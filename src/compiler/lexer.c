@@ -519,6 +519,21 @@ lex_token(st_lexer *lx, st_token *out)
             return 1;
         }
         while (!at_end(lx) && is_binary_char((unsigned char) lx->source[lx->pos])) {
+            /*
+             *  A minus that begins a number is not part of the selector.
+             *
+             *  Binary selectors are greedy, and two characters are allowed,
+             *  so "@-" reads as one -- which turns "-2@-2" into "-2 @- 2"
+             *  and sends #@- to a number.  The minus sign binds to a numeric
+             *  literal that follows it directly, which is the same rule that
+             *  makes "3-4" a send and "3 -4" two literals; it just has to be
+             *  applied here too.  Cursor class>>initialize is full of
+             *  offsets written that way, so no cursor could be built.
+             */
+            if (n > 0 && lx->source[lx->pos] == '-'
+             && lx->pos + 1 < lx->length
+             && isdigit((unsigned char) lx->source[lx->pos + 1]))
+                break;
             if (n + 1 < sizeof out->text)
                 out->text[n++] = lx->source[lx->pos];
             ++lx->pos;

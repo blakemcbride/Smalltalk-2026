@@ -2097,6 +2097,43 @@ install_user_interface(void)
             run_method_on(m, cls, 4000000);
     }
 
+    /*
+     *  A Transcript to report into.
+     *
+     *  Everything that wants to say something says it here -- the compiler
+     *  reports its errors to Transcript, so with none there a compile error
+     *  becomes "nil does not understand #show" and the real message is lost.
+     *  A TextCollector is normally made with a view; this one writes into a
+     *  WriteStream on a String, which is what an image with no window on the
+     *  Transcript yet can offer, and it means the text can be read back.
+     */
+    {
+        st_oop  collector_class = BOOT_global("TextCollector");
+        st_oop  stream_class = BOOT_global("WriteStream");
+        st_oop  string_class = BOOT_global("String");
+
+        if (OM_is_present(collector_class) && OM_is_present(stream_class)
+         && OM_is_present(string_class)) {
+            st_oop  on = lookup_in_chain(OM_fetch_class(stream_class), "on:");
+            st_oop  buffer = OM_instantiate_bytes(string_class, 0);
+            st_oop  collector;
+
+            if (OM_is_present(on) && OM_is_present(buffer)
+             && run_method_with(on, stream_class, &buffer, 1, 2000000)
+             && OM_is_present(st_vm.return_value)) {
+                st_oop  stream = st_vm.return_value;
+
+                collector = OM_instantiate_pointers(collector_class, 3);
+                if (OM_is_present(collector)) {
+                    /*  contents, isLocked, then entryStream.  */
+                    OM_store_pointer(2, collector, stream);
+                    OM_increase_ref(collector);
+                    define_global("Transcript", collector);
+                }
+            }
+        }
+    }
+
     for (i = 0; i < sizeof wanted / sizeof wanted[0]; ++i) {
         st_oop  cls = BOOT_global(wanted[i].class_name);
         st_oop  make;

@@ -379,6 +379,33 @@ test_loops(void)
  *  Reads of i inside the block took the method's slot, which nothing writes,
  *  while the loop stored each value into the block's.
  */
+/*
+ *  A minus sign binds to a numeric literal that follows it directly, and
+ *  that rule applies inside a binary selector too.
+ *
+ *  Binary selectors are greedy and two characters long, so "@-" reads as one
+ *  and "-2@-2" becomes "-2 @- 2".  Cursor class>>initialize is full of
+ *  offsets written exactly that way, so no cursor could be built, and the
+ *  Compiler could not report anything because reporting starts with
+ *  "Cursor execute show".
+ */
+static void
+test_negative_after_binary(void)
+{
+    /*  @ then the literal -2, not the selector @-.  Bytecode 187 is @.  */
+    /*  Only -1 has a push of its own; -2 is a literal, and the same one
+     *  twice is one literal.  */
+    CHECK_CODE("foo ^2 @ -2", "point with a negative y", 119, 32, 187, 124);
+    CHECK_CODE("foo ^-2 @ -2", "both negative", 32, 32, 187, 124);
+
+    /*  A real two-character selector is still one token.  */
+    CHECK_CODE("foo ^1 <= 2", "<= is one selector", 118, 119, 180, 124);
+    CHECK_CODE("foo ^1 // 2", "// is one selector", 118, 119, 189, 124);
+
+    /*  And a minus with a space before a digit is still a send.  */
+    CHECK_CODE("foo ^3 - 4", "subtraction", 32, 33, 177, 124);
+}
+
 static void
 test_scope_shadowing(void)
 {
@@ -597,6 +624,7 @@ main(void)
     test_loops();
     test_cascades();
     test_scope_shadowing();
+    test_negative_after_binary();
 
     return ST_TEST_END();
 }
