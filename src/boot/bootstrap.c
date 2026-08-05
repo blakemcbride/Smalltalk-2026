@@ -50,6 +50,8 @@ typedef struct {
     st_oop      metaclass_association;
     int         reserved_pointer;
 
+    char        category[64];
+
     /*  Pool dictionaries this class shares, by name.  */
     char        pools[4][64];
     unsigned    pool_count;
@@ -853,6 +855,8 @@ parse_class_definition(const char *text)
         split_words(ivars, c->cvars, &c->cvar_count, MAX_IVARS);
     if (quoted_after(text, "poolDictionaries:", ivars, sizeof ivars))
         split_words(ivars, c->pools, &c->pool_count, 4);
+    if (quoted_after(text, "category:", ivars, sizeof ivars))
+        snprintf(c->category, sizeof c->category, "%.63s", ivars);
 
     ++class_count;
     if (result)
@@ -2195,6 +2199,50 @@ install_user_interface(void)
 }
 
 /*
+ *  Build SystemOrganization, the map from class categories to classes.
+ *
+ *  The Browser opens on it -- "BrowserView openOn: SystemOrganization" -- so
+ *  without it there is nothing to browse.  Every class definition names its
+ *  category, so the information has been going past all along; it is
+ *  collected here and handed to the library's own organizer with
+ *  classify:under:, which is how a class says where it belongs.
+ */
+static int
+install_system_organization(void)
+{
+    st_oop      org_class = BOOT_global("SystemOrganizer");
+    st_oop      make;
+    st_oop      classify;
+    st_oop      organization;
+    unsigned    i;
+
+    if (!OM_is_present(org_class))
+        return 1;
+    make = lookup_in_chain(OM_fetch_class(org_class), "new");
+    if (!OM_is_present(make) || !run_method_on(make, org_class, 4000000))
+        return 1;
+    organization = st_vm.return_value;
+    if (!OM_is_present(organization))
+        return 1;
+    OM_increase_ref(organization);
+
+    classify = lookup_in_chain(org_class, "classify:under:");
+    if (OM_is_present(classify)) {
+        for (i = 0; i < class_count; ++i) {
+            st_oop  args[2];
+
+            if (!classes[i].category[0])
+                continue;
+            args[0] = BOOT_intern_symbol(classes[i].name, NULL);
+            args[1] = BOOT_make_string(classes[i].category, NULL);
+            run_method_with(classify, organization, args, 2, 2000000);
+        }
+    }
+    define_global("SystemOrganization", organization);
+    return 1;
+}
+
+/*
  *  Build the process scheduler and the process the image starts in.
  *
  *  ProcessorScheduler class>>new refuses on purpose -- "the integrity of the
@@ -2579,6 +2627,7 @@ BOOT_run_initializers(st_boot_init_report *out)
      */
     install_text_style();
     install_user_interface();
+    install_system_organization();
     return 0;
 }
 

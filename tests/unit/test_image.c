@@ -694,6 +694,22 @@ test_process_scheduler(void)
 }
 
 /*
+ *  SystemOrganization: the map from class categories to classes.
+ *
+ *  The Browser opens on it -- BrowserView openOn: SystemOrganization -- so
+ *  without it there is nothing to browse.  Every class definition names its
+ *  category, so the information has been going past all along; it is
+ *  collected and handed to the library's own organizer.
+ */
+static void
+test_system_organization(void)
+{
+    check_oop("SystemOrganization isNil", ST_FALSE, "false");
+    /*  One per source directory.  */
+    check_integer("SystemOrganization categories size", 41);
+}
+
+/*
  *  Processes, and a controller that wants control.
  *
  *  These are what the interaction loop is made of.  A forked process really
@@ -829,6 +845,7 @@ main(void)
     test_scheduler();
     test_process_scheduler();
     test_processes();
+    test_system_organization();
     test_printing_deep();
     test_mixed_arithmetic();
 

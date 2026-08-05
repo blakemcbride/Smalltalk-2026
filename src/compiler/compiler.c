@@ -1273,6 +1273,96 @@ append_method_class_literal(st_compiler *c)
         c->ctx->method_class_association;
 }
 
+/*
+ *  How deep the working stack gets.
+ *
+ *  A context has room for its temporaries and its stack together, and the
+ *  method header says whether the small size or the large one is wanted.
+ *  This decided that on the temporary count alone, which is only half the
+ *  question: a method with two temporaries and a deeply nested expression
+ *  overflows a small context and writes past the end of it.  BrowserView
+ *  class>>openOn: is one -- a cascade of six keyword messages, each with a
+ *  Rectangle built inline -- and it corrupted the heap rather than failing.
+ *
+ *  The depth is measured by walking the finished bytecodes and applying each
+ *  one's effect on the stack.  Doing it afterwards rather than while emitting
+ *  keeps the arithmetic in one place, where it can be read against Chapter 28
+ *  instead of being spread over every emit site.  Jumps are ignored: the
+ *  compiler only ever generates branches whose arms leave the stack at the
+ *  same depth, so a straight walk gives the true maximum.
+ */
+static unsigned
+max_stack_depth(const st_compiled_code *code)
+{
+    int         depth = 0;
+    int         highest = 0;
+    unsigned    i;
+
+    for (i = 0; i < code->length; ++i) {
+        uint8_t     b = code->bytecodes[i];
+        int         effect = 0;
+
+        if (b <= 119) {
+            /*  0..119 are all pushes: receiver variables, temporaries,
+             *  literals, and the constants self, true, false, nil, -1, 0,
+             *  1 and 2.  */
+            effect = 1;
+        }  else if (b <= 124) {
+            effect = 0;                 /*  returns end the walk anyway  */
+        }  else if (b == 125) {
+            effect = 0;                 /*  return from block            */
+        }  else if (b == 128) {
+            ++i;                        /*  extended push                */
+            effect = 1;
+        }  else if (b == 129) {
+            ++i;                        /*  extended store, keeps it     */
+            effect = 0;
+        }  else if (b == 130) {
+            ++i;                        /*  extended pop and store       */
+            effect = -1;
+        }  else if (b == 131 || b == 133) {
+            uint8_t desc = code->bytecodes[++i];
+
+            effect = -(int) (desc >> 5); /*  send: argc off, result on   */
+        }  else if (b == 132 || b == 134) {
+            uint8_t argc = code->bytecodes[++i];
+
+            ++i;
+            effect = -(int) argc;
+        }  else if (b == 135) {
+            effect = -1;                /*  pop                          */
+        }  else if (b == 136) {
+            effect = 1;                 /*  duplicate                    */
+        }  else if (b == 137) {
+            effect = 1;                 /*  push active context          */
+        }  else if (b >= 96 && b <= 111) {
+            effect = -1;                /*  pop and store                */
+        }  else if (b >= 144 && b <= 175) {
+            if (b >= 160)
+                ++i;                    /*  long jumps carry a byte      */
+            /*  A conditional jump pops its condition.  */
+            effect = (b >= 152 && b <= 159) ? -1
+                   : ((b >= 168 && b <= 175) ? -1 : 0);
+        }  else if (b >= 176) {
+            /*  Arithmetic and special selectors: one argument except the
+             *  unary ones, which take none.  */
+            static const int special_args[16] = {
+                1, 2, 0, 0, 1, 0, 1, 0, 1, 0, 1, 1, 0, 1, 0, 0
+            };
+
+            effect = (b < 192) ? -1
+                   : ((b < 208) ? -special_args[b - 192]
+                                : -(int) ((b - 208) / 16));
+        }
+        depth += effect;
+        if (depth > highest)
+            highest = depth;
+        if (depth < 0)
+            depth = 0;
+    }
+    return (unsigned) highest;
+}
+
 /*  ----------  The method pattern  ----------  */
 
 static void
@@ -1375,7 +1465,13 @@ COMPILE_to_bytecodes(const char *source, const st_compile_context *ctx,
 
     out->argument_count  = c.argument_count;
     out->temporary_count = c.name_count;
-    out->needs_large_context = (c.name_count + 8 > 12);
+    /*
+     *  Temporaries and stack share the frame, so both count.  Twelve slots
+     *  is what a small context has past its fixed fields; anything more
+     *  needs the large one.
+     */
+    out->needs_large_context =
+        (c.name_count + max_stack_depth(out) > 12);
 
     LEX_close(c.lx);
     return c.failed ? -1 : 0;

@@ -406,6 +406,58 @@ test_negative_after_binary(void)
     CHECK_CODE("foo ^3 - 4", "subtraction", 32, 33, 177, 124);
 }
 
+/*
+ *  A context holds its temporaries and its working stack together, and the
+ *  method header chooses the small size or the large one.  Deciding that on
+ *  the temporary count alone is half the question: a method with two
+ *  temporaries and a deeply nested expression overflows a small context and
+ *  writes past the end of it, which corrupts the heap rather than failing.
+ *
+ *  These check the depth is measured, not guessed.  COMPILE_to_bytecodes
+ *  reports it through needs_large_context.
+ */
+static void
+check_context_size(const char *source, int want_large, const char *label)
+{
+    st_compile_context  ctx = context();
+    st_compiled_code    code;
+
+    symbol_count = 0;
+    if (COMPILE_to_bytecodes(source, &ctx, &code) != 0) {
+        printf("  %s: compile failed: %s\n", label, code.error);
+        CHECK(0);
+        return;
+    }
+    ++st_test_checks;
+    if (code.needs_large_context != want_large) {
+        ++st_test_failures;
+        printf("  FAIL %s: large context %d, want %d\n", label,
+               code.needs_large_context, want_large);
+    }
+}
+
+static void
+test_context_size(void)
+{
+    /*  Shallow and few temporaries: small.  */
+    check_context_size("foo ^1 + 2", 0, "a small method");
+    check_context_size("foo | a b c | ^a", 0, "three temporaries");
+
+    /*
+     *  Deeply nested arguments with no temporaries at all.  Each pending
+     *  receiver and argument sits on the stack until its send happens, so
+     *  this needs more room than a small context has -- and it has no
+     *  temporaries to give it away.
+     */
+    check_context_size("foo ^self a: 1 b: 2 c: 3 d: 4 e: 5 f: 6 g: 7 h: 8"
+                       " i: 9 j: 10 k: 11 l: 12 m: 13",
+                       1, "fourteen deep");
+
+    /*  And many temporaries still force it, as before.  */
+    check_context_size("foo | a b c d e f g h i j k l m | ^a", 1,
+                       "thirteen temporaries");
+}
+
 static void
 test_scope_shadowing(void)
 {
@@ -625,6 +677,7 @@ main(void)
     test_cascades();
     test_scope_shadowing();
     test_negative_after_binary();
+    test_context_size();
 
     return ST_TEST_END();
 }
