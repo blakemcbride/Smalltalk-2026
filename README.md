@@ -246,6 +246,24 @@ in 1983 the one scheduler was made when the image was built and carried by
 every snapshot after; an image built from sources has to be given one, and a
 process to wake up in, whose method is compiled from `-startup`.
 
+**And it answers the mouse.** A booted image polling `Sensor` sees a click
+that arrived through the same queue SDL fills:
+
+```sh
+$ ./st80 -screenshot in.pbm -inject 'm 200 120; d 130' -run in.image
+st80: wrote in.pbm, 771 of 307200 pixels are ink
+st80: stopped after 21075 bytecodes
+```
+
+The image was told to spin on `[Sensor anyButtonPressed] whileFalse:
+[Processor yield]` and then draw what it found. It stopped after 21,075
+bytecodes rather than its 60,000,000 limit, and drew bars measuring the red
+button and an x of 200 — which is the whole path: an event queued, the
+semaphore primitive 93 installed signalled, the input process preempting to
+drain the queue, `InputState` updated, and the polling process reading it.
+`-inject` posts exactly what the SDL handlers post, so nothing about that path
+is a test fixture.
+
 **And it schedules windows.** `ScheduledControllers` is a real
 `ControlManager` holding a screen controller; scheduling two views and asking
 it to restore redraws its gray background and both windows over it. `Sensor`
