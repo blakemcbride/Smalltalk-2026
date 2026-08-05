@@ -1,0 +1,125 @@
+Object subclass: #Switch
+  instanceVariableNames: 'on onAction offAction'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Interface-Menus'!
+Switch class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+Switch comment:
+'I represent a selection setting and actions to take depending on a change in the setting.  An instance of me has three attributes:  state, which is either on or off;  on action;  and off action.  The on and off actions are blocks of code that execute whenever the instance changes state.  I am typically used as a menu item in conjunction with a SwitchView and a SwitchController.
+
+Instance Variables:
+		on				<Boolean> true if the Switch is on
+		onAction		<BlockContext> or nil
+		offAction		<BlockContext> or nil'!
+"-----------------------------------"!
+!Switch class methodsFor: 'instance creation'!
+new
+	"Answer an instance of me such that the on and off actions are set to nil
+	('no action'), and the state is set to 'off'."
+
+	^self newOff!
+newOff
+	"Answer an instance of me such that the on and off actions are set to nil
+	('no action'), and the state is set to 'off'."
+
+	^super new initializeOff!
+newOn
+	"Answer an instance of me such that the on and off actions are set to nil
+	('no action'), and the state is set to 'on'."
+
+	^super new initializeOn!
+"-----------------------------------"!
+!Switch methodsFor: 'action'!
+doAction: anAction
+	"Execute anAction if it is non-nil."
+
+	anAction == nil ifFalse: [anAction value]!
+offAction: anAction
+	"Set the off action of the receiver to anAction."
+
+	offAction _ anAction fixTemps!
+onAction: anAction
+	"Set the on action of the receiver to anAction."
+
+	onAction _ anAction fixTemps!
+"-----------------------------------"!
+!Switch methodsFor: 'clearing'!
+clear
+	"Set the state of the receiver to 'off'.  If the state of the receiver was previously
+	'on', then 'self change' is sent.  The receiver's off action is NOT executed."
+
+	self isOn
+		ifTrue:
+			[on _ false.
+			self changed]!
+"-----------------------------------"!
+!Switch methodsFor: 'dependents access'!
+removeDependent: aDependent
+	"If aDependent is the only dependent in the list, the receiver sends
+	Switch|release to try to break up possible pointer cycles."
+
+	super removeDependent: aDependent.
+	self dependents isEmpty ifTrue: [self release]!
+"-----------------------------------"!
+!Switch methodsFor: 'initialize-release'!
+release
+	"Set the on and off actions of the receiver to nil ('no action') in order to break
+	possible pointer cycles.  It is sent by Switch|deleteDependent: when the
+	last dependent has been deleted from the Switch's list of dependents."
+
+	super release.
+	onAction _ nil.
+	offAction _ nil!
+"-----------------------------------"!
+!Switch methodsFor: 'private'!
+initializeOff
+	on _ false.
+	onAction _ nil.
+	offAction _ nil!
+initializeOn
+	on _ true.
+	onAction _ nil.
+	offAction _ nil!
+"-----------------------------------"!
+!Switch methodsFor: 'state'!
+isOff
+	"Answer whether the receiver is set off or not."
+	^on not!
+isOn
+	"Answer whether the receiver is set on or not."
+	^on!
+set
+	"Set the state of the receiver to 'on'.  If the state of the receiver was previously
+	'off', then 'self change' is sent.  The receiver's on action is NOT executed."
+
+	self isOff
+		ifTrue:
+			[on _ true.
+			self changed]!
+switch
+	"Change the state of the receiver from 'on' to 'off' or from 'off' to 'on' (see
+	Switch|turnOn, Switch|turnOff)."
+
+	self isOn
+		ifTrue: [self turnOff]
+		ifFalse: [self turnOn]!
+turnOff
+	"Set the state of the receiver to 'off'.  If the state of the receiver was previously
+	'on', then 'self change' is sent and the receiver's off action is executed."
+
+	self isOn
+		ifTrue:
+			[on _ false.
+			self changed.
+			self doAction: offAction]!
+turnOn
+	"Set the state of the receiver to 'on'.  If the state of the receiver was previously
+	'off', then 'self change' is sent and the receiver's on action is executed."
+
+	self isOff
+		ifTrue:
+			[on _ true.
+			self changed.
+			self doAction: onAction]!

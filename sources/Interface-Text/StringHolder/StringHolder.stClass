@@ -1,0 +1,77 @@
+Object subclass: #StringHolder
+  instanceVariableNames: 'contents isLocked'
+  classVariableNames: 'Workspace'
+  poolDictionaries: ''
+  category: 'Interface-Text'!
+StringHolder class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+StringHolder comment:
+'A model for providing a layer of structure in order to view an aspect of structured information that is a string.
+
+Instance variables
+	contents		<String>
+	isLocked	<Boolean> whether or not the contents has been changed but not stored'!
+"-----------------------------------"!
+!StringHolder class methodsFor: 'class initialization'!
+initialize
+	"The class variables were initialized once, and
+	subsequently filled with information.  Re-executing this method is
+	therefore dangerous.
+
+	workSpace  _ StringHolder new.
+
+
+	StringHolder initialize"!
+"-----------------------------------"!
+!StringHolder class methodsFor: 'instance creation'!
+new
+	^super new initialize!
+"-----------------------------------"!
+!StringHolder class methodsFor: 'workspace constants'!
+workspace
+	"Answer the model for the system workspace."
+	^Workspace!
+"-----------------------------------"!
+!StringHolder methodsFor: 'accessing'!
+contents
+	"Answer the contents that the receiver is holding--presumably a string."
+	^contents!
+contents: aString
+	"Set aString to be the contents of the receiver."
+	contents _ aString!
+"-----------------------------------"!
+!StringHolder methodsFor: 'doIt/accept/explain'!
+doItContext
+	"Answer the context in which a text selection can be evaluated."
+	^nil!
+doItReceiver
+	"Answer the object that should be informed of the result of evaluating a
+	text selection."
+	^nil!
+"-----------------------------------"!
+!StringHolder methodsFor: 'initialize-release'!
+initialize
+	"Initialize the state of the receiver to be unlocked with default contents."
+	isLocked _ false.
+	contents _ self defaultContents!
+"-----------------------------------"!
+!StringHolder methodsFor: 'lock access'!
+isLocked
+	"Answer whether the receiver is locked, that is, has the contents of the
+	receiver been modified since the last time it was unlocked."
+
+	^isLocked!
+isUnlocked
+	"Answer whether the receiver is unlocked."
+	^isLocked not!
+lock
+	"Note that the receiver has been modified."
+	isLocked _ true!
+unlock
+	"Unlock the receiver.  Any modification has presumably been saved."
+	isLocked _ false!
+"-----------------------------------"!
+!StringHolder methodsFor: 'private'!
+defaultContents
+	^ ''!

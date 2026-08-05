@@ -1,0 +1,94 @@
+MouseMenuController subclass: #ScreenController
+  instanceVariableNames: ''
+  classVariableNames: 'ScreenYellowButtonMenu ScreenYellowButtonMessages'
+  poolDictionaries: ''
+  category: 'Interface-Support'!
+ScreenController class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+ScreenController comment:
+'I am the controller for the parts of the display screen that have no window on them.  I only provide a standard yellow button menu.  I view (a FormView of) an infinite gray form.'!
+"-----------------------------------"!
+!ScreenController class methodsFor: 'class initialization'!
+initialize
+	"Initialize the System Menu."
+
+	ScreenYellowButtonMenu _
+		PopUpMenu
+			labels:
+'restore display
+exit project
+project
+file list
+browser
+workspace
+system transcript
+system workspace
+save
+quit'
+			lines: #(2 8 ).
+	ScreenYellowButtonMessages _
+			#(restoreDisplay exitProject openProject
+			openFileList openBrowser openWorkspace openTranscript openSystemWorkspace
+			save quit).
+
+	"ScreenController initialize.
+	ScreenController allInstancesDo: [:c | c initializeYellowButtonMenu]"!
+"-----------------------------------"!
+!ScreenController methodsFor: 'control defaults'!
+isControlActive
+	^super isControlActive and: [sensor yellowButtonPressed]!
+isControlWanted
+	^super isControlWanted and: [sensor yellowButtonPressed]!
+openFileList
+	"Create and schedule a FileList view for specifying files to access."
+	FileList open!
+"-----------------------------------"!
+!ScreenController methodsFor: 'cursor'!
+centerCursorInView
+	"Override so this doesn't happen when taking control"!
+"-----------------------------------"!
+!ScreenController methodsFor: 'initialize-release'!
+initialize
+	super initialize.
+	self initializeYellowButtonMenu!
+"-----------------------------------"!
+!ScreenController methodsFor: 'menu messages'!
+exitProject
+	Project current exit!
+openBrowser
+	BrowserView openOn: SystemOrganization!
+openProject
+	ProjectView open!
+openSystemWorkspace
+	StringHolderView openSystemWorkspace.!
+openTranscript
+	TextCollectorView open: Transcript label: 'System Transcript'!
+openWorkspace
+	StringHolderView open!
+quit
+	| menu index imagePrefix |
+	menu _ PopUpMenu labels:
+' Save, then quit
+ Quit, without saving
+ Continue '
+		lines: #(1 2).
+	index _ menu startUp.
+	index = 1
+		ifTrue:
+			[imagePrefix _ Smalltalk getImagePrefix.
+			imagePrefix isEmpty ifTrue: [^self].
+			Smalltalk saveAs: imagePrefix thenQuit: true].
+	index = 2 ifTrue: [Smalltalk quit]!
+restoreDisplay
+	ScheduledControllers restore!
+save
+	| prefix |
+	prefix _ Smalltalk getImagePrefix.
+	prefix isEmpty ifTrue: [^self].
+	Smalltalk saveAs: prefix thenQuit: false!
+"-----------------------------------"!
+!ScreenController methodsFor: 'private'!
+initializeYellowButtonMenu
+	self yellowButtonMenu: ScreenYellowButtonMenu
+		yellowButtonMessages: ScreenYellowButtonMessages!

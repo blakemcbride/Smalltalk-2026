@@ -1,0 +1,90 @@
+Path subclass: #Line
+  instanceVariableNames: ''
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Graphics-Paths'!
+Line class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+Line comment:
+'This Class is a Line specified by two points. This is a sub-class of path though the two points that determine the line are called begin and end.'!
+"-----------------------------------"!
+!Line class methodsFor: 'examples'!
+example
+	"Designate two places on the screen by clicking any mouse button.
+	A straight path with a square black form will be displayed connecting the
+	two selected points."
+
+	| aLine aForm |
+	aForm _ Form new extent: 20@20.		"make a form one quarter of inch square"
+	aForm black.							"turn it black"
+	aLine _ Line new.
+	aLine form: aForm.						"use the black form for display"
+	aLine beginPoint: Sensor waitButton. Sensor waitNoButton.
+	aForm displayOn: Display at: aLine beginPoint.
+	aLine endPoint: Sensor waitButton.
+	aLine displayOn: Display.				"display the line"
+
+	"Line example."!
+"-----------------------------------"!
+!Line class methodsFor: 'instance creation'!
+from: beginPoint to: endPoint withForm: aForm
+	| newSelf |
+	newSelf _ super new: 2.
+	newSelf add: beginPoint.
+	newSelf add: endPoint.
+	newSelf form: aForm.
+	^newSelf!
+new
+	| newSelf |
+	newSelf _ super new: 2.
+	newSelf add: 0@0.
+	newSelf add: 0@0.
+	^newSelf!
+"-----------------------------------"!
+!Line methodsFor: 'accessing'!
+beginPoint
+	"Answer the first end point of the receiver."
+	^self first!
+beginPoint: aPoint
+	"Set the first end point of the receiver. Answer the argument, aPoint."
+
+	self at: 1 put: aPoint.
+	^aPoint!
+endPoint
+	"Answer the first end point of the receiver."
+
+	^self last!
+endPoint: aPoint
+	"Set the first end point of the receiver."
+
+	self at: 2 put: aPoint.
+	^aPoint!
+"-----------------------------------"!
+!Line methodsFor: 'displaying'!
+displayOn: aDisplayMedium at: aPoint clippingBox: clipRect rule: anInteger mask: aForm
+	"The form associated with this Path will be displayed, according
+	to one of the sixteen functions of two logical variables (rule), at
+	each point on the Line. Also the source form will be first anded
+	with aForm as a mask. Does not effect the state of the Path."
+	collectionOfPoints size < 2 ifTrue: [self error: 'a line must have two points'].
+	aDisplayMedium
+		drawLine: self form
+		from: self beginPoint + aPoint
+		to: self endPoint + aPoint
+		clippingBox: clipRect
+		rule: anInteger
+		mask: aForm!
+displayOn: aDisplayMedium transformation: aTransformation clippingBox: clipRect rule: anInteger mask: aForm
+	| newPath newLine |
+	newPath _ aTransformation applyTo: self.
+	newLine _ Line new.
+	newLine beginPoint: newPath firstPoint.
+	newLine endPoint: newPath secondPoint.
+	newLine form: self form.
+	newLine
+		displayOn: aDisplayMedium
+		at: 0 @ 0
+		clippingBox: clipRect
+		rule: anInteger
+		mask: aForm!

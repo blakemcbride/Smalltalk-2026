@@ -1,0 +1,101 @@
+Integer variableByteSubclass: #LargeNegativeInteger
+  instanceVariableNames: ''
+  classVariableNames: 'MinHi'
+  poolDictionaries: ''
+  category: 'Numeric-Numbers'!
+LargeNegativeInteger class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+LargeNegativeInteger comment:
+'A negative large integer.  Nearly all the work is done in Integer: LargeNegativeInteger just overrides a few messages.'!
+"-----------------------------------"!
+!LargeNegativeInteger class methodsFor: 'class initialization'!
+initialize
+	"If a LargeNegativeInteger is exactly SmallInteger maxBytes in size,
+	and its high-order byte does not exceed MaxHi, the number
+	should be a SmallInteger."
+
+	SmallInteger initialize.
+	MinHi _ (SmallInteger minVal bitShift: (SmallInteger maxBytes - 1 * -8)) negated
+	"LargeNegativeInteger initialize."!
+"-----------------------------------"!
+!LargeNegativeInteger methodsFor: 'arithmetic'!
+abs
+	^self negated!
+negated
+	^self copyto: (LargePositiveInteger new: self digitLength)!
+"-----------------------------------"!
+!LargeNegativeInteger methodsFor: 'bit manipulation'!
+highBit
+	self error: 'highBit not defined for negative numbers'!
+"-----------------------------------"!
+!LargeNegativeInteger methodsFor: 'converting'!
+asObject
+	"This is the inverse of Object.asOop; look there for details.
+	Only Stretch should encounter this code."
+	self >= -16384
+		ifTrue:
+			[self even
+				ifTrue: [^ self // 2]         "even --> negative"
+				ifFalse: [^ (self+1) // -2]]  "odd --> positive"
+		ifFalse:
+			[^ #NonExistentObject]!
+"-----------------------------------"!
+!LargeNegativeInteger methodsFor: 'printing'!
+printOn: aStream base: b
+	aStream nextPut: $-.
+	super printOn: aStream base: b!
+"-----------------------------------"!
+!LargeNegativeInteger methodsFor: 'system primitives'!
+digitAt: index
+	"Answer the value of an indexable field in the receiver.  Fail if the argument
+	(the index) is not an Integer or is out of bounds.  Essential.  See Object
+	documentation whatIsAPrimitive."
+
+	<primitive: 60>
+	self digitLength < index
+		ifTrue: [^0]
+		ifFalse: [^super at: index]!
+digitAt: index put: value
+	"Store the second argument (value) in the indexable field of the receiver
+	indicated by index.  Fail if the value is negative or is larger than 255.  Fail if
+	the index is not an Integer or is out of bounds.  Answer the value that was
+	stored.  Essential.  See Object documentation whatIsAPrimitive."
+
+	<primitive: 61>
+	^super at: index put: value!
+digitLength
+	"Answer the number of indexable fields in the receiver.  This value is the
+	same as the largest legal subscript.  Essential.  See Object documentation
+	whatIsAPrimitive."
+
+	<primitive: 62>
+	self primitiveFailed!
+"-----------------------------------"!
+!LargeNegativeInteger methodsFor: 'testing'!
+negative
+	^true!
+positive
+	^false!
+"-----------------------------------"!
+!LargeNegativeInteger methodsFor: 'truncation and round off'!
+truncated
+	"If I can be represented as a SmallInteger, return the
+	converted result.  This message should really be called
+	something else, since it is only used internally after
+	arithmetic and bit operations."
+
+	| size partial maxSize |
+	size _ self digitLength.
+	size = 0 ifTrue: [^0].
+	partial _ self digitAt: size.
+	partial = 0 ifTrue: [^(self growby: -1) truncated].
+	maxSize _ SmallInteger maxBytes.
+	(size < maxSize or: [size = maxSize and: [partial < MinHi or: [partial = MinHi and: [(self anyBitTo: maxSize - 1 * 8) not]]]])
+		ifTrue:
+			["Convert back to a SmallInteger."
+			partial _ 0 - partial.
+			[(size _ size - 1) > 0]
+				whileTrue:
+					[partial _ (partial bitShift: 8) - (self digitAt: size)].  "Can't overflow"
+			^partial]!

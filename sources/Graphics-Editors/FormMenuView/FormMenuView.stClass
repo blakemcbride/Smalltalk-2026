@@ -1,0 +1,144 @@
+View subclass: #FormMenuView
+  instanceVariableNames: ''
+  classVariableNames: 'BorderForm FormButtons SpecialBorderForm'
+  poolDictionaries: ''
+  category: 'Graphics-Editors'!
+FormMenuView class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+FormMenuView comment:
+'I represent a View whose subViews are Switches (Buttons or OneOnSwitches) whose actions set the mode, color, and tool for editing a Form on the screen.  The default controller of my instances is FormMenuController.'!
+"-----------------------------------"!
+!FormMenuView class methodsFor: 'class initialization'!
+initialize
+	"The forms for the menu are typically stored on files.  In order to avoid reading
+	them every time, they are stored in a collection that is a class variable,
+	along with the offset, tool value, and initial visual state (on or off), that
+	makes up the view of the form in the menu view."
+
+	| offsets keys names formButton states |
+	offsets _ OrderedCollection new: 21.
+	#( 0 64 96 128 160 192 256 288 320 352 420) do: [:i | offsets addLast: i@0]. "First row"
+	#( 0 64 96 128 160 192 256 304 352 420) do: [:i | offsets addLast: i@48].		"Second row"
+	offsets _ offsets asArray.
+	keys _ #($a $s $d $f $g $h $j $k $l $; $' $z $x $c $v $b $n $m $, $. $/ ).	"Keyboard"
+	states _
+		#(false false true false false false true false false false false false false
+		false false false true false false false false ).		"Initial states of buttons"
+	names _
+		#('select.form.' 'singlecopy.form.' 'repeatcopy.form.' 'line.form.' 'curve.form.'
+		'block.form' 'over.form.' 'under.form.' 'reverse.form.' 'erase.form.' 'in.form.'
+		'magnify.form.' 'white.form' 'lightgray.form' 'gray.form' 'darkgray.form' 'black.form'
+		'xgrid.form.' 'ygrid.form.' 'togglegrids.form.' 'out.form.' ).	"Files of button images"
+	FormButtons _ OrderedCollection new.
+	1 to: 21 do:
+		[:index |
+		formButton _ FormButtonCache new.
+		formButton form: (Form readFrom: (names at: index)).
+		formButton offset: (offsets at: index).
+		formButton value: (keys at: index).
+		formButton initialState: (states at: index).
+		FormButtons addLast: formButton].
+	SpecialBorderForm  _ Form readFrom: 'specialborderform.form'.
+	BorderForm _ Form readFrom: 'borderform.form'
+
+	"FormMenuView initialize"!
+"-----------------------------------"!
+!FormMenuView methodsFor: 'controller access'!
+defaultControllerClass
+	^FormMenuController!
+"-----------------------------------"!
+!FormMenuView methodsFor: 'initialize-release'!
+makeFormEditorMenu
+	| button buttonCache form aSwitchView aSwitchController|
+	"Now get those forms into the subviews"
+	self makeButton: 1.					"form source"
+	self makeConnections: (2 to: 6).		"tools"
+	self makeConnections: (7 to: 10).		"modes"
+	self makeButton: 11.					"filing in"
+	self makeButton: 12.					"bit editing"
+	self makeColorConnections: (13 to: 17).		"colors"
+	self makeGridSwitch: 18.					"toggle x"
+	self makeGridSwitch: 19.					"toggle y"
+	self makeButton: 20.					"setting grid"
+	self makeButton: 21					"filing out"!
+"-----------------------------------"!
+!FormMenuView methodsFor: 'private'!
+makeButton: index
+	| button buttonCache aSwitchView|
+	buttonCache _ FormButtons at: index.
+	button _ Button newOff.
+	button onAction: [model changeTool: buttonCache value].
+	aSwitchView _ self makeViews: buttonCache for: button.
+	aSwitchView controller: IndicatorOnSwitchController new!
+makeColorConnections: indexInterval
+	| connector button buttonCache aSwitchView |
+	connector _ Object new.		"A dummy model for connecting dependents"
+	indexInterval do:
+		[:index |
+		buttonCache _ FormButtons at: index.
+		buttonCache initialState = #true
+			ifTrue: [button _ OneOnSwitch newOn]
+			ifFalse: [button _ OneOnSwitch newOff].
+		button onAction: [model changeTool: buttonCache value].
+		button connection: connector.
+		aSwitchView _ self makeViews: buttonCache for: button.
+		aSwitchView highlightForm: BorderForm.
+		aSwitchView borderWidthLeft: 1 right: 0 top: 1 bottom: 1.
+		aSwitchView controller selector: #turnOn].
+	aSwitchView highlightForm: SpecialBorderForm.
+	aSwitchView borderWidth: 1.!
+makeConnections: indexInterval
+	| connector button buttonCache aSwitchView |
+	connector _ Object new.		"A dummy model for connecting dependents."
+	indexInterval do:
+		[:index |
+		buttonCache _ FormButtons at: index.
+		buttonCache initialState = #true
+			ifTrue: [button _ OneOnSwitch newOn]
+			ifFalse: [button _ OneOnSwitch newOff].
+		button onAction: [model changeTool: buttonCache value].
+		button connection: connector.
+		aSwitchView _ self makeViews: buttonCache for: button.
+		aSwitchView borderWidthLeft: 1 right: 0 top: 1 bottom: 1.
+		aSwitchView controller selector: #turnOn].
+	aSwitchView borderWidth: 1.!
+makeGridSwitch: index
+	| button buttonCache |
+	buttonCache _ FormButtons at: index.
+	buttonCache initialState = #true
+		ifTrue: [button _ Switch newOn]
+		ifFalse: [button _ Switch newOff].
+	button onAction: [model changeTool: buttonCache value].
+	button offAction: [model changeTool: buttonCache value].
+	self makeViews: buttonCache for: button!
+makeSwitch: index
+	| button buttonCache |
+	buttonCache _ FormButtons at: index.
+	buttonCache initialState = #true
+		ifTrue: [button _ Switch newOn]
+		ifFalse: [button _ Switch newOff].
+	button onAction: [model changeTool: buttonCache value].
+	self makeViews: buttonCache for: button!
+makeViews: cache for: aSwitch
+	| form aSwitchView |
+	form _ cache form.
+	aSwitchView _ SwitchView new model: aSwitch.
+	aSwitchView key: cache value.
+	aSwitchView label: form.
+	aSwitchView window: (0@0 extent: form extent).
+	aSwitchView translateBy: cache offset.
+	aSwitchView borderWidth: 1.
+	aSwitchView insideColor: Form white.
+	self addSubView: aSwitchView.
+	^aSwitchView!
+"-----------------------------------"!
+!FormMenuView methodsFor: 'subView access'!
+subViewContainingCharacter: aCharacter
+	"Answer the receiver's subView that corresponds to the key, aCharacter.
+	Answer nil if no subView is selected by aCharacter."
+
+	self subViews reverseDo:
+		[:aSubView |
+		(aSubView containsKey: aCharacter) ifTrue: [^aSubView]].
+	^nil!

@@ -1,0 +1,128 @@
+ParseNode subclass: #MethodNode
+  instanceVariableNames: 'selectorOrFalse precedence arguments block literals primitive encoder temporaries'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'System-Compiler'!
+MethodNode class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+MethodNode comment:
+'I am the root of the parse tree.'!
+"-----------------------------------"!
+!MethodNode methodsFor: 'code generation'!
+generate: trailer
+	"I am the root of a parse tree; answer with an instance of CompiledMethod."
+	| blkSize method nLits lit stack strm nArgs i |
+	self generateIfQuick:
+		[:method |
+		1 to: 3 do: [:i | method at: method size - 3 + i put: (trailer at: i)].
+		method cacheTempNames: self tempNames.
+		^method].
+	nArgs _ arguments size.
+	blkSize _ block sizeForEvaluatedValue: encoder.
+	literals _ encoder literals: primitive nArgs: nArgs.
+	encoder maxTemp > 31
+		ifTrue: [^self error: 'Too many temporary variables'].
+	(nLits _ literals size) > 63
+		ifTrue: [^self error: 'Too many literals referenced'].
+	method _ CompiledMethod	"Dummy to allocate right size"
+				newBytes: blkSize
+				flags: ((nArgs <= 4 and: [primitive = 0]) ifTrue: [nArgs] ifFalse: [7])
+				nTemps: encoder maxTemp
+				nStack: 0
+				nLits: nLits.
+	strm _ ReadWriteStream with: method.
+	strm position: method initialPC - 1.
+	stack _ ParseStack new init.
+	block emitForEvaluatedValue: stack on: strm.
+	stack position ~= 1 ifTrue: [^self error: 'Compiler stack discrepancy'].
+	strm position ~= (method size - 3)
+		ifTrue: [^self error: 'Compiler code size discrepancy'].
+	1 to: nLits do: [:lit | method literalAt: lit put: (literals at: lit)].
+	method needsStack: stack size encoder: encoder.
+	1 to: 3 do: [:i | method at: method size - 3 + i put: (trailer at: i)].
+	method cacheTempNames: self tempNames.
+	^method!
+generateIfQuick: methodBlock
+	| v |
+	(primitive = 0 and: [arguments size = 0 and: [block isQuick]])
+		ifTrue:
+			[v _ block code.
+			v < 0
+				ifTrue: [^self].
+			v = LdSelf
+				ifTrue: [^methodBlock value: CompiledMethod toReturnSelf].
+			v < ((CodeBases at: LdInstType) + (CodeLimits at: LdInstType))
+				ifTrue: [^methodBlock value: (CompiledMethod toReturnField: v)].
+			(v // 256 = 1 and: [v \\ 256 < 32])
+				ifTrue:
+					[^methodBlock value: (CompiledMethod toReturnField: v \\ 256)]]!
+generateNoQuick
+	"Assumes would have been quick.  Forces numArgs > 0 so will compile real code.
+	The debugger needs this to look simulate a quick return"
+
+	arguments _ Array new: 1.
+	^ self generate: #(0 0 0)!
+selector
+	(selectorOrFalse isMemberOf: Symbol)
+		ifTrue: [^selectorOrFalse].
+	^selectorOrFalse key!
+sourceMap
+	"I am the root of a parse tree; answer with a sorted collection of associations
+	of the form: pc (byte offset in me) -> sourceRange (an Interval) in source text.
+	Because the number of my literals may grow during generation and therefore
+	the pc's may be off, I must pass my generated number of literals to the encoder."
+	| numLits |
+	numLits _ (self generate: #(0 0 0 )) numLiterals.
+	^encoder sourceMap: numLits!
+"-----------------------------------"!
+!MethodNode methodsFor: 'converting'!
+decompileString
+	| aStream |
+	aStream _ WriteStream on: (String new: 1000).
+	self printOn: aStream.
+	^aStream contents!
+"-----------------------------------"!
+!MethodNode methodsFor: 'initialize-release'!
+selector: selOrFalse arguments: args precedence: p temporaries: temps block: blk encoder: anEncoder primitive: prim
+	encoder _ anEncoder.
+	selectorOrFalse _ selOrFalse.
+	precedence _ p.
+	arguments _ args.
+	temporaries _ temps.
+	block _ blk.
+	primitive _ prim!
+"-----------------------------------"!
+!MethodNode methodsFor: 'printing'!
+printOn: aStream
+	| s args |
+	precedence = 1
+		ifTrue:
+			[aStream nextPutAll: self selector]
+		ifFalse:
+			[args _ ReadStream on: arguments.
+			self selector keywords do:
+				[:s |
+				aStream nextPutAll: s.
+				aStream space; nextPutAll: args next key.
+				aStream space]].
+	comment == nil
+		ifFalse:
+			[aStream crtab: 1.
+			self printCommentOn: aStream indent: 1.
+			aStream cr].
+	temporaries size > 0
+		ifTrue:
+			[aStream crtab: 1.
+			aStream nextPutAll: '| '.
+			temporaries do:
+				[:s | aStream nextPutAll: s key. aStream space].
+			aStream nextPut: $|].
+	primitive > 0
+		ifTrue:
+			[aStream crtab: 1.
+			aStream nextPutAll: '<primitive: '; print: primitive; nextPutAll: '>'].
+	aStream crtab: 1.
+	^block printStatementsOn: aStream indent: 1!
+tempNames
+	^encoder tempNames!

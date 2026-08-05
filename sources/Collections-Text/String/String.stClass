@@ -1,0 +1,420 @@
+ArrayedCollection variableByteSubclass: #String
+  instanceVariableNames: ''
+  classVariableNames: 'StringBlter'
+  poolDictionaries: ''
+  category: 'Collections-Text'!
+String class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+String comment:
+'I am an indexed collection of Characters.  I really store 8-bit bytes, but my access protocol translates between these and real Character instances.'!
+"-----------------------------------"!
+!String class methodsFor: 'examples'!
+example
+	"To see the string displayed at the cursor point, execute this expression and
+	select a point by pressing a mouse button."
+
+	'this is some text' displayOn: Display at: Sensor waitButton
+
+	"String example"!
+"-----------------------------------"!
+!String class methodsFor: 'instance creation'!
+fromString: aString
+	"Answer a new String that is a copy of the argument, aString."
+
+	| newString |
+	newString _ self new: aString size.
+	aString size do: [:i | newString at: i put: (aString at: i)].
+	^newString!
+readFrom: inStream
+	"Answer a new String that is determined by reading the stream, inStream.  Embedded
+	double quotes become the quote Character."
+
+	| outStream char done |
+	outStream _ WriteStream on: (String new: 16).
+	"go to first quote"
+	inStream skipTo: $'.
+	done _ false.
+	[done or: [inStream atEnd]]
+		whileFalse:
+			[char _ inStream next.
+			char = $'
+				ifTrue:
+					[char _ inStream next.
+					char = $'
+						ifTrue: [outStream nextPut: char]
+						ifFalse: [done _ true]]
+				ifFalse: [outStream nextPut: char]].
+	^outStream contents!
+"-----------------------------------"!
+!String methodsFor: 'accessing'!
+at: index
+	"Answer the Character stored in the field of the receiver indexed by the
+	argument.  Fail if the index argument is not an Integer or is out of bounds.
+	Essential.  See Object documentation whatIsAPrimitive."
+
+	<primitive: 63>
+	^Character value: (super at: index)!
+at: index put: aCharacter
+	"Store the Character in the field of the receiver indicated by the index.  Fail if the
+	index is not an Integer or is out of bounds, or if the argument is not a Character.
+	Essential.  See Object documentation whatIsAPrimitive."
+
+	<primitive: 64>
+	(aCharacter isKindOf: Character)
+		ifTrue: [self errorNonIntegerIndex]
+		ifFalse: [self error: 'Strings only store Characters']!
+basicAt: index
+	"Answer the Character stored in the field of the receiver indexed by the
+	argument.  Fail if the index argument is not an Integer or is out of bounds.
+	Essential.  See Object documentation whatIsAPrimitive."
+
+	<primitive: 63>
+	^Character value: (super at: index)!
+basicAt: index put: aCharacter
+	"Store the Character in the field of the receiver indicated by the index.  Fail if the
+	index is not an Integer or is out of bounds, or if the argument is not a Character.
+	Essential.  See Object documentation whatIsAPrimitive."
+
+	<primitive: 64>
+	(aCharacter isKindOf: Character)
+		ifTrue: [self errorNonIntegerIndex]
+		ifFalse: [self error: 'Strings only store Characters']!
+findString: subString startingAt: start
+	"Answer the index of subString within the receiver, starting at start. If the receiver does not contain subString, answer 0."
+
+	| aCharacter index |
+	subString isEmpty ifTrue: [^0].
+	aCharacter _ subString first.
+	start to: self size - subString size + 1 do:
+		[:startIndex |
+		(self at: startIndex) = aCharacter ifTrue:
+			[index _ 1.
+			[(self at: startIndex+index-1) = (subString at: index)] whileTrue:
+				[index = subString size ifTrue: [^startIndex].
+				index _ index+1]]].
+	^0!
+replaceFrom: start to: stop with: replacement startingAt: repStart
+	"This destructively replaces elements from start to stop in the receiver
+	starting at index, repStart, in the collection, replacement.  Answer the
+	receiver."
+	(replacement isKindOf: String)
+		ifTrue:
+			[self primReplaceFrom: start to: stop with: replacement startingAt: repStart]
+		ifFalse:
+			[super replaceFrom: start to: stop with: replacement startingAt: repStart]!
+replaceFrom: start to: stop withByteArray: aByteArray startingAt: repStart
+	"This destructively replaces elements from start to stop in the receiver
+	starting at index, repStart, in the byte array, aByteArray.  Answer the
+	receiver."
+	| index repOff characterTable |
+	<primitive: 105>
+	repOff _ repStart - start.
+	characterTable _ Character characterTable.	"in-line asCharacter for speed"
+	index _ start - 1.
+	[(index _ index + 1) <= stop]
+		whileTrue:
+			[self at: index put: (characterTable at: (aByteArray at: repOff + index)+1)]!
+size
+	"Answer the number of indexable fields in the receiver.  This value is the
+	same as the largest legal subscript.  Essential.  See Object documentation
+	whatIsAPrimitive."
+
+	<primitive: 62>
+	^self basicSize!
+string
+	"Answer the receiver itself.  This is for compatibility with other text classes."
+	^self!
+"-----------------------------------"!
+!String methodsFor: 'comparing'!
+< aString
+	"Answer true if and only if the receiver collates before aString.  The collation
+	sequence is ascii with case differences ignored."
+
+	^(self compare: aString) = 1!
+<= aString
+	"Answer true if and only if the receiver collates before aString or is the
+	same as aString.  The collation sequence is ascii with case differences ignored."
+
+	^(self compare: aString) <= 2!
+> aString
+	"Answer true if and only if the receiver collates after aString.  The collation
+	sequence is ascii with case differences ignored."
+
+	^(self compare: aString) = 3!
+>= aString
+	"Answer true if and only if the receiver collates after aString or is the
+	same as aString.  The collation sequence is ascii with case differences ignored."
+
+	^(self compare: aString) >= 2!
+hash
+	| l m |
+	(l _ m _ self size) <= 2
+	  ifTrue:
+		[l = 2
+		  ifTrue: [m _ 3]
+		  ifFalse:
+			[l = 1
+			  ifTrue: [^((self at: 1) asciiValue bitAnd: 127) * 106].
+			^21845]].
+	^(self at: 1) asciiValue * 48 + ((self at: (m - 1)) asciiValue + l)!
+hashMappedBy: map
+	"My hash is independent of my oop"
+	^ self hash!
+match: text
+	"Answer whether text matches the pattern in the receiver.  Matching
+	ignores upper/lower case differences.  Where the receiver contains #, text may
+	contain any single character.  Where the receiver contains *, text may contain any
+	sequence of characters."
+
+	| pattern scanning p t back textStream startScan |
+	pattern _ ReadStream on: self.
+	textStream _ ReadStream on: text.
+	scanning _ false.
+	[pattern atEnd]
+		whileFalse:
+			[p _ pattern next.
+			p = $*
+				ifTrue:
+					[pattern atEnd ifTrue: [^true].
+					scanning _ true.
+					startScan _ pattern position]
+				ifFalse:
+					[textStream atEnd ifTrue: [^false].
+					t _ textStream next.
+					(t asUppercase = p asUppercase or: [p = $#])
+						ifFalse:
+							[scanning ifFalse: [^false].
+							back _ startScan - pattern position.
+							pattern skip: back.
+							textStream skip: back + 1]].
+			(scanning and: [pattern atEnd and: [textStream atEnd not]])
+				ifTrue: [back _ startScan - pattern position.
+						pattern skip: back.
+						textStream skip: back + 1]
+			].
+	^textStream atEnd
+
+	" Examples:
+
+	'xyz' match: 'Xyz'  true
+	'x#z' match: 'x@z' true
+	'x*z' match: 'x whyNot? z' true
+	'*x' match: 'xx' true
+	"!
+sameAs: aString
+	"Answer whether the receiver collates precisely with aString. The collation
+	sequence is ascii with case differences ignored."
+
+	^(self compare: aString) = 2!
+spellAgainst: aString
+	"Answer an integer between 0 and 100 indicating how similar the argument is to the receiver.  No case conversion is done."
+
+	| i1 i2 size1 size2 score maxLen |
+	size1 _ self size.
+	size2 _ aString size.
+	maxLen _ size1 max: size2.
+	score _ 0.
+	i1 _ i2 _ 1.
+	[i1 <= size1 and: [i2 <= size2]] whileTrue:
+		[(self at: i1) = (aString at: i2)
+			ifTrue: [score _ score+1. 		"match"
+					i1 _ i1+1. 				"advance both"
+					i2 _ i2+1]
+			ifFalse: [(i2 < size2 and: [(self at: i1) = (aString at: i2+1)])
+						ifTrue: [i2 _ i2+1] 	"skip in other"
+			ifFalse: [(i1 < size1 and: [(self at: i1+1) = (aString at: i2)])
+						ifTrue: [i1 _ i1+1] 	"skip in self"
+			ifFalse: [i1 _ i1+1. 				"miss - advance both"
+					i2 _ i2+1] ] ] ].
+
+	score = maxLen
+		ifTrue: [^100]
+		ifFalse: [^100*score//maxLen]
+
+	" 'Smalltalk' spellAgainst: 'Smalltlak' "!
+"-----------------------------------"!
+!String methodsFor: 'converting'!
+asDisplayText
+	"Answer a DisplayText whose text string is the receiver."
+	^DisplayText text: self asText!
+asFileName
+	"Answer a string made up from the receiver that is an acceptable file name."
+	^Disk checkName: self fixErrors: true!
+asLowercase
+	"Answer a string made up from the receiver whose characters are all lowercase."
+
+	| aStream |
+	aStream _ WriteStream on: (String new: self size).
+	self do: [:aCharacter | aStream nextPut: aCharacter asLowercase].
+	^aStream contents!
+asNumber
+	"Answer the number created by interpreting the receiver as the string
+	representation of a number."
+
+	^Number readFromString: self!
+asParagraph
+	"Answer a Paragraph whose text string is the receiver."
+	^Paragraph withText: self asText!
+asString
+	"Answer the receiver itself."
+	^self!
+asSymbol
+	"Answer the unique symbol whose characters are the characters of the string."
+	^Symbol intern: self!
+asText
+	"Answer a Text whose string is the receiver."
+	^Text fromString: self!
+asUppercase
+	"Answer a string made up from the receiver whose characters are all uppercase."
+
+	| aStream |
+	aStream _ WriteStream on: (String new: self size).
+	self do: [:aCharacter | aStream nextPut: aCharacter asUppercase].
+	^aStream contents!
+contractTo: charCount  "Shorten by ellipsis if too long"
+	| half |
+	self size > charCount ifTrue:
+		[half _ charCount // 2.
+		^ self copyReplaceFrom: half
+				to: self size - (charCount-half) + 2
+				with: '...']
+	"
+	'antidisestablishmentarianism' contractTo: 10 'anti...ism'
+	"!
+oldRunDecodeOn: decodedStream
+	"Decodes strings encoded by the message oldRunEncoded.
+	Output is written onto decodedStream"
+	| index size byte count bitsValue |
+	index _ 0. size _ self size.
+	[index>=size] whileFalse:
+		[byte _ (self at: (index _ index+1)).
+		byte asInteger == 0
+			ifTrue:
+				[count _ (self at: (index _ index+1)) asInteger.
+				count = 0
+					ifTrue:  "<0> <0> means one zero byte"
+						[decodedStream nextPut: byte]
+					ifFalse:  "<0> <count> <bitsValue> means count bytes = bitsValue"
+						[bitsValue _ (self at: (index _ index+1)).
+						[(count _ count-1)>=0] whileTrue: [decodedStream nextPut: bitsValue]]]
+			ifFalse:  "<nonZero> means one nonZero byte"
+				[decodedStream nextPut: byte]].
+	^ decodedStream contents!
+oldRunEncoded
+	"Returns a string with equal consecutive bytes encoded as
+		<0> <count> <val>
+	Single zeroes are encoded as <0> <0> "
+
+	| stream count previousByte byte |
+	stream _ WriteStream on: (String new: self size).
+	count _ 0.
+	previousByte _ self at: 1.
+	2 to: self size do:
+		[:i | byte _ self at: i.
+		(byte = previousByte and: [count < 255])
+			ifTrue: [count _ count + 1]
+			ifFalse:
+				[count > 0
+					ifTrue:
+						[stream nextPut: (Character value: 0);
+							nextPut: (Character value: count+1);
+							nextPut: previousByte.
+						count _ 0]
+					ifFalse:
+						[stream nextPut: previousByte.
+						previousByte asInteger = 0
+							ifTrue: [stream nextPut: previousByte]].
+				previousByte _ byte]].
+	count > 0
+		ifTrue:
+			[stream nextPut: (Character value: 0);
+				nextPut: (Character value: count+1);
+				nextPut: previousByte]
+		ifFalse:
+			[stream nextPut: previousByte.
+			previousByte asInteger = 0 ifTrue: [stream nextPut: previousByte]].
+	^stream contents!
+withCRs
+	"substitute CRs for backslashes"
+	^ self collect: [:char | char = $\ ifTrue: [Character cr] ifFalse: [char]]!
+"-----------------------------------"!
+!String methodsFor: 'copying'!
+copyUpTo: aCharacter
+	"Answer a copy of the receiver from index 1 to the first occurrence of
+	aCharacter, non-inclusive."
+
+	| index |
+	index _ self indexOf: aCharacter ifAbsent: [^self].
+	^self copyFrom: 1 to: index-1!
+deepCopy
+	"DeepCopy would otherwise mean make a copy of the character;  since
+	characters are unique, just return a shallowCopy."
+
+	^self shallowCopy!
+"-----------------------------------"!
+!String methodsFor: 'displaying'!
+displayAt: aPoint
+	"Show a representation of the receiver as a DisplayText at location
+	aPoint on the display screen."
+	self asDisplayText displayAt: aPoint!
+displayOn: aDisplayMedium at: aPoint
+	"Show a representation of the receiver as a DisplayText at location
+	aPoint on aDisplayMedium."
+	self asDisplayText displayOn: aDisplayMedium at: aPoint!
+"-----------------------------------"!
+!String methodsFor: 'printing'!
+isLiteral
+	^true!
+printOn: aStream
+	"Print inside string quotes, doubling inbedded quotes."
+
+	^self storeOn: aStream!
+storeOn: aStream
+	"Print inside string quotes, doubling inbedded quotes."
+
+	| i length x |
+	aStream nextPut: $'.
+	i _ 0.
+	length _ self size.
+	[(i _ i + 1) <= length]
+		whileTrue:
+			[aStream nextPut: (x _ self at: i).
+			x == $' ifTrue: [aStream nextPut: x]].
+	"embedded quotes get doubled"
+	aStream nextPut: $'!
+"-----------------------------------"!
+!String methodsFor: 'private'!
+compare: s
+	| i len endResult u1 u2 mylen |
+	mylen _ self size.
+	len _ s size.
+	mylen < len
+		ifTrue:
+			[len _ mylen.
+			endResult _ 1]
+		ifFalse: [endResult _ mylen = len
+						ifTrue: [2]
+						ifFalse: [3]].
+	i _ 0.
+	[(i _ i + 1) <= len]
+		whileTrue:
+			[u1 _ self at: i.
+			u2 _ s at: i.
+			u1 = u2
+				ifFalse:
+					[u1 _ u1 asUppercase.
+					u2 _ u2 asUppercase.
+					u1 = u2 ifFalse:
+						[^u1 < u2
+							ifTrue: [1]
+							ifFalse: [3]]]].
+	^endResult!
+primReplaceFrom: start to: stop with: replacement startingAt: repStart
+	"This destructively replaces elements from start to stop in the receiver
+	starting at index, repStart, in the collection, replacement.  Answer the
+	receiver.  No range checks are performed - this may be primitively implemented."
+	<primitive: 105>
+	super replaceFrom: start to: stop with: replacement startingAt: repStart!
+stringhash
+	^self hash!

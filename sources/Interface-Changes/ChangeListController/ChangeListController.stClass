@@ -1,0 +1,190 @@
+LockedListController subclass: #ChangeListController
+  instanceVariableNames: ''
+  classVariableNames: 'ChangeListYellowButtonMenu ChangeListYellowButtonMessages'
+  poolDictionaries: ''
+  category: 'Interface-Changes'!
+ChangeListController class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+ChangeListController comment:
+'I am the controller for ChangeListView, handling the list menu.'!
+"-----------------------------------"!
+!ChangeListController class methodsFor: 'class initialization'!
+initialize
+	"ChangeListController initialize"
+
+	ChangeListYellowButtonMenu _
+		PopUpMenu
+			labels:
+'file in
+file out
+recover last changes
+display system changes
+do all
+remove all
+restore all
+spawn all
+forget
+do it
+remove it
+restore it
+spawn it
+check conflicts
+check with system'
+			lines: #( 4 8 9 13 ).
+	ChangeListYellowButtonMessages _
+		#(fileIn fileOut recover getChanges doAll removeAll restoreAll copyView forget doThis removeItem restoreItem browse check checkWithSystem)!
+"-----------------------------------"!
+!ChangeListController methodsFor: 'initialize-release'!
+initialize
+	super initialize.
+	self initializeYellowButtonMenu!
+"-----------------------------------"!
+!ChangeListController methodsFor: 'menu messages'!
+browse
+	"Create and schedule a list browser containing only the displayed items."
+	self controlTerminate.
+	model scheduleMessageBrowser.
+	self controlInitialize!
+check
+	self controlTerminate.
+	self checkWithSystem: false.
+	self controlInitialize!
+checkWithSystem
+	self controlTerminate.
+	self checkWithSystem: true.
+	self controlInitialize!
+checkWithSystem: aBoolean
+	self
+		getFile: #file:
+		withPrompt: 'type name of file on which to write confilicts'
+		do:
+			[:aFile |
+			Cursor execute showWhile: [model checkWithSystem: aBoolean].
+			Cursor write showWhile: [model reportConflictsOn: aFile].
+			aFile shorten; close]!
+copyView
+	"Create and schedule a list browser containing only the displayed items.  Accessed by choosing the menu command clone."
+
+	self controlTerminate.
+	ChangeListView openOn: model filterCopy!
+doAll
+	self controlTerminate.
+	self doFrom: 1.
+	self controlInitialize!
+doFrom: firstIndex
+	"Reset selection each time through the loop, so that if an error occurs, the selection is left at the item which caused it."
+	firstIndex to: model listSize do:
+		[:index |
+		(model hasRemoved: index)
+			ifFalse:
+				[model toggleListIndex: index.
+				model doThis: index]]!
+doThis
+	self controlTerminate.
+	model doThis.
+	self controlInitialize!
+fileIn
+	self controlTerminate.
+	self
+		getFile: #oldFile:
+		withPrompt: 'type name of file for reading'
+		do:
+			[:aFile |
+			aFile readOnly.
+			model scanFile: aFile.
+			aFile close].
+	self controlInitialize!
+fileOut
+	self controlTerminate.
+	self
+		getFile: #file:
+		withPrompt: 'type name of file for writing'
+		do:
+			[:aFile |
+			model fileOutOn: aFile.
+			aFile shorten; close].
+	self controlInitialize!
+forget
+	self controlTerminate.
+	Cursor execute showWhile: [model forget].
+	self controlInitialize!
+getChanges
+	self controlTerminate.
+	model addChangeSet: Smalltalk changes.
+	self controlInitialize!
+recover
+	self controlTerminate.
+	model recoverFile: (SourceFiles at: 2).
+	self changeLabel.
+	self controlInitialize!
+removeAll
+	self controlTerminate.
+	view deselect.
+	model removeAll.
+	view displaySelectionBox.
+	self controlInitialize!
+removeItem
+	view deselect.
+	model removeCurrent.
+	view displaySelectionBox!
+restoreAll
+	view deselect.
+	model restoreAll.
+	view displaySelectionBox!
+restoreItem
+	view deselect.
+	model restoreCurrent.
+	view displaySelectionBox!
+"-----------------------------------"!
+!ChangeListController methodsFor: 'private'!
+changeLabel
+	| superView |
+	"This method accesses the label with a terrible kludge.  It would be better if the label were a view of its own, but there would still be problems."
+	superView _ view superView.
+	Display gray: superView labelDisplayBox.
+	superView label: model listName.
+	superView displayView!
+changeModelSelection: anInteger
+	model toggleListIndex: anInteger!
+getFile: aSymbol withPrompt: promptString do: actionBlock
+	"find out the file name"
+
+	| fixedBlock fileName directory end |
+	fixedBlock _ actionBlock fixTemps.
+	FillInTheBlank
+		request: promptString
+		displayAt: Sensor cursorPoint
+		centered: true
+		action: [:fileName | fileName]
+		initialAnswer: ''.
+	fileName isEmpty
+		ifFalse:
+			[directory _ Disk.
+			(directory isLegalFileName: fileName)
+				ifTrue: [Cursor wait showWhile:
+							[actionBlock value: (directory perform: aSymbol with: fileName)]]
+				ifFalse: [Transcript cr; show: 'You specified an illegal file name.']]!
+initializeYellowButtonMenu
+	self
+		yellowButtonMenu: ChangeListYellowButtonMenu
+		yellowButtonMessages: ChangeListYellowButtonMessages.!
+"-----------------------------------"!
+!ChangeListController methodsFor: 'scrolling'!
+scrollView: anInteger
+	| viewList maximumAmount minimumAmount amount |
+	viewList _ view list.
+	maximumAmount _
+		viewList clippingRectangle top -
+		viewList compositionRectangle top max: 0.
+	minimumAmount _
+		viewList clippingRectangle bottom -
+		viewList compositionRectangle bottom min: 0.
+	amount _
+		(anInteger min: maximumAmount) max:
+		minimumAmount.
+	amount ~= 0
+		ifTrue:
+			[view deselect.
+			viewList scrollBy: amount negated.
+			view displaySelectionBox]!

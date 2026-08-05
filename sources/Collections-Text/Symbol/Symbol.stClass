@@ -1,0 +1,218 @@
+String variableByteSubclass: #Symbol
+  instanceVariableNames: ''
+  classVariableNames: 'SingleCharSymbols USTable'
+  poolDictionaries: ''
+  category: 'Collections-Text'!
+Symbol class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+Symbol comment:
+'Symbols are Strings which are created uniquely.  Thus, someString asSymbol == someString asSymbol.'!
+"-----------------------------------"!
+!Symbol class methodsFor: 'class initialization'!
+initialize
+	| a v |
+	"make up table of 1-char atoms"
+	v _ Array new: 128.
+	a _ String new: 1.
+	1 to: 128 do:
+		[:i |
+		a at: 1 put: i - 1.
+		v at: i put: a asSymbol].
+	SingleCharSymbols _ v
+	"Symbol initialize."!
+"-----------------------------------"!
+!Symbol class methodsFor: 'instance creation'!
+correctMessage: unknown
+	"Attempt to correct the spelling of an unknown message symbol."
+	| lc candidates score bestScore guess hasColon nArgs smaller larger |
+	lc _ unknown first asLowercase.
+	hasColon _ unknown last = $:.
+	unknown first isLetter ifFalse: [^ nil].
+	nArgs _ (unknown select: [:char | char = $:]) size.
+	candidates _ OrderedCollection new.
+	smaller _ unknown size-4.
+	larger _ unknown size+4.
+	Symbol allInstancesDo:  "fast tests first"
+		[:each | (((each at: 1) = lc
+				and: [each size between: smaller and: larger])
+				and: [(each last = $:) = hasColon and: [each numArgs = nArgs]])
+			ifTrue: [candidates add: each]].
+
+	bestScore _ 0.
+	candidates do:
+		[:each |
+		(score _ each spellAgainst: unknown) > bestScore ifTrue:
+			[bestScore _ score. guess _ each]].
+
+	bestScore > 50 ifFalse: [^false].
+	(self confirm: 'Confirm correction to ' , guess)
+		ifTrue: [^ guess asSymbol]
+		ifFalse: [^ nil]!
+intern: aString
+	"Answer a unique Symbol whose characters are those of aString."
+
+	| sym index |
+	self hasInterned: aString ifTrue: [:sym | ^sym].
+	 "check if already exists"
+	sym _ (aString isMemberOf: Symbol)
+		ifTrue: [aString] "putting old symbol in new table"
+		ifFalse: [(Symbol new: aString size) string: aString]. "create a new one"
+	index _ aString stringhash \\ USTable size + 1.
+	USTable at: index put: ((USTable at: index) copyWith: sym).
+	^sym!
+internCharacter: aCharacter
+	"Answer with, and create if necessary, a unique Symbol whose characters
+	 are just this character."
+	| ascii |
+	(ascii _ aCharacter asciiValue) < 128
+		ifTrue: [^SingleCharSymbols at: ascii + 1].
+	^self intern: (String with: aCharacter)!
+"-----------------------------------"!
+!Symbol class methodsFor: 'private'!
+hasInterned: aString ifTrue: symBlock
+	"Answer with false if aString hasnt been interned (into a Symbol),
+	otherwise supply the symbol to symBlock and return true"
+
+	| v i ascii |
+	aString size = 1 ifTrue: [(ascii _ (aString at: 1) asciiValue) < 128
+			ifTrue:
+				[symBlock value: (SingleCharSymbols at: ascii + 1).
+				^true]].
+	v _ USTable at: aString stringhash \\ USTable size + 1.
+	1 to: v size do:
+		[:i |
+		(v at: i) == nil
+			ifFalse: [aString size = (v at: i) size ifTrue: [aString = (v at: i)
+						ifTrue:
+							[symBlock value: (v at: i).
+							^true]]]].
+	^false!
+rehash
+	"Rebuild the hash table that holds all the unique Symbols."
+
+	| sym |
+	USTable _ USTable collect: [:sym | Array new: 0].
+	Symbol allInstancesDo: [:sym | self intern: sym]
+	"Symbol rehash"!
+table
+	"Access for SystemTracer"
+
+	^USTable!
+table: newArray
+	"Access for SystemTracer"
+
+	^USTable _ newArray!
+"-----------------------------------"!
+!Symbol methodsFor: 'accessing'!
+at: anInteger put: anObject
+	"you can not modify the receiver."
+
+	self errorNoModification!
+replaceFrom: start to: stop with: replacement startingAt: repStart
+	self errorNoModification!
+"-----------------------------------"!
+!Symbol methodsFor: 'comparing'!
+= anObject
+	^self == anObject!
+hash
+	"Answer with a SmallInteger whose value is half of the receiver's object pointer
+	(interpreting object pointers as 16-bit signed quantities).  Essential.  See
+	Object documentation whatIsAPrimitive."
+
+	<primitive: 75>
+	^self!
+hashMappedBy: map
+	"Answer what my hash would be if oops changed according to map"
+	^ map newHashFor: self hash!
+"-----------------------------------"!
+!Symbol methodsFor: 'converting'!
+asString
+	| newString |
+	newString _ String new: self size.
+	1 to: self size do: [:index | newString at: index put: (self at: index)].
+	^newString!
+asSymbol!
+"-----------------------------------"!
+!Symbol methodsFor: 'copying'!
+copy
+	"Answer with me, because Symbols are unique."!
+shallowCopy
+	"Answer with me, because Symbols are unique."!
+"-----------------------------------"!
+!Symbol methodsFor: 'printing'!
+isLiteral
+	^Scanner isLiteralSymbol: self!
+printOn: aStream
+	aStream nextPutAll: self!
+storeOn: aStream
+	self isLiteral
+		ifTrue:
+			[aStream nextPut: $#.
+			aStream nextPutAll: self]
+		ifFalse:
+			[super storeOn: aStream.
+			aStream nextPutAll: ' asSymbol']!
+"-----------------------------------"!
+!Symbol methodsFor: 'private'!
+errorNoModification
+	self error:  'symbols can not be modified.'!
+species
+	^String!
+string: aString
+	1 to: aString size do: [:j | super at: j put: (aString at: j)].
+	^self!
+stringhash
+	^super hash!
+"-----------------------------------"!
+!Symbol methodsFor: 'system primitives'!
+classPart
+	"I must be a compound selector.  Return my class name"
+	| i |
+	i _ self indexOf: $. ifAbsent: [self error: 'class part not found'].
+	^(self copyFrom: 1 to: i-1) asSymbol!
+isCompound
+	"return true if the receiver is of the form Class.foo "
+	^self includes: $.!
+isInfix
+	"Answer whether the receiver is an infix message selector."
+	^(self at: 1) isLetter not!
+isKeyword
+	"Answer whether the receiver is a message keyword, i.e., ends with colon."
+
+	self size <= 1 ifTrue: [^false].
+	^(self at: self size) = $:!
+keywords
+	"Answer an array of the keywords that compose the receiver."
+
+	| result aStream i l char |
+	result _ WriteStream on: (Array new: 10).
+	aStream _ WriteStream on: (String new: 16).
+	i _ 1.
+	l _ self size.
+	[i <= l]
+		whileTrue:
+			[char _ self at: i.
+			aStream nextPut: char.
+			(char = $: or: [i = l])
+				ifTrue:
+					[result nextPut: aStream contents.
+					aStream reset].
+			i _ i + 1].
+	^result contents!
+numArgs
+	"Answer the number of arguments that the receiver requires if it is interpreted
+	as a message selector."
+
+	| len n i |
+	len _ self size.
+	n _ (self at: 1) isLetter ifTrue: [0] ifFalse: [1].
+	i _ 1.
+	[(i _ i + 1) <= len]
+		whileTrue: "count colons"
+			[(self at: i) = $: ifTrue: [n _ n + 1]].
+	^n!
+selectorPart
+	"return just my part after the class name if the receiver is a compound selector
+	 (otherwise the whole thing)"
+	^(self copyFrom: (self indexOf: $.) + 1 to: self size) asSymbol!

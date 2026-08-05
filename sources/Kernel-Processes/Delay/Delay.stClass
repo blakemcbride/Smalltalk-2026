@@ -1,0 +1,235 @@
+Object subclass: #Delay
+  instanceVariableNames: 'delayDuration resumptionTime delaySemaphore delayInProgress'
+  classVariableNames: 'AccessProtect ActiveDelay SuspendedDelays TimingSemaphore'
+  poolDictionaries: ''
+  category: 'Kernel-Processes'!
+Delay class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+Delay comment:
+'I represent a realtime delay in the execution of a Process.  See the howToUse message in the class messages.
+
+Instance Variables:
+		delayDuration		<Integer> number of milliseconds to delay process
+		resumptionTime		<Integer> value of millisecond clock at which to resume
+		delaySemaphore		<Semaphore> on which to delay process
+		delayInProgress		<Boolean> true if delaying now'!
+"-----------------------------------"!
+!Delay class methodsFor: 'class initialization'!
+initialize
+	"Initialize class variables that keep track of active Delays."
+
+	TimingSemaphore _ Semaphore new.
+	AccessProtect _ Semaphore forMutualExclusion.
+	SuspendedDelays _
+		SortedCollection sortBlock:
+			[:oldDelay :addedDelay |
+			oldDelay resumptionTime <= addedDelay resumptionTime].
+	ActiveDelay _ nil.
+	self initializeTimingProcess
+	"Delay initialize."!
+initializeTimingProcess
+	[[true]
+		whileTrue:
+			[TimingSemaphore wait.
+			ActiveDelay delayInProgress: false.
+			AccessProtect wait.
+			ActiveDelay resume.
+			SuspendedDelays isEmpty
+				ifTrue: [ActiveDelay _ nil]
+				ifFalse: [SuspendedDelays removeFirst activate].
+			AccessProtect signal]]
+		forkAt: Processor timingPriority!
+"-----------------------------------"!
+!Delay class methodsFor: 'documentation'!
+howToUse
+	"An instance of Delay will respond to the message #wait by
+	suspending the active process for a certain amount of time.
+
+	The time for resumption of the active process is specified
+	when the Delay is created.
+
+	The resumption time can be specified relative to the current
+	time with the messages {Delay forMilliseconds: anInteger} and
+	{Delay forSeconds: anInteger}.
+	Delays created in this way can be sent the message #wait
+	again after they have finished a previous delay.
+
+	The resumption time can also be specified at an absolute time
+	with respect to the system's millisecond clock with the message
+	{Delay untilMillisecond: anInteger}.
+	Delays created in this way cannot be sent the message #wait
+	repeatedly.
+	"!
+"-----------------------------------"!
+!Delay class methodsFor: 'general inquiries'!
+millisecondClockValue
+	"Answer the current value of the system's millisecond clock."
+
+	^Time millisecondClockValue!
+"-----------------------------------"!
+!Delay class methodsFor: 'instance creation'!
+forMilliseconds: millisecondCount
+	"Answer a new instance that will delay the active process for
+	millisecondCount milliseconds when sent the message wait."
+
+	^self new delay: millisecondCount!
+forSeconds: secondCount
+	"Answer a new instance that will delay the active process for secondCount seconds when sent the message wait."
+
+	^self new delay: (secondCount * 1000) rounded!
+untilMilliseconds: millisecondCount
+	"Answer a new instance that will delay the active process until the
+	system's millisecond clock value is millisecondCount when sent the
+	message wait."
+
+	^self new resumption: millisecondCount!
+"-----------------------------------"!
+!Delay class methodsFor: 'snapshots'!
+postSnapshot
+	ActiveDelay~~nil
+		ifTrue: [ActiveDelay postSnapshot.
+				  SuspendedDelays do: [ :delay | delay postSnapshot].
+				  ActiveDelay reactivate].
+	AccessProtect signal!
+preSnapshot
+	AccessProtect wait.
+	ActiveDelay~~nil
+		ifTrue: [ActiveDelay preSnapshot].
+	SuspendedDelays do:
+		[ :delay | delay preSnapshot]!
+"-----------------------------------"!
+!Delay class methodsFor: 'testing'!
+testAbsoluteDelayOf: delay for: testCount label: label
+	| time |
+	time _ Delay millisecondClockValue.
+	[1 to: testCount do:
+		[:index |
+		(Delay untilMilliseconds: time + (index * delay)) wait.
+		Transcript show: label.
+		Transcript show: index printString.
+		Transcript space]]
+		forkAt: Processor userInterruptPriority
+
+	"Transcript cr.
+	 Delay testAbsoluteDelayOf: 1000 for: 10 label: 'A'.
+	 Delay testAbsoluteDelayOf: 1500 for: 10 label: 'B'.
+	"!
+testRelativeDelayOf: delay for: testCount label: label
+	| myDelay |
+	myDelay _ Delay forMilliseconds: delay.
+	[1 to: testCount do:
+		[:index |
+		myDelay wait.
+		Transcript show: label.
+		Transcript show: index printString.
+		Transcript space]]
+		forkAt: Processor userInterruptPriority
+
+	"Transcript cr.
+	 Delay testRelativeDelayOf: 1000 for: 10 label: 'A'.
+	 Delay testRelativeDelayOf: 1500 for: 10 label: 'B'.
+	"!
+"-----------------------------------"!
+!Delay methodsFor: 'accessing'!
+resumptionTime
+	"Answer the value of the system's millisecondClock at which the receiver's
+	suspended Process will resume."
+
+	^resumptionTime!
+"-----------------------------------"!
+!Delay methodsFor: 'private'!
+activate
+	"For the moment, the receiver will be the next Delay to resume the
+	reciever's suspended process."
+
+	ActiveDelay _ self.
+	TimingSemaphore initSignals.
+	Processor signal: TimingSemaphore atTime: resumptionTime!
+delay: millisecondCount
+	delayDuration _ millisecondCount.
+	delayInProgress _ false.
+	delaySemaphore _ Semaphore new!
+delayInProgress: aBoolean
+
+	delayInProgress _ aBoolean!
+postSnapshot
+	| pendingDelay |
+	delayInProgress
+		ifTrue:
+			[resumptionTime == nil
+				ifTrue: [self error: 'uninitialized Delay']
+				ifFalse: ["convert from milliseconds since Jan. 1 1901 to local millisecond clock"
+						pendingDelay _ resumptionTime - (Time totalSeconds * 1000).
+						pendingDelay _ pendingDelay max: 0.
+						resumptionTime _ Time millisecondClockValue + pendingDelay]]
+
+		"if false then this delay must be ready and waiting (on AccessProtect) to resume"!
+preSnapshot
+	| pendingDelay |
+	delayInProgress
+		ifTrue:
+			[resumptionTime == nil
+				ifTrue: [self error: 'uninitialized Delay']
+				ifFalse: ["convert from local millisecond clock to milliseconds since Jan. 1 1901"
+						pendingDelay _ resumptionTime - Time millisecondClockValue.
+						resumptionTime _ Time totalSeconds * 1000 + pendingDelay]]
+		ifFalse:
+			[self error: 'This Delay is not waiting']!
+reactivate
+	"Make sure the timer is armed to go off for this delay."
+
+	delayInProgress ifTrue:
+		[TimingSemaphore initSignals.
+		Processor signal: TimingSemaphore atTime: resumptionTime]
+
+	"if false then the timer has already fired for this delay and it is waiting (on AccessProtect) to resume"!
+resume
+	"The receiver's delay duration has expired, the process the receiver
+	suspended will resume now. "
+
+	Processor signal: nil atTime: 0.
+	delayInProgress _ false.
+	delaySemaphore signal!
+resumption: millisecondCount
+	delayDuration _ nil.
+	resumptionTime _ millisecondCount.
+	delayInProgress _ false.
+	delaySemaphore _ Semaphore new!
+setResumption
+	delayInProgress
+		ifTrue: [self error: 'This Delay is already waiting']
+		ifFalse:
+			[delayDuration == nil
+				ifTrue: [resumptionTime == nil ifTrue: [self error: 'uninitialized Delay']]
+				ifFalse: [resumptionTime _ Time millisecondClockValue + delayDuration].
+			delayInProgress _ true]!
+"-----------------------------------"!
+!Delay methodsFor: 'process delay'!
+disable
+	AccessProtect wait.
+	delayInProgress ifTrue:
+		[ActiveDelay == self
+			ifTrue: [SuspendedDelays isEmpty
+						ifTrue: [Processor signal: nil atTime: 0.
+								ActiveDelay _ nil]
+						ifFalse: [SuspendedDelays removeFirst activate]]
+			ifFalse: [SuspendedDelays remove: self].
+		delaySemaphore terminateProcess.
+		delayInProgress _ false].
+	AccessProtect signal!
+wait
+	"Suspend the active process for an amount of time specified when the receiver
+	was initialized."
+
+	AccessProtect wait.
+	self setResumption.
+	ActiveDelay == nil
+		ifTrue: [self activate]
+		ifFalse: [resumptionTime < ActiveDelay resumptionTime
+				ifTrue:
+					[SuspendedDelays add: ActiveDelay.
+					self activate]
+				ifFalse: [SuspendedDelays add: self]].
+	AccessProtect signal.
+	delaySemaphore wait!

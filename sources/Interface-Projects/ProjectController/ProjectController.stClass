@@ -1,0 +1,42 @@
+StringHolderController subclass: #ProjectController
+  instanceVariableNames: ''
+  classVariableNames: 'ProjectYellowButtonMenu ProjectYellowButtonMessages'
+  poolDictionaries: ''
+  category: 'Interface-Projects'!
+ProjectController class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+ProjectController comment:
+'I am a kind of StringHolderController (a ParagraphEditor that adds the doIt, printIt, accept, and cancel commands).  The commands doIt and printIt are omitted.  I provide one additional menu command
+	enter -- replace the current project by the model, thereby "entering" the door
+			to a new office or work area'!
+"-----------------------------------"!
+!ProjectController class methodsFor: 'class initialization'!
+initialize
+	"Initialize the menu for the yellow mouse button."
+
+	ProjectYellowButtonMenu _
+		PopUpMenu
+			labels: 'again
+undo
+copy
+cut
+paste
+accept
+cancel
+enter'
+			lines: #(2 5 7 ).
+	ProjectYellowButtonMessages _
+			#(again undo copySelection cut paste accept cancel enter )
+	"ProjectViewController initialize"!
+"-----------------------------------"!
+!ProjectController methodsFor: 'menu messages'!
+enter
+	"Exchange projects so that the receiver's model is the context in which the user works."
+	view topView deEmphasize.
+	model enter!
+"-----------------------------------"!
+!ProjectController methodsFor: 'private'!
+initializeYellowButtonMenu
+	self yellowButtonMenu: ProjectYellowButtonMenu
+		yellowButtonMessages: ProjectYellowButtonMessages.!

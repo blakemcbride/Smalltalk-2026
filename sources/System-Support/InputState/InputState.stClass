@@ -1,0 +1,212 @@
+Object subclass: #InputState
+  instanceVariableNames: 'x y bitState lshiftState rshiftState ctrlState lockState metaState keyboardQueue deltaTime baseTime timeProtect'
+  classVariableNames: 'BitMax BitMin CtrlKey InputProcess InputSemaphore LockKey LshiftKey RshiftKey'
+  poolDictionaries: ''
+  category: 'System-Support'!
+InputState class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+InputState comment:
+'I represent the state of the user input devices.
+
+Instance Variables:
+		x  <Integer> mouse X location
+		y  <Integer> mouse Y location
+		bitState  <Integer> mouse button and keyset state
+		lshiftState  <1 or 0> state of left shift key
+		rshiftState  <1 or 0> state of right shift key
+		ctrlState  <2 or 0> state of ctrl key
+		lockState  <4 or 0> state of shift-lock key
+		metaState  <Integer> combined state of the meta keys
+		keyboardQueue  <SharedQueue> of keyboard characters
+		deltaTime  <Integer> sampling ticks since last setting of baseTime
+		baseTime  <Integer> millisecond timer at last resync'!
+"-----------------------------------"!
+!InputState class methodsFor: 'class initialization'!
+initialize
+	"Define parameters"
+
+	BitMin _ 8r200.  "Min mouse/keyset bit code"
+	BitMax _ 8r207.  "Max mouse/keyset bit code"
+	LshiftKey _ 8r210.
+	RshiftKey _ 8r211.
+	CtrlKey _ 8r212.
+	LockKey _ 8r213!
+"-----------------------------------"!
+!InputState methodsFor: 'cursor'!
+cursorPoint: aPoint
+	"Set the current cursor position to be aPoint."
+	self primCursorLocPut: aPoint.
+	x _ aPoint x.
+	y _ aPoint y!
+"-----------------------------------"!
+!InputState methodsFor: 'initialize-release'!
+install
+	"Initialize and connect the receiver to the hardware.  Terminate the old input
+	process if any."
+
+	InputProcess == nil ifFalse: [InputProcess terminate].
+	self initState.
+	InputSemaphore _ Semaphore new.
+	InputProcess _ [self run] newProcess.
+	InputProcess priority: Processor lowIOPriority.
+	InputProcess resume.
+	self primInputSemaphore: InputSemaphore!
+"-----------------------------------"!
+!InputState methodsFor: 'keyboard'!
+keyboardNext
+	"Remove and answer the next key in the keyboard buffer."
+	^keyboardQueue next!
+keyboardPeek
+	"Answer the next key in the keyboard buffer but do not remove it."
+	^keyboardQueue peek!
+leftShiftDown
+	"Answer whether the left shift key is down."
+	^lshiftState ~= 0!
+"-----------------------------------"!
+!InputState methodsFor: 'mouse'!
+mouseButtons
+	"Answer the status of the mouse buttons--an Integer between 0 and 7."
+	^bitState bitAnd: 7!
+mousePoint
+	"Answer the coordinates of the mouse location."
+	^self primMousePt!
+"-----------------------------------"!
+!InputState methodsFor: 'private'!
+initState
+	timeProtect _ Semaphore forMutualExclusion.
+	timeProtect critical: [deltaTime _ baseTime _ 0].
+	x _ y _ 0.
+	keyboardQueue _ SharedQueue new: 50.
+	ctrlState _ lshiftState _ rshiftState _ lockState _ metaState _ 0.
+	bitState _ 0!
+keyAt: index put: value
+	| mask |
+	index < 8r200
+	  ifTrue:  "Not a potential special character"
+		[value ~= 0 ifTrue:
+			[(index = $c asciiValue and: [ctrlState ~= 0])
+				ifTrue: [lshiftState ~= 0
+							ifTrue: [self forkEmergencyEvaluatorAt: Processor userInterruptPriority]
+							ifFalse: [[ScheduledControllers interruptName: 'User Interrupt'] fork]]
+				ifFalse: [^keyboardQueue nextPut:
+								(KeyboardEvent code: index
+												 meta: metaState)]]]
+	  ifFalse:
+		[index = CtrlKey
+		  ifTrue: [ctrlState _ value bitShift: 1]
+		  ifFalse:
+			[index = LshiftKey
+			  ifTrue: [lshiftState _ value]
+			  ifFalse:
+				[index = RshiftKey
+				  ifTrue: [rshiftState _ value]
+				  ifFalse:
+					[index = LockKey
+					  ifTrue: [lockState _ value bitShift: 2]
+					  ifFalse:
+						[(index >= BitMin and: [index <= BitMax])
+						  ifTrue:
+							[mask _ 1 bitShift: index - BitMin.
+							value = 1
+							  ifTrue: [bitState _ bitState bitOr: mask]
+							  ifFalse: [bitState _ bitState bitAnd: -1 - mask]]
+						  ifFalse:
+							[value ~= 0 ifTrue:
+								[keyboardQueue nextPut:
+									(KeyboardEvent code: index meta: metaState)]]]]]].
+		metaState _ (ctrlState bitOr: (lshiftState bitOr: rshiftState)) bitOr: lockState]!
+nextEvent: type with: param
+	"Process a single input event, aside from mouse X/Y"
+
+	| highTime lowTime |
+	type = 0  "Delta time"
+		ifTrue:
+			[timeProtect critical: [deltaTime _ deltaTime + param]]
+		ifFalse:
+			[type = 3	"Key down"
+				ifTrue: [self keyAt: param put: 1]
+				ifFalse:
+					[type = 4	"Key up"
+						ifTrue: [self keyAt: param put: 0]
+						ifFalse:
+							[type = 5	"Reset time"
+								ifTrue:
+									[InputSemaphore wait.
+									highTime _ self primInputWord.
+									InputSemaphore wait.
+									lowTime _ self primInputWord.
+									timeProtect critical:
+										[baseTime _ (highTime bitShift: 16) + lowTime.
+										 deltaTime _ 0]]
+								ifFalse: [self error: 'Bad event type']]]]!
+primCursorLocPut: aPoint
+	"Move the cursor to the screen location specified by the argument. Fail if
+	the argument is not a Point. Essential. See Object documentation
+	whatIsAPrimitive. "
+
+	<primitive: 91>
+	^self primCursorLocPutAgain: aPoint rounded!
+primCursorLocPutAgain: aPoint
+	"By this time, aPoint better be an integer or get out of here"
+
+	<primitive: 91>
+	^self primitiveFailed!
+primInputSemaphore: aSemaphore
+	"Install the argument (a Semaphore) as the object to be signalled whenever
+	an input event occurs. The semaphore will be signaled once for every
+	word placed in the input buffer by an I/O device. Fail if the argument is
+	neither a Semaphore nor nil. Essential. See Object whatIsAPrimitive."
+
+	<primitive: 93>
+	^self primitiveFailed!
+primInputWord
+	"Return the next word from the input buffer and remove the word from the
+	buffer. This message should be sent just after the input semaphore
+	finished a wait (was sent a signal by an I/O device). Fail of the input
+	buffer is empty. Essential. See Object documentation whatIsAPrimitive."
+
+	<primitive: 95>
+	^self primitiveFailed!
+primMousePt
+	"Poll the mouse to find out its position.  Return a Point.  Fail if event-driven
+	tracking is used instead of polling.  Optional.  See Object documentation
+	whatIsAPrimitive. "
+
+	<primitive: 90>
+	^x @ y!
+primSampleInterval: anInteger
+	"Set the minimum time span between event driven mouse position
+	samples.  The argument is a number of milliseconds.  Fail if the argument
+	is not a SmallInteger.  Essential.  See Object documentation
+	whatIsAPrimitive. "
+
+	<primitive: 94>
+	^self primitiveFailed!
+run
+	"This is the loop that actually processes input events."
+
+	| word type param |
+	[true]
+		whileTrue:
+			[InputSemaphore wait.
+			"Test for mouse X/Y events here to avoid an activation."
+			word _ self primInputWord.
+			type _ word bitShift: -12.
+			param _ word bitAnd: 4095.
+			type = 1
+				ifTrue:
+					[x _ param "Mouse X"]
+				ifFalse:
+					[type = 2
+						ifTrue: [y _ param "Mouse Y"]
+						ifFalse: [self nextEvent: type with: param]]]!
+"-----------------------------------"!
+!InputState methodsFor: 'time'!
+currentTime
+	"Answer the time on the system clock in milliseconds since midnight."
+	timeProtect critical:
+		[deltaTime = 0
+			ifFalse: [baseTime _ baseTime + (deltaTime * 1000 // 60).
+		 			 deltaTime _ 0]].
+	^baseTime!

@@ -1,0 +1,40 @@
+Magnitude subclass: #LookupKey
+  instanceVariableNames: 'key'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Collections-Support'!
+LookupKey class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+LookupKey comment:
+'I serve as the key for looking up entries in a Dictionary.  Subclasses of me are dictionary entries.  An available example is Association.'!
+"-----------------------------------"!
+!LookupKey class methodsFor: 'instance creation'!
+key: aKey
+	"Answer a new instance of me with the argument as the lookup up."
+	^self new key: aKey!
+"-----------------------------------"!
+!LookupKey methodsFor: 'accessing'!
+key
+	"Answer the lookup key of the receiver."
+	^key!
+key: anObject
+	"Store the argument, anObject, as the lookup key of the receiver."
+	key _ anObject!
+"-----------------------------------"!
+!LookupKey methodsFor: 'comparing'!
+< aLookupKey
+	^key < aLookupKey key!
+= aLookupKey
+	self species = aLookupKey species
+		ifTrue: [^key = aLookupKey key]
+		ifFalse: [^false]!
+hash
+	^key hash!
+hashMappedBy: map
+	"Answer what my hash would be if oops changed according to map"
+	^ key hashMappedBy: map!
+"-----------------------------------"!
+!LookupKey methodsFor: 'printing'!
+printOn: aStream
+	key printOn: aStream!

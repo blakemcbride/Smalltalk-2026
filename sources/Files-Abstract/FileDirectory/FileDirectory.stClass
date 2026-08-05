@@ -1,0 +1,393 @@
+Object subclass: #FileDirectory
+  instanceVariableNames: 'directoryName closed'
+  classVariableNames: 'ExternalReferences'
+  poolDictionaries: 'FilePool'
+  category: 'Files-Abstract'!
+FileDirectory class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+FileDirectory comment:
+'A FileDirectory is uniquely identified by the device or server that it refers to. A FileDirectory is a collection of Files.  It may also be found in some other dictionary or FileDirectory, though often this is implicit'!
+"-----------------------------------"!
+!FileDirectory class methodsFor: 'class initialization'!
+initialize
+	self initializeExternalReferences
+	"FileDirectory initialize"!
+"-----------------------------------"!
+!FileDirectory class methodsFor: 'documentation'!
+documentation
+	"subclasses are expected to implement the following messages which are
+	implemented as self subclassResponsibility unless otherwise noted.
+
+	file accessing
+		fileClass
+		[optional] rename:newName:
+		[default] checkNameOfFile:
+			(default makes no sense to me; for the abstract anything is okay)
+
+	file status
+		[optional] flush
+
+	page accessing
+		[optional] allocate:after:
+		[optional] allocateSN
+		[optional] deallocate:
+		[optional] freePages
+
+	dictionary adding
+		addNew:
+
+	dictionary removing
+		removeOld:
+
+	dictionary enumerating
+		[optional] next
+		[default] do:
+		[optional] reset
+
+	directory accessing
+		[default] versionNumbers
+
+"!
+"-----------------------------------"!
+!FileDirectory class methodsFor: 'external reference access'!
+addExternalReference: anElement
+	"Add anElement as a file that is currently referenced in the system."
+	(ExternalReferences includes: anElement)
+		ifFalse: [ExternalReferences addLast: anElement]!
+initializeExternalReferences
+	"ExternalReferences is an OrderedCollection of the files that are referenced
+	in the system.  Initialize this class variable."
+	ExternalReferences _ OrderedCollection new!
+releaseExternalReferences
+	"Remove and release all of the files referenced by the collection ExternalReferences."
+	[ExternalReferences isEmpty]
+		whileFalse: [ExternalReferences removeLast release]!
+removeExternalReference: anElement
+	"Remove anElement as a file that is currently referenced in the system."
+	ExternalReferences remove: anElement ifAbsent: []!
+"-----------------------------------"!
+!FileDirectory class methodsFor: 'instance creation'!
+directory: aFileDirectory directoryName: aString
+	"Answer an instance of me in directory aFileDirectory whose name is aString."
+
+	^self new setDirectory: aFileDirectory directoryName: aString!
+directoryFromName: fileDesignator setFileName: localNameBlock
+	| directory stream |
+	"Answer the file directory implied from the designator, presumably at the start of the
+	designator, and evaluate the block with the rest of the designator (presumably the
+	file name itself."
+
+	directory _ Disk.
+	stream _ ReadStream on: fileDesignator.
+	localNameBlock value: (stream upTo: nil).
+	^directory!
+"-----------------------------------"!
+!FileDirectory methodsFor: 'accessing'!
+directoryName
+	"Answer the name of the receiver."
+	^directoryName!
+fullName
+	"Answer the name of the receiver in a form recognized when parsing file names (i.e., using [...]).  May be empty for a default directory."
+	^''!
+next
+	"Answer the next file instance in the receiver (part of the streaming protocol)."
+	self subclassResponsibility!
+versionNumbers
+	"Answer true if versions numbers are supported."
+
+	^false		"this is the default"!
+"-----------------------------------"!
+!FileDirectory methodsFor: 'adding'!
+add: aFile
+	"Add the file, aFile, to the receiver.   This creates a new version of the file rather than generating an error if a file with the same name exists."
+
+	| old file |
+	file _ aFile.
+	self versionNumbers
+		ifTrue:
+			["ignore explicit version and directory will create a next version"
+			file _ self initFileName: (file fileName copyUpTo: $!!)]
+		ifFalse:
+			[(self find: file) notNil
+				ifTrue:
+					["otherwise, if file already exists,
+					  rename it to name$, deleting that file first if it exists"
+					old _ self initFileName: (file fileName copyWith: $$).
+					self remove: old ifAbsentDo: [:f | false].
+					self rename: file newName: old fileName.
+					file fileName: (file fileName copyUpTo: $$).
+					(self find: file) notNil ifTrue: [file error: 'insert/rename ??']]].
+	self addNew: file.
+	^file!
+addKey: aFileName
+	"If a file whose name is aFileName exists and the receiver does not know how
+	to create a new version, the create an error.  Otherwise create a new empty file."
+
+	^self add: (self initFileName: aFileName)!
+addNew: aFile
+	"Add the argument, aFile, as a new file in the receiver."
+	self subclassResponsibility!
+"-----------------------------------"!
+!FileDirectory methodsFor: 'dictionary removing'!
+removeKey: aFileName
+	"Remove and answer the file whose name is aFileName;  create an error if not
+	found."
+	^self
+		remove: (self initFileName: aFileName)
+		ifAbsentDo: [:f | f error: 'file not found']!
+"-----------------------------------"!
+!FileDirectory methodsFor: 'enumerating'!
+do: aBlock
+	"Sequence over all possible files in the receiver, evaluating aBlock for each one."
+
+	| aFile |
+	self reset.
+	[aFile _ self next.
+	aFile notNil]
+		whileTrue: [aBlock value: aFile]!
+reset
+	"Set to the beginning of the directory."
+	self subclassResponsibility!
+"-----------------------------------"!
+!FileDirectory methodsFor: 'file accessing'!
+checkName: aFileName fixErrors: aBoolean
+	"Check a string aFileName for validity as a file name.  If there are problems
+	(e.g., illegal length or characters) and aBoolean is false, create an error;  if
+	there are problems and aBoolean is true, make the name legal (usually by
+	truncating and/or tranforming characters) and answer the new name.  Otherwise,
+	answer the name.  Default behavior is to get rid of ending period.
+	Subclasses can do any kind of checking they want and answer either the
+	name, or false if no good."
+
+	aFileName isEmpty ifTrue: [aBoolean ifFalse: [self error: 'file name empty']].
+	aFileName last = $.
+		ifTrue:
+			[aBoolean ifFalse: [self error: 'file name ends in .'].
+			^aFileName copyFrom: 1 to: aFileName size - 1]
+		ifFalse: [^aFileName]!
+checkNameOfFile: aFileName
+	"See FileDirector|checkNameOfFile: aFileName fixErrors: false."
+	^self checkNameOfFile: aFileName fixErrors: false!
+checkNameOfFile: aFile fixErrors: aBoolean
+	"See FileDirectory|checkNameOfFile: aFileName fixErrors: aBoolean.  The first argument
+	is the name of the file, aFile."
+	^self checkName: aFile fileName fixErrors: aBoolean!
+file: aFileName
+	"Answer a FileStream on an old or new File whose name is aFileName."
+
+	^(self findOrAddKey: aFileName) asFileStream!
+fileClass
+	"Answer the proper subclass of File of which the files in the receiver are instances."
+
+	self subclassResponsibility!
+filesMatching: pattern
+	"Answer an Array of the names of files that match the string, pattern."
+	| names name |
+	names _ WriteStream on: (Array new: 10).
+	self do:
+		[:each |
+		name _ each fileName.
+		(pattern match: name)
+			ifTrue:
+				[name last = $. ifTrue: [name _ name copyFrom: 1 to: name size - 1].
+				names nextPut: name]].
+	^names contents!
+isLegalFileName: aString
+	"Answer whether aString is a legal file name."
+	^(self checkName: aString fixErrors: true) = aString!
+isLegalOldFileName: aString
+	"Answer whether aString is a legal file name."
+
+	^(self checkName: aString fixErrors: true) = aString
+		and: [self includesKey: aString]!
+newFile: aFileName
+	"Answer a FileStream on a new File whose name is aFileName;  error if the
+	argument is not a new file name."
+
+	^(self addKey: aFileName) asFileStream!
+oldFile: aFileName
+	"Answer a FileStream on an old File whose name is aFileName;  error if the
+	argument is not an old name."
+
+	^(self findKey: aFileName) asFileStream!
+rename: aFile newName: newName
+	"Rename the file, aFile, to have the name newName.  Create an
+	error if a file by the name, newName, already exists."
+	self subclassResponsibility!
+"-----------------------------------"!
+!FileDirectory methodsFor: 'file copying'!
+retrieve: aFileName
+	"Copy the file whose name is aFileName to itself.  Subclasses may want to overwrite this to
+	redirect the directory on which a file of the same name is copied.  See
+	FileDirectory|retrieveFrom:copyTo:."
+	^self retrieveFrom: aFileName copyTo: aFileName!
+retrieveFrom: aFileName1 copyTo: aFileName2
+	"Copy file whose name is aFileName1 (usually from this receiver) to a file
+	whose name is aFileName2 (usually a local directory)."
+
+	| f1 f2 |
+	f1 _ self oldFile: aFileName1.
+	f1 readOnly.
+	f2 _ self file: aFileName2.
+	f2 nextPutAll: f1.
+	f2 close.
+	f1 close!
+store: aFileName
+	"Store the file whose name is aFileName to itself.  Subclasses may want to overwrite this to
+	redirect the directory on which a file of the same name is copied.  See
+	FileDirectory|storeFrom:copyTo:."
+	^self storeFrom: aFileName copyTo: aFileName!
+storeFrom: aFileName1 copyTo: aFileName2
+	"Copy file whose name is aFileName1 (usually from a local directory) to a file
+	whose name is aFileName2 (usually on the receiver)."
+
+	| f1 f2 |
+	f1 _ self oldFile: aFileName1.
+	f1 readOnly.
+	f2 _ self file: aFileName2.
+	f2 nextPutAll: f1.
+	f2 close.
+	f1 close!
+"-----------------------------------"!
+!FileDirectory methodsFor: 'file status'!
+close
+	"Close the receiver if it is not already closed."
+	closed
+		ifFalse:
+			[ExternalReferences remove: self ifAbsent: [].
+			self release]!
+flush
+	"Write any state on local storage."
+
+	self subclassResponsibility!
+open
+	"Open the directory."
+
+	closed _ false.
+	(ExternalReferences includes: self)
+		ifFalse: [ExternalReferences addLast: self]!
+release
+	"Release the receiver. a more forgiving version of close
+	which should always be possible even if close isn't desired or doesn't work."
+
+	closed _ true!
+"-----------------------------------"!
+!FileDirectory methodsFor: 'file testing'!
+closed
+	"Answer whether the receiver is closed."
+	^closed!
+"-----------------------------------"!
+!FileDirectory methodsFor: 'page accessing'!
+allocate: aFilePage after: virtualDiskAddress
+	"Answer aFilePage with its real disk address field filled in."
+
+	self subclassResponsibility!
+allocateSN: aFile
+	"Allocate a new serial number for the file, aFile."
+
+	self subclassResponsibility!
+deallocate: aFilePage
+	"Deallocate aFilePage at some real disk address."
+
+	self subclassResponsibility!
+freePages
+	"Answer the number of free pages remaining."
+
+	self subclassResponsibility!
+newPage
+	"Create a dummy file and a page from it."
+
+	^(self initFileName: '') initPageNumber: 0!
+"-----------------------------------"!
+!FileDirectory methodsFor: 'printing'!
+listFilesOn: aStream
+	"Write a list of each file name in the receiver onto the stream, aStream."
+	self do:
+		[:aFile |
+		aStream cr.
+		aFile fileName printOn: aStream]!
+printOn: aStream
+	aStream nextPutAll:
+		(self closed
+			ifTrue: ['a closed ']
+			ifFalse: ['an open ']).
+	aStream nextPutAll: self class name.
+	aStream nextPutAll: ' on '.
+	directoryName printOn: aStream!
+"-----------------------------------"!
+!FileDirectory methodsFor: 'private'!
+find: aFile
+	^self find: aFile ifAbsentDo: [:f | nil]!
+find: aFile ifAbsentDo: aBlock
+	"return aFile (partially initialized) if found, otherwise false.
+	this is a default implementation"
+
+	| fname |
+	"check file name"
+	fname _ self checkNameOfFile: aFile.
+	aFile fileName: fname.
+	"iterate through non-deleted entries of directory,
+	and return partially initialized file if found"
+	self do: [:each | (fname sameAs: each fileName) ifTrue: [^each]].
+	"failure"
+	^aBlock value: aFile!
+findKey: aFileName
+	^self
+		find: (self initFileName: aFileName)
+		ifAbsentDo: [:file | file error: 'file not found']!
+findOrAdd: aFile
+	"find an old file if it exists, or create one"
+
+	| f |
+	(f _ self find: aFile) notNil
+		ifTrue: [^f]
+		ifFalse: [^self addNew: aFile]!
+findOrAddKey: t1
+	^self findOrAdd: (self initFileName: t1)!
+initFile: aFile
+	aFile reinitialize.
+	^aFile!
+initFileName: aFileName
+	| aFile |
+	aFile _ self fileClass new.
+	aFile directory: self.
+	aFile fileName: aFileName.
+	aFile reinitialize.
+	^aFile!
+setDirectory: aFileDirectory directoryName: aString
+	"assume that the directory is implicit"
+
+	directoryName _ aString.
+	closed _ true!
+"-----------------------------------"!
+!FileDirectory methodsFor: 'removing'!
+remove: aFile
+	"Remove aFile if found in the receiver.  Create an error if it is not."
+
+	^self remove: aFile ifAbsentDo: [:f | f error: 'file not found']!
+remove: aFileName ifAbsentDo: aBlock
+	"Remove aFile if found in the receiver.  Answer the result of evaluating aBlock if the file is not found."
+
+	| f |
+	f _ self find: aFileName ifAbsentDo: aBlock.
+	f notNil
+		ifTrue: [^self removeOld: f]
+		ifFalse: [^aBlock value: f]!
+removeOld: aFile
+	"If aFile exists, remove it."
+
+	self subclassResponsibility!
+"-----------------------------------"!
+!FileDirectory methodsFor: 'testing'!
+includes: aFile
+	"Answer whether aFile is in the receiver's list of files."
+	^(self find: aFile) notNil!
+includesKey: aFileName
+	"Answer whether a file whose name is aFileName is included in the receiver."
+	| file |
+	file _ self find: (self initFileName: aFileName).
+	file notNil ifTrue:
+		[file release. "close the IFS connection, if an IFS leaf file"
+		^true].
+	^false!

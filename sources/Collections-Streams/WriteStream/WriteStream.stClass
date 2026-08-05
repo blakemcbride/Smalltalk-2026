@@ -1,0 +1,138 @@
+PositionableStream subclass: #WriteStream
+  instanceVariableNames: 'writeLimit'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Collections-Streams'!
+WriteStream class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+WriteStream comment:
+'I am a writer of an indexable collection. writeLimit marks the farthest that has been written into the collection, not the actual size of the collection.'!
+"-----------------------------------"!
+!WriteStream class methodsFor: 'instance creation'!
+on: aCollection from: firstIndex to: lastIndex
+	"Answer with a new instance streaming over a copy of aCollection from
+	firstIndex to lastIndex."
+
+	^self basicNew
+		on: aCollection
+		from: firstIndex
+		to: lastIndex!
+with: aCollection
+	"Answer a new instance of me streaming on aCollection.  Assume that the
+	collection is already full so the position and the limits are set to the end."
+
+	^self basicNew with: aCollection!
+with: aCollection from: firstIndex to: lastIndex
+	"Answer a new instance of me streaming on the subcollection of aCollection, starting
+	at index firstIndex and ending at lastIndex.  Assume that the
+	resulting collection is already full so the position and the limits are set to the end."
+
+	^self basicNew with: (aCollection copyFrom: firstIndex to: lastIndex)!
+"-----------------------------------"!
+!WriteStream methodsFor: 'accessing'!
+contents
+	readLimit _ readLimit max: position.
+	^collection copyFrom: 1 to: position!
+next
+	self shouldNotImplement!
+nextPut: anObject
+	"Insert the argument at the next position in the Stream represented by the
+	receiver. Fail if the collection of this stream is not an Array or a String.
+	Fail if the stream is positioned at its end, or if the position is out of
+	bounds in the collection. Fail if the argument is not of the right type for
+	the collection. Optional. See Object documentation whatIsAPrimitive."
+
+	<primitive: 66>
+	position = writeLimit
+		ifTrue: [^self pastEndPut: anObject]
+		ifFalse:
+			[^collection at: (position _ position + 1) put: anObject]!
+size
+	^readLimit _ readLimit max: position!
+"-----------------------------------"!
+!WriteStream methodsFor: 'character writing'!
+cr
+	"Append a return character to the receiver."
+
+	self nextPut: Character cr!
+crtab
+	"Append a return character, followed by a single tab character, to the receiver."
+
+	self nextPut: Character cr.
+	self nextPut: Character tab!
+crtab: anInteger
+	"Append a return character, followed by anInteger tab characters, to the receiver."
+
+	self nextPut: Character cr.
+	anInteger timesRepeat: [self nextPut: Character tab]!
+emphasis
+	^ 1
+	"Allows compatibility with streams which carry emphasis"!
+emphasis: ignored
+	"Allows compatibility with streams which carry emphasis"!
+space
+	"Append a space character to the receiver."
+
+	self nextPut: Character space!
+tab
+	"Append a tab character to the receiver."
+
+	self nextPut: Character tab!
+"-----------------------------------"!
+!WriteStream methodsFor: 'fileIn/Out'!
+nextChunkPut: aString
+	"Put aString onto self, doubling embedded terminators."
+
+	| index stringSize char terminator |
+	terminator _ $!!.
+	index _ 0.
+	stringSize _ aString size.
+	[(index _ index + 1) <= stringSize]
+		whileTrue:
+			[char _ aString at: index.
+			self nextPut: char.
+			char == terminator ifTrue: ["double imbedded terminator"
+				self nextPut: char]].
+	self nextPut: terminator!
+"-----------------------------------"!
+!WriteStream methodsFor: 'positioning'!
+position: anInteger
+	readLimit _ readLimit max: position.
+	super position: anInteger!
+reset
+	readLimit _ readLimit max: position.
+	position _ 0!
+"-----------------------------------"!
+!WriteStream methodsFor: 'printing'!
+print: anObject
+	"Have anObject print on the receiver."
+
+	anObject printOn: self!
+store: anObject
+	"Have anObject print on me for rereading."
+
+	anObject storeOn: self!
+"-----------------------------------"!
+!WriteStream methodsFor: 'private'!
+on: aCollection
+	super on: aCollection.
+	readLimit _ 0.
+	writeLimit _ aCollection size!
+on: aCollection from: firstIndex to: lastIndex
+	| len |
+	collection _ aCollection.
+	readLimit _
+		writeLimit _ lastIndex > (len _ collection size)
+						ifTrue: [len]
+						ifFalse: [lastIndex].
+	position _ firstIndex <= 1
+				ifTrue: [0]
+				ifFalse: [firstIndex - 1]!
+pastEndPut: anObject
+	collection grow.
+	writeLimit _ collection size.
+	collection at: (position _ position + 1) put: anObject!
+with: aCollection
+	super on: aCollection.
+	position _ readLimit _ writeLimit _ aCollection size!

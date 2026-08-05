@@ -1,0 +1,46 @@
+ParseNode subclass: #AssignmentNode
+  instanceVariableNames: 'variable value'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'System-Compiler'!
+AssignmentNode class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+AssignmentNode comment:
+'I represent a (var_expr) construct.'!
+"-----------------------------------"!
+!AssignmentNode methodsFor: 'code generation'!
+emitForEffect: stack on: aStream
+	value emitForValue: stack on: aStream.
+	variable emitStorePop: stack on: aStream!
+emitForValue: stack on: aStream
+	value emitForValue: stack on: aStream.
+	variable emitStore: stack on: aStream!
+sizeForEffect: encoder
+	^(value sizeForValue: encoder)
+		+ (variable sizeForStorePop: encoder)!
+sizeForValue: encoder
+	^(value sizeForValue: encoder)
+		+ (variable sizeForStore: encoder)!
+"-----------------------------------"!
+!AssignmentNode methodsFor: 'initialize-release'!
+variable: aVariable value: expression
+	variable _ aVariable.
+	value _ expression!
+variable: aVariable value: expression from: encoder
+	"compile"
+
+	(aVariable isMemberOf: MessageNode)
+		ifTrue: [^aVariable store: expression from: encoder].
+	variable _ aVariable.
+	value _ expression!
+"-----------------------------------"!
+!AssignmentNode methodsFor: 'printing'!
+printOn: aStream indent: level
+	variable printOn: aStream indent: level.
+	aStream nextPutAll: ' _ '.
+	value printOn: aStream indent: level + 2!
+printOn: aStream indent: level precedence: p
+	p < 4 ifTrue: [aStream nextPutAll: '('].
+	self printOn: aStream indent: level.
+	p < 4 ifTrue: [aStream nextPutAll: ')']!

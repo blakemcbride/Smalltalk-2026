@@ -1,0 +1,18 @@
+SwitchController subclass: #LockedSwitchController
+  instanceVariableNames: ''
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Interface-Menus'!
+LockedSwitchController class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+LockedSwitchController comment:
+'I am a SwitchController that will not take control if the model (a Switch) is locked.  As an indication, the view (a SwitchView) flashes.'!
+"-----------------------------------"!
+!LockedSwitchController methodsFor: 'control defaults'!
+isControlWanted
+	model isLocked
+		ifTrue:
+			[view flash.
+			^false].
+	^super isControlWanted!

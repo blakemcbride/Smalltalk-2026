@@ -1,0 +1,63 @@
+StandardSystemController subclass: #NotifierController
+  instanceVariableNames: ''
+  classVariableNames: 'NotifierYellowButtonMenu NotifierYellowButtonMessages'
+  poolDictionaries: ''
+  category: 'Interface-Debugger'!
+NotifierController class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+NotifierController comment:
+'I am a kind of MouseMenuController that creates a yellow button menu for proceeding an interrupted process or for creating and scheduling a debugger on the interrupted machine state.  I give up control if a blue button is pressed or if the cursor is not inside the view.'!
+"-----------------------------------"!
+!NotifierController class methodsFor: 'class initialization'!
+initialize
+	NotifierYellowButtonMenu _
+		PopUpMenu labels:
+'proceed
+debug'.
+	NotifierYellowButtonMessages _ #(proceed debug )
+
+	"NotifierController initialize."!
+"-----------------------------------"!
+!NotifierController methodsFor: 'initialize-release'!
+initialize
+	super initialize.
+	self initializeYellowButtonMenu!
+"-----------------------------------"!
+!NotifierController methodsFor: 'menu messages'!
+correct
+	"Attempt to correct the spelling of the not-understood message and resend."
+
+	self controlTerminate.
+	model correct: self.
+	self controlInitialize!
+debug
+	"Open a Debugger on the receiver's model."
+
+	self controlTerminate.
+	view erase.
+	Debugger openFullViewOn: model label: view label.
+	self closeAndUnscheduleNoErase.
+	Processor terminateActive!
+proceed
+	"Proceed execution of the receiver's model."
+	self controlTerminate.
+	model proceed.
+	self controlInitialize!
+"-----------------------------------"!
+!NotifierController methodsFor: 'model access'!
+model: aDebugger
+	"Intercept to possible enable spelling correction."
+
+	super model: aDebugger.
+	model interruptedContext selector == #doesNotUnderstand: ifTrue:
+		[self yellowButtonMenu: (PopUpMenu labels:
+'proceed
+debug
+correct' lines: #(2))
+			yellowButtonMessages: #(proceed debug correct)]!
+"-----------------------------------"!
+!NotifierController methodsFor: 'private'!
+initializeYellowButtonMenu
+	self yellowButtonMenu: NotifierYellowButtonMenu
+		yellowButtonMessages: NotifierYellowButtonMessages!

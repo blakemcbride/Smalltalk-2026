@@ -1,0 +1,560 @@
+Object subclass: #Checker
+  instanceVariableNames: ''
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'System-Releasing'!
+Checker class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+Checker class comment:
+'I am a class used for running static checks over the system.'!
+"-----------------------------------"!
+Checker comment:
+'I contain a collection of checks to run for system consistency.'!
+"-----------------------------------"!
+!Checker class methodsFor: 'browsing'!
+browseAllUnimplementedCalls
+	"Create and schedule a message browser on each method that includes a message
+	that is not implemented in any object in the system.
+		Smalltalk browseAllUnimplementedCalls "
+
+	BrowserView
+		openListBrowserOn: self allUnimplementedCalls
+		label: 'Unimplemented calls'!
+"-----------------------------------"!
+!Checker class methodsFor: 'printing checks'!
+printAllMessagesOn: aFileStream
+	"Smalltalks printAllMessagesOn: (Disk file: 'smalltalk.allMessages')."
+
+	| class selectorStream |
+	selectorStream _ WriteStream on: (String new: 100).
+	SystemOrganization categories do:
+		[:sysCat |
+		Transcript show: sysCat; cr.
+		"form feed between categories of classes"
+		aFileStream nextPut: 12 asCharacter; cr; nextPutAll: sysCat.
+		(SystemOrganization listAtCategoryNamed: sysCat) do:
+			[:className |
+			class _ self at: className.
+			aFileStream crtab: 1; nextPutAll: className.
+			class organization categories do:
+				[:classCat |
+				aFileStream crtab: 2; nextPutAll: classCat; crtab: 3.
+				selectorStream reset.
+				(class organization listAtCategoryNamed: classCat) do:
+					[:selector |
+					(selectorStream position + selector size) > 70
+						ifTrue:
+							[aFileStream nextPutAll: selectorStream contents.
+							aFileStream crtab: 4.
+							selectorStream reset].
+					selectorStream space; nextPutAll: selector.
+					aFileStream nextPutAll: selectorStream contents.]].
+			aFileStream crtab: 1; nextPutAll: class class name.
+			class class organization categories
+			  do:
+				[:classCat |
+				aFileStream crtab: 2; nextPutAll: classCat; crtab: 3.
+				selectorStream reset.
+				(class class organization listAtCategoryNamed: classCat) do:
+					[:selector |
+					(selectorStream position + selector size) > 70
+						ifTrue:
+							[aFileStream nextPutAll: selectorStream contents.
+							aFileStream crtab: 4.
+							selectorStream reset].
+					selectorStream space; nextPutAll: selector.
+					aFileStream nextPutAll: selectorStream contents.]].
+			]
+		].
+	aFileStream close.!
+printCategoryNamesOn: aFileStream
+	"Print the names of all the categories, alphabetically, in the file aFileStream."
+
+	self allCategoryNames do: [:catName | aFileStream nextPutAll: catName; cr].
+	aFileStream close
+	"Smalltalk printCategoryNamesOn: (Disk file: 'Smalltalk.categories')."!
+printInstanceCounts
+	"Smalltalk printInstanceCounts. (Disk file: 'Instance.counts') edit."
+
+	| file |
+	file _ Disk file: 'Instance.counts'.
+	Smalltalk timeStamp: file.
+	Smalltalk
+		instanceCountsAndSpaceDo:
+			[:class :count :nwords |
+			file cr; nextPutAll: class name.
+			(25 - class name size) timesRepeat: [file space].
+			file print: count; tab; print: nwords].
+	file close!
+printInstanceVariablesNotReferencedOn: aFileStream
+	"Print a list of classes and instance variables defined in, but not used in that
+	class
+
+	Smalltalk printInstanceVariablesNotReferencedOn:
+		(Disk file: 'smalltalk.unrefedIvars') "
+
+	self instanceVariablesNotReferenced do: [:ivar | aFileStream nextPutAll: ivar; cr].
+	aFileStream close!
+printMessageUsage
+	"Smalltalk printMessageUsage."
+	| dict file set |
+	dict _ IdentityDictionary new: 1024.
+	Cursor execute showWhile:
+	[CompiledMethod allInstancesDo:
+		[:meth |
+		set _ meth messages.
+		set do:
+			[:sel | dict at: sel put: (dict at: sel ifAbsent: [0]) + 1]
+		]
+	].
+	Cursor write showWhile:
+	[file _ Disk file: 'message.counts'.
+	dict associationsDo:
+		[:assn |
+		assn value > 10
+			ifTrue: [file cr; nextPutAll: assn key; tab; nextPutAll: assn value printString]].
+	file close]!
+printMultipleCategoryMessageNamesOn: aFileStream
+	"Print the names of all the messages defined in more than one category."
+
+	| aCollection |
+	aCollection _ self multipleCategoryMessageNames asSortedCollection.
+	aCollection do:
+		[:selector |
+		aFileStream cr; nextPutAll: selector.
+		Smalltalk allBehaviorsDo:
+			[:class |
+			(class includesSelector: selector)
+				ifTrue:
+					[ aFileStream crtab: 1; nextPutAll: class name.
+					aFileStream nextPutAll: '>'.
+					aFileStream
+						nextPutAll: (class whichCategoryIncludesSelector: selector)]]].
+	aFileStream close
+	"Checker printMultipleCategoryMessageNamesOn:
+		(Disk file: 'Smalltalk.multcats')."!
+printOnlyReturnSelvesOn: aFileStream
+	"Print a list of messages that are only ^self (unimplemented).
+
+	Smalltalk printOnlyReturnSelvesOn:
+		(Disk file: 'smalltalk.unimplementeds') "
+
+	self onlyReturnSelves do: [:aString | aFileStream nextPutAll: aString; cr].
+	aFileStream close!
+printReceivedButNotSentOn: aFileStream
+	"Print a list of messages implemented but not sent anywhere (could be sent
+	by performs).
+
+	Smalltalk printReceivedButNotSentOn: (Disk file: 'smalltalk.receivedButNotSent')"
+
+	self allUnSentMessages do:
+		[:aString | aFileStream nextPutAll: aString; cr].
+	aFileStream close!
+printSentButNotReceivedOn: aFileStream
+	"Print a list of messages sent but not implemented anywhere.
+
+	Smalltalk printSentButNotReceivedOn:
+		(Disk file: 'smalltalk.sentButNotReceived') "
+
+	self allUnimplementedCalls do: [:aString | aFileStream nextPutAll: aString; cr].
+	aFileStream close!
+printSingleClassCategoryNamesOn: aFileStream
+	"Print the names of all the categories defined in only one class.
+
+	Smalltalk printSingleClassCategoryNamesOn:
+		(Disk file: 'Smalltalk.singles'). "
+
+	self singleClassCategoryNames do: [:catName | aFileStream nextPutAll: catName; cr].
+	aFileStream close!
+printUnaryCategoryNamesOn: aFileStream
+	"Print the names of all the categories with only one message.
+
+	Smalltalk printUnaryCategoryNamesOn: (Disk file: 'Smalltalk.unaries')."
+
+	self unaryCategoryNames do:
+		[:catName | aFileStream nextPutAll: catName; cr].
+	aFileStream close!
+printUnresponsivesOn: aFileStream
+	"Print a list of unimplemented subclassResponsibilities.
+
+	Smalltalk printUnresponsivesOn: (Disk file: 'smalltalk.subclassUnimps')"
+
+	self unResponsives do:
+		[:aString | aFileStream nextPutAll: aString; cr].
+	aFileStream close!
+"-----------------------------------"!
+!Checker class methodsFor: 'static checks'!
+allCategoryNames
+	"Answer a SortedCollection of the names of all the categories (sorted alphabetically)."
+
+	| aSet |
+	aSet _ Set new: 1000.
+	Smalltalk allBehaviorsDo:
+		[:class | class organization categories do: [:catName | aSet add: catName]].
+	^aSet asSortedCollection!
+allUnSentMessages
+	"Answer an Array of each message that is implemented by some object in the
+	system but is not sent by any."
+
+
+	| all anArray |
+	all _ self allImplementedMessages.
+	anArray _ Array new: 0.
+	Cursor execute
+		showWhile:
+			[self allBehaviorsDo:
+				[:cl |
+				 cl selectors do:
+					[:sel |
+					(cl compiledMethodAt: sel) literals do:
+						[:m | all remove: m ifAbsent: []]]].
+			1 to: self specialSelectorSize do:
+				[:index |
+				all remove: (self specialSelectorAt: index) ifAbsent: []].
+			Transcript show: all size printString.
+			all do: [:sel | anArray _ anArray , (self allImplementorsOf: sel)]].
+	^anArray!
+allUnimplementedCalls
+	"Answer an Array of each message that is sent by an expression in a method
+	but is not implemented by any object in the system."
+
+	| aStream secondStream all  |
+	all _ self allImplementedMessages.
+	aStream _ WriteStream on: (Array new: 50).
+	Cursor execute showWhile:
+		[self allBehaviorsDo:
+			[:cl |
+			 cl selectors do:
+				[:sel |
+				 secondStream _ WriteStream on: (String new: 5).
+				(cl compiledMethodAt: sel) messages do:
+					[:m | (all includes: m) ifFalse: [secondStream nextPutAll: m; space]].
+				secondStream position = 0 ifFalse:
+					[aStream nextPut: cl name , ' ' , sel , ' calls: ', secondStream contents]]]].
+	^aStream contents!
+browseAllNonAsciiMessages
+	"Bring up a Message Set Window with methods containing bad characters"
+
+	| char cr ff tab aStream badCharacter |
+	cr _ Character cr asciiValue.
+	ff _ Character newPage asciiValue.
+	tab _ Character tab asciiValue.
+	Smalltalk
+		browseAllSelect:
+			[:method |
+			badCharacter _ false.
+			aStream _ ReadStream on: method getSource.
+			[aStream atEnd or: [badCharacter]]
+				whileFalse:
+					[char _ aStream next asciiValue.
+					(char > 127
+						or: [char < 32
+								and: [char ~= cr & (char ~= ff) & (char ~= tab)]])
+						ifTrue:
+							[Transcript show: '*'.
+							badCharacter _ true]].
+			badCharacter]
+	"Smalltalk browseAllNonAsciiMessages."!
+categoriesSelect: aBlock
+	"Smalltalk categoriesSelect: [:catName | catName first = $A]"
+
+	| aDictionary aStream |
+	aDictionary _ IdentityDictionary new: 512.
+	aStream _ WriteStream on: (Array new: 500).
+	Smalltalk allBehaviorsDo:
+		[:class | class organization categories do:
+			[:catName |
+			(aBlock value: catName)
+				ifTrue: [aStream nextPut: class name, ' >> ',catName]]].
+	^aStream contents asSortedCollection!
+checkOrganizations
+	"Check for organization/messagedict inconsistencies.  Print the result in the
+	System Transcript.
+
+	Smalltalk checkOrganizations.
+	Smalltalk allClassesDo:
+			[:cl | cl removeSelector: #DoIt; removeSelector: #DoItIn:]. "
+
+	| className class cat sel set |
+	Smalltalk classNames do:
+		[:className |
+		(Array with: (Smalltalk at: className) with: (Smalltalk at: className) class) do:
+			[:class |
+			set _ Set new.
+			class organization categories do:
+				[:cat | (class organization listAtCategoryNamed: cat) do:
+						[:sel |
+						(set includes: sel)
+							ifTrue: [Transcript show: class name , ' multiple: ' , sel; cr].
+						set add: sel]].
+			class selectors do:
+				[:sel | (set includes: sel)
+					ifTrue: [set remove: sel]
+					ifFalse: [Transcript show: class name , ' missing: ' , sel; cr]].
+				set do: [:sel | Transcript show: class name , ' spurious: ' , sel; cr]]].
+	Transcript show: 'Done checking.'; cr!
+findAllNonAsciiSources
+	"Collect chunks from the source files containing bad characters"
+
+	| char cr ff tab aStream badCharacter aFileStream aChunk badStream|
+	cr _ Character cr asciiValue.
+	ff _ Character newPage asciiValue.
+	tab _ Character tab asciiValue.
+	badStream _ WriteStream on: (Array new: 10).
+	Cursor execute show.
+	1 to: 2 do:
+		[:i |
+		aFileStream _ (SourceFiles at: i) copy.
+		aFileStream reset.
+		[aFileStream atEnd]
+			whileFalse:
+				[aChunk _ aFileStream nextChunk.
+				aStream _ ReadStream on: aChunk.
+				badCharacter _ false.
+				[aStream atEnd or: [badCharacter]]
+				whileFalse:
+					[char _ aStream next asciiValue.
+					(char > 127
+						or: [char < 32
+							and: [char ~= cr & (char ~= ff) & (char ~= tab)]])
+						ifTrue:
+						[Transcript show: '*'.
+						badCharacter _ true]].
+				badCharacter ifTrue: [badStream nextPut: aChunk]].
+		aFileStream close].
+	Cursor normal show.
+	^badStream contents
+	"Smalltalk findAllNonAsciiSources inspect."!
+findSharedPoolVariables
+	"Smalltalk findSharedPoolVariables."
+
+	| aSet duplicates |
+	duplicates _ OrderedCollection new.
+	Smalltalk allClassesDo:
+	[:class |
+	class subclasses isEmpty
+		ifTrue:
+			[aSet _ Set new.
+			class allSharedPools do:
+				[:pool |
+				pool keys do:
+					[:key |
+					(aSet includes: key)
+						ifTrue: [duplicates add: (Association key: key value: class)].
+					aSet add: key]]]].
+	^duplicates!
+instanceCountsAndSpaceDo: aBlock
+	"Evaluate aBlock value: class value: instanceCount value: totalSpace
+	for every class in the system."
+
+	| nwords isBytes n |
+	Smalltalk
+		allClassesDo:
+			[:class |
+			nwords _ 0.
+			class isVariable
+				ifTrue:
+					[n _ 0.
+					isBytes _ class isBytes.
+					class
+						allInstancesDo:
+							[:inst |
+							n _ n + 1.
+							nwords _ nwords + (isBytes
+											ifTrue: [inst basicSize + 1 // 2]
+											ifFalse: [inst basicSize])]]
+				ifFalse: [n _ class instanceCount].
+			nwords _ nwords + (class instSize + 2 * n).  "+2 for header"
+			aBlock
+				value: class
+				value: n
+				value: nwords]!
+instanceVariablesNotReferenced
+	"Return a list of classes and instance variables defined in, but not used in that class
+	Smalltalk instanceVariablesNotReferenced"
+
+	| aStream |
+	aStream _ WriteStream on: (Array new: 50).
+	Smalltalk allBehaviorsDo:
+		[:class |
+		class instVarNames do:
+			[:instVarName |
+			(class whichSelectorsAccess: instVarName) size = 0
+				ifTrue: [aStream nextPut: class name, ' ', instVarName]]].
+	^aStream contents!
+multipleCategoryMessageNames
+	"Return the names of all the messages defined in more then one category,
+	along with the category names."
+
+	| aDictionary class catName selector |
+	aDictionary _ IdentityDictionary new: 1024.
+	Smalltalk allBehaviorsDo:
+		[:class |
+		class organization categories do:
+			[:catName |
+			(class organization listAtCategoryNamed: catName) do:
+				[:selector |
+				(aDictionary includesKey: selector)
+					ifTrue:
+						[(aDictionary at: selector) add: catName]
+					ifFalse: [aDictionary
+								at: selector
+								put: (Set with: catName)]]]].
+	^aDictionary keys select: [:selector | (aDictionary at: selector) size > 1]!
+obsoleteAssociations
+	"Return a collection of all associations containing obsolete classes.
+	Smalltalk obsoleteAssociations "
+
+	| class |
+	^Association allInstances select:
+		[:assoc |
+		class _ assoc value class.
+		class isMeta and: [class isObsolete]]!
+obsoleteClassReferences
+	"Answer a collection of all the methods that reference obsolete classes."
+
+	| methods |
+	methods _ SortedCollection new.
+	self obsoleteAssociations do: [:assoc | methods addAll: (self allCallsOn: assoc)].
+	^methods
+
+	"BrowserView
+		openListBrowserOn: Smalltalk obsoleteClassReferences
+		label: 'References to Obsolete Classes' "!
+obsoleteClasses
+	"Return a collection of all obsolete classes.
+	Smalltalk obsoleteClasses "
+
+	^(Metaclass allInstances select: [:metaclass | metaclass isObsolete])
+		collect: [:metaclass | metaclass someInstance]!
+obsoleteInstanceCounts
+	"Compute the number of instances of each obsolete class.
+	Smalltalk obsoleteInstanceCounts "
+
+	| obsolete count |
+	obsolete _ Dictionary new.
+	self obsoleteClasses do:
+		[:class |
+		count _ class instanceCount.
+		count > 0 ifTrue: [obsolete at: class put: count]].
+	^obsolete!
+onlyReturnSelves
+	"Return message names for messages that are ^self only (i.e. no implementation)
+	Smalltalk onlyReturnSelves."
+
+	| aStream |
+	aStream _ WriteStream on: (Array new: 50).
+	Smalltalk allBehaviorsDo:
+		[:class |
+		class selectors do:
+			[:selector |
+			(class compiledMethodAt: selector) isReturnSelf
+				ifTrue: [aStream nextPut: class name, ' ', selector]]].
+	^aStream contents!
+rehashBadSets
+	"Checker rehashBadSets"
+
+	| badSets checkSet |
+	badSets _ Set new.
+	checkSet _ [:set |
+		(set isKindOf: Dictionary)
+			ifTrue: [set keysDo:
+				[:x | (set includesKey: x) ifFalse: [badSets add: set]]]
+			ifFalse: [set do:
+				[:x | (set includes: x) ifFalse: [badSets add: set]]]].
+
+	Set allInstances do: checkSet.
+	Set allSubInstancesDo: checkSet.
+	badSets do: [:bad | bad rehash].
+	Transcript cr; print: badSets size; show: ' bad sets/dictionaries rehashed'.
+	^badSets!
+removeEmptyCategories
+	"Remove all empty class and method categories.
+	Smalltalk removeEmptyCategories "
+
+	SystemOrganization removeEmptyCategories.
+	ClassOrganizer allInstancesDo: [:organizer | organizer removeEmptyCategories].!
+singleClassCategoryNames
+	"Return the names of all the categories defined in only one class, alphabetic
+	Smalltalk singleClassCategoryNames."
+
+	| aDictionary aStream |
+	aDictionary _ IdentityDictionary new: 512.
+	Smalltalk allBehaviorsDo:
+		[:class | class organization categories do:
+			[:catName |
+			(aDictionary includesKey: catName)
+				ifTrue: [(aDictionary at: catName) = nil
+							ifFalse: [aDictionary at: catName put: nil]]
+				ifFalse: [aDictionary at: catName put: class name]]].
+	aStream _ WriteStream on: (Array new: 500).
+	aDictionary associationsDo:
+		[:assn |
+		assn value == nil
+			ifFalse: [aStream nextPut: assn value, ' >> ',assn key]].
+	^aStream contents asSortedCollection!
+unResponsives
+	"Smalltalk unResponsives"
+
+	| aStream aCollection satisfiedSet workingSet aSubclass special |
+	aStream _ WriteStream on: (Array new: 50).
+	special _ self hasSpecialSelector: #subclassResponsibility ifTrueSetByte: [:byte ].
+	Smalltalk allBehaviorsDo:
+		[:class |
+		aCollection _ class whichSelectorsReferTo: #subclassResponsibility special: special byte: byte.
+		aCollection size > 0
+			ifTrue:
+				[aCollection do:
+					[:selector |
+					workingSet _ class subclasses asOrderedCollection.
+					satisfiedSet _ Set new.
+					[workingSet isEmpty] whileFalse:
+						[aSubclass _ workingSet removeFirst.
+						(aSubclass includesSelector: selector)
+							ifFalse:
+								[satisfiedSet add: aSubclass.
+								workingSet addAll: aSubclass subclasses]].
+					 satisfiedSet do:
+						[:subclass |
+						aStream nextPut: class name, ' ', selector, '
+	', subclass name]]]].
+	^aStream contents!
+unaryCategoryNames
+	"Return the names of all the categories with only one message in them"
+
+	| aSet |
+	aSet _ Set new: 1000.
+	Smalltalk allBehaviorsDo:
+		[:class | class organization categories do:
+			[:catName |
+			(class organization listAtCategoryNamed: catName) size = 1
+				ifTrue: [aSet add: class name, ' >> ',  catName]]].
+	^aSet asSortedCollection!
+whichClassesHaveCategory: categoryName
+	"Return the names of all the classes with the category.
+	Smalltalk whichClassesHaveCategory: 'accessing'."
+
+	| aStream |
+	aStream _ WriteStream on: (Array new: 500).
+	Smalltalk allBehaviorsDo:
+		[:class |
+		(class organization categories includes: categoryName asSymbol)
+			ifTrue: [aStream nextPut: class name]].
+	^aStream contents asSortedCollection!
+whichClassesIncludeCategory: categoryName
+	"Answer an Array of each class that includes the name, categoryName, as
+	one of its message categories."
+
+	| aStream cat |
+	aStream _ WriteStream on: (Array new: 10).
+	cat _ categoryName asSymbol.
+	self allClassesDo:
+		[:class |
+		(class organization categories includes: cat)
+			ifTrue: [aStream nextPut: class].
+		(class class organization categories includes: cat)
+			ifTrue: [aStream nextPut: class class]].
+	^aStream contents
+
+	"Smalltalk whichClassesIncludeCategory: #comparison."!

@@ -1,0 +1,87 @@
+Path subclass: #Curve
+  instanceVariableNames: ''
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Graphics-Paths'!
+Curve class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+Curve comment:
+'A subclass of Path that is a conic section determined by
+				three points p1,p2 and p3 that interpolates p1 and p3
+				and is tangent to p1,p2 and p3,p2 at p1 and p3 respectively.'!
+"-----------------------------------"!
+!Curve class methodsFor: 'examples'!
+example
+	"Designate three locations on the screen by clicking any button.  The curve
+	determined by the points will be displayed with a long black form."
+
+	| aCurve aForm |
+	aForm _ Form new extent: 1@30.			"make a long thin Form for display "
+	aForm black.								"turn it black"
+	aCurve _ Curve new.
+	aCurve form: aForm.						"set the form for display"
+				"collect three Points and show them on the dispaly"
+	aCurve firstPoint: Sensor waitButton. Sensor waitNoButton.
+	aForm displayOn: Display at: aCurve firstPoint.
+	aCurve secondPoint: Sensor waitButton. Sensor waitNoButton.
+	aForm displayOn: Display at: aCurve secondPoint.
+	aCurve thirdPoint: Sensor waitButton. Sensor waitNoButton.
+	aForm displayOn: Display at: aCurve thirdPoint.
+
+	aCurve displayOn: Display					"display the Curve"
+
+	"Curve example."!
+"-----------------------------------"!
+!Curve class methodsFor: 'instance creation'!
+new
+	| newSelf |
+	newSelf _ super new: 3.
+	newSelf add: 0@0.
+	newSelf add: 0@0.
+	newSelf add: 0@0.
+	^newSelf!
+"-----------------------------------"!
+!Curve methodsFor: 'displaying'!
+displayOn: aDisplayMedium at: aPoint clippingBox: clipRect rule: anInteger mask: aForm
+	| pa pb k s p1 p2 p3 line |
+	line _ Line new.
+	line form: self form.
+	collectionOfPoints size < 3 ifTrue: [self error: 'Curve must have three points'].
+	p1 _ self firstPoint.
+	p2 _ self secondPoint.
+	p3 _ self thirdPoint.
+	s _ Path new.
+	s add: p1.
+	pa _ p2 - p1.
+	pb _ p3 - p2.
+	k _ 5 max: pa x abs + pa y abs + pb x abs + pb y abs // 20.
+	"k is a guess as to how many line segments to use to approximate
+	the curve."
+	1 to: k do:
+		[:i |
+		s add: pa * i // k + p1 * (k - i) + (pb * (i - 1) // k + p2 * (i - 1)) // (k - 1)].
+	s add: p3.
+	1 to: s size - 1 do:
+		[:i |
+		line beginPoint: (s at: i).
+		line endPoint: (s at: i + 1).
+		line displayOn: aDisplayMedium
+			at: aPoint
+			clippingBox: clipRect
+			rule: anInteger
+			mask: aForm]!
+displayOn: aDisplayMedium transformation: aTransformation clippingBox: clipRect rule: anInteger mask: aForm
+	| transformedPath newCurve |
+	transformedPath _ aTransformation applyTo: self.
+	newCurve _ Curve new.
+	newCurve firstPoint: transformedPath firstPoint.
+	newCurve secondPoint: transformedPath secondPoint.
+	newCurve thirdPoint: transformedPath thirdPoint.
+	newCurve form: self form.
+	newCurve
+		displayOn: aDisplayMedium
+		at: 0 @ 0
+		clippingBox: clipRect
+		rule: anInteger
+		mask: aForm!

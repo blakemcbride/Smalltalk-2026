@@ -1,0 +1,107 @@
+SequenceableCollection subclass: #ArrayedCollection
+  instanceVariableNames: ''
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Collections-Abstract'!
+ArrayedCollection class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+ArrayedCollection comment:
+'I am an abstract collection of elements with integers as external keys.  I re-implement several messages inherited from SequenceableCollection in order to obtain some performance gains.
+		Subclasses are
+	Array		 elements are pointers
+	ByteArray	elements are bytes
+	RunArray	elements are typically runs of the same thing
+	String		elements are characters
+	Text		elements are characters with style
+	WordArray		elements are words'!
+"-----------------------------------"!
+!ArrayedCollection class methodsFor: 'instance creation'!
+new
+	"Answer a new instance of me, with size = 0."
+	^self new: 0!
+new: size withAll: value
+	"Answer a new instance of me, whose every element is equal to the argument,
+	value."
+
+	^(self new: size) atAllPut: value!
+with: anObject
+	"Answer a new instance of me, containing only anObject."
+
+	| newCollection |
+	newCollection _ self new: 1.
+	newCollection at: 1 put: anObject.
+	^newCollection!
+with: firstObject with: secondObject
+	"Answer a new instance of me, containing firstObject and secondObject."
+
+	| newCollection |
+	newCollection _ self new: 2.
+	newCollection at: 1 put: firstObject.
+	newCollection at: 2 put: secondObject.
+	^newCollection!
+with: firstObject with: secondObject with: thirdObject
+	"Answer a new instance of me, containing only these three objects."
+
+	| newCollection |
+	newCollection _ self new: 3.
+	newCollection at: 1 put: firstObject.
+	newCollection at: 2 put: secondObject.
+	newCollection at: 3 put: thirdObject.
+	^newCollection!
+with: firstObject with: secondObject with: thirdObject with: fourthObject
+	"Answer a new instance of me, containing the four arguments as the elements."
+
+	| newCollection |
+	newCollection _ self new: 4.
+	newCollection at: 1 put: firstObject.
+	newCollection at: 2 put: secondObject.
+	newCollection at: 3 put: thirdObject.
+	newCollection at: 4 put: fourthObject.
+	^newCollection!
+"-----------------------------------"!
+!ArrayedCollection methodsFor: 'accessing'!
+size
+	"Answer the number of indexable fields in the receiver. This value is the
+	same as the largest legal subscript. Primitive is specified here to override
+	SequenceableCollection size. Essential. See Object documentation
+	whatIsAPrimitive. "
+
+	<primitive: 62>
+	^self basicSize!
+"-----------------------------------"!
+!ArrayedCollection methodsFor: 'adding'!
+add: newObject
+	self shouldNotImplement!
+"-----------------------------------"!
+!ArrayedCollection methodsFor: 'printing'!
+storeOn: aStream
+	aStream nextPutAll: '(('.
+	aStream nextPutAll: self class name.
+	aStream nextPutAll: ' new: '.
+	aStream store: self size.
+	aStream nextPut: $).
+	(self storeElementsFrom: 1 to: self size on: aStream)
+		ifFalse: [aStream nextPutAll: '; yourself'].
+	aStream nextPut: $)!
+"-----------------------------------"!
+!ArrayedCollection methodsFor: 'private'!
+defaultElement
+	^nil!
+storeElementsFrom: firstIndex to: lastIndex on: aStream
+	| noneYet defaultElement arrayElement |
+	noneYet _ true.
+	defaultElement _ self defaultElement.
+	firstIndex to: lastIndex do:
+		[:index |
+		arrayElement _ self at: index.
+		arrayElement = defaultElement
+			ifFalse:
+				[noneYet
+					ifTrue: [noneYet _ false]
+					ifFalse: [aStream nextPut: $;].
+				aStream nextPutAll: ' at: '.
+				aStream store: index.
+				aStream nextPutAll: ' put: '.
+				aStream store: arrayElement]].
+	^noneYet!

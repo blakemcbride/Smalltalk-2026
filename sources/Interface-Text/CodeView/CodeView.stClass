@@ -1,0 +1,37 @@
+TextView subclass: #CodeView
+  instanceVariableNames: 'initialSelection'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Interface-Text'!
+CodeView class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+CodeView comment:
+'I am a TextView that assumes the text is code.  I include support for initial selection of a part of the text.'!
+"-----------------------------------"!
+!CodeView class methodsFor: 'instance creation'!
+on: anObject aspect: m1 change: m3 menu: m4 initialSelection: sel
+	"Create an instance viewing anObject.  See super method in TextView for full
+	explanation.  initialSelection (if not nil) is a string which will be searched for,
+	and then highlighted if found, whenever the viewed text changes."
+
+	^ (super on: anObject aspect: m1 change: m3 menu: m4) initialSelection: sel!
+"-----------------------------------"!
+!CodeView methodsFor: 'controller access'!
+defaultControllerClass
+	^ CodeController!
+"-----------------------------------"!
+!CodeView methodsFor: 'initialize-release'!
+initialSelection: sel
+	initialSelection _ sel!
+newText: aText
+	super newText: aText.
+	initialSelection==nil ifFalse: [self controller findAndSelect: initialSelection]!
+"-----------------------------------"!
+!CodeView methodsFor: 'updating'!
+update: aSymbol
+	| range |
+	aSymbol == #pc ifTrue:
+		[range _ model pcRange.
+		self controller selectAndScrollFrom: range first to: range last].
+	super update: aSymbol!

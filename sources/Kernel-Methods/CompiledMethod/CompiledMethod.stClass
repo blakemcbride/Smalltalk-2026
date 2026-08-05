@@ -1,0 +1,458 @@
+ByteArray variableByteSubclass: #CompiledMethod
+  instanceVariableNames: ''
+  classVariableNames: 'BytesForHeader BytesPerLiteral LargeFrame SmallFrame SpecialConstants TempNameCache'
+  poolDictionaries: ''
+  category: 'Kernel-Methods'!
+CompiledMethod class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+CompiledMethod comment:
+'I represent a method suitable for interpretation by the virtual machine.  My instances have pointer fields, including a header and some literals, followed by non-pointer fields comprising the byte encoded instructions for the method.  The header encodes the number of arguments, the number of literals, and the amount of temporary space needed (for context allocation).
+
+An extra three bytes are added after the executable code.  These contain an external file address to the source code for the method.
+
+Instance Variables: *byte indexed*'!
+"-----------------------------------"!
+!CompiledMethod class methodsFor: 'class initialization'!
+initialize
+	"Initialize class variables specifying the size of the temporary frame
+	needed to run instances of me, and the size of my instances' header
+	and literals (which may be system-dependent.)"
+
+	SmallFrame _ 12.	"Context range for temps+stack"
+	LargeFrame _ 32.
+	BytesForHeader _ (self newMethod: 0 header: 0) size.  "Just a header, no literals"
+	BytesPerLiteral _ (self newMethod: 0 header: 1) size - BytesForHeader.  "1 literal"
+	"CompiledMethod initialize."!
+"-----------------------------------"!
+!CompiledMethod class methodsFor: 'instance creation'!
+newBytes: numberOfBytes flags: flags nTemps: numberTemps nStack: stackSpace nLits: numberLiterals
+	"Answer an instance of me.  The header is specified by the message
+	arguments.  The remaining parts are not as yet determined."
+
+	| flagBits |
+	flags >= 4 ifTrue: [flagBits _ flags - 8]
+			ifFalse: [flagBits _ flags].
+	"ensure 15-bit integer result"
+	^self
+		newMethod: numberOfBytes + 3 	"+3 to store source location"
+		header: flagBits * 4096 + (numberTemps * 128)
+				+ (numberTemps + stackSpace > SmallFrame
+						ifTrue: [64]
+						ifFalse: [0])
+				+ numberLiterals!
+newMethod: numberOfBytes header: headerWord
+	"Answer an instance of me.  The number of literals (and other
+	information) is specified the headerWord.  The first argument specifies the
+	number of fields for bytecodes in the method.  Fail if either argument is not a
+	SmallInteger, or if numberOfBytes is negative.  Once the header of a method is
+	set by this primitive, it cannot be changed in any way.  Essential.  See Object
+	documentation whatIsAPrimitive. "
+
+	<primitive: 79>
+	^self primitiveFailed!
+toReturnField: field
+	"Answer an instance of me that is a quick return of the instance
+	variable indexed by the argument, field."
+
+	^self
+		newBytes: 0
+		flags: 6
+		nTemps: field
+		nStack: 0
+		nLits: 0!
+toReturnSelf
+	"Answer an instance of me that is a quick return of the instance (^self)."
+
+	^self
+		newBytes: 0
+		flags: 5
+		nTemps: 0
+		nStack: 0
+		nLits: 0!
+"-----------------------------------"!
+!CompiledMethod methodsFor: 'accessing'!
+endPC
+	"Answer the index of the last bytecode."
+
+	(self last between: 120 and: 124) ifTrue: [^self size].
+	^self size - 3!
+flags
+	"Answer the 3-bit number that indicates the number of arguments
+	the receiver takes and whether it is associated with a primitive."
+
+	^(self header bitShift: -12) bitAnd: 7!
+frameSize
+	"Answer the size of temporary frame needed to run the receiver."
+	self needsLargeFrame
+		ifTrue: [^ LargeFrame]
+		ifFalse: [^ SmallFrame]!
+initialPC
+	"Answer the program counter for the receiver's first bytecode."
+
+	^self numLiterals * BytesPerLiteral + BytesForHeader + 1!
+numArgs
+	"Answer the number of arguments the receiver takes."
+
+	| flags |
+	(flags _ self flags) <= 4 ifTrue: [^flags].
+	flags < 7 ifTrue: [^0].
+	^((self literalAt: self numLiterals - 1)
+		bitShift: -8)
+		bitAnd: 31!
+numLiterals
+	"Answer the number of literals used by the receiver."
+
+	self isQuick ifTrue: [^0].
+	^self header bitAnd: 63!
+numStack
+	"Answer the size of the available stack."
+
+	self isQuick
+		ifTrue: [^0] "The method was simply a return of self or instance variable."
+		ifFalse: [^self frameSize - self numTemps - self numArgs]!
+numTemps
+	"Answer the number of temporary variables used by the receiver."
+
+	self isQuick
+		ifTrue: [^0]
+		ifFalse: [^self numTempsField]!
+numTempsField
+	"Answer the 5-bit number that indicates the number of temporary
+	variables the receiver uses."
+
+	^self header // 128 bitAnd: 31!
+primitive
+	"Answer the primitive index associated with the receiver.  Zero indicates
+	that there is either no primitive or just a quick primitive."
+
+	self flags < 7
+		ifTrue: [^0]
+		ifFalse: [^(self literalAt: self numLiterals - 1) bitAnd: 255	]!
+returnField
+	"Answer the index of the instance variable returned by a quick
+	return method."
+
+	self flags ~= 6
+		ifTrue: [self error: 'only meaningful for quick-return']
+		ifFalse: [^self numTempsField]!
+"-----------------------------------"!
+!CompiledMethod methodsFor: 'initialize-release'!
+needsStack: newStackSize encoder: encoder
+	"If newStackSize does not fit in the receiver, then the receiver
+	becomes a method with large stack."
+
+	| newMethod newNumLits extraBytes largeBit |
+	(self numTemps + newStackSize + 1) <= SmallFrame
+		ifTrue: ["no problem" ^ self].
+	(self numTemps + newStackSize + 1) > LargeFrame
+		ifTrue: [^self error: 'Stack (including temps) is too deep'].
+	newMethod _ CompiledMethod
+				newBytes: self endPC - self initialPC + 1
+				flags: self flags
+				nTemps: self numTemps
+				nStack: newStackSize
+				nLits: self numLiterals.
+		1 to: self numLiterals do:
+			[:index | newMethod literalAt: index put: (self literalAt: index)].
+		extraBytes _ 0.
+
+	self initialPC to: self size do:
+		[:index | newMethod at: index+extraBytes put: (self at: index)].
+	self become: newMethod!
+"-----------------------------------"!
+!CompiledMethod methodsFor: 'literals'!
+header
+	"Answer the word containing the information about the form of the
+	receiver and the form of the context needed to run the receiver."
+
+	^self objectAt: 1!
+literalAt: index
+	"Answer the literal indexed by the argument."
+
+	^self objectAt: index + 1!
+literalAt: index put: value
+	"Replace the literal indexed by the first argument with the
+	second argument."
+
+	^self objectAt: index + 1 put: value!
+literals
+	"Answer with an array of the literals referenced by the receiver."
+
+	| literals numberLiterals index |
+	literals _ Array new: (numberLiterals _ self numLiterals).
+	index _ 0.
+	[(index _ index + 1) <= numberLiterals]
+		whileTrue: [literals at: index put: (self objectAt: index + 1)].
+	^literals!
+objectAt: index
+	"Answer with the method header (if index=1) or a literal (if index >1) from the
+	receiver.  Essential.  See Object documentation whatIsAPrimitive."
+
+	<primitive: 68>
+	self primitiveFailed!
+objectAt: index put: value
+	"Store the value argument into a literal in the receiver.   An index of 2
+	corresponds to the first literal.  Fails if the index is less than 2 or greater than
+	the number of literals.  Answer the value as the result.  Normally only the
+	compiler sends this message, because only the compiler stores values in
+	CompiledMethods.  Essential.  See Object documentation whatIsAPrimitive."
+
+	<primitive: 69>
+	self primitiveFailed!
+refersToLiteral: literal
+	"Answer whether the receiver references the argument, literal.
+	The last literal, if used for super, will not cause a true answer"
+
+	| flags header numLiteralsPlus1 index |
+	"numLiteralsPlus1 _ self numLiterals + 1. -- expanded for speed"
+	header _ self objectAt: 1.
+	flags _ 	(header bitShift: -12) bitAnd: 7.
+	(flags = 6 or: [flags = 5]) ifTrue: [^ false].
+	numLiteralsPlus1 _ (header bitAnd: 63) + 1.
+	index _ 1.
+	[(index _ index + 1) <= numLiteralsPlus1]
+		whileTrue:
+		[literal == (self objectAt: index)
+			ifTrue:
+			[index < numLiteralsPlus1 ifTrue: [^ true].
+			"slow check for last literal which might just be super"
+			^ (literal isMemberOf: Association) not
+				or: [(self readsRef: literal) or: [self writesRef: literal]]]].
+	^ false!
+"-----------------------------------"!
+!CompiledMethod methodsFor: 'printing'!
+printOn: aStream
+	"Overrides method inherited from the byte arrayed collection"
+
+	aStream nextPutAll: 'a CompiledMethod'!
+storeOn: aStream
+	| noneYet index |
+	aStream nextPutAll: '(('.
+	aStream nextPutAll: self class name.
+	aStream nextPutAll: ' newMethod: '.
+	aStream store: self size - self initialPC + 1.
+	aStream nextPutAll: ' header: '.
+	aStream store: self header.
+	aStream nextPut: $).
+	noneYet _ self storeElementsFrom: self initialPC to: self endPC on: aStream.
+	1 to: self numLiterals do:
+		[:index |
+		noneYet
+			ifTrue: [noneYet _ false]
+			ifFalse: [aStream nextPut: $;].
+		aStream nextPutAll: ' literalAt: '.
+		aStream store: index.
+		aStream nextPutAll: ' put: '.
+		aStream store: (self literalAt: index)].
+	noneYet ifFalse: [aStream nextPutAll: '; yourself'].
+	aStream nextPut: $)!
+symbolic
+	"Answer a String that contains a list of all the byte codes in a method
+	with a short description of each."
+
+	| aStream |
+	self isQuick
+		ifTrue:
+			[self isReturnSelf ifTrue: [^'Quick return self'].
+			^'Quick return field ' , self returnField printString , ' (0-based)'].
+	aStream _ WriteStream on: (String new: 1000).
+	self primitive > 0
+		ifTrue:
+			[aStream nextPutAll: '<primitive: '.
+			aStream print: self primitive.
+			aStream nextPut: $>.
+			aStream cr].
+	(InstructionPrinter on: self) printInstructionsOn: aStream.
+	^aStream contents!
+who
+	"Answer an Array of the class in which the receiver is defined and
+	the selector to which it corresponds."
+
+	Smalltalk allBehaviorsDo:
+		[:class |
+		class selectors do:
+			[:sel |
+			(class compiledMethodAt: sel) == self
+				ifTrue: [^Array with: class with: sel]]]!
+"-----------------------------------"!
+!CompiledMethod methodsFor: 'scanning'!
+fieldsTouched
+	"Answer a Set of fields touched by this method."
+	| scanner aSet |
+	self isReturnField ifTrue: [^ Set with: self returnField + 1].
+	self isReturnSelf ifTrue: [^ Set new].
+	aSet _ Set new.
+	scanner _ InstructionStream on: self.
+	scanner
+		scanFor:
+			[:x |
+			scanner addFieldIndexTo: aSet.
+			false	"keep scanning"].
+	^aSet!
+messages
+	"Answer a Set of all the message selectors sent by this method."
+
+	| scanner aSet |
+	aSet _ Set new.
+	scanner _ InstructionStream on: self.
+	scanner
+		scanFor:
+			[:x |
+			scanner addSelectorTo: aSet.
+			false	"keep scanning"].
+	^aSet!
+readsField: varIndex
+	"Answer whether the receiver loads the instance variable indexed
+	by the argument."
+
+	self isReturnField ifTrue: [^self returnField + 1 = varIndex].
+	varIndex <= 16 ifTrue: [^self scanFor: varIndex - 1].
+	^self scanLongLoad: varIndex - 1!
+readsRef: literalAssociation
+	"Answer whether the receiver loads the argument."
+
+	| lit |
+	lit _ self literals indexOf: literalAssociation ifAbsent: [^false].
+	lit <= 32 ifTrue: [^self scanFor: 64 + lit - 1].
+	^self scanLongLoad: 192 + lit - 1!
+scanFor: byte
+	"Answer whether the receiver contains the argument as a bytecode."
+
+	| instr |
+	^(InstructionStream on: self) scanFor: [:instr | instr = byte]!
+scanLongLoad: extension
+	"Answer whether the receiver contains a long load whose extension is the
+	argument."
+
+	| scanner |
+	scanner _ InstructionStream on: self.
+	^scanner scanFor: [:instr | instr = 128 and: [scanner followingByte = extension]]!
+scanLongStore: extension
+	"Answer whether the receiver contains a long store whose extension is the
+	argument."
+
+	| scanner |
+	scanner _ InstructionStream on: self.
+	^scanner scanFor:
+		[:instr |
+		(instr between: 129 and: 130) and: [scanner followingByte = extension]]!
+writesField: field
+	"Answer whether the receiver stores into the instance variable indexed
+	by the argument."
+
+	self isQuick ifTrue: [^false].
+	(field <= 8 and: [self scanFor: 96 + field - 1])
+		ifTrue: [^true]
+		ifFalse: [^self scanLongStore: field - 1]!
+writesRef: ref
+	"Answer whether the receiver stores the argument."
+
+	| lit |
+	lit _ self literals indexOf: ref ifAbsent: [^false].
+	^self scanLongStore: 192 + lit - 1!
+"-----------------------------------"!
+!CompiledMethod methodsFor: 'source code management'!
+cacheTempNames: names
+	TempNameCache _ Association key: self value: names!
+fileIndex
+	"Answer 1 if the source code of the receiver is on the *.sources file
+	and 2 if it is on the *.changes file."
+
+	(self last between: 120 and: 124)
+		ifTrue: [self error: 'Somehow a method does not have a file index.'].
+	^self last // 64 + 1!
+getSource
+	"Answer the source code for the receiver.  Answer nil if there are
+	no source files specified in the global SourceFiles."
+
+	| end highByte position source |
+	SourceFiles == nil ifTrue: [^nil].
+	Cursor read
+		showWhile:
+			[end _ self size.
+			highByte _ self at: end.
+			position _ highByte bitAnd: 63.
+			position _ position * 256 + (self at: end - 1).
+			position _ position * 256 + (self at: end - 2).
+			position = 0
+				ifTrue: [source _ nil]
+				ifFalse: [source _
+							(RemoteString newFileNumber:
+								(highByte bitShift: -6) + 1 position: position) string]].
+	^source!
+putSource: sourceStr class: class category: catName inFile: fileIndex
+	"Print an expression that is a message to the argument, class, asking the
+	class to accept the source code, sourceStr, as a method in category, catName.
+	This is part of the format for writing descriptions of methods on files.
+	If no sources are specified, i.e., SourceFile is nil, then do nothing.
+	If the fileIndex is 1, print on *.sources;  if it is 2, print on *.changes."
+
+	| file remoteString |
+	SourceFiles == nil ifTrue: [^self].
+	file _ SourceFiles at: fileIndex.
+	file setToEnd; readWriteShorten.
+	class printCategoryChunk: catName on: file.
+	file cr.
+	remoteString _
+		RemoteString
+			newString: sourceStr
+			onFileNumber: fileIndex
+			toFile: file.
+	file nextChunkPut: ' '; readOnly.
+	self setSourcePosition: remoteString position inFile: fileIndex!
+putSource: sourceStr inFile: fileIndex
+	"Store the source code for the receiver on an external file.
+	If no sources are specified, i.e., SourceFile is nil, then do nothing.
+	If the fileIndex is 1, print on *.sources;  if it is 2, print on *.changes."
+
+	| file remoteString |
+	SourceFiles == nil ifTrue: [^self].
+	file _ SourceFiles at: fileIndex.
+	file setToEnd; readWriteShorten.
+	file cr; nextPut: $!!; nextChunkPut: 'Behavior method'; cr.
+	remoteString _
+		RemoteString
+			newString: sourceStr
+			onFileNumber: fileIndex
+			toFile: file.
+	file nextChunkPut: ' '; readOnly.
+	self setSourcePosition: remoteString position inFile: fileIndex!
+setSourcePosition: position inFile: fileIndex
+	"Store the location of the source code for the receiver in the receiver.  The
+	location consists of which source file (*.sources or *.changes) and the position
+	in that file."
+
+	| index hiByte middleByte lowByte |
+	"set last three bytes to be position in file (1-4)"
+	fileIndex > 4 ifTrue: [^self error: 'invalid file number'].
+	index _ self size - 2.
+	middleByte _ position bitShift: -8.
+	hiByte _ middleByte bitShift: -8.
+	middleByte _ middleByte bitAnd: 255.
+	lowByte _ position bitAnd: 255.
+	hiByte > 62 ifTrue: [Transcript show: 'Source file is getting full!!!!'; cr].
+	self at: index + 2 put: fileIndex - 1 * 64 + hiByte.
+	self at: index + 1 put: middleByte.
+	self at: index put: lowByte!
+setTempNamesIfCached: aBlock
+	TempNameCache == nil ifTrue: [^self].
+	TempNameCache key == self
+		ifTrue: [aBlock value: TempNameCache value]!
+"-----------------------------------"!
+!CompiledMethod methodsFor: 'testing'!
+isQuick
+	"Answer whether the receiver is a quick return (of self or of an
+	instance variable)."
+
+	^self flags between: 5 and: 6!
+isReturnField
+	"Answer whether the receiver is a quick return of an instance variable."
+
+	^self flags = 6!
+isReturnSelf
+	"Answer whether the receiver is a quick return of self."
+
+	^self flags = 5!
+needsLargeFrame
+	^self header allMask: 64!

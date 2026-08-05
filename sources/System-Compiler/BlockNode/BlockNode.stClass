@@ -1,0 +1,186 @@
+ParseNode subclass: #BlockNode
+  instanceVariableNames: 'arguments statements returns nArgsNode size remoteCopyNode sourceRange endPC'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'System-Compiler'!
+BlockNode class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+BlockNode comment:
+'I represent a bracketed block with 0 or more arguments and 1 or more statements.  If I am initialized with no statements, I create one.  I have a flag to tell whether my last statement returns a value from the enclosing method.  My last three fields remember data needed for code generation.
+
+I can emit for value in the usual way, in which case I create a literal method (actually a context remotely copied) to be evaluated by sending it value: at run time.  Or I can emit code to be evaluated in line; this only happens at the top level of a method and in conditionals and while-loops, none of which have arguments.'!
+"-----------------------------------"!
+!BlockNode methodsFor: 'accessing'!
+arguments: argNodes
+	"decompile"
+
+	arguments _ argNodes!
+numberOfArguments
+	^arguments size!
+returnLast
+	self returns
+		ifFalse:
+			[returns _ true.
+			statements at: statements size put: statements last asReturnNode]!
+returnSelfIfNoOther
+	self returns
+		ifFalse:
+			[statements last == NodeSelf ifFalse: [statements add: NodeSelf].
+			self returnLast]!
+"-----------------------------------"!
+!BlockNode methodsFor: 'code generation'!
+code
+	^statements first code!
+emitExceptLast: stack on: aStream
+	1 to: statements size - 1 do:
+		[:i | (statements at: i) emitForEffect: stack on: aStream]!
+emitForEvaluatedEffect: stack on: aStream
+	self returns
+		ifTrue:
+			[self emitForEvaluatedValue: stack on: aStream.
+			stack pop: 1]
+		ifFalse:
+			[self emitExceptLast: stack on: aStream.
+			statements last emitForEffect: stack on: aStream]!
+emitForEvaluatedValue: stack on: aStream
+	self emitExceptLast: stack on: aStream.
+	statements last emitForValue: stack on: aStream!
+emitForValue: stack on: aStream
+	| arg blockStack |
+	aStream nextPut: LdThisContext.
+	stack push: 1.
+	nArgsNode emitForValue: stack on: aStream.
+	remoteCopyNode emit: stack args: 1 on: aStream.
+	"jmp-around must be 2 bytes"
+	self emitLongJump: size on: aStream.
+
+	"Block gets its own stack in blockContext"
+	blockStack _ ParseStack new init.
+	blockStack push: arguments size.
+	arguments reverseDo: [:arg | arg emitStorePop: blockStack on: aStream].
+	self emitForEvaluatedValue: blockStack on: aStream.
+	endPC _ aStream position+1.
+	self returns ifFalse: [aStream nextPut: EndRemote].
+	blockStack pop: 1.
+
+	stack max: blockStack size!
+pc
+	^ endPC!
+sizeExceptLast: encoder
+	| totalSize |
+	totalSize _ 0.
+	1 to: statements size - 1 do:
+		[:i | totalSize _ totalSize + ((statements at: i) sizeForEffect: encoder)].
+	^totalSize!
+sizeForEvaluatedEffect: encoder
+	self returns ifTrue: [^self sizeForEvaluatedValue: encoder].
+	^(self sizeExceptLast: encoder)
+		+ (statements last sizeForEffect: encoder)!
+sizeForEvaluatedValue: encoder
+	^(self sizeExceptLast: encoder)
+		+ (statements last sizeForValue: encoder)!
+sizeForValue: encoder
+	nArgsNode _ encoder encodeLiteral: arguments size.
+	remoteCopyNode _ encoder encodeSelector: #blockCopy:.
+	size _ self sizeForEvaluatedValue: encoder.
+	self returns
+		ifFalse: [size _ size+1.  "end-block"
+				encoder noteSourceRange: sourceRange forNode: self].
+	arguments do: [:arg | size _ size + (arg sizeForStorePop: encoder)].
+	^1 + (nArgsNode sizeForValue: encoder)
+		+ (remoteCopyNode size: encoder) + 2 + size!
+"-----------------------------------"!
+!BlockNode methodsFor: 'initialize-release'!
+arguments: argNodes statements: statementsCollection returns: returnBool from: encoder
+	sourceEnd: sourceEnd
+	"compile"
+	sourceRange  _ sourceEnd to: sourceEnd.
+	arguments _ argNodes.
+	statements _ statementsCollection size > 0
+				ifTrue: [statementsCollection]
+				ifFalse: [argNodes size > 0
+						ifTrue: [statementsCollection copyWith: arguments last]
+						ifFalse: [Array with: NodeNil]].
+	returns _ returnBool!
+default
+	"[] argument of missing kwyword in ifTrue: or ifFalse:"
+
+	statements _ Array with: NodeNil.
+	arguments _ Array new: 0.
+	returns _ false!
+statements: statementsCollection returns: returnBool
+	"decompile"
+
+	| returnLast |
+	returnLast _ returnBool.
+	returns _ false.
+	statements _
+		(statementsCollection size > 1
+			and: [(statementsCollection at: statementsCollection size - 1)
+					isReturningIf])
+				ifTrue:
+					[returnLast _ false.
+					statementsCollection copyFrom: 1 to: statementsCollection size - 1]
+				ifFalse: [statementsCollection size = 0
+						ifTrue: [Array with: NodeNil]
+						ifFalse: [statementsCollection]].
+	arguments _ Array new: 0.
+	returnLast ifTrue: [self returnLast]!
+"-----------------------------------"!
+!BlockNode methodsFor: 'printing'!
+printArgumentsOn: aStream indent: level
+	arguments size = 0
+		ifFalse:
+			[arguments do:
+				[:arg |
+				aStream nextPut: $:.
+				aStream nextPutAll: arg key.
+				aStream space].
+			aStream nextPutAll: '| '.
+			"If >0 args and >1 statement, put all statements on separate lines"
+			statements size > 1 ifTrue: [aStream crtab: level]]!
+printOn: aStream indent: level
+	statements size <= 1 ifFalse: [aStream crtab: level].
+	aStream nextPut: $[.
+	self printArgumentsOn: aStream indent: level.
+	self printStatementsOn: aStream indent: level.
+	aStream nextPut: $]!
+printStatementsOn: aStream indent: level
+	| len shown thisStatement |
+	comment == nil
+		ifFalse:
+			[self printCommentOn: aStream indent: level.
+			aStream crtab: level].
+	len _ shown _ statements size.
+	(level = 1 and: [statements last isReturnSelf])
+		ifTrue: [shown _ 1 max: shown - 1]
+		ifFalse: [(len = 1 and: [((statements at: 1) == NodeNil) & (arguments size = 0)])
+					ifTrue: [shown _ shown - 1]].
+	1 to: shown do:
+		[:i |
+		thisStatement _ statements at: i.
+		thisStatement == NodeSelf
+			ifFalse:
+				[thisStatement printOn: aStream indent: level.
+				i < shown ifTrue: [aStream nextPut: $.; crtab: level].
+				thisStatement comment size > 0
+					ifTrue:
+						[i = shown ifTrue: [aStream crtab: level].
+						thisStatement printCommentOn: aStream indent: level.
+						i < shown ifTrue: [aStream crtab: level]]]]!
+"-----------------------------------"!
+!BlockNode methodsFor: 'testing'!
+canBeSpecialArgument
+	"can I be an argument of (e.g.) ifTrue:?"
+
+	^arguments size = 0!
+isComplex
+	^statements size > 1!
+isJust: node
+	returns ifTrue: [^false].
+	^statements size = 1 and: [statements first == node]!
+isQuick
+	^statements size = 1 and: [statements first isVariableReference]!
+returns
+	^returns or: [statements last isReturningIf]!

@@ -1,0 +1,55 @@
+FilePage subclass: #AltoFilePage
+  instanceVariableNames: 'address'
+  classVariableNames: ''
+  poolDictionaries: 'AltoFilePool'
+  category: 'Files-Xerox Alto'!
+AltoFilePage class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+AltoFilePage comment:
+'A FilePage from an AltoFile consists of an address (2 words), a label (8 words) and data (512 bytes).  The instance variable "page" is a ByteArray which contains first the label and then the data.'!
+"-----------------------------------"!
+!AltoFilePage methodsFor: 'accessing'!
+size
+	^self headerWordAt: Numch!
+"-----------------------------------"!
+!AltoFilePage methodsFor: 'file status'!
+reinitialize
+	page == nil
+		ifTrue: [super reinitialize]
+		ifFalse: ["nextp, backp, lnused, numch, pn"
+				page atAll: (1 to: 10) put: 0]!
+"-----------------------------------"!
+!AltoFilePage methodsFor: 'file/page/directory implementation'!
+size: size
+	self headerWordAt: Numch put: size!
+"-----------------------------------"!
+!AltoFilePage methodsFor: 'page accessing'!
+address
+	^address!
+address: addressNumber
+	address _ addressNumber!
+pageNumber
+	^self headerWordAt: Pagen!
+pageNumber: pn
+	self headerWordAt: Pagen put: pn!
+serialNumber
+	^self label copyFrom: Sn1 * 2 - 1 to: Sn2 * 2!
+serialNumber: sn
+	self headerWordAt: Sn1 put: (sn wordAt: 1).
+	self headerWordAt: Sn2 put: (sn wordAt: 2).
+	self headerWordAt: Vn put: 1  "fixed version"!
+"-----------------------------------"!
+!AltoFilePage methodsFor: 'page testing'!
+headerSize
+	^16!
+lastPage
+	^(self headerWordAt: Nextp) = 0!
+"-----------------------------------"!
+!AltoFilePage methodsFor: 'private'!
+freePage
+	self headerWordAt: Sn1 put: -1.
+	self headerWordAt: Sn2 put: -1.
+	self headerWordAt: Vn put: -1!
+label
+	^page!

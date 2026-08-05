@@ -1,0 +1,471 @@
+Scanner subclass: #Parser
+  instanceVariableNames: 'here hereType hereMark prevToken prevMark encoder requestor parseNode failBlock lastTempMark correctionDelta'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'System-Compiler'!
+Parser class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+Parser comment:
+'I parse Smalltalk syntax and create a parse tree.  I look one token ahead.
+Instance Variables:
+	here		<Object> the current token
+	hereType	<Symbol> the "type" of the current token (see initialize)
+	hereMark	<Integer> position in source stream (mark) where this token began
+	prevToken	<Integer> size in chars of the previous token parsed
+	prevMark	<Integer> mark of previous token
+	encoder		<Encoder> which uses tables to decode tokens
+	requestor	object from which parsing was invoked.  If not nil, this object
+				will be sent -notify: prior to evaluating the failBlock
+	parseNode	<ParseNode> result of current (recursive descent) parse
+	failBlock	<BlockContext> to be evaluated in case of parse errors
+	lastTempMark <Integer> mark of last temp; points to vert bar,
+				or last char of pattern if no temps declared
+	correctionDelta	<Integer> offset of corrected code relative to source stream
+				owing to interactive corrections so far'!
+"-----------------------------------"!
+!Parser methodsFor: 'code view interaction'!
+pasteTemp: name
+	| editor |
+	editor _ self editor.
+	(lastTempMark > 0 and: [(editor text at: lastTempMark) = $|])
+		ifTrue:		"Paste in before vertical bar"
+			[editor selectAt: lastTempMark.
+			self replaceEditSelectionWith: name , ' '.
+			lastTempMark _ lastTempMark + name size + 1]
+		ifFalse:		"No temp declarations yet; have to insert whole line"
+			[editor selectAt: lastTempMark+1.
+			self replaceEditSelectionWith: (String with: Character cr) , '	| ' , name , ' | '.
+			lastTempMark _ lastTempMark + name size + 6]!
+replaceEditSelectionWith: aString
+	| editor |
+	editor _ self editor.
+	correctionDelta _ correctionDelta + aString size - editor selection size.
+	editor deselect; replaceSelectionWith: aString asText!
+selectVariable: name
+	self editor selectFrom: self bareEndOfLastToken - name size + 1
+					to: self bareEndOfLastToken!
+"-----------------------------------"!
+!Parser methodsFor: 'comparing'!
+match: type
+	"Answer with true if next tokens type matches"
+
+	hereType == type
+		ifTrue:
+			[self advance.
+			^true].
+	^false!
+matchToken: thing
+	"matches the token, not its type"
+
+	here = thing ifTrue: [self advance. ^true].
+	^false!
+"-----------------------------------"!
+!Parser methodsFor: 'error handling'!
+abort
+	| exitBlock |
+	encoder == nil
+		ifFalse: [encoder release. encoder _ nil]. "break cycle"
+	exitBlock _ failBlock.
+	failBlock _ nil.
+	^exitBlock value!
+editor
+	^ requestor editor!
+expected: aString
+	"Notify a problem at token 'here'"
+	tokenType == #doIt ifTrue: [hereMark _ hereMark + 1].
+	hereType == #doIt ifTrue: [hereMark _ hereMark + 1].
+	^ self notify: aString , ' expected' at: hereMark!
+notify: aString
+	"Notify problem at token before 'here'"
+	^self notify: aString at: prevMark!
+notify: string at: location
+	requestor == nil ifFalse: [requestor notify: string , ' ->' at: location + correctionDelta].
+	self abort!
+offEnd: aString
+	" notify a problem beyond 'here' (in lookAhead token).  Don't be offEnded!!"
+	^ self notify: aString at: mark!
+"-----------------------------------"!
+!Parser methodsFor: 'expression types'!
+argumentName
+	hereType == #word
+		ifFalse: [^self expected: 'Argument name'].
+	^self advance!
+assignment
+	"variable '_' expression => AssignmentNode"
+
+	| varName var |
+	varName _ self advance.
+	(encoder cantStoreInto: varName)
+		ifTrue: [^self notify: 'Cannot store into'].
+	var _ encoder encodeVariable: varName.
+	self advance.
+	self expression ifFalse: [^self expected: 'Expression'].
+	var isArg ifTrue: [^self notify: 'Cannot store into argument'].
+	parseNode _ AssignmentNode new
+				variable: var
+				value: parseNode
+				from: encoder!
+blockExpression
+	"  [ {:var} ( | statements) ] => BlockNode"
+
+	| argNodes |
+	argNodes _ OrderedCollection new.
+	[self match: #colon
+	"gather any arguments"]
+		whileTrue:
+			[argNodes addLast: (encoder autoBind: self argumentName)].
+	(argNodes size > 0 & (hereType ~~ #rightBracket) and: [(self match: #verticalBar) not])
+		ifTrue: [^self expected: 'Vertical bar'].
+	self statements: argNodes innerBlock: true.
+	(self match: #rightBracket)
+		ifFalse: [^self expected: 'Period or right bracket']!
+cascade
+	" {; message} => CascadeNode"
+
+	| rcvr msgs |
+	parseNode canCascade
+		ifFalse: [^self expected: 'Cascading not'].
+	rcvr _ parseNode cascadeReceiver.
+	msgs _ OrderedCollection with: parseNode.
+	[self match: #semicolon]
+		whileTrue:
+			[parseNode _ rcvr.
+			(self messagePart: 3 repeat: false)
+				ifFalse: [^self expected: 'Cascade'].
+			parseNode canCascade
+				ifFalse: [^self expected: '<- No special messages'].
+			parseNode cascadeReceiver.
+			msgs addLast: parseNode].
+	parseNode _ CascadeNode new receiver: rcvr messages: msgs!
+expression
+	(hereType == #word and: [tokenType == #leftArrow])
+		ifTrue: [self assignment.  ^true].
+	self primaryExpression ifFalse: [^false].
+	(self messagePart: 3 repeat: true)
+		ifTrue:
+			[hereType == #semicolon ifTrue: [self cascade]].
+	^true!
+messagePart: level repeat: repeat
+	| start receiver selector args precedence |
+
+	[receiver _ parseNode.
+	(hereType == #keyword and: [level >= 3])
+		ifTrue:
+			[start _ self startOfNextToken.
+			selector _ WriteStream on: (String new: 32).
+			args _ OrderedCollection new.
+			[hereType == #keyword]
+				whileTrue:
+					[selector nextPutAll: self advance.
+					self primaryExpression ifFalse: [^self expected: 'Argument'].
+					self messagePart: 2 repeat: true.
+					args addLast: parseNode].
+			selector _ self makeNewSymbol: selector contents startingAt: start.
+			precedence _ 3]
+		ifFalse: [((hereType == #binary or: [hereType == #verticalBar])
+				and: [level >= 2])
+				ifTrue:
+					[start _ self startOfNextToken.
+					selector _ self advance asSymbol.
+					self primaryExpression ifFalse: [^self expected: 'Argument'].
+					self messagePart: 1 repeat: true.
+					args _ Array with: parseNode.
+					precedence _ 2]
+				ifFalse: [hereType == #word
+						ifTrue:
+							[start _ self startOfNextToken.
+							selector _ self makeNewSymbol: self advance startingAt: start.
+							args _ #().
+							precedence _ 1]
+						ifFalse: [^args notNil]]].
+	parseNode _ MessageNode new
+				receiver: receiver
+				selector: selector
+				arguments: args
+				precedence: precedence
+				from: encoder
+				sourceRange: (start to: self endOfLastToken).
+	repeat]
+		whileTrue: [].
+	^true!
+method: doit context: ctxt
+	"pattern [ | temporaries ] block => MethodNode"
+
+	| sap blk prim temps messageComment methodNode |
+	sap _ self pattern: doit inContext: ctxt.
+	"sap={selector, arguments, precedence}"
+	(sap at: 2) do: [:argNode | argNode isArg: true].
+	temps _ self temporaries.
+	messageComment _ currentComment.
+	currentComment _ nil.
+	prim _ doit ifTrue: [0] ifFalse: [self primitive].
+	self statements: #() innerBlock: doit.
+	blk _ parseNode.
+	doit
+		ifTrue: [blk returnLast]
+		ifFalse: [blk returnSelfIfNoOther].
+	hereType == #doIt ifFalse: [^self expected: 'Nothing more'].
+	methodNode _ MethodNode new comment: messageComment.
+	^methodNode
+		selector: (sap at: 1)
+		arguments: (sap at: 2)
+		precedence: (sap at: 3)
+		temporaries: temps
+		block: blk
+		encoder: encoder
+		primitive: prim!
+pattern: fromDoit inContext: ctxt
+	"unarySelector | binarySelector arg | keyword arg {keyword arg} =>
+	{selector, arguments, precedence}"
+
+	| args selector |
+	fromDoit
+		ifTrue:
+			[ctxt == nil
+				ifTrue: [^Array with: #DoIt with: #() with: 1]
+				ifFalse: [^Array
+							with: #DoItIn:
+							with: (Array
+									with: (encoder encodeVariable: 'homeContext'))
+									with: 3]].
+	hereType == #word
+		ifTrue: [^Array with: self advance asSymbol with: #() with: 1].
+	(hereType == #binary or: [hereType == #verticalBar])
+		ifTrue:
+			[selector _ self advance asSymbol.
+			args _ Array with: (encoder bindTemp: self argumentName).
+			^Array with: selector with: args with: 2].
+	hereType == #keyword
+		ifTrue:
+			[selector _ WriteStream on: (String new: 32).
+			args _ OrderedCollection new.
+			[hereType == #keyword]
+				whileTrue:
+					[selector nextPutAll: self advance.
+					args addLast: (encoder bindTemp: self argumentName)].
+			^Array with: selector contents asSymbol with: args with: 3].
+	^self expected: 'Message pattern'!
+primaryExpression
+	hereType == #word
+		ifTrue:
+			[parseNode _ encoder encodeVariable: self advance.
+			^true].
+	hereType == #leftBracket
+		ifTrue:
+			[self advance.
+			self blockExpression.
+			^true].
+	hereType == #leftParenthesis
+		ifTrue:
+			[self advance.
+			self expression ifFalse: [^self expected: 'expression'].
+			(self match: #rightParenthesis)
+				ifFalse: [^self expected: 'right parenthesis'].
+			^true].
+	(hereType == #string or: [hereType == #number or: [hereType == #literal]])
+		ifTrue:
+			[parseNode _ encoder encodeLiteral: self advance.
+			^true].
+	(here == #- and: [tokenType == #number])
+		ifTrue:
+			[self advance.
+			parseNode _ encoder encodeLiteral: self advance negated.
+			^true].
+	^false!
+primitive
+	| n |
+	(self matchToken: #<)
+		ifFalse: [^0].
+	(self matchToken: 'primitive:')
+		ifFalse: [^self expected: 'primitive:'].
+	n _ here.
+	((self match: #number)
+		and: [n isKindOf: Integer])
+		ifFalse: [^self expected: 'Integer'].
+	(self matchToken: #>)
+		ifFalse: [^self expected: '>'].
+	^n!
+statements: argNodes innerBlock: inner
+	| stmts returns start more blockComment |
+	stmts _ OrderedCollection new.
+	"give initial comment to block, since others trail statements"
+	blockComment _ currentComment.
+	currentComment _ nil.
+	returns _ false.
+	more _ hereType ~~ #rightBracket.
+	[more]
+		whileTrue:
+			[start _ self startOfNextToken.
+			(returns _ self match: #upArrow)
+				ifTrue:
+					[self expression
+						ifFalse: [^self expected: 'Expression to return'].
+					self addComment.
+					stmts addLast:
+						(ReturnNode new
+							expr: parseNode
+							encoder: encoder
+							sourceRange: (start to: self endOfLastToken))]
+				ifFalse:
+					[self expression
+						ifTrue:
+							[self addComment.
+							stmts addLast: parseNode]
+						ifFalse:
+							[self addComment.
+							stmts size = 0
+								ifTrue:
+									[stmts addLast:
+										(encoder encodeVariable:
+											(inner ifTrue: ['nil'] ifFalse: ['self']))]]].
+			returns
+				ifTrue:
+					[(hereType == #rightBracket or: [hereType == #doIt])
+						ifFalse: [^self expected: 'End of block']].
+			more _ returns not and: [self match: #period]].
+	parseNode _ BlockNode new
+					arguments: argNodes
+					statements: stmts
+					returns: returns
+					from: encoder
+					sourceEnd: self endOfLastToken+1.
+	parseNode comment: blockComment.
+	^true!
+temporaries
+	"[ '|' (variable) ]  (variable, ..., variable)* "
+
+	| vars |
+	(self match: #verticalBar)
+		ifFalse: [lastTempMark _ self bareEndOfLastToken. ^#()].	"no temps"
+	(self match: #verticalBar)
+		ifTrue: [lastTempMark _ self endOfLastToken. ^#()].	"empty temps"
+	vars _ OrderedCollection new.
+	[hereType == #word]
+		whileTrue: [vars addLast: (encoder bindTemp: self advance)].
+	(self match: #verticalBar)
+		ifTrue: [lastTempMark _ self endOfLastToken. ^vars].
+	^self expected: 'Vertical bar'!
+"-----------------------------------"!
+!Parser methodsFor: 'private'!
+addComment
+	parseNode ~~ nil
+		ifTrue:
+			[parseNode comment: currentComment.
+			currentComment _ nil]!
+init: sourceStream notifying: req failBlock: aBlock
+	requestor _ req.
+	failBlock _ aBlock.
+	correctionDelta _ 0.
+	super scan: sourceStream.
+	prevMark _ hereMark _ mark.
+	self advance!
+initPattern: aString notifying: req return: aBlock
+	| result |
+	self
+		init: (ReadStream on: aString asString)
+		notifying: req
+		failBlock: [^nil].
+	encoder _ self.
+	result _ aBlock value: (self pattern: false inContext: nil).
+	encoder _ failBlock _ nil.  "break cycles"
+	^result!
+makeNewSymbol: aString startingAt: start
+	| editor index menu sym oldText newText oldStream oldKey |
+	Symbol hasInterned: aString ifTrue: [:symbol | ^ symbol].
+	(editor _ self editor) isNil ifTrue: [^ aString asSymbol].
+	editor selectFrom: start to: self endOfLastToken.
+	Cursor normal show.
+	index _ (menu _ ActionMenu
+			labels: 'proceed as is\correct it\abort' withCRs
+			selectors: #(proceed correct abort))
+				startUp: #anyButton
+				withHeading: ' ' , (aString contractTo: 20) , ' is a new message '.
+	index = 0 ifTrue: [^ self notify: ''].
+	(menu selectorAt: index) == #proceed ifTrue: [^ aString asSymbol].
+	(menu selectorAt: index) == #correct ifTrue:
+		[sym _ Symbol correctMessage: aString.
+		sym == false ifTrue: [self notify: 'Couldn''t correct'. self abort].
+		sym == nil ifTrue: [self abort].
+		oldText _ editor selection.
+		sym isKeyword
+			ifTrue:
+				[newText _ oldText.
+				oldStream _ ReadStream on: aString.
+				sym keywords do:
+					[:newKey | oldKey _ (oldStream upTo: $:) , ':'.
+					oldKey = newKey ifFalse:
+						[newText _ newText copyReplaceAll: oldKey asText with: newKey asText]]]
+			ifFalse:
+				[newText _ oldText copyReplaceAll: aString asText with: sym asText].
+		self replaceEditSelectionWith: newText.
+		^ sym].
+	self abort!
+"-----------------------------------"!
+!Parser methodsFor: 'public access'!
+parse: sourceStream class: class noPattern: noPattern context: ctxt
+	notifying: req ifFail: aBlock
+	 "Answer with a parse tree.  noPattern is true for doIts (Compiler evaluate)"
+
+	 | meth |
+	self init: sourceStream notifying: req failBlock: [^aBlock value].
+	encoder _ Encoder new init: class context: ctxt notifying: self.
+	failBlock_ aBlock.
+	meth _ self method: noPattern context: ctxt.
+	encoder _ failBlock _ requestor _ parseNode _ nil. "break cycles & mitigate refct overflow"
+	^meth!
+parseArgsAndTemps: aString notifying: req
+	"(for debugger) parse the string and answer with a two-element Array containing Arrays of Strings (the arg and temp names)"
+
+	aString == nil ifTrue: [^#()].
+	^self
+		initPattern: aString
+		notifying: req
+		return: [:pattern | (pattern at: 2) , self temporaries]!
+parseMethodComment: aString setPattern: aBlock
+	"Answer with the method comment for this string"
+
+	self
+		initPattern: aString
+		notifying: nil
+		return: aBlock.
+	currentComment == nil
+		ifTrue: [^OrderedCollection new]
+		ifFalse: [^currentComment]!
+parseSelector: aString
+	"Answer with the selector for this method string"
+
+	^self
+		initPattern: aString
+		notifying: nil
+		return: [:pattern | pattern at: 1]!
+"-----------------------------------"!
+!Parser methodsFor: 'scanning'!
+advance
+	| this |
+	prevMark _ hereMark.
+	prevToken _ "Now means prev size"
+		(hereType == #number) | (hereType == #string)
+			ifTrue: [mark - prevMark]
+			ifFalse: [here size].
+	this _ here.
+	here _ token.
+	hereType _ tokenType.
+	hereMark _ mark.
+	self scanToken.
+	^this!
+bareEndOfLastToken
+	^ prevMark + prevToken - 1 + correctionDelta!
+endOfLastToken
+	hereType == #doIt ifTrue: [^ prevMark + prevToken + 1 + correctionDelta].
+	tokenType == #doIt ifTrue: [^ prevMark + prevToken + correctionDelta].
+	^ prevMark + prevToken - 1 + correctionDelta!
+startOfNextToken
+	"return starting position in source of next token"
+
+	hereType == #doIt ifTrue: [^source position + 1 + correctionDelta].
+	^hereMark + correctionDelta!
+"-----------------------------------"!
+!Parser methodsFor: 'temporaries'!
+bindTemp: name
+	^name!

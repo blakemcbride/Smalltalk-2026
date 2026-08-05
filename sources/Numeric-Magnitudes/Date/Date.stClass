@@ -1,0 +1,336 @@
+Magnitude subclass: #Date
+  instanceVariableNames: 'day year'
+  classVariableNames: 'DaysInMonth FirstDayOfMonth MonthNames SecondsInDay WeekDayNames'
+  poolDictionaries: ''
+  category: 'Numeric-Magnitudes'!
+Date class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+Date comment:
+'Implements dates.'!
+"-----------------------------------"!
+!Date class methodsFor: 'class initialization'!
+initialize
+	"Initialize class variables representing the names of the months and days and
+	the number of seconds, days in each month, and first day of each month."
+
+	MonthNames _
+		#(January February March April May June
+			July August September October November December ).
+	SecondsInDay _ 24 * 60 * 60.
+	DaysInMonth _ #(31 28 31 30 31 30 31 31 30 31 30 31 ).
+	FirstDayOfMonth _ #(1 32 60 91 121 152 182 213 244 274 305 335 ).
+	WeekDayNames _
+		#(Monday Tuesday Wednesday Thursday Friday Saturday Sunday )
+
+	"Date initialize."!
+"-----------------------------------"!
+!Date class methodsFor: 'general inquiries'!
+dateAndTimeNow
+	"Answer an array with first element Date today and second element Time now."
+
+	^Time dateAndTimeNow!
+dayOfWeek: dayName
+	"Answer the index in a week, 1 - 7, of the day named dayName.  Create an
+	error if no such day exists."
+
+	1 to: 7 do: [:index | (WeekDayNames at: index)
+			= dayName ifTrue: [^index \\ 7]].
+	self error: dayName asString , ' is not a day of the week'!
+daysInMonth: monthName forYear: yearInteger
+	"Answer the number of days in the month named monthName in the
+	year yearInteger."
+
+	^(self newDay: 1
+		  month: monthName
+		  year: yearInteger) daysInMonth!
+daysInYear: yearInteger
+	"Answer the number of days in the year, yearInteger."
+
+	^365 + (self leapYear: yearInteger)!
+indexOfMonth: monthName
+	"Answer the index, 1 - 12, of the month monthName.  Create an
+	error if no such month exists."
+
+	1 to: 12 do:
+		[ :index |
+			(monthName , '*' match: (MonthNames at: index))
+						ifTrue: [^index]].
+	self error: monthName , ' is not a recognized month name'!
+leapYear: yearInteger
+	"Answer 1 if the year yearInteger is a leap year;  answer 0 if it is not."
+
+	(yearInteger \\ 4 ~= 0 or: [yearInteger \\ 100 = 0 and: [yearInteger \\ 400 ~= 0]])
+		ifTrue: [^0]
+		ifFalse: [^1]!
+nameOfDay: dayIndex
+	"Answer a symbol representing the name of the day indexed by dayIndex, 1 - 7."
+
+	^WeekDayNames at: dayIndex!
+nameOfMonth: monthIndex
+	"Answer a symbol representing the name of the month indexed by monthIndex,
+	1 - 12."
+
+	^MonthNames at: monthIndex!
+"-----------------------------------"!
+!Date class methodsFor: 'instance creation'!
+fromDays: dayCount
+	"Answer an instance of me that is dayCount days after Jan 1 1901."
+	^self
+		newDay: 1 + (dayCount truncated rem: 1461)
+							"There are 1461 days in a 4-year cycle.
+							 2000 is a leap year, so no extra correction is necessary. "
+		year: 1901 + ((dayCount truncated quo: 1461) * 4)!
+newDay: day month: monthName year: year
+	"Answer an instance of me which is the day'th day of the month named
+	monthName in the year'th year. The year may be specified as the actual
+	number of years since the beginning of the Roman calendar or the
+	number of years since the beginning of the century."
+
+	| monthIndex daysInMonth firstDayOfMonth |
+	year < 100 ifTrue: [^self
+			newDay: day
+			month: monthName
+			year: 1900 + year].
+	monthIndex _ self indexOfMonth: monthName.
+	monthIndex = 2
+		ifTrue: [daysInMonth _ (DaysInMonth at: monthIndex)
+						+ (self leapYear: year)]
+		ifFalse: [daysInMonth _ DaysInMonth at: monthIndex].
+	monthIndex > 2
+		ifTrue: [firstDayOfMonth _ (FirstDayOfMonth at: monthIndex)
+						+ (self leapYear: year)]
+		ifFalse: [firstDayOfMonth _ FirstDayOfMonth at: monthIndex].
+	(day < 1 or: [day > daysInMonth])
+		ifTrue: [self error: 'illegal day in month']
+		ifFalse: [^self new day: day - 1 + firstDayOfMonth year: year]!
+newDay: dayCount year: referenceYear
+	"Answer with a Date which is dayCount days after the beginning of the
+	year referenceYear."
+
+	| day year daysInYear |
+	day _ dayCount.
+	year _ referenceYear.
+	[day > (daysInYear _ self daysInYear: year)]
+		whileTrue:
+			[year _ year + 1.
+			 day _ day - daysInYear].
+	[day <= 0]
+		whileTrue:
+			[year _ year - 1.
+			 day _ day + (self daysInYear: year)].
+	^self new day: day year: year!
+readFrom: aStream
+	"Read a Date from the stream in any of the forms:
+		<day> <monthName> <year>		(5 April 1982; 5-APR-82)
+		<monthName> <day> <year>		(April 5, 1982)
+		<monthNumber> <day> <year>	(4/5/82)"
+
+	| day month |
+	aStream peek isDigit ifTrue: [day _ Integer readFrom: aStream].
+	[aStream peek isAlphaNumeric] whileFalse: [aStream skip: 1].
+	aStream peek isLetter
+		ifTrue:		"number/name... or name..."
+			[month _ WriteStream on: (String new: 10).
+			[aStream peek isLetter] whileTrue: [month nextPut: aStream next].
+			month _ month contents.
+			day isNil ifTrue:		"name/number..."
+				[[aStream peek isAlphaNumeric] whileFalse: [aStream skip: 1].
+				day _ Integer readFrom: aStream]]
+		ifFalse:		"number/number..."
+			[month _ Date nameOfMonth: day.
+			day _ Integer readFrom: aStream].
+	[aStream peek isAlphaNumeric] whileFalse: [aStream skip: 1].
+	^self newDay: day month: month year: (Integer readFrom: aStream)
+
+	"Date readFrom: (ReadStream on: '5APR82')"!
+today
+	"Answer with the Date representing the day and year right now."
+
+	^self dateAndTimeNow at: 1!
+"-----------------------------------"!
+!Date methodsFor: 'accessing'!
+day
+	"Answer the day of the year represented by the receiver."
+
+	^day!
+leap
+	"Answer whether the receiver's year is a leap year."
+
+	^Date leapYear: year!
+monthIndex
+	"Answer the index of the month in which the receiver falls."
+
+	| leap firstDay |
+	leap _ self leap.
+	12 to: 1 by: -1 do:
+		[ :monthIndex |
+			firstDay _ (FirstDayOfMonth at: monthIndex)
+							+ (monthIndex > 2 ifTrue: [leap] ifFalse: [0]).
+			firstDay<= day
+				ifTrue: [^monthIndex]].
+	self error: 'illegal month'!
+monthName
+	"Answer the name of the month in which the receiver falls."
+
+	^MonthNames at: self monthIndex!
+weekday
+	"Answer the name of the day of the week on which the receiver falls."
+
+	^WeekDayNames at: self weekdayIndex!
+year
+	"Answer the year in which the receiver falls."
+
+	^year!
+"-----------------------------------"!
+!Date methodsFor: 'arithmetic'!
+addDays: dayCount
+	"Answer a new Date that is dayCount more days than the receiver."
+
+	^Date newDay: day + dayCount
+		  year: year!
+subtractDate: aDate
+	"Answer the number of days between the receiver and aDate."
+
+	year = aDate year
+		ifTrue: [^day - aDate day]
+		ifFalse: [^year - 1 // 4 - (aDate year // 4) + day
+						+ aDate daysLeftInYear + (year - 1 - aDate year * 365)]!
+subtractDays: dayCount
+	"Answer a new Date that is dayCount days before the receiver."
+
+	^Date newDay: day - dayCount year: year!
+"-----------------------------------"!
+!Date methodsFor: 'comparing'!
+< aDate
+	"Answer whether aDate precedes the date of the receiver."
+
+	year = aDate year
+		ifTrue: [^day < aDate day]
+		ifFalse: [^year < aDate year]!
+= aDate
+	"Answer whether aDate is the same day as the receiver."
+
+	self species = aDate species
+		ifTrue: [^day = aDate day & (year = aDate year)]
+		ifFalse: [^false]!
+hash
+	"Hash is reimplemented because = is implemented."
+
+	^(year hash bitShift: 3) bitXor: day!
+"-----------------------------------"!
+!Date methodsFor: 'converting'!
+asSeconds
+	"Answer the seconds between a time on1 January 1901 and the same time
+	in the receiver's day."
+
+	^SecondsInDay * (self subtractDate: (Date newDay: 1 year: 1901))!
+"-----------------------------------"!
+!Date methodsFor: 'inquiries'!
+dayOfMonth
+	"Answer which day of the month is represented by the receiver."
+
+	^day - (self firstDayOfMonthIndex: self monthIndex) + 1!
+daysInMonth
+	"Answer the number of days in the month represented by the receiver."
+
+	^(DaysInMonth at: self monthIndex)
+		+ (self monthIndex = 2
+				ifTrue: [self leap]
+				ifFalse: [0])!
+daysInYear
+	"Answer the number of days in the year represented by the receiver."
+
+	^Date daysInYear: self year!
+daysLeftInYear
+	"Answer the number of days in the year after the date of the receiver."
+
+	^self daysInYear - self day!
+firstDayOfMonth
+	"Answer the index of the day of the year that is the first day
+	of the receiver's month"
+
+	^self firstDayOfMonthIndex: self monthIndex!
+previous: dayName
+	"Answer the previous date whose weekday name is dayName."
+
+	^self subtractDays: 7 + self weekdayIndex - (Date dayOfWeek: dayName) \\ 7!
+"-----------------------------------"!
+!Date methodsFor: 'printing'!
+printFormat: formatArray
+	"Answer a string description of the receiver.  The argument
+	formatArray is the print format, where
+	1-3	positions to print day,month,year respectively
+	4	character separator
+	5	month format (1 month #, 2 first 3 chars, 3 entire name)
+	6	year format (1 year #, 2 year # \\ 100)"
+
+	| aStream |
+	aStream _ WriteStream on: (String new: 16).
+	self printOn: aStream format: formatArray.
+	^aStream contents!
+printOn: aStream
+	self printOn: aStream format: #(1 2 3 32 3 1 )!
+printOn: aStream format: formatArray
+	"Print a description of the receiver on aStream.  The argument
+	formatArray is the print format, where
+	1-3	positions to print day,month,year respectively
+	4	character separator
+	5	month format (1 month #, 2 first 3 chars, 3 entire name)
+	6	year format (1 year #, 2 year # \\ 100)"
+
+	| monthIndex element monthFormat |
+	monthIndex _ self monthIndex.
+	1 to: 3 do:
+		[:elementIndex |
+		element _ formatArray at: elementIndex.
+		element = 1 ifTrue: [day - self firstDayOfMonth + 1 printOn: aStream].
+		element = 2
+			ifTrue:
+				[monthFormat _ formatArray at: 5.
+				monthFormat = 1
+					ifTrue: [monthIndex printOn: aStream].
+				monthFormat = 2
+					ifTrue: [aStream nextPutAll: ((MonthNames at: monthIndex)
+													copyFrom: 1 to: 3)].
+				monthFormat = 3
+					ifTrue: [aStream nextPutAll: (MonthNames at: monthIndex)]].
+		element = 3
+			ifTrue:
+				[(formatArray at: 6) = 1
+					ifTrue: [year printOn: aStream]
+					ifFalse: [(year \\ 100) printOn: aStream]].
+		elementIndex < 3
+			ifTrue:
+				[(formatArray at: 4) ~= 0
+					ifTrue: [aStream nextPut: (formatArray at: 4) asCharacter]]]!
+storeOn: aStream
+	aStream nextPutAll: '(', self class name, ' readFromString: ';
+		print: self printString;
+		nextPut: $)!
+"-----------------------------------"!
+!Date methodsFor: 'private'!
+day: dayInteger year: yearInteger
+	day _ dayInteger.
+	year _ yearInteger!
+firstDayOfMonthIndex: monthIndex
+	"Answer the day of the year (an Integer) that is the first day of my month"
+
+	^(FirstDayOfMonth at: monthIndex)
+		+ (monthIndex > 2
+				ifTrue: [self leap]
+				ifFalse: [0])!
+weekdayIndex
+	"Sunday=1, ... , Saturday=7"
+
+	| yearIndex dayIndex |
+	day < (self firstDayOfMonthIndex: 3)
+		ifTrue:
+			[yearIndex _ year - 1.
+			dayIndex _ 307]
+		ifFalse:
+			[yearIndex _ year.
+			dayIndex _ -58 - self leap].
+
+	^dayIndex + day + yearIndex + (yearIndex // 4)
+				+ (yearIndex // 400) - (yearIndex // 100) \\ 7 + 1!

@@ -1,0 +1,30 @@
+Change subclass: #ClassRelatedChange
+  instanceVariableNames: 'className'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'System-Changes'!
+ClassRelatedChange class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+ClassRelatedChange comment:
+'I am a change related in some way to a particular class.'!
+"-----------------------------------"!
+!ClassRelatedChange methodsFor: 'accessing'!
+className
+	^className!
+className: aSymbol
+	className _ aSymbol asSymbol!
+classObject
+	| class |
+	^Smalltalk at: className ifAbsent:
+		[(className size > 6 and: [(className copyFrom: className size - 5 to: className size) = ' class'])
+			ifTrue:
+				[class _ Smalltalk at: (className copyFrom: 1 to: className size - 6) asSymbol ifAbsent: [^nil].
+				(class isKindOf: Class) ifTrue: [class class] ifFalse: [nil]]
+			ifFalse:
+				[nil]]!
+getSource
+	"Set me up to point to the version of this change which is currently installed in the system."
+	self subclassResponsibility!
+parameters
+	^className!

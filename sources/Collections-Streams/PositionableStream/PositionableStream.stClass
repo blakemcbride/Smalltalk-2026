@@ -1,0 +1,153 @@
+Stream subclass: #PositionableStream
+  instanceVariableNames: 'collection position readLimit'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Collections-Streams'!
+PositionableStream class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+PositionableStream comment:
+'I assume that my contents is an indexable collection and that, in support of accessing the elements of my contents, I can reposition a pointer.  I am abstract in that I do not implement the messages next and nextPut: which are inherited from my superclass Stream.'!
+"-----------------------------------"!
+!PositionableStream class methodsFor: 'instance creation'!
+on: aCollection
+	"Answer a new instance of me, streaming over aCollection."
+
+	^self basicNew on: aCollection!
+on: aCollection from: firstIndex to: lastIndex
+	"Answer a new instance of me, streaming over a copy of aCollection from
+	firstIndex to lastIndex."
+
+	^self basicNew on: (aCollection copyFrom: firstIndex to: lastIndex)!
+"-----------------------------------"!
+!PositionableStream methodsFor: 'accessing'!
+contents
+	"Answer with a copy of my collection from 1 to readLimit."
+
+	^collection copyFrom: 1 to: readLimit!
+next: anInteger
+	"Answer the next anInteger elements of the receiver."
+	| newArray |
+	newArray _ self contents species new: anInteger.
+	1 to: anInteger do: [:index | newArray at: index put: self next].
+	^newArray!
+peek
+	"Answer what would be returned with a self next, without
+	changing position.  If the receiver is at the end, answer nil."
+
+	| nextObject |
+	self atEnd ifTrue: [^nil].
+	nextObject _ self next.
+	position _ position - 1.
+	^nextObject!
+peekFor: anObject
+	"Answer false and do not move the position if self next ~= anObject or if the
+	receiver is at the end. Answer true and increment position if self next = anObject."
+
+	| nextObject |
+	self atEnd ifTrue: [^false].
+	nextObject _ self next.
+	"peek for matching element"
+	anObject = nextObject ifTrue: [^true].
+	"gobble it if found"
+	position _ position - 1.
+	^false!
+through: anObject
+	"Answer a subcollection from position to the occurrence (if any, not
+	inclusive) of anObject. If not there, answer everything."
+
+	| newStream element |
+	newStream _ WriteStream on: (collection species new: 64).
+	[(self atEnd or: [(element _ self next) = anObject]) or: [newStream size > 64000]]
+		whileFalse: [newStream nextPut: element].
+	self atEnd
+		ifFalse:	[newStream nextPut: element].
+	^newStream contents!
+upTo: anObject
+	"Answer a subcollection from position to the occurrence (if any, not
+	inclusive) of anObject. If not there, answer everything."
+
+	| newStream element |
+	newStream _ WriteStream on: (collection species new: 64).
+	[self atEnd or: [(element _ self next) = anObject]]
+		whileFalse: [newStream nextPut: element].
+	^newStream contents!
+"-----------------------------------"!
+!PositionableStream methodsFor: 'fileIn/Out'!
+nextChunk
+	"Answer the contents of the receiver, up to the next terminator character, with
+	double terminators ignored."
+
+	| aStream char terminator |
+	terminator _ $!!.
+	aStream _ WriteStream on: (String new: 200).
+	self skipSeparators.
+	[(char _ self next)==nil]
+		whileFalse:
+			[char == terminator
+				ifTrue: [(self peekFor: terminator)
+						ifTrue: ["doubled terminator"
+							aStream nextPut: char]
+						ifFalse: [^aStream contents]]
+				ifFalse: [aStream nextPut: char]].
+	^aStream contents!
+skipSeparators
+	"Move the receiver's position past any separators."
+
+	[self atEnd == false and: [self peek isSeparator]]
+		whileTrue: [self next]!
+"-----------------------------------"!
+!PositionableStream methodsFor: 'positioning'!
+position
+	"Answer the current position of accessing the stream."
+	^position!
+position: anInteger
+	"Set position to anInteger as long as anInteger is within the bounds of the
+	receiver's contents.  If it is not, cause an error."
+
+	anInteger >= 0 & (anInteger <= readLimit)
+		ifTrue: [position _ anInteger]
+		ifFalse: [self positionError]!
+reset
+	"Set the receiver's position to 0."
+	position _ 0!
+setToEnd
+	"Set the position of the receiver to the end of its stream of elements."
+	position _ readLimit!
+skip: anInteger
+	"Set position to position+anInteger. A subclass might choose to be more
+	helpful and select the minimum of self size and position+anInteger or
+	maximum of 1 and position+anInteger for the repositioning."
+
+	self position: position + anInteger!
+skipTo: anObject
+	"Position the receiver past the next occurrance of anObject.  Answer true if
+	anObject is found, false otherwise."
+
+	[self atEnd]
+		whileFalse: [self next = anObject ifTrue: [^true]].
+	^false!
+"-----------------------------------"!
+!PositionableStream methodsFor: 'private'!
+on: aCollection
+	collection _ aCollection.
+	readLimit _ aCollection size.
+	position _ 0.
+	self reset!
+positionError
+	"Since I am not necessarily writable, it is up to my subclasses to override
+	position: if expanding the collection is preferrable to giving this error."
+
+	self error: 'Attempt to set the position of a PositionableStream out of bounds'!
+"-----------------------------------"!
+!PositionableStream methodsFor: 'testing'!
+atEnd
+	"Answer true if the position is greater than or equal to the limit,
+	otherwise answer false. Fail if position or readLimit is not a SmallInteger.
+	Optional. See Object documentation whatIsAPrimitive."
+
+	<primitive: 67>
+	^position >= readLimit!
+isEmpty
+	"Answer whether the receiver has no elements."
+	^position = 0!

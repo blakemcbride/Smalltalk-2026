@@ -1,0 +1,24 @@
+ClassChange subclass: #ClassOtherChange
+  instanceVariableNames: 'type'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'System-Changes'!
+ClassOtherChange class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+ClassOtherChange comment:
+'I represent a change to a class, other than a class definition.  Possible types are:
+	comment, initialize, inst vars for, rename, rename to'!
+"-----------------------------------"!
+!ClassOtherChange methodsFor: 'accessing'!
+name
+	^'  ', type, ' ', className!
+type
+	^type!
+type: aSymbol
+	type _ aSymbol!
+"-----------------------------------"!
+!ClassOtherChange methodsFor: 'checking'!
+checkWith: aChecker
+	aChecker changesAt: className add: self.
+	type == 'inst vars for' asSymbol ifFalse: [aChecker addDoIt: self]!

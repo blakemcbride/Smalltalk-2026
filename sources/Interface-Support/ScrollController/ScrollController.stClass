@@ -1,0 +1,190 @@
+MouseMenuController subclass: #ScrollController
+  instanceVariableNames: 'scrollBar marker savedArea'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Interface-Support'!
+ScrollController class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+ScrollController comment:
+'I represent control for scrolling using a scrollBar.  I am a MouseMenuController that creates a scrollBar, rather than menus.  My subclasses add the button menus.  I keep control as long as the cursor is inside the view or the scrollBar area.
+
+A scrollBar is a rectangular area representing the length of the information being viewed.  It contains an inner rectangle whose top y-coordinate represents the relative position of the information visible on the screen with respect to all of the information, and whose size represents the relative amount of that information visible on the screen.  The user controls which part of the information is visible by pressing the red button.  If the cursor is to the right of the inner rectangle, the window onto the visible information moves upward, if the cursor is to the left, the window moves downward, and if the cursor is inside, the inner rectangle is grabbed and moved to a desired position.
+
+Instance Variables:
+	scrollBar	<Quadrangle> inside white, the outer rectangle
+	marker		<Quadrangle> inside gray, the inner rectangle
+	savedArea	<Form> the area the scrollBar overlaps, restored whenever
+				the scrollBar is hidden'!
+"-----------------------------------"!
+!ScrollController methodsFor: 'basic control sequence'!
+controlInitialize
+	"The scrollbar has a two-pixel border, and for alignment it assumes that this sub-view
+	has a one-pixel border and shares another one-pixel border from its neighbor/super view"
+	super controlInitialize.
+	scrollBar region: (0 @ 0 extent: 32 @ (view displayBox height + 2)).
+	marker region: self computeMarkerRegion.
+	scrollBar _ scrollBar align: scrollBar topRight with: view displayBox topLeft - (0@1).
+	marker _ marker align: marker topCenter with: scrollBar inside topCenter.
+	savedArea _ Form fromDisplay: scrollBar.
+	scrollBar displayOn: Display.
+	self moveMarker!
+controlTerminate
+	super controlTerminate.
+	savedArea notNil
+		ifTrue:
+			[savedArea displayOn: Display at: scrollBar topLeft.
+			savedArea_ nil]!
+"-----------------------------------"!
+!ScrollController methodsFor: 'control defaults'!
+controlActivity
+	self scrollBarContainsCursor
+		ifTrue: [self scroll]
+		ifFalse: [super controlActivity]!
+isControlActive
+	^self viewHasCursor | self scrollBarContainsCursor!
+isControlWanted
+	^self viewHasCursor!
+"-----------------------------------"!
+!ScrollController methodsFor: 'cursor'!
+changeCursor: aCursor
+	"The current cursor should be set to be aCursor."
+	sensor currentCursor ~~ aCursor ifTrue: [aCursor show]!
+markerContainsCursor
+	"Answer whether the gray area inside the scroll bar area contains the cursor."
+	^marker inside containsPoint: sensor cursorPoint!
+scrollBarContainsCursor
+	"Answer whether the cursor is anywhere within the scroll bar area."
+	^scrollBar containsPoint: sensor cursorPoint!
+"-----------------------------------"!
+!ScrollController methodsFor: 'initialize-release'!
+initialize
+	super initialize.
+	scrollBar _ Quadrangle new.
+	scrollBar borderWidthLeft: 2 right: 0 top: 2 bottom: 2.
+	marker _ Quadrangle new.
+	marker insideColor: Form gray!
+"-----------------------------------"!
+!ScrollController methodsFor: 'marker adjustment'!
+computeMarkerRegion
+	"Answer the rectangular area in which the gray area of the scroll bar
+	should be displayed."
+
+	^0@0 extent: 10 @
+			((view window height asFloat /
+						view boundingBox height *
+							scrollBar inside height)
+				 rounded min: scrollBar inside height)!
+markerDelta
+	^marker top
+		- scrollBar inside top
+		- ((view window top - view boundingBox top) asFloat
+			/ view boundingBox height asFloat *
+				scrollBar inside height asFloat) rounded!
+markerRegion: aRectangle
+	"Set the area defined by aRectangle as the marker.  Fill it with gray tone."
+
+	Display fill: marker mask: scrollBar insideColor.
+	marker region: aRectangle.
+	marker _ marker align: marker topCenter with: scrollBar inside topCenter!
+moveMarker
+	"The view window has changed.  Update the marker."
+
+	self moveMarker: self markerDelta negated!
+moveMarker: anInteger
+	"Update the marker so that is is translated by an amount corresponding to
+	a distance of anInteger, constrained within the boundaries of the scroll bar."
+
+	Display fill: marker mask: scrollBar insideColor.
+	marker _ marker translateBy: 0 @
+				((anInteger min: scrollBar inside bottom - marker bottom) max:
+					scrollBar inside top - marker top).
+	marker displayOn: Display!
+"-----------------------------------"!
+!ScrollController methodsFor: 'private'!
+scrollAbsolute
+	| oldMarker |
+	self changeCursor: Cursor marker.
+	self canScroll & sensor anyButtonPressed ifTrue:
+		[[sensor anyButtonPressed] whileTrue:
+			[oldMarker _ marker.
+			marker _ marker translateBy:
+				0@((sensor cursorPoint y - marker center y min:
+					scrollBar inside bottom - marker bottom) max: scrollBar inside top - marker top).
+			(oldMarker areasOutside: marker), (marker areasOutside: oldMarker) do:
+				[:region | Display fill: region rule: Form reverse mask: Form gray]].
+			self scrollView.
+			scrollBar display.
+			self moveMarker]!
+scrollDown
+	self changeCursor: Cursor down.
+	sensor anyButtonPressed
+		ifTrue: [self canScroll
+					ifTrue:
+						[self scrollViewDown.
+						self moveMarker]].
+	sensor waitNoButton!
+scrollUp
+	self changeCursor: Cursor up.
+	sensor anyButtonPressed
+		ifTrue: [self canScroll
+					ifTrue:
+						[self scrollViewUp.
+						self moveMarker]].
+	sensor waitNoButton!
+"-----------------------------------"!
+!ScrollController methodsFor: 'scrolling'!
+canScroll
+	"Answer whether there is information that is not visible and can be seen
+	by scrolling."
+	^marker region height < scrollBar inside height!
+scroll
+	"Check to see whether the user wishes to jump, scroll up, or scroll down."
+
+	| savedCursor regionPercent |
+	savedCursor _ sensor currentCursor.
+	[self scrollBarContainsCursor]
+		whileTrue:
+			[Processor yield.
+			regionPercent _ 100 * (sensor cursorPoint x - scrollBar left) // scrollBar width.
+			regionPercent <= 40
+				ifTrue: [self scrollDown]
+				ifFalse: [regionPercent >= 60
+							ifTrue: [self scrollUp]
+							ifFalse: [self scrollAbsolute]]].
+	savedCursor show!
+scrollAmount
+	"Answer the number of bits of y-coordinate should be scrolled.  This is a
+	default determination based on the view's preset display transformation."
+
+	^((view inverseDisplayTransform: sensor cursorPoint)
+		- (view inverseDisplayTransform: scrollBar inside topCenter)) y!
+scrollView
+	"The scroll bar jump method was used so that the view should be updated to
+	correspond to the location of the scroll bar gray area."
+	self scrollView: self viewDelta!
+scrollView: anInteger
+	"If anInteger is not zero, tell the reciever's view to scroll by anInteger amount."
+
+	anInteger ~= 0
+		ifTrue:
+			[view scrollBy: 0 @
+				((anInteger min: view window top - view boundingBox top)
+						max: view window top - view boundingBox bottom).
+			view clearInside.
+			view display]!
+scrollViewDown
+	"Scroll the receiver's view down the default amount."
+	self scrollView: self scrollAmount!
+scrollViewUp
+	"Scroll the receiver's view up the default amount."
+	self scrollView: self scrollAmount negated!
+viewDelta
+	"Answer an integer that indicates how much the view should be scrolled.
+	The scroll bar has been moved and now the view must be so the amount to
+	scroll is computed as a ratio of the current scroll bar position."
+
+	^view window top - view boundingBox top -
+		((marker top - scrollBar inside top) asFloat /
+			scrollBar inside height asFloat *
+				view boundingBox height asFloat) rounded!

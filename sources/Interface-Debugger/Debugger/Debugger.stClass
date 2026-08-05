@@ -1,0 +1,368 @@
+Browser subclass: #Debugger
+  instanceVariableNames: 'context receiverInspector contextInspector shortStack sourceMap sourceCode processHandle'
+  classVariableNames: 'ContextMenu HighlightPC'
+  poolDictionaries: ''
+  category: 'Interface-Debugger'!
+Debugger class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+Debugger comment:
+'The debugger allows browsing among the stack of contexts of a suspended process.  In addition to viewing the source code at each level, the debugger supports inspection (and change) of temporary and instance variables in each context.
+
+Instance Variables:
+	context				<ContextPart> the currently viewed context
+	receiverInspector	<Inspector> on instance variables in the current context
+	contextInspector		<Inspector> on temporary variables in the current context
+	shortStack			<Boolean> true if only a short portion of the stack is being shown
+	sourceMap			<SortedCollection> of associations (pc -> range)
+	tempNames			<Array of: String>, cached names of the temporary variables
+	processHandle		<ProcessHandle> holding onto the observed process'!
+"-----------------------------------"!
+!Debugger class methodsFor: 'class initialization'!
+flushMenus
+	"Debugger flushMenus."
+	ContextMenu _ nil!
+initialize
+	"Debugger initialize."
+	HighlightPC _ true!
+"-----------------------------------"!
+!Debugger class methodsFor: 'instance creation'!
+context: aContext
+	"Answer an instance of me that models the current state of the system.  The active
+	process has determined that a debugger should be set up (often by the user issuing
+	the command debug)."
+
+	| aDebugger |
+	aDebugger _ self new.
+	aDebugger
+		process: Processor activeProcess
+		context: aContext
+		interrupted: false.
+	^aDebugger!
+interruptProcess: interruptedProcess
+	"Answer an instance of me that models the current state of the system.  The active
+	process has decided to provide a debugger on an interrupted process.  This message
+	is called if the user types the ctrl c interrupt, or a low space notification occurs."
+
+	| debugger |
+	debugger _ self new.
+	debugger
+		process: interruptedProcess
+		context: interruptedProcess suspendedContext
+		interrupted: true.
+	^debugger!
+openFullViewOn: aDebugger label: aString
+	"Answer an instance of me on the model, aDebugger.
+	The label is aString.  Do not terminate the current active process."
+
+	| topView |
+	aDebugger openInspectors.
+	topView _ BrowserView model: aDebugger label: aString minimumSize: 300@230.
+	topView addSubView:
+			(SelectionInListView on: aDebugger printItems: true oneItem: false
+				aspect: #context change: #context: list: #contextList
+				menu: #contextMenu initialSelection: #context)
+		in: (0@0 extent: 1@0.2) borderWidth: 1.
+	topView addSubView:
+			(CodeView on: aDebugger aspect: #text change: #acceptText:from:
+				menu: #textMenu initialSelection: nil)
+		in: (0@0.2 extent: 1@0.6) borderWidth: 1.
+	InspectorView view: aDebugger receiverInspector
+		in: (0@0.8 extent: 0.5@0.2) of: topView.
+	InspectorView view: aDebugger contextInspector
+		in: (0.5@0.8 extent: 0.5@0.2) of: topView.
+	topView controller openNoTerminate.
+	^topView!
+"-----------------------------------"!
+!Debugger methodsFor: 'accessing'!
+interruptedContext
+	"Answer the suspended context of the interrupted process."
+	^processHandle topContext!
+selectedClass
+	^ context mclass!
+"-----------------------------------"!
+!Debugger methodsFor: 'contextList'!
+context
+	^ context!
+context: aContext
+	| oldContext class |
+	oldContext _ context.
+	context _ aContext.
+	context == nil
+		ifTrue:
+			[contextInspector inspect: nil.
+			receiverInspector inspect: nil.
+			self changed: #text.
+			^ self].
+	class _ context receiver class.
+	meta _ class isMeta.
+	meta
+		ifTrue: [className _ class soleInstance name]
+		ifFalse: [className _ class name].
+	selector _ context selector.
+	(oldContext == nil or: [oldContext method ~~ context method])
+		ifTrue:
+			[sourceCode _ context sourceCode.
+			self computeSourceMap. "will compute tempNames"
+			self changed: #text].
+	receiverInspector inspect: context receiver.
+	contextInspector inspect: context.
+	self changed: #pc!
+contextList
+	shortStack
+		ifTrue: [^ processHandle topContext stackOfSize: 9]
+		ifFalse: [^ processHandle topContext stack]!
+contextMenu
+	"Debugger flushMenus"
+	context == nil ifTrue:
+		[^ ActionMenu labels: 'full stack\proceed' withCRs selectors: #(fullStack proceed)].
+	ContextMenu == nil ifTrue:
+		[ContextMenu _ ActionMenu
+			labels: 'full stack\proceed\restart\senders\implementors\messages\step\send' withCRs
+			lines: #(3 6)
+			selectors: #(fullStack proceed restart browseSenders browseImplementors browseMessages step send)].
+	^ ContextMenu!
+"-----------------------------------"!
+!Debugger methodsFor: 'dependents access'!
+removeDependent: aDependent
+	super removeDependent: aDependent.
+	self dependents isEmpty ifTrue: [self release]!
+"-----------------------------------"!
+!Debugger methodsFor: 'doIt/accept/explain'!
+acceptText: aText from: aController
+	"Recompile the method of the selected context."
+	| newSelector classOfMethod newMethod |
+	context == nil ifTrue: [^ false].
+	self revertBlock ifFalse: [^ false].
+	classOfMethod _ context mclass.
+	newSelector _ classOfMethod parserClass new parseSelector: aText.
+	newSelector ~~ selector
+		ifTrue: [self notify: 'selector must not change'].
+	Cursor execute showWhile:
+		[newSelector _ classOfMethod
+				compile: aText
+				classified: ClassOrganizer defaultProtocol
+				notifying: aController].
+	newSelector == nil ifTrue: [^ false].
+	Cursor execute showWhile:
+		["**have to handle newMethod needing big stack!!"
+		newMethod _ classOfMethod compiledMethodAt: newSelector.
+		sourceCode _ aText string.
+		newMethod isQuick
+			ifTrue:  "If compiled quick, we need a non-quick version to put in the context."
+				[newMethod _ (classOfMethod compilerClass new
+							parse: sourceCode in: classOfMethod notifying: nil) generateNoQuick].
+		newMethod frameSize > context size
+			ifTrue:  "This could be handled by allocating another bigger context,
+					but you would have to inform processHandle of change in stack."
+				[self notify: 'The new method requires more frame space than the old.
+You MUST not restart or proceed in this context.
+Other debugging, and restarting other methods is OK.
+You may proceed from this notification'].
+		context restartWith: newMethod.
+		self computeSourceMap.  "Should get cached in CompiledMethod-class like tempNames"
+		self resetContext: context].
+	^ true!
+doItContext
+	"Answer the context in which a text selection can be evaluated."
+	^ context!
+doItReceiver
+	"Answer the receiver in which to evaluate code pane doIts."
+	context == nil ifTrue: [^ nil].
+	^ context receiver!
+doItValue: anObject
+	"Set the value to be returned when the interrupted process proceeds."
+	processHandle proceedValue: anObject!
+"-----------------------------------"!
+!Debugger methodsFor: 'initialize-release'!
+process: aProcess context: aContext interrupted: aBoolean
+	sourceCode _ nil.
+	shortStack _ true.
+	processHandle _ ProcessHandle on: aProcess at: aContext interrupted: aBoolean!
+release
+	processHandle terminate.
+	context _ nil.
+	receiverInspector _ nil.
+	contextInspector _ nil.
+	Smalltalk resetSpaceLimits.
+	super release!
+"-----------------------------------"!
+!Debugger methodsFor: 'inspectors'!
+contextInspector
+	^contextInspector!
+openInspectors
+	"Further initialization when opening notify view to debug view"
+
+	receiverInspector _ Inspector inspect: nil.
+	contextInspector _ ContextInspector inspect: nil.
+	self changed: #contextList!
+receiverInspector
+	^receiverInspector!
+updateInspectors
+	receiverInspector update.
+	contextInspector update!
+"-----------------------------------"!
+!Debugger methodsFor: 'menu messages'!
+correct: aNotifierController
+	"Attempt to correct the spelling of the not-understood message and resend."
+	| oldSelector oldFirst oldArgs selectors guess score bestScore |
+	processHandle topContext selector == #doesNotUnderstand:
+		ifFalse: [^ aNotifierController view flash].
+	oldSelector _ (processHandle topContext tempAt: 1) selector.
+	oldFirst _ oldSelector first.
+	oldArgs _ oldSelector numArgs.
+	selectors _ processHandle topContext receiver class allSelectors select:
+			[:sel | sel first = oldFirst and: [sel numArgs = oldArgs]].
+	bestScore _ 0.
+	selectors do:
+		[:sel |
+		(score _ sel spellAgainst: oldSelector) > bestScore ifTrue:
+			[bestScore _ score. guess _ sel]].
+	(self confirm: 'retry with selector:
+	', guess) ifFalse: [^ aNotifierController view flash].
+	processHandle topContext tempAt: 1 put:
+		(Message selector: guess arguments: (processHandle topContext tempAt: 1) arguments).
+	^ self proceed!
+fullStack
+	"Expand the stack to include all contexts, rather than the first few."
+	shortStack _ false.
+	self changed: #context!
+proceed
+	"Proceed from the interrupted state of the currently selected context.
+	The argument is a controller on a view of the receiver.  That view
+	is closed."
+
+	self checkContextSelection.
+	(context ~= processHandle topContext) | (processHandle interrupted not)
+		ifTrue: [context push: processHandle proceedValue].
+	self resumeProcess!
+restart
+	"Proceed from the initial state of the currently selected context.
+	The argument is a controller on a view of the receiver.  That view
+	is closed."
+
+	self checkContextSelection.
+	self revertBlock ifFalse: [^self].
+	context restart.
+	self resumeProcess!
+spawn: aString
+	"Create and schedule a message browser on the message, aString.  Any edits already
+	made are retained."
+
+	context == nil
+		ifFalse:
+			[^BrowserView openMethodBrowserOn:
+				(MethodListBrowser on:
+					(Array with: self selectedClass name
+							with: selector))
+					"editString: aString"]!
+spawnEdits: aText from: aController
+	context == nil  "cant spawn changes when deselected"
+		ifFalse: [super spawnEdits: aText from: aController]!
+"-----------------------------------"!
+!Debugger methodsFor: 'pc selection'!
+computeSourceMap
+	"Compute the sourceMap for PC selection in the current code."
+	| methodNode |
+	methodNode _ self selectedClass compilerClass new
+			parse: sourceCode
+			in: self selectedClass
+			notifying: nil.
+	sourceMap _ methodNode sourceMap.
+	context method cacheTempNames: methodNode tempNames!
+pcRange
+	"Answer the indices in the source code for the method corresponding
+	to the selected context's program counter value."
+
+	| i methodNode pc end |
+	(HighlightPC and: [context ~~ nil])
+		ifFalse: [^1 to: 0].
+	(sourceMap == nil or: [sourceMap size = 0])
+		 ifTrue: [^1 to: 0].
+	pc_ context pc -
+		((context == processHandle topContext and: [processHandle interrupted])
+			ifTrue: [1]
+			ifFalse: [2]).
+	i _ sourceMap indexForInserting: (Association key: pc value: nil).
+	i < 1 ifTrue: [^1 to: 0].
+	i > sourceMap size
+		ifTrue:
+			[end _ sourceMap inject: 0 into:
+				[:prev :this | prev max: this value last].
+			^ end+1 to: end].
+	^(sourceMap at: i) value!
+"-----------------------------------"!
+!Debugger methodsFor: 'stack manipulation'!
+checkContextSelection
+	context == nil ifTrue: [context _ processHandle topContext]!
+resetContext: aContext
+	"Used when a new context becomes top-of-stack, for instance when the
+	method of the selected context is re-compiled, or the simulator steps or
+	returns to a new method."
+	processHandle topContext: aContext.
+	self changed: #context.
+	context == aContext
+		ifFalse: "old ctxt not in new stack"
+		[self context: aContext.
+		self changed: #context]!
+resumeProcess
+	processHandle topContext: context.
+	processHandle resumeProcess!
+revertBlock
+	"If the selected context is a block, then revert to its home."
+	(context isKindOf: MethodContext) ifFalse:
+			[(self confirm:
+'I will have to revert to the method from
+which this block originated.  Is that OK?')
+				ifTrue: [self context: context home. ^ true]
+				ifFalse: [^ false]].
+	^ true!
+send
+	"The top context on the stack must be selected.  This being so, either some message
+	is about to be sent in that context, or that context is about to return.  Send is only
+	effective in the former case.  It will cause the next message to be sent.  The send is
+	actually simulated, so that the debugger will regain control at the beginning of the
+	method which is invokedi (unless it is a primitive).  In this way, you can step your
+	way deeper into a computation"
+
+	self checkContextSelection.
+	processHandle interrupted ifFalse: [processHandle topContext push: processHandle proceedValue].
+	processHandle interrupted: true. "simulation leaves same state as interrupting"
+	context stepToSendOrReturn.
+	(context ~~ processHandle topContext) | context willReturn
+		ifFalse:
+			[self resetContext: context step. context stepToSendOrReturn]!
+step
+	"Some context is selected (force top if none).  When this is so, either some message
+	is about to be sent in that context, or that context is about to return.  Step will cause
+	the next message to be sent or the return to be executed.  In either case, the debugger
+	regains control so that you can step your way down through a method, and out to the
+	caller when it returns.  Note that the execution invoked by step is actually simulated,
+	so it will run much slower than normal"
+
+	| currentContext |
+	self checkContextSelection.
+	processHandle interrupted ifFalse: [processHandle topContext push: processHandle proceedValue].
+	processHandle interrupted: true. "simulation leaves same state as interrupting"
+	context == processHandle topContext
+		ifTrue:
+			[currentContext _ context.
+			currentContext stepToSendOrReturn.
+			currentContext willReturn
+				ifTrue:
+					[currentContext _ currentContext step.
+					currentContext stepToSendOrReturn.
+					self resetContext: currentContext]
+				ifFalse:
+					[currentContext completeCallee: currentContext step.
+					self changed: #pc.
+					self updateInspectors]]
+		ifFalse:
+			["Have to complete any stuff called from here"
+			context completeCallee: processHandle topContext.
+			self resetContext: context]!
+"-----------------------------------"!
+!Debugger methodsFor: 'text'!
+text
+	context == nil ifTrue: [^ Text new].
+	^ sourceCode asText makeSelectorBoldIn: self selectedClass!

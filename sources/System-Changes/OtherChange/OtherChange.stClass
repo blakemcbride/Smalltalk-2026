@@ -1,0 +1,39 @@
+Change subclass: #OtherChange
+  instanceVariableNames: 'text'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'System-Changes'!
+OtherChange class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+OtherChange comment:
+'I represent a non-classifiable change, i.e. a doIt.  I cache my text to reduce disk accesses.'!
+"-----------------------------------"!
+!OtherChange methodsFor: 'accessing'!
+name
+	^self defaultName: '  doIt '!
+parameters
+	^self text!
+text
+	text == nil ifTrue: [text _ super text].
+	^text!
+text: aString
+	text _ aString.
+	file _ nil!
+"-----------------------------------"!
+!OtherChange methodsFor: 'checking'!
+checkWith: aChecker
+	"Discard comments and 'From ...' messages if from the current system"
+	| myText aStream first |
+	myText _ self text.
+	myText isEmpty ifTrue: [^self].
+	aStream _ ReadStream on: myText.
+	first _ aStream next.
+	first = $" ifTrue:
+		[aStream skipTo: $"; skipSeparators.
+		aStream atEnd ifTrue: [^self]].
+	first = $' ifTrue:
+		[first _ 'From ', Smalltalk version, ' on '.
+		myText size > first size ifTrue:
+			[(aStream next: first size) = first ifTrue: [^self]]].
+	aChecker addDoIt: self!

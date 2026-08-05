@@ -1,0 +1,168 @@
+CharacterScanner subclass: #CompositionScanner
+  instanceVariableNames: 'spaceX spaceIndex'
+  classVariableNames: ''
+  poolDictionaries: 'TextConstants'
+  category: 'Graphics-Support'!
+CompositionScanner class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+CompositionScanner comment:
+'My instances hold the state of CharacterScanner in addition to the following required only for composition.
+
+Instance Variables
+
+	spaceX
+<Integer>  Left edge of last space scanned.  When line overflows this value is substracted from the rightMargin to determine how much padding is available for justification, centering, etc.
+
+	spaceIndex
+<Integer>  Character index of last space scanned in line.  Installed as stop in the TextLineInterval for the line being composed.
+
+CompositionScanners are used to measure text and determine where line breaks and space padding should occur.'!
+"-----------------------------------"!
+!CompositionScanner methodsFor: 'accessing'!
+rightX
+	"Meaningful only when a line has just been composed -- refers to the line most recently composed.  This is a subtrefuge to allow for easy resizing of a composition rectangle to the width of the maximum line.  Useful only when there is only one line in the form or when each line is terminated by a carriage return.  Handy for sizing menus and lists."
+
+	^spaceX!
+"-----------------------------------"!
+!CompositionScanner methodsFor: 'initialize-release'!
+in: aParagraph
+	"Initialize the paragraph to be scanned as the argument, aParagraph.  Set the composition frame for the paragraph."
+
+	super initializeFromParagraph: aParagraph clippedBy: aParagraph clippingRectangle!
+"-----------------------------------"!
+!CompositionScanner methodsFor: 'private'!
+resetFont
+	"Mainly to allow the stop condition crossedX to be shared by display and printer media."
+	^ textStyle fontAt: (text emphasisAt: spaceIndex)!
+"-----------------------------------"!
+!CompositionScanner methodsFor: 'scanning'!
+composeLine: lineIndex fromCharacterIndex: startIndex inParagraph: aParagraph
+	"Answer an instance of TextLineInterval that represents the next line in the paragraph."
+
+	| runLength done stopCondition |
+	lastIndex _ startIndex.		"scanning sets last index"
+	self setStopConditions.		"also sets font"
+	spaceX _ destX _ leftMargin _
+		(aParagraph leftMarginForCompositionForLine: lineIndex).
+	rightMargin _ aParagraph rightMarginForComposition.
+	leftMargin >= rightMargin ifTrue:
+		[self error: 'No room between margins to compose'].
+	runLength _ text runLengthFor: startIndex.
+	runStopIndex _ (lastIndex _ startIndex) + (runLength - 1).
+	line _
+		TextLineInterval
+			start: lastIndex stop: 0 internalSpaces: 0 paddingWidth: 0.
+	spaceCount _ 0.
+	done _ false.
+	[done]
+		whileFalse:
+			[stopCondition _
+				self
+					scanCharactersFrom: lastIndex
+					to: runStopIndex
+					in: text string
+					rightX: rightMargin
+					stopConditions: stopConditions
+					displaying: false.
+			"See setStopConditions for stopping conditions for composing."
+			(self perform: stopCondition) ifTrue: [^line]]!
+"-----------------------------------"!
+!CompositionScanner methodsFor: 'stop conditions'!
+cr
+	"Answer true.  Sets up values for the text line interval currently being composed."
+
+	line stop: lastIndex.
+	spaceX _ destX.
+	line paddingWidth: rightMargin - destX.
+	^true!
+crossedX
+	"There is a word that has fallen across the right edge of the composition rectangle.  This signals the need for wrapping which is done to the last space that was encountered, as recorded by the space stop condition."
+	line stop: spaceIndex.
+	spaceCount > 1
+		ifTrue:	["The common case. First back off the space at which we wrap."
+				spaceCount _ spaceCount - 1.
+				spaceIndex _ spaceIndex - 1.
+				["Check to see if any spaces preceding the one at which we wrap.
+					Double space after a period, most likely."
+				(spaceCount > 1 and: [(text at: spaceIndex) = Space])]
+					whileTrue:
+						[spaceCount _ spaceCount - 1.
+						spaceIndex _ spaceIndex - 1.
+						"Account for backing over a run which might
+							change width of space."
+						font _ self resetFont.
+						spaceX _ spaceX - (font widthOf: Space)].
+						line paddingWidth: rightMargin - spaceX.
+						line internalSpaces: spaceCount]
+		ifFalse:	[spaceCount = 1
+					ifTrue:	["wrap at space, but no internal spaces"
+							line internalSpaces: 0.
+							line paddingWidth: rightMargin - spaceX]
+					ifFalse:	["Neither internal nor trailing spaces, almost never happen,
+								she says confidently."
+							lastIndex _ lastIndex - 1.
+							[destX <= rightMargin]
+							whileFalse:
+								[destX _ destX - (font widthOf:
+													(text at: lastIndex)).
+										"bug --doesn't account for backing over
+										 run and changing actual width of
+										characters. Also doesn't account for
+										backing over a tab.  Happens only
+										when no spaces in line, presumably rare."
+								lastIndex _ lastIndex - 1].
+							spaceX _ destX.
+							line paddingWidth: rightMargin - destX.
+							lastIndex < line first
+								ifTrue:	[line stop: line first]
+								ifFalse:	[line stop: lastIndex]]].
+	^true!
+endOfRun
+	"Answer true if scanning has reached the end of the paragraph.  Otherwise set stop conditions (mostly install potential new font) and answer false."
+
+	| runLength |
+	lastIndex = text size
+	ifTrue:	[line stop: lastIndex.
+			spaceX _ destX.
+			line paddingWidth: rightMargin - destX.
+			^true]
+	ifFalse:	[runLength _ (text runLengthFor: (lastIndex _ lastIndex + 1)).
+			runStopIndex _ lastIndex + (runLength - 1).
+			self setStopConditions.
+			^false]!
+onePixelBackspace
+	"Decrement destX by 1. "
+
+	destX _ (destX - 1) max: leftMargin.
+	lastIndex _ lastIndex + 1.
+	^false!
+onePixelSpace
+	"Increment destX by 1. "
+
+	destX _ destX+1.
+	lastIndex _ lastIndex + 1.
+	destX > rightMargin ifTrue: 	[^self crossedX].
+	^false!
+setStopConditions
+	"Set the font and the stop conditions for the current run."
+
+	font _ textStyle fontAt: (text emphasisAt: lastIndex).
+	super setStopConditions.!
+space
+	"Record left x and character index of the space character just encounted.  Used for wrap-around.  Answer whether the character has crossed the right edge of the composition rectangle of the paragraph."
+
+	spaceX _ destX.
+	destX _ spaceX + spaceWidth.
+	lastIndex _ (spaceIndex _ lastIndex) + 1.
+	spaceCount _ spaceCount + 1.
+	destX > rightMargin ifTrue: 	[^self crossedX].
+	^false!
+tab
+	"Advance destination x according to tab settings in the paragraph's textStyle.  Answer whether the character has crossed the right edge of the composition rectangle of the paragraph.  Scale allows use of same code for display and printing composition"
+
+	destX _ textStyle
+				nextTabXFrom: destX leftMargin: leftMargin rightMargin: rightMargin.
+	destX > rightMargin ifTrue:	[^self crossedX].
+	lastIndex _ lastIndex + 1.
+	^false!

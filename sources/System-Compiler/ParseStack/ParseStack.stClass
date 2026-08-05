@@ -1,0 +1,31 @@
+Object subclass: #ParseStack
+  instanceVariableNames: 'position length'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'System-Compiler'!
+ParseStack class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+ParseStack comment:
+'I keep track of the current and high position of the stack that will be needed by code being compiled.  I am only used during the code generation pass of the compiler (MethodNode generate:)'!
+"-----------------------------------"!
+!ParseStack methodsFor: 'accessing'!
+max: otherSize
+	"Set my max length (size) to be the max of mine and otherSize"
+	length _ length max: otherSize!
+pop: n
+	(position _ position - n) < 0
+		ifTrue: [self error: 'Parse stack underflow']!
+push: n
+	(position _ position + n) > length
+		ifTrue: [length _ position]!
+size
+	^length!
+"-----------------------------------"!
+!ParseStack methodsFor: 'initialize-release'!
+init
+	length _ position _ 0!
+"-----------------------------------"!
+!ParseStack methodsFor: 'results'!
+position
+	^position!

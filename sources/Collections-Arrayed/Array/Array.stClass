@@ -1,0 +1,53 @@
+ArrayedCollection variableSubclass: #Array
+  instanceVariableNames: ''
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Collections-Arrayed'!
+Array class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+Array comment:
+'I am an arrayed collection of pointers.'!
+"-----------------------------------"!
+!Array methodsFor: 'comparing'!
+hash
+	"make sure = arrays hash =ly"
+
+	self size = 0 ifTrue: [^17171].
+	^(self at: 1) hash + (self at: self size) hash!
+hashMappedBy: map
+	"Answer what my hash would be if oops changed according to map"
+	self size = 0 ifTrue: [^ self hash].
+	^ (self first hashMappedBy: map) + (self last hashMappedBy: map)!
+"-----------------------------------"!
+!Array methodsFor: 'converting'!
+asArray
+	"Answer with the receiver itself."
+	^self!
+"-----------------------------------"!
+!Array methodsFor: 'printing'!
+isLiteral
+	self detect: [:element | element isLiteral not] ifNone: [^true].
+	^false!
+printOn: aStream
+	| tooMany |
+	tooMany _ aStream position + self maxPrint.
+	aStream nextPut: $(.
+	self do:
+		[:element |
+		aStream position > tooMany ifTrue: [aStream nextPutAll: '...etc...)'. ^self].
+		element printOn: aStream.
+		aStream space].
+	aStream nextPut: $)!
+storeOn: aStream
+	"Use the literal form if possible."
+
+	self isLiteral
+		ifTrue:
+			[aStream nextPut: $#; nextPut: $(.
+			self do:
+				[:element |
+				element printOn: aStream.
+				aStream space].
+			aStream nextPut: $)]
+		ifFalse: [super storeOn: aStream]!

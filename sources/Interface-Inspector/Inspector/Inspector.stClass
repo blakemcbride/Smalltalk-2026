@@ -1,0 +1,119 @@
+Object subclass: #Inspector
+  instanceVariableNames: 'object field'
+  classVariableNames: 'ListMenu TextMenu'
+  poolDictionaries: ''
+  category: 'Interface-Inspector'!
+Inspector class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+Inspector comment:
+'I represent a query path into the internal representation of an object.  The value of fields
+can be inspected by selecting the field name, and can be changed using ''accept''.
+
+Instance Variables:
+	object		any object to be queried
+	field		<String> name of field being viewed'!
+"-----------------------------------"!
+!Inspector class methodsFor: 'initialization'!
+flushMenus
+	ListMenu _ TextMenu _ nil!
+"-----------------------------------"!
+!Inspector class methodsFor: 'instance creation'!
+inspect: anObject
+	"Answer an instance of me to provide an inspector for anObject."
+	^self new inspect: anObject!
+"-----------------------------------"!
+!Inspector methodsFor: 'doIt/accept/explain'!
+acceptText: aText from: aController
+	| val |
+	object class == CompiledMethod
+		ifTrue: [^false].
+	field == nil ifTrue: [^false].
+	val _ self evaluateText: aText string from: aController ifFail: [^ false].
+	field first isLetter
+		ifTrue: [object instVarAt: self fieldIndex put: val]
+		ifFalse: [object basicAt: self fieldIndex put: val].
+	self changed: #text.
+	^ true!
+doItContext
+	^ nil!
+doItReceiver
+	"Answer the object that should be informed of the result of evaluating a
+	text selection."
+	^object!
+evaluateText: aText from: aController ifFail: failBlock
+	^ Compiler new evaluate: aText
+		in: self doItContext to: self doItReceiver
+		notifying: aController ifFail: failBlock!
+"-----------------------------------"!
+!Inspector methodsFor: 'field list'!
+field
+	^ field!
+field: selection
+	field _ selection.
+	self changed: #text!
+fieldIndex
+	"Answer the offset corresponding to the currently selected field."
+
+	field first isDigit
+		ifTrue: [^ Integer readFromString: field]
+		ifFalse: [^ object class allInstVarNames indexOf: field]!
+fieldList
+	"Answer an Array consisting of 'self' and the instance variable names of the inspected object.  Up to 40 indices are given for variable length objects."
+
+	| max |
+	max _ object basicSize.
+	^(Array with: 'self'), object class allInstVarNames,
+		((max <= 40
+			ifTrue: [1 to: max]
+			ifFalse: [(1 to: 30) , (max-10 to: max)])
+		collect: [:i | i printString])!
+fieldMenu
+	"Inspector flushMenus"
+	field == nil ifTrue: [^ nil].
+	ListMenu == nil ifTrue:
+		[ListMenu _ ActionMenu
+			labels: 'inspect'
+			selectors: #(inspectField)].
+	^ ListMenu!
+fieldValue
+
+	field = 'self' ifTrue: [^object].
+	field first isDigit
+		ifTrue: [^object basicAt: self fieldIndex]
+		ifFalse: [^object instVarAt: self fieldIndex]!
+printItems
+	"Answer whether the elements of the fieldList need to be converted to strings"
+
+	^false!
+"-----------------------------------"!
+!Inspector methodsFor: 'initialization'!
+inspect: anObject
+	anObject == object ifTrue: [^ self update].
+	object _ anObject.
+	self changed: #field!
+object
+	"Answer the object being inspected by the receiver."
+	^object!
+"-----------------------------------"!
+!Inspector methodsFor: 'menu commands'!
+inspectField
+	self fieldValue inspect!
+"-----------------------------------"!
+!Inspector methodsFor: 'text'!
+text
+	field == nil ifTrue: [^ Text new].
+	^ self fieldValue printString asText!
+textMenu
+	"Inspector flushMenus"
+	TextMenu == nil ifTrue:
+		[TextMenu _ ActionMenu
+			labels: 'again\undo\copy\cut\paste\do it\print it\accept\cancel' withCRs
+			lines: #(2 5 7)
+			selectors: #(again undo copySelection cut paste doIt printIt accept cancel)].
+	^ TextMenu!
+"-----------------------------------"!
+!Inspector methodsFor: 'updating'!
+update
+	"Reshow contents, assuming selected value may have changed"
+	field ~~ nil ifTrue: [self changed: #text]!

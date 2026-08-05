@@ -203,6 +203,14 @@ BOOT_make_array(st_oop *elements, unsigned count, void *user)
     return array;
 }
 
+/*  Characters are unique per code point, which is what makes == work.  */
+st_oop
+BOOT_make_character(unsigned code, void *user)
+{
+    (void) user;
+    return OM_fetch_pointer(code, ST_CHARACTER_TABLE);
+}
+
 /*  ----------  Globals  ----------  */
 
 st_oop
@@ -764,6 +772,7 @@ compile_into(boot_class *c, int class_side, const char *source,
     ctx.make_float         = BOOT_make_float;
     ctx.make_large_integer = BOOT_make_large_integer;
     ctx.make_array         = BOOT_make_array;
+    ctx.make_character     = BOOT_make_character;
     ctx.lookup_global      = BOOT_lookup_global;
 
     if (COMPILE_method(source, &ctx, &res) != 0) {
@@ -826,7 +835,12 @@ read_source(const char *path, int definitions_only)
         return 0;
     }
     while (CHUNK_next(reader, &chunk)) {
-        if (chunk.is_empty) {
+        /*
+         *  A chunk with nothing to compile closes the method category.  That
+         *  is the empty chunk of the "! !" idiom, and equally the comment
+         *  the markbush sources use in its place.
+         */
+        if (!chunk.has_code) {
             in_methods = 0;
             current    = NULL;
             continue;

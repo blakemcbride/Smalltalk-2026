@@ -1,0 +1,139 @@
+ReadWriteStream subclass: #ExternalStream
+  instanceVariableNames: ''
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Files-Streams'!
+ExternalStream class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+ExternalStream comment:
+'I represent an accessor for a sequence of objects that communicate to the outside world.  My instances can contain non-homogenous elements.  Assumes streaming on a collection of binary, byte-sized elements.  My methods assume that a "word" consists of two-bytes.'!
+"-----------------------------------"!
+!ExternalStream class methodsFor: 'instance creation'!
+new
+	^self basicNew!
+"-----------------------------------"!
+!ExternalStream methodsFor: 'accessing'!
+next: anInteger
+	"Answer the next anInteger elements of my collection.  Must override
+	because default uses self contents species, which might involve a Large
+	collection. "
+
+	| newArray |
+	newArray _ collection species new: anInteger.
+	1 to: anInteger do: [:index | newArray at: index put: self next].
+	^newArray!
+"-----------------------------------"!
+!ExternalStream methodsFor: 'nonhomogeneous accessing'!
+nextNumber: n
+	"Answer the next n bytes as a positive Integer or LargePositiveInteger."
+
+	| s |
+	n <= 2
+		ifTrue:
+			[s _ 0.
+			n timesRepeat: [s _ s * 256 + self next].
+			^s].
+	s _ LargePositiveInteger new: n.
+	1 to: n do: [:i | s at: n + 1 - i put: self next].
+	"reverse order of significance"
+	^s truncated!
+nextNumber: n put: v
+	"Append to the receiver the argument, v, which is a positive SmallInteger or
+	a LargePositiveInteger, as the next n bytes.  Possibly pad with leading zeros."
+
+	| vlen i |
+	vlen _ v digitLength.
+	n < vlen
+		ifTrue: [self error: 'number too big']
+		ifFalse: [n > vlen ifTrue: [self next: n - vlen put: 0]].
+	"pad beginning with 0's"
+	vlen = 1
+		ifTrue: [self nextPut: v]
+		ifFalse: [(vlen = 2 and: [v isMemberOf: SmallInteger])
+				ifTrue: [self nextWordPut: v]
+				ifFalse: ["LargeInteger (assume pos, no negative convention)"
+					1 to: vlen do: [:i | self nextPut: (v at: vlen + 1 - i)]]]!
+nextSignedInteger
+	"Answer the next two bytes from the receiver as a signed Integer."
+
+	| returnValue |
+	self atEnd ifTrue: [^false].
+	returnValue _ self next asInteger.
+	self atEnd ifTrue: [^false].
+	(returnValue _ returnValue * 256 + self next asInteger) highBit = 16
+		ifTrue:	[^returnValue - 65536	"16-bit negative 0"]
+		ifFalse:	[^returnValue].!
+nextString
+	"Read a string from the receiver. The first byte is the length of the string, unless it
+	is greater than 192, in which case the first two bytes encode the length."
+
+	| aString char length|
+	length _ self next.		"first byte."
+	length >= 192 ifTrue: [length _ (length - 192) * 256 + self next].
+	aString _ String new: length.
+	1 to: length do: [:i | aString at: i put: self next asCharacter].
+	^aString!
+nextStringPut: s
+	"Append the string, s, to the receiver."
+
+	| length |
+	(length _ s size) < 192
+		ifTrue: [self nextPut: length]
+		ifFalse:
+			[self nextPut: (length // 256 + 192).
+			self nextPut: (length \\ 256)].
+	s do: [:char | self nextPut: char asciiValue].
+	^s!
+nextWord
+	"Answer the next two bytes from the receiver as an Integer."
+
+	| high low |
+	high _ self next.
+		high==nil ifTrue: [^false].
+	low _ self next.
+		low==nil ifTrue: [^false].
+	^(high asInteger bitShift: 8) + low asInteger!
+nextWordPut: aWord
+	"Append to the receiver an Integer as the next two bytes."
+
+	self nextPut: ((aWord bitShift: -8) bitAnd: 255).
+	self nextPut: (aWord bitAnd: 255).
+	^aWord!
+"-----------------------------------"!
+!ExternalStream methodsFor: 'nonhomogeneous positioning'!
+padTo: bsize
+	"Pad (skip) to next boundary of bsize characters, and answer how many characters
+	were skipped."
+	self subclassResponsibility!
+padTo: bsize put: aCharacter
+	"Pad using the argument, aCharacter, to the next boundary of bsize characters,
+	and answer how many characters were written."
+	self subclassResponsibility!
+padToNextWord
+	"Make position even (on word boundary), answering the padding character if any."
+
+	position even
+		ifTrue: [^false]
+		ifFalse: [^self next]!
+padToNextWordPut: char
+	"Make position even on word boundary, writing the padding character, char, if necessary.  Answer nil if already on a word boundary"
+
+	position even
+		ifTrue: [^nil]
+		ifFalse: [^self nextPut: char]!
+skipWords: nWords
+	"Position after nWords number of words."
+	self skip: 2 * nWords!
+wordPosition
+	"Answer the current position in words."
+	^self position / 2!
+wordPosition: wp
+	"Set current position in words to be wp."
+	self position: 2 * wp!
+"-----------------------------------"!
+!ExternalStream methodsFor: 'positioning'!
+resetContents
+	"Reset pointers so that can restart reading the collection over which the receiver streams."
+	position _ 0.
+	readLimit _ 0!

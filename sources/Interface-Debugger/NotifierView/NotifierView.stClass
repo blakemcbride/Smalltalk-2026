@@ -1,0 +1,109 @@
+StandardSystemView subclass: #NotifierView
+  instanceVariableNames: 'contents'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Interface-Debugger'!
+NotifierView class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+NotifierView comment:
+'I am a view of interrupted machine state.  The interruption occurred in order to notify the user that some action to be taken is dangerous, perhaps because it is not recoverable. I contain one subView in which the notification information is displayed.  My default controller is NotifierController.
+
+Instance Variables:
+	contents	 <String> the notification information'!
+"-----------------------------------"!
+!NotifierView class methodsFor: 'instance creation'!
+openContext: haltContext label: aString contents: contentsString
+	"Create and schedule an instance of me viewing a Debugger on haltContext.
+	The view will be labeled with aString, and shows a short sender stack."
+
+	| displayPoint |
+	ErrorRecursion
+		ifTrue:
+			[ErrorRecursion _ false.
+			self primitiveError: aString].
+	ErrorRecursion _ true.
+	displayPoint _
+		ScheduledControllers activeController == nil
+			ifTrue: [Display boundingBox center]
+			ifFalse: [ScheduledControllers activeController view displayBox center].
+	self openDebugger: (Debugger context: haltContext)
+		contents: contentsString
+		label: aString
+		displayAt: displayPoint.
+	ErrorRecursion _ false.
+	Processor activeProcess suspend!
+openInterrupt: aString onProcess: interruptedProcess
+	"Create and schedule an instance of me whose model is a Debugger on
+	interruptedProcess.  Sent to notify the user that the system is low in space or that
+	the user typed ctrl c.  The label of the scheduled view is aString."
+
+	| debugger topView |
+	debugger _ Debugger interruptProcess: interruptedProcess.
+	topView _
+		self openDebugger: debugger
+			contents: debugger interruptedContext shortStack
+			label: aString
+			displayAt: Display boundingBox center.
+	^topView!
+"-----------------------------------"!
+!NotifierView class methodsFor: 'private'!
+openDebugger: aDebugger contents: aString1 label: aString2 displayAt: aPoint
+	| notifierView |
+	Cursor normal show.
+	Cursor cursorLink: true.
+	notifierView _ self new model: aDebugger.
+	notifierView contents: aString1.
+	notifierView label: aString2.
+	notifierView borderWidth: 2.
+	notifierView
+		minimumSize: notifierView defaultWindow width
+						@ notifierView defaultWindow height.
+	notifierView controller openNoTerminateDisplayAt: aPoint.
+	^notifierView!
+"-----------------------------------"!
+!NotifierView methodsFor: 'accessing'!
+contents
+	"Answer the information displayed in the receiver."
+
+	^contents!
+contents: aString
+	"Set aString to be the information that is displayed in the receiver."
+
+	contents _ aString asParagraph.
+	self centerContents!
+"-----------------------------------"!
+!NotifierView methodsFor: 'controller access'!
+defaultControllerClass
+	^NotifierController!
+"-----------------------------------"!
+!NotifierView methodsFor: 'displaying'!
+displayView
+	contents
+		displayOn: Display
+		transformation: self displayTransformation
+		clippingBox: self insetDisplayBox
+		fixedPoint: contents boundingBox center.
+	super displayView!
+"-----------------------------------"!
+!NotifierView methodsFor: 'initialize-release'!
+initialize
+	super initialize.
+	self insideColor: Form white!
+"-----------------------------------"!
+!NotifierView methodsFor: 'private'!
+centerContents
+	contents ~~ nil
+		ifTrue:
+			[contents
+				align: contents boundingBox center
+				with: self getWindow center]!
+"-----------------------------------"!
+!NotifierView methodsFor: 'window access'!
+defaultWindow
+	contents == nil
+		ifTrue: [^super defaultWindow]
+		ifFalse: [^contents boundingBox expandBy: 6]!
+window: aWindow
+	super window: aWindow.
+	self centerContents!

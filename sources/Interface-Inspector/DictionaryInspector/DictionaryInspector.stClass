@@ -1,0 +1,83 @@
+Inspector subclass: #DictionaryInspector
+  instanceVariableNames: 'ok'
+  classVariableNames: 'DictListMenu'
+  poolDictionaries: ''
+  category: 'Interface-Inspector'!
+DictionaryInspector class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+DictionaryInspector comment:
+'Note that the "field" instance variable of DictionaryInspectors contains the actual current dictionary key object, not a field name string.'!
+"-----------------------------------"!
+!DictionaryInspector class methodsFor: 'examples'!
+example
+	"Create and schedule an Inspector in which the user can examine the
+	receiver's variables."
+	InspectorView open: (DictionaryInspector inspect: Smalltalk)
+
+	"DictionaryInspector example."!
+"-----------------------------------"!
+!DictionaryInspector class methodsFor: 'initialization'!
+flushMenus
+	DictListMenu _ nil!
+"-----------------------------------"!
+!DictionaryInspector methodsFor: 'compiler interface'!
+insertAndSelect: aString at: ignoredIndex
+	ok _ false!
+"-----------------------------------"!
+!DictionaryInspector methodsFor: 'field list'!
+acceptText: aText from: aController
+	| val |
+	field == nil ifTrue: [^ false].
+	val _ self evaluateText: aText string from: aController ifFail: [^ false].
+	object at: field put: val.
+	self changed: #text.
+	^ true!
+fieldList
+	"Answer a collection of the keys of the inspected dictionary."
+
+	| keys |
+	keys _ object keys.
+	keys detect: [:key | (key class == Symbol) not]
+		ifNone: [^keys asSortedCollection]. "sort dictionaries with Symbol keys"
+	 ^keys asOrderedCollection!
+fieldMenu
+	"DictionaryInspector flushMenus"
+
+	field == nil ifTrue:
+		[^ActionMenu labels: 'add field' withCRs
+			selectors: #(addField)].
+	DictListMenu == nil ifTrue:
+		[DictListMenu _ ActionMenu
+			labels: 'inspect\references\add field\remove' withCRs
+			lines: #(2)
+			selectors: #(inspectField browseReferences
+						addField removeField)].
+	^DictListMenu!
+fieldValue
+
+	^object at: field!
+printItems
+	"Answer whether the elements of the fieldList need to be converted to strings"
+
+	^true!
+"-----------------------------------"!
+!DictionaryInspector methodsFor: 'menu commands'!
+addField
+	| aString key |
+	aString _ Browser new prompt: 'Enter key as a Smalltalk constant' initially: ''.
+	aString isEmpty ifTrue: [^ self].
+	ok _ true.
+	key _ Compiler evaluate: aString for: nil notifying: self logged: false.
+	ok ifFalse: [^nil].
+	object add: (Association key: key value: nil).
+	field _ key.
+	self changed: #field!
+browseReferences
+	Smalltalk browseAllCallsOn: (object associationAt: field)!
+removeField
+
+	(self confirm: 'Confirm removal of ', field printString) ifFalse: [^self].
+	object removeKey: field.
+	field _ nil.
+	self changed: #field!

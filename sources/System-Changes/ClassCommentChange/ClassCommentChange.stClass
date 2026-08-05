@@ -1,0 +1,25 @@
+ClassOtherChange subclass: #ClassCommentChange
+  instanceVariableNames: ''
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'System-Changes'!
+ClassCommentChange class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+ClassCommentChange comment:
+'I am a change to some part of a class comment.'!
+"-----------------------------------"!
+!ClassCommentChange class methodsFor: 'instance creation'!
+new
+	^super new type: #comment!
+"-----------------------------------"!
+!ClassCommentChange methodsFor: 'accessing'!
+text
+	^file == nil
+		ifTrue: [className, ' comment:
+', (Smalltalk at: className) comment printString]
+		ifFalse: [super text]!
+"-----------------------------------"!
+!ClassCommentChange methodsFor: 'checking'!
+checkWith: aChecker
+	aChecker changesAt: className, '<', type, '>' add: self!

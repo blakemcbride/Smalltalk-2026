@@ -1,0 +1,17 @@
+SwitchController subclass: #IndicatorOnSwitchController
+  instanceVariableNames: ''
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Interface-Menus'!
+IndicatorOnSwitchController class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+IndicatorOnSwitchController comment:
+'I am a SwitchController that has its View (a SwitchView) highlighted while the model (a Switch) handles the messages it is sent.'!
+"-----------------------------------"!
+!IndicatorOnSwitchController methodsFor: 'basic control sequence'!
+sendMessage
+	arguments size = 0
+		ifTrue: [view indicatorOnDuring: [model perform: selector]]
+		ifFalse: [view indicatorOnDuring:
+					[model perform: selector withArguments: arguments]]!

@@ -1,0 +1,74 @@
+Object subclass: #ProcessHandle
+  instanceVariableNames: 'process controller interrupted resumeContext proceedValue'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Interface-Debugger'!
+ProcessHandle class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+ProcessHandle comment:
+'A ProcessHandle holds the state of an interrupted process.  It is capable of cutting back
+the process''s stack, terminating the process, or causing it to resume again.'!
+"-----------------------------------"!
+!ProcessHandle class methodsFor: 'instance creation'!
+on: aProcess at: aContext interrupted: aBoolean
+	^ self new
+		process: aProcess
+		controller: (ScheduledControllers activeControllerProcess == aProcess
+					ifTrue: [ScheduledControllers activeController]
+					ifFalse: [nil])
+		interrupted: aBoolean
+		resumeContext: aContext!
+"-----------------------------------"!
+!ProcessHandle methodsFor: 'access'!
+interrupted
+	^ interrupted!
+interrupted: aBoolean
+	"whoever uses this should be a method in this class"
+	interrupted _ aBoolean!
+proceedValue
+	^ proceedValue!
+proceedValue: value
+	proceedValue _ value!
+topContext
+	^ resumeContext!
+topContext: aContext
+	resumeContext _ aContext!
+"-----------------------------------"!
+!ProcessHandle methodsFor: 'control'!
+resumeProcess
+	| aScheduledController |
+	aScheduledController _ ScheduledControllers activeController.
+	aScheduledController view erase.
+	process suspendedContext method == (Process compiledMethodAt: #terminate)
+		ifFalse:
+			[resumeContext == process suspendedContext ifFalse:
+				[process popTo: resumeContext].
+			ScheduledControllers
+				activeControllerNoTerminate: controller  "NoTerminate"
+				andProcess: process].
+	"if old process was terminated, just terminate current one"
+	self release.  "must precede close because it tries to terminate"
+	aScheduledController closeAndUnscheduleNoErase.
+	Processor terminateActive!
+terminate
+	process == nil ifFalse: [process terminate].
+	self release!
+"-----------------------------------"!
+!ProcessHandle methodsFor: 'initialize-release'!
+process: aProcess controller: aController interrupted: aBoolean resumeContext: aContext
+	process _ aProcess.
+	controller _ aController.
+	interrupted _ aBoolean.
+	resumeContext _ aContext.
+	proceedValue _ nil!
+release
+	process _ nil.  "break all cycles"
+	controller _ nil.
+	resumeContext _ nil.
+	proceedValue _ nil!
+"-----------------------------------"!
+!ProcessHandle methodsFor: 'menu messages'!
+proceed
+	interrupted ifTrue: [resumeContext push: proceedValue].
+	self resumeProcess!

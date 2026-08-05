@@ -1,0 +1,87 @@
+ParseNode subclass: #LeafNode
+  instanceVariableNames: 'key code'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'System-Compiler'!
+LeafNode class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+LeafNode comment:
+'I represent a leaf node of the compiler parse tree.  I am abstract.
+ Types (defined in class ParseNode):
+	1 LdInstType (which uses class VariableNode)
+	2 LdTempType (which uses class VariableNode)
+	3 LdLitType (which uses class LiteralNode)
+	4 LdLitIndType (which uses class VariableNode)
+	5 SendType (which uses class SelectorNode)'!
+"-----------------------------------"!
+!LeafNode methodsFor: 'accessing'!
+key
+	^key!
+"-----------------------------------"!
+!LeafNode methodsFor: 'code generation'!
+code
+	^code!
+emitForEffect: stack on: strm
+	^self!
+emitLong: mode on: aStream
+	"emit extended variable access"
+
+	| type index |
+	code < 256
+		ifTrue: [code < 16
+				ifTrue:
+					[type _ 0.
+					index _ code]
+				ifFalse:
+					[code < 32
+						ifTrue:
+							[type _ 1.
+							index _ code - 16]
+						ifFalse:
+							[code < 96
+								ifTrue:
+									[type _ code // 32 + 1.
+									index _ code \\ 32]
+								ifFalse: [self error:
+										'Sends should be handled in SelectorNode']]]]
+		ifFalse:
+			[index _ code \\ 256.
+			type _ code // 256 - 1].
+	aStream nextPut: mode.
+	aStream nextPut: type * 64 + index!
+reserve: encoder
+	"if this is a yet unused literal of type -code, reserve it"
+
+	code < 0 ifTrue: [code _ self code: (encoder litIndex: key) type: 0 - code]!
+size: encoder
+	^self sizeForValue: encoder!
+sizeForEffect: encoder
+	^0!
+sizeForValue: encoder
+	self reserve: encoder.
+	code < 256
+		ifTrue: [^1].
+	^2!
+"-----------------------------------"!
+!LeafNode methodsFor: 'initialize-release'!
+key: object code: byte
+	key _ object.
+	code _ byte!
+key: object index: i type: type
+	self key: object code: (self code: i type: type)!
+name: ignored key: object code: byte
+	key _ object.
+	code _ byte!
+name: literal key: object index: i type: type
+	self key: object
+		index: i
+		type: type!
+"-----------------------------------"!
+!LeafNode methodsFor: 'private'!
+code: index type: type
+	index isNil
+		ifTrue: [^type negated].
+	(CodeLimits at: type) > index
+		ifTrue: [^(CodeBases at: type) + index].
+	^type * 256 + index!

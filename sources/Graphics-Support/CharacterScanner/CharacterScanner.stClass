@@ -1,0 +1,131 @@
+BitBlt subclass: #CharacterScanner
+  instanceVariableNames: 'lastIndex xTable stopConditions text textStyle leftMargin rightMargin font line runStopIndex spaceCount spaceWidth outputMedium'
+  classVariableNames: ''
+  poolDictionaries: 'TextConstants'
+  category: 'Graphics-Support'!
+CharacterScanner class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+CharacterScanner comment:
+'My instances hold the state associated with scanning text.
+
+
+Instance Variables
+
+	lastIndex
+<Integer>  String index of last character scanned.
+
+	xTable
+<Array>  Array left x-coordinates of character glyphs (cached from font).
+
+	stopConditions
+<Array>  Array of selectors to perform when scanning various characters.
+	----
+	text
+<Text>  The text being scanned.
+
+	textStyle
+<TextStyle>  The style (font set, etc.) being used with this text.
+
+	leftMargin, rightMargin
+<Integers>  Screen coordinates delimiting the text.
+
+	font
+<StrikeFont>  The font currently in use.
+
+	line
+<TextLineInterval>  Giving the current range in text.
+
+	runStopIndex
+<Integer>  Where the current run ends in text.
+
+	spaceCount
+<Integer>  How many spaces have been scanned in this line.
+
+	spaceWidth
+<Integer>  How wide spaces should be in this line.
+
+	outputMedium
+<Symbol>  Either #Display, #PressPrinter or #DisplayPrinterWidths as of 1/20/80.  Needed by CompositionScanner for determining the nature of the font to be used for character widths.  For the DisplayScanner there are several places where distinguishing between displaying and printing is required.
+
+The first three variables are required (in addition to inherited BitBlt state) by the primitive scanning operation.'!
+"-----------------------------------"!
+!CharacterScanner methodsFor: 'private'!
+doesDisplaying
+	^false!
+initializeFromParagraph: aParagraph clippedBy: clippingRectangle
+	text _ aParagraph text.
+	textStyle _ aParagraph textStyle.
+	destForm _ aParagraph destinationForm.
+	outputMedium _ aParagraph outputMedium.
+	halftoneForm _ aParagraph mask.
+	self combinationRule: aParagraph rule.
+	self clipRect: clippingRectangle.
+	sourceY _ 0.!
+"-----------------------------------"!
+!CharacterScanner methodsFor: 'scanning'!
+characterNotInFont
+	"All fonts have an illegal character to be used when a character is not within the font's legal range.  When characters out of ranged are encountered in scanning text, then this special character indicates the appropriate behavior.  The character is usually treated as a unary message understood by a subclass of CharacterScanner."
+
+	| illegalAsciiString saveIndex stopCondition |
+	saveIndex _ lastIndex.
+	illegalAsciiString _ String with: (font maxAscii + 1) asCharacter.
+	(self isMemberOf: CompositionScanner) not
+	ifTrue: [
+	stopCondition _
+					self scanCharactersFrom: 1
+						to: 1
+						in: illegalAsciiString
+						rightX: rightMargin
+						stopConditions: stopConditions
+						displaying: self doesDisplaying]
+	ifFalse:	[
+	stopCondition _
+		self scanCharactersFrom: 1 to: 1
+			in: illegalAsciiString
+			rightX: rightMargin stopConditions: stopConditions
+			displaying: self doesDisplaying].
+	lastIndex _ saveIndex + 1.
+	stopCondition ~= (stopConditions at: EndOfRun)
+		ifTrue:	[^self perform: stopCondition]
+		ifFalse: [lastIndex = runStopIndex
+					ifTrue:	[^self perform: (stopConditions at: EndOfRun)].
+				^false]!
+scanCharactersFrom: startIndex to: stopIndex in: sourceString rightX: rightX stopConditions: stops displaying: display
+
+	"This is the inner loop of text display -- but consider scanCharactersFrom: to:rightX: which would get the string, stopConditions and displaying from the instance. March through source String from startIndex to stopIndex. If any character is flagged with a non-nil entry in stops, then return the corresponding value. Determine width of each character from xTable. If dextX would exceed rightX, then return stops at: 258. If displaying is true, then display the character. Advance destX by the width of the character. If stopIndex has been reached, then return stops at: 257. Fail under the same conditions that the Smalltalk code below would cause an error. Optional. See Object documentation whatIsAPrimitive. "
+
+	| ascii nextDestX |
+	<primitive: 103>
+	lastIndex _ startIndex.
+	[lastIndex <= stopIndex]
+		whileTrue:
+			[ascii _ (sourceString at: lastIndex) asciiValue.
+			(stopConditions at: ascii + 1) ~~ nil ifTrue: [^stops at: ascii + 1].
+			sourceX _ xTable at: ascii + 1.
+			nextDestX _ destX + (width _ (xTable at: ascii + 2) - sourceX).
+			nextDestX > rightX ifTrue: [^stops at: CrossedX].
+			display ifTrue: [self copyBits].
+			destX _ nextDestX.
+			lastIndex _ lastIndex + 1].
+	lastIndex _ stopIndex.
+	^stops at: EndOfRun!
+"-----------------------------------"!
+!CharacterScanner methodsFor: 'stop conditions'!
+setStopConditions
+	"Set default stop conditions for the font."
+
+	spaceWidth _ font widthOf: Space.
+	sourceForm _ font glyphs.
+	xTable _ font xTable.
+	height _ font height.
+	stopConditions _ font stopConditions.
+	stopConditions at: Space asInteger + 1 put: #space.
+	stopConditions at: Tab asInteger + 1 put: #tab.
+	stopConditions at: CR asInteger + 1 put: #cr.
+	stopConditions at: EndOfRun put: #endOfRun.
+	stopConditions at: CrossedX put: #crossedX.
+
+	stopConditions at: Ctrls asInteger + 1 put: #onePixelSpace.
+	stopConditions at: CtrlS asInteger + 1 put: #onePixelBackspace.
+	stopConditions at: Ctrlz asInteger + 1 put: #characterNotInFont.!

@@ -1,0 +1,232 @@
+DisplayObject subclass: #Path
+  instanceVariableNames: 'form collectionOfPoints'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Graphics-Display Objects'!
+Path class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+Path comment:
+'This is the basic superclass of the Graphic Spatial Primitives.  Spatial Primitives are used to generate "trajactories" or paths like lines and circles.  The
+instance variable form is the "brush" used for displaying the Path:  the image is accomplished by displaying the form at each point in the Path.'!
+"-----------------------------------"!
+!Path class methodsFor: 'examples'!
+example
+	"Creates a Path from mousePoints and displays it several ways on the display
+	screen.  Messes up the display. for learning about class Path.
+	just select the code below and execute it to create a path and see it redisplayed in
+	another place on the screen.  Each path displays using a different form.  A path
+	is indicated by pressing the red mouse button in sequence;  press any other
+	mouse button to terminate."
+
+	| aPath aForm p1 f1 flag |
+	aForm _ Form new extent: 2 @ 40.
+	"creates a form one inch long"
+	aForm black.
+	"turns it black"
+	aPath _ Path new.
+	aPath form: aForm.
+	"use the long black form for display"
+	flag _ true.
+	[flag]
+		whileTrue:
+			[Sensor waitButton.
+			Sensor redButtonPressed
+				ifTrue:
+					[aPath add: Sensor waitButton.
+					Sensor waitNoButton.
+					aForm displayOn: Display at: aPath last]
+				ifFalse: [flag _ false]].
+	Display white.
+	aPath displayOn: Display.			"the original path"
+	p1 _ aPath translateBy: 0 @ 300.
+	f1 _ Form new extent: 40 @ 40.
+	f1 gray.
+	p1 form: f1.
+	p1 displayOn: Display.		"the translated path"
+	Sensor waitNoButton
+
+	"Path example."!
+"-----------------------------------"!
+!Path class methodsFor: 'instance creation'!
+new
+	^self basicNew initializeCollectionOfPoints!
+new: anInteger
+	^self basicNew initializeCollectionOfPoints: anInteger!
+"-----------------------------------"!
+!Path methodsFor: 'accessing'!
+at: index
+	"Answer the point on the receiver's path at position index."
+	^collectionOfPoints at: index!
+at: index put: aPoint
+	"Store the argument, aPoint, as the point on the receiver's path at position index."
+	^collectionOfPoints at: index put: aPoint!
+first
+	"Answer the first point on the receiver's path."
+	^collectionOfPoints first!
+firstPoint
+	"Answer the first point on the receiver's path."
+	^collectionOfPoints first!
+firstPoint: aPoint
+	"Answer the argument aPoint.  Replace the first element of the receiver
+	with the new value aPoint."
+
+	collectionOfPoints at: 1 put: aPoint.
+	^aPoint!
+form
+	"Answer the receiver's form. If form is nil then a 1 x 1 black form (a
+	black dot) is answered."
+
+	| aForm |
+	form == nil
+		ifTrue:
+			[aForm _ Form new extent: 1 @ 1.
+			aForm black.
+			^aForm]
+		ifFalse:
+			[^form]!
+form: aForm
+	"Make the argument, aForm, the receiver's form."
+	form _ aForm!
+last
+	"Answer the last point on the receiver's path."
+	^collectionOfPoints last!
+offset
+	"There are basically two kinds of display objects in the system:  those that, when
+	asked to transform themselves, create a new object;  and those that side effect
+	themselves by maintaining a record of the transformation request (typically
+	an offset).  Path, like Rectangle and Point, is a display object of the first kind."
+
+	self shouldNotImplement!
+secondPoint
+	"Answer the second element of the receiver."
+
+	^collectionOfPoints at: 2!
+secondPoint: aPoint
+	"Answer the argument aPoint.  Replace the second element of the receiver
+	with the new value aPoint."
+
+	collectionOfPoints at: 2 put: aPoint.
+	^aPoint!
+size
+	"Answer the length of the receiver."
+	^collectionOfPoints size!
+thirdPoint
+	"Answer the third element of the receiver."
+	^collectionOfPoints at: 3!
+thirdPoint: aPoint
+	"Answer the argument aPoint.  Replace the third element of the receiver
+	with the new value aPoint."
+
+	collectionOfPoints at: 3 put: aPoint.
+	^aPoint!
+"-----------------------------------"!
+!Path methodsFor: 'adding'!
+add: aPoint
+	"Include aPoint as one of the receiver's elements."
+	collectionOfPoints add: aPoint!
+"-----------------------------------"!
+!Path methodsFor: 'display box access'!
+computeBoundingBox
+	| box |
+	box _ Rectangle origin: (self at: 1) extent: 0 @ 0.
+	collectionOfPoints do:
+		[:aPoint | box _ box merge: (Rectangle origin: aPoint extent: 0 @ 0)].
+	^box!
+"-----------------------------------"!
+!Path methodsFor: 'displaying'!
+displayOn: aDisplayMedium at: aDisplayPoint clippingBox: clipRectangle rule: ruleInteger mask: aForm
+	"Display this Path--offset by aPoint, clipped by clipRect and the form
+	associated with this Path will be displayedr according to one of the sixteen
+	functions of two logical variables (rule). Also the source form will be first
+	anded with aForm as a mask. Does not effect the state of the Path"
+
+	collectionOfPoints do:
+		[:element |
+		self form
+			displayOn: aDisplayMedium
+			at: element + aDisplayPoint
+			clippingBox: clipRectangle
+			rule: ruleInteger
+			mask: aForm]!
+displayOn: aDisplayMedium transformation: displayTransformation clippingBox: clipRectangle rule: ruleInteger mask: aForm
+	"Displays this path, translated and scaled by aTransformation."
+	"get the scaled and translated Path."
+
+	| newPath transformedPath |
+	transformedPath _ displayTransformation applyTo: self.
+	newPath _ Path new.
+	transformedPath do: [:point | newPath add: point].
+	newPath form: self form.
+	newPath
+		displayOn: aDisplayMedium
+		at: 0 @ 0
+		clippingBox: clipRectangle
+		rule: ruleInteger
+		mask: aForm!
+"-----------------------------------"!
+!Path methodsFor: 'enumerating'!
+collect: aBlock
+	"Evaluate aBlock with each of the receiver's elements as the argument.  Collect the
+	resulting values into a collection that is like the receiver.  Answer the new
+	collection."
+
+	| newCollection |
+	newCollection _ collectionOfPoints collect: aBlock.
+	newCollection form: self form.
+	^newCollection!
+select: aBlock
+	"Evaluate aBlock with each of the receiver's elements as the argument.
+	Collect into a new collection like the receiver, only those elements for which
+	aBlock evaluates to true.  Answer the new collection."
+
+	| newCollection |
+	newCollection _ collectionOfPoints select: aBlock.
+	newCollection form: self form.
+	^newCollection!
+"-----------------------------------"!
+!Path methodsFor: 'private'!
+initializeCollectionOfPoints
+	collectionOfPoints _ OrderedCollection new!
+initializeCollectionOfPoints: anInteger
+	collectionOfPoints _ OrderedCollection new: anInteger!
+"-----------------------------------"!
+!Path methodsFor: 'removing'!
+removeAllSuchThat: aBlock
+	"Evaluate aBlock for each element of the receiver.  Remove each element for
+	which aBlock evaluates to true."
+
+	| newCollection |
+	newCollection _ collectionOfPoints removeAllSuchThat: aBlock.
+	newCollection form: self form.
+	^newCollection!
+"-----------------------------------"!
+!Path methodsFor: 'testing'!
+isEmpty
+	^collectionOfPoints isEmpty!
+"-----------------------------------"!
+!Path methodsFor: 'transforming'!
+scaleBy: aPoint
+	"Answers with a new Path scaled by aPoint.  Does not effect the current data in
+	this Path."
+
+	| newPath |
+	newPath _ Path new: self size.
+	newPath form: self form.
+	collectionOfPoints do:
+		[:element |
+		newPath add:
+				(aPoint x * element x) truncated @ (aPoint y * element y) truncated].
+	^newPath!
+translateBy: aPoint
+	"Answers with a new instance of Path whose elements are translated by aPoint.
+	Does not effect the elements of this Path."
+
+	| newPath |
+	newPath _ Path new: self size.
+	newPath form: self form.
+	collectionOfPoints do:
+		[:element |
+		newPath add:
+			(element x + aPoint x) truncated @ (element y + aPoint y) truncated].
+	^newPath!

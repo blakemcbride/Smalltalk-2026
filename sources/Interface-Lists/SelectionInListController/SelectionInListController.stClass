@@ -1,0 +1,56 @@
+ListController subclass: #SelectionInListController
+  instanceVariableNames: ''
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Interface-Lists'!
+SelectionInListController class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+SelectionInListController comment:
+'This controllers is designed to support the pluggable SelectionInListViews (q.v.).
+As its operation is parameterized in the view, it must ask its view for current
+selection and for menu options.  The tighter controller/view relationship appropriate to
+pluggable viewing has not yet fully matured.  Note that control is not accepted
+if the view is empty.'!
+"-----------------------------------"!
+!SelectionInListController methodsFor: 'control defaults'!
+isControlWanted
+	view isEmpty ifTrue: [^ false].
+	^super isControlWanted!
+"-----------------------------------"!
+!SelectionInListController methodsFor: 'menu messages'!
+redButtonActivity
+	| selectionMovement oldSelection trialSelection nextSelection |
+	selectionMovement _ false.
+	oldSelection _ view selection.
+	[sensor redButtonPressed]
+		whileTrue:
+			[trialSelection _ view findSelection: sensor cursorPoint.
+			trialSelection ~~ nil
+				ifTrue:
+					[nextSelection _ trialSelection.
+					view moveSelectionBox: nextSelection.
+					nextSelection ~= oldSelection ifTrue: [selectionMovement _ true]]].
+	nextSelection == nil ifTrue: [^self].
+	nextSelection = oldSelection ifTrue:
+		[selectionMovement ifTrue: [^self].
+		nextSelection _ 0.
+		view moveSelectionBox: nextSelection].
+	model changeRequest ifFalse:
+			[view moveSelectionBox: oldSelection.
+			^ view flash].
+	view changeModelSelection: nextSelection!
+yellowButtonActivity
+	| index menu |
+	menu _ view yellowButtonMenu.
+	menu == nil
+		ifTrue:
+			[view flash.
+			super controlActivity]
+		ifFalse:
+			[index _ menu startUpYellowButton.
+			index ~= 0
+				ifTrue:
+					[self controlTerminate.
+					model perform: (menu selectorAt: index).
+					self controlInitialize]]!

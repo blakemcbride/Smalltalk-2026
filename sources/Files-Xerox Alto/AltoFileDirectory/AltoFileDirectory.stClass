@@ -1,0 +1,506 @@
+FileDirectory subclass: #AltoFileDirectory
+  instanceVariableNames: 'dirFile bitsFile diskPages totalPages nSectors'
+  classVariableNames: ''
+  poolDictionaries: 'AltoFilePool'
+  category: 'Files-Xerox Alto'!
+AltoFileDirectory class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+AltoFileDirectory comment:
+'A concrete example of a FileDirectory class.  Implements the Xerox Alto File System.  See the Alto Operating System Reference Manual section about Disks.
+
+Note that the Alto file address format is
+	bits
+	0-3		sector number	(0 - 8r15, i.e., 12 or 14 sectors)
+	4-12	cylinder number (0 - 8r312, Model 31; 0-8r625, Model 44)
+	13		head number (0-1)
+	14		disk number (0-1)
+	15		restore bit.
+
+Instance Variables:
+	dirFile		<File> or nil
+	bitsFile		<File> or nil
+	diskPages	<Integer>
+	totalPages	<Integer>
+	nSectors		<Integer>'!
+"-----------------------------------"!
+!AltoFileDirectory class methodsFor: 'instance creation'!
+directory: aFileDirectory directoryName: aString
+	"Answer an instance of me in directory aFileDirectory whose name is aString."
+
+	^super new setDirectory: aFileDirectory directoryName: aString!
+new
+	^self directory: 0 directoryName: 0!
+"-----------------------------------"!
+!AltoFileDirectory methodsFor: 'accessing'!
+next
+	^self nextFile: self fileClass new!
+realToVirtual: address
+	"Convert the argument, address, from a real address to a virtual address."
+
+	^(( address bitShift: -12) bitAnd: 8r17) "sector: field"
+	  + (nSectors * ((address bitAnd: 8r7774) bitShift: -2)) "cylinder and head: field*"
+	  +  "disk: field*pages per disk"
+		((address bitAnd: 2) = 2 "diskPages*(address bitAnd: 2)//2"
+		  ifTrue: [diskPages]
+		  ifFalse: [0])!
+"-----------------------------------"!
+!AltoFileDirectory methodsFor: 'adding'!
+addNew: aFile
+	| sn page |
+	sn _ self allocateSN: aFile.
+	aFile serialNumber: sn.
+
+	"allocate a new page (more success after O.S. stuff, bittable etc.)"
+	self allocate: (page _ aFile initPageNumber: 0) after: 800.
+
+	"write 0th -- leader, in the process filling it in and then creating first page".
+	page reinitialize.
+	page serialNumber: sn.
+	page size: page dataSize.
+	aFile leader: page address.
+	aFile readWrite: Write.
+	aFile updateLeader: page.
+	self addEntry: aFile.
+	^aFile!
+"-----------------------------------"!
+!AltoFileDirectory methodsFor: 'enumerating'!
+reset
+	dirFile == nil
+		ifTrue: [self open]
+		ifFalse: [self flush].
+	dirFile readOnly.
+	dirFile reset!
+"-----------------------------------"!
+!AltoFileDirectory methodsFor: 'file accessing'!
+checkName: aString
+	"Answer whether aString is a valid file name."
+	^self checkName: aString fixErrors: false!
+checkName: fname fixErrors: fixing
+	"Check file name for correct length and characters."
+
+	| char len i newName special period |
+	fname isEmpty
+		ifTrue: [fixing ifTrue: [^'$'].
+				 self error: 'empty file name'].
+
+	special _ '.-+$!!?'.
+	period _ $..
+	len _ fname size.
+
+	(len > 39 or: [len = 39 and: [(fname at: len) ~= period]])
+		ifTrue: [fixing ifTrue: ["truncate name" len _ 38]
+		ifFalse: [self error: 'name too long']].
+
+	newName _ WriteStream on: (String new: len + 1).
+	1 to: len do: [:i |
+		char _ fname at: i.
+		"check characters: alphanumeric or 6 special"
+		(char isLetter or: [(special includes: char) or: [char isDigit]])
+		 	ifTrue: [newName nextPut: char]
+		 	ifFalse: [
+				fixing ifTrue: [newName nextPut: $-]
+					ifFalse: [self error: ('illegal character ' copyWith: char)]]].
+
+	"make sure last character is period (isn't period when fixing)"
+	(fname at: len) = period
+		ifTrue: [fixing ifTrue: [newName skip: -1]]
+		ifFalse: [fixing ifFalse: [newName nextPut: period]].
+
+	^newName contents!
+checkNameOfFile: aString
+	"Answer whether aString is a valid file name."
+	^self checkNameOfFile: aString fixErrors: false!
+fileClass
+	^AltoFile!
+filesMatching: pattern
+	^super filesMatching:
+		(pattern last = $.
+			ifTrue: [pattern]
+			ifFalse: [pattern , '.'])!
+rename: aFile newName: newFileName
+	| holesize pos newFile newName file |
+	(self findFileOrHole: (newFile _ self initFileName: newFileName))
+		  ifTrue: [^newFile error: 'rename: new name already exists'].
+
+	newName _ newFile fileName.
+	"a possible insertion place"
+	pos _ dirFile position.
+
+	(self findFileOrHole: (file _ self initFile: aFile))
+		ifFalse: [^file error: 'rename: old name does not exist'].
+
+	holesize _ dirFile nextWord bitAnd: Dfmask - 1.
+	dirFile skip: -2.
+	file fileName: newName.
+	(self fileSize: file) "new size of entry" <= holesize
+	  ifTrue:
+		["new entry will fit in current entry" "read and save entry"
+		pos _ dirFile position.
+		file _ self next]
+	  ifFalse: ["delete and save entry"
+		file _ self deleteEntry: file].
+
+	"position to same entry or hole discovered earlier"
+	dirFile position: pos.
+	file fileName: newName.
+	self addEntry: file.
+	file readWrite: Write.
+	file writeTime isNil
+		ifTrue:
+			["close file: updating name in leader page"
+			file close]
+	"otherwise, file is open. defer leader page change until someone closes it"!
+"-----------------------------------"!
+!AltoFileDirectory methodsFor: 'file status'!
+close
+	closed
+		ifFalse:
+			[dirFile close.
+			bitsFile == nil ifFalse: ["an interrupted open?" bitsFile close].
+			super close]!
+flush
+	bitsFile == nil ifFalse: [bitsFile flush]!
+open
+	| f s a page len elen type |
+	closed
+	  ifTrue:
+		["assume some defaults in case DSHAPE is not in SysDir leader page.
+	these should only be needed if the disk is old (and not scavenged).
+	they will not work if a 14 sector system is missing DSHAPE (unlikely) since
+	addresses of first page of SysDir and DiskDescriptor might be computed incorrectly"
+		nSectors _ 12.
+		diskPages _ 812 * nSectors.
+		totalPages _ 2 * diskPages.
+
+		"read SysDir leader page to find out file system configuration.  see AltoFileSys.D".
+		f _ self findKey: Dirname.
+		f binary.
+		"to prevent address of page 1 from being stored".
+		f pageAddresses: nil.
+		page _ f readPageNumber: 0.
+		"length of property list, in words"
+		len _ page at: 494.
+		len = 210
+		  ifTrue:
+			["scan file properties for DSHAPE"
+			s _ page asFileStream: ExternalStream new.
+			s skipWords: (page at: 493).
+			[len > 0] whileTrue:
+				[type _ s next.
+				type = 0
+				  ifTrue: [
+					"0 terminates list. property not found.
+					try to read it later from DiskDescriptor"
+					len _ 0]
+				  ifFalse:
+					[elen _ s next.
+					(type = 1 and: [elen = 5])
+					  ifTrue:
+						["DSHAPE. read property"
+						self configure: s.
+						"set flags so configure and loop are not done again"
+						s _ false.
+						len _ 0]
+					  ifFalse:
+						["skip over other property"
+						len _ len - elen.
+						s skipWords: elen - 1]]]].
+
+		"now, with the correct (or default) file system configuration,
+		store the virtual address of next page (1), and create a FileStream on SysDir"
+		a _ AltoFileAddressArray new directory: self.
+		a addLast: (page headerWordAt: Nextp).
+		f pageAddresses: a.
+		dirFile _ f asFileStream.
+		dirFile readOnly.
+
+		bitsFile _ self oldFile: 'DiskDescriptor'.
+		bitsFile binary.
+		bitsFile readWrite.
+		closed _ false.
+		s
+		  ifTrue:
+			["configuration not read from SysDir. this will work for 12 sector systems.
+			14 sector systems should have had the DSHAPE property"
+			self configure: bitsFile].
+		super open]!
+release
+	dirFile _ bitsFile _ nil.
+	closed _ true!
+"-----------------------------------"!
+!AltoFileDirectory methodsFor: 'page accessing'!
+allocate: nextPage after: address
+	| index stop ch m vadr oldCursor |
+	index _ nil.
+	[true] whileTrue:
+		["go around bittable from address to end, and beginning to address.
+		we start over again if the table appears full or bitsFile is out of sync"
+		(index notNil and: [stop >= totalPages])
+		  ifTrue:
+			["wrap around to where we started"
+			stop _ address.
+			index _ 0]
+		  ifFalse:
+			[index isNil
+			  ifFalse: ["disk probably full"
+				Smalltalk releaseExternalViews.
+				self error: 'YOUR DISK IS FULL (abort or make space and proceed)'].
+
+			self open.
+			"index by bits rather than bytes? close enough for now"
+			index _ address bitAnd: 8r177770.
+			stop _ totalPages].
+
+		bitsFile position: index // 8 + Boffset.
+		[index notNil and: [(index _ index + 8) <= stop]] whileTrue:
+			[(ch _ bitsFile next) = 8r377
+			  ifFalse:
+				["check that bitsFile position is correct --
+				possibly out of sync with index if  growSmalltalkBy: occurred?"
+				bitsFile position ~= (index // 8 + Boffset)
+				  ifTrue: [index _ nil]
+				  ifFalse:
+					[m _ 8r200.
+					index - 8 to: index - 1 do:
+						[:vadr | (ch bitAnd: m) = 0
+						  ifTrue:
+							["page appears free. first update DiskDescriptor"
+							bitsFile skip: -1.
+							bitsFile nextPut: (ch _ ch bitOr: m).
+
+							"then check if page is really free"
+							vadr = 0
+							  ifFalse: "O.S. boot"
+								[nextPage reinitialize.
+								nextPage freePage.
+								nextPage address: (self virtualToReal: vadr).
+								(nextPage doCommand: CCR error: nil) notNil
+								  ifTrue: [oldCursor notNil ifTrue: [oldCursor show].
+										^vadr]
+								  ifFalse: "otherwise, page not really free"
+									[oldCursor isNil ifTrue:
+										[oldCursor _ Cursor currentCursor.
+										Cursor wait show. "this may take a while"]]]].
+
+						"page not free according to bit"
+						m _ m bitShift: -1]]]]]!
+allocateSN: file
+	| sn i |
+	"get last serial number used, a ByteArray"
+	bitsFile position: 8.
+	sn _ bitsFile next: 4.
+
+	"Add 1 to 4-byte SN, handling overflow"
+	i _ 4.
+	[(sn at: i) = 255] whileTrue:
+		[sn at: i put: 0.  i _ i-1].
+	sn at: i put: ((sn at: i) + 1).
+
+	"store new serial number, and return it"
+	bitsFile skip: -4.
+	bitsFile nextPutAll: sn.
+	^sn!
+deallocate: page
+	| index byte m |
+	closed ifTrue: [self open].
+	index _ self realToVirtual: page address.
+	"byte position"
+	bitsFile position: index // 8 + Boffset.
+	byte _ bitsFile next.
+	"bit position"
+	m _ 8r200 bitShift: 0 - (index bitAnd: 7).
+
+	"make page free by turning off bit in DiskDescriptor"
+	(byte bitAnd: m) = m
+	  ifTrue:
+		[bitsFile skip: -1.
+		bitsFile nextPut: byte - m]
+	  ifFalse:
+		[Transcript cr. Transcript show: 'page already free (deallocate:)']!
+freePages
+	| npages byte |
+	self open.
+	bitsFile position: Boffset.
+	npages _ 0.
+	1 to: totalPages by: 8 do:
+		[:i | (byte _ bitsFile next) = 255
+		  ifFalse:
+			["possibly up to 8 unused"
+			npages _ npages + 8.
+			[byte = 0] whileFalse:
+				[npages _ npages - (byte bitAnd: 1).
+				byte _ byte bitShift: -1]
+			"all used"]].
+	^npages!
+"-----------------------------------"!
+!AltoFileDirectory methodsFor: 'private'!
+addEntry: file
+	 "called only by Insert: and rename:newName:"
+
+	| entrysize holesize |
+	dirFile atEnd
+		ifTrue: [holesize _ nil]
+		ifFalse: [
+			"either a deleted entry or rename entry"
+			holesize _ dirFile nextWord bitAnd: Dfmask - 1.
+			dirFile skip: -2].
+
+	dirFile readWrite.
+	entrysize _ (self fileSize: file) // 2.
+	dirFile nextWordPut: Dfmask + entrysize.
+	file storeOnDirectory: dirFile.
+
+	(holesize notNil and: [entrysize < holesize])
+	  ifTrue: ["mark remaining hole" dirFile nextWordPut: holesize - entrysize].
+	dirFile readOnly.
+	bitsFile flush!
+configure: s
+	"read disk configuration from a Stream:
+		either leader page of SysDir or beginning of DiskDescriptor"
+
+	| nDisks nHeads nTracks |
+	nDisks _ s nextWord .
+	nTracks _ s nextWord.
+	nHeads _ s nextWord.
+	nSectors _ s nextWord.
+	diskPages _ nTracks * nHeads * nSectors.
+	totalPages _ nDisks * diskPages!
+deleteEntry: file
+	"called only by Delete: and rename:newName:
+	read and save"
+
+	| p nextFile |
+	p _ dirFile position.
+	nextFile _ self next.
+	dirFile position: p.
+
+	"delete it from directory (turn off bit in entry length word)"
+	p _ dirFile nextWord bitAnd: Dfmask - 1.
+	dirFile skip: -2.
+	dirFile readWrite.
+	dirFile nextWordPut: p.
+	dirFile readOnly.
+	dirFile skip: -2.
+	^nextFile!
+diskID
+	"return user name and disk name installed in O.S.
+	login name is stored somewhere else???"
+
+	| f userName diskName len |
+	f _ self oldFile: 'Sys.Boot'.
+	f text.
+	f readOnly.
+	f position: 512.
+	len _ f next asciiValue.
+	userName _ f next: len.
+	f padToNextWord.
+	len _ f next asciiValue.
+	diskName _ f next: len.
+	f close.
+	^Array with: userName with: diskName!
+diskNumber
+	^directoryName!
+fileSize: file
+	"return size in characters of a directory entry
+
+	entry format
+		1	n (length in words, including this one) + undeleted bit (dfmask)
+		2-3	serialNumber
+		4	version
+		5	file number (0?)
+		6	virtual address of page 0
+		7-n name as Bcpl string (extra 0 if length even)"
+
+	^13 "header word, sn, version, fn, leader, name" + (file fileName size bitOr: 1)!
+find: aFile ifAbsentDo: aBlock
+	| sn |
+	(aFile fileName sameAs: Dirname)
+		ifTrue:
+			["return system directory file. known serialNumber and leader"
+			sn _ ByteArray new: 4.
+			sn wordAt: 1 put: 8r100000.
+			sn wordAt: 2 put: 8r144.
+			aFile serialNumber: sn.
+			aFile leader: 8r10000 "(self virtualToReal: 1)".
+			^aFile].
+
+	"^super find: aFile ifAbsent: aBlock"
+	(self findFileOrHole: aFile) ifFalse: [^aBlock value: aFile].
+	^self nextFile: aFile!
+findFileOrHole: t1
+	| t2 t3 t4 t5 t6 t7 t8 t9 t10 |
+	t2 _ self checkNameOfFile: t1.
+	t1 fileName: t2.
+	t8 _ t2 size.
+	self reset.
+	t5 _ nil.
+	t6 _ Dfmask.
+	t7 _ (self fileSize: t1) // 2.
+	[dirFile atEnd]
+	 whileFalse: [t4 _ dirFile nextWord.
+		t3 _ t4 bitAnd: Dfmask - 1.
+		t7 > t3 ifTrue: [t9 _ -2]
+		 ifFalse: [t4 = t3
+			 ifTrue: [t9 _ -2.
+				t3 < t6
+				 ifTrue: [t6 _ t3.
+					t5 _ dirFile position]]
+			 ifFalse: [dirFile skip: 10.
+				t9 _ -13.
+				t8 = dirFile next
+				 ifTrue: [t10 _ 1.
+					[t10 <= t8 and: [(t2 at: t10) asLowercase
+						= dirFile next asCharacter asLowercase]]
+						 whileTrue: [t10 _ t10 + 1].
+					t10 > t8
+						ifTrue:
+							[dirFile skip: t9 - t8.
+							^true].
+					t9 _ t9 - t10]]].
+		dirFile skip: t3 * 2 + t9].
+	t5 notNil ifTrue: [dirFile position: t5 - 2].
+	^false!
+nextFile: aFile
+	| w elen |
+	[dirFile atEnd]
+		whileFalse:
+			["header word of directory"
+			w _ dirFile nextWord.
+			elen _ w bitAnd: Dfmask - 1.
+			(w bitAnd: Dfmask) = Dfmask
+				ifTrue:
+					["normal entry. create file instance"
+					aFile directory: self.
+					aFile reinitialize.
+					"initialize from directory"
+					aFile readFromDirectory: dirFile.
+					"skip to end of partially read entry"
+					dirFile skip: elen * 2 - (self fileSize: aFile).
+					^aFile].
+			"deleted entry"
+			dirFile skipWords: elen - 1].
+	^nil!
+virtualToReal: vadr
+	 "inverse of realToVirtual:"
+
+	| sec d |
+	vadr < diskPages
+	  ifTrue: [d _ 0. sec _ vadr] "d _ (vadr // diskPages) bitShift: 1"
+	  ifFalse: [d _ 2. sec _ vadr \\ diskPages].
+	^"disk" d +
+	"cylinder & head" (sec // nSectors bitShift: 2) + "(sec \\ nSectors) bitShift: 12"
+	"sector" (#(0 8r10000 8r20000 8r30000 8r40000 8r50000 8r60000 8r70000
+		8r100000 8r110000 8r120000 8r130000 8r140000 8r150000 8r160000 8r170000)
+		at: (sec \\ nSectors + 1))  "Indexing is faster than LargeInteger arithmetic!!"!
+"-----------------------------------"!
+!AltoFileDirectory methodsFor: 'removing'!
+remove: aFile ifAbsentDo: aBlock
+	(self findFileOrHole: aFile) ifFalse: [^aBlock value: aFile].
+	self removeOld: aFile!
+removeOld: file
+	| aFile |
+	aFile _ self deleteEntry: file.
+	aFile open.
+	aFile endFile: nil.
+	bitsFile flush!

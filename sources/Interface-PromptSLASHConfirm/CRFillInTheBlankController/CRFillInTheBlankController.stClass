@@ -1,0 +1,54 @@
+FillInTheBlankController subclass: #CRFillInTheBlankController
+  instanceVariableNames: ''
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Interface-Prompt/Confirm'!
+CRFillInTheBlankController class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+CRFillInTheBlankController comment:
+'I am a FillInTheBlankController that causes termination on a carriage return.'!
+"-----------------------------------"!
+!CRFillInTheBlankController methodsFor: 'basic control sequence'!
+controlInitialize
+	startBlock _ paragraph characterBlockForIndex: startBlock stringIndex.
+	stopBlock _ paragraph characterBlockForIndex: stopBlock stringIndex.
+	self initializeSelection.
+	beginTypeInBlock _ nil!
+controlTerminate
+	"self closeTypeIn ifTrue: [startBlock _ stopBlock copy]."
+	"so leaving and entering window won't select last type-in"
+	super controlTerminate!
+"-----------------------------------"!
+!CRFillInTheBlankController methodsFor: 'sensor access'!
+readKeyboard
+	"Copied from ParagraphEditor to gain access to carriage return termination--read a key that the user strikes on the keyboard."
+
+	| typeAhead currentCharacter |
+	self deselect.
+	typeAhead _ WriteStream on: (String new: 128).
+	beginTypeInBlock == nil
+		ifTrue:
+			[UndoSelection _ self selection.
+			beginTypeInBlock _ startBlock copy].
+	[sensor keyboardPressed]
+		whileTrue:
+			[currentCharacter _ sensor keyboardPeek.
+			currentCharacter = Character cr ifTrue: [^self cr: typeAhead].
+			(self perform: (Keyboard at: currentCharacter asciiValue + 1)
+				 with: typeAhead)
+				ifTrue: [^self]].
+	self replaceSelectionWith:
+		(Text string: typeAhead contents emphasis: emphasisHere).
+	startBlock _ stopBlock copy.
+	self selectAndScroll!
+"-----------------------------------"!
+!CRFillInTheBlankController methodsFor: 'stop conditions'!
+cr: characterStream
+	"The carriage return was typed by the user.  This designates that the receiver should give up control."
+
+	sensor keyboard. 	"gobble cr"
+	characterStream isEmpty ifFalse:
+		[self replaceSelectionWith:
+			(Text string: characterStream contents emphasis: emphasisHere)].
+	self accept!

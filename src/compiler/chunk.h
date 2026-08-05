@@ -35,6 +35,16 @@ typedef struct {
     size_t      length;
     int         is_reader;  /*  the chunk was introduced by "!"  */
     int         is_empty;   /*  whitespace only: ends a reader   */
+    /*
+     *  Whether there is anything here to compile.  Distinct from is_empty:
+     *  a chunk of nothing but a comment has no code but is not empty, and
+     *  the two answers are wanted in different places.  Reader detection
+     *  turns on is_empty, because that is what the "! !" idiom produces.
+     *  Ending a method category turns on has_code, because the markbush
+     *  source tree closes a category with a comment where standard fileIn
+     *  writes an empty chunk -- and a comment could not be a method anyway.
+     */
+    int         has_code;
 } st_chunk;
 
 typedef struct st_chunk_reader st_chunk_reader;

@@ -147,6 +147,15 @@ implicit lock. We break it deliberately and supply `Mutex`, `Monitor`,
 threads 1..N are Smalltalk workers and never call SDL video. SDL3's
 main-thread-only rules and macOS's Cocoa run loop force this shape.
 
+**The whole 1983 class library compiles.** All 4517 methods of the 226 MIT
+classes in `sources/` are accepted by the compiler, checked on every test run
+by `tests/unit/test_library.c` and reportable at any time with
+`st80 -syntax`. That is a grammar result, not a runtime one -- whether those
+methods RUN is Phase 8's question -- but it is what settled two points the
+Blue Book grammar gets wrong about the language Xerox actually shipped: the
+bar after a block's arguments is optional when the block has no body, and a
+method category may be closed by a comment rather than an empty chunk.
+
 **The language stops at the Blue Book.** The grammar this compiler accepts is
 the 1983 one, deliberately: dynamic arrays, general pragmas, block-local
 temporaries, byte-array and scaled-decimal literals and named primitives are
@@ -164,7 +173,7 @@ src/gfx/        BitBlt, display, SDL3 main thread
 src/sched/      Process, Semaphore, the M:N scheduler
 src/compiler/   Smalltalk compiler in C, chunk-format reader
 src/boot/       image bootstrap
-sources/        the 1983 class library (MIT), vendored
+sources/        the 1983 class library (MIT), vendored -- 226 classes
 oracle/         PRIVATE, gitignored -- see doc/LICENSING.md
 ```
 

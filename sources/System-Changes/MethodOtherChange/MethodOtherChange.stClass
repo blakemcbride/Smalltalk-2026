@@ -1,0 +1,23 @@
+MethodChange subclass: #MethodOtherChange
+  instanceVariableNames: 'type'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'System-Changes'!
+MethodOtherChange class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+MethodOtherChange comment:
+'Represents a change to a method other than new definition or removal.'!
+"-----------------------------------"!
+!MethodOtherChange methodsFor: 'accessing'!
+name
+	^type, ' ', className, ' ', selector!
+type
+	^type!
+type: aSymbol
+	type _ aSymbol!
+"-----------------------------------"!
+!MethodOtherChange methodsFor: 'checking'!
+checkWith: aChecker
+	aChecker changesAt: self name add: self.
+	aChecker addDoIt: self!

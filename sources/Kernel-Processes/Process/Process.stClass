@@ -1,0 +1,118 @@
+Link subclass: #Process
+  instanceVariableNames: 'suspendedContext priority myList'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Kernel-Processes'!
+Process class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+Process comment:
+'Instance Variables:
+		suspendedContext	<Context> activeContext at time of process suspension
+		priority				<Integer> partial indication of relative scheduling
+		myList				<LinkedList> on which I am suspended
+
+I represent an independent path of control in the system.  This path of control may be stopped (by sending me the message suspend) in such a way that it can later be restarted (by sending me the message restore).  When any one of several paths of control can be advanced, the single instance of ProcessorScheduler named Processor determines which one will actually be advanced partly using my priority.'!
+"-----------------------------------"!
+!Process class methodsFor: 'instance creation'!
+forContext: aContext priority: anInteger
+	"Answer an instance of me that has suspended aContext at priority anInteger."
+
+	| newProcess |
+	newProcess _ self new.
+	newProcess suspendedContext: aContext.
+	newProcess priority: anInteger.
+	^newProcess!
+"-----------------------------------"!
+!Process methodsFor: 'accessing'!
+offList
+	"Inform the receiver that it has been taken off a list that it was suspended
+	on.  This is to break a backpointer."
+
+	myList _ nil!
+priority
+	"Answer the priority of the receiver."
+	^priority!
+priority: anInteger
+	"Set the receiver's priority to anInteger."
+
+	anInteger<=Processor highestPriority
+		ifTrue: [priority _ anInteger]
+		ifFalse: [self error: 'priority too high']!
+suspendedContext
+	"Answer the context the receiver has suspended."
+	^suspendedContext!
+suspendingList
+	"Answer the list on which the receiver has been suspended."
+	^myList!
+"-----------------------------------"!
+!Process methodsFor: 'changing process state'!
+resume
+	"Allow the process that the receiver represents to continue. Put the receiver
+	in line to become the activeProcess. Fail if the receiver is already waiting
+	in a queue (in a Semaphore or ProcessScheduler). Essential. See Object
+	documentation whatIsAPrimitive."
+
+	<primitive: 87>
+	self primitiveFailed!
+suspend
+	"Stop the process that the receiver represents in such a way that it can be
+	restarted at a later time (by sending the receiver the message resume). If
+	the receiver represents the activeProcess, suspend it. Otherwise fail and
+	the code below will remove the receiver from the list of waiting
+	processes. Essential. See Object documentation whatIsAPrimitive."
+
+	<primitive: 88>
+	Processor activeProcess == self
+		ifTrue: [self primitiveFailed]
+		ifFalse:
+			[Processor remove: self ifAbsent: [self error: 'This process was not active'].
+			myList _ nil]!
+terminate
+	"Perhaps this method should be primitive.  If the a process might run at
+	any moment (like a Delay), and another process is trying to terminate it,
+	there is a race condition in this method.  The remove:ifAbsent: may get
+	confused.  One way to avoid this is to let Delays terminate themselves.
+	See MessageTally spyEvery:on: for an example. "
+
+	| context |
+	Processor activeProcess == self
+		ifTrue:
+			[thisContext sender == nil ifFalse: [thisContext sender release].
+			thisContext removeSelf suspend]
+		ifFalse:
+			["remove me first, then destroy me"
+			myList == nil
+				ifFalse:
+					[myList remove: self ifAbsent: [].
+					myList _ nil].
+			context _ suspendedContext.
+			suspendedContext _ nil.
+			(context ~~ nil and: [context sender ~~ nil])
+				ifTrue: [context sender release]]!
+"-----------------------------------"!
+!Process methodsFor: 'changing suspended state'!
+install: aContext
+	"Replace the suspendedContext with aContext."
+
+	self == Processor activeProcess
+		ifTrue: [^self error: 'The active process cannot install contexts'].
+	suspendedContext _ aContext!
+popTo: aContext
+	"Replace the suspendedContext with aContext, releasing all contexts
+	between the currently suspendedContext and it."
+
+	self == Processor activeProcess
+		ifTrue: [^self error: 'The active process cannot pop contexts'].
+	suspendedContext releaseTo: aContext.
+	suspendedContext _ aContext!
+"-----------------------------------"!
+!Process methodsFor: 'printing'!
+printOn: aStream
+	super printOn: aStream.
+	aStream nextPutAll: ' in '.
+	suspendedContext printOn: aStream!
+"-----------------------------------"!
+!Process methodsFor: 'private'!
+suspendedContext: aContext
+	suspendedContext _ aContext!

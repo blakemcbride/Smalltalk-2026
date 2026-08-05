@@ -1,0 +1,36 @@
+Object subclass: #FormButtonCache
+  instanceVariableNames: 'offset form value initialState'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Graphics-Editors'!
+FormButtonCache class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+FormButtonCache comment:
+'I am used to save information needed to construct the menu for the form editor.  A collection of my instances is an class variable of FormMenuView.'!
+"-----------------------------------"!
+!FormButtonCache methodsFor: 'accessing'!
+form
+	"Answer the receiver's form, the image of the button on the screen."
+	^form!
+form: aForm
+	"Set the receiver's form to be the argument."
+	form _ aForm!
+initialState
+	"Answer the receiver's initial state, on or off."
+	^initialState!
+initialState: aBoolean
+	"Set the receiver's initial state, on or off, to be the argument."
+	initialState _ aBoolean!
+offset
+	"Answer the receiver's offset, its relative position for displaying the button."
+	^offset!
+offset: anInteger
+	"Set the receiver's offset."
+	offset _ anInteger!
+value
+	"Answer the receiver's value, the keyboard key that selects the button."
+	^value!
+value: aCharacter
+	"Set the receiver's key character."
+	value _ aCharacter!

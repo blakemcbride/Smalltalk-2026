@@ -1,0 +1,179 @@
+FileModel subclass: #FileList
+  instanceVariableNames: 'list myPattern isReading'
+  classVariableNames: 'FileMenu PatternMenu'
+  poolDictionaries: ''
+  category: 'Interface-File Model'!
+FileList class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+FileList comment:
+'I an a FileModel that can be viewed as a filtered ListMenu of file names as well as the text of a file.
+
+	Instance Variables
+	list				<OrderedCollection> of file names
+	myPatytern		<String> represtenting the filter to select the list'!
+"-----------------------------------"!
+!FileList class methodsFor: 'class initialization'!
+flushMenus		"FileList flushMenus."
+	PatternMenu _ nil.
+	FileMenu _ nil.
+	super flushMenus!
+"-----------------------------------"!
+!FileList class methodsFor: 'instance creation'!
+open		"FileList open"
+	"Create and schedule a view of a new instance of me such that the instance references the files named in the argument, aFileNameList, that can be found in the directory, aFileDirectory."
+	| topView aFileList patternView |
+	aFileList _ self new list: OrderedCollection new.
+	topView _ StandardSystemView model: aFileList label: 'File List' minimumSize: 200 @ 200.
+	patternView _
+		CodeView on: aFileList aspect: #pattern change: #acceptPattern:from:
+				menu: #patternMenu initialSelection: nil.
+	topView addSubView: patternView in: (0@0 extent: 1@0.07) borderWidth: 1.
+	patternView controller: AlwaysAcceptCodeController new.
+	topView addSubView:
+			(SelectionInListView on: aFileList aspect: #fileName change: #fileName:
+				list: #fileNameList menu: #fileListMenu initialSelection: nil)
+		in: (0@0.07 extent: 1@0.23) borderWidth: 1.
+	topView addSubView:
+			(OnlyWhenSelectedCodeView on: aFileList aspect: #text change: #acceptText:from:
+				menu: #textMenu initialSelection: nil selection: #isSelected)
+		in: (0@0.3 extent: 1@0.7) borderWidth: 1.
+	topView controller open!
+openOnFileNames: aFileNameList label: labelString
+	"Create and schedule a view of a new instance of me such that the
+	instance references the files named in the argument, aFileNameList."
+	| topView aFileList |
+	aFileList _ self new list: aFileNameList.
+	topView _ StandardSystemView model: aFileList label: labelString minimumSize: 200 @ 200.
+	topView addSubView:
+			(SelectionInListView on: aFileList aspect: #fileName change: #fileName:
+				list: #fileNameList menu: #fileListMenu initialSelection: nil)
+		in: (0@0 extent: 1@0.2) borderWidth: 1.
+	topView addSubView:
+			(CodeView on: aFileList aspect: #text change: #acceptText:from:
+				menu: #textMenu initialSelection: nil)
+		in: (0@0.2 extent: 1@0.8) borderWidth: 1.
+	topView controller open!
+"-----------------------------------"!
+!FileList methodsFor: 'file name list'!
+copyName
+	ParagraphEditor new copySelection: fileName asText!
+deleteFile
+	"Remove the selected file from its directory."
+
+	| dir localName |
+	dir _ FileDirectory directoryFromName: fileName setFileName: [:localName].
+	(dir includesKey: localName)
+		ifTrue: [(self confirm: 'really remove the selected file?') ifFalse: [^self].
+	dir removeKey: localName].
+	list remove: fileName.
+	self changed: #fileName.!
+fileListMenu
+	fileName == nil ifTrue: [^nil].
+	FileMenu == nil ifTrue:
+		[FileMenu _
+			ActionMenu
+				labels: 'get contents\file in\copy name\rename\remove' withCRs
+				lines: #(2 4)
+				selectors: #(getFile fileInFile copyName renameFile deleteFile)].
+	^ FileMenu
+	"Evaluate this when you change this method:
+		FileList flushMenus"!
+fileName
+	^ fileName!
+fileName: selection
+	"If selection is not nil, it is the name of a file to be viewed"
+	self setFileName: selection.
+	isReading _ false.
+	self changed: #text!
+fileNameList
+	^ list!
+getFile
+	self changeRequest ifFalse: [^self].
+	isReading _ true.
+	self changed: #text!
+isSelected
+	^isReading!
+renameFile
+	| newList newName continue |
+	fileName == nil ifTrue: [^nil].
+	self changeRequest ifFalse: [^nil].
+	continue _ true.
+	[continue] whileTrue:
+		[newName _ FillInTheBlank request: 'New name for file?' initialAnswer: fileName.
+		newName isEmpty ifTrue: [^nil].
+		newName last = $.
+			ifTrue: [newName _ newName copyFrom: 1 to: newName size-1].
+		((self isLegalFileName: newName) and: [(Disk includesKey: newName) not])
+			ifTrue: [continue _ false]
+			ifFalse: [(BinaryChoice message: 'File exists or bad file name. Try again?')
+						ifFalse: [^nil]]].
+	Cursor execute showWhile:
+		[newList _ list copyWithout: fileName.
+		(Disk includesKey: fileName)
+			ifTrue:
+				[Disk rename: (Disk file: fileName) file newName: newName].
+		fileName _ newName.
+		newList add: fileName.
+		list _ newList.
+		self changed: #fileName.
+		self changed: #text]!
+"-----------------------------------"!
+!FileList methodsFor: 'pattern'!
+acceptPattern: aText from: aController
+	"The text consists of file names and file name patterns separated by carriage returns.
+	Patterns can include the characters * (any chars) and # (any single char).
+	Make my new list be those file names on my directory which match the patterns."
+
+	| testPattern readStream newList |
+	Cursor execute showWhile:
+		[myPattern _ aText string.
+		readStream _ ReadStream on: myPattern.
+		newList _ SortedCollection new.
+		[readStream atEnd] whileFalse:
+			[testPattern _ readStream upTo: Character cr. "get next name/pattern"
+			testPattern last = $.
+				ifTrue: [testPattern _ testPattern copyFrom: 1 to: testPattern size-1].
+			(testPattern includes: $*) | (testPattern includes: $#)
+				ifTrue: [newList addAll: (self filesMatching: testPattern)]
+				ifFalse: [(self isLegalFileName: testPattern)
+							ifTrue: [newList add: testPattern]]].
+		list _ newList.
+		list isEmpty
+			ifTrue: [aController deselect; replaceSelectionWith: 'No matching files' asText; select].
+		self changed: #fileName].
+	^true!
+pattern
+	^ myPattern!
+patternMenu
+	"FileModel flushMenus"
+	PatternMenu == nil ifTrue:
+		[PatternMenu _ ActionMenu
+			labels: 'again\undo\copy\cut\paste\accept\cancel' withCRs
+			lines: #(2 5)
+			selectors: #(again undo copySelection cut paste accept cancel)].
+	^ PatternMenu!
+"-----------------------------------"!
+!FileList methodsFor: 'private'!
+filesMatching: pattern
+	"Answer a list of file names matching the pattern string.  Do this by asking the appropriate directory."
+
+	| dir nameBody matches |
+	dir _ FileDirectory directoryFromName: pattern setFileName: [:nameBody].
+	matches _ dir filesMatching: nameBody.
+	^matches!
+isLegalFileName: pattern
+	"Answer whether pattern is a valid file name.  Do this by asking the appropriate directory."
+
+	| dir nameBody |
+	dir _ FileDirectory directoryFromName: pattern setFileName: [:nameBody].
+	^dir isLegalFileName: pattern!
+list: aList
+	list _ aList.
+	isReading _ false!
+"-----------------------------------"!
+!FileList methodsFor: 'text'!
+text
+	isReading
+		ifTrue: [^super text]
+		ifFalse: [^'' asText]!

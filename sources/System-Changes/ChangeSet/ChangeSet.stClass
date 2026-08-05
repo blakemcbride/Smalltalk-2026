@@ -1,0 +1,305 @@
+Object subclass: #ChangeSet
+  instanceVariableNames: 'classChanges methodChanges classRemoves reorganizeSystem specialDoIts'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'System-Changes'!
+ChangeSet class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+ChangeSet comment:
+'I keep track of the changes made to a system, so I can make an incremental fileOut.  I do not remember the order in which changes are made although this sometimes matters.
+
+Instance variables:
+	classChanges	<Dictionary> {class name -> <Set>
+						{add, change, comment, rename, reorganize, ''oldName: xxx''}}
+	methodChanges	<Dictionary> {class name -> <IdentityDictionary>
+										{selector -> add | change | remove}}
+	classRemoves	<Set> {class name}
+	reorganizeSystem	<Boolean> - indicates if SystemOrganization was changed.
+	specialDoIts		<OrderedCollection> of Smalltalk expressions.'!
+"-----------------------------------"!
+!ChangeSet class methodsFor: 'fileIn/Out'!
+superclassOrder: classes
+	"Arrange the classes in the collection, classes, in superclass order so the classes can be properly filed in."
+
+	| aa bb na nb |
+	^classes asSortedCollection: [:a :b |
+		"find lengths (na, nb) of superclass chains (a, b)"
+		aa _ a. na _ 1.	bb _ b. nb _ 1.
+		[(aa _ aa superclass) notNil] whileTrue: [na _ na + 1].
+		[(bb _ bb superclass) notNil] whileTrue: [nb _ nb + 1].
+		"follow longer chain to same depth as shorter"
+		na - nb timesRepeat: [a _ a superclass].
+		nb - na timesRepeat: [b _ b superclass].
+		"trace back until the chains meet"
+		[(aa _ a superclass) ~~ (bb _ b superclass)]
+			whileTrue: [a _ aa. b _ bb].
+		a == b ifTrue: [na <= nb] "chains overlap--one is sub*-class of other"
+			ifFalse: [a name <= b name] "alphabetize at the fork" ]!
+"-----------------------------------"!
+!ChangeSet class methodsFor: 'instance creation'!
+new
+	^super new initialize!
+"-----------------------------------"!
+!ChangeSet methodsFor: 'change management'!
+addClass: class
+	"Include indication that a new class was created."
+	classRemoves remove: class name ifAbsent: [].
+	self atClass: class add: #add!
+addDoIt: smalltalkExpression
+	"When filing out changes, append this string to the file."
+
+	specialDoIts add: smalltalkExpression!
+changeClass: class
+	"Include indication that a class definition has been changed."
+	self atClass: class add: #change!
+changedClasses
+	"Answer a collection of the changed or edited classes, not including removed classes."
+
+	| classes |
+	classes _ Set new.
+	methodChanges keys do: [:className | classes add: (self classNamed: className)].
+	classChanges keys do: [:className | classes add: (self classNamed: className)].
+	^classes!
+commentClass: class
+	"Include indication that a class comment has been changed."
+	self atClass: class add: #comment!
+removeClass: class
+	"Include indication that a class has been forgotten."
+
+	| name |
+	(self isNew: class) ifTrue:
+		[^self removeClassChanges: class]. 	"only remember old classes"
+	(self atClass: class includes: #rename) 	"remember as old name"
+		ifTrue: [name _ self oldNameFor: class]
+		ifFalse: [name _ class name].
+	self removeClassChanges: class.
+	classRemoves add: name!
+removeClassChanges: class
+	"Remove all memory of changes associated with this class and its metaclass."
+
+	classChanges removeKey: class name ifAbsent: [].
+	methodChanges removeKey: class name ifAbsent: [].
+	classChanges removeKey: class class name ifAbsent: [].
+	methodChanges removeKey: class class name ifAbsent: [].
+	classRemoves remove: class name ifAbsent: [].!
+renameClass: class as: newName
+	"Include indication that a class has been renamed."
+
+	| value |
+	(self atClass: class includes: #rename) ifFalse:
+		[self atClass: class add: 'oldName: ', class name. 	"only original name matters"
+		self atClass: class add: #rename].
+ 	"copy changes using new name (metaclass too)"
+	(Array with: classChanges with: methodChanges) do:
+		[:changes |
+		(value _ changes at: class name ifAbsent: [nil]) == nil ifFalse:
+			[changes at: newName put: value.
+			changes removeKey: class name].
+		(value _ changes at: class class name ifAbsent: [nil]) == nil ifFalse:
+			[changes at: (newName, ' class') put: value.
+			changes removeKey: class class name]]!
+reorganizeClass: class
+	"Include indication that a class was reorganized."
+	self atClass: class add: #reorganize!
+reorganizeSystem
+	"Include indication that the system classes were reorganized."
+
+	reorganizeSystem _ true!
+"-----------------------------------"!
+!ChangeSet methodsFor: 'converting'!
+asSortedCollection
+	"Answer a new instance of SortedCollection whose elements are Strings describing the changes represented by the receiver."
+
+	| summary |
+	summary _ SortedCollection new.
+	classChanges associationsDo:
+		[:clAssoc |
+		clAssoc value do:
+			[:changeType | summary add: clAssoc key, ' - ', changeType]].
+	methodChanges associationsDo:
+		[:clAssoc |
+		clAssoc value associationsDo:
+			[:mAssoc | summary add: clAssoc key, ' ', mAssoc key, ' - ', mAssoc value]].
+	classRemoves do:
+		[:name | summary add: name, ' - ', 'remove'].
+	reorganizeSystem ifTrue: [summary add: 'Reorganize System'].
+	specialDoIts isEmpty not ifTrue:
+		[summary add: 'SpecialDoIts - (', specialDoIts size printString, ')'].
+	^summary!
+"-----------------------------------"!
+!ChangeSet methodsFor: 'fileIn/Out'!
+fileOutChangesFor: class on: stream
+	"Write out all the changes the receiver knows about this class."
+
+	| changes removes |
+					"first file out class changes"
+	self fileOutClassChanges: class on: stream.
+					"next file out changed methods"
+	removes _ OrderedCollection new.
+	changes _ OrderedCollection new.
+	(methodChanges at: class name ifAbsent: [^self]) associationsDo:
+		[:mAssoc |
+		mAssoc value = #remove
+			ifTrue: [removes add: mAssoc key]
+			ifFalse: [changes add: mAssoc key]].
+	changes isEmpty ifFalse:
+		[class fileOutChangedMessages: changes on: stream.
+		stream cr].
+	removes do:
+		[:selector |
+		stream nextChunkPut:
+				class name, ' removeSelector: ', selector storeString; cr].
+	"reintialize metaclass if necessary"
+	((class isMemberOf: Metaclass) and: [changes includes: #initialize]) ifTrue:
+		[stream nextChunkPut: class soleInstance name, ' initialize'; cr].!
+fileOutOn: stream
+	"Write out all the changes the receiver knows about."
+
+	self isEmpty ifTrue: [self notify: 'Warning: no changes to file out'].
+
+	(ChangeSet superclassOrder: self changedClasses asOrderedCollection) do:
+		[:class |
+		self fileOutChangesFor: class on: stream].
+	classRemoves do:
+		[:className |
+		stream nextChunkPut: 'Smalltalk removeClassNamed: #', className; cr].
+	reorganizeSystem ifTrue:
+		[stream cr; nextPut: $!!; nextChunkPut: 'SystemOrganization'; cr.
+		stream nextChunkPut: SystemOrganization printString; cr; cr].
+	specialDoIts do:
+		[:expression |
+		stream nextChunkPut: expression; cr].!
+"-----------------------------------"!
+!ChangeSet methodsFor: 'initialize-release'!
+initialize
+	"Reset the receiver to be empty."
+
+	classChanges _ Dictionary new.
+	methodChanges _ Dictionary new.
+	classRemoves _ Set new.
+	reorganizeSystem _ false.
+	specialDoIts _ OrderedCollection new.!
+"-----------------------------------"!
+!ChangeSet methodsFor: 'method changes'!
+addSelector: selector class: class
+	"Include indication that a method has been added."
+	self atSelector: selector class: class put: #add!
+changeSelector: selector class: class
+	"Include indication that a method has been edited."
+
+	(self atSelector: selector class: class) = #add
+		ifFalse: [self atSelector: selector class: class put: #change]
+			"Don't forget a method is new just because it's been changed"!
+changedMessageList
+	"Answer an array that identifies the methods that have been changed.
+	Each entry is a String containing the class name and method selector."
+
+	| messageList |
+	messageList _ SortedCollection new.
+	methodChanges associationsDo:
+		[:clAssoc |
+		clAssoc value associationsDo:
+			[:mAssoc |
+			mAssoc value = #remove ifFalse:
+				[messageList add: clAssoc key asString, ' ' , mAssoc key]]].
+	^messageList asArray!
+removeSelector: selector class: class
+	"Include indication that a method has been forgotten."
+
+	(self atSelector: selector class: class) = #add
+		ifTrue: [self removeSelectorChanges: selector
+					class: class]					"Forgot a new method, no-op"
+		ifFalse: [self atSelector: selector
+					class: class
+					put: #remove]!
+removeSelectorChanges: selector class: class
+	"Remove all memory of changes associated with the argument,
+	selector, in this class."
+
+	| dictionary |
+	dictionary _ methodChanges at: class name ifAbsent: [^self].
+	dictionary removeKey: selector ifAbsent: [].
+	dictionary isEmpty ifTrue: [methodChanges removeKey: class name]!
+"-----------------------------------"!
+!ChangeSet methodsFor: 'private'!
+atClass: class add: changeType
+	(self isNew: class) ifFalse: 	"new classes don't matter"
+		[(classChanges at: class name
+				ifAbsent: [^classChanges at: class name put:
+					(Set with: changeType)])
+			add: changeType]!
+atClass: class includes: changeType
+	^(classChanges at: class name ifAbsent: [^false])
+		includes: changeType!
+atSelector: selector class: class
+	^(methodChanges at: class name ifAbsent: [^#none])
+		at: selector ifAbsent: [#none]!
+atSelector: selector class: class put: changeType
+	| name dict |
+	(self isNew: class) ifTrue: [^self]. 	"Don't keep method changes for new classes"
+	name _ class name.
+	(methodChanges at: name
+		ifAbsent:
+			[dict _ IdentityDictionary new.
+			methodChanges at: name put: dict.
+			dict])
+		at: selector put: changeType!
+classNamed: className
+	"className is either a class name or a class name followed by ' class'.  Answer the class or metaclass it names."
+
+	| meta name class |
+	(className size > 6
+		and: [(className copyFrom: className size - 5 to: className size) = ' class'])
+		ifTrue:
+			[meta _ true.
+			name _ className copyFrom: 1 to: className size - 6]
+		ifFalse:
+			[meta _ false.
+			name _ className].
+	class _ Smalltalk at: name asSymbol.
+	meta
+		ifTrue: [^class class]
+		ifFalse: [^class]!
+fileOutClassChanges: class on: stream
+	"Write out class changes.  i.e.  new class, definition, comment, renaming."
+
+	(self atClass: class includes: #add) ifTrue:
+		[stream cr.
+		class fileOutOn: stream.
+		stream cr.
+		^self atClass: class add: #add  "fileOut clears this!!"].
+
+	(self atClass: class includes: #rename) ifTrue:
+		[stream nextChunkPut: (self oldNameFor: class), ' rename: #', class name; cr].
+
+	(self atClass: class includes: #change) ifTrue:
+		[stream emphasis: 5; nextChunkPut: class definition; cr; emphasis: 1].
+
+	(self atClass: class includes: #comment) ifTrue:
+		[class organization putCommentOnFile: stream
+			numbered: nil moveSource: false.
+		stream cr].
+
+	(self atClass: class includes: #reorganize) ifTrue:
+		[class fileOutOrganizationOn: stream.
+		stream cr]!
+isNew: class
+	"Answer whether this class was added since the ChangeSet was cleared."
+
+	class isMeta
+		ifTrue: [^self atClass: class soleInstance includes: #add "check class"]
+		ifFalse: [^self atClass: class includes: #add]!
+oldNameFor: class
+
+	| name |
+	name _ (classChanges at: class name) asOrderedCollection detect:
+				[:x | 'oldName: *' match: x].
+	^(Scanner new scanTokens: name) last!
+"-----------------------------------"!
+!ChangeSet methodsFor: 'testing'!
+isEmpty
+	"Answer whether the receiver contains any elements."
+
+	^(((methodChanges isEmpty and: [classChanges isEmpty])
+		and: [classRemoves isEmpty]) and: [reorganizeSystem not]) and: [specialDoIts isEmpty]!

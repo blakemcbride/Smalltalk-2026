@@ -1,0 +1,281 @@
+Object subclass: #Scanner
+  instanceVariableNames: 'source mark hereChar aheadChar token tokenType currentComment buffer typeTable'
+  classVariableNames: 'EndChar TypeTable'
+  poolDictionaries: ''
+  category: 'System-Compiler'!
+Scanner class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+Scanner comment:
+'I scan a stream picking out Smalltalk syntactic tokens.  I look one character ahead.  I put each token found into token and its type (a Symbol) into tokenType.  At the end of stream or a doit symbol, I pretend to see an endless sequence of doits.'!
+"-----------------------------------"!
+!Scanner class methodsFor: 'class initialization'!
+initialize
+	"Scanner initialize."
+
+	| newTable |
+	newTable _ Array new: 256 withAll: #xBinary. "default"
+	newTable atAll: #(9 10 12 13 32 ) put: #xDelimiter. "tab lf ff cr space"
+	newTable atAll: ($0 asciiValue to: $9 asciiValue) put: #xDigit.
+	newTable atAll: ($A asciiValue to: $Z asciiValue) put: #xLetter.
+	newTable atAll: ($a asciiValue to: $z asciiValue) put: #xLetter.
+	newTable at: 30 put: #doIt.
+	newTable at: $" asciiValue put: #xDoubleQuote.
+	newTable at: $# asciiValue put: #xLitQuote.
+	newTable at: $$ asciiValue put: #xDollar.
+	newTable at: $' asciiValue put: #xSingleQuote.
+	newTable at: $( asciiValue put: #leftParenthesis.
+	newTable at: $) asciiValue put: #rightParenthesis.
+	newTable at: $. asciiValue put: #period.
+	newTable at: $: asciiValue put: #colon.
+	newTable at: $; asciiValue put: #semicolon.
+	newTable at: $[ asciiValue put: #leftBracket.
+	newTable at: $] asciiValue put: #rightBracket.
+	newTable at: $^ asciiValue put: #upArrow.
+	newTable at: $_ asciiValue put: #leftArrow.
+	newTable at: $| asciiValue put: #verticalBar.
+	EndChar _ 30 asCharacter.
+	TypeTable _ newTable "bon voyage!!"!
+"-----------------------------------"!
+!Scanner class methodsFor: 'instance creation'!
+new
+	^super new initScanner!
+"-----------------------------------"!
+!Scanner class methodsFor: 'testing'!
+isLiteralSymbol: aSymbol
+	"Test whether a symbol can be stored as # followed by its characters.
+	Symbols created internally with asSymbol may not have this property,
+	e.g. '3' asSymbol."
+
+	| i ascii type |
+	i _ aSymbol size.
+	i = 0 ifTrue: [^false].
+	ascii _ (aSymbol at: 1) asciiValue.
+	"TypeTable should have been origined at 0 rather than 1 ..."
+	ascii = 0 ifTrue: [^false].
+	type _ TypeTable at: ascii.
+	(type == #colon or: [type == #verticalBar])
+		ifTrue: [^i = 1].
+	type == #xBinary
+		ifTrue:
+			[[i > 1]
+				whileTrue:
+					[ascii _ (aSymbol at: i) asciiValue.
+					ascii = 0 ifTrue: [^false].
+					(TypeTable at: ascii) == #xBinary ifFalse: [^false].
+					i _ i - 1].
+			^true].
+	type == #xLetter
+		ifTrue:
+			[[i > 1]
+				whileTrue:
+					[ascii _ (aSymbol at: i) asciiValue.
+					ascii = 0 ifTrue: [^false].
+					type _ TypeTable at: ascii.
+					(type == #xLetter or: [type == #xDigit or: [type == #colon]])
+						ifFalse: [^false].
+					i _ i - 1].
+			^true].
+	^false!
+"-----------------------------------"!
+!Scanner methodsFor: 'error handling'!
+notify: string
+	self error: string!
+offEnd: aString
+	"Parser overrides this"
+
+	^self notify: aString!
+"-----------------------------------"!
+!Scanner methodsFor: 'expression types'!
+scanLitVec
+	| s |
+	s _ WriteStream on: (Array new: 16).
+	[tokenType = #rightParenthesis or: [tokenType = #doIt]]
+		whileFalse:
+			[tokenType = #leftParenthesis
+				ifTrue:
+					[self scanToken; scanLitVec]
+				ifFalse:
+					[tokenType = #word | (tokenType = #keyword)
+						ifTrue:
+							[self scanLitWord]
+						ifFalse:
+							[(token == #-
+									and: [(typeTable at: hereChar asciiValue) = #xDigit])
+								ifTrue:
+									[self scanToken.
+									token _ token negated]]].
+			s nextPut: token.
+			self scanToken].
+	token _ s contents!
+scanLitWord
+	"accumulate keywords and asSymbol the result"
+
+	| t |
+	[(typeTable at: hereChar asciiValue) = #xLetter]
+		whileTrue:
+			[t _ token.
+			self xLetter.
+			token _ t , token].
+	token _ token asSymbol!
+scanToken
+	[(tokenType _ typeTable at: hereChar asciiValue) == #xDelimiter]
+		whileTrue: [self step].  "Skip delimiters fast, there almost always is one."
+	mark _ source position - 1.
+	(tokenType at: 1) = $x "x as first letter"
+		ifTrue: [self perform: tokenType "means perform to compute token & type"]
+		ifFalse: [token _ self step asSymbol "else just unique the first char"].
+	^token!
+step
+	| c |
+	c _ hereChar.
+	hereChar _ aheadChar.
+	(aheadChar _ source next) == nil
+		ifTrue: [aheadChar _ EndChar "doit"].
+	^c!
+"-----------------------------------"!
+!Scanner methodsFor: 'initialize-release'!
+initScanner
+	buffer _ WriteStream on: (String new: 40).
+	typeTable _ TypeTable!
+on: inputStream
+	"Bind the input stream, fill the character buffers"
+	source _ inputStream.
+	self step.
+	self step!
+scan: inputStream
+	"Bind the input stream, fill the character buffers and first token buffer"
+	self on: inputStream.
+	self scanToken!
+"-----------------------------------"!
+!Scanner methodsFor: 'multi-character scans'!
+xBinary
+	tokenType _ #binary.
+	token _ Symbol internCharacter: self step.
+	((typeTable at: hereChar asciiValue) = #xBinary and: [hereChar ~= $-])
+		ifTrue: [token _ (token , (String with: self step)) asSymbol]!
+xDelimiter
+	"ignore blanks etc."
+
+	self scanToken!
+xDigit
+	"form a number"
+
+	tokenType _ #number.
+	(aheadChar = EndChar and: [source atEnd
+			and:  [source skip: -1. source next ~= EndChar]])
+		ifTrue: [source skip: -1 "Read off the end last time"]
+		ifFalse: [source skip: -2].
+	token _ Number readFrom: source.
+	self step; step!
+xDollar
+	"form a Character literal"
+
+	self step. "pass over $"
+	token _ self step.
+	tokenType _ #number "really should be Char, but rest of compiler doesn't know"!
+xDoubleQuote
+	"collect comment"
+
+	| aStream |
+	aStream _ WriteStream on: (String new: 32).
+	self step.
+	[aStream nextPut: self step. hereChar == $"]
+		whileFalse:
+			[(hereChar = EndChar and: [source atEnd])
+				ifTrue: [^self offEnd: 'Unmatched comment quote']].
+	self step.
+	currentComment == nil
+		ifTrue: [currentComment _ OrderedCollection with: aStream contents]
+		ifFalse: [currentComment add: aStream contents].
+	self scanToken!
+xLetter
+	"form a word or keyword"
+	| type prefix |
+	buffer reset.
+	[type _ typeTable at: hereChar asciiValue.
+	type == #xLetter or: [type == #xDigit]]
+		whileTrue:
+			["open code step for speed"
+			buffer nextPut: hereChar.
+			hereChar _ aheadChar.
+			source atEnd
+				ifTrue: [aheadChar _ EndChar "doit"]
+				ifFalse: [aheadChar _ source next]].
+	(type == #period and:
+			[tokenType _ typeTable at: aheadChar asciiValue.
+			(tokenType == #xLetter) | (tokenType == #xBinary)])
+		ifTrue:  "Allow embedded period in selectors"
+			[buffer nextPut: self step.
+			prefix _ buffer contents.
+			self perform: tokenType.
+			token _ prefix , token.
+			tokenType == #binary ifTrue: [token _ token asSymbol].
+			^self].
+	type == #colon
+		ifTrue:
+			[buffer nextPut: self step.
+			tokenType _ #keyword]
+		ifFalse:
+			[tokenType _ #word].
+	token _ buffer contents!
+xLitQuote
+	"UniqueStrings and Vectors"
+	" #(1 (4 5) 2 3) #ifTrue:ifFalse:"
+
+	| start |
+	self step. "litQuote"
+	self scanToken.
+	tokenType = #leftParenthesis
+		ifTrue:
+			[start _ mark.
+			self scanToken; scanLitVec.
+			tokenType == #doIt
+				ifTrue: [mark _ start.
+						self offEnd: 'Unmatched parenthesis']]
+		ifFalse:
+			[(#(word keyword colon) includes: tokenType)
+				ifTrue: [self scanLitWord]].
+	tokenType _ #literal!
+xSingleQuote
+	"string"
+	self step.
+	buffer reset.
+	[hereChar == $'
+		and: [aheadChar == $'
+				ifTrue: [self step. false]
+				ifFalse: [true]]]
+		whileFalse:
+			[buffer nextPut: self step.
+			(hereChar == EndChar and: [source atEnd])
+				ifTrue: [^self offEnd: 'Unmatched string quote']].
+	self step.
+	token _ buffer contents.
+	tokenType _ #string!
+"-----------------------------------"!
+!Scanner methodsFor: 'public access'!
+scanFieldNames: stringOrArray
+	"Answer with an Array of strings which are the identifiers in the input string.
+	If passed an Array, just answer with that Array (it has already been scanned)."
+	| strm |
+	(stringOrArray isMemberOf: Array)
+		ifTrue: [^stringOrArray].
+	self scan: (ReadStream on: stringOrArray asString).
+	strm _ WriteStream on: (Array new: 10).
+	[tokenType = #doIt]
+		whileFalse:
+			[tokenType = #word ifTrue: [strm nextPut: token].
+			self scanToken].
+	^strm contents
+
+	"Scanner new scanFieldNames: 'abc  def ghi' ('abc' 'def' 'ghi' )"!
+scanTokens: textOrString
+	"Answer with an Array which has been tokenized as though the input text
+	had appeared between #( and ) in a Smalltalk literal expression."
+
+	self scan: (ReadStream on: textOrString asString).
+	self scanLitVec.
+	^token
+
+	"Scanner new scanTokens:
+			'identifier keyword: 8r31 ''string'' embedded.period key:word: .   '     "!

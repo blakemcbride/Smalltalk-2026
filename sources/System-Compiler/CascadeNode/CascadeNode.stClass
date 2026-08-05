@@ -1,0 +1,42 @@
+ParseNode subclass: #CascadeNode
+  instanceVariableNames: 'receiver messages'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'System-Compiler'!
+CascadeNode class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+CascadeNode comment:
+'The first message has the common receiver, the rest have receiver == nil, which signifies cascading.'!
+"-----------------------------------"!
+!CascadeNode methodsFor: 'code generation'!
+emitForValue: stack on: aStream
+	receiver emitForValue: stack on: aStream.
+	1 to: messages size - 1 do:
+		[:i |
+		aStream nextPut: Dup.
+		stack push: 1.
+		(messages at: i) emitForValue: stack on: aStream.
+		aStream nextPut: Pop.
+		stack pop: 1].
+	messages last emitForValue: stack on: aStream!
+sizeForValue: encoder
+	| size |
+	size _ (receiver sizeForValue: encoder) + (messages size - 1 * 2).
+	messages do: [:aMessage | size _ size + (aMessage sizeForValue: encoder)].
+	^size!
+"-----------------------------------"!
+!CascadeNode methodsFor: 'initialize-release'!
+receiver: receivingObject messages: msgs
+	"user show: 'abc'; tab; show: 'abc'; cr"
+
+	receiver _ receivingObject.
+	messages _ msgs!
+"-----------------------------------"!
+!CascadeNode methodsFor: 'printing'!
+printOn: aStream indent: level
+	receiver printOn: aStream indent: level precedence: 0.
+	1 to: messages size do:
+		[:i |
+		(messages at: i) printOn: aStream indent: level.
+		i < messages size ifTrue: [aStream nextPut: $;]]!

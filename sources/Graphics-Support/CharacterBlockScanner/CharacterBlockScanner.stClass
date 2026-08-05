@@ -1,0 +1,311 @@
+CharacterScanner subclass: #CharacterBlockScanner
+  instanceVariableNames: 'characterPoint characterIndex lastCharacter lastCharacterExtent lastSpaceOrTabExtent nextLeftMargin'
+  classVariableNames: ''
+  poolDictionaries: 'TextConstants'
+  category: 'Graphics-Support'!
+CharacterBlockScanner class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+CharacterBlockScanner comment:
+'Instance Variables
+
+	characterPoint
+<Point>  Used in character location domain.  The topLeft of the character to be returned in a CharacterBlock.
+
+	characterIndex
+<Integer>  Used in character location domain.  The index in the stylizedString of the character to be returned in a CharacterBlock.
+
+	lastCharacter
+<Character>  Used in character location domain.  The character to be returned in a CharacterBlock.
+
+	lastCharacterExtent
+<Point>  Used in character location domain.  The extent of the character to be returned in a CharacterBlock.  The height is usually the stringStyle*s lineGrid.
+
+	lastSpaceOrTabExtent
+<Point>  Used in character location domain.  If the lastCharacter is a space or a tab, this will be its extent, an unexpected value when justification is turned on, and a variable value in the case of tab no matter what the alignment value is.
+
+	nextLeftMargin
+<Integer>  When, as in the case of cr, the left margin of the succeeding line is what is desired, this value, known to the paragraph is needed.  Since the paragraph is not available to the stop conditions, this value is set when the line of the character is discovered and before access to the paragraph is lost.
+
+CharacterBlockScanners are used to scan text to compute the CharacterBlock for a character specified by its index in the text or its proximity to the cursor location'!
+"-----------------------------------"!
+!CharacterBlockScanner methodsFor: 'private'!
+buildCharacterBlockIn: aParagraph
+	| lineIndex runLength lineStop characterBlock done stopCondition |
+	"handle nullText"
+	(aParagraph numberOfLines = 0 or: [text size = 0])
+		ifTrue:	[leftMargin _ (aParagraph leftMarginForDisplayForLine: 1).
+				^CharacterBlock
+					stringIndex: 1	"like being off end of string"
+					character: nil
+					topLeft: (leftMargin @
+								(aParagraph compositionRectangle) top)
+					extent: (0 @ textStyle lineGrid)].
+
+	"find the line"
+	lineIndex _ aParagraph lineIndexOfTop: characterPoint y.
+	destY _ (aParagraph topAtLineIndex: lineIndex).
+	line _ aParagraph lineAt: lineIndex.
+	text _ aParagraph textAt: lineIndex.
+	rightMargin _ aParagraph rightMarginForDisplay.
+
+	(lineIndex = aParagraph numberOfLines and:
+		[(destY + textStyle lineGrid) < characterPoint y])
+			ifTrue:	["if beyond lastLine, force search to last character"
+					characterPoint x: rightMargin]
+			ifFalse:	[characterPoint y < (aParagraph compositionRectangle) top
+						ifTrue: ["force search to first line"
+								characterPoint _
+								(aParagraph compositionRectangle) topLeft].
+					characterPoint x > rightMargin
+						ifTrue:	[characterPoint x: rightMargin]].
+	destX _ leftMargin _ aParagraph leftMarginForDisplayForLine: lineIndex.
+	nextLeftMargin_ aParagraph leftMarginForDisplayForLine: lineIndex+1.
+	lastIndex _ line first.
+
+	self setStopConditions.		"also sets font"
+	runLength _ (text runLengthFor: line first).
+	characterIndex ~~ nil
+		ifTrue:	[lineStop _ characterIndex	"scanning for index"]
+		ifFalse:	[lineStop _ line last].
+	(runStopIndex _ lastIndex + (runLength - 1)) > lineStop
+		ifTrue:	[runStopIndex _ lineStop].
+	lastCharacterExtent _ 0 @ textStyle lineGrid.
+	spaceCount _ 0. done  _ false.
+
+	[done]
+	whileFalse:
+	[stopCondition _
+					self scanCharactersFrom: lastIndex
+						to: runStopIndex
+						in: text string
+						rightX: characterPoint x
+						stopConditions: stopConditions
+						displaying: false.
+
+		"see setStopConditions for stopping conditions for character block 	operations."
+	lastCharacterExtent x: (font widthOf: (text at: lastIndex)).
+	(self perform: stopCondition)
+		ifTrue:	[^CharacterBlock
+					stringIndex: lastIndex
+					character: lastCharacter
+					topLeft: characterPoint
+					extent: lastCharacterExtent]]!
+"-----------------------------------"!
+!CharacterBlockScanner methodsFor: 'scanning'!
+characterBlockAtPoint: aPoint in: aParagraph
+	"Answer a CharacterBlock for character in aParagraph at point aPoint.  It is assumed that aPoint has been transformed into coordinates appropriate to the text's destinationForm rectangle and the compositionRectangle."
+
+	super initializeFromParagraph: aParagraph clippedBy: aParagraph clippingRectangle.
+	characterPoint _ aPoint.
+	^self buildCharacterBlockIn: aParagraph!
+characterBlockForIndex: targetIndex in: aParagraph
+	"Answer a CharacterBlock for character in aParagraph at targetIndex.  The coordinates in the CharacterBlock will be appropriate to the intersection of the destinationForm rectangle and the compositionRectangle."
+
+	super
+		initializeFromParagraph: aParagraph
+		clippedBy: aParagraph clippingRectangle.
+	characterIndex _ targetIndex.
+	characterPoint _
+		aParagraph rightMarginForDisplay @
+			(aParagraph topAtLineIndex:
+				(aParagraph lineIndexOfCharacterIndex: characterIndex)).
+	^self buildCharacterBlockIn: aParagraph!
+characterNotInFont
+	"This does not handle character selection nicely, i.e., illegal characters are a little tricky to select.  Since the end of a run or line is subverted here by actually having the scanner scan a different string in order to manage the illegal character, things are not in an absolutely correct state for the character location code.  If this becomes too odious in use, logic will be added to accurately manage the situation."
+
+	lastCharacterExtent _
+		(font widthOf: (font maxAscii + 1) asCharacter) @ textStyle lineGrid.
+	^super characterNotInFont!
+"-----------------------------------"!
+!CharacterBlockScanner methodsFor: 'stop conditions'!
+cr
+	"Answer an instance of CharacterBlock that specifies the current location of the mouse relative to a carriage return stop condition that has just been encountered.  The ParagraphEditor convention is to denote selections by CharacterBlocks, sometimes including the carriage return (cursor is at the end) and sometimes not (cursor is in the middle of the text). "
+
+	((characterIndex ~= nil
+		and: [characterIndex > text size])
+			or: [(line last = text size)
+				and: [(destY + textStyle lineGrid) < characterPoint y]])
+		ifTrue:	["When off end of string, give data for next character"
+				destY _ destY +  textStyle lineGrid.
+				lastCharacter _ nil.
+				characterPoint _
+					Point
+						x: ((text at: lastIndex) = CR
+								ifTrue: [leftMargin]
+								ifFalse: [nextLeftMargin])
+						y: destY.
+				lastIndex _ lastIndex + 1.
+				lastCharacterExtent x: 0.
+				^ true].
+		lastCharacter _ CR.
+		characterPoint _ destX @ destY.
+		lastCharacterExtent x: rightMargin - destX.
+		^true!
+crossedX
+	"Text display has wrapping.  The scanner just found a character past the x location of the cursor.  We know that the cursor is pointing at a character or before one."
+
+	| leadingTab currentX |
+	((characterPoint x <= (destX + ((lastCharacterExtent x) // 2)))
+		or: [line last = lastIndex])
+		ifTrue:	[lastCharacter _ (text at: lastIndex).
+				((lastCharacter = Space and: [textStyle alignment = Justified])
+					and: [destX + lastCharacterExtent x > rightMargin])
+					ifTrue:	[characterPoint _ nextLeftMargin @ (destY + textStyle lineGrid).
+							characterIndex notNil
+								ifTrue:	[lastIndex _ (characterIndex min: (line last + 1))]
+								ifFalse:	[lastIndex _ (lastIndex + 1) min: (line last + 1)]]
+					ifFalse:	[((lastCharacter = Tab) and: [line last = lastIndex])
+								ifTrue:	[(characterPoint x <= (destX + ((lastCharacterExtent x) // 2)))
+											ifFalse:
+												[destX _ (destX + lastCharacterExtent x).
+												characterPoint _ destX @ destY.
+												^ self endOfRun]].
+								characterPoint _ destX @ destY].
+				^true].
+	"Pointing past middle of a character, return the next character."
+	lastIndex _ lastIndex + 1.
+	lastCharacter _ text at: lastIndex.
+	currentX _ destX + lastCharacterExtent x.
+	lastCharacterExtent x: (font widthOf: lastCharacter).
+	characterPoint _ currentX @ destY.
+
+	"Yukky if next character is space or tab."
+	(lastCharacter = Space and: [textStyle alignment = Justified])
+		ifTrue:	[lastCharacterExtent x:
+					(lastCharacterExtent x + (line justifiedPadFor: (spaceCount + 1))).
+				^true].
+	lastCharacter = Tab
+		ifTrue:
+			["See tabForDisplay for illumination on the following awfulness."
+			leadingTab _ true.
+			(line first to: lastIndex - 1) do:
+			[:index |
+			(text at: index) = Space
+				ifTrue: [leadingTab _ false]].
+			(textStyle alignment ~= Justified or: [leadingTab])
+				ifTrue:	[lastCharacterExtent x: (textStyle nextTabXFrom: currentX
+							leftMargin: leftMargin rightMargin: rightMargin) -
+								currentX]
+				ifFalse:	[lastCharacterExtent x:  (((currentX + (textStyle tabWidth -
+								(line justifiedTabDeltaFor: spaceCount))) -
+									currentX) max: 0)]].
+	^ true!
+endOfRun
+	"Before arriving at the cursor location, the selection has encountered an end of run.  Answer false if the selection continues, true otherwise.  Set up indexes for building the appropriate CharacterBlock."
+
+	| runLength lineStop |
+	((characterIndex ~~ nil and:
+		[runStopIndex < characterIndex and: [runStopIndex < text size]])
+			or:	[characterIndex == nil and: [lastIndex < line last]])
+		ifTrue:	["We're really at the end of a real run."
+				runLength _ (text runLengthFor: (lastIndex _ lastIndex + 1)).
+				characterIndex ~~ nil
+					ifTrue:	[lineStop _ characterIndex	"scanning for index"]
+					ifFalse:	[lineStop _ line last			"scanning for point"].
+				(runStopIndex _ lastIndex + (runLength - 1)) > lineStop
+					ifTrue: 	[runStopIndex _ lineStop].
+				self setStopConditions.
+				^false].
+
+	lastCharacter _ text at: lastIndex.
+	characterPoint _ destX @ destY.
+	((lastCharacter = Space and: [textStyle alignment = Justified])
+		or: [lastCharacter = Tab])
+		ifTrue: [lastCharacterExtent _ lastSpaceOrTabExtent].
+	characterIndex ~~ nil
+		ifTrue:	["If scanning for an index and we've stopped on that index,
+				then we back destX off by the width of the character stopped on
+				(it will be pointing at the right side of the character) and return"
+				runStopIndex = characterIndex
+					ifTrue:	[characterPoint x: destX - lastCharacterExtent x.
+							^true].
+				"Otherwise the requested index was greater than the length of the
+				string.  Return string size + 1 as index, indicate further that off the
+				string by setting character to nil and the extent to 0."
+				lastIndex _  lastIndex + 1.
+				lastCharacter _ nil.
+				lastCharacterExtent x: 0.
+				^true].
+
+	"Scanning for a point and either off the end of the line or off the end of the string."
+	runStopIndex = text size
+		ifTrue:	["off end of string"
+				lastIndex _  lastIndex + 1.
+				lastCharacter _ nil.
+				lastCharacterExtent x: 0.
+				^true].
+	"just off end of line without crossing x"
+	lastIndex _ lastIndex + 1.
+	^true!
+onePixelBackspace
+	"Decrement destX by 1 pixel size."
+
+	| characterWidth |
+	characterWidth _ 1.
+	lastCharacterExtent x: characterWidth.
+	lastIndex _ lastIndex + 1.
+	destX _ (destX - characterWidth) max: leftMargin.
+	^ false!
+onePixelSpace
+	"Increment destX by 1 pixel size."
+
+	| characterWidth |
+	characterWidth _ 1.
+	lastCharacterExtent x: characterWidth.
+	(destX + characterWidth)  >= characterPoint x
+		ifTrue: [^self crossedX].
+	lastIndex _ lastIndex + 1.
+	destX _ destX + characterWidth.
+	^ false!
+paddedSpace
+	"When the line is justified, the spaces will not be the same as the font's space character.  A padding of extra space must be considered in trying to find which character the cursor is pointing at.  Answer true if the scanning has crossed the cursor, false otherwise."
+
+	| pad |
+	spaceCount _ spaceCount + 1.
+	pad _ line justifiedPadFor: spaceCount.
+	lastSpaceOrTabExtent _ lastCharacterExtent copy.
+	lastSpaceOrTabExtent x:  spaceWidth + pad.
+	(destX + lastSpaceOrTabExtent x)  >= characterPoint x
+		ifTrue: [lastCharacterExtent _ lastSpaceOrTabExtent copy.
+				^self crossedX].
+	lastIndex _ lastIndex + 1.
+	destX _ destX + lastSpaceOrTabExtent x.
+	^ false!
+setStopConditions
+	"Set the font and the stop conditions for the current run."
+	| fontIndex displayFont |
+	font _ textStyle fontAt: (text emphasisAt: lastIndex).
+	super setStopConditions.
+	stopConditions
+		at: Space asInteger + 1
+		put: (textStyle alignment = Justified
+				ifTrue: [#paddedSpace]
+				ifFalse: [nil])!
+tab
+	"Handle leading and internal tabs in a justified line.  Leading tabs are considered legal and should be reflected on the display gracefully.  Internal tabs (when the line is justified) are considered at the very best a misguided use of the character, and are reflected on the display the best we can."
+
+
+	| leadingTab currentX |
+	currentX _ destX.
+	leadingTab _ true.
+	(line first to: lastIndex)
+		do: [:index | (text at: index) = Space ifTrue: [leadingTab _ false]].
+	(textStyle alignment ~= Justified or: [leadingTab])
+		ifTrue: [currentX _
+					textStyle
+						nextTabXFrom: currentX
+						leftMargin: leftMargin
+						rightMargin: rightMargin]
+		ifFalse: [currentX _
+					currentX + (textStyle tabWidth -
+						(line justifiedTabDeltaFor: spaceCount)) max: destX].
+	lastSpaceOrTabExtent _ lastCharacterExtent copy.
+	lastSpaceOrTabExtent x: (currentX - destX max: 0).
+	currentX >= characterPoint x
+		ifTrue:
+			[lastCharacterExtent _ lastSpaceOrTabExtent copy.
+			^self crossedX].
+	destX _ currentX.
+	lastIndex _ lastIndex + 1.
+	^false!

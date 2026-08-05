@@ -1,0 +1,20 @@
+CodeController subclass: #AlwaysAcceptCodeController
+  instanceVariableNames: ''
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Interface-Text'!
+AlwaysAcceptCodeController class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+AlwaysAcceptCodeController comment:
+'I am a code controller that will do an accept even if the text is the same.'!
+"-----------------------------------"!
+!AlwaysAcceptCodeController methodsFor: 'menu messages'!
+accept
+	(model changeRequestFrom: view)
+		ifFalse: [^view flash].
+	self controlTerminate.
+	(view accept: self text from: self)
+		ifTrue: [initialText _ paragraph text copy]
+		ifFalse: [view flash].
+	self controlInitialize!

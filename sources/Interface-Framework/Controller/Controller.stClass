@@ -1,0 +1,151 @@
+Object subclass: #Controller
+  instanceVariableNames: 'model view sensor'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Interface-Framework'!
+Controller class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+Controller comment:
+'A Controller coordinates a View, its model, and user actions'!
+"-----------------------------------"!
+!Controller class methodsFor: 'instance creation'!
+new
+	^super new initialize!
+"-----------------------------------"!
+!Controller methodsFor: 'basic control sequence'!
+controlInitialize
+	"Sent by Controller|startUp as part of the standard control sequence. It provides
+	a place in the standard control sequence for initializing the receiver
+	(taking into account the current state of its model and view). It should be
+	redefined in subclasses to perform some specific action."
+	^self!
+controlLoop
+	"Sent by Controller|startUp as part of the standard control sequence.
+	Controller|controlLoop sends the message Controller|isControlActive to test
+	for loop termination. As long as true is returned, the loop continues. When
+	false is returned, the loop ends. Each time through the loop, the message
+	Controller|controlActivity is sent."
+
+	[self isControlActive] whileTrue: [Processor yield. self controlActivity]!
+controlTerminate
+	"Provide a place in the standard control sequence for terminating the
+	receiver (taking into account the current state of its model and view). It
+	should be redefined in subclasses to perform some specific action."
+	^self!
+startUp
+	"Give control to the receiver. The default control sequence is to initialize
+	(see Controller|controlInitialize), to loop (see Controller|controlLoop), and
+	then to terminate (see Controller|controlTerminate). After this sequence,
+	control is returned to the sender of Control|startUp. The receiver's control
+	sequence is used to coordinate the interaction of its view and model. In general,
+	this consists of polling the sensor for user input, testing the input with respect
+	to the current display of the view, and updating the model to reflect intended
+	changes."
+
+	self controlInitialize.
+	self controlLoop.
+	self controlTerminate!
+"-----------------------------------"!
+!Controller methodsFor: 'control defaults'!
+controlActivity
+	"Pass control to the next control level (that is, to the Controller of a subView of
+	the receiver's view) if possible. It is sent by Controller|controlLoop each time
+	through the main control loop. It should be redefined in a subclass if some other
+	action is needed."
+
+	self controlToNextLevel!
+controlToNextLevel
+	"Pass control to the next control level, that is, to the Controller of a subView of
+	the receiver's view if possible. The receiver finds the subView (if any) whose controller
+	wants control and sends that controller the message startUp."
+
+	| aView |
+	aView _ view subViewWantingControl.
+	aView ~~ nil ifTrue: [aView controller startUp]!
+isControlActive
+	"Answer whether the receiver wants control.  The default is to take control
+	if the cursor is inside the view and the blue button is not pressed.  Pressing
+	blue button a default to explicitly give up control without moving the cursor.
+	It is sent by Controller|controlLoop in order to determine when the receiver's control
+	loop should terminate, and should be redefined in a subclass if some other
+	condition for terminating the main control loop is needed."
+
+	^(view containsPoint: sensor cursorPoint) & sensor blueButtonPressed not!
+isControlWanted
+	"Answer true if the cursor is inside the inset display box (see
+	View|insetDisplayBox) of the receiver's view, and answer false,
+	otherwise. It is sent by Controller|controlNextLevel in order to determine
+	whether or not control should be passed to this receiver from the Controller of
+	the superView of this receiver's view."
+
+	^self viewHasCursor!
+"-----------------------------------"!
+!Controller methodsFor: 'cursor'!
+centerCursorInView
+	"Position sensor's mousePoint (which is assumed to be connected to the
+	cursor) to the center of its view's inset display box (see Sensor|mousePoint: and
+	View|insetDisplayBox)."
+
+	^sensor cursorPoint: view insetDisplayBox center!
+viewHasCursor
+	| temp |
+	"Answer true if the cursor point of the receiver's sensor lies within the inset
+	display box of the receiver's view (see View|insetDisplayBox), and
+	answer false, otherwise. Controller|viewHasCursor is normally used in
+	internal methods."
+
+	^view containsPoint: sensor cursorPoint!
+"-----------------------------------"!
+!Controller methodsFor: 'initialize-release'!
+initialize
+	"Initializes the state of the receiver.  Subclasses should include
+	'super initialize' when redefining this message to insure proper initialization."
+	sensor _ InputSensor default!
+release
+	"Breaks the cycle between the receiver and its view. It is usually not
+	necessary to send release provided the receiver's view has been properly
+	released independently."
+
+	super release.
+	view ~= nil
+		ifTrue:
+			[view controller: nil.
+			view _ nil]!
+"-----------------------------------"!
+!Controller methodsFor: 'model access'!
+model
+	"Answer the receiver's model which is the same as the model of the
+	receiver's view."
+	^model!
+model: aModel
+	"Controller|model: and Controller|view: are sent by View|controller: in order
+	to coordinate the links between the model, view, and controller. In ordinary
+	usage, the receiver is created and passed as the parameter to View|controller:
+	so that the receiver's model and view links can be set up by the view."
+
+	model _ aModel!
+"-----------------------------------"!
+!Controller methodsFor: 'sensor access'!
+sensor
+	"Answer the receiver's sensor.
+	Subclasses may use other objects that are not instances of Sensor or its subclasses
+	if more general kinds of input/output functions are required."
+
+	^sensor!
+sensor: aSensor
+	"Set the receiver's sensor to aSensor."
+
+	sensor _ aSensor!
+"-----------------------------------"!
+!Controller methodsFor: 'view access'!
+view
+	"Answer the receiver's view."
+	^view!
+view: aView
+	"Controller|view: and Controller|model: are sent by View|controller: in order
+	to coordinate the links between the model, view, and controller. In ordinary
+	usage, the receiver is created and passed as the parameter to View|controller:
+	and the receiver's model and view links are set up automatically by the view."
+
+	view _ aView!

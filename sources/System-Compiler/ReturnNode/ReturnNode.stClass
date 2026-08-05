@@ -1,0 +1,51 @@
+ParseNode subclass: #ReturnNode
+  instanceVariableNames: 'expr pc'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'System-Compiler'!
+ReturnNode class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+ReturnNode comment:
+'I represent an expression of the form ^expr'!
+"-----------------------------------"!
+!ReturnNode methodsFor: 'code generation'!
+code
+	^expr code!
+emitForReturn: stack on: strm
+	expr emitForReturn: stack on: strm.
+	pc _ strm position!
+emitForValue: stack on: strm
+	expr emitForReturn: stack on: strm.
+	pc _ strm position!
+pc
+	"used by encoder source mapping"
+	pc == nil
+		ifTrue: [^3].  "quick returns never generate, so pc=nil"
+	^pc!
+sizeForReturn: encoder
+	^expr sizeForReturn: encoder!
+sizeForValue: encoder
+	^expr sizeForReturn: encoder!
+"-----------------------------------"!
+!ReturnNode methodsFor: 'converting'!
+asReturnNode!
+"-----------------------------------"!
+!ReturnNode methodsFor: 'initialize-release'!
+expr: e
+	expr _ e!
+expr: e encoder: encoder sourceRange: range
+	expr _ e.
+	encoder noteSourceRange: range forNode: self!
+"-----------------------------------"!
+!ReturnNode methodsFor: 'printing'!
+printOn: aStream indent: level
+	aStream nextPut: $^.
+	expr printOn: aStream indent: level.
+	expr printCommentOn: aStream indent: level!
+"-----------------------------------"!
+!ReturnNode methodsFor: 'testing'!
+isReturnSelf
+	^expr == NodeSelf!
+isVariableReference
+	^expr isVariableReference!

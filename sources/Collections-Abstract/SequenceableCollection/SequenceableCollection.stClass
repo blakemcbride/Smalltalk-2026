@@ -1,0 +1,308 @@
+Collection subclass: #SequenceableCollection
+  instanceVariableNames: ''
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Collections-Abstract'!
+SequenceableCollection class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+SequenceableCollection comment:
+'Abstract superclass for collections that have a well-defined order associated with their elements'!
+"-----------------------------------"!
+!SequenceableCollection methodsFor: 'accessing'!
+atAll: anInterval put: anObject
+	"Put anObject at every index specified by the integer elements of anInterval."
+
+	anInterval do: [:index | self at: index put: anObject]!
+atAllPut: anObject
+	"Put anObject at every one of the receiver's indices."
+
+	| index size |
+	index _ 0.
+	size _ self size.
+	[(index _ index + 1) <= size]
+		whileTrue: [self at: index put: anObject]!
+first
+	"Answer the first element of the receiver.  Create an error if the receiver
+	contains no elements."
+
+	self emptyCheck.
+	^self at: 1!
+indexOf: anElement
+	"Answer the index of anElement within the receiver.  If the receiver does
+	not contain anElement, answer 0."
+
+	^self indexOf: anElement ifAbsent: [0]!
+indexOf: anElement ifAbsent: exceptionBlock
+	"Answer the index of anElement within the receiver.  If the receiver does
+	not contain anElement, answer the result of evaluating the exceptionBlock."
+
+	(1 to: self size)
+		do: [:i | (self at: i) = anElement ifTrue: [^i]].
+	^exceptionBlock value!
+indexOfSubCollection: aSubCollection startingAt: anIndex
+	"Answer the index of the receiver's first element, such that that element
+	equals the first element of aSubCollection, and the next elements equal the rest of
+	the elements of aSubCollection.  Begin the search at element anIndex of the
+	receiver.  If no such match is found, answer 0."
+
+	^self
+		indexOfSubCollection: aSubCollection
+		startingAt: anIndex
+		ifAbsent: [0]!
+indexOfSubCollection: aSubCollection startingAt: anIndex ifAbsent: exceptionBlock
+	"Answer the index of the receiver's first element, such that that element
+	equals the first element of aSubCollection, and the next elements equal the rest of
+	the elements of aSubCollection.  Begin the search at element anIndex of the
+	receiver.  If no such match is found, answer the result of evaluating exceptionBlock."
+
+	| firstElement eq |
+	aSubCollection size = 0 ifTrue: [^exceptionBlock value].
+	firstElement _ aSubCollection at: 1.
+	anIndex to: self size - aSubCollection size + 1 do:
+		[:i |
+		eq _ true.
+		(self at: i) = firstElement
+			ifTrue:
+				[1 to: aSubCollection size do:
+					[:index |
+					(self at: i + index - 1) = (aSubCollection at: index)
+						ifFalse: [eq _ false]].
+				eq ifTrue: [^i]]].
+	^exceptionBlock value!
+last
+	"Answer the last element of the receiver.  Create an error if the receiver
+	contains no elements."
+
+	self emptyCheck.
+	^self at: self size!
+replaceFrom: start to: stop with: replacement
+	"This destructively replaces elements from start to stop in the receiver.
+	Answer the receiver itself.
+	Use copyReplaceFrom:to:with: for insertion/deletion which may alter the
+	size of the result."
+
+	replacement size = (stop - start + 1)
+		ifFalse: [self error: 'Size of replacement doesnt match'].
+	^self replaceFrom: start to: stop with: replacement startingAt: 1!
+replaceFrom: start to: stop with: replacement startingAt: repStart
+	"This destructively replaces elements from start to stop in the receiver
+	starting at index, repStart, in the collection, replacement.  Answer the
+	receiver.  No range checks are performed - this may be primitively implemented."
+
+	| index repOff |
+	repOff _ repStart - start.
+	index _ start - 1.
+	[(index _ index + 1) <= stop]
+		whileTrue: [self at: index put: (replacement at: repOff + index)]!
+size
+	self subclassResponsibility!
+"-----------------------------------"!
+!SequenceableCollection methodsFor: 'adding'!
+grow
+	"The receiver becomes bigger--this is not a copy of the receiver, so all shared references survive."
+
+	| newArray |
+	newArray _ self species new: self size + self growSize.
+	newArray replaceFrom: 1 to: self size with: self.
+	^self become: newArray!
+"-----------------------------------"!
+!SequenceableCollection methodsFor: 'comparing'!
+= otherCollection
+	"Answer whether the species of the receiver is the same as otherCollection's species,
+	and the receiver's size is the same as otherCollection's size, and each of the receiver's
+	elements equal the corresponding element of otherCollection"
+
+	| size index |
+	(size _ self size) = otherCollection size ifFalse: [^false].
+	self species == otherCollection species ifFalse: [^false].
+	index _ 0.
+	[(index _ index + 1) <= size]
+		whileTrue: [(self at: index) = (otherCollection at: index) ifFalse: [^false]].
+	^true!
+"-----------------------------------"!
+!SequenceableCollection methodsFor: 'converting'!
+asArray
+	"Answer a new instance of Array whose elements are the elements of
+	the receiver, in the same order."
+
+	| newArray |
+	newArray _ Array new: self size.
+	1 to: self size do: [:index | newArray at: index put: (self at: index)].
+	^newArray!
+mappedBy: aSequenceableCollection
+	"Answer a new instance of MappedCollection whose contents is the
+	receiver and whose map is the argument, aSequencableCollection."
+
+	^(MappedCollection collection: self map: aSequenceableCollection) contents!
+"-----------------------------------"!
+!SequenceableCollection methodsFor: 'copying'!
+, aSequenceableCollection
+	"Answer with a copy of the receiver concatenated with the argument,
+	a SequencableCollection."
+
+	^self copyReplaceFrom: self size + 1
+		  to: self size
+		  with: aSequenceableCollection!
+copyFrom: start to: stop
+	"Answer a copy of a subset of the receiver, starting from element at index start
+	until element at index stop."
+
+	| newSize |
+	newSize _ stop - start + 1.
+	^(self species new: newSize)
+		replaceFrom: 1
+		to: newSize
+		with: self
+		startingAt: start!
+copyReplaceAll: oldSubstring with: newSubstring
+	"Answer a copy of the receiver in which all occurrances of oldSubstring have
+	been replaced by newSubstring."
+
+	| aString startSearch currentIndex |
+	aString _ self.
+	startSearch _ 1.
+	[(currentIndex _ aString indexOfSubCollection: oldSubstring startingAt: startSearch)
+			 > 0]
+		whileTrue:
+			[aString _ aString
+						copyReplaceFrom: currentIndex
+						to: currentIndex + oldSubstring size - 1
+						with: newSubstring.
+			startSearch _ currentIndex + newSubstring size].
+	^aString
+	"'How noww brown cowow?' copyReplaceAll: 'ow' with: 'ello'"!
+copyReplaceFrom: start to: stop with: replacementCollection
+	"Answer a copy of the receiver satisfying the following conditions:
+
+	If stop is less than start, then this is an insertion;
+		stop should be exactly start-1,
+		start = 1 means insert before the first character,
+		start = size+1 means append after last character.
+	Otherwise, this is a replacement;
+		start and stop have to be within the receiver's bounds."
+
+	| newSequenceableCollection newSize endReplacement |
+	newSize _ self size - (stop - start + 1) + replacementCollection size.
+	endReplacement _ start - 1 + replacementCollection size.
+	newSequenceableCollection _ self species new: newSize.
+	newSequenceableCollection
+		replaceFrom: 1
+		to: start - 1
+		with: self
+		startingAt: 1.
+	newSequenceableCollection
+		replaceFrom: start
+		to: endReplacement
+		with: replacementCollection
+		startingAt: 1.
+	newSequenceableCollection
+		replaceFrom: endReplacement + 1
+		to: newSize
+		with: self
+		startingAt: stop + 1.
+	^newSequenceableCollection!
+copyWith: newElement
+	"Answer a copy of the receiver that is 1 bigger than the receiver and has
+	newElement at the last element."
+
+	| newIC |
+	newIC _ self species new: self size + 1.
+	newIC
+		replaceFrom: 1
+		to: self size
+		with: self
+		startingAt: 1.
+	newIC at: newIC size put: newElement.
+	^newIC!
+copyWithout: oldElement
+	"Answer a copy of the receiver in which all occurrences of oldElement
+	have been left out."
+
+	| aStream |
+	aStream _ WriteStream on: (self species new: self size).
+	self do: [:each | oldElement = each ifFalse: [aStream nextPut: each]].
+	^aStream contents!
+shallowCopy
+	^self copyFrom: 1 to: self size!
+"-----------------------------------"!
+!SequenceableCollection methodsFor: 'enumerating'!
+collect: aBlock
+	| aStream index length |
+	aStream _ WriteStream on: (self species new: self size).
+	index _ 0.
+	length _ self size.
+	[(index _ index + 1) <= length]
+		whileTrue: [aStream nextPut: (aBlock value: (self at: index))].
+	^aStream contents!
+do: aBlock
+	| index length |
+	index _ 0.
+	length _ self size.
+	[(index _ index + 1) <= length]
+		whileTrue: [aBlock value: (self at: index)]!
+findFirst: aBlock
+	"Return the index of my first element for which aBlock evaluates as true."
+
+	| index |
+	index _ 0.
+	[(index _ index + 1) <= self size] whileTrue:
+		[(aBlock value: (self at: index)) ifTrue: [^index]].
+	^ 0!
+findLast: aBlock
+	"Return the index of my last element for which aBlock evaluates as true."
+
+	| index |
+	index _ self size + 1.
+	[(index _ index - 1) >= 1] whileTrue:
+		[(aBlock value: (self at: index)) ifTrue: [^index]].
+	^ 0!
+reverse
+	"Answer with a new collection like me with its elements in the opposite order."
+
+	| aStream index length |
+	aStream _ WriteStream on: (self species new: self size).
+	index _ self size + 1.
+	[(index _ index - 1) > 0]
+		whileTrue: [aStream nextPut: (self at: index)].
+	^aStream contents!
+reverseDo: aBlock
+	"Evaluate aBlock with each of the receiver's elements as the argument, starting
+	with the last element and taking each in sequence up to the first.  For
+	SequenceableCollections, this is the reverse of the enumeration in do:."
+
+	self size to: 1 by: -1 do: [:index | aBlock value: (self at: index)]!
+select: aBlock
+	| aStream index length |
+	aStream _ WriteStream on: (self species new: self size).
+	index _ 0.
+	length _ self size.
+	[(index _ index + 1) <= length]
+		whileTrue:
+			[(aBlock value: (self at: index)) ifTrue: [aStream nextPut: (self at: index)]].
+	^aStream contents!
+with: aSequenceableCollection do: aBlock
+	"Evaluate aBlock with each of the receiver's elements along with the corresponding
+	element from aSequencableCollection."
+
+	| otherCollection |
+	self size ~= aSequenceableCollection size ifTrue: [^self errorNoMatch].
+	otherCollection _ ReadStream on: aSequenceableCollection.
+	self do: [:each | aBlock value: each value: otherCollection next]!
+"-----------------------------------"!
+!SequenceableCollection methodsFor: 'private'!
+errorOutOfBounds
+	self error: 'indices are out of bounds'!
+swap: oneIndex with: anotherIndex
+	"Move the element at oneIndex to anotherIndex, and vice-versa."
+
+	| element |
+	element _ self at: oneIndex.
+	self at: oneIndex put: (self at: anotherIndex).
+	self at: anotherIndex put: element!
+"-----------------------------------"!
+!SequenceableCollection methodsFor: 'removing'!
+remove: oldObject ifAbsent: anExceptionBlock
+	"SequencableCollections cannot implement removing."
+
+	self shouldNotImplement!

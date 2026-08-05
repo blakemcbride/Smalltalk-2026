@@ -1,0 +1,58 @@
+Paragraph subclass: #TextList
+  instanceVariableNames: 'list'
+  classVariableNames: 'ListStyle'
+  poolDictionaries: ''
+  category: 'Interface-Lists'!
+TextList class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+TextList comment:
+'TextList is a subclass of Paragraph which is a more efficient representation of lists.
+Since it displays a list of items, it does not try to produce a single string with CRs,
+but instead simply makes up TextLineIntervals on the fly as needed by the view.
+The major savings come from not needing to make up a new string for the whole list
+and not having to measure the lines, since it is assumed that if they are too long,
+they will simply be clipped rather than wrapping to the next line.'!
+"-----------------------------------"!
+!TextList class methodsFor: 'class initialization'!
+initialize  "TextList initialize."
+	ListStyle _ DefaultTextStyle copy.
+	ListStyle gridForFont: 1 withLead: 0!
+"-----------------------------------"!
+!TextList class methodsFor: 'instance creation'!
+onList: aList
+	^self basicNew
+		compositionRectangle: DefaultCompositionRectangle
+		list:	aList
+		style: ListStyle
+		offset: 0@0
+		outputMedium: #Display!
+"-----------------------------------"!
+!TextList methodsFor: 'initialization'!
+compositionRectangle: compositionRect list: aList style: aTextStyle offset: aPoint outputMedium: aSymbol
+	compositionRectangle _ compositionRect copy.
+	list _ aList.
+	text _ Text new.
+	textStyle _ aTextStyle.
+	firstIndent _ textStyle firstIndent.
+	restIndent _ textStyle restIndent.
+	rightIndent _ textStyle rightIndent.
+	marginTabsLevel _ 0.
+	outputMedium _ aSymbol.
+	rule _ DefaultRule.
+	mask _ DefaultMask.
+	destinationForm _ Display.
+	clippingRectangle _ destinationForm boundingBox.
+	offset _ aPoint.
+	lastLine _ list size.
+	compositionRectangle height: textStyle lineGrid * lastLine!
+"-----------------------------------"!
+!TextList methodsFor: 'line access'!
+lineAt: lineIndex
+	^ TextLineInterval
+		start: 1
+		stop: (list at: lineIndex) size
+		internalSpaces: 1
+		paddingWidth: 0!
+textAt: lineIndex
+	^ (list at: lineIndex) asText!

@@ -1,0 +1,179 @@
+View subclass: #DisplayTextView
+  instanceVariableNames: 'rule mask editParagraph centered'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Graphics-Views'!
+DisplayTextView class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+DisplayTextView comment:
+'I represent a view of an instance of DisplayText.
+
+Instance Variables:
+	rule		<Integer> according to which character display behaves:  equal over, under,
+			and reverse.
+	mask	<Form> with which each character is combined by the display scanner
+			before applying the rule.
+	editParagraph	<Paragraph> the composed text ready for display'!
+"-----------------------------------"!
+!DisplayTextView class methodsFor: 'examples'!
+example1
+	"Creates a system view with a paragraph editor in it"
+
+	| topView aDisplayTextView |
+	aDisplayTextView _ DisplayTextView new model: 'test string' asDisplayText.
+	aDisplayTextView insideColor: Form white.
+	aDisplayTextView borderWidth: 2.
+	topView _ StandardSystemView new.
+	topView label: 'Text Editor'.
+	topView addSubView: aDisplayTextView.
+	topView controller open
+
+	"DisplayTextView example1."!
+example2
+	"Creates a standarad system view with two parts, one editable, the other not."
+	| topView aDisplayTextView |
+	topView _ StandardSystemView new.
+	topView label: 'Text Editor'.
+	aDisplayTextView _ self new model: 'test string label' asDisplayText.
+	aDisplayTextView controller: NoController new.
+	aDisplayTextView window: (0 @ 0 extent: 100 @ 100).
+	aDisplayTextView borderWidthLeft: 2 right: 0 top: 2 bottom: 2.
+	aDisplayTextView insideColor: Form white.
+	topView addSubView: aDisplayTextView.
+
+	aDisplayTextView _ self new model: 'test string' asDisplayText.
+	aDisplayTextView window: (0 @ 0 extent: 100 @ 100).
+	aDisplayTextView borderWidth: 2.
+	aDisplayTextView insideColor: Form white.
+	topView
+		addSubView: aDisplayTextView
+		align: aDisplayTextView viewport topLeft
+		with: topView lastSubView viewport topRight.
+	topView controller open
+
+	"DisplayTextView example2."!
+example3
+	"Creates a passive view of some text on the screen."
+
+	| view |
+	view_ self new model: 'this is a test of one line
+and the second line' asDisplayText.
+	view translateBy: 100@100.
+	view borderWidth: 2.
+	view insideColor: Form white.
+	view display.
+	view release
+
+	"DisplayTextView example3."!
+example4
+	"Creates four passive views of some text on the screen with fat borders."
+
+	| view |
+	view_ self new model: 'this is a test of one line
+and the second line' asDisplayText.
+	view translateBy: 100@100.
+	view borderWidth: 5.
+	view insideColor: Form white.
+	view display.
+	3 timesRepeat: [view translateBy: 100@100. view display].
+	view release
+
+	"DisplayTextView example4."!
+"-----------------------------------"!
+!DisplayTextView methodsFor: 'accessing'!
+centered
+	centered _ true.
+	self centerText!
+isCentered
+	^centered!
+mask
+	"Answer an instance of class Form that is to be used as the mask when displaying
+	the receiver's model (a DisplayText)."
+
+	mask == nil
+		ifTrue: [^self defaultMask]
+		ifFalse: [^mask]!
+mask: aForm
+	"Set aForm to be the mask used when displaying the receiver's model."
+	mask _ aForm!
+rule
+	"Answer a number from 0 to 15 that indicates which of the sixteen display rules
+	is to be used when blting the receiver's model (a DisplayText) onto the display
+	screen."
+
+	rule == nil
+		ifTrue: [^self defaultRule]
+		ifFalse: [^rule]!
+rule: anInteger
+	"Set anInteger to be the rule used when displaying the receiver's model."
+	rule _ anInteger!
+"-----------------------------------"!
+!DisplayTextView methodsFor: 'controller access'!
+defaultController
+	^self defaultControllerClass newParagraph: editParagraph!
+defaultControllerClass
+	^ParagraphEditor!
+"-----------------------------------"!
+!DisplayTextView methodsFor: 'deEmphasizing'!
+deEmphasizeView
+	(self controller isKindOf: ParagraphEditor)
+	 	ifTrue: [controller deselect]!
+"-----------------------------------"!
+!DisplayTextView methodsFor: 'displaying'!
+display
+	self isUnlocked ifTrue: [self positionText].
+	super display!
+displayView
+	self clearInside.
+	(self controller isKindOf: ParagraphEditor )
+		ifTrue: [controller changeParagraph: editParagraph].
+	self isCentered
+		ifTrue:
+			[editParagraph
+				displayOn: Display
+				transformation: self displayTransformation
+				clippingBox: self insetDisplayBox
+				fixedPoint: editParagraph boundingBox center]
+		ifFalse:
+			[editParagraph displayOn: Display]!
+"-----------------------------------"!
+!DisplayTextView methodsFor: 'initialize-release'!
+initialize
+	super initialize.
+	centered _ false!
+"-----------------------------------"!
+!DisplayTextView methodsFor: 'model access'!
+model: aDisplayText
+	super model: aDisplayText.
+	editParagraph _ model asParagraph.
+	self centerText!
+"-----------------------------------"!
+!DisplayTextView methodsFor: 'private'!
+centerText
+	self isCentered
+		ifTrue:
+			[editParagraph
+				align: editParagraph boundingBox center
+				with: self getWindow center]!
+defaultMask
+	^Form black!
+defaultRule
+	^Form over!
+paragraphInset
+	"Answer the amount to inset the paragraph from the border"
+	^6@0!
+positionText
+	| box |
+	box _ self insetDisplayBox origin + self paragraphInset
+			extent: editParagraph boundingBox extent.
+	editParagraph recomposeIn: box clippingBox: box.
+	self centerText!
+"-----------------------------------"!
+!DisplayTextView methodsFor: 'window access'!
+defaultWindow
+	^((0@0 extent: editParagraph extent) expandBy: self paragraphInset)
+		expandBy: borderWidth!
+window: aWindow
+	super window: aWindow.
+	self centerText!

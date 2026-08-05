@@ -1,0 +1,225 @@
+Object subclass: #InputSensor
+  instanceVariableNames: 'keyboardMap'
+  classVariableNames: 'CurrentCursor CurrentInputState DefaultKeyboardMap'
+  poolDictionaries: ''
+  category: 'System-Support'!
+InputSensor class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+InputSensor comment:
+'I represent an interface to the user input devices.  There is at least one instance of me named Sensor in the system.
+
+	keyboardMap  - <String> indexed by (256 * meta key state + ASCII code + 1)'!
+"-----------------------------------"!
+!InputSensor class methodsFor: 'class initialization'!
+initialize
+	| map base array |
+	map _ String new: 256*5.
+	1 to: map size do: [:i | map at: i put: 255 asCharacter].  "Unassigned"
+	#(
+	  "Unshifted characters"
+	  (0 8 (8 9 30 255 255 13 255 255
+		255 255 255 255 255 255 255 255 255 255 255 160))
+	  (0 32 ' !!"#$%&''()*+,-./0123456789:;<=>?')
+	  (0 64 '@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\]^_')
+	  (0 96 '`abcdefghijklmnopqrstuvwxyz{|}~')
+	  (0 127 (173))
+	  (0 140 (158 29 25 174 187 190))
+	  "Shift"
+	  (256 8 (8 9 30 255 255 13 255 255
+		255 255 255 255 255 255 255 255 255 255 255 160))
+	  (256 32 ' ')
+	  (256 $' '"')
+	  (256 $, '<')
+	  (256 $- (21))
+	  (256 $. '>?')
+	  (256 $0 ')!!@#$%~&*(')
+	  (256 $; ':')
+	  (256 $= '+')
+	  (256 $[ '{|}')
+	  (256 $_ '^')
+	  (256 $a 'ABCDEFGHIJKLMNOPQRSTUVWXYZ')
+	  (256 127 (173))
+	  (256 140 (22 29 25 238 253 254))
+	  "Control"
+	  (512 8 (8 9 30 255 255 141 255 255
+		255 255 255 255 255 255 255 255 255 255 255 160))
+	  (512 32
+		(32 255 255 255 255 255 255 15 255 255 255 255 1 137 18 27
+		135 159 144 143 128 127 129 131 180 149 255 3 255 6 255 255))
+	  (512 $[ (7 14 23 255 17))
+	  (512 $a "through $z"
+		(1 166 3 132 130 12 231 179 150 165 136 153 182 14 15
+		138 17 18 19 11 21 134 145 151 178 167))
+	  (512 127 (173))
+	  (512 140 (222 229 225 174 187 190))
+	  "Shift+control"
+	  (768 8 (8 9 30 255 255 13 255 255
+		255 255 255 255 255 255 255 255 255 255 255 160))
+	  (768 32
+		(32 255 255 255 255 255 255 219 255 255 255 255 218 201 233 203
+		199 223 208 207 192 191 193 195 244 213 255 3 255 14 255 255))
+	  (768 $[ (249 204 220 255 236))
+	  (768 $a "through $z"
+		(212 230 228 196 194 226 241 243 214 229 200 217 246 245 216
+		202 210 239 211 240 197 198 209 215 242 231))
+	  (768 127 (173))
+	  (768 140 (22 24 25 238 253 254))
+	  "Upper case lock"
+	  (1024 8 (8 9 30 255 255 13 255 255
+		255 255 255 255 255 255 255 255 255 255 255 160))
+	  (1024 32 ' !!"#$%&''()*+,-./0123456789:;<=>?')
+	  (1024 64 '@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\]^_')
+	  (1024 96 '`ABCDEFGHIJKLMNOPQRSTUVWXYZ{|}~')
+	  (1024 127 (173))
+	  (1024 140 (158 29 25 174 187 190))
+	 ) do:
+	  [:part |
+		base _ (part at: 1) + (part at: 2) asInteger.
+		array _ part at: 3.
+		1 to: array size do:
+		  [:i | map at: base + i put: (array at: i) asCharacter]].
+	DefaultKeyboardMap _ map
+
+	"InputSensor initialize; install.
+	Sensor initMap."!
+install
+	"Create an instance of InputState for accessing the hardware, and save it
+	in the class variable CurrentInputState."
+
+	CurrentInputState _ InputState new.
+	CurrentInputState install!
+"-----------------------------------"!
+!InputSensor class methodsFor: 'constants'!
+default
+	"Answer the default system InputSensor, Sensor."
+	^Sensor!
+initSensor
+	"Create the default system InputSensor, Sensor."
+	Sensor _ InputSensor new!
+"-----------------------------------"!
+!InputSensor class methodsFor: 'instance creation'!
+new
+	^super new initMap!
+"-----------------------------------"!
+!InputSensor methodsFor: 'current cursor'!
+currentCursor
+	"Answer the instance of Cursor currently displayed."
+	^CurrentCursor!
+currentCursor: newCursor
+	"Set newCursor to be the displayed Cursor form."
+	CurrentCursor offset = newCursor offset
+		ifFalse: [self primCursorLocPut: self cursorPoint + newCursor offset].
+	CurrentCursor _ newCursor.
+	Cursor currentCursor: CurrentCursor!
+cursorPoint
+	"Answer a Point indicating the cursor location."
+	^self mousePoint - CurrentCursor offset!
+cursorPoint: aPoint
+	"Set aPoint to be the current cursor location."
+	^self primCursorLocPut: aPoint + CurrentCursor offset!
+"-----------------------------------"!
+!InputSensor methodsFor: 'keyboard'!
+flushKeyboard
+	"Remove all characters from the keyboard buffer."
+
+	[self keyboardPressed]
+		whileTrue: [self keyboard]!
+keyboard
+	"Answer the next character from the keyboard buffer as a fully decoded
+	(ASCII) character."
+
+	^self mapKeyboardEvent: self primKbdNext!
+keyboardEvent
+	"Answer the next character from the keyboard buffer as a KeyboardEvent."
+
+	^self primKbdNext!
+keyboardPeek
+	"Answer the next character in the keyboard buffer or false if it is empty.
+	self keyboardPressed must be true, else an error is created."
+
+	self keyboardPressed ifTrue: [^self mapKeyboardEvent: self primKbdPeek].
+	self error: 'Cant peek when nothing there'!
+keyboardPressed
+	"Answer false if the keyboard buffer is empty, else true."
+
+	^self primKbdPeek notNil	"The keyboard queue only contains real keystrokes, so
+								just test if it is non-empty."!
+leftShiftDown
+	"Answer true if the left shift key on the keyboard is being held down."
+
+	^self primLeftShiftDown!
+mapKeyboardEvent: aKeyboardEvent
+	"Answer the character corresponding to the character in aKeyboardEvent"
+
+	| meta |
+	meta _ aKeyboardEvent hasShift
+				ifTrue: [256]
+				ifFalse: [0].
+	aKeyboardEvent hasCtrl ifTrue: [meta _ meta + 512].
+	meta = 0 ifTrue: [aKeyboardEvent hasLock ifTrue: [meta _ 1024]].
+	^keyboardMap at: aKeyboardEvent keyCharacter asciiValue + meta + 1!
+"-----------------------------------"!
+!InputSensor methodsFor: 'mouse'!
+anyButtonPressed
+	"Answer whether a mouse button is being pressed."
+	^self buttons > 0!
+blueButtonPressed
+	"Answer whether only the blue mouse button is being pressed."
+	^self buttons = 1!
+mousePoint
+	"Answer a Point indicating the coordinates of the current mouse location."
+	^self primMousePt!
+mousePointNext
+	"Answer the next mouse point if red button or tablet is down; false otherwise."
+	self redButtonPressed ifTrue: [^self mousePoint].
+	^false!
+noButtonPressed
+	"Answer whether any mouse button is not being pressed."
+	^self anyButtonPressed == false!
+redButtonPressed
+	"Answer whether only the red mouse button is being pressed."
+	^self buttons = 4!
+waitButton
+	"Wait for the user to press any mouse button and then answer with the
+	current location of the cursor."
+	[self anyButtonPressed] whileFalse.
+	^self cursorPoint!
+waitClickButton
+	"Wait for the user to click (press and then release) any mouse button and then
+	answer with the current location of the cursor."
+	self waitButton.
+	^self waitNoButton!
+waitNoButton
+	"Wait for the user to release any mouse button and then answer with the
+	current location of the cursor."
+	[self anyButtonPressed] whileTrue.
+	^self cursorPoint!
+yellowButtonPressed
+	"Answer whether only the yellow mouse button is being pressed."
+	^self buttons = 2!
+"-----------------------------------"!
+!InputSensor methodsFor: 'private'!
+buttons
+	^self primMouseButtons!
+initMap
+	"Initialize a new instance with the default keyboard map"
+
+	keyboardMap _ DefaultKeyboardMap!
+primCursorLocPut: pt
+	CurrentInputState cursorPoint: pt!
+primKbdNext
+	^CurrentInputState keyboardNext!
+primKbdPeek
+	^CurrentInputState keyboardPeek!
+primLeftShiftDown
+	^CurrentInputState leftShiftDown!
+primMouseButtons
+	^CurrentInputState mouseButtons!
+primMousePt
+	"Poll the mouse to find out its position. Return a Point. Fail if event-driven
+	tracking is used instead of polling. Optional. See Object documentation
+	whatIsAPrimitive. "
+
+	<primitive: 90>
+	^CurrentInputState mousePoint!

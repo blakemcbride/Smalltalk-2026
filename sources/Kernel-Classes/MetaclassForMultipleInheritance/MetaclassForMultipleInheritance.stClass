@@ -1,0 +1,31 @@
+Metaclass subclass: #MetaclassForMultipleInheritance
+  instanceVariableNames: 'otherSuperclasses'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Kernel-Classes'!
+MetaclassForMultipleInheritance class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+MetaclassForMultipleInheritance comment:
+'This metaclass has an additional field and protocol to support multiple inheritance.
+The field, otherSupers, contains a collection of additional superclasses (other than the normal dynamic one) from which traits are to be inherited.  Since the otherSupers appears in the metaclass, classes must ask their metas for other supers (sort of the way metas ask their thisClasses for subs).
+
+It would have been more natural to put otherSupers into a class ClassWithMultSupers, but this would have had to inherit both the multiple supers AND the normal metaclass
+inheritance, thus posing a bootstrapping need for multiple inheritance.'!
+"-----------------------------------"!
+!MetaclassForMultipleInheritance class methodsFor: 'superclass access'!
+subclassOf: sup and: others
+	| newMeta |
+	newMeta _ super subclassOf: sup.
+	newMeta setOtherSuperclasses: others.
+	^newMeta!
+"-----------------------------------"!
+!MetaclassForMultipleInheritance methodsFor: 'class hierarchy'!
+instHasMultipleSuperclasses
+	^true!
+otherSuperclasses
+	^ otherSuperclasses!
+setOtherSuperclasses: others
+	otherSuperclasses _ others!
+superclasses
+	^ (Array with: superclass) , (otherSuperclasses collect: [:sup | sup class])!

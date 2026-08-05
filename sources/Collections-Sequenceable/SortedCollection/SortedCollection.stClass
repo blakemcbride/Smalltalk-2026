@@ -1,0 +1,161 @@
+OrderedCollection variableSubclass: #SortedCollection
+  instanceVariableNames: 'sortBlock'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Collections-Sequenceable'!
+SortedCollection class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+SortedCollection comment:
+'I am an ordered collection of elements, sorted via the function sortBlock.'!
+"-----------------------------------"!
+!SortedCollection class methodsFor: 'instance creation'!
+new: anInteger
+	"The default sorting function is a <= comparison on elements."
+
+	^(super new: anInteger) sortBlock: [:x :y | x <= y]!
+sortBlock: aBlock
+	"Answer a new instance of me such that its elements are sorted according
+	to the criterion specified in aBlock."
+
+	^(super new: 10) sortBlock: aBlock!
+"-----------------------------------"!
+!SortedCollection methodsFor: 'accessing'!
+at: anInteger put: anObject
+	"Storing into a SortedCollection with at:put: is not allowed."
+
+	self error: 'to add to a sorted collection, you must use add:'!
+sortBlock
+	"Answer the blockContext which is the criterion for sorting elements of
+	the receiver."
+	^sortBlock!
+sortBlock: aBlock
+	"Make the argument, aBlock, be the criterion for ordering elements of the
+	receiver."
+
+	sortBlock _ aBlock fixTemps.
+	"The sortBlock must copy its home context, so as to avoid circularities!!"
+	"Therefore sortBlocks with side effects may not work right"
+	self size > 0 ifTrue: [self reSort]!
+"-----------------------------------"!
+!SortedCollection methodsFor: 'adding'!
+add: newObject
+	| nextIndex |
+	self isEmpty ifTrue: [^super addLast: newObject].
+	nextIndex _ self indexForInserting: newObject.
+	self insert: newObject before: nextIndex.
+	^newObject!
+addAll: aCollection
+	aCollection size > (self size // 3)
+		ifTrue:
+			["Faster to add the new elements and resort"
+			aCollection do: [:each | super addLast: each].
+			self reSort]
+		ifFalse: ["Faster to add the elements individually in their proper places"
+			aCollection do: [:each | self add: each]]!
+grow
+	"We must duplicate this message from OrderedCollection so the addLast: won't cause an error."
+
+	| newSelf |
+	newSelf _ self species new: self size + self growSize.
+	newSelf sortBlock: sortBlock.
+	newSelf addAll: self.
+	self become: newSelf!
+"-----------------------------------"!
+!SortedCollection methodsFor: 'comparing'!
+= aSortedCollection
+	"Answer true if my and aSortedCollection's species are the same,
+	and if our blocks are the same, and if our elements are the same."
+
+	self species = aSortedCollection species ifFalse: [^false].
+	sortBlock = aSortedCollection sortBlock
+		ifTrue: [^super = aSortedCollection]
+		ifFalse: [^false]!
+"-----------------------------------"!
+!SortedCollection methodsFor: 'copying'!
+copy
+	| newCollection |
+	newCollection _ self species sortBlock: sortBlock.
+	newCollection addAll: self.
+	^newCollection!
+copyEmpty
+	"Answer a copy of the receiver without any of the receiver's elements."
+
+	^SortedCollection sortBlock: sortBlock!
+"-----------------------------------"!
+!SortedCollection methodsFor: 'enumerating'!
+collect: aBlock
+	"Evaluate aBlock with each of my elements as the argument.  Collect the
+	resulting values into an OrderedCollection  Answer with the new collection.
+	Override superclass in order to produce OrderedCollection instead of
+	SortedCollection. "
+
+	| newCollection |
+	newCollection _ OrderedCollection new.
+	self do: [:each | newCollection add: (aBlock value: each)].
+	^newCollection!
+"-----------------------------------"!
+!SortedCollection methodsFor: 'private'!
+indexForInserting: newObject
+	| index low high |
+	low _ firstIndex.
+	high _ lastIndex.
+	[index _ high + low // 2.
+	low > high]
+		whileFalse:
+			[(sortBlock value: (self basicAt: index) value: newObject)
+				ifTrue: [low _ index + 1]
+				ifFalse: [high _ index - 1]].
+	^low!
+reSort
+	self sort: firstIndex to: lastIndex!
+sort: i to: j
+	"Sort elements i through j of self to be nondescending according to sortBlock."
+
+	| di dij dj tt ij k l n |
+	"The prefix d means the data at that index."
+	(n _ j + 1  - i) <= 1 ifTrue: [^self].	"Nothing to sort."
+	 "Sort di,dj."
+	di _ self basicAt: i.
+	dj _ self basicAt: j.
+	(sortBlock value: di value: dj) "i.e., should di precede dj?"
+		ifFalse:
+			[self swap: i with: j.
+			 tt _ di.
+			 di _ dj.
+			 dj _ tt].
+	n > 2
+		ifTrue:  "More than two elements."
+			[ij _ (i + j) // 2.  "ij is the midpoint of i and j."
+			 dij _ self basicAt: ij.  "Sort di,dij,dj.  Make dij be their median."
+			 (sortBlock value: di value: dij) "i.e. should di precede dij?"
+			   ifTrue:
+				[(sortBlock value: dij value: dj) "i.e., should dij precede dj?"
+				  ifFalse:
+					[self swap: j with: ij.
+					 dij _ dj]]
+			   ifFalse:  "i.e. di should come after dij"
+				[self swap: i with: ij.
+				 dij _ di].
+			n > 3
+			  ifTrue:  "More than three elements."
+				["Find k>i and l<j such that dk,dij,dl are in reverse order.
+				Swap k and l.  Repeat this procedure until k and l pass each other."
+				 k _ i.
+				 l _ j.
+				 [[l _ l - 1.  k <= l and: [sortBlock value: dij value: (self basicAt: l)]]
+				   whileTrue.  "i.e. while dl succeeds dij"
+				  [k _ k + 1.  k <= l and: [sortBlock value: (self basicAt: k) value: dij]]
+				   whileTrue.  "i.e. while dij succeeds dk"
+				  k <= l]
+				   whileTrue:
+					[self swap: k with: l].
+	"Now l<k (either 1 or 2 less), and di through dl are all less than or equal to dk
+	through dj.  Sort those two segments."
+				self sort: i to: l.
+				self sort: k to: j]]!
+swap: i with: j
+	| t |
+	t _ self basicAt: i.
+	self basicAt: i put: (self basicAt: j).
+	self basicAt: j put: t!

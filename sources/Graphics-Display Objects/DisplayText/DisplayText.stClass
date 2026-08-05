@@ -1,0 +1,141 @@
+DisplayObject subclass: #DisplayText
+  instanceVariableNames: 'text textStyle offset form'
+  classVariableNames: ''
+  poolDictionaries: 'TextConstants'
+  category: 'Graphics-Display Objects'!
+DisplayText class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+DisplayText comment:
+'I get used two different ways in the system.
+In the user interface I mainly hold onto some text which is viewed by some form of ParagraphEditor.  However, as a DisplayObject, I may need to display efficiently, so form caches the bits for that purpose.'!
+"-----------------------------------"!
+!DisplayText class methodsFor: 'examples'!
+example
+	"Continually prints two lines of text wherever you point with the cursor.
+	Terminate by pressing any mouse button."
+
+	| t |
+	t _ 'this is a line of characters and
+this is the second line.' asDisplayText.
+	[Sensor anyButtonPressed]
+		whileFalse:
+			[t displayOn: Display at: Sensor cursorPoint]
+
+	"DisplayText example."!
+"-----------------------------------"!
+!DisplayText class methodsFor: 'instance creation'!
+text: aText
+	"Answer an instance of me such that the text displayed is aText
+	according to the system's default textstyle."
+	^self new
+		setText: aText
+		textStyle: DefaultTextStyle copy
+		offset: 0 @ 0!
+text: aText textStyle: aTextStyle
+	"Answer an instance of me such that the text displayed is aText
+	according to the style specified by aTextStyle."
+	^self new
+		setText: aText
+		textStyle: aTextStyle
+		offset: 0 @ 0!
+text: aText textStyle: aTextStyle offset: aPoint
+	"Answer an instance of me such that the text displayed is aText
+	according to the style specified by aTextStyle.  The display of the
+	information should be offset by the amount given as the argument, aPoint."
+	^self new
+		setText: aText
+		textStyle: aTextStyle
+		offset: aPoint!
+"-----------------------------------"!
+!DisplayText methodsFor: 'accessing'!
+form
+	form == nil ifTrue: [self composeForm].
+	^form!
+lineGrid
+	"Answer the relative space between lines of the receiver's text."
+	^textStyle lineGrid!
+numberOfLines
+	"Answer the number of lines of text in the receiver."
+	^self height // text lineGrid!
+offset
+	^offset!
+offset: aPoint
+	offset _ aPoint!
+string
+	"Answer the string of the characters displayed by the receiver."
+	^text string!
+text
+	"Answer the text displayed by the receiver."
+	^text!
+text: aText
+	"Set the receiver to display the argument, aText."
+
+	text _ aText.
+	form _ nil.
+	self changed.!
+textStyle
+	"Answer the style by which the receiver displays its text."
+	^textStyle!
+textStyle: aTextStyle
+	"Set the style by which the receiver should display its text."
+
+	textStyle _ aTextStyle.
+	form _ nil.
+	self changed.!
+"-----------------------------------"!
+!DisplayText methodsFor: 'converting'!
+asParagraph
+	"Answer a Paragraph whose text and style are identical to that of
+	the receiver."
+	^Paragraph withText: text style: textStyle copy!
+"-----------------------------------"!
+!DisplayText methodsFor: 'display box access'!
+boundingBox
+	^self form boundingBox!
+computeBoundingBox
+	"Compute minimum enclosing rectangle around characters."
+
+	| character font width carriageReturn lineWidth lineHeight |
+	carriageReturn _ Character cr.
+	width _ lineWidth _ 0.
+	font _ textStyle defaultFont.
+	lineHeight _ textStyle lineGrid.
+	1 to: text size do:
+		[:i |
+		character _ text at: i.
+		character = carriageReturn
+		  ifTrue:
+			[lineWidth _ lineWidth max: width.
+			lineHeight _ lineHeight + textStyle lineGrid.
+			width _ 0]
+		  ifFalse: [width _ width + (font widthOf: character)]].
+	lineWidth _ lineWidth max: width.
+	^offset extent: lineWidth @ lineHeight!
+"-----------------------------------"!
+!DisplayText methodsFor: 'displaying'!
+displayOn: aDisplayMedium at: aDisplayPoint clippingBox: clipRectangle rule: ruleInteger mask: aForm
+	self form
+		displayOn: aDisplayMedium
+		at: aDisplayPoint + offset
+		clippingBox: clipRectangle
+		rule: ruleInteger
+		mask: aForm!
+displayOn: aDisplayMedium transformation: displayTransformation clippingBox: clipRectangle align: alignmentPoint with: relativePoint rule: ruleInteger mask: aForm
+	| absolutePoint |
+	absolutePoint _ displayTransformation applyTo: relativePoint.
+	absolutePoint _ absolutePoint x truncated @ absolutePoint y truncated.
+	self displayOn: aDisplayMedium
+		at: absolutePoint - alignmentPoint
+		clippingBox: clipRectangle
+		rule: ruleInteger
+		mask: aForm!
+"-----------------------------------"!
+!DisplayText methodsFor: 'private'!
+composeForm
+	form _ self asParagraph asForm!
+setText: aText textStyle: aTextStyle offset: aPoint
+	text _ aText.
+	textStyle _ aTextStyle.
+	offset _ aPoint.
+	form _ nil!

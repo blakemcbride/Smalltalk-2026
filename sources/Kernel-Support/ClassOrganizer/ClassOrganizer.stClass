@@ -1,0 +1,367 @@
+Object subclass: #ClassOrganizer
+  instanceVariableNames: 'globalComment categoryArray categoryStops elementArray'
+  classVariableNames: 'Default'
+  poolDictionaries: ''
+  category: 'Kernel-Support'!
+ClassOrganizer class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+ClassOrganizer comment:
+'Instance variables:
+	globalComment		<RemoteString> comment for the class as a whole
+	categoryArray		<Array of: String> category names
+	categoryStops		<Array of: Integer> see below
+	elementArray		<Array of: Symbol> message selectors
+
+ClassOrganizers contain the categorization information for classes.  A ClassOrganizer consists of an Array of category names (categoryArray), each of which refers to an Array of elements (elementArray).  This association is made through an Array of stop indices (categoryStops), each of which is the index in elementArray of the last element (if any) of the corresponding category.
+	For example:
+		categories _ Array with: #firstCat with: secondCat with: thirdCat
+		stops _ Array with: 1 with: 4 with: 4
+		elements _ Array with: #a with: #b with: #c with: #d
+	means that category firstCat has ony #a, secondCat has #b, #c, and #d,
+		and thirdCat has no elements.
+	This means that stops at: stops size must be the same as elements size.'!
+"-----------------------------------"!
+!ClassOrganizer class methodsFor: 'class initialization'!
+defaultProtocol
+	^Default!
+initialize
+	Default _ 'As yet unclassified' asSymbol
+	"ClassOrganizer initialize"!
+"-----------------------------------"!
+!ClassOrganizer class methodsFor: 'instance creation'!
+new
+	"Answer a new instance of ClassOrganizer with no initial elements."
+	^super new setDefaultList!
+"-----------------------------------"!
+!ClassOrganizer methodsFor: 'accessing'!
+changeFromString: aString
+	"Parse the string and make this be the receiver's structure.  Categories or elements not found are not affected.  New elements are ignored."
+
+	| scanner oldElements newElements newCategories newStops currentStop anArray |
+	scanner _ Scanner new scanTokens: aString.
+	"If nothing was scanned and I had no elements before, then default me"
+	(scanner size = 0 and: [elementArray size = 0])
+		ifTrue: [^self setDefaultList].
+
+	oldElements _ elementArray asSet.
+	newCategories _ Array new: scanner size.
+	newStops _ Array new: scanner size.
+	currentStop _ 0.
+	newElements _ WriteStream on: (Array new: 16).
+	1 to: scanner size do:
+		[:i |
+		anArray _ scanner at: i.
+		newCategories at: i put: anArray first asSymbol.
+		(anArray copyFrom: 2 to: anArray size) asSortedCollection do:
+			[:elem |
+			(oldElements remove: elem ifAbsent: [nil]) notNil ifTrue:
+				[newElements nextPut: elem.
+				currentStop _ currentStop+1]].
+		newStops at: i put: currentStop].
+
+	"Ignore extra elements but don't lose any existing elements!!"
+	oldElements _ oldElements collect:
+		[:elem | Array with: (self categoryOfElement: elem) with: elem].
+	newElements _ newElements contents.
+	categoryArray _ newCategories.
+	categoryStops _ newStops.
+	elementArray _ newElements.
+	oldElements do: [:pair | self classify: pair last under: pair first].!
+"-----------------------------------"!
+!ClassOrganizer methodsFor: 'categories'!
+addCategory: heading
+	"Add a new category named heading."
+	^ self addCategory: heading before: nil!
+addCategory: heading before: nextHeading
+	| nextIndex elements |
+	"Add a new category named heading.  If nextHeading is specified (not nil)
+	and can be found, then INSERT before that entry.  Otherwise ADD it at the end.
+	If heading already exists, then MOVE it where it would have gone otherwise."
+
+	(categoryArray indexOf: heading) > 0
+		ifTrue:  "already there - maybe move"
+			["slow but sure;  remove all, then insert all"
+			elements _ self listAtCategoryNamed: heading.	"Save elements"
+			elements do: [:elt | self removeElement: elt].
+			self removeCategory: heading.		"Remove old entry"
+			self addCategory: heading before: nextHeading.	"Now insert anew"
+			self classifyAll: elements under: heading.			"And restore elements"
+			^self].
+	nextIndex _ categoryArray indexOf: nextHeading
+							ifAbsent: [categoryArray size+1].
+	categoryArray _ categoryArray  "insert before nextIndex"
+			copyReplaceFrom: nextIndex
+			to: nextIndex-1
+			with: (Array with: heading).
+	categoryStops _ categoryStops
+			copyReplaceFrom: nextIndex
+			to: nextIndex-1
+			with: (Array with: (nextIndex=1
+					ifTrue: [0]
+					ifFalse: [categoryStops at: nextIndex-1])).!
+categories
+	"Answer an array of categories (names)."
+
+	(categoryArray size = 1
+		and: [categoryArray first = Default & (elementArray size = 0)])
+		ifTrue: [^Array new].
+	^categoryArray!
+categories: anArray
+	"Reorder my categories to be in the order of anArray.  If the
+	resulting organization does not include all elements, then give an error."
+	| newCategories newStops newElements catName list runningTotal |
+	newCategories _ Array new: anArray size.
+	newStops _ Array new: anArray size.
+	newElements _ Array new: 0.
+	runningTotal _ 0.
+	1 to: anArray size do:
+		[:i |
+		catName _ (anArray at: i) asSymbol.
+		list _ self listAtCategoryNamed: catName.
+				newElements _ newElements, list.
+				newCategories at: i put: catName.
+				newStops at: i put: (runningTotal _ runningTotal + list size)].
+	elementArray do:
+		[:element | "check to be sure all elements are included"
+		(newElements includes: element)
+			ifFalse: [^self error: 'New categories must match old ones']].
+	"Everything is good, now update my three arrays."
+	categoryArray _ newCategories.
+	categoryStops _ newStops.
+	elementArray _ newElements!
+categoryOfElement: element
+	"Answer the category associated with the argument, element."
+
+	| index |
+	index _ self numberOfCategoryOfElement: element.
+	index = 0
+		ifTrue: [^nil]
+		ifFalse: [^categoryArray at: index]!
+removeCategory: cat
+	"Remove the category named, cat.  Create an error if the category has
+	any elements in it."
+
+	| index lastStop |
+	index _ categoryArray indexOf: cat ifAbsent: [^self].
+	lastStop _
+		index = 1
+			ifTrue: [0]
+			ifFalse: [categoryStops at: index - 1].
+	(categoryStops at: index) - lastStop > 0
+		ifTrue: [^self error: 'cannot remove non-empty category'].
+	categoryArray _
+		(categoryArray copyFrom: 1 to: index - 1)
+			, (categoryArray copyFrom: index + 1 to: categoryArray size).
+	categoryStops _
+		(categoryStops copyFrom: 1 to: index - 1)
+			, (categoryStops copyFrom: index + 1 to: categoryStops size).
+	categoryArray size = 0
+		ifTrue:
+			[categoryArray _ Array with: Default.
+			categoryStops _ Array with: 0]!
+removeEmptyCategories
+	"Remove empty categories."
+	| categoryIndex currentStop keptCategories keptStops |
+	keptCategories _ WriteStream on: (Array new: 16).
+	keptStops _ WriteStream on: (Array new: 16).
+	currentStop _ categoryIndex _ 0.
+	[(categoryIndex _ categoryIndex + 1) <= categoryArray size]
+		whileTrue:
+			[(categoryStops at: categoryIndex) > currentStop
+				ifTrue:
+					[keptCategories nextPut: (categoryArray at: categoryIndex).
+					keptStops nextPut: (currentStop _ categoryStops at: categoryIndex)]].
+	categoryArray _ keptCategories contents.
+	categoryStops _ keptStops contents.
+	categoryArray size = 0
+		ifTrue:
+			[categoryArray _ Array with: Default.
+			categoryStops _ Array with: 0]
+
+	"ClassOrganizer allInstancesDo: [:co | co removeEmptyCategories]."!
+renameCategory: oldName to: newName
+	"Answer the array of elements associated with the name, categoryName."
+	| i symbol |
+	i _ categoryArray indexOf: oldName
+		ifAbsent: [^ false].
+	symbol _ newName asSymbol.
+	categoryArray indexOf: symbol
+		ifAbsent: [categoryArray at: i put: symbol.  ^ true].
+	^ false  "newName was already there"!
+"-----------------------------------"!
+!ClassOrganizer methodsFor: 'comment'!
+classComment
+	"Answer the comment associated with the object that refers to the receiver."
+
+	globalComment == nil ifTrue: [^''].
+	^globalComment string!
+classComment: aString
+	"Store the comment, aString, associated with the object that refers to the receiver."
+
+	aString size = 0
+		ifTrue: [globalComment _ nil]
+		ifFalse: [globalComment _ RemoteString newString: aString onFileNumber: 2]!
+hasNoComment
+	"Answer whether the class classified by the receiver has a comment."
+
+	^globalComment == nil!
+moveChangedCommentToFile: aFileStream numbered: sourceIndex
+	"This is part of source code compression.  Move the comment about the
+	class classified by the receiver from the file referenced by
+	sourceIndex and to the stream, aFileStream."
+
+	(globalComment ~~ nil and: [globalComment sourceFileNumber > 1])
+		ifTrue:
+			[aFileStream cr; cr.
+			globalComment _
+				RemoteString
+					newString: globalComment string
+					onFileNumber: sourceIndex
+					toFile: aFileStream]!
+putCommentOnFile: aFileStream numbered: sourceIndex moveSource: moveSource
+	"Store the comment about the class onto file, aFileStream."
+
+	| newRemoteString saveEmphasis |
+	saveEmphasis _ aFileStream emphasis.
+	aFileStream emphasis: 3.		"meant to be 10 point italic font"
+	globalComment ~~ nil
+		ifTrue:
+			[aFileStream cr.
+			newRemoteString _
+				RemoteString
+						newString: globalComment string
+						onFileNumber: sourceIndex
+						toFile: aFileStream.
+			moveSource ifTrue: [globalComment _ newRemoteString]].
+	aFileStream emphasis: saveEmphasis.!
+"-----------------------------------"!
+!ClassOrganizer methodsFor: 'elements'!
+classify: element under: heading
+	"Store the argument, element, in the category named heading."
+
+	| catName catIndex elemIndex realHeading |
+	realHeading _ heading asSymbol.
+
+	(catName _ self categoryOfElement: element) ~~ nil
+		ifTrue:  "Element already there"
+			[realHeading = Default ifTrue: [^self].	"Default causes no change"
+			realHeading = catName ifTrue: [^self].	"heading didnt change"
+			self removeElement: element].	"remove from old heading if did change"
+
+	(categoryArray indexOf: realHeading) = 0 ifTrue: [self addCategory: realHeading].
+	"add realHeading if not there already"
+
+	catIndex _ categoryArray indexOf: realHeading.
+	elemIndex _
+		catIndex > 1
+			ifTrue: [categoryStops at: catIndex - 1]
+			ifFalse: [0].
+	[(elemIndex _ elemIndex + 1) <= (categoryStops at: catIndex)
+		and: [element >= (elementArray at: elemIndex)]] whileTrue.
+
+	"elemIndex is now the index for inserting the element. Do the insertion before it."
+	elementArray _
+		(elementArray copyFrom: 1 to: elemIndex - 1)
+			, (Array with: element)
+			, (elementArray copyFrom: elemIndex to: elementArray size).	"insertion"
+
+	"add one to stops for this and later categories"
+	catIndex to: categoryArray size do:
+		[:i | categoryStops at: i put: (categoryStops at: i) + 1].
+
+	"remove empty default category if any"
+	categoryArray indexOf: Default ifAbsent: [^self].
+	(self listAtCategoryNamed: Default) size = 0
+		ifTrue: [self removeCategory: Default].!
+classifyAll: aCollection under: heading
+	aCollection do:
+		[:element | self classify: element under: heading]!
+includesElement: element
+	^ (self categoryOfElement: element) ~~ nil!
+listAtCategoryNamed: categoryName
+	"Answer the array of elements associated with the name, categoryName."
+
+	| i |
+	i _ categoryArray indexOf: categoryName ifAbsent: [^Array new].
+	^self listAtCategoryNumber: i!
+removeElement: element
+	"Remove the selector, element, from all categories."
+
+	| categoryIndex elementIndex nextStop newElements |
+	categoryIndex _ 1.
+	elementIndex _ 0.
+	nextStop _ 0.
+	"nextStop keeps track of the stops in the new element array"
+	newElements _ WriteStream on: (Array new: elementArray size).
+	[(elementIndex _ elementIndex + 1) <= elementArray size]
+		whileTrue:
+			[[elementIndex > (categoryStops at: categoryIndex)]
+				whileTrue:
+					[categoryStops at: categoryIndex put: nextStop.
+					categoryIndex _ categoryIndex + 1].
+			element = (elementArray at: elementIndex)
+				ifFalse:
+					[nextStop _ nextStop + 1.
+					newElements nextPut: (elementArray at: elementIndex)]].
+	[categoryIndex <= categoryStops size]
+		whileTrue:
+			[categoryStops at: categoryIndex put: nextStop.
+			categoryIndex _ categoryIndex + 1].
+	elementArray _ newElements contents!
+"-----------------------------------"!
+!ClassOrganizer methodsFor: 'fileIn/Out'!
+scanFrom: aStream
+	"Reads in the organization from the next chunk on aStream.  Categories or elements not found in the definition are not affected.  New elements are ignored."
+
+	self changeFromString: aStream nextChunk!
+"-----------------------------------"!
+!ClassOrganizer methodsFor: 'printing'!
+printOn: aStream
+	| elementIndex lastStop |
+	elementIndex _ 1.
+	lastStop _ 1.
+	1 to: categoryArray size do:
+		[:i |
+		aStream nextPut: $(.
+		(categoryArray at: i) asString printOn: aStream.
+		[elementIndex <= (categoryStops at: i)]
+			whileTrue:
+				[aStream space.
+				(elementArray at: elementIndex) printOn: aStream.
+				elementIndex _ elementIndex + 1].
+		aStream nextPut: $).
+		aStream cr]!
+"-----------------------------------"!
+!ClassOrganizer methodsFor: 'private'!
+listAtCategoryNumber: index
+	"Answer the array of elements stored at the position index."
+	| firstIndex lastIndex |
+	firstIndex _ index = 1
+			ifTrue: [1]
+			ifFalse: [(categoryStops at: index - 1) + 1].
+	lastIndex _ categoryStops at: index.
+	^ elementArray copyFrom: firstIndex to: lastIndex!
+numberOfCategoryOfElement: element
+	"Answer the index of the category with which the argument, element,
+	is associated."
+
+	| categoryIndex elementIndex |
+	categoryIndex _ 1.
+	elementIndex _ 0.
+	[(elementIndex _ elementIndex + 1) <= elementArray size]
+		whileTrue:
+			["point to correct category"
+			[elementIndex > (categoryStops at: categoryIndex)]
+				whileTrue: [categoryIndex _ categoryIndex + 1].
+			"see if this is element"
+			element = (elementArray at: elementIndex) ifTrue: [^categoryIndex]].
+	^0!
+setDefaultList
+	self classComment: ''.
+	categoryArray _ categoryStops _ elementArray _ Array new!
+setDefaultList: aSortedCollection
+	self classComment: ''.
+	categoryArray _ Array with: Default.
+	categoryStops _ Array with: aSortedCollection size.
+	elementArray _ aSortedCollection asArray!

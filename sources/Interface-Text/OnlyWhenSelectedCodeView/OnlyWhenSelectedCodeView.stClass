@@ -1,0 +1,29 @@
+CodeView subclass: #OnlyWhenSelectedCodeView
+  instanceVariableNames: 'selectionMsg'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Interface-Text'!
+OnlyWhenSelectedCodeView class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+OnlyWhenSelectedCodeView comment:
+'I am a code view for an OnlyWhenSelectedCodeController.'!
+"-----------------------------------"!
+!OnlyWhenSelectedCodeView class methodsFor: 'instance creation'!
+on: anObject aspect: m1 change: m3 menu: m4 initialSelection: sel selection: selMsg
+	"Create an instance viewing anObject.  See super method in TextView for full
+	explanation.  initialSelection (if not nil) is a string which will be searched for,
+	and then highlighted if found, whenever the viewed text changes."
+	^(super on: anObject aspect: m1 change: m3 menu: m4) selectionMsg: selMsg!
+"-----------------------------------"!
+!OnlyWhenSelectedCodeView methodsFor: 'control'!
+isSelected
+	^model perform: selectionMsg!
+"-----------------------------------"!
+!OnlyWhenSelectedCodeView methodsFor: 'controller access'!
+defaultControllerClass
+	^OnlyWhenSelectedCodeController!
+"-----------------------------------"!
+!OnlyWhenSelectedCodeView methodsFor: 'initialization'!
+selectionMsg: selMsg
+	selectionMsg _ selMsg!

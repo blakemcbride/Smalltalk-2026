@@ -1,0 +1,66 @@
+ContextPart variableSubclass: #MethodContext
+  instanceVariableNames: 'method receiverMap receiver'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Kernel-Methods'!
+MethodContext class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+MethodContext comment:
+'My instances hold all the dynamic state associated with the execution of a CompiledMethod.  In addition to their inherited state, this includes the receiver, a method, and temporary space in the variable part of the context.
+
+MethodContexts, though normal in their variable size, are actually only used in two sizes, small and large, which are determined by the temporary space required by the method being executed.
+
+Instance Variables:  *indexed*
+	method			<CompiledMethod>
+	receiverMap		unused (we expect to use it later for multiple inheritance)
+	receiver			<Object>'!
+"-----------------------------------"!
+!MethodContext class methodsFor: 'instance creation'!
+sender: s receiver: r method: m arguments: args
+	^(self new: m frameSize) setSender: s receiver: r method: m arguments: args!
+"-----------------------------------"!
+!MethodContext methodsFor: 'accessing'!
+home
+	^self!
+method
+	^method!
+receiver
+	^receiver!
+removeSelf
+	"Nil the receiver pointer and answer the former value."
+
+	| tempSelf |
+	tempSelf _ receiver.
+	receiver _ nil.
+	^tempSelf!
+"-----------------------------------"!
+!MethodContext methodsFor: 'initialize-release'!
+restart
+	"Reinitialize the receiver so that it is in the state it was at its creation."
+
+	pc _ method initialPC.
+	stackp _ method numArgs + method numTemps!
+restartWith: aCompiledMethod
+	"Reinitialize the receiver as though it had been for a different method.  Used
+	by a Debugger when one of the methods to which it refers is recompiled."
+
+	method _ aCompiledMethod.
+	^self restart!
+"-----------------------------------"!
+!MethodContext methodsFor: 'private'!
+setSender: s receiver: r method: m arguments: args
+	"Create the receiver's initial state."
+
+	sender _ s.
+	receiver _ r.
+	method _ m.
+	pc _ method initialPC.
+	stackp _ method numTemps.
+	1 to: args size do: [:i | self at: i put: (args at: i)]!
+"-----------------------------------"!
+!MethodContext methodsFor: 'temporaries'!
+tempAt: index
+	^self at: index!
+tempAt: index put: value
+	^self at: index put: value!

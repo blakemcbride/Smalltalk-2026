@@ -1,0 +1,66 @@
+FormView subclass: #FormHolderView
+  instanceVariableNames: 'displayedForm'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Graphics-Views'!
+FormHolderView class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+FormHolderView comment:
+'I represent a view of a Form.  Editing takes place by modifying a working version of the Form.  The message accept is used to copy the working version into the Form;  the message cancel copies the Form into the working version.
+
+Instance Variables:
+	displayedForm <Form> a working version of the Form for cancelable editing'!
+"-----------------------------------"!
+!FormHolderView methodsFor: 'displaying'!
+displayView
+	"This method displays the Form associated with this View according to the rule and mask specifed by this class."
+
+	| oldOffset |
+	oldOffset _ displayedForm offset.
+	displayedForm offset: 0@0.
+	displayedForm
+		displayOn: Display
+		transformation: self displayTransformation
+		clippingBox: self insetDisplayBox
+		rule: self rule
+		mask: self mask.
+	displayedForm offset: oldOffset!
+updateDisplay
+	"The working version is redefined by copying the bits displayed in the receiver's display area."
+
+	displayedForm fromDisplay: self insetDisplayBox.
+	displayedForm changed: self.!
+"-----------------------------------"!
+!FormHolderView methodsFor: 'initialize-release'!
+release
+	super release.
+	displayedForm release.
+	displayedForm _ nil!
+"-----------------------------------"!
+!FormHolderView methodsFor: 'menu messages'!
+accept
+	model
+		copyBits: displayedForm boundingBox
+		from: displayedForm
+		at: 0 @ 0
+		clippingBox: model boundingBox
+		rule: Form over
+		mask: Form black.
+	model changed: self!
+cancel
+	displayedForm become: model deepCopy.
+	displayedForm changed: self.
+	self display!
+"-----------------------------------"!
+!FormHolderView methodsFor: 'model access'!
+changeValueAt: location put: anInteger
+	displayedForm valueAt: location put: anInteger.
+	displayedForm changed: self!
+model: aForm
+	super model: aForm.
+	displayedForm _ aForm deepCopy!
+workingForm
+	"Answer the Form that is currently being displayed--the working version
+	in which edits are carried out."
+	^displayedForm!

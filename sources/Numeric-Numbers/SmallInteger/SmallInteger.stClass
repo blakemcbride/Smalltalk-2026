@@ -1,0 +1,339 @@
+Integer subclass: #SmallInteger
+  instanceVariableNames: ''
+  classVariableNames: 'Digitbuffer'
+  poolDictionaries: ''
+  category: 'Numeric-Numbers'!
+SmallInteger class
+  instanceVariableNames: 'minVal maxVal maxBits maxBytes'!
+"-----------------------------------"!
+SmallInteger comment:
+'SmallIntegers are optimized for the interpreter, stored in two-s complement form.  The allowable range is from minVal to maxVal.'!
+"-----------------------------------"!
+!SmallInteger class methodsFor: 'class initialization'!
+initialize
+	"Initialize the digit buffer, and discover the range of
+	SmallIntegers on this system."
+
+	| val bits |
+	Digitbuffer _ Array new: 32.  "Big enough for 32-bit systems"
+	"Discover minVal and maxVal dynamically.  Assume that
+	minVal is -2^N and maxVal is (2^N)-1."
+	val _ -1.
+	bits _ 0.
+	[(val subtractOrFail: 1) notNil]
+		whileTrue:
+			[val _ val + val.
+			bits _ bits + 1].
+	minVal _ val.
+	maxVal _ (val + 1) negated.
+	maxBits _ bits.
+	maxBytes _ bits + 7 // 8.
+	"SmallInteger initialize."!
+"-----------------------------------"!
+!SmallInteger class methodsFor: 'constants'!
+maxBits
+	"Answer N such that maxVal is (2^N)-1."
+	^maxBits!
+maxBytes
+	"Answer N such that maxVal < 256^N."
+	^maxBytes!
+maxVal
+	"Answer the maximum value for a SmallInteger"
+	^maxVal!
+minVal
+	"Answer the minimum value for a Small Integer"
+	^minVal!
+"-----------------------------------"!
+!SmallInteger class methodsFor: 'documentation'!
+guideToDivision
+	"Handy guide to the kinds of Integer division:
+	/  exact division, returns a fraction if result is not a whole integer.
+	//  returns an Integer, rounded towards negative infinity.
+	\\ is modulo rounded towards negative infinity.
+	quo:  truncated division, rounded towards zero."!
+"-----------------------------------"!
+!SmallInteger class methodsFor: 'instance creation'!
+new
+	self error: 'SmallIntegers can only be created by performing arithmetic'!
+"-----------------------------------"!
+!SmallInteger methodsFor: 'arithmetic'!
+* aNumber
+	"Multiply the receiver by the argument and answer with the result if it is a
+	SmallInterger.  Fail if the argument or the result is not a SmallInteger.
+	Essential.  No Lookup.  See Object documentation whatIsAPrimitive."
+
+	<primitive: 9>
+	self = 0 ifTrue: [^0].
+	"This eliminates the need for a self=0 check in LargeInteger *"
+	^super * aNumber!
++ aNumber
+	"Add the receiver to the argument and answer with the result if it is a SmallInterger.
+	Fail if the argument or the result is not a SmallInteger.  Essential.  No Lookup.
+	See Object documentation whatIsAPrimitive."
+
+	<primitive: 1>
+	^super + aNumber!
+- aNumber
+	"Subtract the argument from the receiver and answer with the result if it is a
+	SmallInterger.  Fail if the argument or the result is not a SmallInteger.
+	Essential.  No Lookup.  See Object documentation whatIsAPrimitive."
+
+	<primitive: 2>
+	^super - aNumber!
+/ aNumber
+	"This primitive (for /) divides the receiver by the argument and returns the
+	result if the division is exact.  Fail if the result is not a whole integer.  Fail if the
+	argument is 0 or is not a SmallInteger.  Optional.  No Lookup.  See Object
+	documentation whatIsAPrimitive."
+
+	<primitive: 10>
+	aNumber = 0 ifTrue: [^self error: 'division by 0'].
+	(aNumber isMemberOf: SmallInteger)
+		ifTrue: [^(Fraction numerator: self denominator: aNumber) reduced]
+		ifFalse: [^super / aNumber]!
+// aNumber
+	"Divide the receiver by the argument and answer with the result.  Round the result
+	down towards negative infinity to make it a whole integer.  Fail if the
+	argument is 0 or is not a SmallInteger.  Essential.  No Lookup.  See Object
+	documentation whatIsAPrimitive. "
+
+	<primitive: 12>
+	^super // aNumber"Do with quo: if primitive fails"!
+\\ aNumber
+	"Take the receiver modulo the argument.  The result is the remainder rounded
+	towards negative infinity, of the receiver divided by the argument.  Fail if the
+	argument is 0 or is not a SmallInteger.  Optional.  No Lookup.  See Object
+	documentation whatIsAPrimitive. "
+
+	<primitive: 11>
+	^super \\ aNumber"Do with // if primitive fails"!
+quo: aNumber
+	"Divide the receiver by the argument and answer with the result.  Round the
+	result down towards zero to make it a whole integer.  Fail if the argument is 0 or is
+	not a SmallInteger.  Optional.  See Object documentation whatIsAPrimitive."
+
+	<primitive: 13>
+	aNumber = 0 ifTrue: [^self error: 'Attempt to divide by zero'].
+	(aNumber isMemberOf: SmallInteger)
+		ifTrue: [self primitiveFailed]
+		ifFalse: [^super quo: aNumber]!
+"-----------------------------------"!
+!SmallInteger methodsFor: 'bit manipulation'!
+bitAnd: arg
+	"Logical AND the twos-complement representation of the receiver with the
+	argument and answer with the result.  Fail if the argument is not a SmallInteger.
+	Essential.  No Lookup.  See Object documentation whatIsAPrimitive."
+
+	<primitive: 14>
+	^arg bitAnd: self!
+bitOr: arg
+	"Logical OR the twos-complement representation of the receiver with the
+	argument and answer with the result.  Fail if the argument is not a SmallInteger.
+	Essential.  No Lookup.  See Object documentation whatIsAPrimitive."
+
+	<primitive: 15>
+	^arg bitOr: self!
+bitShift: arg
+	"Answers with a SmallInteger whose value (in twos-complement
+	representation) is the receiver's value (in twos-complement representation)
+	shifted left by the number of bits indicated by the argument.  Negative
+	arguments shift right.  Zeros are shifted in from the right in left shifts.  The sign
+	bit is extended in right shifts.  Fail if the result cannot be represented as a
+	SmallInteger.  Essential.  No Lookup.  See Object documentation
+	whatIsAPrimitive. "
+
+	<primitive: 17>
+	^super bitShift: arg!
+bitXor: arg
+	"Exclusive OR the twos-complement representation of the receiver with the
+	argument and answer with the result.  Fail if the argument is not a
+	SmallInteger.  Essential.  See Object documentation whatIsAPrimitive."
+
+	<primitive: 16>
+	^arg bitXor: self!
+highBit
+	| i bit |
+	self < 0 ifTrue: [^self error: 'highBit is not defined for negative numbers'].
+	self = 0 ifTrue: [^0].
+	i _ 1.
+	bit _ 1.
+	[self > bit]
+		whileTrue:
+			[i _ i + 1.
+			bit _ bit + bit + 1].
+	^i!
+"-----------------------------------"!
+!SmallInteger methodsFor: 'coercing'!
+coerce: n
+	^n truncated!
+generality
+	^20!
+"-----------------------------------"!
+!SmallInteger methodsFor: 'comparing'!
+< aNumber
+	"Compare the receiver with the argument and answer with true if the receiver is less
+	than the argument.  Otherwise answer false.  Fail if the argument is not a
+	SmallInteger.  Essential.  No Lookup.  See Object documentation whatIsAPrimitive."
+
+	<primitive: 3>
+	^super < aNumber!
+<= aNumber
+	"Compare the receiver with the argument and answer true if the receiver is less
+	than or equal to the argument.  Otherwise answer false.  Fail if the argument is
+	not a SmallInteger.  Optional.  No Lookup.  See Object documentation
+	whatIsAPrimitive. "
+
+	<primitive: 5>
+	^super <= aNumber!
+= aNumber
+	"Compare the receiver with the argument and answer true if the receiver is
+	equal to the argument.  Otherwise answer false.  Fail if the argument is not a
+	SmallInteger.  Essential.  No Lookup.  See Object documentation
+	whatIsAPrimitive. "
+
+	<primitive: 7>
+	^super = aNumber!
+> aNumber
+	"Compare the receiver with the argument and answer true if the receiver is
+	greater than the argument.  Otherwise answer false.  Fail if the argument is not a
+	SmallInteger.  Essential.  No Lookup.  See Object documentation whatIsAPrimitive."
+
+	<primitive: 4>
+	^super > aNumber!
+>= aNumber
+	"Compare the receiver with the argument and answer true if the receiver is
+	greater than or equal to the argument.  Otherwise answer false.  Fail if the
+	argument is not a SmallInteger.  Optional.  No Lookup.  See Object
+	documentation whatIsAPrimitive."
+
+	<primitive: 6>
+	^super >= aNumber!
+hash
+	^self!
+hashMappedBy: map
+	"My hash is independent of my oop"
+	^ self hash!
+~= aNumber
+	"Compare the receiver with the argument and answer true if the receiver is not
+	equal to the argument.  Otherwise answer false.  Fail if the argument is not a
+	SmallInteger.  Essential.  No Lookup.  See Object documentation
+	whatIsAPrimitive. "
+
+	<primitive: 8>
+	^super ~= aNumber!
+"-----------------------------------"!
+!SmallInteger methodsFor: 'converting'!
+asFloat
+	"Create and answer an instance of Float whose value is the value of the receiver.
+	Essential.  See Object documentation whatIsAPrimitive."
+
+	<primitive: 40>
+	self primitiveFailed!
+"-----------------------------------"!
+!SmallInteger methodsFor: 'copying'!
+deepCopy!
+shallowCopy!
+"-----------------------------------"!
+!SmallInteger methodsFor: 'printing'!
+printOn: aStream base: b
+	| i x |
+	(x _ self) < 0
+		ifTrue:
+			[aStream nextPut: $-.
+			x _ self negated].
+	i _ 0.
+	[x >= b]
+		whileTrue:
+			[Digitbuffer at: (i _ i + 1) put: x \\ b.
+			x _ x // b].
+	Digitbuffer at: (i _ i + 1) put: x.
+	[i > 0]
+		whileTrue:
+			[aStream nextPut: (Character digitValue: (Digitbuffer at: i)).
+			i _ i - 1]!
+"-----------------------------------"!
+!SmallInteger methodsFor: 'private'!
+fromString: str radix: radix
+	| maxdigit c val |
+	maxdigit _
+		radix + (radix > 10
+					ifTrue: [55 - 1]
+					ifFalse: [48 - 1]).
+	val _ 0.
+	1 to: str size do:
+		[:i |
+		c _ str at: i.
+		(c < 48 ifFalse: [c > maxdigit])
+			ifTrue: [^false].
+		val _ val * radix + (c <= 57
+							ifTrue: [c - 48]
+							ifFalse:
+								[c < 65 ifTrue: [^false].
+								c - 55])].
+	^val!
+subtractOrFail: aNumber
+	"This is a private copy of the subtraction primitive,
+	used by SmallInteger class initialize to discover the
+	correct value of SmallInteger minVal."
+
+	<primitive: 2>
+	^nil!
+"-----------------------------------"!
+!SmallInteger methodsFor: 'system primitives'!
+asObject
+	"This is the inverse of Object.asOop; look there for details.
+	See also Object documentation whatIsAPrimitive."
+	<primitive: 76>
+	^self primitiveFailed!
+asOop
+	"Answer an integer which is unique to me, consistent with Object.asOop.
+	See Object.asOop for detailed documentation"
+	self >= 0
+		ifTrue: [^ 32768 + self]		"0...16K-1 --> 32K...48K-1"
+		ifFalse: [^ 65536 + self]		"-16k...-1 --> 48K...64K-1"!
+digitAt: n
+	"Answer the value of an apparent indexable field.
+	This is provided for compatibility with LargeInteger."
+
+	 n = 1
+		ifTrue:
+			["Negate carefully in case I am SmallInteger minVal"
+			self < 0
+				ifTrue: [^-256 - self bitAnd: 255].
+			^self bitAnd: 255]
+		ifFalse:
+			[self < 0
+				ifTrue: [^(-256 - self bitShift: -8) + 1 digitAt: n - 1].
+			^(self bitShift: 8 - (n bitShift: 3)) bitAnd: 255]!
+digitAt: n put: value
+	"Fails. The digits of a small integer can not be modified."
+
+	self error: 'You cant store in a SmallInteger'!
+digitLength
+	"Answer with the number of indexable fields in the receiver.  This value is the
+	same as the largest legal subscript.  Included so that a SmallInteger can behave
+	like a LargeInteger."
+
+	| maxSize minValue size |
+	(self < 16r100 and: [self > -16r100]) ifTrue: [^1].
+	maxSize _ SmallInteger maxBytes.
+	maxSize = 2 ifTrue: [^2].  "Make things go fast for 16-bit systems"
+	minValue _ -16r100.
+	size _ 2.
+	[size < maxSize]
+		whileTrue:
+			[minValue _ minValue bitShift: 8.
+			(self <= (-1 - minValue) and: [self > minValue]) ifTrue: [^size].
+			size _ size + 1].
+	^maxSize!
+instVarAt: i
+	"small integer has to be specially handled"
+
+	i = 1 ifTrue: [^self].
+	self error: 'argument too big for small integer instVarAt:'!
+"-----------------------------------"!
+!SmallInteger methodsFor: 'testing'!
+even
+	^(self bitAnd: 1) = 0!
+odd
+	^(self bitAnd: 1) = 1!

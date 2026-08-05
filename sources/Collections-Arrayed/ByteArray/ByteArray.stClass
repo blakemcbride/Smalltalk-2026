@@ -1,0 +1,139 @@
+ArrayedCollection variableByteSubclass: #ByteArray
+  instanceVariableNames: ''
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Collections-Arrayed'!
+ByteArray class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+ByteArray comment:
+'My elements can only be integers between 0 and 255.  The access messages at: and at:put: are handled primitively in class Object'!
+"-----------------------------------"!
+!ByteArray methodsFor: 'accessing'!
+doubleWordAt: i
+	"Answer the value of the double word (4 bytes) starting at byte index i."
+
+	| b0 b1 b2 w |
+	"Primarily for reading socket #s in Pup headers"
+	b0 _ self at: i.
+	b1 _ self at: i+1.
+	b2 _ self at: i+2.
+	w _ self at: i+3.
+	"Following sequence minimizes LargeInteger arithmetic for small results."
+	b2=0 ifFalse: [w _ (b2 bitShift: 8) + w].
+	b1=0 ifFalse: [w _ (b1 bitShift: 16) + w].
+	b0=0 ifFalse: [w _ (b0 bitShift: 24) + w].
+	^w!
+doubleWordAt: i put: value
+	"Set the value of the double word (4 bytes) starting at byte index i."
+
+	| w |
+	"Primarily for setting socket #s in Pup headers"
+	w _ value truncated.
+	self at: i put: (w digitAt: 4).
+	self at: i + 1 put: (w digitAt: 3).
+	self at: i + 2 put: (w digitAt: 2).
+	self at: i + 3 put: (w digitAt: 1)!
+replaceFrom: start to: stop with: replacement startingAt: repStart
+	"This destructively replaces elements from start to stop in the receiver
+	starting at index, repStart, in the collection, replacement.  Answer the
+	receiver."
+	(replacement isKindOf: ByteArray)
+		ifTrue:
+			[self primReplaceFrom: start to: stop with: replacement startingAt: repStart]
+		ifFalse:
+			[super replaceFrom: start to: stop with: replacement startingAt: repStart]!
+replaceFrom: start to: stop withString: aString startingAt: repStart
+	"This destructively replaces elements from start to stop in the receiver
+	starting at index, repStart, in the string, aString.  Answer the
+	receiver."
+	| index repOff |
+	<primitive: 105>
+	repOff _ repStart - start.
+	index _ start - 1.
+	[(index _ index + 1) <= stop]
+		whileTrue:
+			[self at: index put: (aString at: repOff + index) asInteger]!
+wordAt: i
+	"Answer the value of the word (2 bytes) starting at index i."
+
+	| j |
+	j _ i + i.
+	^((self at: j - 1) bitShift: 8) + (self at: j)!
+wordAt: i put: v
+	"Set the value of the word (2 bytes) starting at index i."
+
+	| j |
+	j _ i + i.
+	self at: j - 1 put: ((v bitShift: -8) bitAnd: 8r377).
+	self at: j put: (v bitAnd: 8r377)!
+"-----------------------------------"!
+!ByteArray methodsFor: 'converting'!
+asString
+
+	^(String new: self size) replaceFrom: 1 to: self size withByteArray: self startingAt: 1!
+packBits: fieldSize into: byteArray
+	"Pack the low order fieldSize bits of the receiver's bytes into the bytes of byteArray."
+
+	^self packBits: fieldSize startBit: 8-fieldSize into: byteArray!
+packBits: fieldSize startBit: fieldStart into: byteArray
+	"Pack fieldSize bits of the receiver's bytes into the bytes of byteArray.  fieldSize must be 1, 2, 4, or 8.  fieldStart is the bit offset of the field within the byte (8-fieldSize for low order bits).  The receiver's size must be a multiple of 16/fieldSize.  byteArray's size must be even.  Answers the packed array."
+
+	| unpackedForm packedForm sourceX destX bitBlt fieldsPerWord ht |
+	fieldsPerWord _ 16//fieldSize.
+	ht _ self size//fieldsPerWord.
+	unpackedForm _ Form new extent: fieldsPerWord*8@ht offset: 0@0 bits: self.
+	packedForm _ Form new extent: 16@ht offset: 0@0 bits: byteArray.
+	bitBlt _ BitBlt destForm: packedForm
+		sourceForm: unpackedForm
+		halftoneForm: nil
+		combinationRule: Form over
+		destOrigin: 0@0
+		sourceOrigin: 0@0
+		extent: fieldSize@ht
+		clipRect: (0@0 corner: 16@ht).
+
+	sourceX _ fieldStart.
+	destX _ 0.
+	fieldsPerWord timesRepeat:
+		[bitBlt sourceX: sourceX; destX: destX; copyBits.
+		sourceX _ sourceX + 8.
+		destX _ destX + fieldSize].
+
+	^byteArray!
+unpackBits: fieldSize into: byteArray
+	"Unpack the packed bit fields of the receiver's bytes into the low order fieldSize bits of byteArray twice as large.  fieldSize must be 1, 2, 4, or 8.  The receiver's size must be even.  byteArray's size must be a multiple of 16/fieldSize.  Answers the unpacked array."
+
+	| unpackedForm packedForm sourceX destX bitBlt fieldsPerWord ht |
+	fieldsPerWord _ 16//fieldSize.
+	ht _ self size//2.
+	unpackedForm _ Form new extent: fieldsPerWord*8@ht offset: 0@0 bits: byteArray.
+	packedForm _ Form new extent: 16@ht offset: 0@0 bits: self.
+	bitBlt _ BitBlt destForm: unpackedForm
+		sourceForm: packedForm
+		halftoneForm: nil
+		combinationRule: Form over
+		destOrigin: 0@0
+		sourceOrigin: 0@0
+		extent: fieldSize@ht
+		clipRect: unpackedForm boundingBox.
+
+	sourceX _ 0.
+	destX _ 8-fieldSize.
+	fieldsPerWord timesRepeat:
+		[bitBlt sourceX: sourceX; destX: destX; copyBits.
+		sourceX _ sourceX + fieldSize.
+		destX _ destX + 8].
+
+	^byteArray!
+"-----------------------------------"!
+!ByteArray methodsFor: 'private'!
+defaultElement
+	^0!
+primReplaceFrom: start to: stop with: replacement startingAt: repStart
+	"This destructively replaces elements from start to stop in the receiver
+	starting at index, repStart, in the collection, replacement.  Answer the
+	receiver.  No range checks are performed - this may be primitively implemented."
+
+	<primitive: 105>
+	super replaceFrom: start to: stop with: replacement startingAt: repStart!

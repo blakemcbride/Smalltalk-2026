@@ -1,0 +1,89 @@
+Object subclass: #Change
+  instanceVariableNames: 'file position'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'System-Changes'!
+Change class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+Change comment:
+'I represent a single change of some kind.  I have many subclasses for specific kinds of changes.  The text which represents me is a chunk of a file starting at a particular position.
+
+Since so many kinds of changes are related to classes, categories, and methods, there are dummy accessing methods for these parameters in class Change.
+
+Instance variables:
+	file <FileStream>
+	position <Integer>'!
+"-----------------------------------"!
+!Change class methodsFor: 'instance creation'!
+file: f position: p
+	^super new file: f position: p!
+"-----------------------------------"!
+!Change methodsFor: 'accessing'!
+category
+	^''!
+className
+	^''!
+classObject
+	"Return the class in the present system referenced by my className"
+	^nil!
+defaultName: initialString
+	"The default name is the first few characters of the text."
+	| text cr |
+	text _ WriteStream on: (String new: 50).
+	text nextPutAll: initialString.
+	cr _ Character cr.
+	self text do:
+		[:char |
+		(char = cr or: [text position >= 40]) ifTrue: [text nextPutAll: ' ...'.  ^text contents].
+		text nextPut: char].
+	^text contents!
+name
+	"Return the name which should appear in the list view."
+	self subclassResponsibility!
+parameters
+	"Return the parameters used for the 'same as' test"
+	self subclassResponsibility!
+selector
+	^''!
+text
+	file position: position.
+	^file nextChunk!
+text: aString
+	| tempStream |
+	tempStream _ ReadWriteStream on: (String new: aString size + 20).
+	tempStream nextChunkPut: aString.
+	tempStream position: 0.  "Needed to set readLimit = writePosition"
+	file _ ReadStream on: tempStream contents.
+	position _ 0!
+values
+	"Return the value to be used for the 'same as' filter"
+	^Array with: self class with: self parameters!
+"-----------------------------------"!
+!Change methodsFor: 'checking'!
+checkWith: aConflictChecker
+	"This is a default, most subclasses do something more intelligent."
+	aConflictChecker addDoIt: self!
+"-----------------------------------"!
+!Change methodsFor: 'file accessing'!
+file
+	^file!
+fileName
+	(file isKindOf: FileStream)
+		ifTrue: [^file name]
+		ifFalse: [^'some local stream']!
+"-----------------------------------"!
+!Change methodsFor: 'fileIn/Out'!
+fileIn
+	^Compiler evaluate: self text logged: true!
+fileOutOn: aStream
+	"Default, subclasses may do something different"
+	aStream nextChunkPut: self text; cr; cr!
+fileOutOn: aStream previous: previousChange next: nextChange
+	"Default, subclasses may be able to encode runs more compactly"
+	self fileOutOn: aStream!
+"-----------------------------------"!
+!Change methodsFor: 'initialize'!
+file: aFileStream position: anInteger
+	file _ aFileStream.
+	position _ anInteger!

@@ -1,0 +1,224 @@
+Object subclass: #ControlManager
+  instanceVariableNames: 'scheduledControllers activeController activeControllerProcess screenController'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Interface-Framework'!
+ControlManager class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+ControlManager comment:
+'I represent the top level control over scheduling which controller of a view on the screen the user is actively using.  ScheduledControllers is the global reference to an instance of me, the one attached to the Project currently being used.
+
+Instance Variables:
+	scheduledControllers	<OrderedCollection> of Controllers, usually ScheduledControllers
+	activeController		<Controller> usually a ScheduledController
+	activeControllerProcess	<Process>
+	screenController 	<ScreenController> also appears in ScheduledControllers'!
+"-----------------------------------"!
+!ControlManager class methodsFor: 'exchange'!
+newScheduler: controlManager
+	"When switching projects, the control scheduler has to be exchanged.  The
+	active one is the one associated with the current project."
+
+	ScheduledControllers deactivate.
+	Smalltalk at: #ScheduledControllers put: controlManager.
+	ScheduledControllers restore.
+	controlManager searchForActiveController!
+"-----------------------------------"!
+!ControlManager class methodsFor: 'instance creation'!
+new
+	^super new initialize!
+"-----------------------------------"!
+!ControlManager methodsFor: 'accessing'!
+activeController
+	"Answer the currently active controller."
+
+	^activeController!
+activeController: aController
+	"Set aController to be the currently active controller.  Give the user control in it."
+
+	activeController _ aController.
+	self promote: activeController.
+	activeControllerProcess _
+			[activeController startUp.
+			self searchForActiveController] newProcess.
+	activeControllerProcess priority: Processor userSchedulingPriority.
+	activeControllerProcess resume!
+activeController: aController andProcess: aProcess
+	"Set aController to be the currently active controller and aProcess to be the
+	the process that is handles controller scheduling activities in the system."
+
+
+	self inActiveControllerProcess
+		ifTrue:
+			[aController~~nil
+				ifTrue: [(scheduledControllers includes: aController)
+							ifTrue: [self promote: aController]
+							ifFalse: [self error: 'Old controller not scheduled']].
+			activeController controlTerminate.
+			activeController _ aController.
+			activeController == nil
+				ifFalse: [activeController controlInitialize].
+			activeControllerProcess _ aProcess.
+			activeControllerProcess resume]
+		ifFalse:
+			[self error: 'New active controller process must be set from old one']!
+activeControllerNoTerminate: aController andProcess: aProcess
+	"Set aController to be the currently active controller and aProcess to be the
+	the process that handles controller scheduling activities in the system.
+	This message differs from activeController:andProcess: in that it does not send
+	controlTerminate to the currently active controller."
+
+
+	self inActiveControllerProcess
+		ifTrue:
+			[aController~~nil
+				ifTrue: [(scheduledControllers includes: aController)
+							ifTrue: [self promote: aController]
+							ifFalse: [self error: 'Old controller not scheduled']].
+			activeController _ aController.
+			activeController == nil
+				ifFalse: [activeController controlInitialize].
+			activeControllerProcess _ aProcess.
+			activeControllerProcess resume]
+		ifFalse:
+			[self error: 'New active controller process must be set from old one']!
+activeControllerProcess
+	"Answer the process that is currently handling controller scheduling activities
+	in the system."
+	^activeControllerProcess!
+scheduledControllers
+	"Answer a copy of the ordered collection of scheduled controllers."
+	^scheduledControllers copy!
+"-----------------------------------"!
+!ControlManager methodsFor: 'displaying'!
+restore
+	"Clear the screen to gray and then redisplay all the scheduled views."
+
+	self unschedule: screenController.
+	self scheduleOnBottom: screenController.
+	screenController view window: Display boundingBox.
+	scheduledControllers reverseDo:
+		[:aController | aController view display; deEmphasize].
+	Cursor normal show!
+"-----------------------------------"!
+!ControlManager methodsFor: 'initialize-release'!
+initialize
+	"Initialize the receiver to refer to only the background controller."
+	| screenView |
+	screenController _ ScreenController new.
+	screenView _ FormView new.
+	screenView model: (InfiniteForm with: Form gray) controller: screenController.
+	screenView window: Display boundingBox.
+	scheduledControllers _ OrderedCollection with: screenController!
+release
+	scheduledControllers == nil
+		ifFalse:
+			[scheduledControllers
+				do: [:controller | (controller isKindOf: Controller)
+								ifTrue: [controller view release]
+								ifFalse: [controller release]].
+			scheduledControllers _ nil]!
+"-----------------------------------"!
+!ControlManager methodsFor: 'private'!
+deactivate
+	activeController _ nil.
+	activeControllerProcess _ nil!
+scheduled: aController from: aProcess
+	activeControllerProcess==aProcess
+		ifTrue:
+			[activeController ~~ nil
+					ifTrue: [activeController controlTerminate].
+			aController centerCursorInView.
+			self activeController: aController]
+		ifFalse:
+			[aController view display]!
+"-----------------------------------"!
+!ControlManager methodsFor: 'scheduling'!
+inActiveControllerProcess
+	"Answer whether the active scheduling process is the actual active process in the system."
+
+	^activeControllerProcess == Processor activeProcess!
+interruptName: title
+	"Create a Notifier on the active scheduling process whose label is title
+	Make the Notifier the active controller."
+
+	| newActiveController suspendingList |
+	suspendingList _ activeControllerProcess suspendingList.
+	suspendingList isNil
+		ifTrue: [activeControllerProcess==Processor activeProcess
+						ifTrue: [activeControllerProcess suspend]]
+		ifFalse: [suspendingList remove: activeControllerProcess.
+				 activeControllerProcess offList].
+	newActiveController _
+		(NotifierView openInterrupt: title
+					  onProcess: activeControllerProcess)
+							controller.
+	activeController ~~ nil
+			ifTrue: [activeController controlTerminate].
+	newActiveController centerCursorInView.
+	self activeController: newActiveController!
+promote: aController
+	"Make aController be the first scheduled controller in the ordered collection."
+
+	scheduledControllers remove: aController.
+	scheduledControllers addFirst: aController!
+pullBottomToTop
+	"Make the last scheduled view which wants control be the first one.  Used for implementing the message under to a scheduled controller."
+
+	scheduledControllers reverseDo:
+		[:controller |
+		(controller isControlWanted and: [controller ~~ screenController]) ifTrue:
+			[^scheduledControllers addFirst: (scheduledControllers remove: controller)]]!
+scheduleActive: aController
+	"Make aController be scheduled as the active controller.  Presumably the active
+	scheduling process asked to schedule this controller and that a new process associated
+	this controller takes control.  So this is the last act of the active scheduling process."
+
+	Cursor normal show.
+	self scheduleActiveNoTerminate: aController.
+	Processor terminateActive!
+scheduleActiveNoTerminate: aController
+	"Make aController be the active controller.  Presumably the process that requested
+	the new active controller wants to keep control to do more activites before the
+	new controller can take control.  Therefore, do not terminate the currently
+	active process."
+
+	self schedulePassive: aController.
+	self scheduled: aController
+		from: Processor activeProcess!
+scheduleOnBottom: aController
+	"Make aController be scheduled as a scheduled controller, but not the active one.
+	Put it at the end of the ordered collection of controllers."
+
+	scheduledControllers addLast: aController!
+schedulePassive: aController
+	"Make aController be scheduled as a scheduled controller, but not the active one.
+	Put it at the beginning of the ordered collection of controllers."
+
+	scheduledControllers addFirst: aController!
+searchForActiveController
+	"Find a scheduled controller that wants control and give control to it.  If none
+	wants control, then see if the System Menu has been requested."
+
+	| aController |
+	activeController _ nil.
+	activeControllerProcess _ Processor activeProcess.
+	[Processor yield.
+	 aController _ scheduledControllers
+		detect:
+			[:aController |
+			aController isControlWanted and:
+				[aController ~~ screenController]]
+		ifNone:
+			[screenController isControlWanted
+				ifTrue: [screenController]
+				ifFalse: [nil]].
+	aController isNil]
+		whileTrue.
+	self activeController: aController.
+	Processor terminateActive!
+unschedule: aController
+	"Remove the view, aController, from the collection of scheduled controllers."
+
+	scheduledControllers remove: aController ifAbsent: []!

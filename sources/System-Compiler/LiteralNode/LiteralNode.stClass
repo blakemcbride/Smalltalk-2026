@@ -1,0 +1,21 @@
+LeafNode subclass: #LiteralNode
+  instanceVariableNames: ''
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'System-Compiler'!
+LiteralNode class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+LiteralNode comment:
+'I am a parse tree leaf representing a literal string or number'!
+"-----------------------------------"!
+!LiteralNode methodsFor: 'code generation'!
+emitForValue: stack on: strm
+	code < 256
+		ifTrue: [strm nextPut: code]
+		ifFalse: [self emitLong: LdInstLong on: strm].
+	stack push: 1!
+"-----------------------------------"!
+!LiteralNode methodsFor: 'printing'!
+printOn: aStream indent: level
+	key storeOn: aStream!

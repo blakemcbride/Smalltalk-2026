@@ -1,0 +1,138 @@
+Dictionary variableSubclass: #IdentityDictionary
+  instanceVariableNames: 'valueArray'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Collections-Unordered'!
+IdentityDictionary class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+IdentityDictionary comment:
+'I am a subclass of Dictionary in which the lookup is done using == rather than =.  I am represented as two parallel ordered collections of keys and values, rather than as a single collection of associations.'!
+"-----------------------------------"!
+!IdentityDictionary class methodsFor: 'instance creation'!
+new: size
+	"Answer with a new instance of me, whose initial capacity is size.
+	Size must be a power of 2."
+
+	(size bitAnd: size - 1) = 0 ifFalse: [self error: 'size must be a power of 2'].
+	size >= 1 ifFalse: [self error: 'size must be >= 1'].
+	^super new: size!
+"-----------------------------------"!
+!IdentityDictionary methodsFor: 'accessing'!
+associationAt: key ifAbsent: aBlock
+	"Answer with an Association consisting of key and my value at that key.
+	If key is not found, evaluate aBlock."
+
+	| index |
+	index _ self findKey: key ifAbsent: [^aBlock value].
+	^Association
+		key: (self basicAt: index)
+		value: (valueArray at: index)!
+at: key ifAbsent: aBlock
+	"Answer with the value at key.  If key is not found, evaluate aBlock."
+
+	| index |
+	index _ self findKey: key ifAbsent: [^aBlock value].
+	^valueArray at: index!
+at: key put: value
+	"Set the value at key to be value."
+
+	| index |
+	index _ self findKeyOrNil: key.
+	(self basicAt: index) == nil
+		ifTrue:
+			[tally _ tally + 1.
+			self basicAt: index put: key].
+	valueArray at: index put: value.
+	self fullCheck.
+	^value!
+keyAtValue: value ifAbsent: exceptionBlock
+	"Answer the key whose value equals the argument, value.  If there is none,
+	answer the result of evaluating exceptionBlock."
+
+	| theKey |
+	1 to: self basicSize do:
+		[:index |
+		value == (valueArray at: index)
+			ifTrue:
+				[(theKey _ self basicAt: index) == nil
+					ifFalse: [^theKey]]].
+	^exceptionBlock value!
+"-----------------------------------"!
+!IdentityDictionary methodsFor: 'adding'!
+add: anAssociation
+	self at: anAssociation key put: anAssociation value!
+"-----------------------------------"!
+!IdentityDictionary methodsFor: 'copying'!
+copy
+	| v copy |
+	v _ valueArray.
+	valueArray _ valueArray shallowCopy.
+	copy _ super shallowCopy.
+	valueArray _ v.
+	^copy!
+"-----------------------------------"!
+!IdentityDictionary methodsFor: 'dictionary enumerating'!
+associationsDo: aBlock
+	"Evaluate aBlock for associations consisting of my keys and their values."
+
+	1 to: self basicSize do:
+		[:index |
+		(self basicAt: index) == nil
+			ifFalse: [aBlock value: (Association
+										key: (self basicAt: index)
+										value: (valueArray at: index))]]!
+"-----------------------------------"!
+!IdentityDictionary methodsFor: 'dictionary removing'!
+removeKey: key ifAbsent: errorBlock
+	self removeDangerouslyKey: key ifAbsent: [^errorBlock value]!
+"-----------------------------------"!
+!IdentityDictionary methodsFor: 'enumerating'!
+do: aBlock
+	1 to: self basicSize do:
+		[:index |
+		(self basicAt: index) == nil ifFalse: [aBlock value: (valueArray at: index)]]!
+"-----------------------------------"!
+!IdentityDictionary methodsFor: 'private'!
+findKeyOrNil: key
+	| index length probe pass |
+	length _ self basicSize.
+	pass _ 1.
+	index _ key asOop \\ length + 1.
+	[(probe _ self basicAt: index) == nil or: [probe == key]]
+		whileFalse: [(index _ index + 1) > length
+				ifTrue:
+					[index _ 1.
+					pass _ pass + 1.
+					pass > 2 ifTrue: [^self grow findKeyOrNil: key]]].
+	^index!
+noCheckAdd: anAssociation
+	^self noCheckAdd: anAssociation key with: anAssociation value!
+noCheckAdd: key with: value
+	| index |
+	index _ self findKeyOrNil: key.
+	self basicAt: index put: key.
+	tally _ tally + 1.
+	^valueArray at: index put: value!
+removeDangerouslyKey: key ifAbsent: errorBlock
+	| location oldKey length entry |
+	location _ self findKeyOrNil: key.
+	(self basicAt: location) == nil ifTrue: [^errorBlock value].
+	self basicAt: location put: nil.
+	valueArray at: location put: nil.
+	tally _ tally - 1.
+	length _ self basicSize.
+	[location _
+		location = length
+			ifTrue: [1]
+			ifFalse: [location + 1].
+	(self basicAt: location) == nil]
+		whileFalse:
+			[oldKey _ self findKeyOrNil: (self basicAt: location).
+			location = oldKey ifFalse: [self swap: location with: oldKey]]!
+setTally
+	super setTally.
+	valueArray _ Array new: self basicSize!
+swap: oneElement with: otherElement
+	super swap: oneElement with: otherElement.
+	valueArray swap: oneElement with: otherElement!

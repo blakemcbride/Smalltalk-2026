@@ -1,0 +1,132 @@
+LeafNode subclass: #VariableNode
+  instanceVariableNames: 'name isArg'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'System-Compiler'!
+VariableNode class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+VariableNode comment:
+'I am a parse tree leaf representing a variable.  Note that my name and key are different for pool variables -- the key is the Object Reference.'!
+"-----------------------------------"!
+!VariableNode class methodsFor: 'class initialization'!
+initialize
+	"VariableNode initialize. Decompiler initialize."
+	| encoder |
+	encoder _ Encoder new.
+	StdVariables _ Dictionary new: 16.
+	encoder
+		fillDict: StdVariables
+		with: VariableNode
+		mapping: #('self' 'thisContext' 'super' 'nil' 'false' 'true' )
+		to: (Array with: LdSelf with: LdThisContext with: LdSuper)
+				, (Array with: LdNil with: LdFalse with: LdTrue).
+	StdSelectors _ Dictionary new: 64.
+	encoder
+		fillDict: StdSelectors
+		with: SelectorNode
+		mapping: ((1 to: Smalltalk specialSelectorSize) collect:
+							[:i | Smalltalk specialSelectorAt: i])
+		to: (SendPlus to: SendPlus + 31).
+	StdLiterals _ LiteralDictionary new: 16.
+	encoder
+		fillDict: StdLiterals
+		with: LiteralNode
+		mapping: #(-1 0 1 2 )
+		to: (LdMinus1 to: LdMinus1 + 3).
+	encoder initScopeAndLiteralTables.
+	self initialize2: encoder!
+initialize2: encoder
+	"VariableNode initialize."
+
+	NodeNil _ encoder encodeVariable: 'nil'.
+	NodeTrue _ encoder encodeVariable: 'true'.
+	NodeFalse _ encoder encodeVariable: 'false'.
+	NodeSelf _ encoder encodeVariable: 'self'.
+	NodeThisContext _ encoder encodeVariable: 'thisContext'.
+	NodeSuper _ encoder encodeVariable: 'super'!
+"-----------------------------------"!
+!VariableNode methodsFor: 'code generation'!
+emitForReturn: stack on: strm
+	(code >= LdSelf and: [code <= LdNil])
+		ifTrue:
+			["short returns"
+			strm nextPut: EndMethod - 4 + (code - LdSelf).
+			stack push: 1 "doesnt seem right"]
+		ifFalse:
+			[super emitForReturn: stack on: strm]!
+emitForValue: stack on: strm
+	code < 256
+		ifTrue:
+			[strm nextPut: (code = LdSuper ifTrue: [LdSelf] ifFalse: [code]).
+			stack push: 1]
+		ifFalse:
+			[self emitLong: LdInstLong on: strm.
+			stack push: 1]!
+emitStore: stack on: strm
+	self emitLong: Store on: strm!
+emitStorePop: stack on: strm
+	(code between: 0 and: 7)
+		ifTrue:
+			[strm nextPut: ShortStoP + code "short stopop inst"]
+		ifFalse:
+			[(code between: 16 and: 23)
+				ifTrue: [strm nextPut: ShortStoP + 8 + code - 16 "short stopop temp"]
+				ifFalse: [self emitLong: StorePop on: strm]].
+	stack pop: 1!
+sizeForReturn: encoder
+	(code >= LdSelf and: [code <= LdNil])
+		ifTrue: ["short returns" ^1].
+	^super sizeForReturn: encoder!
+sizeForStore: encoder
+	self reserve: encoder.
+	^2!
+sizeForStorePop: encoder
+	self reserve: encoder.
+	(code < 24 and: [code noMask: 8])
+		ifTrue: [^1].
+	^2!
+"-----------------------------------"!
+!VariableNode methodsFor: 'initialize-release'!
+isArg: aBoolean
+	isArg _ aBoolean!
+name: varName index: i type: type
+	self name: varName
+		key: varName
+		index: i
+		type: type!
+name: string key: object code: byte
+	name _ string.
+	key _ object.
+	code _ byte!
+name: varName key: objRef index: i type: type
+	name _ varName.
+	self key: objRef
+		index: i
+		type: type!
+"-----------------------------------"!
+!VariableNode methodsFor: 'printing'!
+printOn: aStream indent: level
+	aStream nextPutAll: name!
+"-----------------------------------"!
+!VariableNode methodsFor: 'testing'!
+canBeSpecialArgument
+	"can I be an argument of (e.g.) ifTrue:?"
+
+	^code < LdNil!
+isArg
+	^self isTemp and: [isArg==true]!
+isTemp
+	"Answer true if this describes a temporary variable"
+
+	code < 0
+		ifTrue: [^code = LdTempType negated].
+	code > 255
+		ifTrue: [^code
+					between: LdTempType * 256
+					and: LdTempType * 256 + 255].
+	^code
+		between: (CodeBases at: 2)
+		and: (CodeBases at: 2) + (CodeLimits at: 2) - 1!
+isVariableReference
+	^true!

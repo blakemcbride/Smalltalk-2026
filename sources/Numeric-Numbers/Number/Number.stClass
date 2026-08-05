@@ -1,0 +1,316 @@
+Magnitude subclass: #Number
+  instanceVariableNames: ''
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Numeric-Numbers'!
+Number class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+Number comment:
+'The abstract class Number is at the top of the number hierarchy.  Its subclasses are Float, Fraction, and Integer.'!
+"-----------------------------------"!
+!Number class methodsFor: 'instance creation'!
+readFrom: aStream
+	"Answer an instance of me as described on the stream, aStream"
+
+	| value radix fraction fracpos |
+	radix _ 10.
+	value _ Integer readFrom: aStream.
+	(aStream peekFor: $r)
+		ifTrue:
+			["<radix>r<integer>"
+			(radix _ value) < 2 ifTrue: [^self error: 'INVALID RADIX'].
+			value _ Integer readFrom: aStream radix: radix].
+	(aStream peekFor: $.)
+		ifTrue:
+			["<integer>.<fraction>"
+			(aStream atEnd not and: [aStream peek digitValue between: 0 and: radix - 1])
+				ifTrue:
+					[fracpos _ aStream position.
+					fraction _ Integer readFrom: aStream radix: radix.
+					radix _ radix asFloat.
+					fraction _
+						fraction asFloat / (radix raisedTo: aStream position - fracpos).
+					value _ value asFloat + (value < 0
+									ifTrue: [fraction negated]
+									ifFalse: [fraction])]
+				ifFalse:
+					["oops - just <integer>."
+					aStream skip: -1.		"un-gobble the period"
+					^value
+									"Number readFrom: (ReadStream on: '3r-22.2')"]].
+	(aStream peekFor: $e)
+		ifTrue:
+			["<integer>e<exponent>"
+			^value * (radix raisedTo: (Integer readFrom: aStream))].
+	^value!
+"-----------------------------------"!
+!Number methodsFor: 'arithmetic'!
+* aNumber
+	"Answer the result of multiplying the receiver by aNumber."
+	self subclassResponsibility!
++ aNumber
+	"Answer the sum of the receiver and aNumber."
+	self subclassResponsibility!
+- aNumber
+	"Answer the difference between the receiver and aNumber."
+	self subclassResponsibility!
+/ aNumber
+	"Answer the result of dividing receiver by aNumber."
+	self subclassResponsibility!
+// aNumber
+	"Integer quotient defined by division with truncation toward negative
+	infinity.  9//4 = 2,  -9//4 = -3.  -0.9//0.4 = -3.
+	\\ answers the remainder from this division."
+
+	^(self / aNumber) floor!
+\\ aNumber
+	"modulo.  Remainder defined in terms of //.  Answer a Number with the
+	same sign as aNumber.  e.g.  9\\4 = 1,  -9\\4 = 3, 9\\-4 =  -3,  0.9\\0.4 = 0.1"
+
+	^self - (self // aNumber * aNumber)!
+abs
+	"Answer a Number that is the absolute value (positive magnitude) of the receiver."
+
+	self < 0
+		ifTrue: [^self negated]
+		ifFalse: [^self]!
+negated
+	"Answer a Number that is the negation of the receiver."
+	^0 - self!
+quo: aNumber
+	"Integer quotient defined by division with truncation toward zero.
+	 -9 quo: 4 = -2,  -0.9 quo: 0.4 = -2.
+	rem: answers the remainder from this division."
+
+	^(self / aNumber) truncated!
+reciprocal
+	"Answer 1 divided by the receiver.  Create an error if the
+	receiver is 0."
+
+	self = 0
+		ifTrue: [^self error: 'zero has no reciprocal']
+		ifFalse: [^1 / self]!
+rem: aNumber
+	"Remainder defined in terms of quo:. Answer a Number with the same
+	sign as self.  e.g. 9 rem: 4 = 1,  -9 rem: 4 = -1.  0.9 rem: 0.4 = 0.1"
+
+	^self - ((self quo: aNumber) * aNumber)!
+"-----------------------------------"!
+!Number methodsFor: 'coercing'!
+coerce: aNumber
+	"Answer with a number representing the argument, aNumber, that is
+	represented the same kind of Number as is the receiver.
+	Must be defined by all Number classes."
+
+	self subclassResponsibility!
+generality
+	"Answer the number representing the ordering of the receiving in the
+	generality hierarchy.  A number in this hierarchy coerces to numbers
+	higher in hierarhcy (i.e., with larger generality numbers)."
+
+	self subclassResponsibility!
+retry: aSymbol coercing: aNumber
+	"Arithmetic represented by the symbol, aSymbol,
+	could not be performed with the receiver and the argument,
+	aNumber, because of the differences in representation.  Coerce either the
+	receiver or the argument, depending on which has higher generality, and
+	try again.  If the symbol is the equals sign, answer false if the argument is
+	not a Number.  If the generalities are the same, create an error message."
+
+	(aSymbol == #= and: [(aNumber isKindOf: Number) == false])
+		ifTrue: [^false].
+	self generality < aNumber generality
+		ifTrue: [^(aNumber coerce: self) perform: aSymbol with: aNumber].
+	self generality > aNumber generality
+		ifTrue: [^self perform: aSymbol with: (self coerce: aNumber)].
+	self error: 'coercion attempt failed'!
+"-----------------------------------"!
+!Number methodsFor: 'converting'!
+@ y
+	"Answer a new Point whose x value is the receiver and whose y value is the
+	argument.  Optional.  No Lookup.  See Object documentation whatIsAPrimitive."
+
+	<primitive: 18>
+	^Point x: self y: y!
+asInteger
+	"Answer an integer nearest the receiver toward zero."
+	^self truncated!
+asPoint
+	"Answer a new Point with the receiver as both coordinates;
+	often used to supply the same value in two dimensions, as with
+	symmetrical gridding or scaling."
+
+	^self @ self!
+degreesToRadians
+	"The receiver is assumed to represent degrees.  Answer the
+	conversion to radians."
+	^self asFloat degreesToRadians!
+radiansToDegrees
+	"The receiver is assumed to represent radians.  Answer the
+	conversion to degrees."
+	^self asFloat radiansToDegrees!
+"-----------------------------------"!
+!Number methodsFor: 'intervals'!
+to: stop
+	"Answer an Interval from the receiver up to the argument, stop,
+	incrementing by 1."
+
+	^Interval from: self to: stop by: 1!
+to: stop by: step
+	"Answer an Interval from the receiver up to the argument, stop,
+	incrementing by step."
+
+	^Interval from: self to: stop by: step!
+to: stop by: step do: aBlock
+	"Create an Interval from the receiver up to the argument, stop,
+	incrementing by step.  For each element of the interval, evaluate the
+	block, aBlock."
+
+	| nextValue |
+	nextValue _ self.
+	step < 0
+		ifTrue: [[stop <= nextValue]
+				whileTrue:
+					[aBlock value: nextValue.
+					nextValue _ nextValue + step]]
+		ifFalse: [[stop >= nextValue]
+				whileTrue:
+					[aBlock value: nextValue.
+					nextValue _ nextValue + step]]!
+to: stop do: aBlock
+	"Create an Interval from the receiver up to the argument, stop,
+	incrementing by 1.  For each element of the interval, evaluate the
+	block, aBlock."
+
+	| nextValue |
+	nextValue _ self.
+	[nextValue <= stop]
+		whileTrue:
+			[aBlock value: nextValue.
+			nextValue _ nextValue + 1]!
+"-----------------------------------"!
+!Number methodsFor: 'mathematical functions'!
+arcCos
+	^self asFloat arcCos!
+arcSin
+	"Answer with the angle in radians."
+
+	^self asFloat arcSin!
+arcTan
+	"Answer with the angle in radians."
+
+	^self asFloat arcTan!
+cos
+	"Answer with the angle in radians."
+
+	^self asFloat cos!
+exp
+	"Answer the exponential of the receiver as a floating point number."
+	^self asFloat exp!
+floorLog: radix
+	"Answer the floor of the log base radix of the receiver."
+	^self asFloat floorLog: radix!
+ln
+	"Answer the natural log of the receiver."
+	^self asFloat ln!
+log: aNumber
+	"Answer the log base aNumber of the receiver."
+	^self ln / aNumber ln!
+raisedTo: aNumber
+	"Answer the receiver raised to aNumber."
+
+	aNumber isInteger
+		ifTrue: ["Do the special case of integer power"
+				^self raisedToInteger: aNumber].
+	aNumber = 0 ifTrue: [^1].		"Special case of exponent=0"
+	aNumber = 1 ifTrue: [^self].		"Special case of exponent=1"
+	^(aNumber * self ln) exp		"Otherwise raise it to the power using logarithms"!
+raisedToInteger: anInteger
+	"Answer the receiver raised to the power anInteger where the
+	argument must be a kind of Integer.  This is a special case of raisedTo:."
+
+	anInteger isInteger
+		ifFalse: [^self error: 'raisedToInteger: only works for integral arguments'].
+	anInteger = 0 ifTrue: [^1].
+	anInteger = 1 ifTrue: [^self].
+	anInteger > 1
+		ifTrue: [^(self * self raisedToInteger: anInteger // 2)
+					* (self raisedToInteger: anInteger \\ 2)].
+	^(self raisedToInteger: anInteger negated) reciprocal!
+sin
+	"Answer with the angle in radians."
+
+	^self asFloat sin!
+sqrt
+	"Answer the square root of the receiver."
+	^self asFloat sqrt!
+squared
+	"Answer the receiver multipled by itself."
+	^self * self!
+tan
+	"Answer with the angle in radians."
+
+	^self asFloat tan!
+"-----------------------------------"!
+!Number methodsFor: 'printing'!
+storeOn: aStream
+	"Numbers print in a form which is recognized by the compiler."
+
+	self printOn: aStream!
+"-----------------------------------"!
+!Number methodsFor: 'testing'!
+even
+	"Answer whether the receiver is an even number."
+
+	^self \\ 2 = 0!
+negative
+	"Answer whether the receiver is less than 0."
+	^self < 0!
+odd
+	"Answer whether the receiver is an odd number."
+	^self even == false!
+positive
+	"Answer whether the receiver is greater than or equal to 0."
+	^self >= 0!
+sign
+	"Answer 1 if the receiver is greater than 0, -1 if less than 0, else 0."
+
+	self > 0 ifTrue: [^1].
+	self < 0 ifTrue: [^-1].
+	^0!
+strictlyPositive
+	"Answer whether the receiver is greater than 0."
+
+	^self > 0!
+"-----------------------------------"!
+!Number methodsFor: 'truncation and round off'!
+ceiling
+	"Answer the integer nearest the receiver toward positive infinity."
+
+	self <= 0.0
+		ifTrue: [^self truncated]
+		ifFalse: [^self negated floor negated]!
+floor
+	"Answer the integer nearest the receiver toward negative infinity."
+
+	| truncation |
+	truncation _ self truncated.
+	self >= 0 ifTrue: [^truncation].
+	self = truncation
+		ifTrue: [^truncation]
+		ifFalse: [^truncation - 1]!
+roundTo: aNumber
+	"Answer the integer that is a multiple of aNumber that is nearest the receiver."
+	^(self / aNumber) rounded * aNumber!
+rounded
+	"Answer the integer nearest the receiver."
+	^(self + (self sign / 2)) truncated!
+truncateTo: aNumber
+	"Answer the next multiple of aNumber toward zero that is nearest the receiver."
+
+	^(self quo: aNumber)
+		* aNumber!
+truncated
+	"Answer an integer nearest the receiver toward zero."
+	^self quo: 1!

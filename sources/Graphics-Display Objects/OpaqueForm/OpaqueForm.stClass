@@ -1,0 +1,118 @@
+DisplayObject subclass: #OpaqueForm
+  instanceVariableNames: 'figure shape'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Graphics-Display Objects'!
+OpaqueForm class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+OpaqueForm comment:
+'OpaqueForms include a shape as well as a figure form.  The shape indicates what part of the background should get occluded in displaying, so that patterns other than black in the figure form will still appear opaque.'!
+"-----------------------------------"!
+!OpaqueForm class methodsFor: 'examples'!
+example
+	Cursor blank showWhile:
+		[self makeStar follow: [Sensor cursorPoint] while: [Sensor noButtonPressed]]
+
+	"OpaqueForm example"
+	"OpaqueForm makeStar bitEdit"!
+makeStar
+	| figure shape pen formRect |
+	formRect_ 0@0 extent: 50@50.
+	pen _ Pen new.
+	pen defaultNib: 2.
+	Display fill: formRect mask: Form white.
+	pen north; place: formRect center; spiral: 45 angle: 144.
+	shape _ Form fromDisplay: formRect.
+	pen white; north; place: formRect center; spiral: 30 angle: 144.
+	figure _ Form fromDisplay: formRect.
+	^ OpaqueForm figure: figure shape: shape!
+"-----------------------------------"!
+!OpaqueForm class methodsFor: 'instance creation'!
+figure: figureForm shape: shapeForm
+	^ self new setFigure: figureForm shape: shapeForm!
+shape: aSolidForm
+	"Results in a form which is black where aSolidForm is black
+	and transparent where aSolidForm is white."
+	^ self new setFigure: aSolidForm shape: aSolidForm!
+"-----------------------------------"!
+!OpaqueForm methodsFor: 'accessing'!
+figure
+	^ figure!
+offset
+	^ figure offset!
+shape
+	^ shape!
+"-----------------------------------"!
+!OpaqueForm methodsFor: 'copying'!
+deepCopy
+	^ self shallowCopy setFigure: figure deepCopy shape: shape deepCopy!
+"-----------------------------------"!
+!OpaqueForm methodsFor: 'display box access'!
+computeBoundingBox
+	^figure boundingBox!
+"-----------------------------------"!
+!OpaqueForm methodsFor: 'displaying'!
+copyBits: copyRect from: sourceForm at: destPoint clippingBox: clipRect rule: rule mask: mask
+	| sourceFigure sourceShape |
+	(sourceForm isMemberOf: OpaqueForm)
+		ifTrue:
+			[sourceFigure _ sourceForm figure.
+			sourceShape _ sourceForm shape]
+		ifFalse: [sourceFigure _ sourceShape _ sourceForm].
+	figure copyBits: copyRect
+		from: sourceFigure
+		at: destPoint
+		clippingBox: clipRect
+		rule: rule
+		mask: mask.
+	shape copyBits: copyRect
+		from: sourceShape
+		at: destPoint
+		clippingBox: clipRect
+		rule: rule
+		mask: mask!
+displayOn: aDisplayMedium at: aDisplayPoint clippingBox: clipRectangle rule: ruleInteger mask: aForm
+	"This is the real display message, but it doesn't get used until the new display protocol is installed."
+	shape displayOn: aDisplayMedium at: aDisplayPoint clippingBox: clipRectangle rule: Form erase mask: nil.
+	figure displayOn: aDisplayMedium at: aDisplayPoint clippingBox: clipRectangle rule: Form under mask: aForm!
+displayOn: Display transformation: displayTransformation clippingBox: clipRectangle align: alignmentPoint with: relativePoint rule: ruleInteger mask: aForm
+	"See comment in Form."
+	shape displayOn: Display transformation: displayTransformation clippingBox: clipRectangle align: alignmentPoint with: relativePoint rule: Form erase mask: nil.
+	figure displayOn: Display transformation: displayTransformation clippingBox: clipRectangle align: alignmentPoint with: relativePoint rule: Form under mask: aForm!
+"-----------------------------------"!
+!OpaqueForm methodsFor: 'editing'!
+bitEdit
+	"Create and schedule a view located in an area designated by the user that
+	contains a view of the receiver magnified by 8@8 that can be modified
+	using the Bit Editor.  It also contains a view of the original form."
+
+	BitEditor openOnForm: self
+
+	"OpaqueForm makeStar bitEdit."!
+"-----------------------------------"!
+!OpaqueForm methodsFor: 'pattern'!
+valueAt: aPoint
+	"0 and 1 are white and black;  2 is transparent.
+	3 is a weird value which look like 1"
+	(shape valueAt: aPoint) = 1
+		ifTrue: [^ figure valueAt: aPoint]  "opaque"
+		ifFalse: [^ 2 + (figure valueAt: aPoint)]  "background shows through"!
+valueAt: aPoint put: value
+	"0 and 1 are white and black;  2 is transparent.
+	3 is a weird value which look like 1"
+	shape valueAt: aPoint put: 1 - (value//2).
+	figure valueAt: aPoint put: value\\2!
+"-----------------------------------"!
+!OpaqueForm methodsFor: 'printing'!
+storeOn: aStream
+	aStream nextPutAll: 'OpaqueForm figure: ('.
+	figure storeOn: aStream.
+	aStream nextPutAll: ') shape: ('.
+	shape storeOn: aStream.
+	aStream nextPutAll: ')'!
+"-----------------------------------"!
+!OpaqueForm methodsFor: 'private'!
+setFigure: figureForm shape: shapeForm
+	figure _ figureForm.
+	shape _ shapeForm!

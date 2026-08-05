@@ -1,0 +1,40 @@
+Controller subclass: #BinaryChoiceController
+  instanceVariableNames: ''
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Interface-Prompt/Confirm'!
+BinaryChoiceController class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+BinaryChoiceController comment:
+'My instances assume that their model can carry out some action only once--that is, make a selection only once.  Control is given up if the model responds true to the message actionTaken.'!
+"-----------------------------------"!
+!BinaryChoiceController methodsFor: 'basic control sequence'!
+startUp
+
+	Cursor normal showWhile: [super startUp]!
+"-----------------------------------"!
+!BinaryChoiceController methodsFor: 'control defaults'!
+isControlActive
+	model actionTaken ifTrue: [^false].
+	[super isControlActive] whileFalse: [view flash].
+	^true!
+"-----------------------------------"!
+!BinaryChoiceController methodsFor: 'cursor'!
+centerCursorInView
+	"Position sensor's mousePoint (which is assumed to be connected to the
+	cursor) to the center of its view's inset display box (see Sensor|mousePoint: and
+	View|insetDisplayBox)."
+
+	| lowestSubView subViews |
+	subViews_ view subViews.
+	subViews isEmpty
+		ifFalse:	[lowestSubView _ subViews at: 1.
+				subViews do:
+					[:subView |
+						(subView insetDisplayBox top >
+							lowestSubView insetDisplayBox top)
+						ifTrue:	[lowestSubView _ subView]].
+				^lowestSubView controller centerCursorInView].
+
+	^super centerCursorInView!

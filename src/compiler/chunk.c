@@ -127,6 +127,10 @@ CHUNK_next(st_chunk_reader *r, st_chunk *out)
 {
     size_t  used = 0;
     int     saw_content = 0;
+    int     saw_code = 0;
+    int     was_comment;
+    /*  0 outside, 1 inside a 'string', 2 inside a "comment".  */
+    int     state = 0;
 
     if (!r || r->pos >= r->length)
         return 0;
@@ -160,6 +164,8 @@ CHUNK_next(st_chunk_reader *r, st_chunk *out)
                     return 0;
                 r->pos += 2;
                 saw_content = 1;
+                if (state != 2)
+                    saw_code = 1;      /*  a bang inside a comment is not code  */
                 continue;
             }
             ++r->pos;
@@ -177,8 +183,53 @@ CHUNK_next(st_chunk_reader *r, st_chunk *out)
         }
         if (c == '\n')
             ++r->line;
-        else if (c != ' ' && c != '\t' && c != '\f')
+
+        /*
+         *  Track strings and comments, so that a chunk of nothing but a
+         *  comment can be told from one with code in it.  A doubled quote is
+         *  a literal one and does not leave the construct, and a quote of one
+         *  kind inside the other is just a character -- "don't" and
+         *  'say "hi"' both occur in the sources.
+         *
+         *  The state is advanced BEFORE deciding whether this character
+         *  counted as code, and a character is discounted if it was in a
+         *  comment either side of the move.  Otherwise the quote that opens a
+         *  comment is judged before it has opened anything, and every comment
+         *  reads as code.
+         */
+        was_comment = (state == 2);
+        if (state == 0) {
+            if (c == '\'')
+                state = 1;
+            else if (c == '"')
+                state = 2;
+        }  else  {
+            char    close = (state == 1) ? '\'' : '"';
+
+            if (c == close) {
+                if (r->pos + 1 < r->length && r->source[r->pos + 1] == close) {
+                    /*
+                     *  Both characters are kept.  Only "!!" is un-doubled by
+                     *  this reader; a doubled quote is the LEXER's escape and
+                     *  collapsing it here would close the string one quote
+                     *  early and swallow the rest of the method.
+                     */
+                    if (!append(r, &used, c) || !append(r, &used, c))
+                        return 0;
+                    r->pos += 2;
+                    saw_content = 1;
+                    if (!was_comment)
+                        saw_code = 1;
+                    continue;
+                }
+                state = 0;
+            }
+        }
+        if (c != '\n' && c != ' ' && c != '\t' && c != '\f') {
             saw_content = 1;
+            if (!was_comment && state != 2)
+                saw_code = 1;
+        }
         if (!append(r, &used, c))
             return 0;
         ++r->pos;
@@ -189,6 +240,7 @@ CHUNK_next(st_chunk_reader *r, st_chunk *out)
     out->text     = r->buffer;
     out->length   = used - 1;
     out->is_empty = !saw_content;
+    out->has_code = saw_code;
     /*
      *  A reader expression is the chunk that follows an empty one -- see the
      *  note above on why the leading bang cannot be detected directly.

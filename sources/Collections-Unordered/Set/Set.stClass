@@ -1,0 +1,131 @@
+Collection variableSubclass: #Set
+  instanceVariableNames: 'tally'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Collections-Unordered'!
+Set class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+Set comment:
+'I am an unordered collection of elements that are not duplicated in me.'!
+"-----------------------------------"!
+!Set class methodsFor: 'instance creation'!
+new
+	^self new: 2!
+new: anInteger
+	^(super new: (anInteger max: 1)) setTally!
+"-----------------------------------"!
+!Set methodsFor: 'accessing'!
+at: index
+	self errorNotKeyed!
+at: index put: anObject
+	self errorNotKeyed!
+size
+	^tally!
+"-----------------------------------"!
+!Set methodsFor: 'adding'!
+add: newObject
+	| index |
+	newObject == nil ifTrue: [^newObject].
+	index _ self findElementOrNil: newObject.
+	(self basicAt: index) == nil ifTrue: [self atNewIndex: index put: newObject].
+	^newObject!
+grow
+	"The receiver becomes twice as big--this is not a copy of the receiver, so all shared references survive."
+
+	| newSelf |
+	newSelf _ self species new: self basicSize + self growSize.
+	self do: [:each | newSelf noCheckAdd: each].
+	self become: newSelf!
+"-----------------------------------"!
+!Set methodsFor: 'enumerating'!
+collect: aBlock
+	"Evaluate aBlock with each of the receiver's elements as the argument.  Collect the
+	resulting values into another Set.  Answer the new Set.  We override the general
+	method, so that we make a big enough set and avoid growing. "
+
+	| newSet size index element |
+	tally = 0 ifTrue: [^Set new: 2].
+	newSet _ Set new: (size _ self basicSize).
+	index _ 0.
+	[(index _ index + 1) <= size] whileTrue:
+		[(element _ self basicAt: index) == nil ifFalse:
+			[newSet add: (aBlock value: element)]].
+	^newSet!
+do: aBlock
+	tally = 0 ifTrue: [^self].
+	1 to: self basicSize do:
+		[:index |
+		(self basicAt: index) == nil ifFalse: [aBlock value: (self basicAt: index)]]!
+"-----------------------------------"!
+!Set methodsFor: 'private'!
+atNewIndex: index put: anObject
+	self basicAt: index put: anObject.
+	tally _ tally + 1.
+	self fullCheck!
+find: anObject ifAbsent: aBlock
+	| index |
+	index _ self findElementOrNil: anObject.
+	(self basicAt: index) == nil
+		ifTrue: [^aBlock value]
+		ifFalse: [^index]!
+findElementOrNil: anObject
+	| index length probe pass |
+	length _ self basicSize.
+	pass _ 1.
+	index _ anObject hash \\ length + 1.
+	[(probe _ self basicAt: index) == nil or: [probe = anObject]]
+		whileFalse: [(index _ index + 1) > length
+				ifTrue:
+					[index _ 1.
+					pass _ pass + 1.
+					pass > 2 ifTrue: [^self grow findElementOrNil: anObject]]].
+	^index!
+fixCollisionsFrom: index
+	| myLength oldIndex nextIndex nextObject |
+	oldIndex _ index.
+	myLength _ self basicSize.
+	[oldIndex _ oldIndex \\ myLength + 1.
+	nextObject _ self basicAt: oldIndex.
+	nextObject == nil]
+		whileFalse:
+			[nextIndex _ self findElementOrNil: nextObject.
+			nextIndex = oldIndex
+				ifFalse:
+					[self basicAt: nextIndex put: nextObject.
+					self basicAt: oldIndex put: nil]]!
+fullCheck
+	self basicSize - self size <= (self basicSize // 4) ifTrue: [self grow]!
+noCheckAdd: anObject
+	self basicAt: (self findElementOrNil: anObject)
+		put: anObject.
+	tally _ tally + 1!
+rehash
+	| newSelf |
+	newSelf _ self species new: self basicSize.
+	self do: [:each | newSelf noCheckAdd: each].
+	self become: newSelf!
+setTally
+	tally _ 0!
+swap: oneElement with: otherElement
+	| save |
+	save _ self basicAt: oneElement.
+	self basicAt: oneElement put: (self basicAt: otherElement).
+	self basicAt: otherElement put: save!
+"-----------------------------------"!
+!Set methodsFor: 'removing'!
+remove: oldObject ifAbsent: aBlock
+	| index |
+	index _ self find: oldObject ifAbsent: [^aBlock value].
+	self basicAt: index put: nil.
+	tally _ tally - 1.
+	self fixCollisionsFrom: index.
+	^oldObject!
+"-----------------------------------"!
+!Set methodsFor: 'testing'!
+includes: anObject
+	^(self basicAt: (self findElementOrNil: anObject)) ~~ nil!
+occurrencesOf: anObject
+	(self includes: anObject)
+		ifTrue: [^1]
+		ifFalse: [^0]!

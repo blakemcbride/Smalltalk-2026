@@ -1,0 +1,199 @@
+ContextPart variableSubclass: #BlockContext
+  instanceVariableNames: 'nargs startpc home'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Kernel-Methods'!
+BlockContext class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+BlockContext comment:
+'My instances function similarly to instances of MethodContext, but they hold the dynamic state for execution of a block in Smalltalk.  They access all temporary variables and the method sender via their home pointer, so that those values are effectively shared.  Their indexable part is used to store their independent value stack during execution.
+
+My instance must hold onto its home in order to work.  This can cause circularities if the home is also pointing (via a temp, perhaps) to the instance.  In the rare event that this happens (as in SortedCollection sortBlock:) the message fixTemps will replace home with a copy of home, thus defeating the sharing of temps but, nonetheless, eliminating the circularity.
+
+Instance Variables: *indexed*
+	nargs	<Integer> number of block arguments
+	startpc	<Integer>
+	home	<Context>'!
+"-----------------------------------"!
+!BlockContext methodsFor: 'accessing'!
+fixTemps
+	"Fix the values of the temporary variables used in the block that are
+	ordinarily shared with the method in which the block is defined."
+
+	home _ home copy.
+	home swapSender: nil!
+hasMethodReturn
+	"answer true if there is an ^ in the code of this block"
+	| method scanner end |
+	method _ self method.
+	"Determine end of block from long jump preceding it"
+	end _ (method at: startpc-2)\\16-4*256 + (method at: startpc-1) + startpc - 1.
+	scanner _ InstructionStream new method: method pc: startpc.
+	scanner scanFor: [:byte | (byte between: 120 and: 124) or: [scanner pc > end]].
+	^ scanner pc <= end!
+home
+	"Answer the context in which the receiver was defined."
+
+	^home!
+method
+	"Answer the compiled method in which the receiver was defined."
+
+	^home method!
+receiver
+	^home receiver!
+"-----------------------------------"!
+!BlockContext methodsFor: 'controlling'!
+whileFalse
+	"Evaluate the receiver once and then repeatedly as long as the value
+	returned by the evaluation is false."
+
+	^[self value] whileFalse: []!
+whileFalse: aBlock
+	"Evaluate the argument, aBlock, as long as the value
+	of the receiver is false. Ordinarily compiled in-line.
+	But could also be done in Smalltalk as follows"
+
+	^self value
+		ifFalse:
+			[aBlock value.
+			self whileFalse: aBlock]!
+whileTrue
+	"Evaluate the receiver once and then repeatedly as long as the value
+	returned by the evaluation is true."
+
+	^[self value] whileTrue: []!
+whileTrue: aBlock
+	"Evaluate the argument, aBlock, as long as the value
+	of the receiver is true. Ordinarily compiled in-line.
+	But could also be done in Smalltalk as follows"
+
+	^self value
+		ifTrue:
+			[aBlock value.
+			self whileTrue: aBlock]!
+"-----------------------------------"!
+!BlockContext methodsFor: 'evaluating'!
+value
+	"Evaluate the block represented by the receiver.  Fail if the block expects any
+	arguments or if the block is already being executed.  Optional.  No Lookup.  See
+	Object documentation whatIsAPrimitive."
+
+	<primitive: 81>
+	^self valueWithArguments: #()!
+value: arg
+	"Evaluate the block represented by the receiver.  Fail if the block expects other
+	than one argument or if the block is already being executed.  Optional.  No
+	Lookup.  See Object documentation whatIsAPrimitive."
+
+	<primitive: 81>
+	^self valueWithArguments: (Array with: arg)!
+value: arg1 value: arg2
+	"Evaluate the block represented by the receiver.  Fail if the block expects other
+	than two arguments or if the block is already being executed.  Optional.  See
+	Object documentation whatIsAPrimitive."
+
+	<primitive: 81>
+	^self valueWithArguments: (Array with: arg1 with: arg2)!
+value: arg1 value: arg2 value: arg3
+	"Evaluate the block represented by the receiver.  Fail if the block expects other
+	than three arguments or if the block is already being executed.  Optional.  See
+	Object documentation whatIsAPrimitive."
+
+	<primitive: 81>
+	^self valueWithArguments:
+		(Array
+			with: arg1
+			with: arg2
+			with: arg3)!
+valueWithArguments: anArray
+	"Evaluate the block represented by the receiver.  The argument is an Array
+	whose elements are the arguments for the block.  Fail if the length of the Array
+	is not the same as the the number of arguments that the block was expecting.
+	Fail if the block is already being executed.  Essential.  See Object
+	documentation whatIsAPrimitive."
+
+	<primitive: 82>
+	nargs = anArray size
+		ifTrue: [self valueError]
+		ifFalse: [self error: 'The block needs more or fewer arguments defined']!
+"-----------------------------------"!
+!BlockContext methodsFor: 'initialize-release'!
+home: aContextPart startpc: position nargs: anInteger
+	"This is the initialization message.  The receiver has been
+	initialized with the correct size only."
+
+	home _ aContextPart.
+	startpc _ position.
+	nargs _ anInteger.
+	pc _ position.
+	stackp _ 0!
+"-----------------------------------"!
+!BlockContext methodsFor: 'instruction decoding'!
+blockReturnTop
+	"Simulate the interpreter's action when a ReturnTopOfStack
+	bytecode is encountered in the receiver."
+
+	| save dest |
+	save _ home.	"Needed because return code will nil it"
+	dest _ self return: self pop to: self sender.
+	home _ save.
+	sender _ nil.
+	^dest!
+pushArgs: args from: sendr
+	"Simulates action of the value primitive."
+
+	args size ~= nargs ifTrue: [^self error: 'incorrect number of args'].
+	stackp _ 0.
+	args do: [:arg | self push: arg].
+	sender _ sendr.
+	pc _ startpc!
+"-----------------------------------"!
+!BlockContext methodsFor: 'printing'!
+printOn: aStream
+	home == nil ifTrue: [^aStream nextPutAll: 'a BlockContext with home=nil'].
+	aStream nextPutAll: '[] in '.
+	super printOn: aStream!
+"-----------------------------------"!
+!BlockContext methodsFor: 'private'!
+valueError
+	self error: 'Incompatible number of args, or already active'!
+"-----------------------------------"!
+!BlockContext methodsFor: 'scheduling'!
+fork
+	"Create and schedule a process running the code in the receiver."
+
+	self newProcess resume!
+forkAt: priority
+	"Create and schedule a process running the code in the receiver.
+	The priority of the process is the argument, priority."
+
+	| forkedProcess |
+	forkedProcess _ self newProcess.
+	forkedProcess priority: priority.
+	forkedProcess resume!
+newProcess
+	"Answer a new process running the code in the receiver.
+	The process is not scheduled."
+
+	^Process
+		forContext:
+			[self value.
+			Processor terminateActive]
+		priority: Processor activePriority!
+newProcessWith: anArray
+	"Answer a new process running the code in the receiver.
+	The receiver's block arguments are bound to the contents
+	of the argument, anArray.  The process is not scheduled."
+
+	^Process
+		forContext:
+			[self valueWithArguments: anArray.
+			Processor terminateActive]
+		priority: Processor activePriority!
+"-----------------------------------"!
+!BlockContext methodsFor: 'temporaries'!
+tempAt: index
+	^home at: index!
+tempAt: index put: value
+	^home at: index put: value!

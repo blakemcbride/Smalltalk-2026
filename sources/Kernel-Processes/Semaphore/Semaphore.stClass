@@ -1,0 +1,69 @@
+LinkedList subclass: #Semaphore
+  instanceVariableNames: 'excessSignals'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Kernel-Processes'!
+Semaphore class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+Semaphore comment:
+'I provide synchronized communication of a single bit of information (a "signal") between Processes.  A signal is sent by sending me the message signal and received by sending me the message wait.  If no signal has been sent when a wait message is sent, the sending Process will be suspended until a signal is sent.'!
+"-----------------------------------"!
+!Semaphore class methodsFor: 'instance creation'!
+forMutualExclusion
+	"Answer a new instance of me that contains a single signal.
+	This new instance can now be used for mutual exclusion (see the
+	critical: message to Semaphore)."
+
+	^self new signal!
+new
+	"Answer a new instance of Semaphore that contains no signals."
+
+	^self basicNew initSignals!
+"-----------------------------------"!
+!Semaphore methodsFor: 'communication'!
+signal
+	"Send a signal through the receiver. If one or more processes have been
+	suspended trying to receive a signal, allow the first one to proceed. If no
+	process is waiting, remember the excess signal. Essential. See Object documentation
+	whatIsAPrimitive. "
+
+	<primitive: 85>
+	self primitiveFailed
+
+	"self isEmpty
+		ifTrue: [excessSignals _ excessSignals+1]
+		ifFalse: [Processor resume: self removeFirstLink]"!
+wait
+	"The active Process must receive a signal through the receiver before
+	proceeding.  If no signal has been sent, the active Process will be suspended
+	until one is sent.  Essential.  See
+	Object whatIsAPrimitive."
+
+	<primitive: 86>
+	self primitiveFailed
+
+	"excessSignals>0
+		ifTrue: [excessSignals _ excessSignals-1]
+		ifFalse: [self addLastLink: Processor activeProcess suspend]"!
+"-----------------------------------"!
+!Semaphore methodsFor: 'initialize-release'!
+initSignals
+	"Consume any excess signals the receiver may have accumulated."
+
+	excessSignals _ 0!
+terminateProcess
+	self isEmpty
+		ifFalse: [self removeFirst terminate]!
+"-----------------------------------"!
+!Semaphore methodsFor: 'mutual exclusion'!
+critical: mutuallyExcludedBlock
+	"Evaluate mutuallyExcludedBlock only if the receiver is not currently in the
+	process of running the critical: message.  If the receiver is, evaluate
+	mutuallyExcludedBlock after the other critical: message is finished."
+
+	| blockValue |
+	self wait.
+	blockValue _ mutuallyExcludedBlock value.
+	self signal.
+	^blockValue!

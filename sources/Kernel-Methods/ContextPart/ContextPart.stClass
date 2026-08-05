@@ -1,0 +1,533 @@
+InstructionStream subclass: #ContextPart
+  instanceVariableNames: 'stackp'
+  classVariableNames: 'TryPrimitiveMethods'
+  poolDictionaries: ''
+  category: 'Kernel-Methods'!
+ContextPart class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+ContextPart comment:
+'Instance Variables:
+	stackp	<Integer> indicating the offset of the top of my temporary value stack
+
+To the instruction parsing ability of InstructionStream I add the actual semantics for execution.  The execution state is stored in my subclasses indexable fields, which store temporary variables and a stack of values used in evaluating expressions.  The actual semantics of execution can be found in my category "simulator", which exactly parallels the operation of the Smalltalk machine itself.'!
+"-----------------------------------"!
+!ContextPart class methodsFor: 'class initialization'!
+initPrimitives
+	"The methods (from class Object) that are cached in tryPrimitiveMethods are
+	used by the simulator to catch failures when simulating primitives"
+
+	| method |
+	TryPrimitiveMethods _
+		#(tryPrimitive0 tryPrimitive1: tryPrimitive2:with: tryPrimitive3:with:with:
+			tryPrimitive4:with:with:with: )
+			collect:
+				[:sel |
+				method _ Object compiledMethodAt: sel.
+				method numLiterals = 3 ifFalse: [self error: 'doPrimitive assumes 3'].
+				method]!
+"-----------------------------------"!
+!ContextPart class methodsFor: 'examples'!
+runSimulated: aBlock
+	"The simulator is a group of methods in class ContextPart which do what the
+	Smalltalk interpreter does.  They execute Smalltalk bytecodes.  By adding code
+	to the simulator, you could take statistics on the running of Smalltalk methods.
+	See also trace: callStatistics: and instructionStatistics: for sample uses"
+
+	^ thisContext sender
+		runSimulated: aBlock
+		contextAtEachStep: [:ignored]
+
+	"ContextPart runSimulated: [Pen new defaultNib: 5; go: 100]"!
+tallyInstructions: aBlock
+	"This method uses the simulator to count the number of occurrences of
+	each of the Smalltalk instructions executed during evaluation of aBlock.
+	Results appear in order of the byteCode set."
+	| current tallies |
+	tallies _ Bag new.
+	thisContext sender
+		runSimulated: aBlock
+		contextAtEachStep:
+			[:current | tallies add: current nextByte].
+	^tallies sortedElements
+
+	"ContextPart tallyInstructions: [3.14159 printString]."!
+tallyMethods: aBlock
+	"This method uses the simulator to count the number of calls on each method
+	invoked in evaluating aBlock.  Results are given in order of decreasing counts."
+	| prev current tallies |
+	tallies _ Bag new.
+	prev _ aBlock.
+	thisContext sender
+		runSimulated: aBlock
+		contextAtEachStep:
+			[:current |
+			current == prev ifFalse: "call or return"
+				[prev sender == nil ifFalse: "call only"
+					[tallies add: current printString].
+				prev _ current]].
+	^tallies sortedCounts
+
+	"ContextPart tallyMethods: [3.14159 printString]."!
+trace: aBlock
+	"This method uses the simulator to print calls and returned values in the Transcript"
+	| prev current |
+	prev _ aBlock.
+	^ thisContext sender
+		runSimulated: aBlock
+		contextAtEachStep:
+			[:current |
+			current == prev
+				ifFalse:
+					[prev sender == nil ifTrue:  "returning"
+						[Transcript space; nextPut: $^; print: current top].
+					Transcript cr;
+						nextPutAll: (String new: (current depthBelow: aBlock) withAll: $ );
+						print: current receiver; space; nextPutAll: current selector; endEntry.
+					prev _ current]]
+
+	"ContextPart trace: [3 factorial]"!
+"-----------------------------------"!
+!ContextPart methodsFor: 'accessing'!
+home
+	"Answer the context in which the receiver was defined."
+
+	self subclassResponsibility!
+method
+	self subclassResponsibility!
+receiver
+	"Answer the receiver of the message that created this context."
+
+	self subclassResponsibility!
+sourceCode
+	"Answer the source form of the receiver's method."
+	| mclass selector method |
+	method _ self method.
+	selector _ self receiver class selectorAtMethod: method setClass: [:mclass].
+	^ mclass sourceCodeForMethod: method at: selector!
+"-----------------------------------"!
+!ContextPart methodsFor: 'controlling'!
+activateMethod: newMethod withArgs: args receiver: rcvr class: class
+	"Answer a new context initialized with the arguments."
+
+	^MethodContext
+		sender: self
+		receiver: rcvr
+		method: newMethod
+		arguments: args!
+blockCopy: numArgs
+	"Distinguish a block of code from its enclosing method by creating a new
+	BlockContext for that block.  The compiler inserts into all methods that contain
+	blocks the bytecodes to send the message blockCopy:.  Do not use blockCopy: in
+	code that you write!!  Only the compiler can decide to send the message
+	blockCopy:.  Fail if numArgs is not a SmallInteger.  Optional.  No Lookup.  See
+	Object documentation whatIsAPrimitive."
+
+	<primitive: 80>
+	^(BlockContext new: self size)
+		home: self home
+		startpc: pc + 2
+		nargs: numArgs!
+pop
+	"Answer the top of the receiver's stack and remove the top of the stack."
+
+	| val |
+	val _ self at: stackp.
+	self at: stackp put: nil.
+	stackp _ stackp - 1.
+	^val!
+push: val
+	"Push val on the receiver's stack."
+	self at: (stackp _ stackp + 1) put: val!
+return: value to: sendr
+	"Simulate the return of value to sendr."
+
+	self releaseTo: sendr.
+	^sendr push: value!
+send: selector to: rcvr with: args super: superFlag
+	"Simulates the action of sending a message with selector, selector,
+	and arguments, args, to receiver.  The argument, superFlag, tells
+	whether the receiver of the message was specified with
+	'super' in the source method."
+
+	| class meth val |
+	class _
+		superFlag
+			ifTrue: [(self method literalAt: self method numLiterals) value superclass]
+			ifFalse: [rcvr class].
+	[class == nil]
+		whileFalse:
+			[(class includesSelector: selector)
+				ifTrue:
+					[meth _ class compiledMethodAt: selector.
+					val _
+						self tryPrimitiveFor: meth
+							receiver: rcvr
+							args: args.
+					val == #primitiveFail ifFalse: [^val].
+					^self
+						activateMethod: meth
+						withArgs: args
+						receiver: rcvr
+						class: class].
+			class _ class superclass].
+	self error: 'Simulated message ' , selector , ' not understood'!
+top
+	"Answer the top of the receiver's stack."
+
+	^self at: stackp!
+"-----------------------------------"!
+!ContextPart methodsFor: 'debugger access'!
+depthBelow: aContext
+	"Answer how many calls between this and aContext."
+	| this depth |
+	this _ self.
+	depth _ 0.
+	[this == aContext or: [this == nil]]
+		whileFalse:
+			[this _ this sender.
+			depth _ depth + 1].
+	^depth!
+hasSender: context
+	"Answer true if the receiver is strictly above context on the stack."
+
+	| s |
+	self == context ifTrue: [^false].
+	s _ sender.
+	[s == nil]
+		whileFalse:
+			[s == context ifTrue: [^true].
+			s _ s sender].
+	^false!
+mclass
+	"Answer the class in which the receiver's method was found."
+
+	| mclass |
+	self receiver class selectorAtMethod: self method setClass: [:mclass].
+	^mclass!
+pc
+	"Answer the index of the next bytecode to be executed."
+
+	^pc!
+release
+	"Remove information from the receiver and all of the contexts on its
+	sender chain in order to break circularities."
+
+	self releaseTo: nil!
+releaseTo: caller
+	"Remove information from the receiver and the contexts on its
+	sender chain up to caller in order to break circularities."
+
+	| c s |
+	c _ self.
+	[c == nil or: [c == caller]]
+		whileFalse:
+			[s _ c sender.
+			c singleRelease.
+			c _ s]!
+selector
+	"Answer the selector of the method that created the receiver."
+
+	^self receiver class
+		selectorAtMethod: self method
+		setClass: [:ignored]!
+sender
+	"Answer the context that sent the message that created the receiver."
+
+	^sender!
+shortStack
+	"Answer a string showing the top five contexts on my sender chain."
+
+	| shortStackStream |
+	shortStackStream _ WriteStream on: (String new: 400).
+	(self stackOfSize: 5) do:
+		[:item | shortStackStream print: item; cr].
+	^shortStackStream contents!
+singleRelease
+	"Remove information from the receiver in order to break circularities."
+
+	stackp == nil ifFalse: [1 to: stackp do: [:i | self at: i put: nil]].
+	sender _ nil!
+stack
+	"Answer an array of the contexts on the receiver's sender chain."
+	^self stackOfSize: 9999!
+stackOfSize: limit
+	"Answer an array of the top 'limit' contexts on the receiver's sender chain."
+
+	| a stack |
+	stack _ OrderedCollection new: 100.
+	stack addLast: (a _ self).
+	[(a _ a sender) ~~ nil and: [stack size < limit]]
+		whileTrue:
+			[stack addLast: a].
+	^ stack!
+swapSender: coroutine
+	"Replace the receiver's sender with coroutine and answer the receiver's previous sender.
+	For use in coroutining."
+
+	| oldSender |
+	oldSender _ sender.
+	sender _ coroutine.
+	^oldSender!
+"-----------------------------------"!
+!ContextPart methodsFor: 'instruction decoding'!
+doDup
+	"Simulates the action of a 'duplicate top of stack' bytecode."
+
+	self push: self top!
+doPop
+	"Simulates the action of a 'remove top of stack' bytecode."
+
+	self pop!
+jump: distance
+	"Simulates the action of a 'unconditional jump' bytecode whose
+	offset is the argument, distance."
+
+	pc _ pc + distance!
+jump: distance if: condition
+	"Simulates the action of a 'conditional jump' bytecode whose
+	offset is the argument, distance, and whose condition is the
+	argument, condition."
+
+	(self pop eqv: condition) ifTrue: [self jump: distance]!
+methodReturnConstant: value
+	"Simulates the action of a 'return constant' bytecode whose
+	value is the argument, value.  This corresponds to a source
+	expression like '^0'."
+
+	^self return: value to: self home sender!
+methodReturnReceiver
+	"Simulates the action of a 'return receiver' bytecode.  This
+	corresponds to the source expression '^self'."
+
+	^self return: self receiver to: self home sender!
+methodReturnTop
+	"Simulates the action of a 'return top of stack' bytecode.  This
+	corresponds to source expressions like '^something'."
+
+	^self return: self pop to: self home sender!
+popIntoLiteralVariable: value
+	"Simulates the action of bytecode that removes the top of the stack and
+	stores it into a literal variable of my method."
+
+	value value: self pop!
+popIntoReceiverVariable: offset
+	"Simulates the action of bytecode that removes the top of the stack and
+	stores it into an instance variable of my receiver."
+
+	self receiver instVarAt: offset + 1 put: self pop!
+popIntoTemporaryVariable: offset
+	"Simulates the action of bytecode that removes the top of the stack and
+	stores it into one of my temporary variables."
+
+	self home at: offset + 1 put: self pop!
+pushActiveContext
+	"Simulates the action of bytecode that pushes the the active
+	context on the top of its own stack."
+
+	self push: self!
+pushConstant: value
+	"Simulates the action of bytecode that pushes the constant, value, on
+	the top of the stack."
+
+	self push: value!
+pushLiteralVariable: value
+	"Simulates the action of bytecode that pushes the contents
+	of the literal variable whose index is the argument, index,
+	on the top of the stack."
+
+	self push: value value!
+pushReceiver
+	"Simulates the action of bytecode that pushes the the active
+	context's receiver on the top of the stack."
+
+	self push: self receiver!
+pushReceiverVariable: offset
+	"Simulates the action of bytecode that pushes the contents
+	of the receiver's instance variable whose index is the argument, index,
+	on the top of the stack."
+
+	self push: (self receiver instVarAt: offset + 1)!
+pushTemporaryVariable: offset
+	"Simulates the action of bytecode that pushes the contents
+	of the temporary variable whose index is the argument, index,
+	on the top of the stack."
+
+	self push: (self home at: offset + 1)!
+send: selector super: superFlag numArgs: numArgs
+	"Simulates the action of bytecodes that send a message
+	with selector, selector.  The argument, superFlag, tells
+	whether the receiver of the message was specified with
+	'super' in the source method.  The arguments of the message
+	are found in the top numArgs locations on the stack and
+	the receiver just below them."
+
+	| receiver arguments |
+	arguments _ OrderedCollection new.
+	numArgs timesRepeat: [arguments addFirst: self pop].
+	receiver _ self pop.
+	(selector == #halt or: [selector == #halt:]) ifTrue:
+		[self error: 'Cant simulate halt.  Proceed to bypass it.'.
+		self push: nil. ^self].
+	^self send: selector to: receiver with: arguments super: superFlag!
+storeIntoLiteralVariable: value
+	"Simulates the action of bytecode that stores the top of the stack
+	into a literal variable of my method."
+
+	value value: self top!
+storeIntoReceiverVariable: offset
+	"Simulates the action of bytecode that stores the top of the stack
+	into an instance variable of my receiver."
+
+	self receiver instVarAt: offset + 1 put: self top!
+storeIntoTemporaryVariable: offset
+	"Simulates the action of bytecode that stores the top of the stack
+	into one of my temporary variables."
+
+	self home at: offset + 1 put: self top!
+"-----------------------------------"!
+!ContextPart methodsFor: 'printing'!
+printOn: aStream
+	| mclass selector class |
+	selector _
+		(class _ self receiver class)
+			selectorAtMethod: self method
+			setClass: [:mclass].
+	selector == #?
+		ifTrue:
+			[aStream nextPut: $?; print: self method who.
+			^self].
+	aStream nextPutAll: class name.
+	mclass == class
+		ifFalse:
+			[aStream nextPut: $(.
+			aStream nextPutAll: mclass name.
+			aStream nextPut: $)].
+	aStream nextPutAll: '>>'.
+	aStream nextPutAll: selector!
+"-----------------------------------"!
+!ContextPart methodsFor: 'private'!
+doPrimitive: primitiveIndex receiver: receiver args: arguments
+	"Simulate a primitive method whose index is primitiveIndex.  The
+	simulated receiver and arguments are given as arguments to this message."
+
+	| numberArguments primitiveMethod value |
+	"If successful, push result and return resuming context, else ^#primitiveFail"
+	(primitiveIndex = 80 and: [receiver isKindOf: ContextPart])
+		ifTrue: [^self push:
+					((BlockContext new: receiver size)
+						home: receiver home
+						startpc: pc + 2
+						nargs: arguments first)].
+	(primitiveIndex = 81 and: [receiver isMemberOf: BlockContext])
+		ifTrue: [^receiver pushArgs: arguments from: self].
+	primitiveIndex = 83
+		ifTrue: [^self
+					send: arguments first
+					to: receiver
+					with: (arguments copyFrom: 2 to: arguments size)
+					super: false].
+	numberArguments _ arguments size.
+	numberArguments > 4 ifTrue: [^#primitiveFail].
+	"currently fails text primitive"
+	primitiveMethod _ TryPrimitiveMethods at: numberArguments + 1.
+	primitiveMethod
+		literalAt: 2
+		put: ((primitiveMethod literalAt: 2) bitAnd: -256) + primitiveIndex.
+	"slam num into primitive"
+	"Instead of 100 such messages in Object"
+	Class flushCache.
+	"in case interp caches primitive #"
+	numberArguments = 0 ifTrue: [value _ receiver tryPrimitive0].
+	numberArguments = 1 ifTrue: [value _ receiver tryPrimitive1: (arguments at: 1)].
+	numberArguments = 2 ifTrue: [value _ receiver tryPrimitive2: (arguments at: 1)
+					with: (arguments at: 2)].
+	numberArguments = 3 ifTrue: [value _ receiver
+					tryPrimitive3: (arguments at: 1)
+					with: (arguments at: 2)
+					with: (arguments at: 3)].
+	numberArguments = 4 ifTrue: [value _ receiver
+					tryPrimitive4: (arguments at: 1)
+					with: (arguments at: 2)
+					with: (arguments at: 3)
+					with: (arguments at: 4)].
+	numberArguments > 4 ifTrue: [self error: 'too many arguments to this primitive'].
+	value == #primitiveFail
+		ifTrue: [^value]
+		ifFalse: [^self push: value]!
+tryPrimitiveFor: method receiver: receiver args: arguments
+	"Simulate a primitive method, method for the receiver and arguments given
+	as arguments to this message.  Answer resuming the context if successful, else
+	answer the symbol, #primitiveFail."
+
+	| flag primIndex |
+	(method objectAt: 1) > 0 ifTrue: [^#primitiveFail].
+	"fast check flags < 4"
+	(flag _ method flags) < 5 ifTrue: [^#primitiveFail].
+	flag = 5 ifTrue: [^self push: receiver].
+	flag = 6 ifTrue: [^self push: (receiver instVarAt: method numTempsField + 1)].
+	flag = 7
+		ifTrue:
+			[(primIndex _ method primitive) = 0 ifTrue: [^#primitiveFail].
+			^self doPrimitive: primIndex receiver: receiver args: arguments]!
+"-----------------------------------"!
+!ContextPart methodsFor: 'system simulation'!
+completeCallee: aContext
+	"Simulate the execution of bytecodes until a return to the receiver."
+
+	| ctxt current |
+	self class initPrimitives.
+	ctxt _ aContext.
+	[ctxt == current or: [ctxt hasSender: self]]
+		whileTrue:
+			[current _ ctxt.
+			ctxt _ ctxt step].
+	self stepToSendOrReturn!
+runSimulated: aBlock contextAtEachStep: block2
+	"Simulate the execution of aBlock until it ends.  aBlock MUST NOT contain an ^.
+	Evaluate block2 with current context prior each instruction executed.
+	Answer with the simulated value of aBlock."
+	| current |
+	aBlock hasMethodReturn
+		ifTrue: [self error: 'simulation of blocks with ^ can run loose'].
+	self class initPrimitives.
+	current _ aBlock.
+	current pushArgs: Array new from: self.
+	[current == self]
+		whileFalse:
+			[block2 value: current.
+			current _ current step].
+	^self pop!
+step
+	"Simulate the execution of the receiver's next bytecode.
+	Answer the context that would be the active context
+	after this bytecode."
+
+	^self interpretNextInstructionFor: self!
+stepToSendOrReturn
+	"Simulate the execution of bytecodes until either sending a message
+	or returning a value to the receiver (that is, until switching contexts)."
+
+	[self willSend | self willReturn]
+		whileFalse: [self step]!
+"-----------------------------------"!
+!ContextPart methodsFor: 'temporaries'!
+tempAt: index
+	"Answer the value of the temporary variable whose index is the argument, index."
+	self subclassResponsibility!
+tempAt: index put: value
+	"Store the argument, value, as the temporary variable whose
+	index is the argument, index."
+	self subclassResponsibility!
+tempNames
+	"Answer an OrderedCollection of the names of the receiver's temporary
+	variables, which are strings."
+
+	| names |
+	self method setTempNamesIfCached: [:names | ^names].
+	names _ (self mclass compilerClass new
+			parse: self sourceCode
+			in: self mclass
+			notifying: nil) tempNames.
+	self method cacheTempNames: names.
+	^names!

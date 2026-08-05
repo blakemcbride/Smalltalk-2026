@@ -1,0 +1,31 @@
+ClassChange subclass: #ClassDefinitionChange
+  instanceVariableNames: 'superclassName classType otherParameters'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'System-Changes'!
+ClassDefinitionChange class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+ClassDefinitionChange comment:
+'I am a change to some part of a class definition.'!
+"-----------------------------------"!
+!ClassDefinitionChange methodsFor: 'accessing'!
+name
+	^'  define ', className!
+superclassName: aSymbol classType: aSelector otherParameters: anArray
+	superclassName _ aSymbol.
+	classType _ aSelector.
+	otherParameters _ anArray!
+text
+	^file == nil
+		ifTrue: [(Smalltalk at: className) definition]
+		ifFalse: [super text]!
+"-----------------------------------"!
+!ClassDefinitionChange methodsFor: 'checking'!
+checkWith: aChecker
+	| class |
+	aChecker changesAt: className add: self.
+	aChecker checkSystem ifTrue:
+		[class _ Smalltalk at: className ifAbsent: [^self].
+		self text = class definition ifFalse:
+			[aChecker changesAt: className add: (self class new className: className)]]!

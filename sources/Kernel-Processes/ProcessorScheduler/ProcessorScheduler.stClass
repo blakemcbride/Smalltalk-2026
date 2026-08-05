@@ -1,0 +1,198 @@
+Object subclass: #ProcessorScheduler
+  instanceVariableNames: 'quiescentProcessLists activeProcess'
+  classVariableNames: 'BackgroundProcess HighIOPriority LowIOPriority SystemBackgroundPriority SystemRockBottomPriority TimingPriority UserBackgroundPriority UserInterruptPriority UserSchedulingPriority'
+  poolDictionaries: ''
+  category: 'Kernel-Processes'!
+ProcessorScheduler class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+ProcessorScheduler comment:
+'Instance Variables:
+		quiescentProcessLists		<Array of LinkedLists> on which to suspend processes
+		activeProcess			<Process> currently executing process
+
+My single instance, named Processor, coordinates the use of the physical processor by all Processes requiring service'!
+"-----------------------------------"!
+!ProcessorScheduler class methodsFor: 'background process'!
+background: aBlock
+	"Replace the background process with a process running the code
+	in aBlock."
+
+	BackgroundProcess == nil ifFalse: [BackgroundProcess terminate].
+	BackgroundProcess _ aBlock newProcess.
+	BackgroundProcess priority: SystemRockBottomPriority.
+	BackgroundProcess resume!
+hiddenBackgroundProcess
+	"Install a default background process which is invisible."
+
+	self background:
+		[[true] whileTrue: []]!
+sweepHandBackgroundProcess
+	"Install the default background process which shows a sweeping circle
+	of Xor-ed bits on the screen."
+
+	| sweepHand |
+	sweepHand _ Pen new.
+	sweepHand defaultNib: 2.
+	sweepHand combinationRule: 6.
+	self background:
+		[[true]
+			whileTrue: [2 timesRepeat:
+							[sweepHand north.
+							36 timesRepeat:
+								[sweepHand place: Display boundingBox topRight + (-25@25).
+								sweepHand go: 20.
+								sweepHand turn: 10]]]]!
+"-----------------------------------"!
+!ProcessorScheduler class methodsFor: 'class initialization'!
+initialize
+	SystemRockBottomPriority _ 1.
+	SystemBackgroundPriority _ 2.
+	UserBackgroundPriority _ 3.
+	UserSchedulingPriority _ 4.
+	UserInterruptPriority _ 5.
+	LowIOPriority _ 6.
+	HighIOPriority _ 7.
+	TimingPriority _ 8
+	"ProcessorScheduler initialize."!
+"-----------------------------------"!
+!ProcessorScheduler class methodsFor: 'instance creation'!
+new
+	"New instances of ProcessorScheduler should not be created."
+
+	self error:
+'New ProcessSchedulers should not be created since
+the integrity of the system depends on a unique scheduler'!
+"-----------------------------------"!
+!ProcessorScheduler methodsFor: 'accessing'!
+activePriority
+	"Answer the priority level of the currently running Process."
+
+	^activeProcess priority!
+activeProcess
+	"Answer the currently running Process."
+
+	^activeProcess!
+highestPriority
+	"Answer the number of priority levels currently available for use."
+
+	^quiescentProcessLists size!
+highestPriority: newHighestPriority
+	"Change the number of priority levels currently available for use."
+
+	| continue newProcessLists |
+	(quiescentProcessLists size > newHighestPriority
+		and: [self anyProcessesAbove: newHighestPriority])
+			ifTrue: [self error: 'There are processes with priority higher than '
+													,newHighestPriority printString].
+	newProcessLists _ Array new: newHighestPriority.
+	1 to: ((quiescentProcessLists size) min: (newProcessLists size)) do:
+		[:priority | newProcessLists at: priority put: (quiescentProcessLists at: priority)].
+	quiescentProcessLists size to: newProcessLists size do:
+		[:priority | newProcessLists at: priority put: LinkedList new].
+	quiescentProcessLists become: newProcessLists!
+"-----------------------------------"!
+!ProcessorScheduler methodsFor: 'priority names'!
+highIOPriority
+	"Answer the priority at which the most time critical input/output
+	processes should run.  An example is the process handling input from a
+	network."
+
+	^HighIOPriority!
+lowIOPriority
+	"Answer the priority at which most input/output processes should run.
+	Examples are the process handling input from the user (keyboard,
+	pointing device, etc.) and the process distributing input from a network."
+
+	^LowIOPriority!
+systemBackgroundPriority
+	"Answer the priority at which system background processes should
+	run.  Examples are an incremental garbage collector or status checker."
+
+	^SystemBackgroundPriority!
+timingPriority
+	"Answer the priority at which the system processes keeping track of
+	real time should run."
+
+	^TimingPriority!
+userBackgroundPriority
+	"Answer the priority at which user background processes should run."
+
+	^UserBackgroundPriority!
+userInterruptPriority
+	"Answer the priority at which user processes desiring immediate
+	service should run.  Processes run at this level will preempt the window
+	scheduler and should, therefore, not consume the processor forever."
+
+	^UserInterruptPriority!
+userSchedulingPriority
+	"Answer the priority at which the window scheduler should run."
+
+	^UserSchedulingPriority!
+"-----------------------------------"!
+!ProcessorScheduler methodsFor: 'private'!
+anyProcessesAbove: highestPriority
+	"Do any instances of Process exist with higher priorities?"
+
+	^(Process allInstances select: [:aProcess | aProcess priority > highestPriority]) isEmpty!
+signal: aSemaphore atMilliseconds: milliseconds
+	"Signal the semaphore when the millisecond clock reaches the value of
+	the second argument.  The second argument is a byte indexable object at
+	least four bytes long (a 32-bit unsigned number with the low order
+	8-bits stored in the byte with the lowest index).  Fail if the first
+	argument is neither a Semaphore nor nil.  Essential.  See Object
+	documentation whatIsAPrimitive."
+
+	<primitive: 100>
+	self primitiveFailed!
+"-----------------------------------"!
+!ProcessorScheduler methodsFor: 'process state change'!
+suspendFirstAt: aPriority
+	"Suspend the first Process that is waiting to run with priority aPriority."
+
+	^self suspendFirstAt: aPriority
+		  ifNone: [self error: 'No Process to suspend']!
+suspendFirstAt: aPriority ifNone: noneBlock
+	"Suspend the first Process that is waiting to run with priority aPriority.
+	If no Process is waiting, evaluate noneBlock"
+
+	| aList |
+	aList _ quiescentProcessLists at: aPriority.
+	aList isEmpty
+		ifTrue: [^noneBlock value]
+		ifFalse: [^aList first suspend]!
+terminateActive
+	"Terminate the process that is currently running."
+
+	activeProcess terminate!
+yield
+	"Give other Processes at the current priority a chance to run"
+
+	| semaphore |
+	semaphore _ Semaphore new.
+	[semaphore signal] fork.
+	semaphore wait!
+"-----------------------------------"!
+!ProcessorScheduler methodsFor: 'removing'!
+remove: aProcess ifAbsent: aBlock
+	"Remove aProcess from the list on which it is waiting for the processor. If
+	it is not waiting, evaluate aBlock."
+
+	(quiescentProcessLists at: aProcess priority)
+		remove: aProcess ifAbsent: aBlock.
+	^aProcess!
+"-----------------------------------"!
+!ProcessorScheduler methodsFor: 'timing'!
+signal: aSemaphore atTime: timeInterval
+	"Signal aSemaphore when the system's millisecond clock reaches
+	timeInterval (an Integer)"
+
+	| milliseconds |
+	(timeInterval digitLength > 4 or: [timeInterval negative])
+		ifTrue: [self error: 'Can''t convert time to double word'].
+	milliseconds _ ByteArray new: 4.
+	milliseconds at: 1 put: (timeInterval digitAt: 1).
+	milliseconds at: 2 put: (timeInterval digitAt: 2).
+	milliseconds at: 3 put: (timeInterval digitAt: 3).
+	milliseconds at: 4 put: (timeInterval digitAt: 4).
+	^self signal: aSemaphore atMilliseconds: milliseconds!

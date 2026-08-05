@@ -1,0 +1,101 @@
+ParseNode subclass: #DecompilerConstructor
+  instanceVariableNames: 'method instVars nArgs literalValues tempVars'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'System-Compiler'!
+DecompilerConstructor class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+DecompilerConstructor comment:
+'I am used by the decompiler to construct parse tree nodes and other appropriate items corresponding to each unit identified by the decompiler.  This factoring allows the decompiler, in principle, to use other constructors for other purposes.'!
+"-----------------------------------"!
+!DecompilerConstructor methodsFor: 'constructor'!
+codeAnyLitInd: association
+	^VariableNode new
+		name: association key
+		key: association
+		index: 0
+		type: LdLitIndType!
+codeAnyLiteral: value
+	^LiteralNode new
+		key: value
+		index: 0
+		type: LdLitType!
+codeAnySelector: selector
+	^SelectorNode new
+		key: selector
+		index: 0
+		type: SendType!
+codeArguments: args block: block
+	^block arguments: args!
+codeAssignTo: variable value: expression
+	^AssignmentNode new variable: variable value: expression!
+codeBlock: statements returns: returns
+	^BlockNode new statements: statements returns: returns!
+codeCascade: receiver messages: messages
+	^CascadeNode new receiver: receiver messages: messages!
+codeCascadedMessage: selector arguments: arguments
+	^self
+		codeMessage: nil
+		selector: selector
+		arguments: arguments!
+codeConstants
+	"Answer with an array of the objects representing self, true, false, nil, -1, 0, 1, 2"
+
+	| i |
+	^(Array with: NodeSelf with: NodeTrue with: NodeFalse with: NodeNil)
+		, ((-1 to: 2) collect: [:i | LiteralNode new key: i code: LdMinus1 + i + 1])!
+codeEmptyBlock
+	^BlockNode new default!
+codeInst: index
+	^VariableNode new
+		name: (instVars at: index + 1)
+		index: index
+		type: LdInstType!
+codeMessage: receiver selector: selector arguments: arguments
+	| symbol |
+	symbol _ selector key.
+	^MessageNode new
+		receiver: receiver
+		selector: selector
+		arguments: arguments
+		precedence:
+			(symbol isInfix
+				ifTrue: [2]
+				ifFalse: [symbol isKeyword ifTrue: [3] ifFalse: [1]])!
+codeMethod: selector block: block tempVars: vars primitive: primitive class: class
+	| node precedence |
+	node _ self codeSelector: selector code: nil.
+	precedence _ selector isInfix
+				ifTrue: [2]
+				ifFalse: [selector isKeyword ifTrue: [3] ifFalse: [1]].
+	tempVars _ vars.
+	^MethodNode new
+		selector: node
+		arguments: (tempVars copyFrom: 1 to: nArgs)
+		precedence: precedence
+		temporaries: (tempVars copyFrom: nArgs + 1 to: tempVars size)
+		block: block
+		encoder: (Encoder new initScopeAndLiteralTables
+					nTemps: tempVars size
+					literals: literalValues
+					class: class)
+		primitive: primitive!
+codeSelector: sel code: code
+	^SelectorNode new key: sel code: code!
+codeSuper
+	^NodeSuper!
+codeTemp: index
+	^VariableNode new
+		name: 't' , (index + 1) printString
+		index: index
+		type: LdTempType!
+codeThisContext
+	^NodeThisContext!
+"-----------------------------------"!
+!DecompilerConstructor methodsFor: 'initialize-release'!
+method: aMethod class: aClass literals: literals
+	method _ aMethod.
+	instVars _ aClass allInstVarNames.
+	nArgs _ method numArgs.
+	literalValues _ literals!

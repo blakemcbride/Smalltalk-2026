@@ -1,0 +1,125 @@
+ListView subclass: #SelectionInListView
+  instanceVariableNames: 'itemList printItems oneItem partMsg initialSelectionMsg changeMsg listMsg menuMsg'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Interface-Lists'!
+SelectionInListView class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+SelectionInListView comment:
+'SelectionInListView is a "pluggable" ListView.  The notion of pluggable views is an
+experiment in user interface design.  The idea is to provide a view which can be plugged
+onto any object, rather than having to define a new subclass specific to every kind of
+object which needs to be viewed.
+
+The chief mechanism is a set of selectors, which can be thought of as an adaptor to
+convert the generic listView operations (such as changeSelection) into model-specific
+operations (such as fileName:).
+
+An added feature of this listView is that it tries to preserve its selection through
+changes in the choice list.  This effect, and also the choice of an intial selection are
+transmitted to the model just as a user-requested selection would be.
+
+See the protocol ''adaptor'' for use of the pluggable selectors.
+See the creation messages in my class for an explication of the various parameters.
+Browse senders of the creation messages in my class for examples in the system.'!
+"-----------------------------------"!
+!SelectionInListView class methodsFor: 'instance creation'!
+on: anObject
+	aspect: aspectMsg change: changeMsg list: listMsg menu: menuMsg initialSelection: sel
+	"Create a 'pluggable' (see class comment) listView viewing anObject.
+	aspectMsg is sent to read the value of the current selection.
+		It is also used as the changed: parameter for this view.
+	changeMsg is sent to inform anObject of a new selection.
+	listMsg is sent to read the current list which should be displayed.
+	menuMsg is sent to read the yellowButton menu for this view.
+	initialSelection is sent to read a selection to be selected initailly as a default."
+
+	^ self new on: anObject printItems: false oneItem: false
+		aspect: aspectMsg change: changeMsg list: listMsg menu: menuMsg initialSelection: sel!
+on: anObject printItems: flag1 oneItem: flag2
+	aspect: aspectMsg change: changeMsg list: listMsg menu: menuMsg initialSelection: sel
+	"Create a listView with these parameters - see comment in on:aspect:change: . . .
+	Moreover, if printItems is true, then the view will show the printStrings of the
+		items in the list, rather than assuming they are already text-like objects.
+	And if oneItem is true the list works as a read-only list of one item.  this is mainly
+		used for the root list of various sub-browsers spawned from the browser."
+
+	^ self new on: anObject printItems: flag1 oneItem: flag2
+		aspect: aspectMsg change: changeMsg list: listMsg menu: menuMsg initialSelection: sel!
+"-----------------------------------"!
+!SelectionInListView methodsFor: 'adaptor'!
+changeModelSelection: anInteger
+
+	changeMsg ~~ nil ifTrue:
+		[model perform: changeMsg with:
+			(anInteger = 0 ifTrue: [nil] ifFalse: [itemList at: anInteger])]!
+getList
+	| item |
+	oneItem ifTrue:
+		[item _ self initialSelection.
+		item == nil ifTrue: [^ nil].
+		^ Array with: item].
+	listMsg == nil ifTrue: [^nil].
+	^ model perform: listMsg!
+initialSelection
+	initialSelectionMsg == nil ifTrue: [^ nil].
+	^ model perform: initialSelectionMsg!
+yellowButtonMenu
+	menuMsg == nil ifTrue: [^ nil].
+	^ model perform: menuMsg!
+"-----------------------------------"!
+!SelectionInListView methodsFor: 'controller access'!
+defaultControllerClass
+	^ SelectionInListController!
+"-----------------------------------"!
+!SelectionInListView methodsFor: 'displaying'!
+displayView
+	isEmpty
+		ifTrue: [self clearInside]
+		ifFalse: [super displayView]!
+"-----------------------------------"!
+!SelectionInListView methodsFor: 'initialization'!
+on: anObject printItems: flag1 oneItem: flag2
+		aspect: m1 change: m3 list: m4 menu: m5 initialSelection: m6
+	self model: anObject.
+	printItems _ flag1.
+	oneItem _ flag2.
+	partMsg _ m1.
+	changeMsg _ m3.
+	listMsg _ m4.
+	menuMsg _ m5.
+	initialSelectionMsg _ m6.
+	oneItem ifTrue:
+		[self noTopDelimiter noBottomDelimiter.
+		initialSelectionMsg == nil
+			ifTrue: [self error: 'initialSelection must be specified for oneItem mode']].
+	self list: self getList!
+"-----------------------------------"!
+!SelectionInListView methodsFor: 'list access'!
+list: anArray
+	| item |
+	itemList _ anArray.
+	anArray == nil ifTrue:
+		[isEmpty _ true.
+		selection _ 0.
+		^self changeModelSelection: 0].
+	printItems
+		ifTrue: [super list: (anArray collect:
+					[:each | each printString copyUpTo: Character cr])]
+		ifFalse: [super list: anArray].
+	item _ self initialSelection.
+	selection _ item == nil
+			ifTrue: [0]
+			ifFalse: [itemList findFirst: [:x | x = item]].
+	selection > 0 ifTrue: [self positionList].
+	self changeModelSelection: selection!
+"-----------------------------------"!
+!SelectionInListView methodsFor: 'testing'!
+isEmpty
+	^ isEmpty!
+"-----------------------------------"!
+!SelectionInListView methodsFor: 'updating'!
+update: aSymbol
+	aSymbol == partMsg
+		ifTrue: [self list: self getList; displayView]!

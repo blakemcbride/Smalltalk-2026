@@ -1,0 +1,438 @@
+Number variableWordSubclass: #Float
+  instanceVariableNames: ''
+  classVariableNames: 'ExpPCoefficients ExpQCoefficients Fourthpi Halfpi Ln2 LnCoefficients Pi RadiansPerDegree SinCoefficients Sqrt2 TanCoefficients Twopi'
+  poolDictionaries: ''
+  category: 'Numeric-Numbers'!
+Float class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+Float comment:
+'I represent floating-point numbers in IEEE 32-bit format.
+
+These floating-point numbers are good for about 8 or 9 digits of accuracy, and the range is between plus and minus 10^32.
+Here are some valid floating-point examples:
+	8.0   13.3   0.3   2.5e6   1.27e-30  1.27e-31 -12.987654e12
+Mainly: no imbedded blanks, little e for tens power, and a digit on both sides of the decimal point.'!
+"-----------------------------------"!
+!Float class methodsFor: 'class initialization'!
+initialize
+	"constants from Computer Approximations, pp. 182-183
+	Pi = 3.14159265358979323846264338327950288
+	Pi/2 = 1.57079632679489661923132169163975144
+	Pi/4 = 0.78539816339744830961566084581987572
+	Pi*2 = 6.28318530717958647692528676655900576
+	Pi/180 = 0.01745329251994329576923690768488612
+	2.0 ln = 0.69314718055994530941723212145817657
+	2.0 sqrt = 1.41421356237309504880168872420969808"
+
+	Pi _ 3.14159.
+	Halfpi _ Pi / 2.0.
+	Fourthpi _ Pi / 4.0.
+	Twopi _ Pi * 2.0.
+	RadiansPerDegree _ Pi / 180.0.
+	Ln2 _ 0.693147.
+	Sqrt2 _ 1.41421.
+	SinCoefficients _ #(-0.166667 0.00833333 -1.98409e-4 2.7526e-6 -2.39e-8 ).
+	TanCoefficients _ #(0.333331 0.133392 0.0533741 0.0245651 0.00290052 0.00951681 ).
+	ExpPCoefficients _ #(28.8756 2525.04 ).
+	ExpQCoefficients _ #(1.0 375.022 7285.73 ).
+	LnCoefficients _ #(0.237625 0.285254 0.400006 0.666667 2.0 )
+	"Float initialize."!
+"-----------------------------------"!
+!Float class methodsFor: 'constants'!
+pi
+	"Answer the constant, Pi."
+	^Pi!
+"-----------------------------------"!
+!Float class methodsFor: 'instance creation'!
+readFrom: aStream
+	"Answer a new Float as described on the stream, aStream."
+
+	^(super readFrom: aStream) asFloat!
+"-----------------------------------"!
+!Float methodsFor: 'arithmetic'!
+* aNumber
+	"Multiply the receiver by the argument and return the result as a Float.  Fail if
+	the argument is not a Float.  Essential.  See Object documentation whatIsAPrimitive."
+
+	<primitive: 49>
+	^self retry: #* coercing: aNumber!
++ aNumber
+	"Add the receiver to the argument and return the result as a Float.  Fail if the
+	argument is not a Float.  Essential.  See Object documentation
+	whatIsAPrimitive. "
+
+	<primitive: 41>
+	^self retry: #+ coercing: aNumber!
+- aNumber
+	"Subtract the argument from the receiver and return the result as a Float.  Fail if
+	the argument is not a Float.  Essential.  See Object documentation
+	whatIsAPrimitive. "
+
+	<primitive: 42>
+	^self retry: #- coercing: aNumber!
+/ aNumber
+	"Divide the receiver by the argument and return the exact result as a Float.  Fail
+	if the argument is not a Float.  Essential.  See Object documentation
+	whatIsAPrimitive. "
+
+	<primitive: 50>
+	aNumber = 0
+		ifTrue: [self error: 'attempt to divide by zero']
+		ifFalse: [^self retry: #/ coercing: aNumber]!
+negated
+	"Answer a Number that is the negation of the receiver."
+	^0.0 - self!
+"-----------------------------------"!
+!Float methodsFor: 'coercing'!
+coerce: aNumber
+	^aNumber asFloat!
+generality
+	^80!
+"-----------------------------------"!
+!Float methodsFor: 'comparing'!
+< aNumber
+	"Compare the receiver with the argument and return true if the receiver is less
+	than the argument.  Otherwise return false.  Fail if the argument is not a Float.
+	Essential.  See Object documentation whatIsAPrimitive."
+
+	<primitive: 43>
+	^self retry: #< coercing: aNumber!
+<= aNumber
+	"Compare the receiver with the argument and return true if the receiver is less
+	than or equal to the argument.  Otherwise return false.  Fail if the argument is
+	not a Float.  Optional.  See Object documentation whatIsAPrimitive."
+
+	<primitive: 45>
+	^super <= aNumber!
+= aNumber
+	"Compare the receiver with the argument and return true if the receiver is
+	equal to the argument.  Otherwise return false.  Fail if the argument is not a
+	Float.  Essential.  See Object documentation whatIsAPrimitive."
+
+	<primitive: 47>
+	^self retry: #= coercing: aNumber!
+> aNumber
+	"Compare the receiver with the argument and return true if the receiver is
+	greater than the argument.  Otherwise return false.  Fail if the argument is not a
+	Float.  Essential.  See Object documentation whatIsAPrimitive."
+
+	<primitive: 44>
+	^self retry: #> coercing: aNumber!
+>= aNumber
+	"Compare the receiver with the argument and return true if the receiver is
+	greater than or equal to the argument.  Otherwise return false.  Fail if the
+	argument is not a Float.  Optional.  See Object documentation
+	whatIsAPrimitive. "
+
+	<primitive: 46>
+	^super >= aNumber!
+hash
+	"Hash is reimplemented because = is implemented."
+
+	^(self basicAt: 1) bitAnd: 16383		"High bits as an Integer"!
+~= aNumber
+	"Compare the receiver with the argument and return true if the receiver is not
+	equal to the argument.  Otherwise return false.  Fail if the argument is not a
+	Float.  Optional.  See Object documentation whatIsAPrimitive."
+
+	<primitive: 48>
+	^super ~= aNumber!
+"-----------------------------------"!
+!Float methodsFor: 'converting'!
+asFloat
+	"Answer with the receiver itself."
+	^self!
+asFraction
+	"Answer with a new Fraction representing the receiver.
+	This conversion uses the continued fraction method to approximate
+	a floating point number."
+
+	| num1 denom1 num2 denom2 int frac newD temp |
+	num1 _ self truncated.	"The first of two alternating numerators"
+	denom1 _ 1.		"The first of two alternating denominators"
+	num2 _ 1.		"The second numerator"
+	denom2 _ 0.		"The second denominator--will update"
+	int _ num1.		"The integer part of self"
+	frac _ self fractionPart.		"The fractional part of self"
+	[frac = 0]
+		whileFalse:
+			["repeat while the fractional part is not zero"
+			newD _ 1.0 / frac.			"Take reciprocal of the fractional part"
+			int _ newD truncated.		"get the integer part of this"
+			frac _ newD fractionPart.	"and save the fractional part for next time"
+			temp _ num2.				"Get old numerator and save it"
+			num2 _ num1.				"Set second numerator to first"
+			num1 _ num1 * int + temp.	"Update first numerator"
+			temp _ denom2.				"Get old denominator and save it"
+			denom2 _ denom1.			"Set second denominator to first"
+			denom1 _ int * denom1 + temp.		"Update first denominator"
+			10000.0 < denom1
+				ifTrue:
+					["Is ratio past float precision?  If so, pick which
+					of the two ratios to use"
+					num2 = 0.0
+						ifTrue: ["Is second denominator 0?"
+								^Fraction numerator: num1 denominator: denom1].
+					^Fraction numerator: num2 denominator: denom2]].
+	"If fractional part is zero, return the first ratio"
+	denom1 = 1
+		ifTrue: ["Am i really an Integer?"
+				^num1"Yes, return Integer result"]
+		ifFalse: ["Otherwise return Fraction result"
+				^Fraction numerator: num1 denominator: denom1]!
+degreesToRadians
+	^self * RadiansPerDegree!
+radiansToDegrees
+	^self / RadiansPerDegree!
+"-----------------------------------"!
+!Float methodsFor: 'copying'!
+deepCopy
+	^self copy!
+shallowCopy
+	^self + 0.0!
+"-----------------------------------"!
+!Float methodsFor: 'mathematical functions'!
+arcCos
+	"Answers with the angle in radians."
+
+	^Halfpi - self arcSin!
+arcSin
+	"Answers with the angle in radians"
+
+	self abs > 1.0 ifTrue: [self error: 'Value out of range'].
+	self abs = 1.0
+		ifTrue: [^Halfpi]
+		ifFalse: [^(self / (1 - (self * self)) sqrt) arcTan]!
+arcTan
+	"Answers with the angle in radians"
+
+	| theta term y eps i |
+	self = 1.0 ifTrue: [^Fourthpi].
+	self = -1.0 ifTrue: [^Fourthpi negated].
+	self * self > 1.0
+		ifTrue:
+			[theta _ Halfpi.
+			y _ -1.0 / (self * self).
+			term _ -1.0 / self abs]
+		ifFalse:
+			[theta _ 0.0.
+			y _ 0.0 - (self * self).
+			term _ self abs].
+	i _ 1.
+	eps _ 1.0e-4.
+	[term abs > eps]
+		whileTrue:
+			[theta _ theta + term.
+			term _ term * y * i asFloat / (i + 2) asFloat.
+			i _ i + 2].
+	^self sign asFloat * theta!
+cos
+	"Answers with the cosine of the receiver in radians."
+
+	self < 0.0 ifTrue: [^(self + Halfpi) sin].
+	^(Halfpi - self) sin!
+exp
+	"see Computer Approximations, pp. 96-104, p. 205 (EXPB 1065)"
+
+	| a n1 x x2 P Q |
+	self abs > 9212.0
+		ifTrue: ["Float maxVal ln"
+			"1.0 exp"
+			self error: 'exp overflow']
+		ifFalse:
+			[x _ self / Ln2.
+			n1 _ 2.0 raisedTo: x truncated.
+			(x _ x - x truncated) >= 0.5
+				ifTrue:
+					[n1 _ n1 * Sqrt2.
+					x _ x - 0.5].
+			x2 _ x * x.
+			"compute 2.0 power: x"
+			P _ Q _ 0.0.
+			ExpPCoefficients do: [:a | P _ P * x2 + a].
+			ExpQCoefficients do: [:a | Q _ Q * x2 + a].
+			^n1 * (Q + (x * P) / (Q - (x * P)))]!
+floorLog: radix
+	"quick computation of (self log: radix) floor"
+
+	| x |
+	self < radix ifTrue: [^0]. 	"self assumed positive"
+	self < radix squared ifTrue: [^1].
+	x _ 2 * (self floorLog: radix squared).	"binary recursion like ipow"
+	^x + (self / (radix raisedTo: x) floorLog: radix)!
+ln
+	"see Computer Approximations, pp. 105-111, p. 227 (LOGE 2663)"
+
+	| expt x x2 n P |
+	self <= 0.0
+		ifTrue: [self error: 'ln not valid for ' , self printString]
+		ifFalse:
+			[expt _ self exponent.
+			n _ Ln2 * (expt - 0.5).
+			"mantissa between 0.5 and 1.0"
+			x _ self timesTwoPower: 0 - expt.
+			x _ x * Sqrt2.
+			x _ x - 1.0 / (x + 1.0).
+			x2 _ x * x.
+			P _ 0.0.
+			LnCoefficients do: [:a | P _ P * x2 + a].
+			^n + (x * P)]
+
+"2.718284 ln 1.0"!
+log
+	"Base 10 logarithm"
+
+	^self ln / 10.0 ln!
+sin
+	"Answers with the sine of the receiver in radians."
+
+	| x x2 sum |
+		"normalize to 0<=self<=(Pi/2)"
+	self < 0.0 ifTrue: [^self negated sin negated].
+	self > Twopi ifTrue: [^(self \\ Twopi) sin].
+	self > Pi ifTrue: [^(self - Pi) sin negated].
+	self > Halfpi ifTrue: [^(Pi - self) sin].
+	sum _ x _ self.
+	x2 _ x * x.
+	SinCoefficients do: [:const | sum _ const * (x _ x * x2) + sum].
+	^sum!
+sqrt
+	| guess |
+	self <= 0.0 ifTrue: [self = 0.0
+			ifTrue: [^0.0]
+			ifFalse: [^self error: 'sqrt invalid for x < 0']].
+	"copy and halve the exponent for first guess"
+	guess _ self timesTwoPower: 0 - (self exponent // 2).
+	5 timesRepeat: [guess _ self - (guess * guess) / (guess * 2.0) + guess].
+	^guess!
+tan
+	"Answer the ratio of the sine to cosine of the receiver in radians."
+
+	| x x2 sum |
+		"normalize to 0<=self<=(Pi/4)"
+	self < 0.0 ifTrue: [^self negated tan negated].
+	self > Pi ifTrue: [^(self \\ Pi) tan].
+	self > Halfpi ifTrue: [^(Pi - self) tan negated].
+	self > Fourthpi ifTrue: [^1.0 / (Halfpi - self) tan].
+	sum _ x _ self.
+	x2 _ x * x.
+	TanCoefficients do: [:const | sum _ const * (x _ x * x2) + sum].
+	^sum!
+"-----------------------------------"!
+!Float methodsFor: 'printing'!
+isLiteral
+	^true!
+printOn: aStream
+	self printOn: aStream digits: 6!
+"-----------------------------------"!
+!Float methodsFor: 'private'!
+absPrintOn: aStream digits: digits
+	"Print me using digits significant figures."
+
+	| fuzz x exp q i |
+	"x is myself normalized to [1.0, 10.0), exp is my exponent"
+	exp _
+		self < 1.0
+			ifTrue: [(10.0 / self floorLog: 10.0) negated]
+			ifFalse: [self floorLog: 10.0].
+	x _ self / (10.0 raisedTo: exp).
+	fuzz _ 10.0 raisedTo: 1 - digits.
+	"round the last digit to be printed"
+	x _ 0.5 * fuzz + x.
+	x >= 10.0
+		ifTrue:
+			["check if rounding has unnormalized x"
+			x _ x / 10.0.
+			exp _ exp + 1].
+	(exp < 6 and: [exp > -4])
+		ifTrue:
+			["decimal notation"
+			q _ 0.
+			exp < 0 ifTrue: [1 to: 1 - exp do: [:i | aStream nextPut: ('0.0000' at: i)]]]
+		ifFalse:
+			["scientific notation"
+			q _ exp.
+			exp _ 0].
+	[x >= fuzz]
+		whileTrue:
+			["use fuzz to track significance"
+			i _ x truncated.
+			aStream nextPut: (48 + i) asCharacter.
+			x _ x - i * 10.0.
+			fuzz _ fuzz * 10.0.
+			exp _ exp - 1.
+			exp = -1 ifTrue: [aStream nextPut: $.]].
+	[exp >= -1]
+		whileTrue:
+			[aStream nextPut: $0.
+			exp _ exp - 1.
+			exp = -1 ifTrue: [aStream nextPut: $.]].
+	q ~= 0
+		ifTrue:
+			[aStream nextPut: $e.
+			q printOn: aStream]!
+exponent
+	"Consider the receiver to be represented as a power of two multiplied by a
+	mantissa (between one and two).  Answer with the SmallInteger to whose power
+	two is raised.  Optional.  See Object documentation whatIsAPrimitive."
+
+	| positive |
+	<primitive: 53>
+	self >= 1.0 ifTrue: [^self floorLog: 2].
+	self > 0.0
+		ifTrue:
+			[positive _ (1.0 / self) exponent.
+			self = (1.0 / (1.0 timesTwoPower: positive))
+				ifTrue: [^positive negated]
+				ifFalse: [^positive negated - 1]].
+	self = 0.0 ifTrue: [^-1].
+	^self negated exponent!
+mantissa: nBits
+	"Answer as an integer the most significant nBits of the mantissa of the receiver."
+
+	^(self abs timesTwoPower: nBits-self exponent-1) truncated!
+printOn: aStream digits: digits
+	"Print me using digits significant figures."
+
+	self > 0.0
+		ifTrue: [self absPrintOn: aStream digits: digits]
+		ifFalse: [self = 0.0
+					ifTrue:
+						[aStream nextPutAll: '0.0']
+					ifFalse:
+						[aStream nextPutAll: '-'.
+						self negated absPrintOn: aStream digits: digits]]!
+timesTwoPower: anInteger
+	"Answer with the receiver mulitplied by 2.0 raised to the power of the argument.
+	Optional.  See Object documentation whatIsAPrimitive."
+
+	<primitive: 54>
+	^self * (2.0 raisedToInteger: anInteger)!
+"-----------------------------------"!
+!Float methodsFor: 'truncation and round off'!
+fractionPart
+	"Answer a new Float whose value is the difference between the receiver and the
+	receiver's truncated value.  Optional.  See Object documentation
+	whatIsAPrimitive."
+
+	<primitive: 52>
+	^self - self truncated!
+integerPart
+	"Answer with a new Float whose value is the receiver's truncated value."
+
+	^self - self fractionPart!
+rounded
+	"Answer the integer nearest the receiver."
+	self >= 0.0
+		ifTrue: [^(self + 0.5) truncated]
+		ifFalse: [^(self - 0.5) truncated]!
+truncated
+	"Answer with a SmallInteger equal to the value of the receiver without
+	its fractional part. The primitive fails if the truncated value cannot be
+	represented as a SmallInteger. In that case, the code below will compute
+	a LargeInteger truncated value. Essential. See Object documentation
+	whatIsAPrimitive. "
+
+	<primitive: 51>
+	^(self quo: 16383.0) * 16383 + (self rem: 16383.0) truncated!

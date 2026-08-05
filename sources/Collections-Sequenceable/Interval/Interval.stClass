@@ -1,0 +1,170 @@
+SequenceableCollection subclass: #Interval
+  instanceVariableNames: 'start stop step'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Collections-Sequenceable'!
+Interval class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+Interval comment:
+'I represent a finite arithmetic progression'!
+"-----------------------------------"!
+!Interval class methodsFor: 'instance creation'!
+from: startInteger to: stopInteger
+	"Answer a new instance of me, starting at startInteger, ending and
+	stopInteger, and with an interval increment of 1."
+
+	^self new
+		setFrom: startInteger
+		to: stopInteger
+		by: 1!
+from: startInteger to: stopInteger by: stepInteger
+	"Answer a new instance of me, starting at startInteger, ending and
+	stopInteger, and with an interval increment of stepInteger."
+
+	^self new
+		setFrom: startInteger
+		to: stopInteger
+		by: stepInteger!
+new
+	"Create and answer with a new instance of the receiver (a class) with no indexable
+	fields.  Fail if the class is indexable.  Override SequenceableCollection new.
+	Essential.  See Object documentation whatIsAPrimitive."
+
+	<primitive: 70>
+	self isVariable ifTrue: [^self new: 0].
+	self primitiveFailed!
+"-----------------------------------"!
+!Interval methodsFor: 'accessing'!
+at: anInteger
+	"Answer the anInteger'th element."
+
+	(anInteger >= 1 and: [anInteger <= self size])
+		ifTrue: [^start + (step * (anInteger - 1))]
+		ifFalse: [self errorSubscriptBounds: anInteger]!
+at: anInteger put: anObject
+	"Storing into an Interval is not allowed."
+
+	self error: 'you can not store into an interval'!
+first
+	^start!
+increment
+	"Answer the receiver's interval increment."
+	^step!
+last
+	^stop - (stop - start \\ step)!
+size
+	step < 0
+		ifTrue: [start < stop
+				ifTrue: [^0]
+				ifFalse: [^stop - start // step + 1]]
+		ifFalse: [stop < start
+				ifTrue: [^0]
+				ifFalse: [^stop - start // step + 1]]!
+"-----------------------------------"!
+!Interval methodsFor: 'adding'!
+add: newObject
+	"Adding to an Interval is not allowed."
+	self shouldNotImplement!
+"-----------------------------------"!
+!Interval methodsFor: 'comparing'!
+= anInterval
+	"Answer true if my species and anInterval species are equal, and
+	if our starts, steps and sizes are equal."
+
+	self species == anInterval species
+		ifTrue: [^start = anInterval first
+					and: [step = anInterval increment and: [self size = anInterval size]]]
+		ifFalse: [^false]!
+hash
+	^(((start hash bitShift: 2)
+		bitOr: stop hash)
+		bitShift: 1)
+		bitOr: self size!
+hashMappedBy: map
+	"My hash is independent of my oop"
+	^ self hash!
+"-----------------------------------"!
+!Interval methodsFor: 'copying'!
+copy
+	"Return a copy of me.
+	I override this message because my species is Array and copy, as inherited
+	from SequenceableCollection, uses copyFrom:to:, which creates a new object
+	of my species"
+
+	^self shallowCopy!
+"-----------------------------------"!
+!Interval methodsFor: 'enumerating'!
+collect: aBlock
+	| nextValue i result |
+	result _ self species new: self size.
+	nextValue _ start.
+	i _ 1.
+	step < 0
+		ifTrue: [[stop <= nextValue]
+				whileTrue:
+					[result at: i put: (aBlock value: nextValue).
+					nextValue _ nextValue + step.
+					i _ i + 1]]
+		ifFalse: [[stop >= nextValue]
+				whileTrue:
+					[result at: i put: (aBlock value: nextValue).
+					nextValue _ nextValue + step.
+					i _ i + 1]].
+	^result!
+do: aBlock
+	| aValue |
+	aValue _ start.
+	step < 0
+		ifTrue: [[stop <= aValue]
+				whileTrue:
+					[aBlock value: aValue.
+					aValue _ aValue + step]]
+		ifFalse: [[stop >= aValue]
+				whileTrue:
+					[aBlock value: aValue.
+					aValue _ aValue + step]]!
+reverseDo: aBlock
+	"Evaluate aBlock for each element of my interval, in reverse order."
+
+	| aValue |
+	aValue _ stop.
+	step < 0
+		ifTrue: [[start >= aValue]
+				whileTrue:
+					[aBlock value: aValue.
+					aValue _ aValue - step]]
+		ifFalse: [[start <= aValue]
+				whileTrue:
+					[aBlock value: aValue.
+					aValue _ aValue - step]]!
+"-----------------------------------"!
+!Interval methodsFor: 'printing'!
+printOn: aStream
+	aStream nextPut: $(.
+	start printOn: aStream.
+	aStream nextPutAll: ' to: '.
+	stop printOn: aStream.
+	step ~= 1
+		ifTrue:
+			[aStream nextPutAll: ' by: '.
+			step printOn: aStream].
+	aStream nextPut: $)!
+storeOn: aStream
+	"This is possible because we know numbers store and print the same"
+
+	self printOn: aStream!
+"-----------------------------------"!
+!Interval methodsFor: 'private'!
+setFrom: startInteger to: stopInteger by: stepInteger
+	start _ startInteger.
+	stop _ stopInteger.
+	step _ stepInteger!
+species
+	^Array!
+"-----------------------------------"!
+!Interval methodsFor: 'removing'!
+remove: newObject
+	"Removing from an Interval is not allowed."
+
+	self error: 'elements cannot be removed from an Interval'!

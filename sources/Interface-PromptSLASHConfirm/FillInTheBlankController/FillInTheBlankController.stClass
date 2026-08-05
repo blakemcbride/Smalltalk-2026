@@ -1,0 +1,40 @@
+StringHolderController subclass: #FillInTheBlankController
+  instanceVariableNames: ''
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Interface-Prompt/Confirm'!
+FillInTheBlankController class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+FillInTheBlankController comment:
+'I am a StringHolderController for a FillInTheBlankView.  The string is information that the user can type in and edit.  Upon issuing the accept command, this information is used by my model in the evaluation of an action block.'!
+"-----------------------------------"!
+!FillInTheBlankController methodsFor: 'basic control sequence'!
+controlTerminate
+	| topController |
+	super controlTerminate.
+	model actionTaken ifFalse: [^self].
+	topController _ view topView controller.
+	(topController notNil & (topController isKindOf: StandardSystemController))
+		ifTrue: [topController close].
+	model selectAction!
+"-----------------------------------"!
+!FillInTheBlankController methodsFor: 'control defaults'!
+isControlActive
+	model actionTaken ifTrue: [^false].
+	^super isControlActive!
+isControlWanted
+	model actionTaken ifTrue: [^false].
+	^super isControlActive!
+"-----------------------------------"!
+!FillInTheBlankController methodsFor: 'initialize-release'!
+resetState
+	"intercept to force selection of entire text"
+
+	super resetState.
+	stopBlock _ paragraph characterBlockForIndex: paragraph text size+1.!
+"-----------------------------------"!
+!FillInTheBlankController methodsFor: 'menu messages'!
+accept
+	super accept.
+	model setAction: true!

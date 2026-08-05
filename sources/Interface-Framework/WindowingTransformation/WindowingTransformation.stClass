@@ -1,0 +1,178 @@
+Object subclass: #WindowingTransformation
+  instanceVariableNames: 'scale translation'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Interface-Framework'!
+WindowingTransformation class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+WindowingTransformation comment:
+'WindowingTransformation is used to transform objects from a source coordinate system to a destination coordinate system.  WindowingTransformation contains a scale and a translation which can be applied to objects that respond to scaleBy: and translateBy:.  An instance of WindowingTransformation can be created with a default identity scale and translation, or with a specified scale and translation, or with a scale and translation computed from a window (a Rectangle in the source coordinate system) and a viewport (a Rectangle in the destination coordinate system).  In applying a WindowingTransformation to an object, the object is first scaled (around the origin of the source coordinate system) and then translated.  WindowingTransformations can be composed to form a single compound transformation.'!
+"-----------------------------------"!
+!WindowingTransformation class methodsFor: 'instance creation'!
+identity
+	"Answer an instance of me with no scaling (nil) and no translation (0@0)."
+
+	^self new setScale: nil translation: 0 @ 0!
+scale: aScale translation: aTranslation
+	"Answer an instance of me with a scale factor of
+	aScale and a translation offset of aTranslation. When the transformation is
+	applied (see WindowingTransformation|apply:), the scale is applied first,
+	followed by the translation."
+
+	^self new setScale: aScale translation: aTranslation!
+window: aWindow viewport: aViewport
+	"Answer an instance of me with a scale and translation based on aWindow and
+	aViewport. The scale and translation are computed such that aWindow, when
+	transformed, coincides with aViewport. "
+
+	| scale translation |
+	aViewport width = aWindow width & (aViewport height = aWindow height)
+		ifTrue:
+			[scale _ nil]
+		ifFalse:
+			[scale _ aViewport width asFloat / aWindow width asFloat
+						@ (aViewport height asFloat / aWindow height asFloat)].
+	scale == nil
+		ifTrue: [translation _ aViewport left - aWindow left
+								@ (aViewport top - aWindow top)]
+		ifFalse: [translation _ aViewport left - (scale x * aWindow left)
+								@ (aViewport top - (scale y * aWindow top))].
+	^self new setScale: scale translation: translation!
+"-----------------------------------"!
+!WindowingTransformation methodsFor: 'applying transform'!
+applyInverseTo: anObject
+	"Apply the inverse of the receiver to anObject and answer the result.
+	Used to map some object in destination coordinates to one in source coordinates."
+
+	| transformedObject |
+	transformedObject _ anObject translateBy: translation x negated @ translation y negated.
+	scale == nil
+		ifFalse: [transformedObject _ transformedObject scaleBy: 1.0 / scale x @ (1.0 / scale y)].
+	^transformedObject!
+applyTo: anObject
+	"Apply the receiver to anObject and answer the result.
+	Used to map some object in source coordinates to one in destination
+	coordinates."
+
+	| transformedObject |
+	scale == nil
+		ifTrue: [transformedObject _ anObject]
+		ifFalse: [transformedObject _ anObject scaleBy: scale].
+	transformedObject _ transformedObject translateBy: translation.
+	^transformedObject!
+compose: aTransformation
+	"Answer a new WindowingTransformation that is the composition of the
+	receiver and aTransformation.  The effect of applying
+	the resulting WindowingTransformation to an object is the same as that of
+	first applying aTransformation to the object and then applying the
+	receiver to its result."
+
+	| aTransformationScale newScale newTranslation |
+	aTransformationScale _ aTransformation scale.
+	scale == nil
+		ifTrue:
+			[aTransformation noScale
+				ifTrue: [newScale _ nil]
+				ifFalse: [newScale _ aTransformationScale].
+			newTranslation _ translation + aTransformation translation]
+		ifFalse:
+			[aTransformation noScale
+				ifTrue: [newScale _ scale]
+				ifFalse: [newScale _ scale * aTransformationScale].
+			newTranslation _ translation + (scale * aTransformation translation)].
+	^WindowingTransformation scale: newScale translation: newTranslation!
+"-----------------------------------"!
+!WindowingTransformation methodsFor: 'printing'!
+printOn: aStream
+	aStream nextPutAll: self class name, ' scale: ';
+		print: scale; nextPutAll: ' translation: ';
+		print: translation!
+storeOn: aStream
+	aStream nextPut: $(; nextPutAll: self species name;
+	nextPutAll: ' scale: ';
+	store: scale; cr;
+	nextPutAll: ' translation: ';
+	store: translation;
+	nextPut: $).!
+"-----------------------------------"!
+!WindowingTransformation methodsFor: 'private'!
+checkScale: aScale
+	"Converts aScale to the internal format of a floating-point Point."
+ 	| checkedScale |
+	checkedScale _ aScale asPoint.
+	^checkedScale x asFloat @ checkedScale y asFloat!
+setScale: aScale translation: aTranslation
+	"Sets the scale to aScale and the translation to aTranslation."
+
+	scale _ aScale.
+	translation _ aTranslation!
+"-----------------------------------"!
+!WindowingTransformation methodsFor: 'scrolling'!
+scrollBy: aPoint
+	"Answer a new WindowingTransformation with the same scale as the
+	receiver and with a translation of the current translation plus aPoint scaled by
+	the current scale. It is used when the translation is known in source coordinates,
+	rather than scaled source coordinates (see WindowingTransformation|translateBy:).
+	An example is that of scrolling objects with respect to a stationary window in the
+	source coordinate system. If no scaling is in effect (scale = nil), then
+	WindowingTransformation|translateBy: and
+	WindowingTransformation|scrollBy: are equivalent."
+
+	| newTranslation |
+	scale == nil
+		ifTrue: [newTranslation _ aPoint]
+		ifFalse: [newTranslation _ scale * aPoint].
+	^self translateBy: newTranslation!
+"-----------------------------------"!
+!WindowingTransformation methodsFor: 'transforming'!
+align: point1 with: point2
+	"Answer a new WindowingTransformation with the same scale as the
+	receiver and with a translation of (aPoint2 - aPoint1).
+	It is normally used when the source and destination coordinate systems are
+	scaled the same (that is, there is no scaling between them), and is then a
+	convenient way of specifying a translation, given two points that are
+	intended to coincide."
+
+	^self translateBy: point2 - point1!
+noScale
+	"Answer true if the identity scale is in effect;  answer false, otherwise."
+
+	^scale == nil!
+scale
+	"Answer a copy of the point that represents the current scale of the receiver."
+
+	scale == nil
+		ifTrue: [^1.0 @ 1.0]
+		ifFalse: [^scale copy]!
+scaleBy: aScale
+	"Answer a new WindowingTransformation with the scale and translation of
+	the receiver both scaled by aScale."
+
+	| checkedScale newScale newTranslation |
+	aScale == nil
+		ifTrue:
+			[newScale _ scale.
+			newTranslation _ translation]
+		ifFalse:
+			[checkedScale _ self checkScale: aScale.
+			scale == nil
+				ifTrue: [newScale _ checkedScale]
+				ifFalse: [newScale _ scale * checkedScale].
+			newTranslation _ checkedScale * translation].
+	^WindowingTransformation scale: newScale translation: newTranslation!
+scaleOfOne
+	scale _ 1.0 @ 1.0.!
+translateBy: aPoint
+	"Answer a new WindowingTransformation with the same scale as the
+	receiver and with a translation of the current translation plus aPoint. It is used
+	when the translation is known in scaled source coordinates, rather than source
+	coordinates (see WindowingTransformation|scrollBy:). If no scaling is in effect
+	(scale = nil), then WindowingTransformation|translateBy: and
+	WindowingTransformation|scrollBy: are equivalent."
+
+	^WindowingTransformation scale: scale translation: translation + aPoint!
+translation
+	"Answer a copy of the receiver's translation."
+
+	^translation copy!

@@ -1,0 +1,76 @@
+StringHolder subclass: #Project
+  instanceVariableNames: 'projectWindows projectChangeSet projectTranscript projectHolder'
+  classVariableNames: 'CurrentProject'
+  poolDictionaries: ''
+  category: 'Interface-Projects'!
+Project class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+Project comment:
+'Each screen is a manifestation of a project.  Each project manages the windows (views) in it.  While the user is working in the project, the changes made to classes are collected.  Thus a system-wide set of changes is the collection of all project changes.'!
+"-----------------------------------"!
+!Project class methodsFor: 'class initialization'!
+initialize
+	"This is the Top Project."
+
+	CurrentProject _ super new initialProject
+	"Project initialize."!
+"-----------------------------------"!
+!Project class methodsFor: 'constants'!
+current
+	"Answer the project that is currently being used."
+	^CurrentProject!
+"-----------------------------------"!
+!Project class methodsFor: 'instance creation'!
+new
+	^super new setProjectHolder: CurrentProject!
+"-----------------------------------"!
+!Project methodsFor: 'change management'!
+noChanges
+	"Reset the receiver's ChangeSet so that it is empty."
+	projectChangeSet _ ChangeSet new.
+	Smalltalk newChanges: projectChangeSet!
+"-----------------------------------"!
+!Project methodsFor: 'controlling'!
+enter
+	"The user has chosen to change the context of the workspace to be that of
+	the receiver.  Change the ChangeSet, Transcript, and collection of scheduled
+	views accordingly."
+
+	Smalltalk newChanges: projectChangeSet.
+	CurrentProject _ self.
+	TextCollector newTranscript: projectTranscript.
+	ControlManager newScheduler: projectWindows!
+exit
+	"Leave the current project and enter the project in which the receiver's view
+	is scheduled."
+	projectHolder enter!
+"-----------------------------------"!
+!Project methodsFor: 'dependents access'!
+removeDependent: aDependent
+	super removeDependent: aDependent.
+	self dependents isEmpty ifTrue: [self release]!
+"-----------------------------------"!
+!Project methodsFor: 'initialize-release'!
+release
+	projectWindows isNil ifFalse: [projectWindows release].
+	^super release!
+"-----------------------------------"!
+!Project methodsFor: 'lock access'!
+isLocked
+	^super isLocked
+	| projectChangeSet isEmpty not
+	| (projectWindows scheduledControllers size > 1)!
+isUnlocked
+	^ self isLocked not!
+"-----------------------------------"!
+!Project methodsFor: 'private'!
+initialProject
+	projectWindows _ ScheduledControllers.
+	projectChangeSet _ Smalltalk changes.
+	projectHolder _ self!
+setProjectHolder: aProject
+	projectWindows _ ControlManager new.
+	projectChangeSet _ ChangeSet new.
+	projectTranscript _ TextCollector new.
+	projectHolder _ aProject!

@@ -1,0 +1,327 @@
+Object subclass: #Explainer
+  instanceVariableNames: 'class selector instance context methodText'
+  classVariableNames: 'NewLine'
+  poolDictionaries: ''
+  category: 'Interface-Support'!
+Explainer class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+Explainer comment:
+'I try to determine what a piece of text represents, usually in the context of a method.'!
+"-----------------------------------"!
+!Explainer class methodsFor: 'class initialization'!
+initialize
+	"Explainer initialize"
+	NewLine _ String with: Character cr!
+"-----------------------------------"!
+!Explainer methodsFor: 'explaining'!
+class: aClass selector: aSymbol instance: anInstance context: aContext methodText: aText
+	class _ aClass.
+	selector _ aSymbol.
+	instance _ anInstance.
+	context _ aContext.
+	methodText _ aText!
+explain: selection for: model
+	"Try to shed some light on what kind of entity the current selection is.
+	The selection must be a single token or construct.  Insert the answer
+	after the selection.  Call private routines whose names begin with
+	'explain'.  They return a String if they recognise the selection, else nil."
+
+	| string tiVars cgVars selectors delimitors numbers symbol reply |
+	Cursor execute
+		showWhile:
+			[selection isEmpty
+				ifTrue: [reply _ '']
+				ifFalse:
+					[string _ self explainScan: selection.
+					"Remove space, tab, cr"
+					"Temps and Instance vars need only test strings that are all letters"
+					(string detect: [:char | (char isLetter or: [char isDigit]) not]
+						ifNone: [])
+						~~ nil
+						ifFalse:
+							[tiVars _ self explainTemp: string.
+							tiVars == nil ifTrue: [tiVars _ self explainInst: string]].
+					(tiVars == nil)
+						ifTrue: [tiVars _ model explainSpecial: string].
+					tiVars == nil
+						ifTrue: [tiVars _ '']
+						ifFalse: [tiVars _ tiVars , NewLine].
+					"Context, Class, Pool, and Global vars, and Selectors need
+					only test symbols"
+					(Symbol hasInterned: string ifTrue: [:symbol | symbol])
+						ifTrue:
+							[cgVars _ self explainCtxt: symbol.
+							cgVars == nil
+								ifTrue:
+									[cgVars _ self explainClass: symbol.
+									cgVars == nil ifTrue: [cgVars _ self explainGlobal: symbol]].
+							"See if it is a Selector (sent here or not)"
+							selectors _ self explainMySel: symbol.
+							selectors == nil
+								ifTrue:
+									[selectors _ self explainPartSel: string.
+									selectors == nil ifTrue: [selectors _ self explainAnySel: symbol]]]
+						ifFalse: [selectors _ self explainPartSel: string].
+					cgVars == nil
+						ifTrue: [cgVars _ '']
+						ifFalse: [cgVars _ cgVars , NewLine].
+					selectors == nil
+						ifTrue: [selectors _ '']
+						ifFalse: [selectors _ selectors , NewLine].
+					string size = 1
+						ifTrue: ["single special characters"
+							delimitors _ self explainChar: string]
+						ifFalse: ["matched delimitors"
+							delimitors _ self explainDelimitor: string].
+					numbers _ self explainNumber: string.
+					numbers == nil ifTrue: [numbers _ ''].
+					delimitors == nil ifTrue: [delimitors _ ''].
+					reply _ tiVars , cgVars , selectors , delimitors , numbers]].
+	reply size = 0 ifTrue:
+		[^ '"Sorry, I can''t explain that.  Please select a single token, construct, or special character."'].
+	^ reply!
+explainAnySel: symbol
+	"Is this any message selector?"
+
+	| list reply |
+	list _ Smalltalk allClassesImplementing: symbol.
+	list size = 0 ifTrue: [^nil].
+	list size < 12
+		ifTrue: [reply _ ' is a message selector which is defined in these classes ' , list printString]
+		ifFalse: [reply _ ' is a message selector which is defined in many classes'].
+	^'"' , symbol , reply , '."', NewLine, 'Smalltalk browseAllImplementorsOf: #' , symbol!
+explainChar: string
+	"Does string start with a special character?"
+
+	| char |
+	char _ string at: 1.
+	char = $. ifTrue: [^'"Period marks the end of a Smalltalk statement.  A period in the middle of a number means a decimal point.  (The number is an instance of Float).  A period in the middle of a selector means a compound selector.  (To the left is the superclass, to the right is the selector)."'].
+	char = $' ifTrue: [^'"The characters between two single quotes are made into an instance of class String"'].
+	char = $" ifTrue: [^'"Double quotes enclose a comment.  Smalltalk ignores everything between double quotes."'].
+	char = $# ifTrue: [^'"The characters following a hash mark are made into an instance of class Symbol.  If parenthesis follow a hash mark, an instance of class Array is made."'].
+	(char = $( or: [char = $)]) ifTrue: [^'"Expressions enclosed in parenthesis are evaluated first"'].
+	(char = $[ or: [char = $]]) ifTrue: [^'"The code inside square brackets is an unevaluated block of code.  It becomes an instance of BlockContext and is usually passed as an argument."'].
+	(char = $< or: [char = $>]) ifTrue: [^'"<primitive: xx> means that this method is usually preformed directly by the virtual machine.  If this method is primitive, its Smalltalk code is executed only when the primitive fails."'].
+	char = $^ ifTrue: [^'"Uparrow means return from this method.  The value returned is the expression following the ^"'].
+	char = $| ifTrue: [^'"Vertical bars enclose the names of the temporary variables used in this method.  In a block, the vertical bar separates the argument names from the rest of the code."'].
+	char = $_ ifTrue: [^'"Left arrow means assignment.  The value of the expression after the left arrow is stored into the variable before it."'].
+	char = $; ifTrue: [^'"Semicolon means cascading.  The message after the semicolon is sent to the same object which received the message before the semicolon."'].
+	char = $: ifTrue: [^'"A colon at the end of a keyword means that an argument is expected to follow.  Methods which take more than one argument have selectors with more than one keyword.  (One keyword, ending with a colon, appears before each argument).', NewLine, NewLine, 'A colon before a variable name just inside a block means that the block takes an agrument.  (When the block is evaluated, the argument will be assigned to the variable whose name appears after the colon)."'].
+	char = $$ ifTrue: [^'"The single character following a dollar sign is made into an instance of class Character"'].
+	char = $- ifTrue: [^'"A minus sign in front of a number means a negative number."'].
+	char = $e ifTrue: [^'"An e in the middle of a number means that the exponent follows."'].
+	char = $r ifTrue: [^'"An r in the middle of a bunch of digits is an instance of Integer expressed in a certain radix.  The digits before the r denote the base and the digits after it express a number in that base."'].
+	char = Character space ifTrue: [^'"the space Character"'].
+	char = Character tab ifTrue: [^'"the tab Character"'].
+	char = Character cr ifTrue: [^'"the carriage return Character"'].
+	^nil!
+explainClass: symbol
+	"Is symbol a class variable or a pool variable?"
+
+	|  name pool reply classes |
+	class == nil ifTrue: [^nil].	  "no class is selected"
+	classes _
+		((class isKindOf: Metaclass) ifTrue: [class soleInstance] ifFalse: [class])
+			withAllSuperclasses.
+
+	"class variables"
+	reply _ classes detect: [:each | (each classVarNames
+			detect: [:name | symbol = name] ifNone: [])
+			~~ nil] ifNone: [].
+	reply == nil ifFalse: [^'"is a class variable; defined in class ' , reply printString, '"', NewLine,
+		'Smalltalk browseAllCallsOn: (', reply printString, ' classPool associationAt: #', symbol, ').'].
+
+	"pool variables"
+	classes do: [:each | (each sharedPools
+			detect: [:pool | (pool includesKey: symbol) and: [reply _ pool. true]]
+			ifNone: []) ~~ nil].
+	reply == nil ifTrue: [(Undeclared includesKey: symbol) ifTrue: [reply _ Undeclared]].
+	reply == nil
+		ifFalse:
+			[classes _ WriteStream on: Array new.
+			Smalltalk allBehaviorsDo: [:each |
+					(each sharedPools detect: [:pool | pool == reply] ifNone: [])
+					~~ nil ifTrue: [classes nextPut: each]].
+			"Perhaps not print whole list of classes if too long. (unlikely)"
+			^'"is a pool variable from the pool ' , (Smalltalk keyAtValue: reply),
+			', which is used by the following classes ' , classes contents printString , '"', NewLine,
+			'Smalltalk browseAllCallsOn: (', (Smalltalk keyAtValue: reply) printString,
+			' associationAt: #', symbol, ').'].
+	^nil!
+explainCtxt: symbol
+	"Is symbol a context variable?"
+
+	| reply classes text |
+	symbol = #nil ifTrue: [reply _ '"is a constant.  It is the only instance of class UndefinedObject.  nil is the initial value of all variables."'].
+	symbol = #true ifTrue: [reply _ '"is a constant.  It is the only instance of class True and is the receiver of many control messages."'].
+	symbol = #false ifTrue: [reply _ '"is a constant.  It is the only instance of class False and is the receiver of many control messages."'].
+	class == nil ifTrue: [^nil].	  "no message selected"
+	symbol = #self
+		ifTrue:
+			[classes _ class withAllSubclasses.
+			classes size > 12
+				ifTrue: [text _ class printString , ' or a subclass']
+				ifFalse:
+					[classes _ classes printString.
+					text _ 'one of these classes' , (classes copyFrom: 4 to: classes size)].
+			reply _ '"is the receiver of this message; an instance of ' , text , '"'].
+	symbol = #super ifTrue: [reply _ '"is just like self.  Messages to super are looked up in the superclass (' , class superclass printString , ')"'].
+	symbol = #thisContext ifTrue: [reply _ '"is a context variable.  It''s value is always the MethodContext which is executing this method."'].
+	^reply!
+explainDelimitor: string
+	"Is string enclosed in delimitors?"
+
+	| str |
+	(string at: 1) isLetter ifTrue: [^nil].  "only special chars"
+	(string first = string last) ifTrue:
+			[^ self explainChar: (String with: string first)]
+		ifFalse:
+			[(string first = $( and: [string last = $)]) ifTrue:
+				[^ self explainChar: (String with: string first)].
+			(string first = $[ and: [string last = $]]) ifTrue:
+				[^ self explainChar: (String with: string first)].
+			(string first = $< and: [string last = $>]) ifTrue:
+				[^ self explainChar: (String with: string first)].
+			(string first = $# and: [string last = $)]) ifTrue:
+				[^'"An instance of class Array.  The Numbers, Characters, or Symbols between the parenthesis are the elements of the Array."'].
+			string first = $# ifTrue:
+				[^'"An instance of class Symbol."'].
+			(string first = $$ and: [string size = 2]) ifTrue:
+				[^'"An instance of class Character.  This one is the character ', (String with: string last), '."'].
+			(string first = $:) ifTrue:
+				[str _ (string copyFrom: 2 to: string size).
+				(self explainTemp: str) ~~ nil ifTrue:
+					[^'"An argument to this block will be bound to the temporary variable ',
+						str, '."']]].
+	^ nil!
+explainGlobal: symbol
+	"Is symbol a global variable?"
+
+	| each pool reply classes |
+	reply _ Smalltalk at: symbol ifAbsent: [^nil].
+	(reply isKindOf: Behavior)
+		ifTrue: [^'"is a global variable.  ' , symbol , ' is a class in category ', reply category,
+			'."', NewLine, 'Browser newOnClass: ' , symbol , '.'].
+	symbol == #Smalltalk ifTrue: [^'"is a global.  Smalltalk is the only instance of SystemDictionary and holds all global variables."'].
+	reply class == Dictionary
+		ifTrue:
+			[classes _ Set new.
+			Smalltalk allBehaviorsDo: [:each | (each sharedPools detect: [:pool | pool == reply]
+					ifNone: [])
+					~~ nil ifTrue: [classes add: each]].
+			classes _ classes printString.
+			^'"is a global variable.  ' , symbol , ' is a Dictionary.  It is a pool which is used by the following classes' , (classes copyFrom: 4 to: classes size) , '"'].
+	^'"is a global variable.  ' , symbol , ' is ' , reply printString , '"'!
+explainInst: string
+	"Is string an instance variable of this class?"
+
+	| name each classes |
+	class == nil ifTrue: [^nil].	  "no class is selected"
+	classes _ class withAllSuperclasses.
+	classes _ classes detect: [:each | (each instVarNames
+			detect: [:name | name = string] ifNone: [])
+			~~ nil] ifNone: [^nil].
+	classes _ classes printString.
+	^ '"is an instance variable of the receiver; defined in class ' , classes , '"',
+		NewLine , classes , ' browseAllAccessesTo: ''' , string , '''.'!
+explainMySel: symbol
+	"Is symbol the selector of this method?  Is it sent by this method?  If
+	not, then expalin will call (explainPartSel:) to see if it is a fragment of a
+	selector sent here.  If not, explain will call (explainAnySel:) to catch any
+	selector. "
+
+	| lits classes |
+	selector == nil ifTrue: [^nil].	"not in a message"
+	classes _ Smalltalk allClassesImplementing: symbol.
+	classes size > 12
+		ifTrue: [classes _ 'many classes']
+		ifFalse: [classes _ 'these classes ' , classes printString].
+	selector = symbol
+		ifTrue: [^ '"' , symbol , ' is the selector of this very method!!  It is defined in ',
+			classes , '.  To see the other definitions, go to the message list pane and use yellowbug to select ''implementors''."']
+		ifFalse:
+			[lits _ (class compiledMethodAt: selector) messages.
+			(lits detect: [:each | each == symbol]
+				ifNone: [])
+				== nil ifTrue: [^nil].
+			^ '"' , symbol , ' is a message selector which is defined in ', classes , '.  To see the definitions, go to the message list pane and use yellowbug to select ''messages''."'].!
+explainNumber: string
+	"Is string a Number?"
+
+	| strm c |
+	(c _ string at: 1) isDigit ifFalse: [(c = $- and: [string size > 1])
+			ifFalse: [^nil]].
+	strm _ ReadStream on: string.
+	c _ Number readFrom: strm.
+	strm atEnd ifFalse: [^nil].
+	c printString = string
+		ifTrue: [^'"' , string , ' is a ' , c class name , '"']
+		ifFalse: [^'"' , string , ' (= ' , c printString , ') is a ' , c class name , '"']!
+explainPartSel: string
+	"Is this a fragment of a multiple-argument selector sent in this method?"
+
+	| lits frag whole reply classes s |
+	selector == nil ifTrue: [^nil].  "not in a message"
+	string last == $: ifFalse: [^nil].
+	"Name of this method"
+	lits _ Array with: selector.
+	(whole _ lits detect: [:each | (each keywords detect: [:frag | frag = string]
+					ifNone: []) ~~ nil]
+				ifNone: []) ~~ nil
+		ifTrue: [reply _ ', which is the selector of this very method!!'.
+			s _ '.  To see the other definitions, go to the message list pane and use yellowbug to select ''implementors''."']
+		ifFalse:
+			["Selectors called from this method"
+			lits _ (class compiledMethodAt: selector) messages.
+			(whole _ lits detect: [:each | (each keywords detect: [:frag | frag = string]
+							ifNone: []) ~~ nil]
+						ifNone: []) ~~ nil
+				ifFalse: [string = 'primitive:'
+					ifTrue: [^self explainChar: '<']
+					ifFalse: [^nil]].
+			reply _ '.'.
+			s _ '.  To see the definitions, go to the message list pane and use yellowbug to select ''messages''."'].
+	classes _ Smalltalk allClassesImplementing: whole.
+	classes size > 12
+		ifTrue: [classes _ 'many classes']
+		ifFalse: [classes _ 'these classes ' , classes printString].
+	^ '"' , string , ' is one part of the message selector ' , whole, reply , '  It is defined in ' , classes , s!
+explainScan: string
+	"remove beginning and trailing space, tab, cr"
+
+	| c beg end |
+	beg _ 1.
+	end _ string size.
+
+	[beg = end ifTrue: [^string copyFrom: 1 to: 1].
+	"if all blank, tell about the first"
+	c _ string at: beg.
+	c = Character space or: [c = Character tab or: [c = Character cr]]]
+		whileTrue: [beg _ beg + 1].
+
+	[c _ string at: end.
+	c = Character space or: [c = Character tab or: [c = Character cr]]]
+		whileTrue: [end _ end - 1].
+	^string copyFrom: beg to: end	"Return purely visible characters"!
+explainTemp: string
+	"Is string the name of a temporary variable (or block argument variable)?"
+
+	| tempNames i reply methodNode method |
+	selector == nil ifTrue: [^nil].	"no message is selected"
+	tempNames _ class parserClass new parseArgsAndTemps: methodText notifying: nil.
+	method _ class compiledMethodAt: selector.
+	(i _ tempNames findFirst: [:each | each = string]) = 0 ifTrue: [
+		(method numTemps > tempNames size and: [Smalltalk frills])
+			ifTrue:
+				["It must be an undeclared block argument temporary"
+				methodNode _ class compilerClass new
+							parse: methodText
+							in: class
+							notifying: nil.
+				tempNames _ methodNode tempNames]
+			ifFalse: [^nil]].
+	(i _ tempNames findFirst: [:each | each = string]) > 0 ifTrue: [i > method numArgs
+			ifTrue: [reply _ '"is a temporary variable in this method"']
+			ifFalse: [reply _ '"is an argument to this method"']].
+	^reply!

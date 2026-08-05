@@ -1,0 +1,44 @@
+Object subclass: #KeyboardEvent
+  instanceVariableNames: 'keyCharacter metaState'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'System-Support'!
+KeyboardEvent class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+KeyboardEvent comment:
+'I represent a keyboard event consisting of a non-meta key being struck plus the state of the meta keys at that moment.  Only InputState creates instances of me.
+
+Instance Variables:
+		keyCharacter "<Integer> non-meta key character"
+		metaState "<Integer> combined state of meta keys"'!
+"-----------------------------------"!
+!KeyboardEvent class methodsFor: 'instance creation'!
+code: code meta: meta
+	"Answer an instance of me, with code the regular key and meta the special
+	keys--ctrl, shift, lock."
+	^self new key: code meta: meta!
+"-----------------------------------"!
+!KeyboardEvent methodsFor: 'accessing'!
+keyCharacter
+	"Answer the keyboard character of the receiver."
+	^keyCharacter!
+metaState
+	"Answer the state of the special keyboard characters--control, shift, lock."
+	^metaState!
+"-----------------------------------"!
+!KeyboardEvent methodsFor: 'private'!
+key: anInteger meta: meta
+	keyCharacter _ anInteger asCharacter.
+	metaState _ meta!
+"-----------------------------------"!
+!KeyboardEvent methodsFor: 'testing'!
+hasCtrl
+	"Answer whether a control key was pressed."
+	^metaState anyMask: 2!
+hasLock
+	"Answer whether the shift key is locked."
+	^metaState anyMask: 4!
+hasShift
+	"Answer whether a shift key was pressed."
+	^metaState anyMask: 1!

@@ -1,0 +1,10 @@
+WordArray variableWordSubclass: #DisplayBitmap
+  instanceVariableNames: ''
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Graphics-Support'!
+DisplayBitmap class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+DisplayBitmap comment:
+'This subclass of Bitmap is used to indicate the particular bitmap which is being displayed, so that various implementations can treat it specially'!

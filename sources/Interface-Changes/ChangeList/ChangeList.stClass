@@ -1,0 +1,381 @@
+StringHolder subclass: #ChangeList
+  instanceVariableNames: 'listName changes selectionIndex list filter removed filterList filterKey changeDict doItDict checkSystem fieldList'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Interface-Changes'!
+ChangeList class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+ChangeList comment:
+'I know how to scan a changes file and produce Change objects from it.  I also function as a model for a ListView.
+
+Instance variables:
+	listName <String> "label for browser, the set of files that I have read"
+	changes <OrderedCollection of: Change> "my underlying collection of changes"
+	selectionIndex <Integer> "currently selected change, or 0 if none"
+	currentChange <String> "text of current selection"
+	list <OrderedCollection of: Change> "filtered collection of changes"
+	filter <BlockContext> "filter predicate"
+	removed <Set> "removed changes"
+	filterList <Array of: Symbol> "individual filters, or nil"
+	filterKey <Change> "the change supplying the key value(s) for the filter(s)"
+	changeDict <Dictionary from: Symbol to: (OrderedCollection of: Change)> "cross-index for conflict detection"
+	doItDict <Dictionary from: String to: (OrderedCollection of: Change)> "cross-index for conflict detection"
+	fieldList <Array of: Symbol> "individual field options, or nil"'!
+"-----------------------------------"!
+!ChangeList methodsFor: 'accessing'!
+contents: newText notifying: requestor
+	| oldChange newChange |
+	selectionIndex = 0 ifTrue: [^false].
+	oldChange _ list at: selectionIndex.
+	newChange _ oldChange accept: newText notifying: requestor.
+	newChange isNil ifTrue: [^false].
+	list at: selectionIndex put: newChange.
+	changes at: (changes indexOf: oldChange) put: newChange.
+	self contents: newText.
+	self changed: #list!
+filterCopy
+	^self class new listName: '(', self listName, ')' changes: list removed: (list select: [:c | removed includes: c])!
+hasRemoved: index
+	^index > 0 and: [index <= list size and: [removed includes: (list at: index)]]!
+list
+	| name |
+	^list collect:
+		[:c |
+		name _ nil.
+		fieldList do:
+			[:f |
+			f == nil ifFalse:
+				[f _ c perform: f.
+				f == nil ifFalse:
+					[name == nil ifTrue: [name _ WriteStream on: (String new: 50)].
+					name nextPut: $(; nextPutAll: f; nextPutAll: ') ']]].
+		name == nil ifTrue: [c name] ifFalse: [name nextPutAll: c name.  name contents]]!
+listName
+	listName size = 0
+		ifTrue: [^'Changes']
+		ifFalse: [^listName]!
+listSize
+	^list size!
+"-----------------------------------"!
+!ChangeList methodsFor: 'checking'!
+checkWith: aConflictChecker
+	list do:
+		[:change |
+		(removed includes: change) ifFalse:
+			[change checkWith: aConflictChecker]]!
+checkWithSystem: aBoolean
+	changeDict _ Dictionary new.
+	doItDict _ Dictionary new.
+	checkSystem _ aBoolean.
+	list do: [:change |
+		(removed includes: change) ifFalse: [change checkWith: self]]!
+"-----------------------------------"!
+!ChangeList methodsFor: 'checking-Change'!
+addDoIt: aChange
+	| fileName |
+	fileName _ aChange fileName.
+	(doItDict at: fileName ifAbsent: [doItDict at: fileName put: OrderedCollection new])
+		add: aChange!
+changesAt: changeName
+	^changeDict at: changeName ifAbsent: [#()]!
+changesAt: changeName add: aChange
+	(changeDict at: changeName ifAbsent: [changeDict at: changeName put: OrderedCollection new])
+		add: aChange!
+checkSystem
+	^checkSystem!
+equalWithoutComments: text1 and: text2
+	| stream1 stream2 t |
+	stream1 _ ReadStream on: text1.
+	stream2 _ ReadStream on: text2.
+	[(t _ self nextNonComment: stream1) = (self nextNonComment: stream2)]
+		whileTrue:
+			[t == nil ifTrue: [^true]].
+	^false!
+"-----------------------------------"!
+!ChangeList methodsFor: 'checking-private'!
+finishReportOn: aStream
+	"report conflicts among the changes"
+	| cr previous terminator |
+	cr _ Character cr.
+	terminator _ $!!.
+	doItDict associationsDo:
+		[:aDoIt |
+		aStream cr; nextChunkPut: '"*** DoIts in ', aDoIt key, ' ***"'; cr; cr.
+		aDoIt value do:
+			[:doit | self tabText: doit text on: aStream] ].
+
+	aStream isEmpty ifTrue:
+		[Transcript show: '*** no conflicts ***'.
+		aStream nextChunkPut: '"*** no conflicts ***"'; cr].
+	^aStream close!
+nextNonComment: sourceStream
+	"Return the next item from the sourceStream (assumed not atEnd),
+	carefully ignoring comments and separators."
+
+	| char sepr |
+	sepr _ false.
+	[true]
+		whileTrue:
+			[sourceStream atEnd ifTrue: [^nil].
+			char _ sourceStream peek.
+			char = $$ ifTrue: [sourceStream next.  ^sourceStream next].	"catch chars/strings"
+			char = $' ifTrue: [^String readFrom: sourceStream].
+			char = $"
+				ifTrue: [sourceStream next; skipTo: $".  sepr _ true]
+				ifFalse:
+					[char isSeparator
+						ifTrue: [sourceStream skipSeparators.  sepr _ true]
+						ifFalse: [sepr ifTrue: [^Character space].
+								sourceStream next.
+								^char]]]!
+reportChangesOn: reportStream extension: extension
+	"report conflicts among the changes"
+	| aStream contendors oldText |
+	aStream _ reportStream.
+	changeDict keys asSortedCollection do: [:change |
+		contendors _ changeDict at: change.
+		contendors size > 1 ifTrue:
+			[extension == nil ifFalse:
+				[aStream _ Disk file: ((change copyUpTo: $ ) copyWithout: $ ), extension.
+				aStream setToEnd].
+			aStream cr; nextChunkPut: '"*** conflict: ', change, ' ***"'; cr.
+			oldText _ '...'.
+			contendors do: [:contendor | oldText _ self writeContendor: contendor on: aStream oldText: oldText].
+			extension == nil ifFalse: [aStream close]] ].!
+tabText: text on: aStream
+	"report conflicts among the changes"
+	| cr previous terminator |
+	cr _ Character cr.
+	terminator _ $!!.
+	previous _ cr.
+	text do:
+		[:char |
+		char = cr ifFalse: [previous = cr ifTrue: [aStream tab]].
+		aStream nextPut: (previous _ char).
+		char = terminator ifTrue: [aStream nextPut: char]].
+	aStream nextPut: terminator; cr!
+writeContendor: source on: aStream oldText: oldText
+	"write out the change"
+
+	| text method endComment code |
+	aStream cr; nextChunkPut: '"File: ', source fileName, '"'; cr.
+	text _ source text.
+	(source isKindOf: MethodDefinitionChange) ifFalse:
+		[self tabText: text on: aStream.
+		^oldText].
+	method _ ReadStream on: text.
+	method skipSeparators; skipTo: Character cr; skipSeparators. 	"skip header"
+	(method peekFor: $")
+		ifTrue:
+			[method skipTo: $"; skipSeparators].
+	endComment _ method position.
+	code _ method nextChunk.
+	(self equalWithoutComments: code and: oldText)
+		ifTrue:
+			[method reset.
+			aStream cr; nextPutAll: (method next: endComment);
+					nextPutAll: '[SAME CODE AS ABOVE]'; cr]
+		ifFalse:
+			[aStream cr; nextChunkPut: text; cr].
+	^code!
+"-----------------------------------"!
+!ChangeList methodsFor: 'checking-reporting'!
+reportConflictsByClassWithExtension: extension
+	"report conflicts among the changes"
+	self reportChangesOn: nil extension: extension.
+	^self finishReportOn: (Disk file: 'DoIts', extension)!
+reportConflictsOn: aStream
+	"report conflicts among the changes"
+	self reportChangesOn: aStream extension: nil.
+	^self finishReportOn: aStream!
+"-----------------------------------"!
+!ChangeList methodsFor: 'fileIn/Out'!
+doThis
+	selectionIndex > 0 ifTrue: [(list at: selectionIndex) fileIn]!
+doThis: listIndex
+	(list at: listIndex) fileIn!
+fileOutOn: aFile
+	| previous current |
+	list do:
+		[:next |
+		(removed includes: next) ifFalse:
+			[current == nil
+				ifFalse: [current fileOutOn: aFile previous: previous next: next].
+			previous _ current.
+			current _ next]].
+	current == nil ifFalse:
+		[current fileOutOn: aFile previous: previous next: nil]!
+"-----------------------------------"!
+!ChangeList methodsFor: 'filter'!
+hasFilter: index
+	^index <= filterList size and: [(filterList at: index) notNil]!
+switchFilter: index perform: aSymbol
+	index > filterList size
+		ifTrue:
+			[filterList _ filterList , (Array new: index - filterList size)].
+	(filterList at: index) isNil
+		ifTrue:
+			[selectionIndex > 0 ifTrue:
+				[filterKey _ list at: selectionIndex.
+				filterList at: index put: aSymbol]]
+		ifFalse:
+			[filterList at: index put: nil].
+	self updateList!
+"-----------------------------------"!
+!ChangeList methodsFor: 'initialize-release'!
+addChangeSet: aChangeSet
+	self addChanges: aChangeSet changedMessageList!
+addChanges: changedMessages
+	ChangeScanner new scanChangedMessages: changedMessages do: [:change | changes add: change].
+	self updateList!
+initialize
+	super initialize.
+	listName _ ''.
+	changes _ OrderedCollection new.
+	list _ OrderedCollection new.
+	selectionIndex _ 0.
+	filter _ [:change | true].
+	removed _ Set new.
+	filterList _ #().
+	fieldList _ #()!
+recoverFile: aFileStream
+	"Recover all the changes from a .changes file since the last snapshot"
+	| position |
+	position _ self findLast: '
+
+''----SNAPSHOT----''!!
+' in: aFileStream.
+	position isNil
+		ifTrue: [position _ 0].
+	aFileStream position: position.
+	self scanFile: aFileStream!
+release
+	"break BlockContext cycles"
+	filter _ nil.
+	filterList _ #()!
+scanFile: aFileStream
+	ChangeScanner new scanFile: aFileStream do: [:change | changes add: change].
+	listName size = 0
+		ifTrue: [listName _ aFileStream name]
+		ifFalse: [listName _ listName, ' ..'].
+	self updateList!
+scheduleMessageBrowser
+	| change |
+	selectionIndex > 0 ifTrue:
+		[change _ list at: selectionIndex.
+		(change isKindOf: MethodDefinitionChange) ifTrue:
+			[^BrowserView openListBrowserOn: (Array with: change name) label: 'current definition']].
+	^nil!
+"-----------------------------------"!
+!ChangeList methodsFor: 'lock access'!
+isUnlocked
+	^true!
+lock
+	"ignore"!
+unlock
+	"ignore"!
+"-----------------------------------"!
+!ChangeList methodsFor: 'private'!
+addFilter: aSymbol
+	| value oldFilter |
+	value _ filterKey perform: aSymbol.
+	filter isNil
+		ifTrue: [filter _ [:change | (change perform: aSymbol) = value]]
+		ifFalse:
+			[oldFilter _ filter.
+			filter _ [:change | (oldFilter value: change) and: [(change perform: aSymbol) = value]]]!
+findLast: aString in: aStream
+	"Return the position in the stream of the end of the last occurrence of aString (presumably a snapshot message)"
+	| firstChar endPosition position count index lastEnd |
+	firstChar _ aString first.
+	aStream setToEnd.
+	position _ aStream position.
+	[endPosition _ position.
+	lastEnd == nil and: [(position _ endPosition - 5000 max: 0) < endPosition]]
+		whileTrue:
+			[aStream position: position.
+			count _ endPosition - position.
+			[count > 0]
+				whileTrue:
+					[count _ count - 1.
+					aStream next = firstChar
+						ifTrue:
+							[index _ 2.
+							[index <= aString size and: [(aString at: index) = aStream next]]
+								whileTrue: [index _ index + 1].
+							index > aString size
+								ifTrue: [lastEnd _ aStream position]
+								ifFalse: [aStream position: endPosition - count]]]].
+	^lastEnd!
+listName: aString changes: aChangeCollection removed: aSet
+	listName _ aString.
+	changes addAll: aChangeCollection.
+	list addAll: aChangeCollection.
+	removed addAll: aSet!
+updateList
+	| oldChange newIndex |
+	selectionIndex > 0 ifTrue: [oldChange _ list at: selectionIndex].
+	filter _ nil.
+	filterList do: [:aSymbol | aSymbol notNil ifTrue: [self addFilter: aSymbol]].
+	filter isNil ifTrue: [filter _ [:change | true]].
+	list _ changes select: [:change | filter value: change].
+	newIndex _
+		oldChange == nil
+			ifTrue: [0]
+			ifFalse: [list indexOf: oldChange].
+	self updateSelection: newIndex!
+updateSelection: newIndex
+	self deselect.
+	self changed: #list.
+	newIndex > 0 ifTrue:
+		[self toggleListIndex: newIndex]!
+"-----------------------------------"!
+!ChangeList methodsFor: 'removing'!
+forget
+	changes _ changes select: [:c | (removed includes: c) not].
+	removed _ Set new.
+	self updateList!
+removeAll
+	removed addAll: list!
+removeCurrent
+	selectionIndex > 0 ifTrue:
+		[removed add: (list at: selectionIndex)]!
+restoreAll
+	list do: [:change | removed remove: change ifAbsent: []]!
+restoreCurrent
+	selectionIndex > 0 ifTrue:
+		[removed remove: (list at: selectionIndex) ifAbsent: []]!
+"-----------------------------------"!
+!ChangeList methodsFor: 'selecting'!
+contents: aString
+	"ignore"!
+deselect
+	selectionIndex _ 0.
+	contents _ ''!
+listIndex
+	^selectionIndex!
+selection
+	selectionIndex > 0 ifTrue: [^(list at: selectionIndex) text]!
+toggleListIndex: anInteger
+	selectionIndex = anInteger
+		ifTrue:
+			[self deselect]
+		ifFalse:
+			[selectionIndex _ anInteger.
+			contents _ self selection].
+	self changed: #listIndex!
+"-----------------------------------"!
+!ChangeList methodsFor: 'showing'!
+showingField: index
+	^index <= fieldList size and: [(fieldList at: index) notNil]!
+switchField: index perform: aSymbol
+	index > fieldList size
+		ifTrue:
+			[fieldList _ fieldList , (Array new: index - fieldList size)].
+	(fieldList at: index) isNil
+		ifTrue:
+			[fieldList at: index put: aSymbol]
+		ifFalse:
+			[fieldList at: index put: nil].
+	self updateSelection: selectionIndex!

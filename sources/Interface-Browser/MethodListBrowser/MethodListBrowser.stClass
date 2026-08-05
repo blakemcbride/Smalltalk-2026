@@ -1,0 +1,47 @@
+Browser subclass: #MethodListBrowser
+  instanceVariableNames: 'methodList methodName'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Interface-Browser'!
+MethodListBrowser class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+MethodListBrowser comment:
+'I represent a list of methods to be browsed.'!
+"-----------------------------------"!
+!MethodListBrowser methodsFor: 'doIt/accept/explain'!
+acceptText: aText from: aController
+	textMode == #unclassified ifTrue:
+		[self notify: 'A method must be selected to suggest class and protocol'.
+		^ false].
+	^ super acceptText: aText from: aController!
+"-----------------------------------"!
+!MethodListBrowser methodsFor: 'initialization'!
+on: aList
+	methodList _ aList!
+"-----------------------------------"!
+!MethodListBrowser methodsFor: 'method functions'!
+removeMethod
+	(super removeMethod) ifTrue:
+		[methodList _ methodList copyWithout: methodName.
+		self changed: #methodName]!
+"-----------------------------------"!
+!MethodListBrowser methodsFor: 'method list'!
+methodList
+	^ methodList!
+methodMenu
+	selector == nil ifTrue: [^ nil].
+	^ super selectorMenu!
+methodName
+	^ methodName!
+methodName: selection
+	| aStream aSymbol |
+	methodName _ selection.
+	selection == nil ifTrue: [selector _ nil. ^ self textMode: #unclassified].
+	aStream _ ReadStream on: selection.
+	className _ (aStream upTo: $ ) asSymbol.
+	aSymbol _ (aStream upTo: $ ) asSymbol.
+	(meta _ (aSymbol == #class) & aStream atEnd not) ifTrue:
+		[aSymbol _ (aStream upTo: $ ) asSymbol].
+	protocol _ self selectedClass organization categoryOfElement: aSymbol.
+	self selector: aSymbol!

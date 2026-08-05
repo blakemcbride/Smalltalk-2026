@@ -1,0 +1,77 @@
+Rectangle subclass: #CharacterBlock
+  instanceVariableNames: 'stringIndex character'
+  classVariableNames: ''
+  poolDictionaries: 'TextConstants'
+  category: 'Graphics-Support'!
+CharacterBlock class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+CharacterBlock comment:
+'CharacterBlocks contain information about displayed characters.  They are used to return the results of methods
+	Paragraph characterBlockAtPoint: aPoint and
+	Paragraph characterBlockForIndex: stringIndex.
+Any recomposition or movement of a Paragraph can make the information obsolete.'!
+"-----------------------------------"!
+!CharacterBlock class methodsFor: 'instance creation'!
+stringIndex: anInteger character: aCharacter boundingRectangle: aRectangle
+	"Answer an instance of me with values set to the arguments."
+	^self new
+		newStringIndex: anInteger
+		Character: aCharacter
+		BoundingRectangle: aRectangle!
+stringIndex: anInteger character: aCharacter topLeft: originPoint extent: extentPoint
+	"Answer an instance of me with values set to the arguments."
+	^self new
+		newStringIndex: anInteger
+		Character: aCharacter
+		TopLeft: originPoint
+		Extent: extentPoint!
+"-----------------------------------"!
+!CharacterBlock methodsFor: 'accessing'!
+character
+	"Answer the character in the receiver."
+	^character!
+stringIndex
+	"Answer the position of the receiver in the string it indexes."
+	^stringIndex!
+"-----------------------------------"!
+!CharacterBlock methodsFor: 'comparing'!
+< aCharacterBlock
+	"Answer whether the string index of the receiver precedes that of aCharacterBlock."
+	^stringIndex < aCharacterBlock stringIndex!
+<= aCharacterBlock
+	"Answer whether the string index of the receiver does not come after that of
+	aCharacterBlock."
+	^(self > aCharacterBlock) not!
+= aCharacterBlock
+	self species = aCharacterBlock species
+		ifTrue: [^stringIndex = aCharacterBlock stringIndex]
+		ifFalse: [^false]!
+> aCharacterBlock
+	"Answer whether the string index of the receiver comes after that of
+	aCharacterBlock."
+	^aCharacterBlock < self!
+>= aCharacterBlock
+	"Answer whether the string index of the receiver does not precede that of
+	aCharacterBlock."
+	^(self < aCharacterBlock) not!
+"-----------------------------------"!
+!CharacterBlock methodsFor: 'copying'!
+copy
+	^self deepCopy!
+"-----------------------------------"!
+!CharacterBlock methodsFor: 'printing'!
+printOn: aStream
+	aStream nextPutAll: 'a CharacterBlock with index '.
+	stringIndex printOn: aStream.
+	aStream nextPutAll: ' and character '.
+	character printOn: aStream.
+	aStream nextPutAll: ' and rectangle '.
+	super printOn: aStream!
+"-----------------------------------"!
+!CharacterBlock methodsFor: 'private'!
+newStringIndex: anInteger Character: aCharacter TopLeft: originPoint Extent: extentPoint
+	stringIndex _ anInteger.
+	character _ aCharacter.
+	super origin: originPoint.
+	super extent: extentPoint!

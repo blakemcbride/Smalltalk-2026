@@ -1,0 +1,95 @@
+ScrollController subclass: #ListController
+  instanceVariableNames: ''
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Interface-Lists'!
+ListController class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+ListController comment:
+'I am a kind of ScrollController that assumes that the view is a kind of ListView.  Therefore, scrolling means moving the items in a textual list (menu) up or down. In addition, I provide the red button activity of determining when the red button is selecting an item in the list.'!
+"-----------------------------------"!
+!ListController methodsFor: 'control defaults'!
+isControlActive
+	^super isControlActive & sensor blueButtonPressed not!
+"-----------------------------------"!
+!ListController methodsFor: 'marker adjustment'!
+computeMarkerRegion
+	| viewList |
+	viewList _ view list.
+	^ 0@0 extent: 10@
+			((viewList clippingRectangle height asFloat /
+						viewList compositionRectangle height *
+							scrollBar inside height)
+					rounded min: scrollBar inside height)!
+markerDelta
+	| viewList |
+	viewList _ view list.
+	^(marker top - scrollBar inside top) -
+		((viewList clippingRectangle top -
+				viewList compositionRectangle top) asFloat /
+			viewList compositionRectangle height asFloat *
+			scrollBar inside height asFloat) rounded!
+"-----------------------------------"!
+!ListController methodsFor: 'menu messages'!
+redButtonActivity
+	| noSelectionMovement oldSelection trialSelection nextSelection |
+	noSelectionMovement _ true.
+	oldSelection _ view selection.
+	[sensor redButtonPressed]
+		whileTrue:
+			[trialSelection _ view findSelection: sensor cursorPoint.
+			trialSelection ~~ nil
+				ifTrue:
+					[nextSelection _ trialSelection.
+					view moveSelectionBox: nextSelection.
+					nextSelection ~= oldSelection ifTrue: [noSelectionMovement _ false]]].
+	nextSelection ~~ nil & (nextSelection = oldSelection
+			ifTrue: [noSelectionMovement]
+			ifFalse: [true]) ifTrue: [self changeModelSelection: nextSelection]!
+"-----------------------------------"!
+!ListController methodsFor: 'private'!
+changeModelSelection: anInteger
+	model toggleListIndex: anInteger!
+"-----------------------------------"!
+!ListController methodsFor: 'scrolling'!
+canScroll
+	| viewList |
+	viewList _ view list.
+	^viewList compositionRectangle height - viewList clippingRectangle height
+		> (viewList lineGrid // 2)!
+scrollAmount
+	^sensor cursorPoint y - scrollBar inside top!
+scrollView: anInteger
+	| viewList maximumAmount minimumAmount amount |
+	viewList _ view list.
+	maximumAmount _
+		viewList clippingRectangle top -
+		viewList compositionRectangle top max: 0.
+	minimumAmount _
+		viewList clippingRectangle bottom -
+		viewList compositionRectangle bottom min: 0.
+	amount _
+		(anInteger min: maximumAmount) max:
+		minimumAmount.
+	amount ~= 0
+		ifTrue:
+			[view deselect.
+			viewList scrollBy: amount negated.
+			view isSelectionBoxClipped
+				"ifTrue: [ self changeModelSelection: 0]  compile this code to deselect
+					when the selection is scrolled outside of the visible region"
+				ifFalse: [ view displaySelectionBox ]]!
+scrollViewDown
+	self scrollView: self scrollAmount.!
+scrollViewUp
+	self scrollView: (self scrollAmount) negated.!
+viewDelta
+	| viewList |
+	viewList _ view list.
+	^(viewList clippingRectangle top -
+			viewList compositionRectangle top -
+			((marker top - scrollBar inside top) asFloat /
+				scrollBar inside height asFloat *
+				viewList compositionRectangle height asFloat))
+		roundTo: viewList lineGrid!

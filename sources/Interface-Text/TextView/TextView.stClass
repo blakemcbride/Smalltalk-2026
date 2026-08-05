@@ -1,0 +1,118 @@
+View subclass: #TextView
+  instanceVariableNames: 'partMsg acceptMsg menuMsg'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Interface-Text'!
+TextView class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+TextView comment:
+'TextView is a "pluggable" view of text.  The notion of pluggable views is an
+experiment in user interface design.  The idea is to provide a view which can be plugged
+onto any object, rather than having to define a new subclass specific to every kind of
+object which needs to be viewed.
+
+The chief mechanism is a set of selectors, which can be thought of as an adaptor to
+convert the generic textView operations (such as yellowButtonMenu) into model-specific
+operations (such as textMenu).
+
+See the protocol ''adaptor'' for use of the pluggable selectors.
+See the creation messages in my class for an explication of the various parameters.
+Browse senders of the creation messages in my class for examples in the system.'!
+"-----------------------------------"!
+!TextView class methodsFor: 'instance creation'!
+on: anObject aspect: aspectMsg change: changeMsg menu: menuMsg
+	"Create a 'pluggable' (see class comment) textView viewing anObject.
+	aspectMsg is sent to read the current text value in the model.
+		It is also used as the changed: parameter for this view.
+	changeMsg is sent to inform anObject of new text for the model.
+	menuMsg is sent to read the yellowButton menu for this view."
+
+	^ self new on: anObject aspect: aspectMsg change: changeMsg menu: menuMsg!
+"-----------------------------------"!
+!TextView methodsFor: 'adaptor'!
+accept: aText from: aController
+	acceptMsg == nil ifTrue: [self flash. ^ false].
+	^ acceptMsg numArgs = 1
+		ifTrue:  "one arg selectors get text only"
+			[model perform: acceptMsg with: aText]
+		ifFalse:  "two arg selectors get text and controller as well"
+			[model perform: acceptMsg with: aText with: aController]!
+getText
+	| text |
+	partMsg == nil ifTrue: [^ Text new].
+	text _ model perform: partMsg.
+	text == nil ifTrue: [^ Text new].
+	^ text!
+yellowButtonMenu
+	menuMsg == nil ifTrue: [^ nil].
+	^ model perform: menuMsg!
+"-----------------------------------"!
+!TextView methodsFor: 'controller access'!
+defaultControllerClass
+	^ TextController!
+"-----------------------------------"!
+!TextView methodsFor: 'deEmphasizing'!
+deEmphasizeView
+	self controller deselect!
+"-----------------------------------"!
+!TextView methodsFor: 'displaying'!
+display
+	self isUnlocked
+		ifTrue:
+			[self controller
+				wrappingBox: (self insetDisplayBox insetBy: 6 @ 0)
+				clippingBox: self insetDisplayBox.
+			"ugly initialization hack: "
+			(controller text isEmpty and: [controller textHasChanged not])
+				ifTrue: [self newText: self getText]].
+	super display!
+displayView
+	self clearInside.
+	self controller display!
+"-----------------------------------"!
+!TextView methodsFor: 'emphasizing'!
+emphasizeView
+	self controller select!
+"-----------------------------------"!
+!TextView methodsFor: 'initialize-release'!
+initialize
+	super initialize.
+	self insideColor: Form white!
+newText: aText
+	aText == nil ifTrue: [^ self newText: Text new].
+	self controller paragraph text: aText.
+	self controller scrollToTop; resetState!
+"-----------------------------------"!
+!TextView methodsFor: 'private'!
+on: anObject aspect: m1 change: m3 menu: m4
+	self model: anObject.
+	partMsg _ m1.
+	acceptMsg _ m3.
+	menuMsg _ m4.
+	self initialize!
+"-----------------------------------"!
+!TextView methodsFor: 'updating'!
+update: aSymbol
+	| text |
+	aSymbol == partMsg
+		ifTrue:
+			[text _ self getText.
+			self controller text ~= text
+				ifTrue:
+					[self newText: text.
+					self displayView]]!
+updateRequest
+	| cancel |
+	self controller textHasChanged ifFalse: [^true].
+	self superView isCollapsed
+		ifFalse:
+			[Display reverse: insetDisplayBox mask: Form gray.
+	Display reverse: (insetDisplayBox insetBy: 4) mask: Form gray].
+	cancel _ self confirm: 'The text showing has been altered.
+Do you wish to discard those changes?'.
+	self superView isCollapsed
+		ifFalse:
+			[Display reverse: insetDisplayBox mask: Form gray.
+	Display reverse: (insetDisplayBox insetBy: 4) mask: Form gray].
+	^ cancel!

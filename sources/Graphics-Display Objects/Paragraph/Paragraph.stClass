@@ -1,0 +1,1007 @@
+DisplayText subclass: #Paragraph
+  instanceVariableNames: 'clippingRectangle compositionRectangle destinationForm rule mask marginTabsLevel firstIndent restIndent rightIndent lines lastLine outputMedium'
+  classVariableNames: 'DefaultCompositionRectangle'
+  poolDictionaries: 'TextConstants'
+  category: 'Graphics-Display Objects'!
+Paragraph class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+Paragraph comment:
+'The font and emphasis changes for text is fundamentally more complex than such graphical entities as a bar chart or pie chart.  Hence many of the methods associated with Paragraph tend to be, stylistically, longer and more complex than those in most other system classes.
+
+Instance Variables:
+
+	clippingRectangle
+<Rectangle>  A Rectangle in CurrentDisplay coordinates. Its intersection with the compositionRectangle in turn intersected with the destinationForm is the area in which characters are constrained to display.
+
+	compositionRectangle
+<Rectangle>  Its offset serves as a relative offset similar to the offset field in Form.  The width of the compositionRectangle is the dimension, modified by indents and tabsLevels, against which line wraparound is measured.  The height of the compositionRectangle is reset each time recomposition is required.  This happens when the stylizedString is initially composed and whenever a replacement (copyReplaceFrom:to:with:) occurs.
+
+	destinationForm
+<Form>  The Form into which the characters are scanned.  Typically CurrentDisplay.
+	rule
+<Integer>  The rule according to which character display behaves. For example, rule may equal over, under, reverse, etc.
+
+	mask
+<Form>  The form with which each character is combined by the scanner before applying the rule for display.
+
+	marginTabsLevel
+<Integer>  The margin tabs give the left and right indent values for a specified marginTabsLevel.  The marginTabsLevel is sometimes referred to as the nesting level and is an index into the marginTabsArray of the stringStyle.
+
+	firstIndent
+<Integer>  Amount to inset from the left margin for the first line of a paragraph. Initialized to value in the textStyle.
+
+	restIndent
+<Integer>  Amount to inset from the left margin for all but the first line of a paragraph. Initialized to value in the textStyle.
+
+	rightIndent
+<Integer>  Amount to inset from the right margin for all the lines of the paragraph. Initialized to value in the textStyle.
+
+	lines
+<Array>  This array is built during composition and modified when the stylizedString is modified (copyReplaceFrom:to:with:).  Each of its fields from 1 to lastLine contains a TextLineInterval which in turn contains the starting index and stopping index of a given line as well as its internal spaces and padding width, the latter two being used to support the management of padded spaces, tabs and changing margin alignments.
+
+	lastLine
+<Integer>  The index of the last validly composed line in the lines array.
+
+	outputMedium
+<Symbol>   Either #Display, #PressPrinter or #DisplayPrinterWidths as of 1/20/80.  Needed by CompositionScanner for determining the nature of the font to be used for character widths.  For the DisplayScanner there are several places where distinguishing between displaying and printing is required.  Also used for some margin and grid computations.'!
+"-----------------------------------"!
+!Paragraph class methodsFor: 'examples'!
+example
+	"This simple example illustrates how to display a few lines of text on the screen at
+	the current cursor point."
+
+	| para point |
+	point _ Sensor waitButton.
+	para _ 'this is the first line of characters
+and this is the second line comprising this TextForm.' asParagraph.
+	para displayOn: Display at: point.
+	para
+		displayOn: Display at: point + (0 @ para height)
+		clippingBox: Display boundingBox
+		rule: Form over
+		mask: Form gray
+
+	"Paragraph example."!
+"-----------------------------------"!
+!Paragraph class methodsFor: 'instance creation'!
+initialize	"Paragraph initialize."
+
+	DefaultCompositionRectangle _ 0@0 corner: 10000@10000.!
+new
+	"Do not allow an uninitialized view.  Create with text that has no characters."
+
+	^self withText: '' asText!
+withText: aText
+	"Answer an instance of me with text set to aText and style set to
+	the system's default text style."
+
+	^self withText: aText style: DefaultTextStyle copy!
+withText: aText style: aTextStyle
+	"Answer an instance of me with text set to aText and style set to aTextStyle."
+	^super new
+		compositionRectangle: DefaultCompositionRectangle
+		text:	aText
+		style: aTextStyle
+		offset: (0@0)
+		outputMedium: #Display
+		fitWidth: true!
+withText: aText style: aTextStyle compositionRectangle: compRect clippingRectangle: clipRect
+	| para |
+
+	para _ super new
+		compositionRectangle: compRect
+		text: aText
+		style: aTextStyle
+		offset: (0@0)
+		outputMedium: #Display
+		fitWidth: false.
+	para clippingRectangle: clipRect.
+	^para!
+"-----------------------------------"!
+!Paragraph methodsFor: 'accessing'!
+baseline
+	"Answer the baseline of my TextStyle."
+	^textStyle baseline!
+clippingRectangle
+	"Answer the rectangle, defined in absolute coordinates, whose intersection with the
+	destinationForm is the area in which the characters are constrained to display."
+	^clippingRectangle!
+clippingRectangle: aRectangle
+	"Set the rectangle, defined in absolute coordinates, whose intersection with the
+	destinationForm is the area in which the characters are constrained to display."
+	clippingRectangle _ aRectangle.!
+compositionRectangle
+	"Answer the rectangle whose width is the dimension, modified by
+	indents and tabsLevels, against which line wraparound is measured. The
+	height of the compositionRectangle is reset each time recomposition is
+	required."
+
+	^compositionRectangle!
+compositionRectangle: compRectangle
+	"Set the rectangle whose width is the dimension, modified by
+	indents and tabsLevels, against which line wraparound is measured."
+
+	compositionRectangle _ compRectangle.
+	self composeAll!
+destinationForm
+	 "Answer the Form into which the characters are scanned."
+	^destinationForm!
+destinationForm: aFormOrRectangle
+	 "Set the Form or Rectangle into which the characters are scanned.  The destinationFrom is a Form when the outputMedium is #Display or #DisplayPrinterWidths, a Rectangle when the outputMedium is a #PressPrinter."
+	destinationForm _ aFormOrRectangle.!
+form
+	^form!
+height
+	"Answer the height of the composition rectangle."
+	^compositionRectangle height!
+lineGrid
+	"Answer the lineGrid of my TextStyle."
+	^textStyle lineGrid!
+mask
+	"Answer the form with which each character is combined by the scanner
+	before applying the rule for display."
+	^mask!
+mask: maskForm
+	"Set the argument, maskForm, to be the form with which each character is
+	combined by the scanner before applying the rule for display."
+	mask _ maskForm.!
+numberOfLines
+	"Answer the number of lines of text in the receiver."
+	^lastLine!
+outputMedium
+	"Answer the outputMedium for the receiver."
+
+	^outputMedium!
+outputMedium: aSymbol
+	"Set the argument to be the outputMedium for the receiver.
+	As of 1/20/80, #Display, #PressPrinter, #DisplayPrinterWidths are the possibilities."
+	outputMedium _ aSymbol.
+		"Changing the outputMedium means that the text must be recomposed."
+	textStyle outputMedium: aSymbol.
+	self composeAll!
+replaceFrom: start to: stop with: aText displaying: displayBoolean
+	"Replace the receiver's text starting at position start, stopping at stop, by the characters in aText. It is expected that most requirements for modifications to the receiver will call this code.  Certainly all cut's or paste's."
+
+	| compositionScanner obsoleteLines obsoleteLastLine firstLineIndex lastLineIndex
+	startLine stopLine replacementRange visibleRectangle startIndex newLine done
+	newStop obsoleteY newY upOrDown moveRectangle |
+
+	text			"Update the text."
+	  replaceFrom: start to: stop with: aText.
+	lastLine = 0
+	  ifTrue: 	["if lines have never been set up, measure them and display
+					all the lines falling in the visibleRectangle"
+				self composeAll.
+				displayBoolean
+					ifTrue:	[self clearVisibleRectangle.
+							self displayLines: (1 to: lastLine)].
+				^self].
+
+	"save -- things get pretty mashed as we go along"
+	obsoleteLines _ lines copy.
+	obsoleteLastLine _ lastLine.
+
+		"find the starting and stopping lines"
+	firstLineIndex _ startLine _ self lineIndexOfCharacterIndex: start.
+	stopLine _ self lineIndexOfCharacterIndex: stop.
+		"how many characters being inserted or deleted -- negative if
+			aText size is < characterInterval size."
+	replacementRange _ aText size - (stop - start + 1).
+		"Give ourselves plenty of elbow room."
+	compositionRectangle height: textStyle lineGrid * 8196.	"max Vector length"
+		"build a boundingBox of the actual screen space in question -- we'll need it later"
+	visibleRectangle _ (clippingRectangle intersect: compositionRectangle)
+							intersect: destinationForm boundingBox.
+		"Initialize a scanner."
+	compositionScanner _ CompositionScanner new in: self.
+
+		"If the starting line is not also the first line, then measuring must commence from line preceding the one in which characterInterval start appears.  For example, deleting a line with only a carriage return may move characters following the deleted portion of text into the line preceding the deleted line."
+	startIndex _ (lines at: firstLineIndex) first.
+	startLine > 1
+		ifTrue: 	[newLine _
+					compositionScanner
+						composeLine: startLine - 1
+						fromCharacterIndex: (lines at: startLine - 1) first
+						inParagraph: self.
+				(lines at: startLine - 1) = newLine
+					ifFalse:	["start in line preceding the one with the starting character"
+							startLine _ startLine - 1.
+							self lineAt: startLine put: newLine.
+							startIndex _ newLine last + 1]].
+	startIndex > text size
+		ifTrue: 	["nil lines after a deletion -- remeasure last line below"
+				self trimLinesTo: (firstLineIndex - 1 max: 0).
+				text size = 0
+					ifTrue:	["entire text deleted -- clear visibleRectangle and return."
+							destinationForm
+				 				fill: visibleRectangle rule: rule mask: Form white.
+							self updateCompositionHeight.
+							^self]].
+
+	"Now we really get to it."
+	done _ false.
+	lastLineIndex _ stopLine.
+	[done or: [startIndex > text size]]
+		whileFalse:
+		[self lineAt: firstLineIndex put:
+			(newLine _ compositionScanner composeLine: firstLineIndex
+							fromCharacterIndex: startIndex inParagraph: self).
+		[(lastLineIndex > obsoleteLastLine
+			or: ["no more old lines to compare with?"
+				newLine last <
+					(newStop _ (obsoleteLines at: lastLineIndex) last + replacementRange)])
+			  	or: [done]]
+			whileFalse:
+			[newStop = newLine last
+				ifTrue:	["got the match"
+						upOrDown _ replacementRange < 0
+							ifTrue: [0] ifFalse: [1].
+							"get source and dest y's for moving the unchanged lines"
+						obsoleteY _ self topAtLineIndex: lastLineIndex + upOrDown.
+						newY _ self topAtLineIndex: firstLineIndex + upOrDown.
+						stopLine _ firstLineIndex.
+						done _ true.
+							"Fill in the new line vector with the old unchanged lines.
+							Update their starting and stopping indices on the way."
+						((lastLineIndex _ lastLineIndex + 1) to: obsoleteLastLine) do:
+							[:upDatedIndex |
+							self lineAt: (firstLineIndex _ firstLineIndex + 1)
+								put: ((obsoleteLines at: upDatedIndex)
+							  		slide: replacementRange)].
+							"trim off obsolete lines, if any"
+						self trimLinesTo: firstLineIndex]
+				ifFalse:	[lastLineIndex _ lastLineIndex + 1]].
+		startIndex _ newLine last + 1.
+		firstLineIndex _ firstLineIndex + 1].
+
+	"Now the lines are up to date -- Whew!!.  What remains is to move the 'unchanged' lines and display those which have changed."
+	displayBoolean
+	ifTrue:	[
+	startIndex > text size
+		ifTrue:	["If at the end of previous lines simply display lines from the line in
+				which the first character of the replacement occured through the
+				end of the paragraph."
+				self updateCompositionHeight.
+				self displayLines:
+					(startLine to: (stopLine _ firstLineIndex min: lastLine))]
+		ifFalse:	["Otherwise prepare to move the unchanged lines.  moveRectangle
+				defines the portion of the visibleRectangle containing the lines
+				which may be moved en masse.
+				Deletion -- moving 'up' the screen or ..."
+				moveRectangle _
+					visibleRectangle left @ (obsoleteY max: visibleRectangle top)
+						corner: visibleRectangle corner.
+				"Insertion -- moving 'down' the screen.
+				Shorten moveRectangle by height of insertion or ..."
+				obsoleteY <= newY
+					ifTrue:	[moveRectangle corner:
+								visibleRectangle corner + (0 @ (obsoleteY - newY))]
+					ifFalse:	["Deletion,
+							and top of moveRectangle will fall above top of
+							visibleRectangle.  Increase the origin of moveRectangle
+							by the amount that would fall above (hence outside)
+							the visibleRectangle."
+							newY < visibleRectangle top
+								ifTrue:	[moveRectangle origin:
+											visibleRectangle left @
+												(obsoleteY + visibleRectangle top - newY)]].
+				"Move'em."
+				destinationForm copyBits: moveRectangle from: destinationForm
+					at: visibleRectangle left @ (newY max: visibleRectangle top)
+						clippingBox: visibleRectangle rule: Form over mask: Form black.
+				"Display the new lines."
+				self displayLines: (startLine to: stopLine).
+				"A deletion may have 'pulled' previously undisplayed lines into
+				the visibleRectangle.  If so, display them."
+				(newY < obsoleteY and:
+					[(self topAtLineIndex: obsoleteLastLine + 1) > visibleRectangle bottom])
+					ifTrue:	[self displayLines:
+								((self lineIndexOfTop:
+										visibleRectangle bottom - (obsoleteY - newY))
+								to: (stopLine _
+										self lineIndexOfTop: visibleRectangle bottom))]].
+
+	"If we have done a deletion, obsolete material may remain at the bottom of the visibleRectangle.  If so, clear it out."
+	obsoleteLastLine >= lastLine
+		ifTrue:	[
+				newY _ self topAtLineIndex: lastLine + 1.
+				newY < visibleRectangle top
+					ifTrue:	["new lastLine is above visibleRectangle,
+							clear entire visibleRectangle"
+							destinationForm fill: visibleRectangle
+								rule: rule mask: Form white]
+					ifFalse:	[destinationForm
+								fill: ((visibleRectangle left @ newY
+									extent: visibleRectangle extent)
+							intersect: visibleRectangle)
+							rule: rule mask: Form white]]].
+	self updateCompositionHeight.!
+rule
+	"Answer the rule according to which character display behaves. For
+	example, rule may equal over, under, reverse."
+	^rule!
+rule: ruleInteger
+	"Set the rule according to which character display behaves."
+	rule _ ruleInteger.!
+text: aText
+	"Set the argument, aText, to be the text for the receiver."
+	text _ aText.
+	self composeAll!
+"-----------------------------------"!
+!Paragraph methodsFor: 'alignment'!
+centered
+	"Set the alignment for the style with which the receiver displays its text
+	so that text is centered in the composition rectangle."
+	textStyle alignment: Centered.!
+justified
+	"Set the alignment for the style with which the receiver displays its text
+	so that the characters in each of text end on an even border in the composition
+	rectangle."
+	textStyle alignment: Justified.!
+leftFlush
+	"Set the alignment for the style with which the receiver displays its text
+	so that the characters in each of text begin on an even border in the composition
+	rectangle.  This is also known as ragged-right."
+	textStyle alignment: LeftFlush.!
+rightFlush
+	"Set the alignment for the style with which the receiver displays its text
+	so that the characters in each of text end on an even border in the composition
+	rectangle but the beginning of each line does not (ragged-left)."
+	textStyle alignment: RightFlush!
+toggleAlignment
+	"Set the alignment for the style with which the receiver displays its text
+	so that it moves from centered to justified to leftFlush to rightFlush and back
+	to centered again."
+	textStyle alignment: textStyle alignment + 1.!
+"-----------------------------------"!
+!Paragraph methodsFor: 'character location'!
+characterBlockAtPoint: aPoint
+	"Answer a CharacterBlock for characters in the text at point aPoint.
+	It is assumed that aPoint has been transformed into coordinates appropriate to
+	the receiver's destinationForm rectangle and the compositionRectangle."
+
+	^CharacterBlockScanner new characterBlockAtPoint: aPoint in: self!
+characterBlockForIndex: targetIndex
+	"Answer a CharacterBlock for character in the text at targetIndex.  The
+	coordinates in the CharacterBlock will be appropriate to the intersection of the
+	destinationForm rectangle and the compositionRectangle."
+
+	^CharacterBlockScanner new characterBlockForIndex: targetIndex in: self!
+"-----------------------------------"!
+!Paragraph methodsFor: 'composition'!
+composeAll
+	"Compose a collection of characters into a collection of lines."
+
+	| startIndex stopIndex lineIndex maximumRightX compositionScanner |
+	lines _ Array new: 32.
+	lastLine _ 0.
+	maximumRightX _ 0.
+	text size = 0
+		ifTrue:
+			[compositionRectangle height: 0.
+			^maximumRightX].
+	startIndex _ lineIndex _ 1.
+	stopIndex _ text size.
+	compositionScanner _ CompositionScanner new in: self.
+	[startIndex > stopIndex] whileFalse:
+		[self lineAt: lineIndex
+				put: (compositionScanner composeLine: lineIndex
+										fromCharacterIndex: startIndex
+										inParagraph: self).
+		 maximumRightX _ compositionScanner rightX max: maximumRightX.
+		 startIndex _ (lines at: lineIndex) last + 1.
+		 lineIndex _ lineIndex + 1].
+	self updateCompositionHeight.
+	self trimLinesTo: lineIndex - 1.
+	^maximumRightX!
+recomposeIn: compositionRect clippingBox: clippingRect
+	"Set the composition rectangle for the receiver so that the lines wrap
+	within the rectangle, compositionRect, and the display of the text is
+	clipped by the rectangle, clippingRect."
+
+	self compositionRectangle: compositionRect copy
+		text: text
+		style: textStyle
+		offset: offset
+		outputMedium: #Display
+		fitWidth: false.
+	clippingRectangle _ clippingRect copy!
+"-----------------------------------"!
+!Paragraph methodsFor: 'converting'!
+asForm
+	"Answer a new Form made up of the bits that represent the receiver's
+	dispayable text."
+
+	| aForm saveDestinationForm |
+	aForm _ Form new extent: compositionRectangle extent.
+	saveDestinationForm _ destinationForm.
+	self displayOn: aForm
+		at: 0 @ 0
+		clippingBox: aForm boundingBox
+		rule: Form over
+		mask: Form black.
+	aForm offset: offset.
+	destinationForm _ saveDestinationForm.
+	^aForm!
+asString
+	"Answer the string of characters of the receiver's text."
+	^text string!
+asText
+	"Answer the receiver's text."
+	^text!
+"-----------------------------------"!
+!Paragraph methodsFor: 'display box access'!
+boundingBox
+	^offset extent: compositionRectangle extent!
+computeBoundingBox
+	^offset extent: compositionRectangle extent!
+"-----------------------------------"!
+!Paragraph methodsFor: 'displaying'!
+displayAt: aPoint
+	"Because Paragraphs cache so much information, computation is avoided and
+	displayAt: 0@0 is not appropriate here"
+
+	self displayOn: destinationForm
+		at: aPoint
+		clippingBox: clippingRectangle
+		rule: rule
+		mask: mask!
+displayOn: aDisplayMedium
+	"Display on a new destination medium -- typically a form."
+
+	self displayOn: aDisplayMedium
+		at: compositionRectangle topLeft
+		clippingBox: clippingRectangle
+		rule: rule
+		mask: mask!
+displayOn: aDisplayMedium at: aDisplayPoint clippingBox: clipRectangle rule: ruleInteger mask: aForm
+	"Default display message when aDisplayPoint is in absolute screen
+	coordinates. "
+
+	destinationForm _ aDisplayMedium.
+	clippingRectangle _ clipRectangle.
+	rule _ ruleInteger.
+	mask _ aForm.
+	compositionRectangle moveTo: aDisplayPoint.
+	(lastLine == nil or: [lastLine < 1]) ifTrue: [self composeAll].
+	self displayLines: (1 to: lastLine)!
+displayOn: aDisplayMedium transformation: displayTransformation clippingBox: clipRectangle align: alignmentPoint with: relativePoint rule: ruleInteger mask: aForm
+
+	self				"Assumes offset has been set!!!!!!!!!!"
+	  displayOn: aDisplayMedium
+	  at: (offset
+			+ (displayTransformation applyTo: relativePoint)
+			- alignmentPoint) rounded
+	  clippingBox: clipRectangle
+	  rule: ruleInteger
+	  mask: aForm.!
+"-----------------------------------"!
+!Paragraph methodsFor: 'indicating'!
+flash
+	"Complement twice the visible area in which the receiver displays."
+	Display flash: self visibleRectangle!
+outline
+	"Display a border around the visible area in which the receiver
+	presents its text."
+
+	clippingRectangle bottom <= compositionRectangle bottom
+	  ifTrue: [Display
+				border: (clippingRectangle intersect: compositionRectangle)
+				width: 2]
+	  ifFalse: [Display
+				border: (clippingRectangle intersect: destinationForm boundingBox)
+				width: 2].!
+"-----------------------------------"!
+!Paragraph methodsFor: 'private'!
+compositionRectangle: compositionRect text: aText style: aTextStyle offset: aPoint outputMedium: aSymbol fitWidth: aBoolean
+	| paddingDelta lineIndex |
+	compositionRectangle _ compositionRect copy.
+	text _ aText.
+	textStyle _ aTextStyle.
+	firstIndent _ textStyle firstIndent.
+	restIndent _ textStyle restIndent.
+	rightIndent _ textStyle rightIndent.
+	marginTabsLevel _ 0.
+	outputMedium _ aSymbol.
+	lines _ Array new: 32.
+	lastLine _ 0.
+	rule _ DefaultRule.
+	mask _ DefaultMask.
+	destinationForm _ Display.
+	clippingRectangle _ destinationForm boundingBox.
+	offset _ aPoint.
+	aBoolean
+		ifTrue:	[	"save initial width of compositionRectangle"
+				paddingDelta _ compositionRectangle width.
+				compositionRectangle width:
+					(self composeAll "returns fitted right margin" - compositionRectangle left).
+				paddingDelta _ paddingDelta - compositionRectangle width.
+					"Have to shrink padding widths created when compositionRectangle was large."
+				1 to: lastLine do:
+					[:i | (lines at: i) paddingWidth: (lines at: i) paddingWidth - paddingDelta]]
+		ifFalse:	["Composition rectangle sent in is the one desired no matter what the maximum
+				right struck by the text."
+				self composeAll].!
+compositionRectangleDelta
+	"A handy number -- mostly for scrolling"
+
+	^compositionRectangle top - clippingRectangle top!
+copyLines: anInterval
+	^lines copyFrom: anInterval first to: (anInterval last min: lastLine)!
+displayLines: linesInterval
+	"This is the first level workhorse in the display portion of the TextForm routines.
+	It checks to see which lines in the interval are actually visible, has the
+	DisplayScanner display only those, clears out the areas in which display will
+	occur, and clears any space remaining in the visibleRectangle following the space
+	occupied by lastLine."
+
+	| lineGrid visibleRectangle topY firstLineIndex lastLineIndex lastLineIndexBottom |
+	lineGrid _ textStyle lineGrid.
+	"Save some time by only displaying visible lines"
+	visibleRectangle _
+		(clippingRectangle intersect: compositionRectangle)
+			  intersect: destinationForm boundingBox.
+	firstLineIndex _ self lineIndexOfTop: visibleRectangle top.
+	firstLineIndex < linesInterval first ifTrue: [firstLineIndex _ linesInterval first].
+	lastLineIndex _ self lineIndexOfTop: visibleRectangle bottom - 1.
+	lastLineIndex > linesInterval last
+		ifTrue:
+			[linesInterval last > lastLine
+		 		ifTrue: [lastLineIndex _ lastLine]
+		  		ifFalse: [lastLineIndex _ linesInterval last]].
+	((Rectangle
+		origin: visibleRectangle left @ (topY _ self topAtLineIndex: firstLineIndex)
+		corner: visibleRectangle right @
+					(lastLineIndexBottom _ (self topAtLineIndex: lastLineIndex)
+					  + lineGrid))
+	  intersects: visibleRectangle)
+	  	ifFalse: ["None of lines in interval visible." ^self].
+	"Set boundingBox containing the lines in linesInterval to color for space surrounding
+	the characters."
+	destinationForm
+	  fill: ((visibleRectangle left @ topY
+				extent: visibleRectangle width @ (lastLineIndexBottom - topY))
+		  	intersect: visibleRectangle)
+	  rule: rule
+	  mask: Form white.
+	DisplayScanner new
+	  displayLines: (firstLineIndex to: lastLineIndex)
+	  in: self
+	  clippedBy: visibleRectangle.
+	lastLineIndex = lastLine
+		ifTrue:
+		 [destinationForm
+		  fill: (visibleRectangle left @ lastLineIndexBottom
+				extent: visibleRectangle width @
+					(visibleRectangle bottom - lastLineIndexBottom))
+		  rule: rule
+		  mask: Form white]!
+leftMarginForCompositionForLine: lineIndex
+	"Build the left margin for composition of a line.
+	Depends upon marginTabsLevel and the indent."
+	| scale |
+	scale _ 1.
+	lineIndex = 1
+		ifTrue: [^(firstIndent + (textStyle leftMarginTabAt: marginTabsLevel)) * scale]
+		ifFalse: [^(restIndent + (textStyle leftMarginTabAt: marginTabsLevel)) * scale].!
+leftMarginForDisplayForLine: lineIndex
+	"Build the left margin for display of a line.
+	Depends upon leftMarginForComposition, compositionRectangle left, the outputMedium and
+	the alignment."
+
+	| pad scale|
+
+	scale _ 1.
+	(textStyle alignment = LeftFlush or: [textStyle alignment = Justified])
+		ifTrue:
+			[^((compositionRectangle left * scale)
+				+ (self leftMarginForCompositionForLine: lineIndex))].
+	"When called from character location code and entire string has been cut,
+	there are no valid lines, hence following nil check."
+	( lineIndex <= lines size and: [(lines at: lineIndex) ~~ nil])
+		ifTrue:
+			[pad _ (lines at: lineIndex) paddingWidth]
+		ifFalse:
+			[pad _
+				compositionRectangle width - firstIndent - rightIndent].
+	textStyle alignment = Centered
+		ifTrue:
+			[^((compositionRectangle left * scale)
+				+ (self leftMarginForCompositionForLine: lineIndex)) + (pad // 2)].
+	textStyle alignment = RightFlush
+		ifTrue:
+			[^((compositionRectangle left * scale)
+				+ (self leftMarginForCompositionForLine: lineIndex)) + pad].
+	self error: ['no such alignment']!
+lineAt: lineIndex
+	"Return the textLineInterval for the specified line"
+	^ lines at: lineIndex!
+lineAt: indexInteger put: aTextLineInterval
+	"store a line, track last, and grow lines if necessary"
+
+	indexInteger > lastLine ifTrue: [lastLine _ indexInteger].
+	lastLine > lines size ifTrue: [lines grow].
+	^lines at: indexInteger put: aTextLineInterval!
+lineIndexOfCharacterIndex: characterIndex
+	"line index for a given characterIndex"
+	1 to: lastLine do:
+		[:lineIndex |
+		(lines at: lineIndex) last >= characterIndex ifTrue: [^lineIndex]].
+	^lastLine!
+lineIndexOfTop: top
+	"line index at a given top y"
+
+	^(top - compositionRectangle top // textStyle lineGrid + 1 max: 1)
+		min: lastLine!
+lines
+	^lines!
+lines: anArray
+	"Install a new set of lines in the paragraph,  a tricky way to avoid recomposing when a press paragraph overflows a page."
+	lines _ anArray.
+	(lastLine _ (anArray indexOf: nil) - 1) = -1
+		ifTrue:	[^ (lastLine _ anArray size)]
+		ifFalse:	[^ lastLine].!
+removeFirstChars: numberOfChars
+	"Remove a number of characters from the beginning of the receiver, adjusting the composition rectangle so the displayed text moves as little as possible.  Special kludge for TextCollectorController."
+	"9/14/82 SBP"
+
+	| delta scrollDelta |
+	delta _ ((self lineIndexOfCharacterIndex: numberOfChars)-1)*self lineGrid.
+	scrollDelta _ self compositionRectangleDelta negated.
+	delta > scrollDelta ifTrue:
+		[delta _ scrollDelta. 	"deleting some visible lines"
+		self clearVisibleRectangle].
+	self replaceFrom: 1 to: numberOfChars with: '' asText displaying: false.
+	compositionRectangle moveBy: 0@delta.
+	delta = scrollDelta ifTrue: [self display]!
+repositionAt: aPoint clippingBox: clippingBox
+	compositionRectangle moveTo: aPoint.
+	clippingRectangle _ clippingBox.!
+rightMarginForComposition
+	"Build the right margin for a line.
+	Depends upon compositionRectangle width, marginTabsLevel, and right
+	indent."
+	| scale |
+
+	scale _ 1.
+	^(compositionRectangle width
+		- (textStyle rightMarginTabAt: marginTabsLevel) - rightIndent) * scale!
+rightMarginForDisplay
+	"Build the right margin for a line.
+	Depends upon compositionRectangle rightSide, marginTabsLevel, and right indent."
+
+	| scale |
+	scale _ 1.
+	^(compositionRectangle right -
+		rightIndent - (textStyle rightMarginTabAt: marginTabsLevel)) * scale!
+textAt: lineIndex
+	"Return the text for the specified line (subclasses may override)"
+	^ text!
+topAtLineIndex: lineIndex
+	"top y of given line"
+
+	^compositionRectangle top + (lineIndex - 1 * textStyle lineGrid)!
+trimLinesTo: lastLineInteger
+	(lastLineInteger + 1 to: lastLine) do: [:i | lines at: i put: nil].
+	(lastLine _ lastLineInteger) < (lines size // 2)
+		ifTrue: [lines _ lines copyFrom: 1 to: lines size - (lines size // 2)]!
+updateCompositionHeight
+	"Mainly used to insure that intersections with compositionRectangle work."
+
+	compositionRectangle height: textStyle lineGrid * lastLine.
+	(text size ~= 0 and: [(text at: text size) = CR])
+		ifTrue: [compositionRectangle
+					height: compositionRectangle height + textStyle lineGrid]!
+visibleRectangle
+	^ (clippingRectangle intersect: compositionRectangle)
+							intersect: destinationForm boundingBox!
+"-----------------------------------"!
+!Paragraph methodsFor: 'scrolling'!
+scrollBy: heightToMove
+	"Change the composition rectangle such that the first line of text corresponds
+	to the line at the current first line plus heightToMove, modulo the grid of the
+	receiver's textstyle."
+	self scrollBy: heightToMove grid: textStyle lineGrid.!
+scrollBy: height grid: grid
+	"Change the composition rectangle such that the first line of text corresponds
+	to the line at the current first line plus heightToMove, modulo the grid."
+
+	| initialClippingRectangle heightToMove |
+
+	"keep from scrolling out of clippingRectangle"
+	heightToMove _
+		(height max: self compositionRectangleDelta).
+	(heightToMove abs between: 0 and: grid)
+		ifTrue: [heightToMove _ heightToMove sign * grid]
+		ifFalse: [heightToMove _ heightToMove truncateTo: grid].
+	heightToMove  abs >= clippingRectangle height
+		ifTrue:	[self clearVisibleRectangle.
+				"adjust compositionRectangle behind clippingRectangle"
+				compositionRectangle moveBy:  (0 @ (0 - heightToMove)).
+				"If heightToMove >= clippingRectangle, all lines to be displayed are not
+					currently displayed."
+				self displayLines: (1 to: lastLine).
+				^self].
+
+	"Adjust compositionRectangle behind clippingRectangle"
+	compositionRectangle moveBy:  (0 @ (0 - heightToMove)).
+	"Need only to reshow part of clippingRectangle.
+		Some of the lines are already on the display screen."
+	initialClippingRectangle _ clippingRectangle copy.
+	heightToMove  < 0	"Box the lines to be moved."
+		ifTrue:	["Moving down."
+				clippingRectangle _
+					clippingRectangle insetOriginBy: (0 @ 0) cornerBy: (0 @ (0 - heightToMove ))]
+			ifFalse: ["Moving up."
+					clippingRectangle _
+						clippingRectangle insetOriginBy: (0 @ heightToMove ) cornerBy: (0 @ 0)].
+			destinationForm
+				copyBits: clippingRectangle
+				from: destinationForm
+				at: clippingRectangle left @ (clippingRectangle top - heightToMove )
+				clippingBox: initialClippingRectangle
+				rule: Form over
+				mask: Form black.
+
+	"Make room in clippingRectangle for lines 'pulled' into view."
+	heightToMove < 0
+		ifTrue:	["On the top."
+				(clippingRectangle bottomRight) y: clippingRectangle top - heightToMove ]
+		ifFalse: ["At the bottom."
+				(clippingRectangle topLeft)
+					y: (((self topAtLineIndex:
+							(self lineIndexOfTop: clippingRectangle bottom - heightToMove)))
+					max: initialClippingRectangle topLeft y)].
+
+		"The reduced clippingRectangle informs the displayLines routine of what lines to actually display of those it is requested to display.  It only displays those actually falling in the clippingRectangle."
+
+		self displayLines: (1 to: lastLine).
+
+		"If we've shortened so that bottom of compositionRectangle is < clippingRectangle, clear out the the potential garbage at the bottom of the clippingRectangle."
+		compositionRectangle bottom < initialClippingRectangle bottom
+			ifTrue:	[destinationForm
+						fill: (initialClippingRectangle left @ compositionRectangle bottom
+								corner: initialClippingRectangle bottomRight)
+						mask: Form white].
+
+	"And the clippingRectangle needs to be set to its original value."
+	clippingRectangle _ initialClippingRectangle.!
+"-----------------------------------"!
+!Paragraph methodsFor: 'selecting'!
+displayCaretAt: aPoint
+	"Display CaretForm located at aPoint with default settings for rule and halftone."
+
+	CaretForm
+		displayOn: destinationForm
+		at: aPoint
+		clippingBox: clippingRectangle
+		rule: Form reverse
+		mask: Form black!
+displayCaretForBlock: aCharacterBlock
+	"Show caret at proper place for aCharacterBlock"
+
+	self displayCaretAt: (aCharacterBlock topLeft + (0@textStyle baseline))!
+dyForPoint: pt
+	"See if pt is above or below clippingRectangle, return scroll amount"
+
+	| dy dyLim |
+	((dy _ pt y - clippingRectangle top) < 0
+	 and: [(dyLim _ compositionRectangle top - clippingRectangle top) < 0])
+		ifTrue: [^(dy max: dyLim) - textStyle lineGrid].
+	((dy _ pt y - clippingRectangle bottom) > 0
+	 and: [(dyLim _ compositionRectangle bottom - clippingRectangle bottom) > 0])
+		ifTrue: [^(dy min: dyLim) + textStyle lineGrid].
+	^0!
+mouseSelect: previousStartBlock to: previousStopBlock
+	"Answer with an Array of two CharacterBlocks that represent the text selection that the user makes. Allow for scrolling to extend selections."
+
+	| pivotBlock startBlock stopBlock showingCaret dy pt okToScroll scrollDelay word |
+	startBlock _ stopBlock _ pivotBlock _ self characterBlockAtPoint: Sensor cursorPoint.
+	self displayCaretForBlock: pivotBlock.
+	showingCaret _ true.
+	okToScroll _ true.
+	scrollDelay _ Delay forMilliseconds: 250. "For Dorados"
+	[Sensor redButtonPressed] whileTrue: [
+		pt _ Sensor cursorPoint.
+		(okToScroll
+		 and: [(dy _ self dyForPoint: pt) ~= 0]) ifTrue: [
+			[okToScroll _ false. scrollDelay wait. okToScroll _ true]
+				forkAt: Processor userInterruptPriority.
+			showingCaret
+				ifTrue: [
+					self displayCaretForBlock: pivotBlock.
+					showingCaret _ false]
+				ifFalse: [self reverseFrom: startBlock to: pivotBlock].
+			self scrollBy: dy.
+			pt _ dy < 0
+				ifTrue: [clippingRectangle topLeft]
+				ifFalse: [clippingRectangle bottomRight].
+			pivotBlock _ self characterBlockForIndex: pivotBlock stringIndex.
+			startBlock _ pivotBlock ].
+		stopBlock _ self characterBlockAtPoint: pt.
+		stopBlock = startBlock ifFalse: [
+			showingCaret ifTrue: [
+				self displayCaretForBlock: pivotBlock. showingCaret _ false].
+			self reverseFrom: startBlock to: stopBlock.
+			startBlock _ stopBlock] ].
+	(showingCaret not and: [pivotBlock = stopBlock])
+		ifTrue: [self displayCaretForBlock: pivotBlock].
+	scrollDelay disable.
+	(previousStartBlock = previousStopBlock and:
+		[pivotBlock = stopBlock and: [stopBlock = previousStopBlock]])
+		ifTrue:  "select a word or bracketed range"
+			[word _ self selectWord: pivotBlock stringIndex.
+			word first = word last ifFalse:
+				[self displayCaretForBlock: pivotBlock.
+				pivotBlock _ self characterBlockForIndex: word first.
+				stopBlock _ self characterBlockForIndex: word last.
+				self reverseFrom: pivotBlock to: stopBlock]].
+	stopBlock < pivotBlock
+		ifTrue: [^Array with: stopBlock with: pivotBlock]
+		ifFalse: [^Array with: pivotBlock with: stopBlock]!
+reverseFrom: characterBlock1 to: characterBlock2
+	"Reverse area between the two character blocks given as arguments."
+
+	| start stop |
+	characterBlock1 = characterBlock2 ifTrue: [^self].
+	characterBlock1 < characterBlock2
+		ifTrue: [start _ characterBlock1. stop _ characterBlock2]
+		ifFalse: [start _ characterBlock2. stop _ characterBlock1].
+	start top = stop top ifTrue: [
+		^self reverseRectangle: (start origin corner: stop bottomLeft)].
+	self reverseRectangle:
+	 (start origin corner: compositionRectangle right @ start bottom).
+	self reverseRectangle:
+	 (compositionRectangle left@start bottom corner: compositionRectangle right@stop top).
+	self reverseRectangle: (compositionRectangle left@stop top corner: stop bottomLeft).!
+reverseRectangle: aRectangle
+	"Highlight the part of aRectangle which is visible"
+	| rect |
+	rect _ aRectangle intersect: self visibleRectangle.
+	destinationForm fill: rect rule: Form reverse mask: mask.!
+selectWord: stringIndex
+	"Select delimited text or word--the result of double-clicking."
+
+	| openDelimiter closeDelimiter direction match level leftDelimiters rightDelimiters
+	string here hereChar start stop |
+	string _ text string.
+	here _ stringIndex.
+	(here between: 2 and: string size)
+		ifFalse: ["if at beginning or end, select entire string"
+			^ 1 to: string size + 1].
+	leftDelimiters _ '([{<''"
+'.
+	rightDelimiters _ ')]}>''"
+'.
+	openDelimiter _ string at: here - 1.
+	match _ leftDelimiters indexOf: openDelimiter.
+	match > 0
+		ifTrue:
+			["delimiter is on left -- match to the right"
+			start _ here.
+			direction _ 1.
+			here _ here - 1.
+			closeDelimiter _ rightDelimiters at: match]
+		ifFalse:
+			[openDelimiter _ string at: here.
+			match _ rightDelimiters indexOf: openDelimiter.
+			match > 0
+				ifTrue:
+					["delimiter is on right -- match to the left"
+					stop _ here - 1.
+					direction _ -1.
+					closeDelimiter _ leftDelimiters at: match]
+				ifFalse: ["no delimiters -- select a token"
+					direction _ -1]].
+	level _ 1.
+	[level > 0 and: [direction > 0
+			ifTrue: [here < string size]
+			ifFalse: [here > 1]]]
+		whileTrue:
+			[hereChar _ string at: (here _ here + direction).
+			match = 0
+				ifTrue: ["token scan goes left, then right"
+					hereChar tokenish
+						ifTrue: [here = 1
+								ifTrue:
+									[start _ 1.
+									"go right if hit string start"
+									direction _ 1]]
+						ifFalse: [direction < 0
+								ifTrue:
+									[start _ here + 1.
+									"go right if hit non-token"
+									direction _ 1]
+								ifFalse: [level _ 0]]]
+				ifFalse: ["bracket match just counts nesting level"
+					hereChar = closeDelimiter
+						ifTrue: [level _ level - 1"leaving nest"]
+						ifFalse: [hereChar = openDelimiter
+									ifTrue: [level _ level + 1"entering deeper nest"]]]].
+	level > 0 ifTrue: ["in case ran off string end"	here _ here + direction].
+	direction > 0
+		ifTrue: [^ start to: here]
+		ifFalse: [^ here + 1 to: stop + 1]!
+"-----------------------------------"!
+!Paragraph methodsFor: 'tabs and margins'!
+clearIndents
+	"Reset all the indention settings to be 0."
+	self firstIndent: 0.
+	self restIndent: 0.
+	self rightIndent: 0!
+deltaMarginTabsLevel: anInteger
+	"Delta the depth of 'nesting' for this paragraph -- an index into the marginTabsArray in the textStyle."
+	self marginTabsLevel: anInteger + marginTabsLevel.!
+firstIndent
+	"Answer the horizontal indenting of the first line of a paragraph in the style of the receiver."
+	^firstIndent!
+firstIndent: anInteger
+	"Set the horizontal indenting of the first line of a paragraph in the style of the receiver to be anInteger."
+	firstIndent _
+		(anInteger max: 0) min: (compositionRectangle width - DefaultSpace - rightIndent).
+	self composeAll.!
+marginTabsLevel
+	"Answer the depth of 'nesting' for this paragraph -- an index into the marginTabsArray in the textStyle."
+	^marginTabsLevel!
+marginTabsLevel: anInteger
+	"Set the depth of 'nesting' for this paragraph -- an index into the marginTabsArray in the textStyle."
+	marginTabsLevel _ (anInteger max: 0) min: textStyle nestingDepth.
+
+"Check if we've nested so far that there is no room between the effective margins."
+	[(self leftMarginForCompositionForLine: 1) >= (self rightMarginForComposition)
+		and: [marginTabsLevel > 0]]
+		whileTrue:
+			[marginTabsLevel _ (marginTabsLevel - 1 max: 0)].
+	[(self leftMarginForCompositionForLine: 2) >= (self rightMarginForComposition)
+		and: [marginTabsLevel > 0]]
+		whileTrue:
+			[marginTabsLevel _ (marginTabsLevel - 1 max: 0)].
+	self composeAll.!
+restIndent
+	"Answer the indent for all but the first line of a paragraph in the style of the receiver."
+	^restIndent!
+restIndent: anInteger
+	"Set the indent for all but the first line of a paragraph in the style of the receiver to be anInteger."
+	restIndent _
+		(anInteger max: 0) min: (compositionRectangle width - DefaultSpace - rightIndent).
+	self composeAll.!
+rightIndent
+	"Answer the right margin indent for the lines of a paragraph in the style of the receiver."
+	^rightIndent!
+rightIndent: anInteger
+	"Set the right margin indent for the lines of a paragraph in the style of the receiver to be anInteger."
+	| maxRightIndent |
+	firstIndent > restIndent
+		ifTrue:	[maxRightIndent _
+					(compositionRectangle width- DefaultSpace - firstIndent) max: 1]
+		ifFalse:	[maxRightIndent _
+					(compositionRectangle width- DefaultSpace - restIndent) max: 1].
+	rightIndent _ anInteger min: maxRightIndent.
+	self composeAll.!
+"-----------------------------------"!
+!Paragraph methodsFor: 'utilities'!
+clearVisibleRectangle
+	"Display the area in which the receiver presents its text so that the area
+	is all one tone--in this case, all white."
+
+	destinationForm
+	  fill: self visibleRectangle
+	  rule: rule
+	  mask: Form white.!
+fit
+	"Make the bounding rectangle of the receiver contain all the text without
+	changing the width of the receiver's composition rectangle."
+
+	[(self lineIndexOfTop: clippingRectangle top) = 1]
+		whileFalse: [self scrollBy: (0-1)*textStyle lineGrid].
+	self updateCompositionHeight.
+	clippingRectangle bottom: compositionRectangle bottom!
+gridWithLead: leadInteger
+	"Set the line grid of the receiver's style for displaying text to the height
+	of the first font in the receiver's style + the argument, leadInteger."
+
+	textStyle
+		gridForFont: (text emphasisAt: 1)
+		withLead: leadInteger.		"assumes only one font referred to by runs"
+	self updateCompositionHeight.!

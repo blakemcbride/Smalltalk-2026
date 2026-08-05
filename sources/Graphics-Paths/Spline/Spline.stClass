@@ -1,0 +1,153 @@
+Path subclass: #Spline
+  instanceVariableNames: 'derivatives'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Graphics-Paths'!
+Spline class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+Spline comment:
+'This is a subclass of Path.  Basically, a collection of Points through
+				which a cubic spline curve is fitted.'!
+"-----------------------------------"!
+!Spline class methodsFor: 'examples'!
+example
+	"Designate points on the Path by clicking the red button.  Terminate by pressing any other button.  A curve will be displayed, through the selected points, using a square black form."
+
+	| splineCurve aForm flag|
+	aForm _ Form new extent: 8@8.
+	aForm black.
+	splineCurve _ Spline new.
+	splineCurve form: aForm.
+	flag _ true.
+	[flag] whileTrue:
+		[Sensor waitButton.
+		 Sensor redButtonPressed
+			ifTrue:
+				[splineCurve add: Sensor waitButton.
+				 Sensor waitNoButton.
+				 aForm displayOn: Display at: splineCurve last]
+			ifFalse: [flag_false]].
+	splineCurve computeCurve.
+	splineCurve isEmpty
+		ifFalse: [splineCurve displayOn: Display.
+				Sensor waitNoButton].
+ 	^splineCurve
+	"Spline example."!
+"-----------------------------------"!
+!Spline methodsFor: 'accessing'!
+derivativePointsAt: knot
+
+	^Array	with: ((derivatives at: 1) at: knot)
+			with: ((derivatives at: 2) at: knot)
+			with: ((derivatives at: 3) at: knot)!
+isCyclic
+	^self size > 3 and: [self first = self last]!
+"-----------------------------------"!
+!Spline methodsFor: 'displaying'!
+displayOn: aDisplayMedium at: aPoint clippingBox: clipRect rule: anInteger mask: aForm
+	"Method for display of a Spline curve approximated by straight line segments."
+
+	| segment steps a b c d t |
+	segment _ Line new.
+	segment form: self form.
+	segment beginPoint: self first.
+	1 to: self size-1 do:		"for each knot"
+		[:k |
+			"taylor series coefficients"
+		d _ self at: k.
+		c _ (derivatives at: 1) at: k.
+		b _ ((derivatives at: 2) at: k) / 2.0.
+		a _ ((derivatives at: 3) at: k) / 6.0.
+			"guess stepping parameter"
+		steps _ ((derivatives at: 2) at: k) abs + ((derivatives at: 2) at: k+1) abs.
+		steps _ 5 max: (steps x + steps y) // 100.
+		1 to: steps - 1 do:
+			[:j |
+			t _ j asFloat / steps.
+			segment endPoint: a * t + b * t + c * t + d.
+			segment
+				displayOn: aDisplayMedium
+				at: aPoint
+				clippingBox: clipRect
+				rule: anInteger
+				mask: aForm.
+			segment beginPoint: segment endPoint].
+		segment endPoint: (self at: k+1).
+		segment
+			displayOn: aDisplayMedium
+			at: aPoint
+			clippingBox: clipRect
+			rule: anInteger
+			mask: aForm]!
+displayOn: aDisplayMedium transformation: aTransformation clippingBox: clipRect rule: anInteger mask: aForm
+	"get the scaled and translated path of newKnots."
+
+	| newKnots newSpline |
+	newKnots _ aTransformation applyTo: self.
+	newSpline _ Spline new.
+	newKnots do: [:knot | newSpline add: knot].
+	newSpline form: self form.
+	newSpline
+		displayOn: aDisplayMedium
+		at: 0 @ 0
+		clippingBox: clipRect
+		rule: anInteger
+		mask: aForm!
+"-----------------------------------"!
+!Spline methodsFor: 'private'!
+computeCurve
+	"Compute an array for the derivatives at each knot."
+
+	| size extras values |
+	size _ self size.
+	self isCyclic
+		ifTrue:	"for cyclic curves"
+			[extras _ 2.		"add 2 extra points to each end."
+			values _ Array new: 2*extras + size.
+			1 to: extras do:
+				[:i |
+				values at: i put: (self at: size-extras+i-1).
+				values at: size+extras+i put: (self at: i+1)].
+			values replaceFrom: extras+1 to: extras+size with: collectionOfPoints]
+		ifFalse: [extras _ 0.
+				values _ collectionOfPoints].
+
+	derivatives _ Array new: 3.
+	1 to: 3 do: [:i | derivatives at: i put: (Array new: values size)].
+	self derivs: values
+		first: (derivatives at: 1)
+		second: (derivatives at: 2)
+		third: (derivatives at: 3).
+
+	extras > 0 ifTrue:		"remove extra points"
+		[1 to: 3 do:
+			[:i | derivatives at: i put: ((derivatives at: i) copyFrom: extras+1 to: extras+size)]]!
+derivs: values first: first second: second third: third
+	"Computes the first, second and third derivitives at each point in the array values."
+
+	| size v b |
+	size _ values size.
+	size > 2 ifTrue:
+		[v _ Array new: size.
+		v at: 1 put: 4.0.
+		b _ Array new: size.
+		b at: 1 put: 6.0*(values first-((values at: 2)*2.0)+(values at: 3)).
+		2 to: size-2 do:
+			[:i |
+			v at: i put: 4.0-(1.0/(v at: i-1)).
+			b at: i put: 6.0*((values at: i)-((values at: i+1)*2.0)
+				+(values at: i+2))-((b at: i-1)/(v at: i-1))].
+		second at: size-1 put: (b at: size-2)/(v at: size-2).
+		size-2 to: 2 by: -1 do:
+			[:i |
+			second at: i put: (b at: i-1)-(second at: i+1)/(v at: i-1)]].
+
+	second at: 1 put: 0.0 asPoint.
+	second at: size put: 0.0 asPoint.
+
+	1 to: size-1 do:
+		[:i |
+		first at: i put: (values at: i+1)-(values at: i)-((second at: i)*2.0
+			+(second at: i+1)/6.0).
+		third at: i put: (second at: i+1)-(second at: i)].!

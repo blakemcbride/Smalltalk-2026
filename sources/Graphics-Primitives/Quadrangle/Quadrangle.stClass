@@ -1,0 +1,176 @@
+Rectangle subclass: #Quadrangle
+  instanceVariableNames: 'borderWidth borderColor insideColor'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Graphics-Primitives'!
+Quadrangle class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+Quadrangle comment:
+'I represent a particular kind of Rectangle that has a border and inside color.
+
+Instance Variables:
+	borderWidth		<Rectangle> the left, right, top, bottom border widths
+	borderColor		<Form>
+	insideColor 		<Form>'!
+"-----------------------------------"!
+!Quadrangle class methodsFor: 'instance creation'!
+new
+	"Answer an instance of me, initialized to a null Rectangle,
+	with borderWidth of 1, borderColor of black, and insideColor of white."
+
+	^super new initialize!
+region: aRectangle borderWidth: anInteger borderColor: aMask1 insideColor: aMask2
+	"Answer an instance of me with rectangle, border width and color, and
+	inside color determined by the arguments."
+
+	^super new
+		region: aRectangle
+		borderWidth: anInteger
+		borderColor: aMask1
+		insideColor: aMask2!
+"-----------------------------------"!
+!Quadrangle methodsFor: 'bordering'!
+borderColor
+	"Answer the borderColor of the receiver."
+	^borderColor!
+borderColor: aColor
+	"Set the borderColor of the receiver to aColor."
+	borderColor _ aColor!
+borderWidth
+	"Answer the borderWidth of the receiver."
+	^borderWidth!
+borderWidth: anInteger
+	"Set the borderWidth of the receiver to anInteger."
+	borderWidth _ anInteger!
+borderWidthLeft: anInteger1 right: anInteger2 top: anInteger3 bottom: anInteger4
+	"Set the border width of the receiver to a Rectangle that represents the left,
+	right, top, and bottom border widths."
+
+	borderWidth _ anInteger1 @ anInteger3 corner: anInteger2 @ anInteger4!
+inside
+	"Answer a Rectangle that is the receiver inset by the borderWidth."
+	^self insetBy: borderWidth!
+insideColor
+	"Answer the insideColor of the receiver."
+	^insideColor!
+insideColor: aColor
+	"Set the insideColor of the receiver to aColor."
+	insideColor _ aColor!
+region
+	"Answer a Rectangle that defines the area of the receiver."
+	^origin corner: corner!
+region: aRectangle
+	"Set the rectangular area of the receiver to aRectangle."
+
+	origin _ aRectangle origin.
+	corner _ aRectangle corner!
+"-----------------------------------"!
+!Quadrangle methodsFor: 'displaying'!
+displayAlign: aPoint1 with: aPoint2 clippingBox: aRectangle
+	"Display the border and region of the reciever so that its position at
+	aPoint1 is aligned with position aPoint2.  The displayed information should
+	be clipped so that only information with the area determined by aRectangle
+	is displayed."
+
+	| savedRegion |
+	savedRegion _ self region.
+	self region: ((savedRegion align: aPoint1 with: aPoint2) intersect: aRectangle).
+	self displayOn: Display.
+	self region: savedRegion!
+"-----------------------------------"!
+!Quadrangle methodsFor: 'displaying-Display'!
+display
+	self displayOn: Display!
+"-----------------------------------"!
+!Quadrangle methodsFor: 'displaying-generic'!
+displayOn: aDisplayMedium
+	"Display the border and insideRegion of the receiver."
+
+	insideColor ~~ nil ifTrue: [aDisplayMedium fill: self inside mask: insideColor].
+	borderWidth ~~ 0 & (insideColor ~~ nil)
+		ifTrue:
+			[aDisplayMedium fill: self region mask: borderColor.
+			aDisplayMedium fill: self inside mask: insideColor]!
+displayOn: aDisplayMedium align: aPoint1 with: aPoint2 clippingBox: aRectangle
+	"Display the border and region of the reciever so that its position at
+	aPoint1 is aligned with position aPoint2.  The displayed information should
+	be clipped so that only information with the area determined by aRectangle
+	is displayed."
+
+	| savedRegion |
+	savedRegion _ self region.
+	self region: ((savedRegion align: aPoint1 with: aPoint2) intersect: aRectangle).
+	self displayOn: aDisplayMedium.
+	self region: savedRegion!
+displayOn: aDisplayMedium transformation: aWindowingTransformation clippingBox: aRectangle
+	"Display the border and region of the reciever so that it is scaled and translated
+	with respect to aWindowingTransformation.  The displayed information should
+	be clipped so that only information with the area determined by aRectangle
+	is displayed."
+
+	| screenRectangle |
+	screenRectangle _
+		(aWindowingTransformation applyTo: self) intersect: aRectangle.
+	borderWidth ~~ 0 & (insideColor ~~ nil)
+		ifTrue:
+			[aDisplayMedium fill: screenRectangle mask: borderColor.
+			aDisplayMedium
+				fill: (screenRectangle insetBy: borderWidth)
+				mask: insideColor]!
+"-----------------------------------"!
+!Quadrangle methodsFor: 'initialize-release'!
+initialize
+	"Initialize the region to a null Rectangle, the borderWidth to 1, the
+	borderColor to black, and the insideColor to white."
+
+	origin _ 0 @ 0.
+	corner _ 0 @ 0.
+	borderWidth _ 1.
+	borderColor _ Form black.
+	insideColor _ Form white!
+"-----------------------------------"!
+!Quadrangle methodsFor: 'private'!
+region: aRectangle borderWidth: anInteger borderColor: aMask1 insideColor: aMask2
+	origin _ aRectangle origin.
+	corner _ aRectangle corner.
+	borderWidth _ anInteger.
+	borderColor _ aMask1.
+	insideColor _ aMask2.!
+"-----------------------------------"!
+!Quadrangle methodsFor: 'rectangle functions'!
+intersect: aRectangle
+	"Answer a new Quadrangle whose region is the intersection of the
+	receiver's area and aRectangle."
+
+	^ Quadrangle
+	 	region: (super intersect: aRectangle)
+		borderWidth: borderWidth
+		borderColor: borderColor
+		insideColor: insideColor!
+"-----------------------------------"!
+!Quadrangle methodsFor: 'transforming'!
+align: aPoint1 with: aPoint2
+	"Answer a new Quadrangle translated by aPoint2 - aPoint1."
+
+	^ Quadrangle
+		region: (super translateBy: aPoint2 - aPoint1)
+		borderWidth: borderWidth
+		borderColor: borderColor
+		insideColor: insideColor!
+scaleBy: aPoint
+	"Answer a new Quadrangle scaled by aPoint."
+
+	^ Quadrangle
+		region: (super scaleBy: aPoint)
+		borderWidth: borderWidth
+		borderColor: borderColor
+		insideColor: insideColor!
+translateBy: aPoint
+	"Answer a new Quadrangle translated by aPoint."
+
+	^ Quadrangle
+		region: (super translateBy: aPoint)
+		borderWidth: borderWidth
+		borderColor: borderColor
+		insideColor: insideColor!

@@ -1,0 +1,78 @@
+Object subclass: #SyntaxError
+  instanceVariableNames: 'class badText processHandle'
+  classVariableNames: 'TextMenu'
+  poolDictionaries: ''
+  category: 'Interface-Debugger'!
+SyntaxError class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+SyntaxError comment:
+'I represent a report of a syntax error when reading class descriptions from a noninteractive source such as an external file.  As a StringHolder, the string to be viewed is the code or expression containing the error.'!
+"-----------------------------------"!
+!SyntaxError class methodsFor: 'initialization'!
+flushMenus
+	TextMenu _ nil!
+"-----------------------------------"!
+!SyntaxError class methodsFor: 'instance creation'!
+errorInClass: aClass withCode: aString errorString: errorString
+	"Answer a StandardSystemView whose model is an instance of me.
+	The syntax error occurred in trying to add code, aString, to class, aClass."
+	| aSyntaxError topView aListView aCodeView |
+	Cursor normal show.
+	aSyntaxError _ self new
+			setClass: aClass
+			code: aString
+			processHandle: (ProcessHandle on: Processor activeProcess at: thisContext interrupted: false).
+	topView _ StandardSystemView model: aSyntaxError label: 'Syntax Error' minimumSize: 300 @ 180.
+	topView addSubView:
+			(CodeView on: aSyntaxError aspect: #text change: #acceptText:from:
+				menu: #textMenu initialSelection: errorString)
+		in: (0@0 extent: 1@1) borderWidth: 1.
+	topView controller openNoTerminateDisplayAt: Display extent // 2.
+	Processor activeProcess suspend!
+"-----------------------------------"!
+!SyntaxError methodsFor: 'dependents access'!
+removeDependent: aDependent
+	super removeDependent: aDependent.
+	self dependents isEmpty "detect when closing"
+		ifTrue: [processHandle release]!
+"-----------------------------------"!
+!SyntaxError methodsFor: 'doIt/accept/explain'!
+acceptText: aString from: aController
+	"Compile the code in aString and notify aController of any errors.
+	Proceed if successful."
+
+	(class
+		compile: aString
+		classified: ClassOrganizer defaultProtocol
+		notifying: aController)
+		== nil
+			ifTrue: [^false]
+			ifFalse: [^true]!
+doItContext
+	^ nil!
+doItReceiver
+	^ nil!
+"-----------------------------------"!
+!SyntaxError methodsFor: 'private'!
+setClass: aClass code: aString processHandle: aProcessHandle
+	class _ aClass.
+	processHandle _ aProcessHandle.
+	badText _ aString asText!
+"-----------------------------------"!
+!SyntaxError methodsFor: 'text'!
+proceed
+	"Continue the file in, ignoring this section of code, regardless of whether or not the
+	syntax error was corrected."
+
+	self changeRequest ifTrue: [processHandle proceed]!
+text
+	^ badText!
+textMenu
+	"SyntaxError flushMenus"
+	TextMenu == nil ifTrue:
+		[TextMenu _ ActionMenu
+			labels: 'again\undo\copy\cut\paste\do it\print it\accept\cancel\proceed' withCRs
+			lines: #(2 5 7 9)
+			selectors: #(again undo copySelection cut paste doIt printIt accept cancel proceed)].
+	^ TextMenu!

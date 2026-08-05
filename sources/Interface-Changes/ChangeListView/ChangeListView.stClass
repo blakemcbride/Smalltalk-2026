@@ -1,0 +1,162 @@
+ListView subclass: #ChangeListView
+  instanceVariableNames: ''
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Interface-Changes'!
+ChangeListView class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+ChangeListView comment:
+'I am a list view of various system changes.'!
+"-----------------------------------"!
+!ChangeListView class methodsFor: 'examples'!
+example
+	"recover is an example, access other change files through the menu commands of a ChangeListView,
+	or choose a recovery file to replace the following expression form
+
+	ChangeListView openOn: (ChangeList new recoverFile: (Disk file: 'filename'))
+
+	"!
+"-----------------------------------"!
+!ChangeListView class methodsFor: 'instance creation'!
+open
+	"Open a view for changes files.  Starts as an empty template."
+
+	self openOn: ChangeList new
+
+	"ChangeListView open"!
+openOn: aChangeList
+	"schedule a change browser"
+	| topView aChangeListView aChangeView alignPoint |
+
+	topView _ StandardSystemView new model: aChangeList.
+	topView label: aChangeList listName.
+	topView minimumSize: 180@180.
+
+	aChangeListView _ self new.
+	aChangeListView model: aChangeList.
+	aChangeListView window: (0@0 extent: 180@120).
+	aChangeListView insideColor: Form white.
+	aChangeListView borderWidthLeft: 2 right: 2 top: 2 bottom: 0.
+	topView addSubView: aChangeListView.
+
+	alignPoint _ self
+		openSwitches:
+			#(	('show file' showingField: (1) switchField:perform: (1 fileName) 90)
+				('show category' showingField: (2) switchField:perform: (2 category) 90)
+			)
+		topView: topView
+		at: aChangeListView viewport bottomLeft
+		model: aChangeList.
+	alignPoint _ self
+		openSwitches:
+			#(	(file hasFilter: (1) switchFilter:perform: (1 file) 30)
+				(type hasFilter: (2) switchFilter:perform: (2 class) 30)
+				(class hasFilter: (3) switchFilter:perform: (3 className) 30)
+				(category hasFilter: (4) switchFilter:perform: (4 category) 30)
+				(selector hasFilter: (5) switchFilter:perform: (5 selector) 30)
+				(same hasFilter: (6) switchFilter:perform: (6 values) 30)
+			)
+		topView: topView
+		at: alignPoint
+		model: aChangeList.
+
+	aChangeView _ StringHolderView new.
+	aChangeView model: aChangeList.
+	aChangeView controller: ChangeController new.
+	aChangeView window: (0@0 extent: 180@240).
+	aChangeView insideColor: Form white.
+	aChangeView borderWidthLeft: 2 right: 2 top: 2 bottom: 2.
+	topView
+		addSubView: aChangeView
+		align: aChangeView viewport topLeft
+		with: alignPoint.
+
+	topView controller open.!
+recover
+	"Open a view of the current changes file since the last snapshot."
+
+	self openOn: (ChangeList new recoverFile: (SourceFiles at: 2))
+
+	"ChangeListView recover"!
+"-----------------------------------"!
+!ChangeListView class methodsFor: 'private'!
+openSwitches: parameters topView: topView at: initialPoint model: aChangeList
+	"Define a related group of switches"
+	| aSwitchView alignPoint leftBorder |
+
+	alignPoint _ initialPoint.
+	leftBorder _ 2.
+
+	parameters do:
+		[:args |
+			[:label :viewSelector :viewArguments :controllerSelector :controllerArguments :width |
+			aSwitchView _ SwitchView new.
+			aSwitchView model: aChangeList.
+			aSwitchView controller: LockedSwitchController new.
+			aSwitchView borderWidthLeft: leftBorder right: 2 top: 2 bottom: 0.
+			aSwitchView selector: viewSelector.
+			aSwitchView arguments: viewArguments.
+			aSwitchView controller selector: controllerSelector.
+			aSwitchView controller arguments: controllerArguments.
+			aSwitchView window: (0 @ 0 extent: width @ 25).
+			aSwitchView label: label asParagraph.
+			topView addSubView: aSwitchView
+				align: aSwitchView viewport topLeft
+				with: alignPoint.
+			alignPoint _ aSwitchView viewport topRight.
+			leftBorder _ 0.
+			] valueWithArguments: args].
+
+	^initialPoint x @ aSwitchView viewport bottom!
+"-----------------------------------"!
+!ChangeListView methodsFor: 'controller access'!
+defaultControllerClass
+	^ChangeListController!
+"-----------------------------------"!
+!ChangeListView methodsFor: 'initialize-release'!
+release
+	model release.
+	super release!
+"-----------------------------------"!
+!ChangeListView methodsFor: 'model access'!
+model: aChangeList
+	super model: aChangeList.
+	self list: model list.
+	selection _ model listIndex.!
+"-----------------------------------"!
+!ChangeListView methodsFor: 'selecting'!
+deselect
+	super deselect.
+	self reverseRemoved!
+displaySelectionBox
+	self reverseRemoved.
+	super displaySelectionBox!
+reverseRemoved
+	| box line |
+	self selectionInterval do:
+		[:index |
+		(model hasRemoved: index) ifTrue:
+			[box _ self selectionBox: index.
+			line _ Rectangle origin: box leftCenter - (0@1) extent: box width @ 2.
+			Display reverse: (line intersect: self clippingBox)]]!
+selectionBox: listIndex
+	"Answer the rectangle in which a particular selection is displayed."
+
+	^(self insetDisplayBox left @
+			(list compositionRectangle top + (self selectionBoxOffset: listIndex))
+		extent: self insetDisplayBox width @ list lineGrid)
+		insetBy: (Rectangle left: 1 right: 1 top: 1 bottom: 0)!
+selectionBoxOffset: listIndex
+	"Answer an integer that determines the y position for the display box of a
+	particular selection."
+	^(listIndex - 1 + self minimumSelection - 1) * list lineGrid!
+selectionIndex: yPosition
+	"Answer the selection index corresponding to a particular Y coordinate."
+
+	^(yPosition - list compositionRectangle top) // list lineGrid - self minimumSelection + 2!
+selectionInterval
+	"Answer the currently visible range of selection indices."
+
+	^((self selectionIndex: self insetDisplayBox top) max: 1) to:
+	 ((self selectionIndex: self insetDisplayBox bottom) min: model listSize)!

@@ -1,0 +1,735 @@
+Dictionary variableSubclass: #SystemDictionary
+  instanceVariableNames: ''
+  classVariableNames: 'CachedClassNames Frills LowSpaceProcess LowSpaceSemaphore OopsLeftLimit SpecialSelectors SystemChanges WordsLeftLimit'
+  poolDictionaries: ''
+  category: 'System-Support'!
+SystemDictionary class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+SystemDictionary comment:
+'I am a special dictionary that supports protocol for asking questions about the structure of the system.  My only instance is Smalltalk.'!
+"-----------------------------------"!
+!SystemDictionary class methodsFor: 'class initialization'!
+initialize
+	Project current noChanges
+	"SystemDictionary initialize"!
+"-----------------------------------"!
+!SystemDictionary methodsFor: 'accessing'!
+at: aKey put: anObject
+	"Override from Dictionary so that can check Undeclared and fix up
+	references of undeclared variables."
+
+	| index element |
+	index _ self findKeyOrNil: aKey.
+	element _ self basicAt: index.
+	element == nil
+		ifTrue:
+			[self
+				valueAtNewKey: aKey
+				put: anObject
+				atIndex: index
+				declareFrom: Undeclared]
+		ifFalse:
+			[element value: anObject].
+	^anObject!
+valueAtNewKey: aKey put: anObject atIndex: index declareFrom: aDictionary
+	"Handle overriding atKey:put: from Dictionary so that adding
+	something new to a system dictionary such as Smalltalk checks
+	Undeclared and fixes up all references to the undeclared variable"
+
+	(aDictionary includesKey: aKey)
+		ifTrue:
+			[self atNewIndex: index
+				put: ((aDictionary associationAt: aKey) value: anObject).
+			aDictionary removeKey: aKey]
+		ifFalse:
+			[self atNewIndex: index put: (Association key: aKey value: anObject)].
+	self flushClassNameCache!
+"-----------------------------------"!
+!SystemDictionary methodsFor: 'browsing'!
+browseAllCallsOn: aSymbol
+	"Create and schedule a message browser on each method that calls on
+	aSymbol. For example,
+	Smalltalk browseAllCallsOn: #open:label:.	"
+
+	| label key |
+	(aSymbol isMemberOf: Association)
+		ifTrue: [key _ aSymbol key. 	label _ 'Users of ' , key]
+		ifFalse: [key _ aSymbol. 		label _ 'Senders of ', key].
+
+	^ BrowserView
+		openListBrowserOn: (self allCallsOn: aSymbol)
+		label: label
+		initialSelection: key asSymbol keywords first!
+browseAllCallsOn: literal1 and: literal2
+	"Create and schedule a message browser on each method that calls on the
+	two Symbols, literal1 and literal2.
+	For example,
+		Smalltalk browseAllCallsOn: #at: and: #at:pt:.	"
+
+	BrowserView
+		openListBrowserOn: (self allCallsOn: literal1 and: literal2)
+		label: literal1 printString , literal2 printString!
+browseAllImplementorsOf: selector
+	"Create and schedule a message browser on each method that implements the
+	message whose selector is the argument, selector.
+	For example,
+		Smalltalk browseAllImplementorsOf: #at:put:.	"
+
+	BrowserView
+		openListBrowserOn: (self allImplementorsOf: selector)
+		label: 'Implementors of ' , selector!
+browseAllSelect: aBlock
+	"Create and schedule a message browser on each method that, when used as the
+	block argument to aBlock gives a true result.
+	For example,
+		Smalltalk browseAllSelect:
+			[:method |
+			method numLiterals > 10]
+	"
+
+	BrowserView openListBrowserOn: (self allSelect: aBlock) label: 'selected messages'!
+browseChangedMessages
+	"Smalltalk browseChangedMessages"
+	BrowserView
+		openListBrowserOn: SystemChanges changedMessageList
+		label: 'Changed Messages'!
+showMenuThenBrowse: selectorCollection
+	"Show a menu of the given selectors, abbreviated to 20 characters.
+	Create and schedule a message set browser of all implementors of the
+	message chosen.  Do nothing if no message is chosen."
+	| aStream menu index |
+	selectorCollection isEmpty ifTrue: [^Transcript cr; show: 'No messages sent.'].
+	aStream _ WriteStream on: (String new: 200).
+	selectorCollection do:
+		[:sel |
+		aStream nextPutAll: (sel contractTo: 20); cr].
+	aStream skip: -1.
+	index _ (PopUpMenu labels: aStream contents) startUp.
+	index > 0 ifTrue: [Smalltalk browseAllImplementorsOf: (selectorCollection at: index)]!
+"-----------------------------------"!
+!SystemDictionary methodsFor: 'change management'!
+changes
+	"Answer the current system ChangeSet."
+	^SystemChanges!
+logChange: aStringOrText
+	"Write the argument, a String or Text, onto the changes file."
+	| aFileStream aString |
+	SourceFiles == nil
+		ifTrue: [^self].
+	(aString isMemberOf: Text)
+		ifTrue: [aString _ aStringOrText string]
+		ifFalse: [aString _ aStringOrText].
+	(aString isMemberOf: String)
+		ifFalse: [self error: 'cant log this change'].
+	(aString findFirst: [:char | char isSeparator not]) = 0
+		ifTrue: [^self].  "null doits confuse replay"
+	aFileStream _ SourceFiles at: 2.
+	aFileStream setToEnd; readWrite.
+	aFileStream cr; cr; nextChunkPut: aString.
+	aFileStream readOnly!
+newChanges: aChangeSet
+	"Set the system ChangeSet to be aChangeSet."
+	SystemChanges _ aChangeSet!
+noChanges
+	"Initialize the system ChangeSet."
+
+	SystemChanges initialize!
+recover: nCharacters
+	"Schedule an editable text view on the last n characters of changes."
+
+	| changes |
+	changes _ SourceFiles at: 2.
+	changes setToEnd; skip: nCharacters negated.
+	(Disk file: 'st80.recent') nextPutAll: changes; close; edit!
+removeClassNamed: className
+	"Remove the class with the name className, and all of its subclasses, from the system, and note the removal in the system ChangeSet."
+
+	| class |
+	class _ self at: className asSymbol ifAbsent: [^self].
+	class subclasses do:
+		[:subclass | self removeClassNamed: subclass name]. 	"remove subclasses first"
+	SystemChanges removeClass: class.
+	SystemOrganization removeElement: className.
+	self removeKey: className asSymbol.
+	self flushClassNameCache.
+	class obsolete.!
+renameClass: aClass as: newName
+	"Rename the class, aClass, to have the title newName."
+
+	| oldref |
+	SystemOrganization classify: newName under: aClass category.
+	SystemOrganization removeElement: aClass name.
+	SystemChanges renameClass: aClass as: newName.
+	oldref _ self removeKey: aClass name.
+	oldref key: newName.
+	(Undeclared includesKey: newName)
+		ifTrue: [self at: newName put: aClass]
+		ifFalse: [self add: oldref "Preserve old reference"].
+	self flushClassNameCache!
+"-----------------------------------"!
+!SystemDictionary methodsFor: 'class names'!
+classNames
+	"Answer a SortedCollection of all class names.  Use cached copy if available."
+
+	CachedClassNames == nil ifTrue: [^self newClassNames].
+	^CachedClassNames!
+flushClassNameCache
+	"Invalidate cached copy of classnames (see classNames)"
+	CachedClassNames _ nil!
+newClassNames
+	"Compute a sorted collection of class names and cache it for efficiency."
+	| names |
+	names _ OrderedCollection new: self size.
+	self do:
+		[:cl | (cl isKindOf: Class) ifTrue: [names add: cl name]].
+	^CachedClassNames _ names asSortedCollection!
+"-----------------------------------"!
+!SystemDictionary methodsFor: 'compiling'!
+recompileAllFrom: firstName
+	"Recompile all classes, starting with given name."
+
+	| class |
+	Smalltalk forgetDoIts.
+	self allClassesDo:
+		[:class | class name >= firstName
+			ifTrue:
+				[Transcript show: class name; cr.
+				class compileAll]]
+
+	"Smalltalk recompileAllFrom: 'Aardvark'."!
+recompileCallsOn: aLiteral
+	"Recompile every message in the system that refers to aLiteral."
+
+	| special |
+	special _ self hasSpecialSelector: aLiteral ifTrueSetByte: [:byte ].
+	Cursor execute showWhile:
+		[self allBehaviorsDo:
+			[:class | (class whichSelectorsReferTo: aLiteral special: special byte: byte)
+				do: [:sel | sel ~~ #DoIt ifTrue: [class recompile: sel]]]]!
+recompileMethodsForWhich: aBlock
+	"Recompile all methods in the system for which aBlock evaluates to true.
+	For example,
+		Smalltalk recompileMethodsForWhich: [:meth | meth size=6]"
+
+	Cursor execute showWhile:
+		[self allBehaviorsDo:
+			[:class | class selectors do:
+				[:sel | (aBlock value: (class compiledMethodAt: sel))
+					ifTrue:
+						[Transcript show: class name , ' ' , sel; cr.
+						class recompile: sel]]]]!
+"-----------------------------------"!
+!SystemDictionary methodsFor: 'enumerating'!
+allBehaviorsDo: aBlock
+	"Evaluate the argument, aBlock, for each kind of Behavior in the system
+	(that is, Object and its subclasses)."
+	aBlock value: Object.
+	Object allSubclassesDo: aBlock!
+allClassesDo: aBlock
+	"Evaluate the argument, aBlock, for each class in the system."
+	(self classNames collect: [:name | Smalltalk at: name]) do: aBlock!
+pointersTo: anObject do: aBlock
+	"Evaluate the argument aBlock for each pointer to anObject in the system."
+
+	| me class obj method i fixedSize |
+	me _ thisContext.
+	Smalltalk allBehaviorsDo:
+		[:class | class isBits
+			ifTrue:
+				["Might be CompiledMethod"
+				class == CompiledMethod
+					ifTrue:
+						[class allInstancesDo:
+							[:method |
+							1 to: method numLiterals + 1 do:
+								[:i |
+								(method objectAt: i) == anObject
+									ifTrue: [aBlock value: method]]]]]
+			ifFalse:
+				[fixedSize _ class instSize.
+				class allInstancesDo:
+					[:obj |
+					1 to: (fixedSize + obj basicSize) do:
+						[:i |
+						((obj instVarAt: i) == anObject and: [obj ~~ me])
+							ifTrue: [aBlock value: obj]]]]].
+	me _ nil "Break cycle"!
+"-----------------------------------"!
+!SystemDictionary methodsFor: 'initialize-release'!
+install
+	"Get connected back up to the hardware after a snapshot or quit."
+
+	"Call the initialization code that depends on system parameters,
+	in case we are coming up on a system different from the one
+	that we quit or snapshot on."
+	CompiledMethod initialize.
+	SmallInteger initialize.
+	LargePositiveInteger initialize.
+	LargeNegativeInteger initialize.
+
+	DisplayScreen currentDisplay: Display.
+	Cursor currentCursor: Cursor currentCursor.
+	InputSensor install.
+	LowSpaceProcess == nil ifFalse: [LowSpaceProcess terminate].
+	LowSpaceSemaphore _ Semaphore new.
+	LowSpaceProcess _ [self lowSpaceNotificationLoop] newProcess.
+	LowSpaceProcess priority: Processor lowIOPriority.
+	LowSpaceProcess resume.
+	self resetSpaceLimits.!
+"-----------------------------------"!
+!SystemDictionary methodsFor: 'memory space'!
+core
+	"Answer an Array containing the number of objects in the system and the number
+	of words they occupy.
+			Smalltalk core"
+
+	| n nobjects nwords isBytes name |
+	nobjects _ nwords _ 0.
+	Smalltalk allBehaviorsDo:
+		[:class |
+		class isVariable
+			ifTrue:
+				[n _ 0.
+				isBytes _ class isBytes.
+				class allInstancesDo:
+					[:inst |
+					n _ n + 1.
+					nwords _
+						nwords + (isBytes
+									ifTrue: [inst basicSize + 1 // 2]
+									ifFalse: [inst basicSize])]]
+			ifFalse:
+				[n _ class isMeta
+						ifTrue: ["quicker" 1]
+						ifFalse: [class instanceCount]].
+		nobjects _ nobjects + n.
+		nwords _ nwords + (class instSize + 2 * n) "+2 for header"].
+	^Array with: nobjects with: nwords!
+coreLeft
+	"Answer the number of unallocated words in the object space.  Essential.
+	See Object documentation whatIsAPrimitive."
+
+	<primitive: 112>
+	self primitiveFailed!
+coreLeftLimit
+	"Answer the threashold at which the user is to be notified
+	that the system is low in core space."
+
+	^WordsLeftLimit!
+coreLeftLimit: newLimit
+	"Set newLimit to be the threashold at which the user is to be notified
+	that the system is low in core space."
+
+	WordsLeftLimit _ newLimit.
+	self resetLowSpaceSignal.
+	^newLimit!
+frills
+	"Answer whether the current Smalltalk is willing to work harder -
+	on slow machines, you may want to set Smalltalk frills: false"
+
+	^Frills!
+frills: aBoolean
+	"Set to true for more functionality on fast machines -
+	but on slow machines, you may want to set Smalltalk frills: false."
+
+	^Frills _ aBoolean!
+oopsLeft
+	"Answer the number of unallocated object pointers in the object
+	table.  Equal to the net number of objects which can be created before the
+	object table is full.  Essential.  See Object documentation whatIsAPrimitive."
+
+	<primitive: 115>
+	self primitiveFailed!
+oopsLeftLimit
+	"Answer the threashold at which the user is to be notified
+	that the system is low in number of oops."
+
+	^OopsLeftLimit!
+oopsLeftLimit: newLimit
+	"Set newLimit to be the threashold at which the user is to be notified
+	that the system is low in nubmer of oops."
+
+	OopsLeftLimit _ newLimit.
+	self resetLowSpaceSignal.
+	^newLimit!
+resetLowSpaceSignal
+	"The threasholds for notifying the user the space is low have changed so
+	update the system."
+	self signal: LowSpaceSemaphore
+		atOopsLeft: OopsLeftLimit
+		wordsLeft: WordsLeftLimit!
+resetSpaceLimits
+	"Reset the threashold on the number of oops and the core space at which
+	point the user should be notified."
+
+	OopsLeftLimit _ self oopsLeft // 4.
+	WordsLeftLimit _ self coreLeft // 4.
+	self resetLowSpaceSignal!
+signal: aSemaphore atOopsLeft: numOops wordsLeft: numWords
+	"Tell the object memory to signal the Semaphore when either the number
+	 of object pointers remaining drops below numOops, or the number of
+	words in the object space remaining drops below numWords.  Fail if the
+	frist argument is neither a Semaphore nor nil.  Fail if numOops is not a
+	16-bit Integer, or if numWords is not a 32-bit LargePositiveInteger.
+	Essential.  See Object documentation whatIsAPrimitive."
+
+	<primitive: 116>
+	self primitiveFailed!
+"-----------------------------------"!
+!SystemDictionary methodsFor: 'printing'!
+printOn: aStream
+	"Intercepted to avoid infinite recursion when #Smalltalk is reached."
+	| tooMany |
+	tooMany _ aStream position + self maxPrint.
+	aStream nextPutAll: self class name, ' keys ('.
+	self keysDo:
+		[:key |
+		aStream position > tooMany ifTrue: [aStream nextPutAll: '...etc...)'. ^self].
+		key printOn: aStream.
+		aStream space].
+	aStream nextPut: $)!
+"-----------------------------------"!
+!SystemDictionary methodsFor: 'private'!
+exitToDebugger
+	"Enter the machine language debugger, if one exists.  Essential.  See Object
+	documentation whatIsAPrimitive. "
+
+	<primitive: 114>
+	self primitiveFailed!
+lowSpaceNotificationLoop
+	[true]
+		whileTrue:
+			[LowSpaceSemaphore wait.
+			ScheduledControllers interruptName: 'Space is Low'.
+			self resetSpaceLimits]!
+quitPrimitive
+	"Exit to another operating system on the host machine, if one exists.  All
+	state changes in the object space since the last snapshot are lost.  Essential.
+	See Object documentation whatIsAPrimitive."
+
+	<primitive: 113>
+	self primitiveFailed!
+releaseExternalViews
+	SourceFiles==nil
+		ifFalse: [SourceFiles do: [:t | t==nil ifFalse: [t close]]].
+	Disk==nil ifFalse: [Disk close].
+	FileDirectory releaseExternalReferences!
+snapshotPrimitive
+	"Write the current state of the object memory on a file in the same format as
+	the Smalltalk-80 release.  The file can later be resumed, returning you to
+	this exact state.  Return normally after writing the file.  Essential.  See
+	Object documentation whatIsAPrimitive."
+
+	<primitive: 97>
+	self primitiveFailed!
+specialSelectors
+	"Used by SystemTracer only"
+
+	^SpecialSelectors!
+"-----------------------------------"!
+!SystemDictionary methodsFor: 'retrieving'!
+allCallsOn: aLiteral
+	"Answer a SortedCollection of all the methods that call on aLiteral."
+
+	| aSortedCollection special |
+	aSortedCollection _ SortedCollection new.
+	special _ self hasSpecialSelector: aLiteral ifTrueSetByte: [:byte ].
+	Cursor execute showWhile:
+		[self allBehaviorsDo:
+			[:class |
+			 (class whichSelectorsReferTo: aLiteral special: special byte: byte) do:
+				[:sel | sel ~~ #DoIt
+					ifTrue: [aSortedCollection add: class name , ' ' , sel]]]].
+	^aSortedCollection!
+allCallsOn: firstLiteral and: secondLiteral
+	"Answer a SortedCollection of all the methods that call on both aLiteral and
+	secondLiteral."
+
+	| aCollection secondArray firstSpecial secondSpecial |
+	aCollection _ SortedCollection new.
+	firstSpecial _ self hasSpecialSelector: firstLiteral ifTrueSetByte: [:firstByte].
+	secondSpecial _ self hasSpecialSelector: secondLiteral ifTrueSetByte: [:secondByte].
+	Cursor execute showWhile:
+		[self allBehaviorsDo:
+			[:class |
+			secondArray _ class whichSelectorsReferTo: secondLiteral special: secondSpecial byte: secondByte.
+			((class whichSelectorsReferTo: firstLiteral special: firstSpecial byte: firstByte) select:
+				[:aSel | (secondArray includes: aSel)]) do:
+						[:sel | aCollection add: class name , ' ' , sel]]].
+	^aCollection!
+allClassesImplementing: aSelector
+	"Answer an Array of all classes that implement the message aSelector."
+
+	| aCollection |
+	aCollection _ ReadWriteStream on: Array new.
+	self allBehaviorsDo:
+		[:class | (class includesSelector: aSelector)
+			ifTrue: [aCollection nextPut: class]].
+	^ aCollection contents!
+allImplementedMessages
+	"Answer a Set of all the messages that are sent by a method in the
+	system but are not implemented."
+
+	| aSet |
+	aSet _ Set new: (Symbol instanceCount * 1.5) truncated.
+	Cursor execute showWhile:
+		[self allBehaviorsDo: [:cl | cl selectors do: [:aSelector | aSet add: aSelector]]].
+	^aSet!
+allImplementorsOf: aSelector
+	"Answer a SortedCollection of all the methods that implement the message aSelector."
+
+	| aCollection |
+	aCollection _ SortedCollection new.
+	Cursor execute showWhile:
+		[self allBehaviorsDo:
+			[:class |
+			(class includesSelector: aSelector)
+				ifTrue: [aCollection add: class name, ' ', aSelector]]].
+	^aCollection!
+allSelect: aBlock
+	"Answer a SortedCollection of each method that, when used as the
+	block argument to aBlock, gives a true result."
+
+	| aCollection |
+	aCollection _ SortedCollection new.
+	Cursor execute showWhile:
+		[self allBehaviorsDo:
+			[:class | class selectors do:
+				[:sel | (aBlock value: (class compiledMethodAt: sel))
+					ifTrue: [aCollection add: class name , ' ' , sel]]]].
+	^aCollection!
+collectPointersTo: anObject
+	"Answer an Array of all occurrences in the system of pointers to the argument
+	anObject."
+
+	| some me |
+	some _ OrderedCollection new.
+	me _ thisContext.
+	self pointersTo: anObject do:
+		[:obj | (obj ~~ me) & (obj ~~ some) ifTrue: [some add: obj]].
+	me _ nil. "to avoid circularity"
+	^some asArray
+
+	"(Smalltalk collectPointersTo: Browser) inspect."!
+"-----------------------------------"!
+!SystemDictionary methodsFor: 'special selectors'!
+hasSpecialSelector: aLiteral ifTrueSetByte: aBlock
+	1 to: self specialSelectorSize do:
+		[:index |
+		(self specialSelectorAt: index) == aLiteral
+			ifTrue: [aBlock value: index + 16rAF. ^true]].
+	^false!
+specialNargsAt: anInteger
+	"Answer the number of arguments for the special selector at: anInteger"
+
+	^SpecialSelectors at: anInteger * 2!
+specialSelectorAt: anInteger
+	"Answer the special message selector stored at location anInteger in the
+	system dictionary."
+	^SpecialSelectors at: anInteger * 2 - 1!
+specialSelectorSize
+	"Answer the number of special selectors in the system."
+	^SpecialSelectors size // 2!
+"-----------------------------------"!
+!SystemDictionary methodsFor: 'system backup/out'!
+copyChangesTo: newFileName
+	"If the file name supplied is different than the current changes file name, copy the changes file and install the new copy as the changes file."
+
+	| oldName newFile |
+	SourceFiles == nil ifTrue: [^self].
+	oldName _ (SourceFiles at: 2) name.
+	oldName last = $. ifTrue: [oldName _ oldName copyFrom: 1 to: oldName size-1].
+	(newFileName sameAs: oldName) ifFalse:
+		[Transcript cr; show: 'Copying ', oldName,
+			' to ', newFileName, '...'.
+		(SourceFiles at: 2) close; readOnly; reset.
+		newFile _ FileStream fileNamed: newFileName.
+		Cursor write showWhile:
+			[newFile nextPutAll: (SourceFiles at: 2)].
+		newFile readOnly.
+		SourceFiles at: 2 put: newFile.
+		Transcript show: ' done'; cr]!
+getImagePrefix
+	"Prompt the user for a snapshot file name.  Persist until a legal name is supplied."
+
+	| default newPrefix prompt |
+	SourceFiles == nil
+		ifTrue: [^'snapshot'].
+	prompt _
+'Enter name for image file:'.
+	default _ 'snapshot'.
+	newPrefix _ ''.
+	FillInTheBlank
+		request: prompt
+		displayAt: Sensor cursorPoint
+		centered: true
+		action: [:newPrefix | ]
+		initialAnswer: default.
+
+	[newPrefix isEmpty or:
+			[(Disk isLegalFileName: newPrefix, '.changes') not]] whileTrue:
+		[newPrefix isEmpty ifTrue: [^newPrefix].
+		FillInTheBlank
+			request: prompt
+			displayAt: Sensor cursorPoint
+			centered: true
+			action: [:newPrefix | ]
+			initialAnswer: default.
+		(newPrefix size > 2 and:
+			[(newPrefix copyFrom: newPrefix size-2 to: newPrefix size) sameAs: '.im'])
+				ifTrue: [newPrefix _ newPrefix copyFrom: 1 to: newPrefix size-3].
+		prompt _
+'Illegal file name: ', newPrefix, '
+Enter name for image file:'.
+		default _ Disk checkName: newPrefix, '.changes' fixErrors: true.
+		default _ default copyFrom: 1 to: default size - 8].
+
+	^newPrefix!
+quit
+	"Close open files then exit to another operating system on the host machine,
+	if one exists.  All state changes in the object space since the last snapshot are lost."
+
+	self releaseExternalViews.
+	self quitPrimitive!
+saveAs: imagePrefix thenQuit: quitIfTrue
+	"Copy the changes file to the new name if necessary, then create a matching image file.  Answer true if the image file was just created."
+
+	Disk == nil
+		ifFalse:
+			[(imagePrefix sameAs: 'snapshot')
+					ifFalse: [self copyChangesTo: imagePrefix, '.changes']].
+	^self snapshotAs: imagePrefix thenQuit: quitIfTrue!
+shutdown
+	"Shut off the low space signal so that the Vmem writer can be sure the
+	system is stable while it is tracing."
+
+	self coreLeftLimit: 0.
+	self oopsLeftLimit: 0!
+snapshot
+	"Write the OT and Data of this Smalltalk out on the external file snapshot.im."
+
+	self snapshotAs: 'snapshot' thenQuit: false!
+snapshotAs: imageFilePrefix thenQuit: quitIfTrue
+	"Write the OT and Data of this Smalltalk out on an external file.  Answer true if the snapshot was just created."
+
+	| height justSnapped |
+	Cursor execute show.
+	self logChange: '''----SNAPSHOT----'''.
+	Disk == nil
+		ifFalse:	"install as snapshot file and update creation time"
+			[(FileStream fileNamed: imageFilePrefix, '.im') beSnapshotFile; readWrite; close].
+	self releaseExternalViews.
+	Transcript cr; show: 'Snapshot at: ', Time dateAndTimeNow printString.
+	height _ Display height.
+	DisplayScreen displayHeight: (height min: 100).  "Minimize display space on snapshot"
+	Delay preSnapshot.
+	Cursor wait show.
+	justSnapped _ self snapshotPrimitive isNil.
+	justSnapped & quitIfTrue
+		ifTrue:
+			[self quitPrimitive]
+		ifFalse:
+			[Delay postSnapshot.
+			DisplayScreen displayHeight: height.
+			self install].
+	Cursor normal show.
+	^justSnapped!
+"-----------------------------------"!
+!SystemDictionary methodsFor: 'system compression'!
+condenseChanges
+	"Move all the changes onto a compacted sources file.
+		Smalltalk condenseChanges."
+
+	| f fileName |
+	f _ Disk file: 'ST80.temp'.
+	f timeStamp.
+	Smalltalk allBehaviorsDo: [:class | class moveChangesTo: f].
+	f close.
+	f readOnly.
+	fileName _ (SourceFiles at: 2) name.
+	(SourceFiles at: 2) close.
+	SourceFiles at: 2 put: f.
+	Disk removeKey: fileName.
+	f file rename: fileName!
+forgetDoIts
+	"get rid of old DoIt methods"
+
+	Smalltalk allBehaviorsDo:
+		[:class |
+		class removeSelectorSimply: #DoIt;
+		removeSelectorSimply: #DoItIn:]
+
+	"Smalltalk forgetDoIts"!
+newSourceFile: vers without: setOfClasses
+	"Make a new source file omitting references to any classes in the set, setOfClasses.
+
+		Smalltalk newSourceFile: Smalltalk versionName without: (Array new).
+
+	Make sure versionName is updated.
+	Then rename the image similarly, and delete the old sources and changes."
+
+	| oldFile newFile class |
+	oldFile _ SourceFiles at: 1.
+	newFile _ Disk file: vers , '.sources'.
+	newFile timeStamp.
+	Smalltalk classNames do:
+		[:className |
+		class _ Smalltalk at: className.
+		(setOfClasses includes: class)
+			ifFalse:
+				[class
+					fileOutOn: newFile
+					moveSource: true
+					toFile: 1.
+				newFile nextPut: 12 asCharacter]].
+	newFile shorten; readOnly.
+	SourceFiles at: 1 put: newFile.
+	SourceFiles at: 2 put: (Disk file: vers , '.changes').
+	(SourceFiles at: 2) shorten; readOnly!
+renameSystemFiles: newVersion
+	"Rename the sources and changes and image files.
+
+		Smalltalk renameSystemFiles: Smalltalk versionName.
+
+	Then rename the relevant .run and .syms files manually."
+
+	| oldFile oldName oldVersion file |
+	oldFile _ SourceFiles at: 1.
+	oldName _ oldFile name.
+	oldVersion _ oldName copyFrom: 1 to: (oldName indexOf: $.)
+					- 1.
+	(SourceFiles at: 1) close.
+	SourceFiles at: 1 put: nil.
+	(SourceFiles at: 2) close.
+	SourceFiles at: 2 put: nil.
+	#('.sources' '.changes' '.im' ) do:
+		[:ext | (Disk file: oldVersion , ext) file rename: newVersion , ext].
+	1 to: 2 do:
+		[:i |
+		file _ Disk file: newVersion , (#('.sources' '.changes' ) at: i).
+		file readOnly.
+		SourceFiles at: i put: file]!
+"-----------------------------------"!
+!SystemDictionary methodsFor: 'time/versions'!
+copyright
+	"The Smalltalk copyright.
+			Copyright (c) 1983 Xerox Corp.  All rights reserved.
+	"
+
+	^'Copyright (c) 1983 Xerox Corp.  All rights reserved.'!
+timeStamp: aStream
+	"Writes system version and current time on stream aStream."
+
+	| dateTime |
+	dateTime _ Time dateAndTimeNow.
+	aStream nextPutAll: 'From ', Smalltalk version, ' on ', (dateTime at: 1) printString,
+						' at ', (dateTime at: 2) printString!
+version
+	"Answer the version of this Smalltalk release."
+
+	^'Smalltalk-80, version 2, of April 1, 1983'!
+versionName
+	"Answer the version identification, e.g. Smalltalk-80"
+
+	^'Smalltalk-80'!

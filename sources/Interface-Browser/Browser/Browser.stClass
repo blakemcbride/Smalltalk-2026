@@ -1,0 +1,560 @@
+Object subclass: #Browser
+  instanceVariableNames: 'organization category className meta protocol selector textMode'
+  classVariableNames: 'CategoryMenu ClassMenu MessageMenu MethodMoveCategory MethodMoveProtocol ProtocolMenu TextMenu'
+  poolDictionaries: ''
+  category: 'Interface-Browser'!
+Browser class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+Browser comment:
+'A browser represents a hierarchical query path which identifies a method to be examined.
+
+organization - a SystemOrganizer
+category - a selection from all categories in the organization.
+className - a selection from all classes in the category.
+meta - false for viewing normal methods, true for class methods.
+protocol - a selection from all protocols in the class.
+selector - a selection from all messages in the protocol.
+textMode - symbol indicating the nature of the currently viewed text.'!
+"-----------------------------------"!
+!Browser class methodsFor: 'class initialization'!
+flushMenus  "Browser flushMenus."
+	"Causes all menus to be newly created (so changes appear)"
+	MethodMoveProtocol _ 'protocol name'.
+	CategoryMenu _ nil.
+	ClassMenu _ nil.
+	MessageMenu _ nil.
+	ProtocolMenu _ nil.
+	TextMenu _ nil!
+"-----------------------------------"!
+!Browser class methodsFor: 'instance creation'!
+newOnClass: aClass
+	BrowserView openClassBrowserOn: (self new onClass: aClass)!
+"-----------------------------------"!
+!Browser methodsFor: 'category functions'!
+addCategory
+	| aString newCategory |
+	self changeRequest ifFalse: [^self].
+	aString _ self prompt: 'Enter new category name' initially: 'category name'.
+	aString isEmpty ifTrue: [^ self].
+	newCategory _ aString asSymbol.
+	organization addCategory: newCategory before: category.
+	Smalltalk changes reorganizeSystem.
+	self newCategoryList: newCategory!
+editCategories
+	self changeRequest ifFalse: [^self].
+	self textMode: #categories!
+fileOutCategory
+	organization fileOutCategory: category!
+printOutCategory
+	organization printOutCategory: category!
+removeCategory
+	| classes |
+	self changeRequest ifFalse: [^self].
+	classes _ organization superclassOrder: category.
+	classes isEmpty ifFalse:
+		[(self confirm: 'Are you certain that you want to
+remove all classes in this category?') ifFalse: [^self].
+		classes reverseDo: [:cls | cls removeFromSystem]].
+	organization removeCategory: category.
+	Smalltalk changes reorganizeSystem.
+	self newCategoryList: nil!
+renameCategory
+	| aString newCategory |
+	self changeRequest ifFalse: [^self].
+	aString _ self prompt: 'Enter new category name' initially: category.
+	aString isEmpty ifTrue: [^ self].
+	newCategory _ aString asSymbol.
+	(organization renameCategory: category to: newCategory)
+		ifTrue:
+			[Smalltalk changes reorganizeSystem.
+			self newCategoryList: newCategory]!
+spawnCategory
+	BrowserView openCategoryBrowserOn: self copy!
+updateCategories
+	self changeRequest ifFalse: [^self].
+	self newCategoryList: category!
+"-----------------------------------"!
+!Browser methodsFor: 'category list'!
+category
+	^ category!
+category: selection
+	category _ selection.
+	selection isNil ifTrue: [self textMode: nil].
+	self newClassList: className!
+categoryList
+	^ organization categories!
+categoryMenu
+	"Browser flushMenus"
+	category == nil ifTrue:
+		[^ ActionMenu labels: 'add category\update\edit all' withCRs
+					lines: #(1)
+					selectors: #(addCategory updateCategories editCategories )].
+	CategoryMenu == nil ifTrue:
+		[CategoryMenu _ ActionMenu
+			labels: 'file out\print out\spawn\add category\rename\remove\update\edit all' withCRs
+			lines: #(3 6)
+			selectors: #(fileOutCategory printOutCategory spawnCategory addCategory renameCategory removeCategory updateCategories editCategories)].
+	^ CategoryMenu!
+newCategoryList: initialSelection
+	category _ initialSelection.
+	self changed: #category!
+"-----------------------------------"!
+!Browser methodsFor: 'change management'!
+logProtocolChange: aString
+	"Add aString, which is an executable account of the last protocol change (rename,
+	remove, selector move) to the changes file."
+	| file |
+	SourceFiles == nil
+		ifFalse:
+			[file _ SourceFiles at: 2.
+			file setToEnd; readWriteShorten.
+			file cr; nextChunkPut: aString.
+			file cr; readOnly].!
+"-----------------------------------"!
+!Browser methodsFor: 'class functions'!
+acceptClass: aText from: aController
+	| oldClass class |
+	oldClass _ className == nil ifTrue: [Object] ifFalse: [self selectedClass].
+	class _ oldClass subclassDefinerClass
+				evaluate: aText string
+				notifying: aController
+				logged: true.
+	(class isKindOf: Behavior)
+		ifTrue: [self newClassList: class name.  ^true]
+		ifFalse: [^false]!
+browseClassReferences
+	Smalltalk browseAllCallsOn: (Smalltalk associationAt: className)!
+browseClassVariables
+	"Show a menu of all class variables of the currently selected class
+	and its superclasses.  Browse all methods which refer to the variable selected."
+	| association |
+	association _ self selectedClass
+		showVariableMenu: [:class | class classPool associations asSortedCollection]
+		collect: [:association | association key].
+	association notNil ifTrue:
+		[BrowserView
+			openListBrowserOn: (self selectedClass allCallsOn: association)
+			label: 'Users of ' , association key
+			initialSelection: association key]!
+browseFieldReferences
+	"Show a menu of all instance variables of the currently selected class
+	and its superclasses.  Browse all methods which refer to the variable selected."
+	| name |
+	name _ self selectedClass showVariableMenu: [:class | class instVarNames]
+				collect: [:name | name].
+	name notNil ifTrue:
+		[BrowserView
+			openListBrowserOn: (self selectedClass allAccessesTo: name)
+			label: name
+			initialSelection: name]!
+browseHierarchy
+	"I am a copy; put me in the right state to browse a hierarchy"
+	category _ '**Hierarchy**'.
+	self meta: false!
+classMode
+	^#(classDefinition hierarchy comment protocols) includes: textMode!
+editClass
+	self changeRequest ifFalse: [^self].
+	self textMode: #classDefinition.
+	self newProtocolList: nil!
+editComment
+	self changeRequest ifFalse: [^self].
+	self textMode: #comment.
+	self newProtocolList: nil!
+editProtocols
+	self changeRequest ifFalse: [^self].
+	self textMode: #protocols.
+	self newProtocolList: nil!
+fileOutClass
+	self nonMetaClass fileOut!
+nonMetaClass
+	^ meta
+		ifTrue: [self selectedClass soleInstance]
+		ifFalse: [self selectedClass]!
+printOutClass
+	self nonMetaClass printOut!
+promptClass
+	self newClassList: nil.
+	self textMode: #classDefinition!
+removeClass
+	| class |
+	self changeRequest ifFalse: [^self].
+	class _ self nonMetaClass.
+	(self confirm: 'Are you certain that you
+want to remove the class ', class name, '?')
+		ifTrue:
+		[class subclasses size > 0
+			ifTrue: [self notify: class name , ' has subclasses'].
+		class removeFromSystem.
+		self newClassList: nil]!
+renameClass
+	| aString newName cleanString |
+	self changeRequest ifFalse: [^self].
+	aString _ self prompt: 'Enter new ClassName' initially: self selectedClass name.
+	aString isEmpty ifTrue: [^self].
+	cleanString _ aString select: [:char | char isAlphaNumeric].
+	cleanString = aString
+		ifFalse: [aString _ cleanString.
+				(self confirm: 'Invalid characters in class name.  Should I use ', aString, '?')
+					ifFalse: [^self]].
+	aString first isUppercase
+		ifFalse: [aString at: 1 put: (aString at: 1) asUppercase.
+				(self confirm: 'Class names must be capitalized.  Should I use ', aString, '?')
+					ifFalse: [^self]].
+	newName _ aString asSymbol.
+	aString = self selectedClass name
+		ifFalse:
+			[self selectedClass rename: newName.
+		self newClassList: newName.
+		Transcript cr; show: 'Searching for references to this class...'.
+		self browseClassReferences]!
+showHierarchy
+	self changeRequest ifFalse: [^self].
+	self textMode: #hierarchy.
+	self newProtocolList: nil!
+spawnClass
+	BrowserView openClassBrowserOn: self copy!
+spawnHierarchy
+	BrowserView openCategoryBrowserOn: self copy browseHierarchy!
+"-----------------------------------"!
+!Browser methodsFor: 'class list'!
+classList
+	category == nil ifTrue: [^ nil].
+	category = '**Hierarchy**' ifTrue:
+		[^ (self selectedClass withAllSuperclasses reverse , self selectedClass allSubclasses)
+			collect: [:cls | cls name]].
+	^ organization listAtCategoryNamed: category!
+classMenu
+	"Browser flushMenus"
+	className == nil ifTrue: [^nil].
+	ClassMenu == nil ifTrue:
+		[ClassMenu _ ActionMenu
+			labels: 'file out\print out\spawn\spawn hierarchy
+hierarchy\definition\comment\protocols
+inst var refs\class var refs\class refs
+rename\remove' withCRs
+			lines: #(4 8 11)
+			selectors: #(fileOutClass printOutClass spawnClass spawnHierarchy
+showHierarchy editClass editComment editProtocols
+browseFieldReferences browseClassVariables browseClassReferences
+ renameClass removeClass)].
+	^ ClassMenu!
+className
+	^ className!
+className: selection
+	className _ selection.
+	self newProtocolList: protocol.
+	selection isNil & category notNil
+		ifTrue: [self textMode: #classDefinition]
+		ifFalse: [self classMode ifTrue: [self changed: #text]]!
+newClassList: initialSelection
+	className _ initialSelection.
+	self changed: #className!
+selectedClass
+	className == nil ifTrue: [^ nil].
+	meta
+		ifTrue: [^ (Smalltalk at: className) class]
+		ifFalse: [^ Smalltalk at: className]!
+"-----------------------------------"!
+!Browser methodsFor: 'class/inst switch'!
+meta
+	^ meta!
+meta: aBoolean
+	self changeRequest ifFalse: [^ self changed: #meta].
+	meta _ aBoolean.
+	self changed: #meta.
+	self newProtocolList: protocol.
+	self classMode ifTrue: [self changed: #text]!
+"-----------------------------------"!
+!Browser methodsFor: 'doIt/accept/explain'!
+acceptText: aText from: aController
+	textMode == #classDefinition ifTrue:
+		[^ self acceptClass: aText from: aController].
+	textMode == #methodDefinition ifTrue:
+		[^ self acceptMethod: aText from: aController].
+	textMode == #categories ifTrue:
+		[organization changeFromString: aText string.
+		self newCategoryList: category.
+		^true].
+	textMode == #protocols ifTrue:
+		[self selectedClass organization changeFromString: aText string.
+		self selectedClass reorganize.
+		self selectedClass logOrganizationChange.
+		self textMode: #protocol; newProtocolList: nil.
+		^ true].
+	textMode == #comment ifTrue:
+		[self selectedClass comment: aText string.
+		self textMode: #comment; newProtocolList: nil.
+		^ true].
+	textMode == #hierarchy ifTrue:
+		[aController flash].
+	^ false!
+doItContext
+	^ nil!
+doItReceiver
+	^ nil!
+explainSpecial: string
+	"Answer with a string explaining the code pane selection if it is
+	displaying one of the special edit functions."
+
+	| classes whole lits reply |
+	(textMode == #classDefinition)
+		ifTrue:
+			["Selector parts in class definition"
+			string last == $: ifFalse: [^nil].
+			lits _ Array with: #subclass:instanceVariableNames:classVariableNames:poolDictionaries:category:.
+			(whole _ lits detect: [:each | (each keywords
+					detect: [:frag | frag = string] ifNone: []) ~~ nil]
+						ifNone: []) ~~ nil
+				ifTrue: [reply _ '"' , string , ' is one part of the message selector ' , whole , '.']
+				ifFalse: [^nil].
+			classes _ Smalltalk allClassesImplementing: whole.
+			classes _ 'these classes ' , classes printString.
+			^reply , '  It is defined in ' , classes , '."
+Smalltalk browseAllImplementorsOf: #' , whole].
+
+	textMode == #hierarchy
+		ifTrue:
+			["Instance variables in subclasses"
+			classes _ self selectedClass allSubclasses.
+			classes _ classes detect: [:each | (each instVarNames
+						detect: [:name | name = string] ifNone: []) ~~ nil]
+					ifNone: [^nil].
+			classes _ classes printString.
+			^'"is an instance variable in class ' , classes , '."
+' , classes , ' browseAllAccessesTo: ''' , string , '''.'].
+	^nil!
+"-----------------------------------"!
+!Browser methodsFor: 'initialization'!
+on: anOrganizer
+	organization _ anOrganizer.
+	meta _ false!
+onClass: aClass
+	organization _ SystemOrganization.
+	className _ aClass isMeta
+			ifTrue: [aClass soleInstance name]
+			ifFalse: [aClass name].
+	meta _ aClass isMeta!
+"-----------------------------------"!
+!Browser methodsFor: 'protocol functions'!
+addProtocol
+	| aString newProtocol |
+	self changeRequest ifFalse: [^self].
+	aString _ self prompt: 'Enter new protocol name' initially: 'protocol name'.
+	aString isEmpty ifTrue: [^ self].
+	newProtocol _ aString asSymbol.
+	self selectedClass organization addCategory: newProtocol before: protocol.
+	self logProtocolChange: self selectedClass name, ' organization addCategory: ', newProtocol storeString, ' before: ', protocol storeString.
+	self selectedClass reorganize.
+	self newProtocolList: newProtocol!
+fileOutProtocol
+	self selectedClass fileOutCategory: protocol!
+printOutProtocol
+	self selectedClass printOutCategory: protocol!
+removeProtocol
+	| selectors |
+	self changeRequest ifFalse: [^self].
+	selectors _ self selectedClass organization listAtCategoryNamed: protocol.
+	selectors isEmpty ifFalse:
+		[(self confirm: 'Are you certain that you want to
+remove all methods in this protocol?') ifFalse: [^self].
+		selectors do: [:sel | self selectedClass removeSelector: sel]].
+	self selectedClass organization removeCategory: protocol.
+	self logProtocolChange: self selectedClass name, ' organization removeCategory: ', protocol storeString.
+	self selectedClass reorganize.
+	self newProtocolList: nil!
+renameProtocol
+	| aString newProtocol |
+	self changeRequest ifFalse: [^self].
+	aString _ self prompt: 'Enter new protocol name' initially: protocol.
+	aString isEmpty ifTrue: [^ self].
+	newProtocol _ aString asSymbol.
+	(self selectedClass organization renameCategory: protocol to: newProtocol)
+		ifTrue:
+			[self logProtocolChange: self selectedClass name, ' organization renameCategory: ', protocol storeString, ' to: ', newProtocol storeString.
+self selectedClass reorganize.
+			self newProtocolList: newProtocol]!
+spawnProtocol
+	BrowserView openProtocolBrowserOn: self copy!
+"-----------------------------------"!
+!Browser methodsFor: 'protocol list'!
+newProtocolList: initialSelection
+	protocol _ initialSelection.
+	self changed: #protocol!
+protocol
+	^ protocol!
+protocol: selection
+	protocol _ selection.
+	self classMode ifTrue: [^ self newSelectorList: nil].
+	selection isNil & className notNil ifTrue: [self textMode: #classDefinition].
+	self newSelectorList: selector!
+protocolList
+	className == nil ifTrue: [^ nil].
+	^ self selectedClass organization categories!
+protocolMenu
+	"Browser flushMenus"
+	protocol == nil ifTrue:
+		[^ ActionMenu labels: 'add protocol' selectors: #(addProtocol)].
+	ProtocolMenu == nil ifTrue:
+		[ProtocolMenu _ ActionMenu
+			labels: 'file out\print out\spawn\add protocol\rename\remove' withCRs
+			lines: #(3)
+			selectors: #(fileOutProtocol printOutProtocol spawnProtocol addProtocol renameProtocol removeProtocol)].
+	^ ProtocolMenu!
+"-----------------------------------"!
+!Browser methodsFor: 'selector functions'!
+acceptMethod: aText from: aController
+	| newSelector |
+	newSelector _ self selectedClass
+				compile: aText
+				classified: protocol
+				notifying: aController.
+	newSelector == nil ifTrue: [^false].
+	newSelector == selector
+		ifFalse: [self newSelectorList: newSelector].
+	^true!
+browseImplementors
+	Smalltalk browseAllImplementorsOf: selector!
+browseMessages
+	Smalltalk showMenuThenBrowse:
+		(self selectedClass compiledMethodAt: selector)
+			messages asSortedCollection!
+browseSenders
+	Smalltalk browseAllCallsOn: selector!
+fileOutMessage
+	self selectedClass fileOutMessage: selector!
+moveMethod
+	| newProtocol classPart destClass protStart moved destClassName |
+	self changeRequest ifFalse: [^self].
+	newProtocol _ self prompt: 'Type destination protocol
+(Class>protocol will copy)' initially: MethodMoveProtocol.
+	newProtocol isEmpty ifTrue: [^self].
+	MethodMoveProtocol _ newProtocol.
+	moved _ false.
+	(newProtocol includes: $>)
+		ifTrue:
+			["copy to another class"
+			classPart _ newProtocol copyUpTo: $>.
+			destClassName _ classPart copyUpTo: Character space.
+			destClass _ Smalltalk at: destClassName asSymbol ifAbsent: [nil].
+			(destClass isKindOf: ClassDescription)
+				ifFalse: [(Display flash: Display boundingBox). ^nil].
+			classPart size = destClassName size
+				ifFalse:
+					[(classPart size-destClassName size = 6
+						and: [(classPart copyFrom: classPart size - 5 to: classPart size) = ' class'])
+								ifTrue: [destClass _ destClass class]
+								ifFalse: [(Display flash: Display boundingBox). ^nil]].
+			protStart _ classPart size + 2.
+			[(newProtocol at: protStart) = $ ]
+				whileTrue: [protStart _ protStart + 1].
+			newProtocol _ (newProtocol copyFrom: protStart to: newProtocol size) asSymbol.
+			destClass == self selectedClass
+				ifFalse:
+					[moved _ true.
+					destClass compile: self text classified: newProtocol notifying: nil]]
+		ifFalse:
+			["move within this class"
+			destClass _ self selectedClass.
+			newProtocol _ newProtocol asSymbol].
+	moved
+		ifFalse:
+			[(destClass organization categories includes: newProtocol)
+				ifFalse:
+					[destClass organization addCategory: newProtocol.
+					self newProtocolList: protocol].
+			destClass organization classify: selector under: newProtocol.
+			self logProtocolChange: destClass name , ' organization classify: '
+								, selector storeString , ' under: ' , newProtocol storeString.
+			destClass reorganize].
+	self newSelectorList: selector!
+printOutMessage
+	self selectedClass printOutMessage: selector!
+removeMethod
+	(self changeRequest and: [self confirm: 'Are you certain that you
+want to remove this method?'])
+		ifTrue:
+			[self selectedClass removeSelector: selector.
+			self newSelectorList: nil.
+			^ true].
+	^ false!
+spawnEdits: aText from: aController
+	| newController |
+	newController _ aController copy.  "Copy gets the changes"
+	aController cancel; controlTerminate.   "Cancel changes in spawning browser"
+	selector == nil  "spawn full browser if not in a specific method"
+		ifTrue: [BrowserView openOn: self copy withController: newController]
+		ifFalse: [BrowserView openMethodBrowserOn: self copy withController: newController]!
+spawnMethod
+	BrowserView openMethodBrowserOn: self copy!
+"-----------------------------------"!
+!Browser methodsFor: 'selector list'!
+newSelectorList: initialSelection
+	selector _ initialSelection.
+	self changed: #selector!
+selector
+	^ selector!
+selector: selection
+	selector _ selection.
+	(selection == nil and: [protocol == nil]) ifTrue: [^ self].
+	self textMode: #methodDefinition!
+selectorList
+	protocol == nil ifTrue: [^ nil].
+	^ self selectedClass organization listAtCategoryNamed: protocol!
+selectorMenu
+	"Browser flushMenus"
+	selector == nil ifTrue: [^ nil].
+	MessageMenu == nil ifTrue:
+		[MessageMenu _ ActionMenu
+			labels: 'file out\print out\spawn\senders\implementors\messages\move\remove' withCRs
+			lines: #(3 6)
+			selectors: #(fileOutMessage printOutMessage spawnMethod browseSenders browseImplementors browseMessages moveMethod removeMethod)].
+	^ MessageMenu!
+"-----------------------------------"!
+!Browser methodsFor: 'text'!
+prompt: promptString initially: initialString
+	| aString |
+	FillInTheBlank
+		request: promptString , '
+then accept or CR'
+		displayAt: Sensor cursorPoint centered: false action: [:aString]
+		initialAnswer: initialString.
+	^ aString!
+text
+	| text |
+	textMode == #classDefinition ifTrue:
+		[className == nil
+			ifTrue: [^ (Class template: category) asText]
+			ifFalse: [^ self selectedClass definition asText]].
+	textMode == #methodDefinition ifTrue:
+		[selector == nil
+			ifTrue: [^ self selectedClass sourceCodeTemplate asText]
+			ifFalse: [^ (self selectedClass sourceCodeAt: selector) asText
+						makeSelectorBoldIn: self selectedClass]].
+	textMode == #category ifTrue:
+		[^ 'category to add' asText].
+	textMode == #categories ifTrue:
+		[^ organization printString asText].
+	textMode == #protocol ifTrue:
+		[^ 'protocol to add' asText].
+	textMode == #protocols ifTrue:
+		[^ self selectedClass organization printString asText].
+	textMode == #comment ifTrue:
+		[text _ self selectedClass comment asText.
+		text isEmpty ifFalse: [^ text].
+		^ 'This class has no comment' asText].
+	textMode == #hierarchy ifTrue:
+		[^ self selectedClass printHierarchy asText].
+	^ Text new!
+textMenu
+	"Browser flushMenus"
+	TextMenu == nil ifTrue:
+		[TextMenu _ ActionMenu
+			labels: 'again\undo\copy\cut\paste\do it\print it\accept\cancel\format\spawn\explain' withCRs
+			lines: #(2 5 7 9)
+			selectors: #(again undo copySelection cut paste doIt printIt accept cancel format spawnEdits:from: explain)].
+	^ TextMenu!
+textMode: aSymbol
+	textMode _ aSymbol.
+	self changed: #text!

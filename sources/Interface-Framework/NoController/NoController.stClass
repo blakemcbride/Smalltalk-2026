@@ -1,0 +1,21 @@
+Controller subclass: #NoController
+  instanceVariableNames: ''
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Interface-Framework'!
+NoController class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+NoController comment:
+'I represent a controller that never wants control.  I am the controller for views that are non-interactive.'!
+"-----------------------------------"!
+!NoController methodsFor: 'basic control sequence'!
+startUp
+	"I do nothing."
+	^self!
+"-----------------------------------"!
+!NoController methodsFor: 'control defaults'!
+isControlActive
+	^false!
+isControlWanted
+	^false!

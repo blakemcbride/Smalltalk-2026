@@ -1,0 +1,22 @@
+ClassRelatedChange subclass: #MethodChange
+  instanceVariableNames: 'selector category'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'System-Changes'!
+MethodChange class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+MethodChange comment:
+'Represents a change to a method (new definition or removal).'!
+"-----------------------------------"!
+!MethodChange methodsFor: 'accessing'!
+category
+	^category!
+category: aSymbol
+	category _ aSymbol asSymbol!
+parameters
+	^Array with: className with: selector!
+selector
+	^selector!
+selector: aSymbol
+	selector _ aSymbol asSymbol!

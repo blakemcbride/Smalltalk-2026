@@ -1,0 +1,247 @@
+BitBlt subclass: #Pen
+  instanceVariableNames: 'frame location direction penDown'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Graphics-Primitives'!
+Pen class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+Pen comment:
+'Pens can scribble on the screen, drawing and printing at any angle.'!
+"-----------------------------------"!
+!Pen class methodsFor: 'examples'!
+example
+	"Draws a spiral in gray with a pen that is 4 pixels wide."
+
+	| bic |
+	bic _ Pen new.
+	bic mask: Form gray.
+	bic defaultNib: 4.
+	bic combinationRule: Form under.
+	1 to: 50 do: [:i | bic go: i*4. bic turn: 89]
+	"Pen example"!
+"-----------------------------------"!
+!Pen class methodsFor: 'instance creation'!
+new
+	| quill |
+	quill _ super new.
+	quill destForm: Display.
+	quill frame: Display boundingBox.
+	quill sourceOrigin: 0@0.
+	quill mask: Form black.
+	quill defaultNib: 1.
+	quill combinationRule: Form paint.
+	quill down.
+	quill home.
+	quill north.
+	^quill!
+"-----------------------------------"!
+!Pen methodsFor: 'accessing'!
+direction
+	"Answer the receiver's current direction. 0 is towards the top of the screen."
+	^direction!
+frame
+	"Answer with the rectangle in which the receiver can draw."
+	^frame!
+frame: aRectangle
+	"Set the rectangle in which the receiver can draw."
+	frame _ aRectangle.
+	self clipRect: aRectangle!
+location
+	"Answer where the receiver is currently located."
+	^location!
+sourceForm: aForm
+	sourceForm _ aForm.
+	width _ aForm width.
+	height _ aForm height.!
+width: anInteger
+	"Setting width with this message is not allowed."
+
+	self error: 'Pen widths cannot be reset this way;  use defaultNib: or specify a new source form using sourceForm: '!
+"-----------------------------------"!
+!Pen methodsFor: 'coloring'!
+black
+	"Set the receiver's mask to the black form."
+	self mask: Form black!
+color: ignored
+	"Only meaningful for PressPens"!
+white
+	"Set the receiver's mask to the white form."
+	self mask: Form white!
+"-----------------------------------"!
+!Pen methodsFor: 'geometric designs'!
+dragon: order
+	"Draws a dragon curve of order order in the center of the screen.  Writes
+	directly into the display bitmap."
+
+	order = 0
+		ifTrue: [self go: 10]
+		ifFalse: [order > 0
+				ifTrue: [self dragon: order - 1; turn: 90; dragon: 1 - order]
+				ifFalse: [self dragon: -1 - order; turn: -90; dragon: 1 + order]]
+	"
+	Pen new dragon: 8.
+	"!
+filberts: n side: s
+	"Two Hilbert curve fragments back to back form a Hilbert tile.  Draw four
+	interlocking tiles of order n directly on the display.  (Can you fix this algorithm?)"
+
+	| n2 |
+	Display white.
+	n2 _ 1 bitShift: n - 1.
+	self up; go: 0 - n2 * s; down.
+	1 to: 4 do:
+		[:i |
+		self color: i - 1 * 40.
+		self
+			fillIn:
+				[self hilbert: n side: s.
+				self go: s.
+				self hilbert: n side: s.
+				self go: s].
+		self black.
+		self hilbert: n side: s.
+		self go: s.
+		self hilbert: n side: s.
+		self go: s.
+		self up.
+		self go: n2 - 1 * s.
+		self turn: -90.
+		self go: n2 * s.
+		self turn: 180.
+		self down]
+	"
+	Pen new filberts: 3 side: 10.
+	"!
+hilbert: n side: s
+	"Draws an nth lever Hilbert curve directly into the display bitmap.  A
+	Hilbert curve is a space-filling curve."
+
+	| a m |
+	n = 0 ifTrue: [^self turn: 180].
+	n > 0
+		ifTrue:
+			[a _ 90.
+			m _ n - 1]
+		ifFalse:
+			[a _ -90.
+			m _ n + 1].
+	self turn: a.
+	self hilbert: 0 - m side: s.
+	self turn: a; go: s.
+	self hilbert: m side: s.
+	self turn: 0 - a; go: s; turn: 0 - a.
+	self hilbert: m side: s.
+	self go: s; turn: a.
+	self hilbert: 0 - m side: s.
+	self turn: a
+	"
+	(Pen new) hilbert: 3 side: 8.
+	(Pen new sourceForm: Cursor wait) combinationRule: Form under;
+	hilbert: 3 side: 25.
+	"!
+hilberts: n
+	"Demonstrates the space-filling nature of Hilbert curves by drawing n
+	levers of nested curves on the screen."
+
+	| s |
+	self up; go: 128; down.
+	1 to: n do:
+		[:i |
+		s _ 256 bitShift: 0 - i.
+		self color: n - i * 40.
+		self defaultNib: n - i + 1.
+		self up; go: 0 - s // 2; turn: -90; go: s // 2; turn: 90; down.
+		self hilbert: i side: s.
+		self go: s.
+		self hilbert: i side: s.
+		self go: s]
+	"
+	Display white.  Pen new hilberts: 4.
+	"!
+mandala: npoints diameter: d
+	"On a circle of diameter d, place n points.  Draw all possible connecting
+	lines directly on the display."
+
+	| l points |
+	Display white.
+	l _ (3.14 * d / npoints) rounded.
+	self home; up; turn: -90; go: d // 2; turn: 90; go: 0 - l // 2.
+	points _ Array new: npoints.
+	1 to: npoints do:
+		[:i |
+		points at: i put: location.
+		self go: l; turn: 360 // npoints].
+	self down.
+	npoints // 2
+		to: 1
+		by: -1
+		do:
+			[:i |
+			self color: npoints // 2 - i * 20 \\ 250.
+			1 to: npoints do:
+				[:j |
+				self place: (points at: j).
+				self goto: (points at: j + i - 1 \\ npoints + 1)]]
+	"
+	Pen new mandala: 30 diameter: 400.
+	"!
+spiral: n angle: a
+	"Draw a double squiral directly on the display."
+	1 to: n do:
+		[:i |
+		self color: i * 2 \\ 256.
+		self go: i; turn: a]
+	"
+	Display white.  Pen new spiral: 200 angle: 89; home; spiral: 200
+		angle: -89.
+	"!
+"-----------------------------------"!
+!Pen methodsFor: 'initialize-release'!
+defaultNib: widthInteger
+	"Nib is the tip of a pen.  This is an easy way to set up a default pen."
+
+	self sourceForm: (Form dotOfSize: widthInteger)!
+"-----------------------------------"!
+!Pen methodsFor: 'moving'!
+down
+	"Set the state of the receiver's pen to down (drawing)."
+
+	penDown _ true!
+fillIn: aBlock
+	"Just draw the outline; PressPens fill it in"
+
+	^ aBlock value!
+go: distance
+	"Move the receiver in its current direction a number of bits equal to
+	the argument, distance.  If the pen is down, a line will be drawn using
+	the receiver's form source as the shape of the drawing brush."
+
+	| dir |
+	dir _ direction degreesToRadians.
+	dir _ dir cos @ dir sin.
+	self goto: dir * distance + location!
+goto: aPoint
+	"Move the receiver to position aPoint.  If the pen is down, a line will be drawn
+	from the current position to the new one using the receiver's form source as the
+	shape of the drawing brush.  The receiver's set direction does not change."
+
+	| old |
+	old _ location.
+	location _ aPoint.
+	penDown ifTrue: [self drawFrom: old to: location]!
+home
+	"Place the receiver at the center of its frame."
+	location _ frame center!
+north
+	"Set the receiver's direction to facing toward the top of the display screen."
+	direction _ 270.0!
+place: aPoint
+	"Set the receiver at position aPoint.  No lines are drawn."
+	location _ aPoint!
+turn: degrees
+	"Change the direction that the receiver faces by an amount equal to the argument, degrees."
+	direction _ (direction + degrees) \\ 360!
+up
+	"Set the state of the receiver's pen to up (not drawing)."
+	penDown _ false!

@@ -1,0 +1,42 @@
+Object subclass: #UndefinedObject
+  instanceVariableNames: ''
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Kernel-Objects'!
+UndefinedObject class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+UndefinedObject comment:
+'I describe the behavior of my sole instance, nil.  nil represents a prior value for variables that have not been initialized, or for results which are meaningless.'!
+"-----------------------------------"!
+!UndefinedObject class methodsFor: 'instance creation'!
+new
+	self error: 'You may not create any more undefined objects--use nil'!
+"-----------------------------------"!
+!UndefinedObject methodsFor: 'copying'!
+deepCopy
+	"Only one instance of UndefinedObject should ever be made, so answer
+	with self."!
+shallowCopy
+	"Only one instance of UndefinedObject should ever be made, so answer
+	with self."!
+"-----------------------------------"!
+!UndefinedObject methodsFor: 'dependents access'!
+addDependent: ignored
+	self error: 'Nil should not have dependents'!
+"-----------------------------------"!
+!UndefinedObject methodsFor: 'initialize-release'!
+release
+	"Nil release is a no-op"!
+"-----------------------------------"!
+!UndefinedObject methodsFor: 'printing'!
+printOn: aStream
+	aStream nextPutAll: 'nil'!
+storeOn: aStream
+	aStream nextPutAll: 'nil'!
+"-----------------------------------"!
+!UndefinedObject methodsFor: 'testing'!
+isNil
+	^true!
+notNil
+	^false!

@@ -1,0 +1,225 @@
+Object subclass: #PopUpMenu
+  instanceVariableNames: 'labelString font lineArray frame form marker selection'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Interface-Menus'!
+PopUpMenu class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+PopUpMenu comment:
+'I represent a list of items.  My instances are presented on the display screen in a rectangular area.  The user points to an item, pressing a mouse button;  the item is highlighted.  When the button is released, the highlighted item indicates the selection.
+
+Instance Variables:
+
+labelString	<String> of menu items
+font		<StrikeFont> for displaying the characters
+lineArray	<Array> of integers indicating where lines should be drawn in the menu
+frame	<Quadrangle>
+form	<Form> containing the composed paragraph
+marker	<Rectangle> used to highlight selection
+selection	<Integer> index into menu items;  if 0, no selection'!
+"-----------------------------------"!
+!PopUpMenu class methodsFor: 'instance creation'!
+labels: aString
+	"Answer an instance of me whose items are in aString."
+	^self labels: aString lines: nil!
+labels: aString lines: anArray
+	"Answer an instance of me whose items are in aString, with lines drawn
+	after each item indexed by anArray."
+	^ self new labels: aString font: (TextStyle default fontAt: 1) lines: anArray!
+"-----------------------------------"!
+!PopUpMenu methodsFor: 'accessing'!
+center
+	"Answer the point at the center of the receiver's rectangular area."
+	^frame center!
+height
+	"Answer the width of the receiver's rectangular area."
+	^frame height!
+reset
+	marker _  marker align: marker topLeft with: frame topLeft + frame borderWidth.
+	selection _ 0.!
+topLeft
+	"Answer the point at the topLeft of the receiver's rectangular area."
+	^frame topLeft!
+width
+	"Answer the width of the receiver's rectangular area."
+	^frame width!
+"-----------------------------------"!
+!PopUpMenu methodsFor: 'basic control sequence'!
+startUp
+	"Show the receiver and give control to the user to make a selection."
+	^self startUp: #anyButton!
+"-----------------------------------"!
+!PopUpMenu methodsFor: 'bordering'!
+borderWidth
+	"Answer the borderWidth of the receiver's rectangular area."
+	^frame borderWidth!
+"-----------------------------------"!
+!PopUpMenu methodsFor: 'controlling'!
+buttonPressed: aSymbol
+	"The argument indicates which button should be tested.  Answer whether
+	it is pressed."
+
+	aSymbol = #redButton ifTrue: [^Sensor redButtonPressed].
+	aSymbol = #yellowButton ifTrue: [^Sensor yellowButtonPressed].
+	aSymbol = #blueButton ifTrue: [^Sensor blueButtonPressed].
+	^Sensor anyButtonPressed!
+startUp: aSymbol
+	"Display and make a selection from the receiver as long as the button
+	denoted by the symbol, aSymbol, is pressed.  Answer the current selection."
+
+	self displayAt: Sensor cursorPoint
+		during: [Sensor cursorPoint: marker center.
+				[self buttonPressed: aSymbol] whileFalse: [].
+				[self buttonPressed: aSymbol] whileTrue: [self manageMarker]].
+	^selection!
+startUp: aSymbol withHeading: aText
+	"Display and make a selection from the receiver as long as the button
+	denoted by the symbol, aSymbol, is pressed.  Answer the current selection."
+
+	self displayAt: Sensor cursorPoint withHeading: aText
+		during: [Sensor cursorPoint: marker center.
+				[self buttonPressed: aSymbol]
+					whileFalse: [(frame containsPoint: Sensor cursorPoint) ifFalse: [Display flash: frame]].
+				[self buttonPressed: aSymbol]
+					whileTrue: [self manageMarker]].
+	^selection!
+startUpAndWaitForSelectionAt: aPoint
+	"Display and make a selection from the receiver as long as the button denoted
+	by the symbol, aSymbol, is pressed.  Answer the current selection."
+
+	  | upperLeft |
+
+	self displayAt: aPoint
+		during: [[(Sensor anyButtonPressed and: [frame inside containsPoint: Sensor cursorPoint])]
+					whileFalse: [].
+				[self buttonPressed: #anyButton]
+					whileTrue: [self manageMarker]].
+	^selection!
+startUpBlueButton
+	"Display and make a selection from the receiver as long as the blue button
+	is pressed."
+	^self startUp: #blueButton!
+startUpRedButton
+	"Display and make a selection from the receiver as long as the red button
+	is pressed."
+	^self startUp: #redButton!
+startUpYellowButton
+	"Display and make a selection from the receiver as long as the yellow button
+	is pressed."
+	^self startUp: #yellowButton!
+"-----------------------------------"!
+!PopUpMenu methodsFor: 'displaying'!
+displayAt: aPoint during: aBlock
+	"Display the receiver centered at aPoint while aBlock is evaluated.
+	If necessary, translate so the view is completely on the screen."
+
+	| delta savedArea |
+	frame _ frame align: marker center with: aPoint.
+	delta _ frame amountToTranslateWithin: Display boundingBox.
+	frame moveBy: delta.
+	marker _ marker align: marker center with: aPoint + delta.
+	savedArea _ Form fromDisplay: frame.
+	Display black: (frame origin + (1@1) corner: frame corner).
+	Display black: (frame origin corner: frame corner - (1@1)).
+	form displayOn: Display at: frame inside topLeft clippingBox: frame inside.
+	selection ~= 0 ifTrue: [Display reverse: marker].
+	aBlock value.
+	savedArea displayOn: Display at: frame topLeft!
+displayAt: aPoint withHeading: aText during: aBlock
+	"Display the receiver centered at aPoint while aBlock is evaluated.
+	If necessary, translate so the view is completely on the screen."
+
+	| delta savedArea heading headingBox headingSavedArea |
+	frame _ frame align: marker center with: aPoint.
+	heading _ aText asDisplayText.
+	headingBox _ heading boundingBox expandBy: 2.
+	headingBox _ headingBox
+			align: headingBox bottomCenter
+			with: frame topCenter + (0@2).
+	delta _ (frame merge: headingBox) amountToTranslateWithin: Display boundingBox.
+	frame moveBy: delta.
+	headingBox moveBy: delta.
+	marker _ marker align: marker center with: aPoint + delta.
+	savedArea _ Form fromDisplay: frame.
+	headingSavedArea _ Form fromDisplay: headingBox.
+	Display border: (headingBox) width: 2 mask: Form black.
+	heading displayAt: headingBox origin + (2@2).
+	Display black: (frame origin + (1@1) corner: frame corner).
+	Display black: (frame origin corner: frame corner - (1@1)).
+	form displayOn: Display at: frame inside topLeft clippingBox: frame inside.
+	selection ~= 0 ifTrue: [Display reverse: marker].
+	aBlock value.
+	savedArea displayOn: Display at: frame topLeft.
+	headingSavedArea displayOn: Display at: headingBox topLeft!
+"-----------------------------------"!
+!PopUpMenu methodsFor: 'marker adjustment'!
+manageMarker
+	"If the cursor is inside the receiver's frame, then highlight the marked item.
+	Otherwise no item is to be marked."
+
+	| aPoint |
+	aPoint _ Sensor cursorPoint.
+	(frame inside containsPoint: aPoint)
+		ifTrue: [self markerOn: aPoint]
+		ifFalse: [self markerOff]!
+markerOff
+	"No item is selected.  Reverse the highlight if any item has been marked as selected."
+	selection ~= 0
+		ifTrue:
+			[Display reverse: marker.
+			selection _ 0]!
+markerOn: aPoint
+	"The item whose bounding area contains aPoint should be marked as selected.
+	Highlight its area and set the selection to its index."
+
+	selection = 0 | (marker containsPoint: aPoint) not
+		ifTrue: [selection = 0 & (marker containsPoint: aPoint)
+					ifTrue: [Display reverse: marker]
+					ifFalse:
+						[selection ~= 0 ifTrue: [Display reverse: marker].
+						marker _
+							marker
+								align: marker topLeft
+								with: marker left @ (self markerTop: aPoint).
+						Display reverse: marker]].
+	selection _ marker top - frame top // marker height + 1!
+markerTop: aPoint
+	"Answer aPoint, gridded to lines in the receiver."
+
+	^(aPoint y - frame inside top truncateTo: font height) + frame inside top!
+"-----------------------------------"!
+!PopUpMenu methodsFor: 'private'!
+labels: aString font: aFont lines: anArray
+	| style labelPara |
+	labelString _ aString.
+	font _ aFont.
+	style _ TextStyle fontArray: (Array with: font).
+	style alignment: 2.  "centered"
+	style gridForFont: 1 withLead: 0.
+	labelPara _ Paragraph withText: aString asText style: style.
+	lineArray _ anArray.
+	form _ labelPara asForm.
+	frame _ Quadrangle new.
+	frame region: (labelPara compositionRectangle expandBy: 2).
+	frame borderWidth: (1@1 corner: 3@3).
+	lineArray == nil
+	  ifFalse:
+		[lineArray do:
+			[:line |
+			form fill: (0 @ (line * font height) extent: (frame width @ 1))
+				mask: Form black]].
+	marker _ frame inside topLeft extent: frame inside width @ labelPara lineGrid.
+	selection _ 0!
+rescan
+	"cause me to be recreated for system changes like fonts"
+
+	labelString == nil
+		ifFalse: [self labels: labelString font: font lines: lineArray]
+
+	"PopUpMenu allInstancesDo: [:x | x rescan]."!
+"-----------------------------------"!
+!PopUpMenu methodsFor: 'selecting'!
+selection
+	"Answer the current selection."
+	^selection!

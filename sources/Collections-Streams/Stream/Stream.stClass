@@ -1,0 +1,58 @@
+Object subclass: #Stream
+  instanceVariableNames: ''
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Collections-Streams'!
+Stream class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+Stream comment:
+'I am an abstract class representing objects that stream over a self typing data structure.'!
+"-----------------------------------"!
+!Stream class methodsFor: 'instance creation'!
+new
+	self error: 'Streams are created with on: and with:'!
+"-----------------------------------"!
+!Stream methodsFor: 'accessing'!
+contents
+	"Answer the contents of the receiver."
+	self subclassResponsibility!
+next
+	"Answer the next object in the receiver."
+	self subclassResponsibility!
+next: anInteger
+	"Answer an OrderedCollection of the next anInteger number of random numbers."
+	| aCollection |
+	aCollection _ OrderedCollection new.
+	anInteger timesRepeat: [aCollection addLast: self next].
+	^aCollection!
+next: anInteger put: anObject
+	"Put anObject into the next anInteger elements of the receiver."
+
+	anInteger timesRepeat: [self nextPut: anObject].
+	^anObject!
+nextMatchFor: anObject
+	"Gobble the next element and answer whether it is equal to anObject."
+
+	^anObject = self next!
+nextPut: anObject
+	"Insert the argument, anObject, at the next position in the receiver.
+	Answer anObject."
+	self subclassResponsibility!
+nextPutAll: aCollection
+	"Append the elements of aCollection onto the receiver.  Answer aCollection."
+
+	aCollection do: [:v | self nextPut: v].
+	^aCollection!
+"-----------------------------------"!
+!Stream methodsFor: 'enumerating'!
+do: aBlock
+	"Evaluate aBlock for each of the elements of the receiver."
+
+	[self atEnd]
+		whileFalse: [aBlock value: self next]!
+"-----------------------------------"!
+!Stream methodsFor: 'testing'!
+atEnd
+	"Answer whether the position is greater than or equal to the limit."
+	self subclassResponsibility!

@@ -1,0 +1,116 @@
+Controller subclass: #MouseMenuController
+  instanceVariableNames: 'redButtonMenu redButtonMessages yellowButtonMenu yellowButtonMessages blueButtonMenu blueButtonMessages'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Interface-Support'!
+MouseMenuController class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+MouseMenuController comment:
+'I am a Controller that modifies the scheduling of user activities so that the three mouse buttons can be used to make selections or display menus.  The menu items are unary messages to the value of sending my instance the message menuMessageReceiver.
+
+Instance Variables:
+	redButtonMenu			<PopUpMenu>
+	redButtonMessages		<Array> of Symbols, unary messages
+	yellowButtonMenu		<PopUpMenu>
+	yellowButtonMessages	<Array> of Symbols, unary messages
+	blueButtonMenu		<PopUpMenu>
+	blueButtonMessages		<Array> of Symbols, unary messages'!
+"-----------------------------------"!
+!MouseMenuController methodsFor: 'control defaults'!
+controlActivity
+	sensor redButtonPressed & self viewHasCursor
+		ifTrue: [^self redButtonActivity].
+	sensor yellowButtonPressed & self viewHasCursor
+		ifTrue: [^self yellowButtonActivity].
+	sensor blueButtonPressed & self viewHasCursor
+		ifTrue: [^self blueButtonActivity].
+	super controlActivity!
+isControlActive
+	^view containsPoint: sensor cursorPoint!
+"-----------------------------------"!
+!MouseMenuController methodsFor: 'initialize-release'!
+release
+	super release.
+	redButtonMenu release.
+	yellowButtonMenu release.
+	blueButtonMenu release!
+reset
+	"Eliminate references to all mouse button menus."
+
+	redButtonMenu _ nil.
+	redButtonMessages _ nil.
+	yellowButtonMenu _ nil.
+	yellowButtonMessages _ nil.
+	blueButtonMenu _ nil.
+	blueButtonMessages _ nil!
+"-----------------------------------"!
+!MouseMenuController methodsFor: 'menu messages'!
+blueButtonActivity
+	"Determine which item in the blue button pop-up menu is selected.
+	If one is selected, then send the corresponding message to the object
+	designated as the menu message receiver."
+
+	| index |
+	blueButtonMenu ~~ nil
+		ifTrue:
+			[index _ blueButtonMenu startUpBlueButton.
+			index ~= 0
+				ifTrue: [self menuMessageReceiver perform:
+							(blueButtonMessages at: index)]]
+		ifFalse: [super controlActivity]!
+menuMessageReceiver
+	"Answer the object that should be sent a message when a menu item is selected."
+	^ self!
+redButtonActivity
+	"Determine which item in the red button pop-up menu is selected.
+	If one is selected, then send the corresponding message to the object
+	designated as the menu message receiver."
+
+	| index |
+	redButtonMenu ~~ nil
+		ifTrue:
+			[index _ redButtonMenu startUpRedButton.
+			index ~= 0
+				ifTrue: [self menuMessageReceiver perform:
+							(redButtonMessages at: index)]]
+		ifFalse: [super controlActivity]!
+yellowButtonActivity
+	"Determine which item in the yellow button pop-up menu is selected.
+	If one is selected, then send the corresponding message to the object
+	designated as the menu message receiver."
+
+	| index |
+	yellowButtonMenu ~~ nil
+		ifTrue:
+			[index _ yellowButtonMenu startUpYellowButton.
+			index ~= 0
+				ifTrue: [self menuMessageReceiver perform:
+							(yellowButtonMessages at: index)]]
+		ifFalse: [super controlActivity]!
+"-----------------------------------"!
+!MouseMenuController methodsFor: 'menu setup'!
+blueButtonMenu: aSystemMenu blueButtonMessages: anArray
+	"Initialize the pop-up menu that should appear when the user presses
+	the blue mouse button to be aSystemMenu.  The corresponding messages
+	that should be sent are listed in the array, anArray."
+
+	blueButtonMenu release.
+	blueButtonMenu _ aSystemMenu.
+	blueButtonMessages _ anArray!
+redButtonMenu: aSystemMenu redButtonMessages: anArray
+	"Initialize the pop-up menu that should appear when the user presses
+	the red mouse button to be aSystemMenu.  The corresponding messages
+	that should be sent are listed in the array, anArray."
+
+	redButtonMenu release.
+	redButtonMenu _ aSystemMenu.
+	redButtonMessages _ anArray!
+yellowButtonMenu: aSystemMenu yellowButtonMessages: anArray
+	"Initialize the pop-up menu that should appear when the user presses
+	the yellow mouse button to be aSystemMenu.  The corresponding messages
+	that should be sent are listed in the array, anArray."
+
+	yellowButtonMenu release.
+	yellowButtonMenu _ aSystemMenu.
+	yellowButtonMessages _ anArray!

@@ -1,0 +1,97 @@
+Object subclass: #FileModel
+  instanceVariableNames: 'fileName'
+  classVariableNames: 'TextMenu'
+  poolDictionaries: ''
+  category: 'Interface-File Model'!
+FileModel class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+FileModel comment:
+'I represent an interface between a File and an editable view of it.  As a StringHolder, the string is the contents of the File.
+
+Instance Variables:
+	fileName	<String> The name of the file I am viewing.'!
+"-----------------------------------"!
+!FileModel class methodsFor: 'initialization'!
+flushMenus
+	TextMenu _ nil!
+"-----------------------------------"!
+!FileModel class methodsFor: 'instance creation'!
+fileStream: aFileStream
+	"Answer an instance of me on the argument, aFileStream."
+	^self new setFileStream: aFileStream!
+open: aFileModel named: aString
+	"Scheduled a view whose model is aFileModel and whose label is aString."
+	| topView |
+	topView _ StandardSystemView model: aFileModel label: aString minimumSize: 180 @ 180.
+	topView addSubView:
+			(CodeView on: aFileModel aspect: #text change: #acceptText:from:
+				menu: #textMenu initialSelection: nil)
+		in: (0@0 extent: 1@1) borderWidth: 1.
+	topView controller open!
+open: aFileModel named: aString withController: aController
+	"Scheduled a FileModel view with changes made in another editor."
+	| topView textView |
+	topView _ StandardSystemView model: aFileModel label: aString minimumSize: 180 @ 180.
+	textView _ CodeView on: aFileModel aspect: #text change: #acceptText:from:
+				menu: #textMenu initialSelection: nil.
+	textView controller: aController.
+	topView addSubView: textView in: (0@0 extent: 1@1) borderWidth: 1.
+	topView controller open!
+"-----------------------------------"!
+!FileModel methodsFor: 'doIt/accept/explain'!
+acceptText: aText from: aController
+	"Update the contents of the file stream with the receiver's contents.  If the file name does not include an explicit version number, create a new version."
+
+	Cursor write showWhile:
+		[((fileName includes: $!!)
+			ifTrue: [FileStream fileNamed: fileName]
+			ifFalse: [FileStream newFileNamed: fileName]) nextPutAll: aText string; close].
+	^true!
+doItContext
+	^ nil!
+doItReceiver
+	^ nil!
+"-----------------------------------"!
+!FileModel methodsFor: 'private'!
+setFileName: fullFileName
+	fileName _ fullFileName!
+setFileStream: aStream
+
+	aStream release.		"close, since later a new file stream will be created"
+	fileName _ aStream file fullName!
+"-----------------------------------"!
+!FileModel methodsFor: 'text'!
+text
+	| dir localName |
+	fileName == nil ifTrue: [^nil].
+	dir _ FileDirectory directoryFromName: fileName setFileName: [:localName].
+	(dir includesKey: localName) ifFalse:		"don't create file"
+		[^'-new file-' asText emphasizeFrom: 2 to: 9 with: 3].
+	^Cursor read showWhile:
+		[(FileStream oldFileNamed: fileName) contentsOfEntireFile asText]!
+textMenu
+	"FileModel flushMenus"
+	fileName == nil ifTrue: [^ nil].
+	TextMenu == nil ifTrue:
+		[TextMenu _ ActionMenu
+			labels: 'again\undo\copy\cut\paste\do it\print it\file it in\put\get' withCRs
+			lines: #(2 5 8 10)
+			selectors: #(again undo copySelection cut paste doIt printIt fileItIn:from: accept getNew:from:)].
+	^ TextMenu!
+"-----------------------------------"!
+!FileModel methodsFor: 'user protocol'!
+fileInFile
+	"Read the entire file as Smalltalk code."
+
+	(FileStream oldFileNamed: fileName) fileIn.!
+fileItIn: fullText from: controller
+	"Make a Stream on the text selection and fileIn it."
+	| selection |
+	selection _ controller selection.
+	(ReadWriteStream on: selection from: 1 to: selection size) fileIn!
+getNew: ignoreText from: aController
+	"Reinitialize the information the receiver models by re-reading the file stream."
+
+	self changeRequest ifFalse: [^ aController view flash].
+	self changed: #text!

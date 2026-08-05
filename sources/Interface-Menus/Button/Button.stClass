@@ -1,0 +1,27 @@
+Switch subclass: #Button
+  instanceVariableNames: ''
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Interface-Menus'!
+Button class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+Button comment:
+'I am a Switch that turns off automatically after being turned on, that is, I act like a push-button switch.'!
+"-----------------------------------"!
+!Button class methodsFor: 'instance creation'!
+newOn
+	self error: 'Buttons cannot be created in the on state'.
+	^nil!
+"-----------------------------------"!
+!Button methodsFor: 'state'!
+turnOff
+	"Sets the state of the receiver to 'off'.  The off action of the receiver is not
+	executed."
+
+	on _ false!
+turnOn
+	"The receiver remains in the 'off' state'."
+
+	self doAction: onAction.
+	self doAction: offAction!

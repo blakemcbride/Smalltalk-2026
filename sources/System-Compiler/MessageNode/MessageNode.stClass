@@ -1,0 +1,391 @@
+ParseNode subclass: #MessageNode
+  instanceVariableNames: 'receiver selector precedence special arguments sizes pc'
+  classVariableNames: 'MacroEmitters MacroSelectors MacroSizers MacroTransformers ThenFlag'
+  poolDictionaries: ''
+  category: 'System-Compiler'!
+MessageNode class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+MessageNode comment:
+'I represent a receiver and its message.
+
+Precedence codes:
+	1 unary
+	2 binary
+	3 keyword
+	4 other
+
+If special>0, I compile special code in-line instead of sending messages with literal methods as remotely copied contexts.'!
+"-----------------------------------"!
+!MessageNode class methodsFor: 'class initialization'!
+initialize
+	"MessageNode initialize."
+
+	MacroSelectors _
+		#(ifTrue: ifFalse: ifTrue:ifFalse: ifFalse:ifTrue:
+			and: or: whileFalse: whileTrue: ).
+	MacroTransformers _
+		#(transformIfTrue: transformIfFalse: transformIfTrueIfFalse:
+			transformIfFalseIfTrue: transformAnd: transformOr:
+			transformWhile: transformWhile: ).
+	MacroEmitters _
+		#(emitIf:on:value: emitIf:on:value: emitIf:on:value: emitIf:on:value:
+			emitIf:on:value: emitIf:on:value: emitWhile:on:value: emitWhile:on:value: ).
+	MacroSizers _
+		#(sizeIf:value: sizeIf:value: sizeIf:value: sizeIf:value: sizeIf:value:
+			sizeIf:value: sizeWhile:value: sizeWhile:value: )!
+"-----------------------------------"!
+!MessageNode methodsFor: 'code generation'!
+emitForEffect: stack on: strm
+	special > 0
+		ifTrue:
+			[self perform: (MacroEmitters at: special) with: stack with: strm with: false.
+			pc _ 0]
+		ifFalse:
+			[super emitForEffect: stack on: strm.
+			pc _ strm position]!
+emitForValue: stack on: strm
+	| argument |
+	special > 0
+		ifTrue:
+			[self perform: (MacroEmitters at: special) with: stack with: strm with: true.
+			pc _ 0]
+		ifFalse:
+			[receiver ~~ nil ifTrue: [receiver emitForValue: stack on: strm].
+			arguments do: [:argument | argument emitForValue: stack on: strm].
+			selector
+				emit: stack
+				args: arguments size
+				on: strm
+				super: receiver == NodeSuper.
+			pc _ strm position]!
+emitIf: stack on: strm value: forValue
+	"Emit code for <A> ifTrue: <B> ifFalse: <C>, with some optimizations"
+	| thenExpr thenSize elseExpr elseSize |
+	thenSize _ sizes at: 1.
+	elseSize _ sizes at: 2.
+	thenExpr _ arguments at: 1.
+	elseExpr _ arguments at: 2.
+	forValue
+		ifTrue:
+			["Everything is straightforward for value:  <A> bfp-C <B> jmp-end <C>"
+			receiver emitForValue: stack on: strm.
+			self emitBranch: thenSize pop: stack on: strm.
+			thenExpr emitForEvaluatedValue: stack on: strm.
+			stack pop: 1.
+			thenExpr returns ifFalse: [self emitJump: elseSize on: strm].
+			elseExpr emitForEvaluatedValue: stack on: strm]
+		ifFalse:
+			["If value not needed, check for possible shortcuts"
+			(thenSize=0) & (elseSize=0)  "null conditional"
+				ifTrue: [^ receiver emitForEffect: stack on: strm].
+			(elseSize = 0) | (thenSize = 0)
+				ifTrue:
+					[receiver emitForValue: stack on: strm.
+					(elseSize = 0)
+						ifTrue:
+							["Shortcut for ifTrue: only:  <A> bfp-end <B>"
+							self emitBranch: thenSize pop: stack on: strm.
+							thenExpr emitForEvaluatedEffect: stack on: strm]
+						ifFalse:
+							["Shortcut for ifFalse: only  <A> btp-end <C>"
+							self emitTrueBranch: elseSize pop: stack on: strm.
+							elseExpr emitForEvaluatedEffect: stack on: strm]]
+				ifFalse:
+					["If no shortcuts, then compile for value followed by pop"
+					super emitForEffect: stack on: strm]]!
+emitWhile: stack on: strm value: forValue
+	"Size code for <A> whileTrue: <B>, or <A> whileFalse: <B>"
+	| stmt stmtSize loopSize |
+	stmt _ arguments at: 1.
+	stmtSize _ sizes at: 1.  "Includes loop-back jump"
+	loopSize _ sizes at: 2.
+	receiver emitForEvaluatedValue: stack on: strm.
+	selector key == #whileTrue:
+		ifTrue: [self emitBranch: stmtSize pop: stack on: strm]
+		ifFalse: [self emitTrueBranch: stmtSize pop: stack on: strm].
+	stmt emitForEvaluatedEffect: stack on: strm.
+	self emitJump: 0 - loopSize on: strm.
+	forValue ifTrue: [strm nextPut: LdNil. stack push: 1]!
+pc
+	"used by encoder source mapping"
+
+	^pc!
+sizeForEffect: encoder
+	special > 0
+		ifTrue: [^self perform: (MacroSizers at: special) with: encoder with: false].
+	^super sizeForEffect: encoder!
+sizeForValue: encoder
+	| arg total argSize |
+	special > 0
+		ifTrue: [^self perform: (MacroSizers at: special) with: encoder with: true].
+	receiver == NodeSuper
+		ifTrue: [selector _ selector copy "only necess for splOops"].
+	total _ selector size: encoder args: arguments size super: receiver == NodeSuper.
+	receiver == nil
+		ifFalse: [total _ total + (receiver sizeForValue: encoder)].
+	sizes _ arguments collect:
+					[:arg |
+					argSize _ arg sizeForValue: encoder.
+					total _ total + argSize.
+					argSize].
+	^total!
+sizeIf: encoder value: forValue
+	"Size code for <A> ifTrue: <B> ifFalse: <C>, with some optimizations"
+	| thenExpr thenSize elseExpr elseSize noElse noThen |
+	thenExpr _ arguments at: 1.
+	elseExpr _ arguments at: 2.
+	forValue
+		ifTrue:
+			["Everything is straightforward for value:  <A> bfp-C <B> jmp-end <C>"
+			elseSize _ elseExpr sizeForEvaluatedValue: encoder.
+			thenSize _ (thenExpr sizeForEvaluatedValue: encoder)
+						+ (thenExpr returns
+								ifTrue: [0]
+								ifFalse: [self sizeJump: elseSize])]
+		ifFalse:
+			["If value not needed, check for possible shortcuts"
+			(noElse _ elseExpr isJust: NodeNil) | (noThen _ thenExpr isJust: NodeNil)
+				ifFalse:  "If no shortcuts, then compile for value followed by pop"
+					[^ super sizeForEffect: encoder].
+			elseSize _ noElse
+				ifTrue: [0]
+				ifFalse: [elseExpr sizeForEvaluatedEffect: encoder].
+			thenSize _ noThen
+				ifTrue: [0]
+				ifFalse:	[thenExpr sizeForEvaluatedEffect: encoder]].
+	sizes _ Array with: thenSize with: elseSize.
+	(thenSize=0) & (elseSize=0)  "null conditional"
+		ifTrue: [^ receiver sizeForEffect: encoder].
+	^ (receiver sizeForValue: encoder)
+			+ (thenSize=0
+				ifTrue: [2 "BTP is long"]
+				ifFalse: [self sizeBranch: thenSize])
+			+ thenSize + elseSize!
+sizeWhile: encoder value: forValue
+	"Size code for <A> whileTrue: <B>, or <A> whileFalse: <B>"
+	| cond stmt branchSize stmtSize loopSize |
+	stmt _ arguments at: 1.
+	stmtSize _ (stmt sizeForEvaluatedEffect: encoder) + 2. "loop jump is 2 bytes"
+	selector key == #whileTrue:
+		ifTrue: [branchSize _ self sizeBranch: stmtSize]
+		ifFalse: [branchSize _ 2 "BTP is always 2 bytes"].
+	loopSize _ (receiver sizeForEvaluatedValue: encoder) + branchSize + stmtSize.
+	sizes _ Array with: stmtSize with: loopSize.
+	^ loopSize + (forValue ifTrue: [1] ifFalse: [0]) "push nil (for value) takes 1 byte"!
+"-----------------------------------"!
+!MessageNode methodsFor: 'debugger temp access'!
+isTemp
+	"Sorry, folks, for now you cant use remote temps in blocks"
+	"This could be fixed by supporting store protocol for the case of assignment
+	into virtual fields in BlockNode sizeForValue and emitForValue"
+	^ false!
+store: expr from: encoder
+	"ctxt tempAt: n -> ctxt tempAt: n put: expr (see Assignment).
+	For assigning into temps of a context being debugged"
+	selector key ~= #tempAt:
+		ifTrue: [^self error: 'cant transform this message'].
+	^MessageNode new
+		receiver: receiver
+		selector: #tempAt:put:
+		arguments: (arguments copyWith: expr)
+		precedence: precedence
+		from: encoder!
+"-----------------------------------"!
+!MessageNode methodsFor: 'expression types'!
+cascadeReceiver
+	"nil out rcvr (to indicate cascade) and return what it had been"
+
+	| rcvr |
+	rcvr _ receiver.
+	receiver _ nil.
+	^rcvr!
+"-----------------------------------"!
+!MessageNode methodsFor: 'initialize-release'!
+receiver: rcvr selector: selNode arguments: args precedence: p
+	"decompile"
+
+	self receiver: rcvr
+		arguments: args
+		precedence: p.
+	special _ MacroSelectors indexOf: selNode key.
+	selector _ selNode!
+receiver: rcvr selector: selName arguments: args precedence: p from: encoder
+	"compile"
+
+	self receiver: rcvr
+		arguments: args
+		precedence: p.
+	special _  MacroSelectors indexOf: selName.
+	(self transform: encoder)
+		ifTrue:
+			[selector _ SelectorNode new
+							key: (MacroSelectors at: special)
+							code: #macro]
+		ifFalse:
+			[selector _ encoder encodeSelector: selName.
+			rcvr == NodeSuper ifTrue: [encoder noteSuper]]!
+receiver: rcvr selector: selName arguments: args precedence: p from: encoder sourceRange: range
+	"compile"
+
+	encoder noteSourceRange: range forNode: self.
+	^self
+		receiver: rcvr
+		selector: selName
+		arguments: args
+		precedence: p
+		from: encoder!
+"-----------------------------------"!
+!MessageNode methodsFor: 'printing'!
+precedence
+	^precedence!
+printIfOn: aStream indent: level
+	(arguments last isJust: NodeNil) ifTrue:
+		[^self printKeywords: #ifTrue: arguments: (Array with: arguments first)
+					on: aStream indent: level].
+	(arguments last isJust: NodeFalse) ifTrue:
+		[^self printKeywords: #and: arguments: (Array with: arguments first)
+					on: aStream indent: level].
+	(arguments first isJust: NodeNil) ifTrue:
+		[^self printKeywords: #ifFalse: arguments: (Array with: arguments last)
+					on: aStream indent: level].
+	(arguments first isJust: NodeTrue) ifTrue:
+		[^self printKeywords: #or: arguments: (Array with: arguments last)
+					on: aStream indent: level].
+	self printKeywords: #ifTrue:ifFalse: arguments: arguments
+					on: aStream indent: level!
+printKeywords: key arguments: args on: aStream indent: level
+	| keywords part prev arg indent thisKey |
+	args size = 0
+		ifTrue: [aStream space; nextPutAll: key. ^self].
+	keywords _ key keywords.
+	prev _ receiver.
+	1 to: args size do:
+		[:part | arg _ args at: part.
+		thisKey _ keywords at: part.
+		(prev isMemberOf: BlockNode)
+		 | ((prev isMemberOf: MessageNode) and: [prev precedence >= 3])
+		 | ((arg isMemberOf: BlockNode) and: [arg isComplex and: [thisKey ~= #do:]])
+		 | (args size > 2)
+		 | (key = #ifTrue:ifFalse:)
+			ifTrue: [aStream crtab: level+1. indent _ 1] "newline after big args"
+			ifFalse: [aStream space. indent _ 0].
+		aStream nextPutAll: thisKey; space.
+		arg  printOn: aStream indent: level + 1 + indent
+			 precedence: (precedence = 2 ifTrue: [1] ifFalse: [precedence]).
+		prev _ arg]!
+printOn: aStream indent: level
+	receiver == nil
+		ifFalse: [receiver printOn: aStream indent: level precedence: precedence].
+	(special between: 1 and: 6)
+		ifTrue:
+			[self printIfOn: aStream indent: level]
+		ifFalse:
+			[self
+				printKeywords: selector key
+				arguments: arguments
+				on: aStream
+				indent: level]!
+printOn: strm indent: level precedence: p
+	| parenthesize |
+	parenthesize _
+		precedence > p or: [p = 3 and: [precedence = 3 "both keywords"]].
+	parenthesize ifTrue: [strm nextPutAll: '('].
+	self printOn: strm indent: level.
+	parenthesize ifTrue: [strm nextPutAll: ')']!
+"-----------------------------------"!
+!MessageNode methodsFor: 'private'!
+checkBlock: node as: nodeName from: encoder
+	node canBeSpecialArgument ifTrue: [^node isMemberOf: BlockNode].
+	((node isKindOf: BlockNode) and: [node numberOfArguments > 0])
+		ifTrue:	[^encoder notify: '<- ', nodeName , ' of ' ,
+					(MacroSelectors at: special) , ' must be 0-argument block']
+		ifFalse: [^encoder notify: '<- ', nodeName , ' of ' ,
+					(MacroSelectors at: special) , ' must be a block or variable']!
+receiver: rcvr arguments: args precedence: p
+	receiver _ rcvr.
+	arguments _ args.
+	sizes _ Array new: arguments size.
+	precedence _ p!
+transform: encoder
+	special = 0 ifTrue: [^false].
+	(self perform: (MacroTransformers at: special) with: encoder)
+		ifTrue:
+			[^true]
+		ifFalse:
+			[special _ 0. ^false]!
+transformAnd: encoder
+	(self transformBoolean: encoder)
+		ifTrue:
+			[arguments _
+				Array
+					with: (arguments at: 1)
+					with: (BlockNode new
+								statements: (Array with: NodeFalse)
+								returns: false).
+			^true]
+		ifFalse:
+			[^false]!
+transformBoolean: encoder
+	^self
+		checkBlock: (arguments at: 1)
+		as: 'argument'
+		from: encoder!
+transformIfFalse: encoder
+	(self transformBoolean: encoder)
+		ifTrue:
+			[arguments _
+				Array
+					with: (BlockNode new
+							statements: (Array with: NodeNil)
+							returns: false)
+					with: (arguments at: 1).
+			^true]
+		ifFalse:
+			[^false]!
+transformIfFalseIfTrue: encoder
+	((self checkBlock: (arguments at: 1) as: 'False arg' from: encoder)
+		and: [self checkBlock: (arguments at: 2) as: 'True arg' from: encoder])
+		ifTrue:
+			[selector _ #ifTrue:ifFalse:.
+			arguments swap: 1 with: 2.
+			^true]
+		ifFalse:
+			[^false]!
+transformIfTrue: encoder
+	(self transformBoolean: encoder)
+		ifTrue:
+			[arguments _
+				Array
+					with: (arguments at: 1)
+					with: (BlockNode new
+								statements: (Array with: NodeNil)
+								returns: false).
+			^true]
+		ifFalse:
+			[^false]!
+transformIfTrueIfFalse: encoder
+	^(self checkBlock: (arguments at: 1) as: 'True arg' from: encoder)
+		and: [self checkBlock: (arguments at: 2) as: 'False arg' from: encoder]!
+transformOr: encoder
+	(self transformBoolean: encoder)
+		ifTrue:
+			[arguments _
+				Array
+					with: (BlockNode new
+								statements: (Array with: NodeTrue)
+								returns: false)
+					with: (arguments at: 1).
+			^true]
+		ifFalse:
+			[^false]!
+transformWhile: encoder
+	^(self transformBoolean: encoder)
+		and: [self checkBlock: receiver as: 'receiver' from: encoder]!
+"-----------------------------------"!
+!MessageNode methodsFor: 'testing'!
+canCascade
+	^(receiver == NodeSuper or: [special > 0]) not!
+isReturningIf
+	^(special between: 3 and: 4)
+		and: [arguments first returns and: [arguments last returns]]!

@@ -1,0 +1,291 @@
+Object subclass: #FilePage
+  instanceVariableNames: 'file page binary'
+  classVariableNames: ''
+  poolDictionaries: 'FilePool'
+  category: 'Files-Abstract'!
+FilePage class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+FilePage comment:
+'I represent a fixed size page or record of data from a File.  My instance is uniquely identified within its File by its pageNumber.
+
+The normal layout of a FilePage is as a ByteArray, which begins with some header information (e.g. serial number, page number, size), some data with possible leftover allocation, and some trailer information: pageSize = headerSize + size + (dataSize - size) + trailerSize.  In the current implementations, all FilePages (except possibly the last page) of a File are full (i.e. no unused data allocation).  This assumption is also reflected in File characterSize, and in FileStream positioning methods.  Given the current implementation of ByteArrays and Strings, each page has a type (binary or text).  The messages asStream: and fromStream: do the necessary conversion.
+
+Instance Variables:
+	file		<File> that contains the instance
+	page	<Integer> the number of the instance
+	binary 	<Boolean> true if content of page is binary, else it is text'!
+"-----------------------------------"!
+!FilePage class methodsFor: 'documentation'!
+documentation
+	"My subclasses are expected to implement the following messages.  These are
+	provided as self subclassResponsibility.  Some are optional for implementation,
+	depending on the representation of the actual file page;  for some, defaults are
+	provided.
+
+	testing
+		size
+	page initialization
+		pageNumber:
+	page accessing
+		[optional] address
+		[optional] address:
+		[optional] pageNumber
+		[optional] pageNumber:
+		[optional] serialNumber:
+	page testing
+		[default] dataSize
+		[default] headerSize
+		[default] trailerSize
+	file/page/directory implementation
+		size:
+"!
+"-----------------------------------"!
+!FilePage methodsFor: 'accessing'!
+at: aByteIndex
+	"Answer the data byte associated with aByteIndex."
+
+	^page at: (self dataIndex: aByteIndex size: 1)!
+at: aByteIndex put: aByte
+	"Put the date byte, aByte, at location aByteIndex.  Answer aByte."
+	^page at: (self dataIndex: aByteIndex size: 1) put: aByte!
+size
+	"Answer the number of data characters the receiver contains
+	(0 <= self size <= self dataSize)"
+
+	^self subclassResponsibility!
+wordAt: aWordIndex
+	"Answer the data word associated with aWordIndex."
+
+	^page wordAt: (self dataIndex: aWordIndex size: 2)!
+wordAt: aWordIndex put: aWord
+	"Put aWord at location aWordIndex.  Answer aWord."
+	^page wordAt: (self dataIndex: aWordIndex size: 2) put: aWord!
+"-----------------------------------"!
+!FilePage methodsFor: 'converting'!
+asFileStream: aStream
+	"Initialize aStream (typically a FileStream) to access the data portion of the receiver
+	-- this is the normal way to access characters and words.
+	Pages which segment data and header can do this differently."
+
+	| offset len sourceData destData |
+	len _ self size.
+	offset _ self headerSize.
+	sourceData _ self dataString.
+	binary
+		ifTrue: [^aStream
+					on: sourceData
+					from: offset + 1
+					to: offset + len"self dataBeginning"
+					"self dataEnd"].
+	destData _ String new: self dataSize.
+	destData replaceFrom: 1 to: len withByteArray: sourceData startingAt: offset+1.
+	^aStream on: destData from: 1 to: len!
+fromFileStream: aStream
+	"Copy data into page; pages which separate data and header can do this differently"
+	| sourceData destData offset |
+	binary
+		ifFalse:
+			[offset _ self headerSize.
+			sourceData _ aStream contents.
+			destData _ self dataString.
+			destData
+				replaceFrom: offset + 1
+				to: offset+ self size
+				withString: sourceData
+				startingAt: 1]!
+"-----------------------------------"!
+!FilePage methodsFor: 'file accessing'!
+endFile
+	"Answer the result of making the receiver be the last page of its file."
+
+	^file endFile: self!
+file
+	"Answer with the receiver's file."
+
+	^file!
+"-----------------------------------"!
+!FilePage methodsFor: 'file modes'!
+binary
+	"Set the receiver's information type to be binary."
+	binary _ true!
+text
+	"Set the receiver's information type to be ascii characters."
+	binary _ false!
+"-----------------------------------"!
+!FilePage methodsFor: 'file status'!
+reinitialize
+	"Reset the receiver to its initial status."
+	page == nil ifTrue: [page _ self allocatePage].
+	self size: 0!
+reopen
+	"Reopen the receiver's file and reinitialize the receiver onto it."
+
+	file reopen.
+	file initPage: self!
+"-----------------------------------"!
+!FilePage methodsFor: 'file testing'!
+isBinary
+	"Answer whether the information in the receiver is stored in binary format."
+	^binary!
+isText
+	"Answer whether the information in the receiver is stored as ascii characters."
+	^binary == false!
+"-----------------------------------"!
+!FilePage methodsFor: 'file/page/directory implementation'!
+doCommand: command error: s
+	"Answer the result of executing a command on the receiver."
+
+	^file doCommand: command page: self error: s!
+size: aByteIndex
+	"Set the number of data characters the receiver contains to be aByteIndex.
+	aByteIndex <= dataSize on last page; aByteIndex = dataSize on earlier
+	pages)."
+
+	^self subclassResponsibility!
+"-----------------------------------"!
+!FilePage methodsFor: 'nonhomogeneous accessing'!
+headerWordAt: n
+	"Answer the n-th header word;  default is that it is at the beginning of
+	page."
+
+	^page wordAt: n!
+headerWordAt: n put: v
+	"Set and answer n-th header word."
+
+	^page wordAt: n put: v!
+pageWordAt: aWordIndex
+	"Answer the word associated with aWordIndex in the page as a whole,
+	ignoring header, data and trailer boundaries"
+
+	^page wordAt: aWordIndex!
+pageWordAt: aWordIndex put: aWord
+	"Set and answer the word associated with aWordIndex in the page as a whole,
+	ignoring header, data and trailer boundaries."
+
+	^page wordAt: aWordIndex put: aWord!
+readPageNumber: aPageNumber
+	"Answer the result of file reading a page into the receiver."
+
+	self pageNumber: aPageNumber.
+	self size: 0.
+	^file read: self!
+write
+	"Answer the result of writing the receiver onto its file."
+	^file write: self!
+"-----------------------------------"!
+!FilePage methodsFor: 'page accessing'!
+address
+	"Answer the disk address for the receiver.  This need only be defined for
+	those subclasses which have access to an address, probably for local
+	disks and not for remote file servers"
+
+	self subclassResponsibility!
+address: addressNumber
+	"Set the receiver's disk address."
+
+	self subclassResponsibility!
+dataBeginning
+	"Answer the index in the receiver for the first element of data-1."
+
+	binary
+		ifTrue: [^self headerSize]
+		ifFalse: [^0]!
+dataEnd
+	"Answer the character index for the last character of actual data."
+
+	^self dataBeginning + self size!
+dataEnd: aPageIndex
+	"Set the end of the data in the receiver."
+
+	^self size: aPageIndex - self dataBeginning!
+dataMaxEnd
+	"Answer the maximum possible data byte index."
+
+	^self dataBeginning + self dataSize!
+dataString
+	"Answer a string containing the data."
+
+	^page!
+page
+	"Answer the receiver's page"
+
+	^page!
+pageNumber
+	"Answer the receiver's page number, an Integer."
+
+	^self subclassResponsibility!
+pageNumber: anInteger
+	"Set the receiver's page number."
+
+	^self subclassResponsibility!
+serialNumber
+	"Answer the serial number of the receiver's page."
+
+	^file serialNumber!
+serialNumber: aSN
+	"Set the serial number of the receiver's page."
+
+	^self subclassResponsibility!
+"-----------------------------------"!
+!FilePage methodsFor: 'page initialization'!
+file: aFile
+	"Set the receiver's file to be aFile."
+	file _ aFile!
+file: aFile page: aByteArray
+	"Set the receiver's file to be aFile, and its page to contain aByteArray."
+	file _ aFile.
+	page _ aByteArray.
+	self reinitialize!
+page: aByteArray
+	"Set the receiver's page to contain aByteArray."
+	page _ aByteArray!
+"-----------------------------------"!
+!FilePage methodsFor: 'page testing'!
+dataSize
+	"Answer the maximum size of data (in characters) in the receiver's page."
+	^512!
+headerSize
+	"Answer the size of the receiver's header in characters."
+
+	^0!
+isFull
+	"Answer whether the receiver has no more room at the end for more data."
+	^self size = self dataSize!
+lastPage
+	"Answer whether the receiver is at the last page in its file."
+
+	^self pageNumber >= file lastPageNumber!
+pageSize
+	"Answer the total size of the receiver's page, in bytes."
+
+	^self headerSize + self dataSize + self trailerSize!
+trailerSize
+	"Answer the size of trailer in bytes."
+
+	^0!
+"-----------------------------------"!
+!FilePage methodsFor: 'private'!
+allocatePage
+	"allocate a page buffer"
+
+	^ByteArray new: self pageSize"this is a default"!
+dataIndex: index size: nBytes
+	"Answer with an index offset properly into page, unless index would be
+	out of bounds.   nBytes = 1 for characters; nBytes = 2 for words"
+
+	(index > 0 and: [index <= (self size // nBytes)])
+		ifTrue: [^(self headerSize // nBytes) + index]
+		ifFalse: [self error: 'index out of bounds']!
+readOrAddPageNumber: aPageNumber
+	"answer with the result of file reading a page or creating a page into me"
+
+	self pageNumber: aPageNumber.
+	self size: 0.
+	^file readOrAdd: self!
+"-----------------------------------"!
+!FilePage methodsFor: 'testing'!
+isEmpty
+	"Answer whether this page has no data."
+
+	^self size = 0!

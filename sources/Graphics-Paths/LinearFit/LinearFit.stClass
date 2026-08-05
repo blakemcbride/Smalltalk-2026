@@ -1,0 +1,62 @@
+Path subclass: #LinearFit
+  instanceVariableNames: ''
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Graphics-Paths'!
+LinearFit class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+LinearFit comment:
+'A subclass of Path that is a piece-wise linear
+				approximation to a set of points in the plane.'!
+"-----------------------------------"!
+!LinearFit class methodsFor: 'examples'!
+example
+	"Select points on a Path using the red button.  Terminate by selecting any other
+	button.  Creates a Path from the points and displays it as a piece-wise linear
+	approximation."
+
+	| aLinearFit aForm flag |
+	aLinearFit _ LinearFit new.
+	aForm _ Form new extent: 1 @ 40.
+	aForm  black.
+	aLinearFit form: aForm.
+	flag _ true.
+	[flag] whileTrue:
+		[Sensor waitButton.
+		 Sensor redButtonPressed
+			ifTrue: [aLinearFit add: Sensor waitButton. Sensor waitNoButton.
+					aForm displayOn: Display at: aLinearFit last]
+			ifFalse: [flag_false]].
+	aLinearFit displayOn: Display
+
+	"LinearFit example."!
+"-----------------------------------"!
+!LinearFit methodsFor: 'displaying'!
+displayOn: aDisplayMedium at: aPoint clippingBox: clipRect rule: anInteger mask: aForm
+	| pt line |
+	line _ Line new.
+	line form: self form.
+	1 to: self size - 1 do:
+		[:i |
+		line beginPoint: (self at: i).
+		line endPoint: (self at: i + 1).
+		line displayOn: aDisplayMedium
+			at: aPoint
+			clippingBox: clipRect
+			rule: anInteger
+			mask: aForm]!
+displayOn: aDisplayMedium transformation: aTransformation clippingBox: clipRect rule: anInteger mask: aForm
+
+	| newLinearFit transformedPath |
+	"get the scaled and translated Path."
+	transformedPath _ aTransformation applyTo: self.
+	newLinearFit _ LinearFit new.
+	transformedPath do: [:point | newLinearFit add: point].
+	newLinearFit form: self form.
+	newLinearFit
+		displayOn: aDisplayMedium
+		at: 0 @ 0
+		clippingBox: clipRect
+		rule: anInteger
+		mask: aForm!

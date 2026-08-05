@@ -1,0 +1,124 @@
+ParagraphEditor subclass: #StringHolderController
+  instanceVariableNames: 'isLockingOn'
+  classVariableNames: 'CodeYellowButtonMenu CodeYellowButtonMessages'
+  poolDictionaries: ''
+  category: 'Interface-Text'!
+StringHolderController class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+StringHolderController comment:
+'I represent a ParagraphEditor for a single paragraph of text, omitting alignment commands.  I provide items in the yellow button menu so that the text selection can be evaluated and so that the contents of the model can be stored or restored.
+	doIt -- evaluate the text selection as an expression
+	printIt -- same as doIt but insert a description of the result after the selection
+	accept -- store the contents of the StringHolder into the model
+	cancel -- store the contents of the model into the StringHolder
+
+Instance Variables:
+	isLockingOn	<Boolean> true if the view has been editted so that it should not
+					be closed without warning the user.'!
+"-----------------------------------"!
+!StringHolderController class methodsFor: 'class initialization'!
+initialize
+	"Initialize the yellow button pop-up menu and corresponding messages."
+
+	CodeYellowButtonMenu _
+		PopUpMenu
+			labels:
+'again
+undo
+copy
+cut
+paste
+do it
+print it
+accept
+cancel'
+		lines: #(2 5 7).
+	CodeYellowButtonMessages _
+		#(again undo copySelection cut paste doIt printIt accept cancel)
+	"StringHolderController initialize"!
+"-----------------------------------"!
+!StringHolderController methodsFor: 'editing'!
+insertAndSelect: aString at: anInteger
+	self selectAt: anInteger.
+	self deselect.
+	self replaceSelectionWith: (' ' , aString) asText.
+	self selectAndScroll!
+"-----------------------------------"!
+!StringHolderController methodsFor: 'initialize-release'!
+initialize
+	super initialize.
+	isLockingOn _ true!
+"-----------------------------------"!
+!StringHolderController methodsFor: 'lock access'!
+isLockingOff
+	"Answer whether no unsaved modifications have been carried out using
+	the receiver."
+	^isLockingOn not!
+isLockingOn
+	"Answer whether unsaved modifications have been carried out using the receiver."
+	^isLockingOn!
+lockModel
+	"If the receiver is lock, do so to the receiver's model."
+	isLockingOn ifTrue: [model lock]!
+turnLockingOff
+	"Turn off the receiver's indication that it is locked."
+	isLockingOn _ false!
+turnLockingOn
+	"Turn on the receiver's indication that it is locked."
+	isLockingOn _ true!
+unlockModel
+	"If the receiver is locked, then the model probably is, but should not be, so
+	unlock the model."
+	isLockingOn ifTrue: [model unlock]!
+"-----------------------------------"!
+!StringHolderController methodsFor: 'menu messages'!
+accept
+	super accept.
+	model contents: paragraph string.
+	self unlockModel!
+cancel
+	super cancel.
+	self unlockModel!
+doIt
+	"Treat the current text selection as an expression; evaluate it"
+
+	| result |
+	self controlTerminate.
+	result _
+		model doItReceiver class evaluatorClass new
+				evaluate: self selectionAsStream
+				in: model doItContext
+				to: model doItReceiver
+				notifying: self
+				ifFail:
+					[self controlInitialize.
+					^#failedDoit].
+	Smalltalk logChange: self selection string.
+	self controlInitialize.
+	^result!
+printIt
+	"Treat the current text selection as an expression;  evaluate it.  Insert
+	the description of the result of evaluation after the selection and then make this
+	description the new text selection."
+
+	| result |
+	result _ self doIt.
+	result ~~ #failedDoit
+		ifTrue: [self afterSelectionInsertAndSelect: result printString]!
+"-----------------------------------"!
+!StringHolderController methodsFor: 'model access'!
+model: aModel
+	super model: aModel.
+	view displayContents == nil
+		ifFalse: [self changeParagraph: view displayContents]!
+"-----------------------------------"!
+!StringHolderController methodsFor: 'private'!
+afterSelectionInsertAndSelect: aString
+	self insertAndSelect: aString at: stopBlock stringIndex!
+initializeYellowButtonMenu
+	self yellowButtonMenu: CodeYellowButtonMenu
+		yellowButtonMessages: CodeYellowButtonMessages!
+replaceSelectionWith: aText
+	super replaceSelectionWith: aText.
+	self lockModel!

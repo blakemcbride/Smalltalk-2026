@@ -1,0 +1,47 @@
+StringHolderController subclass: #TextCollectorController
+  instanceVariableNames: ''
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Interface-Transcript'!
+TextCollectorController class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+TextCollectorController comment:
+'I am a kind of StringHolderController (a ParagraphEditor) that adds the doIt, printIt, accept, and cancel commands.  I do not change the yellow button menu.  I do add methods for accepting text that was generated from Stream-like messages to the model, a TextCollector'!
+"-----------------------------------"!
+!TextCollectorController methodsFor: 'entry control'!
+appendEntry
+	"Append the text in the model's writeStream to the editable text."
+	"revised 9/14/82 SBP"
+
+	view topView isCollapsed
+		ifTrue:
+			[paragraph text replaceFrom: 1 to: paragraph text size with: model contents]
+		ifFalse:
+			[self deselect.
+			paragraph text size > model characterLimit ifTrue:
+				[paragraph removeFirstChars: paragraph text size - (model characterLimit//2)].
+			self selectWithoutComp: paragraph text size + 1.
+			self replaceSelectionWith: model nextEntry asText.
+			self selectWithoutComp: paragraph text size + 1.
+			self selectAndScroll.
+			self deselect.
+			model contents: paragraph text]!
+changeText: aText
+	"The paragraph to be edited is changed to aText."
+
+	paragraph text: aText.
+	self resetState.
+	self selectWithoutComp: paragraph text size + 1.
+	self selectAndScroll.
+	paragraph displayOn: Display.
+	self deselect!
+viewToTop
+	"Bring the view to top in z of screen."
+
+	view topView isCollapsed ifFalse: [view display].!
+"-----------------------------------"!
+!TextCollectorController methodsFor: 'private'!
+selectWithoutComp: characterIndex
+	startBlock _ paragraph characterBlockForIndex: characterIndex.
+	stopBlock _ startBlock copy!

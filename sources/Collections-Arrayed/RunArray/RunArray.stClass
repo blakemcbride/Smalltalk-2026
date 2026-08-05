@@ -1,0 +1,172 @@
+ArrayedCollection subclass: #RunArray
+  instanceVariableNames: 'runs values'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Collections-Arrayed'!
+RunArray class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+RunArray comment:
+'RunArrays provide space-efficient storage of data which tends to be constant over long runs of the possible indices.  runs is an array of Integers, and each indicates the number of indices over which the corresponding value (in values) is constant.'!
+"-----------------------------------"!
+!RunArray class methodsFor: 'instance creation'!
+new
+	^self runs: Array new values: Array new!
+new: size withAll: value
+	"Answer a new instance of me, whose every element is equal to the argument,
+	value."
+
+	size = 0 ifTrue: [^self new].
+	^self runs: (Array with: size) values: (Array with: value)!
+readFrom: aStream
+	"Answer a new instance of RunArray as described on the stream, aStream"
+
+	| size runs values |
+	size _ aStream nextWord.
+	runs _ Array new: size.
+	values _ Array new: size.
+	1 to: size do:
+		[:x |
+		runs at: x put: aStream nextWord.
+		values at: x put: aStream nextWord].
+	^ self runs: runs values: values!
+runs: newRuns values: newValues
+	"Answer a new instance of RunArray with runs and values specified
+	by the arguments."
+
+	| instance |
+	instance _ self basicNew.
+	instance setRuns: newRuns setValues: newValues.
+	^instance!
+"-----------------------------------"!
+!RunArray methodsFor: 'accessing'!
+at: index
+	| run offset value |
+	self at: index setRunOffsetAndValue: [:run :offset :value | ^value]!
+runLengthAt: index
+	"Answer the length remaining in run beginning at index."
+
+	| run offset value |
+	self at: index
+		setRunOffsetAndValue: [:run :offset :value | ^(runs at: run) - offset]!
+size
+	| size |
+	size _ 0.
+	runs do: [:run | size _ size + run].
+	^size!
+values
+	"Answer the values in the receiver."
+	^values!
+"-----------------------------------"!
+!RunArray methodsFor: 'adding'!
+addFirst: value
+	"Add value as the first element of the receiver."
+
+	(runs size=0 or: [values first ~= value])
+	  ifTrue:
+		[runs_ (Array with: 1) , runs.
+		values_ (Array with: value) , values]
+	  ifFalse:
+		[runs at: 1 put: runs first+1]!
+addLast: value
+	"Add value as the last element of the receiver."
+
+	(runs size=0 or: [values last ~= value])
+	  ifTrue:
+		[runs_ runs copyWith: 1.
+		values_ values copyWith: value]
+	  ifFalse:
+		[runs at: runs size put: runs last+1]!
+"-----------------------------------"!
+!RunArray methodsFor: 'copying'!
+, aRunArray
+	"Answer a new RunArray that is a concatenation of the receiver and aRunArray."
+
+	| new newRuns |
+	(aRunArray isMemberOf: RunArray)
+		ifFalse:
+			[new _ self copy.
+			"attempt to be sociable"
+			aRunArray do: [:each | new addLast: each].
+			^new].
+	runs size = 0 ifTrue: [^aRunArray copy].
+	aRunArray runs size = 0 ifTrue: [^self copy].
+	values last ~= aRunArray first
+		ifTrue: [^RunArray
+					runs: runs , aRunArray runs
+					values: values , aRunArray values].
+	newRuns _ runs
+					copyReplaceFrom: runs size
+					to: runs size
+					with: aRunArray runs.
+	newRuns at: runs size put: runs last + aRunArray runs first.
+	^RunArray
+		runs: newRuns
+		values:
+			(values
+				copyReplaceFrom: values size
+				to: values size
+				with: aRunArray values)!
+copyFrom: start to: stop
+	| run1 offset1 value1 run2 offset2 value2 newRuns |
+	stop < start ifTrue: [^RunArray new].
+	self at: start setRunOffsetAndValue: [:run1 :offset1 :value1 | value1].
+	self at: stop setRunOffsetAndValue: [:run2 :offset2 :value2 | value2].
+	run1 = run2
+		ifTrue:
+			[newRuns _ Array with: offset2 - offset1 + 1]
+		ifFalse:
+			[newRuns _ runs copyFrom: run1 to: run2.
+			newRuns at: 1 put: (newRuns at: 1) - offset1.
+			newRuns at: newRuns size put: offset2 + 1].
+	^RunArray runs: newRuns values: (values copyFrom: run1 to: run2)!
+copyReplaceFrom: start to: stop with: replacement
+	^(self copyFrom: 1 to: start - 1)
+		, replacement
+		, (self copyFrom: stop + 1 to: self size)!
+"-----------------------------------"!
+!RunArray methodsFor: 'fileIn/Out'!
+writeOn: aStream
+	aStream nextWordPut: runs size.
+	1 to: runs size do:
+		[:x |
+		aStream nextWordPut: (runs at: x).
+		aStream nextWordPut: (values at: x)]!
+"-----------------------------------"!
+!RunArray methodsFor: 'printing'!
+storeOn: aStream
+	aStream nextPut: $(.
+	aStream nextPutAll: self class name.
+	aStream nextPutAll: ' runs: '.
+	runs storeOn: aStream.
+	aStream nextPutAll: ' values: '.
+	values storeOn: aStream.
+	aStream nextPut: $)!
+"-----------------------------------"!
+!RunArray methodsFor: 'private'!
+at: index setRunOffsetAndValue: aBlock
+	"Supply all run information to aBlock."
+
+	| run limit position |
+	" Tolerates index=0 and index=size+1 for copyReplace:"
+	run _ 1.
+	limit _ runs size.
+	position _ index.
+	[run <= limit and: [position > (runs at: run)]]
+		whileTrue:
+			[position _ position - (runs at: run).
+			run _ run + 1].
+	run > limit
+		ifTrue:
+			["adjustment for size+1"
+			run _ run - 1.
+			position _ position + (runs at: run)].
+	^aBlock
+		value: run	"an index into runs and values"
+		value: position - 1	"zero-based offset from beginning of this run"
+		value: (values at: run)	"value for this run"!
+runs
+	^runs!
+setRuns: newRuns setValues: newValues
+	runs _ newRuns.
+	values _ newValues!

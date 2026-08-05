@@ -1,0 +1,123 @@
+Number subclass: #Fraction
+  instanceVariableNames: 'numerator denominator'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Numeric-Numbers'!
+Fraction class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+Fraction comment:
+'I represent some rational number as a fraction.  All public arithmetic operations return reduced fractions.'!
+"-----------------------------------"!
+!Fraction class methodsFor: 'instance creation'!
+numerator: numInteger denominator: denInteger
+	"Answer a new Fraction denInteger/numInteger."
+
+	^self new setNumerator: numInteger denominator: denInteger!
+"-----------------------------------"!
+!Fraction methodsFor: 'arithmetic'!
+* aFraction
+	(aFraction isMemberOf: Fraction)
+		ifTrue: [^(Fraction
+					numerator: numerator * aFraction numerator
+					denominator: denominator * aFraction denominator)
+					reduced]
+		ifFalse: [^self retry: #* coercing: aFraction]!
++ aFraction
+	| commonDenominator newNumerator |
+	(aFraction isMemberOf: Fraction)
+		ifTrue:
+			[denominator = aFraction denominator
+				ifTrue: [^(Fraction
+							numerator: numerator + aFraction numerator
+							denominator: denominator) reduced].
+			commonDenominator _ denominator lcm: aFraction denominator.
+			newNumerator _ numerator
+								* (commonDenominator / denominator)
+								+ (aFraction numerator *
+									(commonDenominator / aFraction denominator)).
+			^(Fraction
+				numerator: newNumerator
+				denominator: commonDenominator) reduced]
+		ifFalse: [^self retry: #+ coercing: aFraction]!
+- aFraction
+	(aFraction isMemberOf: Fraction)
+		ifTrue: [^self + aFraction negated]
+		ifFalse: [^self retry: #- coercing: aFraction]!
+/ aFraction
+	(aFraction isMemberOf: Fraction)
+		ifTrue: [^self * aFraction reciprocal]
+		ifFalse: [^self retry: #/ coercing: aFraction]!
+negated
+	^Fraction numerator: numerator negated denominator: denominator!
+reciprocal
+	numerator = 0 ifTrue: [self error: '0 has no reciprocal'].
+	numerator = 1 ifTrue: [^denominator].
+	numerator = -1 ifTrue: [^denominator negated].
+	^Fraction numerator: denominator denominator: numerator!
+"-----------------------------------"!
+!Fraction methodsFor: 'coercing'!
+coerce: aNumber
+	^aNumber asFraction!
+generality
+	^60!
+"-----------------------------------"!
+!Fraction methodsFor: 'comparing'!
+< aFraction
+	(aFraction isMemberOf: Fraction)
+		ifTrue: [aFraction numerator = 0
+				ifTrue: [^numerator < 0]
+				ifFalse: [^self - aFraction < 0]]
+		ifFalse: [^self retry: #< coercing: aFraction]!
+= aFraction
+	(aFraction isMemberOf: Fraction)
+		ifTrue: [aFraction numerator = 0
+				ifTrue: [^numerator = 0]
+				ifFalse: [^aFraction numerator = numerator
+							and: [aFraction denominator = denominator]]]
+		ifFalse: [^self retry: #= coercing: aFraction]!
+hash
+	"Hash is reimplemented because = is implemented."
+
+	^numerator bitXor: denominator!
+"-----------------------------------"!
+!Fraction methodsFor: 'converting'!
+asFloat
+	"Answer with a new Float that represents the same value as does the receiver."
+	^numerator asFloat / denominator asFloat!
+asFraction
+	"Answer with the receiver itself."
+	^self!
+"-----------------------------------"!
+!Fraction methodsFor: 'printing'!
+printOn: aStream
+	aStream nextPut: $(.
+	numerator printOn: aStream.
+	aStream nextPut: $/.
+	denominator printOn: aStream.
+	aStream nextPut: $)!
+"-----------------------------------"!
+!Fraction methodsFor: 'private'!
+denominator
+	^denominator!
+numerator
+	^numerator!
+reduced
+	| gcd numer denom |
+	numerator = 0 ifTrue: [^0].
+	gcd _ numerator gcd: denominator.
+	numer _ numerator // gcd.
+	denom _ denominator // gcd.
+	denom = 1 ifTrue: [^numer].
+	^Fraction numerator: numer denominator: denom!
+setNumerator: n denominator: d
+	d = 0
+		ifTrue: [self error: 'denominator cannot be zero']
+		ifFalse:
+			[numerator _ n truncated.
+			denominator _ d truncated abs. "keep sign in numerator"
+			d < 0 ifTrue: [numerator _ numerator negated]]!
+"-----------------------------------"!
+!Fraction methodsFor: 'truncation and round off'!
+truncated
+	^numerator quo: denominator!

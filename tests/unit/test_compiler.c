@@ -51,6 +51,8 @@ static st_oop stub_large(int64_t v, void *user)
 { (void) v; (void) user; return 2004; }
 static st_oop stub_array(st_oop *e, unsigned n, void *user)
 { (void) e; (void) n; (void) user; return 2006; }
+static st_oop stub_character(unsigned code, void *user)
+{ (void) user; return (st_oop) (4000 + code * 2); }
 static st_oop stub_global(const char *name, void *user)
 {
     (void) user;
@@ -75,6 +77,7 @@ context(void)
     ctx.make_float         = stub_float;
     ctx.make_large_integer = stub_large;
     ctx.make_array         = stub_array;
+    ctx.make_character     = stub_character;
     ctx.lookup_global      = stub_global;
     return ctx;
 }
@@ -241,6 +244,16 @@ test_blocks(void)
                137, 117, 200, 164, 2, 118, 125, 124);
     CHECK_CODE("foo ^[:a | a]", "block with an argument",
                137, 118, 200, 164, 3, 104, 16, 125, 124);
+
+    /*
+     *  The bar is optional when the block has no body.  The Blue Book
+     *  grammar shows it as required, but Xerox's compiler did not insist and
+     *  its own sources depend on it -- [:result], [:byte ] and a dozen more
+     *  appear in Smalltalk-80.sources, so the class library will not load
+     *  without this.  Such a block takes its argument and answers nil.
+     */
+    CHECK_CODE("foo ^[:a]", "argument-only block",
+               137, 118, 200, 164, 3, 104, 115, 125, 124);
 }
 
 static void
@@ -367,6 +380,66 @@ test_chunk_reader(void)
     CHECK_EQ_STR(chunk.text, "\nbar ^1");
     CHECK(CHUNK_next(r, &chunk));           /*  "! !" closes the category   */
     CHECK_EQ_INT(chunk.is_empty, 1);
+    CHUNK_close(r);
+
+    /*
+     *  has_code and is_empty answer different questions, and the difference
+     *  is load-bearing at both ends.
+     *
+     *  A chunk of nothing but a comment has no code, which is how the
+     *  markbush sources close a method category -- they write a comment
+     *  where standard fileIn writes the empty chunk of "! !".  But it is NOT
+     *  empty, and it must not be, because emptiness is what marks the next
+     *  chunk as a reader expression.  Conflating the two breaks one end or
+     *  the other: treat a comment as empty and every class definition that
+     *  follows one is mistaken for a reader and silently dropped; treat it
+     *  as code and it is compiled as a method, which it cannot be.
+     */
+    r = CHUNK_open_string("\"just a comment\"!  !x _ 1!");
+    CHECK(r != NULL);
+    CHECK(CHUNK_next(r, &chunk));
+    CHECK_EQ_INT(chunk.has_code, 0);        /*  nothing to compile     */
+    CHECK_EQ_INT(chunk.is_empty, 0);        /*  but not empty          */
+    CHECK_EQ_INT(chunk.is_reader, 0);
+    CHECK(CHUNK_next(r, &chunk));           /*  the spaces: empty      */
+    CHECK_EQ_INT(chunk.is_empty, 1);
+    CHECK_EQ_INT(chunk.has_code, 0);
+    CHECK(CHUNK_next(r, &chunk));
+    CHECK_EQ_INT(chunk.is_reader, 1);
+    CHECK_EQ_INT(chunk.has_code, 1);
+    CHUNK_close(r);
+
+    /*  A comment ahead of real code does not make the chunk codeless.  */
+    r = CHUNK_open_string("\"doc\" ^1!");
+    CHECK(r != NULL);
+    CHECK(CHUNK_next(r, &chunk));
+    CHECK_EQ_INT(chunk.has_code, 1);
+    CHUNK_close(r);
+
+    /*
+     *  A doubled quote is the lexer's escape, not the reader's, so it must
+     *  survive intact.  Un-doubling it here closes the string a quote early
+     *  and swallows the remainder of the method.
+     */
+    r = CHUNK_open_string("f ^'it''s'!");
+    CHECK(r != NULL);
+    CHECK(CHUNK_next(r, &chunk));
+    CHECK_EQ_STR(chunk.text, "f ^'it''s'");
+    CHECK_EQ_INT(chunk.has_code, 1);
+    CHUNK_close(r);
+
+    /*  A quote of one kind inside the other is an ordinary character.  */
+    r = CHUNK_open_string("\"don't stop\"!");
+    CHECK(r != NULL);
+    CHECK(CHUNK_next(r, &chunk));
+    CHECK_EQ_INT(chunk.has_code, 0);
+    CHUNK_close(r);
+
+    r = CHUNK_open_string("f ^'say \"hi\"'!");
+    CHECK(r != NULL);
+    CHECK(CHUNK_next(r, &chunk));
+    CHECK_EQ_INT(chunk.has_code, 1);
+    CHECK_EQ_STR(chunk.text, "f ^'say \"hi\"'");
     CHUNK_close(r);
 
     /*  The 1983 files end lines with CR, which must read as a newline.  */

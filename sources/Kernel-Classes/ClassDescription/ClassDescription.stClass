@@ -1,0 +1,602 @@
+Behavior subclass: #ClassDescription
+  instanceVariableNames: 'instanceVariables organization'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Kernel-Classes'!
+ClassDescription class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+ClassDescription comment:
+'Instance Variables:
+		instanceVariables	<Array> names of instance fields
+		organization		<ClassOrganizer> provides organization of message protocol
+
+ClassDescription adds a number of facilities to basic Behavior:
+		- named instance variables
+		- category organization for methods
+		- the notion of a name of this class (implemented as subclass responsibility)
+		- the maintenance of the Changes set, and logging changes on a file
+		- most of the mechanism for fileOut
+ClassDescription is an abstract class: its facilities are intended for inheritance by the two subclasses, Class and Metaclass.'!
+"-----------------------------------"!
+!ClassDescription methodsFor: 'accessing'!
+comment
+	"Answer the receiver's comment."
+
+	| aString |
+	aString _ self organization classComment.
+	aString size = 0 ifTrue: [^''].
+	"get string only of classComment, undoubling quotes"
+	^ String readFromString: aString!
+comment: aString
+	"Set the receiver's comment to be the argument, aString."
+
+	| aStream |
+	aString size = 0
+		ifTrue:
+			[self organization classComment: aString]
+		ifFalse:
+			["double internal quotes of the comment string"
+			aStream _ WriteStream on: (String new: aString size).
+			aStream nextPutAll: self name , ' comment:'; cr.
+			aString storeOn: aStream.
+			self organization classComment: aStream contents.
+	Smalltalk changes commentClass: self]!
+commentTemplate
+	"Answer an expression to edit and evaluate in order to produce the receiver's comment."
+
+	| aString |
+	aString _ self organization classComment.
+	aString size = 0
+		ifTrue: [^self name , ' comment:
+''This class has not yet been commented.  A proper comment should include the purpose of the class and the type and purpose of each instance variable.
+''']
+		ifFalse: [^aString]!
+name
+	"Answer a String that is the name of the receiver."
+
+	self subclassResponsibility!
+"-----------------------------------"!
+!ClassDescription methodsFor: 'compiling'!
+compile: code classified: heading
+	"Compile the argument, code, as source code in the context of the receiver and
+	install the result in the receiver's method dictionary under the classification
+	indicated by the second argument, heading. nil is to be notified if an error occurs.
+	The argument code is either a string or an object that converts to a string or a
+	PositionableStream on an object that converts to a string."
+
+	^self
+		compile: code
+		classified: heading
+		notifying: nil!
+compile: code classified: heading notifying: requestor
+	"Compile the argument, code, as source code in the context of the receiver and
+	install the result in the receiver's method dictionary under the classification
+	indicated by the second argument, heading  The third argument,
+	requestor, is to be notified if an error occurs. The argument code is either a string or
+	an object that converts to a string or a PositionableStream on an object that converts
+	to a string."
+
+	| selector |
+	selector _
+		self compile: code
+			notifying: requestor
+			trailer: #(0 0 0 )
+			ifFail: [^nil].
+	(methodDict at: selector)
+		putSource: code asString
+		class: self
+		category: heading
+		inFile: 2.
+	self organization classify: selector under: heading.
+	^selector!
+compile: code notifying: requestor trailer: bytes ifFail: failBlock
+	"Intercept this message in order to remember system changes."
+
+	| methodNode selector |
+	Cursor execute showWhile:
+		[methodNode _
+			 	self compilerClass new
+					compile: code
+					in: self
+					notifying: requestor
+					ifFail: failBlock.
+	selector _ methodNode selector.
+	(methodDict includesKey: selector)
+		ifTrue: [Smalltalk changes changeSelector: selector class: self]
+		ifFalse: [Smalltalk changes addSelector: selector class: self].
+	self addSelector: selector withMethod: (methodNode generate: bytes)].
+	^selector!
+"-----------------------------------"!
+!ClassDescription methodsFor: 'copying'!
+copy: sel from: class
+	"Install the method associated with the first arugment, sel, a message selector,
+	found in the method dictionary of the second argument, class, as one of the
+	receiver's methods.  Classify the message under -as yet not classified-"
+
+	self copy: sel
+		from: class
+		classified: nil!
+copy: sel from: class classified: cat
+	"Install the method associated with the first arugment, sel, a message selector,
+	found in the method dictionary of the second argument, class, as one of the
+	receiver's methods.  Classify the message under the third argument, cat."
+
+	| code category |
+	"Useful when modifying an existing class"
+	code _ class sourceMethodAt: sel.
+	code == nil
+		ifFalse:
+			[cat == nil
+				ifTrue: [category _ class organization categoryOfElement: sel]
+				ifFalse: [category _ cat].
+			(methodDict includesKey: sel)
+				ifTrue: [code asString = (self sourceMethodAt: sel) asString
+							ifFalse: [self error: self name
+										, ' '
+										, sel
+										, ' will be redefined if you proceed.']].
+			self compile: code classified: category]!
+copyAll: selArray from: class
+	"Install all the methods found in the method dictionary of the second argument, class,
+	as the receiver's methods.  Classify the messages under -as yet not classified-"
+
+	self copyAll: selArray
+		from: class
+		classified: nil!
+copyAll: selArray from: class classified: cat
+	"Install all the methods found in the method dictionary of the second argument, class,
+	as the receiver's methods.  Classify the messages under the third argument, cat."
+
+	selArray do:
+		[:s | self copy: s
+				from: class
+				classified: cat]!
+copyAllCategoriesFrom: aClass
+	"Specify that the categories of messages for the receiver include all of those found
+	in the class, aClass.  Install each of the messages found in these categories into the
+	method dictionary of the receiver, classified under the appropriate categories."
+
+	aClass organization categories do: [:cat | self copyCategory: cat from: aClass]!
+copyCategory: cat from: class
+	"Specify that one of the categories of messages for the receiver is cat, as found
+	in the class, aClass.  Copy each message found in this category."
+
+	self copyCategory: cat
+		from: class
+		classified: cat!
+copyCategory: cat from: aClass classified: newCat
+	"Specify that one of the categories of messages for the receiver is the third argument,
+	newCat.  Copy each message found in the category cat in class aClass into this
+	new category."
+
+	self copyAll: (aClass organization listAtCategoryNamed: cat)
+		from: aClass
+		classified: newCat!
+"-----------------------------------"!
+!ClassDescription methodsFor: 'fileIn/Out'!
+fileOutCategory: aString
+	"Create a file whose name is the name of the receiver with -.st- as the
+	extension, and file a description of the receiver's category aString onto it"
+
+	| fileName fileStream |
+	fileName _ Disk checkName: self name , '-' , aString , '.st' fixErrors: true.
+	fileStream _ Disk file: fileName.
+	fileStream timeStamp.
+	self fileOutCategory: aString
+		on: fileStream
+		moveSource: false
+		toFile: 0.
+	fileStream shorten; close!
+fileOutCategory: aString on: aFileStream moveSource: moveSource toFile: fileIndex
+	"File a description of the receiver's category, aString, onto aFileStream.  If
+	the boolean argument, moveSource, is true, then set the trailing bytes to the position
+	of aFileStream and to fileIndex in order to indicate where to find the source code."
+
+	self printCategoryChunk: aString on: aFileStream.
+	(self organization listAtCategoryNamed: aString)
+		do: [:sel | self
+				printMethodChunk: sel
+				on: aFileStream
+				moveSource: moveSource
+				toFile: fileIndex].
+	aFileStream nextChunkPut: ' '!
+fileOutChangedMessages: aSet on: aFileStream
+	"File a description of the messages of the receiver that have been changed
+	(i.e., are entered into the system ChangeSet) onto aFileStream."
+
+	self fileOutChangedMessages: aSet
+		on: aFileStream
+		moveSource: false
+		toFile: 0!
+fileOutChangedMessages: aSet on: aFileStream moveSource: moveSource toFile: fileIndex
+	"File a description of the messages of the receiver that have been changed
+	(i.e., are entered into the system ChangeSet) onto aFileStream.  If
+	the boolean argument, moveSource, is true, then set the trailing bytes to the position
+	of aFileStream and to fileIndex in order to indicate where to find the source code."
+
+	| org sels |
+	(org _ self organization) categories do:
+		[:cat |
+		sels _ (org listAtCategoryNamed: cat) select: [:sel | aSet includes: sel].
+		sels size > 0
+			ifTrue:
+				[Transcript cr; show: self name , '>' , cat.
+				self printCategoryChunk: cat on: aFileStream.
+				sels do: [:sel |
+						self
+							printMethodChunk: sel
+							on: aFileStream
+							moveSource: moveSource
+							toFile: fileIndex].
+				aFileStream nextChunkPut: ' ']]!
+fileOutMessage: aString
+	"Create a fileName which is the name of the receiver with -.st as the
+	extension, and file a description of the receiver's message aString onto it"
+
+	self fileOutMessage: aString
+		fileName: (Disk checkName: self name , '-' , aString , '.st' fixErrors: true)!
+fileOutMessage: aString fileName: fileName
+	"Create a local file named fileName
+	and file a description of the receiver's message aString onto it"
+
+	| fileStream |
+	fileStream _ Disk file: fileName.
+	fileStream timeStamp.
+	self fileOutMessage: aString
+		on: fileStream
+		moveSource: false
+		toFile: 0.
+	fileStream close!
+fileOutMessage: aString on: aFileStream moveSource: moveSource toFile: fileIndex
+	"File a description of the receiver's message, aString, onto aFileStream.  If
+	the boolean argument, moveSource, is true, then set the trailing bytes to the position
+	of aFileStream and to fileIndex in order to indicate where to find the source code."
+
+	| cat |
+	cat _ self organization categoryOfElement: aString.
+	cat == nil ifTrue: [^self error: 'no such message'].
+	self printCategoryChunk: cat on: aFileStream.
+	self
+		printMethodChunk: aString
+		on: aFileStream
+		moveSource: moveSource
+		toFile: fileIndex.
+	aFileStream nextChunkPut: ' '!
+fileOutOn: aFileStream
+	"File a description of the receiver on aFileStream."
+
+	self fileOutOn: aFileStream
+		moveSource: false
+		toFile: 0!
+fileOutOn: aFileStream moveSource: moveSource toFile: fileIndex
+	"file me out on aFileStream"
+	aFileStream emphasis: 5.		"Meant to be 12 point bold font."
+	aFileStream nextChunkPut: self definition.
+	self organization
+		putCommentOnFile: aFileStream
+		numbered: fileIndex
+		moveSource: moveSource.
+	aFileStream cr.
+	self organization categories do:
+		[:heading |
+		self
+			fileOutCategory: heading
+			on: aFileStream
+			moveSource: moveSource
+			toFile: fileIndex]!
+fileOutOrganizationOn: aFileStream
+	"File a description of the receiver's organization onto aFileStream."
+
+	aFileStream emphasis: 3.
+	aFileStream cr; nextPut: $!!.
+	aFileStream nextChunkPut: self name, ' reorganize'; cr.
+	aFileStream nextChunkPut: self organization printString; cr.
+	aFileStream emphasis: 1!
+kindOfSubclass
+	"Answer a string that describes what kind of subclass the receiver is, i.e.,
+	variable, variable byte, variable word, or not variable."
+
+	self isVariable
+		ifTrue: [self isBits
+					ifTrue: [self isBytes
+								ifTrue: [^' variableByteSubclass: ']
+								ifFalse: [^' variableWordSubclass: ']]
+					ifFalse: [^' variableSubclass: ']]
+		ifFalse: [^' subclass: ']!
+methodsFor: aString
+	"Answer a ClassCategoryReader for accessing the messages in the method
+	dictionary category, aString, of the receiver."
+
+	^ClassCategoryReader class: self category: aString asSymbol
+	"False methodsFor: 'logical operations' inspect"!
+moveChangesTo: newFile
+	"Used in the process of condensing changes, this message requests that the source
+	code of all methods of the receiver that have been changed should be moved to
+	newFile."
+
+	| changes |
+	self organization moveChangedCommentToFile: newFile numbered: 2.
+	changes _ methodDict keys select: [:sel | (methodDict at: sel) fileIndex > 1].
+	self fileOutChangedMessages: changes
+		on: newFile
+		moveSource: true
+		toFile: 2!
+printCategoryChunk: aString on: aFileStream
+	"print category definition on aFileStream"
+
+	aFileStream cr; cr; nextPut: $!!.
+	aFileStream nextChunkPut:
+				self name , ' methodsFor: ' , '''' , aString , ''''!
+printMethodChunk: aSelector on: aFileStream moveSource: moveSource toFile: fileIndex
+	"Print the source code for the method associated with the argument
+	selector onto
+	the fileStream. aFileStream, and, for backup, if the argument
+	moveSource (a Boolean)
+	is true, also set the file index within the method to be the argument
+	fileIndex. "
+
+	| position |
+	aFileStream cr.
+	Cursor write showWhile:
+		[moveSource
+			ifTrue:
+				[position _ aFileStream position.
+				aFileStream nextChunkPut: (self sourceCodeAt: aSelector).
+				(self compiledMethodAt: aSelector)
+					setSourcePosition: position inFile: fileIndex]
+			ifFalse: [aFileStream cr; nextChunkPut: (self sourceCodeAt: aSelector)]]!
+printOutCategory: aString
+	"Create a readable version of the message category aString, and send to a printer.
+	Defaults to fileOut."
+	self fileOutCategory: aString!
+printOutMessage: aString
+	"Create a readable version of the message with selector aString, and send to a printer.
+	Defaults to fileOut."
+	self fileOutMessage: aString!
+"-----------------------------------"!
+!ClassDescription methodsFor: 'initialize-release'!
+obsolete
+	"Make the receiver obsolete."
+
+	organization _ nil.
+	super obsolete!
+subclassOf: newSuper oldClass: oldClass instanceVariableNames: newInstVarString variable: v words: w pointers: p ifBad: badBlock
+	"Basic initialization message for creating classes using the information provided
+	as arguments.  Answer whether old instances will be invalidated."
+
+	| old new usedNames invalid oldSuperMeta newInstVarArray |
+	old _ self allInstVarNames.
+	usedNames _ #(self super thisContext true false nil ) asSet.
+	newInstVarArray _ Scanner new scanFieldNames: newInstVarString.
+	(invalid _ superclass ~~ newSuper)
+		ifTrue:
+			["superclass changed"
+			oldSuperMeta _ superclass class.
+			superclass removeSubclass: self.
+			superclass _ newSuper.
+			superclass addSubclass: self.
+			self class superclass == oldSuperMeta
+				ifTrue: ["Only false when self is a metaclass"
+						self class superclass: newSuper class]].
+	instanceVariables _ nil.  "To give us all super names"
+	new _ self allInstVarNames , newInstVarArray.
+	new do:
+		[:fieldName |
+		(usedNames includes: fieldName)
+			ifTrue:
+				[self error: fieldName , ' is reserved (maybe in a superclass)'.
+				^badBlock value].
+		usedNames add: fieldName].
+	instanceVariables _ newInstVarArray size = 0
+		ifTrue: [nil]
+		ifFalse: [newInstVarArray].
+	invalid _ invalid | (new ~= old).
+	"field names changed"
+	old _ format.
+	self
+		format: new size
+		variable: v
+		words: w
+		pointers: p.
+	invalid _ invalid | (format ~= old).
+	"format changed"
+	^invalid!
+updateInstancesFrom: oldClass
+	"Recreate any existing instances of the argument, oldClass, as
+	instances of the receiver, which is a newly changed class.  Permute variables
+	as necessary."
+
+	| oldInstVarNames map variable old new instSize offset fieldName |
+	oldClass someInstance == nil ifTrue: [^self].
+	"no instances to convert"
+	oldInstVarNames _ oldClass allInstVarNames.
+	map _
+		self allInstVarNames
+			collect: [:instVarName | oldInstVarNames indexOf: instVarName].
+	variable _ self isVariable.
+	instSize _ self instSize.
+	oldClass allInstances do:
+		[:old |
+		"note allInstsDo would get confused by becoming"
+		variable
+			ifTrue: [new _ self basicNew: old basicSize]
+			ifFalse: [new _ self basicNew].
+		1 to: instSize do:
+			[:offset |
+			(map at: offset) > 0
+				ifTrue: [new instVarAt: offset put: (old instVarAt: (map at: offset))]].
+		variable
+			ifTrue: [1 to: old basicSize do:
+						[:offset | new basicAt: offset put: (old basicAt: offset)]].
+		old become: new]!
+validateFrom: oldClass in: environ instanceVariableNames: invalidFields methods: invalidMethods
+	"Recompile the receiver, a class, and redefine its subclasses if necessary."
+
+	| sub newSub |
+	invalidFields & invalidMethods ifFalse: [^self].
+	invalidMethods & self hasMethods
+		ifTrue:
+			[Transcript show: 'recompiling ' , self name , '...'.
+			self compileAllFrom: oldClass.
+			Transcript show: ' done'; cr].
+	self ~~ oldClass ifTrue: [self updateInstancesFrom: oldClass].
+	oldClass subclasses do:
+		[:sub |
+		newSub _ sub copyForValidation.
+		newSub
+			subclassOf: self
+			oldClass: sub
+			instanceVariableNames: sub instVarNames
+			variable: sub isVariable
+			words: sub isBytes not
+			pointers: sub isBits not
+			ifBad: [self error: 'terrible problem in recompiling subclasses!!'].
+		newSub
+			validateFrom: sub
+			in: environ
+			instanceVariableNames: invalidFields
+			methods: invalidMethods]!
+"-----------------------------------"!
+!ClassDescription methodsFor: 'instance variables'!
+addInstVarName: aString
+	"Add the argument, aString, as one of the receiver's instance variables."
+
+	self subclassResponsibility!
+instVarNames
+	"Answer an Array of the names of instance variables defined in the receiver."
+
+	instanceVariables == nil
+		ifTrue: [^#()]
+		ifFalse: [^instanceVariables]!
+removeInstVarName: aString
+	"Remove the argument, aString, as one of the receiver's instance variables."
+
+	self subclassResponsibility!
+"-----------------------------------"!
+!ClassDescription methodsFor: 'method dictionary'!
+removeCategory: aString
+	"Remove each of the messages categorized under aString in the method dictionary
+	of the receiver.  Then remove the category aString."
+
+	(self organization listAtCategoryNamed: aString asSymbol) do:
+		[:sel | self removeSelector: sel].
+	self organization removeEmptyCategories!
+removeSelector: aSymbol
+	"Remove the message whose selector is aSymbol from the method
+	dictionary of the receiver, if it is there.  Answer nil otherwise."
+
+	(methodDict includesKey: aSymbol) ifFalse: [^nil].
+	super removeSelector: aSymbol.
+	self organization removeElement: aSymbol.
+	Smalltalk changes removeSelector: aSymbol class: self.
+	Smalltalk logChange: self name , ' removeSelector: #' , aSymbol!
+"-----------------------------------"!
+!ClassDescription methodsFor: 'organization'!
+category
+	"Answer the system organization category for the receiver."
+
+	^SystemOrganization categoryOfElement: self name!
+category: cat
+	"Categorize the receiver under the system category, cat, removing it from any
+	previous categorization."
+
+	(cat isKindOf: String)
+		ifTrue: [SystemOrganization classify: self name under: cat asSymbol]
+		ifFalse: [self errorCategoryName]!
+logOrganizationChange
+	"Record that the receiver is being reorganized on the changes file."
+	| file |
+	SourceFiles == nil
+		ifFalse:
+			[file _ SourceFiles at: 2.
+			file setToEnd; readWriteShorten.
+			file cr; nextChunkPut:
+				self name, ' organization changeFromString: ',
+					self organization printString storeString.
+			file cr; readOnly]!
+organization
+	"Answer the instance of ClassOrganizer that represents the organization
+	of the messages of the receiver."
+	organization==nil
+		ifTrue: [organization _ ClassOrganizer new].
+	^organization!
+reorganize
+	"Record that the receiver is being reorganized and answer the receiver's organization."
+
+	Smalltalk changes reorganizeClass: self.
+	^self organization!
+whichCategoryIncludesSelector: aSelector
+	"Answer the category of the argument, aSelector, in the organization of the
+	receiver, or answer nil if the receiver does not inlcude this selector."
+
+	(self includesSelector: aSelector)
+		ifTrue: [^organization categoryOfElement: aSelector]
+		ifFalse: [^nil]!
+"-----------------------------------"!
+!ClassDescription methodsFor: 'printing'!
+classVariablesString
+	"Answer a string of my class variable names separated by spaces, in alphabetical order."
+	| aStream |
+	aStream _ WriteStream on: (String new: 100).
+	self classPool keys asSortedCollection do: [:key | aStream nextPutAll: key; space].
+	^ aStream contents!
+definition
+	"Answer a string that defines the receiver."
+	| aStream |
+	aStream _ WriteStream on: (String new: 300).
+	self hasMultipleSuperclasses
+		ifTrue:
+			[aStream nextPutAll: 'Class named: '.
+			self name storeOn: aStream.
+			aStream cr; tab; nextPutAll: 'superclasses: '.
+			aStream store: self superclassesString.
+			aStream cr; tab; nextPutAll: 'instanceVariableNames: '.
+			aStream store: self instanceVariablesString.
+			aStream cr; tab; nextPutAll: 'classVariableNames: '.
+			aStream store: self classVariablesString]
+		ifFalse:
+			[aStream nextPutAll: (superclass == nil ifTrue: ['nil'] ifFalse: [superclass name]).
+			aStream nextPutAll: self kindOfSubclass.
+			self name storeOn: aStream.
+			aStream cr; tab; nextPutAll: 'instanceVariableNames: '.
+			aStream store: self instanceVariablesString.
+			aStream cr; tab; nextPutAll: 'classVariableNames: '.
+			aStream store: self classVariablesString.
+			aStream cr; tab; nextPutAll: 'poolDictionaries: '.
+			aStream store: self sharedPoolsString].
+	aStream cr; tab; nextPutAll: 'category: '.
+	(SystemOrganization categoryOfElement: self name) asString storeOn: aStream.
+	^aStream contents!
+instanceVariablesString
+	"Answer a string of my instance variable names separated by spaces."
+	| aStream names |
+	aStream _ WriteStream on: (String new: 100).
+	names _ self instVarNames.
+	1 to: names size do: [:i | aStream nextPutAll: (names at: i); space].
+	^ aStream contents!
+printOn: aStream
+	aStream nextPutAll: self name!
+sharedPoolsString
+	"Answer a string of my class variable names separated by spaces."
+	| aStream |
+	aStream _ WriteStream on: (String new: 100).
+	self sharedPools do: [:x | aStream nextPutAll: (Smalltalk keyAtValue: x); space].
+	^ aStream contents!
+storeOn: aStream
+	"Clases and Metaclasses have global names."
+	aStream nextPutAll: self name!
+superclassesString
+	"Answer a string of my superclass names separated by spaces."
+	| aStream names |
+	aStream _ WriteStream on: (String new: 100).
+	self superclasses do: [:each | aStream nextPutAll: each name; space].
+	^ aStream contents!
+"-----------------------------------"!
+!ClassDescription methodsFor: 'private'!
+errorCategoryName
+	self error: 'Category name must be a String'!
+"-----------------------------------"!
+!ClassDescription methodsFor: 'testing'!
+isMeta
+	^ false!

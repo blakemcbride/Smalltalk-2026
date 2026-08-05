@@ -1,0 +1,171 @@
+Magnitude subclass: #Character
+  instanceVariableNames: 'value'
+  classVariableNames: 'CharacterTable'
+  poolDictionaries: ''
+  category: 'Collections-Text'!
+Character class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+Character comment:
+'This class represents characters by storing their associated ASCII (extended to 256 codes) code.  The instances of this class are created uniquely, so that all instances $R (for instance) are identical'!
+"-----------------------------------"!
+!Character class methodsFor: 'accessing untypeable characters'!
+backspace
+	"Answer the Character representing a backspace."
+	^self value: 8!
+cr
+	"Answer the Character representing a carriage return."
+	^self value: 13!
+esc
+	"Answer the Character representing an escape."
+	^self value: 160!
+newPage
+	"Answer the Character representing a form feed."
+	^self value: 12!
+space
+	"Answer the Character representing a space."
+	^self value: 32!
+tab
+	"Answer the Character representing a tab."
+	^self value: 9!
+"-----------------------------------"!
+!Character class methodsFor: 'class initialization'!
+initialize
+	"Create the table of unique Characters.  This code is not shown so that the
+	user can not destroy the system by trying to recreate the table."!
+"-----------------------------------"!
+!Character class methodsFor: 'constants'!
+characterTable
+	"Answer the class variable in which unique Characters are stored."
+	^CharacterTable!
+"-----------------------------------"!
+!Character class methodsFor: 'instance creation'!
+digitValue: x
+	"Answer the Character whose digit value is x.  For example,
+	answer $9 for x=9, $0 for x=0, $A for x=10, $Z for x=35."
+
+	| index |
+	index _ x truncated.
+	^CharacterTable at:
+		(index < 10
+			ifTrue: [48 + index]
+			ifFalse: [55 + index])
+		+ 1!
+new
+	"Creating new characters is not allowed."
+
+	self error: 'cannot create new characters'!
+value: anInteger
+	"Answer the Character whose value is anInteger.
+	Characters are unique; they are stored in the class variable CharacterTable."
+
+	^CharacterTable at: anInteger + 1!
+"-----------------------------------"!
+!Character methodsFor: 'accessing'!
+asciiValue
+	"Answer the value of the receiver."
+	^value!
+digitValue
+	"Answer 0-9 if the receiver is $0-$9, 10-35 if it is $A-$Z, and < 0 otherwise.
+	This is used to parse literal numbers of radix 2-36."
+
+	value <= $9 asciiValue
+		ifTrue: [^value - $0 asciiValue].
+	value >= $A asciiValue
+		ifTrue: [value <= $Z asciiValue ifTrue: [^value - $A asciiValue + 10]].
+	^-1!
+"-----------------------------------"!
+!Character methodsFor: 'comparing'!
+< aCharacter
+	"Answer true if the receiver's value < aCharacter's value."
+
+	^self asciiValue < aCharacter asciiValue!
+= aCharacter
+	"Answer true if the receiver and the argument are the same object (have the
+	same object pointer) and false otherwise.  Optional.  See Object documentation
+	whatIsAPrimitive."
+
+	<primitive: 110>
+	^self == aCharacter!
+> aCharacter
+	"Answer true if the receiver's value > aCharacter's value."
+
+	^self asciiValue > aCharacter asciiValue!
+hash
+	^value!
+"-----------------------------------"!
+!Character methodsFor: 'converting'!
+asCharacter
+	"Answer the receiver itself."
+	^self!
+asInteger
+	"Answer the value of the receiver."
+	^value!
+asLowercase
+	"Answer a Character that is the lower case letter corresponding to the receiver.  If
+	the receiver is not an upper case letter, answer the receiver itself."
+
+	8r101 <= value
+		ifTrue: [value <= 8r132
+					ifTrue: [^Character value: value+8r40]]!
+asSymbol
+	^Symbol internCharacter: self!
+asUppercase
+	"Answer a Character that is the upper case letter corresponding to the receiver.  If
+	the receiver is not a lower case letter, answer the receiver itself."
+
+	8r141 <= value
+		ifTrue: [value <= 8r172
+					ifTrue: [^Character value: value-8r40]]!
+"-----------------------------------"!
+!Character methodsFor: 'copying'!
+copy
+	"Answer with me because Characters are unique."!
+deepCopy
+	"Answer with me becuase Characters are unique."!
+"-----------------------------------"!
+!Character methodsFor: 'printing'!
+isLiteral
+	^true!
+printOn: aStream
+	aStream nextPut: $$.
+	aStream nextPut: self!
+storeOn: aStream
+	"Character literals are preceded by '$'."
+	aStream nextPut: $$; nextPut: self!
+"-----------------------------------"!
+!Character methodsFor: 'testing'!
+isAlphaNumeric
+	"Answer whether the receiver is a letter or a digit."
+	^self isLetter or: [self isDigit]!
+isDigit
+	"Answer whether the receiver is a digit."
+	^self >= $0 and: [self <= $9]!
+isLetter
+	"Answer whether the receiver is a letter."
+	^(8r141 <= value and: [value <= 8r172])
+		or: [8r101 <= value and: [value <= 8r132]]!
+isLowercase
+	"Answer whether the receiver is a lowercase letter."
+	^self >= $a and: [self <= $z]!
+isSeparator
+	"Answer whether the receiver is one of the separator characters--space,
+	cr, tab, line feed, or form feed."
+
+	value = 32 ifTrue: [^true].	"space"
+	value = 13 ifTrue: [^true].	"cr"
+	value = 9 ifTrue: [^true].	"tab"
+	value = 10 ifTrue: [^true].	"line feed"
+	value = 12 ifTrue: [^true].	"form feed"
+	^false!
+isUppercase
+	"Answer whether the receiver is an uppercase letter."
+	^self >= $A and: [self <= $Z]!
+isVowel
+	"Answer whether the receiver is one of the vowels, AEIOU, in upper or lower case."
+
+	^'AEIOU' includes: self asUppercase!
+tokenish
+	"Answer whether the receiver is a valid token-character--letter, digit, or colon."
+
+	^self isLetter or: [self isDigit or: [self = $:]]!

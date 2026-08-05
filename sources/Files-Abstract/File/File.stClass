@@ -1,0 +1,313 @@
+Object subclass: #File
+  instanceVariableNames: 'fileDirectory fileName pageCache serialNumber lastPageNumber binary readWrite error'
+  classVariableNames: ''
+  poolDictionaries: 'FilePool'
+  category: 'Files-Abstract'!
+File class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+File comment:
+'I am an abstract representation of a collection of FilePages and a reference to a FileDirectory which contains me.  My instance is usually uniquely identified both by an alphanumeric name (a String) and a serial number (a ByteArray).
+
+According to this Smalltalk model, a File System consists of coordinated subclass definitions for FilePage, File, and FileDirectory.  User programs typically do not directly access a File or its FilePages but access it as a sequence of characters or bytes through a FileStream.
+
+Instance Variables:
+	fileName		<String>
+	serialNumber	<ByteArray>
+	fileDirectory	<FileDirectory>
+	lastPageNumber	<Integer>
+	binary			<Boolean> indicates binary or textual contents
+	readWrite		<Integer> tells if writing is allowed
+	error			<Symbol> an error condition
+	pageCache		not currently used.'!
+"-----------------------------------"!
+!File class methodsFor: 'class initialization'!
+initialize
+	"Subclasses of File may want to share variables in pools.
+	Execute before filin:  Smalltalk at: #XFilePool as: (Dictionary: 16).
+	in XFile initialize."
+
+	FilePool at: #Read put: 1.
+	FilePool at: #Write put: 2.
+	FilePool at: #Shorten put: 3!
+"-----------------------------------"!
+!File class methodsFor: 'documentation'!
+documentation
+	"Subclasses of File are expected to implement the following messages.  Unless 	otherwise indicated, they are provided as self subclassResponsibilty
+
+	testing
+		[optional] characterSize
+
+	fileStream accessing
+		read:
+		write:
+
+	file accessing
+		endFile:
+
+	file status
+	(these are implemented as returning self)
+		close
+		release
+
+	error handling
+		errorString:
+
+	file/page/directory implementation
+		doCommand:page:error:
+
+	private
+		[optional] findLastPageNumber
+			(this has an implementation but is circular with characterSize
+				so one or both must be reimplemented)
+		pageClass
+
+"!
+"-----------------------------------"!
+!File methodsFor: 'accessing'!
+size
+	"Answer the receiver's size in pages;  a file is a collection of pages."
+
+	lastPageNumber isNil
+		ifTrue: [^self findLastPageNumber]
+		ifFalse: [^lastPageNumber]!
+"-----------------------------------"!
+!File methodsFor: 'comparing'!
+match: aFile
+	"Answer whether the two strings, the receiver's file name and that
+	of the argument, aFile, match.  (See String|match:)."
+	^self fileName match: aFile fileName!
+"-----------------------------------"!
+!File methodsFor: 'converting'!
+asFileStream
+	"Answer a FileStream on the first page of the receiver."
+
+	self open.
+	^FileStream on: (self readOrAddPageNumber: 1)!
+"-----------------------------------"!
+!File methodsFor: 'error handling'!
+error
+	"Answer a Symbol indicating the last error condition."
+	^error!
+error: e
+	"Construct an error message using the argument, e."
+
+	| s errorString |
+	s _ WriteStream on: (String new: 50).
+	s nextPutAll: fileName.
+	s nextPutAll: ' '.
+	s nextPutAll: e.
+	s nextPutAll: ', '.
+	s nextPutAll: error.
+	errorString _ s contents.
+	error _ ''.
+	^super error: errorString!
+errorString: anInteger
+	"Construct an error string corresponding to the error code, anInteger."
+	self subclassResponsibility!
+"-----------------------------------"!
+!File methodsFor: 'file accessing'!
+beSnapshotFile
+	self subclassResponsibility!
+directory
+	"Answer the directory in which the receiver is referenced."
+	^fileDirectory!
+directory: aFileDirectory
+	"Set the directory in which the receiver is referenced to be aFileDirectory."
+	fileDirectory _ aFileDirectory!
+endFile: aFilePage
+	"Make the file end with aFilePage, i.e., remove all file pages after
+	aFilePage, and answer the result of writing aFilePage (File|write:). If the argument is
+	nil, delete all of the receiver's pages."
+
+	self subclassResponsibility!
+fileName
+	"Answer the name of the receiver."
+	^fileName!
+fileName: aFileName
+	"Set the name of the receiver to be aFileName."
+	fileName _ aFileName!
+fullName
+	"Answer the name of the receiver, including directory names if necessary."
+	^self directory fullName, self fileName!
+rename: newFileName
+	"Change the name of the receiver to be newFileName."
+
+	fileDirectory rename: self newName: newFileName!
+"-----------------------------------"!
+!File methodsFor: 'file modes'!
+binary
+	"Set the receiver's contents to be in binary format."
+	binary _ true!
+readWrite
+	"Answer the read/write status of the receiver."
+	^readWrite!
+readWrite: statusInteger
+	"Set the read/write status of the receiver to be statusInteger."
+	readWrite _ statusInteger!
+text
+	"Set the receiver's contents to be in ascii character format."
+	binary _ false!
+"-----------------------------------"!
+!File methodsFor: 'file status'!
+close
+	"Close the receiver.  Subclasses may wish to update the leader page."
+	self subclassResponsibility!
+open
+	"Open the receiver."
+	self findLastPageNumber!
+reinitialize
+	"Reset the receiver to its initial status."
+	lastPageNumber _ nil.
+	error _ ''.
+	serialNumber _ ByteArray new: 4.
+	"text mode is default"
+	binary isNil ifTrue: [binary _ false]!
+release
+	"Release the receiver.  This is a more forgiving version of close
+	and should always be possible even if close isn't desired or doesn't work."
+
+	self subclassResponsibility!
+reopen
+	"Reopen the receiver by possibly looking it up in a file directory and then opening."
+
+	self sameAsStoredFile
+		ifFalse:
+			[self reinitialize.
+			fileDirectory findOrAdd: self].
+	self open!
+"-----------------------------------"!
+!File methodsFor: 'file testing'!
+isBinary
+	"Answer whether the information in the receiver is stored in binary format."
+	^binary!
+isText
+	"Answer whether the information in the receiver is stored as ascii characters."
+	^binary == false!
+"-----------------------------------"!
+!File methodsFor: 'file/page/directory implementation'!
+doCommand: command page: aFilePage error: errorString
+	"The argument, command, is typically read or write;
+	page is a FilePage containing data and possibly other information;
+	errorString is a String to include in an error message
+	(or if it is nil, no error is to be reported).
+
+	Execute some disk primitive (which is usually another message).
+
+	Answer aFilePage if successful. If an error occurs, answer false if errorString is nil.
+	Otherwise, create an error message with errorString."
+
+	self subclassResponsibility!
+initPage: aFilePage
+	"Initialize the argument, aFilePage."
+
+	aFilePage reinitialize.
+	aFilePage serialNumber: serialNumber.
+	^aFilePage!
+initPageNumber: aPageNumber
+	"Create and initialize the file page with page number, aPageNumber;
+	serial number that of the receiver.  Answer the new FilePage."
+
+	| aFilePage |
+	aFilePage _ self pageClass new file: self page: nil.
+	binary
+		ifTrue: [aFilePage binary]
+		ifFalse: [aFilePage text].
+	aFilePage pageNumber: aPageNumber.
+	aFilePage serialNumber: serialNumber.
+	^aFilePage!
+lastPageNumber
+	"Answer the number of the last page of the receiver."
+	^self size!
+size: aPageNumber
+	"Set the last page number of the receiver to be aPageNumber."
+	lastPageNumber _ aPageNumber!
+"-----------------------------------"!
+!File methodsFor: 'nonhomogeneous accessing'!
+read: aFilePage
+	"Read aFilePage if it exists, else answer false.  aFilePage contains a pageNumber and other
+	information, e.g., a serialNumber necessary to obtain the page.  It is possible that
+	aFilePage pageNumber = 0 may or may not exist in some file systems. The pageNumber may
+	be used to compute a byte range to be read, or to lookup a disk address in a table.
+	In a file system where pages are linked, aFilePage may contain the address
+	of the next page and may help reveal lastPageNumber."
+
+	self subclassResponsibility!
+readOrAdd: aFilePage
+	"Read aFilePage if it exists or extend File to create it as an empty page."
+
+	| pageNumber filePage |
+	filePage _ aFilePage.
+	pageNumber _ filePage pageNumber.
+	pageNumber <= lastPageNumber ifTrue: [^self read: filePage].
+	(lastPageNumber + 1 to: pageNumber - 1)
+		do: ["write full intermediate pages"
+			filePage pageNumber: pageNumber.
+			filePage _ self write: filePage].
+	"return an empty last page"
+	filePage pageNumber: pageNumber.
+	filePage size: 0.
+	^filePage!
+readPageNumber: aPageNumber
+	"Create a FilePage for page number, aPageNumber, and read into it."
+
+	^self read: (self initPageNumber: aPageNumber)!
+write: aFilePage
+	"Write aFilePage, one that has been read or created (see File|readOrAdd:).
+	If aFilePage pageNumber < lastPageNumber, make sure page is full.
+	If aFilePage pageNumber = (lastPageNumber+1), then update file length.
+	Page numbers greater than lastPageNumber+1 are illegal (use File|readOrAdd:).
+
+	Answer the result of writing the page.  In some implementations, at end of file,
+	the next empty page is also written and answered."
+
+	self subclassResponsibility!
+"-----------------------------------"!
+!File methodsFor: 'page accessing'!
+serialNumber
+	"Answer the receiver's serial number."
+	^serialNumber!
+serialNumber: aSerialNumber
+	"Set the receiver's serial number to be aSerialNumber."
+	serialNumber _ aSerialNumber!
+"-----------------------------------"!
+!File methodsFor: 'printing'!
+printOn: aStream
+	fileName printOn: aStream!
+"-----------------------------------"!
+!File methodsFor: 'private'!
+findLastPageNumber
+	"set and answer with the page number of my last page.
+	see circularity comment for characterSize"
+
+	^lastPageNumber _ self pageNumberFrom: self size!
+pageClass
+	"answer with the appropriate subclass of FilePage which I contain"
+
+	self subclassResponsibility!
+pageNumberFrom: characterIndex
+	"compute a page number from a character index"
+
+	^characterIndex - 1 // self pageClass new dataSize + 1!
+readOrAddPageNumber: aPageNumber
+	"create aFilePage and read or extend into it"
+
+	^self readOrAdd: (self initPageNumber: aPageNumber)!
+sameAsStoredFile
+	"Answer true if File instance is correct enough so that it doesn't have to be
+	reinitialized.  This allows reopen to go more quickly for certain
+	implementations.  For example, in a local file system, a write date and time
+	may guarantee that it hasn't changed since we closed this file.  This is the
+	default. "
+
+	^false!
+"-----------------------------------"!
+!File methodsFor: 'testing'!
+characterSize
+	"Answer the size of the receiver in characters.  The definitions
+	characterSize and findLastPageNumber are circular;  a subclass must
+	define either or both."
+
+	| page |
+	page _ self readPageNumber: self size.
+	^lastPageNumber - 1 * page dataSize + page size!

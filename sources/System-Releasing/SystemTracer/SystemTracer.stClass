@@ -1,0 +1,586 @@
+Object subclass: #SystemTracer
+  instanceVariableNames: 'map refcts file holder writeDict maxOop specialObjects initialProcess ot bank addr'
+  classVariableNames: 'Clamped MT NewNil NoRefs ODD OVref PTRS'
+  poolDictionaries: ''
+  category: 'System-Releasing'!
+SystemTracer class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+SystemTracer comment:
+'Instance Variables:
+		map		<Array> of new oops indexed by old oops
+		refcts	<ByteArray> encoding refcts and clamping
+		file		<FileStream> for writing vmem image
+		holder	<Stream> of objects created just for the new image
+		writeDict	<Dictionary> of writing selectors for each class
+		maxOop		<Integer> number of objects written in clone
+		specialObjects	<Array> of objects to get first N oops in clone
+		initialProcess	<Process> to resume at startup
+		ot		<FileStream> for writing OT
+		bank	<Integer> high bits of object offest in image
+		addr	<Integer> low bits
+
+The system Tracer is the secret weapon of Smalltalk developers.  Some people think it is an overnight garbage collector.  It is; in fact on a decent machine (heh, heh), it is a coffee-break garbage collector.  But the real value of the tracer is that it allows fundamental changes to be made to the system from within.
+
+Basically, the tracer runs through the system tracing every accessible object, and writing a copy of each object onto a disk image.  It does this carefully enough that the resulting clone can be started up and run, just like a snapshot.  Some care is taken so that objects appear in the same order in the data space as they do in the object table.
+
+The tracer has built-in support for clamping unwanted (or unneeded) classes out of the system.  Use the message writeCloneWithout: for this.  A considerably more powerful clamping mechanism is the message winnowing feature.  It will cull out all unreferenced messages, and then based on THOSE deletions, cull out more and so on.  See the comment in winnow.
+
+Examples of things we have done with the SystemTracer include changing the instruction set of Smalltalk.  For this we define a subclass called Junta which defines a special method for writing CompiledMethods out in the new format.  Then we change the virtual machine and fire up the clone.  Another example is changing the format of FloatingPoint numbers'!
+"-----------------------------------"!
+!SystemTracer class methodsFor: 'class initialization'!
+initialize
+	"SystemTracer initialize."
+
+	ODD _ 128.
+	PTRS _ 64.
+	MT _ 32.
+	NoRefs _ 0.
+	OVref _ 128.
+	Clamped _ 255.
+	NewNil _ 1!
+"-----------------------------------"!
+!SystemTracer class methodsFor: 'cloning'!
+writeClone
+	"This message creates and runs a SystemTracer:
+		SystemTracer writeClone.
+	If all goes well, it will produce a file called clone.im which is a valid image file"
+
+	self writeCloneWithout: Set new!
+writeCloneWithout: aSet
+	"This message creates and runs a SystemTracer without the sets named:
+		SystemTracer writeCloneWithout:
+			(Set with: AltoFilePage with: AltoFile with: AltoFileDirectory).
+	If all goes well, it will produce a file called clone.im which is a valid image file"
+
+	| tracer |
+	tracer_ self new.
+	tracer doitWithout: aSet.
+	tracer == nil
+		ifTrue:
+			[Smalltalk install.
+			ScheduledControllers restore.
+			Disk == nil ifFalse: [Disk release]]
+	"
+	Below are checks for things which might cause the Tracer to run amock:
+
+	Checker rehashBadSets
+
+	Smalltalk obsoleteClasses do: [:class | class obsolete]
+
+	BrowserView
+		openListBrowserOn: Smalltalk obsoleteClassReferences
+		label: 'References to Obsolete Classes'
+
+	Smalltalk classNames select:
+		[:x | (Smalltalk at: x) superclass class ~~ (Smalltalk at: x) 	class superclass]
+	"!
+"-----------------------------------"!
+!SystemTracer methodsFor: 'image'!
+writeImage: roots
+	| datalen otlen root oop i |
+	ot readWrite.
+	file readWrite.
+	file position: 512.
+	"Skip header page"
+	ot position: 0.
+	addr _ bank _ 0.
+	self writeSpecial1.
+	roots do: [:root | self trace: root].
+	self writeSpecial2.
+	datalen _ file position - 512 // 2.
+	ot shorten.
+	otlen _ ot position // 5 + 1 * 2.
+	file padTo: 512 put: 0.
+	ot position: 0.
+	file nextWordPut: MT.
+	file nextWordPut: 0.
+	"oop zero"
+	1 to: maxOop do:
+		[:i |
+		"append the OT, rectifying reference counts"
+		oop _ ot nextWord.
+		file nextPut: (refcts at: oop).
+		file nextPut: ot next.
+		file nextPut: ot next.
+		file nextPut: ot next].
+	file shorten.
+	"info in header page"
+	file position: 0.
+	file nextWordPut: datalen // 65536.
+	file nextWordPut: datalen \\ 65536.
+	file nextWordPut: otlen // 65536.
+	file nextWordPut: otlen \\ 65536.
+	file nextWordPut: 0.
+	file padTo: 512 put: 0.
+	"Pad header page"
+	ot close.
+	file close.
+	^Array with: otlen // 2 with: datalen!
+writeSpecial1
+	| obj |
+	specialObjects _
+		 "1:" (Array with: nil with: false with: true with: (Smalltalk associationAt: #Processor))
+		, "5:" (Array with: Symbol table with: SmallInteger with: String with: Array)
+		, "9:" (Array with: (Smalltalk associationAt: #Smalltalk) with: Float
+					with: MethodContext with: BlockContext)
+		, "13:" (Array with: Point with: LargePositiveInteger with: DisplayBitmap with: Message)
+		, "17:" (Array with: CompiledMethod with: #unusedOop18 with: Semaphore with: Character)
+		, "21:" (Array with: #doesNotUnderstand: with: #cannotReturn:
+					with: #monitor: with: Smalltalk specialSelectors)
+		, "25:" (Array with: Character characterTable with: #mustBeBoolean).
+	specialObjects size = 26 ifFalse: [self error: 'try again!!'].
+	specialObjects do:  "create OT entries"
+		[:obj |
+		self new: obj
+			class: obj class
+			length: (self sizeInWordsOf: obj)
+			trace: nil
+			write: [].
+		refcts at: (self oopOf: obj) put: OVref "jam refcts of special objects"].
+	self trace: #Smalltalk; trace: #Processor "need to get mapped now"!
+writeSpecial2
+	| obj pos max oldTable |
+	specialObjects do:
+		[:obj |
+		"make sure parts are written (will cause extra ref)"
+		self trace: obj class.
+		obj == Symbol table | obj class isBits
+			ifFalse: [1 to: (self sizeInWordsOf: obj) do:
+						[:i | self trace: (obj instVarAt: i)]]].
+	oldTable _ Symbol table copy.
+	"trim Symbol table to only those UStrings used"
+	1 to: Symbol table size do:
+		[:i |
+		Symbol table
+			at: i
+			put: ((Symbol table at: i)
+					select: [:obj | (refcts at: (self oopOf: obj)) > NoRefs])].
+	1 to: (self sizeInWordsOf: Symbol table) do:
+		[:i | self trace: (Symbol table instVarAt: i)].
+	pos _ file position.
+	file position: 512.
+	max _ maxOop.
+	specialObjects do:
+		[:obj | "go back and write data after tracing"
+		self perform: (writeDict at: obj class) with: obj].
+	max ~= maxOop ifTrue: [self error: 'bug in tracer'].
+	file position: pos.
+	specialObjects do:
+		[:obj | "undo the extra refs due to specialObjects"
+		self unref: obj class.
+		obj class isBits ifFalse:
+			[1 to: (self sizeInWordsOf: obj) do: [:i | self unref: (obj instVarAt: i)]]].
+	Symbol table: oldTable.
+	self unref: #Smalltalk; unref: #Processor!
+"-----------------------------------"!
+!SystemTracer methodsFor: 'initialize-release'!
+doitWithout: classSet
+	| time1 time2 ctxt n |
+	ctxt _ thisContext sender.
+	ctxt push: nil.
+	self init: ctxt.
+	self initClampedClasses: classSet.
+	FileDirectory initializeExternalReferences.
+	Smalltalk shutdown.
+	"Make sure the system is stable underneath us."
+	Transcript show: 'Tracing . . . '.
+	time1 _ Time now asSeconds.
+	n _ self writeImage: (Array with: Smalltalk).
+	time2 _ Time now asSeconds.
+	Transcript print: n; show: ' objects, words, '; print: time2 - time1; show: ' sec.'; cr.
+	Smalltalk install.
+	"Allow things to change again."
+	ctxt pop
+	"So we can resume"!
+init: aContext
+	initialProcess _ Process forContext: aContext priority: Processor activePriority.
+	refcts _ ByteArray new: 49152.
+	map _ WordArray new: 49152.
+	file _ Disk file: 'clone.im'.
+	file binary.
+	ot _ Disk file: 'ot.scratch'.
+	ot binary.
+	holder _ ReadWriteStream on: (Array new: 100).
+	maxOop _ 0.
+	self clamp: self.
+	self initDict!
+initClampedClasses: classSet
+	| x |
+	classSet isEmpty
+		ifTrue: [^self].
+	classSet do:
+		[:class |
+		self clamp: class].
+	Smalltalk allBehaviorsDo:
+		[:class |
+		class superclass == nil &
+			((writeDict at: class) ~= #writeClamped:)
+		ifTrue: [class == Object
+					ifFalse: [self error: class name , 'superclass is clamped!!!!!!!!']]].
+	SystemOrganization removeEmptyCategories.
+	Smalltalk newClassNames; noChanges.
+	Browser allInstancesDo: [:x | x updateCategories].
+	Smalltalk newSourceFile: 'Smalltalk80' without: classSet!
+initDict
+	writeDict _ Dictionary new: 256.
+	Smalltalk
+		allBehaviorsDo:
+			[:class |
+			writeDict at: class put: #writePointers:.
+			class isBits
+				ifTrue:
+					[writeDict at: class put: (class isBytes
+											ifTrue: [#writeBytes:]
+											ifFalse: [#writeWords:])]
+				ifFalse:
+					[(class inheritsFrom: Set) | (class == Set) ifTrue:
+						[writeDict at: class put: #writeSet:].
+					(class inheritsFrom: IdentityDictionary) | (class == IdentityDictionary) ifTrue:
+						[writeDict at: class put: #writeIdentityDictionary:]]].
+	writeDict at: SmallInteger put: #writeClamped:.
+	writeDict at: CompiledMethod put: #writeMethod:.
+	writeDict at: Process put: #writeProcess:!
+new: obj class: class length: length trace: traceBlock write: writeBlock
+	| oop objpos endpos |
+	oop_ self oopOf: obj.
+	(refcts at: oop)=NoRefs ifTrue: "create a new ot entry"
+		[map at: oop put: (maxOop_ maxOop+1).
+		refcts at: oop put: 1.
+		ot nextWordPut: oop.  "save oop; fill in refct in pass2"
+		ot nextPut: bank +
+			(class  isBits
+			ifTrue: [(class isBytes and: [obj size even == false])
+						ifTrue: [ODD]  ifFalse: [0]]
+			ifFalse: [PTRS]).
+		ot nextWordPut: addr.
+		addr _ addr + length+2.
+		addr >= 65536
+			ifTrue:
+				[addr _ (addr - 65536) truncated.
+				bank _ bank + 1]]
+			ifFalse:
+				[(map at: oop)>specialObjects size
+					ifTrue: [self error: 'double write!!']].
+	objpos_ file position.
+	file skip: length+2*2.
+	traceBlock notNil ifTrue: [self trace: class.  traceBlock value].
+	endpos_ file position.  file position: objpos.
+	self writeBitField: length+2.  self writePointerField: class.  writeBlock value.
+	file position: endpos!
+preserve: refs
+	"This message should puts into the set 'refs' all the messages considered as
+	roots in the system to be winnowed.  Those given below are a minimal set.
+	See the comment in winnow:"
+
+	1 to: Smalltalk specialSelectorSize do:  "these at least"
+		[:i | refs add: (Smalltalk specialSelectorAt: i)].
+	refs addAll: #(doesNotUnderstand: cannotReturn: monitor: unusedOop51).
+	refs addAll: #()  "Lots more here for a real trace"!
+winnow: nPasses
+	"This method will clamp message out of the cloning process.  First it calls preserve:
+	to establish a root set of messages which must not be deleted.  Then it makes a pass
+	through the system figuring out which messages are not called from anywhere
+	except in classes which have already been clamped.  Then it makes another pass,
+	picking up those which are now unreferenced due to the preceding deletions.
+	And so on;  usually 6 iterations gets most everything.
+
+	It is advisable to run just the winnow phase of the trace (2 passes, say)
+		ExportTracer new init: thisContext; winnow: 2
+	and then read the file chaff.st to see what got zapped, before doing a full trace.
+	Chances are, you will have forgotten to include several messages in preserve: (qv)."
+
+	| f refs class sel lit method first |
+	f _ Disk file: 'chaff.st'.
+	" 6 iterations gets most everything"
+	1 to: nPasses do:
+		[:i |
+		Transcript show: 'Winnow pass ' , i printString; cr; endEntry.
+		refs _ Set new: 4096.
+		self preserve: refs.
+		Smalltalk allBehaviorsDo: [:class | "collect all refs"
+			(self hasClamped: class)
+				ifFalse: [class selectors do:
+						[:sel |
+						method _ class compiledMethodAt: sel.
+						(self hasClamped: method)
+							ifFalse: [method literals do: [:lit | (lit isMemberOf: Symbol)
+										ifTrue: [refs add: lit]]]]]].
+		Smalltalk allBehaviorsDo: [:class | "collect all unrefs"
+			(self hasClamped: class)
+				ifFalse:
+					[first _ true.
+					class selectors do: [:sel | (refs includes: sel)
+							ifFalse:
+								[method _ class compiledMethodAt: sel.
+								(self hasClamped: method)
+									ifFalse:
+										[first ifTrue:
+											[first _ false.
+											f cr; cr; nextPutAll: class name; space].
+										self clamp: (class compiledMethodAt: sel).
+										class organization removeElement: sel.
+										f nextPutAll: sel; space]]]]].
+		f cr; nextPutAll: '------------'; cr].
+	f close!
+"-----------------------------------"!
+!SystemTracer methodsFor: 'private'!
+asOopFromIndex: oop
+	"Convert from OT index to values returned by asOop"
+	oop <= 16383
+		ifTrue: [^ oop]
+		ifFalse: [^ oop - 32768]!
+asOopToIndex: oop
+	"Unscramble asOop values to return OT index in range 1 to 32767."
+	oop < 0
+		ifTrue: [^ oop + 32768]
+		ifFalse: [^ oop]!
+clamp: obj
+	refcts at: (self oopOf: obj) put: Clamped.
+	(obj isKindOf: Behavior)
+		ifTrue:
+			[writeDict at: obj put: #writeClamped:.
+			Smalltalk removeKey: obj name.
+			SystemOrganization removeElement: obj name]!
+hasClamped: obj
+	obj class == SmallInteger ifTrue: [^false].
+	^(refcts at: (self oopOf: obj)) = Clamped!
+newHashFor: asOop
+	"This is what asOop will return in the cloned system.
+	asOop is what asOop returns in the current system"
+
+	^ self asOopFromIndex: (map at: (self asOopToIndex: asOop))!
+newSmallIntegerHash: anInteger
+	^ anInteger asOop!
+oopOf: obj
+	"Returns an OT index, also suitable for indexing map and refcts.
+	obj must not be a SmallInteger."
+
+	^ self asOopToIndex: obj asOop!
+permutation: permutationBlock for: array
+	| len perm key hash |
+	"Return an inverse permutation for an array to permute it according to
+	the mapped oop values.  The keys in array MUST have been mapped."
+
+	len _ array basicSize.
+	perm _ Array new: len.
+	1 to: len do:
+		[:i | key _ array basicAt: i.
+		(key == nil or: [self hasClamped: key])
+		  ifFalse:
+			[hash _ permutationBlock value: key.
+			hash _ hash \\ len + 1.
+			[(perm at: hash) == nil]
+				whileFalse:
+				[hash _ (hash = len ifTrue: [1] ifFalse: [hash + 1])].
+			perm at: hash put: i]].
+	^perm!
+permute: vec by: perm
+	| copy j len inverse |
+	(perm isMemberOf: Interval) ifTrue: [^perm"no-op for 1~n identity"].
+	len _ vec size.
+	copy _ Array new: len.
+	inverse _ Array new: len.
+	1 to: len do:
+		[:i |
+		(j _ perm at: i) == nil
+			ifFalse:
+				[copy at: i put: (vec at: j).
+				inverse at: j put: i]].
+	1 to: len do: [:i | vec at: i put: (copy at: i)].
+	^inverse!
+refctOf: obj
+	(obj isMemberOf: SmallInteger) ifTrue: [^0].
+	^refcts at: (self oopOf: obj)!
+sizeInWordsOf: anObject
+	| class |
+	class_ anObject class.
+	class isBytes ifTrue: [^anObject size+1//2].
+	class isVariable ifTrue: [^class instSize+anObject basicSize].
+	^class instSize!
+unref: obj
+	| oop refct |
+	(obj isMemberOf: SmallInteger) ifTrue: [^self].
+	oop _ self oopOf: obj.
+	(refct _ refcts at: oop) = OVref ifTrue: [^self].
+	refct = 1 ifTrue: [self error: 'deleting last ref'].
+	refcts at: oop put: refct - 1!
+"-----------------------------------"!
+!SystemTracer methodsFor: 'static checks'!
+allCallsOn: aLiteral clampedBy: nameSet
+	"Specialized version of the SystemDictionary allCallsOn:,
+	which doesnt include calls from clamped classes."
+	| aSortedCollection classNames class name special |
+	aSortedCollection _ SortedCollection new.
+	special _ Smalltalk hasSpecialSelector: aLiteral ifTrueSetByte: [:byte ].
+	classNames _ Smalltalk classNames.
+	nameSet do: [:name | classNames remove: name ifAbsent: []].
+	Cursor execute showWhile:
+		[classNames do:
+			[:name | class _ Smalltalk at: name.
+			(class whichSelectorsReferTo: aLiteral special: special byte: byte) do:
+				[:sel | sel ~~ #DoIt
+					ifTrue: [aSortedCollection add: class name , ' ' , sel]].
+			class _ class class.
+			(class whichSelectorsReferTo: aLiteral special: special byte: byte) do:
+				[:sel | sel ~~ #DoIt
+					ifTrue: [aSortedCollection add: class name , ' ' , sel]]]].
+	^aSortedCollection!
+printDanglingRefs   "SystemTracer new printDanglingRefs."
+	"Use this method to locate calls on classes and other global objects
+	which are to be clamped from the system"
+	| class x clamped f dangling |
+	clamped _ Set new.
+	"clamp entire categories of classes: "
+	(SystemOrganization categories select: [:x | 'ClampThis*' match: x]) do:
+		[:str |
+		(SystemOrganization superclassOrder: str) do:
+			[:class | clamped add: class name]].
+	"clamp individual classes and other Globals: "
+	(Array with: #AltoFile with: #AltoFileDirectory with: #AltoFilePage) do:
+		[:x | clamped add: x].
+	Smalltalk allBehaviorsDo:
+		[:class |
+		(class organization categories select:
+				[:name | ('clampme*' match: name)]) do:
+			[:name | Transcript print: class; space; nextPutAll: name; cr; endEntry.
+			class removeCategory: name].
+		].
+	f_ Disk file: 'dangling.st'.
+	clamped do:
+		[:name |
+		dangling _ self allCallsOn: (Smalltalk associationAt: name) clampedBy: clamped.
+		dangling isEmpty ifFalse:
+			[f cr; nextPutAll: name; cr.
+			dangling do:
+				[:x | f tab; nextPutAll: x; cr]]].
+	f close!
+"-----------------------------------"!
+!SystemTracer methodsFor: 'tracing and writing'!
+trace: obj
+	| oop refct |
+	(obj isMemberOf: SmallInteger) ifTrue: [^self].
+	oop _ self oopOf: obj.
+	refct _ refcts at: oop.
+	refct >= OVref ifTrue: [^self].
+	refct > NoRefs
+		ifTrue:
+			[refcts at: oop put: refct + 1.
+			^self].
+	self perform: (writeDict at: obj class)
+		with: obj!
+writeBitField: bits
+	bits class == SmallInteger
+		ifTrue:
+			[file nextPut: (bits bitShift: -8).
+			file nextPut: (bits bitAnd: 255)]
+		ifFalse:
+			[file nextPut: (bits at: 2).
+			file nextPut: (bits at: 1)]!
+writeBytes: obj
+	self new: obj
+		class: obj class
+		length: (self sizeInWordsOf: obj)
+		trace: []
+		write:
+			[1 to: obj size do: [:i | file nextPut: (obj at: i) asInteger].
+			file padToNextWordPut: 0]!
+writeClamped: obj
+	"Take no action"!
+writeIdentityDictionary: obj
+	"Elements of an IdentityDict need to be reOrdered owing to new oops"
+	"Here we also support removal of entries for clamped values"
+	| i perm fixPart length objCopy |
+	objCopy _ obj copy.
+	objCopy keys do:
+		[:key |
+		(self hasClamped: (objCopy at: key)) ifTrue: [objCopy removeKey: key]].
+	holder nextPut: objCopy.
+	fixPart _ objCopy class instSize.
+	self new: obj
+		class: objCopy class
+		length: (length _ self sizeInWordsOf: objCopy)
+		trace:
+			["map the keys first"
+			3 to: length do: [:i | self trace: (objCopy instVarAt: i)].
+			perm _
+				self permutation:
+					[:key |  "IdentityDicts hash by asOop, not hash"
+					key class == SmallInteger
+						ifTrue: [self newSmallIntegerHash: key]
+						ifFalse: [self newHashFor: key asOop]]
+				for: objCopy.
+			self permute: (objCopy instVarAt: 2) by: perm.
+			"and permute the new value vector"
+			1 to: 2 do: [:i | self trace: (objCopy instVarAt: i)]]
+		write:
+			[1 to: fixPart do: [:i | self writePointerField: (objCopy instVarAt: i)].
+			1 to: objCopy basicSize do: [:i | self writePointerField: ((perm at: i)
+						== nil ifFalse: [objCopy instVarAt: (perm at: i)
+								+ fixPart])]]!
+writeMethod: obj
+	| nptrs |
+	nptrs _ obj numLiterals + 1.
+	self new: obj
+		class: obj class
+		length: (self sizeInWordsOf: obj)
+		trace: [1 to: nptrs do: [:i | self trace: (obj objectAt: i)]]
+		write:
+			[1 to: nptrs do: [:i | self writePointerField: (obj objectAt: i)].
+			nptrs * 2 + 1 to: obj size do: [:i | file nextPut: (obj at: i)].
+			file padToNextWordPut: 0]!
+writePointerField: obj
+	| oop |
+	(obj isMemberOf: SmallInteger)
+			ifTrue:
+				[file nextPut: ((obj bitShift: -7) bitAnd: 255).
+				file nextPut: (obj bitAnd: 127) * 2 + 1]
+			ifFalse:
+				[oop _ map at: (self oopOf: obj).
+				oop = 0 ifTrue: [oop _ NewNil].
+				file nextPut: ((oop bitShift: -7) bitAnd: 255).
+				file nextPut: (oop bitAnd: 127) * 2 + 0]!
+writePointers: obj
+	| length |
+	self new: obj
+		class: obj class
+		length: (length _ self sizeInWordsOf: obj)
+		trace: [1 to: length do: [:i | self trace: (obj instVarAt: i)]]
+		write: [1 to: length do: [:i | self writePointerField: (obj instVarAt: i)]]!
+writeProcess: obj
+	"Substitute new initialProcess for current"
+
+	| length newObj |
+	newObj _
+		obj == Processor activeProcess
+			ifTrue: [initialProcess]
+			ifFalse: [obj].
+	self new: obj
+		class: newObj class
+		length: (length _ self sizeInWordsOf: newObj)
+		trace: [1 to: length do: [:i | self trace: (newObj instVarAt: i)]]
+		write: [1 to: length do: [:i | self writePointerField: (newObj instVarAt: i)]]!
+writeSet: obj
+	"Elements of a Set need to be reOrdered owing to new oops"
+	| perm length assoc |
+	self new: obj
+		class: obj class
+		length: (length _ self sizeInWordsOf: obj)
+		trace:
+			[1 to: length do: [:i | self trace: (obj instVarAt: i)].
+			"map the elements first"
+			perm _ self permutation: [:key | key hashMappedBy: self] for: obj]
+		write:
+			[1 to: obj class instSize do:
+				[:i | self writePointerField: (obj instVarAt: i)].
+			1 to: obj basicSize do:
+				[:i |
+				self writePointerField:
+					((perm at: i) == nil ifFalse: [obj basicAt: (perm at: i)])]]!
+writeWords: obj
+	| length |
+	self new: obj
+		class: obj class
+		length: (length _ self sizeInWordsOf: obj)
+		trace: []
+		write: [1 to: length do: [:i | self writeBitField: (obj instVarAt: i)]]!

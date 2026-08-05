@@ -1,0 +1,48 @@
+StringHolderView subclass: #TextCollectorView
+  instanceVariableNames: ''
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Interface-Transcript'!
+TextCollectorView class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+TextCollectorView comment:
+'I am a StringHolderView of the description of the contents of a TextCollector or Transcript.  TextCollectorController is my default controller.'!
+"-----------------------------------"!
+!TextCollectorView class methodsFor: 'instance creation'!
+open
+	"Answer an instance of me on a new TextCollector.  Schedule it."
+	^self open: TextCollector new label: 'TextCollector'!
+open: aTextCollector label: aString
+	"Answer an instance of me on the argument, aTextCollector.  The
+	label of the StandardSystemView should be aString."
+
+	| topView aView |
+	topView _ StandardSystemView new.
+	topView model: aTextCollector.
+	topView label: aString.
+	topView minimumSize: 160 @ 120.
+	aView _ self new model: aTextCollector.
+	aView insideColor: Form white.
+	aView borderWidth: 1.
+	topView borderWidth: 1.
+	topView addSubView: aView.
+	topView controller open!
+"-----------------------------------"!
+!TextCollectorView methodsFor: 'controller access'!
+defaultControllerClass
+	| t |
+	t _ 0.
+	^TextCollectorController!
+"-----------------------------------"!
+!TextCollectorView methodsFor: 'updating'!
+update: aParameter
+	self topView isCollapsed ifTrue: [model appendEntry].
+	(self controller isKindOf: TextCollectorController)
+		ifTrue:
+			[aParameter == #appendEntry
+				ifTrue: [^controller appendEntry].
+			aParameter == #update
+				ifTrue: [^controller changeText: model contents asText].
+			aParameter == #refresh
+				ifTrue:	[^controller viewToTop]]!

@@ -1,0 +1,249 @@
+Integer variableByteSubclass: #LargePositiveInteger
+  instanceVariableNames: ''
+  classVariableNames: 'MaxHi'
+  poolDictionaries: ''
+  category: 'Numeric-Numbers'!
+LargePositiveInteger class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+LargePositiveInteger comment:
+'A positive large integer.  Nearly all the work is done in Integer: LargePositiveInteger just overrides a few messages.'!
+"-----------------------------------"!
+!LargePositiveInteger class methodsFor: 'class initialization'!
+initialize
+	"If a LargePositiveInteger is exactly SmallInteger maxBytes in size,
+	and its high-order byte does not exceed MaxHi, the number
+	should be a SmallInteger."
+
+	SmallInteger initialize.
+	MaxHi _ SmallInteger maxVal bitShift: (SmallInteger maxBytes - 1 * -8)
+	"LargePositiveInteger initialize."!
+"-----------------------------------"!
+!LargePositiveInteger methodsFor: 'arithmetic'!
+* anInteger
+	"Multiply the receiver by the argument and answer with an Integer result.  Fail if
+	either the argument or the result is not a SmallInteger or a
+	LargePositiveInteger less than 65536.  Optional.  See Object documentation
+	whatIsAPrimitive. "
+
+	<primitive: 29>
+	^super * anInteger!
++ anInteger
+	"Add the receiver to the argument and answer with an Integer result.  Fail if either
+	the argument or the result is not a SmallInteger or a LargePositiveInteger less than
+	65536.  Optional.  See Object documentation whatIsAPrimitive."
+
+	<primitive: 21>
+	^super + anInteger!
+- anInteger
+	"Subtract the argument from the receiver and answer with an Integer result.  Fail if
+	either the argument or the result is not a SmallInteger or a
+	LargePositiveInteger less than 65536.  Optional.  See Object documentation
+	whatIsAPrimitive. "
+
+	<primitive: 22>
+	^super - anInteger!
+/ anInteger
+	"Divide the receiver by the argument and answer with the result if the division
+	is exact.  Fail if the result is not a whole integer.  Fail if the argument is 0.  Fail if
+	either the argument or the result is not a SmallInteger or a
+	LargePositiveInteger less than 65536.  Optional.  See Object documentation
+	whatIsAPrimitive. "
+
+	<primitive: 30>
+	^super / anInteger!
+// anInteger
+	"Divide the receiver by the argument and return the result.  Round the result
+	down towards negative infinity to make it a whole integer.  Fail if the
+	argument is 0.  Fail if either the argument or the result is not a SmallInteger or a
+	LargePositiveInteger less than 65536.  Optional.  See Object documentation
+	whatIsAPrimitive. "
+
+	<primitive: 32>
+	^super // anInteger!
+\\ anInteger
+	"Take the receiver modulo the argument.  The result is the remainder rounded
+	towards negative infinity, of the receiver divided by the argument.  Fail if the
+	argument is 0.  Fail if either the argument or the result is not a SmallInteger or a
+	LargePositiveInteger less than 65536.  Optional.  See Object documentation
+	whatIsAPrimitive."
+
+	<primitive: 31>
+	^super \\ anInteger!
+abs!
+negated
+	| minVal |
+	((self digitAt: 1) = 0 and: [self digitLength = 1]) ifTrue: [^self].
+	"Zero"
+	minVal _ SmallInteger minVal.
+	((self digitAt: 2) = (0 - (minVal // 256)) and: [(self digitAt: 1) = 0])
+		ifTrue: [^minVal].
+	^self copyto: (LargeNegativeInteger new: self digitLength)!
+quo: anInteger
+	"Divide the receiver by the argument and return the result.  Round the result
+	down towards zero to make it a whole integer.  Fail if the argument is 0.  Fail if
+	either the argument or the result is not a SmallInteger or a
+	LargePositiveInteger less than 65536.  Optional.  See Object documentation
+	whatIsAPrimitive."
+
+	<primitive: 33>
+	^super quo: anInteger!
+"-----------------------------------"!
+!LargePositiveInteger methodsFor: 'bit manipulation'!
+bitAnd: anInteger
+	"Logical AND the twos-complement representation of the receiver with the
+	argument and return the result.  Fail if either the argument or the result is not a
+	SmallInteger or a LargePositiveInteger less than 65536.  Optional.  See Object
+	documentation whatIsAPrimitive."
+
+	<primitive: 34>
+	^super bitAnd: anInteger!
+bitOr: anInteger
+	"Logical OR the twos-complement representation of the receiver with the
+	argument and return the result.  Fail if either the argument or the result is not a
+	SmallInteger or a LargePositiveInteger less than 65536.  Optional.  See Object
+	documentation whatIsAPrimitive."
+
+	<primitive: 35>
+	^super bitOr: anInteger!
+bitShift: anInteger
+	"Answer with a Integer whose value (in twos-complement representation) is the
+	receiver's value (in twos-complement representation) shifted left by the
+	number of bits indicated by the argument.  Negative arguments shift right.
+	Zeros are shifted in from the right in left shifts.  The sign bit is extended in right
+	shifts.  Fail if the result cannot be represented as a SmallInteger or a
+	LargePositiveInteger less than 65536.  Optional.  See Object documentation
+	whatIsAPrimitive."
+
+	<primitive: 37>
+	^super bitShift: anInteger!
+bitXor: anInteger
+	"Logical XOR the twos-complement representation of the receiver with the
+	argument and return the result.  Fail if either the argument or the result is not a
+	SmallInteger or a LargePositiveInteger less than 65536.  Optional.  See Object
+	documentation whatIsAPrimitive."
+
+	<primitive: 36>
+	^super bitXor: anInteger!
+highBit
+	"Answer with the index of the high order bit of the binary representation of this
+	number "
+
+	^self lastDigit highBit + (8 * (self digitLength - 1))!
+"-----------------------------------"!
+!LargePositiveInteger methodsFor: 'comparing'!
+< anInteger
+	"Compare the receiver with the argument and return true if the receiver is less
+	than the argument.  Otherwise return false.  Fail if the argument is not a
+	SmallInteger or a LargePositiveInteger less than 65536.  Optional.  See Object
+	documentation whatIsAPrimitive."
+
+	<primitive: 23>
+	^super < anInteger!
+<= anInteger
+	"Compare the receiver with the argument and return true if the receiver is less
+	than or equal to the argument.  Otherwise return false.  Fail if the argument is
+	not a SmallInteger or a LargePositiveInteger less than 65536.  Optional.  See
+	Object documentation whatIsAPrimitive."
+
+	<primitive: 25>
+	^super <= anInteger!
+= anInteger
+	"Compare the receiver with the argument and return true if the receiver is
+	equal to the argument.  Otherwise return false.  Fail if the argument is not a
+	SmallInteger or a LargePositiveInteger less than 65536.  Optional.  See Object
+	documentation whatIsAPrimitive."
+
+	<primitive: 27>
+	^super = anInteger!
+> anInteger
+	"Compare the receiver with the argument and return true if the receiver is
+	greater than the argument.  Otherwise return false.  Fail if the argument is not a
+	SmallInteger or a LargePositiveInteger less than 65536.  Optional.  See Object
+	documentation whatIsAPrimitive."
+
+	<primitive: 24>
+	^super > anInteger!
+>= anInteger
+	"Compare the receiver with the argument and answer with true if the receiver
+	is greater than or equal to the argument.  Otherwise return false.  Fail if the
+	argument is not a SmallInteger or a LargePositiveInteger less than 65536.
+	Optional.  See Object documentation whatIsAPrimitive."
+
+	<primitive: 26>
+	^super >= anInteger!
+~= anInteger
+	"Compare the receiver with the argument and answer true if the receiver is not
+	equal to the argument.  Otherwise answer false.  Fail if the argument is not a
+	SmallInteger or a LargePositiveInteger less than 65536.  Optional.  See Object
+	documentation whatIsAPrimitive."
+
+	<primitive: 28>
+	^super ~= anInteger!
+"-----------------------------------"!
+!LargePositiveInteger methodsFor: 'converting'!
+asObject
+	"This is the inverse of Object.asOop; look there for details."
+	<primitive: 76>
+	self < 32768
+		ifTrue: [^ (self-32768) asObject].  "16K...32K-1 synonym for -16K...-1"
+	self < 49152
+		ifTrue: [^ self-32768].	"32K...48K-1 --> SmallIntegers 0...16K-1"
+	self < 65536
+		ifTrue: [^ self-65536].	"48K...64K-1 --> SmallIntegers -16K...-1"
+	^ #NonExistentObject!
+"-----------------------------------"!
+!LargePositiveInteger methodsFor: 'system primitives'!
+digitAt: index
+	"Answer with the value of an indexable field in the receiver. Fail if the
+	argument (the index) is not an Integer or is out of bounds. Essential. See Object
+	documentation whatIsAPrimitive."
+
+	<primitive: 60>
+	self digitLength < index
+		ifTrue: [^0]
+		ifFalse: [^super at: index]!
+digitAt: index put: value
+	"Store the second argument (value) in the indexable field of the receiver
+	indicated by index.  Fail if the value is negative or is larger than 255.  Fail if the
+	index is not an Integer or is out of bounds.  Answer with the value that was
+	stored.  Essential.  See Object documentation whatIsAPrimitive."
+
+	<primitive: 61>
+	^super at: index put: value!
+digitLength
+	"Answer with the number of indexable fields in the receiver.  This value is the
+	same as the largest legal subscript.  Essential.  See Object documentation
+	whatIsAPrimitive."
+
+	<primitive: 62>
+	self primitiveFailed!
+"-----------------------------------"!
+!LargePositiveInteger methodsFor: 'testing'!
+negative
+	^false!
+positive
+	^true!
+"-----------------------------------"!
+!LargePositiveInteger methodsFor: 'truncation and round off'!
+truncated
+	"If I can be represented as a SmallInteger, return the
+	converted result.  This message should really be called
+	something else, since it is only used internally after
+	arithmetic and bit operations, and in a few external
+	places that construct LargePositiveIntegers in non-
+	standard ways."
+
+	| size partial maxSize |
+	size _ self digitLength.
+	size = 0 ifTrue: [^0].
+	partial _ self digitAt: size.
+	partial = 0 ifTrue: [^(self growby: -1) truncated].
+	maxSize _ SmallInteger maxBytes.
+	(size < maxSize or: [size = maxSize and: [partial <= MaxHi]])
+		ifTrue:
+			["Convert back to a SmallInteger."
+			[(size _ size - 1) > 0]
+				whileTrue:
+					[partial _ (partial bitShift: 8) + (self digitAt: size)].  "Can't overflow"
+			^partial]!

@@ -1,0 +1,492 @@
+ExternalStream subclass: #FileStream
+  instanceVariableNames: 'page rwmode closed'
+  classVariableNames: ''
+  poolDictionaries: 'FilePool'
+  category: 'Files-Streams'!
+FileStream class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+FileStream comment:
+'I represent a Stream that accesses a FilePage from a File.  One use for my instance is to access larger "virtual Strings" than can be stored contiguously in main memory.  I restrict the objects stored and retrieved to be Integers or Characters.  An end of file pointer terminates reading;  it can be extended by writing past it, or the file can be explicitly truncated.
+
+To use the file system for most applications, you typically create a FileStream.  This is done by sending a message to a FileDirectory (file:, oldFile:, newFile:, rename:newName:) which creates an instance of me.  Accesses to the file are then done via my instance.
+
+Instance variables
+	page			<FilePage> the current FilePage being accessed
+	rwmode			<Integer> denoting readOnly, readWrite, or readWriteShorten.
+					readWriteShorten with textual contents is the default.
+	closed			<Boolean> false if the file is open'!
+"-----------------------------------"!
+!FileStream class methodsFor: 'instance creation'!
+fileNamed: fileDesignator
+	"Answer a FileStream on an old or new File designated by the string fileDesignator."
+
+	| dir fName |
+	dir _ FileDirectory directoryFromName: fileDesignator setFileName: [:fName].
+	^(dir findOrAddKey: fName) asFileStream!
+newFileNamed: fileDesignator
+	"Answer a FileStream on a new File designated by the string fileDesignator.  Error if the argument is not a new file name."
+
+	| dir fName |
+	dir _ FileDirectory directoryFromName: fileDesignator setFileName: [:fName].
+	^(dir addKey: fName) asFileStream!
+oldFileNamed: fileDesignator
+	"Answer a FileStream on an old File designated by the string fileDesignator.  Error if the argument is not an old file name."
+
+	| dir fName |
+	dir _ FileDirectory directoryFromName: fileDesignator setFileName: [:fName].
+	^(dir findKey: fName) asFileStream!
+on: aFilePage
+	^self new on: aFilePage!
+"-----------------------------------"!
+!FileStream methodsFor: 'accessing'!
+contentsOfEntireFile
+	"Read all of the contents of the receiver."
+
+	| s |
+	self readOnly.
+	self reset.
+	s _ self next: self size.
+	self close.
+	^s!
+next
+	(position >= readLimit and: [self atEnd])
+		ifTrue: [^nil]
+		ifFalse: [^collection at: (position _ position + 1)]!
+next: anInteger
+
+	| newCollection howManyRead increment |
+
+	newCollection _ collection species new: anInteger.
+
+	howManyRead _ 0.
+	[howManyRead < anInteger] whileTrue:
+		[
+		self atEnd ifTrue:
+			[
+			(howManyRead + 1) to: anInteger do: [:i | newCollection at: i put: (self next)].
+			^newCollection
+			].
+		increment _ (readLimit - position) min: (anInteger - howManyRead).
+		newCollection replaceFrom: (howManyRead + 1) to: (howManyRead _ howManyRead + increment) with: collection startingAt: (position + 1).
+		position _ position + increment.
+		].
+	^newCollection!
+next: anInteger into: aCollection
+	"Copy the next anInteger bytes from the receiver into aCollection."
+
+	| howManyRead increment |
+
+	howManyRead _ 0.
+	[howManyRead < anInteger] whileTrue:
+		[
+		self atEnd ifTrue:
+			[
+			(howManyRead + 1) to: anInteger do: [:i | aCollection at: i put: (self next)].
+			^aCollection
+			].
+		increment _ (readLimit - position) min: (anInteger - howManyRead).
+		aCollection replaceFrom: (howManyRead + 1) to: (howManyRead _ howManyRead + increment) with: collection startingAt: (position + 1).
+		position _ position + increment.
+		].
+	^aCollection!
+nextPut: aByte
+	| dmax |
+	rwmode == nil
+		ifTrue: [self readWriteShorten "default mode"].
+	(rwmode bitAnd: Write) = 0
+		ifTrue: [^self error: 'no writing allowed!!'].
+	closed ifTrue: [self reopen].
+	position < writeLimit
+		ifTrue: [^collection at: (position _ position + 1) put: aByte].
+	dmax _ page dataMaxEnd.
+	writeLimit < dmax
+		ifTrue: [writeLimit _ dmax]
+		ifFalse:
+			[self nextPage isNil ifTrue: [^self error: 'cannot write!!!!!!'].
+			position = readLimit ifTrue: [writeLimit _ dmax]].
+	^collection at: (position _ position + 1) put: aByte!
+nextPutAll: aCollection
+	| dmax howManyWritten increment collectionSize |
+
+	((aCollection isKindOf: ByteArray) or: [aCollection isKindOf: String])
+		ifFalse: [^super nextPutAll: aCollection].
+
+	rwmode == nil
+		ifTrue: [self readWriteShorten "default mode"].
+	(rwmode bitAnd: Write) = 0
+		ifTrue: [^self error: 'no writing allowed!!'].
+	closed ifTrue: [self reopen].
+
+	howManyWritten _ 0.
+	collectionSize _ aCollection size.
+	dmax _ (page dataMaxEnd).
+	[
+	increment _ (dmax - position) min: (collectionSize - howManyWritten).
+	collection replaceFrom: (position + 1) to: (position _ position + increment)
+		with: aCollection startingAt: (howManyWritten + 1).
+	howManyWritten _ howManyWritten + increment.
+	howManyWritten < collectionSize.
+	] whileTrue:
+		[
+		self nextPage isNil ifTrue: [^self error: 'cannot write!!!!!!'].
+		position = readLimit ifTrue: [writeLimit _ dmax].
+		].
+	position > writeLimit ifTrue: [writeLimit _ dmax].
+	^aCollection!
+size
+	"return size of File in characters"
+
+	self reopen.
+	self fixEnd.
+	"if on last page, return answer directly"
+	page lastPage
+		ifTrue: [^page pageNumber - 1 * page dataSize + page size]
+		ifFalse: [^self file characterSize]!
+"-----------------------------------"!
+!FileStream methodsFor: 'editing'!
+edit
+	"Create and schedule a FileView of the contents of the receiver.  The label of the view is the name of the receiver."
+
+	FileModel
+		open: (FileModel fileStream: self)
+		named: self file fullName!
+"-----------------------------------"!
+!FileStream methodsFor: 'file accessing'!
+beSnapshotFile
+	^self file beSnapshotFile!
+directory
+	"Answer the directory of the file for the page the receiver is currently streaming over."
+	^page file directory!
+file
+	"Answer the file for the page the receiver is streaming over."
+	^page file!
+name
+	"Answer the name of the file for the page the receiver is streaming over."
+	^page file fileName!
+page
+	"Answer the page the receiver is streaming over."
+	^page!
+"-----------------------------------"!
+!FileStream methodsFor: 'file modes'!
+binary
+	"Set the receiver's file to be binary mode."
+
+	self file binary.
+	"fix up current page"
+	page binary.
+	self on: page!
+readOnly
+	"Set the receiver's mode so that pages are not flushed and reading stops at
+	end of file."
+	self setMode: Read!
+readWrite
+	"Set the receiver's mode so that pages are flushed, end of file can be extended by
+	writing, and closing does not truncate file."
+	self setMode: Read + Write!
+readWriteShorten
+	"Same as readWrite except close truncates file at current position."
+	self setMode: Read + Write + Shorten!
+text
+	"Set the receiver's file to be in text mode."
+
+	self file text.
+	"fix up current page"
+	page text.
+	self on: page!
+writeShorten
+	"Allow write and shorten the receiver's file upon closing."
+	self setMode: Write + Shorten!
+"-----------------------------------"!
+!FileStream methodsFor: 'file status'!
+close
+	"Set the receiver's file status to closed."
+
+	closed
+		ifFalse:
+			[self writing
+				ifTrue: [(rwmode bitAnd: Shorten) = Shorten
+							ifTrue: [self shorten]
+							ifFalse: [self flush]].
+			closed _ true.
+			readLimit _ writeLimit _ 0.
+			self file close.
+			FileDirectory removeExternalReference: self]!
+flush
+	"Write the current page back onto the file."
+	self closed
+		ifTrue: [^page]
+		ifFalse:
+			[self fixEnd.
+			page fromFileStream: self.
+			^page write]!
+release
+	"Set the receiver's status to closed, if it is not already, and do not allow
+	any further reading or writing."
+	closed
+		ifFalse:
+			[closed _ true.
+			readLimit _ writeLimit _ 0.
+			self file release]!
+reopen
+	"Set the receiver's file to be open again, setting the position to its previous position.
+	Create an error if the file can not be reopened."
+
+	| pos |
+	closed ifFalse: [^nil].
+	"reopen to previous position"
+	pos _ position.
+	(self read: page pageNumber) isNil
+		ifTrue:
+			["that page doesn't exist, so go to last one that does.
+			note that setToEnd would be recursive"
+			(self read: self file size) isNil
+				ifTrue: [^self error: 'cannot reopen or setToEnd'].
+			position _ readLimit]
+		ifFalse: [position _ pos min: readLimit]!
+"-----------------------------------"!
+!FileStream methodsFor: 'file testing'!
+closed
+	"Answer the status of the file--false if open, true otherwise."
+	^closed!
+writing
+	"Answer whether it is possible to write on the receiver."
+
+	rwmode == nil
+		ifTrue:
+			[self readWriteShorten.	"default mode"
+			^true].
+	^(rwmode bitAnd: Write) = Write!
+"-----------------------------------"!
+!FileStream methodsFor: 'fileIn/Out'!
+fileIn
+	"Guarantee fileStream is readOnly before fileIn for efficiency and to eliminate remote sharing conflicts"
+
+	Transcript refresh; cr; cr; show: 'Filing in from:'; crtab; show: self name; cr.
+	self readOnly.
+	^super fileIn!
+fileOutChanges
+	"Append to the receiver a description of all system changes."
+
+	Transcript refresh; cr; cr; show: ('Filing out changes on:'); crtab; show: self name.
+	super fileOutChanges!
+printOutChanges
+	"Print out a description of all system changes."
+
+	self fileOutChanges!
+"-----------------------------------"!
+!FileStream methodsFor: 'nonhomogeneous accessing'!
+nextPage
+	"Answer the receiver as a FileStream on the next page or nil if there is no next page."
+	^self read: page pageNumber + 1!
+read: pageNumber
+	"The receiver is formatted into pages.  Access the information on page
+	pageNumber.  Normally called by pastEnd, position:size:, reopen, reset, setToEnd.
+	Answer nil if the pageNumber does not exist in the receiver.  Else answer
+	the receiver as a FileStream on this new page."
+
+	| p |
+	pageNumber < 1 ifTrue: [^nil].
+	closed
+		ifTrue:
+			["reopen the file, (re)read the page"
+			page reopen.
+			(p _ page readPageNumber: pageNumber) isNil
+				ifTrue: [^nil]
+				ifFalse: [^self on: p]].
+	(pageNumber = page pageNumber and: [page size > 0 or: [position > page dataBeginning]])
+		ifTrue:
+			[self fixEnd.
+			position _ page dataBeginning.
+			^self].
+	"current page has wrong page number or is empty (possibly from error)"
+	self writing
+		ifTrue:
+			[((pageNumber > page pageNumber and: [page isFull == false])
+				ifTrue:
+					["fill up last page when positioning past it"
+					position _ page dataMaxEnd.
+					true]
+				ifFalse: ["otherwise, fixEnd"
+					position > page dataEnd])
+				ifTrue: [page dataEnd: (readLimit _ position)].
+			"write current page"
+			page fromFileStream: self.
+			p _ page write.
+			p pageNumber = pageNumber ifFalse: ["read it or create it"
+				p _ page readOrAddPageNumber: pageNumber"already have next page, e.g. at end of AltoFile"]]
+		ifFalse: [p _ page readPageNumber: pageNumber].
+	p isNil ifTrue: [^nil].
+	(page _ p) asFileStream: self!
+"-----------------------------------"!
+!FileStream methodsFor: 'nonhomogeneous positioning'!
+padTo: bsize
+	| rem |
+	rem _ bsize - ((page dataSize \\ bsize = 0
+					ifTrue: [position - page dataBeginning]
+					ifFalse: [self position])
+					\\ bsize).
+	rem = bsize ifTrue: [^0].
+	self skip: rem.
+	^rem!
+padTo: bsize put: aCharacter
+	| rem |
+	rem _ bsize - ((page dataSize \\ bsize = 0
+					ifTrue: [position - page dataBeginning]
+					ifFalse: [self position])
+					\\ bsize).
+	rem = bsize ifTrue: [^0].
+	self next: rem put: aCharacter.
+	^rem!
+wordPosition
+	"return current position in words (2 characters)"
+
+	^self positionSize: 2!
+wordPosition: wpos
+	"set current position in words"
+
+	^self position: wpos size: 2!
+"-----------------------------------"!
+!FileStream methodsFor: 'positioning'!
+position
+	"return current character position in File"
+
+	^self positionSize: 1!
+position: pos
+	self position: pos size: 1!
+reset
+	"set position to beginning of File"
+
+	(self read: 1) isNil ifTrue: [self error: 'reset']!
+setToEnd
+	"set position to end of File.  logically: self position: self size"
+
+	self reopen.
+	(self read: (self file size max: page pageNumber)) isNil
+		ifTrue: [self error: 'setToEnd'].
+	position _ readLimit!
+skip: n
+	| pos plen pageOffset |
+	n = 0 ifTrue: [^self].
+	self reopen.
+	pos _ position + n.
+	(n > 0
+		ifTrue: [pos >= readLimit]
+		ifFalse:
+			[self fixEnd.
+			"important on last page"
+			pos < page dataBeginning])
+		ifTrue:
+			[plen _ page dataSize.
+			"assume p is not Large, otherwise use divMod:"
+			pos _ pos - page dataBeginning.
+			pageOffset _ pos // plen.
+			(self positionPage: page pageNumber + pageOffset character: pos \\ plen)
+				ifFalse: [self error: 'cannot skip ' , n printString]]
+		ifFalse: ["same page"
+			position _ pos]!
+"-----------------------------------"!
+!FileStream methodsFor: 'printing'!
+printOn: aStream
+	super printOn: aStream.
+	aStream nextPutAll: ' on '.
+	self file printOn: aStream!
+"-----------------------------------"!
+!FileStream methodsFor: 'private'!
+fixEnd
+	(self writing and: [position > page dataEnd])
+		ifTrue: ["fix the end of page" page dataEnd: (readLimit _ position)]!
+on: aFilePage
+	"initialize stream on aFilePage"
+
+	page _ aFilePage.
+		"some page from a File, usually page 1, or another FileStream"
+	(page isKindOf: FileStream)
+		ifTrue: [page _ page page].
+	page asFileStream: self.
+	closed _ false.
+	FileDirectory addExternalReference: self!
+position: objpos size: size
+	"set the current character position and the current page
+	from the position of an object of a given size (see positionSize:)"
+
+	| len pn c pos newSize |
+	len _ page dataSize.
+	newSize _ size. "this may change at end of page"
+	size = len
+		ifTrue:
+			["page size"
+			pn _ objpos + 1.
+			c _ 0]
+		ifFalse:
+			[pos _ objpos.
+			size = 1 ifFalse: [len \\ size = 0
+					ifTrue: ["page length is a multiple of size"
+						len _ len // size]
+					ifFalse:
+						[pos _ objpos * size.
+						newSize _ 1]].
+			"obtain quotient (page) and remainder (position)"
+			pn _ 1 + (pos // len).
+			c _ newSize * (pos \\ len)].
+	(self positionPage: pn character: c) ifTrue: [^objpos].
+	self error: 'cannot read page ' , pn printString!
+positionPage: pn character: c
+	"normally accessed by position:size:, skip:"
+
+	(self read: pn) notNil
+		ifTrue:
+			["c assumed between 0 and page dataSize.
+			position, readLimit were set in on:"
+			position _ position + c.
+			(position <= readLimit or: [self writing])
+				ifTrue: [^true]
+				ifFalse:
+					[position _ readLimit.
+					^false]]
+		ifFalse: [c = 0
+				ifTrue: ["try end of previous page"
+					^self positionPage: pn - 1 character: page dataSize]
+				ifFalse: [^false]]!
+positionSize: size
+	"compute the position for an object of a given size,
+	e.g. characters (1), words (2), fixed length (n),
+	from the current character position and the current page"
+
+	| len pos |
+	len _ page dataSize.
+	(size = 1 or: [len \\ size ~= 0])
+		ifTrue:
+			[pos _ page pageNumber - 1 * len + (position - page dataBeginning).
+			size = 1
+				ifTrue: [^pos]
+				ifFalse: [^pos // size]]
+		ifFalse: ["page length is a multiple of size"
+				^page pageNumber - 1 * (len // size)
+							+ (position - page dataBeginning // size)]!
+setMode: m
+	rwmode = m
+		"don't flush if first time or not write mode or continuing write mode"
+		ifFalse: [(rwmode == nil or: [(rwmode bitAnd: Write) = 0
+					or: [(m bitAnd: Write) = Write]])
+					ifTrue: [rwmode _ m]
+					ifFalse:
+						[self flush.
+						rwmode _ m]]!
+shorten
+	"normally called by close and not directly by user"
+
+	page dataEnd: (readLimit _ position).
+	page fromFileStream: self.
+	self on: page endFile.
+	position _ readLimit!
+"-----------------------------------"!
+!FileStream methodsFor: 'testing'!
+atEnd
+	"Answer true if current position is >= end of file position."
+
+	closed ifTrue: [self reopen].
+	position < readLimit ifTrue: [^false].
+	(page lastPage or: [self nextPage isNil])
+		ifTrue: [^true].
+	^position = readLimit!

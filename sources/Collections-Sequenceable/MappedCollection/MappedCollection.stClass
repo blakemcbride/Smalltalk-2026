@@ -1,0 +1,74 @@
+Collection subclass: #MappedCollection
+  instanceVariableNames: 'domain map'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Collections-Sequenceable'!
+MappedCollection class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+MappedCollection comment:
+'I am re-ordering or subcollecting of a writeable SequenceableCollection.'!
+"-----------------------------------"!
+!MappedCollection class methodsFor: 'instance creation'!
+collection: aCollection map: aSequenceableCollection
+	"Answer a new instance of me that maps aCollection by aSequenceableCollection."
+	^self basicNew setCollection: aCollection map: aSequenceableCollection!
+new
+	self error: 'MappedCollections must be created using the collection:map: message'!
+"-----------------------------------"!
+!MappedCollection methodsFor: 'accessing'!
+at: anIndex
+	^domain at: (map at: anIndex)!
+at: anIndex put: anObject
+	^domain at: (map at: anIndex) put: anObject!
+contents
+	"Answer the receiver's domain for mapping, a SequenceableCollection."
+	^map collect: [:mappedIndex | domain at: mappedIndex]!
+size
+	^map size!
+"-----------------------------------"!
+!MappedCollection methodsFor: 'adding'!
+add: newObject
+	self shouldNotImplement!
+"-----------------------------------"!
+!MappedCollection methodsFor: 'copying'!
+copy
+	"This returns another MappedCollection whereas copyFrom:to: will return an
+	object like my domain"
+
+	^MappedCollection collection: domain map: map!
+"-----------------------------------"!
+!MappedCollection methodsFor: 'enumerating'!
+collect: aBlock
+	| aStream |
+	aStream _ WriteStream on: (self species new: self size).
+	self do:
+		[:domainValue |
+		aStream nextPut: (aBlock value: domainValue)].
+	^aStream contents!
+do: aBlock
+	map do:
+		[:mapValue | aBlock value: (domain at: mapValue)]!
+select: aBlock
+	| aStream |
+	aStream _ WriteStream on: (self species new: self size).
+	self do:
+		[:domainValue |
+		(aBlock value: domainValue)
+			ifTrue: [aStream nextPut: domainValue]].
+	^aStream contents!
+"-----------------------------------"!
+!MappedCollection methodsFor: 'printing'!
+storeOn: aStream
+	aStream nextPut: $(.
+	domain storeOn: aStream.
+	aStream nextPutAll: ' mappedBy: '.
+	map storeOn: aStream.
+	aStream nextPut: $)!
+"-----------------------------------"!
+!MappedCollection methodsFor: 'private'!
+setCollection: aCollection map: aDictionary
+	domain _ aCollection.
+	map _ aDictionary!
+species
+	^domain species!

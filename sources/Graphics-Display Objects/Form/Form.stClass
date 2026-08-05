@@ -1,0 +1,904 @@
+DisplayMedium subclass: #Form
+  instanceVariableNames: 'bits width height offset'
+  classVariableNames: 'OneBitForm'
+  poolDictionaries: ''
+  category: 'Graphics-Display Objects'!
+Form class
+  instanceVariableNames: 'whiteMask darkGrayMask grayMask blackMask lightGrayMask veryLightGrayMask'!
+"-----------------------------------"!
+Form comment:
+'This class is a rectangular pattern of dots represented as a Smalltalk Bitmap.'!
+"-----------------------------------"!
+!Form class methodsFor: 'class initialization'!
+initialize
+
+	self initializeMasks.
+	OneBitForm _ Form new extent: 1 @ 1
+
+	"Form  initialize."!
+initializeMasks
+	| anArray |
+	anArray _ Array new: 16.
+	anArray atAllPut: 0.
+	whiteMask _ Form extent: 16 @ 16 fromArray: anArray offset: 0 @ 0.
+	anArray atAllPut: 65535.
+	blackMask _ Form extent: 16 @ 16 fromArray: anArray offset: 0 @ 0.
+	anArray atAll: (1 to: anArray size by: 2) put: 21845.
+	anArray atAll: (2 to: anArray size by: 2) put: 43690.
+	grayMask _ Form extent: 16 @ 16 fromArray: anArray offset: 0 @ 0.
+	anArray atAll: (1 to: anArray size by: 2) put: 30583.
+	anArray atAll: (2 to: anArray size by: 2) put: 56797.
+	darkGrayMask _ Form extent: 16 @ 16 fromArray: anArray offset: 0 @ 0.
+	lightGrayMask _ darkGrayMask deepCopy reverse.
+	anArray atAll: (1 to: anArray size by: 4) put: 34952.
+	anArray atAll: (2 to: anArray size by: 2) put: 0.
+	anArray atAll: (3 to: anArray size by: 4) put: 8738.
+	veryLightGrayMask _  Form extent: 16 @ 16 fromArray: anArray offset: 0 @ 0
+
+	"Form initializeMasks"!
+"-----------------------------------"!
+!Form class methodsFor: 'examples'!
+exampleEdits
+	"In Form category editing are messages edit and bitEdit that make it possible to
+	create editors on instances of Form.
+
+	This is the general form editor--
+
+	|f|
+	f _ Form fromUser.
+	f edit.
+
+	and the bit editor
+	|f |
+	f _ Form fromUser.
+	f bitEdit.
+
+	"!
+exampleMagnify
+	[Sensor redButtonPressed] whileFalse:
+		[((Form fromDisplay: (Sensor cursorPoint extent: 50@50))
+			magnifyBy: 3 @ 3)
+				displayAt: 0 @ 0]
+
+	"Form exampleMagnify."!
+exampleShrink
+	[Sensor redButtonPressed] whileFalse:
+		[((Form fromDisplay: (Sensor cursorPoint extent: 150@150))
+			shrinkBy: 3 @ 3)
+				displayAt: 0 @ 0]
+
+	"Form exampleShrink."!
+exampleSketch
+	"This is a simple drawing algorithm to get a sketch on the display screen.  After
+	executing, just keep the mouse button depressed and a pen will let you
+	scribble."
+
+	| aPen |
+	aPen _ Pen new.
+	Sensor waitButton.
+	aPen place: Sensor cursorPoint.
+	aPen down.
+	[Sensor anyButtonPressed]
+		whileTrue: [aPen goto: Sensor cursorPoint]
+
+	"Form exampleSketch."!
+exampleSpaceFill
+	"This example demonstrates the area filling algorithm.
+	The example starts by having the user sketch on the screen and then select
+	a rectangular area of the screen which includes all off the area to be filled.
+	Finally, (with crosshair cursor), the user points as the interior of the region
+	to be filled, and the filling begins with that place as its seed"
+
+	| f r interiorPoint |
+	Form exampleSketch.		"sketch a little area with an enclosed region"
+	r _ Rectangle fromUser.
+	f _ Form fromDisplay: r.
+	Cursor crossHair showWhile:
+		[interiorPoint _ Sensor waitButton - r origin].
+	Cursor execute showWhile:
+		[f shapeFill: Form gray interiorPoint: interiorPoint].
+	f displayOn: Display at: r origin
+
+	"Form exampleSpaceFill."!
+"-----------------------------------"!
+!Form class methodsFor: 'instance creation'!
+dotOfSize: diameter
+	"Create a form which contains a round black dot."
+
+	| radius form bite circle |
+	radius _ diameter//2.
+	form _ Form new extent: diameter@diameter offset: (0@0) - (radius@radius).
+	diameter <= 9 ifTrue: "special case for speed"
+		[form black.
+		diameter <= 2 ifTrue: [^form].
+		bite _ diameter//3.
+		form white: (0@0 extent: bite@1).
+		form white: (0@(diameter-1) extent: bite@1).
+		form white: (diameter-bite@0 extent: bite@1).
+		form white: (diameter-bite@(diameter-1) extent: bite@1).
+		form white: (0@0 extent: 1@bite).
+		form white: (0@(diameter-bite) extent: 1@bite).
+		form white: (diameter-1@0 extent: 1@bite).
+		form white: (diameter-1@(diameter-bite) extent: 1@bite).
+		^form].
+
+	radius _ diameter-1//2.  "so circle fits entirely"
+	(Circle new center: radius@radius radius: radius) displayOn: form.
+	form convexShapeFill: Form black.	"fill the circle with black"
+	^form
+
+	"(Form dotOfSize: 8) displayAt: Sensor cursorPoint"!
+extent: extentPoint
+	"Answer an instance of me with blank bitmap."
+	^self basicNew
+		setExtent: extentPoint
+		fromArray: Array new
+		setOffset: 0@0!
+extent: extentPoint fromArray: anArray offset: offsetPoint
+	"Answer an instance of me with bitmap initialized from anArray."
+	^self basicNew
+		setExtent: extentPoint
+		fromArray: anArray
+		setOffset: offsetPoint!
+extent: extentPoint fromCompactArray: anArray offset: offsetPoint
+	"Answer an instance of me with bitmap initialized from anArray."
+	^self basicNew
+		setExtent: extentPoint
+		fromCompactArray: anArray
+		setOffset: offsetPoint!
+fromDisplay: aRectangle
+	"Answer an instance of me with bitmap initialized from the area of
+	the display screen defined by aRectangle."
+	^self new fromDisplay: aRectangle!
+fromUser
+	"Answer an instance of me with bitmap initialized from the area of
+	the display screen designated by the user.  The grid for selecting an area
+	is 1@1."
+	^self fromUser: 1 @ 1!
+fromUser: aPoint
+	"Answer an instance of me with bitmap initialized from the area of
+	the display screen designated by the user.  The grid for selecting an area
+	is aPoint."
+	| aRectangle |
+	aRectangle _ Rectangle fromUser: aPoint.
+	^self new fromDisplay: aRectangle!
+readFormFile: file
+	"Answer an instance of me with bitmap initialized from the external file.  The file format is:  fileCode(1), extent, offset, bits."
+
+	| newForm newWidth newHeight theBits filePosition offsetX offsetY |
+	file readOnly; binary.
+	file nextWord = 1 ifFalse: [^(Form new extent: 8 @ 8) black].	"reads fileCode"
+	newForm _ self new.
+	newWidth _ file nextWord.
+	newHeight _ file nextWord.
+	newForm extent: newWidth @ newHeight.
+	offsetX  _ file nextWord.
+	offsetY _ file nextWord.
+	offsetX > 32767 ifTrue: [offsetX _ offsetX - 65536]. "stored two's-complement"
+	offsetY > 32767 ifTrue: [offsetY _ offsetY - 65536]. "stored two's-complement"
+	newForm offset: offsetX @ offsetY.
+	theBits _ WordArray new: newWidth + 15 // 16 * newHeight.
+	filePosition _ 0.
+	1 to: newWidth + 15 // 16 do:
+		[:j |
+		1 to: newHeight do:
+			[:i | theBits at: (filePosition _ filePosition + 1) put: file nextWord]].
+	newForm bits: theBits.
+	file close.
+	^newForm!
+readFrom: fileName
+	"Answer an instance of me with bitmap initialized from the external file named fileName."
+
+	| file code |
+	file _ FileStream oldFileNamed: fileName.
+	file readOnly; binary.
+	code _ file nextWord.	"reads fileCode"
+	code = 1 ifTrue: [^self readFormFile: file].
+	file close.
+	^nil!
+stringScanLineOfWidth: width
+	^self new extent: width@1 offset: 0@0 bits: (String new: width+15//16*2)!
+"-----------------------------------"!
+!Form class methodsFor: 'mask constants'!
+black
+	"Answer the form denoting black mask."
+	^blackMask!
+darkGray
+	"Answer the form denoting dark gray mask."
+	^darkGrayMask!
+gray
+	"Answer the form denoting gray mask."
+	^grayMask!
+lightGray
+	"Answer the form denoting light gray mask."
+	^lightGrayMask!
+veryLightGray
+	"Answer the form denoting very light gray mask."
+	^veryLightGrayMask!
+white
+	"Answer the form denoting white mask."
+	^whiteMask!
+"-----------------------------------"!
+!Form class methodsFor: 'mode constants'!
+and
+	"Answer the integer denoting the logical 'and' combination rule."
+	^1!
+erase
+	"Answer the integer denoting mode erase."
+	^4!
+over
+	"Answer the integer denoting mode over."
+	^3!
+paint
+	"Answer the integer denoting the 'paint' combination rule."
+	^16!
+reverse
+	"Answer the integer denoting mode reverse."
+	^6!
+under
+	"Answer the integer denoting mode under."
+	^7!
+"-----------------------------------"!
+!Form methodsFor: 'accessing'!
+extent: aPoint
+	"Create a virtual bit map with width = (extent x) and height = (extent y)
+	with the bits all zeros (white).  The extent is guaranteed to be zero or a positive
+	size."
+
+	| nonZeroExtent extentSize |
+	nonZeroExtent _
+		aPoint >= (0 @ 0)
+			ifTrue: [aPoint]
+			ifFalse: [0 @ 0].
+	extentSize _ nonZeroExtent y * (nonZeroExtent x + 15 // 16).
+	self extent: nonZeroExtent
+		offset: 0 @ 0
+		bits: (WordArray new: (extentSize min: WordArray maxSize))!
+extent: extentPoint offset: offsetPoint
+	"Create a virtual bit map with width = (extent x) and height = (extent y)
+	with the bits all zeros (white)."
+
+	| normalizedPoint |
+	normalizedPoint _ extentPoint >= (0 @ 0)
+				ifTrue: [extentPoint]
+				ifFalse: [0 @ 0].
+	self extent: normalizedPoint
+		offset: offsetPoint
+		bits: (WordArray new: normalizedPoint y * (normalizedPoint x + 15 // 16))!
+extent: extent offset: aPoint bits: aBitmap
+	"Create a virtual bit map with width = (extent x) and height = (extent y)
+	with the bits = aBitmap."
+
+	width _ extent x.
+	height _ extent y.
+	offset _ aPoint.
+	bits _ aBitmap!
+offset
+	offset == nil
+		ifTrue: [^0 @ 0]
+		ifFalse: [^offset]!
+offset: aPoint
+	offset _ aPoint!
+size
+	"Answer the number of bits in the receiver's bitmap."
+	^bits size!
+"-----------------------------------"!
+!Form methodsFor: 'bordering'!
+borderWidth: anInteger
+	"Set the width of the border for the receiver to be anInteger and paint it
+	using Form black as the border color."
+
+	self border: self boundingBox width: anInteger mask: Form black!
+borderWidth: anInteger mask: aMask
+	"Set the width of the border for the receiver to be anInteger and paint it
+	using aMask as the border color."
+
+	self border: self boundingBox width: anInteger mask: aMask!
+"-----------------------------------"!
+!Form methodsFor: 'coloring'!
+fill: aRectangle rule: anInteger mask: aForm
+	"Replace a rectangular area of the receiver with the pattern described by aForm
+	according to the rule anInteger."
+
+	"Make up a BitBlt table and copy the bits"
+	(BitBlt
+		destForm: self
+		sourceForm: nil
+		halftoneForm: aForm
+		combinationRule: anInteger
+		destOrigin: aRectangle origin
+		sourceOrigin: self boundingBox origin
+		extent: aRectangle extent
+		clipRect: self boundingBox) copyBits!
+"-----------------------------------"!
+!Form methodsFor: 'copying'!
+deepCopy
+	| newForm |
+	newForm _ self shallowCopy.
+	newForm bits: (WordArray new: self size).
+	newForm copyBits: self boundingBox
+		from: self
+		at: 0 @ 0
+		clippingBox: newForm boundingBox
+		rule: Form over
+		mask: Form black.
+	^newForm!
+"-----------------------------------"!
+!Form methodsFor: 'display box access'!
+computeBoundingBox
+	^0 @ 0 extent: width @ height!
+"-----------------------------------"!
+!Form methodsFor: 'displaying'!
+copyBits: sourceRect from: sourceForm at: destOrigin clippingBox: clipRect rule: rule mask: aForm
+	"Make up a BitBlt table and copy the bits."
+
+	(BitBlt
+		destForm: self
+		sourceForm: sourceForm
+		halftoneForm: aForm
+		combinationRule: rule
+		destOrigin: destOrigin
+		sourceOrigin: sourceRect origin
+		extent: sourceRect extent
+		clipRect: clipRect) copyBits!
+displayOn: aDisplayMedium at: aDisplayPoint clippingBox: clipRectangle rule: ruleInteger mask: aForm
+	aDisplayMedium copyBits: self boundingBox
+		from: self
+		at: aDisplayPoint + offset
+		clippingBox: clipRectangle
+		rule: ruleInteger
+		mask: aForm!
+displayOn: aDisplayMedium transformation: displayTransformation clippingBox: clipRectangle align: alignmentPoint with: relativePoint rule: ruleInteger mask: aForm
+	"Graphically, it means nothing to scale a Form by floating point values.
+	Because scales and other display parameters are kept in floating point to
+	minimize round off errors, we are forced in this routine to round off to the
+	nearest integer."
+
+	| absolutePoint scale magnifiedForm |
+	absolutePoint _ displayTransformation applyTo: relativePoint.
+	absolutePoint _ absolutePoint x truncated @ absolutePoint y truncated.
+	displayTransformation noScale
+		ifTrue: [magnifiedForm _ self]
+		ifFalse:
+			[scale _ displayTransformation scale.
+			scale _ scale x rounded @ scale y rounded.
+			(1@1 = scale)
+					ifTrue: [scale _ nil. magnifiedForm _ self]
+					ifFalse: [magnifiedForm _ self magnifyBy: scale]].
+	magnifiedForm
+		displayOn: aDisplayMedium
+		at: absolutePoint - alignmentPoint
+		clippingBox: clipRectangle
+		rule: ruleInteger
+		mask: aForm!
+drawLine: sourceForm from: beginPoint to: endPoint clippingBox: clipRect rule: anInteger mask: aForm
+
+	| dotSetter |
+	"set up an instance of BitBlt for display"
+	dotSetter _ BitBlt
+		destForm: self
+		sourceForm: sourceForm
+		halftoneForm: aForm
+		combinationRule: anInteger
+		destOrigin: beginPoint
+		sourceOrigin: 0 @ 0
+		extent: sourceForm extent
+		clipRect: clipRect.
+	dotSetter drawFrom: beginPoint to: endPoint!
+"-----------------------------------"!
+!Form methodsFor: 'editing'!
+bitEdit
+	"Create and schedule a view located in an area designated by the user that
+	contains a view of the receiver magnified by 8@8 that can be modified
+	using the Bit Editor.  It also contains a view of the original form."
+
+	BitEditor openOnForm: self
+
+	"Note that using direct messages to BitEditor, fixed locations and scales can be created.	 	That is, also try
+		BitEditor openOnForm: self at: <some point>.
+		BitEditor openOnForm: self at: <some point> scale: <some point>."!
+bitEditAt: magnifiedLocation
+	"Create and schedule a view whose top left corner is magnifiedLocation and
+	that contains a view of the receiver magnified by 8@8 that can be modified
+	using the Bit Editor.  It also contains a view of the original form."
+
+	BitEditor openOnForm: self at: magnifiedLocation!
+bitEditAt: magnifiedFormLocation scale: scaleFactor
+	"Create and schedule a view whose top left corner is magnifiedLocation and
+	that contains a view of the receiver magnified by scaleFactor that can be modified
+	using the Bit Editor.  It also contains a view of the original form."
+
+	BitEditor openOnForm: self at: magnifiedFormLocation scale: scaleFactor!
+edit
+	"Start up an instance of the FormEditor on this form. Typically the form
+	is not visible on the screen. The editor menu is located at the bottom of
+	the form editing frame. The form is displayed centered in the frame.
+	YellowButtonMenu accept is used to modify the form to reflect the
+	changes made on the screen version; cancel restores the original form to
+	the screen. Note that the changes are clipped to the original size of the
+	form."
+
+	FormEditor openOnForm: self!
+editAt: originPoint
+	"Start up an instance of the FormEditor on this form in an area whose
+	top left corrner is originPoint. Typically the form is not visible on the
+	screen. The editor menu is located at the bottom of the form editing
+	frame. The form is displayed centered in the frame. YellowBugMenu
+	accept is used to modify the form to reflect the changes made on the
+	screen version; cancel restores the original form to the screen. Note that
+	the changes are clipped to the original size of the form."
+
+	FormEditor openOnForm: self at: originPoint!
+"-----------------------------------"!
+!Form methodsFor: 'fileIn/Out'!
+writeOn: fileName
+	"Saves the receiver on the file fileName in the format--fileCode, extent, offset, bits."
+
+	| file fileCode filePosition |
+	fileCode _ 1.
+	"This indicates that the instance is a Form.  Should probably be changed
+	when better methods for permanent storage are devised."
+	file _ FileStream fileNamed: fileName.
+	file binary.
+	file nextWordPut: fileCode.
+	file nextWordPut: width.
+	file nextWordPut: height.
+	file nextWordPut: offset x.
+	file nextWordPut: offset y.
+	filePosition _ 0.
+	1 to: width + 15 // 16 do:
+		[:j |
+		1 to: height do: [:i | file nextWordPut: (bits at: (filePosition _ filePosition + 1))]].
+	file close.!
+"-----------------------------------"!
+!Form methodsFor: 'image manipulation'!
+convexShapeFill: aMask
+	"Fill the interior of the outtermost outlined region in the receiver.  The outlined region must not be concave by more than 90 degrees."
+
+	| destForm tempForm skew |
+	destForm _ Form extent: self extent.
+	tempForm _ Form extent: self extent.
+	self displayOn: tempForm at: (0@0) - self offset.
+	skew _ 1.
+	[skew < width] whileTrue:
+		[tempForm displayOn: tempForm at: skew@0
+			clippingBox: tempForm boundingBox rule: Form under mask: nil.
+		skew _ skew+skew].
+	tempForm displayOn: destForm.
+
+	self displayOn: tempForm at: (0@0) - self offset.
+	skew _ 1.
+	[skew < width] whileTrue:
+		[tempForm displayOn: tempForm at: skew negated@0
+			clippingBox: tempForm boundingBox rule: Form under mask: nil.
+		skew _ skew+skew].
+	tempForm displayOn: destForm at: 0@0
+		clippingBox: destForm boundingBox rule: Form and mask: nil.
+
+	self displayOn: tempForm at: (0@0) - self offset.
+	skew _ 1.
+	[skew < height] whileTrue:
+		[tempForm displayOn: tempForm at: 0@skew
+			clippingBox: tempForm boundingBox rule: Form under mask: nil.
+		skew _ skew+skew].
+	tempForm displayOn: destForm at: 0@0
+		clippingBox: destForm boundingBox rule: Form and mask: nil.
+
+	self displayOn: tempForm at: (0@0) - self offset.
+	skew _ 1.
+	[skew < height] whileTrue:
+		[tempForm displayOn: tempForm at: 0@skew negated
+			clippingBox: tempForm boundingBox rule: Form under mask: nil.
+		skew _ skew+skew].
+	tempForm displayOn: destForm at: 0@0
+		clippingBox: destForm boundingBox rule: Form and mask: nil.
+
+	destForm displayOn: self at: 0@0
+			clippingBox: self boundingBox rule: Form over mask: aMask!
+copy: destRectangle from: sourcePt in: sourceForm rule: rule
+	"Make up a BitBlt table and copy the bits"
+
+	(BitBlt
+		destForm: self
+		sourceForm: sourceForm
+		halftoneForm: nil
+		combinationRule: rule
+		destOrigin: destRectangle origin
+		sourceOrigin: sourcePt
+		extent: destRectangle extent
+		clipRect: (0@0 extent: width@height)) copyBits
+"
+ [Sensor redButtonPressed] whileFalse:
+	[Display copy: (30@30 extent: 300@300) from: Sensor cursorPoint in: Display rule: Form over].
+"!
+magnifyBy: scale
+	"Answer a new form created as a multiple of the receiver; the new form
+	is larger, each bit in the receiver being blown up to extent=scale"
+
+	| wideForm bigForm spacing |
+	spacing _ 0 @ 0.
+	wideForm _ Form new extent: (width * scale x) @ height.
+	wideForm
+		spread: self boundingBox
+		from: self
+		by: scale x
+		spacing: spacing x
+		direction: 1 @ 0.
+	bigForm _ Form new extent: self extent * scale.
+	bigForm
+		spread: wideForm boundingBox
+		from: wideForm
+		by: scale y
+		spacing: spacing y
+		direction: 0 @ 1.
+	^bigForm
+
+	"Check consistency of shrink and magnify:
+	[Sensor redButtonPressed] whileFalse:
+		[(((Form fromDisplay: (Sensor cursorPoint extent: 50@50))
+			magnifyBy: 3@5) shrinkBy: 3@5)
+				displayAt: 100@100]
+	"!
+nextLifeGeneration
+	| nbr1 nbr2 nbr4 carry2 carry4 all delta |
+	nbr1 _ Form extent: self extent.
+	nbr2 _ Form extent: self extent.
+	nbr4 _ Form extent: self extent.
+	carry2 _ Form extent: self extent.
+	carry4 _ Form extent: self extent.
+	all _ self boundingBox.
+	1 to: 8 do:
+		[:i |
+		delta _   "delta is the offset of the eight neighboring cells"
+			((#(-1 0 1 1 1 0 -1 -1) at: i) @ (#(-1 -1 -1 0 1 1 1 0) at: i)).
+		carry2 copy: all from: 0@0 in: nbr1 rule: 3.
+		carry2 copy: all from: delta in: self rule: 1.  "AND for carry into 2"
+		nbr1 copy: all from: delta in: self rule: 6.    "XOR for sum 1"
+		carry4 copy: all from: 0@0 in: nbr2 rule: 3.
+		carry4 copy: all from: 0@0 in: carry2 rule: 1. "AND for carry into 4"
+		nbr2 copy: all from: 0@0 in: carry2 rule: 6.   "XOR for sum 2"
+		nbr4 copy: all from: 0@0 in: carry4 rule: 6].   "XOR for sum 4 (ignore carry into 8)"
+	self copy: all from: 0@0 in: nbr2 rule: 1.
+	nbr1 copy: all from: 0@0 in: nbr2 rule: 1.
+	self copy: all from: 0@0 in: nbr1 rule: 7.
+	self copy: all from: 0@0 in: nbr4 rule: 4 "compute next generation"
+"
+ BitEditor magnifyOnScreen.
+	| life |
+	life _ Form fromUser.
+	[Sensor redButtonPressed] whileFalse:
+		[(life nextLifeGeneration magnifyBy: 8@8) displayAt: 0@0]
+"!
+reflect: spec
+	"spec = 0@1 for vertical reflection, 1@0 for horizontal"
+	| mask temp all newForm full half |
+	all _ self boundingBox.
+	mask _ Form extent: self extent.
+	temp _ Form extent: self extent.
+	full _ self extent*spec.
+	mask black: (0@0 extent: self extent // (spec+1)).
+	newForm _ self deepCopy.
+	[full x + full y > 1] whileTrue:
+		[half _ full // 2.
+		temp copy: all from: 0@0 in: newForm rule: 3.
+		temp copy: all from: full-half in: newForm rule: 6.
+		temp copy: all from: 0@0 in: mask rule: 1.
+		newForm copy: all from: 0@0 in: temp rule: 6.
+		newForm copy: (all translateBy: full-half) from: 0@0 in: temp rule: 6.
+		"Now refine the mask"
+		mask copy: all from: half - (half//2) in: mask rule: 1.
+		mask copy: (all translateBy: full-half) from: 0@0 in: mask rule: 7.
+		full _ half].
+	^ newForm
+"
+ [Sensor redButtonPressed] whileFalse:
+	[((Form fromDisplay: (Rectangle new origin: Sensor cursorPoint extent: 113@37)) reflect: 1@0)
+		displayAt: 0@0].
+"!
+rotate2: direction
+	"Destructively rotate a square Form of dimension 2^N by 90 degrees.
+		direction = 1 for clockwise, -1 for counterclockwise"
+	| mask temp all quad delta |
+	all _ self boundingBox.
+	mask _ Form extent: self extent.
+	temp _ Form extent: self extent.
+	mask white.   "set up the first mask"
+	mask black: (0@0 extent: mask extent//2).
+	quad_ self width // 2.
+	[quad >= 1] whileTrue:
+		[delta _ direction=1 ifTrue: [quad@0] ifFalse: [0@quad].
+		temp copy: all from: 0@0 in: mask rule: 3.  "First exchange left and right halves"
+		temp copy: (all translateBy: delta transpose) from: 0@0 in: mask rule: 7.
+		temp copy: all from: 0@0 in: self rule: 1.
+		self copy: all from: 0@0 in: temp rule: 6.
+		temp copy: all from: delta in: self rule: 6.
+		self copy: all from: delta in: self rule: 7.
+		self copy: (all translateBy: delta) from: 0@0 in: temp rule: 6.
+		temp copy: all from: 0@0 in: self rule: 3.  "then flip the diagonals"
+		temp copy: all from: quad@quad in: self rule: 6.
+		temp copy: all from: 0@0 in: mask rule: 1.
+		self copy: all from: 0@0 in: temp rule: 6.
+		self copy: all from: quad negated@quad negated in: temp rule: 6.
+		mask copy: all from: (quad//2)@(quad//2) in: mask rule: 1. "Now refine the mask"
+		mask copy: all from: quad negated@0 in: mask rule: 7.
+		mask copy: all from: 0@quad negated in: mask rule: 7.
+		quad_ quad//2]
+"
+ [Sensor redButtonPressed] whileFalse:
+	[((Form fromDisplay: (Rectangle new origin: Sensor cursorPoint extent: 128@128))
+		rotate2: 1)
+			displayAt: 0@0].
+"!
+rotateBy: angle
+	"Answer a copied Form rotated clockwise by angle in units of 90 degrees.
+	angle = 0 means unchanged, 1 means clockwise 90 degrees, etc"
+	| angle4 rotSize newForm rotForm all destPt sourcePt sourceDelta destDelta rotOrigin |
+	angle4 _ angle \\ 4.
+	angle = 0 ifTrue: [^self deepCopy].  "null rotation"
+	angle = 2 ifTrue: [^(self reflect: 0@1) reflect: 1@0].  "two reflections does 180 degrees"
+
+	"Break the problem up into squares of size 2^N, and rotate them"
+	rotSize _ (width min: height)   "minimum rotation size"
+				max: 64.  "but faster if we do larger chunks"
+	rotSize _ 2 raisedTo: ((rotSize-1) asFloat floorLog: 2)+1.  "force up to a power of 2"
+	newForm _ Form extent: self extent transpose.
+	rotForm _ Form extent: rotSize asPoint.
+	all _ rotForm boundingBox.
+	sourcePt _ 0@0.
+	width >= height
+		ifTrue:
+			[sourceDelta _ rotSize@0.
+			angle=1
+				ifTrue:
+					[destPt _ 0@0.
+					destDelta _ sourceDelta transpose.
+					rotOrigin _ (rotSize-height)@0]
+				ifFalse:
+					[destPt _ 0@(width-rotSize).
+					destDelta _ (0@0) - sourceDelta transpose.
+					rotOrigin _ 0@0]]
+		ifFalse:
+			[sourceDelta _ 0@rotSize.
+			angle=1
+				ifTrue:
+					[destPt _ (height-rotSize)@0.
+					destDelta _ (0@0) - sourceDelta transpose.
+					rotOrigin _ 0@0]
+				ifFalse:
+					[destPt _ 0@0.
+					destDelta _ sourceDelta transpose.
+					rotOrigin _ 0@(rotSize-width)]].
+	(width max: height) - 1 // rotSize + 1 timesRepeat:
+		[rotForm copy: all from: sourcePt in: self rule: 3.
+		rotForm rotate2: (angle=1 ifTrue: [1] ifFalse: [-1]).
+		newForm copy: (all translateBy: destPt) from: rotOrigin in: rotForm rule: 3.
+		sourcePt _ sourcePt + sourceDelta.
+		destPt _ destPt + destDelta].
+	^ newForm
+"
+	| f |
+	[Sensor redButtonPressed] whileFalse:
+		[f_ Form fromDisplay: (Sensor cursorPoint extent: 100@15).
+		(f rotateBy: 0) displayAt: 100@100.
+		(f rotateBy: 1) displayAt: 85@100.
+		(f rotateBy: 2) displayAt: 0@85.
+		(f rotateBy: 3) displayAt: 100@0]
+"!
+shapeFill: aMask interiorPoint: interiorPoint
+	"Fill the interior of some outlined region according to mask and rule.
+	InteriorPoint marks a location in the interior or the region.  A mark is
+	placed at this point as a seed, then the seed is smeared into a blob
+	until there is no change in the blob when it fills the region.
+	Uses the upper left corner of the display screen for computing the blob"
+
+	| dirs smearForm previousSmear all cycle noChange |
+	all _ self boundingBox.
+	smearForm _ Form extent: self extent.
+	smearForm valueAt: interiorPoint put: 1.		"Place a seed in the interior"
+	previousSmear _ smearForm deepCopy.
+	dirs _ Array with: 1@0 with: -1@0 with: 0@1 with: 0@-1.
+	cycle _ 0.
+	[(cycle _ cycle+1) \\ 10 = 0 and:   "check for no change every 10 smears"
+		[previousSmear copy: all from: 0@0 in: smearForm rule: Form reverse.
+		noChange _ previousSmear isAllWhite.
+		previousSmear copy: all from: 0@0 in: smearForm rule: Form over.
+		noChange]]
+		whileFalse:
+			[dirs do:
+				[:dir |    "smear in each of the four directions"
+				smearForm copy: all from: dir in: smearForm rule: Form under.
+				"After each smear, trim around the region border"
+				smearForm copy: all from: 0@0 in: self rule: Form erase]].
+	"Now paint the filled region in me with aMask"
+	smearForm displayOn: self at: 0@0 clippingBox: self boundingBox
+		rule: Form under mask: aMask!
+shrinkBy: scale
+	"Answer a scaled-down copy of the receiver.  Each bit in the new form is a
+	sample taken from the upper-left bit of a rectangle of extent = scale in the
+	receiver.  A more involved algorithm would count the bits in the rectangle
+	and produce black only if more than half were black"
+
+	| wideForm shrunkenForm saveOffset |
+	saveOffset _ self offset.
+	self offset: 0 @ 0.
+	wideForm _ Form new extent: self width @ (self height // scale y).
+	0 to: wideForm height-1 do:
+		[:index |
+		wideForm copy: (0 @ index extent: wideForm width @ 1)
+			from: 0 @ (index * scale y)
+			in: self
+			rule: Form over].
+	shrunkenForm _ Form new extent: self width // scale x @ wideForm height.
+	0 to: shrunkenForm width-1 do:
+		[:index |
+		shrunkenForm
+			copy: (index @ 0 extent: 1 @ wideForm height)
+			from: (index * scale x) @ 0
+			in: wideForm
+			rule: Form over].
+	self offset: saveOffset.
+	shrunkenForm offset: offset // scale.
+	^shrunkenForm!
+spread: rectangle from: sourceForm by: scale spacing: spacing direction: dir
+	| slice sourcePt |
+	slice _ 0 @ 0 corner: dir transpose * self extent + dir.
+	sourcePt _ rectangle origin.
+	1 to: (rectangle extent dotProduct: dir) do:
+		[:i |
+		"slice up original area"
+		self copy: slice
+			from: sourcePt
+			in: sourceForm
+			rule: 3.
+		sourcePt _ sourcePt + dir.
+		slice moveBy: dir * scale].
+	1 to: scale - spacing - 1 do:
+		[:i | "smear out the slices, leave white space"
+		self copy: (dir corner: self extent)
+			from: 0 @ 0
+			in: self
+			rule: 7]!
+wrapAround: aPoint
+	"Answer a new form which contains the image of the receiver, but translated by deltaPoint, with wrap-around.  Used for realigning halftone masks.  Assumes the receiver is 16x16 with zero offset."
+
+	| newForm delta |
+	newForm _ Form extent: width@height.
+	delta _ (aPoint x\\16)@(aPoint y\\16).
+	delta = (0@0) ifTrue: [^self].
+	self displayOn: newForm at: delta-(16@16).
+	self displayOn: newForm at: delta-(16@0).
+	self displayOn: newForm at: delta-(0@16).
+	self displayOn: newForm at: delta.
+	^newForm
+
+	"[Sensor anyButtonPressed] whileFalse:
+		[((Cursor normal wrapAround: Sensor cursorPoint)
+			magnifyBy: 8@8) displayAt: 100@100]"!
+"-----------------------------------"!
+!Form methodsFor: 'initialize-release'!
+fromDisplay: aRectangle
+	"Create a virtual bit map from a user specified rectangular area on the
+	display screen. Reallocates bitmap only if aRectangle ~= the receiver's extent."
+
+	(width = aRectangle width and: [height = aRectangle height])
+		ifFalse: [self extent: aRectangle extent].
+	self
+		copyBits: (aRectangle origin extent: self extent)
+		from: Display
+		at: 0 @ 0
+		clippingBox: Display boundingBox
+		rule: Form over
+		mask: Form black!
+"-----------------------------------"!
+!Form methodsFor: 'pattern'!
+bits
+	"Answer the receiver's Bitmap containing its bits."
+	^bits!
+bits: aBitmap
+	"Reset the Bitmap containing the receiver's bits."
+
+	bits _ aBitmap!
+valueAt: aPoint
+	"Query whether a bit is on or off.... answer with 1 if the color at coordinate aPoint
+	is black in the receiver and 0 if the color is white at coordinate aPoint"
+
+	OneBitForm copyBits: (aPoint extent: 1 @ 1)
+		from: self
+		at: 0 @ 0
+		clippingBox: self boundingBox
+		rule: Form over
+		mask: Form black.
+	(OneBitForm bits at: 1) = 0
+		ifTrue: [^0]
+		ifFalse: [^1]!
+valueAt: aPoint put: maskCode
+	"Set the bit in the receiver at coordinate aPoint to be white (0) or black (1)."
+
+
+	maskCode = 0
+	  ifTrue: [OneBitForm white] 	"OneBitForm is a class variable."
+	  ifFalse: [OneBitForm black].
+	self
+	  copyBits: OneBitForm boundingBox
+	  from: OneBitForm
+	  at: aPoint
+	  clippingBox: self boundingBox
+	  rule: Form over
+	  mask: Form black.!
+"-----------------------------------"!
+!Form methodsFor: 'printing'!
+scanLineStringAt: y
+	| form |
+	form _ Form stringScanLineOfWidth: width.
+	form copy: form boundingBox from: 0@y in: self rule: Form over.
+ 	^ form bits!
+storeOn: aStream
+	"Store the receiver out in the form:  Form extent:fromCompactArray:#()offset:"
+	| stripe bitsWidth word |
+	aStream nextPut: $(; nextPutAll: self species name; crtab: 1.
+	aStream nextPutAll: 'extent: '; print: self extent; crtab: 1.
+	aStream nextPutAll: 'fromCompactArray: #('.
+	1 to: height do:
+		[:i |
+		stripe _ self scanLineStringAt: i-1.
+		stripe oldRunEncoded storeOn: aStream.
+		aStream cr].
+	aStream nextPut: $); crtab: 1.
+	aStream nextPutAll: 'offset: '; print: self offset; nextPut: $)
+"
+ | s | s_ WriteStream on: (String new: 2000).
+Form fromUser storeOn: s.
+(Compiler evaluate: s contents) displayAt: 0@0.
+
+ | f | f_ Disk file: 'screen.form'.
+Display storeOn: f.
+f close. f size
+"!
+storeOn: aStream base: anInteger
+	"Store the receiver out in the form:  Form newExtent:fromArray:#()offset:"
+
+	aStream nextPut: $(.
+	aStream nextPutAll: self species name.
+	aStream crtab: 1.
+	aStream nextPutAll: 'extent: '.
+	self extent printOn: aStream.
+	aStream crtab: 1.
+	aStream nextPutAll: 'fromArray: #('.
+	1 to: self bits size do:
+		[:index |
+		anInteger = 10
+			ifTrue: [aStream space]
+			ifFalse: [aStream crtab: 2; nextPutAll: anInteger printString; nextPut: $r].
+		(self bits at: index) printOn: aStream base: anInteger].
+	aStream nextPut: $).
+	aStream crtab: 1.
+	aStream nextPutAll: 'offset: '.
+	self offset printOn: aStream.
+	aStream nextPut: $)!
+"-----------------------------------"!
+!Form methodsFor: 'private'!
+isAllWhite
+	| count |
+	count _ bits countBits.
+	count = 0 ifTrue: [^true].
+	count > 0 ifTrue: [^false].
+	bits do: [:data | data ~= 0 ifTrue: [^false]].
+	^true!
+setExtent: extentPoint fromArray: anArray setOffset: offsetPoint
+	width _ extentPoint x.
+	height _ extentPoint y.
+	offset _ offsetPoint.
+	bits _ WordArray new: width + 15 // 16 * height.
+	1 to: anArray size do:
+		[:index | bits at: index put: (anArray at: index)]!
+setExtent: extentPoint fromCompactArray: anArray setOffset: offsetPoint
+	| stripe index |
+	width _ extentPoint x.
+	height _ extentPoint y.
+	offset _ offsetPoint.
+	bits _ WordArray new: width + 15 // 16 * height.
+	stripe _ Form stringScanLineOfWidth: width.
+	1 to: anArray size do:
+		[:index |
+		(anArray at: index) oldRunDecodeOn: (WriteStream on: stripe bits).
+		self copy: (0@(index-1) extent: width@1) from: 0@0 in: stripe rule: Form over].!

@@ -1,0 +1,114 @@
+Path subclass: #Arc
+  instanceVariableNames: 'quadrant radius center'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Graphics-Paths'!
+Arc class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+Arc comment:
+'A quarter of a Circle, the quadrant is specified by 1, 2, 3 or 4 points which indicate which part of the circle is to be displayed. Quadrants are numbered 1 - 4 counter clockwise.'!
+"-----------------------------------"!
+!Arc class methodsFor: 'examples'!
+example
+	"Click the button somewhere on the screen.  The designated point will
+	be the center of an Arc with radius 50 in the 4th quadrant."
+
+	| anArc aForm |
+	aForm _ Form new extent: 1 @ 30.	"make a long thin Form for display"
+	aForm black.						"turn it black"
+	anArc _ Arc new.
+	anArc form: aForm.					"set the form for display"
+	anArc radius: 50.0.
+	anArc center: Sensor waitButton.
+	anArc quadrant: 4.
+	anArc displayOn: Display.
+	Sensor waitButton
+
+	"Arc example."!
+"-----------------------------------"!
+!Arc methodsFor: 'accessing'!
+center
+	"Answer the point at the center of the receiver."
+	^center!
+center: aPoint
+	"Set aPoint to be the receiver's center."
+	center _ aPoint!
+center: aPoint radius: anInteger
+	"The receiver is defined by a point at the center and a radius.
+	The quadrant is not reset."
+	center _ aPoint.
+	radius _ anInteger!
+center: aPoint radius: anInteger quadrant: section
+	"The receiver is an Arc for the quadrant specified by section.  The size of
+	the arc is defined by the center and its radius."
+
+	center _ aPoint.
+	radius _ anInteger.
+	quadrant _ section!
+quadrant
+	"Answer the section of a circle represented by the receiver."
+	^quadrant!
+quadrant: section
+	"Set section to be the part of the circle represented by the receiver."
+	quadrant _ section!
+radius
+	"Answer the receiver's radius."
+	^radius!
+radius: anInteger
+	"Set anInteger to be the receiver's radius."
+	radius _ anInteger!
+"-----------------------------------"!
+!Arc methodsFor: 'displaying'!
+displayOn: aDisplayMedium at: aPoint clippingBox: clipRect rule: anInteger mask: aForm
+	| nSegments line angle sin cos xn yn xn1 yn1 |
+	nSegments _ 12.0.
+	line _ Line new.
+	line form: self form.
+	angle _ 90.0 / nSegments.
+	sin _ (angle * (2 * Float pi / 360.0)) sin.
+	cos _ (angle * (2 * Float pi / 360.0)) cos.
+	quadrant = 1
+		ifTrue:
+			[xn _ radius asFloat.
+			yn _ 0.0].
+	quadrant = 2
+		ifTrue:
+			[xn _ 0.0.
+			yn _ 0.0 - radius asFloat].
+	quadrant = 3
+		ifTrue:
+			[xn _ 0.0 - radius asFloat.
+			yn _ 0.0].
+	quadrant = 4
+		ifTrue:
+			[xn _ 0.0.
+			yn _ radius asFloat].
+	nSegments truncated
+		timesRepeat:
+			[xn1 _ xn * cos + (yn * sin).
+			yn1 _ yn * cos - (xn * sin).
+			line beginPoint: center + (xn truncated @ yn truncated).
+			line endPoint: center + (xn1 truncated @ yn1 truncated).
+			line
+				displayOn: aDisplayMedium
+				at: aPoint
+				clippingBox: clipRect
+				rule: anInteger
+				mask: aForm.
+			xn _ xn1.
+			yn _ yn1]!
+displayOn: aDisplayMedium transformation: aTransformation clippingBox: clipRect rule: anInteger mask: aForm
+	| newArc tempCenter |
+	newArc _ Arc new.
+	tempCenter _ aTransformation applyTo: self center.
+	newArc center: tempCenter x truncated @ tempCenter y truncated.
+	newArc quadrant: self quadrant.
+	newArc radius: (self radius * aTransformation scale x) truncated.
+	newArc form: self form.
+	newArc
+		displayOn: aDisplayMedium
+		at: 0 @ 0
+		clippingBox: clipRect
+		rule: anInteger
+		mask: aForm!

@@ -1,0 +1,308 @@
+File subclass: #AltoFile
+  instanceVariableNames: 'writeTime pageAddresses leader'
+  classVariableNames: ''
+  poolDictionaries: 'AltoFilePool'
+  category: 'Files-Xerox Alto'!
+AltoFile class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+AltoFile comment:
+'A concrete example of class File.
+
+Instance Variables:
+	writeTime	<Time>
+	pageAddresses	<RunArray> of page addresses
+	leader		<Integer> address of the page where the leader information is stored'!
+"-----------------------------------"!
+!AltoFile class methodsFor: 'class initialization'!
+initialize
+	| readStream |
+	AltoFilePool at: #(CRR CCR CCW CWW ) put: #(18496 18512 18520 18536 ).
+	readStream _ ReadStream on: #(1024 32 'SysDir.' ).
+	#(Dfmask Boffset Dirname ) do:
+		 [:each | AltoFilePool at: each put: readStream next].
+	readStream _ ReadStream on: #(1 2 3 4 5 6 7 8 ).
+	#(Nextp Backp Unused Numch Pagen Vn Sn1 Sn2 ) do:
+		[:each | AltoFilePool at: each put: readStream next]!
+"-----------------------------------"!
+!AltoFile methodsFor: 'error handling'!
+errorString: status
+	"see Alto hardware manual for details on error word format"
+
+	| s |
+	status = -1 ifTrue: [^'primitive failure, bad args?'].
+	s _ WriteStream on: (String new: 50).
+	s nextPutAll: (#('' 'hardware error or sector overflow' 'check error'
+					 'disk command specified illegal sector' ) at: 1 + (status bitAnd: 3)).
+	1 to: 6 do: [:t | (status allMask: (128 bitShift: 1 - t))
+			ifTrue:
+				[s nextPut: $ .
+				s nextPutAll: (#('seek failed, possible illegal track' 'seek in progress'
+								'disk unit not ready' 'hardware late'
+								 'hardware not transferring' 'checksum' ) at: t)]].
+	s nextPut: $ .
+	s nextPutAll: (status storeStringRadix: 8).
+	^s contents!
+"-----------------------------------"!
+!AltoFile methodsFor: 'file accessing'!
+beSnapshotFile
+	^self
+		beSnapshotSerialNumber: (self serialNumber)
+		leaderVirtualDiskAddr: (fileDirectory realToVirtual: self leader)!
+endFile: aPage
+	| page nextPage pn |
+	page _ aPage.
+	page isNil
+	  ifTrue: [pn _ -1 "free all of file"]
+	  ifFalse:
+		[page isFull
+		  ifTrue:
+			[nextPage _ self write: page.
+			"if page was a full last page, next is an empty (and now last) page"
+			nextPage lastPage ifTrue: [^nextPage].
+			page _ self readPageNumber: page pageNumber + 1.
+			page isEmpty ifTrue: [^page].
+			page size: 0].
+		page headerWordAt: Nextp put: 0.
+		self write: page.
+		"free rest of file"
+		pn _ page pageNumber].
+
+	lastPageNumber _ nil "reset by read:".
+	[lastPageNumber isNil and: [
+		(nextPage _ self readPageNumber: (pn _ pn + 1)) notNil]] whileTrue:
+		[nextPage reinitialize.
+		nextPage freePage.
+		nextPage doCommand: CWW error: 'endFile:'.
+		fileDirectory deallocate: nextPage].
+
+	page notNil
+	  ifTrue: [pageAddresses shortenTo: (lastPageNumber _ page pageNumber)].
+	^page!
+"-----------------------------------"!
+!AltoFile methodsFor: 'file status'!
+close
+	"fix up leader page, and remember create time"
+
+	self updateLeader: (self readPageNumber: 0)!
+open
+	"don't find last page immediately.  for later close"
+
+	readWrite _ Read!
+reinitialize
+	super reinitialize.
+	pageAddresses _ AltoFileAddressArray new directory: fileDirectory!
+release!
+"-----------------------------------"!
+!AltoFile methodsFor: 'file/page/directory implementation'!
+doCommand: command page: filePage error: e
+	| done |
+	done _ Semaphore new.
+	self dskprim: fileDirectory diskNumber
+		address: filePage address
+		command: command
+		page: filePage page
+		semaphore: done.
+	error<0 ifFalse: [done wait].
+	error ~= 0
+		ifTrue:
+			[e isNil ifTrue: [^nil].
+			error _ self errorString: error.
+			self error: e]
+		ifFalse:
+			[error _ ''.
+			^filePage]!
+"-----------------------------------"!
+!AltoFile methodsFor: 'nonhomogeneous accessing'!
+read: page
+	| pn p fp palen oldCursor |
+	pn _ page pageNumber.
+	pageAddresses isNil
+	  ifTrue:
+		[pn = 0 ifTrue: [palen _ 0] ifFalse: [^nil]]
+	  ifFalse:
+		[palen _ pageAddresses size].
+
+	fp _ palen min: pn.
+	"set address of first page. next addresses are set later"
+	page address: (fp = 0
+					ifTrue: [leader]
+					ifFalse: [pageAddresses at: fp]).
+
+	oldCursor _ Cursor currentCursor.
+	pn-fp > 10 ifTrue: [Cursor wait show]. "this may take a while..."
+
+	fp to: pn do:
+		[:p | "set up page for checking"
+		page pageNumber: p.
+		"set by machine code:
+			page headerWordAt: Nextp put:
+				(p < palen ifTrue: [pageAddresses at: (p+1)] ifFalse: [0]).
+			page headerWordAt: backp put:
+				(p=0 ifTrue: [0] ifFalse: [p=1 ifTrue: [leader]
+					ifFalse: [pageAddresses at: (p-1)]]).
+			page size: (p < palen ifTrue: [page dataSize] ifFalse: [0])."
+
+		page doCommand: CCR error: 'read:'.
+
+		page lastPage
+		  ifTrue:
+			[lastPageNumber _ p.
+			p < pn
+				ifTrue: [oldCursor show. ^nil]
+				ifFalse: [oldCursor show. ^page]].
+
+		(pageAddresses ~~ nil and: [p >= palen])
+			ifTrue: ["save address of next page if there is a page address table
+				and address not already stored"
+				pageAddresses addLast: (page headerWordAt: Nextp)].
+		p < pn
+			ifTrue: ["set address of next page"
+				page address: (page headerWordAt: Nextp)]].
+	oldCursor show.
+	^page!
+readOrAdd: aPage
+	| page p pn |
+	page _ aPage.
+	pn _ page pageNumber.
+	(self read: page) notNil ifTrue: [^page].
+	"page now contains last page"
+	(lastPageNumber to: pn - 1) do:
+		[:p |
+		page pageNumber: p.
+		page size: page dataSize.
+		"this writes current and allocates next (empty) page"
+		page _ self write: page].
+	^page!
+write: page
+	| nextPage labelDirty returnPage |
+	((labelDirty _ page lastPage) and: [page isFull])
+	  ifTrue:
+		["last page can't be full, so glue on another page"
+		returnPage _ nextPage _ self initPageNumber: 0.
+		fileDirectory allocate: nextPage after: (fileDirectory realToVirtual: page address).
+		nextPage reinitialize.
+		nextPage headerWordAt: Backp put: page address.
+		nextPage pageNumber: (lastPageNumber _ page pageNumber + 1).
+		nextPage serialNumber: serialNumber.
+		nextPage doCommand: CWW error: 'write: (allocate)'.
+		"link to current page"
+		page headerWordAt: Nextp put: nextPage address.
+		pageAddresses ~~ nil
+		  ifTrue: [pageAddresses addLast: nextPage address]]
+	  	  ifFalse: [returnPage _ page].
+
+	"whenever a last (or second last) page is written, write label also"
+	self doCommand: (labelDirty
+	  					ifTrue: [CWW]
+	  					ifFalse: [CCW]) page: page error: 'write:'.
+	readWrite _ Read + Write.
+	^returnPage!
+"-----------------------------------"!
+!AltoFile methodsFor: 'private'!
+beSnapshotSerialNumber: aByteArray leaderVirtualDiskAddr: anInteger
+	<primitive: 135>
+	self primitiveFailed!
+dskprim: diskNumber address: diskAddress command: diskCommand page: buffer semaphore: aSemaphore
+	"Transfer a single record (page) to or from the Alto File System.  Fail if
+	integer arguments are not 16-bit positive Integers.  Fail if a disk transfer
+	 is already in progress.  Fail if the buffer is not large enough or is
+	pointer containing.  Fail if the last argument is not a Semaphore.  Xerox
+	specific primitive.  See Object documentation what IsAPrimitive.
+
+	diskNumber is 0 or 1,
+	diskAddress is the starting Alto disk address (Integer),
+	diskCommand is the disk command (usually CCR, CCW, CWW)
+	(Integer), buffer is the string containing label and data,
+	aSemaphore is signalled when the transfer completes.
+	If disk primitive encounters an error, the receiver's instance variable
+	named error is set to the DCB status.  This Integer is greater than 0 and
+	is
+	interpreted by errorString:.  Normally error is set to 0."
+
+	<primitive: 128>
+	error _ -1
+	"set error when the primitive fails"!
+findLastPageNumber
+	self readPageNumber: 20000.
+	^lastPageNumber!
+leader
+	^leader!
+leader: pageAddress
+	leader _ pageAddress!
+pageAddresses: anArrayOrNil
+	pageAddresses _ anArrayOrNil!
+pageClass
+	^AltoFilePage!
+readFromDirectory: aFileStream
+	"read file description from SysDir"
+
+	serialNumber _ aFileStream next: 4.
+	aFileStream skip: 4.
+	leader _ fileDirectory virtualToReal: aFileStream nextWord.
+	fileName _ String new: aFileStream next.
+	1 to: fileName size do: [:i | fileName at: i put: aFileStream next asCharacter].
+	aFileStream padToNextWord!
+sameAsStoredFile
+	| page s tname |
+	page _ self initPageNumber: 0.
+	page binary.
+	page address: leader.
+	"if any of the following tests fail, File will be reinitialized"
+	(((page doCommand: CCR error: nil) notNil and: [page pageNumber = 0])
+		and: [s _ page asFileStream: ExternalStream new.
+			s skip: 4.
+			writeTime = (s next: 4)
+				and:
+					[s skip: 4.
+					tname _ String new: s next.
+					1 to: tname size do: [:i | tname at: i put: s next asCharacter].
+					fileName sameAs: tname]])
+		ifTrue:
+			[(lastPageNumber notNil and: [pageAddresses notNil])
+				ifTrue:
+					[page pageNumber: lastPageNumber.
+					page address: (pageAddresses at: lastPageNumber).
+					(page doCommand: CCR error: nil) isNil
+						ifTrue: ["wrong file or page number" ^false].
+					page lastPage ifFalse: ["not last page anymore"
+						lastPageNumber _ nil].
+					^true].
+			^true].
+	^false!
+storeOnDirectory: aFileStream
+	aFileStream nextPutAll: serialNumber.
+	aFileStream nextWordPut: 1.
+	aFileStream nextWordPut: 0.
+	aFileStream nextWordPut: (fileDirectory realToVirtual: leader).
+	aFileStream nextPut: fileName size.
+	fileName do: [:char | aFileStream nextPut: char asciiValue].
+	aFileStream padToNextWordPut: 0!
+updateLeader: page
+	"see <Alto>AltoFileSys.D, (p.3 leader page) for further info"
+
+	| aFileStream time lastwrite |
+	page binary.
+	aFileStream _ page asFileStream: ExternalStream new.
+	time _ Time timeWords.
+	(readWrite bitAnd: Write) = Write
+		ifTrue:
+			[fileDirectory flush.
+			"set creation/write/read date and file name"
+			writeTime _ time.
+			aFileStream nextPutAll: time.
+			aFileStream nextPutAll: time.
+			aFileStream nextPutAll: time.
+			fileName isEmpty
+				ifFalse:
+					[aFileStream nextPut: fileName size.
+					fileName do: [:char | aFileStream nextPut: char asciiValue]]]
+		ifFalse:
+			["skip creation, remember write, update read date"
+			aFileStream skip: 4.
+			writeTime _ aFileStream next: 4.
+			aFileStream nextPutAll: time].
+	page fromFileStream: aFileStream.
+	self write: page!
+writeTime
+	^writeTime!

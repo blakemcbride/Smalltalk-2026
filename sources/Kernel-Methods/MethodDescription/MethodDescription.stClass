@@ -1,0 +1,61 @@
+Object subclass: #MethodDescription
+  instanceVariableNames: 'status whichClass selector'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Kernel-Methods'!
+MethodDescription class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+MethodDescription comment:
+'I model the result of looking up a selector name.  Usually I simply identify an existing method in some class in the system.  However, the lookup may fail, in which case I know the message would not be understood.  Also, in multiple inheritance situations, the lookup may yield conflicting results, in which case I will know that as well.'!
+"-----------------------------------"!
+!MethodDescription class methodsFor: 'instance creation'!
+makeConflictingMethods
+	^self new setStatus: #conflictingMethods!
+makeMethodNotImplemented
+	^self new setStatus: #methodNotImplemented!
+whichClass: c selector: s
+	^self new setWhichClass: c setSelector: s!
+"-----------------------------------"!
+!MethodDescription methodsFor: 'accessing'!
+method
+	^whichClass compiledMethodAt: selector!
+selector
+	^selector!
+sourceCode
+	^whichClass sourceCodeAt: selector!
+whichClass
+	^whichClass!
+"-----------------------------------"!
+!MethodDescription methodsFor: 'comparing'!
+= descr
+	self isConflictingMethods ifTrue: [^descr isConflictingMethods].
+	self isMethodNotImplemented ifTrue: [^descr isMethodNotImplemented].
+	^(whichClass == descr whichClass) & (selector == descr selector)!
+"-----------------------------------"!
+!MethodDescription methodsFor: 'printing'!
+printOn: strm
+	status==#methodNotImplemented ifTrue:
+		[strm nextPutAll: 'MethodDescription(methodNotImplemented)'.  ^self].
+	status==#conflictingMethods ifTrue:
+		[strm nextPutAll: 'MethodDescription(conflictingMethods)'.  ^self].
+	strm nextPutAll: 'MethodDescription(';
+		nextPutAll: whichClass name;
+		nextPut: $, ;
+		nextPutAll: selector;
+		nextPut: $)!
+"-----------------------------------"!
+!MethodDescription methodsFor: 'private'!
+setStatus: s
+	status _ s!
+setWhichClass: c setSelector: s
+	whichClass _ c.
+	selector _ s!
+"-----------------------------------"!
+!MethodDescription methodsFor: 'testing'!
+isBad
+	^status == #conflictingMethods or: [status == #methodNotImplemented]!
+isConflictingMethods
+	^status == #conflictingMethods!
+isMethodNotImplemented
+	^status == #methodNotImplemented!

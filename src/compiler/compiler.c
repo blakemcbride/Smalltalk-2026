@@ -460,8 +460,11 @@ parse_literal_array(st_compiler *c)
             break;
         case ST_TOK_CHARACTER:
             /*  Characters live in a table the image owns.  */
-            element = OM_fetch_pointer((uint32_t) c->token.integer,
-                                       ST_CHARACTER_TABLE);
+            element = c->ctx->make_character
+                        ? c->ctx->make_character((unsigned) c->token.integer,
+                                                 c->ctx->user)
+                        : OM_fetch_pointer((uint32_t) c->token.integer,
+                                           ST_CHARACTER_TABLE);
             advance(c);
             break;
         case ST_TOK_SYMBOL:
@@ -513,7 +516,11 @@ compile_primary(st_compiler *c, var_ref *out_var)
         return;
     case ST_TOK_CHARACTER:
         emit_push_literal_constant(c,
-            OM_fetch_pointer((uint32_t) c->token.integer, ST_CHARACTER_TABLE));
+            c->ctx->make_character
+                ? c->ctx->make_character((unsigned) c->token.integer,
+                                         c->ctx->user)
+                : OM_fetch_pointer((uint32_t) c->token.integer,
+                                   ST_CHARACTER_TABLE));
         advance(c);
         return;
     case ST_TOK_SYMBOL:
@@ -571,7 +578,14 @@ compile_primary(st_compiler *c, var_ref *out_var)
             ++argc;
             advance(c);
         }
-        if (argc > 0 && !accept(c, ST_TOK_BAR)) {
+        /*
+         *  The bar is required only when a body follows it.  The Blue Book
+         *  grammar shows it as mandatory, but Xerox's own compiler did not
+         *  insist: the 1983 sources contain [:result], [:byte ] and a dozen
+         *  more argument-only blocks, and the class library will not load
+         *  without them.  Such a block takes its argument and answers nil.
+         */
+        if (argc > 0 && !at(c, ST_TOK_RBRACKET) && !accept(c, ST_TOK_BAR)) {
             fail(c, "expected | after block arguments");
             return;
         }

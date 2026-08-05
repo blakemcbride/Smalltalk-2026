@@ -1,0 +1,235 @@
+View subclass: #StandardSystemView
+  instanceVariableNames: 'labelFrame labelText isLabelComplemented savedSubViews minimumSize maximumSize'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Interface-Support'!
+StandardSystemView class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+StandardSystemView comment:
+'I represent a view that has a label above its top left corner.  The text in the label identifies the kind of view.  In addition to a label, I add control over the maximum and minimum size of the display box of my instance.  My default controller is StandardSystemController.  The elements of ScheduledControllers, the sole instance of ControlManager, usually contain controllers for instances of me.
+
+Instance Variables:
+	labelFrame				<Quadrangle>
+	labelText				<Paragraph>
+	isLabelComplemented	<Boolean> true if the label is complemented
+	savedSubViews			<Array> of Views
+	minimumSize			<Point> representing minimum width and height
+	maximumSize			<Point> representing maximum width and height'!
+"-----------------------------------"!
+!StandardSystemView class methodsFor: 'instance creation'!
+model: aModel label: labelText minimumSize: minimumSize
+	| view |
+	view _ self new.
+	view model: aModel.
+	view label: labelText.
+	view minimumSize: minimumSize.
+	view borderWidth: 1.
+	^view!
+"-----------------------------------"!
+!StandardSystemView methodsFor: 'clipping box access'!
+clippingBox
+	"Answer the rectangular area in which the receiver can show its label."
+
+	^self isTopView
+		ifTrue: [self labelDisplayBox]
+		ifFalse: [super insetDisplayBox]!
+"-----------------------------------"!
+!StandardSystemView methodsFor: 'controller access'!
+defaultControllerClass
+	^StandardSystemController!
+"-----------------------------------"!
+!StandardSystemView methodsFor: 'deEmphasizing'!
+deEmphasizeView
+	self deEmphasizeLabel!
+"-----------------------------------"!
+!StandardSystemView methodsFor: 'displaying'!
+displayEmphasized
+	"Display the receiver with the label highlighted to indicate
+	that it is active."
+	self display.
+	self emphasize.
+	self emphasizeLabel!
+displayView
+	| clippingBox labelDisplayBox |
+	clippingBox _ self clippingBox.
+	labelDisplayBox _ self labelDisplayBox.
+	(labelDisplayBox intersect: clippingBox) displayOn: Display.
+	labelText isNil
+		ifFalse:
+			[labelText
+				displayOn: Display
+				at: (labelDisplayBox center -
+						(labelText boundingBox center -
+							labelText boundingBox topLeft))
+				clippingBox: clippingBox]!
+"-----------------------------------"!
+!StandardSystemView methodsFor: 'framing'!
+collapse
+	"If the receiver is not already collapsed, change its view to be that of
+	its label only."
+
+	self isCollapsed
+		ifFalse:
+			[savedSubViews _ subViews.
+			self resetSubViews.
+			labelText isNil ifTrue: [self label: 'No Label'].
+			self window: (self inverseDisplayTransform: self labelDisplayBox region).
+			labelFrame borderWidthLeft: 2 right: 2 top: 2 bottom: 2]!
+erase
+	"Clear the display box of the receiver to be gray, as in the screen background."
+
+	self clear: Form gray.
+	Display fill: self labelDisplayBox region mask: Form gray.
+	isLabelComplemented _ false!
+expand
+	"If the receiver is collapsed, change its view to be that of all of its subviews,
+	not its label alone."
+
+	self isCollapsed
+		ifTrue:
+			[subViews _ savedSubViews.
+			self window: self defaultWindow.
+			labelFrame borderWidthLeft: 2 right: 2 top: 2 bottom: 0.
+			savedSubViews _ nil]!
+getFrame
+	"Ask the user to designate a rectangular area in which the receiver should
+	be displayed."
+
+	| origin minimumCorner maximumCorner frame corner |
+	Sensor waitNoButton.
+	Cursor origin
+		showWhile:
+			[origin _ Sensor cursorPoint.
+			[Sensor redButtonPressed]
+				whileFalse: [Processor yield.
+							 origin _ Sensor cursorPoint]].
+	minimumCorner _ origin + self minimumSize.
+	maximumCorner _ origin + self maximumSize.
+	frame _ origin corner: minimumCorner.
+	Display fill: frame rule: Form reverse mask: Form gray.
+	Display fill: frame rule: Form reverse mask: Form gray.
+	minimumCorner = maximumCorner
+		ifFalse:
+			[Sensor cursorPoint: minimumCorner.
+			Cursor corner
+				showWhile:
+					[corner _ Sensor cursorPoint.
+					[Sensor redButtonPressed]
+						whileTrue:
+							[Processor yield.
+							frame _ origin corner:
+										((corner max: minimumCorner)
+											min: maximumCorner).
+	Display fill: frame rule: Form reverse mask: Form gray.
+	Display fill: frame rule: Form reverse mask: Form gray.
+							corner _ Sensor cursorPoint]]].
+	^frame!
+resize
+	"Determine the rectangular area for the receiver, adjusted to the minimum
+	and maximum sizes."
+
+	| aRectangle |
+	aRectangle _ self getFrame.
+	aRectangle _ aRectangle origin extent:
+					((aRectangle extent max: minimumSize) min: maximumSize).
+	self window: self window viewport: aRectangle.!
+resizeMinimumCenteredAt: aPoint
+	"Determine the rectangular area for the receiver, adjusted so that it is centered
+	a position, aPoint."
+
+	| aRectangle |
+	aRectangle _ 0 @ 0 extent: self minimumSize.
+	aRectangle _ aRectangle align: aRectangle center with: aPoint.
+	self window: self window viewport: aRectangle!
+"-----------------------------------"!
+!StandardSystemView methodsFor: 'initialize-release'!
+initialize
+	super initialize.
+	self insideColor: Form lightGray.
+	labelFrame _ Quadrangle new.
+	labelFrame region: (Rectangle origin: 0 @ 0 extent: 50 @ 20).
+	labelFrame insideColor: Form white.
+	labelFrame
+		borderWidthLeft: 2
+		right: 2
+		top: 2
+		bottom: 0.
+	self label: nil.
+	isLabelComplemented _ false.
+	minimumSize _ 50 @ 50.
+	maximumSize _ Display extent!
+release
+	self expand.
+	super release!
+"-----------------------------------"!
+!StandardSystemView methodsFor: 'label access'!
+deEmphasizeLabel
+	"If the label is highlighted, reverse it."
+
+	isLabelComplemented
+		ifTrue:
+			[self reverseLabel.
+			isLabelComplemented _ false]!
+emphasizeLabel
+	"Highlight the label."
+
+	isLabelComplemented
+		ifFalse:
+			[self reverseLabel.
+			isLabelComplemented _ true]!
+label
+	"Answer the string that appears in the receiver's label."
+	^labelText isNil
+		ifTrue: [^'']
+		ifFalse: [labelText asString]!
+label: aString
+	"Set aString to be the receiver's label."
+	aString == nil
+		ifTrue:
+			[labelText _ nil.
+			labelFrame region: (0 @ 0 extent: 0 @ 0)]
+		ifFalse:
+			[labelText _ aString asParagraph.
+			labelFrame region: (0 @ 0 extent: labelText boundingBox width + 8 @ 20)]!
+labelDisplayBox
+	"Answer the rectangle that borders the visible parts of the receiver's label on the
+	display screen."
+
+	^labelFrame
+		align: (self isCollapsed
+				ifTrue: [labelFrame topLeft]
+				ifFalse: [labelFrame bottomLeft])
+		with: self displayBox topLeft!
+labelFrame
+	"Answer the bounding box for the label."
+	^labelFrame!
+labelFrame: aQuadrangle
+	"Set the bounding box for the label to be aQuadrangle."
+	labelFrame _ aQuadrangle!
+"-----------------------------------"!
+!StandardSystemView methodsFor: 'private'!
+reverseLabel
+	labelText isNil ifFalse: [Display reverse: self labelDisplayBox inside]!
+"-----------------------------------"!
+!StandardSystemView methodsFor: 'size'!
+maximumSize
+	"Answer a point representing the maximum width and height of the receiver."
+	^maximumSize!
+maximumSize: aPoint
+	"Set the argument, aPoint, to be the maximum width and height of the receiver."
+	maximumSize _ aPoint!
+minimumSize
+	"Answer a point representing the minimum width and height of the receiver."
+	^minimumSize!
+minimumSize: aPoint
+	"Set the argument, aPoint, to be the minimum width and height of the receiver."
+	minimumSize _ aPoint!
+"-----------------------------------"!
+!StandardSystemView methodsFor: 'testing'!
+containsPoint: aPoint
+	^(super containsPoint: aPoint)
+		| (self labelDisplayBox containsPoint: aPoint)!
+isCollapsed
+	"Answer whether the scheduled view is collapsed (true) or expanded (false)."
+	^savedSubViews ~~ nil!

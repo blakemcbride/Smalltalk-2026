@@ -1,0 +1,220 @@
+Object subclass: #StrikeFont
+  instanceVariableNames: 'xTable glyphs name stopConditions type minAscii maxAscii maxWidth strikeLength ascent descent xOffset raster subscript superscript emphasis'
+  classVariableNames: ''
+  poolDictionaries: 'TextConstants'
+  category: 'Graphics-Support'!
+StrikeFont class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+StrikeFont comment:
+'Instance Variables:
+
+	xTable	<Array>  Of left x-coordinate of character in glyphs.
+
+	glyphs	<Form>  Containing bits representing the characters.
+
+	name	<String>  Name of this font.
+
+	stopConditions	<Array>  Of selectors to be performed in scanning text.
+
+	type	<Integer>  Code for strike fonts files.
+
+	minAscii, maxAscii	<Integer>  Giving range supported by this font.
+
+	maxWidth	<Integer>  Width of widest char. Not presently used, but may be for font modification.
+
+	strikeLength	<Integer>  Not used.
+
+	ascent, descent	<Integer>  Max extent of chars above and below the baseline
+
+	xOffset	<Integer>  For kerning (not presently used)
+
+	raster	<Integer>  Specifies layout of the glyphs form
+
+	subscript, superscript	<Integer>  Further vertical offset relative to baseline
+
+	emphasis	<Integer>  code for synthetic bold, italic, underline, strike-out
+
+StrikeFonts are a compact encoding of a set of Forms corresponding to characters in the ASCII character set.  All the forms are placed side by side in a large form whose height is the font height, and whose width is the sum of all the character widths.  The xTable gives the left-x coordinates of the subForms corresponding to the characters.'!
+"-----------------------------------"!
+!StrikeFont methodsFor: 'accessing'!
+ascent
+	"Answer the font's maximum extent of characters above the baseline."
+	^ascent!
+characterForm: character
+	"Answer a Form copied out of the glyphs for this character."
+
+	| characterForm ascii |
+	ascii _ character asciiValue.
+	ascii > maxAscii ifTrue: [ascii _maxAscii].
+	characterForm _ Form new extent: (self widthOf: character) @ self height.
+	characterForm
+		copyBits: (Rectangle origin: (xTable at: ascii + 1)
+					@ 0 extent: (self widthOf: character)
+					@ self height)
+		from: glyphs
+		at: 0 @ 0
+		clippingBox: characterForm boundingBox
+		rule: Form over
+		mask: Form black.
+	^characterForm!
+descent
+	"Answer the font's maximum extent of characters below the baseline."
+	^descent!
+familySizeFace
+	"Return an array with familyName <String> pointSize <Integer> faceCode <Integer>"
+
+	| fontName firstDigit lastDigit |
+	fontName_ name asUppercase.
+	firstDigit _ fontName findFirst: [:char | char isDigit].
+	lastDigit _ fontName findLast: [:char | char isDigit].
+	^Array with: (fontName copyFrom: 1 to: firstDigit-1)
+		with: (Integer readFromString: (fontName copyFrom: firstDigit to: lastDigit))
+		with: (#('B' 'I' 'BI') indexOf:
+					(fontName copyFrom: lastDigit+1 to: fontName size))
+
+" (1 to: 12) collect: [:x | (TextStyle default fontAt: x) familySizeFace] "!
+glyphs
+	"Answer a Form containing the bits representing the characters of the receiver."
+	^glyphs!
+height
+	"Answer the height of the font, total of maximum extents of characters
+	above and below the baseline."
+	^self ascent + self descent!
+maxAscii
+	"Answer the integer that is the last Ascii character value of the receiver."
+	^maxAscii!
+maxWidth
+	"Answer the integer that is the width of the receiver's widest character."
+	^maxWidth!
+minAscii
+	"Answer the integer that is the first Ascii character value of the receiver."
+	^minAscii!
+name
+	"Answer the receiver's name."
+	^name!
+name: aString
+	"Set the receiver's name."
+	name _ aString.!
+raster
+	"Answer an integer that specifies the layout of the glyphs' form."
+	^raster!
+stopConditions
+	"Answer the array of selectors to be performed in scanning text made
+	up of the receiver's characters."
+	^stopConditions!
+subscript
+	"Answer an integer that is the further vertical offset relative to the
+	baseline for positioning characters as subscripts."
+	^subscript!
+subscript: anInteger
+	"Answer an integer that is the further vertical offset relative to the
+	baseline for positioning characters as subscripts."
+	subscript _ anInteger.!
+superscript
+	"Answer an integer that is the further vertical offset relative to the
+	baseline for positioning characters as superscripts."
+	^superscript!
+superscript: anInteger
+	"Answer an integer that is the further vertical offset relative to the
+	baseline for positioning characters as superscripts."
+	superscript _ anInteger.!
+widthOf: aCharacter
+	"Answer the width of the argument as a character in the receiver."
+
+	| ascii |
+	ascii _ (aCharacter asciiValue min: maxAscii + 1) max: minAscii.
+	^(xTable at: ascii + 2) - (xTable at: ascii + 1)!
+xTable
+	"Answer an array of the left x-coordinate of characters in glyphs."
+	^xTable!
+"-----------------------------------"!
+!StrikeFont methodsFor: 'displaying'!
+characters: anInterval in: sourceString displayAt: aPoint clippedBy: clippingRectangle rule: ruleInteger mask: aForm
+	"Simple, slow, primitive method for displaying a line of characters.  No
+	wrap-around is handled."
+
+	| ascii character characterForm |
+	anInterval do:
+		[:i |
+		ascii _ (character _ sourceString at: i) asciiValue.
+		(ascii < minAscii or: [ascii > maxAscii])
+			ifTrue: [character _ (ascii _ maxAscii) asCharacter].
+		characterForm _ self characterForm: character.
+		characterForm
+			displayOn: Display
+			at: aPoint
+			clippingBox: clippingRectangle
+			rule: ruleInteger
+			mask: aForm.
+		aPoint x: aPoint x + (self widthOf: character)].
+	^aPoint x!
+composeWord: aTextLineInterval in: sourceString beginningAt: xInteger
+	"Non-primitive composition of a word -- add up widths of characters, add sum to
+	beginning x and answer the resulting x.  Similar to performance of scanning
+	primitive, but without stop conditions."
+
+	| character resultX |
+	resultX _ xInteger.
+	aTextLineInterval do:
+		[:i |
+		character _ sourceString at: i.
+		resultX _ resultX + (self widthOf: character)].
+	^resultX!
+displayLine: aString at: aPoint
+	"Display the characters in aString, starting at position aPoint."
+
+	self characters: (1 to: aString size)
+		in: aString
+		displayAt: aPoint
+		clippedBy: Display boundingBox
+		rule: Form over
+		mask: Form black!
+"-----------------------------------"!
+!StrikeFont methodsFor: 'emphasis'!
+emphasis
+	"Answer the integer code for synthetic bold, itallic, underline, and strike-out."
+	^emphasis!
+emphasis: code
+	"Set the integer code for synthetic bold, itallic, underline, and strike-out,
+	where bold=1, itallic=2, underlined=4, struck out=8, subscript=16, superscript=32."
+	emphasis _ code!
+emphasized: code
+	"Answer a copy of the receiver with emphasis set to code."
+	^self copy emphasis: code + emphasis
+
+	"TextStyle default fontAt: 9 put: ((TextStyle default fontAt: 1) emphasized: 4)"!
+emphasized: code named: aString
+	"Answer a copy of the receiver with emphasis set to code."
+	| copy |
+
+	copy _ self copy emphasis: (code + emphasis).
+	copy name: aString.
+	^copy
+
+	"TextStyle default fontAt: 9
+		put: ((TextStyle default fontAt: 1) emphasized: 4 named: 'TimesRoman10i')"!
+"-----------------------------------"!
+!StrikeFont methodsFor: 'printing'!
+printOn: aStream
+	aStream nextPutAll: self class name, ' name ', name, ' emphasis ';
+		print: emphasis; nextPut: Character cr.!
+"-----------------------------------"!
+!StrikeFont methodsFor: 'private'!
+ascent: anInteger
+	"Set the font's maximum extent of characters above the baseline."
+	ascent _ anInteger.!
+glyphs: aForm
+	"Set the Form containing the bits representing the characters of the receiver."
+	glyphs _ aForm.!
+"-----------------------------------"!
+!StrikeFont methodsFor: 'testing'!
+checkCharacter: character
+	"Answer a character that is within the ascii range of the receiver--either character
+	or the last character in the receiver."
+
+	| ascii |
+	ascii _ character asciiValue.
+	((ascii < minAscii) or: [ascii > maxAscii])
+			ifTrue: [^maxAscii asCharacter]
+			ifFalse:	[^character]!

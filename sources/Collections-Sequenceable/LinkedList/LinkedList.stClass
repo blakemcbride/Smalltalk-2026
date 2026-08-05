@@ -1,0 +1,114 @@
+SequenceableCollection subclass: #LinkedList
+  instanceVariableNames: 'firstLink lastLink'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Collections-Sequenceable'!
+LinkedList class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+LinkedList comment:
+'I implement ordered collections using a chain of elements.  I can be initialized using
+	LinkedList with: Link new'!
+"-----------------------------------"!
+!LinkedList methodsFor: 'accessing'!
+first
+	"Answer the first link;  create an error if the receiver is empty."
+
+	self emptyCheck.
+	^firstLink!
+last
+	"Answer the last link;  create an error if the receiver is empty."
+
+	self emptyCheck.
+	^lastLink!
+size
+	"Answer how many elements the receiver contains."
+	| tally |
+	tally _ 0.
+	self do: [:each | tally _ tally + 1].
+	^tally!
+"-----------------------------------"!
+!LinkedList methodsFor: 'adding'!
+add: aLink
+	"Add aLink to the end of the receiver's list."
+
+	^self addLast: aLink!
+addFirst: aLink
+	"Add aLink to the beginning of the receiver's list."
+
+	self isEmpty ifTrue: [lastLink _ aLink].
+	aLink nextLink: firstLink.
+	firstLink _ aLink.
+	^aLink!
+addLast: aLink
+	"Add aLink to the end of the receiver's list."
+
+	self isEmpty
+		ifTrue: [firstLink _ aLink]
+		ifFalse: [lastLink nextLink: aLink].
+	lastLink _ aLink.
+	^aLink!
+"-----------------------------------"!
+!LinkedList methodsFor: 'enumerating'!
+do: aBlock
+	| aLink |
+	aLink _ firstLink.
+	[aLink == nil] whileFalse:
+		[aBlock value: aLink.
+		 aLink _ aLink nextLink]!
+"-----------------------------------"!
+!LinkedList methodsFor: 'removing'!
+remove: aLink ifAbsent: aBlock
+	"Remove aLink from the receiver.  If it is not there, answer the result of
+	evaluating aBlock."
+
+	| tempLink |
+	aLink == firstLink
+		ifTrue: [firstLink _ aLink nextLink.
+				aLink == lastLink
+					ifTrue: [lastLink _ nil]]
+		ifFalse: [tempLink _ firstLink.
+				[tempLink == nil ifTrue: [^aBlock value].
+				 tempLink nextLink == aLink]
+					whileFalse: [tempLink _ tempLink nextLink].
+				tempLink nextLink: aLink nextLink.
+				aLink == lastLink
+					ifTrue: [lastLink _ tempLink]].
+	aLink nextLink: nil.
+	^aLink!
+removeFirst
+	"Remove the first element.  If the receiver is empty, cause an error;
+	otherwise answer the removed element.  Using the sequence addFirst:/removeFirst
+	causes the receiver to behave as a stack; using addLast:/removeFirst causes the
+	receiver to behave as a queue."
+
+	| oldLink |
+	self emptyCheck.
+	oldLink _ firstLink.
+	firstLink == lastLink
+		ifTrue: [firstLink _ nil. lastLink _ nil]
+		ifFalse: [firstLink _ oldLink nextLink].
+	oldLink nextLink: nil.
+	^oldLink!
+removeLast
+	"Remove the receiver's last element.  If the receiver is empty, cause an error;
+	otherwise answer the removed element.  Using addLast:/removeLast causes the
+	receiver to behave as a stack; using addFirst:/removeLast causes the receiver to
+	behave as a queue."
+
+	| oldLink aLink |
+	self emptyCheck.
+	oldLink _ lastLink.
+	firstLink == lastLink
+		ifTrue: [firstLink _ nil. lastLink _ nil]
+		ifFalse: [aLink _ firstLink.
+				[aLink nextLink == oldLink] whileFalse:
+					[aLink _ aLink nextLink].
+				 aLink nextLink: nil.
+				 lastLink _ aLink].
+	oldLink nextLink: nil.
+	^oldLink!
+"-----------------------------------"!
+!LinkedList methodsFor: 'testing'!
+isEmpty
+	^firstLink == nil!

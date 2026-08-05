@@ -1,0 +1,584 @@
+ClassDescription subclass: #Class
+  instanceVariableNames: 'name classPool sharedPools'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Kernel-Classes'!
+Class class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+Class comment:
+'My instances describe the representation and behavior of objects.  I add more comprehensive programming support facilities to the basic attributes of Behavior and the descriptive facilities of ClassDescription.  An example is accessing shared (pool) variables.
+
+Instance Variables:
+		name		<Symbol> name of class for printing and global reference
+		classPool	<Dictionary> of variables common to all instances
+		sharedPools	<Array> of Dictionaries access to other shared variables'!
+"-----------------------------------"!
+!Class class methodsFor: 'instance creation'!
+getSuperclasses: superNames
+	| supers |
+	"find the superclasses corresponding to the superclass names"
+	supers _ (Scanner new scanTokens: superNames) collect:
+		[:each | Smalltalk at: each].
+	"check that each is a kind of Behavior"
+	supers do: [:each | (each isKindOf: Behavior) ifFalse:
+		[self error: 'superclass must be a class-describing object']].
+	^supers!
+named: newClassName superclasses: newSuperNames instanceVariableNames: myInstVarNames classVariableNames: classVarNames category: cat
+	| newClass supers firstSuper otherSupers fork |
+	"find the superclasses corresponding to the superclass names"
+	supers _ self getSuperclasses: newSuperNames.
+	supers size=1 ifTrue:
+		[^supers first   "if there's only one superclass, just use old code"
+			subclass: newClassName
+			instanceVariableNames: myInstVarNames
+			classVariableNames: classVarNames
+			poolDictionaries: ''
+			category: cat].
+	newClass _ supers first
+		subclass: newClassName
+		otherSupers: (supers copyFrom: 2 to: supers size)
+		instanceVariableNames: myInstVarNames
+		classVariableNames: classVarNames
+		category: cat.
+	^newClass!
+template: category
+	"Answer an expression that can be edited and evaluated in order to define
+	 a new class."
+
+	^'NameOfSuperclass subclass: #NameOfClass
+	instanceVariableNames: ''instVarName1 instVarName2''
+	classVariableNames: ''ClassVarName1 ClassVarName2''
+	poolDictionaries: ''''
+	category: ''' , category , ''''!
+"-----------------------------------"!
+!Class methodsFor: 'accessing'!
+classPool
+	"Answer the dictionary of class variables."
+
+	classPool == nil
+		ifTrue: [^Dictionary new]
+		ifFalse: [^classPool]!
+name
+	"Answer the name of the receiver."
+
+	name == nil
+		ifTrue: [^super name]
+		ifFalse: [^name]!
+"-----------------------------------"!
+!Class methodsFor: 'accessing class hierarchy'!
+hasMultipleSuperclasses
+	^self class instHasMultipleSuperclasses!
+isObsolete
+	"Answer whether the receiver is an obsolete class."
+
+	^self class isObsolete 		"ask the metaclass"!
+"-----------------------------------"!
+!Class methodsFor: 'class name'!
+rename: aString
+	"The new name of the receiver is the argument, aString."
+
+	| newName |
+	newName _ aString asSymbol.
+	(Smalltalk includesKey: newName)
+		ifTrue: [^self error: newName , ' already exists'].
+	Smalltalk renameClass: self as: newName.
+	name _ newName.
+	self comment: self comment.
+	self class comment: self class comment!
+"-----------------------------------"!
+!Class methodsFor: 'class variables'!
+addClassVarName: aString
+	"Add the argument, aString, as a class variable of the receiver."
+
+	aString first isLowercase
+		ifTrue: [^self error: aString, ' class variable name should be capitalized; proceed to include anyway.'].
+	self withAllSubclasses do:
+		[:subclass |
+		subclass
+			poolHas: aString asSymbol
+			ifTrue:
+				[:ignored |
+				^self error: aString , ' is already used as a variable name in ' , subclass name]].
+	classPool _ self classPool.  "might be nil"
+	classPool add: (Association key: aString asSymbol value: nil)!
+allClassVarNames
+	"Answer a Set of the names of the receiver's class variables, including those
+	defined in the superclasses of the receiver."
+	| aSet |
+	superclass == nil
+		ifTrue:
+			[^self classVarNames]  "This is the keys so it is a new Set."
+		ifFalse:
+			[aSet _ superclass allClassVarNames.
+			aSet addAll: self classVarNames.
+			^aSet]!
+classVarNames
+	"Answer a Set of the names of the class variables defined in the receiver."
+
+	^self classPool keys!
+initialize
+	"Typically used for the initialization of class variables and metaclass instance
+	variables.  Does nothing, but may be overridden in Metaclasses."
+	^self!
+removeClassVarName: aString
+	"Remove the class variable whose name is the argument, aString, from the names
+	defined in the receiver, a class."
+
+	| anAssoc aSymbol |
+	aSymbol _ aString asSymbol.
+	(classPool includesKey: aSymbol)
+		ifFalse: [^self error: aString, ' is not a class variable'].
+	anAssoc _ classPool associationAt: aSymbol.
+	self withAllSubclasses do:
+		[:subclass |
+		(Array with: subclass with: subclass class) do:
+			[:classOrMeta |
+			(classOrMeta whichSelectorsReferTo: (classPool associationAt: aSymbol))
+				isEmpty
+					ifFalse: [^self error: aString
+								, ' is still used in code of class '
+								, classOrMeta name]]].
+	classPool removeKey: aSymbol!
+"-----------------------------------"!
+!Class methodsFor: 'compiling'!
+compileAllFrom: otherClass
+	super compileAllFrom: otherClass.
+	self class compileAllFrom: otherClass class!
+poolHas: varName ifTrue: assocBlock
+	"Look up the first argument in the context of the receiver.  If it is there,
+	pass the association to assocBlock, and answer true, else answer false."
+	| assoc pool |
+	assoc _ self classPool associationAt: varName ifAbsent: [].
+	assoc == nil
+		ifFalse:
+			[assocBlock value: assoc.
+			^true].
+	self sharedPools do:
+		[:pool |
+		assoc _ pool associationAt: varName ifAbsent: [].
+		assoc == nil
+			ifFalse:
+				[assocBlock value: assoc.
+				^true]].
+	^ false!
+"-----------------------------------"!
+!Class methodsFor: 'copying'!
+copy
+	| newClass |
+	newClass _ self class copy new
+		superclass: superclass
+		methodDict: methodDict copy
+		format: format
+		name: name
+		organization: organization copy
+		instVarNames: instanceVariables copy
+		classPool: classPool copy
+		sharedPools: sharedPools.
+	Class instSize to: self class instSize do:
+		[:offset | newClass instVarAt: offset put: (self instVarAt: offset)].
+	^newClass!
+copyForValidation
+	"Make a copy of the receiver (a class) but do not install the created class
+	as a new class in the system.  This is used for creating a new version of
+	the receiver in which the installation is deferred until all changes are
+	successfully completed."
+
+	^self class copy new
+		superclass: superclass
+		methodDict: methodDict copy
+		format: format
+		name: name
+		organization: organization
+		instVarNames: instanceVariables copy
+		classPool: classPool
+		sharedPools: sharedPools!
+"-----------------------------------"!
+!Class methodsFor: 'fileIn/Out'!
+fileOut
+	"Create a file whose name is the name of the receiver with -.st- as the
+	extension, and file a description of the receiver onto it"
+
+	| fileStream |
+	Transcript refresh; cr; cr; show: 'Filing out class:'.
+					fileStream _ Disk file: self name , '.st'.
+	fileStream timeStamp.
+	self fileOutOn: fileStream
+		moveSource: false
+		toFile: 0.
+	fileStream shorten; close.
+	self removeFromChanges.!
+fileOutOn: aFileStream moveSource: moveSource toFile: fileIndex
+	"File a description of the receiver on aFileStream.  If the boolean argument,
+	moveSource, is true, then set the trailing bytes to the position of aFileStream and
+	to fileIndex in order to indicate where to find the source code."
+
+	Transcript cr; show: name.
+	super
+		fileOutOn: aFileStream
+		moveSource: moveSource
+		toFile: fileIndex.
+	self class nonTrivial
+		ifTrue:
+			[aFileStream cr; nextPutAll: '"-- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- "!!'; cr; cr.
+			self class
+				fileOutOn: aFileStream
+				moveSource: moveSource
+				toFile: fileIndex].!
+printOut
+	"Create a readable version of my definition, and send to a printer.
+	Defaults to fileOut."
+	self fileOut!
+removeFromChanges
+	"References to the receiver, a class, and its metaclass should no longer be included
+	in the system ChangeSet."
+	Smalltalk changes removeClassChanges: self!
+"-----------------------------------"!
+!Class methodsFor: 'initialize-release'!
+declare: varString
+	"Declare class variables common to all instances.  Answer whether
+	recompilation is advisable."
+
+	| newVars conflicts assoc class |
+	newVars _
+		(Scanner new scanFieldNames: varString)
+			collect: [:x | x asSymbol].
+	newVars do:
+		[:var | var first isLowercase
+			ifTrue: [self error: var, ' class variable name should be capitalized; proceed to include anyway.']].
+	conflicts _ false.
+	classPool == nil
+		ifFalse: [(classPool keys reject: [:x | newVars includes: x]) do:
+					[:var | self removeClassVarName: var]].
+	(newVars reject: [:var | self classPool includesKey: var])
+		do: [:var | "adding"
+			"check if new vars defined elsewhere"
+			(self scopeHas: var ifTrue: [:ignored | ignored])
+				ifTrue:
+					[self error: var , ' is defined elsewhere'.
+					conflicts _ true]].
+	newVars size > 0
+		ifTrue:
+			[classPool _ self classPool.
+			"in case it was nil"
+			newVars do: [:var | classPool declare: var from: Undeclared]].
+	^conflicts!
+obsolete
+	"Change the receiver to an obsolete class by changing its name to have the prefix -AnObsolete-, and nilling the fields of any instances."
+
+	self isPointers ifTrue:
+		[self allInstancesDo: [:instance | instance nilFields]]. 	"nil fields of instances"
+	('AnObsolete*' match: name) ifFalse:
+		[name _ 'AnObsolete' , name].
+	classPool _ Dictionary new.
+	self class obsolete.
+	super obsolete!
+removeFromSystem
+	"Forget the receiver, and all of its subclasses, from the Smalltalk global dictionary.  Any existing instances will refer to an obsolete version of the receiver."
+
+	Smalltalk removeClassNamed: self name. 			"remove from system dictionary"!
+sharing: poolString
+	"Set up sharedPools.  Answer whether recompilation is advisable."
+
+	| oldPools poolName pool |
+	oldPools _ self sharedPools.
+	sharedPools _ Set new.
+	(Scanner new scanFieldNames: poolString) do:
+		[:poolName |
+		sharedPools add: (Smalltalk at: poolName asSymbol)].
+	sharedPools isEmpty ifTrue: [sharedPools _ nil].
+	oldPools
+		detect: [:pool | (self sharedPools includes: pool) not]
+		ifNone: [^false].
+	^true	"A pool got deleted - who knows if there are still references?"!
+superclass: sup methodDict: md format: ft name: nm organization: org instVarNames: nilOrArray classPool: pool sharedPools: poolSet
+	"Answer an instance of me, a new class, using the arguments of the message
+	as the needed information."
+
+	superclass _ sup.
+	methodDict _ md.
+	format _ ft.
+	name _ nm.
+	organization _ org.
+	instanceVariables _ nilOrArray.
+	classPool _ pool.
+	sharedPools _ poolSet!
+validateFrom: oldClass in: environ instanceVariableNames: invalidFields methods: invalidMethods
+	"Recompile the receiver and redefine its subclasses if necessary."
+
+	super
+		validateFrom: oldClass
+		in: environ
+		instanceVariableNames: invalidFields
+		methods: invalidMethods.
+	self ~~ oldClass
+		ifTrue:
+			[environ at: name put: self.
+			self updateInheritanceTables: oldClass.
+			oldClass obsolete]!
+"-----------------------------------"!
+!Class methodsFor: 'instance variables'!
+addInstVarName: aString
+	"Add the argument, aString, as one of the receiver's instance variables."
+	superclass class
+		name: self name
+		inEnvironment: Smalltalk
+		subclassOf: superclass
+		instanceVariableNames: self instanceVariablesString , aString
+		variable: self isVariable
+		words: self isWords
+		pointers: self isPointers
+		classVariableNames: self classVariablesString
+		poolDictionaries: self sharedPoolsString
+		category: self category
+		comment: nil
+		changed: false!
+removeInstVarName: aString
+	"Remove the argument, aString, as one of the receiver's instance variables."
+	| newInstVarString |
+	(self instVarNames includes: aString)
+		ifFalse: [self error: aString , ' is not one of my instance variables'].
+	newInstVarString _ ''.
+	(self instVarNames copyWithout: aString) do:
+		[:varName | newInstVarString _ newInstVarString , ' ' , varName].
+	superclass class
+		name: self name
+		inEnvironment: Smalltalk
+		subclassOf: superclass
+		instanceVariableNames: newInstVarString
+		variable: self isVariable
+		words: self isWords
+		pointers: self isPointers
+		classVariableNames: self classVariablesString
+		poolDictionaries: self sharedPoolsString
+		category: self category
+		comment: nil
+		changed: false!
+"-----------------------------------"!
+!Class methodsFor: 'pool variables'!
+addSharedPool: aDictionary
+	"Add the argument, aDictionary, as one of the receiver's pool dictionaries.  Create
+	an error if the dictionary is already one of the pools."
+
+	(self sharedPools includes: aDictionary)
+		ifTrue: [^self error: 'The dictionary is already in my pool'].
+	sharedPools == nil
+		ifTrue: [sharedPools _ Set with: aDictionary]
+		ifFalse: [sharedPools add: aDictionary]!
+allSharedPools
+	"Answer a Set of the pools the receiver shares, including those defined
+	in the superclasses of the receiver."
+
+	| aSet |
+	superclass == nil
+		ifTrue:
+			[^self sharedPools copy]
+		ifFalse:
+			[aSet _ superclass allSharedPools.
+			aSet addAll: self sharedPools.
+			^aSet]!
+removeSharedPool: aDictionary
+	"Remove the pool dictionary, aDictionary, as one of the receiver's pool dictionaries.
+	Create an error if the dictionary is not one of the pools."
+
+	| satisfiedSet workingSet aSubclass|
+	(self sharedPools includes: aDictionary)
+		ifFalse: [^self error: 'the dictionary is not in my pool'].
+
+	"first see if it is declared in a superclass in which case we can remove it."
+	(self allSuperclasses select: [:class | class sharedPools includes: aDictionary]) isEmpty
+		ifFalse: [sharedPools remove: aDictionary.
+				sharedPools isEmpty ifTrue: [sharedPools _ nil].
+				^self].
+
+	"second get all the subclasses that reference aDictionary through me rather than a
+	superclass that is one of my subclasses."
+
+	workingSet _ self subclasses asOrderedCollection.
+	satisfiedSet _ Set new.
+	[workingSet isEmpty] whileFalse:
+		[aSubclass _ workingSet removeFirst.
+		(aSubclass sharedPools includes: aDictionary)
+			ifFalse:
+				[satisfiedSet add: aSubclass.
+				workingSet addAll: aSubclass subclasses]].
+
+	"for each of these, see if they refer to any of the variables in aDictionary because
+	if they do, we can not remove the dictionary."
+	satisfiedSet add: self.
+	satisfiedSet do:
+		[:aSubclass |
+		aDictionary associationsDo:
+			[:aGlobal |
+			(aSubclass whichSelectorsReferTo: aGlobal) isEmpty
+				ifFalse: [^self error: aGlobal key
+								, ' is still used in code of class '
+								, aSubclass name]]].
+	sharedPools remove: aDictionary.
+	sharedPools isEmpty ifTrue: [sharedPools _ nil]!
+sharedPools
+	"Answer a Set of the pool dictionaries declared in the receiver."
+
+	sharedPools == nil
+		ifTrue: [^Set new]
+		ifFalse: [^sharedPools]!
+"-----------------------------------"!
+!Class methodsFor: 'subclass creation'!
+subclass: t instanceVariableNames: f classVariableNames: d poolDictionaries: s category: cat
+	"This is the standard initialization message for creating a new class as a subclass
+	of an existing class (the receiver)."
+
+	self isVariable
+		ifTrue:
+			[self isPointers
+				ifTrue: [^self
+							variableSubclass: t
+							instanceVariableNames: f
+							classVariableNames: d
+							poolDictionaries: s
+							category: cat].
+			self isBytes
+				ifTrue: [^self
+							variableByteSubclass: t
+							instanceVariableNames: f
+							classVariableNames: d
+							poolDictionaries: s
+							category: cat].
+			^self
+				variableWordSubclass: t
+				instanceVariableNames: f
+				classVariableNames: d
+				poolDictionaries: s
+				category: cat].
+	^self class
+		name: t
+		inEnvironment: Smalltalk
+		subclassOf: self
+		instanceVariableNames: f
+		variable: false
+		words: true
+		pointers: true
+		classVariableNames: d
+		poolDictionaries: s
+		category: cat
+		comment: nil
+		changed: false!
+subclass: t otherSupers: others instanceVariableNames: f classVariableNames: d category: cat
+	"This is the standard initialization message for creating a new class as a subclass
+	of an existing class (the receiver)."
+
+	self isVariable
+		ifTrue:
+			[self isPointers
+				ifTrue: [^self
+							variableSubclass: t
+							instanceVariableNames: f
+							classVariableNames: d
+							poolDictionaries: ''
+							category: cat].
+			self isBytes
+				ifTrue: [^self
+							variableByteSubclass: t
+							instanceVariableNames: f
+							classVariableNames: d
+							poolDictionaries: ''
+							category: cat].
+			^self
+				variableWordSubclass: t
+				instanceVariableNames: f
+				classVariableNames: d
+				poolDictionaries: ''
+				category: cat].
+	^self class
+		name: t
+		inEnvironment: Smalltalk
+		subclassOf: self and: others
+		instanceVariableNames: f
+		variable: false
+		words: true
+		pointers: true
+		classVariableNames: d
+		poolDictionaries: ''
+		category: cat
+		comment: nil
+		changed: false!
+variableByteSubclass: t instanceVariableNames: f
+	classVariableNames: d poolDictionaries: s category: cat
+	"This is the standard initialization message for creating a new class as a subclass
+	of an existing class (the receiver) in which the subclass is to have indexable
+	byte-sized nonpointer variables."
+
+	self instSize > 0
+		ifTrue: [^self error: 'cannot make a byte subclass of a class with named fields'].
+	(self isVariable and: [self isWords])
+		ifTrue: [^self error: 'cannot make a byte subclass of a class with word fields'].
+	(self isVariable and: [self isPointers])
+		ifTrue: [^self error:
+					'cannot make a byte subclass of a class with pointer fields'].
+	^self class name: t
+		inEnvironment: Smalltalk
+		subclassOf: self
+		instanceVariableNames: f
+		variable: true
+		words: false
+		pointers: false
+		classVariableNames: d
+		poolDictionaries: s
+		category: cat
+		comment: nil
+		changed: false!
+variableSubclass: t instanceVariableNames: f
+	classVariableNames: d poolDictionaries: s category: cat
+	"This is the standard initialization message for creating a new class as a subclass
+	of an existing class (the receiver) in which the subclass is to have indexable
+	pointer variables."
+
+	self isBits
+		ifTrue:
+			[^self error:
+				'cannot make a pointer subclass of a class with non-pointer fields'].
+	^self class name: t
+		inEnvironment: Smalltalk
+		subclassOf: self
+		instanceVariableNames: f
+		variable: true
+		words: true
+		pointers: true
+		classVariableNames: d
+		poolDictionaries: s
+		category: cat
+		comment: nil
+		changed: false!
+variableWordSubclass: t instanceVariableNames: f
+	classVariableNames: d poolDictionaries: s category: cat
+	"This is the standard initialization message for creating a new class as a subclass
+	of an existing class (the receiver) in which the subclass is to have indexable
+	word-sized nonpointer variables."
+
+	self instSize > 0
+		ifTrue: [^self error:
+					'cannot make a word subclass of a class with named fields'].
+	self isBytes
+		ifTrue: [^self error: 'cannot make a word subclass of a class with byte fields'].
+	(self isVariable and: [self isPointers])
+		ifTrue: [^self error:
+					'cannot make a word subclass of a class with pointer fields'].
+	^self class name: t
+		inEnvironment: Smalltalk
+		subclassOf: self
+		instanceVariableNames: f
+		variable: true
+		words: true
+		pointers: false
+		classVariableNames: d
+		poolDictionaries: s
+		category: cat
+		comment: nil
+		changed: false!
+"-----------------------------------"!
+!Class methodsFor: 'testing method dictionary'!
+hasMethods
+	"Answer a Boolean as to whether any methods are defined for the receiver
+	(includes whether there are methods defined in the receiver's metaclass)."
+
+	^super hasMethods or: [self class hasMethods]!

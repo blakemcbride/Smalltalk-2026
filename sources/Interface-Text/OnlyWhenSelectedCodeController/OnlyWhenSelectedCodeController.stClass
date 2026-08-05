@@ -1,0 +1,19 @@
+CodeController subclass: #OnlyWhenSelectedCodeController
+  instanceVariableNames: ''
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Interface-Text'!
+OnlyWhenSelectedCodeController class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+OnlyWhenSelectedCodeController comment:
+'I am a code controller that will not take control unless my model has some selection.'!
+"-----------------------------------"!
+!OnlyWhenSelectedCodeController methodsFor: 'control defaults'!
+isControlWanted
+	view isSelected
+		ifFalse:
+			[sensor yellowButtonPressed ifTrue: [view flash].
+			self deselect.
+			^false].
+	^self viewHasCursor!

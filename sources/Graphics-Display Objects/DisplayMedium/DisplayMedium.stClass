@@ -1,0 +1,120 @@
+DisplayObject subclass: #DisplayMedium
+  instanceVariableNames: ''
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Graphics-Display Objects'!
+DisplayMedium class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+DisplayMedium comment:
+'I am a display object which can both paint myself on a medium (displayOn: messages), and can act as a medium myself.  My chief subclass is Form.'!
+"-----------------------------------"!
+!DisplayMedium methodsFor: 'bordering'!
+border: aRectangle width: borderWidth
+	"Paint a border whose rectangular area is defined by aRectangle.  The width of
+	the border of each side is borderWidth.  Uses Form black for drawing the border."
+	self border: aRectangle
+		width: borderWidth
+		mask: Form black!
+border: aRectangle width: borderWidth mask: aHalfTone
+	"Paint a border whose rectangular area is defined by aRectangle.  The width of
+	the border of each side is borderWidth.  Uses aHalfTone for drawing the border."
+	self border: aRectangle
+		widthRectangle:
+			(Rectangle
+				left: borderWidth
+				right: borderWidth
+				top: borderWidth
+				bottom: borderWidth)
+		mask: aHalfTone!
+border: aRectangle widthRectangle: insets mask: aHalfTone
+	"Paint a border whose rectangular area is defined by aRectangle.  The width of
+	each edge of the border is determined by the four coordinates of insets.
+	Uses aHalfTone for drawing the border."
+	(aRectangle areasOutside: (aRectangle insetBy: insets)) do:
+		[:edgeStrip | self fill: edgeStrip mask: aHalfTone]!
+border: aRectangle widthRectangle: insets mask: aHalfTone clippingBox: clipRect
+	"Paint a border whose rectangular area is defined by aRectangle.  The width of
+	each edge of the border is determined by the four coordinates of insets.
+	Uses aHalfTone for drawing the border."
+	(aRectangle areasOutside: (aRectangle insetBy: insets)) do:
+		[:edgeStrip | self fill: (edgeStrip intersect: clipRect) mask: aHalfTone]!
+"-----------------------------------"!
+!DisplayMedium methodsFor: 'coloring'!
+black
+	"Set all bits in the receiver to black (ones)."
+
+	self fill: self boundingBox
+		mask: Form black!
+black: aRectangle
+	"Set all bits in the receiver's area defined by aRectangle to black (ones)."
+	self fill: aRectangle rule: Form over mask: Form black!
+darkGray
+	"Set all bits in the receiver to darkGray."
+	self fill: self boundingBox
+		mask: Form darkGray!
+darkGray: aRectangle
+	"Set all bits in the receiver's area defined by aRectangle to the darkGray mask."
+	self fill: aRectangle rule: Form over mask: Form darkGray!
+fill: aRectangle
+	"Fill aRectangle with the default background, Form gray."
+	self fill: aRectangle rule: Form over mask: Form gray!
+fill: aRectangle mask: aForm
+	"Replace a rectangular area of the receiver with the pattern described by aForm
+	according to the rule over."
+	self fill: aRectangle rule: Form over mask: aForm!
+fill: aRectangle rule: anInteger mask: aForm
+	"Replace a rectangular area of the receiver with the pattern described by aForm
+	according to the rule anInteger."
+	self subclassResponsibility!
+gray
+	"Set all bits in the receiver to gray."
+	self fill: self boundingBox
+		mask: Form gray!
+gray: aRectangle
+	"Set all bits in the receiver's area defined by aRectangle to the gray mask."
+	self fill: aRectangle rule: Form over mask: Form gray!
+lightGray
+	"Set all bits in the receiver to lightGray."
+	self fill: self boundingBox
+		mask: Form lightGray!
+lightGray: aRectangle
+	"Set all bits in the receiver's area defined by aRectangle to the lightGray mask."
+	self fill: aRectangle rule: Form over mask: Form lightGray!
+reverse
+	"Change all the bits in the receiver that are white to black, and the ones
+	that are black to white."
+	self fill: self boundingBox
+		rule: Form reverse
+		mask: Form black!
+reverse: aRectangle
+	"Change all the bits in the receiver's area that intersects with aRectangle
+	that are white to black, and the ones that are black to white."
+	self fill: aRectangle rule: Form reverse mask: Form black!
+reverse: aRectangle mask: aMask
+	"Change all the bits in the receiver's area that intersects with aRectangle
+	according to the mask.  Black does not necessarily turn to white, rather it
+	changes with respect to the rule and the bit in a corresponding mask location.
+	Bound to give a surprise."
+	self fill: aRectangle rule: Form reverse mask: aMask!
+veryLightGray
+	"Set all bits in the receiver to veryLightGray."
+	self fill: self boundingBox
+		mask: Form veryLightGray!
+veryLightGray: aRectangle
+	"Set all bits in the receiver's area defined by aRectangle to the veryLightGray mask."
+	self fill: aRectangle rule: Form over mask: Form veryLightGray!
+white
+	"Set all bits in the form to white ( to zeros)."
+	self fill: self boundingBox
+		mask: Form white!
+white: aRectangle
+	"Set all bits in the receiver's area defined by aRectangle to white (zeros)."
+	self fill: aRectangle rule: Form over mask: Form white!
+"-----------------------------------"!
+!DisplayMedium methodsFor: 'displaying'!
+copyBits: sourceRect from: sourceForm at: destOrigin clippingBox: clipRect rule: rule mask: aForm
+	"Make up a BitBlt table and copy the bits."
+	self subclassResponsibility!
+drawLine: sourceForm from: beginPoint to: endPoint clippingBox: clipRect rule: anInteger mask: aForm
+	self subclassResponsibility!

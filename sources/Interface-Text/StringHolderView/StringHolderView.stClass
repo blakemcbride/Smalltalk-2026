@@ -1,0 +1,131 @@
+View subclass: #StringHolderView
+  instanceVariableNames: 'displayContents'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Interface-Text'!
+StringHolderView class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+StringHolderView comment:
+'I am a View of a String that is an aspect of a more structured object.  This String should not be changed by any editing unless the user issues the accept command.  Thus my instances provide a working copy of the String.  This copy is edited.  When the user issues the accept command, the String is copied from the working version;  or if the user issues the cancel command, the working version is restored from the String.  StringHolderController is my default controller.  It is initialized specially by passing the string viewed which is then converted to a Paragraph for editing.
+
+Instance Variables:
+	displayContents	<String> the working copy'!
+"-----------------------------------"!
+!StringHolderView class methodsFor: 'instance creation'!
+container
+	"Answer an instance of me with a new instance of StringHolder as the model."
+	^self container: StringHolder new!
+container: aContainer
+	"Answer an instance of me whose model is aContainer.  Give it a 2-dot border."
+
+	| aCodeView |
+	aCodeView _ self new model: aContainer.
+	aCodeView borderWidth: 1.
+	^aCodeView!
+open
+	"Create a scheduled view of a workspace on the screen."
+
+	self open: StringHolder new label: 'Workspace'!
+open: aStringHolder
+	"Create a scheduled view of the argument, aStringHolder, as viewed by an
+	instance of me.  The view has label 'StringHolder'."
+
+	self open: aStringHolder label: 'StringHolder'!
+open: aStringHolder label: aString
+	"Create a StandardSystemView of the model, aStringHolder, as viewed by an instance of me.
+	The label of the view is aString."
+	| aStringHolderView topView |
+	aStringHolderView _ self container: aStringHolder.
+	topView _ StandardSystemView new.
+	topView borderWidth: 1.
+	topView model: aStringHolderView model.
+	topView addSubView: aStringHolderView.
+	topView label: aString.
+	topView minimumSize: 200 @ 150.
+	topView controller open!
+"-----------------------------------"!
+!StringHolderView class methodsFor: 'workspace constants'!
+openSystemWorkspace	"StringHolderView openSystemWorkspace."
+	"Schedule a view of the system workspace."
+	self open: StringHolder workspace label: 'System Workspace'!
+"-----------------------------------"!
+!StringHolderView methodsFor: 'controller access'!
+defaultController
+	^self defaultControllerClass newParagraph: displayContents!
+defaultControllerClass
+	^StringHolderController!
+displayContents
+	^displayContents!
+"-----------------------------------"!
+!StringHolderView methodsFor: 'deEmphasizing'!
+deEmphasizeView
+	(self controller isKindOf: ParagraphEditor)
+	 	ifTrue: [controller deselect]!
+"-----------------------------------"!
+!StringHolderView methodsFor: 'displaying'!
+display
+	self isUnlocked
+		ifTrue:
+			[self positionDisplayContents.
+			(self controller isKindOf: ParagraphEditor)
+				ifTrue: [controller recomputeSelection]].
+	super display!
+displayView
+	self clearInside.
+	(self controller isKindOf: ParagraphEditor)
+		ifTrue: [controller display]
+		ifFalse: [displayContents display]!
+positionDisplayContents
+	"Presumably the text being displayed changed so that the wrapping box and clipping box should be reset."
+
+	displayContents
+		recomposeIn: (self insetDisplayBox insetBy: self paragraphInset)
+		clippingBox: self insetDisplayBox!
+"-----------------------------------"!
+!StringHolderView methodsFor: 'initialize-release'!
+initialize
+	super initialize.
+	displayContents _ '' asParagraph.
+	self insideColor: Form white!
+"-----------------------------------"!
+!StringHolderView methodsFor: 'model access'!
+editString: aString
+	"The paragraph to be displayed is created from the characters in aString."
+
+	displayContents _ Paragraph
+				withText: aString asText
+				style: TextStyle default copy
+				compositionRectangle: (self insetDisplayBox insetBy: self paragraphInset)
+				clippingRectangle: self insetDisplayBox.
+	(self controller isKindOf: ParagraphEditor)
+		ifTrue: [controller changeParagraph: displayContents]!
+model: aLockedModel
+	super model: aLockedModel.
+	self editString: self getContents!
+"-----------------------------------"!
+!StringHolderView methodsFor: 'private'!
+getContents
+	^model contents!
+paragraphInset
+	"Answer the amount to inset the paragraph from the border"
+	^6@0!
+"-----------------------------------"!
+!StringHolderView methodsFor: 'updating'!
+update: aSymbol
+	self updateDisplayContents!
+updateDisplayContents
+	"Make the text that is displayed be the contents of the receiver's model."
+
+	| contents |
+	contents _ self getContents.
+	displayContents string ~= contents
+		ifTrue:
+			[self editString: contents.
+			self displayView]!
+updateRequest
+	^ model isUnlocked or:
+			[(self confirm: 'Contents have not been saved.  Are you
+certain that you want to close?')
+				ifTrue: [model unlock. ^true]
+				ifFalse: [^false]]!

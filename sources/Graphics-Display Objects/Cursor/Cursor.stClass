@@ -1,0 +1,412 @@
+Form subclass: #Cursor
+  instanceVariableNames: ''
+  classVariableNames: 'BlankCursor CornerCursor CrossHairCursor CurrentCursor DownCursor MarkerCursor NormalCursor OriginCursor ReadCursor SquareCursor UpCursor WaitCursor WriteCursor XeqCursor'
+  poolDictionaries: ''
+  category: 'Graphics-Display Objects'!
+Cursor class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+Cursor comment:
+'I am a 16 x 16 dot matrix suitable for use as the current cursor.'!
+"-----------------------------------"!
+!Cursor class methodsFor: 'class initialization'!
+initialize
+	"Create all the standard cursors
+		Cursor blank
+		Cursor corner
+		Cursor crossHair
+		Cursor down
+		Cursor execute
+		Cursor marker
+		Cursor normal
+		Cursor origin
+		Cursor read
+		Cursor square
+		Cursor up
+		Cursor wait
+		Cursor write"
+
+	OriginCursor _
+		(Cursor
+			extent: 16@16
+			fromArray: #(
+		2r1111111111111111
+		2r1111111111111111
+		2r1100000000000000
+		2r1100000000000000
+		2r1100000000000000
+		2r1100000000000000
+		2r1100000000000000
+		2r1100000000000000
+		2r1100000000000000
+		2r1100000000000000
+		2r1100000000000000
+		2r1100000000000000
+		2r1100000000000000
+		2r1100000000000000
+		2r1100000000000000
+		2r1100000000000000)
+			offset: -2@-2).
+
+	CornerCursor _
+		(Cursor
+			extent: 16@16
+			fromArray: #(
+		2r0000000000000011
+		2r0000000000000011
+		2r0000000000000011
+		2r0000000000000011
+		2r0000000000000011
+		2r0000000000000011
+		2r0000000000000011
+		2r0000000000000011
+		2r0000000000000011
+		2r0000000000000011
+		2r0000000000000011
+		2r0000000000000011
+		2r0000000000000011
+		2r0000000000000011
+		2r1111111111111111
+		2r1111111111111111)
+			offset: -14@-14).
+
+	ReadCursor _
+		(Cursor
+			extent: 16@16
+			fromArray: #(
+		2r0000110000000110
+		2r0001001000001001
+		2r0001001000001001
+		2r0010000000010000
+		2r0100000000100000
+		2r1111101111100000
+		2r1000010000100000
+		2r1000010000100000
+		2r1011010110100000
+		2r0111101111000000
+		2r0
+		2r0
+		2r0
+		2r0
+		2r0
+		2r0)
+	offset: 0@0).
+
+	WriteCursor _ (Cursor
+	extent: 16@16
+	fromArray: #(
+		2r0000000000000110
+		2r0000000000001111
+		2r0000000000010110
+		2r0000000000100100
+		2r0000000001001000
+		2r0000000010010000
+		2r0000000100100000
+		2r0000001001000011
+		2r0000010010000010
+		2r0000100100000110
+		2r0001001000001000
+		2r0010010000001000
+		2r0111100001001000
+		2r0101000010111000
+		2r0110000110000000
+		2r1111111100000000)
+	offset: 0@0).
+
+	WaitCursor _
+		  (Cursor
+			extent: 16@16
+			fromArray: #(
+		2r1111111111111111
+		2r1000000000000001
+		2r0100000000000010
+		2r0010000000000100
+		2r0001110000111000
+		2r0000111101110000
+		2r0000011011100000
+		2r0000001111000000
+		2r0000001111000000
+		2r0000010110100000
+		2r0000100010010000
+		2r0001000110001000
+		2r0010001101000100
+		2r0100111111110010
+		2r1011111111111101
+		2r1111111111111111)
+			offset: 0@0).
+
+	BlankCursor _ Cursor new.
+
+	XeqCursor _
+		(Cursor
+			extent: 16@16
+			fromArray: #(
+		2r1000000000010000
+		2r1100000000010000
+		2r1110000000111000
+		2r1111000111111111
+		2r1111100011000110
+		2r1111110001000100
+		2r1111111001111100
+		2r1111000001101100
+		2r1101100011000110
+		2r1001100010000010
+		2r0000110000000000
+		2r0000110000000000
+		2r0000011000000000
+		2r0000011000000000
+		2r0000001100000000
+		2r0000001100000000)
+	offset: 0@0).
+
+	SquareCursor _
+		(Cursor
+			extent: 16@16
+			fromArray: #(
+		2r0
+		2r0
+		2r0
+		2r0
+		2r0
+		2r0000001111000000
+		2r0000001111000000
+		2r0000001111000000
+		2r0000001111000000
+		2r0
+		2r0
+		2r0
+		2r0
+		2r0
+		2r0
+		2r0)
+	offset: -8@-8).
+
+	NormalCursor _
+		(Cursor
+			extent: 16@16
+			fromArray: #(
+		2r1000000000000000
+		2r1100000000000000
+		2r1110000000000000
+		2r1111000000000000
+		2r1111100000000000
+		2r1111110000000000
+		2r1111111000000000
+		2r1111100000000000
+		2r1111100000000000
+		2r1001100000000000
+		2r0000110000000000
+		2r0000110000000000
+		2r0000011000000000
+		2r0000011000000000
+		2r0000001100000000
+		2r0000001100000000)
+	offset: 0@0).
+
+	CrossHairCursor _
+		(Cursor
+			extent: 16@16
+			fromArray: #(
+		2r0000000100000000
+		2r0000000100000000
+		2r0000000100000000
+		2r0000000100000000
+		2r0000000100000000
+		2r0000000100000000
+		2r0000000100000000
+		2r1111111111111110
+		2r0000000100000000
+		2r0000000100000000
+		2r0000000100000000
+		2r0000000100000000
+		2r0000000100000000
+		2r0000000100000000
+		2r0000000100000000
+		2r0)
+			offset: -7@-7).
+
+	MarkerCursor _
+		Cursor
+			extent: 16@16
+			fromArray: #(
+		2r0
+		2r0
+		2r0
+		2r0000001000000000
+		2r0000001110000000
+		2r0000001111100000
+		2r1111111111111000
+		2r1111111111111110
+		2r1111111111111000
+		2r0000001111100000
+		2r0000001110000000
+		2r0000001000000000
+		2r0
+		2r0
+		2r0
+		2r0)
+			offset: -7@-7.
+
+	UpCursor _
+		Cursor
+			extent: 16@16
+			fromArray: #(
+		2r1000000000000000
+		2r1100000000000000
+		2r1110000000000000
+		2r1111000000000000
+		2r1111100000000000
+		2r1111110000000000
+		2r1100000000000000
+		2r1100000000000000
+		2r1100000000000000
+		2r1100000000000000
+		2r1100000000000000
+		2r1100000000000000
+		2r1100000000000000
+		2r1100000000000000
+		2r1100000000000000
+		2r1100000000000000)
+	 		offset: 0@-7.
+
+	DownCursor _
+		 Cursor
+			extent: 16@16
+			fromArray: #(
+		2r0000110000000000
+		2r0000110000000000
+		2r0000110000000000
+		2r0000110000000000
+		2r0000110000000000
+		2r0000110000000000
+		2r0000110000000000
+		2r0000110000000000
+		2r0000110000000000
+		2r0000110000000000
+		2r1111110000000000
+		2r0111110000000000
+		2r0011110000000000
+		2r0001110000000000
+		2r0000110000000000
+		2r0000010000000000)
+			offset: -5@-7.
+
+"Cursor initialize"!
+"-----------------------------------"!
+!Cursor class methodsFor: 'constants'!
+blank
+	"Answer the instance of me that is all white."
+	^BlankCursor!
+corner
+	"Answer the instance of me that is the shape of the bottom right corner of
+	a rectangle."
+	^CornerCursor!
+crossHair
+	"Answer the instance of me that is the shape of a cross."
+	^CrossHairCursor!
+down
+	"Answer the instance of me that is the shape of an arrow facing downward."
+	^DownCursor!
+execute
+	"Answer the instance of me that is the shape of an arrow slanted left
+	with a star next to it."
+	^XeqCursor!
+marker
+	"Answer the instance of me that is displayed when thumb-scrolling."
+	^MarkerCursor!
+normal
+	"Answer the instance of me that is the shape of an arrow slanted left."
+	^NormalCursor!
+origin
+	"Answer the instance of me that is the shape of the top left corner of a rectangle."
+	^OriginCursor!
+read
+	"Answer the instance of me that is the shape of eyeglasses."
+	^ReadCursor!
+square
+	"Answer the instance of me that is the shape of a square."
+	^SquareCursor!
+up
+	"Answer the instance of me that is the shape of an arrow facing upward."
+	^UpCursor!
+wait
+	"Answer the instance of me that is the shape of an hourglass."
+	^WaitCursor!
+write
+	"Answer the instance of me that is the shape of a pen writing."
+	^WriteCursor!
+"-----------------------------------"!
+!Cursor class methodsFor: 'current cursor'!
+currentCursor
+	"Answer the instance of Cursor that is the one currently displayed."
+	^CurrentCursor!
+currentCursor: aCursor
+	"Make the instance of cursor, aCursor, be the current cursor.  Display
+	it.  Create an error if the argument is not a Cursor."
+
+	aCursor class == self
+		ifTrue:
+			[CurrentCursor _ aCursor.
+			aCursor beCursor]
+		ifFalse: [self error: 'The new cursor must be an instance of class Cursor']!
+cursorLink: boolean
+	"Cause the cursor to track the pointing device location if the argument is true.
+	Decouple the cursor from the pointing device if the argument is false.
+	Essential.  See Object documentation whatIsAPrimitive."
+
+	<primitive: 92>
+	^self primitiveFailed!
+"-----------------------------------"!
+!Cursor class methodsFor: 'instance creation'!
+extent: extentPoint fromArray: anArray offset: offsetPoint
+	"Answer a new instance of me with width and height specified by
+	extentPoint, offset by offsetPoint, and bits from anArray."
+
+	extentPoint = (16 @ 16)
+		ifTrue:
+			[^super
+				extent: extentPoint
+				fromArray: anArray
+				offset: offsetPoint]
+		ifFalse: [self error: 'cursors must be 16@16']!
+new
+	^self
+		extent: 16 @ 16
+		fromArray: Array new
+		offset: 0 @ 0
+	"Cursor new bitEdit show."!
+"-----------------------------------"!
+!Cursor methodsFor: 'displaying'!
+beCursor
+	"Tell the interpreter to use the receiver as the current cursor image.  Fail if the
+	receiver does not match the size expected by the hardware.  Essential.  See
+	Object documentation whatIsAPrimitive."
+
+	<primitive: 101>
+	self primitiveFailed!
+show
+	"Make the current cursor shape be the receiver."
+	Sensor currentCursor: self!
+showGridded: gridPoint
+	"Make the current cursor shape be the receiver, forcing the location of cursor
+	to the point nearest gridPoint."
+	Sensor primCursorLocPut: ((Sensor cursorPoint grid: gridPoint) + self offset).
+	Sensor currentCursor: self!
+showWhile: aBlock
+	"While evaluating the argument, aBlock, make the receiver be the cursor shape."
+
+	| oldcursor value |
+	oldcursor _ Sensor currentCursor.
+	self show.
+	value _ aBlock value.
+	oldcursor show.
+	^value!
+"-----------------------------------"!
+!Cursor methodsFor: 'printing'!
+printOn: aStream
+	self storeOn: aStream base: 2!
+"-----------------------------------"!
+!Cursor methodsFor: 'updating'!
+changed: aParameter
+	self == CurrentCursor ifTrue: [self beCursor].
+	super changed: aParameter!

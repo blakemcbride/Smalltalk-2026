@@ -1,0 +1,1066 @@
+Object subclass: #Behavior
+  instanceVariableNames: 'superclass methodDict format subclasses'
+  classVariableNames: 'SelectorsOfConflictMethods SelectorsOfCopiedMethods SelectorsOfDirectedMethods'
+  poolDictionaries: ''
+  category: 'Kernel-Classes'!
+Behavior class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+Behavior comment:
+'Instance Variables:
+	superclass	<Behavior> links the chain of inheritance
+	methodDict	<IdentityDictionary> associates message names with methods
+	format		<Integer> encodes storage layout of instances
+	subclasses	<Set> back-pointers to the class'' subclasses
+
+Behavior provides the minimum state necessary for compiling methods, and creating and running instances.  Most objects are created as instances of the more fully supported subclass, Class, but Behavior is a good starting point for providing instance-specific behavior (as in Metaclass).'!
+"-----------------------------------"!
+!Behavior class methodsFor: 'initialization'!
+init  "Behavior init."
+	SelectorsOfConflictMethods _ IdentityDictionary new.
+		"selector -> Array of classes"
+	SelectorsOfCopiedMethods _ IdentityDictionary new.
+		"selector -> Array of classes"
+	SelectorsOfDirectedMethods _ IdentityDictionary new
+		"selector -> Array of classes"!
+"-----------------------------------"!
+!Behavior methodsFor: 'accessing'!
+format
+	"Answer an Integer that encodes the kinds and numbers of variables of instances
+	of the receiver."
+
+	^format!
+"-----------------------------------"!
+!Behavior methodsFor: 'accessing class hierarchy'!
+allDynamicSuperclasses
+	"Answer an OrderedCollection of the receiver and the receiver's ancestor's
+	dynamic superclasses;  ordered with immediate superclass first."
+	| temp |
+	superclass == nil
+		ifTrue: [^OrderedCollection new]
+		ifFalse: [temp _ superclass allDynamicSuperclasses.
+				temp addFirst: superclass.
+				^temp]!
+allSubclasses
+	"Answer an OrderedCollection of the receiver's subclasses and the receiver's ancestor's
+	subclasses in breadth-first order, with the immediate subclasses first."
+	| coll |
+	coll _ OrderedCollection new.
+	coll addAll: self subclasses.
+	self subclasses do: [:eachSubclass | coll addAll: eachSubclass allSubclasses].
+	^coll!
+allSuperclasses
+	"Answer an OrderedCollection of the receiver's superclasses and the receiver's ancestor's
+	superclasses in breadth-first order, with the immediate superclasses first."
+	| coll |
+	coll _ OrderedCollection new.
+	self allSuperclassesInto: coll.
+	^coll!
+allSuperclassesInto: orderedCollection
+	"Add all my superclasses to orderedCollection if not already there.
+	  Use breadth-first order."
+	| mysupers |
+	mysupers _ self superclasses.
+	mysupers do: [:each | each allSuperclassesInto: orderedCollection].
+	mysupers reverseDo:
+		[:each | (orderedCollection includes: each) ifFalse: [orderedCollection addFirst: each]]!
+dynamicSuperclass
+	"Answer the receiver's superclass.  Only returns the first one - use 'superclasses'
+	 to find them all."
+
+	^superclass!
+hasMultipleSuperclasses
+	^false!
+subclasses
+	"Answer the receiver's subclasses.  Return a copy so that callers who
+	add or delete subclasses won't get confused."
+
+	subclasses == nil
+		ifTrue: [^Set new]
+		ifFalse: [^subclasses copy]!
+superclass
+	"Answer the receiver's superclass.  Only returns the first one
+		- use 'superclasses' to find them all."
+	^superclass!
+superclasses
+	"Answer with an array of all the receiver's superclasses."
+	superclass == nil ifTrue: [^#()].
+	self hasMultipleSuperclasses
+		ifTrue: [^ (Array with: superclass) , self class otherSuperclasses].
+	^ Array with: superclass!
+withAllSubclasses
+	"Answer an OrderedCollection of subclasses including this class in breadth first order."
+	| subs |
+	subs _ self allSubclasses.
+	subs addFirst: self.
+	^subs!
+withAllSuperclasses
+	"Answer an OrderedCollection of superclasses including this class in breadth first order."
+	| subs |
+	subs _ self allSuperclasses.
+	subs addFirst: self.
+	^subs!
+"-----------------------------------"!
+!Behavior methodsFor: 'accessing instances and variables'!
+allClassVarNames
+	"Answer a Set of the names of the receiver's and the receiver's
+	ancestor's class variables."
+
+	^superclass allClassVarNames!
+allInstVarNames
+	"Answer an Array of the names of the receiver's instance variables."
+	| names |
+	names _ OrderedCollection new.
+	self accumulateInstVarNames: names traversedClasses: Set new.
+	^names!
+allInstances
+	"Answer a collection of all instances of this class."
+
+	| aCollection |
+	aCollection _ OrderedCollection new.
+	self allInstancesDo:
+		[:x | x == aCollection ifFalse: [aCollection add: x]].
+	^aCollection!
+allSharedPools
+	"Answer a Set of the pools, dictionaries, that the receiver and the
+	receiver's ancestors share.  Subclasses, such as class Class, override this message."
+
+	^superclass allSharedPools!
+allVarNamesSelect: selectBlock
+	"Answer a collection of all the static variable names defined for the receiver which satisfy the condition in selectBlock.  Test class and pool variables, including superclass variables.  Also include global variables."
+
+	| set |
+	set _ self classPool keys select: selectBlock.
+	self sharedPools do: [:pool | set addAll: (pool keys select: selectBlock)].
+	superclass == nil
+		ifTrue:	[set addAll: (Smalltalk keys select: selectBlock)]
+		ifFalse: [set addAll: (superclass allVarNamesSelect: selectBlock)].
+	^set!
+classVarNames
+	"Answer a Set of the receiver's class variable names.  Since the receiver does
+	not retain knowledge of class variables, the method fakes it by creating an empty set."
+
+	^Set new!
+instVarNames
+	"Answer an Array of the instance variable names.  Behaviors must make up fake
+	local instance variable names because Behaviors have instance variables for the
+	purpose of compiling methods, but these are not named instance variables.  "
+
+	| mySize superSize |
+	mySize _ self instSize.
+	superSize _
+		superclass == nil
+			ifTrue: [0]
+			ifFalse: [superclass instSize].
+	mySize = superSize ifTrue: [^#()].
+	^(superSize + 1 to: mySize) collect: [:i | 'inst' , i printString]!
+instanceCount
+	"Answer the number of instances of the receiver that are currently in use."
+
+	| count |
+	count _ 0.
+	self allInstancesDo: [:x | count _ count + 1].
+	^count!
+sharedPools
+	"Answer a Set of the pools, dictionaries, that the receiver shares.  Since the receiver
+	does not retain knowledge of pool dictionaries, the method fakes it by creating an
+	empty array.  Subclasses, such as class Class, override this message."
+
+	^Set new!
+someInstance
+	"Answer the first instance of this receiver.  See Object nextInstance.  Fails
+	if there are none.  Essential.  See Object documentation whatIsAPrimitive."
+
+	<primitive: 77>
+	^nil!
+subclassInstVarNames
+	"Answer a Set of the names of the receiver's subclasses' instance variables."
+	| vars |
+	vars _ Set new.
+	self allSubclasses do: [:aSubclass | vars addAll: aSubclass instVarNames].
+	^vars!
+"-----------------------------------"!
+!Behavior methodsFor: 'accessing method dictionary'!
+allSelectors
+	"Answer a set of all the message selectors that instances of the receiver can
+	understand."
+	| aSet |
+	aSet _ Set new.
+	self withAllSuperclasses do: [:each | aSet addAll: each selectors].
+	^aSet
+
+	"Point allSelectors."!
+checkChangeSelector: selector
+	| descr classes class |
+	"The method for selector has been changed or removed.
+	 Check all copied versions for the method in question."
+	(SelectorsOfCopiedMethods at: selector ifAbsent: [Array new]) do:
+		[:class |
+		(class inheritsFrom: self) ifTrue:
+			[(class checkMethodFor: selector) ifFalse:
+				[Transcript cr; show: 'conflicting methods for ' , selector, ' in ', class name]
+				]].
+	"Remove all versions copied for directed access (eg Point.max) "
+	(SelectorsOfDirectedMethods at: selector ifAbsent: [Array new]) do:
+		[:class |
+		(class inheritsFrom: self) ifTrue:
+			[(class compoundSelectorsMatching: selector) do:
+				[:sel | class removeSelectorUnchecked: sel].
+		self removeClass: class selector: selector in: SelectorsOfDirectedMethods]]!
+checkSuperAddSelector: selector
+	| local |
+	local _ self includesSelector: selector.
+	self hasMultipleSuperclasses
+		ifFalse:
+			[local ifTrue: [^self].
+			^ self subclasses do: [:sub | sub checkSuperAddSelector: selector]].
+	(self checkMethodFor: selector) ifFalse:  "Copy or note conflict"
+		[Transcript cr; show: 'conflicting methods for ' , selector, ' in ', self name].
+	local ifTrue: [^self].  "Was local before, so no change below"
+	^ self subclasses do: [:sub | sub checkSuperAddSelector: selector]!
+compiledMethodAt: selector
+	"Answer the compiled method associated with the message selector in the
+	receiver's method dictionary.  If the selector is not in the dictionary,
+	create an error notification."
+
+	^methodDict at: selector!
+dynamicMethodDescriptionAt: selector
+	"return a method description for the method for 'selector' that would
+	 be found by dynamic lookup"
+	(methodDict includesKey: selector) ifTrue:
+		[^MethodDescription whichClass: self selector: selector].
+	superclass == nil ifTrue:
+		[^MethodDescription makeMethodNotImplemented].
+	^superclass dynamicMethodDescriptionAt: selector!
+methodDescriptionAt: selector
+	"return a method description for the method for 'selector' "
+	| local copied conflict |
+	local _ methodDict includesKey: selector.
+	copied _ (SelectorsOfCopiedMethods at: selector ifAbsent: [Array new]) includes: self.
+	conflict _ (SelectorsOfConflictMethods at: selector ifAbsent: [Array new]) includes: self.
+	local & copied not & conflict not
+		ifTrue: [^MethodDescription whichClass: self selector: selector].
+	^self superMethodDescriptionAt: selector!
+selectorAtMethod: method setClass: classResultBlock
+	"Answer both the message selector associated with the compiled method
+	and the class in which that selector is defined."
+
+	| sel |
+	sel _ methodDict keyAtValue: method
+				ifAbsent:
+					[superclass == nil
+						ifTrue:
+							[classResultBlock value: self.
+							^self defaultSelectorForMethod: method].
+					sel _ superclass selectorAtMethod: method setClass: classResultBlock.
+					"Set class to be self, rather than that returned from
+					superclass. "
+					sel == (self defaultSelectorForMethod: method) ifTrue: [classResultBlock value: self].
+					^sel].
+	classResultBlock value: self.
+	^sel!
+selectors
+	"Answer a Set of all the message selectors specified in the receiver's
+	method dictionary."
+
+	^methodDict keys
+
+	"Point selectors."!
+sourceCodeAt: messageSelector
+	"Answer the string corresponding to the source code for the argument."
+	^ self sourceCodeForMethod: (methodDict at: messageSelector) at: messageSelector!
+sourceCodeForMethod: method at: messageSelector
+	"Answer the string corresponding to the source code for the argument."
+	| newSource index|
+	Sensor leftShiftDown
+		ifTrue: [newSource _
+					(self decompilerClass new
+						decompile: messageSelector
+						in: self
+						method: method) decompileString]
+		ifFalse:
+			[newSource _ method getSource.
+			newSource == nil
+				ifTrue: [newSource _
+							(self decompilerClass new
+								decompile: messageSelector
+								in: self
+								method: method) decompileString]
+				ifFalse:	[((newSource at: newSource size) isSeparator)
+							ifTrue:	[index _ newSource size. "tidy up for file out"
+									[((newSource at: index) isSeparator)
+										and: [index > 1]]
+										whileTrue:	[index _ index - 1].
+									newSource _ newSource copyFrom: 1 to: index]]].
+	^newSource!
+sourceMethodAt: selector
+	"Answer the paragraph corresponding to the source code for the argument."
+
+	^(self sourceCodeAt: selector) asText makeSelectorBoldIn: self!
+superMethodDescriptionAt: selector
+	"return a method description for the method for 'selector' inherited from my superclasses"
+	| descr result |
+	result _ MethodDescription makeMethodNotImplemented.
+	self superclasses do:
+		[: each | descr _ each methodDescriptionAt: selector.
+		 descr isMethodNotImplemented ifFalse:
+		 	[result isMethodNotImplemented
+				ifTrue: [result _ descr]
+				ifFalse: [result=descr ifFalse:
+							[^MethodDescription makeConflictingMethods]]]].
+	^result!
+"-----------------------------------"!
+!Behavior methodsFor: 'compiling'!
+compile: code notifying: requestor trailer: bytes
+	"Compile  the argument, code, as source code in the context of the
+	receiver.  Use the default fail code [^nil].  Does not save source code.
+	The second argument, requestor, is to be notified if an error occurs. The
+	argument code is either a string or an object that converts to a string or a
+	PositionableStream on an object that converts to a string. The third argument,
+	bytes, is a trailer, that is, an array of three bytes that should be added to the end
+	of the compiled method. These point to the location of the source code (on a file)."
+
+	^self compile: code notifying: requestor trailer: bytes ifFail: [^nil]!
+compile: code notifying: requestor trailer: bytes ifFail: failBlock
+	"Compile the argument, code, as source code in the context of the receiver and
+	install the result in the receiver's method dictionary.  The argument requestor is to
+	be notified if an error occurs. The argument code is either a string or an
+	object that converts to a string or a PositionableStream on an object that
+	converts to a string.  The trailer is an array of three bytes that should
+	be added to the end of the compiled method.  These point to the location
+	of the source code (on a file).   This method does not save the source code.
+	Evaluate the failBlock if the compilation does not succeed."
+
+	| methodNode selector |
+	methodNode _ self compilerClass new
+				compile: code
+				in: self
+				notifying: requestor
+				ifFail: failBlock.
+	selector _ methodNode selector.
+	self addSelector: selector withMethod: (methodNode generate: bytes).
+	^selector!
+compileAll
+	^ self compileAllFrom: self!
+compileAllFrom: oldClass
+	"Compile all the methods in oldClass's method dictionary.
+	See recompile:from: regarding oldClass, which is normally just self."
+
+	self selectors do: [:sel | self recompile: sel from: oldClass]!
+compileAllSubclasses
+	"Compile all the methods in the receiver's subclasses.  This does not modify
+	code (re-install the compiled versions), just compiles the methods as a kind of static
+	check."
+
+	self allSubclasses do: [:aSubclass | aSubclass compileAll]!
+compileBroadcastCodeFor: selector
+	"compile code that invokes ALL methods for 'selector' in my inheritance hierarchy"
+	| implementors strm keywords argNames |
+	implementors _ self withAllSuperclasses select:
+		[:each | each includesSelector: selector].
+	argNames _ Array new: selector numArgs.
+	1 to: argNames size do: [:i | argNames at: i put: 'arg' , i printString].
+	strm _ WriteStream on: (String new: 500).
+	strm nextPutAll: 'all.'.
+	argNames size=0
+		ifTrue: [strm nextPutAll: selector]
+		ifFalse: [keywords _ selector keywords.
+				1 to: argNames size do:
+					[:i | strm nextPutAll: (keywords at: i); space;
+						nextPutAll: (argNames at: i); space]].
+	implementors do:
+		[:each | strm cr; tab; nextPutAll: 'self '; nextPutAll: each name; nextPut: $. .
+			argNames size=0
+				ifTrue: [strm nextPutAll: selector]
+				ifFalse: [keywords _ selector keywords.
+						1 to: argNames size do:
+							[:i | strm nextPutAll: (keywords at: i); space;
+								nextPutAll: (argNames at: i); space]].
+			strm nextPut: $.].
+	self compileUnchecked: strm contents!
+compileUnchecked: code
+	"Compile the argument, code, and install the result in the receiver's method dictionary.
+	Do not check for possible effect on inheritance, since that's what this is doing."
+	| selector methodNode |
+	methodNode _ self compilerClass new
+				compile: code
+				in: self
+				notifying: nil
+				ifFail: [^nil].
+	selector _ methodNode selector.
+	self addSelectorUnchecked: selector withMethod: (methodNode generate: #(0 0 0)).
+	^selector!
+compilerClass
+	"Return a compiler class appropriate for source methods of this class."
+
+	^Compiler!
+decompile: selector
+	"Find the compiled code associated with the argument, selector, as a message selector
+	in the receiver's method dictionary and decompile it.  Answer the resulting source
+	code as a string.  Create an error if the selector is not in the receiver's method
+	dictionary."
+
+	^self decompilerClass new decompile: selector in: self!
+decompilerClass
+	"Return a decompiler class appropriate for compiled methods of this class."
+
+	^Decompiler!
+evaluatorClass
+	"Return an evaluator class appropriate for evaluating expressions in the
+	context of instances of this class."
+
+	^Compiler!
+parserClass
+	"Return a parser class to use for parsing methods in this class."
+
+	^self compilerClass preferredParserClass!
+poolHas: varName ifTrue: assocBlock
+	"Behaviors have no pools"
+	^false!
+recompile: selector
+	^ self recompile: selector from: self!
+recompile: selector from: oldClass
+	"Recompile the method associated with selector in the receiver's method dictionary.
+	Take care not to write out any new source code - just generate new bytes.
+	oldClass may differ from self in order to decompile right (if sourceFiles == nil)
+	when adding or removing fields of a class."
+
+	| method trailer methodNode |
+	method _ oldClass compiledMethodAt: selector.
+	trailer _ (method size - 2 to: method size) collect: [:i | method at: i].
+	methodNode _ self compilerClass new
+				compile: (oldClass sourceCodeAt: selector)
+				in: self
+				notifying: nil
+				ifFail: [].
+	methodNode == nil  "Try again after proceed from SyntaxError"
+		ifTrue: [^self recompile: selector].
+	selector == methodNode selector ifFalse: [self error: 'selector changed!!'].
+	self addSelector: selector withMethod: (methodNode generate: trailer).!
+sourceCodeTemplate
+	"Answer an expression to be edited and evaluated in order to
+	define methods in this class."
+
+	^'message selector and argument names
+	"comment stating purpose of message"
+
+	| temporary variable names |
+	statements'!
+subclassDefinerClass
+	"Return an evaluator class appropriate for evaluating definitions of new
+	subclasses of this class."
+
+	^Compiler!
+"-----------------------------------"!
+!Behavior methodsFor: 'copying'!
+copy
+	"Make a copy of the receiver without a list of subclasses."
+
+	| myCopy savedSubclasses |
+	savedSubclasses _ subclasses.
+	subclasses _ nil.
+	myCopy _ self shallowCopy.
+	subclasses _ savedSubclasses.
+	^myCopy methodDictionary: methodDict copy!
+"-----------------------------------"!
+!Behavior methodsFor: 'creating class hierarchy'!
+addSubclass: aSubclass
+	"Make the argument, aSubclass, be one of the subclasses of the receiver."
+
+	(aSubclass superclasses includes: self)
+		ifTrue: [subclasses == nil
+					ifTrue:	[subclasses _ Set with: aSubclass]
+					ifFalse:	[subclasses add: aSubclass]]
+		ifFalse: [self error: aSubclass name , ' is not my subclass']!
+removeSubclass: aSubclass
+	"If the argument, aSubclass, is one of the receiver's subclasses, remove it."
+	subclasses == nil ifFalse:
+		[subclasses remove: aSubclass ifAbsent: [].
+		subclasses isEmpty ifTrue: [subclasses _ nil]]!
+superclass: aClass
+	"Change the receiver's superclass to be aClass."
+
+	(aClass isKindOf: Behavior)
+		ifTrue: [superclass _ aClass]
+		ifFalse: [self error: 'superclass must be a class-describing object']!
+"-----------------------------------"!
+!Behavior methodsFor: 'creating method dictionary'!
+addSelector: selector withMethod: compiledMethod
+	"Add the message selector with the corresponding compiled method to the receiver's
+	method dictionary."
+	| wasThere |
+	wasThere _ methodDict includesKey: selector.
+	methodDict at: selector put: compiledMethod.
+	self flushCache.
+	"if the selector is indexed in SelectorsOfConflictMethods or SelectorsOfCopiedMethods,
+	 remove it"
+	((SelectorsOfConflictMethods at: selector ifAbsent: [Array new]) includes: self)
+		ifTrue: [self removeClass: self selector: selector in: SelectorsOfConflictMethods].
+	((SelectorsOfCopiedMethods at: selector ifAbsent: [Array new]) includes: self)
+		ifTrue: [self removeClass: self selector: selector in: SelectorsOfCopiedMethods].
+	wasThere
+		ifTrue: [self checkChangeSelector: selector]
+		ifFalse: [self subclasses do:
+			[:sub | sub checkSuperAddSelector: selector]]!
+addSelectorUnchecked: selector withMethod: compiledMethod
+	"Add the message selector with the corresponding compiled method to the receiver's
+	method dictionary.  Do not check for effect on (multiple) inheritance."
+
+	methodDict at: selector put: compiledMethod.
+	self flushCache!
+methodDictionary: aDictionary
+	"Store the argument, aDictionary, as the method dictionary of the receiver."
+
+	methodDict _ aDictionary!
+removeSelector: selector
+	"Assuming that the message selector is in the receiver's method dictionary,
+	remove it.  If the selector is not in the method dictionary, create an error
+	notification."
+
+	methodDict removeKey: selector.
+	self flushCache.
+	self checkChangeSelector: selector!
+removeSelectorUnchecked: selector
+	"Assuming that the message selector is in the receiver's method dictionary,
+	remove it.  If the selector is not in the method dictionary, create an error
+	notification.  Do not check for effect on (multiple) inheritance."
+
+	methodDict removeKey: selector.
+	self flushCache!
+tryCopyingCodeFor: selector
+	"Check if 'selector' is compound, and if so, try to copy down the appropriate code.
+	  Return #OK if sucessful,
+		#HierarchyViolation if the class part is not one of my immediate superclasses,
+		or #NotFound if the class part is OK but the
+		selector part is not found in the inheritance hierarchy."
+	| classPart whichClass simpleSelector descr |
+	selector isCompound ifFalse: [^#NotFound].
+	classPart _ selector classPart.
+	simpleSelector _ selector selectorPart.
+	"check for special class parts"
+	classPart==#all ifTrue:
+		[self compileBroadcastCodeFor: simpleSelector.
+		self insertClass: self selector: simpleSelector in: SelectorsOfDirectedMethods.
+		^#OK].
+	classPart==#super
+		ifTrue: [descr _ self superMethodDescriptionAt: simpleSelector]
+		ifFalse: [whichClass _ Smalltalk at: classPart.
+				"if I'm a metaclass, get the metaclass of whichClass"
+				self isMeta ifTrue: [whichClass _ whichClass class].
+				"check that whichClass is one of my superclasses"
+				(self inheritsFrom: whichClass) ifFalse: [^#HierarchyViolation].
+				descr _ whichClass methodDescriptionAt: simpleSelector].
+	descr isBad ifTrue: [^#NotFound].
+	self compileUnchecked: classPart , '.' , descr sourceCode.
+	self insertClass: self selector: simpleSelector in: SelectorsOfDirectedMethods.
+	^#OK!
+"-----------------------------------"!
+!Behavior methodsFor: 'enumerating'!
+allAccessesTo: instVarName
+	"Return a list of all methods in my hierarchy that refer to the named instance variable."
+	| coll |
+	coll _ OrderedCollection new.
+	Cursor execute
+		showWhile:
+			[(self withAllSuperclasses reverse) , self allSubclasses do:
+				[:class |
+				(class whichSelectorsAccess: instVarName) do:
+					[:sel | sel ~~ #DoIt ifTrue: [coll add: class name , ' ' , sel]]]].
+	^coll
+	"Collection allAccessesTo: 'contents'."!
+allCallsOn: aLiteral
+	"Answer a SortedCollection of all the methods that call on aLiteral."
+
+	| aSortedCollection special |
+	aSortedCollection _ SortedCollection new.
+	special _ Smalltalk hasSpecialSelector: aLiteral ifTrueSetByte: [:byte ].
+	(self withAllSuperclasses reverse) , self allSubclasses do:
+		[:class |
+		(class whichSelectorsReferTo: aLiteral special: special byte: byte) do:
+			[:sel | sel ~~ #DoIt ifTrue: [aSortedCollection add: class name , ' ' , sel]].
+		(class class whichSelectorsReferTo: aLiteral special: special byte: byte) do:
+			[:sel | sel ~~ #DoIt ifTrue: [aSortedCollection add: class class name , ' ' , sel]].
+		].
+	^aSortedCollection!
+allInstancesDo: aBlock
+	"Evaluate the argument, aBlock, for each of the current instances of the receiver."
+
+	| inst next |
+	inst _ self someInstance.
+	inst == nil
+		ifFalse:
+			[[next _ inst nextInstance.
+			aBlock value: inst.
+			next == nil]
+				whileFalse: [inst _ next]].
+	nil class == self ifTrue: [aBlock value: nil]!
+allSubInstancesDo: aBlock
+	"Evaluate the argument, aBlock, for each of the current instances of the receiver's
+	subclasses."
+
+	self allSubclassesDo: [:sub | sub allInstancesDo: aBlock]!
+allSubclassesDo: aBlock
+	"Evaluate the argument, aBlock, for each of the receiver's subclasses."
+
+	self subclasses do:
+		[:cl |
+		aBlock value: cl.
+		cl allSubclassesDo: aBlock]!
+browseAllAccessesTo: instanceVariable
+	"Create and schedule a Message Set browser for all the receiver's methods or any methods of a subclass that refer to the instance variable name.  If the instance variable name is not defined for the receiver, the notification 'Nobody' occurs in the System Transcript."
+
+	BrowserView
+			openListBrowserOn: (self allAccessesTo: instanceVariable)
+			label: instanceVariable
+			initialSelection: instanceVariable!
+browseAllCallsOn: aSymbol
+	"Create and schedule a message browser on each method that calls on aSymbol.
+	For example,
+		Number browseAllCallsOn: #/.	"
+
+	| label key |
+	(aSymbol isMemberOf: Association)
+		ifTrue: [key _ aSymbol key. 	label _ 'Users of ' , key]
+		ifFalse: [key _ aSymbol. 		label _ 'Senders of ', key].
+
+	^ BrowserView
+		openListBrowserOn: (self allCallsOn: aSymbol)
+		label: label, ' from ', self name
+		initialSelection: key asSymbol keywords first!
+crossReference
+	"Answer an array of arrays of size 2 whose first element is a message selector
+	in the receiver's method dictionary and whose second element is a set of all message
+	selectors in the method dictionary whose methods send a message with that selector.
+	Subclasses are not included."
+
+	^self selectors asSortedCollection asArray collect:
+		[:x |
+		Array
+			with: (String with: Character cr), x
+			with: (self whichSelectorsReferTo: x)]
+
+	"Point crossReference."!
+showVariableMenu: generatorBlock collect: valueBlock
+	"Construct a menu of variable names supplied by the generatorBlock,
+	with lines between classes in the superclass chain.  Show the menu,
+	returning the variable chosen by the user, or nil if no
+	variable was chosen."
+
+	| eachClass aStream lines count lastLine variables index |
+	aStream _ WriteStream on: (String new: 200).
+	lines _ OrderedCollection new.
+	count _ 0.
+	lastLine _ 0.
+	variables _ OrderedCollection new.
+	self withAllSuperclasses reverseDo:
+		[:eachClass |
+		count = lastLine ifFalse: [lines add: count.  lastLine _ count].
+		(generatorBlock value: eachClass) do:
+			[:var |
+			aStream nextPutAll: ((valueBlock value: var) contractTo: 20); cr.
+			variables addLast: var.
+			count _ count + 1]].
+	variables isEmpty ifTrue: [^nil].  "Nothing to choose from"
+	aStream skip: -1.
+	index _ (PopUpMenu labels: aStream contents lines: lines) startUp.
+	^index = 0
+		ifTrue: [nil]
+		ifFalse: [variables at: index]!
+"-----------------------------------"!
+!Behavior methodsFor: 'fileIn/Out'!
+printMethodChunk: selector on: aFileStream moveSource: moveSource toFile: fileIndex
+	"Print the source code for the method associated with the argument selector onto
+	the fileStream. aFileStream, and, for backup, if the argument moveSource (a Boolean)
+	is true, also set the file index within the method to be the argument fileIndex."
+
+	| position |
+	aFileStream cr; cr.
+	moveSource ifTrue: [position _ aFileStream position].
+	aFileStream nextChunkPut: (self sourceMethodAt: selector) asString.
+	moveSource
+		ifTrue: [(self compiledMethodAt: selector)
+					setSourcePosition: position inFile: fileIndex]!
+"-----------------------------------"!
+!Behavior methodsFor: 'initialize-release'!
+obsolete
+	"Invalidate and recycle local messages.  Remove the receiver from its superclass'
+	subclass list."
+
+	methodDict _ MethodDictionary new.
+	self superclasses do: [:each | each removeSubclass: self].
+	self removeFromInheritanceTables!
+"-----------------------------------"!
+!Behavior methodsFor: 'instance creation'!
+basicNew
+	"Answer a new instance of the receiver (which is a class) with no indexable
+	variables.  Fail if the class is indexable.  Essential.  See Object documentation
+	whatIsAPrimitive."
+
+	<primitive: 70>
+	self isVariable ifTrue: [^self basicNew: 0].
+	self primitiveFailed!
+basicNew: anInteger
+	"Answer a new instance of the receiver (which is a class) with the number of
+	indexable variables specified by the argument, anInteger.  Fail if the class is not
+	indexable or if the argument is not a positive Integer.  Essential.  See Object
+	documentation whatIsAPrimitive."
+
+	<primitive: 71>
+	self primitiveFailed!
+new
+	"Answer a new instance of the receiver (which is a class) with no indexable
+	variables.  Fail if the class is indexable.  Essential.  See Object documentation
+	whatIsAPrimitive. "
+
+	<primitive: 70>
+	self isVariable ifTrue: [^self new: 0].
+	self primitiveFailed!
+new: anInteger
+	"Answer a new instance of the receiver (which is a class) with the number of
+	indexable variables specified by the argument, anInteger.  Fail if the class is not
+	indexable or if the argument is not a positive Integer.  Essential.  See Object
+	documentation whatIsAPrimitive."
+
+	<primitive: 71>
+	self primitiveFailed!
+"-----------------------------------"!
+!Behavior methodsFor: 'printing'!
+printHierarchy
+	"Answer a description containing the names and instance variable
+	names of all of the subclasses and superclasses of the receiver."
+
+	| aStream index supers |
+	index _ 0.
+	aStream _ WriteStream on: (String new: 16).
+	self allDynamicSuperclasses reverseDo:
+		[:aClass |
+		aStream crtab: index.
+		index _ index + 1.
+		aStream nextPutAll: aClass name.
+		aStream space.
+		aStream print: aClass instVarNames.
+		supers _ aClass superclasses.
+		supers size>1 ifTrue:
+			[aStream nextPutAll: '  [also a '.
+			(supers copyFrom: 2 to: supers size) do:
+				[:s | aStream space; nextPutAll: s name; space; print: s allInstVarNames].
+			aStream nextPut: $]  ]].
+	aStream cr.
+	self printSubclassesOn: aStream callingSuperclass: self dynamicSuperclass level: index.
+	^aStream contents!
+printOn: aStream
+	aStream nextPutAll: 'a descendent of '.
+	superclass printOn: aStream!
+"-----------------------------------"!
+!Behavior methodsFor: 'private'!
+accumulateInstVarNames: names traversedClasses: classSet
+	"accumulate instance variable names in 'names'.  Do this in depth-first,
+	  left-to-right order.  This will give the ordering of instance variable names
+	  expected by the compiler and other parts of the system."
+	self superclasses do:
+		[:each | each accumulateInstVarNames: names traversedClasses: classSet].
+	(classSet includes: self) ifFalse:
+		[names addAll: self instVarNames.
+		classSet add: self]!
+checkMethodFor: selector
+	"copy method from superclass if necessary.  Answer true if no conflict detected"
+	| descr unmoved copyOK local copied conflict |
+	local _ methodDict includesKey: selector.
+	copied _ (SelectorsOfCopiedMethods at: selector ifAbsent: [Array new]) includes: self.
+	conflict _ (SelectorsOfConflictMethods at: selector ifAbsent: [Array new]) includes: self.
+	local & copied not & conflict not
+		ifTrue: [^true].
+	descr _ self superMethodDescriptionAt: selector.
+	descr isMethodNotImplemented
+		ifTrue: [self removeSelectorUnchecked: selector.  ^true].
+	descr isConflictingMethods
+		ifTrue: [self compileConflictCodeFor: selector.  ^false].
+
+	conflict ifTrue:  "Not conflicting any more, so remove if it had been."
+		[self removeSelectorUnchecked: selector.
+		self removeClass: self selector: selector in: SelectorsOfConflictMethods].
+
+	"If this method isnt on the dynamic chain, copy it."
+	descr = (self dynamicMethodDescriptionAt: selector) ifFalse:
+		[unmoved _ self unmovedVarsFrom: descr whichClass.
+		copyOK _ true.  "If method doesnt touch any vars which moved"
+		descr method fieldsTouched do:
+			[:field | copyOK _ copyOK & (unmoved at: field)].
+		copyOK
+			ifTrue:  "then can just install that same method"
+				[self addSelectorUnchecked: descr selector withMethod: descr method]
+			ifFalse:  "otherwise have to recompile it here"
+				[self compileUnchecked: descr sourceCode].
+		self insertClass: self selector: selector in: SelectorsOfCopiedMethods].
+	^true!
+compileConflictCodeFor: selector
+	| classes |
+	classes _ SelectorsOfConflictMethods at: selector ifAbsent: [Array new].
+	(classes includes: self name)  "This class already has conflict code for this selector"
+		ifTrue: [^self].
+	self compile: (self conflictCodeFor: selector)
+		classified: 'conflicting inherited methods'
+		notifying: nil.
+	self insertClass: self selector: selector in: SelectorsOfConflictMethods!
+compoundSelectorsMatching: simple
+	^ self selectors select:
+		[:sel | sel isCompound and: [sel selectorPart = simple]]!
+conflictCodeFor: sel  "return some code that indicates a conflicting definition"
+	| code parser |
+	code _ (self dynamicMethodDescriptionAt: sel) sourceCode.
+	(parser _ self parserClass new) parseSelector: code.
+	^ (code copyFrom: 1 to: (parser endOfLastToken min: code size)) ,
+		(String with: Character cr) ,
+		'	^self conflictingInheritanceError'!
+copyMethods  "copy all methods from superclasses not on the dynamic lookup chain"
+	| noConflicts |
+	noConflicts _ true.
+	self allSelectors do:
+		[:selector | noConflicts _ noConflicts & (self checkMethodFor: selector)].
+	noConflicts ifFalse:
+		[Transcript cr; show: self name , ' has conflicting inherited methods
+  -- consult browser for their names']!
+defaultSelectorForMethod: aMethod
+	"Given a method, invent an appropriate selector, that is, one that will parse with
+	the correct number of arguments."
+
+	| aStream |
+	aStream _ WriteStream on: (String new: 16).
+	aStream nextPutAll: 'unboundMethod'.
+	1 to: aMethod numArgs do: [:i | aStream nextPutAll: 'with:'].
+	^aStream contents asSymbol!
+flushCache
+	"Tell the interpreter to remove the contents of its method lookup cache, if it has
+	one.  Essential.  See Object documentation whatIsAPrimitive."
+
+	<primitive: 89>
+	self primitiveFailed!
+format: nInstVars variable: isVar words: isWords pointers: isPointers
+	"Set the format for the receiver (a Class)."
+
+	format _ nInstVars +
+				(isVar
+						ifTrue: [4096]
+						ifFalse: [0]) +
+				(isWords
+						ifTrue: [8192]
+						ifFalse: [0]) +
+				(isPointers
+						ifTrue: [-16384]
+						ifFalse: [0])!
+insertClass: aClass selector: selector in: aDictionary
+	| previous |
+	previous _ aDictionary at: selector ifAbsent: [Array new].
+	(previous includes: aClass) ifFalse:
+		[aDictionary at: selector put: (previous copyWith: aClass)]!
+printSubclassesOn: aStream callingSuperclass: whichSuper level: level
+	"As part of the algorithm for printing a description of the receiver, print the
+	subclass on the file stream, aStream, indenting level times."
+	| subs supers |
+	aStream crtab: level.
+	aStream nextPutAll: self name.
+	aStream space; print: self instVarNames.
+	supers _ self superclasses.
+	supers size>1 ifTrue:
+		[aStream nextPutAll: '  [also a'.
+		(supers copyWithout: whichSuper) do:
+			[:s | aStream space; nextPutAll: s name; space; print: s allInstVarNames].
+		aStream nextPut: $]  ].
+	subs _ self subclasses.
+	self == Class ifTrue:
+		[aStream crtab: level+1; nextPutAll: '... all the Metaclasses ...'.
+		subs _ subs reject: [:sub | sub isMeta]].
+	"Print subclasses in alphabetical order"
+	(subs asSortedCollection: [:x :y | x name < y name]) do:
+		[:sub |
+		sub printSubclassesOn: aStream callingSuperclass: self level: level + 1]!
+removeClass: aClass selector: selector in: aDictionary
+	| list |
+	list _ (aDictionary at: selector) copyWithout: aClass.
+	list size = 0
+		ifTrue: [aDictionary removeKey: selector]
+		ifFalse: [aDictionary at: selector put: list]!
+removeFromInheritanceTable: table
+	"I have been deleted -- remove me from the given inheritance table"
+	| keys list |
+	"get keys first, since we may be deleting entries in the midst of the loop that follows"
+	keys _ table keys.
+	keys do:
+		[:key | list _ (table at: key) copyWithout: self.
+		list size = 0
+			ifTrue: [table removeKey: key]
+			ifFalse: [table at: key put: list]]!
+removeFromInheritanceTables
+	"I have been deleted.  Remove me from multiple inheritance tables"
+	self removeFromInheritanceTable: SelectorsOfConflictMethods.
+	self removeFromInheritanceTable: SelectorsOfCopiedMethods.
+	self removeFromInheritanceTable: SelectorsOfDirectedMethods!
+removeSelectorSimply: selector
+	"Remove the message selector from the receiver's method dictionary.
+	Internal access from compiler."
+
+	methodDict removeKey: selector ifAbsent: [^self].
+	self flushCache!
+sourceTextAt: selector
+	"Answer with the string of the source code for the message selector."
+
+	| newSource method |
+	method _ methodDict at: selector.
+	Sensor leftShiftDown
+		ifTrue: [newSource _
+					self decompilerClass new
+						decompile: selector
+						in: self
+						method: method]
+		ifFalse:
+			[newSource _ method getSource.
+			newSource == nil
+				ifTrue: [newSource _
+							self decompilerClass new
+								decompile: selector
+								in: self
+								method: method]].
+	^newSource asText!
+unmovedVarsFrom: sup
+	"Answer with an Array with true for fields with the same offset in this class as in super"
+	| allInstVarNames supNames |
+	allInstVarNames _ self allInstVarNames.
+	supNames _ sup allInstVarNames.
+	^ ((1 to: sup instSize) collect: [:i | (supNames at: i) = (allInstVarNames at: i)])!
+updateInheritanceTable: table oldSelf: oldSelf
+	"I have replaced an old behavior or class.  Update the given multiple inheritance table"
+	table do:
+		[:array | 1 to: array size do:
+			[:i | (array at: i)==oldSelf ifTrue: [array at: i put: self]]]!
+updateInheritanceTables: oldSelf
+	"I have replaced an old behavior or class.  Update the multiple inheritance tables"
+	self updateInheritanceTable: SelectorsOfConflictMethods oldSelf: oldSelf.
+	self updateInheritanceTable: SelectorsOfCopiedMethods oldSelf: oldSelf.
+	self updateInheritanceTable: SelectorsOfDirectedMethods oldSelf: oldSelf!
+"-----------------------------------"!
+!Behavior methodsFor: 'testing'!
+instSize
+	"Answer the number of named instance variables (as opposed to indexed
+	variables) of the receiver."
+
+	^format bitAnd: 255!
+isBits
+	"Answer whether the receiver contains just bits (not pointers)."
+
+	^format noMask: -16384!
+isBytes
+	"Answer whether the receiver has 8-bit instance variables."
+	^format noMask: 8192!
+isFixed
+	"Answer whether the receiver does not have a variable (indexable) part."
+
+	^self isVariable not!
+isPointers
+	"Answer whether the receiver contains just pointers (not bits)."
+
+	^self isBits not!
+isVariable
+	"Answer whether the receiver has a variable (indexable) part."
+
+	^(format bitAnd: 4096) ~= 0!
+isWords
+	"Answer whether the receiver has 16-bit instance variables."
+
+	^self isBytes not!
+"-----------------------------------"!
+!Behavior methodsFor: 'testing class hierarchy'!
+inheritsFrom: aClass
+	"Answer whether the argument, aClass, is on the receiver's superclass chain."
+	self superclasses do:
+		[:each | (each==aClass or: [each inheritsFrom: aClass]) ifTrue: [^true]].
+	^false!
+kindOfSubclass
+	"Answer a string which is the keyword that describes the receiver's kind of
+	subclass, either a regular subclass, a variableSubclass, a variableByteSubclass, or
+	a variableWordSubclass."
+
+	self isVariable
+		ifTrue: [self isBits
+					ifTrue: [self isBytes
+								ifTrue: [^' variableByteSubclass: ']
+								ifFalse: [^' variableWordSubclass: ']]
+					ifFalse: [^' variableSubclass: ']]
+		ifFalse: [^' subclass: ']!
+"-----------------------------------"!
+!Behavior methodsFor: 'testing method dictionary'!
+canUnderstand: selector
+	"Answer true if the receiver can respond to the message whose selector
+	is the argument, false otherwise.  The selector can be in the method dictionary
+	of the receiver's class or any of its superclasses."
+
+	(self includesSelector: selector) ifTrue: [^true].
+	superclass == nil ifTrue: [^false].
+	^superclass canUnderstand: selector!
+hasMethods
+	"Answer whether the receiver has any methods in its method dictionary."
+
+	^methodDict size > 0!
+includesSelector: aSymbol
+	"Answer whether the message whose selector is the argument is in the
+	method dictionary of the receiver's class."
+
+	^methodDict includesKey: aSymbol!
+scopeHas: varName ifTrue: assocBlock
+	"Look up varName in this class, its superclasses, and Smalltalk.  If it is there,
+	pass the association to assocBlock, and answer true; else answer false."
+	| assoc |
+	self withAllSuperclasses do:
+		[:sup |
+		(sup poolHas: varName ifTrue: assocBlock) ifTrue: [^true]].
+	assoc _ Smalltalk associationAt: varName ifAbsent: [].
+	assoc == nil
+		ifFalse:
+			[assocBlock value: assoc.
+			^true].
+	^false!
+whichClassIncludesSelector: aSymbol
+	"Answer the class on the receiver's superclass chain where the argument, aSymbol
+	(a message selector), will be found."
+
+	(methodDict includesKey: aSymbol) ifTrue: [^self].
+	superclass == nil ifTrue: [^nil].
+	^superclass whichClassIncludesSelector: aSymbol
+
+	"Rectangle whichClassIncludesSelector: #inspect."!
+whichSelectorsAccess: instVarName
+	"Answer a set of selectors whose methods access the argument, instVarName,
+	as a named instance variable."
+
+	| instVarIndex |
+	instVarIndex _ self allInstVarNames indexOf: instVarName ifAbsent: [^Set new].
+	^methodDict keys select:
+		[:sel |
+		((methodDict at: sel)
+			readsField: instVarIndex)
+			or: [(methodDict at: sel) writesField: instVarIndex]]
+
+	"Point whichSelectorsAccess: 'x'."!
+whichSelectorsReferTo: literal
+	"Answer a set of selectors whose methods access the argument as a literal."
+
+	| special |
+	special _ Smalltalk hasSpecialSelector: literal ifTrueSetByte: [:byte ].
+	^self whichSelectorsReferTo: literal special: special byte: byte
+
+	"Rectangle whichSelectorsReferTo: #+."!
+whichSelectorsReferTo: literal special: specialFlag byte: specialByte
+	"Answer a collection of selectors whose methods access the argument as a literal."
+
+	| who method methodArray index arraySize |
+	who_ OrderedCollection new.
+	methodArray _ methodDict methodArray.
+	arraySize _ methodArray size.
+	index _ 0.
+	[(index _ index + 1) <= arraySize] whileTrue:
+		[(method _ methodArray at: index) == nil ifFalse:
+			[((method refersToLiteral: literal) or:
+				[specialFlag and: [method scanFor: specialByte]])
+					ifTrue: [who add: (methodDict basicAt: index)]]].
+	^who
+
+	"Rectangle whichSelectorsReferTo: #+."!

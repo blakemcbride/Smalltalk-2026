@@ -1,0 +1,159 @@
+MouseMenuController subclass: #StandardSystemController
+  instanceVariableNames: 'status'
+  classVariableNames: 'ScheduledBlueButtonMenu ScheduledBlueButtonMessages'
+  poolDictionaries: ''
+  category: 'Interface-Support'!
+StandardSystemController class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+StandardSystemController comment:
+'I am a controller for StandardSystemViews, that is, those views that are at the top level of a project in the system user interface.  I am a kind of MouseMenuController that creates a blue button menu for moving, framing, collapsing, and closing StandardSystemViews, and for selecting views under the view of my instance.
+
+Instance Variables:
+	status	<Symbol> condition, either
+			#active--keep control as long as the cursor is inside the view if a
+					button is pressed
+			#inactive -- no longer in control, deEmphasize any highlighting
+			#open -- visible on the screen
+			#closed -- unschedule the instance from the project'!
+"-----------------------------------"!
+!StandardSystemController class methodsFor: 'class initialization'!
+initialize
+	"StandardSystemController initialize."
+	ScheduledBlueButtonMenu _ PopUpMenu labels:
+'under
+move
+frame
+collapse
+close' lines: #(4 ).
+	ScheduledBlueButtonMessages _ #(under move expand collapse close )!
+"-----------------------------------"!
+!StandardSystemController methodsFor: 'basic control sequence'!
+controlInitialize
+	view displayEmphasized.
+	status _ #active!
+controlTerminate
+	status == #closed
+		ifTrue:
+			[view ~~ nil ifTrue: [view release].
+			ScheduledControllers unschedule: self.
+			^self].
+	status == #inactive
+		ifTrue:
+			[view deEmphasize.
+			ScheduledControllers pullBottomToTop.
+			^self].
+	view deEmphasize!
+"-----------------------------------"!
+!StandardSystemController methodsFor: 'control defaults'!
+isControlActive
+	^status == #active
+		and: [sensor anyButtonPressed
+				ifTrue: [view containsPoint: sensor cursorPoint]
+				ifFalse: [true]]!
+"-----------------------------------"!
+!StandardSystemController methodsFor: 'initialize-release'!
+initialize
+	super initialize.
+	status _ #inactive.
+	self initializeBlueButtonMenu!
+initializeBlueButtonMenu
+	"Initialize the blue button pop-up menu and corresponding array of messages
+	for the receiver."
+
+	self blueButtonMenu: ScheduledBlueButtonMenu
+		blueButtonMessages: ScheduledBlueButtonMessages!
+"-----------------------------------"!
+!StandardSystemController methodsFor: 'menu messages'!
+close
+	"The receiver's view should be removed from the screen and from the
+	collection of scheduled views."
+
+	model changeRequest  "check for changes in progress"
+		ifFalse: [^self].
+	status _ #closed.
+	view erase!
+collapse
+	"Get the receiver's view to change to a collapsed view on the screen."
+
+	view erase; collapse; display.
+	self move.!
+expand
+	"The receiver's view was collapsed;  open it again and ask the user to
+	designate its rectangular area."
+
+	view erase.
+	view expand.
+	view resize.
+	view displayEmphasized!
+menuMessageReceiver
+	"Answer the object that should receive the message corresponding to
+	a menu selection."
+	^ self!
+move
+	"Ask the user to designate a new origan position for the recevier's view."
+	| form |
+	Sensor cursorPoint: view labelDisplayBox origin.
+	view deEmphasize.
+	form _ Form fromDisplay: (view labelDisplayBox).
+	view erase.
+	Cursor origin showWhile:
+		[form follow: [Sensor cursorPoint] while: [Sensor noButtonPressed]].
+
+	view align: view labelDisplayBox origin
+		with: sensor cursorPoint.
+	view displayEmphasized.!
+under
+	"Deactive the receiver's scheduled view and pass control to any view that
+	might be positioned directly underneath it and the cursor."
+
+	status _ #inactive!
+"-----------------------------------"!
+!StandardSystemController methodsFor: 'scheduling'!
+closeAndUnschedule
+	"Erase the receiver's view and remove it from the collection of scheduled controllers."
+
+	status _ #closed.
+	view erase.
+	view release.
+	ScheduledControllers unschedule: self!
+closeAndUnscheduleNoErase
+	"Remove the scheduled view from the collection of scheduled controllers.
+	Set its status to closed but do not erase."
+
+	status _ #closed.
+	view release.
+	ScheduledControllers unschedule: self!
+open
+	"Create an area on the screen in which the receiver's scheduled controller can
+	be displayed.  Make it the active controller."
+
+	view resize.
+	status _ #open.
+	ScheduledControllers scheduleActive: self!
+openDisplayAt: aPoint
+	"Create an area with origin aPoint in which the receiver's scheduled
+	view can be displayed.  If necessary, translate so the view is completely
+	on the screen.  Make it the active view."
+
+	view align: view viewport center with: aPoint.
+	view translateBy:
+		(view displayBox amountToTranslateWithin: Display boundingBox).
+	status _ #open.
+	ScheduledControllers scheduleActive: self!
+openNoTerminate
+	"Create an area in which the receiver's scheduled view can
+	be displayed.  Make it the active view.  Do not terminate the currently active
+	process."
+
+	view resize.
+	status _ #open.
+	ScheduledControllers scheduleActiveNoTerminate: self!
+openNoTerminateDisplayAt: aPoint
+	"Create an area with origin aPoint in which the receiver's scheduled view can
+	be displayed.  Make it the active view.  Do not terminate the currently active
+	process."
+
+	view resizeMinimumCenteredAt: aPoint.
+	status _ #open.
+	ScheduledControllers scheduleActiveNoTerminate: self!

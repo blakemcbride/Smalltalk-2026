@@ -1,0 +1,45 @@
+PositionableStream subclass: #ReadStream
+  instanceVariableNames: ''
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Collections-Streams'!
+ReadStream class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+ReadStream comment:
+'I am a reader of an indexable collection.  I only define the message next.'!
+"-----------------------------------"!
+!ReadStream class methodsFor: 'instance creation'!
+on: aCollection from: firstIndex to: lastIndex
+	"Answer with a new instance streaming over a copy of aCollection from
+	firstIndex to lastIndex."
+
+	^self basicNew
+		on: aCollection
+		from: firstIndex
+		to: lastIndex!
+"-----------------------------------"!
+!ReadStream methodsFor: 'accessing'!
+next
+	"Answer with the next object in the Stream represented by the receiver.
+	Fail if the collection of this stream is not an Array or a String. Fail if
+	the stream is positioned at its end, or if the position is out of bounds in
+	the collection. Optional. See Object documentation whatIsAPrimitive."
+
+	<primitive: 65>
+	position >= readLimit
+		ifTrue: [^nil]
+		ifFalse: [^collection at: (position _ position + 1)]!
+nextPut: anObject
+	self shouldNotImplement!
+"-----------------------------------"!
+!ReadStream methodsFor: 'private'!
+on: aCollection from: firstIndex to: lastIndex
+	| len |
+	collection _ aCollection.
+	readLimit _  lastIndex > (len _ collection size)
+						ifTrue: [len]
+						ifFalse: [lastIndex].
+	position _ firstIndex <= 1
+				ifTrue: [0]
+				ifFalse: [firstIndex - 1]!

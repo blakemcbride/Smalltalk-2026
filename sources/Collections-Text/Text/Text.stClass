@@ -1,0 +1,291 @@
+ArrayedCollection subclass: #Text
+  instanceVariableNames: 'string runs'
+  classVariableNames: ''
+  poolDictionaries: 'TextConstants'
+  category: 'Collections-Text'!
+Text class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+Text comment:
+'Instance Variables:
+	string:	A String of Characters
+	runs:	A RunArray of emphasis codes
+
+The emphasis codes indicate abstract changes in character appearance.  Actual display is performed in the presence of a TextStyle which indicates, for each abstract code, an actual font to be used'!
+"-----------------------------------"!
+!Text class methodsFor: 'class initialization'!
+initTextConstants	"Text initTextConstants."
+	"Initialize constants shared by classes associated with text display, e.g.,
+	space, tab, cr, bs, esc."
+
+	| tempArray  |
+	TextConstants		at: #Space				put:	(32 asCharacter).
+	TextConstants		at: #Tab					put:	(9 asCharacter).
+	TextConstants		at: #CR					put:	(13 asCharacter).
+	TextConstants		at: #BS					put:	(8 asCharacter).
+	TextConstants		at: #BS2					put:	(158 asCharacter).
+	TextConstants		at: #Ctrlw				put:	(145 asCharacter).
+	TextConstants		at: #ESC					put:	(160 asCharacter).
+	TextConstants		at: #Cut					put:	(173 asCharacter).
+	TextConstants		at: #Paste				put:	(30 asCharacter).
+	TextConstants		at: #Ctrlt				put:	(11 asCharacter).
+	TextConstants		at: #Ctrlf				put:	(12 asCharacter).
+	TextConstants		at: #Ctrlz				put:	(26 asCharacter).
+
+		"in case font doesn't have a width for space character"
+		"some plausible numbers-- are there right ones?"
+	TextConstants		at: #DefaultSpace			put:	4.
+	TextConstants		at: #DefaultTab			put:	24.
+	TextConstants		at: #DefaultLineGrid		put:	16.
+	TextConstants		at: #DefaultBaseline		put:	12.
+	TextConstants		at: #DefaultRule			put:	Form over.
+	TextConstants		at: #DefaultMask			put:	Form black.
+
+	TextConstants		at: #CtrlMinus			put:	(137 asCharacter).
+	TextConstants		at: #CtrlShiftMinus		put:	(201 asCharacter).
+	TextConstants		at: #Ctrlb				put:	(166 asCharacter).
+	TextConstants		at: #CtrlB				put:	(230 asCharacter).
+	TextConstants		at: #Ctrli					put:	(150 asCharacter).
+	TextConstants		at: #CtrlI				put:	(214 asCharacter).
+	TextConstants		at: #Ctrlx				put:	(151 asCharacter).
+
+
+
+
+	tempArray _ Array new: Display width // DefaultTab.
+	1 to: tempArray size do:
+		[:i | tempArray
+				at: i
+				put: DefaultTab * i].
+	TextConstants at: #DefaultTabsArray put: tempArray.
+	tempArray _ Array new:
+					(Display width // DefaultTab) // 2.
+	1 to: tempArray size do:
+		[:i | tempArray
+				at: i
+				put: (Array with: (DefaultTab*i) with: (DefaultTab*i))].
+	TextConstants at: #DefaultMarginTabsArray 	put: tempArray.
+	self initTextConstants2.!
+initTextConstants2		"Text initTextConstants."
+	"Initialize constants shared by classes associated with text display, e.g.,
+	space, tab, cr, bs, esc."
+
+	TextConstants		at: #Ctrlh				put:	(179 asCharacter).
+	TextConstants		at: #CtrlH				put:	(243 asCharacter).
+	TextConstants		at: #Ctrls				put:	(19 asCharacter).
+	TextConstants		at: #CtrlS				put:	(211 asCharacter).
+
+	TextConstants		at: #Ctrln				put:	(14 asCharacter).
+	TextConstants		at: #CtrlN				put:	(245 asCharacter).
+	TextConstants		at: #Ctrlp				put:	(138 asCharacter).
+	TextConstants		at: #CtrlTopBlank			put:	(222 asCharacter).
+	TextConstants		at: #CtrlMiddleBlank		put:	(229 asCharacter).
+	TextConstants		at: #CtrlBottomBlank		put:	(225 asCharacter).
+
+		"location of non-character stop conditions"
+	TextConstants		at: #EndOfRun			put:	257.
+	TextConstants		at: #CrossedX				put:	258.
+
+		"values for alignment"
+	TextConstants		at: #LeftFlush			put:	0.
+	TextConstants		at: #RightFlush			put:	1.
+	TextConstants		at: #Centered				put:	2.
+	TextConstants		at: #Justified				put:	3.
+
+		"subscripts for a marginTabsArray tuple"
+	TextConstants		at: #LeftMarginTab		put:	1.
+	TextConstants		at: #RightMarginTab		put:	2.
+
+		"font faces"
+	TextConstants		at: #Basal				put:	0.
+	TextConstants		at: #Bold				put:	1.
+	TextConstants		at: #Italic				put:	2.
+	TextConstants		at: #BoldItalic			put:	3.
+	TextConstants		at: #Underlined			put:	4.
+	TextConstants		at: #OverStruck			put:	8.
+	TextConstants		at: #Subscripted			put:	16.
+	TextConstants		at: #Superscripted			put:	32.
+	TextConstants		at: #SubscriptedUnderlined			put:	20.
+	TextConstants		at: #SuperscriptedUnderlined			put:	36.
+	TextConstants		at: #UnderlinedBit		put:	3.
+	TextConstants		at: #OverStruckBit			put:	4.
+	TextConstants		at: #SubscriptedBit		put:	5.
+	TextConstants		at: #SuperscriptedBit			put:	6.
+	TextConstants		at: #SubSuperscriptMask			put:	48.
+	TextConstants		at: #NonFaceEmphasisMask			put:	52. "overstrike not supported"
+	TextConstants		at: #FamilyName			put:	1.
+	TextConstants		at: #PointSize				put:	2.
+	TextConstants		at: #Face				put:	3.!
+initialize
+	"Initialize constants shared by classes associated with text display.
+
+	Text initialize."
+
+	(Smalltalk includes: TextConstants)
+		ifFalse: [Smalltalk at: #TextConstants put: (Dictionary new: 32)].
+	TextConstants at: #CaretForm
+		 		 put: (Cursor
+	extent: 16@16
+	fromArray: #(
+		2r110000000
+		2r110000000
+		2r1111000000
+		2r11111100000
+		2r11001100000
+		2r0
+		2r0
+		2r0
+		2r0
+		2r0
+		2r0
+		2r0
+		2r0
+		2r0
+		2r0
+		2r0)
+	offset: 8@0).
+
+	self initTextConstants!
+"-----------------------------------"!
+!Text class methodsFor: 'instance creation'!
+fromString: aString
+	"Answer an instance of me whose characters are those of the argument, aString."
+	^self string: aString emphasis: 1!
+fromUser
+	"Answer an instance of me obtained by requesting the user to type some
+	characters into a View."
+
+	| result |
+	FillInTheBlank
+		request: 'Type text followed by carriage return'
+		displayAt: (50@ Display boundingBox height//2)
+		centered: false
+		action: [:result]
+		initialAnswer: ''.
+	^self fromString: result!
+new: stringSize
+	^self fromString: (String new: stringSize)!
+string: aString emphasis: code
+	"Answer an instance of me whose characters are those of the argument, aString.
+	Use the font whose index into the default TextStyle font array is code."
+
+	^self string: aString runs: (RunArray new: aString size withAll: code)!
+"-----------------------------------"!
+!Text class methodsFor: 'private'!
+string: aString runs: anArray
+	^self basicNew setString: aString setRuns: anArray!
+"-----------------------------------"!
+!Text methodsFor: 'accessing'!
+at: index
+	^string at: index!
+at: index put: character
+	^string at: index put: character!
+findString: aString startingAt: start
+	"Answer the index of subString within the receiver, starting at position start.
+	If the receiver does not contain subString, answer 0."
+
+	^string findString: aString asString startingAt: start!
+replaceFrom: start to: stop with: aText
+	string _ string copyReplaceFrom: start to: stop with: aText string.
+	runs _ runs copyReplaceFrom: start to: stop with: aText runs!
+size
+	^string size!
+string
+	"Answer the string representation of the receiver."
+	^string!
+"-----------------------------------"!
+!Text methodsFor: 'comparing'!
+= anotherText
+	^string = anotherText string!
+"-----------------------------------"!
+!Text methodsFor: 'converting'!
+asDisplayText
+	"Answer a DisplayText whose text is the receiver."
+	^DisplayText text: self!
+asLowercase
+	string _ string asLowercase!
+asNumber
+	"Answer the number created by interpreting the receiver as the textual
+	representation of a number."
+
+	^string asNumber!
+asParagraph
+	"Answer a Paragraph whose text is the receiver."
+	^Paragraph withText: self!
+asString
+	"Answer a String representation of the textual receiver."
+	^string!
+asText
+	"Answer the receiver itself."
+	^self!
+asUppercase
+	string _ string asUppercase!
+"-----------------------------------"!
+!Text methodsFor: 'copying'!
+copy
+	^self deepCopy!
+copyFrom: start to: stop
+	"Answer with a copied subrange of this text"
+
+	| realStart realStop |
+	stop > self size
+		ifTrue: [realStop _ self size]		"handle selection at end of string"
+		ifFalse: [realStop _ stop].
+	start < 1
+		ifTrue: [realStart _ 1]			"handle selection before start of string"
+		ifFalse: [realStart _ start].
+	^Text
+		string: (string copyFrom: realStart to: realStop)
+		runs: (runs copyFrom: realStart to: realStop)!
+copyReplaceFrom: start to: stop with: aText
+	^self shallowCopy replaceFrom: start to: stop with: aText!
+"-----------------------------------"!
+!Text methodsFor: 'emphasis'!
+allBold
+	self emphasizeFrom: 1 to: self size with: 2!
+emphasisAt: characterIndex
+	"Answer the code for characters in the run beginning at characterIndex."
+
+	self size = 0 ifTrue: [^1].	"null text tolerates access"
+	^runs at: characterIndex!
+emphasizeFrom: start to: stop with: emphasis
+	"Set the emphasis for characters in the interval start-stop."
+
+	runs _
+		runs
+			copyReplaceFrom: start
+			to: stop
+			with: (RunArray new: stop - start + 1 withAll: emphasis)!
+makeSelectorBoldIn: aClass
+	"For formatting Smalltalk source code, set the emphasis of that portion of
+	the receiver's string that parses as a message selector to be bold."
+
+	| parser |
+	string size = 0 ifTrue: [^self].
+	(parser _ aClass parserClass new) parseSelector: string.
+	self emphasizeFrom: 1
+		to: (parser endOfLastToken min: string size)
+		with: 2!
+runLengthFor: characterIndex
+	"Answer the count of characters remaining in run beginning with
+	characterIndex."
+
+	^runs runLengthAt: characterIndex!
+"-----------------------------------"!
+!Text methodsFor: 'printing'!
+printOn: aStream
+	aStream nextPutAll: 'Text for '.
+	string printOn: aStream!
+storeOn: aStream
+	aStream nextPutAll: '(Text string: ';
+		store: string;
+		nextPutAll: ' runs: ';
+		store: runs;
+		nextPut: $)!
+"-----------------------------------"!
+!Text methodsFor: 'private'!
+runs
+	^runs!
+setString: aString setRuns: anArray
+	string _ aString.
+	runs _ anArray!

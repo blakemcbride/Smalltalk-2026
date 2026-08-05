@@ -1,0 +1,867 @@
+Object subclass: #View
+  instanceVariableNames: 'model controller superView subViews transformation viewport window displayTransformation insetDisplayBox borderWidth borderColor insideColor boundingBox'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Interface-Framework'!
+View class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+View comment:
+'My instances are intended to be components in a  structured picture.  Each View in the structured picture can contain other Views as sub-components.  These sub-components are called subViews.  A View can be a subView of only one View.  This View is called its superView.  The set of Views in a structured picture forms a hierarchy.  The one View in the hierarchy that has no superView is called the topView of the structured picture.  A View in a structured picture with no subViews is called a bottom View.  A View and all of its subViews, and all of their subViews and so on, are treated as a unit in many operations on the View.  For example, if a View is displayed, all of its subViews are displayed as well.  There are several catagories of operations that can be performed on a View.  Among these are the following.
+	1.	Adding subViews to a View.
+	2.	Positioning subViews within a View.
+	3.	Deleting subViews from a View.
+	4.	Transforming a View.
+	5.	Displaying a View.
+
+Each View has its own coordinate system.   In order to change from one coordinate system to another, each View has two transformations associated with it.  The local transformation is a WindowingTransformation that maps objects in the coordinate system of the View to objects in the coordinate system of the superView of the View.  The displayTransformation is a WindowingTransformation that maps objects in the coordinate system of the View to objects in the display screen coordinate system.
+
+The part of the space that is to be made visible is represented by the window of the View.  The window of a View is a Rectangle expressed in the coordinate system of the View.  The area occupied by a View in the coordinate system of its superView is called its viewport.  The viewport of a View is its window transformed by its local transformation.  The region of the display screen occupied by a View is called its displayBox.  The display box of a View can include a border.  The width of the border expressed in display screen coordinates is called the border width of the View.  The color of the border is called the border color.  The region of the display box of a View excluding the border is called the inset display box.  The color of the inset display box is called the inside color of the View.
+
+model - any object
+controller - <Controller>, #NoControllerAllowed, or nil
+superView - <View>, or nil
+subViews - <OrderedCollection> of Views
+transformation - <WindowingTransformation>
+viewport - <Rectangle> (in superView coordinates), or nil.
+window - <Rectangle> (in View coordinates), or nil.
+displayTransformation - <WindowingTransformation>, or nil.
+insetDisplayBox - <Rectangle> (in display screen coordinates), or nil.
+borderWidth - <Rectangle> (display screen unit) or 0 (meaning no border).
+borderColor - <Form>
+insideColor - <Form>, or nil (meaning transparent)
+boundingBox - <Rectangle> (in View coordinates), or nil'!
+"-----------------------------------"!
+!View class methodsFor: 'instance creation'!
+identityTransformation
+	"Answer an instance of me with no translation and unity scaling. "
+
+	^WindowingTransformation identity!
+new
+	"Answer an initialized instance of me.  The transformation is an identity
+	transformation, the borderWidth is 0, the borderColor is black, and the
+	insideColor is transparent."
+
+	^super new initialize!
+"-----------------------------------"!
+!View methodsFor: 'basic control sequence'!
+subViewWantingControl
+	"Answer the first subView that has a controller that now wants control."
+
+	subViews reverseDo:
+		[:aSubView | aSubView controller isControlWanted ifTrue: [^aSubView]].
+	^nil!
+"-----------------------------------"!
+!View methodsFor: 'bordering'!
+borderColor
+	"Answer the receiver's border color."
+	^borderColor!
+borderColor: aColor
+	"Set the receiver's border color to aColor."
+	borderColor _ aColor!
+borderWidth
+	"Answer either 0, indicating no border, or a Rectangle whose
+	left value is the width in display coordinates of the receiver's left border.
+	Right, top, and bottom widths are analogous.
+	The border width is initially 0. A View with a border width of 0 will not have
+	any border displayed."
+
+	^borderWidth!
+borderWidth: borderValue
+	"Set the four border widths of the receiver to anInteger or rectangle."
+
+	(borderValue isKindOf: Rectangle)
+			ifTrue:	[borderWidth _ borderValue.
+					self unlock]
+			ifFalse:	[self
+					borderWidthLeft: borderValue
+					right: borderValue
+					top: borderValue
+					bottom: borderValue].!
+borderWidthLeft: anInteger1 right: anInteger2 top: anInteger3 bottom: anInteger4
+	"Set the border widths of the receiver to a Rectangle made up of the four
+	arguments.  These arguements represent the left, right, top, and bottom border
+	widths."
+
+	borderWidth _
+			Rectangle
+				left: anInteger1
+				right: anInteger2
+				top: anInteger3
+				bottom: anInteger4.
+	self unlock!
+insideColor
+	"Answer the inside color of the receiver. The inside color determines the color of
+	the inside of the receiver, which is the area inside the receiver's window excluding
+	the border. The inside color is initially nil (meaning transparent), which
+	means that when the receiver is displayed, the inside region will not be affected."
+
+	^insideColor!
+insideColor: aColor
+	"Set the inside color of the receiver to be aColor."
+
+	insideColor _ aColor!
+"-----------------------------------"!
+!View methodsFor: 'clearing'!
+clear
+	"Use the border color to paint the display box (including the border, see
+	View|displayBox) of the receiver."
+
+	borderColor ~= nil ifTrue: [self clear: borderColor]!
+clear: aColor
+	"Use aColor to paint the display box (including the border, see
+	View|displayBox) of the receiver."
+
+	aColor ~= nil ifTrue: [Display fill: self displayBox mask: aColor]!
+clearInside
+	"Use the inside color to paint the inset display box (excluding the border,
+	see View|insetDisplayBox) of the receiver."
+
+	insideColor ~= nil ifTrue: [self clearInside: insideColor]!
+clearInside: aColor
+	"Use aColor to paint the inset display box (excluding the border, see
+	View|insetDisplayBox) of the receiver."
+
+	aColor ~= nil ifTrue: [Display fill: self insetDisplayBox mask: aColor]!
+"-----------------------------------"!
+!View methodsFor: 'controller access'!
+controller
+	"If the receiver's controller is nil (the default case), an initialized instance of the
+	receiver's default controller is returned."
+
+	controller == nil ifTrue: [self controller: self defaultController].
+	^controller!
+controller: aController
+	"Set the receiver's controller to aController.  An instance of NoController can be
+	specified to indicate that the receiver will not have a controller.  The model of
+	aController is set to the receiver's model."
+
+	self model: model controller: aController!
+defaultController
+	"Answer an initialized instance of the receiver's default controller.
+	Subclasses should redefine this message only if the default controller
+	instances need to be initialized in a nonstandard way."
+
+	^self defaultControllerClass new!
+defaultControllerClass
+	"Answer the class of the default controller for the receiver.
+	Subclasses should redefine View|defaultControllerClass if the class of the
+	default controller is not Controller."
+
+	^Controller!
+model: aModel controller: aController
+	"Set the receiver's model to aModel, add the receiver to aModel's list of dependents,
+	and set the receiver's controller to aController. Subsequent changes to aModel
+	(see Model|change) will result in View|update: messages being sent to the
+	receiver. nil for the value of aController indicates that the default
+	controller is to be used when needed. If aController is not nil, its view is set to the
+	receiver and its model is set to aModel."
+
+	model ~~ nil & (model ~~ aModel)
+		ifTrue: [model removeDependent: self].
+	aModel ~~ nil & (aModel ~~ model)
+		ifTrue: [aModel addDependent: self].
+	model _ aModel.
+	aController ~~ nil
+		ifTrue:
+			[aController view: self.
+			aController model: aModel].
+	controller _ aController!
+"-----------------------------------"!
+!View methodsFor: 'deEmphasizing'!
+deEmphasize
+	"Modify the emphasis (highlighting, special tabs) of the receiver.  This includes
+	objects such as labels, lines, and boxes.  Typically used so that the receiver is not
+	presented as active.  Do this for the receiver and then for each of the receiver's
+	subViews."
+
+	self deEmphasizeView.
+	self deEmphasizeSubViews!
+deEmphasizeSubViews
+	"Send the deEmphasize message to each of the receiver's subviews."
+	subViews do: [:aSubView | aSubView deEmphasize]!
+deEmphasizeView
+	"Subclasses should redefine View|deEmphasizeView in order to modify
+	the emphasis (highlighting, special tabs) of particular objects associated
+	with the View such as labels, lines, and boxes."
+	^self!
+emphasize
+	"Modify the emphasis (highlighting, special tabs) of the receiver.  This includes
+	objects such as labels, lines, and boxes.  Typically used so that the receiver is not
+	presented as active.  Do this for the receiver and then for each of the receiver's
+	subViews."
+
+	self emphasizeView.
+	self emphasizeSubViews!
+emphasizeSubViews
+	"Send the emphasize message to each of the receiver's subviews."
+	subViews do: [:aSubView | aSubView emphasize]!
+emphasizeView
+	"Subclasses should redefine View|emphasizeView in order to modify
+	the emphasis (highlighting, special tabs) of particular objects associated
+	with the View such as labels, lines, and boxes."
+	^self!
+"-----------------------------------"!
+!View methodsFor: 'display box access'!
+boundingBox
+	"Answer the bounding box which for the default case is the rectangular
+	area surrounding the bounding boxes of all the subViews."
+
+	boundingBox ~~ nil
+		ifTrue: [^boundingBox]
+		ifFalse: [^self computeBoundingBox]!
+computeBoundingBox
+	"Answer the minimum Rectangle that encloses the bounding boxes of the
+	receiver's subViews. If the receiver has no subViews, then the bounding box is the
+	receiver's window. Subclasses should redefine View|boundingBox if a more
+	suitable default for the case of no subViews is available."
+
+	| aRectangle |
+	subViews isEmpty ifTrue: [^self getWindow].
+	aRectangle _ self firstSubView transform: self firstSubView boundingBox.
+	subViews do:
+		[:aView |
+		aRectangle _ aRectangle merge: (aView transform: aView boundingBox).].
+	^aRectangle expandBy: borderWidth!
+displayBox
+	"Answer the receiver's inset display box (see View|insetDisplayBox) expanded by the
+	borderWidth.  The display box represents the region of the display screen in
+	which the receiver (including the border) is displayed.  If the receiver is totally
+	clipped by the display screen and its superView, the resulting Rectangle will
+	be invalid."
+
+	^self insetDisplayBox expandBy: borderWidth!
+insetDisplayBox
+	"Answer the receiver's inset display box. The inset display box is the intersection
+	of the receiver's window, tranformed to display coordinates, and the inset
+	display box of the superView, inset by the border width. The inset display box
+	represents the region of the display screen in which the inside of the receiver (all
+	except the border) is displayed. If the receiver is totally clipped by the display
+	screen and its superView, the resulting Rectangle will be invalid."
+
+	[insetDisplayBox == nil] whileTrue: [insetDisplayBox _ self computeInsetDisplayBox].
+	^insetDisplayBox!
+"-----------------------------------"!
+!View methodsFor: 'display transformation'!
+displayTransform: anObject
+	"Apply the display transformation of the receiver to anObject (see
+	View|displayTransformation) and answer the resulting scaled, translated
+	object. It is normally applied to Rectangles, Points, and other objects with
+	coordinates defined in the View's local coordinate system in order to get a
+	corresponding object in display coordinates."
+
+	^(self displayTransformation applyTo: anObject) rounded!
+displayTransformation
+	"Answer a WindowingTransformation that is the result of composing all local
+	transformations in the receiver's superView chain with the receiver's own local
+	transformation. The resulting transformation transforms objects in the
+	receiver's coordinate system into objects in the display screen coordinate
+	system. "
+
+	displayTransformation == nil
+		ifTrue: [displayTransformation _ self computeDisplayTransformation].
+	^displayTransformation!
+inverseDisplayTransform: aPoint
+	"Answer a point that is obtained from aPoint by applying to it the inverse of the
+	receiver's display transformation.  It is typically used by the Controller of the
+	receiver in order to convert a point in display coordinates, such as the cursor point,
+	to the local coordinate system of the receiver."
+
+	^self displayTransformation applyInverseTo: aPoint!
+"-----------------------------------"!
+!View methodsFor: 'displaying'!
+display
+	"Display the receiver's border, display the receiver, then display
+	the subViews of the receiver.
+	Can be sent to the top View of a structured picture in order to display the entire
+	structure, or to any particular View in the structure in order to display that
+	View and its subViews. It is typically sent in response to an update request to
+	a View."
+
+	self displayBorder.
+	self displayView.
+	self displaySubViews!
+displayBorder
+	"Display the receiver's border (using the receiver's borderColor)."
+
+	borderWidth = 0
+		ifTrue:
+			[insideColor == nil
+				ifFalse:
+					[Display fill: self displayBox mask: insideColor]]
+		ifFalse:
+			[insideColor == nil
+				ifTrue:
+					[superView isNil
+						ifTrue:	[Display
+								border: self displayBox
+								widthRectangle: borderWidth
+								mask: borderColor]
+						ifFalse:	[Display
+								border: self displayBox
+								widthRectangle: borderWidth
+								mask: borderColor
+								clippingBox: superView insetDisplayBox]]
+				ifFalse:
+					[Display fill: self displayBox mask: borderColor.
+					Display fill: self insetDisplayBox mask: insideColor]]!
+displaySubViews
+	"Display all the subViews of the receiver."
+
+	subViews do: [:aSubView | aSubView display]!
+displayView
+	"Subclasses should redefine View|displayView in order to display particular
+	objects associated with the View such as labels, lines, boxes, etc."
+	^self!
+inspect
+	"Build an inspector of my model, me, and my controller."
+
+	| topView titleView className |
+	topView _ StandardSystemView model: nil label: 'MVC inspector'
+		minimumSize: 250 @ 250.
+
+	titleView _ StringHolderView new.
+	className _ model class name.
+	titleView model: (StringHolder new contents: '	Model: ',
+			((className at: 1) isVowel ifTrue: ['an '] ifFalse: ['a ']), className).
+	titleView controller: Controller new.
+	topView addSubView: titleView
+		in: (0@0 extent: 1@0.06) borderWidth: 1.
+	InspectorView view: (Inspector inspect: model)
+		in: (0@0.06 extent: 1@0.34) of: topView.
+
+	titleView _ StringHolderView new.
+	className _ self class name.
+	titleView model: (StringHolder new contents: '	View: ',
+			((className at: 1) isVowel ifTrue: ['an '] ifFalse: ['a ']), className).
+	titleView controller: Controller new.
+	topView addSubView: titleView
+		in: (0@0.4 extent: 1@0.06) borderWidth: 1.
+	InspectorView view: (Inspector inspect: self)
+		in: (0@0.46 extent: 1@0.24) of: topView.
+
+	titleView _ StringHolderView new.
+	className _ controller class name.
+	titleView model: (StringHolder new contents: '	Controller: ',
+			((className at: 1) isVowel ifTrue: ['an '] ifFalse: ['a ']), className).
+	titleView controller: Controller new.
+	topView addSubView: titleView
+		in: (0@0.7 extent: 1@0.06) borderWidth: 1.
+	InspectorView view: (Inspector inspect: controller)
+		in: (0@0.76 extent: 1@0.24) of: topView.
+
+	topView controller open!
+"-----------------------------------"!
+!View methodsFor: 'indicating'!
+flash
+	"Cause the inset display box (the display box excluding the border, see
+	View|insetDisplayBox) of the receiver to complement twice in succession."
+
+	Display flash: self insetDisplayBox!
+highlight
+	"Cause the inset display box (the display box excluding the border, see
+	View|insetDisplayBox) of the receiver to complement."
+
+	Display reverse: self insetDisplayBox!
+"-----------------------------------"!
+!View methodsFor: 'initialize-release'!
+initialize
+	"Initialize the state of the receiver. Subclasses should include 'super initialize'
+	when redefining this message to insure proper initialization."
+
+	self resetSubViews.
+	transformation _ WindowingTransformation identity.
+	self borderWidth: 0.
+	self borderColor: Form black!
+release
+	"Remove the receiver from its model's list of dependents (if the model exists), and
+	release all of its subViews.  It is used to break possible cycles in the receiver and
+	should be sent when the receiver is no longer needed.  Subclasses should include
+	'super release.' when redefining release."
+
+	super release.
+	model removeDependent: self.
+	model _ nil.
+	controller release.
+	controller _ nil.
+	subViews ~~ nil ifTrue: [subViews do: [:aView | aView release]].
+	subViews _ nil.
+	superView _ nil.!
+"-----------------------------------"!
+!View methodsFor: 'lock access'!
+isLocked
+	"Answer whether the receiver is locked.
+	A View is 'locked' if its display transformation and inset display box are
+	defined. If these are undefined, the View is 'unlocked'. The display
+	transformation and inset display box become undefined when the
+	transformation of the View (or the transformation of a View in its superView
+	chain) is changed, or when the superView of the View is changed, or any
+	other change to the View that affects the display screen coordinates of the
+	View. The locking and unlocking of a View is handled automatically by the
+	internal methods of the View, but can also be done explicitly if desired (see
+	View|lock, and View|unlock)."
+
+	displayTransformation == nil | (insetDisplayBox == nil)
+		ifTrue: [^false]
+		ifFalse: [^true]!
+isUnlocked
+	"Answer whether the receiver is unlocked.
+	See comment in View|isLocked."
+
+	^displayTransformation == nil & (insetDisplayBox == nil)!
+lock
+	"'Lock' the receiver and all of its subViews (see View|isLocked). This has the effect
+	of computing and storing the display transformation (see View|displayTransformation)
+	and inset display box (see View|insetDisplayBox) of the receiver and all its subViews.
+	 The locking and unlocking of a View is handled automatically by the internal
+	methods of the View, but can also be done explicitly if desired."
+
+	self isLocked ifTrue: [^self].
+	displayTransformation _ self computeDisplayTransformation.
+	insetDisplayBox _ self computeInsetDisplayBox.
+	subViews do: [:aSubView | aSubView lock]!
+unlock
+	"'Unlock the receiver and all of its subViews (see View|isUnlocked). This has the
+	effect of forcing the display transformation (see View|displayTransformation) and
+	inset display box (see View|insetDisplayBox) of the receiver and all its subViews to
+	be recomputed the next time they are referenced. The locking and unlocking of a
+	View is handled automatically by the internal methods of the View, but can also be
+	done explicitly if desired."
+
+	self isUnlocked ifTrue: [^self].
+	displayTransformation _ nil.
+	insetDisplayBox _ nil.
+	subViews do: [:aSubView | aSubView unlock]!
+"-----------------------------------"!
+!View methodsFor: 'model access'!
+model
+	"Answer the receiver's model."
+	^model!
+model: aModel
+	"Set the receiver's model to aModel.  The model of the receiver's controller is also
+	set to aModel."
+
+	self model: aModel controller: controller!
+"-----------------------------------"!
+!View methodsFor: 'private'!
+computeDisplayTransformation
+	"Returns a WindowingTransformation that transforms the coordinate
+	system of the View into that of the display screen. The transformation is
+	computed by composing the View's transformation with all transformations
+	along its superView chain.
+	It is sent by View|displayTransformation when the View is unlocked (see
+	View|unlock)."
+
+	self isTopView
+		ifTrue: [^transformation]
+		ifFalse: [^superView displayTransformation compose: transformation]!
+computeInsetDisplayBox
+	"Compute the View's inset display box by intersecting the superView's inset
+	display box with the View's window transformed to display coordinates and
+	then inseting the result by the border width. It is sent by
+	View|insetDisplayBox if the inset display box is nil."
+
+	self isTopView
+		ifTrue:
+			[^(self displayTransform: self getWindow) insetBy: borderWidth]
+		ifFalse:
+			[^(superView insetDisplayBox
+				intersect: (self displayTransform: self getWindow))
+						insetBy: borderWidth]!
+getController
+	"Returns the View's controller if one exists. nil indicates that the
+	default controller is to be used."
+
+	^controller!
+getViewport
+	"Returns the Rectangle representing the View's viewport (in the coordinate
+	system of the superclass). If no viewport has been specified, the View's
+	window transformed into the superView's coordinate system is saved and
+	returned. It should be used by methods of View and subclasses (instead of
+	directly referring to the viewport) unless it is known that a viewport actually
+	exists. It should not be used outside of View or subclasses because the
+	viewport is not sharable."
+
+	viewport == nil ifTrue: [viewport _ self transform: self getWindow].
+	^viewport!
+getWindow
+	"Returns the Rectangle that represents the window of this View. If no window
+	has been specified, a default window (see View|defaultWindow) is created,
+	saved, and returned.
+	Should be used by methods of View and subclasses to access the View window
+	instead of directly accessing the field unless it is known that a window
+	actually exists. It is not to be used outside of View (or subclasses) because the
+	window is not sharable. View|window should be used for outside access to the
+	window."
+
+	window == nil ifTrue: [self setWindow: self defaultWindow].
+	^window!
+isCyclic: aView
+	"Answers true if aView is the same as this View or its superView, false
+	otherwise. "
+
+	self == aView ifTrue: [^true].
+	self isTopView ifTrue: [^false].
+	^superView isCyclic: aView!
+setTransformation: aTransformation
+	"Sets the View's local transformation to aTransformation, unlocks the View
+	(see View|unlock) and sets the viewport to undefined (this forces it to be
+	recomputed when needed).  Should be used instead of setting the
+	transformation directly."
+
+	transformation _ aTransformation.
+	self unlock.
+	viewport _ nil!
+setWindow: aWindow
+	"Sets the View's window to aWindow and unlocks the View (see View|unlock).
+	View|setWindow should be used by methods of View and subclasses to set the
+	View window (rather than directly setting the instance variable) to insure
+	that the View is unlocked."
+
+	window _ aWindow.
+	viewport _ nil.
+	self unlock!
+superView: aView
+	"Sets the View's superView to aView and unlocks the View (see View|unlock).
+	It is sent by View|addSubView:  in order to properly set all the links."
+
+	superView _ aView.
+	self unlock!
+"-----------------------------------"!
+!View methodsFor: 'scrolling'!
+scrollBy: aPoint
+	"The x component of aPoint specifies the amount of scrolling in the x direction;
+	the y component specifies the amount of scrolling in the y direction. The amounts
+	are specified in the receiver's local coordinate system.
+	Scroll the receiver up or down, left or right. The window of the receiver is kept
+	stationary and the subViews and other objects in the receiver are translated
+	relative to it. Scrolling doesn't change the insetDisplayBox or the viewport
+	since the change in the transformation is canceled by the change in the
+	window. In other words, all display objects in the view, except the window,
+	are translated by the scrolling operation."
+
+	| aRectangle |
+	aRectangle _ insetDisplayBox.
+	transformation _ transformation scrollBy: aPoint.
+	window _ self getWindow translateBy: aPoint x negated @ aPoint y negated.
+	self unlock.
+	insetDisplayBox _ aRectangle!
+"-----------------------------------"!
+!View methodsFor: 'subView access'!
+firstSubView
+	"Answer the first subView in the receiver's list of subViews if it is not empty,
+	else nil."
+
+	subViews isEmpty
+		ifTrue: [^nil]
+		ifFalse: [^subViews first]!
+lastSubView
+	"Answer the last subView in the receiver's list of subViews if it is not empty,
+	else nil."
+
+	subViews isEmpty
+		ifTrue: [^nil]
+		ifFalse: [^subViews last]!
+subViewContaining: aPoint
+	"Answer the first subView that contains aPoint within its window and answer
+	nil, otherwise. It is typically sent from a Controller in order to determine
+	where to pass control (usually to the Controller of the View returned by
+	View|subViewContaining:). "
+
+	subViews reverseDo:
+		[:aSubView |
+		(aSubView displayBox containsPoint: aPoint) ifTrue: [^aSubView]].
+	^nil!
+subViews
+	"Answer the receiver's collection of subViews."
+
+	^subViews!
+"-----------------------------------"!
+!View methodsFor: 'subView inserting'!
+addSubView: aView
+	"Remove aView from the tree of Views it is in (if any) and adds it to the rear
+	of the list of subViews of the receiver.  Set the superView of aView to be the
+	receiver. It is typically used to build up a hierarchy of Views (a structured
+	picture). An error is generated if aView is the same as the receiver or its
+	superView, etc."
+
+	self addSubView: aView ifCyclic: [self error: 'cycle in subView structure.']!
+addSubView: aSubView above: lowerView
+	"Adds aView (see View|addSubView:) so that it lies above lowerView"
+	self addSubView: aSubView
+		align: aSubView viewport bottomLeft
+		with: lowerView viewport topLeft!
+addSubView: aSubView align: aPoint1 with: aPoint2
+	"Add aView to the receiver's list of subViews (see View|addSubView:) and
+	translate aView so that aPoint1 coincides with aPoint2. It is typically used to
+	build up a hierarchy of Views (a structured picture). Normally, aPoint1 is a
+	point on aView's viewport (e.g. aView viewport topLeft, etc.), and aPoint2 is
+	either an arbitrary point in the receiver's coordinate system or a point on the
+	receiver's window (e.g. self window topRight, etc)."
+
+	self addSubView: aSubView.
+	aSubView align: aPoint1 with: aPoint2!
+addSubView: aSubView below: lowerView
+	"Adds aView (see View|addSubView:) so that it lies below lowerView"
+	self addSubView: aSubView
+		align: aSubView viewport topLeft
+		with: lowerView viewport bottomLeft!
+addSubView: aView ifCyclic: exceptionBlock
+	"Remove aView from the tree of Views it is in (if any) and add it to the rear of the
+	list of subViews of the receiver.  Set the superView of aView to be the receiver.
+	It is typically used to build up a hierarchy of Views (a structured picture). An
+	error is generated if aView is the same as the receiver or its superView, etc."
+
+	(self isCyclic: aView)
+		ifTrue: [exceptionBlock value]
+		ifFalse:
+			[aView removeFromSuperView.
+			subViews addLast: aView.
+			aView superView: self]!
+addSubView: aView in: aRelativeRectangle borderWidth: width
+
+	"I make 'aView' into a subview. I use 'aRelativeRectangle' and the super view's window to compute (1) a viewport within the superview for 'aView' and (2) the window extent for 'aView'.
+Note: defining the windowing transformation and deriving the viewport is logically equivalent but does not seem to be easily done"
+
+	| subViewPort subWindow |
+	self addSubView: aView ifCyclic: [self error: 'cycle in subView structure.'].
+	aView borderWidth: width.
+	subViewPort _ self window extent * aRelativeRectangle origin
+			corner: self window extent * aRelativeRectangle corner.
+	subWindow _ 0 @ 0 extent: (self window extent * aRelativeRectangle extent).
+	aView window: subWindow viewport: subViewPort!
+addSubView: aSubView toLeftOf: rightView
+	"Adds aView (see addSubView:) so that it lies to the left of rightView."
+	self addSubView: aSubView
+		align: aSubView viewport topRight
+		with:  rightView viewport topLeft!
+addSubView: aSubView toRightOf: leftView
+	"Adds aView (see addSubView:) so that it lies to the right of leftView"
+	self addSubView: aSubView
+		align: aSubView viewport topLeft
+		with: leftView viewport topRight!
+addSubView: aView viewport: aViewport
+	"Add aView to the receiver's list of subViews (see View|addSubView:) and
+	applies to aView a scale and translation computed from its window and
+	aViewport (such that its window fills aViewport)."
+
+	self addSubView: aView.
+	aView window: aView window viewport: aViewport!
+addSubView: aView window: aWindow viewport: aViewport
+	"Add aView to the receiver's list of subViews (see View|addSubView:) and
+	applies to aView a scale and translation computed from aWindow and
+	aViewport (such that aWindow fills aViewport)."
+
+	self addSubView: aView.
+	aView window: aWindow viewport: aViewport!
+insertSubView: aSubView above: lowerView
+	"Adds aView (see View|addSubView:) so that it lies above lowerView"
+	self insertSubView: aSubView before: lowerView ifCyclic: [self error: 'cycle in subView structure.'].
+	aSubView
+		align: aSubView viewport bottomLeft
+			with: lowerView viewport topLeft.!
+insertSubView: aView before: anotherView ifCyclic: exceptionBlock
+	"Remove aView from the tree of Views it is in (if any) and add it to the rear of the list of subViews of the receiver.  Set the superView of aView to be the receiver.   It is typically used to build up a hierarchy of Views (a structured picture). An  error is generated if aView is the same as the receiver or its superView, etc."
+
+	(self isCyclic: aView)
+		ifTrue: [exceptionBlock value]
+		ifFalse:
+			[aView removeFromSuperView.
+			subViews add: aView before: anotherView.
+			aView superView: self]!
+"-----------------------------------"!
+!View methodsFor: 'subView removing'!
+releaseSubView: aView
+	"Delete aView from the receiver's list of subViews and send it the message
+	'release' (so that it can break up cycles with subViews, etc.)"
+
+	self removeSubView: aView.
+	aView release!
+releaseSubViews
+	"Release (see View|releaseSubView: ) all subViews in the receiver's list of
+	subViews."
+
+	subViews do: [:aView | aView release].
+	self resetSubViews!
+removeFromSuperView
+	"Delete the receiver from its superView's collection of subViews."
+
+	superView ~= nil ifTrue: [superView removeSubView: self]!
+removeSubView: aView
+	"Remove aView from the receiver's list of subViews.
+	 If the list of subViews does not contain aView, an error window is created."
+
+	subViews remove: aView.
+	aView superView: nil.
+	aView unlock!
+removeSubViews
+	"Remove all the receiver's subViews."
+
+	subViews do:
+		[:aView |
+		aView superView: nil.
+		aView unlock].
+	self resetSubViews!
+"-----------------------------------"!
+!View methodsFor: 'superView access'!
+isTopView
+	"Answer true if the receiver is a top view, that is, if it has no superView."
+
+	^superView == nil!
+resetSubViews
+	"Set the list of subviews to an empty collection."
+
+	subViews _ OrderedCollection new!
+superView
+	"Answer the superView of the receiver."
+	^superView!
+topView
+	"Answer the root of the tree of Views in which the receiver is a node.
+	The root of the tree is found by going up the superView path until reaching
+	a View whose superView is nil."
+
+	superView == nil
+		ifTrue: [^self]
+		ifFalse: [^superView topView]!
+"-----------------------------------"!
+!View methodsFor: 'testing'!
+containsPoint: aPoint
+	"Answer true if aPoint is within the receiver's display box,
+	and answer false, otherwise. It is sent to a View's
+	subViews by View|subViewAt: in order to determine which subView
+	contains the cursor point (so that, for example, control can be pass down to
+	that subView's controller)."
+
+	^self displayBox containsPoint: aPoint!
+"-----------------------------------"!
+!View methodsFor: 'transforming'!
+align: aPoint1 with: aPoint2
+	"Add a translation of (aPoint2 - aPoint1) to the receiver's local transformation.
+	The point in the receiver's coordinate system that previously was transformed
+	to aPoint1 in the superView's coordinate system will now be transformed to
+	aPoint2 in the superView's coordinate system. Other points will be translated
+	by the same amount. It is normally used when adding subViews to their
+	superView in order to line up the Viewport of one subView with that of
+	another subView (see View|addSubView:align:with:). aPoint1 and aPoint2
+	are usually points on the viewports that are to be aligned. For example,
+	'subView2 align: subView2 viewport topLeft with: subView1 viewport
+	topRight' would be used to place the viewport of subView2 next to the
+	viewport of subView1 with the topLeft and topRight corners, respectively,
+	coinciding. It is also possible to align the viewport of a subView with the
+	window of the superView, e.g. 'subView align: subView viewport center
+	with: superView window center'. View|align:with: assumes that the view
+	has been properly scaled, if necessary, to match its superView (see
+	View|scaleBy:). Typically, the coordinate systems of the receiver and its
+	superView will differ only by a translation offset so that no scaling is
+	necessary. "
+
+	self setTransformation: (transformation align: aPoint1 with: aPoint2)!
+scale: aScale translation: aTranslation
+	"The x component of aScale (a Point) specifies the scale (translation) in the
+	x direction; the y component specifies the scale (translation) in the y direction.
+	aScale can optionally be an instance of Integer or Float in order to specify uniform
+	scaling in both directions.
+
+	Create a new local transformation for the receiver with a scale factor of aScale and
+	a translation offset of aTranslation. When the transformation is applied (see
+	View|transform:), the scale is applied first, followed by the translation. It is
+	typically used when building a superView from its subViews in order to line
+	up the viewports of the subViews in the desired way. If no scaling is required
+	between subView and superView, then View|align:with: is often more
+	convenient to use."
+
+	self setTransformation:
+		(WindowingTransformation scale: aScale translation: aTranslation)!
+scaleBy: aScale
+	"The x component of aScale (a Point) specifies the scale in the x direction;
+	the y component specifies the scale in the y direction. aScale can, optionally,
+	be an instance of Integer or Float in order to specify uniform scaling in both
+	directions. Scales the View by aScale. The scale is concatenated with the current
+	transformation of the receiver and is applied when View|transform is sent. This
+	happens automatically in the process of displaying the receiver, for example."
+
+	self setTransformation: (transformation scaleBy: aScale)!
+transform: anObject
+	"Apply the local transformation of the receiver to anObject and answer the
+	resulting transformation.  It is used to get the superView coordinates of an object.
+	For example, the viewport is equal to the window transformed."
+
+	^transformation applyTo: anObject!
+transformation
+	"Answer a copy of the receiver's local transformation."
+	^transformation copy!
+transformation: aTransformation
+	"Set the receiver's local transformation to a copy of aTransformation, unlock the
+	receiver (see View|unlock) and set the viewport to undefined (this forces it to be
+	recomputed when needed)."
+
+	self setTransformation: aTransformation copy!
+translateBy: aPoint
+	"Translate the receiver by aPoint. The translation is concatenated with the
+	current transformation of the receiver and is applied when View|transform is
+	sent. This happens automatically in the process of displaying the receiver."
+
+	self setTransformation: (transformation translateBy: aPoint)!
+window: aWindow viewport: aViewport
+	"Set the receiver's window to aWindow, set its viewport to aViewport, and
+	create a new local transformation for the receiver based on aWindow and
+	aViewport. The receiver is scaled and translated so that aWindow, when
+	transformed, coincides with aViewport.
+	It is used to position a subView's window within some specific region of its
+	superView's area. For example, 'subView window: aRectangle1 viewport:
+	aRectangle2' sets subView's window to aRectangle1, its viewport to
+	aRectangle2, and its local transformation to one that transforms aRectangle1
+	to aRectange2."
+
+	self window: aWindow.
+	self setTransformation:
+		(WindowingTransformation window: aWindow viewport: aViewport).
+	self getViewport!
+"-----------------------------------"!
+!View methodsFor: 'updating'!
+update
+	"Normally sent by the receiver's model in order to notify the receiver of a change in
+	the model's state.  Subclasses implement this message to do particular update actions."
+
+	self update: self!
+update: aParameter
+	"Normally sent by the receiver's model (via 'View|update') in order to notify the
+	receiver that the state of the model has changed.
+	View|update: should be redefined in a subclass if some specific action is to take
+	place when the model changes. A typical action that might be required is to
+	redisplay the receiver."
+
+	^self!
+"-----------------------------------"!
+!View methodsFor: 'viewport access'!
+viewport
+	"Answer a copy of the receiver's viewport."
+	^self getViewport copy!
+"-----------------------------------"!
+!View methodsFor: 'window access'!
+defaultWindow
+	"Build the minimum Rectangle that encloses all the windows of the receiver's
+	subViews. The answer is a Rectangle obtained by expanding this
+	minimal Rectangle by the borderWidth of the receiver. If the receiver has no
+	subViews, then a Rectangle enclosing the entire display screen is answered.
+	It is used internally by View methods if no window has been specified for the
+	View.  Specialized subclasses of View should redefine
+	View|defaultWindow to handle the default case for instances that have no
+	subViews. "
+
+	| aRectangle |
+	subViews isEmpty ifTrue: [^DisplayScreen boundingBox].
+	aRectangle _ self firstSubView viewport.
+	subViews do: [:aView | aRectangle _ aRectangle merge: aView viewport].
+	^aRectangle expandBy: borderWidth!
+insetWindow
+	"Answer a Rectangle that is obtained by insetting the receiver's window
+	rectangle by the border width."
+
+	^self getWindow insetBy: borderWidth!
+window
+	"Answer a copy of the receiver's window."
+	^self getWindow copy!
+window: aWindow
+	"Set the receiver's window to a copy of aWindow."
+	self setWindow: aWindow copy!

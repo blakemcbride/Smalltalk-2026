@@ -1,0 +1,61 @@
+Object subclass: #Magnitude
+  instanceVariableNames: ''
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Numeric-Magnitudes'!
+Magnitude class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+Magnitude comment:
+'This abstract class assists subclasses which measure something linear like dates or times.'!
+"-----------------------------------"!
+!Magnitude methodsFor: 'comparing'!
+< aMagnitude
+	"Compare the receiver with the argument and answer with true if the
+	receiver is less than the argument. Otherwise answer false."
+
+	^self subclassResponsibility!
+<= aMagnitude
+	"Compare the receiver with the argument and answer with true if the
+	receiver is less than or equal to the argument. Otherwise answer false."
+
+	^(self > aMagnitude) not!
+= aMagnitude
+	"Compare the receiver with the argument and answer with true if the
+	receiver is equal to the argument. Otherwise answer false."
+
+	^self subclassResponsibility!
+> aMagnitude
+	"Compare the receiver with the argument and answer with true if the
+	receiver is greater than the argument. Otherwise answer false."
+
+	^aMagnitude < self!
+>= aMagnitude
+	"Compare the receiver with the argument and answer with true if the
+	receiver is greater than or equal to the argument. Otherwise answer false."
+
+	^(self < aMagnitude) not!
+between: min and: max
+	"Answer whether the receiver is less than or equal to the argument, max,
+	and greater than or equal to the argument, min."
+
+	^self >= min and: [self <= max]!
+hash
+	"Hash must be redefined whenever = is redefined."
+
+	^self subclassResponsibility!
+hashMappedBy: map
+	"My hash is independent of my oop"
+	^ self hash!
+max: aMagnitude
+	"Answer the receiver or the argument, whichever has the greater magnitude."
+
+	self > aMagnitude
+		ifTrue: [^self]
+		ifFalse: [^aMagnitude]!
+min: aMagnitude
+	"Answer the receiver or the argument, whichever has the lesser magnitude."
+
+	self < aMagnitude
+		ifTrue: [^self]
+		ifFalse: [^aMagnitude]!

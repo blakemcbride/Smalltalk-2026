@@ -1,0 +1,99 @@
+Object subclass: #SharedQueue
+  instanceVariableNames: 'contentsArray readPosition writePosition accessProtect readSynch'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Kernel-Processes'!
+SharedQueue class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+SharedQueue comment:
+'I provide synchronized communication of arbitrary objects between Processes.  An object is sent by sending me the message nextPut: and received by sending me the message next.  If no object has been sent when a next message is sent, the Process requesting the object will be suspended until one is sent.'!
+"-----------------------------------"!
+!SharedQueue class methodsFor: 'instance creation'!
+new
+	"Answer a new instance of SharedQueue that has 10 elements."
+
+	^self new: 10!
+new: anInteger
+	^super new init: anInteger!
+"-----------------------------------"!
+!SharedQueue methodsFor: 'accessing'!
+next
+	"Answer the object that was sent through the receiver first and has not yet
+	been received by anyone.  If no object has been sent, suspend the
+	requesting process until one is."
+
+	| value |
+	readSynch wait.
+	accessProtect
+		critical: [readPosition = writePosition
+					ifTrue:
+						[self error: 'Error in SharedQueue synchronization'.
+						 value _ nil]
+					ifFalse:
+						[value _ contentsArray at: readPosition.
+						 contentsArray at: readPosition put: nil.
+						 readPosition _ readPosition + 1]].
+	^value!
+nextPut: value
+	"Send value through the receiver.  If a Process has been suspended waiting to
+	receive a value through the receiver, allow it to proceed."
+
+	accessProtect
+		critical: [writePosition > contentsArray size
+						ifTrue: [self makeRoomAtEnd].
+				 contentsArray at: writePosition put: value.
+				 writePosition _ writePosition + 1].
+	readSynch signal.
+	^value!
+peek
+	"Answer the object that was sent through the receiver first and has not yet
+	been received by anyone but do not remove it from the receiver. If no object has
+	been sent, suspend the requesting process until one is."
+
+	| value |
+	accessProtect
+		critical: [readPosition >= writePosition
+					ifTrue: [readPosition _ 1.
+							writePosition _ 1.
+							value _ nil]
+					ifFalse: [value _ contentsArray at: readPosition]].
+	^value!
+size
+	"Answer the number of objects that have been sent through the
+	receiver and not yet received by anyone."
+
+	^writePosition - readPosition!
+"-----------------------------------"!
+!SharedQueue methodsFor: 'initialize-release'!
+release
+	contentsArray _ nil!
+"-----------------------------------"!
+!SharedQueue methodsFor: 'private'!
+init: size
+	contentsArray _ Array new: size.
+	readPosition _ 1.
+	writePosition _ 1.
+	accessProtect _ Semaphore forMutualExclusion.
+	readSynch _ Semaphore new!
+makeRoomAtEnd
+	| contentsSize |
+	readPosition = 1
+		ifTrue:
+			[contentsArray grow]
+		ifFalse:
+			[contentsSize _ writePosition - readPosition.
+			1 to: contentsSize do:
+				[:index |
+				contentsArray
+					at: index
+					put: (contentsArray at: index + readPosition - 1)].
+			readPosition _ 1.
+			writePosition _ contentsSize + 1]!
+"-----------------------------------"!
+!SharedQueue methodsFor: 'testing'!
+isEmpty
+	"Answer whether any objects have been sent through the receiver
+	and not yet received by anyone."
+
+	^readPosition = writePosition!

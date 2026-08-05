@@ -1,0 +1,70 @@
+Form subclass: #DisplayScreen
+  instanceVariableNames: ''
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Graphics-Display Objects'!
+DisplayScreen class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+DisplayScreen comment:
+'There is only one instance of me, CurrentDisplay.  It is a global and is used to handle general user requests to deal with the whole display screen.  Although I offer no protocol, my name provides a way to distinguish this special instance from all other Forms.'!
+"-----------------------------------"!
+!DisplayScreen class methodsFor: 'current display'!
+currentDisplay: form
+	"Make the argument, form, be the form representing the current display
+	screen.  Create an error if form is not an instance of me."
+
+	form class == self
+		ifTrue:
+			[form bits class == DisplayBitmap
+				ifTrue:
+					[Display become: form.
+					Display beDisplay]
+				ifFalse:
+					[self error: 'bitmap should be DisplayBitmap']]
+		ifFalse: [self error: 'form should be DisplayForm']!
+displayExtent: extent
+	"Make the width and height of the current display screen form be extent."
+
+	| w h |
+	w _ extent x truncateTo: 32.
+	h _ extent y truncateTo: 2.
+	DisplayScreen currentDisplay:
+		(DisplayScreen new
+			extent: w @ 16
+			offset: 0 @ 0
+			bits: (DisplayBitmap new: w // 16 * 16)).
+	"shrink to 16 to release old bitmap"
+	DisplayScreen currentDisplay:
+		(DisplayScreen new
+			extent: w @ h
+			offset: 0 @ 0
+			bits: (DisplayBitmap new: w // 16 * h)).
+	"now grow to new size"
+	ScheduledControllers restore!
+displayHeight: height
+	"Make the height of the current display screen form be the argument, height."
+
+	^self displayExtent: self boundingBox width @ height!
+"-----------------------------------"!
+!DisplayScreen class methodsFor: 'display box access'!
+boundingBox
+	"Answer the bounding box for the form representing the current display screen."
+	^Display boundingBox!
+"-----------------------------------"!
+!DisplayScreen methodsFor: 'displaying'!
+beDisplay
+	"Tell the interpreter to use the receiver as the current display image.  Fail if the
+	form is too wide to fit on the physical display.  Essential.  See Object
+	documentation whatIsAPrimitive."
+
+	<primitive: 102>
+	self primitiveFailed!
+flash: aRectangle
+	"Complement twice the area of the screen defined by the argument, aRectangle."
+
+	2 timesRepeat:
+		[self fill: aRectangle
+			rule: Form reverse
+			mask: Form black.
+		(Delay forMilliseconds: 60) wait]!

@@ -1,0 +1,60 @@
+Boolean subclass: #True
+  instanceVariableNames: ''
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Kernel-Objects'!
+True class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+True comment:
+'I describe the behavior of my sole instance, true'!
+"-----------------------------------"!
+!True methodsFor: 'controlling'!
+and: alternativeBlock
+	"Nonevaluating conjunction -- answer the value of alternativeBlock since
+	the receiver is true."
+
+	^alternativeBlock value!
+ifFalse: alternativeBlock
+	"Since the condition is true, the value is the true alternative, which is nil.
+	Execution does not actually reach here because the expression is compiled
+	in-line."
+
+	^nil!
+ifFalse: falseAlternativeBlock ifTrue: trueAlternativeBlock
+	"Answer the value of trueAlternativeBlock. Execution does not
+	actually reach here because the expression is compiled in-line."
+
+	^trueAlternativeBlock value!
+ifTrue: alternativeBlock
+	"Answer the value of alternativeBlock. Execution does not actually
+	reach here because the expression is compiled in-line."
+
+	^alternativeBlock value!
+ifTrue: trueAlternativeBlock ifFalse: falseAlternativeBlock
+	"Answer with the value of trueAlternativeBlock. Execution does not
+	actually reach here because the expression is compiled in-line."
+
+	^trueAlternativeBlock value!
+or: alternativeBlock
+	"Nonevaluating disjunction -- answer true since the receiver is true."
+
+	^self!
+"-----------------------------------"!
+!True methodsFor: 'logical operations'!
+& alternativeObject
+	"Evaluating conjunction -- answer alternativeObject since receiver is true."
+
+	^alternativeObject!
+not
+	"Negation--answer false since the receiver is true."
+
+	^false!
+| aBoolean
+	"Evaluating disjunction (OR) -- answer true since the receiver is true."
+
+	^self!
+"-----------------------------------"!
+!True methodsFor: 'printing'!
+printOn: aStream
+	aStream nextPutAll: 'true'!

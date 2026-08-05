@@ -1,0 +1,86 @@
+View subclass: #BinaryChoiceView
+  instanceVariableNames: ''
+  classVariableNames: 'ThumbsDown ThumbsUp'
+  poolDictionaries: ''
+  category: 'Interface-Menus'!
+BinaryChoiceView class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+BinaryChoiceView comment:
+'I am a view of a BinaryChoice.  I display a question and two switches, yes and no, indicating choices the user can make.'!
+"-----------------------------------"!
+!BinaryChoiceView class methodsFor: 'class initialization'!
+initialize
+	ThumbsUp _
+		Cursor
+			extent: 16@16
+			fromArray:
+				#(16 104 72 120 136 136 3980 4227 8192 16128 8192 16128 8192 7943 2056 4080 )
+			offset: -15@0.
+	ThumbsDown _
+		Cursor
+			extent: 16@16
+			fromArray:
+				#(4080 2056 7943 8192 16128 8192 16128 8192 4227 3980 136 136 120 72 104 16 )
+			offset: 0@0
+	"BinaryChoiceView initialize"!
+"-----------------------------------"!
+!BinaryChoiceView class methodsFor: 'instance creation'!
+openOn: aBinaryChoice message: messageString displayAt: originPoint centered: centered
+	"Answer an instance of me that displays aBinaryChoice asking the question
+	messageString.  If the argument centered, a Boolean, is false, display the instance
+	with top left corner at originPoint;  otherwise, display it with its center at
+	originPoint.  If necessary, translate so the view is completely on the screen.
+	Do not schedule, rather take control immediately and insist that the user respond."
+
+	| topView messageView switchView savedArea |
+	messageView _ DisplayTextView new model: messageString asDisplayText.
+	messageView insideColor: Form white.
+	messageView controller: NoController new.
+	messageView centered.
+	switchView _
+		self buildSwitchesFor: aBinaryChoice width: messageView window width.
+	topView _ self new model: aBinaryChoice.
+	topView addSubView: messageView.
+	topView addSubView: switchView below: messageView.
+	topView
+		align: (centered
+				ifTrue: [switchView viewport center]
+				ifFalse: [topView viewport topLeft])
+		with: originPoint.
+	topView borderWidth: 2.
+	topView translateBy:
+		(topView displayBox amountToTranslateWithin: Display boundingBox).
+	topView insideColor: Form white.
+	savedArea _ Form fromDisplay: topView displayBox.
+	topView display.
+	topView controller startUp.
+	topView release.
+	savedArea displayOn: Display at: topView viewport topLeft!
+"-----------------------------------"!
+!BinaryChoiceView class methodsFor: 'private'!
+buildSwitchesFor: aBinaryChoice	width: anInteger
+	|switchView yesSwitchView noSwitchView|
+	switchView _ View new model: aBinaryChoice.
+	switchView controller: BinaryChoiceController new.
+	yesSwitchView _ SwitchView new model: aBinaryChoice.
+	yesSwitchView borderWidthLeft: 0 right: 2 top: 0 bottom: 0.
+	yesSwitchView selector: #active.
+	yesSwitchView controller selector: #selectTrue.
+	yesSwitchView controller cursor: ThumbsUp.
+	yesSwitchView label: 'yes' asParagraph.
+	yesSwitchView window: (0@0 extent: anInteger//2 @ yesSwitchView window height).
+	noSwitchView _ SwitchView new model: aBinaryChoice.
+	noSwitchView selector: #active.
+	noSwitchView controller selector: #selectFalse.
+	noSwitchView controller cursor: ThumbsDown.
+	noSwitchView label: 'no' asParagraph.
+	noSwitchView window: (0@0 extent: anInteger//2 @ noSwitchView window height).
+	switchView addSubView: yesSwitchView.
+	switchView addSubView: noSwitchView toRightOf: yesSwitchView.
+	switchView borderWidthLeft: 0 right: 0 top: 2 bottom: 0.
+	^switchView!
+"-----------------------------------"!
+!BinaryChoiceView methodsFor: 'controller access'!
+defaultControllerClass
+	^BinaryChoiceController!

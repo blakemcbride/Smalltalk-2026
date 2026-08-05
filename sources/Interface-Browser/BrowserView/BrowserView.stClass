@@ -1,0 +1,149 @@
+StandardSystemView subclass: #BrowserView
+  instanceVariableNames: ''
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Interface-Browser'!
+BrowserView class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+BrowserView comment:
+'I am a StandardSystemView that provides initialization methods (messages to myself) to create and schedule the various system browsers:  System Browser, System Category Browser, Class Browser, Message Category Browser, Message Browser.'!
+"-----------------------------------"!
+!BrowserView class methodsFor: 'instance creation'!
+openCategoryBrowserOn: aBrowser
+	| topView |
+	(topView _ self model: aBrowser label: 'Category Browser' minimumSize: 400@250)
+		addCategoryView: (0@0 extent: 0.3@0.06) on: aBrowser readOnly: true;
+		addClassView: (0@0.06 extent: 0.3@0.28) on: aBrowser readOnly: false;
+		addMetaView: (0@0.34 extent: 0.3@0.06) on: aBrowser readOnly: false;
+		addProtocolView: (0.3@0 extent: 0.3@0.4) on: aBrowser readOnly: false;
+		addSelectorView: (0.6@0 extent: 0.4@0.4) on: aBrowser readOnly: false;
+		addTextView: (0@0.4 extent: 1.0@0.6) on: aBrowser initialSelection: nil.
+	topView controller open!
+openClassBrowserOn: aBrowser
+	| topView |
+	(topView _ self model: aBrowser label: 'Class Browser' minimumSize: 400@250)
+		addClassView: (0@0 extent: 0.5@0.1) on: aBrowser readOnly: true;
+		addMetaView: (0.5@0 extent: 0.5@0.1) on: aBrowser readOnly: false;
+		addProtocolView: (0@0.1 extent: 0.5@0.3) on: aBrowser readOnly: false;
+		addSelectorView: (0.5@0.1 extent: 0.5@0.3) on: aBrowser readOnly: false;
+		addTextView: (0@0.4 extent: 1.0@0.6) on: aBrowser initialSelection: nil.
+	topView controller open!
+openListBrowserOn: aCollection label: labelString
+	self openListBrowserOn: aCollection label: labelString initialSelection: nil!
+openListBrowserOn: aCollection label: labelString initialSelection: sel
+	"Create and schedule a Method List browser for the methods in aCollection.
+	If the collection is empty, print -Nobody- in the System Transcript."
+	| topView aBrowser label |
+	aCollection isEmpty ifTrue: [^ Transcript cr; show: 'Nobody'].
+	aBrowser _ MethodListBrowser new on: aCollection.
+	label _ (labelString isKindOf: LookupKey)
+				ifTrue: [labelString key]
+				ifFalse: [labelString asString].
+	topView _ self model: aBrowser label: label minimumSize: 300@100.
+	topView
+		addMethodView: (0@0 extent: 1.0@0.25) on: aBrowser readOnly: false;
+		addTextView: (0@0.25 extent: 1@0.75) on: aBrowser initialSelection: sel.
+	topView controller open!
+openMethodBrowserOn: aBrowser
+	| topView |
+	(topView _ self model: aBrowser label: 'Method Browser on ' , aBrowser selectedClass name
+					minimumSize: 250@120)
+		addSelectorView: (0@0 extent: 1@0.15) on: aBrowser readOnly: true;
+		addTextView: (0@0.15 extent: 1@0.85) on: aBrowser initialSelection: nil.
+	topView controller open!
+openMethodBrowserOn: aBrowser withController: aController
+	"aController may contain changes that haven't already been accepted"
+	| topView textView |
+	topView _ self model: aBrowser
+			label: 'Method Browser on ' , aBrowser selectedClass name
+			minimumSize: 250@120.
+	topView addSelectorView: (0@0 extent: 1@0.15) on: aBrowser readOnly: true.
+	textView _ CodeView on: aBrowser aspect: #text change: #acceptText:from:
+				menu: #textMenu initialSelection: nil.
+	textView controller: aController.
+	topView addSubView: textView in: (0@0.15 extent: 1@0.85) borderWidth: 1.
+	topView controller open!
+openOn: anOrganizer
+	"BrowserView openOn: SystemOrganization."
+	| topView aBrowser topY bottomY metaY |
+	aBrowser _ Browser new on: anOrganizer.
+	topY _ 0.35.		"change this to re-proportion system browser"
+	bottomY _ 1 - topY.
+	metaY _ 0.05.		"change this to re-proportion system browser"
+	(topView _ self model: aBrowser label: 'System Browser' minimumSize: 400@250)
+		addCategoryView: (0@0 extent: 0.25@topY) on: aBrowser readOnly: false;
+		addClassView: (0.25@0 extent: 0.25@(topY - metaY)) on: aBrowser readOnly: false;
+		addMetaView: (0.25@(topY - metaY) extent: 0.25@metaY) on: aBrowser readOnly: false;
+		addProtocolView: (0.5@0 extent: 0.25@topY) on: aBrowser readOnly: false;
+		addSelectorView: (0.75@0 extent: 0.25@topY) on: aBrowser readOnly: false;
+		addTextView: (0@topY extent: 1.0@bottomY) on: aBrowser initialSelection: nil.
+	topView controller open!
+openOn: aBrowser withController: aController
+	"aController may contain changes that haven't already been accepted"
+	| topView textView |
+	(topView _ self model: aBrowser label: 'System Browser' minimumSize: 400@250)
+		addCategoryView: (0@0 extent: 0.25@0.4) on: aBrowser readOnly: false;
+		addClassView: (0.25@0 extent: 0.25@0.34) on: aBrowser readOnly: false;
+		addMetaView: (0.25@0.34 extent: 0.25@0.06) on: aBrowser readOnly: false;
+		addProtocolView: (0.5@0 extent: 0.25@0.4) on: aBrowser readOnly: false;
+		addSelectorView: (0.75@0 extent: 0.25@0.4) on: aBrowser readOnly: false.
+	textView _ CodeView on: aBrowser aspect: #text change: #acceptText:from:
+				menu: #textMenu initialSelection: nil.
+	textView controller: aController.
+	topView addSubView: textView in: (0@0.4 extent: 1@0.6) borderWidth: 1.
+	topView controller open!
+openProtocolBrowserOn: aBrowser
+	| topView |
+	(topView _ self model: aBrowser label: 'Protocol Browser on ' , aBrowser selectedClass name
+					minimumSize: 400@200)
+		addProtocolView: (0@0 extent: 1@0.1) on: aBrowser readOnly: true;
+		addSelectorView: (0@0.1 extent: 1@0.3) on: aBrowser readOnly: false;
+		addTextView: (0@0.4 extent: 1.0@0.6) on: aBrowser initialSelection: nil.
+	topView controller open!
+"-----------------------------------"!
+!BrowserView methodsFor: 'subview creation'!
+addCategoryView: area on: aBrowser readOnly: RO
+	self addSubView:
+		(SelectionInListView on: aBrowser printItems: false oneItem: RO
+			aspect: #category change: #category: list: #categoryList
+			menu: #categoryMenu initialSelection: #category)
+		in: area borderWidth: 1!
+addClassView: area on: aBrowser readOnly: RO
+	self addSubView:
+		(SelectionInListView on: aBrowser printItems: false oneItem: RO
+			aspect: #className change: #className: list: #classList
+			menu: #classMenu initialSelection: #className)
+		in: area borderWidth: 1!
+addMetaView: area on: aBrowser readOnly: ingored
+	| mid |
+	mid _ (area left + area right) * 0.5.
+	self addSubView: (BooleanView on: aBrowser aspect: #meta
+			label: 'instance' asText change: #meta: value: false)
+		in: (area copy right: mid) borderWidth: 1.
+	self addSubView: (BooleanView on: aBrowser aspect: #meta
+			label: 'class' asText change: #meta: value: true)
+		in: (area copy left: mid) borderWidth: 1!
+addMethodView: area on: aBrowser readOnly: RO
+	self addSubView:
+		(SelectionInListView on: aBrowser printItems: false oneItem: RO
+			aspect: #methodName change: #methodName: list: #methodList
+			menu: #methodMenu initialSelection: #methodName)
+		in: area borderWidth: 1!
+addProtocolView: area on: aBrowser readOnly: RO
+	self addSubView:
+		(SelectionInListView on: aBrowser printItems: false oneItem: RO
+			aspect: #protocol change: #protocol: list: #protocolList
+			menu: #protocolMenu initialSelection: #protocol)
+		in: area borderWidth: 1!
+addSelectorView: area on: aBrowser readOnly: RO
+	self addSubView:
+		(SelectionInListView on: aBrowser printItems: false oneItem: RO
+			aspect: #selector change: #selector: list: #selectorList
+			menu: #selectorMenu initialSelection: #selector)
+		in: area borderWidth: 1!
+addTextView: area on: aBrowser initialSelection: sel
+	self addSubView:
+			(CodeView on: aBrowser aspect: #text change: #acceptText:from:
+				menu: #textMenu initialSelection: sel)
+		in: area borderWidth: 1!

@@ -1,0 +1,273 @@
+InstructionStream subclass: #Decompiler
+  instanceVariableNames: 'constructor method instVars tempVars constTable stack statements lastPc exit lastJumpPc lastReturnPc limit hasValue'
+  classVariableNames: 'ArgumentFlag CascadeFlag'
+  poolDictionaries: ''
+  category: 'System-Compiler'!
+Decompiler class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+Decompiler comment:
+'I translate CompiledMethods into source code.'!
+"-----------------------------------"!
+!Decompiler class methodsFor: 'class initialization'!
+initialize
+	"Decompiler initialize"
+	CascadeFlag _ 'cascade'.  "A unique object"
+	ArgumentFlag _ 'argument'.  "Ditto"!
+"-----------------------------------"!
+!Decompiler methodsFor: 'control'!
+blockTo: end
+	| exprs block |
+	"Decompile a range of code as in statementsTo:, but return a block node"
+	exprs _ self statementsTo: end.
+	block _ constructor codeBlock: exprs returns: lastReturnPc = lastPc.
+	lastReturnPc _ -1.  "So as not to mislead outer calls"
+	^block!
+checkForBlock: receiver
+	"We just saw a blockCopy: message.  Check for a following block."
+	| savePc jump args argPos block |
+	receiver == constructor codeThisContext ifFalse: [^false].
+	savePc _ pc.
+	(jump _ self interpretJump) notNil
+		ifFalse:
+			[pc _ savePc.  ^nil].
+	"Definitely a block"
+	jump _ jump + pc.
+	argPos _ statements size.
+	[self willStorePop]
+		whileTrue:
+			[stack addLast: ArgumentFlag.  "Flag for doStore:"
+			self interpretNextInstructionFor: self].
+	args _ Array new: statements size - argPos.
+	1 to: args size do: [:i | args at: i put: statements removeLast].  "Retrieve args"
+	block _ self blockTo: jump.
+	stack addLast: (constructor codeArguments: args block: block).
+	^true!
+statementsTo: end
+	| blockPos stackPos t |
+	"Decompile the method from pc up to end and return an array of
+	expressions.  If at run time this block will leave a value on
+	the stack, set hasValue to true.  If the block ends with a jump or return,
+	set exit to the destination of the jump, or the end of the method;
+	otherwise, set exit = end.  Leave pc = end."
+	blockPos _ statements size.
+	stackPos _ stack size.
+	[pc < end]
+		whileTrue:
+			[lastPc _ pc.  limit _ end.  "for performs"
+			self interpretNextInstructionFor: self].
+	"If there is an additional item on the stack, it will be the value
+	of this block."
+	(hasValue _ stack size > stackPos)
+		ifTrue:
+			[statements addLast: stack removeLast].
+	lastJumpPc = lastPc ifFalse: [exit _ pc].
+	^self popTo: blockPos!
+"-----------------------------------"!
+!Decompiler methodsFor: 'initialize-release'!
+initSymbols: aClass
+	|  nTemps |
+	constructor
+		method: method
+		class: aClass
+		literals: method literals.
+	constTable _ constructor codeConstants.
+	instVars _ Array new: aClass instSize.
+	"parse the header"
+	nTemps _ method numTemps.
+	tempVars _ Array new: nTemps.
+	1 to: nTemps do: [:i | tempVars at: i put: (constructor codeTemp: i - 1)]!
+"-----------------------------------"!
+!Decompiler methodsFor: 'instruction decoding'!
+blockReturnTop
+	"No action needed"!
+doDup
+	stack last == CascadeFlag
+		ifFalse:
+			["Save position and mark cascade"
+			stack addLast: statements size.
+			stack addLast: CascadeFlag].
+	stack addLast: CascadeFlag!
+doPop
+	statements addLast: stack removeLast!
+doStore: stackOrBlock
+	"Only called internally, not from InstructionStream.  StackOrBlock is
+	stack for store, statements for storePop."
+	| var expr |
+	var _ stack removeLast.
+	expr _ stack removeLast.
+	stackOrBlock addLast: (expr == ArgumentFlag
+		ifTrue: [var]
+		ifFalse: [constructor codeAssignTo: var value: expr])!
+jump: dist
+	exit _ pc + dist.
+	lastJumpPc _ lastPc!
+jump: dist if: condition
+	| savePc elseDist sign elsePc elseStart end cond ifExpr thenBlock elseBlock thenJump elseJump condHasValue n b |
+	elsePc _ lastPc.
+	elseStart _ pc + dist.
+	end _ limit.
+	"Check for bfp-jmp to invert condition.
+	Don't be fooled by a loop with a null body."
+	sign _ condition.
+	savePc _ pc.
+	((elseDist _ self interpretJump) notNil and: [elseDist >= 0 and: [elseStart = pc]])
+		ifTrue: [sign _ sign not.  elseStart _ pc + elseDist]
+		ifFalse: [pc _ savePc].
+	ifExpr _ stack removeLast.
+	thenBlock _ self blockTo: elseStart.
+	condHasValue _ hasValue.
+	"ensure jump is within block (in case thenExpr returns)"
+	thenJump _ exit <= end ifTrue: [exit] ifFalse: [elseStart].
+	"if jump goes back, then it's a loop"
+	thenJump < elseStart
+		ifTrue:
+			["thenJump will jump to the beginning of the while expr.  In the case of
+			while's with a block in the condition, the while expr
+			should include more than just the last expression: find all the
+			statements needed by re-decompiling."
+			pc _ thenJump.
+			b _ self statementsTo: elsePc.
+			"discard unwanted statements from block"
+			b size - 1 timesRepeat: [statements removeLast].
+			statements addLast: (constructor
+					codeMessage: (constructor codeBlock: b returns: false)
+					selector: (constructor codeSelector: (sign ifTrue: [#whileFalse:] ifFalse: [#whileTrue:]) code: #macro)
+					arguments: (Array with: thenBlock)).
+			pc _ elseStart]
+		ifFalse:
+			[elseBlock _ self blockTo: thenJump.
+			elseJump _ exit.
+			"if elseJump is backwards, it is not part of the elseExpr"
+			elseJump < elsePc
+				ifTrue: [pc _ lastPc].
+			cond _ constructor
+						codeMessage: ifExpr
+						selector: (constructor codeSelector: #ifTrue:ifFalse: code: #macro)
+						arguments:
+							(sign
+								ifTrue: [Array with: elseBlock with: thenBlock]
+								ifFalse: [Array with: thenBlock with: elseBlock]).
+			condHasValue
+				ifTrue: [stack addLast: cond]
+				ifFalse: [statements addLast: cond]]!
+methodReturnConstant: value
+	self pushConstant: value; methodReturnTop!
+methodReturnReceiver
+	self pushReceiver; methodReturnTop!
+methodReturnTop
+	exit _ method size + 1.
+	lastJumpPc _ lastReturnPc _ lastPc.
+	statements addLast: stack removeLast!
+popIntoLiteralVariable: value
+	self pushLiteralVariable: value; doStore: statements!
+popIntoReceiverVariable: offset
+	self pushReceiverVariable: offset; doStore: statements!
+popIntoTemporaryVariable: offset
+	self pushTemporaryVariable: offset; doStore: statements!
+pushActiveContext
+	stack addLast: constructor codeThisContext!
+pushConstant: value
+	| node |
+	node _ value == true ifTrue: [constTable at: 2]
+		ifFalse: [value == false ifTrue: [constTable at: 3]
+		ifFalse: [value == nil ifTrue: [constTable at: 4]
+		ifFalse: [constructor codeAnyLiteral: value]]].
+	stack addLast: node!
+pushLiteralVariable: assoc
+	stack addLast: (constructor codeAnyLitInd: assoc)!
+pushReceiver
+	stack addLast: (constTable at: 1)!
+pushReceiverVariable: offset
+	| var |
+	(var _ instVars at: offset + 1) == nil
+		ifTrue:
+			["Not set up yet"
+			instVars at: offset + 1 put: (var _ constructor codeInst: offset)].
+	stack addLast: var!
+pushTemporaryVariable: offset
+	stack addLast: (tempVars at: offset + 1)!
+send: selector super: superFlag numArgs: numArgs
+	| args rcvr selNode msgNode messages |
+	args _ Array new: numArgs.
+	(numArgs to: 1 by: -1) do:
+		[:i | args at: i put: stack removeLast].
+	rcvr _ stack removeLast.
+	superFlag ifTrue: [rcvr _ constructor codeSuper].
+	(selector == #blockCopy: and: [self checkForBlock: rcvr])
+		ifFalse:
+			[selNode _ constructor codeAnySelector: selector.
+			rcvr == CascadeFlag
+				ifTrue:
+					[msgNode _ constructor
+						codeCascadedMessage: selNode
+						arguments: args.
+					stack last == CascadeFlag
+						ifFalse:
+							["Last message of a cascade"
+							statements addLast: msgNode.
+							messages _ self popTo: stack removeLast.  "Depth saved by first dup"
+							msgNode _ constructor
+								codeCascade: stack removeLast
+								messages: messages]]
+				ifFalse:
+					[msgNode _ constructor
+						codeMessage: rcvr
+						selector: selNode
+						arguments: args].
+			stack addLast: msgNode]!
+storeIntoLiteralVariable: assoc
+	self pushLiteralVariable: assoc; doStore: stack!
+storeIntoReceiverVariable: offset
+	self pushReceiverVariable: offset; doStore: stack!
+storeIntoTemporaryVariable: offset
+	self pushTemporaryVariable: offset; doStore: stack!
+"-----------------------------------"!
+!Decompiler methodsFor: 'private'!
+decompile: aSelector in: aClass method: aMethod using: aConstructor
+	| block |
+	constructor _ aConstructor.
+	method _ aMethod.
+	self initSymbols: aClass.  "create symbol tables"
+	method isQuick
+		ifTrue: [block _ self quickMethod]
+		ifFalse:
+			[stack _ OrderedCollection new: method frameSize.
+			statements _ OrderedCollection new: 20.
+			super method: method pc: method initialPC.
+			block _ self blockTo: method endPC + 1.
+			stack isEmpty ifFalse: [self error: 'stack not empty']].
+	^constructor
+		codeMethod: aSelector
+		block: block
+		tempVars: tempVars
+		primitive: method primitive
+		class: aClass!
+popTo: oldPos
+	| t |
+	t _ Array new: statements size - oldPos.
+	(t size to: 1 by: -1) do:
+		[:i | t at: i put: statements removeLast].
+	^t!
+quickMethod
+	^method isReturnSelf
+		ifTrue: [constructor codeBlock:
+				(Array with: (constTable at: 1 "self")) returns: true]
+		ifFalse: [method isReturnField
+			ifTrue: [constructor codeBlock:
+				(Array with: (constructor codeInst: method returnField)) returns: true]
+			ifFalse: [self error: 'improper short method']]!
+"-----------------------------------"!
+!Decompiler methodsFor: 'public access'!
+decompile: aSelector in: aClass
+	^self
+		decompile: aSelector
+		in: aClass
+		method: (aClass compiledMethodAt: aSelector)!
+decompile: aSelector in: aClass method: aMethod
+	"answer with a parse tree (root is a MethodNode) for this method"
+	^self
+		decompile: aSelector
+		in: aClass
+		method: aMethod
+		using: DecompilerConstructor new!

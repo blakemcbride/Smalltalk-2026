@@ -1,0 +1,719 @@
+ScrollController subclass: #ParagraphEditor
+  instanceVariableNames: 'paragraph startBlock stopBlock beginTypeInBlock emphasisHere initialText selectionShowing'
+  classVariableNames: 'CurrentSelection Keyboard TextEditorYellowButtonMenu TextEditorYellowButtonMessages UndoSelection'
+  poolDictionaries: 'TextConstants'
+  category: 'Interface-Text'!
+ParagraphEditor class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+ParagraphEditor comment:
+'I contain the main handling of text editing.  I ought to be used only on smallish paragraphs.
+
+Instance Variables
+
+	paragraph
+<Paragraph>  A pointer to the textForm being edited.  The Paragraph is optimized for managing replacements in it*s stylizedString and for scrolling.
+
+	startBlock
+	stopBlock
+<CharacterBlock>  These variables contain the string indices, characters, and bounding boxes of the starting and stopping characters in the stylizedString which will be operated upon by the next command.
+
+	beginTypeInBlock
+<CharacterBlock>  Used to manage typing and to distinguish selection arising from the last characters typed in from selection with the mouse or which is the result of some special keystroke.
+
+	initialText
+<Text>  A copy of the string held by the Paragraph at the time the text editor was instantiated.  It is currently used to manage the editing of Smalltalk code, and is reinstalled in the Paragraph when a *cancel* is executed and is overwritten when an *accept* is executed."
+
+	selectionState
+<Integer>  1 = on, 0 = off.  Since selection involves raw modification of the bits in the destinationForm of the Paragraph, it must be monitored closely and with care."'!
+"-----------------------------------"!
+!ParagraphEditor class methodsFor: 'class initialization'!
+initialize
+	"Initialize the yellow button menu information, the keyboard map for special
+	control characters, and the shared buffers for copying text across views and
+	managing undo."
+
+	CurrentSelection _ UndoSelection _ Text new.
+	TextEditorYellowButtonMenu _ PopUpMenu labels: 'again
+undo
+copy
+cut
+paste
+accept
+cancel
+align
+fit'
+	lines: #(2 5 7).
+	TextEditorYellowButtonMessages _
+		#(again undo copySelection cut paste accept cancel align fit ).
+	Keyboard _ Array new: 256.
+	Keyboard atAllPut: #normalCharacter:.
+	Keyboard at: Cut asciiValue + 1 put: #cut:.
+	Keyboard at: Paste asciiValue + 1 put: #paste:.
+	Keyboard at: ESC asciiValue + 1 put: #selectCurrentTypeIn:.
+	Keyboard at: BS asciiValue + 1 put: #backspace:.
+	Keyboard at: Ctrlw asciiValue + 1 put: #backWord:.
+	Keyboard at: Ctrlt asciiValue + 1 put: #displayIfTrue:.
+	Keyboard at: Ctrlf asciiValue + 1 put: #displayIfFalse:.
+	Keyboard at: 132 + 1 put: #displayDate:.	"ctrl-d"
+
+	#(159 144 143 128 127 129 131 180 149 135 223 208		"fonts"
+		137 201											"underline, unUnderline"
+		166 230											"bold, unbold"
+		150 214											"italic, unitalic"
+		151												"clear emphasis")
+	do:
+		["CTL-1 thru 9, and 0, CTLSHIFT 1-2
+			CTL-, CTLSHIFT-"
+		:i |	Keyboard at: i + 1 put: #changeEmphasis:].
+
+	#(213 7 218 249 219 15) do:
+		[:i | "ctl open brackets"
+		Keyboard at: i + 1 put: #enclose:].
+	Keyboard at: BS2 asciiValue + 1 put: #leaveBrackets:.
+
+	"ParagraphEditor initialize."!
+"-----------------------------------"!
+!ParagraphEditor class methodsFor: 'instance creation'!
+new
+	"Answer a new instance of me with a null Paragraph to be edited."
+	^ self newParagraph: '' asParagraph!
+newParagraph: aParagraph
+	"Answer an instance of me with aParagraph as the text to be edited. "
+
+	| aParagraphEditor |
+	aParagraphEditor _ super new.
+	aParagraphEditor changeParagraph: aParagraph.
+	^aParagraphEditor!
+"-----------------------------------"!
+!ParagraphEditor methodsFor: 'accessing'!
+copySelection: aText
+	CurrentSelection _ UndoSelection _ aText!
+text
+	"Answer the text of the paragraph being edited."
+	^paragraph text!
+"-----------------------------------"!
+!ParagraphEditor methodsFor: 'basic control sequence'!
+controlInitialize
+	super controlInitialize.
+	startBlock _ paragraph characterBlockForIndex: startBlock stringIndex.
+	stopBlock _ paragraph characterBlockForIndex: stopBlock stringIndex.
+	self initializeSelection.
+	beginTypeInBlock _ nil.!
+controlTerminate
+	super controlTerminate.
+	self closeTypeIn ifTrue: [startBlock _ stopBlock copy].
+	"so leaving and entering window won't select last type-in"!
+"-----------------------------------"!
+!ParagraphEditor methodsFor: 'control defaults'!
+controlActivity
+	self scrollBarContainsCursor
+		ifTrue:
+			[self scroll]
+		ifFalse:
+			[self processKeyboard.
+			self processMouseButtons].!
+isControlActive
+	^super isControlActive & sensor blueButtonPressed not!
+processKeyset
+	"clever trick to remove this method after it is called for the last time"
+	ParagraphEditor removeSelector: #processKeyset!
+"-----------------------------------"!
+!ParagraphEditor methodsFor: 'copying'!
+copy
+	| p c |
+	"Return a copy of me, which goes one level deeper into my paragraph"
+	p _ paragraph.
+	paragraph _ paragraph copy.
+	c _ super copy.
+	paragraph _ p.
+	^ c!
+"-----------------------------------"!
+!ParagraphEditor methodsFor: 'displaying'!
+display
+	"Redisplay the paragraph."
+	| selectionState |
+	selectionState _ selectionShowing.
+	self deselect.
+	paragraph displayOn: Display.
+	selectionState ifTrue: [self select]!
+displayAt: aDisplayPoint clippingBox: clipRectangle rule: ruleInteger mask: aForm
+	"Redisplay the paragraph starting at aDisplayPoint, clipped by the rectangle,
+	clipRectangle.  The characters are displayed with respect to the rule, ruleInteger, and
+	the mask, aForm."
+	self deselect.
+	paragraph
+		displayOn: Display
+		at: aDisplayPoint
+		clippingBox: clipRectangle
+		rule: ruleInteger
+		mask: aForm.
+	self select!
+"-----------------------------------"!
+!ParagraphEditor methodsFor: 'editing'!
+backWord: characterStream
+	"Backspace over the last word--i.e., cut the last word.  Initiated by ctrl w"
+
+	| startIndex |
+	sensor keyboard.		" flush the ctrl-w"
+	characterStream isEmpty
+		ifFalse:
+			[self replaceSelectionWith:
+				(Text string: characterStream contents emphasis: emphasisHere).
+			startBlock _ stopBlock copy.
+			characterStream reset].
+	startIndex _ 1 max: startBlock stringIndex - 1.
+	[startIndex > 1 and: [(paragraph text at: startIndex - 1) asCharacter tokenish]]
+		whileTrue: [startIndex _ startIndex - 1].
+	startBlock _ paragraph characterBlockForIndex: startIndex.
+	beginTypeInBlock _
+		paragraph characterBlockForIndex:
+				(beginTypeInBlock stringIndex min: startIndex).
+	^false!
+backspace: characterStream
+	"Backspace over the last character--i.e., cut the previous character."
+
+	| startIndex |
+	sensor keyboard.			"flush character"
+	characterStream isEmpty
+		ifTrue:
+			[startIndex _ 1 max: startBlock stringIndex - 1.
+			startBlock _ paragraph characterBlockForIndex: startIndex.
+			beginTypeInBlock _
+				paragraph characterBlockForIndex:
+							(beginTypeInBlock stringIndex min: startIndex)]
+		ifFalse: [characterStream skip: -1].
+	^false!
+changeEmphasis: characterStream
+	"Change the emphasis of the current selection or prepare to accept characters with the change in emphasis.  Emphasis change amounts to a font change."
+
+	| oldCode newCode keyboard |
+
+	oldCode _ paragraph text emphasisAt: startBlock stringIndex.
+	((newCode _ #(159 144 143 128 127 129 131 180 149 135 223 208)
+		"CTL 1-9, 0, CTLSHIFT 1-2		-- fonts"
+		indexOf:  ((keyboard _ sensor keyboard) asciiValue)) = 0)
+		ifTrue:	[newCode _ self emphasisDefault: oldCode keyedTo: keyboard].
+	(((paragraph textStyle isFontUnderlined: oldCode)
+		and: [keyboard ~= CtrlShiftMinus		"--unUnderline"])
+			and: [keyboard ~= Ctrlx				"clear emphasis"])
+		ifTrue:	["If font being replaced was underlined, use underlined version
+					of new font, unless unUnderline has just been struck"
+				newCode _ paragraph textStyle underlinedFontFor: newCode].
+
+	startBlock stringIndex = stopBlock stringIndex
+	  ifTrue:  "only change emphasisHere while typing"
+		[emphasisHere _ newCode.
+		self select.
+		^true].
+	self replaceSelectionWith:
+		(Text string: self selection asString emphasis: (newCode max: 1)).
+	self closeTypeIn.
+	self select.
+	^true!
+cut: characterStream
+	"Cut out the current text selection."
+
+	sensor keyboard.	"flush character"
+	self cut.
+	^true!
+displayDate: characterStream
+	"Replace the current text selection with today's date--initiated by ctrl d."
+
+	sensor keyboard.		"flush character"
+	characterStream nextPutAll: Date today printString.
+	^false!
+displayIfFalse: characterStream
+	"Replace the current text selection with the text 'ifFalse:'--initiated by ctrl f."
+
+	sensor keyboard.		"flush character"
+	characterStream nextPutAll: 'ifFalse:'.
+	^false!
+displayIfTrue: characterStream
+	"Replace the current text selection with the text 'ifTrue:'--initiated by ctrl t."
+
+	sensor keyboard.		"flush character"
+	characterStream nextPutAll: 'ifTrue:'.
+	^false!
+enclose: characterStream
+	"Insert or remove bracket characters around the current selection.
+		If null selection, then make a pair of brackets with cursor inside"
+	| char left right startIndex stopIndex which text oldSelection |
+	char _ Sensor keyboard asciiValue.
+	characterStream reset.
+	self deselect.
+	startIndex _ startBlock stringIndex.
+	stopIndex _ stopBlock stringIndex.
+	which _ #(213 7 218 249 219 15) indexOf: char.
+	left _ '([<{"''' at: which.
+	right _ ')]>}"''' at: which.
+	text _ paragraph text.
+	((startIndex > 1 and: [stopIndex <= text size])
+		and:
+		[(text at: startIndex-1) = left and: [(text at: stopIndex) = right]])
+		ifTrue:
+			["already enclosed; strip off brackets"
+			oldSelection _ self selection.
+			self selectFrom: startIndex-1 to: stopIndex; deselect.
+			self replaceSelectionWith: oldSelection.
+			self select]
+		ifFalse:
+			["not enclosed; enclose by matching brackets"
+			self selectAt: startIndex; deselect.
+			self setEmphasisHere.
+			self replaceSelectionWith: (Text string: (String with: left)
+						emphasis: emphasisHere).
+			self selectAt: stopIndex+1; deselect.
+			self setEmphasisHere.
+			self replaceSelectionWith: (Text string: (String with: right)
+						emphasis: emphasisHere).
+			self selectFrom: stopIndex+1 to: stopIndex].
+	^ true!
+leaveBrackets: characterStream
+	"Jump typing cursor over a close-bracket character"
+	| stopIndex nextChar |
+	Sensor keyboard.
+		stopBlock character notNil
+		ifTrue:	[stopIndex _ stopBlock stringIndex.
+				nextChar _ paragraph text at: stopIndex.
+				(')]>}"''' includes: nextChar) ifFalse: [^false].
+				self deselect.
+				startBlock _ stopBlock _ paragraph characterBlockForIndex: stopIndex+1.
+				self select]
+		ifFalse:	[self select].
+	^ true!
+normalCharacter: characterStream
+	"A nonspecial character is to be added to the stream of characters."
+
+	characterStream nextPut: sensor keyboard.
+	^false!
+paste: characterStream
+	"Replace the current text selection by the text in the shared buffer."
+
+	sensor keyboard.		"flush character"
+	self paste.
+	^true!
+readKeyboard
+	"Key struck on the keyboard.  Find out which one and, if special,
+	carry out the associated special action.  Otherwise, add the character to
+	the stream of characters.
+	This also includes fast-echo: while the user is typing, it tries to keep up, even if not
+	exactly correctly.  When the user pauses, it fixes things up."
+
+	| typeAhead nextCharacter line font x w delay expired charType firstWasCR |
+	beginTypeInBlock == nil
+		ifTrue:
+			[UndoSelection _ self selection.
+			beginTypeInBlock _ startBlock copy].
+	self deselect.
+
+	"Prepare for fast-echo loop"
+	typeAhead _ WriteStream on: (String new: 128).
+	line _ (startBlock expandBy: 9999@0) intersect: paragraph visibleRectangle.
+	startBlock = stopBlock
+		ifTrue:		"Only do fast type-in if null selection"
+			[x _ startBlock left.
+			font _ paragraph textStyle fontAt: emphasisHere.
+			firstWasCR _ sensor keyboardPeek = Character cr.
+
+			"Fast echo loop, accumulates chars in typeAhead stream"
+			[delay _ 100.  "wait for small typing pauses:"
+			[sensor keyboardPressed | (delay=0)]
+				whileFalse: [delay _ delay - 1].
+			sensor keyboardPressed and:
+				[((nextCharacter _ sensor keyboardPeek) = Character cr) == firstWasCR]]
+
+				whileTrue:
+					[charType _ Keyboard at: nextCharacter asciiValue + 1.
+					(self perform: charType with: typeAhead)
+						ifTrue: [^self].
+					w _ font widthOf: nextCharacter.
+					(charType = #normalCharacter:) & (x+w <= line right)
+						ifTrue:
+							[Display
+								copy: ((x+w) @ line top corner: line corner)
+								from: x @ line top
+								in: Display rule: Form over.
+							(font characterForm: nextCharacter)
+								displayAt:
+									x @ (line top + paragraph textStyle baseline - font ascent).
+							x _ x+w]].	"end fast echo loop"
+				]
+			ifFalse:		"Do normal behavior if non-null selection"
+				[nextCharacter _ sensor keyboardPeek.
+				charType _ Keyboard at: nextCharacter asciiValue + 1.
+				(self perform: charType with: typeAhead)
+						ifTrue: [^self]].
+	"Now properly paste and display accumulated characters"
+	self replaceSelectionWith:
+		(Text string: typeAhead contents emphasis: emphasisHere).
+	startBlock _ stopBlock copy.
+	self selectAndScroll!
+selectCurrentTypeIn: characterStream
+	"The user just finished typing in some text and then typed the esc key.  The
+	typed text becomes the current text selection."
+
+	sensor keyboard.		"flush character"
+	characterStream isEmpty
+		ifTrue:
+			[self deselect]
+		ifFalse:
+			[self replaceSelectionWith:
+				(Text string: characterStream contents emphasis: emphasisHere).
+			startBlock _ stopBlock copy].
+	self closeTypeIn.
+	startBlock = stopBlock
+		ifFalse: [startBlock _
+					paragraph characterBlockForIndex:
+						stopBlock stringIndex - CurrentSelection size].
+	self select.
+	^true!
+"-----------------------------------"!
+!ParagraphEditor methodsFor: 'indicating'!
+flash
+	"Causes the view of he paragraph to complement twice in succession."
+	paragraph flash!
+"-----------------------------------"!
+!ParagraphEditor methodsFor: 'initialize-release'!
+changeParagraph: aParagraph
+	"Install aParagraph as the one to be edited by the receiver."
+
+	paragraph _ aParagraph.
+	self resetState!
+initialize
+	super initialize.
+	self initializeYellowButtonMenu!
+resetState
+	"Establish the initial conditions for editing the paragraph:  place caret
+	before first character, set the emphasis to that of the first character,
+	and save the paragraph for purposes of canceling."
+
+	| insetDisplayBox |
+	insetDisplayBox _ paragraph compositionRectangle.
+	startBlock _
+		CharacterBlock
+			stringIndex: 1
+			character: nil
+			boundingRectangle: (insetDisplayBox topLeft extent: 0 @ 0).
+	stopBlock _ startBlock copy.
+	beginTypeInBlock _ startBlock copy.
+	self setEmphasisHere.
+	selectionShowing _ false.
+	initialText _ paragraph text copy!
+"-----------------------------------"!
+!ParagraphEditor methodsFor: 'marker adjustment'!
+computeMarkerRegion
+	paragraph compositionRectangle height = 0
+		ifTrue:	[^0@0 extent: 10 @ scrollBar inside height]
+		ifFalse:	[^0@0 extent:
+					10 @ ((paragraph clippingRectangle height asFloat /
+							self scrollRectangleHeight * scrollBar inside height) rounded
+							min: scrollBar inside height)]!
+markerDelta
+	^marker top - scrollBar top - ((paragraph clippingRectangle top -
+		paragraph compositionRectangle top) asFloat /
+			(self scrollRectangleHeight max: 1) asFloat *
+				scrollBar height asFloat) rounded!
+updateMarker
+	"A variation of moveMarker--only redisplay the marker in the scrollbar
+	if an actual change has occurred in the positioning of the paragraph."
+
+	| newMarkerRegion |
+	newMarkerRegion _ self computeMarkerRegion.
+	newMarkerRegion extent ~= marker region extent
+		ifTrue:
+			[self markerRegion: newMarkerRegion.
+			self moveMarker]!
+"-----------------------------------"!
+!ParagraphEditor methodsFor: 'menu messages'!
+accept
+	"Save the current text of the text being edited as the current acceptable
+	version for purposes of canceling."
+	initialText _ paragraph text copy!
+again
+	"Text subsititution.  If the left shift key is down, the substitution is made
+	throughout the entire Paragraph.  Otherwise, only the next possible
+	subsitution is made."
+
+	| many |
+	many _ sensor leftShiftDown.
+	self deselect.
+	self closeTypeIn.
+	self select.
+	many
+		ifTrue: [[self againOnce] whileTrue]
+		ifFalse: [self againOnce ifFalse: [self flash]].
+	self moveMarker!
+align
+	"Align text according to the next greater alignment value--cycling among
+	left flush, right flush, center, justified."
+
+	self deselect.
+	paragraph toggleAlignment.
+	paragraph displayOn: Display.
+	startBlock _ paragraph characterBlockForIndex: startBlock stringIndex.
+	stopBlock _ paragraph characterBlockForIndex: stopBlock stringIndex.
+	self select!
+cancel
+	"Restore the text of the paragraph to be the text saved since initialization or
+	the last accept."
+
+	self controlTerminate.
+	UndoSelection _ paragraph text.
+	view clearInside.
+	self changeParagraph: (paragraph text: initialText).
+	paragraph displayOn: Display.
+	self scrollToTop.
+	self controlInitialize!
+copySelection
+	"Copy the current selection and store it in the shared buffer."
+	CurrentSelection _ UndoSelection _ self selection!
+cut
+	"Cut out the current selection and redisplay the paragraph if necessary."
+
+	self deselect.
+	self closeTypeIn.
+	self replaceSelectionWith: Text new.
+	self selectAndScroll.
+	self updateMarker.
+	CurrentSelection _ UndoSelection copy!
+fit
+	"Make the bounding rectangle of the paragraph contain all the text while not
+	changing the width of the view of the paragraph."
+
+	self deselect.
+	paragraph clearVisibleRectangle.
+	paragraph fit.
+	paragraph displayOn: Display.
+	paragraph outline.
+	self select.
+	self updateMarker!
+paste
+	"Paste the text from the shared buffer over the current selection and redisplay
+	if necessary."
+
+	self deselect.
+	self closeTypeIn.
+	self replaceSelectionWith: CurrentSelection.
+	self selectAndScroll.
+	self updateMarker!
+undo
+	"Reset the state of the paragraph prior to the previous cut or paste edit."
+
+	self deselect.
+	self closeTypeIn.
+	self replaceSelectionWith: UndoSelection.
+	self selectAndScroll.
+	self updateMarker!
+"-----------------------------------"!
+!ParagraphEditor methodsFor: 'private'!
+againOnce
+	| nextStartIndex |
+	nextStartIndex _
+		paragraph text findString: UndoSelection startingAt: stopBlock stringIndex.
+	nextStartIndex = 0 ifTrue: [^false].
+	self deselect.
+	startBlock _ paragraph characterBlockForIndex: nextStartIndex.
+	stopBlock _ paragraph characterBlockForIndex: nextStartIndex + UndoSelection size.
+	CurrentSelection = UndoSelection
+		ifFalse: [self replaceSelectionWith: CurrentSelection].
+	self selectAndScroll.
+	^true!
+closeTypeIn
+	beginTypeInBlock ~~ nil
+		ifTrue:
+			[beginTypeInBlock < startBlock
+				ifTrue:
+					[CurrentSelection _
+						paragraph text
+							copyFrom: beginTypeInBlock stringIndex
+							to: startBlock stringIndex - 1.
+					startBlock _ beginTypeInBlock copy].
+			beginTypeInBlock _ nil.
+			^true]
+		ifFalse: [^false]!
+emphasisDefault: oldEmphasisCode keyedTo: keyboardCharacter
+	"Some default ways to get common forms of emphasis -- returns a new emphasis code.  Subroutine for changeEmphasis.  If anyone else uses, please note here."
+
+	keyboardCharacter = CtrlMinus					"underline"
+		ifTrue:	[^ paragraph textStyle underlinedFontFor: oldEmphasisCode].
+	keyboardCharacter = CtrlShiftMinus				"unUnderline"
+		ifTrue:	[^ paragraph textStyle unUnderlinedFontFor: oldEmphasisCode].
+	keyboardCharacter = Ctrlb						"Bold"
+		ifTrue:	[^ paragraph textStyle boldFontFor: oldEmphasisCode].
+	keyboardCharacter = CtrlB						"unBold"
+		ifTrue:	[^ paragraph textStyle basalFontFor: oldEmphasisCode].
+	keyboardCharacter = Ctrli						"Italic"
+		ifTrue:	[^ paragraph textStyle italicFontFor: oldEmphasisCode].
+	keyboardCharacter = CtrlI						"unItalic"
+		ifTrue:	[^ paragraph textStyle basalFontFor: oldEmphasisCode].
+	keyboardCharacter = Ctrlx						"clear emphasis, go to basal font"
+		ifTrue:	[^ paragraph textStyle basalFontFor: oldEmphasisCode].!
+initializeYellowButtonMenu
+	self yellowButtonMenu: TextEditorYellowButtonMenu
+		yellowButtonMessages: TextEditorYellowButtonMessages!
+replaceSelectionWith: aText
+	beginTypeInBlock == nil ifTrue: [UndoSelection _ self selection].
+	paragraph
+		replaceFrom: startBlock stringIndex
+		to: stopBlock stringIndex - 1
+		with: aText
+		displaying: true.
+	startBlock _ paragraph characterBlockForIndex: startBlock stringIndex.
+	stopBlock _
+		paragraph characterBlockForIndex: startBlock stringIndex + aText size!
+scrollRectangleHeight
+	^paragraph compositionRectangle height
+		+ paragraph clippingRectangle height
+		- paragraph lineGrid!
+setEmphasisHere
+	emphasisHere _ paragraph text emphasisAt: startBlock stringIndex!
+"-----------------------------------"!
+!ParagraphEditor methodsFor: 'scrolling'!
+canScroll
+	^true!
+scroll
+	self updateMarker.
+	super scroll!
+scrollAmount
+	^sensor cursorPoint y - scrollBar top!
+scrollBy: heightToMove
+	"Move the paragraph by the amount, heightToMove, and reset the text selection."
+	self deselect.
+	paragraph scrollBy: heightToMove.
+	startBlock _ paragraph characterBlockForIndex: startBlock stringIndex.
+	stopBlock _ paragraph characterBlockForIndex: stopBlock stringIndex.
+	self select!
+scrollToTop
+	"Scroll so that the paragraph is at the top of the view."
+	self scrollView: (paragraph clippingRectangle top
+		- paragraph compositionRectangle top)!
+scrollView: anInteger
+	| maximumAmount minimumAmount amount |
+	self deselect.
+	maximumAmount _
+		paragraph clippingRectangle top - paragraph compositionRectangle top max: 0.
+	minimumAmount _
+		paragraph clippingRectangle top
+			+ paragraph lineGrid - paragraph compositionRectangle bottom min: 0.
+	amount _ (anInteger min: maximumAmount) max: minimumAmount.
+	amount ~= 0 ifTrue: [self scrollBy: amount negated].
+	self select!
+viewDelta
+	^paragraph clippingRectangle top
+		- paragraph compositionRectangle top
+		- ((marker top - scrollBar inside top) asFloat
+				/ scrollBar inside height asFloat * self scrollRectangleHeight asFloat)
+			roundTo: paragraph lineGrid!
+"-----------------------------------"!
+!ParagraphEditor methodsFor: 'selecting'!
+deselect
+	"If the text selection is visible on the screen, reverse its highlight."
+	selectionShowing ifTrue: [self reverseSelection]!
+findAndSelect: aString
+	| index |
+	index _ paragraph text findString: aString startingAt: stopBlock stringIndex.
+	index = 0 ifTrue: [^false].
+	self selectAndScrollFrom: index to: index + aString size-1.
+	^true!
+initializeSelection
+	"Do the initial activity when starting up the receiver.  For example, in the
+	ParagraphEditor highlight the current selection."
+	self select!
+recomputeSelection
+	"eg after changing the composition rectangle of the paragraph"
+	self deselect.
+	startBlock _ paragraph characterBlockForIndex: startBlock stringIndex.
+	stopBlock _ paragraph characterBlockForIndex: stopBlock stringIndex.
+	selectionShowing_ false!
+reverseSelection
+	"Reverse the valence of the current selection highlighting."
+
+	selectionShowing _ selectionShowing not.
+	startBlock = stopBlock
+		ifTrue: [paragraph displayCaretAt:
+					startBlock topLeft + (0 @ paragraph textStyle baseline)]
+		ifFalse: [paragraph reverseFrom: startBlock to: stopBlock]!
+select
+	"If the text selection is visible on the screen, highlight it."
+	selectionShowing ifFalse: [self reverseSelection]!
+selectAndScroll
+	"Scroll until the selection is in the view and then highlight it."
+
+	| lineHeight deltaY clippingRectangle |
+	lineHeight _ paragraph textStyle lineGrid.
+	clippingRectangle _ paragraph clippingRectangle.
+	deltaY _ stopBlock top - clippingRectangle top.
+	deltaY >= 0
+		ifTrue: [deltaY _ stopBlock bottom - clippingRectangle bottom max: 0].
+						"check if stopIndex below bottom of clippingRectangle"
+	deltaY ~= 0
+		ifTrue: [self scrollBy: (deltaY abs + lineHeight - 1 truncateTo: lineHeight)
+									* deltaY sign].
+	self select!
+selectAndScrollFrom: start to: stop
+	self deselect.
+	startBlock _ paragraph characterBlockForIndex: start.
+	stopBlock _ paragraph characterBlockForIndex: stop + 1.
+	self selectAndScroll!
+selectAt: characterIndex
+	"Place the character before the character at position characterIndex.  Make
+	certain the selection is in the view."
+
+	self deselect.
+	startBlock _ paragraph characterBlockForIndex: characterIndex.
+	stopBlock _ startBlock copy.
+	self selectAndScroll!
+selectFrom: start to: stop
+	"The text selection starts at the character at position start and ends at the
+	character at position stop."
+
+	self deselect.
+	startBlock _ paragraph characterBlockForIndex: start.
+	stopBlock _ paragraph characterBlockForIndex: stop+1.
+	self selectAndScroll!
+selection
+	"Answer the text in the paragraph that is currently selected."
+	^paragraph text copyFrom: startBlock stringIndex to: stopBlock stringIndex - 1!
+selectionAsStream
+	"Answer a ReadStream on the text in the paragraph that is currently selected."
+	^ReadStream
+		on: paragraph text asString
+		from: startBlock stringIndex
+		to: stopBlock stringIndex - 1!
+"-----------------------------------"!
+!ParagraphEditor methodsFor: 'sensor access'!
+processBlueButton
+	"The user pressed the blue button on the mouse.  Determine what action to take."
+	^self!
+processKeyboard
+	"Determine whether the user pressed the keyboard.  If so, read the keys."
+	sensor keyboardPressed
+		ifTrue: [self readKeyboard]!
+processMouseButtons
+	"Determine whether the user pressed any mouse button.  For each possible
+	button, determine what actions to take."
+
+	sensor redButtonPressed ifTrue: [self processRedButton].
+	sensor yellowButtonPressed ifTrue: [self processYellowButton].
+	sensor blueButtonPressed ifTrue: [self processBlueButton]!
+processRedButton
+	"The user pressed a red mouse button, meaning create a new text selection.
+	Highlighting the selection is carried out by the paragraph itself.  Double
+	clicking causes a selection of the area between the nearest enclosing delimitors;
+	extension is based on both ends if different."
+
+	| paragraphOrigin selectionBlocks |
+	self deselect.
+	self closeTypeIn.
+	paragraphOrigin _ paragraph compositionRectangle origin.
+	selectionBlocks _ paragraph mouseSelect: startBlock to: stopBlock.
+	selectionShowing _ true.
+	startBlock _ selectionBlocks at: 1.
+	stopBlock _ selectionBlocks at: 2.
+	self updateMarker.
+	self setEmphasisHere!
+processYellowButton
+	"User pressed the yellow button on the mouse.  Determine what
+	actions to take."
+	self yellowButtonActivity!

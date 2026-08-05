@@ -1,0 +1,10 @@
+ClassRelatedChange subclass: #ClassChange
+  instanceVariableNames: ''
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'System-Changes'!
+ClassChange class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+ClassChange comment:
+'I am a change to some part of a class definition (actual definition, comment, name, ...) as opposed to a change to a method within a class.'!

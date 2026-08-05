@@ -1,0 +1,273 @@
+Magnitude subclass: #MessageTally
+  instanceVariableNames: 'class method tally receivers'
+  classVariableNames: 'HowOften ObservedProcess TargetBlock Timer'
+  poolDictionaries: ''
+  category: 'System-Support'!
+MessageTally class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+MessageTally comment:
+'See the comment for spyOn: in MessageTally class for an example of how to use the spy.
+
+MessageTallies represent nodes in a tree which gathers statistics on the time spent in various parts of the system.  Specifically, each node represents a message being sent.  During the evaluation of an expression, a timer periodically interrupts the execution of the various methods involved, and tallies these probes in the tree of MessageTallies which it constructs.  When evaluation of the expression is complete, a detailed report is produced indicating where in the system most of the time was spent.
+
+Instance variables:
+	class		<Behavior> the class of the receiver of the message
+	method		<CompiledMethod> which was running when probe occurred
+	tally		<Integer> number of probes which hit this method or others
+				called by it
+	receivers	<Collection of MessageTally> sons of this node in the tree,
+				representing tallies of methods called from this one.
+				If this field is nil, it indicates tallies due to in-line primitives
+
+MessageTallies may be taken on only one block at a time.  Spying on two blocks at once does not work.  The block upon which the MessageTally is spying can be stopped and started.  See spyEvery:on:.'!
+"-----------------------------------"!
+!MessageTally class methodsFor: 'spying'!
+spyOn: aBlock
+	"An execution profile of the execution of aBlock is obtained.  For example:
+		MessageTally spyOn: [Pen example].
+	The execution profile is presented in a workspace (user is prompted for area).
+	No value is returned"
+	| spy val reportStream |
+	spy _ self new.
+	"Set up the block"
+	spy spyEvery: spy defaultInterval on: aBlock.
+	"Run the block and take the tallies"
+	val _ spy continueSpying.
+	"Report it"
+	reportStream _ WriteStream on: (String new: 5000).
+	spy reportOn: reportStream; close.
+	StringHolderView
+		open: (StringHolder new contents: reportStream contents)
+		label: 'Spy Results'.
+	^val  "Never gets returned due to window scheduling"!
+spyOn: aBlock to: fileName
+	"Spy on the evaluation of aBlock.  Write the data collected on a file named fileName.
+	The value of the block is returned as the value of this method.  For example:
+		MessageTally spyOn: [Smalltalk asSortedCollection] to: 'spy.results'.
+		(FileStream oldFileNamed: 'spy.results') edit.
+	"
+	| spy val aFileStream |
+	spy _ self new.
+	"Set up the block"
+	spy spyEvery: spy defaultInterval on: aBlock.
+		"Run the block and take the tallies"
+	val _ spy continueSpying.
+		"Report it"
+	aFileStream _ FileStream fileNamed: fileName.
+	aFileStream timeStamp; nextPutAll: fileName; space.
+	spy reportOn: aFileStream; close.
+	aFileStream close.
+	^val!
+"-----------------------------------"!
+!MessageTally methodsFor: 'collecting leaves'!
+bump: anInteger
+	tally _ tally + anInteger!
+into: aDictionary
+	| aMessageTally index |
+	index _
+		aDictionary
+			find: self
+			ifAbsent:
+				[aDictionary add:
+					(aMessageTally _ MessageTally new class: class method: method).
+				^aMessageTally bump: tally].
+	(aDictionary basicAt: index) bump: tally!
+leaves: leafDictionary
+	| aBreakDown |
+	aBreakDown _ self sonsOver: 0.
+	aBreakDown size = 0
+		ifTrue:
+			[self into: leafDictionary]
+		ifFalse:
+			[aBreakDown do: [:aMessageTally | aMessageTally leaves: leafDictionary]]!
+"-----------------------------------"!
+!MessageTally methodsFor: 'comparing'!
+< aMessageTally
+	^tally > aMessageTally tally!
+= aMessageTally
+	^aMessageTally method == method!
+> aMessageTally
+	^tally < aMessageTally tally!
+hash
+	^method asOop!
+sonsOver: threshold
+	| hereTally last sons |
+	(receivers == nil or: [receivers size = 0]) ifTrue: [^#()].
+	hereTally _ tally.
+	sons _ receivers select:  "subtract subNode tallies for primitive hits here"
+		[:son |
+		hereTally _ hereTally - son tally.
+		son tally > threshold].
+	hereTally > threshold
+		ifTrue:
+			[last _ MessageTally new class: class method: method.
+			^sons copyWith: (last primitives: hereTally)].
+	^sons!
+"-----------------------------------"!
+!MessageTally methodsFor: 'initialize-release'!
+close
+	(Timer isMemberOf: Process) ifTrue: [Timer terminate].
+	Timer _ ObservedProcess _ nil.
+	class _ method _ tally _ receivers _ nil!
+continueSpying
+	| myDelay value active |
+	myDelay _ Delay forMilliseconds: HowOften.
+	active _ true.
+	Timer _
+		[[active] whileTrue:
+			[myDelay wait.
+			active ifTrue: [self tally: ObservedProcess suspendedContext]].
+		nil] newProcess.
+	Timer priority: Processor userInterruptPriority.
+		"activate the probe and evaluate the block"
+	Timer resume.
+	value _ TargetBlock value.
+	active _ false.
+		"Timer will fire once more, not tally, and terminate itself"
+	^value  "return the block's value"!
+defaultInterval
+	"Answer the number of ticks between sampling."
+
+	Smalltalk frills ifTrue: [^16] ifFalse: [^60]!
+reportOn: aStream
+	"Default cutoff percentage is 2%."
+	self reportOn: aStream cutoff: 2!
+reportOn: aStream cutoff: perCent
+	"Print a report on the stream. perCent should be a number like 2 or 3"
+	tally = 0
+		ifTrue:
+			[aStream nextPutAll: ' - no tallies obtained']
+		ifFalse:
+			[aStream nextPutAll: ' - '; print: tally; nextPutAll: ' tallies.'; cr; cr.
+			self fullPrintOn: aStream cutoff: perCent]!
+spyEvery: millisecs on: aBlock
+	"Create a spy on the given block at the specified rate.  Don't run it yet"
+	(aBlock isMemberOf: BlockContext)
+		ifFalse: [self error: 'spy needs a block here'].
+	self class: aBlock receiver class method: aBlock method.
+		"set up the probe"
+	ObservedProcess _ Processor activeProcess.
+	HowOften _ millisecs.
+	TargetBlock _ aBlock
+
+"Set a block up for spying, and accumulate the tallies from several executions
+	| spy |
+	spy _ MessageTally new.
+	spy spyEvery: spy defaultInterval on:
+		['this block contains your code'. 30 factorial].
+	10 timesRepeat: [spy continueSpying].
+	spy report: 'spy.results'.  spy close.
+	(Disk file: 'spy.results') edit.
+
+If there are no tallies reported, the block executes faster than the delay"!
+spyOn: aBlock
+	"Spy on the evaluation of aBlock.  Browse the results in a workspace."
+	| val reportStream |
+	"Set up the block"
+	self spyEvery: self defaultInterval on: aBlock.
+	"Run the block and take the tallies"
+	val _ self continueSpying.
+	"Report it"
+	reportStream _ WriteStream on: (String new: 5000).
+	self reportOn: reportStream.
+	self close.
+	StringHolderView
+		open: (StringHolder new contents: reportStream contents)
+		label: 'Spy Results'.
+	^val  "Never gets returned due to window scheduling"!
+spyOn: aBlock to: fileName
+	"Spy on the evaluation of aBlock.  Write the data collected on a file named fileName."
+	| val aFileStream |
+		"Set up the block"
+	self spyEvery: self defaultInterval on: aBlock.
+		"Run the block and take the tallies"
+	val _ self continueSpying.
+		"Report it"
+	aFileStream _ FileStream fileNamed: fileName.
+	aFileStream timeStamp; nextPutAll: fileName; space.
+	self reportOn: aFileStream.
+	self close.
+	aFileStream close.
+	^val!
+"-----------------------------------"!
+!MessageTally methodsFor: 'printing'!
+fullPrintOn: aStream cutoff: perCent
+	| threshold |
+	threshold _ (perCent asFloat / 100 * tally) rounded.
+	aStream nextPutAll: '**Tree**'; cr.
+	self treePrintOn: aStream
+		tabs: OrderedCollection new
+		thisTab: ''
+		total: tally
+		over: threshold.
+	aStream nextPut: Character newPage; cr.
+	aStream nextPutAll: '**Leaves**'; cr.
+	self leavesPrintOn: aStream
+		over: threshold.!
+leavesPrintOn: aStream over: threshold
+	| aSet |
+	aSet _ Set new: 128.
+	self leaves: aSet.
+	(aSet asOrderedCollection select: [:node | node tally > threshold])
+		asSortedCollection do:
+		[:node | node printOn: aStream total: tally]!
+printOn: aStream total: total
+	| aSelector aClass |
+	aStream print: (tally asFloat / total * 100.0 roundTo: 0.1); space.
+	receivers == nil
+		ifTrue: [aStream nextPutAll: 'primitives']
+		ifFalse:
+			[aSelector _ class selectorAtMethod: method setClass: [:aClass].
+			aStream nextPutAll: aClass name; space; nextPutAll: aSelector].
+	aStream cr!
+treePrintOn: aStream tabs: tabs thisTab: myTab total: total over: threshold
+	| sons sonTab |
+	tabs do: [:tab | aStream nextPutAll: tab].
+	tabs size > 0 ifTrue: [self printOn: aStream total: total].
+	sons _ self sonsOver: threshold.
+	sons isEmpty ifFalse:
+		[tabs addLast: myTab.
+		sons _ sons asSortedCollection.
+		(1 to: sons size) do:
+			[:i |
+			sonTab _ i < sons size ifTrue: ['  |'] ifFalse: ['  '].
+			(sons at: i)
+				treePrintOn: aStream tabs: tabs thisTab: sonTab total: total over: threshold].
+		tabs removeLast]!
+"-----------------------------------"!
+!MessageTally methodsFor: 'private'!
+class: aClass method: aMethod
+	class _ aClass.
+	method _ aMethod.
+	tally _ 0.
+	receivers _ Array new: 0!
+method
+	^method!
+primitives: anInteger
+	tally _ anInteger.
+	receivers _ nil!
+tally
+	^tally!
+"-----------------------------------"!
+!MessageTally methodsFor: 'tallying'!
+bump
+	tally _ tally + 1!
+tally: context
+	"Explicitly tally the specified context and its stack."
+
+	| root |
+	context method == method ifTrue: [^self bump].
+	(root _ context home sender) == nil ifTrue: [^self bump tallyPath: context].
+	^(self tally: root) tallyPath: context!
+tallyPath: context
+	| aMethod path |
+	aMethod _ context method.
+	receivers do:
+		[:aMessageTally |
+		aMessageTally method == aMethod ifTrue: [path _ aMessageTally]].
+	path == nil
+		ifTrue:
+			[path _ MessageTally new class: context receiver class method: aMethod.
+			receivers _ receivers copyWith: path].
+	^path bump!

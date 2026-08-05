@@ -1,0 +1,242 @@
+Object subclass: #InstructionStream
+  instanceVariableNames: 'sender pc'
+  classVariableNames: 'SpecialConstants'
+  poolDictionaries: ''
+  category: 'Kernel-Methods'!
+InstructionStream class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+InstructionStream comment:
+'Instance Variables:
+	sender	<Context>, sometimes <CompiledMethod>
+	pc		<Integer> pointing into my method
+
+As a superclass of contexts, I store the return pointer in sender, and the current position in my method in pc.
+
+This class by itself has the ability to interpret the byte-encoded Smalltalk instruction set and maintains a program counter (pc) for streaming through CompiledMethods.  Contexts thus inherit all this capability and, for other users, sender can hold a method to be similarly interpreted.  The unclean re-use of sender to hold the method was to avoid a trivial subclass for the stand-alone scanning funtion.'!
+"-----------------------------------"!
+!InstructionStream class methodsFor: 'class initialization'!
+initialize
+	"Initialize an array of special constants returned by single-bytecode returns."
+
+	SpecialConstants _
+		(Array with: true with: false with: nil)
+			, (Array with: -1 with: 0 with: 1 with: 2)
+	"InstructionStream initialize."!
+"-----------------------------------"!
+!InstructionStream class methodsFor: 'instance creation'!
+on: method
+	"Answer a new InstructionStream on the argument, method."
+
+	^self new method: method pc: method initialPC!
+"-----------------------------------"!
+!InstructionStream methodsFor: 'decoding'!
+interpretJump
+	| t |
+	t _ self method at: pc.
+	(t between: 144 and: 151) ifTrue:
+		[pc _ pc + 1.  ^t - 143].
+	(t between: 160 and: 167) ifTrue:
+		[pc _ pc + 2.  ^(t - 164) * 256 + (self method at: pc - 1)].
+	^nil!
+interpretNextInstructionFor: client
+	"Send to the argument, client, a message that specifies the type of the
+	the next instruction."
+
+	| byte type offset method |
+	method_ self method.
+	byte_ method at: pc.
+	type_ byte // 16.
+	offset_ byte \\ 16.
+	pc_ pc+1.
+	type=0 ifTrue: [^client pushReceiverVariable: offset].
+	type=1 ifTrue: [^client pushTemporaryVariable: offset].
+	type=2 ifTrue: [^client pushConstant: (method literalAt: offset+1)].
+	type=3 ifTrue: [^client pushConstant: (method literalAt: offset+17)].
+	type=4 ifTrue: [^client pushLiteralVariable: (method literalAt: offset+1)].
+	type=5 ifTrue: [^client pushLiteralVariable: (method literalAt: offset+17)].
+	type=6
+		ifTrue: [offset<8
+					ifTrue: [^client popIntoReceiverVariable: offset]
+					ifFalse: [^client popIntoTemporaryVariable: offset-8]].
+	type=7
+		ifTrue: [offset=0 ifTrue: [^client pushReceiver].
+				offset<8 ifTrue: [^client pushConstant: (SpecialConstants at: offset)].
+				offset=8 ifTrue: [^client methodReturnReceiver].
+				offset<12 ifTrue: [^client methodReturnConstant:
+												(SpecialConstants at: offset-8)].
+				offset=12 ifTrue: [^client methodReturnTop].
+				offset=13 ifTrue: [^client blockReturnTop].
+				offset>13 ifTrue: [^self error: 'unusedBytecode']].
+	type=8 ifTrue: [^self interpretExtension: offset in: method for: client].
+	type=9
+		ifTrue:  "short jumps"
+			[offset<8 ifTrue: [^client jump: offset+1].
+			^client jump: offset-8+1 if: false].
+	type=10
+		ifTrue:  "long jumps"
+			[byte_ method at: pc.  pc_ pc+1.
+			offset<8 ifTrue: [^client jump: offset-4*256 + byte].
+			^client jump: (offset bitAnd: 3)*256 + byte if: offset<12].
+	type=11
+		ifTrue:
+			[^client
+				send: (Smalltalk specialSelectorAt: offset+1)
+				super: false
+				numArgs: (Smalltalk specialNargsAt: offset+1)].
+	type=12
+		ifTrue:
+			[^client
+				send: (Smalltalk specialSelectorAt: offset+17)
+				super: false
+				numArgs: (Smalltalk specialNargsAt: offset+17)].
+	type>12
+		ifTrue:
+			[^client send: (method literalAt: offset+1)
+					super: false
+					numArgs: type-13]!
+"-----------------------------------"!
+!InstructionStream methodsFor: 'private'!
+interpretExtension: offset in: method for: client
+	| numberArguments literalNumber type offset2 |
+	"pc has already been incremented by 1"
+	offset < 3
+		ifTrue:
+			["extended pushes and pops"
+			type _ (method at: pc) // 64.
+			offset2 _ (method at: pc) \\ 64.
+			pc _ pc + 1.
+			offset = 0
+				ifTrue:
+					[type = 0 ifTrue: [^client pushReceiverVariable: offset2].
+					type = 1 ifTrue: [^client pushTemporaryVariable: offset2].
+					type = 2
+						ifTrue: [^client pushConstant: (method literalAt: offset2 + 1)].
+					type = 3
+						ifTrue: [^client pushLiteralVariable:
+									(method literalAt: offset2 + 1)]].
+			offset = 1
+				ifTrue:
+					[type = 0 ifTrue: [^client storeIntoReceiverVariable: offset2].
+					type = 1 ifTrue: [^client storeIntoTemporaryVariable: offset2].
+					type = 2 ifTrue: [self error: 'illegalStore'].
+					type = 3
+						ifTrue: [^client storeIntoLiteralVariable:
+									(method literalAt: offset2 + 1)]].
+			offset = 2
+				ifTrue:
+					[type = 0 ifTrue: [^client popIntoReceiverVariable: offset2].
+					type = 1 ifTrue: [^client popIntoTemporaryVariable: offset2].
+					type = 2 ifTrue: [self error: 'illegalStore'].
+					type = 3
+						ifTrue: [^client popIntoLiteralVariable:
+									(method literalAt: offset2 + 1)]]].
+	offset < 7
+		ifTrue:
+			["extended sends"
+			offset odd
+				ifTrue:
+					[numberArguments _ (method at: pc) // 32.
+					literalNumber _ (method at: pc) \\ 32.
+					pc _ pc + 1]
+				ifFalse:
+					[numberArguments _ method at: pc.
+					literalNumber _ method at: pc + 1.
+					pc _ pc + 2].
+			^client
+				send: (method literalAt: literalNumber + 1)
+				super: offset > 4
+				numArgs: numberArguments].
+	offset = 7 ifTrue: [^client doPop].
+	offset = 8 ifTrue: [^client doDup].
+	offset = 9 ifTrue: [^client pushActiveContext].
+	self error: 'unusedBytecode'!
+method: method pc: startpc
+	sender _ method.
+	"allows this class to stand alone as a method scanner"
+	pc _ startpc!
+"-----------------------------------"!
+!InstructionStream methodsFor: 'scanning'!
+addFieldIndexTo: set
+	"If this instruction is an instVar reference, add its index (offset+1) to set."
+	| byte byte2 |
+	byte _ self method at: pc.
+	byte < 16 ifTrue: [^ set add: byte + 1].  "load field"
+	(byte >= 96 and: [byte <= 130]) ifTrue:
+		[(byte between: 96 and: 103) ifTrue:  "short store-pop"
+			[^ set add: byte - 96 + 1].
+		(byte between: 128 and: 130) ifTrue:  "extended field access"
+			[byte2 _ self method at: pc+1.
+			byte2 < 64 ifTrue: [^ set add: byte2 \\ 64 + 1]]]!
+addSelectorTo: set
+	"If this instruction is a send, add its selector to set."
+
+	| byte literalNumber |
+	byte _ self method at: pc.
+	byte < 128 ifTrue: [^self].
+	byte >= 176
+		ifTrue:
+			["special byte or short send"
+			byte >= 208
+				ifTrue: [set add: (self method literalAt: (byte bitAnd: 15) + 1)]
+				ifFalse: [set add: (Smalltalk specialSelectorAt: byte - 176 + 1)]]
+		ifFalse:
+			[(byte between: 131 and: 134)
+				ifTrue:
+					[literalNumber _ byte odd
+								ifTrue: [(self method at: pc + 1) \\ 32]
+								ifFalse: [self method at: pc + 2].
+					set add: (self method literalAt: literalNumber + 1)]]!
+followingByte
+	"Answer the following bytecode."
+	^self method at: pc + 1!
+method
+	"Answer the compiled method that supplies the receiver's bytecodes."
+
+	^sender		"method access when used alone (not as part of a context)"!
+nextByte
+	"Answer the next bytecode."
+	^self method at: pc!
+pc
+	"Answer the index of the next bytecode."
+
+	^pc!
+scanFor: scanBlock
+	"Answer the index of the first bytecode for which scanBlock answer
+	true when supplied with that bytecode."
+
+	| method end byte type |
+	method _ self method.
+	end _ method endPC.
+	[pc <= end]
+		whileTrue:
+			[(scanBlock value: (byte _ method at: pc)) ifTrue: [^true].
+			type _ byte // 16.
+			pc _
+				type = 8
+					ifTrue: ["extensions"
+							pc + (#(2 2 2 2 3 2 3 1 1 1 ) at: byte \\ 16 + 1)]
+					ifFalse: [type = 10
+								ifTrue: [pc + 2"long jumps"]
+								ifFalse: [pc + 1]]].
+	^false!
+"-----------------------------------"!
+!InstructionStream methodsFor: 'testing'!
+willReturn
+	"Answer whether the next bytecode is a return."
+
+	^(self method at: pc) between: 120 and: 125!
+willSend
+	"Answer whether the next bytecode is a message-send."
+	| byte |
+	byte _ self method at: pc.
+	byte < 128 ifTrue: [^ false].
+	byte >= 176	"special send or short send"
+		ifTrue: [^ byte ~= 200].  "but not blockCopy"
+	^ byte between: 131 and: 134	"long sends"!
+willStorePop
+	"Answer whether the next bytecode is a store-pop."
+
+	| byte |
+	byte _ self method at: pc.
+	^byte = 130 or: [byte between: 96 and: 111]!

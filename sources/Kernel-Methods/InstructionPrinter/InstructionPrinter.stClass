@@ -1,0 +1,130 @@
+InstructionStream subclass: #InstructionPrinter
+  instanceVariableNames: 'stream oldPC'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Kernel-Methods'!
+InstructionPrinter class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+InstructionPrinter comment:
+'Instance Variables:
+	stream	<WriteStream> accumulates symbolic output
+	oldPC	<integer> remembers where current instruction started
+
+An InstructionPrinter can print the object code of a CompiledMethod in symbolic format.  It prints into stream, and uses oldPC to know how many bytes to print in the listing.
+The inherited variable "sender" is used in an ugly way to hold the method being printed.'!
+"-----------------------------------"!
+!InstructionPrinter methodsFor: 'initialize-release'!
+printInstructionsOn: aStream
+	"Append to the stream, aStream, a description of each bytecode in the instruction
+	stream."
+
+	| end |
+	stream _ aStream.
+	end _ self method endPC.
+	oldPC _ pc.
+	[pc <= end]
+		whileTrue: [super interpretNextInstructionFor: self]!
+"-----------------------------------"!
+!InstructionPrinter methodsFor: 'instruction decoding'!
+blockReturnTop
+	"Print the ReturnTopOfStack bytecode."
+	self print: 'blockReturn'!
+doDup
+	"Print the Duplicate Top of Stack bytecode."
+	self print: 'dup'!
+doPop
+	"Print the Remove Top of Stack bytecode."
+	self print: 'pop'!
+jump: offset
+	"Print the Unconditional Jump bytecode."
+	self print: 'jumpTo: ' , (pc + offset) printString!
+jump: offset if: condition
+	"Print the Conditional Jump bytecode."
+	self print:
+		(condition
+			ifTrue: ['jumpTrue: ']
+			ifFalse: ['jumpFalse: '])
+			, (pc + offset) printString!
+methodReturnConstant: value
+	"Print the Return Constant bytecode."
+	self print: 'return: ' , value printString!
+methodReturnReceiver
+	"Print the Return Self bytecode."
+	self print: 'returnSelf'!
+methodReturnTop
+	"Print the Return Top of Stack bytecode."
+	self print: 'returnTop'!
+popIntoLiteralVariable: anAssociation
+	"Print the Removes the Top of the Stack and Stores it into a Literal Variable
+	bytecode."
+	self print: 'popIntoLit: ' , anAssociation key!
+popIntoReceiverVariable: offset
+	"Print the Removes the Top of the Stack and Stores it into an Instance Variable
+	bytecode."
+	self print: 'popIntoRcvr: ' , offset printString!
+popIntoTemporaryVariable: offset
+	"Print the Removes the Top of the Stack and Stores it into a Temporary Variable
+	bytecode."
+	self print: 'popIntoTemp: ' , offset printString!
+pushActiveContext
+	"Print the Push the Active Context on the Top of its Own Stack bytecode."
+	self print: 'pushThisContext: '!
+pushConstant: value
+	"Print the Push the Constant, value, on the Top of the Stack bytecode."
+	self print: 'pushConstant: ' , value printString!
+pushLiteralVariable: anAssociation
+	"Print the Push the Contents of anAssociation on the Top of the Stack bytecode."
+	self print: 'pushLit: ' , anAssociation key!
+pushReceiver
+	"Print the Push the Active Context's Receiver on the Top of the Stack bytecode."
+	self print: 'self'!
+pushReceiverVariable: offset
+	"Print the Push the Contents of the Receiver's Instance Variable whose Index
+	is the argument, offset, on the Top of the Stack bytecode."
+	self print: 'pushRcvr: ' , offset printString!
+pushTemporaryVariable: offset
+	"Print the Push the Contents of the Temporary Variable whose Index is the
+	argument, offset, on the Top of the Stack bytecode."
+	self print: 'pushTemp: ' , offset printString!
+send: selector super: supered numArgs: numberArguments
+	"Print the Send a Message with Selector, selector, bytecode.  The argument,
+	supered, indicates whether the receiver of the message is specified with
+	'super' in the source method.  The arguments of the message
+	are found in the top numArguments locations on the stack and
+	the receiver just below them."
+	self print: (supered ifTrue: ['superSend: '] ifFalse: ['send: ']) , selector!
+storeIntoLiteralVariable: anAssociation
+	"Print the Store the Top of the Stack into a Literal Variable of the Method bytecode."
+	self print: 'storeIntoLit: ' , anAssociation key!
+storeIntoReceiverVariable: offset
+	"Print the Store the Top of the Stack into an Instance Variable of the Method
+	bytecode."
+	self print: 'storeIntoRcvr: ' , offset printString!
+storeIntoTemporaryVariable: offset
+	"Print the Store the Top of the Stack into a Temporary Variable of the Method
+	bytecode."
+	self print: 'storeIntoTemp: ' , offset printString!
+"-----------------------------------"!
+!InstructionPrinter methodsFor: 'printing'!
+print: instruction
+	"Append to the receiver a description of the bytecode, instruction."
+
+	| code |
+	stream print: oldPC; space.
+	stream nextPut: $<.
+	oldPC to: pc - 1 do:
+		[:i |
+		code _ (self method at: i) storeStringRadix: 16.
+		stream nextPut:
+			(code size < 5
+				ifTrue: [$0]
+				ifFalse: [code at: 4]).
+		stream nextPut: code last; space].
+	stream skip: -1.
+	stream nextPut: $>.
+	stream space.
+	stream nextPutAll: instruction.
+	stream cr.
+	oldPC _ pc
+	"(InstructionPrinter compiledMethodAt: #print:) symbolic."!

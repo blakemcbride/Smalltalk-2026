@@ -1,0 +1,45 @@
+RunArray subclass: #AltoFileAddressArray
+  instanceVariableNames: 'directory'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Files-Xerox Alto'!
+AltoFileAddressArray class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+AltoFileAddressArray comment:
+'I am a RunArray where each run represents the virtual addresses of a block of contiguous pages.  Indexed by page numbers, my instance holds the virtual disk addresses of the pages.  Attributes inherited from RunArray are:  runs, an array of starting indicies;  and values, an array of the first virtual address in each block.
+
+Instance Variables:
+	directory	<FileDirectory>'!
+"-----------------------------------"!
+!AltoFileAddressArray methodsFor: 'accessing'!
+at: index
+	| run offset value |
+	super at: index setRunOffsetAndValue:
+		[:run :offset :value | ^directory virtualToReal: value + offset]!
+"-----------------------------------"!
+!AltoFileAddressArray methodsFor: 'adding'!
+addLast: val
+	| virt |
+	virt _ directory realToVirtual: val.
+	(runs size = 0 or: [virt ~= ((values at: values size) + (runs at: runs size))])
+		ifTrue: [super addLast: virt] "create new run"
+		ifFalse: [runs at: runs size put: (runs at: runs size) + 1]. "stretch last run"
+	^val!
+"-----------------------------------"!
+!AltoFileAddressArray methodsFor: 'initialize-release'!
+directory: aDirectory
+	"Set the receiver's directory to be the argument, aDirectory."
+	directory _ aDirectory!
+shortenTo: newSize
+	"Shortens the receiver to be size, newSize (for file shorten).  Create an
+	error if newSize is greater than the old size."
+
+	| oldSize short |
+	oldSize _ self size.
+	newSize > oldSize ifTrue: [^self error: 'invalid extension'].
+	newSize < oldSize
+		ifTrue:
+			[short _ self copyFrom: 1 to: newSize.
+			runs _ short runs.
+			values _ short values]!

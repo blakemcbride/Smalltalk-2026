@@ -1,0 +1,23 @@
+Object subclass: #Link
+  instanceVariableNames: 'nextLink'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Collections-Support'!
+Link class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+Link comment:
+'I am a simple record of a pointer to another Link'!
+"-----------------------------------"!
+!Link class methodsFor: 'instance creation'!
+nextLink: aLink
+	"Answer a new instance of me referring to the argument, aLink."
+	^self new nextLink: aLink!
+"-----------------------------------"!
+!Link methodsFor: 'accessing'!
+nextLink
+	"Answer the Link to which the receiver points."
+	^nextLink!
+nextLink: aLink
+	"Store the argument, as the Link to which the receiver refers."
+	^nextLink _ aLink!

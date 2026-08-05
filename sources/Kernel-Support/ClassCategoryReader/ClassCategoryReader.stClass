@@ -1,0 +1,38 @@
+Object subclass: #ClassCategoryReader
+  instanceVariableNames: 'class category'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Kernel-Support'!
+ClassCategoryReader class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+ClassCategoryReader comment:
+'Instance Variables:
+	class		<ClassDescription> the class being read in
+	category	<String> the category for methods being read in
+
+I am created during fileIn in response to "class methodsFor: cat" message.  I subsequently scan consecutive "chunks" from the fileIn stream and ask class to compile them in this category.  I continue in this way until an empty chunk is found.'!
+"-----------------------------------"!
+!ClassCategoryReader class methodsFor: 'instance creation'!
+class: aClass category: aCategory
+	"Answer a new instance of ClassCategoryReader for the category,
+	aCategory, of the class, aClass."
+
+	^self new setClass: aClass category: aCategory!
+"-----------------------------------"!
+!ClassCategoryReader methodsFor: 'fileIn/Out'!
+scanFrom: aStream
+	"Files in methods from the stream, aStream.  Prints the name and
+	category of the methods in the transcript view."
+
+	| string |
+	[string _ aStream nextChunk.
+	string size > 0]						"done when double terminators"
+		whileTrue: [class compile: string classified: category].
+	Transcript show: class name , '<' , category , '
+'!
+"-----------------------------------"!
+!ClassCategoryReader methodsFor: 'private'!
+setClass: aClass category: aCategory
+	class _ aClass.
+	category _ aCategory!

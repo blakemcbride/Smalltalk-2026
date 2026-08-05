@@ -16,6 +16,8 @@
 #include "st_sched.h"
 #include "bootstrap.h"
 #include "compiler.h"
+#include "chunk.h"
+#include "survey.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -57,6 +59,7 @@ usage(const char *argv0)
     printf("  -trace2 <image> [n]   bytecode trace, Xerox trace2 format\n");
     printf("  -trace3 <image> [n]   send trace, Xerox trace3 format\n");
     printf("  -inspect <image> <oop>  describe one object (oop in hex)\n");
+    printf("  -syntax <f.st...>     compile every method and report failures\n");
     printf("  -help                 this message\n");
     printf("\n");
     printf("  ST_EVAL_TRACE=1       trace the bytecodes an -eval runs\n");
@@ -434,6 +437,7 @@ evaluate(const char *expression, char *errbuf, size_t errlen)
     ctx.make_float         = BOOT_make_float;
     ctx.make_large_integer = BOOT_make_large_integer;
     ctx.make_array         = BOOT_make_array;
+    ctx.make_character     = BOOT_make_character;
     ctx.lookup_global      = BOOT_lookup_global;
 
     /*
@@ -653,6 +657,20 @@ do_inspect(const char *path, const char *oop_text)
     return 0;
 }
 
+
+static int
+do_syntax(int argc, char **argv)
+{
+    st_survey   survey;
+    int         i;
+
+    SURVEY_init(&survey);
+    for (i = 0; i < argc; ++i)
+        SURVEY_file(&survey, argv[i]);
+    SURVEY_report(&survey, stdout);
+    return (survey.failed || survey.unreadable) ? 1 : 0;
+}
+
 int
 main(int argc, char **argv)
 {
@@ -667,6 +685,8 @@ main(int argc, char **argv)
             print_version();
             return 0;
         }
+        if (!strcmp(argv[i], "-syntax") && i + 1 < argc)
+            return do_syntax(argc - i - 1, argv + i + 1);
         if (!strcmp(argv[i], "-census") && i + 1 < argc)
             return do_census(argv[i + 1]);
         if (!strcmp(argv[i], "-classes") && i + 1 < argc)

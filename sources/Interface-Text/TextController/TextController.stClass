@@ -1,0 +1,66 @@
+ParagraphEditor subclass: #TextController
+  instanceVariableNames: ''
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Interface-Text'!
+TextController class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+TextController comment:
+'This subclass of the paragraphEditor uses actionMenus for model control protocol.
+It also makes a stab (localMenuItem:) at the problem of distinguishing user control
+directed at the model from that directed at the view/controller.
+
+This controller is more tightly connected to its view (for example it asks it for its
+yellowButtonMenu), because the view is the current site for "pluggable" parameterization.'!
+"-----------------------------------"!
+!TextController methodsFor: 'accessing'!
+paragraph
+	^ paragraph!
+textHasChanged
+	^ self text ~= initialText!
+"-----------------------------------"!
+!TextController methodsFor: 'composition'!
+wrappingBox: wrapRectangle clippingBox: clipRectangle
+	paragraph recomposeIn: wrapRectangle clippingBox: clipRectangle.
+	self selectFrom: startBlock stringIndex to: stopBlock stringIndex-1!
+"-----------------------------------"!
+!TextController methodsFor: 'control activity'!
+yellowButtonActivity
+	| index menu selector |
+	menu _ view yellowButtonMenu.
+	menu == nil
+		ifTrue:
+			[view flash.
+			super controlActivity]
+		ifFalse:
+			[index _ menu startUpYellowButton.
+			index ~= 0
+				ifTrue:
+					[selector _ menu selectorAt: index.  "editing to self, rest to model"
+					(self localMenuItem: selector)
+						ifTrue: [self perform: selector]
+						ifFalse: [self controlTerminate.
+								selector numArgs = 2
+									ifTrue: [model perform: selector with: self text with: self]
+									ifFalse: [model perform: selector].
+								self controlInitialize]]]!
+"-----------------------------------"!
+!TextController methodsFor: 'editing'!
+insertAndSelect: aString at: anInteger
+	self selectAt: anInteger.
+	self deselect.
+	self replaceSelectionWith: (' ' , aString) asText.
+	self selectAndScroll!
+"-----------------------------------"!
+!TextController methodsFor: 'menu messages'!
+accept
+	(self textHasChanged and: [model changeRequestFrom: view])
+		ifFalse: [^view flash].
+	self controlTerminate.
+	(view accept: self text from: self)
+		ifTrue: [super accept]
+		ifFalse: [view flash].
+	self controlInitialize!
+localMenuItem: selector
+	^ #(cut paste copySelection again undo cancel accept) includes: selector!

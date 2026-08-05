@@ -1,0 +1,19 @@
+IdentityDictionary variableSubclass: #MethodDictionary
+  instanceVariableNames: ''
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Kernel-Support'!
+MethodDictionary class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+MethodDictionary comment:
+'MethodDictionaries behave just the same as IdentityDictionaries, except that
+removal is implemented as an atomic operation.  This allows the interpreter
+to access methodDictionaries removal without getting confused.'!
+"-----------------------------------"!
+!MethodDictionary methodsFor: 'dictionary removing'!
+methodArray
+	^valueArray!
+removeKey: key ifAbsent: errorBlock
+	"Remove the key from a copy and then use become: to effect and atomic update"
+	self become: (self copy removeDangerouslyKey: key ifAbsent: [^errorBlock value])!

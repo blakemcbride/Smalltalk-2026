@@ -1,0 +1,290 @@
+ParseNode subclass: #Encoder
+  instanceVariableNames: 'scopeTable nTemps supered requestor class literalStream selectorSet litIndSet litSet sourceRanges lastTempPos'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'System-Compiler'!
+Encoder class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+Encoder comment:
+'I encode names and literals into tree nodes with byte codes for the compiler.  Byte codes for literals are not assigned until the tree-sizing pass of the compiler, because only then is it known which literals are actually needed.  I also keep track of sourceCode ranges during parsing and code generation so I can provide an inverse map for the debugger.
+
+scopeTable is a dictionary of (names->nodes)
+nTemps is the count of temporaries used so far
+supered is true if super has been used in this method
+requestor is usually a parser
+class is the class in which we are compiling - used to look up class and pool variables
+literalStream accumulates the literals used in this method
+selectorSet is a dictionary of (selectors->nodes) predefined or used in this method
+litIndSet is a dictionary of (poolVars->nodes) used in this method
+litSet is a dictionary of (constants->nodes) used in this method
+sourceRanges is a dictionary of (node->source interval)s'!
+"-----------------------------------"!
+!Encoder methodsFor: 'encoding'!
+cantStoreInto: varName
+	^ StdVariables includesKey: varName!
+encodeLiteral: object
+	^self
+		name: object
+		key: object
+		class: LiteralNode
+		type: LdLitType
+		set: litSet!
+encodeSelector: selector
+	^self
+		name: selector
+		key: selector
+		class: SelectorNode
+		type: SendType
+		set: selectorSet!
+encodeVariable: name
+	^scopeTable at: name
+		ifAbsent:
+			[self lookupInPools: name
+				ifFound: [:assoc | ^ self global: assoc name: name].
+			requestor editor notNil
+				ifTrue: [self undeclared: name]
+				ifFalse: [self declareUndeclared: name]]!
+litIndex: literal
+	| p |
+	p _ literalStream position.
+	p = 64 ifTrue:
+		[self notify: 'More than 64 literals referenced.  You must split or otherwise simplify this method'. ^nil].
+	literalStream nextPut: literal.
+	^p!
+"-----------------------------------"!
+!Encoder methodsFor: 'error handling'!
+abort
+	| req |
+	requestor == nil
+		ifFalse:
+			[req _ requestor.
+			self release.
+			req abort].
+	^false!
+notify: string
+	| req |
+	requestor == nil
+		ifFalse:
+			[req _ requestor.
+			self release.
+			req notify: string].
+	^false!
+"-----------------------------------"!
+!Encoder methodsFor: 'initialize-release'!
+fillDict: dict with: nodeClass mapping: keys to: codeArray
+	| codeStream key |
+	codeStream _ ReadStream on: codeArray.
+	keys do:
+		[:key | dict
+				at: key
+				put:  (nodeClass new name: key key: key code: codeStream next)]!
+init: aClass context: aContext notifying: req
+	| variable node n homeNode indexNode |
+	requestor _ req.
+	class _ aClass.
+	nTemps _ 0.
+	supered _ false.
+	self initScopeAndLiteralTables.
+	n _ -1.
+	class allInstVarNames do:
+		[:variable |
+		node _ VariableNode new
+					name: variable
+					index: (n _ n + 1)
+					type: LdInstType.
+		scopeTable at: variable put: node].
+	aContext == nil
+		ifFalse:
+			[homeNode _ self bindTemp: 'homeContext'.
+			"first temp = aContext passed as arg"
+			n _ 0.
+			aContext tempNames do:
+				[:variable |
+				indexNode _ self encodeLiteral: (n _ n + 1).
+				node _ MessageNode new
+							receiver: homeNode
+							selector: #tempAt:
+							arguments: (Array with: indexNode)
+							precedence: 3
+							from: self.
+				scopeTable at: variable put: node]].
+	sourceRanges _ Dictionary new: 32!
+initScopeAndLiteralTables
+	scopeTable _ StdVariables copy.
+	litSet _ StdLiterals copy.
+	selectorSet _ StdSelectors copy.
+	litIndSet _ Dictionary new: 16.
+	literalStream _ WriteStream on: (Array new: 32)!
+nTemps: n literals: lits class: cl
+	"Decompile"
+
+	class _ cl.
+	nTemps _ n.
+	literalStream _ ReadStream on: lits.
+	literalStream position: lits size!
+noteSuper
+	supered _ true!
+release
+	requestor _ nil!
+"-----------------------------------"!
+!Encoder methodsFor: 'private'!
+global: ref name: name
+	^self
+		name: name
+		key: ref
+		class: VariableNode
+		type: LdLitIndType
+		set: litIndSet!
+lookupInPools: name ifFound: assocBlock
+	| sym |
+	Symbol
+		hasInterned: name
+		ifTrue: [:sym | ^class scopeHas: sym ifTrue: assocBlock].
+	^false!
+name: name key: key class: leafNodeClass type: type set: dict
+	| node |
+	^dict
+		at: key
+		ifAbsent:
+			[node _ leafNodeClass new
+						name: name
+						key: key
+						index: nil
+						type: type.
+			dict at: key put: node.
+			^node]!
+"-----------------------------------"!
+!Encoder methodsFor: 'results'!
+associationFor: aClass
+	| name |
+	name _ Smalltalk keyAtValue: aClass ifAbsent: [^Association new value: aClass].
+	^Smalltalk associationAt: name!
+associationForClass
+	^self associationFor: class!
+literals: primitive nArgs: nArgs
+	(primitive > 0 or: [nArgs > 4])
+		ifTrue:
+			[self litIndex: nArgs * 256 + primitive.
+			self litIndex: (self associationForClass)]
+		ifFalse:
+			[supered ifTrue: [self litIndex: (self associationForClass)]].
+	^literalStream contents!
+supered
+	^supered!
+tempNames
+	| tempNodes |
+	tempNodes _ (scopeTable values select: [:node | node isTemp])
+		asSortedCollection: [:n1 :n2 | n1 code <= n2 code].
+	^tempNodes collect: [:node | node key]!
+"-----------------------------------"!
+!Encoder methodsFor: 'source mapping'!
+noteSourceRange: range forNode: node
+	sourceRanges at: node put: range!
+sourceMap: numLits
+	"Answer with a sorted set of associations (pc . range).  Delta is the difference
+	between the parsed number of literals (startpc) and the generated number of
+	literals."
+	| key delta |
+	delta _ (numLits - literalStream position) * 2.
+	^(sourceRanges keys collect:
+		[:key |  Association key: key pc + delta value: (sourceRanges at: key)])
+			asSortedCollection!
+"-----------------------------------"!
+!Encoder methodsFor: 'temporaries'!
+autoBind: name
+	"Declare a block argument as a temp if not already declared"
+
+	| node assoc |
+	node _
+		scopeTable
+			at: name
+			ifAbsent:
+				[(self lookupInPools: name ifFound: [:assoc | assoc])
+					ifTrue: [self notify: 'Name already used in a Pool or Global'].
+				^self reallyBindTemp: name].
+	node isTemp ifFalse: [^self notify: 'Name already used in this class'].
+	^node!
+bindTemp: name
+	"Declare a temporary; error not if a field or class variable."
+
+	(scopeTable includesKey: name)
+		ifTrue: [^self notify: 'Name is already defined'].
+	^self reallyBindTemp: name!
+maxTemp
+	^nTemps!
+newTemp: name
+	nTemps _ nTemps + 1.
+	^VariableNode new
+		name: name
+		index: nTemps - 1
+		type: LdTempType!
+reallyBindTemp: name
+	"private;  assumes name not in scope yet"
+	| node |
+	node _ self newTemp: name.
+	scopeTable at: name put: node.
+	^node!
+"-----------------------------------"!
+!Encoder methodsFor: 'undeclared variables'!
+declareClassVar: name
+	| sym |
+	name first isUppercase ifFalse: [self notify: 'Capitalize globals or classVars'].
+	sym _ name asSymbol.
+	class addClassVarName: sym.
+	Smalltalk changes changeClass: class.
+	^ self global: (class classPool associationAt: sym) name: sym!
+declareCorrect: name
+	"Attempt to correct the spelling of an undeclared variable."
+
+	| old lc names score bestScore guess |
+	old _ name.
+	lc _ old first asLowercase.
+	names _
+			(scopeTable keys select: [:key | key first asLowercase = lc]).
+	names addAll:
+			(class allVarNamesSelect: [:key | key first asLowercase = lc]).
+
+	bestScore _ 0.
+	names do:
+		[:name |
+		(score _ name spellAgainst: old) > bestScore ifTrue:
+			[bestScore _ score. guess _ name]].
+
+	bestScore > 50 ifFalse: [^ self notify: 'Couldn''t correct'].
+	(self confirm: 'Confirm correction to ' , guess)
+		ifTrue:
+			[requestor replaceEditSelectionWith: guess.
+			^ self encodeVariable: guess]
+		ifFalse:
+			[^ self notify: 'Undeclared']!
+declareFailed: name
+	self abort!
+declareGlobal: name
+	| sym |
+	name first isUppercase ifFalse: [self notify: 'Capitalize globals or classVars'].
+	sym _ name asSymbol.
+	Smalltalk at: sym put: nil.
+	^ self global: (Smalltalk associationAt: sym) name: sym!
+declareTemp: name
+	requestor pasteTemp: name.
+	^ self reallyBindTemp: name!
+declareUndeclared: name
+	| sym |
+	sym _ name asSymbol.
+	(Undeclared includesKey: name asSymbol) ifFalse:
+		[Transcript show: ' (' , name , ' is Undeclared) '.
+		Undeclared at: sym put: nil].
+	^ self global: (Undeclared associationAt: sym) name: sym!
+undeclared: name
+	| message messageLoc messageBox saveBits menu index |
+	Cursor normal show.
+	requestor selectVariable: name.
+	index _ (menu _ ActionMenu
+			labels: 'temp\class var\global\undeclared\correct it\abort' withCRs
+			lines: #(4)
+			selectors: #(declareTemp: declareClassVar: declareGlobal: declareUndeclared: declareCorrect: declareFailed:))
+				startUp: #anyButton
+				withHeading: ' declare ' asText , (name contractTo: 20) asText allBold , ' as ' asText.
+	index = 0 ifTrue: [^ self declareFailed: name].
+	^ self perform: (menu selectorAt: index) with: name!

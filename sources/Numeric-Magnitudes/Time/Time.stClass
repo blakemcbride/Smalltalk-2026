@@ -1,0 +1,247 @@
+Magnitude subclass: #Time
+  instanceVariableNames: 'hours minutes seconds'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Numeric-Magnitudes'!
+Time class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+Time comment:
+'Implements times of day.'!
+"-----------------------------------"!
+!Time class methodsFor: 'general inquiries'!
+dateAndTimeNow
+	"Answer an array of (Date today, Time now)."
+
+	^self currentTime: #dateAndTime!
+millisecondClockValue
+	"Answer with the number of milliseconds since the millisecond clock was
+	last reset or rolled over."
+
+	| milliseconds |
+	milliseconds _ LargePositiveInteger new: 4.
+	self millisecondClockInto: milliseconds.
+	^milliseconds truncated!
+millisecondsToRun: timedBlock
+	"Answer with the number of milliseconds timedBlock takes to return its value."
+
+	| initialMilliseconds |
+	initialMilliseconds _ self millisecondClockValue.
+	timedBlock value.
+	^self millisecondClockValue - initialMilliseconds!
+timeWords
+	"Answer with the seconds (in GMT) since Jan 1 1901: as a four element
+	ByteArray.  The high-order 8-bits of the answer are stored in the byte
+	indexed by 1 and the low-order 8-bits in the byte indexed 4.  Note: this
+	order is not consistent with the primitives or the other time messages,
+	but it is what the Alto file system uses (see AltoFile updateLeader:)."
+
+	| seconds bytes |
+	seconds _ ByteArray new: 4.
+	self secondClockInto: seconds.
+	bytes _ ByteArray new: 4.
+	"Reverse the bytes"
+	1 to: 4 do: [:i | bytes at: i put: (seconds at: 5 - i)].
+	^bytes!
+totalSeconds
+	"Answer with the total seconds from Jan 1 1901 corrected for time zone
+	and daylight savings time."
+
+	^self currentTime: #seconds!
+"-----------------------------------"!
+!Time class methodsFor: 'instance creation'!
+fromSeconds: secondCount
+	"Answer with a Time that is secondCount seconds since midnight."
+
+	| secondsInHour hours |
+	hours _ secondCount truncated // 3600.
+	secondsInHour _ secondCount truncated \\ 3600.
+	^self new hours: hours
+			   minutes: secondsInHour // 60
+			   seconds: secondsInHour \\ 60!
+now
+	"Answer with a Time representing the time right now--this is a 24 hour clock."
+
+	^self dateAndTimeNow at: 2!
+readFrom: aStream
+	"Read a Time from the stream in the form:
+		<hour>:<minute>:<second> <am/pm>
+
+	<minute>, <second> or <am/pm> may be omitted.  e.g. 1:59:30 pm; 8AM; 15:30"
+
+	| hour minute second |
+	hour _ Integer readFrom: aStream.
+	minute _ 0.
+	second _ 0.
+	(aStream peekFor: $:) ifTrue:
+		[minute _ Integer readFrom: aStream.
+		(aStream peekFor: $:) ifTrue:
+			[second _ Integer readFrom: aStream]].
+	aStream skipSeparators.
+	(aStream atEnd not and: [aStream peek isLetter])
+		ifTrue:
+			[aStream next asLowercase = $p ifTrue: [hour _ hour + 12].
+			(aStream peekFor: $m) ifFalse: [aStream peekFor: $M]].
+	^self fromSeconds: 60*(60*hour+minute)+second
+
+	"Time readFrom: (ReadStream on: '2:23:09 pm')"!
+"-----------------------------------"!
+!Time class methodsFor: 'private'!
+currentTime: formatted
+	"If formatted is #seconds, answer with the total seconds from Jan 1 1901
+	corrected for time zone and daylight savings time.
+	Otherwise, answer an array of (Date today, Time now).
+	m570 and m571 are time zone specific parameters, set for California."
+
+	| secondCount d dd t dfirst dlast m570 m571 |
+	secondCount _ LargePositiveInteger new: 4.
+	self secondClockInto: secondCount.
+	secondCount _ secondCount truncated.
+	m570 _ 16505.
+	m571 _ 305.
+	"adjust for time zone"
+	secondCount _
+		secondCount
+			+ ((m570 >= 0
+					ifTrue: [-1]	"west"
+					ifFalse: [1]	"east")
+				* (3600 * ((m570 bitAnd: 30720) bitShift: -11)
+							+ (60 * ((m571 bitAnd: 32256) bitShift: -9)))).
+
+	"Guess the number of days since Jan 1 1901."
+	d _ Date fromDays: secondCount // 86400.
+
+	"The formatted test makes it possible to skip some work if all you want is to correct
+	the total number of seconds.  secondCount \\ 86400 is the number of seconds that
+	were left over from the estimate of days"
+	formatted==#seconds ifFalse: [t _ Time fromSeconds: secondCount \\ 86400].
+
+	"check for daylight savings time (DST). correct DST parameters for nonleap
+	years and round to previous Sunday if necessary"
+
+	"day of the year on or before which DST takes effect"
+	dfirst _ m570 bitAnd: 511.
+	(dfirst = 366
+		ifTrue: [false"DST not in effect"]
+		ifFalse: [(dd _ d day) >= (dfirst _ dfirst + d leap - 1)
+				ifTrue:
+					["day of the year on or before which DST ends"
+					dlast _ (m571 bitAnd: 511) + d leap - 1.
+					dd < dlast and:
+						[dd < ((Date newDay: dlast year: d year)
+								previous: #Sunday) day]]
+				ifFalse: ["possibly earlier than or at beginning of range"
+						dd >= ((Date newDay: dfirst year: d year)
+								previous: #Sunday) day]])
+		ifTrue: [formatted==#seconds
+					ifTrue: ["daylight savings time in effect. add an hour"
+							secondCount _ secondCount + 3600]
+					ifFalse: [t hours = 23
+								ifTrue:
+									[d _ d addDays: 1.
+									t hours: 0]
+								ifFalse: [t hours: t hours + 1]]].
+	formatted==#seconds
+		ifTrue: [^secondCount]
+		ifFalse: [^Array with: d with: t]!
+millisecondClockInto: aByteArray
+	"The argument is a byte indexable object of length at least four (a
+	LargePositiveInteger).  Store into the first four bytes of the argument the
+	number of milliseconds since the millisecond clock was last reset or rolled
+	over (a 32-bit unsigned number).  The low-order 8-bits are stored in
+	the byte indexed by 1 and the high-order 8-bits in the byte indexed 4.
+	Essential.  See Object documentation whatIsAPrimitive."
+
+	<primitive: 99>
+	self primitiveFailed!
+secondClockInto: aByteArray
+	"The argument is a byte indexable object of length at least four.  Store
+	into the first four bytes of the argument the number of seconds since
+	00:00 in the morning of January 1, 1901 (a 32-bit unsigned number).
+	The low-order 8-bits are stored in the byte indexed by 1 and the high-
+	order 8-bits in the byte indexed 4.  Essential.  See Object documentation
+	whatIsAPrimitive. "
+
+	<primitive: 98>
+	self primitiveFailed!
+"-----------------------------------"!
+!Time methodsFor: 'accessing'!
+hours
+	"Answer the number of hours the receiver represents."
+	^hours!
+minutes
+	"Answer the number of minutes the receiver represents."
+	^minutes!
+seconds
+	"Answer the number of seconds the receiver represents."
+	^seconds!
+"-----------------------------------"!
+!Time methodsFor: 'arithmetic'!
+addTime: timeAmount
+	"Answer a new Time that is timeAmount after the receiver.  timeAmount is an
+	instance of Date or Time."
+
+	^Time fromSeconds: self asSeconds + timeAmount asSeconds!
+subtractTime: timeAmount
+	"Answer a new Time that is timeAmount before the receiver.  timeAmount is an
+	instance of Date or Time."
+
+	^Time fromSeconds: self asSeconds - timeAmount asSeconds!
+"-----------------------------------"!
+!Time methodsFor: 'comparing'!
+< aTime
+	"Answer whether aTime is earlier than the receiver."
+
+	hours ~= aTime hours ifTrue: [^hours < aTime hours].
+	minutes ~= aTime minutes ifTrue: [^minutes < aTime minutes].
+	^seconds < aTime seconds!
+= aTime
+	"Answer whether aTime represents the same second as the receiver."
+
+	self species = aTime species
+		ifTrue: [^hours = aTime hours
+					& (minutes = aTime minutes)
+					& (seconds = aTime seconds)]
+		ifFalse: [^false]!
+hash
+	"Hash must be redefined since = was redefined."
+	^((hours hash bitShift: 3) bitXor: minutes) bitXor: seconds!
+"-----------------------------------"!
+!Time methodsFor: 'converting'!
+asSeconds
+	"Answer the number of seconds since midnight of the receiver."
+
+	^3600 * hours + (60 * minutes + seconds)!
+"-----------------------------------"!
+!Time methodsFor: 'printing'!
+printOn: aStream
+	"Format is h:mm:ss am/pm"
+
+	hours > 12
+		ifTrue: [hours - 12 printOn: aStream]
+		ifFalse: [hours < 1
+					ifTrue: [12 printOn: aStream]
+					ifFalse: [hours printOn: aStream]].
+	aStream nextPutAll: (minutes < 10
+							ifTrue: [':0']
+							ifFalse: [':']).
+	minutes printOn: aStream.
+	aStream nextPutAll: (seconds < 10
+							ifTrue: [':0']
+							ifFalse: [':']).
+	seconds printOn: aStream.
+	aStream nextPutAll: (hours < 12
+							ifTrue: [' am']
+							ifFalse: [' pm'])!
+storeOn: aStream
+	aStream nextPutAll: '(', self class name, ' readFromString: ';
+		print: self printString;
+		nextPut: $)!
+"-----------------------------------"!
+!Time methodsFor: 'private'!
+hours: anInteger
+	hours _ anInteger!
+hours: hourInteger minutes: minInteger seconds: secInteger
+	hours _ hourInteger.
+	minutes _ minInteger.
+	seconds _ secInteger!

@@ -49,6 +49,15 @@ typedef struct {
     st_oop            (*make_large_integer)(int64_t value, void *user);
     st_oop            (*make_array)(st_oop *elements, unsigned count,
                                     void *user);
+    /*
+     *  A character literal.  Characters are unique per code point, so this
+     *  is a lookup rather than a construction, and in an image it is a fetch
+     *  from CharacterTable.  It goes through the context like every other
+     *  literal so that the compiler needs no object memory of its own --
+     *  which is what lets -syntax check source without building an image.
+     *  When NULL the character table is read directly.
+     */
+    st_oop            (*make_character)(unsigned code, void *user);
 } st_compile_context;
 
 typedef struct {

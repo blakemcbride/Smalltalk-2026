@@ -1,0 +1,47 @@
+Inspector subclass: #ContextInspector
+  instanceVariableNames: 'tempNames'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Interface-Inspector'!
+ContextInspector class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+ContextInspector comment:
+'I represent a query path into the internal representation of a ContextPart.  Typically this is a context at a point in the query path of a Debugger.  As a StringHolder, the string I represent is the value of the currently selected variable of the observed temporary variable of the context.
+
+Instance Variables:
+	contextCode	<String> the method whose activation is being inspected
+	tempNames	<Array> of Strings, each the name of a temporary variable.'!
+"-----------------------------------"!
+!ContextInspector methodsFor: 'doIt/accept'!
+acceptText: aText from: aController
+	| val |
+	(field == nil) | (field = 'self') ifTrue: [^ false].
+	val _ self evaluateText: aText string from: aController ifFail: [^ false].
+	object tempAt: self fieldIndex put: val.
+	self changed: #text.
+	^ true!
+doItContext
+	^object!
+doItReceiver
+	^object receiver!
+"-----------------------------------"!
+!ContextInspector methodsFor: 'field list'!
+fieldIndex
+	^ tempNames indexOf: field!
+fieldList
+	object == nil ifTrue: [^nil].
+	^(tempNames _ object tempNames)!
+fieldMenu
+	field == nil ifTrue: [^ nil].
+	^ActionMenu
+		labels: 'inspect'
+		selectors: #(inspectField)!
+fieldValue
+	field = 'self' ifTrue: [^ object receiver].
+	^ object tempAt: self fieldIndex!
+"-----------------------------------"!
+!ContextInspector methodsFor: 'initialization'!
+inspect: anObject
+	object _ anObject.
+	self changed: #field!

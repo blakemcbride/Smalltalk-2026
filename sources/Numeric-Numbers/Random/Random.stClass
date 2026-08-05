@@ -1,0 +1,37 @@
+Stream subclass: #Random
+  instanceVariableNames: 'seed'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Numeric-Numbers'!
+Random class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+Random comment:
+'A simple random number generator.'!
+"-----------------------------------"!
+!Random class methodsFor: 'instance creation'!
+new
+	"Answer a new random number generator."
+	^self basicNew setSeed!
+"-----------------------------------"!
+!Random methodsFor: 'accessing'!
+contents
+	^self shouldNotImplement!
+next
+	"Answer with the next random number."
+
+	| temp |
+	[seed _ 13849 + (27181 * seed) bitAnd: 65535.
+	0 = (temp _ seed / 65536.0)] whileTrue.
+	^temp!
+nextPut: anObject
+	^self shouldNotImplement!
+"-----------------------------------"!
+!Random methodsFor: 'private'!
+setSeed
+	seed _ Time millisecondClockValue bitAnd: 65535
+		"Time millisecondClockValue gives a large integer;  I only want the lower 16 bits."!
+"-----------------------------------"!
+!Random methodsFor: 'testing'!
+atEnd
+	^false!

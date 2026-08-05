@@ -1,0 +1,35 @@
+LookupKey subclass: #Association
+  instanceVariableNames: 'value'
+  classVariableNames: ''
+  poolDictionaries: ''
+  category: 'Collections-Support'!
+Association class
+  instanceVariableNames: ''!
+"-----------------------------------"!
+Association comment:
+'I am a pair of associated objects--a key and a value.  I can serve as an entry in a dictionary.  Think of my key as the left-hand side of the dictionary and my value as the right-hand side.'!
+"-----------------------------------"!
+!Association class methodsFor: 'instance creation'!
+key: newKey value: newValue
+	"Answer a new instance of me with the arguments as the key and
+	value of the association."
+	^(super key: newKey) value: newValue!
+"-----------------------------------"!
+!Association methodsFor: 'accessing'!
+key: aKey value: anObject
+	"Store the arguments as the variables of the receiver."
+
+	key _ aKey.
+	value _ anObject!
+value
+	"Answer the value of the receiver."
+	^value!
+value: anObject
+	"Store the argument, anObject, as the value of the receiver."
+	value _ anObject!
+"-----------------------------------"!
+!Association methodsFor: 'printing'!
+printOn: aStream
+	super printOn: aStream.
+	aStream nextPutAll: '->'.
+	value printOn: aStream!
