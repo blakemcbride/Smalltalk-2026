@@ -889,6 +889,48 @@ test_compile_inspect_debug(void)
 }
 
 /*
+ *  Every class the image defines is reachable by name from Smalltalk.
+ *
+ *  A binding is made the first time a name is needed, and for the first
+ *  seventeen of them that is before the class named Association exists --
+ *  Association being the seventeenth.  Those carried a nil class, and the
+ *  one thing in the system that asks a binding what class it is happens to
+ *  be Dictionary>>add:, which sends #key.  So the system dictionary refused
+ *  exactly those seventeen, and "Smalltalk includesKey: #Array" answered
+ *  false in a system where Array worked perfectly well -- a compiled method
+ *  holds the binding and reads its value, and never asks its class.
+ *
+ *  The names below are chosen from the refused seventeen and from after
+ *  them, because what makes this worth a test is that both must hold.
+ */
+static void
+test_globals_are_reachable_by_name(void)
+{
+    /*  Refused when their bindings had no class.  */
+    check_oop("^Smalltalk includesKey: #Array", ST_TRUE, "true");
+    check_oop("^Smalltalk includesKey: #Association", ST_TRUE, "true");
+    check_oop("^Smalltalk includesKey: #OrderedCollection", ST_TRUE, "true");
+    check_oop("^Smalltalk includesKey: #Stream", ST_TRUE, "true");
+    check_oop("^Smalltalk includesKey: #Interval", ST_TRUE, "true");
+
+    /*  Defined after Association, so never affected.  */
+    check_oop("^Smalltalk includesKey: #Point", ST_TRUE, "true");
+    check_oop("^Smalltalk includesKey: #Object", ST_TRUE, "true");
+
+    /*  And the lookup answers the class itself, not merely a binding.  */
+    check_oop("^(Smalltalk at: #Array) == Array", ST_TRUE, "true");
+    check_oop("^(Smalltalk at: #OrderedCollection) == OrderedCollection",
+              ST_TRUE, "true");
+
+    /*
+     *  Nothing is missing.  Every class the bootstrap built is in the
+     *  dictionary; a count that falls short means bindings were refused
+     *  again, which is precisely how this went unnoticed before.
+     */
+    check_oop("^Smalltalk size >= 310", ST_TRUE, "true");
+}
+
+/*
  *  Input, through the path a window's events take.
  *
  *  GFX_inject_* does exactly what the SDL handlers do -- move the pointer,
@@ -1052,6 +1094,7 @@ main(void)
     test_browsing();
     test_browser();
     test_compile_inspect_debug();
+    test_globals_are_reachable_by_name();
     test_input();
     test_printing_deep();
     test_mixed_arithmetic();

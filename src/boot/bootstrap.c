@@ -150,6 +150,7 @@ static int place_in_symbol_table(st_oop sym);
 static size_t remember_source(const char *text);
 uint32_t BOOT_string_hash_of_text(const char *text, size_t length);
 static int adopt_symbols(void);
+static int adopt_associations(void);
 
 st_oop
 BOOT_intern_symbol(const char *text, void *user)
@@ -422,7 +423,8 @@ define_global(const char *name, st_oop value)
     key         = BOOT_intern_symbol(name, NULL);
     /*
      *  Association itself may not exist yet during the earliest steps, so a
-     *  binding made then carries a nil class and is adopted later.
+     *  binding made then carries a nil class, and adopt_associations gives
+     *  it one once there is one to give.
      */
     association = OM_instantiate_pointers(BOOT_global("Association"), 2);
     if (!OM_is_object(association))
@@ -1652,6 +1654,8 @@ boot_build_locked(const char *const *paths, unsigned path_count,
         return -1;
     if (!adopt_symbols())
         return -1;
+    if (!adopt_associations())
+        return -1;
     if (!finish_fixed_objects())
         return -1;
 
@@ -1730,6 +1734,47 @@ adopt_symbols(void)
     for (i = 0; i < symbol_count; ++i) {
         if (OM_fetch_class(symbols[i]) != symbol_class)
             OM_set_class_of_object(symbols[i], symbol_class);
+    }
+    return 1;
+}
+
+/*
+ *  Give every global binding its class.
+ *
+ *  The same problem as the symbols above, and it went unnoticed for longer
+ *  because it hid so much better.  A binding is made the first time a name
+ *  is needed, which for the first seventeen of them is before the class
+ *  named Association exists -- Association is itself the seventeenth.  Those
+ *  carried a nil class.
+ *
+ *  Nothing about the classes they name stopped working, because a compiled
+ *  method holds the binding itself and reads its value field directly; the
+ *  interpreter never asks a binding what class it is.  Only ONE thing does,
+ *  and it is Dictionary>>add:, which sends #key to what it is given.  So the
+ *  seventeen were silently refused by the system dictionary, and
+ *  "Smalltalk includesKey: #Array" answered false in a system where Array
+ *  worked perfectly -- as did OrderedCollection, Stream, Interval and every
+ *  other collection and stream in the kernel.
+ *
+ *  It cost seventeen doesNotUnderstand lines during the bootstrap, which is
+ *  the whole of what it looked like from outside.
+ */
+static int
+adopt_associations(void)
+{
+    st_oop      association_class = BOOT_global("Association");
+    unsigned    i;
+
+    if (!OM_is_present(association_class)) {
+        boot_fail("the kernel must define Association");
+        return 0;
+    }
+    for (i = 0; i < global_count; ++i) {
+        st_oop  binding = OM_fetch_pointer(i, globals_values);
+
+        if (OM_is_present(binding)
+         && OM_fetch_class(binding) != association_class)
+            OM_set_class_of_object(binding, association_class);
     }
     return 1;
 }
@@ -2177,8 +2222,21 @@ install_system_dictionary(void)
 
     for (i = 0; i < global_count; ++i) {
         arg = OM_fetch_pointer(i, globals_values);
-        if (OM_is_present(arg))
+        if (OM_is_present(arg)) {
+            if (getenv("ST_GLOBAL_LOG")) {
+                char    cname[64];
+
+                char    kname[64];
+
+                OM_class_name_of(OM_fetch_class(arg), cname, sizeof cname);
+                OM_string_of(OM_fetch_pointer(ST_ASSOCIATION_KEY, arg),
+                             kname, sizeof kname);
+                if (strcmp(cname, "Association") != 0)
+                    fprintf(stderr, "  global %u \"%s\" has class %s\n",
+                            i, kname, cname);
+            }
             run_method_with(add_to, dict, &arg, 1, 2000000);
+        }
     }
 
     /*
