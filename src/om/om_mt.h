@@ -36,6 +36,8 @@
 #include <stdint.h>
 #include <stddef.h>
 
+#include "st_atomic.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -100,11 +102,18 @@ typedef int64_t     st_int;
 #define ST_FMT_FREE         0x0200  /*  table entry is unused       */
 
 typedef struct {
-    st_oop      class_oop;
-    uint32_t    size;               /*  fields, words or bytes, per format  */
-    uint32_t    flags;
-    uint32_t    refcount;
-    uint32_t    hash;               /*  identity hash, stable across moves  */
+    st_oop          class_oop;
+    uint32_t        size;           /*  fields, words or bytes, per format  */
+    uint32_t        flags;
+    /*
+     *  The count is mutated by every thread that stores a pointer, so it is
+     *  atomic rather than merely volatile.  Relaxed ordering is enough for
+     *  the increment -- what matters is that no update is lost -- but the
+     *  decrement that reaches zero must synchronise with the other threads'
+     *  releases before the object is torn down, so it is acquire-release.
+     */
+    st_atomic_uint  refcount;
+    uint32_t        hash;           /*  identity hash, stable across moves  */
 } om_header;
 
 /*
@@ -112,9 +121,26 @@ typedef struct {
  *  allocation.  Keeping them adjacent means one pointer chase to reach
  *  either, and lets a future collector move the pair together.
  */
-extern om_header  **st_om_table;
-extern uint32_t     st_om_table_size;   /*  entries allocated  */
-extern uint32_t     st_om_table_limit;  /*  first index past the used range */
+/*
+ *  The table is allocated once, at its maximum, and never moved.
+ *
+ *  That is a threading requirement rather than a simplification.  A growable
+ *  table has to be reallocated, and reallocation moves it -- while other
+ *  threads are indexing it without a lock, since taking one on every field
+ *  access would defeat the point of the object table.  Reserving the whole
+ *  range up front costs eight bytes of address space per possible object and
+ *  nothing in resident memory until an entry is touched, because the pages
+ *  are only mapped on first write.
+ *
+ *  The growth path, when four million objects is no longer enough, is a
+ *  segmented table: a fixed directory of fixed-size chunks, so growth adds a
+ *  chunk and never moves an existing one.
+ */
+#define ST_OM_MAX_OBJECTS   (4u * 1024u * 1024u)
+
+extern om_header      **st_om_table;
+extern uint32_t         st_om_table_size;   /*  entries reserved  */
+extern st_atomic_uint   st_om_table_limit;  /*  first index past the used range */
 
 static inline void *
 OM_body(st_oop p)
@@ -193,7 +219,7 @@ OM_free_bit(st_oop p)
 static inline unsigned
 OM_count_bits(st_oop p)
 {
-    return OM_head(p)->refcount;
+    return (unsigned) ST_load_relaxed(&OM_head(p)->refcount);
 }
 
 static inline uint32_t
@@ -229,10 +255,36 @@ OM_odd_bit(st_oop p)
     return 0;
 }
 
+/*
+ *  Object fields are read and written by several threads at once, so the
+ *  accesses are atomic even though the ordering is relaxed.  Relaxed is the
+ *  right strength: what must not happen is a torn value -- half of one
+ *  pointer and half of another, which would be neither object -- and that is
+ *  all a relaxed atomic promises.  Ordering between fields is the
+ *  program's business, and doc/CONCURRENCY.md says so.
+ *
+ *  The cast is the usual pragmatic one: st_oop is pointer-sized and every
+ *  field is naturally aligned, so the access is lock-free on every platform
+ *  we target.
+ */
+static inline st_oop
+ST_oop_load(const st_oop *slot)
+{
+    return (st_oop) atomic_load_explicit(
+        (const _Atomic st_oop *) slot, memory_order_relaxed);
+}
+
+static inline void
+ST_oop_store(st_oop *slot, st_oop value)
+{
+    atomic_store_explicit((_Atomic st_oop *) slot, value,
+                          memory_order_relaxed);
+}
+
 static inline st_oop
 OM_fetch_pointer(uint32_t field, st_oop p)
 {
-    return ((st_oop *) OM_body(p))[field];
+    return ST_oop_load(&((st_oop *) OM_body(p))[field]);
 }
 
 static inline uint16_t

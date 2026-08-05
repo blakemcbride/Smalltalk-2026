@@ -16,7 +16,7 @@ object memory and the scheduler with ones that use every core.
 
 ## Status
 
-Phases 0-2 and 4 complete; Phase 3 in progress. See `doc/PLAN.md` for the roadmap.
+Phases 0-2, 4, 6 and 7 complete; 3 and 5 partial. See `doc/PLAN.md` for the roadmap.
 
 | Phase | State |
 |---|---|
@@ -25,10 +25,10 @@ Phases 0-2 and 4 complete; Phase 3 in progress. See `doc/PLAN.md` for the roadma
 | 2 — Interpreter, primitives, `trace2` gate | done |
 | 3 — BitBlt, SDL3, first light | in progress — see below |
 | 4 — 64-bit object memory | done |
-| 5 — Compiler and image bootstrap | next |
-| 6 — macOS and Windows | |
-| 7 — Native threads | |
-| 8 — MVC under parallelism | |
+| 5 — Compiler and image bootstrap | compiler done; bootstrap not started |
+| 6 — macOS and Windows | done, unconfirmed on those hosts |
+| 7 — Native threads | done |
+| 8 — MVC under parallelism | not started |
 
 ## Building
 
@@ -79,6 +79,15 @@ could write ourselves:
 | `method.oops` | 4,494 / 4,494 methods exact — pointer, class and selector |
 | **`trace2`** | **611 / 611 lines byte for byte** — every bytecode, send, return and primitive of the image's startup |
 | `trace3` | 482-line prefix exact; see `tests/unit/test_trace.c` for the one documented divergence |
+
+And for the parallel half, where no 1983 oracle exists, the thread
+sanitizer is the judge:
+
+| Check | Result |
+|---|---|
+| 31 native threads mutating one shared object memory | 398 checks, **0 races under TSAN** |
+| Collections running while those threads mutate | every slot intact afterwards |
+| Reference counts under contention | balanced traffic returns to exactly one holder |
 
 ## Design in one page
 
