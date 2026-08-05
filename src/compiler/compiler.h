@@ -1,0 +1,96 @@
+/*
+ *  Copyright (c) 2026 Blake McBride
+ *  All rights reserved.
+ *
+ *  The Smalltalk-80 compiler: source text to a CompiledMethod.
+ *
+ *  It emits the Blue Book bytecode set, which the interpreter already
+ *  reproduces against Xerox's own traces, so the two halves can be checked
+ *  against each other: compile a method from the 1983 sources and the
+ *  bytecodes should match the ones the 1983 compiler produced and left in
+ *  the image.  That is the gate this compiler is built to pass.
+ *
+ *  Control flow is compiled to jumps rather than sends wherever the Blue
+ *  Book compiler does the same.  ifTrue:, ifFalse:, and:, or: and the while
+ *  loops are inlined; to:do: is not, because the reference traces show it
+ *  arriving as a real send with a block argument.
+ */
+
+#ifndef ST_COMPILER_H
+#define ST_COMPILER_H
+
+#include "om.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/*
+ *  What the compiler needs to know about the class it is compiling for:
+ *  the names of instance variables, so a bare identifier can be resolved,
+ *  and a way to look up globals.
+ */
+typedef struct {
+    const char *const  *instance_variables;
+    unsigned            instance_variable_count;
+
+    /*
+     *  Resolve a global name to an Association.  The bootstrap supplies the
+     *  system dictionary; a running image supplies its own.  Returning
+     *  ST_NIL makes the compiler report an undeclared variable.
+     */
+    st_oop            (*lookup_global)(const char *name, void *user);
+    void               *user;
+
+    /*  Intern a Symbol, and make a String and a Float.  */
+    st_oop            (*intern_symbol)(const char *text, void *user);
+    st_oop            (*make_string)(const char *text, void *user);
+    st_oop            (*make_float)(double value, void *user);
+    st_oop            (*make_large_integer)(int64_t value, void *user);
+    st_oop            (*make_array)(st_oop *elements, unsigned count,
+                                    void *user);
+} st_compile_context;
+
+typedef struct {
+    st_oop      method;             /*  ST_OOP_INVALID on failure  */
+    char        selector[256];
+    unsigned    argument_count;
+    unsigned    temporary_count;
+    unsigned    primitive;
+    char        error[256];
+    unsigned    error_line;
+} st_compile_result;
+
+/*
+ *  Compile one method.  The text is a complete method: the pattern line,
+ *  optional temporaries, and the body.
+ */
+int     COMPILE_method(const char *source, const st_compile_context *ctx,
+                       st_compile_result *out);
+
+/*
+ *  Compile to raw bytecodes without building a CompiledMethod, which is how
+ *  the compiler is tested against the bytecodes already in an image.
+ */
+typedef struct {
+    uint8_t     bytecodes[4096];
+    unsigned    length;
+    st_oop      literals[256];
+    unsigned    literal_count;
+    unsigned    argument_count;
+    unsigned    temporary_count;
+    unsigned    primitive;
+    int         needs_large_context;
+    char        selector[256];
+    char        error[256];
+    unsigned    error_line;
+} st_compiled_code;
+
+int     COMPILE_to_bytecodes(const char *source, const st_compile_context *ctx,
+                             st_compiled_code *out);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif  /*  ST_COMPILER_H  */
