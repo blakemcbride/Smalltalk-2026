@@ -133,6 +133,7 @@ SURVEY_file(st_survey *s, const char *path)
             ctx.make_array         = syn_array;
             ctx.make_character     = syn_character;
             ctx.lookup_global      = syn_global;
+            ctx.method_class_association = 5000;
 
             ++s->methods;
             if (COMPILE_to_bytecodes(chunk.text, &ctx, &code) != 0) {

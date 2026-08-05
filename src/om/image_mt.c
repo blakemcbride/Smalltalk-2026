@@ -115,7 +115,7 @@ OM_image_save(const char *path, char *errbuf, size_t errlen)
         return -1;
     }
     for (index = 1; index < st_om_table_limit; ++index) {
-        om_header  *head = st_om_table[index];
+        om_header  *head = OM_table_get(index);
         unsigned char present;
 
         present = (head && (head->flags & ST_FMT_FREE) == 0) ? 1 : 0;
@@ -210,8 +210,9 @@ OM_image_load(const char *path, char *errbuf, size_t errlen)
      *  every stored pointer valid.
      */
     while (st_om_table_size < limit) {
-        om_header **grown = (om_header **) realloc(st_om_table,
-                                (size_t) st_om_table_size * 2 * sizeof *grown);
+        st_atomic_ptr  *grown = (st_atomic_ptr *) realloc(st_om_table,
+                                    (size_t) st_om_table_size * 2
+                                        * sizeof *grown);
 
         if (!grown) {
             fail(errbuf, errlen, "cannot grow the object table to %u", limit);
@@ -248,7 +249,7 @@ OM_image_load(const char *path, char *errbuf, size_t errlen)
                 return -1;
             }
             head->flags = ST_FMT_FREE;
-            st_om_table[index] = head;
+            OM_table_set(index, head);
             continue;
         }
         if (read_u64(f, &class_oop) != 0 || read_u32(f, &size) != 0
@@ -290,7 +291,7 @@ OM_image_load(const char *path, char *errbuf, size_t errlen)
             fclose(f);
             return -1;
         }
-        st_om_table[index] = head;
+        OM_table_set(index, head);
     }
     fclose(f);
 

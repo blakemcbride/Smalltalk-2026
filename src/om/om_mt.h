@@ -138,20 +138,41 @@ typedef struct {
  */
 #define ST_OM_MAX_OBJECTS   (4u * 1024u * 1024u)
 
-extern om_header      **st_om_table;
+/*
+ *  The table's slots are atomic because they are written under table_lock
+ *  but READ without it, on every dereference.  Publishing a new entry is
+ *  ordered by st_om_table_limit's release, but slot REUSE is not: handing a
+ *  freed index to the next allocation stores NULL and then a new body into a
+ *  slot another thread may be reading at that moment.  A plain pointer there
+ *  is a data race, which the thread sanitizer reports about one run in four.
+ */
+extern st_atomic_ptr   *st_om_table;
 extern uint32_t         st_om_table_size;   /*  entries reserved  */
 extern st_atomic_uint   st_om_table_limit;  /*  first index past the used range */
-
-static inline void *
-OM_body(st_oop p)
-{
-    return (void *) (st_om_table[p >> 1] + 1);
-}
 
 static inline om_header *
 OM_head(st_oop p)
 {
-    return st_om_table[p >> 1];
+    return (om_header *) ST_load_acquire(&st_om_table[p >> 1]);
+}
+
+static inline void *
+OM_body(st_oop p)
+{
+    return (void *) (OM_head(p) + 1);
+}
+
+/*  Publishing a slot: pairs with the acquire in OM_head.  */
+static inline void
+OM_table_set(uint32_t index, om_header *head)
+{
+    ST_store_release(&st_om_table[index], (uintptr_t) head);
+}
+
+static inline om_header *
+OM_table_get(uint32_t index)
+{
+    return (om_header *) ST_load_acquire(&st_om_table[index]);
 }
 
 /*  ----------  SmallIntegers  ----------  */

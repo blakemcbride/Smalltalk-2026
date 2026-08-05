@@ -73,6 +73,15 @@ st_oop  BOOT_make_float(double value, void *user);
 st_oop  BOOT_make_large_integer(int64_t value, void *user);
 st_oop  BOOT_make_array(st_oop *elements, unsigned count, void *user);
 st_oop  BOOT_make_character(unsigned code, void *user);
+
+/*
+ *  Globals the sources referred to but never defined.  Fills `names` with up
+ *  to `max` of them and answers how many there are in total.
+ */
+unsigned BOOT_undeclared(const char **names, unsigned max);
+
+/*  How many of those began with a lower-case letter -- probable bugs.  */
+unsigned BOOT_undeclared_lowercase(void);
 st_oop  BOOT_lookup_global(const char *name, void *user);
 
 /*  Byte offset of a method's first bytecode, past the header and literals. */

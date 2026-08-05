@@ -23,6 +23,15 @@
 #define MAX_ARGS        16
 #define MAX_BLOCK_DEPTH 16
 
+/*  Save and restore enough to compile a stretch of source a second time.  */
+typedef struct {
+    st_lexer_state  lexer;
+    st_token        token;
+    unsigned        length;
+    unsigned        literal_count;
+    unsigned        name_count;
+} compiler_mark;
+
 typedef struct {
     st_lexer                   *lx;
     st_token                    token;      /*  the current token  */
@@ -41,6 +50,27 @@ typedef struct {
      *  1983 compiler does not emit -- see discard_statement_value.
      */
     size_t      loop_nil_end;
+
+    /*  Whether a super send was emitted, and so needs the class literal.  */
+    int         used_super;
+
+    /*
+     *  Where the receiver of the outermost message just compiled ended.
+     *
+     *  A cascade sends to the receiver of the LAST message before the
+     *  semicolon, not to the primary.  In
+     *
+     *      OrderedCollection new add: 1; add: 2
+     *
+     *  the cascade receiver is "OrderedCollection new", so add: 2 goes to
+     *  the collection.  Marking after the primary instead sends it to the
+     *  class, which answers something plausible and wrong.
+     *
+     *  Each level records its own receiver and assigns here after emitting
+     *  its send, so the outermost assignment lands last -- inner calls,
+     *  including the ones that compile arguments, have already returned.
+     */
+    compiler_mark receiver_mark;
 
     int         failed;
 } st_compiler;
@@ -222,6 +252,8 @@ emit_send(st_compiler *c, const char *selector, unsigned argc, int to_super)
     st_oop      symbol;
     unsigned    index;
 
+    if (to_super)
+        c->used_super = 1;
     if (!to_super) {
         for (i = 0; i < 16; ++i) {
             if (strcmp(selector, arithmetic_selectors[i]) == 0) {
@@ -641,14 +673,6 @@ compile_primary(st_compiler *c, var_ref *out_var)
  *  it alone and so do we.
  */
 
-/*  Save and restore enough to compile a stretch of source a second time.  */
-typedef struct {
-    st_lexer_state  lexer;
-    st_token        token;
-    unsigned        length;
-    unsigned        literal_count;
-    unsigned        name_count;
-} compiler_mark;
 
 static void
 mark(st_compiler *c, compiler_mark *m)
@@ -839,23 +863,34 @@ compile_inline_while(st_compiler *c)
 static void
 compile_unary_sequence(st_compiler *c, int receiver_is_super)
 {
+    compiler_mark   receiver;
+    int             sent = 0;
+
     while (at(c, ST_TOK_IDENTIFIER)) {
         char    selector[256];
 
+        mark(c, &receiver);             /*  the code so far IS the receiver */
         snprintf(selector, sizeof selector, "%s", c->token.text);
         advance(c);
         emit_send(c, selector, 0, receiver_is_super);
         receiver_is_super = 0;
+        sent = 1;
     }
+    if (sent)
+        c->receiver_mark = receiver;
 }
 
 static void
 compile_binary_sequence(st_compiler *c, int receiver_is_super)
 {
+    compiler_mark   receiver;
+    int             sent = 0;
+
     compile_unary_sequence(c, receiver_is_super);
     while (at(c, ST_TOK_BINARY) || at(c, ST_TOK_BAR)) {
         char    selector[256];
 
+        mark(c, &receiver);
         /*  A bar in operator position is the binary selector, not a
          *  temporaries separator; those only appear at the head of a
          *  method or block body.  */
@@ -865,7 +900,10 @@ compile_binary_sequence(st_compiler *c, int receiver_is_super)
         compile_primary(c, NULL);
         compile_unary_sequence(c, 0);
         emit_send(c, selector, 1, 0);
+        sent = 1;
     }
+    if (sent)
+        c->receiver_mark = receiver;
 }
 
 /*
@@ -884,12 +922,14 @@ compile_binary_expression(st_compiler *c)
 static void
 compile_keyword_message(st_compiler *c, int receiver_is_super)
 {
-    char        selector[256] = "";
-    unsigned    argc = 0;
+    char            selector[256] = "";
+    unsigned        argc = 0;
+    compiler_mark   receiver;
 
     compile_binary_sequence(c, receiver_is_super);
     if (!at(c, ST_TOK_KEYWORD))
         return;
+    mark(c, &receiver);
 
     /*
      *  The inlined forms, tried before building a send.  Each rewinds if the
@@ -919,6 +959,7 @@ compile_keyword_message(st_compiler *c, int receiver_is_super)
         ++argc;
     }
     emit_send(c, selector, argc, receiver_is_super);
+    c->receiver_mark = receiver;
 }
 
 /*
@@ -938,13 +979,15 @@ compile_keyword_message(st_compiler *c, int receiver_is_super)
  *  correct and stays, and only the messages are reconsidered.
  */
 static void
-compile_cascade(st_compiler *c, const compiler_mark *after_receiver)
+compile_cascade(st_compiler *c)
 {
+    compiler_mark   after_receiver = c->receiver_mark;
+
     if (!at(c, ST_TOK_SEMICOLON))
         return;
 
     /*  Redo the first message, this time keeping the receiver.  */
-    rewind_to(c, after_receiver);
+    rewind_to(c, &after_receiver);
     emit(c, 136);                       /*  duplicate the receiver  */
     compile_keyword_message(c, 0);
     if (c->failed)
@@ -1033,12 +1076,14 @@ compile_expression(st_compiler *c)
             compile_primary(c, &v);
         }
         /*
-         *  Marked after the receiver, for the cascade: its messages may need
-         *  recompiling, the receiver never does.
+         *  A cascade with no message at all before the semicolon is not
+         *  legal, so the receiver mark only has to be sound when a message
+         *  was sent -- which is exactly when the message levels set it.
          */
         mark(c, &after_receiver);
+        c->receiver_mark = after_receiver;
         compile_keyword_message(c, is_super);
-        compile_cascade(c, &after_receiver);
+        compile_cascade(c);
     }
 }
 
@@ -1119,6 +1164,48 @@ compile_statements(st_compiler *c, int inside_block)
     } else if (!inside_block) {
         discard_statement_value(c);     /*  a method answers self, not this */
     }
+}
+
+/*
+ *  A super send reads the method class from the last literal, so it has to be
+ *  the last literal.  It is appended here, after the body, and deliberately
+ *  without going through literal_index: that would reuse an existing entry if
+ *  the class had already been mentioned by name, and the whole requirement is
+ *  positional.
+ */
+static int
+needs_method_class(const st_compiler *c)
+{
+    /*
+     *  A super send needs it to look up from.  So does any method with a
+     *  header extension -- flag value 7, meaning a primitive or more than
+     *  four arguments -- whether or not it uses super: Xerox's
+     *  SmallInteger>>bitXor: and SmallInteger>>asFloat both carry it with no
+     *  super send anywhere in them.  The extension then sits second to last
+     *  and the class association last, which is the order the interpreter
+     *  reads them in.
+     */
+    return c->used_super
+        || c->out->primitive != 0
+        || c->out->argument_count > 4;
+}
+
+static void
+append_method_class_literal(st_compiler *c)
+{
+    if (c->failed || !needs_method_class(c))
+        return;
+    if (c->ctx->method_class_association == ST_OOP_INVALID) {
+        fail(c, "this method needs its class as a literal, which the compile "
+                "context does not supply");
+        return;
+    }
+    if (c->out->literal_count >= 256) {
+        fail(c, "too many literals");
+        return;
+    }
+    c->out->literals[c->out->literal_count++] =
+        c->ctx->method_class_association;
 }
 
 /*  ----------  The method pattern  ----------  */
@@ -1219,6 +1306,7 @@ COMPILE_to_bytecodes(const char *source, const st_compile_context *ctx,
         if (out->length == 0 || out->bytecodes[out->length - 1] != 124)
             emit(&c, 120);
     }
+    append_method_class_literal(&c);
 
     out->argument_count  = c.argument_count;
     out->temporary_count = c.name_count;
@@ -1306,18 +1394,31 @@ COMPILE_method(const char *source, const st_compile_context *ctx,
     OM_store_pointer(0, method,
                      build_header(flag, code.temporary_count,
                                   code.needs_large_context, literals));
-    for (i = 0; i < code.literal_count; ++i)
-        OM_store_pointer(1 + i, method, code.literals[i]);
     if (flag == 7) {
         /*
+         *  The frame is [ ...the method's own literals, extension, class ].
+         *
          *  The extension is the next-to-last literal: argument count in bits
-         *  2..6, primitive index in bits 7..14, again in Blue Book numbering.
+         *  2..6, primitive index in bits 7..14, in Blue Book numbering.  The
+         *  compiler has already made the class association the last of its
+         *  literals, so the extension is spliced in ahead of it -- writing it
+         *  at the end instead simply overwrites the class, which costs
+         *  nothing until a super send goes looking for it and finds a Symbol.
          */
         uint64_t    extension = 1;
+        unsigned    n = code.literal_count;
 
         extension |= (uint64_t) (code.argument_count & 31) << 9;
         extension |= (uint64_t) (code.primitive & 255) << 1;
-        OM_store_pointer(literals - 1, method, (st_oop) extension);
+
+        for (i = 0; i + 1 < n; ++i)
+            OM_store_pointer(1 + i, method, code.literals[i]);
+        OM_store_pointer(n, method, (st_oop) extension);
+        if (n > 0)
+            OM_store_pointer(n + 1, method, code.literals[n - 1]);
+    }  else  {
+        for (i = 0; i < code.literal_count; ++i)
+            OM_store_pointer(1 + i, method, code.literals[i]);
     }
     for (i = 0; i < code.length; ++i)
         OM_store_byte(byte_start + i, method, code.bytecodes[i]);

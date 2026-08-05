@@ -49,7 +49,7 @@ usage(const char *argv0)
     printf("usage: %s [options]\n", argv0);
     printf("\n");
     printf("  -version              print version and build configuration\n");
-    printf("  -bootstrap <a.st...> [-o image] [-eval expr]\n");
+    printf("  -bootstrap <a.st...> [-manifest f] [-o image] [-eval expr]\n");
     printf("                        build an image from source\n");
     printf("  -run <image> [n]      run the image, opening a window\n");
     printf("  -screenshot <f.pbm>   with -run, write the display when it stops\n");
@@ -510,6 +510,33 @@ do_bootstrap(const char *const *sources, unsigned count, const char *out_path,
     fprintf(stderr, "st80: %u classes, %u methods, %u symbols\n",
             result.classes_created, result.methods_compiled,
             result.symbols_interned);
+    {
+        /*
+         *  Names nothing defined.  Capitalised ones are ordinary forward
+         *  references -- Sensor, Display and Transcript are made when an
+         *  image is built, long after the code using them is compiled.  A
+         *  lower-case one is almost always a bug in the source, and the 1983
+         *  library has some; they are reported rather than hidden.
+         */
+        const char *names[256];
+        unsigned    n = BOOT_undeclared(names, 256);
+        unsigned    lower = BOOT_undeclared_lowercase();
+        unsigned    i;
+
+        if (n) {
+            fprintf(stderr, "st80: %u undeclared global%s", n,
+                    n == 1 ? "" : "s");
+            if (lower)
+                fprintf(stderr, ", %u lower-case (probable source bugs)",
+                        lower);
+            fprintf(stderr, ":");
+            for (i = 0; i < n && i < 12; ++i)
+                fprintf(stderr, " %s", names[i]);
+            if (n > 12)
+                fprintf(stderr, " ... and %u more", n - 12);
+            fprintf(stderr, "\n");
+        }
+    }
 
     if (expression) {
         st_oop  value = evaluate(expression, err, sizeof err);
@@ -671,6 +698,72 @@ do_syntax(int argc, char **argv)
     return (survey.failed || survey.unreadable) ? 1 : 0;
 }
 
+
+/*  ----------  A growable list of source paths  ----------  */
+
+typedef struct {
+    char      **items;
+    unsigned    count;
+    unsigned    capacity;
+} path_list;
+
+static int
+path_list_add(path_list *l, const char *path)
+{
+    if (l->count == l->capacity) {
+        unsigned    want = l->capacity ? l->capacity * 2 : 32;
+        char      **grown = (char **) realloc(l->items, want * sizeof *grown);
+
+        if (!grown)
+            return 0;
+        l->items    = grown;
+        l->capacity = want;
+    }
+    l->items[l->count] = strdup(path);
+    if (!l->items[l->count])
+        return 0;
+    ++l->count;
+    return 1;
+}
+
+static void
+path_list_free(path_list *l)
+{
+    unsigned    i;
+
+    for (i = 0; i < l->count; ++i)
+        free(l->items[i]);
+    free(l->items);
+}
+
+/*
+ *  One path per line.  The class library is 226 files whose directories have
+ *  spaces in their names, which is more than a command line wants to carry.
+ */
+static int
+read_manifest(const char *path, path_list *l)
+{
+    FILE   *f = fopen(path, "r");
+    char    line[1024];
+
+    if (!f) {
+        fprintf(stderr, "st80: cannot open manifest %s\n", path);
+        return 0;
+    }
+    while (fgets(line, sizeof line, f)) {
+        size_t  n = strlen(line);
+
+        while (n && (line[n - 1] == '\n' || line[n - 1] == '\r'))
+            line[--n] = '\0';
+        if (n && !path_list_add(l, line)) {
+            fclose(f);
+            return 0;
+        }
+    }
+    fclose(f);
+    return 1;
+}
+
 int
 main(int argc, char **argv)
 {
@@ -694,26 +787,38 @@ main(int argc, char **argv)
         if (!strcmp(argv[i], "-methods") && i + 1 < argc)
             return do_methods(argv[i + 1]);
         if (!strcmp(argv[i], "-bootstrap")) {
-            const char *sources[32];
-            unsigned    count = 0;
+            path_list   sources;
             const char *out_path = NULL;
             const char *expression = NULL;
             int         j;
+            int         status;
 
+            memset(&sources, 0, sizeof sources);
             for (j = i + 1; j < argc; ++j) {
                 if (!strcmp(argv[j], "-o") && j + 1 < argc) {
                     out_path = argv[++j];
                 }  else if (!strcmp(argv[j], "-eval") && j + 1 < argc) {
                     expression = argv[++j];
-                }  else if (count < 32) {
-                    sources[count++] = argv[j];
+                }  else if (!strcmp(argv[j], "-manifest") && j + 1 < argc) {
+                    if (!read_manifest(argv[++j], &sources)) {
+                        path_list_free(&sources);
+                        return 1;
+                    }
+                }  else if (!path_list_add(&sources, argv[j])) {
+                    fprintf(stderr, "st80: out of memory\n");
+                    path_list_free(&sources);
+                    return 1;
                 }
             }
-            if (count == 0) {
+            if (sources.count == 0) {
                 fprintf(stderr, "st80: -bootstrap needs source files\n");
+                path_list_free(&sources);
                 return 1;
             }
-            return do_bootstrap(sources, count, out_path, expression);
+            status = do_bootstrap((const char *const *) sources.items,
+                                  sources.count, out_path, expression);
+            path_list_free(&sources);
+            return status;
         }
         if (!strcmp(argv[i], "-screenshot") && i + 1 < argc) {
             shot_path = argv[++i];

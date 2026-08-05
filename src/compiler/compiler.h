@@ -58,6 +58,22 @@ typedef struct {
      *  When NULL the character table is read directly.
      */
     st_oop            (*make_character)(unsigned code, void *user);
+
+    /*
+     *  An Association whose value is the class this method is being compiled
+     *  into -- the metaclass, for a class-side method.
+     *
+     *  A super send takes its lookup class from the method's LAST literal:
+     *  bytecodes 133 and 134 carry only the selector, and the interpreter
+     *  reads literal (count - 1), expects an Association, and starts the
+     *  lookup at the superclass of its value.  So a method containing a
+     *  super send must carry this, and one that does not need not.  Xerox
+     *  used the class's own global binding on the instance side
+     *  (#SmallInteger -> SmallInteger) and a keyless one on the class side
+     *  (nil -> IdentityDictionary class); all the interpreter reads is the
+     *  value, so either shape works.
+     */
+    st_oop              method_class_association;
 } st_compile_context;
 
 typedef struct {

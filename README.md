@@ -28,7 +28,7 @@ Phases 0-7 complete; Phase 8 has its foundation. See `doc/PLAN.md` for the roadm
 | 5 — Compiler and image bootstrap | done |
 | 6 — macOS and Windows | done, unconfirmed on those hosts |
 | 7 — Native threads | done |
-| 8 — MVC under parallelism | interpreter runs parallel; MVC not started |
+| 8 — MVC under parallelism | the 1983 library loads and runs; MVC not started |
 
 ## Building
 
@@ -147,14 +147,23 @@ implicit lock. We break it deliberately and supply `Mutex`, `Monitor`,
 threads 1..N are Smalltalk workers and never call SDL video. SDL3's
 main-thread-only rules and macOS's Cocoa run loop force this shape.
 
-**The whole 1983 class library compiles.** All 4517 methods of the 226 MIT
-classes in `sources/` are accepted by the compiler, checked on every test run
-by `tests/unit/test_library.c` and reportable at any time with
-`st80 -syntax`. That is a grammar result, not a runtime one -- whether those
-methods RUN is Phase 8's question -- but it is what settled two points the
-Blue Book grammar gets wrong about the language Xerox actually shipped: the
-bar after a block's arguments is optional when the block has no body, and a
-method category may be closed by a comment rather than an empty chunk.
+**The whole 1983 class library loads and runs.** All 4517 methods of the 226
+MIT classes in `sources/` compile, bootstrap into a live image in 92ms, and
+compute:
+
+```sh
+$ ./st80 -bootstrap -manifest sources/MANIFEST -eval '3 factorial'
+st80: 226 classes, 4517 methods, 3488 symbols
+6
+```
+
+`3 factorial`, `100 gcd: 75`, `(1 to: 5) collect: [:i | i * i]`,
+`(3/4) + (1/4)` and `(0@0 corner: 10@20) area` are all answered by Xerox's own
+methods, not by anything in this project. `tests/unit/test_library.c` gates
+on the library compiling; `tests/unit/test_image.c` gates on it running, and
+prints the frontier that does not work yet — `printString` and anything else
+needing the class variables that 62 class-side `initialize` methods would
+set, which an image build has never run here.
 
 **The language stops at the Blue Book.** The grammar this compiler accepts is
 the 1983 one, deliberately: dynamic arrays, general pragmas, block-local

@@ -78,6 +78,8 @@ context(void)
     ctx.make_large_integer = stub_large;
     ctx.make_array         = stub_array;
     ctx.make_character     = stub_character;
+    /*  A super send needs a method class; any Association will do here.  */
+    ctx.method_class_association = 5000;
     ctx.lookup_global      = stub_global;
     return ctx;
 }

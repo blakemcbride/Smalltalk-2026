@@ -13,7 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-om_header      **st_om_table;
+st_atomic_ptr  *st_om_table;
 uint32_t         st_om_table_size;
 st_atomic_uint   st_om_table_limit;
 
@@ -48,7 +48,8 @@ OM_init(void)
      *  the pages arrive as they are first written, so the cost here is
      *  address space rather than memory.
      */
-    st_om_table = (om_header **) calloc(ST_OM_MAX_OBJECTS, sizeof *st_om_table);
+    st_om_table = (st_atomic_ptr *) calloc(ST_OM_MAX_OBJECTS,
+                                          sizeof *st_om_table);
     if (!st_om_table)
         return -1;
     st_om_table_size  = ST_OM_MAX_OBJECTS;
@@ -78,7 +79,7 @@ OM_shutdown(void)
         uint32_t    limit = (uint32_t) ST_load_relaxed(&st_om_table_limit);
 
         for (i = 0; i < limit; ++i)
-            free(st_om_table[i]);
+            free(OM_table_get(i));
         free(st_om_table);
     }
     st_om_table       = NULL;
@@ -103,9 +104,13 @@ OM_is_object(st_oop p)
      */
     if (index == 0 || index >= (uint32_t) ST_load_acquire(&st_om_table_limit))
         return 0;
-    if (!st_om_table[index])
-        return 0;
-    return (st_om_table[index]->flags & ST_FMT_FREE) == 0;
+    {
+        om_header  *head = OM_table_get(index);
+
+        if (!head)
+            return 0;
+        return (head->flags & ST_FMT_FREE) == 0;
+    }
 }
 
 /*  ----------  Allocation  ----------  */
@@ -118,9 +123,9 @@ table_alloc_locked(void)
     if (free_head != FREE_END) {
         index = free_head;
         /*  The free chain threads through the unused class field.  */
-        free_head = (uint32_t) st_om_table[index]->class_oop;
-        free(st_om_table[index]);
-        st_om_table[index] = NULL;
+        free_head = (uint32_t) OM_table_get(index)->class_oop;
+        free(OM_table_get(index));
+        OM_table_set(index, NULL);
         return index;
     }
     /*
@@ -170,7 +175,7 @@ instantiate(st_oop class_pointer, uint32_t size, uint32_t format,
         free(head);
         return ST_OOP_INVALID;
     }
-    st_om_table[index] = head;
+    OM_table_set(index, head);
     if (index >= (uint32_t) ST_load_relaxed(&st_om_table_limit))
         ST_store_release(&st_om_table_limit, index + 1);
     live_bytes += bytes;
@@ -220,7 +225,7 @@ OM_deallocate(st_oop p)
     if (!OM_is_object(p))
         return;
     index = (uint32_t) (p >> 1);
-    head  = st_om_table[index];
+    head  = OM_table_get(index);
 
     if (head->flags & ST_FMT_POINTERS) {
         uint32_t    i;
@@ -249,13 +254,13 @@ OM_deallocate(st_oop p)
     head = (om_header *) realloc(head, sizeof *head);
     if (!head) {
         /*  realloc shrinking should not fail; if it does, keep the old one. */
-        head = st_om_table[index];
+        head = OM_table_get(index);
     }
     head->flags     = ST_FMT_FREE;
     head->size      = 0;
     ST_store_relaxed(&head->refcount, 0);
     head->class_oop = free_head;
-    st_om_table[index] = head;
+    OM_table_set(index, head);
     free_head = index;
     ST_mutex_unlock(&table_lock);
 }
@@ -278,14 +283,16 @@ OM_swap_identities(st_oop a, st_oop b)
      *  back after the swap.
      */
     {
-        unsigned    ca = (unsigned) ST_load_relaxed(&st_om_table[ia]->refcount);
-        unsigned    cb = (unsigned) ST_load_relaxed(&st_om_table[ib]->refcount);
+        om_header  *ha = OM_table_get(ia);
+        om_header  *hb = OM_table_get(ib);
+        unsigned    ca = (unsigned) ST_load_relaxed(&ha->refcount);
+        unsigned    cb = (unsigned) ST_load_relaxed(&hb->refcount);
 
-        t = st_om_table[ia];
-        st_om_table[ia] = st_om_table[ib];
-        st_om_table[ib] = t;
-        ST_store_relaxed(&st_om_table[ia]->refcount, ca);
-        ST_store_relaxed(&st_om_table[ib]->refcount, cb);
+        t = ha;
+        OM_table_set(ia, hb);
+        OM_table_set(ib, t);
+        ST_store_relaxed(&hb->refcount, ca);
+        ST_store_relaxed(&ha->refcount, cb);
     }
 }
 
@@ -371,8 +378,8 @@ OM_next_object(st_oop p)
     uint32_t    index = (uint32_t) (p >> 1);
 
     for (++index; index < (uint32_t) ST_load_acquire(&st_om_table_limit); ++index) {
-        if (st_om_table[index]
-         && (st_om_table[index]->flags & ST_FMT_FREE) == 0)
+        if (OM_table_get(index)
+         && (OM_table_get(index)->flags & ST_FMT_FREE) == 0)
             return (st_oop) index << 1;
     }
     return ST_OOP_INVALID;
@@ -393,7 +400,7 @@ OM_oops_left(void)
 
     while (index != FREE_END) {
         ++n;
-        index = (uint32_t) st_om_table[index]->class_oop;
+        index = (uint32_t) OM_table_get(index)->class_oop;
     }
     return n + (st_om_table_size
                 - (uint32_t) ST_load_relaxed(&st_om_table_limit));
@@ -440,8 +447,8 @@ collect_at_safepoint(void *unused)
     mark_top = 0;
 
     for (index = 1; index < (uint32_t) ST_load_relaxed(&st_om_table_limit); ++index) {
-        if (st_om_table[index])
-            ST_store_relaxed(&st_om_table[index]->refcount, 0);
+        if (OM_table_get(index))
+            ST_store_relaxed(&OM_table_get(index)->refcount, 0);
     }
 
     for (index = 2; index <= ST_SELECTOR_CANNOT_INTERPRET; index += 2)
@@ -488,11 +495,11 @@ collect_at_safepoint(void *unused)
     for (index = 1; index < (uint32_t) ST_load_relaxed(&st_om_table_limit); ++index) {
         st_oop  p = (st_oop) index << 1;
 
-        if (!st_om_table[index])
+        if (!OM_table_get(index))
             continue;
-        if (st_om_table[index]->flags & ST_FMT_FREE)
+        if (OM_table_get(index)->flags & ST_FMT_FREE)
             continue;
-        if (ST_load_relaxed(&st_om_table[index]->refcount) != 0)
+        if (ST_load_relaxed(&OM_table_get(index)->refcount) != 0)
             continue;
         /*
          *  Unreachable.  Release it directly rather than through
@@ -500,7 +507,7 @@ collect_at_safepoint(void *unused)
          *  fields again would corrupt them.
          */
         {
-            om_header  *head = st_om_table[index];
+            om_header  *head = OM_table_get(index);
 
             live_bytes -= (head->flags & ST_FMT_POINTERS)
                             ? (uint64_t) head->size * sizeof(st_oop)
@@ -510,12 +517,12 @@ collect_at_safepoint(void *unused)
             --live_objects;
             head = (om_header *) realloc(head, sizeof *head);
             if (!head)
-                head = st_om_table[index];
+                head = OM_table_get(index);
             head->flags     = ST_FMT_FREE;
             head->size      = 0;
             ST_store_relaxed(&head->refcount, 0);
             head->class_oop = free_head;
-            st_om_table[index] = head;
+            OM_table_set(index, head);
             free_head = index;
             ++reclaimed;
         }

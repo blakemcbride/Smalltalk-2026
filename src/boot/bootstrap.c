@@ -37,9 +37,25 @@ typedef struct {
     st_oop      class_oop;
     st_oop      metaclass_oop;
 
+    /*
+     *  Class variables.  Shared by the class, its metaclass and every
+     *  subclass of both, so they are looked up by walking the superclass
+     *  chain.  Each is an Association, because that is what a compiled
+     *  method's literal frame holds.
+     */
+    /*  nil -> the metaclass, for super sends in class methods.  */
+    st_oop      metaclass_association;
+
+    char        cvars[MAX_IVARS][64];
+    st_oop      cvar_assoc[MAX_IVARS];
+    unsigned    cvar_count;
+
     /*  Instance variables including every inherited one, in frame order.  */
     char        all_ivars[MAX_IVARS][64];
     unsigned    all_ivar_count;
+    /*  The same for the metaclass side, which has its own parallel chain.  */
+    char        all_class_ivars[MAX_IVARS][64];
+    unsigned    all_class_ivar_count;
     int         resolved;
 } boot_class;
 
@@ -306,11 +322,116 @@ define_global(const char *name, st_oop value)
     return association;
 }
 
+/*
+ *  Names the library used before anything defined them.  A real Smalltalk
+ *  fileIn does the same thing: an unknown capitalised identifier becomes a
+ *  binding in Undeclared, so the method compiles and the reference is live
+ *  the moment something assigns to the name.  Without it the 1983 library
+ *  cannot load at all -- Sensor, Display, Transcript and Processor are all
+ *  built when an image is made, long after the code that uses them.
+ *
+ *  They are counted and can be listed, because "undeclared" is a fact worth
+ *  seeing.  A typo becomes a global here exactly as it would in 1983.
+ */
+static char         undeclared_names[256][64];
+static unsigned     undeclared_count;
+static unsigned     undeclared_lowercase;
+
+unsigned
+BOOT_undeclared(const char **names, unsigned max)
+{
+    unsigned    i;
+
+    for (i = 0; i < undeclared_count && i < max; ++i)
+        names[i] = undeclared_names[i];
+    return undeclared_count;
+}
+
+unsigned
+BOOT_undeclared_lowercase(void)
+{
+    return undeclared_lowercase;
+}
+
+static boot_class *find_class(const char *name);
+
+/*
+ *  A class variable is shared by a class, its metaclass and all their
+ *  subclasses, so it is found by walking the superclass chain.  It shadows a
+ *  global of the same name, which is the point: several classes in the 1983
+ *  library have a class variable spelled like something in Smalltalk.
+ */
+static st_oop
+class_variable_association(boot_class *c, const char *name, unsigned depth)
+{
+    unsigned    i;
+
+    if (!c || depth > 64)
+        return ST_OOP_INVALID;
+    for (i = 0; i < c->cvar_count; ++i) {
+        if (strcmp(c->cvars[i], name) != 0)
+            continue;
+        if (c->cvar_assoc[i] == 0) {
+            st_oop  key = BOOT_intern_symbol(name, NULL);
+            st_oop  assoc = OM_instantiate_pointers(BOOT_global("Association"),
+                                                    2);
+
+            if (!OM_is_object(assoc))
+                return ST_OOP_INVALID;
+            OM_increase_ref(assoc);
+            OM_store_pointer(ST_ASSOCIATION_KEY, assoc, key);
+            OM_store_pointer(ST_ASSOCIATION_VALUE, assoc, ST_NIL);
+            c->cvar_assoc[i] = assoc;
+        }
+        return c->cvar_assoc[i];
+    }
+    if (!c->superclass[0] || strcmp(c->superclass, "nil") == 0)
+        return ST_OOP_INVALID;
+    return class_variable_association(find_class(c->superclass), name,
+                                      depth + 1);
+}
+
 st_oop
 BOOT_lookup_global(const char *name, void *user)
 {
-    (void) user;
-    return global_association(name);
+    st_oop      association;
+
+    /*
+     *  user is the class whose method is being compiled, when there is one.
+     *  Class variables are in scope there and nowhere else, which is why the
+     *  compiler asks through this one hook rather than being told up front.
+     */
+    association = class_variable_association((boot_class *) user, name, 0);
+    if (association != ST_OOP_INVALID)
+        return association;
+
+    association = global_association(name);
+    if (association != ST_OOP_INVALID)
+        return association;
+    /*
+     *  Lower-case names get the same treatment, because the 1983 sources
+     *  need it.  FillInTheBlank class>>request:initialAnswer: ends
+     *
+     *      action: [:response | response]
+     *      initialAnswer: aString.
+     *      ^response
+     *
+     *  where response is a block argument being read from the method that
+     *  encloses it -- so the method always answers nil.  That text is in
+     *  Xerox's own Smalltalk-80.sources verbatim, so it shipped: their
+     *  compiler put the name in Undeclared and carried on, and refusing it
+     *  here would mean refusing to load the library Xerox actually released.
+     *  They are counted apart from the capitalised ones, which are ordinary
+     *  forward references to globals an image build creates.
+     */
+    if (undeclared_count < 256) {
+        snprintf(undeclared_names[undeclared_count],
+                 sizeof undeclared_names[0], "%.63s", name);
+        ++undeclared_count;
+        if (!(name[0] >= 'A' && name[0] <= 'Z'))
+            ++undeclared_lowercase;
+    }
+    return define_global(name, ST_NIL);
 }
 
 /*  ----------  Class construction  ----------  */
@@ -396,6 +517,17 @@ resolve_ivars(boot_class *c, unsigned depth)
                      super->all_ivars[i]);
             ++c->all_ivar_count;
         }
+        /*
+         *  Metaclasses form their own chain, parallel to the classes': the
+         *  metaclass of a subclass inherits from the metaclass of its
+         *  superclass.  So a class method of Form sees the class-side
+         *  instance variables of DisplayMedium, Object and so on.
+         */
+        for (i = 0; i < super->all_class_ivar_count; ++i) {
+            snprintf(c->all_class_ivars[c->all_class_ivar_count], 64, "%.63s",
+                     super->all_class_ivars[i]);
+            ++c->all_class_ivar_count;
+        }
         /*  Shape is inherited unless the subclass declares its own.  */
         if (!c->indexable && super->indexable) {
             c->indexable = super->indexable;
@@ -406,6 +538,12 @@ resolve_ivars(boot_class *c, unsigned depth)
     for (i = 0; i < c->ivar_count && c->all_ivar_count < MAX_IVARS; ++i) {
         snprintf(c->all_ivars[c->all_ivar_count], 64, "%.63s", c->ivars[i]);
         ++c->all_ivar_count;
+    }
+    for (i = 0; i < c->class_ivar_count
+             && c->all_class_ivar_count < MAX_IVARS; ++i) {
+        snprintf(c->all_class_ivars[c->all_class_ivar_count], 64, "%.63s",
+                 c->class_ivars[i]);
+        ++c->all_class_ivar_count;
     }
     c->resolved = 1;
     return 1;
@@ -598,10 +736,55 @@ parse_class_definition(const char *text)
 
     if (quoted_after(text, "instanceVariableNames:", ivars, sizeof ivars))
         split_words(ivars, c->ivars, &c->ivar_count, MAX_IVARS);
+    if (quoted_after(text, "classVariableNames:", ivars, sizeof ivars))
+        split_words(ivars, c->cvars, &c->cvar_count, MAX_IVARS);
 
     ++class_count;
     if (result)
         ++result->classes_created;
+    return 1;
+}
+
+/*
+ *  The metaclass side of a class definition:
+ *
+ *      Form class
+ *          instanceVariableNames: 'whiteMask blackMask'
+ *
+ *  These are instance variables of the metaclass, so they are in scope in
+ *  class methods and nowhere else.  Form class>>initialize assigns to them.
+ */
+static int
+parse_class_side_definition(const char *text)
+{
+    const char *at = strstr(text, " class");
+    boot_class *c;
+    char        name[64];
+    char        ivars[512];
+    size_t      n = 0;
+    const char *p;
+
+    if (!at || !strstr(text, "instanceVariableNames:"))
+        return 0;
+    /*  Anything else on the line means this is not a bare "Foo class".  */
+    if (strstr(text, "subclass:"))
+        return 0;
+
+    p = text;
+    while (*p == ' ' || *p == '\n' || *p == '\t')
+        ++p;
+    while (p < at && (isalnum((unsigned char) *p) || *p == '_')
+        && n + 1 < sizeof name)
+        name[n++] = *p++;
+    name[n] = '\0';
+    if (!name[0] || p != at)
+        return 0;
+
+    c = find_class(name);
+    if (!c)
+        return 0;
+    if (quoted_after(text, "instanceVariableNames:", ivars, sizeof ivars))
+        split_words(ivars, c->class_ivars, &c->class_ivar_count, MAX_IVARS);
     return 1;
 }
 
@@ -763,10 +946,49 @@ compile_into(boot_class *c, int class_side, const char *source,
     st_oop              selector;
 
     memset(&ctx, 0, sizeof ctx);
-    for (i = 0; i < c->all_ivar_count; ++i)
-        ivar_pointers[i] = c->all_ivars[i];
-    ctx.instance_variables      = class_side ? NULL : ivar_pointers;
-    ctx.instance_variable_count = class_side ? 0 : c->all_ivar_count;
+    /*
+     *  A class method sees the metaclass's instance variables, not the
+     *  class's.  Form class>>initialize assigns whiteMask; Form>>displayOn:
+     *  reads bits.  Neither can see the other's.
+     */
+    if (class_side) {
+        for (i = 0; i < c->all_class_ivar_count; ++i)
+            ivar_pointers[i] = c->all_class_ivars[i];
+        ctx.instance_variables      = ivar_pointers;
+        ctx.instance_variable_count = c->all_class_ivar_count;
+    }  else  {
+        for (i = 0; i < c->all_ivar_count; ++i)
+            ivar_pointers[i] = c->all_ivars[i];
+        ctx.instance_variables      = ivar_pointers;
+        ctx.instance_variable_count = c->all_ivar_count;
+    }
+    ctx.user = c;
+
+    /*
+     *  What a super send looks up from.  On the instance side that is the
+     *  class's own global binding, which is what Xerox used
+     *  (#SmallInteger -> SmallInteger).  On the class side the method class
+     *  is the metaclass, and there is no global naming it, so a keyless
+     *  Association is made once per class -- again matching 1983, where
+     *  IdentityDictionary class>>new: carries nil -> IdentityDictionary class.
+     */
+    if (class_side) {
+        if (c->metaclass_association == 0) {
+            st_oop  assoc = OM_instantiate_pointers(BOOT_global("Association"),
+                                                    2);
+
+            if (OM_is_object(assoc)) {
+                OM_increase_ref(assoc);
+                OM_store_pointer(ST_ASSOCIATION_KEY, assoc, ST_NIL);
+                OM_store_pointer(ST_ASSOCIATION_VALUE, assoc,
+                                 c->metaclass_oop);
+                c->metaclass_association = assoc;
+            }
+        }
+        ctx.method_class_association = c->metaclass_association;
+    }  else  {
+        ctx.method_class_association = global_association(c->name);
+    }
     ctx.intern_symbol      = BOOT_intern_symbol;
     ctx.make_string        = BOOT_make_string;
     ctx.make_float         = BOOT_make_float;
@@ -868,8 +1090,10 @@ read_source(const char *path, int definitions_only)
             }
             continue;
         }
-        if (definitions_only)
-            parse_class_definition(chunk.text);
+        if (definitions_only) {
+            if (!parse_class_side_definition(chunk.text))
+                parse_class_definition(chunk.text);
+        }
     }
     CHUNK_close(reader);
     return 1;
@@ -1001,6 +1225,31 @@ finish_fixed_objects(void)
     }
 
     /*
+     *  Character class>>value: reads the class variable CharacterTable, so
+     *  the table the VM owns has to BE that class variable.  Otherwise every
+     *  Character creation reads nil, and "nil at: n" walks into
+     *  Object>>at:'s failure path, which reports an error by building a
+     *  message that needs a Character.
+     *
+     *  This is the first of the class variables an image build is expected
+     *  to fill in -- 62 classes in the library define a class-side
+     *  initialize that has never been run here.  See doc/PLAN.md; the rest
+     *  belong to Phase 8, which needs Display and Sensor to exist first.
+     */
+    {
+        boot_class *character = find_class("Character");
+
+        if (character) {
+            st_oop  assoc = class_variable_association(character,
+                                                       "CharacterTable", 0);
+
+            if (assoc != ST_OOP_INVALID)
+                OM_store_pointer(ST_ASSOCIATION_VALUE, assoc,
+                                 ST_CHARACTER_TABLE);
+        }
+    }
+
+    /*
      *  The character table.  Characters are unique per code point, which is
      *  what makes "$a == $a" answer true, so they are made once here.
      */
@@ -1062,9 +1311,9 @@ finish_fixed_objects(void)
 
 /*  ----------  Driver  ----------  */
 
-int
-BOOT_build(const char *const *paths, unsigned path_count,
-           st_bootstrap_result *out)
+static int
+boot_build_locked(const char *const *paths, unsigned path_count,
+                  st_bootstrap_result *out)
 {
     unsigned    i;
 
@@ -1143,6 +1392,27 @@ BOOT_build(const char *const *paths, unsigned path_count,
     }
 
     return 0;
+}
+
+
+/*
+ *  BOOT_build kept the caller's result pointer in a static so that later
+ *  steps could count what they did.  Everything that runs AFTER it -- a doIt
+ *  compiled against the finished image, say -- still interns symbols, and
+ *  BOOT_intern_symbol still incremented through that pointer.  By then the
+ *  caller's st_bootstrap_result is usually a dead stack frame, which is a
+ *  write to a returned function's locals: harmless for years, then not.
+ *
+ *  The pointer is dropped here, where the counting ends.
+ */
+int
+BOOT_build(const char *const *paths, unsigned path_count,
+           st_bootstrap_result *out)
+{
+    int status = boot_build_locked(paths, path_count, out);
+
+    result = NULL;
+    return status;
 }
 
 uint32_t
