@@ -586,6 +586,30 @@ OM_instantiate_bytes(st_oop class_pointer, uint32_t size)
 }
 
 void
+OM_swap_identities(st_oop a, st_oop b)
+{
+    uint16_t    a0;
+    uint16_t    a1;
+    unsigned    ca;
+    unsigned    cb;
+
+    if (!OM_is_object(a) || !OM_is_object(b))
+        return;
+    a0 = st_om_ot[a];
+    a1 = st_om_ot[a + 1];
+    st_om_ot[a]     = st_om_ot[b];
+    st_om_ot[a + 1] = st_om_ot[b + 1];
+    st_om_ot[b]     = a0;
+    st_om_ot[b + 1] = a1;
+
+    /*  Counts belong to the identity, not the body, so put them back.  */
+    ca = OM_count_bits(b);
+    cb = OM_count_bits(a);
+    OM_set_count_bits(a, ca);
+    OM_set_count_bits(b, cb);
+}
+
+void
 OM_deallocate(st_oop p)
 {
     unsigned    segment;

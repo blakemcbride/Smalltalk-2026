@@ -42,7 +42,7 @@ ST_print_object(st_oop p, char *buf, size_t buflen)
     if (buflen == 0)
         return;
     if (OM_is_int(p)) {
-        snprintf(buf, buflen, "%d", (int) OM_int_value(p));
+        snprintf(buf, buflen, "%lld", (long long) OM_int_value(p));
         return;
     }
     if (p == ST_NIL) {

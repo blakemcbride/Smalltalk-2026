@@ -103,9 +103,15 @@ LIB_AR    := $(BUILD_DIR)/libst.a
 
 MAIN_SRC  := src/main.c
 MAIN_OBJ  := $(patsubst %.c,$(OBJ_DIR)/%.o,$(MAIN_SRC))
-BIN       := st80
+
+# The binary lives in the variant's build directory and is copied to the top
+# level.  With a single shared path, switching OM= left a newer st80 sitting
+# there and make reported nothing to do, silently running the other memory.
+VARIANT_BIN := $(BUILD_DIR)/st80
+BIN         := st80
 
 .PHONY: all clean test unit-test help
+.NOTPARALLEL:
 .DEFAULT_GOAL := all
 
 all: $(BIN)
@@ -118,8 +124,11 @@ $(LIB_AR): $(LIB_OBJ)
 	@mkdir -p $(dir $@)
 	ar rcs $@ $^
 
-$(BIN): $(MAIN_OBJ) $(LIB_AR)
+$(VARIANT_BIN): $(MAIN_OBJ) $(LIB_AR)
 	$(CC) $(CFLAGS) $(MAIN_OBJ) $(LIB_AR) -o $@ $(LDFLAGS) $(LIBS)
+
+$(BIN): $(VARIANT_BIN)
+	cp -f $< $@
 
 # Unit tests ----------------------------------------------------------------
 

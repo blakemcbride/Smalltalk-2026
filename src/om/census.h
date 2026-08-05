@@ -10,6 +10,8 @@
 
 #include "om.h"
 
+#define OM_HISTOGRAM_BUCKETS    256
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -22,7 +24,11 @@ typedef struct {
     uint32_t    odd_objects;
     uint64_t    total_refcounts;
     uint64_t    total_words;
-    uint32_t    refcount_histogram[ST_HUGE_SIZE];
+    /*
+     *  Sized for the Blue Book's saturating 8-bit counts.  The 64-bit memory
+     *  counts far higher, so anything above the top bucket is tallied there.
+     */
+    uint32_t    refcount_histogram[256];
 } om_census;
 
 void    OM_census(om_census *c);

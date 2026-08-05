@@ -18,6 +18,13 @@
  */
 
 #include "st_test.h"
+
+/*
+ *  These check the Blue Book object memory against the 1983 image, so they
+ *  only apply to that build.  Under OM=mt they compile to a stub.
+ */
+#ifdef ST_OM_BB
+
 #include "om.h"
 #include "interp.h"
 
@@ -232,3 +239,14 @@ main(void)
     test_trace3_prefix();
     return ST_TEST_END();
 }
+
+#else   /*  not ST_OM_BB  */
+
+int
+main(void)
+{
+    printf("skipped: this suite validates the Blue Book object memory\n");
+    return 0;
+}
+
+#endif

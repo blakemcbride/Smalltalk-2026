@@ -98,7 +98,7 @@ do_census(const char *path)
     printf("words in objects : %llu\n", (unsigned long long) c.total_words);
     printf("sum of refcounts : %llu\n", (unsigned long long) c.total_refcounts);
     printf("\nreference count histogram (count: objects)\n");
-    for (i = 0; i < ST_HUGE_SIZE; ++i) {
+    for (i = 0; i < OM_HISTOGRAM_BUCKETS; ++i) {
         if (c.refcount_histogram[i])
             printf("%6u %u\n", c.refcount_histogram[i], i);
     }
@@ -338,26 +338,23 @@ do_inspect(const char *path, const char *oop_text)
 
     printf("oop            : 16r%X (8r%o, %u)\n", raw, raw, raw);
     if (OM_is_int(p)) {
-        printf("kind           : SmallInteger %d\n", OM_int_value(p));
+        printf("kind           : SmallInteger %lld\n",
+               (long long) OM_int_value(p));
         OM_shutdown();
         return 0;
     }
-    if (raw >= st_om_ot_limit) {
-        printf("kind           : out of range (table holds %u words)\n",
-               st_om_ot_limit);
+    if (!OM_is_object(p)) {
+        printf("kind           : not a live object\n");
         OM_shutdown();
         return 0;
     }
-    printf("free bit       : %u\n", OM_free_bit(p));
     printf("reference count: %u\n", OM_count_bits(p));
     printf("pointer bit    : %u\n", OM_pointer_bit(p));
     printf("odd bit        : %u\n", OM_odd_bit(p));
+#ifdef ST_OM_BB
     printf("segment        : %u\n", OM_segment_bits(p));
     printf("location       : 16r%X\n", OM_location(p));
-    if (OM_free_bit(p)) {
-        OM_shutdown();
-        return 0;
-    }
+#endif
     printf("size (words)   : %u\n", OM_size_bits(p));
     printf("word length    : %u\n", OM_fetch_word_length(p));
     printf("byte length    : %u\n", OM_fetch_byte_length(p));
@@ -381,7 +378,7 @@ do_inspect(const char *path, const char *oop_text)
 
             printf("  [%2u]         : 16r%X", i, (unsigned) field);
             if (OM_is_int(field))
-                printf(" = %d", OM_int_value(field));
+                printf(" = %lld", (long long) OM_int_value(field));
             else if (OM_class_name_of(field, name, sizeof name))
                 printf(" = %s", name);
             else if (OM_is_object(field) && !OM_pointer_bit(field)) {

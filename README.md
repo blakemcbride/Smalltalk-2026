@@ -16,7 +16,7 @@ object memory and the scheduler with ones that use every core.
 
 ## Status
 
-Phases 0-2 complete; Phase 3 in progress. See `doc/PLAN.md` for the roadmap.
+Phases 0-2 and 4 complete; Phase 3 in progress. See `doc/PLAN.md` for the roadmap.
 
 | Phase | State |
 |---|---|
@@ -24,8 +24,8 @@ Phases 0-2 complete; Phase 3 in progress. See `doc/PLAN.md` for the roadmap.
 | 1 — Blue Book object memory | done |
 | 2 — Interpreter, primitives, `trace2` gate | done |
 | 3 — BitBlt, SDL3, first light | in progress — see below |
-| 4 — 64-bit object memory | |
-| 5 — Compiler and image bootstrap | |
+| 4 — 64-bit object memory | done |
+| 5 — Compiler and image bootstrap | next |
 | 6 — macOS and Windows | |
 | 7 — Native threads | |
 | 8 — MVC under parallelism | |

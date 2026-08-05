@@ -26,8 +26,18 @@
 #include <string.h>
 #include <inttypes.h>
 
-static int      st_test_checks;
-static int      st_test_failures;
+/*
+ *  Unused when a suite compiles to its skip stub, which happens whenever a
+ *  test applies to only one object memory.
+ */
+#if defined(__GNUC__) || defined(__clang__)
+#define ST_TEST_MAYBE_UNUSED    __attribute__((unused))
+#else
+#define ST_TEST_MAYBE_UNUSED
+#endif
+
+static int      st_test_checks    ST_TEST_MAYBE_UNUSED;
+static int      st_test_failures  ST_TEST_MAYBE_UNUSED;
 
 #define ST_TEST_BEGIN(name)                                             \
     do {                                                                \

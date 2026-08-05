@@ -419,31 +419,12 @@ primitive_new_with_arg(void)
 static int
 primitive_become(void)
 {
-    st_oop      a = ST_stack_value(1);
-    st_oop      b = ST_stack_value(0);
-    uint16_t    a0;
-    uint16_t    a1;
+    st_oop  a = ST_stack_value(1);
+    st_oop  b = ST_stack_value(0);
 
     if (!OM_is_object(a) || !OM_is_object(b))
         return 0;
-    a0 = st_om_ot[a];
-    a1 = st_om_ot[a + 1];
-    st_om_ot[a]     = st_om_ot[b];
-    st_om_ot[a + 1] = st_om_ot[b + 1];
-    st_om_ot[b]     = a0;
-    st_om_ot[b + 1] = a1;
-
-    /*
-     *  The counts belong to the identities, not to the bodies, so swapping
-     *  the whole entry would move them too.  Put them back.
-     */
-    {
-        unsigned    ca = OM_count_bits(b);   /*  now holds a's old count  */
-        unsigned    cb = OM_count_bits(a);
-
-        OM_set_count_bits(a, ca);
-        OM_set_count_bits(b, cb);
-    }
+    OM_swap_identities(a, b);
     ST_pop_n(1);
     return 1;
 }

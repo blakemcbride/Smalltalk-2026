@@ -183,6 +183,8 @@ OM_census(om_census *c)
         unsigned    count = OM_count_bits(p);
 
         ++c->objects;
+        if (count >= OM_HISTOGRAM_BUCKETS)
+            count = OM_HISTOGRAM_BUCKETS - 1;
         c->refcount_histogram[count] += 1;
         c->total_refcounts += count;
         c->total_words     += OM_size_bits(p);
@@ -193,6 +195,7 @@ OM_census(om_census *c)
         if (OM_odd_bit(p))
             ++c->odd_objects;
     }
+#ifdef ST_OM_BB
     {
         uint32_t    entry;
 
@@ -202,4 +205,7 @@ OM_census(om_census *c)
                 ++c->free_entries;
         }
     }
+#else
+    c->free_entries = OM_oops_left();
+#endif
 }

@@ -352,6 +352,12 @@ st_oop  OM_instantiate_bytes(st_oop class_pointer, uint32_t size);
 /*  Release an object and recursively release what it referred to.  */
 void    OM_deallocate(st_oop p);
 
+/*
+ *  Two-way identity exchange -- primitive 72.  With an object table this is
+ *  a swap of two entries and nothing in the heap moves or is rewritten.
+ */
+void    OM_swap_identities(st_oop a, st_oop b);
+
 /*  Words currently available across every segment.  Blue Book coreLeft.  */
 uint32_t    OM_core_left(void);
 
