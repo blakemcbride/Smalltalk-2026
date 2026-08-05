@@ -202,19 +202,30 @@ set_active_context(st_oop ctx)
 }
 
 /*
- *  Roots the object memory cannot see: the interpreter's registers and the
- *  objects the VM itself holds on to.  Everything else is reachable from the
- *  guaranteed pointers, which the collector walks on its own.
+ *  Roots the object memory cannot see.
+ *
+ *  This set must mirror the references the VM actually COUNTS, not merely
+ *  the ones it can reach.  The collector rebuilds every count from the walk,
+ *  so a root visited here that the interpreter never counted leaves the
+ *  object one too high afterwards -- and an object whose count can no longer
+ *  fall to zero is never freed again.  Visiting the whole register file that
+ *  way inflated every context by up to five per collection and leaked them
+ *  wholesale.
+ *
+ *  The interpreter counts exactly one reference: the active context, taken
+ *  in set_active_context.  home_context, method and receiver are uncounted
+ *  registers, all reachable through it -- a block context points at its
+ *  home, a context at its method and receiver -- so reachability is covered
+ *  without touching their counts.  new_method and message_selector are
+ *  likewise reachable from the method dictionary that yielded them.
+ *
+ *  The display form and the input semaphore are genuinely held by C, and
+ *  their setters count them, so they belong here.
  */
 static void
 provide_roots(om_visit_fn visit)
 {
     visit(st_vm.active_context);
-    visit(st_vm.home_context);
-    visit(st_vm.method);
-    visit(st_vm.receiver);
-    visit(st_vm.new_method);
-    visit(st_vm.message_selector);
     visit(GFX_display_form());
     visit(SCHED_input_semaphore());
 }
@@ -352,10 +363,27 @@ do_return(st_oop result, st_oop to_context, int from_block)
     }
     if (st_vm.call_depth > 0)
         --st_vm.call_depth;
+
+    /*
+     *  Break the outgoing context's links before dropping it -- the Blue
+     *  Book's nilContextFields.  Without this the sender chain stays whole
+     *  whenever anything else still refers to the context, and every frame
+     *  below it is retained: thisContext having been pushed, a BlockContext
+     *  holding its home, a debugger looking on.  Contexts then pile up until
+     *  the object table is gone, and the marking collector cannot help,
+     *  because they really are still reachable.
+     *
+     *  The result and the destination are both counted across the switch so
+     *  that neither can be the thing this release frees.
+     */
+    OM_increase_ref(sender);
     OM_increase_ref(result);
+    OM_store_pointer(ST_CTX_SENDER, st_vm.active_context, ST_NIL);
+    OM_store_pointer(ST_CTX_IP, st_vm.active_context, ST_NIL);
     set_active_context(sender);
     ST_push(result);
     OM_decrease_ref(result);
+    OM_decrease_ref(sender);
 }
 
 static void

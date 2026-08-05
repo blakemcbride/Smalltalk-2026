@@ -311,6 +311,9 @@ SCHED_primitive_suspend(void)
 void
 SCHED_set_input_semaphore(st_oop semaphore)
 {
+    /*  Counted, because provide_roots visits it as a root.  */
+    OM_increase_ref(semaphore);
+    OM_decrease_ref(input_semaphore);
     input_semaphore = semaphore;
 }
 

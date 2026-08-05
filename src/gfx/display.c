@@ -42,6 +42,9 @@ static int      damage_y2;
 void
 GFX_set_display(st_oop form)
 {
+    /*  A reference held by C must be counted like any other.  */
+    OM_increase_ref(form);
+    OM_decrease_ref(display_form);
     display_form = form;
     GFX_damage_all();
 }

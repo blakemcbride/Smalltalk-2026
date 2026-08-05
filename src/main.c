@@ -226,15 +226,69 @@ do_run(const char *path, uint64_t max_cycles)
                     "%u words and %u table entries free\n",
             (unsigned long long) total, st_om_collections, st_om_reclaimed,
             OM_core_left(), OM_oops_left());
+    /*
+     *  Who refers to the contexts that will not die?  Walk back up the
+     *  reference graph from one of them; the chain of referrers names the
+     *  structure that is retaining the lot.
+     */
+    if (getenv("ST_WHO_REFERS")) {
+        st_oop      target = ST_OOP_INVALID;
+        st_oop      p;
+        int         hop;
+
+        for (p = OM_first_object(); p != ST_OOP_INVALID; p = OM_next_object(p)) {
+            if (OM_fetch_class(p) == ST_CLASS_METHOD_CONTEXT) {
+                target = p;
+                break;
+            }
+        }
+        for (hop = 0; hop < 12 && target != ST_OOP_INVALID; ++hop) {
+            st_oop      referrer = ST_OOP_INVALID;
+            uint32_t    field_no = 0;
+            char        name[128];
+
+            for (p = OM_first_object(); p != ST_OOP_INVALID;
+                 p = OM_next_object(p)) {
+                uint32_t    n;
+                uint32_t    i;
+
+                if (p == target || !OM_pointer_bit(p))
+                    continue;
+                n = OM_fetch_word_length(p);
+                for (i = 0; i < n; ++i) {
+                    if (OM_fetch_pointer(i, p) == target) {
+                        referrer = p;
+                        field_no = i;
+                        break;
+                    }
+                }
+                if (referrer != ST_OOP_INVALID)
+                    break;
+            }
+            OM_class_name_of(OM_fetch_class(target), name, sizeof name);
+            fprintf(stderr, "  16r%X (a%s) count=%u", (unsigned) target,
+                    name, OM_count_bits(target));
+            if (referrer == ST_OOP_INVALID) {
+                fprintf(stderr, " <- nothing found\n");
+                break;
+            }
+            OM_class_name_of(OM_fetch_class(referrer), name, sizeof name);
+            fprintf(stderr, " <- field %u of 16r%X (a%s)\n", field_no,
+                    (unsigned) referrer, name);
+            target = referrer;
+        }
+    }
+
     /*  What is holding the object table open?  Count live objects by class. */
     if (getenv("ST_CLASS_CENSUS")) {
         st_oop      p;
-        st_oop      classes[24];
-        uint32_t    counts[24];
+        st_oop      classes[512];
+        uint32_t    counts[512];
         int         used = 0;
         int         i;
 
         memset(counts, 0, sizeof counts);
+        memset(classes, 0, sizeof classes);
         for (p = OM_first_object(); p != ST_OOP_INVALID; p = OM_next_object(p)) {
             st_oop  cls = OM_fetch_class(p);
 
@@ -243,7 +297,7 @@ do_run(const char *path, uint64_t max_cycles)
                     break;
             }
             if (i == used) {
-                if (used >= 24)
+                if (used >= 512)
                     continue;
                 classes[used] = cls;
                 counts[used]  = 0;
@@ -254,7 +308,7 @@ do_run(const char *path, uint64_t max_cycles)
         for (i = 0; i < used; ++i) {
             char    name[128];
 
-            if (counts[i] < 300)
+            if (counts[i] < 200)
                 continue;
             OM_class_name_of(classes[i], name, sizeof name);
             fprintf(stderr, "  %6u instances of %s\n", counts[i],
