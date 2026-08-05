@@ -14,6 +14,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 /*  ----------  Argument helpers  ----------  */
 
@@ -85,6 +86,41 @@ answer_positive_16bit(uint32_t value, uint32_t pop)
         return 0;
     ST_pop_n(pop);
     ST_push(result);
+    return 1;
+}
+
+/*
+ *  Answer any non-negative value, promoting to a LargePositiveInteger when
+ *  it will not fit a SmallInteger.  coreLeft reports hundreds of thousands
+ *  of words, which is far outside the 15-bit range the Blue Book memory
+ *  gives a SmallInteger, so answering one is not optional.
+ *
+ *  Digits are stored least significant first, as elsewhere.
+ */
+static int
+answer_positive(uint64_t value, uint32_t pop)
+{
+    st_oop      big;
+    unsigned    bytes = 0;
+    uint64_t    scan  = value;
+    unsigned    i;
+
+    if (value <= (uint64_t) ST_INT_MAX) {
+        ST_pop_n(pop);
+        ST_push(OM_int_oop((st_int) value));
+        return 1;
+    }
+    while (scan) {
+        ++bytes;
+        scan >>= 8;
+    }
+    big = OM_instantiate_bytes(ST_CLASS_LARGE_POSITIVE_INTEGER, bytes);
+    if (!OM_is_present(big))
+        return 0;
+    for (i = 0; i < bytes; ++i)
+        OM_store_byte(i, big, (uint8_t) ((value >> (i * 8)) & 0xFF));
+    ST_pop_n(pop);
+    ST_push(big);
     return 1;
 }
 
@@ -643,6 +679,331 @@ primitive_tick_words_into(void)
     return 1;
 }
 
+/*  ----------  Floats, primitives 40 to 54  ----------
+ *
+ *  Smalltalk-80 Floats are IEEE 754 single precision: two 16-bit words, most
+ *  significant first.  That was read out of the 1983 image rather than
+ *  assumed -- 16r3F80 0000 is 1.0 and 16r3E99 9999 is 0.3.
+ *
+ *  A bootstrapped image is free to carry double precision instead, so the
+ *  accessors below take the width from the object and handle either.
+ */
+
+static int
+float_value(st_oop p, double *out)
+{
+    uint32_t    words;
+
+    if (!OM_is_present(p) || OM_fetch_class(p) != ST_CLASS_FLOAT)
+        return 0;
+    words = OM_fetch_word_length(p);
+    if (words == 2) {
+        union { float f; uint32_t u; } bits;
+
+        bits.u = ((uint32_t) OM_fetch_word(0, p) << 16) | OM_fetch_word(1, p);
+        *out = (double) bits.f;
+        return 1;
+    }
+    if (words == 4) {
+        union { double d; uint64_t u; } bits;
+        unsigned    i;
+
+        bits.u = 0;
+        for (i = 0; i < 4; ++i)
+            bits.u = (bits.u << 16) | OM_fetch_word(i, p);
+        *out = bits.d;
+        return 1;
+    }
+    return 0;
+}
+
+static st_oop
+make_float(double value)
+{
+    union { float f; uint32_t u; } bits;
+    st_oop      p = OM_instantiate_words(ST_CLASS_FLOAT, 2);
+
+    if (!OM_is_present(p))
+        return ST_OOP_INVALID;
+    bits.f = (float) value;
+    OM_store_word(0, p, (uint16_t) (bits.u >> 16));
+    OM_store_word(1, p, (uint16_t) (bits.u & 0xFFFF));
+    return p;
+}
+
+/*  Either operand may be the receiver, so both are read the same way.  */
+static int
+float_operands(double *a, double *b)
+{
+    return float_value(ST_stack_value(1), a) && float_value(ST_stack_value(0), b);
+}
+
+static int
+answer_float(double value, uint32_t pop)
+{
+    st_oop  result = make_float(value);
+
+    if (result == ST_OOP_INVALID)
+        return 0;
+    ST_pop_n(pop);
+    ST_push(result);
+    return 1;
+}
+
+static int
+float_primitive(unsigned index)
+{
+    double  a;
+    double  b;
+
+    switch (index) {
+    case 40: {                          /*  SmallInteger asFloat  */
+        st_int  value;
+
+        if (!integer_arg(0, &value))
+            return 0;
+        return answer_float((double) value, 1);
+    }
+    case 51: {                          /*  truncated  */
+        if (!float_value(ST_stack_value(0), &a))
+            return 0;
+        if (a > (double) ST_INT_MAX || a < (double) ST_INT_MIN)
+            return 0;                   /*  needs a LargeInteger: fail  */
+        return answer_integer((st_int) a, 1);
+    }
+    case 52:                            /*  fractionPart  */
+        if (!float_value(ST_stack_value(0), &a))
+            return 0;
+        return answer_float(a - (double) (long long) a, 1);
+    case 53: {                          /*  exponent  */
+        int exponent;
+
+        if (!float_value(ST_stack_value(0), &a))
+            return 0;
+        if (a == 0.0)
+            return answer_integer(0, 1);
+        frexp(a, &exponent);
+        return answer_integer(exponent - 1, 1);
+    }
+    case 54: {                          /*  timesTwoPower:  */
+        st_int  power;
+
+        if (!float_value(ST_stack_value(1), &a) || !integer_arg(0, &power))
+            return 0;
+        return answer_float(ldexp(a, (int) power), 2);
+    }
+    default:
+        break;
+    }
+
+    if (!float_operands(&a, &b))
+        return 0;
+    switch (index) {
+    case 41: return answer_float(a + b, 2);
+    case 42: return answer_float(a - b, 2);
+    case 43: return answer_boolean(a <  b, 2);
+    case 44: return answer_boolean(a >  b, 2);
+    case 45: return answer_boolean(a <= b, 2);
+    case 46: return answer_boolean(a >= b, 2);
+    case 47: return answer_boolean(a == b, 2);
+    case 48: return answer_boolean(a != b, 2);
+    case 49: return answer_float(a * b, 2);
+    case 50:
+        if (b == 0.0)
+            return 0;
+        return answer_float(a / b, 2);
+    default: return 0;
+    }
+}
+
+/*  ----------  CompiledMethods, primitives 68, 69 and 79  ----------
+ *
+ *  A method is a byte object whose leading words are the header and the
+ *  literal frame, so objectAt: reaches those words while at: reaches the
+ *  bytecodes.  The image builds methods at run time -- that is what the
+ *  compiler in the image does -- so newMethod:header: is essential.
+ */
+
+static uint32_t
+method_word_slots(st_oop method)
+{
+    return OM_fetch_byte_length(method) / (uint32_t) sizeof(st_oop) == 0
+            ? OM_fetch_byte_length(method) / 2
+            : OM_fetch_byte_length(method) / (uint32_t) sizeof(st_oop);
+}
+
+static int
+primitive_object_at(void)
+{
+    st_oop      method = ST_stack_value(1);
+    st_int      index;
+
+    if (!OM_is_present(method) || !integer_arg(0, &index))
+        return 0;
+    if (index < 1 || (uint32_t) index > method_word_slots(method))
+        return 0;
+    ST_pop_n(2);
+    ST_push(OM_fetch_pointer((uint32_t) index - 1, method));
+    return 1;
+}
+
+static int
+primitive_object_at_put(void)
+{
+    st_oop      method = ST_stack_value(2);
+    st_oop      value  = ST_stack_value(0);
+    st_int      index;
+
+    if (!OM_is_present(method) || !integer_arg(1, &index))
+        return 0;
+    if (index < 1 || (uint32_t) index > method_word_slots(method))
+        return 0;
+    OM_store_pointer((uint32_t) index - 1, method, value);
+    ST_pop_n(3);
+    ST_push(value);
+    return 1;
+}
+
+static int
+primitive_new_method(void)
+{
+    st_oop      header = ST_stack_value(0);
+    st_oop      cls    = ST_stack_value(2);
+    st_int      bytecodes;
+    uint32_t    literals;
+    st_oop      method;
+
+    if (!OM_is_int(header) || !integer_arg(1, &bytecodes) || bytecodes < 0)
+        return 0;
+    if (!OM_is_present(cls))
+        return 0;
+    literals = ST_header_literal_count(header);
+    /*
+     *  The header and the literal frame come first, then the bytecodes.  The
+     *  stride is the object memory's pointer size, the same one the
+     *  interpreter uses to find a method's first bytecode.
+     */
+    method = OM_instantiate_bytes(cls,
+                (literals + 1) * (uint32_t) sizeof(st_oop)
+                    + (uint32_t) bytecodes);
+    if (!OM_is_present(method))
+        return 0;
+    OM_store_pointer(0, method, header);
+    ST_pop_n(3);
+    ST_push(method);
+    return 1;
+}
+
+/*  ----------  Bulk copy, primitive 105  ----------  */
+
+static int
+primitive_replace_from_to_with_starting_at(void)
+{
+    st_oop      target = ST_stack_value(4);
+    st_oop      source = ST_stack_value(1);
+    st_int      start;
+    st_int      stop;
+    st_int      from;
+    st_int      i;
+    int         target_bytes;
+    int         source_bytes;
+
+    if (!OM_is_present(target) || !OM_is_present(source))
+        return 0;
+    if (!integer_arg(3, &start) || !integer_arg(2, &stop)
+     || !integer_arg(0, &from))
+        return 0;
+    if (start < 1 || stop < start - 1)
+        return 0;
+    target_bytes = !OM_pointer_bit(target);
+    source_bytes = !OM_pointer_bit(source);
+    if (target_bytes != source_bytes)
+        return 0;               /*  no mixing pointers and bytes  */
+
+    for (i = 0; i <= stop - start; ++i) {
+        uint32_t    to_index   = (uint32_t) (start + i - 1);
+        uint32_t    from_index = (uint32_t) (from + i - 1);
+
+        if (target_bytes) {
+            if (to_index >= OM_fetch_byte_length(target)
+             || from_index >= OM_fetch_byte_length(source))
+                return 0;
+            OM_store_byte(to_index, target, OM_fetch_byte(from_index, source));
+        }  else  {
+            if (to_index >= OM_fetch_word_length(target)
+             || from_index >= OM_fetch_word_length(source))
+                return 0;
+            OM_store_pointer(to_index, target,
+                             OM_fetch_pointer(from_index, source));
+        }
+    }
+    ST_pop_n(4);
+    return 1;                   /*  answers the receiver  */
+}
+
+/*  ----------  Reflection, primitives 83 and 84  ----------
+ *
+ *  perform: is how the image dispatches on a selector it computed rather
+ *  than wrote.  The text scanner uses it for every stop condition, so
+ *  without these two nothing draws: the scanner fails, the error path tries
+ *  to report which method failed, and that walk recurses until the object
+ *  table is gone.  Neither has a Smalltalk fallback -- they cannot, since
+ *  performing a send is exactly what they are for.
+ */
+
+static int
+primitive_perform(void)
+{
+    uint32_t    argc = st_vm.argument_count;
+    st_oop      selector;
+    uint32_t    i;
+
+    /*  The selector is the first argument, so there is always at least one. */
+    if (argc < 1)
+        return 0;
+    selector = ST_stack_value(argc - 1);
+    if (!OM_is_present(selector))
+        return 0;
+
+    /*
+     *  Shuffle the real arguments down over the selector, leaving the stack
+     *  exactly as an ordinary send of that selector would have left it.
+     */
+    for (i = 0; i + 1 < argc; ++i)
+        ST_stack_put(argc - 1 - i, ST_stack_value(argc - 2 - i));
+    ST_pop_n(1);
+
+    ST_send_selector(selector, argc - 1);
+    return 1;
+}
+
+static int
+primitive_perform_with_arguments(void)
+{
+    st_oop      arguments;
+    st_oop      selector;
+    uint32_t    count;
+    uint32_t    i;
+
+    if (st_vm.argument_count != 2)
+        return 0;
+    arguments = ST_stack_value(0);
+    selector  = ST_stack_value(1);
+    if (!OM_is_present(arguments) || !OM_is_present(selector))
+        return 0;
+    if (OM_fetch_class(arguments) != ST_CLASS_ARRAY)
+        return 0;
+    count = OM_fetch_word_length(arguments);
+
+    /*  Drop the selector and the array, then spread the array out.  */
+    ST_pop_n(2);
+    for (i = 0; i < count; ++i)
+        ST_push(OM_fetch_pointer(i, arguments));
+
+    ST_send_selector(selector, count);
+    return 1;
+}
+
 /*  ----------  Identity and class, primitives 110 and 111  ----------  */
 
 static int
@@ -681,6 +1042,15 @@ ST_primitive_dispatch(unsigned index)
     case 74:  return primitive_inst_var_at_put();
     case 80:  return primitive_block_copy();
     case 81:  return primitive_value(st_vm.argument_count);
+    case 40: case 41: case 42: case 43: case 44: case 45: case 46:
+    case 47: case 48: case 49: case 50: case 51: case 52: case 53:
+    case 54:
+        return float_primitive(index);
+    case 68:  return primitive_object_at();
+    case 69:  return primitive_object_at_put();
+    case 79:  return primitive_new_method();
+    case 83:  return primitive_perform();
+    case 84:  return primitive_perform_with_arguments();
     case 85:  return SCHED_primitive_signal();
     case 86:  return SCHED_primitive_wait();
     case 87:  return SCHED_primitive_resume();
@@ -697,6 +1067,19 @@ ST_primitive_dispatch(unsigned index)
     case 99:  return primitive_tick_words_into();
     case 101: return primitive_be_cursor();
     case 102: return primitive_be_display();
+    case 105: return primitive_replace_from_to_with_starting_at();
+    case 112:                   /*  coreLeft  */
+        return answer_positive(OM_core_left(), 1);
+    case 115:                   /*  oopsLeft  */
+        return answer_positive(OM_oops_left(), 1);
+    case 116:
+        /*
+         *  signal:atOopsLeft:wordsLeft: arms a low-space warning.  We have
+         *  no such warning yet, so accept the request and answer the
+         *  receiver rather than fail into the image's error path.
+         */
+        ST_pop_n(3);
+        return 1;
     case 110: return primitive_equivalent();
     case 111: return primitive_class();
     default:  return 0;

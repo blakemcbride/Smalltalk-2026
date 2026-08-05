@@ -46,6 +46,13 @@ ST_stack_value(uint32_t from_top)
                             st_vm.active_context);
 }
 
+void
+ST_stack_put(uint32_t from_top, st_oop value)
+{
+    OM_store_pointer(st_vm.stack_pointer - from_top, st_vm.active_context,
+                     value);
+}
+
 st_oop
 ST_stack_top(void)
 {

@@ -44,6 +44,7 @@ void    ST_must_be_boolean(st_oop value);
 /*  Stack helpers shared with the interpreter.  */
 st_oop  ST_stack_value(uint32_t from_top);
 st_oop  ST_stack_top(void);
+void    ST_stack_put(uint32_t from_top, st_oop value);
 void    ST_push(st_oop value);
 st_oop  ST_pop(void);
 void    ST_pop_n(uint32_t n);

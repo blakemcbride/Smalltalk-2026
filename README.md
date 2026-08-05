@@ -16,14 +16,14 @@ object memory and the scheduler with ones that use every core.
 
 ## Status
 
-Phases 0-2 and 4-7 complete; Phase 3 partial. See `doc/PLAN.md` for the roadmap.
+Phases 0-7 complete; Phase 8 remaining. See `doc/PLAN.md` for the roadmap.
 
 | Phase | State |
 |---|---|
 | 0 — Skeleton, portability layer | done |
 | 1 — Blue Book object memory | done |
 | 2 — Interpreter, primitives, `trace2` gate | done |
-| 3 — BitBlt, SDL3, first light | in progress — see below |
+| 3 — BitBlt, SDL3, first light | done |
 | 4 — 64-bit object memory | done |
 | 5 — Compiler and image bootstrap | done |
 | 6 — macOS and Windows | done, unconfirmed on those hosts |
@@ -51,20 +51,27 @@ Sanitizer builds go to their own directory (`build/bb-tsan`, `build/bb-asan`)
 so an instrumented binary can never be linked against stale uninstrumented
 objects.
 
-### Phase 3 status
+### First light
 
-Implemented and building: BitBlt (Blue Book Chapter 18, all sixteen
-combination rules, clipping, skew, halftone, overlap reversal), the SDL3 front
-end (streaming texture, damage tracking, event translation), the green
-process scheduler (Blue Book control primitives 85-88), and the marking
-garbage collector (Chapter 30).
+The 1983 Xerox image boots to its own desktop:
 
-The image boots, runs, and tells us its display is 640x480 by way of
-`beDisplay`. It does not yet reach a usable System Browser: it exhausts the
-Blue Book object table -- 32,767 entries, a hard limit of this object memory --
-after about 2.5 million bytecodes. Four collections reclaim progressively
-less (1030, 69, 6, 0), so the objects still standing are genuinely reachable
-and something is retaining them. That is the open question for Phase 3.
+```sh
+$ ./st80 -screenshot screen.pbm -run oracle/VirtualImage 30000000
+st80: display is 640x480
+st80: wrote screen.pbm, 59898 of 307200 pixels are ink
+```
+
+What it draws is the System Workspace ("The Smalltalk-80 System Version 2,
+Copyright (c) 1983 Xerox Corp."), the System Transcript showing the snapshot
+timestamp of 31 May 1983, and a System Browser listing its class categories --
+rendered by our BitBlt, through our text scanner, at 640x480.
+
+It had appeared to leak contexts, exhausting the object table after ~3M
+bytecodes. It was not a leak. Five primitives were missing, `perform:` and
+the Floats among them; the image failed, tried to report which method had
+failed, and that reporting recursed. The sender chain was 10,275 frames deep
+at the point of death. With those primitives implemented the image runs
+50 million bytecodes with three quarters of the heap still free.
 
 ## Validation
 

@@ -14,3 +14,8 @@ oracle/
 # The bootstrapped image is a build product.
 *.image
 *.changes
+
+# Screenshots of the Xerox image reproduce its content, which carries the
+# same absent license grant as the image itself.  See doc/LICENSING.md.
+smalltalk-desktop.*
+screen*.pbm

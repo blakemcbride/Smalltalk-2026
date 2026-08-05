@@ -50,6 +50,7 @@ usage(const char *argv0)
     printf("  -bootstrap <a.st...> [-o image] [-eval expr]\n");
     printf("                        build an image from source\n");
     printf("  -run <image> [n]      run the image, opening a window\n");
+    printf("  -screenshot <f.pbm>   with -run, write the display when it stops\n");
     printf("  -census <image>       load an image and summarize it\n");
     printf("  -classes <image>      list every class, in class.oops format\n");
     printf("  -methods <image>      list every method, in method.oops format\n");
@@ -201,6 +202,8 @@ do_trace(const char *path, st_trace_mode mode, uint64_t limit)
  */
 #define SLICE_BYTECODES     20000
 
+static const char *shot_path;
+
 static int
 do_run(const char *path, uint64_t max_cycles)
 {
@@ -235,11 +238,82 @@ do_run(const char *path, uint64_t max_cycles)
         if (GFX_is_open() && !GFX_pump())
             break;
     }
+    /*
+     *  Write the display out as a portable bitmap, so what the image drew
+     *  can be looked at without a window -- and so a headless run can prove
+     *  it drew anything at all.
+     */
+    if (shot_path && GFX_display_form() != ST_NIL) {
+        gfx_form    form;
+
+        if (GFX_form_from_oop(GFX_display_form(), &form)) {
+            FILE   *f = fopen(shot_path, "wb");
+
+            if (f) {
+                int     x;
+                int     y;
+                long    ink = 0;
+
+                fprintf(f, "P1\n%d %d\n", form.width, form.height);
+                for (y = 0; y < form.height; ++y) {
+                    for (x = 0; x < form.width; ++x) {
+                        uint16_t    word = form.bits[(size_t) y * form.raster
+                                                     + (x >> 4)];
+                        int         bit = (word >> (15 - (x & 15))) & 1;
+
+                        ink += bit;
+                        fputc(bit ? '1' : '0', f);
+                        fputc(x + 1 == form.width ? '\n' : ' ', f);
+                    }
+                }
+                fclose(f);
+                fprintf(stderr, "st80: wrote %s, %ld of %d pixels are ink\n",
+                        shot_path, ink, form.width * form.height);
+            }
+        }
+    }
     fprintf(stderr, "st80: stopped after %llu bytecodes; "
                     "%u collections reclaimed %u objects; "
                     "%u words and %u table entries free\n",
             (unsigned long long) total, st_om_collections, st_om_reclaimed,
             OM_core_left(), OM_oops_left());
+    /*
+     *  How deep is the sender chain?  A chain thousands of frames long means
+     *  the image is descending without returning; a short one means the
+     *  contexts are retained by something else.
+     */
+    if (getenv("ST_CHAIN")) {
+        st_oop      ctx = st_vm.active_context;
+        unsigned    depth = 0;
+        char        name[128];
+
+        while (OM_is_present(ctx) && depth < 100000) {
+            ++depth;
+            ctx = OM_fetch_pointer(0, ctx);     /*  sender or caller  */
+        }
+        fprintf(stderr, "  active sender chain is %u deep\n", depth);
+
+        /*  And how many contexts are reachable from the scheduler?  */
+        {
+            st_oop      scheduler = OM_fetch_pointer(ST_ASSOCIATION_VALUE,
+                                        ST_SCHEDULER_ASSOCIATION);
+            st_oop      active;
+
+            if (OM_is_present(scheduler)) {
+                active = OM_fetch_pointer(1, scheduler);
+                OM_class_name_of(OM_fetch_class(active), name, sizeof name);
+                fprintf(stderr, "  active process is a%s\n", name);
+                ctx = OM_fetch_pointer(1, active);
+                depth = 0;
+                while (OM_is_present(ctx) && depth < 100000) {
+                    ++depth;
+                    ctx = OM_fetch_pointer(0, ctx);
+                }
+                fprintf(stderr, "  its suspended chain is %u deep\n", depth);
+            }
+        }
+    }
+
     /*
      *  Who refers to the contexts that will not die?  Walk back up the
      *  reference graph from one of them; the chain of referrers names the
@@ -559,6 +633,10 @@ main(int argc, char **argv)
                 return 1;
             }
             return do_bootstrap(sources, count, out_path, expression);
+        }
+        if (!strcmp(argv[i], "-screenshot") && i + 1 < argc) {
+            shot_path = argv[++i];
+            continue;
         }
         if (!strcmp(argv[i], "-run") && i + 1 < argc)
             return do_run(argv[i + 1],
