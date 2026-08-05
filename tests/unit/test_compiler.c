@@ -211,6 +211,24 @@ test_super(void)
      *  a one-byte encoding, because the lookup class differs.
      */
     CHECK_CODE("foo ^super bar", "super send", 112, 133, 0, 124);
+
+    /*
+     *  A BINARY message to super is a super send too, and must not take the
+     *  one-byte encoding: 181 sends >= to the receiver, which in Float>>>=
+     *  is the method that is running.  The 1983 library has 29 binary super
+     *  sends and comparing a Float with an Integer is one of them, so this
+     *  recursed until it ran out of bytecodes.
+     */
+    CHECK_CODE("foo: n ^super >= n", "binary super send",
+               112, 16, 133, 32, 124);
+    CHECK_CODE("foo: n ^super + n", "binary super send of +",
+               112, 16, 133, 32, 124);
+
+    /*  Once anything has been sent the receiver is a result, not super.  */
+    CHECK_CODE("foo: n ^super bar + n", "super, then an ordinary binary",
+               112, 133, 0, 16, 176, 124);
+    CHECK_CODE("foo: n ^super bar: n", "keyword super send",
+               112, 16, 133, 32, 124);
 }
 
 static void

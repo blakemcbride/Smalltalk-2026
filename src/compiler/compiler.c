@@ -881,7 +881,12 @@ compile_inline_while(st_compiler *c)
     return 1;
 }
 
-static void
+/*
+ *  Answers whether it emitted a send, which the caller needs: after any send
+ *  the value on the stack is a result, not the original receiver, so it is no
+ *  longer "super" for the message that follows.
+ */
+static int
 compile_unary_sequence(st_compiler *c, int receiver_is_super)
 {
     compiler_mark   receiver;
@@ -899,15 +904,26 @@ compile_unary_sequence(st_compiler *c, int receiver_is_super)
     }
     if (sent)
         c->receiver_mark = receiver;
+    return sent;
 }
 
-static void
+static int
 compile_binary_sequence(st_compiler *c, int receiver_is_super)
 {
     compiler_mark   receiver;
     int             sent = 0;
 
-    compile_unary_sequence(c, receiver_is_super);
+    /*
+     *  A binary message to super is a super send too.  This passed a hard
+     *  zero, so "super >= aNumber" compiled to the ordinary one-byte send of
+     *  >= -- to the receiver rather than to its superclass, which is the
+     *  method that is running.  Float>>>= is exactly that, so comparing a
+     *  Float with an Integer recursed until it ran out of bytecodes.  Unary
+     *  and keyword sends to super were always right, which is why it took
+     *  the 1983 library to find: our own kernel used neither.
+     */
+    if (compile_unary_sequence(c, receiver_is_super))
+        receiver_is_super = 0;
     while (at(c, ST_TOK_BINARY) || at(c, ST_TOK_BAR)) {
         char    selector[256];
 
@@ -920,11 +936,13 @@ compile_binary_sequence(st_compiler *c, int receiver_is_super)
         advance(c);
         compile_primary(c, NULL);
         compile_unary_sequence(c, 0);
-        emit_send(c, selector, 1, 0);
+        emit_send(c, selector, 1, receiver_is_super);
+        receiver_is_super = 0;
         sent = 1;
     }
     if (sent)
         c->receiver_mark = receiver;
+    return sent;
 }
 
 /*
@@ -947,7 +965,8 @@ compile_keyword_message(st_compiler *c, int receiver_is_super)
     unsigned        argc = 0;
     compiler_mark   receiver;
 
-    compile_binary_sequence(c, receiver_is_super);
+    if (compile_binary_sequence(c, receiver_is_super))
+        receiver_is_super = 0;
     if (!at(c, ST_TOK_KEYWORD))
         return;
     mark(c, &receiver);

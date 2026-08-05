@@ -127,8 +127,19 @@ $(LIB_AR): $(LIB_OBJ)
 $(VARIANT_BIN): $(MAIN_OBJ) $(LIB_AR)
 	$(CC) $(CFLAGS) $(MAIN_OBJ) $(LIB_AR) -o $@ $(LDFLAGS) $(LIBS)
 
+#
+#  The convenience copy at the top of the tree.
+#
+#  Forced, not timestamp-driven.  ./st80 is whichever variant was built last,
+#  and after "make OM=bb" it is NEWER than build/mt/st80 -- so a following
+#  "make OM=mt" answers "nothing to be done" and leaves the Blue Book binary
+#  sitting there under a name that now means something else.  Every command
+#  then fails in a way that has nothing to do with the change being made.
+#  A copy costs nothing; guessing wrong costs an afternoon.
+#
+.PHONY: $(BIN)
 $(BIN): $(VARIANT_BIN)
-	cp -f $< $@
+	@cp -f $< $@
 
 # Unit tests ----------------------------------------------------------------
 

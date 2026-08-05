@@ -136,6 +136,7 @@ make_string_object(const char *text)
 }
 
 static int place_in_symbol_table(st_oop sym);
+static int adopt_symbols(void);
 
 st_oop
 BOOT_intern_symbol(const char *text, void *user)
@@ -1460,6 +1461,8 @@ boot_build_locked(const char *const *paths, unsigned path_count,
         return -1;
     if (!link_class_objects())
         return -1;
+    if (!adopt_symbols())
+        return -1;
     if (!finish_fixed_objects())
         return -1;
 
@@ -1509,6 +1512,37 @@ BOOT_build(const char *const *paths, unsigned path_count,
     /*  Nothing C holds survives a collection unless the walk can see it.  */
     ST_interp_install_roots(BOOT_provide_roots);
     return status;
+}
+
+/*
+ *  Give every symbol its class.
+ *
+ *  Symbols are interned from the first moment a name is needed, which is
+ *  long before the class named Symbol exists -- the class objects are built
+ *  in the order the sources were read, and the first of them has a name that
+ *  must be interned to be stored.  Those early symbols were created with a
+ *  nil class and stayed that way.
+ *
+ *  The effect was beautifully arbitrary: whether a class could print its own
+ *  name depended on where its source file sorted relative to
+ *  Collections-Text/Symbol.  Set printed, OrderedCollection did not, and the
+ *  reason was alphabetical.
+ */
+static int
+adopt_symbols(void)
+{
+    st_oop      symbol_class = BOOT_global("Symbol");
+    unsigned    i;
+
+    if (!OM_is_present(symbol_class)) {
+        boot_fail("the kernel must define Symbol");
+        return 0;
+    }
+    for (i = 0; i < symbol_count; ++i) {
+        if (OM_fetch_class(symbols[i]) != symbol_class)
+            OM_set_class_of_object(symbols[i], symbol_class);
+    }
+    return 1;
 }
 
 /*  ----------  Roots  ----------  */

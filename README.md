@@ -170,10 +170,14 @@ Symbols are unique, which is what makes `==` mean anything for them:
 `#printString == 'printString' asSymbol` is true, whether the symbol was made
 by the compiler while building the library or by the image afterwards.
 
-`tests/unit/test_library.c` gates on the library compiling;
-`tests/unit/test_image.c` gates on it running, and prints on every run the
-frontier that does not work yet — Float printing and `OrderedCollection`'s
-`printOn:`.
+Printing works throughout, which is the deepest path the library has:
+`printOn:` runs Stream, WriteStream, String, Symbol, Character and — for a
+Float — LargeInteger division, all at once. So does mixed-mode arithmetic,
+in both directions: `3 + 1.5` and `3.5 >= 0` both coerce to the higher
+generality and retry.
+
+`tests/unit/test_library.c` gates on the library compiling and
+`tests/unit/test_image.c` on it running.
 
 **The language stops at the Blue Book.** The grammar this compiler accepts is
 the 1983 one, deliberately: dynamic arrays, general pragmas, block-local

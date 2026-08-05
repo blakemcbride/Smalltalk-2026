@@ -379,45 +379,6 @@ test_strings(void)
     check_integer("((String new: 2) at: 1 put: $z) asInteger", 122);
 }
 
-/*
- *  What does not work yet, printed rather than asserted.
- *
- *  These are the frontier of Phase 8, not regressions: they need the class
- *  variables that 62 class-side initialize methods would set, and the image
- *  build has never run them -- printString goes through TextConstants and a
- *  WriteStream on a String, and Association creation through a class
- *  variable of its own.  Listing them keeps the boundary written down and
- *  visible on every run, so that one starting to work is noticed and
- *  promoted rather than sitting here unclaimed.
- *
- *  Nothing here fails the suite.  If any of it did assert, the suite would
- *  be red for a known and deliberate reason, which trains people to ignore
- *  it -- the thing a test suite must never do.
- */
-static void
-report_frontier(void)
-{
-    static const char *const pending[] = {
-        /*  Float printing: absPrintOn:digits: and LargeInteger division.  */
-        "3.5 printString size",
-        /*  OrderedCollection's printOn: walks its own do:, which does not
-         *  terminate here even though its size, do: and collect: all do.  */
-        "(1 to: 5) asOrderedCollection printString size",
-        "(OrderedCollection new add: 1; yourself) printString size"
-    };
-    unsigned    i;
-
-    printf("  not yet working:\n");
-    for (i = 0; i < sizeof pending / sizeof pending[0]; ++i) {
-        st_oop  value = evaluate(pending[i]);
-        char    text[128];
-
-        ST_print_object(value, text, sizeof text);
-        printf("    %-40s %s\n", pending[i],
-               value == ST_OOP_INVALID ? "(did not finish)" : text);
-    }
-}
-
 static void
 test_graphics_objects(void)
 {
@@ -431,6 +392,43 @@ test_graphics_objects(void)
     check_integer("(0 @ 0 corner: 10 @ 20) area", 200);
     check_integer("((0 @ 0 corner: 10 @ 10) intersect: (5 @ 5 corner: 20 @ 20))"
                   " area", 25);
+}
+
+/*
+ *  Printing, which is the deepest path in the library: printOn: runs Stream,
+ *  WriteStream, String, Symbol, Character and -- for a Float -- LargeInteger
+ *  division, all at once.  Everything that used to be listed here as not
+ *  working now is here as an assertion instead.
+ */
+static void
+test_printing_deep(void)
+{
+    check_integer("3.5 printString size", 3);
+    check_integer("2.0 sqrt printString size", 7);
+    check_integer("OrderedCollection new printString size", 20);
+    check_integer("(1 to: 5) asOrderedCollection printString size", 30);
+    check_integer("(OrderedCollection new add: 1; yourself) printString size",
+                  22);
+    check_integer("OrderedCollection name size", 17);
+}
+
+/*
+ *  Mixed-mode arithmetic, which the library does by coercing to the higher
+ *  generality and retrying.  Both directions matter and only one of them used
+ *  to work: a Float receiver with an Integer argument fell back through
+ *  "super >= aNumber", and a binary message to super was not compiled as a
+ *  super send at all.
+ */
+static void
+test_mixed_arithmetic(void)
+{
+    check_oop("3.5 >= 0", ST_TRUE, "true");
+    check_oop("3.5 <= 4", ST_TRUE, "true");
+    check_oop("3 < 3.5",  ST_TRUE, "true");
+    check_integer("(3 + 1.5) truncated", 4);
+    check_integer("(3.5 + 1) truncated", 4);
+    check_integer("3.5 floor", 3);
+    check_integer("3.5 ceiling", 4);
 }
 
 int
@@ -473,7 +471,8 @@ main(void)
     test_floats();
     test_strings();
     test_graphics_objects();
-    report_frontier();
+    test_printing_deep();
+    test_mixed_arithmetic();
 
     OM_shutdown();
     return ST_TEST_END();
