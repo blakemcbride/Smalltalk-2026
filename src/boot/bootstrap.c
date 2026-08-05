@@ -2590,65 +2590,100 @@ install_system_organization(void)
  *  the image does when it starts is a string rather than something baked into
  *  C -- which is how a Smalltalk decides what to do on waking up.
  */
-int
-BOOT_install_scheduler(const char *startup_source)
+/*
+ *  The scheduler object itself, and the name Processor for it.
+ *
+ *  Separated from the startup process because the class initializers need
+ *  it: Delay class>>initialize forks its timing process at Processor
+ *  timingPriority, so with no Processor it stopped there and the image was
+ *  built with no timing process at all -- every Delay would have waited
+ *  forever.  It asked nil for a priority and said so, which is the only
+ *  sign there was.
+ *
+ *  Idempotent, because both the initializers and BOOT_install_scheduler ask
+ *  for it and neither knows which of them is first.
+ */
+static st_oop
+install_processor_object(void)
 {
     st_oop      sched_class = BOOT_global("ProcessorScheduler");
     st_oop      process_class = BOOT_global("Process");
     st_oop      list_class = BOOT_global("LinkedList");
     st_oop      array_class = BOOT_global("Array");
+    st_oop      existing = OM_fetch_pointer(ST_ASSOCIATION_VALUE,
+                                            ST_SCHEDULER_ASSOCIATION);
     st_oop      scheduler;
     st_oop      lists;
     st_oop      process;
-    st_oop      context;
-    st_compile_context  ctx;
-    st_compile_result   res;
-    char        source[2048];
     unsigned    i;
 
+    if (OM_is_present(existing))
+        return existing;
     if (!OM_is_present(sched_class) || !OM_is_present(process_class)
-     || !OM_is_present(list_class) || !OM_is_present(array_class)) {
-        fprintf(stderr, "st80: no scheduler: ProcessorScheduler=%d Process=%d"
-                        " LinkedList=%d Array=%d\n",
-                (int) OM_is_present(sched_class),
-                (int) OM_is_present(process_class),
-                (int) OM_is_present(list_class),
-                (int) OM_is_present(array_class));
-        return 1;
-    }
+     || !OM_is_present(list_class) || !OM_is_present(array_class))
+        return ST_NIL;
 
     /*  Eight priorities, 1 to 8, each with an empty list of waiters.  */
     lists = OM_instantiate_pointers(array_class, 8);
     if (!OM_is_present(lists))
-        return 0;
+        return ST_NIL;
     for (i = 0; i < 8; ++i) {
         /*
          *  Built here rather than with LinkedList new.  An empty list is two
-         *  nil fields, and going through the image for it means going through
-         *  Behavior>>new and whatever else is not ready yet -- which at this
-         *  point is Metaclass>>name, because a class cannot name itself until
-         *  Smalltalk can be searched for it.  There is nothing to gain by
-         *  asking.
+         *  nil fields, and going through the image for it means going
+         *  through Behavior>>new and whatever else is not ready yet.
          */
         st_oop  list = OM_instantiate_pointers(list_class, 2);
 
         if (!OM_is_present(list))
-            return 0;
+            return ST_NIL;
         OM_store_pointer(i, lists, list);
     }
 
     scheduler = OM_instantiate_pointers(sched_class, 2);
     if (!OM_is_present(scheduler))
-        return 0;
+        return ST_NIL;
     OM_increase_ref(scheduler);
     OM_store_pointer(ST_SCHEDULER_PROCESS_LISTS, scheduler, lists);
 
     /*
-     *  Processor is named before anything is asked to run, because things
-     *  that want to run ask for it by name.
+     *  A process to be active, before there is anything for one to do.
+     *
+     *  Processor activePriority is activeProcess priority, and an initializer
+     *  that forks asks for it.  At the top priority the forks can only queue,
+     *  which is what an image being built wants: nothing runs until it is
+     *  resumed with a real process in BOOT_install_scheduler.
      */
+    process = OM_instantiate_pointers(process_class, 4);
+    if (!OM_is_present(process))
+        return ST_NIL;
+    OM_increase_ref(process);
+    OM_store_pointer(ST_PROCESS_PRIORITY, process, OM_int_oop(8));
+    OM_store_pointer(ST_PROCESS_MY_LIST, process, ST_NIL);
+    OM_store_pointer(ST_SCHEDULER_ACTIVE_PROCESS, scheduler, process);
+
     OM_store_pointer(ST_ASSOCIATION_VALUE, ST_SCHEDULER_ASSOCIATION, scheduler);
     define_global("Processor", scheduler);
+    return scheduler;
+}
+
+int
+BOOT_install_scheduler(const char *startup_source)
+{
+    st_oop      process_class = BOOT_global("Process");
+    st_oop      scheduler = install_processor_object();
+    st_oop      process;
+    st_oop      context;
+    st_compile_context  ctx;
+    st_compile_result   res;
+    char        source[2048];
+
+    if (!OM_is_present(scheduler) || !OM_is_present(process_class)) {
+        fprintf(stderr, "st80: no scheduler: Processor=%d Process=%d\n",
+                (int) OM_is_present(scheduler),
+                (int) OM_is_present(process_class));
+        return 1;
+    }
 
     /*  The startup method, compiled from source like any other.  */
     memset(&ctx, 0, sizeof ctx);
@@ -2979,6 +3014,56 @@ install_pools(void)
  *  re-run: each carries its own "Text initialize" in a comment, which is an
  *  invitation to do exactly that.
  */
+/*
+ *  Initializers that must not be run, and why each one.
+ *
+ *  Every entry here was found by running it: each raised an error whose real
+ *  cause was that the method cannot work in an image being built, and each
+ *  is already served some other way.  Running them anyway achieved nothing
+ *  and reported a fault in the wrong place -- two of them by way of
+ *  Object>>error:, which draws its message at Sensor cursorPoint and so
+ *  failed a second time on the way to complaining about the first.
+ */
+static const struct { const char *class_name; const char *why; }
+never_initialize[] = {
+    /*
+     *  Asks the user to confirm resetting every dependency in the system.
+     *  There is nobody to ask, so confirm: reaches a nil Sensor.  Its two
+     *  halves -- initializeDependentsFields and initializeErrorRecursion --
+     *  are called directly instead, which is the whole of what a yes does.
+     */
+    { "Object", "asks the user to confirm; its two halves are called directly" },
+    /*
+     *  Interns 128 one-character symbols, and interning reads the very table
+     *  it is building.  seed_symbol_table closes that circle in C.  The
+     *  method also cannot run as written: it does "a at: 1 put: i - 1" on a
+     *  String, and String>>at:put: takes a Character, so the 1983 source is
+     *  itself at fault here.
+     */
+    { "Symbol", "the symbol table is seeded in C; see seed_symbol_table" },
+    /*
+     *  Reads its button images from Xerox .form files with Form class>>
+     *  readFrom:.  There is no file system here and those files are not
+     *  ours to ship, so the read cannot succeed.  The class works; its
+     *  cached menu images are absent.
+     */
+    { "FormMenuView", "reads Xerox .form files that are not shipped" }
+};
+
+static int
+skip_initializer(const char *class_name, const char **why)
+{
+    unsigned    i;
+
+    for (i = 0; i < sizeof never_initialize / sizeof never_initialize[0]; ++i) {
+        if (strcmp(never_initialize[i].class_name, class_name) == 0) {
+            *why = never_initialize[i].why;
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static void
 run_class_initializers(st_boot_init_report *out)
 {
@@ -2987,10 +3072,12 @@ run_class_initializers(st_boot_init_report *out)
     out->defined = 0;
     out->ran = 0;
     out->unfinished = 0;
+    out->skipped = 0;
     for (i = 0; i < class_count; ++i) {
         boot_class *c = &classes[i];
         st_oop      dict;
         st_oop      method;
+        const char *why;
 
         if (!OM_is_present(c->metaclass_oop))
             continue;
@@ -3000,6 +3087,13 @@ run_class_initializers(st_boot_init_report *out)
             continue;
 
         ++out->defined;
+        if (skip_initializer(c->name, &why)) {
+            ++out->skipped;
+            if (getenv("ST_BOOT_LOG"))
+                fprintf(stderr, "  %s class>>initialize skipped: %s\n",
+                        c->name, why);
+            continue;
+        }
         if (run_method_on(method, c->class_oop, 20000000)) {
             ++out->ran;
         }  else  {
@@ -3028,14 +3122,31 @@ BOOT_run_initializers(st_boot_init_report *out)
     if (!install_pools())
         return -1;
 
-    run_class_initializers(out);
     /*
-     *  TextStyle class>>fontArray: reads DefaultTab and the rest out of
-     *  TextConstants, and nothing fills those until Text class>>initialize
-     *  has run -- so the style is built between the two passes, and the
-     *  second gives every initializer that wanted it a style to copy.
+     *  The first pass is expected to fail in places, so it says nothing.
+     *
+     *  Roughly a third of the initializers want a text style, and the style
+     *  cannot be built until Text class>>initialize has filled
+     *  TextConstants -- which is itself one of the initializers.  So the
+     *  first pass runs to fill the constants, the style is built, and the
+     *  second pass runs with everything the first was missing.
+     *
+     *  Reporting the first pass meant printing ten failures that the second
+     *  pass then fixed, which is worse than saying nothing: a real fault had
+     *  to be picked out of a list of ten that did not matter, and the input
+     *  semaphore hid in exactly that list for months.  Only failures that
+     *  survive the last pass are printed now.
      */
+    /*
+     *  A Processor before anything asks for one -- Delay class>>initialize
+     *  forks its timing process at Processor timingPriority.
+     */
+    install_processor_object();
+
+    ST_set_error_reporting(0);
+    run_class_initializers(out);
     install_text_style();
+    ST_set_error_reporting(1);
     run_class_initializers(out);
 
     install_user_interface();

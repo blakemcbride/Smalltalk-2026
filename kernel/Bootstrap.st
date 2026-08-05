@@ -25,3 +25,23 @@ readWrite
 	"As readWriteShorten: nothing to do for a stream on a collection."!
 readOnly
 	"As readWriteShorten: nothing to do for a stream on a collection."! !
+
+"----------  A method the 1983 sources send and never define  ----------"!
+
+"CharacterBlock class>>stringIndex:character:boundingRectangle: sends
+newStringIndex:Character:BoundingRectangle: to the instance it has just made.
+No such method exists.  Searching the whole of sources/ for
+'BoundingRectangle:' finds this one send and no definition anywhere, so the
+gap is in the 1983 sources rather than in how they were read.
+
+It is reached the first time a TextView displays: View>>controller makes a
+ParagraphEditor, whose resetState builds a CharacterBlock this way.  The
+sibling that does exist takes the rectangle already taken apart, so this is
+that method with the two halves put back together."!
+
+!CharacterBlock methodsFor: 'bootstrap support'!
+newStringIndex: anInteger Character: aCharacter BoundingRectangle: aRectangle
+	stringIndex _ anInteger.
+	character _ aCharacter.
+	super origin: aRectangle origin.
+	super extent: aRectangle extent! !

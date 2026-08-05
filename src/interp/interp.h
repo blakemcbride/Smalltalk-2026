@@ -228,4 +228,18 @@ void    ST_print_object(st_oop p, char *buf, size_t buflen);
 }
 #endif
 
+/*  Where the running send came from, innermost first.  Diagnostics only.  */
+void        ST_report_backtrace(void);
+
+/*
+ *  Whether a failed send says so.
+ *
+ *  On by default.  The bootstrap turns it off while it runs a pass it
+ *  expects to fail -- the class initializers need two passes, because some
+ *  of them want a text style that a later one builds -- so that only
+ *  failures which survive the last pass are ever printed.
+ */
+void        ST_set_error_reporting(int on);
+int         ST_errors_reported(void);
+
 #endif  /*  ST_INTERP_H  */

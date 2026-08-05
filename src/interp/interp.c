@@ -361,6 +361,114 @@ lookup_method(st_oop selector, st_oop start_class, st_oop *found_class)
     return ST_NIL;
 }
 
+/*
+ *  Name a method, by finding it again in the class that holds it.
+ *
+ *  A CompiledMethod does not know its own selector: the selector is the KEY
+ *  the method dictionary filed it under, and nothing points back.  So the
+ *  only way to name one is to look for it, which is what this does -- up the
+ *  chain from the receiver's class, because the method that is running may
+ *  well be inherited.
+ *
+ *  It is a linear scan of every dictionary on the way up, which would be
+ *  indefensible anywhere but here.  This runs once, when something has
+ *  already gone wrong and the run is over.
+ */
+static int
+name_method(st_oop receiver, st_oop method, char *out, size_t len)
+{
+    st_oop  cls = OM_fetch_class(receiver);
+
+    while (OM_is_present(cls)) {
+        st_oop      dict = OM_fetch_pointer(ST_CLASS_METHOD_DICT, cls);
+        uint32_t    capacity = OM_method_dict_capacity(dict);
+        uint32_t    slot;
+
+        for (slot = 0; slot < capacity; ++slot) {
+            if (OM_method_dict_value(dict, slot) == method) {
+                char        cname[64];
+                char        sel[128];
+                st_oop      key = OM_method_dict_key(dict, slot);
+                uint32_t    n = OM_is_present(key)
+                                    ? OM_fetch_byte_length(key) : 0;
+                uint32_t    k;
+
+                if (n > sizeof sel - 1)
+                    n = sizeof sel - 1;
+                for (k = 0; k < n; ++k)
+                    sel[k] = (char) OM_fetch_byte(k, key);
+                sel[n] = '\0';
+                if (!OM_class_name_of(cls, cname, sizeof cname))
+                    snprintf(cname, sizeof cname, "?");
+                snprintf(out, len, "%s>>%s", cname, n ? sel : "?");
+                return 1;
+            }
+        }
+        cls = OM_fetch_pointer(ST_CLASS_SUPERCLASS, cls);
+    }
+    return 0;
+}
+
+/*
+ *  Where the failing send came from, as far back as it goes.
+ *
+ *  One line naming the running method\'s class was what this used to print,
+ *  and it was not enough to act on: half the errors raised during a
+ *  bootstrap are raised by the error REPORTING path -- Object>>error: draws
+ *  its message at Sensor cursorPoint, and asks a nil Sensor -- so the class
+ *  named was the reporter rather than anything to do with the fault.  The
+ *  chain distinguishes the two immediately.
+ */
+#define BACKTRACE_LIMIT     24
+
+static int  errors_reported = 1;
+
+void
+ST_set_error_reporting(int on)
+{
+    errors_reported = on;
+}
+
+int
+ST_errors_reported(void)
+{
+    return errors_reported;
+}
+
+void
+ST_report_backtrace(void)
+{
+    st_oop      ctx = st_vm.active_context;
+    unsigned    depth = 0;
+
+    if (!errors_reported)
+        return;
+    while (OM_is_present(ctx) && depth < BACKTRACE_LIMIT) {
+        st_oop  method = OM_fetch_pointer(ST_CTX_METHOD, ctx);
+        st_oop  receiver = OM_fetch_pointer(ST_CTX_RECEIVER, ctx);
+        char    name[200];
+
+        /*
+         *  A block context holds its home in the method field, so it is
+         *  named by the method the block was written in.
+         */
+        if (!OM_is_present(method) || !name_method(receiver, method,
+                                                  name, sizeof name)) {
+            char    cname[64];
+
+            if (!OM_class_name_of(OM_fetch_class(receiver), cname,
+                                  sizeof cname))
+                snprintf(cname, sizeof cname, "?");
+            snprintf(name, sizeof name, "a method of %s", cname);
+        }
+        fprintf(stderr, "       %s %s\n", depth ? "from" : "sent from", name);
+        ctx = OM_fetch_pointer(ST_CTX_SENDER, ctx);
+        ++depth;
+    }
+    if (OM_is_present(ctx))
+        fprintf(stderr, "       ... and further\n");
+}
+
 /*  ----------  Activation and return  ----------  */
 
 static void
@@ -534,22 +642,11 @@ send_does_not_understand(st_oop receiver, st_oop selector, st_oop lookup_class)
             name[k] = (char) OM_fetch_byte(k, selector);
         name[n] = '\0';
 
-        fprintf(stderr, "st80: %s does not understand #%s, and does not "
-                        "understand doesNotUnderstand: either\n",
-                buf, n ? name : "(not a symbol)");
-        {
-            /*
-             *  Name the method that was running.  Which send failed matters
-             *  much less than where it was sent from, and the receiver of the
-             *  active context says that in one word.
-             */
-            char    who[64];
-            st_oop  sender_class = OM_fetch_class(st_vm.receiver);
-
-            if (!OM_class_name_of(sender_class, who, sizeof who))
-                snprintf(who, sizeof who, "?");
-            fprintf(stderr, "       sent from a method of %s\n", who);
-        }
+        if (errors_reported)
+            fprintf(stderr, "st80: %s does not understand #%s, and does not "
+                            "understand doesNotUnderstand: either\n",
+                    buf, n ? name : "(not a symbol)");
+        ST_report_backtrace();
         if (getenv("ST_LOOKUP_LOG")) {
             st_oop  cls = OM_fetch_class(receiver);
             char    cname[64];

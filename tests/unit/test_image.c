@@ -75,7 +75,7 @@ build_once(void)
 
     CHECK_EQ_INT(res.classes_created, 226);
     /*  4517 from the MIT sources, plus the few in kernel/Bootstrap.st.  */
-    CHECK_EQ_INT(res.methods_compiled, 4520);
+    CHECK_EQ_INT(res.methods_compiled, 4521);
     built = 1;
     return 1;
 }
@@ -714,6 +714,31 @@ test_process_scheduler(void)
     }
 
     /*
+     *  The image is built with its system processes already running.
+     *
+     *  Two of the class initializers fork one.  Delay class>>initialize
+     *  forks the timing process at Processor timingPriority, which is 8, and
+     *  InputSensor class>>install forks the process that drains the event
+     *  queue at lowIOPriority, which is 6.  Both sit on their run queues
+     *  waiting on a semaphore, which is where a 1983 image keeps them.
+     *
+     *  Neither used to be there.  Both initializers ask Processor for a
+     *  priority, and the scheduler was built after the initializers ran, so
+     *  each stopped at that line -- Delay leaving an image in which every
+     *  wait would have been forever.  Asserting the queues is the only way
+     *  to see it, because a process that was never forked is not missing
+     *  from anywhere you would think to look.
+     *
+     *  Asserted BEFORE the yields below, and that ordering is the point: a
+     *  yield runs the highest-priority process that is ready, so the first
+     *  two yields take these two off their queues and leave them waiting on
+     *  their semaphores instead.  Both states are correct; only the first
+     *  says anything about whether the processes were forked at all.
+     */
+    check_oop("^((Processor instVarAt: 1) at: 8) isEmpty", ST_FALSE, "false");
+    check_oop("^((Processor instVarAt: 1) at: 6) isEmpty", ST_FALSE, "false");
+
+    /*
      *  Yielding, which is the smallest thing that needs two processes.
      *
      *  ProcessorScheduler>>yield forks a process to signal a semaphore and
@@ -819,7 +844,22 @@ test_browser(void)
               " top addTextView: (0@0.35 extent: 1.0@0.65) on: b"
               " initialSelection: nil."
               " top window: (20@20 corner: 620@460). top display. ^1",
-              56618);
+              /*
+               *  It used to be 56618, and that number was the bug.
+               *
+               *  Displaying the text view reached CharacterBlock class>>
+               *  stringIndex:character:boundingRectangle:, which sends a
+               *  method the 1983 sources never define -- searching all of
+               *  sources/ for BoundingRectangle: finds the send and nothing
+               *  else.  The display died there, part drawn, and the count
+               *  recorded whatever had been painted before it stopped.
+               *
+               *  kernel/Bootstrap.st supplies the method, so the browser now
+               *  draws to completion: a title tab, five list panes with the
+               *  category list filled, and an empty text pane because no
+               *  method is selected yet.  Less ink, and all of it wanted.
+               */
+              15035);
 }
 
 /*
@@ -854,7 +894,7 @@ test_browsing(void)
     check_integer("(Boolean sourceCodeAt: #not) size", 122);
     check_integer("((Boolean sourceCodeAt: #not) asText"
                   " makeSelectorBoldIn: Boolean) size", 122);
-    check_integer("(SourceFiles at: 1) contents size", 1203250);
+    check_integer("(SourceFiles at: 1) contents size", 1203447);
 }
 
 /*
@@ -1064,13 +1104,20 @@ main(void)
         st_boot_init_report init;
 
         BOOT_run_initializers(&init);
-        printf("  %u class initializers, %u ran, %u unfinished",
-               init.defined, init.ran, init.unfinished);
+        printf("  %u class initializers, %u ran, %u skipped, %u unfinished",
+               init.defined, init.ran, init.skipped, init.unfinished);
         if (init.unfinished)
             printf(" (first: %s)", init.first_unfinished);
         printf("\n");
         CHECK(init.defined >= 45);
-        CHECK_EQ_INT(init.ran, init.defined);   /*  all of them  */
+        /*
+         *  Every one either ran or was deliberately skipped.  Three are:
+         *  Object asks the user a question, Symbol builds the table that
+         *  interning reads, and FormMenuView reads Xerox files we do not
+         *  ship.  never_initialize in the bootstrap says why for each.
+         */
+        CHECK_EQ_INT(init.ran + init.skipped, init.defined);
+        CHECK_EQ_INT(init.skipped, 3);
     }
 
     test_classes_present();

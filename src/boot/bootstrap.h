@@ -90,6 +90,7 @@ typedef struct {
     unsigned    defined;        /*  classes with a class-side initialize  */
     unsigned    ran;            /*  ... that finished                     */
     unsigned    unfinished;     /*  ... that exceeded the bytecode budget */
+    unsigned    skipped;        /*  ... deliberately not run; see the table */
     char        first_unfinished[64];
     unsigned    symbols_seeded;     /*  entries placed in the library table */
     unsigned    symbols_total;

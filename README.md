@@ -202,7 +202,7 @@ the 1983 library's, running on an image bootstrapped from MIT sources.
 ```
 $ make OM=mt TSAN=1 test
 ---- the library, in parallel ----
-  image: 226 classes, 4520 methods, 45 initializers
+  image: 226 classes, 4521 methods, 45 initializers
   31 threads ran 4960 library expressions on 32 CPUs, 3 collections
 ok: 18 checks, 0 failures
 ```

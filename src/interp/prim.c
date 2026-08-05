@@ -1266,7 +1266,9 @@ ST_must_be_boolean(st_oop value)
     char    buf[256];
 
     ST_print_object(value, buf, sizeof buf);
-    fprintf(stderr, "st80: %s is not a boolean at cycle %llu\n", buf,
-            (unsigned long long) st_vm.cycle);
+    if (ST_errors_reported())
+        fprintf(stderr, "st80: %s is not a boolean at cycle %llu\n", buf,
+                (unsigned long long) st_vm.cycle);
+    ST_report_backtrace();
     st_vm.running = 0;
 }

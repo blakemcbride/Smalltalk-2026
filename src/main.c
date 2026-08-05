@@ -628,8 +628,9 @@ do_bootstrap(const char *const *sources, unsigned count, const char *out_path,
         st_boot_init_report init;
 
         BOOT_run_initializers(&init);
-        fprintf(stderr, "st80: %u class initializers, %u ran, %u unfinished",
-                init.defined, init.ran, init.unfinished);
+        fprintf(stderr, "st80: %u class initializers, %u ran, %u skipped,"
+                        " %u unfinished",
+                init.defined, init.ran, init.skipped, init.unfinished);
         if (init.unfinished)
             fprintf(stderr, " (first: %s)", init.first_unfinished);
         fprintf(stderr, "; %u of %u symbols in the library table\n",

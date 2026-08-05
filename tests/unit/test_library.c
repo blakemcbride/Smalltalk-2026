@@ -70,7 +70,7 @@ main(void)
      */
     CHECK_EQ_INT(survey.files, 227);
     CHECK_EQ_INT(survey.unreadable, 0);
-    CHECK_EQ_INT(survey.methods, 4520);
+    CHECK_EQ_INT(survey.methods, 4521);
     CHECK_EQ_INT(survey.failed, 0);
 
     return ST_TEST_END();

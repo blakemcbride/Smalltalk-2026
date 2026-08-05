@@ -207,7 +207,8 @@ main(void)
     BOOT_run_initializers(&init);
     printf("  image: %u classes, %u methods, %u initializers\n",
            boot.classes_created, boot.methods_compiled, init.ran);
-    CHECK_EQ_INT(init.ran, init.defined);
+    /*  Three are deliberately skipped; never_initialize says why for each.  */
+    CHECK_EQ_INT(init.ran + init.skipped, init.defined);
 
     /*  The interface is present while all this runs.  */
     CHECK(OM_is_present(BOOT_global("ScheduledControllers")));
