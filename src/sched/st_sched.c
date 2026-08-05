@@ -59,27 +59,72 @@ SCHED_is_empty_list(st_oop list)
 st_oop
 SCHED_remove_first_link(st_oop list)
 {
-    st_oop  first = OM_fetch_pointer(ST_LIST_FIRST_LINK, list);
+    st_oop  first;
     st_oop  last;
     st_oop  next;
 
+    /*
+     *  A list whose links are not links.
+     *
+     *  Chapter 29's removeFirstLinkOf: assumes the chain holds Links,
+     *  because in Smalltalk it cannot hold anything else -- the only way in
+     *  is addLast:, which is typed by its callers.  Here the fields are raw
+     *  memory, so a Semaphore that was never a Semaphore, or a list built by
+     *  something that got the layout wrong, writes through field 0 of
+     *  whatever it is holding and corrupts the heap somewhere else entirely.
+     *
+     *  Answering nil instead makes the list look empty, which is what a
+     *  malformed one should look like: the signal is remembered as an excess
+     *  and nothing is resumed.
+     */
+    if (!OM_is_present(list) || !OM_pointer_bit(list)
+     || OM_fetch_word_length(list) <= ST_LIST_LAST_LINK)
+        return ST_NIL;
+    first = OM_fetch_pointer(ST_LIST_FIRST_LINK, list);
     if (first == ST_NIL)
         return ST_NIL;
+    /*
+     *  Pointer objects only.  A byte object -- a String, a Symbol -- has a
+     *  word length of its own that says nothing about how many FIELDS it
+     *  has, which is none, so the length test alone lets one through and
+     *  field 0 is past the end of it.
+     */
+    if (!OM_is_present(first) || !OM_pointer_bit(first)
+     || OM_fetch_word_length(first) <= ST_LINK_NEXT)
+        return ST_NIL;
     last = OM_fetch_pointer(ST_LIST_LAST_LINK, list);
+    next = (first == last) ? ST_NIL
+                           : OM_fetch_pointer(ST_LINK_NEXT, first);
+
+    /*
+     *  Clear the link's own pointer BEFORE the list lets go of it.
+     *
+     *  Chapter 29 writes it the other way round -- unlink, then
+     *  "link nextLink: nil" -- which is fine where nothing is counting.
+     *  Here the list holds the only reference: dropping it first takes the
+     *  count to zero, the body is released, and the store that follows lands
+     *  in freed memory.  The order below never leaves the link unreferenced
+     *  while it is still being written to.
+     */
+    OM_store_pointer(ST_LINK_NEXT, first, ST_NIL);
     if (first == last) {
         OM_store_pointer(ST_LIST_FIRST_LINK, list, ST_NIL);
         OM_store_pointer(ST_LIST_LAST_LINK, list, ST_NIL);
     }  else  {
-        next = OM_fetch_pointer(ST_LINK_NEXT, first);
         OM_store_pointer(ST_LIST_FIRST_LINK, list, next);
     }
-    OM_store_pointer(ST_LINK_NEXT, first, ST_NIL);
     return first;
 }
 
 void
 SCHED_add_last_link(st_oop link, st_oop list)
 {
+    /*  The same guard from the other side: never chain a non-link.  */
+    if (!OM_is_present(link) || !OM_is_present(list)
+     || !OM_pointer_bit(link) || !OM_pointer_bit(list)
+     || OM_fetch_word_length(link) <= ST_PROCESS_MY_LIST
+     || OM_fetch_word_length(list) <= ST_LIST_LAST_LINK)
+        return;
     if (SCHED_is_empty_list(list))
         OM_store_pointer(ST_LIST_FIRST_LINK, list, link);
     else

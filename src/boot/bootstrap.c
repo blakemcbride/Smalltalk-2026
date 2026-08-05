@@ -2580,18 +2580,25 @@ install_pools(void)
     return 1;
 }
 
-int
-BOOT_run_initializers(st_boot_init_report *out)
+/*
+ *  Send #initialize to every class that defines one.
+ *
+ *  Called twice, with the text style built in between, because the order is
+ *  forced from both ends: TextStyle cannot be built until Text class>>
+ *  initialize has filled TextConstants, and TextList class>>initialize wants
+ *  "DefaultTextStyle copy" -- so whichever runs first, something it needs is
+ *  nil.  A second pass settles it, and these methods are written to be
+ *  re-run: each carries its own "Text initialize" in a comment, which is an
+ *  invitation to do exactly that.
+ */
+static void
+run_class_initializers(st_boot_init_report *out)
 {
     unsigned    i;
 
-    memset(out, 0, sizeof *out);
-    if (!seed_symbol_table(out))
-        return -1;
-    if (!install_system_dictionary())
-        return -1;
-    if (!install_pools())
-        return -1;
+    out->defined = 0;
+    out->ran = 0;
+    out->unfinished = 0;
     for (i = 0; i < class_count; ++i) {
         boot_class *c = &classes[i];
         st_oop      dict;
@@ -2620,12 +2627,29 @@ BOOT_run_initializers(st_boot_init_report *out)
          */
         OM_collect();
     }
+}
+
+int
+BOOT_run_initializers(st_boot_init_report *out)
+{
+    memset(out, 0, sizeof *out);
+    if (!seed_symbol_table(out))
+        return -1;
+    if (!install_system_dictionary())
+        return -1;
+    if (!install_pools())
+        return -1;
+
+    run_class_initializers(out);
     /*
-     *  Last: TextStyle class>>fontArray: reads DefaultTab and the rest out of
+     *  TextStyle class>>fontArray: reads DefaultTab and the rest out of
      *  TextConstants, and nothing fills those until Text class>>initialize
-     *  has run.
+     *  has run -- so the style is built between the two passes, and the
+     *  second gives every initializer that wanted it a style to copy.
      */
     install_text_style();
+    run_class_initializers(out);
+
     install_user_interface();
     install_system_organization();
     return 0;
