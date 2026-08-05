@@ -911,7 +911,8 @@ static int
 compile_binary_sequence(st_compiler *c, int receiver_is_super)
 {
     compiler_mark   receiver;
-    int             sent = 0;
+    int             binary_sent = 0;
+    int             any_sent = 0;
 
     /*
      *  A binary message to super is a super send too.  This passed a hard
@@ -922,8 +923,21 @@ compile_binary_sequence(st_compiler *c, int receiver_is_super)
      *  and keyword sends to super were always right, which is why it took
      *  the 1983 library to find: our own kernel used neither.
      */
-    if (compile_unary_sequence(c, receiver_is_super))
+    /*
+     *  Two answers are wanted here and they are not the same one.  The
+     *  RETURN says whether anything at all was sent, because the caller uses
+     *  it to decide that its own receiver is no longer super -- and a unary
+     *  send is quite enough to make that so.  Reporting only binary sends
+     *  compiled "super new compositionRectangle: ..." as a super send of the
+     *  keyword message, which starts the lookup above the receiver's class
+     *  and walks straight past the method it wanted.  The MARK, separately,
+     *  belongs to the outermost send at THIS level, so it is only touched
+     *  when a binary send actually happens.
+     */
+    if (compile_unary_sequence(c, receiver_is_super)) {
         receiver_is_super = 0;
+        any_sent = 1;
+    }
     while (at(c, ST_TOK_BINARY) || at(c, ST_TOK_BAR)) {
         char    selector[256];
 
@@ -938,11 +952,12 @@ compile_binary_sequence(st_compiler *c, int receiver_is_super)
         compile_unary_sequence(c, 0);
         emit_send(c, selector, 1, receiver_is_super);
         receiver_is_super = 0;
-        sent = 1;
+        binary_sent = 1;
+        any_sent = 1;
     }
-    if (sent)
+    if (binary_sent)
         c->receiver_mark = receiver;
-    return sent;
+    return any_sent;
 }
 
 /*

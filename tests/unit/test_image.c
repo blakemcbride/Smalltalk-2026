@@ -502,7 +502,6 @@ check_ink(const char *expression, long want)
 static void
 test_display(void)
 {
-    CHECK(BOOT_install_display(640, 480));
     check_integer("Display width", 640);
     check_integer("Display height", 480);
     check_integer("Display bits size", 40 * 480);
@@ -574,6 +573,28 @@ test_text(void)
 }
 
 /*
+ *  Composing text: Paragraph, the CompositionScanner and the font together.
+ *
+ *  This is what a view displays, so it is the last thing under MVC rather
+ *  than part of it.  The width of a line is the sum of the widths the font
+ *  reports, which for this face is eight a character -- so the numbers here
+ *  are the string lengths, and they are exact.
+ */
+static void
+test_paragraph(void)
+{
+    check_integer("(Paragraph withText: 'hello' asText) numberOfLines", 1);
+    check_integer("(Paragraph withText: 'hello' asText) width", 5 * 8);
+    check_integer("('hello world' asParagraph) width", 11 * 8);
+    /*  Empty text composes to no lines at all, not to one empty one.  */
+    check_integer("('' asParagraph) numberOfLines", 0);
+
+    /*  And it draws: 'Hi' is two glyphs of known ink.  */
+    check_ink("Display white. 'Hi' asParagraph displayOn: Display at: 20@20."
+              " ^1", 50);   /*  the ink of H and i in this face  */
+}
+
+/*
  *  Printing, which is the deepest path in the library: printOn: runs Stream,
  *  WriteStream, String, Symbol, Character and -- for a Float -- LargeInteger
  *  division, all at once.  Everything that used to be listed here as not
@@ -624,6 +645,13 @@ main(void)
         return ST_TEST_END();
 
     /*
+     *  The screen first: Text class>>initialize asks Display how wide it is
+     *  when it works out the default tab stops, so an image with no Display
+     *  gets no text constants and then no text style.
+     */
+    CHECK(BOOT_install_display(640, 480));
+
+    /*
      *  The step a fileIn does not do and an image build does.  Without it the
      *  library's class variables are all nil, and printString, Symbol
      *  interning and Character creation all walk into nil.
@@ -653,6 +681,7 @@ main(void)
     test_bitblt();
     test_display();
     test_text();
+    test_paragraph();
     test_printing_deep();
     test_mixed_arithmetic();
 

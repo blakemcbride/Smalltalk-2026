@@ -534,6 +534,49 @@ send_does_not_understand(st_oop receiver, st_oop selector, st_oop lookup_class)
         fprintf(stderr, "st80: %s does not understand #%s, and does not "
                         "understand doesNotUnderstand: either\n",
                 buf, n ? name : "(not a symbol)");
+        {
+            /*
+             *  Name the method that was running.  Which send failed matters
+             *  much less than where it was sent from, and the receiver of the
+             *  active context says that in one word.
+             */
+            char    who[64];
+            st_oop  sender_class = OM_fetch_class(st_vm.receiver);
+
+            if (!OM_class_name_of(sender_class, who, sizeof who))
+                snprintf(who, sizeof who, "?");
+            fprintf(stderr, "       sent from a method of %s\n", who);
+        }
+        if (getenv("ST_LOOKUP_LOG")) {
+            st_oop  cls = OM_fetch_class(receiver);
+            char    cname[64];
+
+            while (OM_is_present(cls)) {
+                st_oop  d = OM_fetch_pointer(ST_CLASS_METHOD_DICT, cls);
+
+                OM_class_name_of(cls, cname, sizeof cname);
+                {
+                    uint32_t cap = OM_method_dict_capacity(d);
+                    uint32_t s2;
+                    uint32_t used = 0;
+                    int      here = 0;
+
+                    for (s2 = 0; s2 < cap; ++s2) {
+                        st_oop k = OM_method_dict_key(d, s2);
+
+                        if (k != ST_NIL && OM_is_object(k))
+                            ++used;
+                        if (k == selector)
+                            here = 1;
+                    }
+                    fprintf(stderr, "    in %s: capacity %u, %u used,"
+                                    " selector %s\n",
+                            cname[0] ? cname : "?", cap, used,
+                            here ? "PRESENT" : "absent");
+                }
+                cls = OM_fetch_pointer(ST_CLASS_SUPERCLASS, cls);
+            }
+        }
         st_vm.running = 0;
         return;
     }

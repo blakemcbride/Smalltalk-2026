@@ -459,8 +459,13 @@ evaluate(const char *expression, char *errbuf, size_t errlen)
     ST_set_active_context(context);
     st_vm.running      = 1;
     st_vm.return_value = ST_NIL;
-    if (getenv("ST_EVAL_TRACE"))
-        ST_trace_set(ST_TRACE_BYTECODES, stderr);
+    {
+        const char *mode = getenv("ST_EVAL_TRACE");
+
+        if (mode)
+            ST_trace_set(mode[0] == 's' ? ST_TRACE_SENDS : ST_TRACE_BYTECODES,
+                         stderr);
+    }
     ST_interp_run(2000000);
     ST_trace_set(ST_TRACE_OFF, NULL);
     if (st_vm.running) {

@@ -2137,7 +2137,20 @@ build_strike_font(void)
     OM_store_pointer(0,  font, xtable);
     OM_store_pointer(1,  font, glyphs);
     OM_store_pointer(2,  font, BOOT_make_string("Smalltalk2026", NULL));
-    OM_store_pointer(3,  font, ST_NIL);         /*  stopConditions, set later */
+    {
+        /*
+         *  The scanner's stop-condition table, indexed by character code and
+         *  by two values past the end: EndOfRun is 257 and CrossedX is 258,
+         *  which is why it is not merely 256 long.  CharacterScanner>>
+         *  setStopConditions fills it; it only has to exist, and be big
+         *  enough that filling it does not run off the end.
+         */
+        st_oop  stops = OM_instantiate_pointers(array_class, 258);
+
+        if (!OM_is_present(stops))
+            return ST_OOP_INVALID;
+        OM_store_pointer(3, font, stops);
+    }
     OM_store_pointer(4,  font, OM_int_oop(0));  /*  type                      */
     OM_store_pointer(5,  font, OM_int_oop(0));  /*  minAscii                  */
     OM_store_pointer(6,  font, OM_int_oop(FONT_CODES - 1));
@@ -2167,6 +2180,7 @@ install_text_style(void)
     st_oop      style_class = BOOT_global("TextStyle");
     st_oop      array_class = BOOT_global("Array");
     st_oop      font_array;
+    unsigned    i;
     st_oop      make;
     st_oop      arg;
     st_oop      style;
@@ -2176,10 +2190,20 @@ install_text_style(void)
         return 1;
     define_global("DefaultFont", font);
 
-    font_array = OM_instantiate_pointers(array_class, 1);
+    /*
+     *  Four entries, all the same face.
+     *
+     *  TextStyle indexes fontArray by emphasis -- basal, bold, italic, bold
+     *  italic -- and asking for an index it does not have answers nil, which
+     *  is then sent #name.  One face repeated is honest about what the system
+     *  has: every emphasis looks the same until there are faces to tell
+     *  apart, which is better than composition failing.
+     */
+    font_array = OM_instantiate_pointers(array_class, 4);
     if (!OM_is_present(font_array))
         return 1;
-    OM_store_pointer(0, font_array, font);
+    for (i = 0; i < 4; ++i)
+        OM_store_pointer(i, font_array, font);
 
     make = lookup_in_chain(OM_fetch_class(style_class), "fontArray:");
     if (!OM_is_present(make))

@@ -224,9 +224,22 @@ test_super(void)
     CHECK_CODE("foo: n ^super + n", "binary super send of +",
                112, 16, 133, 32, 124);
 
-    /*  Once anything has been sent the receiver is a result, not super.  */
+    /*
+     *  Once anything has been sent the receiver is a result, not super.
+     *
+     *  This is the case that mattered: "super new compositionRectangle: ..."
+     *  is a unary send to super, and then a KEYWORD send to what it answered.
+     *  Reporting only binary sends up to the keyword level left the keyword
+     *  message marked super too, so the lookup began above the receiver's
+     *  class and walked straight past the method it wanted -- Paragraph new
+     *  could not find Paragraph's own initialiser.
+     */
     CHECK_CODE("foo: n ^super bar + n", "super, then an ordinary binary",
                112, 133, 0, 16, 176, 124);
+    CHECK_CODE("foo: n ^super bar baz: n", "super unary, then keyword",
+               112, 133, 0, 16, 225, 124);
+    CHECK_CODE("foo: n ^super bar + n baz: n", "super unary, binary, keyword",
+               112, 133, 0, 16, 176, 16, 225, 124);
     CHECK_CODE("foo: n ^super bar: n", "keyword super send",
                112, 16, 133, 32, 124);
 }

@@ -194,6 +194,11 @@ A black frame with white knocked out of it, and a correctly dithered gray —
 the counts are exact, because a fill covers precisely the rectangle asked for
 and gray covers half of it.
 
+**And it composes and draws text.** `'hello world' asParagraph` composes to
+one line 88 pixels wide and displays on the screen, which runs Paragraph, the
+CompositionScanner, the font and BitBlt together — the whole path a view
+uses.
+
 **And it draws text.** The 1983 sources are code and carry no font data —
 fonts lived in the image, which is the one thing here that has no licence —
 so the system ships an 8x8 face of its own in `src/gfx/font8x8.c`, built into
