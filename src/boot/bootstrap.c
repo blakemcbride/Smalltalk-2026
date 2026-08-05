@@ -12,6 +12,7 @@
 #include "census.h"
 #include "gfx.h"
 #include "font.h"
+#include "st_sched.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -2073,8 +2074,16 @@ install_user_interface(void)
      */
     static const struct { const char *class_name; const char *selector; }
     directly[] = {
-        { "Object", "initializeDependentsFields" },
-        { "Object", "initializeErrorRecursion" }
+        { "Object",      "initializeDependentsFields" },
+        { "Object",      "initializeErrorRecursion" },
+        /*
+         *  InputSensor class>>install makes the InputState that reads the
+         *  hardware and keeps it in a class variable.  Like the cursor and
+         *  the scheduler, it is made when an image is built; without it every
+         *  question about the mouse or the keyboard is asked of nil.
+         */
+        { "InputSensor", "install" },
+        { "InputSensor", "initMap" }
     };
     static const struct {
         const char *class_name;
@@ -2138,6 +2147,7 @@ install_user_interface(void)
         st_oop  cls = BOOT_global(wanted[i].class_name);
         st_oop  make;
 
+
         if (!OM_is_present(cls))
             continue;
         make = lookup_in_chain(OM_fetch_class(cls), wanted[i].constructor);
@@ -2150,6 +2160,147 @@ install_user_interface(void)
             define_global(wanted[i].global, st_vm.return_value);
         }
     }
+
+    /*
+     *  Prime the Sensor's idea of the current cursor.
+     *
+     *  InputSensor and Cursor each declare a class variable called
+     *  CurrentCursor -- they are different bindings, which is what the 1983
+     *  sources say and not a mistake -- and InputSensor's begins nil.  The
+     *  first thing currentCursor: does is ask the old cursor for its offset,
+     *  so showing any cursor at all fails until one is already shown.  In an
+     *  image built in 1983 that knot was tied when the image was made; here.
+     */
+    {
+        boot_class *sensor = find_class("InputSensor");
+        st_oop      cursor_class = BOOT_global("Cursor");
+
+        if (sensor && OM_is_present(cursor_class)) {
+            st_oop  normal = lookup_in_chain(OM_fetch_class(cursor_class),
+                                             "normal");
+
+            if (OM_is_present(normal)
+             && run_method_on(normal, cursor_class, 2000000)
+             && OM_is_present(st_vm.return_value)) {
+                st_oop  binding = class_variable_association(sensor,
+                                      "CurrentCursor", 0);
+
+                if (binding != ST_OOP_INVALID)
+                    OM_store_pointer(ST_ASSOCIATION_VALUE, binding,
+                                     st_vm.return_value);
+            }
+        }
+    }
+    return 1;
+}
+
+/*
+ *  Build the process scheduler and the process the image starts in.
+ *
+ *  ProcessorScheduler class>>new refuses on purpose -- "the integrity of the
+ *  system depends on a unique scheduler" -- because in 1983 the one scheduler
+ *  was made when the image was built and has been carried by every snapshot
+ *  since.  Building from sources, this is where it is made.
+ *
+ *  The scheduler needs a list per priority and one runnable process.  That
+ *  process's suspended context is a method compiled here from source, so what
+ *  the image does when it starts is a string rather than something baked into
+ *  C -- which is how a Smalltalk decides what to do on waking up.
+ */
+int
+BOOT_install_scheduler(const char *startup_source)
+{
+    st_oop      sched_class = BOOT_global("ProcessorScheduler");
+    st_oop      process_class = BOOT_global("Process");
+    st_oop      list_class = BOOT_global("LinkedList");
+    st_oop      array_class = BOOT_global("Array");
+    st_oop      scheduler;
+    st_oop      lists;
+    st_oop      process;
+    st_oop      context;
+    st_compile_context  ctx;
+    st_compile_result   res;
+    char        source[2048];
+    unsigned    i;
+
+    if (!OM_is_present(sched_class) || !OM_is_present(process_class)
+     || !OM_is_present(list_class) || !OM_is_present(array_class)) {
+        fprintf(stderr, "st80: no scheduler: ProcessorScheduler=%d Process=%d"
+                        " LinkedList=%d Array=%d\n",
+                (int) OM_is_present(sched_class),
+                (int) OM_is_present(process_class),
+                (int) OM_is_present(list_class),
+                (int) OM_is_present(array_class));
+        return 1;
+    }
+
+    /*  Eight priorities, 1 to 8, each with an empty list of waiters.  */
+    lists = OM_instantiate_pointers(array_class, 8);
+    if (!OM_is_present(lists))
+        return 0;
+    for (i = 0; i < 8; ++i) {
+        /*
+         *  Built here rather than with LinkedList new.  An empty list is two
+         *  nil fields, and going through the image for it means going through
+         *  Behavior>>new and whatever else is not ready yet -- which at this
+         *  point is Metaclass>>name, because a class cannot name itself until
+         *  Smalltalk can be searched for it.  There is nothing to gain by
+         *  asking.
+         */
+        st_oop  list = OM_instantiate_pointers(list_class, 2);
+
+        if (!OM_is_present(list))
+            return 0;
+        OM_store_pointer(i, lists, list);
+    }
+
+    scheduler = OM_instantiate_pointers(sched_class, 2);
+    if (!OM_is_present(scheduler))
+        return 0;
+    OM_increase_ref(scheduler);
+    OM_store_pointer(ST_SCHEDULER_PROCESS_LISTS, scheduler, lists);
+
+    /*  The startup method, compiled from source like any other.  */
+    memset(&ctx, 0, sizeof ctx);
+    ctx.intern_symbol      = BOOT_intern_symbol;
+    ctx.make_string        = BOOT_make_string;
+    ctx.make_float         = BOOT_make_float;
+    ctx.make_large_integer = BOOT_make_large_integer;
+    ctx.make_array         = BOOT_make_array;
+    ctx.make_character     = BOOT_make_character;
+    ctx.lookup_global      = BOOT_lookup_global;
+    snprintf(source, sizeof source, "startUp %s", startup_source);
+    if (COMPILE_method(source, &ctx, &res) != 0) {
+        boot_fail("cannot compile the startup: %s", res.error);
+        return 0;
+    }
+    OM_increase_ref(res.method);
+
+    context = OM_instantiate_pointers(ST_CLASS_METHOD_CONTEXT,
+                                      ST_LARGE_CONTEXT_SLOTS);
+    if (!OM_is_present(context))
+        return 0;
+    OM_store_pointer(ST_CTX_SENDER, context, ST_NIL);
+    OM_store_pointer(ST_CTX_METHOD, context, res.method);
+    OM_store_pointer(ST_CTX_RECEIVER, context, ST_NIL);
+    OM_store_pointer(ST_CTX_IP, context,
+                     OM_int_oop((st_int)
+                        (BOOT_method_initial_ip(res.method) + 1)));
+    OM_store_pointer(ST_CTX_SP, context,
+                     OM_int_oop((st_int) ST_header_temporary_count(
+                                    OM_fetch_pointer(0, res.method))));
+
+    process = OM_instantiate_pointers(process_class, 4);
+    if (!OM_is_present(process))
+        return 0;
+    OM_increase_ref(process);
+    OM_store_pointer(ST_PROCESS_SUSPENDED_CONTEXT, process, context);
+    OM_store_pointer(ST_PROCESS_PRIORITY, process, OM_int_oop(4));
+    OM_store_pointer(ST_PROCESS_MY_LIST, process, ST_NIL);
+
+    OM_store_pointer(ST_SCHEDULER_ACTIVE_PROCESS, scheduler, process);
+    OM_store_pointer(ST_ASSOCIATION_VALUE, ST_SCHEDULER_ASSOCIATION, scheduler);
+    define_global("Processor", scheduler);
     return 1;
 }
 

@@ -50,6 +50,7 @@ usage(const char *argv0)
     printf("\n");
     printf("  -version              print version and build configuration\n");
     printf("  -bootstrap <a.st...> [-manifest f] [-o image] [-eval expr]\n");
+    printf("                        [-startup expr]  what a saved image resumes\n");
     printf("                        build an image from source\n");
     printf("  -run <image> [n]      run the image, opening a window\n");
     printf("  -screenshot <f.pbm>   with -run or -bootstrap, write the display\n");
@@ -518,7 +519,7 @@ write_screenshot(void)
 
 static int
 do_bootstrap(const char *const *sources, unsigned count, const char *out_path,
-             const char *expression)
+             const char *expression, const char *startup)
 {
     st_bootstrap_result result;
     char                err[512];
@@ -581,6 +582,25 @@ do_bootstrap(const char *const *sources, unsigned count, const char *out_path,
         fprintf(stderr, "; %u of %u symbols in the library table\n",
                 init.symbols_seeded, init.symbols_total);
     }
+
+    /*
+     *  What the image does when it wakes up.  A saved image needs a process
+     *  to resume, and this is the only place that knows what that should be;
+     *  it is a string so that it can be changed without changing C.
+     */
+    if (!BOOT_install_scheduler(startup ? startup :
+                                /*
+                                 *  beDisplay first: a reloaded image has a
+                                 *  DisplayScreen but the VM has not been told
+                                 *  which Form is the screen, and that is what
+                                 *  primitive 102 is for.
+                                 */
+                                "Display beDisplay."
+                                " ScheduledControllers restore."
+                                " [true] whileTrue:"
+                                " [ScheduledControllers"
+                                " searchForActiveController]"))
+        fprintf(stderr, "st80: no startup process installed\n");
 
     if (expression) {
         st_oop  value = evaluate(expression, err, sizeof err);
@@ -835,6 +855,7 @@ main(int argc, char **argv)
             path_list   sources;
             const char *out_path = NULL;
             const char *expression = NULL;
+            const char *startup = NULL;
             int         j;
             int         status;
 
@@ -844,6 +865,8 @@ main(int argc, char **argv)
                     out_path = argv[++j];
                 }  else if (!strcmp(argv[j], "-eval") && j + 1 < argc) {
                     expression = argv[++j];
+                }  else if (!strcmp(argv[j], "-startup") && j + 1 < argc) {
+                    startup = argv[++j];
                 }  else if (!strcmp(argv[j], "-screenshot") && j + 1 < argc) {
                     shot_path = argv[++j];
                 }  else if (!strcmp(argv[j], "-manifest") && j + 1 < argc) {
@@ -863,7 +886,8 @@ main(int argc, char **argv)
                 return 1;
             }
             status = do_bootstrap((const char *const *) sources.items,
-                                  sources.count, out_path, expression);
+                                  sources.count, out_path, expression,
+                                  startup);
             path_list_free(&sources);
             return status;
         }

@@ -135,6 +135,12 @@ void BOOT_provide_roots(om_visit_fn visit);
  *  built from sources has to be given a first.
  */
 int BOOT_install_display(unsigned width, unsigned height);
+
+/*
+ *  Create the process scheduler and the process the image starts in, whose
+ *  method is compiled from `startup_source`.  Answers 0 on failure.
+ */
+int BOOT_install_scheduler(const char *startup_source);
 st_oop  BOOT_lookup_global(const char *name, void *user);
 
 /*  Byte offset of a method's first bytecode, past the header and literals. */

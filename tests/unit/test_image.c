@@ -668,6 +668,32 @@ test_scheduler(void)
 }
 
 /*
+ *  The scheduler, and the process a saved image resumes into.
+ *
+ *  ProcessorScheduler class>>new refuses on purpose -- "the integrity of the
+ *  system depends on a unique scheduler" -- because in 1983 the one scheduler
+ *  was made when the image was built and carried by every snapshot after.
+ *  An image built from sources has to be given one, along with a process to
+ *  wake up in, or there is nothing for -run to resume.
+ */
+static void
+test_process_scheduler(void)
+{
+    CHECK(BOOT_install_scheduler("^Display width"));
+
+    ++st_test_checks;
+    if (!OM_is_present(BOOT_global("Processor"))) {
+        ++st_test_failures;
+        printf("  FAIL Processor was not installed\n");
+    }
+    check_oop("Processor activeProcess isNil", ST_FALSE, "false");
+    check_integer("Processor activePriority", 4);
+
+    /*  Eight priorities, each with a list of its own.  */
+    check_integer("(Processor instVarAt: 1) size", 8);
+}
+
+/*
  *  Printing, which is the deepest path in the library: printOn: runs Stream,
  *  WriteStream, String, Symbol, Character and -- for a Float -- LargeInteger
  *  division, all at once.  Everything that used to be listed here as not
@@ -757,6 +783,7 @@ main(void)
     test_paragraph();
     test_view();
     test_scheduler();
+    test_process_scheduler();
     test_printing_deep();
     test_mixed_arithmetic();
 

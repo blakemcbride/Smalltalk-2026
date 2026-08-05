@@ -28,7 +28,7 @@ Phases 0-7 complete; Phase 8 has its foundation. See `doc/PLAN.md` for the roadm
 | 5 — Compiler and image bootstrap | done |
 | 6 — macOS and Windows | done, unconfirmed on those hosts |
 | 7 — Native threads | done |
-| 8 — MVC under parallelism | views and the window scheduler work; input and the interaction loop next |
+| 8 — MVC under parallelism | the image boots to its own desktop; input and the tools next |
 
 ## Building
 
@@ -193,6 +193,21 @@ st80: wrote screen.pbm, 14400 of 307200 pixels are ink
 A black frame with white knocked out of it, and a correctly dithered gray —
 the counts are exact, because a fill covers precisely the rectangle asked for
 and gray covers half of it.
+
+**And the image boots.** Saved and resumed with `-run`, it wakes into a
+process of its own and runs the MVC control loop:
+
+```sh
+$ ./st80 -bootstrap -manifest sources/MANIFEST -o mvc.image -startup '...'
+$ ./st80 -screenshot screen.pbm -run mvc.image 3000000
+st80: wrote screen.pbm, 121199 of 307200 pixels are ink
+```
+
+What it draws is its own desktop — the gray background and the scheduled
+windows over it. `ProcessorScheduler class>>new` refuses on purpose, because
+in 1983 the one scheduler was made when the image was built and carried by
+every snapshot after; an image built from sources has to be given one, and a
+process to wake up in, whose method is compiled from `-startup`.
 
 **And it schedules windows.** `ScheduledControllers` is a real
 `ControlManager` holding a screen controller; scheduling two views and asking
