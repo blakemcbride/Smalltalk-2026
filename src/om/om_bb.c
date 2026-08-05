@@ -585,6 +585,25 @@ OM_instantiate_bytes(st_oop class_pointer, uint32_t size)
     return instantiate(class_pointer, words, 0, size & 1, 0);
 }
 
+st_oop
+OM_next_instance_after(st_oop after, st_oop class_oop)
+{
+    /*
+     *  Object pointers are word offsets into the object table, two words to
+     *  an entry, so the step is two and the first candidate is two past the
+     *  one given.
+     */
+    st_oop  p = (after == ST_OOP_INVALID) ? 2 : after + 2;
+
+    for (; p < st_om_ot_limit; p += 2) {
+        if (!OM_is_object(p))
+            continue;
+        if (OM_fetch_class(p) == class_oop)
+            return p;
+    }
+    return ST_OOP_INVALID;
+}
+
 void
 OM_swap_identities(st_oop a, st_oop b)
 {

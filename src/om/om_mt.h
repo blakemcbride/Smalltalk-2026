@@ -372,6 +372,15 @@ typedef void (*om_root_provider)(om_visit_fn visit);
 void        OM_set_root_provider(om_root_provider provider);
 uint32_t    OM_collect(void);
 
+/*
+ *  The next live instance of a class after `after`, or ST_OOP_INVALID.
+ *
+ *  Pass ST_OOP_INVALID to start.  The order is the object table's, which is
+ *  arbitrary but stable, and that is all someInstance/nextInstance promise.
+ */
+st_oop  OM_next_instance_after(st_oop after, st_oop class_oop);
+
+
 extern uint32_t st_om_collections;
 extern uint32_t st_om_reclaimed;
 

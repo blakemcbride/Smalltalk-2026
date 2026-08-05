@@ -28,7 +28,7 @@ Phases 0-7 complete; Phase 8 has its foundation. See `doc/PLAN.md` for the roadm
 | 5 — Compiler and image bootstrap | done |
 | 6 — macOS and Windows | done, unconfirmed on those hosts |
 | 7 — Native threads | done |
-| 8 — MVC under parallelism | the 1983 library loads and runs; MVC not started |
+| 8 — MVC under parallelism | library loads, runs, draws and renders text; views next |
 
 ## Building
 
@@ -193,6 +193,14 @@ st80: wrote screen.pbm, 14400 of 307200 pixels are ink
 A black frame with white knocked out of it, and a correctly dithered gray —
 the counts are exact, because a fill covers precisely the rectangle asked for
 and gray covers half of it.
+
+**And it draws text.** The 1983 sources are code and carry no font data —
+fonts lived in the image, which is the one thing here that has no licence —
+so the system ships an 8x8 face of its own in `src/gfx/font8x8.c`, built into
+a `StrikeFont` and a `TextStyle` the library made itself. Pool dictionaries
+work, so `TextConstants` holds the bindings every text class compiled
+against, and `Smalltalk` is a real `SystemDictionary` rather than a
+placeholder.
 
 `tests/unit/test_library.c` gates on the library compiling and
 `tests/unit/test_image.c` on it running.

@@ -630,6 +630,72 @@ primitive_value(uint32_t argc)
     return ST_activate_block(block, argc);
 }
 
+/*
+ *  75: the identity hash.
+ *
+ *  The Blue Book defines it as half the object pointer read as a signed
+ *  16-bit quantity, which is a 16-bit memory talking about itself.  What the
+ *  callers need is only that it is a SmallInteger, that it never changes for
+ *  an object, and that it spreads -- every Set and Dictionary in the library
+ *  hashes with it, so without this nothing can be stored in one at all.
+ *
+ *  The 64-bit memory keeps a hash in the object header for exactly this, and
+ *  it survives compaction, which an address-derived hash would not.  The
+ *  16-bit memory has no header field to spare, so it answers the pointer
+ *  itself, which is what the 1983 machine did.
+ */
+static int
+primitive_object_hash(void)
+{
+    st_oop      object = ST_stack_value(0);
+    uint32_t    hash;
+
+    if (!OM_is_object(object))
+        return 0;               /*  a SmallInteger is its own hash  */
+#ifdef ST_OM_MT
+    hash = OM_head(object)->hash & 0x3FFF;
+#else
+    hash = (uint32_t) (object >> 1) & 0x3FFF;
+#endif
+    return answer_positive_16bit(hash, 1);
+}
+
+/*
+ *  77 and 78: walking every instance of a class.
+ *
+ *  Symbol class>>rehash uses them, and so does anything that asks the system
+ *  what exists.  The walk is over the object table, which is the only place
+ *  that knows.
+ */
+static int
+primitive_some_instance(void)
+{
+    st_oop  class_oop = ST_stack_value(0);
+    st_oop  found = OM_next_instance_after(ST_OOP_INVALID, class_oop);
+
+    if (!OM_is_present(found))
+        return 0;               /*  none: the primitive fails  */
+    ST_pop_n(1);
+    ST_push(found);
+    return 1;
+}
+
+static int
+primitive_next_instance(void)
+{
+    st_oop  object = ST_stack_value(0);
+    st_oop  found;
+
+    if (!OM_is_object(object))
+        return 0;
+    found = OM_next_instance_after(object, OM_fetch_class(object));
+    if (!OM_is_present(found))
+        return 0;
+    ST_pop_n(1);
+    ST_push(found);
+    return 1;
+}
+
 /*  ----------  Primitive 96: copyBits  ----------
  *
  *  The one primitive the Blue Book says the whole graphics system needs.
@@ -1111,6 +1177,9 @@ ST_primitive_dispatch(unsigned index)
     case 72:  return primitive_become();
     case 73:  return primitive_inst_var_at();
     case 74:  return primitive_inst_var_at_put();
+    case 75:  return primitive_object_hash();
+    case 77:  return primitive_some_instance();
+    case 78:  return primitive_next_instance();
     case 80:  return primitive_block_copy();
     case 81:  return primitive_value(st_vm.argument_count);
     case 40: case 41: case 42: case 43: case 44: case 45: case 46:

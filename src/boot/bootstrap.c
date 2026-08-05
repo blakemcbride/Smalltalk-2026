@@ -11,6 +11,7 @@
 #include "interp.h"
 #include "census.h"
 #include "gfx.h"
+#include "font.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -47,6 +48,10 @@ typedef struct {
     /*  nil -> the metaclass, for super sends in class methods.  */
     st_oop      metaclass_association;
     int         reserved_pointer;
+
+    /*  Pool dictionaries this class shares, by name.  */
+    char        pools[4][64];
+    unsigned    pool_count;
 
     char        cvars[MAX_IVARS][64];
     st_oop      cvar_assoc[MAX_IVARS];
@@ -312,9 +317,17 @@ global_association(const char *name)
     uint32_t    i;
     char        text[64];
 
-    if (!OM_is_present(ST_SMALLTALK))
-        return ST_OOP_INVALID;
-    associations = OM_fetch_pointer(0, ST_SMALLTALK);
+    /*
+     *  Read the bootstrap's own array, not field 0 of Smalltalk.
+     *
+     *  Smalltalk starts as a placeholder whose first field is this array, and
+     *  it is tempting to go through it -- but once install_system_dictionary
+     *  turns Smalltalk into a real SystemDictionary, field 0 is the tally and
+     *  every global lookup silently answers nothing.  The two views share the
+     *  same Association objects, so either sees the other's changes; only the
+     *  route to them differs.
+     */
+    associations = globals_values;
     if (!OM_is_present(associations))
         return ST_OOP_INVALID;
     n = OM_fetch_word_length(associations);
@@ -390,6 +403,27 @@ define_global(const char *name, st_oop value)
 static char         undeclared_names[256][64];
 static unsigned     undeclared_count;
 static unsigned     undeclared_lowercase;
+
+/*
+ *  Bindings that belong in a pool dictionary.
+ *
+ *  A pool's names are referenced by methods compiled long before anything
+ *  puts values in the pool -- TextConstants is filled by Text class>>
+ *  initialize, which cannot run until every class exists.  So the binding is
+ *  created when the name is first seen and the SAME Association is put into
+ *  the pool afterwards.  Dictionary>>at:put: updates an existing element's
+ *  value in place rather than replacing it, so when the initializer finally
+ *  runs, the methods are already pointing at the binding it sets.
+ *
+ *  Creating a second Association instead -- which is what happens if the
+ *  pool is simply left empty -- leaves every compiled reference reading nil
+ *  for ever, and nothing says so.
+ */
+static struct {
+    st_oop  association;
+    char    pool[64];
+} pool_bindings[512];
+static unsigned     pool_binding_count;
 
 unsigned
 BOOT_undeclared(const char **names, unsigned max)
@@ -485,7 +519,25 @@ BOOT_lookup_global(const char *name, void *user)
         if (!(name[0] >= 'A' && name[0] <= 'Z'))
             ++undeclared_lowercase;
     }
-    return define_global(name, ST_NIL);
+    {
+        st_oop      assoc = define_global(name, ST_NIL);
+        boot_class *c = (boot_class *) user;
+
+        /*
+         *  A capitalised name first seen while compiling a class that shares
+         *  a pool is almost certainly one of that pool's.  Remember it so the
+         *  binding can be put where the pool's own initializer will find it.
+         */
+        if (c && c->pool_count > 0 && assoc != ST_OOP_INVALID
+         && pool_binding_count < 512
+         && (name[0] >= 'A' && name[0] <= 'Z')) {
+            pool_bindings[pool_binding_count].association = assoc;
+            snprintf(pool_bindings[pool_binding_count].pool, 64, "%.63s",
+                     c->pools[0]);
+            ++pool_binding_count;
+        }
+        return assoc;
+    }
 }
 
 /*  ----------  Class construction  ----------  */
@@ -798,6 +850,8 @@ parse_class_definition(const char *text)
         split_words(ivars, c->ivars, &c->ivar_count, MAX_IVARS);
     if (quoted_after(text, "classVariableNames:", ivars, sizeof ivars))
         split_words(ivars, c->cvars, &c->cvar_count, MAX_IVARS);
+    if (quoted_after(text, "poolDictionaries:", ivars, sizeof ivars))
+        split_words(ivars, c->pools, &c->pool_count, 4);
 
     ++class_count;
     if (result)
@@ -1685,6 +1739,31 @@ method_in_dictionary(st_oop dict, const char *selector)
 }
 
 /*
+ *  The same, but walking the superclass chain -- an ordinary method lookup.
+ *
+ *  method_in_dictionary deliberately does not inherit, because an
+ *  initializer must belong to the class that defines it.  Calling a method
+ *  is the opposite case: Dictionary class does not define new:, it inherits
+ *  it, and refusing to look up the chain simply fails to find it.
+ */
+static st_oop
+lookup_in_chain(st_oop class_oop, const char *selector)
+{
+    unsigned    depth = 0;
+
+    while (OM_is_present(class_oop) && depth++ < 64) {
+        st_oop  found = method_in_dictionary(
+                            OM_fetch_pointer(CLASS_METHOD_DICT, class_oop),
+                            selector);
+
+        if (OM_is_present(found))
+            return found;
+        class_oop = OM_fetch_pointer(CLASS_SUPERCLASS, class_oop);
+    }
+    return ST_OOP_INVALID;
+}
+
+/*
  *  Activate one method on one receiver and run it to completion.
  *
  *  A context whose sender is nil, exactly as the drivers build for a doIt,
@@ -1890,6 +1969,287 @@ seed_symbol_table(st_boot_init_report *out)
     return 1;
 }
 
+/*
+ *  Make Smalltalk a real SystemDictionary holding the globals.
+ *
+ *  Until now Smalltalk has been a placeholder: the globals live in a C array
+ *  and an Array of Associations, which the compiler can search but the image
+ *  cannot.  A great deal of the library asks -- "Smalltalk at: #Foo put:",
+ *  "Smalltalk includes:", "Smalltalk associationAt:" -- and Text class>>
+ *  initialize is the first to be caught by it: finding no TextConstants in
+ *  Smalltalk, it makes a fresh Dictionary and throws away the bindings every
+ *  method compiled against.
+ *
+ *  The dictionary is built by the image, filled with the SAME Association
+ *  objects the compiler handed out, and then swapped into the reserved
+ *  pointer with become:.  Swapping is what become: is for, and it is why the
+ *  object table earns its indirection: the interpreter names Smalltalk by a
+ *  fixed pointer, and that pointer now names a real dictionary without
+ *  anything else in the image having to be told.
+ */
+static int
+install_system_dictionary(void)
+{
+    st_oop      cls = BOOT_global("SystemDictionary");
+    st_oop      new_with;
+    st_oop      add_to;
+    st_oop      dict;
+    st_oop      arg;
+    unsigned    i;
+
+    if (!OM_is_present(cls))
+        cls = BOOT_global("Dictionary");
+    if (!OM_is_present(cls))
+        return 1;               /*  a kernel without either: nothing to do  */
+
+    new_with = lookup_in_chain(OM_fetch_class(cls), "new:");
+    add_to   = lookup_in_chain(cls, "add:");
+    if (!OM_is_present(new_with) || !OM_is_present(add_to))
+        return 1;
+
+    /*  Room to spare: a hashed collection that fills up stops working.  */
+    arg = OM_int_oop((st_int) (global_count * 4 + 64));
+    if (!run_method_with(new_with, cls, &arg, 1, 2000000))
+        return 1;
+    dict = st_vm.return_value;
+    if (!OM_is_present(dict))
+        return 1;
+    OM_increase_ref(dict);
+
+    for (i = 0; i < global_count; ++i) {
+        arg = OM_fetch_pointer(i, globals_values);
+        if (OM_is_present(arg))
+            run_method_with(add_to, dict, &arg, 1, 2000000);
+    }
+
+    /*
+     *  The reserved pointer must end up naming the real dictionary, so the
+     *  two identities are exchanged rather than the contents copied.
+     */
+    if (getenv("ST_BOOT_LOG"))
+        fprintf(stderr, "  Smalltalk: %u globals into a %u-slot dictionary\n",
+                global_count, (unsigned) OM_fetch_word_length(dict));
+    OM_swap_identities(ST_SMALLTALK, dict);
+    smalltalk = ST_SMALLTALK;
+    define_global("Smalltalk", ST_SMALLTALK);
+    if (getenv("ST_BOOT_LOG")) {
+        char name[64];
+
+        OM_class_name_of(OM_fetch_class(ST_SMALLTALK), name, sizeof name);
+        fprintf(stderr, "  Smalltalk: now a %s of %u slots; global = %llu,"
+                        " ST_SMALLTALK = %llu, nil = %llu\n",
+                name, (unsigned) OM_fetch_word_length(ST_SMALLTALK),
+                (unsigned long long) BOOT_global("Smalltalk"),
+                (unsigned long long) ST_SMALLTALK,
+                (unsigned long long) ST_NIL);
+    }
+    return 1;
+}
+
+/*
+ *  Build the system font and text style.
+ *
+ *  A StrikeFont is one Form holding every glyph side by side, plus an xTable
+ *  giving where each starts: the width of a character is the distance to the
+ *  next one, which is why the table has an entry past the last glyph.  Every
+ *  glyph here is the same width, so the table is arithmetic -- but the shape
+ *  is the 1983 one, so the scanning primitive and CharacterScanner's own
+ *  Smalltalk both read it without knowing that.
+ *
+ *  Slots are reserved for all 128 codes rather than only the printable ones,
+ *  so an ascii out of range indexes a blank rather than off the end.
+ */
+#define FONT_CODES      128
+#define FONT_STRIKE_W   (FONT_CODES * ST_FONT_WIDTH)
+
+static st_oop
+build_strike_font(void)
+{
+    st_oop      font_class = BOOT_global("StrikeFont");
+    st_oop      form_class = BOOT_global("Form");
+    st_oop      word_array = BOOT_global("WordArray");
+    st_oop      array_class = BOOT_global("Array");
+    st_oop      glyphs;
+    st_oop      bits;
+    st_oop      xtable;
+    st_oop      font;
+    st_oop      origin;
+    uint32_t    raster = FONT_STRIKE_W / 16;
+    unsigned    code;
+    unsigned    row;
+    unsigned    i;
+
+    if (!OM_is_present(font_class) || !OM_is_present(form_class)
+     || !OM_is_present(word_array) || !OM_is_present(array_class))
+        return ST_OOP_INVALID;
+
+    bits = OM_instantiate_words(word_array, raster * ST_FONT_HEIGHT);
+    if (!OM_is_present(bits))
+        return ST_OOP_INVALID;
+
+    /*  Paint each glyph into its slot, eight pixels wide.  */
+    for (code = ST_FONT_FIRST; code <= ST_FONT_LAST; ++code) {
+        unsigned    x = code * ST_FONT_WIDTH;
+
+        for (row = 0; row < ST_FONT_HEIGHT; ++row) {
+            uint8_t     glyph = ST_FONT_GLYPHS[code - ST_FONT_FIRST][row];
+            uint32_t    index = row * raster + x / 16;
+            uint16_t    word  = OM_fetch_word(index, bits);
+            unsigned    shift = (x % 16 == 0) ? 8 : 0;
+
+            word = (uint16_t) (word | ((uint16_t) glyph << shift));
+            OM_store_word(index, bits, word);
+        }
+    }
+
+    origin = OM_instantiate_pointers(ST_CLASS_POINT, 2);
+    if (!OM_is_present(origin))
+        return ST_OOP_INVALID;
+    OM_store_pointer(0, origin, OM_int_oop(0));
+    OM_store_pointer(1, origin, OM_int_oop(0));
+
+    glyphs = OM_instantiate_pointers(form_class, 4);
+    if (!OM_is_present(glyphs))
+        return ST_OOP_INVALID;
+    OM_store_pointer(ST_FORM_BITS,   glyphs, bits);
+    OM_store_pointer(ST_FORM_WIDTH,  glyphs, OM_int_oop(FONT_STRIKE_W));
+    OM_store_pointer(ST_FORM_HEIGHT, glyphs, OM_int_oop(ST_FONT_HEIGHT));
+    OM_store_pointer(ST_FORM_OFFSET, glyphs, origin);
+
+    /*  One entry per code, plus one past the end for the last width.  */
+    xtable = OM_instantiate_pointers(array_class, FONT_CODES + 2);
+    if (!OM_is_present(xtable))
+        return ST_OOP_INVALID;
+    for (i = 0; i < FONT_CODES + 2; ++i) {
+        unsigned    x = i * ST_FONT_WIDTH;
+
+        OM_store_pointer(i, xtable,
+                         OM_int_oop((st_int) (x > FONT_STRIKE_W
+                                              ? FONT_STRIKE_W : x)));
+    }
+
+    font = OM_instantiate_pointers(font_class, 16);
+    if (!OM_is_present(font))
+        return ST_OOP_INVALID;
+    /*  xTable glyphs name stopConditions type minAscii maxAscii maxWidth
+     *  strikeLength ascent descent xOffset raster subscript superscript
+     *  emphasis  */
+    OM_store_pointer(0,  font, xtable);
+    OM_store_pointer(1,  font, glyphs);
+    OM_store_pointer(2,  font, BOOT_make_string("Smalltalk2026", NULL));
+    OM_store_pointer(3,  font, ST_NIL);         /*  stopConditions, set later */
+    OM_store_pointer(4,  font, OM_int_oop(0));  /*  type                      */
+    OM_store_pointer(5,  font, OM_int_oop(0));  /*  minAscii                  */
+    OM_store_pointer(6,  font, OM_int_oop(FONT_CODES - 1));
+    OM_store_pointer(7,  font, OM_int_oop(ST_FONT_WIDTH));
+    OM_store_pointer(8,  font, OM_int_oop(FONT_STRIKE_W));
+    OM_store_pointer(9,  font, OM_int_oop(ST_FONT_HEIGHT - 1));  /*  ascent   */
+    OM_store_pointer(10, font, OM_int_oop(1));                   /*  descent  */
+    OM_store_pointer(11, font, OM_int_oop(0));                   /*  xOffset  */
+    OM_store_pointer(12, font, OM_int_oop((st_int) raster));
+    OM_store_pointer(13, font, OM_int_oop(0));
+    OM_store_pointer(14, font, OM_int_oop(0));
+    OM_store_pointer(15, font, OM_int_oop(0));
+    OM_increase_ref(font);
+    return font;
+}
+
+/*
+ *  Give the image a font and a default text style.
+ *
+ *  TextStyle class>>fontArray: is the library's own constructor, so the
+ *  style is built the way the library expects rather than field by field.
+ */
+static int
+install_text_style(void)
+{
+    st_oop      font = build_strike_font();
+    st_oop      style_class = BOOT_global("TextStyle");
+    st_oop      array_class = BOOT_global("Array");
+    st_oop      font_array;
+    st_oop      make;
+    st_oop      arg;
+    st_oop      style;
+
+    if (!OM_is_present(font) || !OM_is_present(style_class)
+     || !OM_is_present(array_class))
+        return 1;
+    define_global("DefaultFont", font);
+
+    font_array = OM_instantiate_pointers(array_class, 1);
+    if (!OM_is_present(font_array))
+        return 1;
+    OM_store_pointer(0, font_array, font);
+
+    make = lookup_in_chain(OM_fetch_class(style_class), "fontArray:");
+    if (!OM_is_present(make))
+        return 1;
+    arg = font_array;
+    if (!run_method_with(make, style_class, &arg, 1, 4000000))
+        return 1;
+    style = st_vm.return_value;
+    if (!OM_is_present(style))
+        return 1;
+    OM_increase_ref(style);
+    define_global("DefaultTextStyle", style);
+    return 1;
+}
+
+/*
+ *  Build the pool dictionaries and fill them with the bindings the compiler
+ *  already handed out.
+ *
+ *  The dictionary is made by the image, with Dictionary new:, and each
+ *  binding is put in with Dictionary>>add:, which stores the Association it
+ *  is given rather than making one of its own.  Doing it through the image
+ *  rather than by hand in C means the hashing is the library's, so the
+ *  pool's own at: finds what we put there.
+ */
+static int
+install_pools(void)
+{
+    st_oop      dict_class = BOOT_global("Dictionary");
+    st_oop      new_with;
+    st_oop      add_to;
+    unsigned    i;
+    unsigned    k = 0;
+
+    if (!OM_is_present(dict_class))
+        return 1;               /*  a kernel without Dictionary: nothing to do */
+    new_with = lookup_in_chain(OM_fetch_class(dict_class), "new:");
+    add_to   = lookup_in_chain(dict_class, "add:");
+    if (getenv("ST_BOOT_LOG"))
+        fprintf(stderr, "  pools: %u bindings, new:=%d add:=%d\n",
+                pool_binding_count, (int) OM_is_present(new_with),
+                (int) OM_is_present(add_to));
+    if (!OM_is_present(new_with) || !OM_is_present(add_to))
+        return 1;
+
+    for (i = 0; i < pool_binding_count; ++i) {
+        const char *name = pool_bindings[i].pool;
+        st_oop      pool = BOOT_global(name);
+        st_oop      arg;
+
+        /*  The pool itself is a global; make it the first time it is named. */
+        if (!OM_is_present(pool)) {
+            arg = OM_int_oop(64);
+            if (!run_method_with(new_with, dict_class, &arg, 1, 2000000))
+                continue;
+            pool = st_vm.return_value;
+            if (!OM_is_present(pool))
+                continue;
+            define_global(name, pool);
+        }
+        arg = pool_bindings[i].association;
+        if (run_method_with(add_to, pool, &arg, 1, 2000000))
+            ++k;
+    }
+    if (getenv("ST_BOOT_LOG"))
+        fprintf(stderr, "  pools: %u of %u bindings added\n", k,
+                pool_binding_count);
+    return 1;
+}
+
 int
 BOOT_run_initializers(st_boot_init_report *out)
 {
@@ -1897,6 +2257,10 @@ BOOT_run_initializers(st_boot_init_report *out)
 
     memset(out, 0, sizeof *out);
     if (!seed_symbol_table(out))
+        return -1;
+    if (!install_system_dictionary())
+        return -1;
+    if (!install_pools())
         return -1;
     for (i = 0; i < class_count; ++i) {
         boot_class *c = &classes[i];
@@ -1926,6 +2290,12 @@ BOOT_run_initializers(st_boot_init_report *out)
          */
         OM_collect();
     }
+    /*
+     *  Last: TextStyle class>>fontArray: reads DefaultTab and the rest out of
+     *  TextConstants, and nothing fills those until Text class>>initialize
+     *  has run.
+     */
+    install_text_style();
     return 0;
 }
 

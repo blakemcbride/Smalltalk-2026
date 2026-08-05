@@ -545,10 +545,14 @@ do_bootstrap(const char *const *sources, unsigned count, const char *out_path,
                 fprintf(stderr, ", %u lower-case (probable source bugs)",
                         lower);
             fprintf(stderr, ":");
-            for (i = 0; i < n && i < 12; ++i)
-                fprintf(stderr, " %s", names[i]);
-            if (n > 12)
-                fprintf(stderr, " ... and %u more", n - 12);
+            {
+                unsigned limit = getenv("ST_BOOT_LOG") ? n : 12;
+
+                for (i = 0; i < n && i < limit; ++i)
+                    fprintf(stderr, " %s", names[i]);
+                if (n > limit)
+                    fprintf(stderr, " ... and %u more", n - limit);
+            }
             fprintf(stderr, "\n");
         }
     }

@@ -527,6 +527,53 @@ test_display(void)
 }
 
 /*
+ *  Text, which needed a font: the 1983 sources are code and carry none, so
+ *  the image is given one written for this project.  Rendering a line runs
+ *  the strike -- one Form holding every glyph, with an xTable saying where
+ *  each begins -- through BitBlt, once per character, at whatever x the
+ *  previous character left off.  Most of those are not word aligned, which
+ *  is the case that needs each bitmap access bounds checked rather than the
+ *  whole blit refused: an eight-pixel span starting four bits before a word
+ *  boundary needs two destination words and so reads two source words from a
+ *  form only one word wide.
+ */
+static void
+test_text(void)
+{
+    check_integer("DefaultFont ascent", 7);
+    check_integer("DefaultFont glyphs width", 128 * 8);
+    check_integer("DefaultFont glyphs height", 8);
+    check_integer("DefaultFont widthOf: $A", 8);
+    check_integer("DefaultFont widthOf: $i", 8);
+    check_integer("(DefaultFont characterForm: $A) width", 8);
+
+    /*  The glyph really is the letter A: these are its eight rows.  */
+    check_integer("(DefaultFont characterForm: $A) bits"
+                  " inject: 0 into: [:a :b | a + b]",
+                  0x1800 + 0x3C00 + 0x6600 + 0xC300 + 0xFF00 + 0xC300
+                  + 0xC300);
+
+    /*  An 8x8 black square lands whole wherever it is put, aligned or not. */
+    check_ink("| f | Display white. f := Form extent: 8@8."
+              " f fill: f boundingBox rule: 3 mask: Form black."
+              " f displayOn: Display at: 20@10"
+              " clippingBox: Display boundingBox rule: 3 mask: Form black."
+              " ^1", 64);
+    check_ink("| f | Display white. f := Form extent: 8@8."
+              " f fill: f boundingBox rule: 3 mask: Form black."
+              " f displayOn: Display at: 29@10"
+              " clippingBox: Display boundingBox rule: 3 mask: Form black."
+              " ^1", 64);
+
+    /*  And a line of text draws every character of it.  */
+    check_ink("Display white."
+              " DefaultFont characters: (1 to: 12) in: 'Smalltalk-80'"
+              " displayAt: 20@20 clippedBy: Display boundingBox rule: 3"
+              " mask: Form black. ^1", 291);
+    check_ink("Display white. ^1", 0);
+}
+
+/*
  *  Printing, which is the deepest path in the library: printOn: runs Stream,
  *  WriteStream, String, Symbol, Character and -- for a Float -- LargeInteger
  *  division, all at once.  Everything that used to be listed here as not
@@ -605,6 +652,7 @@ main(void)
     test_graphics_objects();
     test_bitblt();
     test_display();
+    test_text();
     test_printing_deep();
     test_mixed_arithmetic();
 

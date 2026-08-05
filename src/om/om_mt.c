@@ -265,6 +265,27 @@ OM_deallocate(st_oop p)
     ST_mutex_unlock(&table_lock);
 }
 
+
+st_oop
+OM_next_instance_after(st_oop after, st_oop class_oop)
+{
+    uint32_t    index = (after == ST_OOP_INVALID) ? 1
+                        : (uint32_t) (after >> 1) + 1;
+    uint32_t    limit = (uint32_t) ST_load_acquire(&st_om_table_limit);
+
+    for (; index < limit; ++index) {
+        om_header  *head = OM_table_get(index);
+        st_oop      p;
+
+        if (!head || (head->flags & ST_FMT_FREE) != 0)
+            continue;
+        p = (st_oop) index << 1;
+        if (OM_fetch_class(p) == class_oop)
+            return p;
+    }
+    return ST_OOP_INVALID;
+}
+
 void
 OM_swap_identities(st_oop a, st_oop b)
 {

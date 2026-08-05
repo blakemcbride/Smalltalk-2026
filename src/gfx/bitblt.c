@@ -105,13 +105,37 @@ GFX_form_from_oop(st_oop form, gfx_form *out)
 }
 
 /*
- *  Whether every word the copy loop will touch lies inside the bitmap.
+ *  Reading and writing a bitmap word, bounds checked.
  *
- *  The loop walks `rows` rows; each visits `n_words` words stepping by h_dir
- *  from `start`, and then start advances by `delta`.  Rather than reproduce
- *  that arithmetic and risk disagreeing with it, this walks the same shape
- *  and checks the two extremes of every row.
+ *  Chapter 18's copyLoop indexes without checking, which is safe in the
+ *  simulation because Smalltalk arrays are checked underneath it.  Here the
+ *  words are raw memory, and the loop genuinely does run off the end: a span
+ *  of eight pixels starting four bits before a word boundary needs two
+ *  destination words, so it reads two source words even when the source is
+ *  only one word wide.  In the Blue Book those reads land in the next row of
+ *  the same bitmap and are masked away; on the last row there is no next row.
+ *
+ *  Refusing the whole blit is wrong -- it is a legitimate and extremely
+ *  common shape, which is every character drawn at an odd position -- so
+ *  each access is guarded instead.  A read outside is zero, a write outside
+ *  is dropped, and everything inside is exactly what Chapter 18 says.
  */
+static uint16_t
+word_at(const uint16_t *bits, int index, uint32_t words)
+{
+    if (index < 0 || (uint32_t) index >= words)
+        return 0;
+    return bits[index];
+}
+
+static void
+word_put(uint16_t *bits, int index, uint32_t words, uint16_t value)
+{
+    if (index < 0 || (uint32_t) index >= words)
+        return;
+    bits[index] = value;
+}
+
 /*  Looked up once: a getenv per blit would be felt when drawing.  */
 static int
 blit_logging(void)
@@ -123,26 +147,6 @@ blit_logging(void)
     return state;
 }
 
-static int
-indices_in_range(int start, int delta, int n_words, int rows,
-                 uint32_t words, int h_dir)
-{
-    int     row;
-    int     index = start;
-
-    if (n_words <= 0 || rows <= 0)
-        return 1;
-    for (row = 0; row < rows; ++row) {
-        int last = index + (n_words - 1) * h_dir;
-
-        if (index < 0 || (uint32_t) index >= words)
-            return 0;
-        if (last < 0 || (uint32_t) last >= words)
-            return 0;
-        index = last + h_dir + delta;
-    }
-    return 1;
-}
 
 /*
  *  Clip the requested rectangle against the clipping rectangle and then
@@ -291,36 +295,12 @@ GFX_copy_bits(gfx_blit *b)
     dest_index = b->dy * b->dest.raster + (b->dx / 16);
     dest_delta = (b->dest.raster * v_dir) - (n_words * h_dir);
 
-    /*
-     *  Refuse a blit whose indices leave the bitmaps.
-     *
-     *  Chapter 18's copyLoop indexes without checking, which is fine for the
-     *  simulation because Smalltalk arrays are bounds-checked underneath it.
-     *  Here the words are raw memory, so a Form whose geometry does not
-     *  survive clipping walks off the end of the heap and corrupts something
-     *  unrelated.  Failing is also the specified behaviour: the primitive
-     *  falls back to BitBlt's own Smalltalk simulation, which will raise a
-     *  proper error rather than take the machine with it.
-     */
     if (blit_logging())
         fprintf(stderr, "  blit: rule=%u dest %dx%d raster=%d words=%u"
-                        " dx=%d dy=%d w=%d h=%d n=%d di=%d dd=%d hdir=%d"
-                        " halftone=%d source=%d\n",
+                        " dx=%d dy=%d w=%d h=%d n=%d di=%d dd=%d hdir=%d\n",
                 b->rule, b->dest.width, b->dest.height, b->dest.raster,
                 b->dest.words, b->dx, b->dy, b->w, b->h, n_words,
-                dest_index, dest_delta, h_dir, b->has_halftone,
-                b->has_source);
-    if (!indices_in_range(dest_index, dest_delta, n_words, b->h,
-                          b->dest.words, h_dir)) {
-        if (blit_logging())
-            fprintf(stderr, "  blit: refused, dest out of range\n");
-        return;
-    }
-    if (b->has_source
-     && !indices_in_range(source_index, source_delta,
-                          n_words + (preload ? 1 : 0), b->h,
-                          b->source.words, h_dir))
-        return;
+                dest_index, dest_delta, h_dir);
 
     /*  ----- copyLoop -----  */
     for (i = 0; i < b->h; ++i) {
@@ -340,7 +320,8 @@ GFX_copy_bits(gfx_blit *b)
         skew_word = halftone_word;
 
         if (preload && b->has_source) {
-            prev_word = b->source.bits[source_index];
+            prev_word = word_at(b->source.bits, source_index,
+                                b->source.words);
             source_index += h_dir;
         }  else  {
             prev_word = 0;
@@ -355,19 +336,21 @@ GFX_copy_bits(gfx_blit *b)
                 uint16_t    this_word;
 
                 prev_word = (uint16_t) (prev_word & skew_mask);
-                this_word = b->source.bits[source_index];
+                this_word = word_at(b->source.bits, source_index,
+                                    b->source.words);
                 skew_word = (uint16_t) (prev_word
                                 | (this_word & (uint16_t) ~skew_mask));
                 prev_word = this_word;
                 skew_word = rotate16(skew_word, skew);
             }
-            dest_word = b->dest.bits[dest_index];
+            dest_word = word_at(b->dest.bits, dest_index,
+                                b->dest.words);
             merged    = merge(b->rule,
                               (uint16_t) (skew_word & halftone_word),
                               dest_word);
-            b->dest.bits[dest_index] =
-                (uint16_t) ((merge_mask & merged)
-                          | (dest_word & (uint16_t) ~merge_mask));
+            word_put(b->dest.bits, dest_index, b->dest.words,
+                     (uint16_t) ((merge_mask & merged)
+                               | (dest_word & (uint16_t) ~merge_mask)));
 
             if (b->has_source)
                 source_index += h_dir;
