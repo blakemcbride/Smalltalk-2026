@@ -25,6 +25,7 @@
 #include "compiler.h"
 #include "bootstrap.h"
 #include "gfx.h"
+#include "st_sched.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -854,6 +855,55 @@ test_compile_inspect_debug(void)
 }
 
 /*
+ *  Input, through the path a window's events take.
+ *
+ *  GFX_inject_* does exactly what the SDL handlers do -- move the pointer,
+ *  set the button state, queue the event words, signal the input semaphore.
+ *  Driving a private queue instead would prove nothing about the one the
+ *  image reads; this is the same one.
+ *
+ *  With it the interactive half can be tested without a person in front of
+ *  it: the Sensor answers where the pointer is, and a controller says whether
+ *  it wants control -- which is the question searchForActiveController spends
+ *  its whole life asking.
+ */
+static void
+test_input(void)
+{
+    /*  The Sensor reports where the pointer was put.  */
+    GFX_inject_mouse(100, 80);
+    check_integer("Sensor cursorPoint x", 100);
+    check_integer("Sensor cursorPoint y", 80);
+
+    GFX_inject_mouse(300, 240);
+    check_integer("Sensor cursorPoint x", 300);
+    check_integer("Sensor cursorPoint y", 240);
+
+    /*
+     *  Buttons are not asserted here, and the reason is worth stating: the
+     *  pointer's position is polled straight from the VM by primitive 90,
+     *  but the button state is kept by InputState and updated by the input
+     *  PROCESS as it drains the event queue.  This harness stands a context
+     *  up and interprets it directly, so no process runs and the events sit
+     *  where they were put.  A booted image drains them -- see -inject.
+     */
+
+    /*
+     *  A controller wants control when the pointer is over its view, and
+     *  does not when it is not.  Moving the pointer changes the answer,
+     *  which is the whole of how MVC decides who is in charge.
+     */
+    GFX_inject_mouse(50, 50);
+    check_oop("| v | v := StandardSystemView new."
+              " v window: (0@0 corner: 200@200)."
+              " ^v controller isControlWanted", ST_TRUE, "true");
+    GFX_inject_mouse(500, 400);
+    check_oop("| v | v := StandardSystemView new."
+              " v window: (0@0 corner: 200@200)."
+              " ^v controller isControlWanted", ST_FALSE, "false");
+}
+
+/*
  *  Printing, which is the deepest path in the library: printOn: runs Stream,
  *  WriteStream, String, Symbol, Character and -- for a Float -- LargeInteger
  *  division, all at once.  Everything that used to be listed here as not
@@ -949,6 +999,7 @@ main(void)
     test_browsing();
     test_browser();
     test_compile_inspect_debug();
+    test_input();
     test_printing_deep();
     test_mixed_arithmetic();
 

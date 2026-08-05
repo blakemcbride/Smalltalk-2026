@@ -90,6 +90,18 @@ void    GFX_copy_bits(gfx_blit *b);
  *  The window is a view of it: thread 0 copies damaged regions out and
  *  presents them, and never writes back.
  */
+/*
+ *  Post input as though it came from the window.
+ *
+ *  Buttons use the Smalltalk codes: 128 is blue (the leftmost), 129 yellow,
+ *  130 red.  These take the same path SDL's own events do, which is the point
+ *  of them -- a test that drove a private queue would prove nothing about the
+ *  one the image reads.
+ */
+void    GFX_inject_mouse(int x, int y);
+void    GFX_inject_button(unsigned code, int down);
+void    GFX_inject_key(unsigned code, int down);
+
 void    GFX_set_display(st_oop form);
 st_oop  GFX_display_form(void);
 void    GFX_damage(int x, int y, int w, int h);

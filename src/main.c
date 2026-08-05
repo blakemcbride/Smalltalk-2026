@@ -54,6 +54,7 @@ usage(const char *argv0)
     printf("                        build an image from source\n");
     printf("  -run <image> [n]      run the image, opening a window\n");
     printf("  -screenshot <f.pbm>   with -run or -bootstrap, write the display\n");
+    printf("  -inject <script>      post input: m X Y, d CODE, u CODE, k CODE\n");
     printf("  -census <image>       load an image and summarize it\n");
     printf("  -classes <image>      list every class, in class.oops format\n");
     printf("  -methods <image>      list every method, in method.oops format\n");
@@ -210,6 +211,48 @@ do_trace(const char *path, st_trace_mode mode, uint64_t limit)
 
 static const char *shot_path;
 
+/*
+ *  Input to post as though it came from the window.
+ *
+ *  "m X Y" moves the pointer, "d CODE" presses a button, "u CODE" releases
+ *  it, "k CODE" taps a key: 128 is the blue button, 129 yellow, 130 red.
+ *  It exists so the interactive half can be driven without a person at the
+ *  mouse -- what it posts goes through the same queue SDL fills, so what it
+ *  drives is the real path.
+ */
+static const char *inject_script;
+
+static void
+run_inject_script(void)
+{
+    const char *p = inject_script;
+
+    while (p && *p) {
+        char    what = *p++;
+        long    a = 0;
+        long    b = 0;
+
+        while (*p == ' ')
+            ++p;
+        a = strtol(p, (char **) &p, 10);
+        if (what == 'm') {
+            while (*p == ' ')
+                ++p;
+            b = strtol(p, (char **) &p, 10);
+            GFX_inject_mouse((int) a, (int) b);
+        }  else if (what == 'd') {
+            GFX_inject_button((unsigned) a, 1);
+        }  else if (what == 'u') {
+            GFX_inject_button((unsigned) a, 0);
+        }  else if (what == 'k') {
+            GFX_inject_key((unsigned) a, 1);
+            GFX_inject_key((unsigned) a, 0);
+        }
+        while (*p == ' ' || *p == ';')
+            ++p;
+    }
+}
+
 static void write_screenshot(void);
 
 static int
@@ -227,6 +270,16 @@ do_run(const char *path, uint64_t max_cycles)
     }
     while (st_vm.running) {
         total += ST_interp_run(SLICE_BYTECODES);
+        /*
+         *  Scripted input goes in after the first slice, by which time the
+         *  image has started its input process and can drain it.  Posting it
+         *  before that would fill the queue and signal a semaphore nobody is
+         *  waiting on yet.
+         */
+        if (inject_script && total >= SLICE_BYTECODES) {
+            run_inject_script();
+            inject_script = NULL;
+        }
         if (max_cycles && total >= max_cycles)
             break;
 
@@ -893,6 +946,10 @@ main(int argc, char **argv)
         }
         if (!strcmp(argv[i], "-screenshot") && i + 1 < argc) {
             shot_path = argv[++i];
+            continue;
+        }
+        if (!strcmp(argv[i], "-inject") && i + 1 < argc) {
+            inject_script = argv[++i];
             continue;
         }
         if (!strcmp(argv[i], "-run") && i + 1 < argc)

@@ -158,6 +158,57 @@ GFX_button_state(void)
     return button_state;
 }
 
+/*
+ *  ----------  Synthetic input  ----------
+ *
+ *  The same path a window's events take, driven from C instead of a mouse.
+ *
+ *  Without it the interactive half of the system can only be tested by a
+ *  person sitting in front of it, which in practice means it is not tested.
+ *  These do what the SDL handlers do -- move the pointer, set the button
+ *  state, queue the event words, signal the input semaphore -- so what they
+ *  exercise is the real path and not a parallel one built for the occasion.
+ *  They work in a headless build too, which is where the tests run.
+ */
+void
+GFX_inject_mouse(int x, int y)
+{
+    gfx_form    form;
+
+    if (GFX_form_from_oop(display_form, &form)) {
+        if (x < 0)
+            x = 0;
+        if (y < 0)
+            y = 0;
+        if (x >= form.width)
+            x = form.width - 1;
+        if (y >= form.height)
+            y = form.height - 1;
+    }
+    if (x == mouse_x && y == mouse_y)
+        return;
+    mouse_x = x;
+    mouse_y = y;
+    queue_event(ST_EVENT_XLOCATION, (unsigned) x);
+    queue_event(ST_EVENT_YLOCATION, (unsigned) y);
+}
+
+void
+GFX_inject_button(unsigned code, int down)
+{
+    if (down)
+        button_state |= 1 << (int) (code - 128);
+    else
+        button_state &= ~(1 << (int) (code - 128));
+    queue_event(down ? ST_EVENT_BISTATE_ON : ST_EVENT_BISTATE_OFF, code);
+}
+
+void
+GFX_inject_key(unsigned code, int down)
+{
+    queue_event(down ? ST_EVENT_BISTATE_ON : ST_EVENT_BISTATE_OFF, code);
+}
+
 #ifndef ST_HAVE_SDL3
 
 /*  ----------  Headless build  ----------  */
