@@ -106,7 +106,16 @@ evaluate(const char *expression)
      */
     OM_collect();
 
-    snprintf(source, sizeof source, "doIt ^%s", expression);
+    /*
+     *  An expression containing a caret is already a method body, temporary
+     *  declarations and all, so it is used as written -- the same rule the
+     *  driver uses.  Wrapping it in "doIt ^" instead produces "doIt ^| f |",
+     *  which is not a sentence in any dialect.
+     */
+    if (strchr(expression, '^'))
+        snprintf(source, sizeof source, "doIt %s", expression);
+    else
+        snprintf(source, sizeof source, "doIt ^%s", expression);
     if (COMPILE_method(source, &ctx, &res) != 0) {
         printf("  cannot compile \"%s\": %s\n", expression, res.error);
         return ST_OOP_INVALID;
@@ -307,6 +316,21 @@ test_symbols(void)
     check_oop("#printString == 'printString' asSymbol", ST_TRUE, "true");
     check_oop("#at:put: == 'at:put:' asSymbol", ST_TRUE, "true");
     check_oop("#zzz == 'zzz' asSymbol", ST_TRUE, "true");
+
+    /*
+     *  A long selector is still one Symbol.  The intern table compared
+     *  against a 64-byte C copy of the text, so anything past 63 characters
+     *  never matched itself and every mention made a new Symbol -- the
+     *  method installed under one and sent with another, and a dictionary
+     *  keyed by identity could not find it.  Fourteen selectors in the
+     *  library are that long.
+     */
+    check_integer("'subclass:instanceVariableNames:classVariableNames:"
+                  "poolDictionaries:category:' asSymbol size", 76);
+    check_oop("'setDestForm:sourceForm:halftoneForm:combinationRule:"
+              "destOrigin:sourceOrigin:extent:clipRect:' asSymbol"
+              " == #setDestForm:sourceForm:halftoneForm:combinationRule:"
+              "destOrigin:sourceOrigin:extent:clipRect:", ST_TRUE, "true");
 }
 
 /*
@@ -395,6 +419,41 @@ test_graphics_objects(void)
 }
 
 /*
+ *  BitBlt, through the library's own Form and BitBlt classes.
+ *
+ *  Filling a form is the case that is exactly as wide as its raster, and
+ *  Chapter 18's word count is off by one there unless the test is "<=".  With
+ *  "<" a 16-pixel blit at x = 0 claims two words of a one-word row: it wrote
+ *  a whole extra word per row, masked to all ones, and read past the end of
+ *  the bitmap.  It survived the Xerox image because a form there is nearly
+ *  always wider than the blit.
+ */
+static void
+test_bitblt(void)
+{
+    /*  A fresh form is white.  */
+    check_integer("(Form extent: 16 @ 16) bits inject: 0 into: [:a :b | a + b]",
+                  0);
+
+    /*  Filled black, every one of the sixteen words is all ones.  */
+    check_integer("| f | f := Form extent: 16 @ 16."
+                  " f fill: f boundingBox rule: 3 mask: Form black."
+                  " ^f bits first", 65535);
+    check_integer("| f | f := Form extent: 16 @ 16."
+                  " f fill: f boundingBox rule: 3 mask: Form black."
+                  " ^f bits inject: 0 into: [:a :b | a + b]", 16 * 65535);
+
+    /*  Two words wide, eight rows: the same total by a different shape.  */
+    check_integer("| f | f := Form extent: 32 @ 8."
+                  " f fill: f boundingBox rule: 3 mask: Form black."
+                  " ^f bits inject: 0 into: [:a :b | a + b]", 16 * 65535);
+
+    /*  And the mask the library hands out really is black.  */
+    check_integer("Form black bits inject: 0 into: [:a :b | a + b]",
+                  16 * 65535);
+}
+
+/*
  *  Printing, which is the deepest path in the library: printOn: runs Stream,
  *  WriteStream, String, Symbol, Character and -- for a Float -- LargeInteger
  *  division, all at once.  Everything that used to be listed here as not
@@ -471,6 +530,7 @@ main(void)
     test_floats();
     test_strings();
     test_graphics_objects();
+    test_bitblt();
     test_printing_deep();
     test_mixed_arithmetic();
 

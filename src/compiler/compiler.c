@@ -1225,9 +1225,19 @@ needs_method_class(const st_compiler *c)
      *  and the class association last, which is the order the interpreter
      *  reads them in.
      */
+    /*
+     *  c->argument_count, not c->out->argument_count: the latter is copied
+     *  across only after the body is compiled, which is after this runs.  It
+     *  read zero, so a method with more than four arguments and no primitive
+     *  lost its class literal -- and then COMPILE_method spliced the header
+     *  extension in ahead of what it took to be that literal, shifting a real
+     *  one down a place.  Every bytecode referring to it read the extension
+     *  instead, which is a SmallInteger, so the send went out with a number
+     *  for a selector.
+     */
     return c->used_super
         || c->out->primitive != 0
-        || c->out->argument_count > 4;
+        || c->argument_count > 4;
 }
 
 static void

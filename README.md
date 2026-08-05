@@ -58,7 +58,7 @@ The 1983 Xerox image boots to its own desktop:
 ```sh
 $ ./st80 -screenshot screen.pbm -run oracle/VirtualImage 30000000
 st80: display is 640x480
-st80: wrote screen.pbm, 59898 of 307200 pixels are ink
+st80: wrote screen.pbm, 59792 of 307200 pixels are ink
 ```
 
 What it draws is the System Workspace ("The Smalltalk-80 System Version 2,
@@ -175,6 +175,10 @@ Printing works throughout, which is the deepest path the library has:
 Float — LargeInteger division, all at once. So does mixed-mode arithmetic,
 in both directions: `3 + 1.5` and `3.5 >= 0` both coerce to the higher
 generality and retry.
+
+BitBlt runs from the library too: a Form filled through `BitBlt` comes back
+with every word set, which is the case Chapter 18's word count gets wrong by
+one unless the boundary test is `<=`.
 
 `tests/unit/test_library.c` gates on the library compiling and
 `tests/unit/test_image.c` on it running.

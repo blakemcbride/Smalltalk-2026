@@ -23,6 +23,8 @@
  */
 
 #include "gfx.h"
+#include <stdlib.h>
+#include <stdio.h>
 #include "interp.h"
 
 #include <string.h>
@@ -99,6 +101,46 @@ GFX_form_from_oop(st_oop form, gfx_form *out)
         return 0;
     if ((uint32_t) (out->raster * out->height) > out->words)
         return 0;               /*  the bitmap is too small for its extent  */
+    return 1;
+}
+
+/*
+ *  Whether every word the copy loop will touch lies inside the bitmap.
+ *
+ *  The loop walks `rows` rows; each visits `n_words` words stepping by h_dir
+ *  from `start`, and then start advances by `delta`.  Rather than reproduce
+ *  that arithmetic and risk disagreeing with it, this walks the same shape
+ *  and checks the two extremes of every row.
+ */
+/*  Looked up once: a getenv per blit would be felt when drawing.  */
+static int
+blit_logging(void)
+{
+    static int  state = -1;
+
+    if (state < 0)
+        state = getenv("ST_BLIT_LOG") != NULL;
+    return state;
+}
+
+static int
+indices_in_range(int start, int delta, int n_words, int rows,
+                 uint32_t words, int h_dir)
+{
+    int     row;
+    int     index = start;
+
+    if (n_words <= 0 || rows <= 0)
+        return 1;
+    for (row = 0; row < rows; ++row) {
+        int last = index + (n_words - 1) * h_dir;
+
+        if (index < 0 || (uint32_t) index >= words)
+            return 0;
+        if (last < 0 || (uint32_t) last >= words)
+            return 0;
+        index = last + h_dir + delta;
+    }
     return 1;
 }
 
@@ -192,7 +234,18 @@ GFX_copy_bits(gfx_blit *b)
     mask2      = (uint16_t) ~right_masks[end_bits];
     skew_mask  = (skew == 0) ? 0 : right_masks[16 - skew];
 
-    if (b->w < start_bits) {
+    /*
+     *  Chapter 18 tests "bbW <= startBits", not "<".  A run that exactly
+     *  fills the remainder of one word lives inside that word and needs one,
+     *  not two.  With "<" a 16-pixel-wide blit at x = 0 asked for two words
+     *  of a one-word raster, which reads and writes a word past the end of
+     *  every row.  It survived the Xerox image because a form there is
+     *  almost always wider than the blit, so the extra word landed on the
+     *  next row's storage and was masked to nothing; it only becomes fatal
+     *  when the blit is as wide as the form, which is exactly what filling a
+     *  form does.
+     */
+    if (b->w <= start_bits) {
         /*  The whole run lives inside one destination word.  */
         mask1   = (uint16_t) (mask1 & mask2);
         mask2   = 0;
@@ -237,6 +290,37 @@ GFX_copy_bits(gfx_blit *b)
     }
     dest_index = b->dy * b->dest.raster + (b->dx / 16);
     dest_delta = (b->dest.raster * v_dir) - (n_words * h_dir);
+
+    /*
+     *  Refuse a blit whose indices leave the bitmaps.
+     *
+     *  Chapter 18's copyLoop indexes without checking, which is fine for the
+     *  simulation because Smalltalk arrays are bounds-checked underneath it.
+     *  Here the words are raw memory, so a Form whose geometry does not
+     *  survive clipping walks off the end of the heap and corrupts something
+     *  unrelated.  Failing is also the specified behaviour: the primitive
+     *  falls back to BitBlt's own Smalltalk simulation, which will raise a
+     *  proper error rather than take the machine with it.
+     */
+    if (blit_logging())
+        fprintf(stderr, "  blit: rule=%u dest %dx%d raster=%d words=%u"
+                        " dx=%d dy=%d w=%d h=%d n=%d di=%d dd=%d hdir=%d"
+                        " halftone=%d source=%d\n",
+                b->rule, b->dest.width, b->dest.height, b->dest.raster,
+                b->dest.words, b->dx, b->dy, b->w, b->h, n_words,
+                dest_index, dest_delta, h_dir, b->has_halftone,
+                b->has_source);
+    if (!indices_in_range(dest_index, dest_delta, n_words, b->h,
+                          b->dest.words, h_dir)) {
+        if (blit_logging())
+            fprintf(stderr, "  blit: refused, dest out of range\n");
+        return;
+    }
+    if (b->has_source
+     && !indices_in_range(source_index, source_delta,
+                          n_words + (preload ? 1 : 0), b->h,
+                          b->source.words, h_dir))
+        return;
 
     /*  ----- copyLoop -----  */
     for (i = 0; i < b->h; ++i) {

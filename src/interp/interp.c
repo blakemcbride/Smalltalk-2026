@@ -512,11 +512,28 @@ send_does_not_understand(st_oop receiver, st_oop selector, st_oop lookup_class)
 
     method = lookup_method(ST_SELECTOR_DOES_NOT_UNDERSTAND, lookup_class, &found);
     if (!OM_is_present(method)) {
-        char    buf[256];
+        char        buf[256];
+        char        name[256];
+        uint32_t    n;
+        uint32_t    k;
 
+        /*
+         *  Name the selector.  Reporting only that "something" was not
+         *  understood leaves the reader to guess which of the dozen sends in
+         *  a line it was, and the guess is usually wrong.  The selector is a
+         *  Symbol, so its bytes are its text.
+         */
         ST_print_object(receiver, buf, sizeof buf);
-        fprintf(stderr, "st80: %s does not understand a selector, and does "
-                        "not understand doesNotUnderstand: either\n", buf);
+        n = OM_is_present(selector) ? OM_fetch_byte_length(selector) : 0;
+        if (n > sizeof name - 1)
+            n = sizeof name - 1;
+        for (k = 0; k < n; ++k)
+            name[k] = (char) OM_fetch_byte(k, selector);
+        name[n] = '\0';
+
+        fprintf(stderr, "st80: %s does not understand #%s, and does not "
+                        "understand doesNotUnderstand: either\n",
+                buf, n ? name : "(not a symbol)");
         st_vm.running = 0;
         return;
     }

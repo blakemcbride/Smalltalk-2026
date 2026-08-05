@@ -73,7 +73,6 @@ static int          symbol_table_ready;
 static st_oop       symbol_table;
 
 static st_oop       symbols[MAX_SYMBOLS];
-static char         symbol_text[MAX_SYMBOLS][64];
 static unsigned     symbol_count;
 
 static st_oop       smalltalk;          /*  the SystemDictionary  */
@@ -146,8 +145,33 @@ BOOT_intern_symbol(const char *text, void *user)
     size_t      n = strlen(text);
 
     (void) user;
+    /*
+     *  Compare against the Symbol's own bytes, not a copy.
+     *
+     *  This kept a parallel C array of the text, 64 bytes per entry, and
+     *  compared against that -- so a selector longer than 63 characters never
+     *  matched itself, and every mention of it made a NEW Symbol.  The method
+     *  was then installed under one Symbol and sent with another, and a
+     *  dictionary keyed by identity could not find it.  Fourteen selectors in
+     *  the 1983 library are that long, including
+     *  subclass:instanceVariableNames:classVariableNames:poolDictionaries:category:
+     *  and the whole of BitBlt's setDestForm:...clipRect:, so neither
+     *  defining a class from inside the image nor drawing anything worked.
+     *
+     *  The copy is gone rather than widened.  A second representation of the
+     *  same text is a thing to keep in step, and this one had already
+     *  drifted; the Symbol itself cannot.
+     */
     for (i = 0; i < symbol_count; ++i) {
-        if (strcmp(symbol_text[i], text) == 0)
+        size_t  k;
+
+        if (OM_fetch_byte_length(symbols[i]) != n)
+            continue;
+        for (k = 0; k < n; ++k) {
+            if (OM_fetch_byte((uint32_t) k, symbols[i]) != (uint8_t) text[k])
+                break;
+        }
+        if (k == n)
             return symbols[i];
     }
     s = OM_instantiate_bytes(BOOT_global("Symbol"), (uint32_t) n);
@@ -157,7 +181,6 @@ BOOT_intern_symbol(const char *text, void *user)
         OM_store_byte(i, s, (uint8_t) text[i]);
     if (symbol_count < MAX_SYMBOLS) {
         symbols[symbol_count] = s;
-        snprintf(symbol_text[symbol_count], 64, "%.63s", text);
         ++symbol_count;
         if (result)
             ++result->symbols_interned;
