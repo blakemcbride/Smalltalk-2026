@@ -2047,6 +2047,76 @@ install_system_dictionary(void)
 }
 
 /*
+ *  Give the image its Sensor and its window scheduler.
+ *
+ *  Both are made once when an image is built and carried forward by every
+ *  snapshot after: InputSensor class>>initSensor assigns Sensor, and
+ *  ControlManager is what ScheduledControllers holds.  Neither exists in an
+ *  image built from sources, so a great deal of the interface asks nil for
+ *  the cursor position or for the active controller and stops there.
+ *
+ *  They are created by sending the library's own constructors, so whatever
+ *  those do to set an object up is done.
+ */
+static int
+install_user_interface(void)
+{
+    /*
+     *  Initialisers that BOOT_run_initializers cannot reach.
+     *
+     *  Object class>>initialize asks the user to confirm before resetting
+     *  every dependency in the system, which is sensible in a running image
+     *  and impossible in one being built -- there is nobody to ask.  Its two
+     *  halves are separate methods, so they are called directly.  Without
+     *  DependentsFields, addDependent: sends at:ifAbsent: to nil, and
+     *  nothing in MVC can register interest in a model.
+     */
+    static const struct { const char *class_name; const char *selector; }
+    directly[] = {
+        { "Object", "initializeDependentsFields" },
+        { "Object", "initializeErrorRecursion" }
+    };
+    static const struct {
+        const char *class_name;
+        const char *constructor;
+        const char *global;
+    } wanted[] = {
+        { "InputSensor",    "new",  "Sensor" },
+        { "ControlManager", "new",  "ScheduledControllers" }
+    };
+    unsigned    i;
+
+    for (i = 0; i < sizeof directly / sizeof directly[0]; ++i) {
+        st_oop  cls = BOOT_global(directly[i].class_name);
+        st_oop  m;
+
+        if (!OM_is_present(cls))
+            continue;
+        m = lookup_in_chain(OM_fetch_class(cls), directly[i].selector);
+        if (OM_is_present(m))
+            run_method_on(m, cls, 4000000);
+    }
+
+    for (i = 0; i < sizeof wanted / sizeof wanted[0]; ++i) {
+        st_oop  cls = BOOT_global(wanted[i].class_name);
+        st_oop  make;
+
+        if (!OM_is_present(cls))
+            continue;
+        make = lookup_in_chain(OM_fetch_class(cls), wanted[i].constructor);
+        if (!OM_is_present(make))
+            continue;
+        if (!run_method_on(make, cls, 4000000))
+            continue;
+        if (OM_is_present(st_vm.return_value)) {
+            OM_increase_ref(st_vm.return_value);
+            define_global(wanted[i].global, st_vm.return_value);
+        }
+    }
+    return 1;
+}
+
+/*
  *  Build the system font and text style.
  *
  *  A StrikeFont is one Form holding every glyph side by side, plus an xTable
@@ -2320,6 +2390,7 @@ BOOT_run_initializers(st_boot_init_report *out)
      *  has run.
      */
     install_text_style();
+    install_user_interface();
     return 0;
 }
 

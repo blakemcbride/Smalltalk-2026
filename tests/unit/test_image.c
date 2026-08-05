@@ -621,6 +621,53 @@ test_view(void)
 }
 
 /*
+ *  The window scheduler.
+ *
+ *  ScheduledControllers is a ControlManager, made when an image is built and
+ *  carried by every snapshot after; Sensor likewise.  Neither exists in an
+ *  image built from sources, and without them a great deal of the interface
+ *  asks nil for the active controller or the cursor and stops there.
+ *
+ *  Object class>>initialize cannot be run to get DependentsFields, because it
+ *  asks the user to confirm resetting every dependency in the system and
+ *  there is nobody to ask; its two halves are called directly instead.
+ *  Without it addDependent: sends at:ifAbsent: to nil and no view can
+ *  register interest in a model.
+ */
+static void
+test_scheduler(void)
+{
+    ++st_test_checks;
+    if (!OM_is_present(BOOT_global("Sensor"))) {
+        ++st_test_failures;
+        printf("  FAIL Sensor was not installed\n");
+    }
+    ++st_test_checks;
+    if (!OM_is_present(BOOT_global("ScheduledControllers"))) {
+        ++st_test_failures;
+        printf("  FAIL ScheduledControllers was not installed\n");
+    }
+
+    /*  It starts holding the screen controller and nothing else.  */
+    check_integer("ScheduledControllers scheduledControllers size", 1);
+
+    /*
+     *  Two windows scheduled and the screen restored: the manager redraws
+     *  its gray background and both views over it.  Far more ink than the
+     *  views alone, because the background is most of the screen.
+     */
+    check_ink("| a b | Display white."
+              " a := StandardSystemView new. a label: 'Transcript'."
+              " a window: (30@30 corner: 300@180)."
+              " b := StandardSystemView new. b label: 'Workspace'."
+              " b window: (200@120 corner: 560@340)."
+              " ScheduledControllers schedulePassive: a controller."
+              " ScheduledControllers schedulePassive: b controller."
+              " ScheduledControllers restore. ^1", 124794);
+    check_integer("ScheduledControllers scheduledControllers size", 3);
+}
+
+/*
  *  Printing, which is the deepest path in the library: printOn: runs Stream,
  *  WriteStream, String, Symbol, Character and -- for a Float -- LargeInteger
  *  division, all at once.  Everything that used to be listed here as not
@@ -709,6 +756,7 @@ main(void)
     test_text();
     test_paragraph();
     test_view();
+    test_scheduler();
     test_printing_deep();
     test_mixed_arithmetic();
 

@@ -28,7 +28,7 @@ Phases 0-7 complete; Phase 8 has its foundation. See `doc/PLAN.md` for the roadm
 | 5 — Compiler and image bootstrap | done |
 | 6 — macOS and Windows | done, unconfirmed on those hosts |
 | 7 — Native threads | done |
-| 8 — MVC under parallelism | views display; scheduler and input next |
+| 8 — MVC under parallelism | views and the window scheduler work; input and the interaction loop next |
 
 ## Building
 
@@ -193,6 +193,12 @@ st80: wrote screen.pbm, 14400 of 307200 pixels are ink
 A black frame with white knocked out of it, and a correctly dithered gray —
 the counts are exact, because a fill covers precisely the rectangle asked for
 and gray covers half of it.
+
+**And it schedules windows.** `ScheduledControllers` is a real
+`ControlManager` holding a screen controller; scheduling two views and asking
+it to restore redraws its gray background and both windows over it. `Sensor`
+is a real `InputSensor`. Both are made when an image is built and carried by
+every snapshot after, so an image built from sources has to be given them.
 
 **And it puts a window on the screen.** A `StandardSystemView` with a label
 displays itself — the tab, the border and the body — through the library's
