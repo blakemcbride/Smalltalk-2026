@@ -22,12 +22,56 @@
 #include "census.h"
 #include "st_sched.h"
 #include "gfx.h"
+#include "worker.h"
+#include "st_atomic.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-st_interp   st_vm;
+_Thread_local st_interp     st_vm;
+
+/*
+ *  Every running interpreter, so the collector can walk them all.  Written
+ *  when a thread joins or leaves and read only at a safepoint, where by
+ *  construction nothing is joining or leaving.
+ */
+#define MAX_INTERPRETERS    64
+
+/*
+ *  Lock-free on purpose.  The collector reads this table while every mutator
+ *  is parked, but a thread on its way out of the pool is not parked -- it has
+ *  stopped polling and is unregistering.  Guarding the table with a mutex
+ *  would let the collector hold that mutex while waiting for a thread that
+ *  is blocked on it, which is a deadlock.  Atomic slots avoid the question.
+ */
+static st_atomic_ptr    interpreters[MAX_INTERPRETERS];
+
+void
+ST_interp_register(void)
+{
+    unsigned    i;
+
+    for (i = 0; i < MAX_INTERPRETERS; ++i) {
+        uintptr_t   empty = 0;
+
+        if (ST_cas_strong(&interpreters[i], &empty, (uintptr_t) &st_vm))
+            return;
+    }
+}
+
+void
+ST_interp_unregister(void)
+{
+    unsigned    i;
+
+    for (i = 0; i < MAX_INTERPRETERS; ++i) {
+        uintptr_t   mine = (uintptr_t) &st_vm;
+
+        if (ST_cas_strong(&interpreters[i], &mine, 0))
+            return;
+    }
+}
 
 /*  ----------  Small helpers  ----------  */
 
@@ -239,12 +283,35 @@ set_active_context(st_oop ctx)
  *  The display form and the input semaphore are genuinely held by C, and
  *  their setters count them, so they belong here.
  */
+static om_root_provider extra_roots;
+
 static void
 provide_roots(om_visit_fn visit)
 {
-    visit(st_vm.active_context);
+    unsigned    i;
+
+    /*
+     *  Every thread's active context, not just this one's.  A collection
+     *  runs with all of them parked, so reading the table here is safe --
+     *  and missing an entry would free another thread's entire stack.
+     */
+    for (i = 0; i < MAX_INTERPRETERS; ++i) {
+        st_interp  *vm = (st_interp *) ST_load_acquire(&interpreters[i]);
+
+        if (vm)
+            visit(vm->active_context);
+    }
     visit(GFX_display_form());
     visit(SCHED_input_semaphore());
+    if (extra_roots)
+        extra_roots(visit);
+}
+
+void
+ST_interp_install_roots(om_root_provider extra)
+{
+    extra_roots = extra;
+    OM_set_root_provider(provide_roots);
 }
 
 void
@@ -614,7 +681,8 @@ ST_interp_init(char *errbuf, size_t errlen)
             snprintf(errbuf, errlen, "active process has no suspended context");
         return -1;
     }
-    OM_set_root_provider(provide_roots);
+    ST_interp_install_roots(extra_roots);
+    ST_interp_register();
     st_vm.active_context = ST_NIL;
     set_active_context(context);
     st_vm.running = 1;
@@ -638,6 +706,12 @@ ST_interp_run(uint64_t limit)
          *  deliver queued interrupt signals and switch processes if one is
          *  pending.  Phase 7 puts the safepoint poll here too.
          */
+        /*
+         *  The safepoint poll.  A relaxed load in the common case; it parks
+         *  only when a collection is asking, and at that moment this
+         *  thread's registers are consistent and its roots are known.
+         */
+        WORKER_poll();
         SCHED_check_process_switch();
         if (!st_vm.running)
             break;

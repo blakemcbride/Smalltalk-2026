@@ -153,7 +153,34 @@ typedef struct {
     st_oop      return_value;
 } st_interp;
 
-extern st_interp    st_vm;
+/*
+ *  One interpreter per thread.
+ *
+ *  The registers -- active context, method, receiver, instruction and stack
+ *  pointers -- are private to whoever is executing; only the objects they
+ *  point at are shared.  Making this thread-local is what lets several
+ *  Smalltalk processes run bytecodes at the same time on the same object
+ *  memory, which is the whole point of the project.
+ *
+ *  A thread that will execute bytecodes must call ST_interp_register first,
+ *  so the collector can find its context as a root.  Miss that and its
+ *  entire stack looks like garbage at the next collection.
+ */
+extern _Thread_local st_interp  st_vm;
+
+void        ST_interp_register(void);
+void        ST_interp_unregister(void);
+
+/*
+ *  Install the collector's root provider: every registered interpreter's
+ *  active context, plus whatever `extra` adds.
+ *
+ *  Anything C holds must be visited here.  A marking collection rebuilds
+ *  every reference count from the walk, so counting a reference from C does
+ *  not protect it -- the next collection simply recounts and finds nothing.
+ *  Pass NULL if C holds nothing.
+ */
+void        ST_interp_install_roots(om_root_provider extra);
 
 /*  ----------  API  ----------  */
 

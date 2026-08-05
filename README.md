@@ -16,7 +16,7 @@ object memory and the scheduler with ones that use every core.
 
 ## Status
 
-Phases 0-7 complete; Phase 8 remaining. See `doc/PLAN.md` for the roadmap.
+Phases 0-7 complete; Phase 8 has its foundation. See `doc/PLAN.md` for the roadmap.
 
 | Phase | State |
 |---|---|
@@ -28,7 +28,7 @@ Phases 0-7 complete; Phase 8 remaining. See `doc/PLAN.md` for the roadmap.
 | 5 — Compiler and image bootstrap | done |
 | 6 — macOS and Windows | done, unconfirmed on those hosts |
 | 7 — Native threads | done |
-| 8 — MVC under parallelism | not started |
+| 8 — MVC under parallelism | interpreter runs parallel; MVC not started |
 
 ## Building
 
@@ -92,8 +92,9 @@ sanitizer is the judge:
 
 | Check | Result |
 |---|---|
-| 31 native threads mutating one shared object memory | 398 checks, **0 races under TSAN** |
-| Collections running while those threads mutate | every slot intact afterwards |
+| **31 threads interpreting Smalltalk on 32 CPUs** | **11,160 expressions, every answer correct, 0 races under TSAN** |
+| Collections running while those threads interpret | answers still correct |
+| 31 native threads mutating one shared object memory | 398 checks, 0 races under TSAN |
 | Reference counts under contention | balanced traffic returns to exactly one holder |
 
 ## The bootstrapped image
