@@ -787,6 +787,41 @@ test_browser(void)
 }
 
 /*
+ *  Browsing: category, class, protocol, selector, source.
+ *
+ *  Every pane of the Browser answers, and the last one answers real source
+ *  text.  Smalltalk-80 does not keep source in the image -- a CompiledMethod
+ *  carries a position into a sources file and the Browser reads the chunk
+ *  there -- so the bootstrap writes every method's source into one String
+ *  and hands it over as SourceFiles.  Nothing says that stream has to be a
+ *  file: RemoteString asks it only to position: and nextChunk.
+ */
+static void
+test_browsing(void)
+{
+    check_integer("(Browser new on: SystemOrganization) categoryList size", 41);
+
+    /*  Kernel-Objects holds Boolean, False, Object, True, UndefinedObject.  */
+    check_integer("| b | b := Browser new on: SystemOrganization."
+                  " b category: #'Kernel-Objects'. ^b classList size", 5);
+
+    /*  Boolean's protocols, and the selectors in the first of them.  */
+    check_integer("| b | b := Browser new on: SystemOrganization."
+                  " b category: #'Kernel-Objects'. b className: #Boolean."
+                  " ^b protocolList size", 4);
+    check_integer("| b | b := Browser new on: SystemOrganization."
+                  " b category: #'Kernel-Objects'. b className: #Boolean."
+                  " b protocol: (b protocolList at: 1)."
+                  " ^b selectorList size", 6);
+
+    /*  And the source of a method, read back out of SourceFiles.  */
+    check_integer("(Boolean sourceCodeAt: #not) size", 122);
+    check_integer("((Boolean sourceCodeAt: #not) asText"
+                  " makeSelectorBoldIn: Boolean) size", 122);
+    check_integer("(SourceFiles at: 1) contents size", 1202933);
+}
+
+/*
  *  Printing, which is the deepest path in the library: printOn: runs Stream,
  *  WriteStream, String, Symbol, Character and -- for a Float -- LargeInteger
  *  division, all at once.  Everything that used to be listed here as not
@@ -879,6 +914,7 @@ main(void)
     test_process_scheduler();
     test_processes();
     test_system_organization();
+    test_browsing();
     test_browser();
     test_printing_deep();
     test_mixed_arithmetic();

@@ -365,21 +365,6 @@ test_loops(void)
  *  message but the last.
  */
 /*
- *  An inner declaration shadows an outer one of the same name.
- *
- *  Names share one frame, appended as their scopes open, so the innermost
- *  declaration is the LAST -- and resolving forwards therefore picked the
- *  outermost.  It stays invisible until a block argument shares a name with
- *  a method temporary, which the 1983 library does:
- *
- *      hasInterned: aString ifTrue: symBlock
- *          | v i ascii |
- *          1 to: v size do: [:i | ... (v at: i) ... ]
- *
- *  Reads of i inside the block took the method's slot, which nothing writes,
- *  while the loop stored each value into the block's.
- */
-/*
  *  A minus sign binds to a numeric literal that follows it directly, and
  *  that rule applies inside a binary selector too.
  *
@@ -458,24 +443,43 @@ test_context_size(void)
                        "thirteen temporaries");
 }
 
+
+/*
+ *  A block argument that shares a name with an enclosing temporary IS that
+ *  temporary: it gets the same slot, not one of its own.
+ *
+ *  This looks like a mistake and is the 1983 rule, and a good deal of the
+ *  library depends on it.  RunArray>>copyFrom:to: declares
+ *  "| run1 offset1 value1 ... |" and then writes
+ *
+ *      self at: start setRunOffsetAndValue: [:run1 :offset1 :value1 | value1]
+ *
+ *  before going on to use run1 and offset1 in the METHOD.  The block is how
+ *  those variables get their values.  Give the argument a slot of its own --
+ *  which is what "inner scopes shadow outer ones" would mean anywhere else --
+ *  and the method reads nil for ever, so no Text can be emphasised and the
+ *  Browser cannot show a method's source.
+ */
 static void
-test_scope_shadowing(void)
+test_block_argument_slots(void)
 {
-    /*  Two temporaries, then a block argument reusing the second's name.
-     *  Inside the block, "b" must be temporary 2 (the block's), not 1.  */
-    CHECK_CODE("foo | a b | ^[:b | b]", "block argument shadows a temporary",
-               137, 118, 200, 164, 3, 106, 18, 125, 124);
-
-    /*  Without the collision the same block uses the next free slot.  */
-    CHECK_CODE("foo | a b | ^[:c | c]", "block argument, no collision",
-               137, 118, 200, 164, 3, 106, 18, 125, 124);
-
-    /*  A method argument shadowed by a block argument, likewise.  */
-    CHECK_CODE("foo: x ^[:x | x]", "block argument shadows an argument",
+    /*
+     *  "b" is temporary 1, and the block's argument is temporary 1 too: the
+     *  store is 105 (pop into 1) and the read is 17 (push 1).
+     */
+    CHECK_CODE("foo | a b | ^[:b | b]", "block argument shares its name",
                137, 118, 200, 164, 3, 105, 17, 125, 124);
 
-    /*  And outside the block the outer name is still the outer slot.  */
-    CHECK_CODE("foo: x ^x", "the outer name outside the block", 16, 124);
+    /*  A name that is not already taken gets the next slot, 2.  */
+    CHECK_CODE("foo | a b | ^[:c | c]", "block argument with a new name",
+               137, 118, 200, 164, 3, 106, 18, 125, 124);
+
+    /*  A method argument works the same way: "x" is temporary 0.  */
+    CHECK_CODE("foo: x ^[:x | x]", "block argument shares an argument",
+               137, 118, 200, 164, 3, 104, 16, 125, 124);
+
+    /*  And outside the block the name still means the same slot.  */
+    CHECK_CODE("foo: x ^x", "the name outside the block", 16, 124);
 }
 
 static void
@@ -675,7 +679,7 @@ main(void)
     test_conditionals();
     test_loops();
     test_cascades();
-    test_scope_shadowing();
+    test_block_argument_slots();
     test_negative_after_binary();
     test_context_size();
 

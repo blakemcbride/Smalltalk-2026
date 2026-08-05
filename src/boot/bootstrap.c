@@ -89,6 +89,9 @@ static st_oop       globals_values;
 static unsigned     global_count;
 #define MAX_GLOBALS 1024
 
+/*  How many buckets the library's symbol table has.  */
+#define USTABLE_BUCKETS 512
+
 static st_bootstrap_result *result;
 
 /*
@@ -144,6 +147,8 @@ make_string_object(const char *text)
 }
 
 static int place_in_symbol_table(st_oop sym);
+static size_t remember_source(const char *text);
+uint32_t BOOT_string_hash_of_text(const char *text, size_t length);
 static int adopt_symbols(void);
 
 st_oop
@@ -183,6 +188,44 @@ BOOT_intern_symbol(const char *text, void *user)
         if (k == n)
             return symbols[i];
     }
+    /*
+     *  Then the library's own table, if it exists yet.
+     *
+     *  The scan above only sees symbols this side made.  Once the image is
+     *  running it interns symbols too -- classify:under: sends asSymbol to
+     *  every category name -- and those never reach the C table.  Creating
+     *  another Symbol with the same characters gives two, and Symbol>>= is
+     *  identity, so they are not even equal: a category the image stored
+     *  could not be found by a name the compiler read.
+     */
+    if (symbol_table_ready && OM_is_present(symbol_table)) {
+        uint32_t    index = BOOT_string_hash_of_text(text, n) % USTABLE_BUCKETS;
+        st_oop      bucket = OM_fetch_pointer(index, symbol_table);
+        uint32_t    count = OM_is_present(bucket)
+                                ? OM_fetch_word_length(bucket) : 0;
+        uint32_t    b;
+
+        for (b = 0; b < count; ++b) {
+            st_oop      candidate = OM_fetch_pointer(b, bucket);
+            size_t      k;
+
+            if (!OM_is_present(candidate)
+             || OM_fetch_byte_length(candidate) != n)
+                continue;
+            for (k = 0; k < n; ++k) {
+                if (OM_fetch_byte((uint32_t) k, candidate)
+                        != (uint8_t) text[k])
+                    break;
+            }
+            if (k == n) {
+                /*  Remember it so the next lookup is the quick one.  */
+                if (symbol_count < MAX_SYMBOLS)
+                    symbols[symbol_count++] = candidate;
+                return candidate;
+            }
+        }
+    }
+
     s = OM_instantiate_bytes(BOOT_global("Symbol"), (uint32_t) n);
     if (!OM_is_object(s))
         return ST_NIL;
@@ -428,6 +471,35 @@ static struct {
 } pool_bindings[512];
 static unsigned     pool_binding_count;
 
+/*
+ *  Which protocol each method belongs to.
+ *
+ *  The Browser's third pane is the protocol list, and it comes from the
+ *  class's organization -- an object every class has and none of ours had.
+ *  The information is in the sources, in the "methodsFor:" that introduces
+ *  each run of methods, and it went past unread until now.
+ */
+static struct {
+    unsigned    class_index;
+    int         class_side;
+    st_oop      selector;
+    char        protocol[64];
+} method_protocols[6000];
+static unsigned     method_protocol_count;
+
+/*
+ *  Every method's source, in one buffer, in chunk format.
+ *
+ *  Smalltalk-80 does not keep source in the image: a CompiledMethod carries
+ *  a position into a sources file, and the Browser reads the chunk there.
+ *  Nothing says the stream has to be a file -- RemoteString asks it only to
+ *  position: and nextChunk, which any PositionableStream does -- so the
+ *  sources live in a String and the image reads them the ordinary way.
+ */
+static char        *source_text;
+static size_t       source_length;
+static size_t       source_capacity;
+
 unsigned
 BOOT_undeclared(const char **names, unsigned max)
 {
@@ -584,6 +656,7 @@ make_format(unsigned fixed, int pointers, int indexable, int bytes)
 #define CLASS_FORMAT            2
 #define CLASS_SUBCLASSES        3
 #define CLASS_INSTANCE_VARS     4
+#define CLASS_ORGANIZATION      5
 #define CLASS_ORGANIZATION      5
 #define CLASS_NAME              6
 #define CLASS_POOL              7
@@ -918,15 +991,20 @@ parse_class_side_definition(const char *text)
  */
 static int
 parse_methods_for(const char *text, char *class_name, size_t namelen,
-                  int *class_side)
+                  int *class_side, char *category, size_t catlen)
 {
     const char *at = strstr(text, "methodsFor:");
     const char *p  = text;
     size_t      n  = 0;
 
     *class_side = 0;
+    if (category && catlen)
+        category[0] = '\0';
     if (!at)
         return 0;
+    /*  The protocol this run of methods belongs to, for the Browser.  */
+    if (category && catlen)
+        quoted_after(at, "methodsFor:", category, catlen);
     while (*p == ' ' || *p == '\n' || *p == '\t')
         ++p;
     while (*p && (isalnum((unsigned char) *p) || *p == '_') && n + 1 < namelen)
@@ -1096,7 +1174,7 @@ link_class_objects(void)
 
 static int
 compile_into(boot_class *c, int class_side, const char *source,
-             const char *file, unsigned line)
+             const char *file, unsigned line, const char *protocol)
 {
     st_compile_context  ctx;
     st_compile_result   res;
@@ -1208,6 +1286,33 @@ compile_into(boot_class *c, int class_side, const char *source,
         method_dictionary_at_put(grown, selector, res.method);
         OM_store_pointer(CLASS_METHOD_DICT, target, grown);
     }
+    /*
+     *  The source pointer, in the three bytes the compiler left for it.
+     *  Chapter 27 reads them from the end: the last holds the top six bits
+     *  of the position and, above those, the file number.
+     */
+    {
+        size_t      position = remember_source(source);
+        uint32_t    size = OM_fetch_byte_length(res.method);
+
+        if (size >= 3 && position <= 0x3FFFFF) {
+            OM_store_byte(size - 3, res.method, (uint8_t) (position & 0xFF));
+            OM_store_byte(size - 2, res.method,
+                          (uint8_t) ((position >> 8) & 0xFF));
+            OM_store_byte(size - 1, res.method,
+                          (uint8_t) ((position >> 16) & 0x3F));
+        }
+    }
+
+    /*  Remember where it belongs, so the class can be organized later.  */
+    if (protocol && protocol[0] && method_protocol_count < 6000) {
+        unsigned    slot = method_protocol_count++;
+
+        method_protocols[slot].class_index = (unsigned) (c - classes);
+        method_protocols[slot].class_side  = class_side;
+        method_protocols[slot].selector    = selector;
+        snprintf(method_protocols[slot].protocol, 64, "%.63s", protocol);
+    }
     if (result)
         ++result->methods_compiled;
     return 1;
@@ -1222,6 +1327,7 @@ read_source(const char *path, int definitions_only)
     st_chunk            chunk;
     char                err[256];
     char                class_name[64];
+    char                protocol[64] = "";
     int                 class_side = 0;
     boot_class         *current = NULL;
     int                 in_methods = 0;
@@ -1244,7 +1350,7 @@ read_source(const char *path, int definitions_only)
         }
         if (chunk.is_reader) {
             if (parse_methods_for(chunk.text, class_name, sizeof class_name,
-                                  &class_side)) {
+                                  &class_side, protocol, sizeof protocol)) {
                 current    = find_class(class_name);
                 in_methods = 1;
                 if (!current && !definitions_only) {
@@ -1259,7 +1365,7 @@ read_source(const char *path, int definitions_only)
         if (in_methods) {
             if (!definitions_only && current
              && !compile_into(current, class_side, chunk.text, path,
-                              CHUNK_line(reader))) {
+                              CHUNK_line(reader), protocol)) {
                 CHUNK_close(reader);
                 return 0;
             }
@@ -1628,6 +1734,39 @@ adopt_symbols(void)
     return 1;
 }
 
+/*
+ *  Append one method's source in chunk format and answer where it started.
+ *
+ *  A bang inside the text is doubled, which is the chunk format's own escape
+ *  and what nextChunk undoes on the way back out.
+ */
+static size_t
+remember_source(const char *text)
+{
+    size_t  start = source_length;
+    size_t  i;
+    size_t  n = strlen(text);
+
+    for (i = 0; i <= n; ++i) {
+        char    c = (i < n) ? text[i] : '!';
+        int     doubled = (i < n && c == '!');
+
+        if (source_length + 3 > source_capacity) {
+            size_t  want = source_capacity ? source_capacity * 2 : 65536;
+            char   *grown = (char *) realloc(source_text, want);
+
+            if (!grown)
+                return 0;
+            source_text = grown;
+            source_capacity = want;
+        }
+        source_text[source_length++] = c;
+        if (doubled)
+            source_text[source_length++] = c;
+    }
+    return start;
+}
+
 /*  ----------  Roots  ----------  */
 
 /*
@@ -1848,6 +1987,21 @@ run_method_on(st_oop method, st_oop receiver, uint64_t budget)
  *
  *  Smalltalk indexes from one, so "self at: (m - 1)" is byte m - 2 here.
  */
+/*  The same formula on plain text, for interning a name not yet a Symbol. */
+uint32_t
+BOOT_string_hash_of_text(const char *text, size_t length)
+{
+    size_t  m;
+
+    if (length == 0)
+        return 21845;
+    if (length == 1)
+        return (uint32_t) (text[0] & 127) * 106;
+    m = (length == 2) ? 3 : length;
+    return (uint32_t) (unsigned char) text[0] * 48
+         + (uint32_t) (unsigned char) text[m - 2] + (uint32_t) length;
+}
+
 uint32_t
 BOOT_string_hash(st_oop string)
 {
@@ -2199,6 +2353,120 @@ install_user_interface(void)
 }
 
 /*
+ *  Give every class an organization: its methods grouped by protocol.
+ *
+ *  The Browser's third pane lists them, and its fourth lists the selectors
+ *  in the one chosen, so a class with no organization browses as empty however
+ *  many methods it has.  Each class gets a ClassOrganizer and every selector
+ *  is classified under the protocol its "methodsFor:" named.
+ */
+static int
+install_class_organization(void)
+{
+    st_oop      org_class = BOOT_global("ClassOrganizer");
+    st_oop      make;
+    st_oop      classify;
+    unsigned    i;
+
+    if (!OM_is_present(org_class))
+        return 1;
+    make     = lookup_in_chain(OM_fetch_class(org_class), "new");
+    classify = lookup_in_chain(org_class, "classify:under:");
+    if (!OM_is_present(make) || !OM_is_present(classify))
+        return 1;
+
+    /*  One organizer per class and per metaclass, made on first use.  */
+    for (i = 0; i < method_protocol_count; ++i) {
+        boot_class *c = &classes[method_protocols[i].class_index];
+        st_oop      target = method_protocols[i].class_side ? c->metaclass_oop
+                                                            : c->class_oop;
+        st_oop      organization;
+        st_oop      args[2];
+
+        if (!OM_is_present(target))
+            continue;
+        organization = OM_fetch_pointer(CLASS_ORGANIZATION, target);
+        if (!OM_is_present(organization) || organization == ST_NIL) {
+            if (!run_method_on(make, org_class, 2000000))
+                continue;
+            organization = st_vm.return_value;
+            if (!OM_is_present(organization))
+                continue;
+            OM_store_pointer(CLASS_ORGANIZATION, target, organization);
+        }
+        args[0] = method_protocols[i].selector;
+        args[1] = BOOT_make_string(method_protocols[i].protocol, NULL);
+        run_method_with(classify, organization, args, 2, 2000000);
+    }
+    return 1;
+}
+
+/*
+ *  Hand the collected sources to the image as SourceFiles.
+ *
+ *  CompiledMethod>>getSource reads a chunk from "SourceFiles at: n" at the
+ *  position in its trailer, and RemoteString asks that stream only to
+ *  position: and nextChunk.  A ReadWriteStream on a String answers both, so
+ *  the sources need not be a file -- which is just as well, since this image
+ *  has no file system yet.  Index 2 is the changes stream, empty and
+ *  writable, which is where the image will put anything it compiles itself.
+ */
+static int
+install_sources(void)
+{
+    st_oop      array_class = BOOT_global("Array");
+    st_oop      stream_class = BOOT_global("ReadWriteStream");
+    st_oop      string_class = BOOT_global("String");
+    st_oop      files;
+    st_oop      text;
+    st_oop      arg;
+    size_t      i;
+
+    if (!OM_is_present(array_class) || !OM_is_present(stream_class)
+     || !OM_is_present(string_class) || source_length == 0)
+        return 1;
+
+    text = OM_instantiate_bytes(string_class, (uint32_t) source_length);
+    if (!OM_is_present(text))
+        return 0;
+    for (i = 0; i < source_length; ++i)
+        OM_store_byte((uint32_t) i, text, (uint8_t) source_text[i]);
+
+    files = OM_instantiate_pointers(array_class, 2);
+    if (!OM_is_present(files))
+        return 0;
+    OM_increase_ref(files);
+
+    {
+        /*
+         *  "with:" rather than "on:": on: positions at the start and treats
+         *  the collection as empty to be written over, which is right for
+         *  the changes stream and wrong for one that already holds every
+         *  method in the system.
+         */
+        st_oop  with = lookup_in_chain(OM_fetch_class(stream_class), "with:");
+        st_oop  on = lookup_in_chain(OM_fetch_class(stream_class), "on:");
+        st_oop  empty;
+
+        if (!OM_is_present(on) || !OM_is_present(with))
+            return 1;
+        arg = text;
+        if (!run_method_with(with, stream_class, &arg, 1, 4000000)
+         || !OM_is_present(st_vm.return_value))
+            return 1;
+        OM_store_pointer(0, files, st_vm.return_value);
+
+        empty = OM_instantiate_bytes(string_class, 0);
+        arg = empty;
+        if (run_method_with(on, stream_class, &arg, 1, 4000000)
+         && OM_is_present(st_vm.return_value))
+            OM_store_pointer(1, files, st_vm.return_value);
+    }
+    define_global("SourceFiles", files);
+    return 1;
+}
+
+/*
  *  Build SystemOrganization, the map from class categories to classes.
  *
  *  The Browser opens on it -- "BrowserView openOn: SystemOrganization" -- so
@@ -2497,19 +2765,31 @@ install_text_style(void)
     define_global("DefaultFont", font);
 
     /*
-     *  Four entries, all the same face.
+     *  Four faces: basal, bold, italic, bold italic.
      *
-     *  TextStyle indexes fontArray by emphasis -- basal, bold, italic, bold
-     *  italic -- and asking for an index it does not have answers nil, which
-     *  is then sent #name.  One face repeated is honest about what the system
-     *  has: every emphasis looks the same until there are faces to tell
-     *  apart, which is better than composition failing.
+     *  They draw the same glyphs -- there is one face here, not four -- but
+     *  they must be four distinct StrikeFonts whose emphasis fields differ,
+     *  because that is how the library tells them apart.  Text>>
+     *  makeSelectorBoldIn: asks the style for the bold face of the current
+     *  one and gets nil if no font claims to be bold, and then sends it
+     *  #name.  Sharing one object four times looks tidier and does not work.
      */
     font_array = OM_instantiate_pointers(array_class, 4);
     if (!OM_is_present(font_array))
         return 1;
-    for (i = 0; i < 4; ++i)
-        OM_store_pointer(i, font_array, font);
+    OM_store_pointer(0, font_array, font);
+    for (i = 1; i < 4; ++i) {
+        st_oop      face = OM_instantiate_pointers(OM_fetch_class(font), 16);
+        unsigned    k;
+
+        if (!OM_is_present(face))
+            return 1;
+        for (k = 0; k < 16; ++k)
+            OM_store_pointer(k, face, OM_fetch_pointer(k, font));
+        OM_store_pointer(15, face, OM_int_oop((st_int) i));   /*  emphasis  */
+        OM_increase_ref(face);
+        OM_store_pointer(i, font_array, face);
+    }
 
     make = lookup_in_chain(OM_fetch_class(style_class), "fontArray:");
     if (!OM_is_present(make))
@@ -2651,6 +2931,8 @@ BOOT_run_initializers(st_boot_init_report *out)
     run_class_initializers(out);
 
     install_user_interface();
+    install_class_organization();
+    install_sources();
     install_system_organization();
     return 0;
 }

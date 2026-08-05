@@ -194,6 +194,15 @@ A black frame with white knocked out of it, and a correctly dithered gray —
 the counts are exact, because a fill covers precisely the rectangle asked for
 and gray covers half of it.
 
+**And browsing works.** Category to class to protocol to selector to source:
+`Kernel-Objects` lists its five classes, `Boolean` its four protocols, and
+`controlling` its six selectors — and `Boolean sourceCodeAt: #not` answers
+the method's real text. Smalltalk-80 keeps no source in the image; a
+`CompiledMethod` carries a position into a sources file and the Browser reads
+the chunk there. The bootstrap writes every method's source into one String
+and hands it over as `SourceFiles`, because nothing says that stream has to
+be a file — `RemoteString` asks it only to `position:` and `nextChunk`.
+
 **And it browses itself.** A System Browser — the Browser model on
 `SystemOrganization`, five list views and a code view, all the library's own
 — renders on the bootstrapped image, listing the categories the image was

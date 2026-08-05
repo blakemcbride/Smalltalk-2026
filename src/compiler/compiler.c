@@ -615,19 +615,48 @@ compile_primary(st_compiler *c, var_ref *out_var)
          */
         unsigned    argc = 0;
         unsigned    first_arg = c->name_count;
+        unsigned    arg_slots[MAX_ARGS];
         unsigned    jump_at;
 
         advance(c);
         while (at(c, ST_TOK_COLON)) {
+            unsigned    slot;
+            unsigned    k;
+
             advance(c);
             if (!at(c, ST_TOK_IDENTIFIER)) {
                 fail(c, "expected a block argument name");
                 return;
             }
-            if (c->name_count < MAX_TEMPS) {
+            /*
+             *  A block argument that shares a name with an enclosing
+             *  temporary IS that temporary -- it is given the same slot, not
+             *  one of its own.
+             *
+             *  This looks like a mistake and is the 1983 rule, and a good
+             *  deal of the library depends on it.  RunArray>>copyFrom:to:
+             *  declares "| run1 offset1 value1 ... |" and then writes
+             *
+             *      self at: start setRunOffsetAndValue:
+             *          [:run1 :offset1 :value1 | value1]
+             *
+             *  before going on to use run1 and offset1 in the METHOD.  The
+             *  block is how those variables get their values; give the
+             *  argument a slot of its own and the method reads nil for ever.
+             */
+            slot = c->name_count;
+            for (k = 0; k < c->name_count; ++k) {
+                if (strcmp(c->names[k], c->token.text) == 0) {
+                    slot = k;
+                    break;
+                }
+            }
+            if (slot == c->name_count && c->name_count < MAX_TEMPS) {
                 snprintf(c->names[c->name_count], 64, "%.63s", c->token.text);
                 ++c->name_count;
             }
+            if (argc < MAX_ARGS)
+                arg_slots[argc] = slot;
             ++argc;
             advance(c);
         }
@@ -655,12 +684,17 @@ compile_primary(st_compiler *c, var_ref *out_var)
         emit(c, 200);                       /*  blockCopy:  */
         jump_at = emit_jump_placeholder(c, JUMP_ALWAYS);
 
-        /*  Block arguments arrive already stored in the block's frame.  */
+        /*
+         *  Block arguments arrive on the stack and are stored into their
+         *  slots, last first -- which are not necessarily consecutive, since
+         *  one that shares a name with an enclosing temporary shares its
+         *  slot too.
+         */
         {
             unsigned    i;
 
-            for (i = 0; i < argc; ++i)
-                emit_store_temporary(c, first_arg + argc - 1 - i, 1);
+            for (i = 0; i < argc && i < MAX_ARGS; ++i)
+                emit_store_temporary(c, arg_slots[argc - 1 - i], 1);
         }
         compile_statements(c, 1);
         emit(c, 125);                       /*  return stack top from block  */
@@ -1544,7 +1578,16 @@ COMPILE_method(const char *source, const st_compile_context *ctx,
      *  same addresses either way, so the layout is identical in both builds.
      */
     byte_start  = (literals + 1) * (unsigned) sizeof(st_oop);
-    total_bytes = byte_start + code.length;
+    /*
+     *  Three bytes past the bytecodes: the source pointer.
+     *
+     *  Chapter 27 keeps it in the method's trailer -- the last three bytes
+     *  hold a position into the sources, and the top two bits of the last
+     *  say which file.  Zero means "no source", which is what these are
+     *  until something fills them in.  The interpreter never reads them
+     *  because it stops at a return long before.
+     */
+    total_bytes = byte_start + code.length + 3;
 
     method = OM_instantiate_bytes(ST_CLASS_COMPILED_METHOD, total_bytes);
     if (!OM_is_object(method)) {
