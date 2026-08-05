@@ -28,7 +28,7 @@ Phases 0-7 complete; Phase 8 has its foundation. See `doc/PLAN.md` for the roadm
 | 5 — Compiler and image bootstrap | done |
 | 6 — macOS and Windows | done, unconfirmed on those hosts |
 | 7 — Native threads | done |
-| 8 — MVC under parallelism | the image boots to its own desktop; input and the tools next |
+| 8 — MVC under parallelism | a System Browser renders on the bootstrapped image; interaction next |
 
 ## Building
 
@@ -193,6 +193,13 @@ st80: wrote screen.pbm, 14400 of 307200 pixels are ink
 A black frame with white knocked out of it, and a correctly dithered gray —
 the counts are exact, because a fill covers precisely the rectangle asked for
 and gray covers half of it.
+
+**And it browses itself.** A System Browser — the Browser model on
+`SystemOrganization`, five list views and a code view, all the library's own
+— renders on the bootstrapped image, listing the categories the image was
+built from. It is built with its window set rather than swept out, because
+`open` calls `view resize`, which asks the user to drag a rectangle and there
+is nobody headless to drag one.
 
 **And the image boots.** Saved and resumed with `-run`, it wakes into a
 process of its own and runs the MVC control loop:

@@ -754,6 +754,39 @@ test_processes(void)
 }
 
 /*
+ *  A System Browser.
+ *
+ *  Built the way BrowserView class>>openOn: builds one, but with the window
+ *  set rather than swept out: "open" calls "view resize", which in 1983 asks
+ *  the user to drag a rectangle, and there is nobody here to drag one.
+ *  Everything else is the library's -- the Browser model on
+ *  SystemOrganization, the five list views, the code view -- and what it
+ *  draws is the categories this image was built from.
+ */
+static void
+test_browser(void)
+{
+    check_ink("| b top | Display white."
+              " b := Browser new on: SystemOrganization."
+              " top := BrowserView model: b label: 'System Browser'"
+              " minimumSize: 400@250."
+              " top addCategoryView: (0@0 extent: 0.25@0.35) on: b"
+              " readOnly: false."
+              " top addClassView: (0.25@0 extent: 0.25@0.3) on: b"
+              " readOnly: false."
+              " top addMetaView: (0.25@0.3 extent: 0.25@0.05) on: b"
+              " readOnly: false."
+              " top addProtocolView: (0.5@0 extent: 0.25@0.35) on: b"
+              " readOnly: false."
+              " top addSelectorView: (0.75@0 extent: 0.25@0.35) on: b"
+              " readOnly: false."
+              " top addTextView: (0@0.35 extent: 1.0@0.65) on: b"
+              " initialSelection: nil."
+              " top window: (20@20 corner: 620@460). top display. ^1",
+              56618);
+}
+
+/*
  *  Printing, which is the deepest path in the library: printOn: runs Stream,
  *  WriteStream, String, Symbol, Character and -- for a Float -- LargeInteger
  *  division, all at once.  Everything that used to be listed here as not
@@ -846,6 +879,7 @@ main(void)
     test_process_scheduler();
     test_processes();
     test_system_organization();
+    test_browser();
     test_printing_deep();
     test_mixed_arithmetic();
 
