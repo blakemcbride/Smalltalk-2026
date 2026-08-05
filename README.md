@@ -16,7 +16,7 @@ object memory and the scheduler with ones that use every core.
 
 ## Status
 
-Phases 0-7 complete; Phase 8 has its foundation. See `doc/PLAN.md` for the roadmap.
+All nine phases complete. See `doc/PLAN.md` for the roadmap.
 
 | Phase | State |
 |---|---|
@@ -28,7 +28,7 @@ Phases 0-7 complete; Phase 8 has its foundation. See `doc/PLAN.md` for the roadm
 | 5 — Compiler and image bootstrap | done |
 | 6 — macOS and Windows | done, unconfirmed on those hosts |
 | 7 — Native threads | done |
-| 8 — MVC under parallelism | a System Browser renders on the bootstrapped image; interaction next |
+| 8 — MVC under parallelism | done — browse, compile, inspect, debug, and 31 threads underneath |
 
 ## Building
 
@@ -193,6 +193,25 @@ st80: wrote screen.pbm, 14400 of 307200 pixels are ink
 A black frame with white knocked out of it, and a correctly dithered gray —
 the counts are exact, because a fill covers precisely the rectangle asked for
 and gray covers half of it.
+
+**And it browses, compiles, inspects and debugs itself — while 31 threads
+run Smalltalk underneath.** That is Phase 8's exit criterion, and none of it
+is our code: the Browser, the Compiler, the Inspector and the Debugger are
+the 1983 library's, running on an image bootstrapped from MIT sources.
+
+```
+$ make OM=mt TSAN=1 test
+---- the library, in parallel ----
+  image: 226 classes, 4520 methods, 45 initializers
+  31 threads ran 4960 library expressions on 32 CPUs, 3 collections
+ok: 18 checks, 0 failures
+```
+
+`Object compile: 'answerFortyTwo ^42' classified: 'testing' notifying: nil`
+installs a method the image compiled itself, and `3 answerFortyTwo` answers
+42. The Inspector lists a Point's fields; the Debugger lists a context's
+stack. All of it with the whole class library and its interface in the heap,
+and every answer checked on every core.
 
 **And browsing works.** Category to class to protocol to selector to source:
 `Kernel-Objects` lists its five classes, `Boolean` its four protocols, and

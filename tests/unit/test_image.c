@@ -73,7 +73,8 @@ build_once(void)
            res.methods_compiled, res.symbols_interned);
 
     CHECK_EQ_INT(res.classes_created, 226);
-    CHECK_EQ_INT(res.methods_compiled, 4517);
+    /*  4517 from the MIT sources, plus the few in kernel/Bootstrap.st.  */
+    CHECK_EQ_INT(res.methods_compiled, 4520);
     built = 1;
     return 1;
 }
@@ -818,7 +819,38 @@ test_browsing(void)
     check_integer("(Boolean sourceCodeAt: #not) size", 122);
     check_integer("((Boolean sourceCodeAt: #not) asText"
                   " makeSelectorBoldIn: Boolean) size", 122);
-    check_integer("(SourceFiles at: 1) contents size", 1202933);
+    check_integer("(SourceFiles at: 1) contents size", 1203250);
+}
+
+/*
+ *  Editing, compiling, inspecting and debugging -- inside the image.
+ *
+ *  This is the rest of Phase 8's exit criterion, and none of it is our code:
+ *  the Compiler, the Inspector and the Debugger are the library's, running on
+ *  an image bootstrapped from source.  A method compiled here is installed in
+ *  a real method dictionary and answers when sent.
+ */
+static void
+test_compile_inspect_debug(void)
+{
+    /*  The image compiles a method into a class, and it runs.  */
+    check_integer("Object compile: 'answerFortyTwo ^42' classified: 'testing'"
+                  " notifying: nil. ^3 answerFortyTwo", 42);
+    check_integer("Object compile: 'twice: n ^n * 2' classified: 'testing'"
+                  " notifying: nil. ^(3 twice: 21)", 42);
+
+    /*  It is a real method: the Browser can find it and read it back.  */
+    check_integer("Object compile: 'answerFortyTwo ^42' classified: 'testing'"
+                  " notifying: nil."
+                  " ^(Object sourceCodeAt: #answerFortyTwo) size", 18);
+
+    /*  The Inspector opens on an object and lists its fields.  */
+    check_integer("(Inspector new inspect: 3@4) fieldList size", 3);
+    check_class("Inspector inspect: 3@4", "Inspector");
+
+    /*  The Debugger opens on a context and lists the stack.  */
+    check_integer("(Debugger context: thisContext) contextList size", 1);
+    check_class("Debugger context: thisContext", "Debugger");
 }
 
 /*
@@ -916,6 +948,7 @@ main(void)
     test_system_organization();
     test_browsing();
     test_browser();
+    test_compile_inspect_debug();
     test_printing_deep();
     test_mixed_arithmetic();
 

@@ -2241,7 +2241,14 @@ install_user_interface(void)
          *  question about the mouse or the keyboard is asked of nil.
          */
         { "InputSensor", "install" },
-        { "InputSensor", "initMap" }
+        { "InputSensor", "initMap" },
+        /*
+         *  Behavior class>>init, not initialize, so BOOT_run_initializers
+         *  never finds it.  It makes the three dictionaries addSelector:
+         *  consults on every method installed -- so compiling anything
+         *  inside the image asks nil for a selector without them.
+         */
+        { "Behavior",    "init" }
     };
     static const struct {
         const char *class_name;
@@ -2249,7 +2256,16 @@ install_user_interface(void)
         const char *global;
     } wanted[] = {
         { "InputSensor",    "new",  "Sensor" },
-        { "ControlManager", "new",  "ScheduledControllers" }
+        { "ControlManager", "new",  "ScheduledControllers" },
+        /*
+         *  Where the compiler puts a name it does not know.  Compiling
+         *  anything inside the image reaches Encoder>>declareUndeclared:,
+         *  which asks Undeclared for the name -- and asks nil, if nothing
+         *  has made one.
+         */
+        { "Dictionary",     "new",  "Undeclared" },
+        /*  And where it records what it has changed.  */
+        { "ChangeSet",      "new",  "SystemChanges" }
     };
     unsigned    i;
 

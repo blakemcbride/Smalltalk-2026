@@ -58,16 +58,19 @@ main(void)
     SURVEY_report(&survey, stdout);
 
     /*
-     *  226 classes and 4517 methods.  The method count is not a guess: the
-     *  upstream tree also stores each method as its own .st file, and there
-     *  are exactly 4517 of those, so this is an independent check that the
-     *  chunk reader is finding every method and not quietly skipping any.
-     *  Undercounting is the failure mode that hides -- an early-terminated
-     *  method category simply compiles fewer methods and still passes.
+     *  226 vendored classes and 4517 methods, plus kernel/Bootstrap.st --
+     *  our own additions, filed in last and listed last in the manifest.
+     *
+     *  The method count is not a guess: the upstream tree also stores each
+     *  method as its own .st file, and there are exactly 4517 of those, so
+     *  this is an independent check that the chunk reader is finding every
+     *  method and not quietly skipping any.  Undercounting is the failure
+     *  mode that hides -- an early-terminated method category simply
+     *  compiles fewer methods and still passes.
      */
-    CHECK_EQ_INT(survey.files, 226);
+    CHECK_EQ_INT(survey.files, 227);
     CHECK_EQ_INT(survey.unreadable, 0);
-    CHECK_EQ_INT(survey.methods, 4517);
+    CHECK_EQ_INT(survey.methods, 4520);
     CHECK_EQ_INT(survey.failed, 0);
 
     return ST_TEST_END();

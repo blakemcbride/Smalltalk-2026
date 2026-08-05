@@ -224,3 +224,4 @@ sources/System-Support/InputState/InputState.stClass
 sources/System-Support/KeyboardEvent/KeyboardEvent.stClass
 sources/System-Support/MessageTally/MessageTally.stClass
 sources/System-Support/SystemDictionary/SystemDictionary.stClass
+kernel/Bootstrap.st
