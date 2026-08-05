@@ -28,7 +28,7 @@ Phases 0-7 complete; Phase 8 has its foundation. See `doc/PLAN.md` for the roadm
 | 5 — Compiler and image bootstrap | done |
 | 6 — macOS and Windows | done, unconfirmed on those hosts |
 | 7 — Native threads | done |
-| 8 — MVC under parallelism | library loads, runs, draws and renders text; views next |
+| 8 — MVC under parallelism | views display; scheduler and input next |
 
 ## Building
 
@@ -193,6 +193,11 @@ st80: wrote screen.pbm, 14400 of 307200 pixels are ink
 A black frame with white knocked out of it, and a correctly dithered gray —
 the counts are exact, because a fill covers precisely the rectangle asked for
 and gray covers half of it.
+
+**And it puts a window on the screen.** A `StandardSystemView` with a label
+displays itself — the tab, the border and the body — through the library's
+own `View` code, the windowing transformation and the text it composes. That
+is the substrate a Browser or an Inspector lives in.
 
 **And it composes and draws text.** `'hello world' asParagraph` composes to
 one line 88 pixels wide and displays on the screen, which runs Paragraph, the

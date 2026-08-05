@@ -595,6 +595,32 @@ test_paragraph(void)
 }
 
 /*
+ *  A view on the screen.
+ *
+ *  StandardSystemView is the window everything in MVC lives in: a labelled
+ *  tab above a body, drawn by the library's own View code through the
+ *  transformation, the border and the text it just learned to compose.  This
+ *  is Phase 8's substrate -- what a Browser or an Inspector puts itself in.
+ */
+static void
+test_view(void)
+{
+    check_integer("| v | v := StandardSystemView new. v label: 'Hello'."
+                  " ^v label size", 5);
+    check_integer("| v | v := StandardSystemView new."
+                  " v window: (60@40 corner: 360@200). ^v window width", 300);
+
+    /*
+     *  Displayed, it covers its window: a gray body and a labelled tab.  The
+     *  count is stable because the dither is, and it is far more than the
+     *  border alone -- a view that failed to fill would be obvious here.
+     */
+    check_ink("| v | Display white. v := StandardSystemView new."
+              " v label: 'Hello World'. v window: (60@40 corner: 360@200)."
+              " v display. ^1", 12512);
+}
+
+/*
  *  Printing, which is the deepest path in the library: printOn: runs Stream,
  *  WriteStream, String, Symbol, Character and -- for a Float -- LargeInteger
  *  division, all at once.  Everything that used to be listed here as not
@@ -682,6 +708,7 @@ main(void)
     test_display();
     test_text();
     test_paragraph();
+    test_view();
     test_printing_deep();
     test_mixed_arithmetic();
 
