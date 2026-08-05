@@ -204,7 +204,9 @@ st80: wrote screen.pbm, 121199 of 307200 pixels are ink
 ```
 
 What it draws is its own desktop — the gray background and the scheduled
-windows over it. `ProcessorScheduler class>>new` refuses on purpose, because
+windows over it — and then it waits for input. Processes fork and the
+scheduler switches between them; the Sensor answers; a controller under the
+cursor says it wants control, and `searchForActiveController` gives it. `ProcessorScheduler class>>new` refuses on purpose, because
 in 1983 the one scheduler was made when the image was built and carried by
 every snapshot after; an image built from sources has to be given one, and a
 process to wake up in, whose method is compiled from `-startup`.

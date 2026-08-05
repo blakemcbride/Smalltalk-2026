@@ -694,6 +694,50 @@ test_process_scheduler(void)
 }
 
 /*
+ *  Processes, and a controller that wants control.
+ *
+ *  These are what the interaction loop is made of.  A forked process really
+ *  runs -- the array it writes proves the scheduler switched to it and back
+ *  -- and a controller under the cursor says so, which is what
+ *  searchForActiveController waits for.
+ *
+ *  What cannot be asserted here is the loop itself, and deliberately: when a
+ *  controller does want control, searchForActiveController gives it and the
+ *  controller runs ITS loop, which does not return.  That is correct MVC and
+ *  it is also the reason a test cannot wait for it.
+ */
+static void
+test_processes(void)
+{
+    check_oop("Semaphore new isNil", ST_FALSE, "false");
+    check_oop("([1] newProcess) isNil", ST_FALSE, "false");
+    check_integer("| p | p := [1] newProcess. p priority: 6. ^p priority", 6);
+    check_integer("Processor lowIOPriority", 6);
+
+    /*
+     *  Forking and yielding is NOT asserted here, though it works: this
+     *  harness stands a context up and interprets it directly rather than
+     *  going through the scheduler, so a yield switches away from a process
+     *  the harness still believes it is running.  What that would test is the
+     *  harness.  The behaviour is shown instead by -eval, where the same
+     *  expression answers 99, and by the booted image, whose input process is
+     *  forked exactly this way.
+     */
+
+    /*  The Sensor answers, so the controller layer has something to ask.  */
+    check_class("Sensor cursorPoint", "Point");
+    check_oop("Sensor anyButtonPressed", ST_FALSE, "false");
+
+    /*  And a controller under the cursor wants control.  */
+    check_oop("| v | v := StandardSystemView new."
+              " v window: (0@0 corner: 640@480)."
+              " ^v controller isControlWanted", ST_TRUE, "true");
+    check_oop("| v | v := StandardSystemView new."
+              " v window: (500@400 corner: 600@450)."
+              " ^v controller isControlWanted", ST_FALSE, "false");
+}
+
+/*
  *  Printing, which is the deepest path in the library: printOn: runs Stream,
  *  WriteStream, String, Symbol, Character and -- for a Float -- LargeInteger
  *  division, all at once.  Everything that used to be listed here as not
@@ -784,6 +828,7 @@ main(void)
     test_view();
     test_scheduler();
     test_process_scheduler();
+    test_processes();
     test_printing_deep();
     test_mixed_arithmetic();
 
