@@ -2626,6 +2626,83 @@ install_special_selectors(void)
 }
 
 /*
+ *  Give every class a classPool holding its class variables.
+ *
+ *  A class variable is reached two ways.  A method already compiled holds
+ *  the Association itself in its literal frame and reads its value field, so
+ *  everything the C compiler built works whether or not any dictionary
+ *  exists.  A method compiled LATER has to find the binding by name, and the
+ *  only place to look is the class's classPool -- Encoder>>lookupInPools:
+ *  asks each class up the chain for one.
+ *
+ *  Ours was nil on every class, so the image could compile a method that
+ *  named a class variable and would quietly bind it to nil instead.  The
+ *  method compiled, ran, and answered the wrong thing.  That is what the
+ *  Browser does every time someone accepts a method, and roughly a third of
+ *  the 1983 library names a class variable somewhere.
+ *
+ *  Filled here rather than as each binding is made, because the bindings are
+ *  created lazily while methods compile and are only all present afterwards.
+ */
+static void
+install_class_pools(void)
+{
+    st_oop      dict_class = BOOT_global("Dictionary");
+    st_oop      new_with;
+    st_oop      add_to;
+    unsigned    i;
+
+    if (!OM_is_present(dict_class))
+        return;
+    new_with = lookup_in_chain(OM_fetch_class(dict_class), "new:");
+    add_to   = lookup_in_chain(dict_class, "add:");
+    if (!OM_is_present(new_with) || !OM_is_present(add_to))
+        return;
+
+    for (i = 0; i < class_count; ++i) {
+        boot_class *c = &classes[i];
+        st_oop      pool;
+        st_oop      arg;
+        unsigned    k;
+        unsigned    present = 0;
+
+        if (!OM_is_present(c->class_oop) || c->cvar_count == 0)
+            continue;
+        for (k = 0; k < c->cvar_count; ++k)
+            if (c->cvar_assoc[k] != 0)
+                ++present;
+        if (present == 0)
+            continue;
+
+        /*  Room to spare: a hashed collection that fills up stops working. */
+        arg = OM_int_oop((st_int) (c->cvar_count * 4 + 8));
+        if (!run_method_with(new_with, dict_class, &arg, 1, 2000000))
+            continue;
+        pool = st_vm.return_value;
+        if (!OM_is_present(pool))
+            continue;
+
+        for (k = 0; k < c->cvar_count; ++k) {
+            st_oop  arg2;
+
+            if (c->cvar_assoc[k] == 0)
+                continue;
+            /*
+             *  add:, so the dictionary holds the very Association the
+             *  compiled methods already point at.  at:put: would make a
+             *  SECOND binding of the same name, and then a method compiled
+             *  now and a method compiled at bootstrap would be reading and
+             *  writing two different variables that happened to be spelled
+             *  alike.  Which is worse than not finding it at all.
+             */
+            arg2 = c->cvar_assoc[k];
+            run_method_with(add_to, pool, &arg2, 1, 2000000);
+        }
+        OM_store_pointer(CLASS_POOL, c->class_oop, pool);
+    }
+}
+
+/*
  *  The scheduler object itself, and the name Processor for it.
  *
  *  Separated from the startup process because the class initializers need
@@ -3183,6 +3260,7 @@ BOOT_run_initializers(st_boot_init_report *out)
      *  builds the compiler's table out of them.
      */
     install_special_selectors();
+    install_class_pools();
 
     ST_set_error_reporting(0);
     run_class_initializers(out);

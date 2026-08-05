@@ -1106,6 +1106,44 @@ test_self_hosting(void)
 }
 
 /*
+ *  A method compiled inside the image can see a class variable, and sees the
+ *  same one everything else does.
+ *
+ *  A class variable is reached two ways.  A method the C compiler built
+ *  holds the Association in its literal frame and reads its value, so it
+ *  works whether or not any dictionary exists.  A method compiled LATER has
+ *  to find the binding by name, and the only place to look is the class's
+ *  classPool.
+ *
+ *  Ours was nil on every class, so the image compiled a method naming a
+ *  class variable and quietly bound it to nil.  It compiled, it ran, and it
+ *  answered the wrong thing -- which is what the Browser does every time
+ *  someone accepts a method.
+ *
+ *  MacroSelectors is the case that proves both halves: it is written by
+ *  MessageNode class>>initialize, which the C compiler built, and read here
+ *  by a method the image compiles now.  Eight entries means the two are
+ *  looking at one binding and not at two spelled alike.
+ */
+static void
+test_class_variables_from_the_image(void)
+{
+    check_integer("MessageNode class compile: 'shMacros ^MacroSelectors'"
+                  " classified: 'class variable check' notifying: nil."
+                  " ^MessageNode shMacros size", 8);
+
+    /*  And that writing through one is seen through the other.  */
+    check_integer("MessageNode class compile: 'shPut: x MacroSelectors _ x'"
+                  " classified: 'class variable check' notifying: nil."
+                  " MessageNode shPut: #(1 2 3)."
+                  " ^MessageNode shMacros size", 3);
+    check_integer("MessageNode shPut:"
+                  " #(ifTrue: ifFalse: ifTrue:ifFalse: ifFalse:ifTrue:"
+                  " and: or: whileFalse: whileTrue:)."
+                  " ^MessageNode shMacros size", 8);
+}
+
+/*
  *  Every class the image defines is reachable by name from Smalltalk.
  *
  *  A binding is made the first time a name is needed, and for the first
@@ -1320,6 +1358,7 @@ main(void)
     test_compile_inspect_debug();
     test_globals_are_reachable_by_name();
     test_self_hosting();
+    test_class_variables_from_the_image();
     test_input();
     test_printing_deep();
     test_mixed_arithmetic();
