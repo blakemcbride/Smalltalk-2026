@@ -147,6 +147,13 @@ implicit lock. We break it deliberately and supply `Mutex`, `Monitor`,
 threads 1..N are Smalltalk workers and never call SDL video. SDL3's
 main-thread-only rules and macOS's Cocoa run loop force this shape.
 
+**The language stops at the Blue Book.** The grammar this compiler accepts is
+the 1983 one, deliberately: dynamic arrays, general pragmas, block-local
+temporaries, byte-array and scaled-decimal literals and named primitives are
+all later Squeak/Pharo additions and none of them are implemented.
+`doc/LanguageExtensions.md` surveys them and records where each stands; it is
+a discussion to have once the nine phases are done, not before.
+
 ## Layout
 
 ```
