@@ -257,20 +257,28 @@ test_chunk_reader(void)
     CHECK_EQ_STR(chunk.text, "first chunk");
     CHECK_EQ_INT(chunk.is_reader, 0);
     CHECK(CHUNK_next(r, &chunk));
-    CHECK_EQ_STR(chunk.text, "second with a bang! inside");
+    CHECK_EQ_STR(chunk.text, " second with a bang! inside");
     CHECK(!CHUNK_next(r, &chunk));
     CHUNK_close(r);
 
-    /*  A leading bang introduces a reader chunk; an empty chunk ends it.  */
-    r = CHUNK_open_string("!Foo methodsFor: 'x'!\nbar ^1! !");
+    /*
+     *  A reader expression is the chunk after an empty one.  The bang before
+     *  "Foo" is a separator like any other, so the whitespace ahead of it
+     *  forms the empty chunk that marks what follows as a reader.
+     */
+    r = CHUNK_open_string("x!\n!Foo methodsFor: 'x'!\nbar ^1! !");
     CHECK(r != NULL);
-    CHECK(CHUNK_next(r, &chunk));
+    CHECK(CHUNK_next(r, &chunk));           /*  x                          */
+    CHECK_EQ_STR(chunk.text, "x");
+    CHECK(CHUNK_next(r, &chunk));           /*  the newline: empty         */
+    CHECK_EQ_INT(chunk.is_empty, 1);
+    CHECK(CHUNK_next(r, &chunk));           /*  the reader expression      */
     CHECK_EQ_INT(chunk.is_reader, 1);
     CHECK_EQ_STR(chunk.text, "Foo methodsFor: 'x'");
-    CHECK(CHUNK_next(r, &chunk));
+    CHECK(CHUNK_next(r, &chunk));           /*  the method                 */
     CHECK_EQ_INT(chunk.is_reader, 0);
-    CHECK_EQ_STR(chunk.text, "bar ^1");
-    CHECK(CHUNK_next(r, &chunk));
+    CHECK_EQ_STR(chunk.text, "\nbar ^1");
+    CHECK(CHUNK_next(r, &chunk));           /*  "! !" closes the category   */
     CHECK_EQ_INT(chunk.is_empty, 1);
     CHUNK_close(r);
 

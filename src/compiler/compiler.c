@@ -629,10 +629,14 @@ static void
 compile_binary_sequence(st_compiler *c, int receiver_is_super)
 {
     compile_unary_sequence(c, receiver_is_super);
-    while (at(c, ST_TOK_BINARY)) {
+    while (at(c, ST_TOK_BINARY) || at(c, ST_TOK_BAR)) {
         char    selector[256];
 
-        snprintf(selector, sizeof selector, "%s", c->token.text);
+        /*  A bar in operator position is the binary selector, not a
+         *  temporaries separator; those only appear at the head of a
+         *  method or block body.  */
+        snprintf(selector, sizeof selector, "%s",
+                 at(c, ST_TOK_BAR) ? "|" : c->token.text);
         advance(c);
         compile_primary(c, NULL);
         compile_unary_sequence(c, 0);
@@ -805,9 +809,14 @@ compile_pattern(st_compiler *c)
         advance(c);
         return;
     }
-    if (at(c, ST_TOK_BINARY)) {
+    if (at(c, ST_TOK_BINARY) || at(c, ST_TOK_BAR)) {
+        /*
+         *  A vertical bar is a binary selector as well as the separator for
+         *  temporaries.  Only the parser can tell them apart, and here we
+         *  are plainly at a method pattern.
+         */
         snprintf(c->out->selector, sizeof c->out->selector, "%s",
-                 c->token.text);
+                 at(c, ST_TOK_BAR) ? "|" : c->token.text);
         advance(c);
         if (!at(c, ST_TOK_IDENTIFIER)) {
             fail(c, "expected an argument name");

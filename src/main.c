@@ -14,6 +14,8 @@
 #include "interp.h"
 #include "gfx.h"
 #include "st_sched.h"
+#include "bootstrap.h"
+#include "compiler.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -45,6 +47,8 @@ usage(const char *argv0)
     printf("usage: %s [options]\n", argv0);
     printf("\n");
     printf("  -version              print version and build configuration\n");
+    printf("  -bootstrap <a.st...> [-o image] [-eval expr]\n");
+    printf("                        build an image from source\n");
     printf("  -run <image> [n]      run the image, opening a window\n");
     printf("  -census <image>       load an image and summarize it\n");
     printf("  -classes <image>      list every class, in class.oops format\n");
@@ -331,6 +335,118 @@ do_run(const char *path, uint64_t max_cycles)
     return 0;
 }
 
+/*
+ *  Build an image from source and, optionally, evaluate an expression in it.
+ *
+ *  Evaluating means compiling the expression as the body of a method,
+ *  standing up a context whose sender is nil, and running until it returns.
+ *  A return with no sender has nowhere to push its answer, so the
+ *  interpreter keeps it and stops -- see st_vm.return_value.
+ */
+static st_oop
+evaluate(const char *expression, char *errbuf, size_t errlen)
+{
+    st_compile_context  ctx;
+    st_compile_result   res;
+    char                source[4096];
+    st_oop              context;
+    st_oop              method;
+
+    memset(&ctx, 0, sizeof ctx);
+    ctx.intern_symbol      = BOOT_intern_symbol;
+    ctx.make_string        = BOOT_make_string;
+    ctx.make_float         = BOOT_make_float;
+    ctx.make_large_integer = BOOT_make_large_integer;
+    ctx.make_array         = BOOT_make_array;
+    ctx.lookup_global      = BOOT_lookup_global;
+
+    snprintf(source, sizeof source, "doIt ^%s", expression);
+    if (COMPILE_method(source, &ctx, &res) != 0) {
+        snprintf(errbuf, errlen, "%s", res.error);
+        return ST_OOP_INVALID;
+    }
+    method = res.method;
+
+    context = OM_instantiate_pointers(ST_CLASS_METHOD_CONTEXT, 32);
+    if (!OM_is_object(context)) {
+        snprintf(errbuf, errlen, "out of memory building a context");
+        return ST_OOP_INVALID;
+    }
+    OM_store_pointer(ST_CTX_SENDER, context, ST_NIL);
+    OM_store_pointer(ST_CTX_METHOD, context, method);
+    OM_store_pointer(ST_CTX_RECEIVER, context, ST_NIL);
+    /*
+     *  The instruction pointer is stored one-relative and counts bytes from
+     *  the start of the method, so it begins past the header and literals.
+     */
+    OM_store_pointer(ST_CTX_IP, context,
+                     OM_int_oop((st_int)
+                        (BOOT_method_initial_ip(method) + 1)));
+    OM_store_pointer(ST_CTX_SP, context, OM_int_oop(0));
+
+    memset(&st_vm, 0, sizeof st_vm);
+    st_vm.active_context = ST_NIL;
+    ST_set_active_context(context);
+    st_vm.running      = 1;
+    st_vm.return_value = ST_NIL;
+    ST_interp_run(2000000);
+    if (st_vm.running) {
+        snprintf(errbuf, errlen, "expression did not finish in 2M bytecodes");
+        return ST_OOP_INVALID;
+    }
+    return st_vm.return_value;
+}
+
+static int
+do_bootstrap(const char *const *sources, unsigned count, const char *out_path,
+             const char *expression)
+{
+    st_bootstrap_result result;
+    char                err[512];
+
+    if (BOOT_build(sources, count, &result) != 0) {
+        fprintf(stderr, "st80: bootstrap failed: %s\n", result.error);
+        return 1;
+    }
+    fprintf(stderr, "st80: %u classes, %u methods, %u symbols\n",
+            result.classes_created, result.methods_compiled,
+            result.symbols_interned);
+
+    if (expression) {
+        st_oop  value = evaluate(expression, err, sizeof err);
+        char    text[256];
+
+        if (value == ST_OOP_INVALID) {
+            fprintf(stderr, "st80: %s\n", err);
+            return 1;
+        }
+        ST_print_object(value, text, sizeof text);
+        printf("%s\n", text);
+    }
+    if (out_path) {
+#ifdef ST_OM_MT
+        if (OM_image_save(out_path, err, sizeof err) != 0) {
+            fprintf(stderr, "st80: %s\n", err);
+            return 1;
+        }
+        fprintf(stderr, "st80: wrote %s\n", out_path);
+#else
+        /*
+         *  A bootstrapped image is written in the native format, which
+         *  belongs to the 64-bit memory.  The Blue Book build can still
+         *  bootstrap and evaluate -- useful for checking the compiler
+         *  against an interpreter already proven on the Xerox traces -- but
+         *  it has nothing to write the result into.
+         */
+        fprintf(stderr, "st80: -o needs the 64-bit object memory "
+                        "(build with OM=mt)\n");
+        return 1;
+#endif
+    }
+    OM_shutdown();
+    return 0;
+}
+
 static int
 do_inspect(const char *path, const char *oop_text)
 {
@@ -422,6 +538,28 @@ main(int argc, char **argv)
             return do_classes(argv[i + 1]);
         if (!strcmp(argv[i], "-methods") && i + 1 < argc)
             return do_methods(argv[i + 1]);
+        if (!strcmp(argv[i], "-bootstrap")) {
+            const char *sources[32];
+            unsigned    count = 0;
+            const char *out_path = NULL;
+            const char *expression = NULL;
+            int         j;
+
+            for (j = i + 1; j < argc; ++j) {
+                if (!strcmp(argv[j], "-o") && j + 1 < argc) {
+                    out_path = argv[++j];
+                }  else if (!strcmp(argv[j], "-eval") && j + 1 < argc) {
+                    expression = argv[++j];
+                }  else if (count < 32) {
+                    sources[count++] = argv[j];
+                }
+            }
+            if (count == 0) {
+                fprintf(stderr, "st80: -bootstrap needs source files\n");
+                return 1;
+            }
+            return do_bootstrap(sources, count, out_path, expression);
+        }
         if (!strcmp(argv[i], "-run") && i + 1 < argc)
             return do_run(argv[i + 1],
                           (i + 2 < argc) ? strtoull(argv[i + 2], NULL, 0) : 0);

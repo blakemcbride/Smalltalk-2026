@@ -463,10 +463,19 @@ collect_at_safepoint(void *unused)
          *  selector and global binding reachable only from a method.
          */
         if (head->class_oop == ST_CLASS_COMPILED_METHOD) {
-            uint32_t    literals = (uint32_t)
-                            ((OM_fetch_pointer(0, p) >> 1) & 63);
+            /*
+             *  A method is a byte object, so its size counts bytes while the
+             *  header and literals are read as pointers.  The bound has to
+             *  be in pointer-sized slots or the walk runs eight times too
+             *  far off the end.
+             */
+            uint32_t    slots = head->size / (uint32_t) sizeof(st_oop);
+            uint32_t    literals;
 
-            for (i = 0; i <= literals && i < head->size; ++i)
+            if (slots == 0)
+                continue;
+            literals = (uint32_t) ((OM_fetch_pointer(0, p) >> 1) & 63);
+            for (i = 0; i <= literals && i < slots; ++i)
                 mark_visit(OM_fetch_pointer(i, p));
             continue;
         }

@@ -143,6 +143,14 @@ typedef struct {
     uint64_t    cycle;                  /*  bytecodes executed  */
     int         running;
     int         call_depth;
+
+    /*
+     *  What the outermost method answered.  A return whose sender is nil has
+     *  nowhere to push its result, so it is kept here and the interpreter
+     *  stops -- which is how an expression evaluated from C gets its value
+     *  back.
+     */
+    st_oop      return_value;
 } st_interp;
 
 extern st_interp    st_vm;

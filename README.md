@@ -16,7 +16,7 @@ object memory and the scheduler with ones that use every core.
 
 ## Status
 
-Phases 0-2, 4, 6 and 7 complete; 3 and 5 partial. See `doc/PLAN.md` for the roadmap.
+Phases 0-2 and 4-7 complete; Phase 3 partial. See `doc/PLAN.md` for the roadmap.
 
 | Phase | State |
 |---|---|
@@ -25,7 +25,7 @@ Phases 0-2, 4, 6 and 7 complete; 3 and 5 partial. See `doc/PLAN.md` for the road
 | 2 — Interpreter, primitives, `trace2` gate | done |
 | 3 — BitBlt, SDL3, first light | in progress — see below |
 | 4 — 64-bit object memory | done |
-| 5 — Compiler and image bootstrap | compiler done; bootstrap not started |
+| 5 — Compiler and image bootstrap | done |
 | 6 — macOS and Windows | done, unconfirmed on those hosts |
 | 7 — Native threads | done |
 | 8 — MVC under parallelism | not started |
@@ -88,6 +88,24 @@ sanitizer is the judge:
 | 31 native threads mutating one shared object memory | 398 checks, **0 races under TSAN** |
 | Collections running while those threads mutate | every slot intact afterwards |
 | Reference counts under contention | balanced traffic returns to exactly one holder |
+
+## The bootstrapped image
+
+Every Smalltalk-80 image in existence descends by mutation from the one
+Xerox shipped in 1983. This one does not:
+
+```sh
+$ ./st80 -bootstrap kernel/Kernel.st -o st80.image -eval '3 + 4'
+st80: 36 classes, 69 methods, 102 symbols
+7
+```
+
+`kernel/Kernel.st` is our own source, so the image carries no Xerox
+provenance. The bootstrap runs in three passes because the metaclass graph
+has no valid build order — a class's class is its metaclass, whose class is
+Metaclass, whose class is its own metaclass, whose class is Metaclass again.
+Allocating every class object with a nil class field, then patching, closes
+every loop at once.
 
 ## Design in one page
 

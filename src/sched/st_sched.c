@@ -105,7 +105,7 @@ SCHED_sleep(st_oop process)
     if (!OM_is_int(priority))
         return;
     lists = OM_fetch_pointer(ST_SCHEDULER_PROCESS_LISTS, SCHED_scheduler());
-    if (!OM_is_object(lists))
+    if (!OM_is_present(lists))
         return;
     if (OM_int_value(priority) < 1
      || (uint32_t) OM_int_value(priority) > OM_fetch_word_length(lists))
@@ -133,7 +133,7 @@ wake_highest_priority(void)
     uint32_t    count;
     uint32_t    i;
 
-    if (!OM_is_object(lists))
+    if (!OM_is_present(lists))
         return ST_NIL;
     count = OM_fetch_word_length(lists);
     for (i = count; i > 0; --i) {
@@ -170,7 +170,7 @@ SCHED_resume(st_oop process)
     st_oop  active_priority;
     st_oop  new_priority;
 
-    if (!OM_is_object(process))
+    if (!OM_is_present(process))
         return;
     active_priority = OM_fetch_pointer(ST_PROCESS_PRIORITY, active);
     new_priority    = OM_fetch_pointer(ST_PROCESS_PRIORITY, process);
@@ -191,7 +191,7 @@ SCHED_synchronous_signal(st_oop semaphore)
 {
     st_oop  excess;
 
-    if (!OM_is_object(semaphore))
+    if (!OM_is_present(semaphore))
         return;
     if (SCHED_is_empty_list(semaphore)) {
         /*  Nobody is waiting, so the signal is remembered.  */
@@ -207,7 +207,7 @@ SCHED_synchronous_signal(st_oop semaphore)
 void
 SCHED_asynchronous_signal(st_oop semaphore)
 {
-    if (!OM_is_object(semaphore))
+    if (!OM_is_present(semaphore))
         return;
     if (async_count >= ASYNC_QUEUE_MAX)
         return;                 /*  drop rather than corrupt  */

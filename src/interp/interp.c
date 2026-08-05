@@ -98,9 +98,19 @@ method_literal(uint32_t index, st_oop method)
 static uint32_t
 method_initial_ip(st_oop method)
 {
-    /*  Bytecodes begin after the header word and the literal frame.  */
+    /*
+     *  Bytecodes begin after the header word and the literal frame.
+     *
+     *  The stride is the object memory's pointer size, not two.  A hardcoded
+     *  two is right for the Blue Book's 16-bit words and silently wrong for
+     *  the 64-bit memory, where it starts execution four words early --
+     *  inside the literal frame, interpreting object pointers as bytecodes.
+     *  Every expression that reached a real method lookup crashed; the ones
+     *  answered by a primitive or an inlined conditional worked, which is
+     *  what made it look like a problem with sends.
+     */
     return (ST_header_literal_count(method_header(method))
-            + ST_METHOD_LITERAL_START) * 2;
+            + ST_METHOD_LITERAL_START) * (uint32_t) sizeof(st_oop);
 }
 
 static unsigned
@@ -254,7 +264,8 @@ lookup_method(st_oop selector, st_oop start_class, st_oop *found_class)
 {
     st_oop  cls = start_class;
 
-    while (OM_is_object(cls)) {
+    /*  A nil superclass is the top of the chain, so the walk stops there.  */
+    while (OM_is_present(cls)) {
         st_oop      dict = OM_fetch_pointer(ST_CLASS_METHOD_DICT, cls);
         uint32_t    capacity = OM_method_dict_capacity(dict);
         uint32_t    slot;
@@ -356,9 +367,15 @@ do_return(st_oop result, st_oop to_context, int from_block)
 
     ST_trace_return(result, from_block);
 
-    if (!OM_is_object(sender)) {
-        /*  Returning from the bottom of the world stops the interpreter.  */
-        st_vm.running = 0;
+    /*
+     *  nil is a live object, so testing reachability alone would let a
+     *  return off the bottom of the stack dereference it.  An empty slot in
+     *  Smalltalk holds nil, and that is what has to be checked for.
+     */
+    if (sender == ST_NIL || !OM_is_object(sender)) {
+        /*  The bottom of the world: keep the answer and stop.  */
+        st_vm.return_value = result;
+        st_vm.running      = 0;
         return;
     }
     if (st_vm.call_depth > 0)
@@ -420,7 +437,7 @@ send_does_not_understand(st_oop receiver, st_oop selector, st_oop lookup_class)
     st_vm.argument_count = 1;
 
     method = lookup_method(ST_SELECTOR_DOES_NOT_UNDERSTAND, lookup_class, &found);
-    if (!OM_is_object(method)) {
+    if (!OM_is_present(method)) {
         char    buf[256];
 
         ST_print_object(receiver, buf, sizeof buf);
@@ -486,7 +503,7 @@ execute_new_method(st_oop receiver, st_oop selector, st_oop lookup_class,
     if (traced)
         ST_trace_send(receiver, selector, st_vm.argument_count, args);
 
-    if (!OM_is_object(method)) {
+    if (!OM_is_present(method)) {
         send_does_not_understand(receiver, selector, lookup_class);
         return;
     }
@@ -571,21 +588,21 @@ ST_interp_init(char *errbuf, size_t errlen)
     memset(&st_vm, 0, sizeof st_vm);
 
     scheduler = OM_fetch_pointer(ST_ASSOCIATION_VALUE, ST_SCHEDULER_ASSOCIATION);
-    if (!OM_is_object(scheduler)) {
+    if (!OM_is_present(scheduler)) {
         if (errbuf)
             snprintf(errbuf, errlen, "scheduler association holds no scheduler");
         return -1;
     }
     /*  ProcessorScheduler: activeProcess is its second instance variable.  */
     process = OM_fetch_pointer(1, scheduler);
-    if (!OM_is_object(process)) {
+    if (!OM_is_present(process)) {
         if (errbuf)
             snprintf(errbuf, errlen, "no active process in the scheduler");
         return -1;
     }
     /*  Process: suspendedContext is its first instance variable.  */
     context = OM_fetch_pointer(1, process);
-    if (!OM_is_object(context)) {
+    if (!OM_is_present(context)) {
         if (errbuf)
             snprintf(errbuf, errlen, "active process has no suspended context");
         return -1;

@@ -19,6 +19,7 @@ struct st_chunk_reader {
     unsigned    chunk_line;
     char       *buffer;     /*  the chunk being built   */
     size_t      buffer_size;
+    int         previous_empty;
 };
 
 static st_chunk_reader *
@@ -125,43 +126,26 @@ int
 CHUNK_next(st_chunk_reader *r, st_chunk *out)
 {
     size_t  used = 0;
-    int     is_reader = 0;
     int     saw_content = 0;
 
     if (!r || r->pos >= r->length)
         return 0;
 
     /*
-     *  Skip whitespace between chunks so that the line number reported is
-     *  the one the chunk really starts on.  A "!" found here introduces a
-     *  reader chunk rather than terminating an empty one.
+     *  A bang is purely a separator.  It is tempting to treat one at the
+     *  start of a chunk as introducing a reader, since that is how the
+     *  format reads on the page -- "!Foo methodsFor: 'x'!" -- but doing so
+     *  swallows the bang that begins the NEXT group, because the idiom that
+     *  ends a method category is "! !": the first bang closes the last
+     *  method and the second closes an empty chunk.
+     *
+     *  Splitting on bangs alone, that same text falls out correctly: the
+     *  method, then an empty chunk, then the reader expression.  Which is
+     *  where the rule comes from -- a chunk that follows an empty one is a
+     *  reader expression, because the empty chunk is the whitespace sitting
+     *  between the previous terminator and the reader's own leading bang.
      */
-    while (r->pos < r->length) {
-        char    c = r->source[r->pos];
-
-        if (c == '\n') {
-            ++r->line;
-            ++r->pos;
-        }  else if (c == '\r') {
-            /*  The 1983 files use CR alone; treat CRLF as one break.  */
-            ++r->line;
-            ++r->pos;
-            if (r->pos < r->length && r->source[r->pos] == '\n')
-                ++r->pos;
-        }  else if (c == ' ' || c == '\t' || c == '\f') {
-            ++r->pos;
-        }  else {
-            break;
-        }
-    }
-    if (r->pos >= r->length)
-        return 0;
-
     r->chunk_line = r->line;
-    if (r->source[r->pos] == '!') {
-        is_reader = 1;
-        ++r->pos;
-    }
 
     while (r->pos < r->length) {
         char    c = r->source[r->pos];
@@ -202,9 +186,14 @@ CHUNK_next(st_chunk_reader *r, st_chunk *out)
 
     if (!append(r, &used, '\0'))
         return 0;
-    out->text      = r->buffer;
-    out->length    = used - 1;
-    out->is_reader = is_reader;
-    out->is_empty  = !saw_content;
+    out->text     = r->buffer;
+    out->length   = used - 1;
+    out->is_empty = !saw_content;
+    /*
+     *  A reader expression is the chunk that follows an empty one -- see the
+     *  note above on why the leading bang cannot be detected directly.
+     */
+    out->is_reader = !out->is_empty && r->previous_empty;
+    r->previous_empty = out->is_empty;
     return 1;
 }
