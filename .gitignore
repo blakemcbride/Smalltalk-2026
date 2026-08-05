@@ -19,3 +19,8 @@ oracle/
 # same absent license grant as the image itself.  See doc/LICENSING.md.
 smalltalk-desktop.*
 screen*.pbm
+
+# Rendered copies of documents whose source is already tracked.  The Markdown
+# under doc/ is the original; a PDF of it is a second copy to keep in step
+# and no reader of this repository needs one.
+*.pdf
