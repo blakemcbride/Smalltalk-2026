@@ -148,6 +148,67 @@ to something else, and the bytes read back belonged to a different string.
 A crash would have been kinder. `BOOT_provide_roots` now visits all of it,
 and a caller that installs its own provider must chain to it.
 
+## A process belongs to nobody twice on its way to running
+
+Scheduling a process is a sequence of handoffs, and at three points in it the
+process is referred to by nothing at all. `removeFirstLinkOf:` unlinks it from
+the list it was waiting on; the caller resumes it; resuming stores it on a run
+queue or nominates it to run next. The list was the only thing holding it, so
+the moment it is unlinked its count reaches zero and the collector is entitled
+to it.
+
+All three variants of this bug were found, and each looked like something else:
+
+- **Written after being released.** Chapter 29 unlinks the link and then sends
+  `nextLink: nil` to it. Where nothing is counting that is fine. Here the store
+  landed in a freed body.
+- **Used after being released.** `SCHED_synchronous_signal` was
+  `SCHED_resume(SCHED_remove_first_link(semaphore))`. The removal returned a
+  process that had already been reclaimed, `SCHED_resume` found it not present
+  and returned, and the system reported that every process was blocked --
+  pointing at the scheduler, which was not wrong and was not where the bug was.
+- **Held only in C.** `SCHED_transfer_to` parks the nominated process in a C
+  variable until the interpreter reaches a point where it can switch. A
+  reference held only in C protects nothing (see below), so the nomination was
+  not a reference; the process was collected between being chosen and being
+  run, and its object-table slot was reused. The symptom was
+  `aMethodContext does not understand #priority`, sent from the scheduler.
+
+The fix is one rule: **`SCHED_remove_first_link` returns a held reference, and
+every caller releases it only once something in the object memory holds the
+process.** The nomination counts what it holds and the root walk visits it.
+
+That last symptom is the useful one to recognise. A message sent to an object
+of a class that has no business being there is rarely a wrong send -- it is
+almost always a freed object whose slot has been handed to something else.
+
+## The VM's own connections to the image
+
+Two links from the VM to the image live in C rather than in any instance
+variable: the semaphore `primInputSemaphore:` (primitive 93) installs for
+input, and the Form `beDisplay` (primitive 102) makes the screen. A snapshot
+stores objects, so both were dropped by a save and reload, and a reloaded image
+came up unable to be told about a key or a mouse button. The events queued and
+the semaphore they signalled was nobody's.
+
+Smalltalk-80 reconnects by sending `Smalltalk install` on resume -- that is
+what `SystemDictionary>>install` is for, and its comment says so: *"Get
+connected back up to the hardware after a snapshot or quit."* But that is the
+image putting the VM back together, and it cannot run before the VM can run it.
+The snapshot now carries both connections as VM state, and `ST_interp_init`
+restores them when nothing is connected yet.
+
+The same input semaphore taught a second lesson about ordering. `InputSensor
+class>>install` forks the process that drains the event queue, and that process
+takes its priority from `Processor activePriority` -- so it needs not just a
+Processor but one with an active process. Run with the other initialisers, it
+stopped at that line, and the last line, the one that installs the semaphore,
+never ran. Nothing announced it. Input simply never arrived, which is a hard
+thing to go looking for. It now runs inside `BOOT_install_scheduler`, after the
+startup process exists and before that process is given its real priority --
+the startup process is briefly at the highest priority so that resuming the
+input process can only queue it, never transfer to it.
+
 ## Status
 
 The contract is settled; the implementation lands in Phase 7. Phases 0 through 6

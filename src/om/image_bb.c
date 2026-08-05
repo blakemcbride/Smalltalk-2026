@@ -26,10 +26,14 @@
  */
 
 #include "om_bb.h"
+#include "om.h"
 
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
+
+/*  Unused by the Xerox format, which has no place to keep it.  */
+st_oop      st_om_vm_state[ST_VM_STATE_SLOTS];
 
 uint32_t    st_om_image_object_words;
 uint32_t    st_om_image_ot_words;

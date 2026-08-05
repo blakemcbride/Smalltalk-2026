@@ -15,18 +15,21 @@
  */
 
 #include "om_mt.h"
+#include "om.h"
 
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
 #include <stdlib.h>
 
+st_oop      st_om_vm_state[ST_VM_STATE_SLOTS];
+
 uint32_t    st_om_image_object_words;
 uint32_t    st_om_image_ot_words;
 
 #define IMAGE_MAGIC     "ST26MT\0\0"
 #define IMAGE_MAGIC_LEN 8
-#define IMAGE_VERSION   1
+#define IMAGE_VERSION   2       /*  2 added the VM-state slots  */
 
 static void
 fail(char *errbuf, size_t errlen, const char *fmt, ...)
@@ -114,6 +117,18 @@ OM_image_save(const char *path, char *errbuf, size_t errlen)
         fclose(f);
         return -1;
     }
+    /*  The VM's own connections to the image -- see om.h.  */
+    {
+        unsigned    slot;
+
+        for (slot = 0; slot < ST_VM_STATE_SLOTS; ++slot) {
+            if (write_u64(f, (uint64_t) st_om_vm_state[slot]) != 0) {
+                fail(errbuf, errlen, "%s: cannot write the header", path);
+                fclose(f);
+                return -1;
+            }
+        }
+    }
     for (index = 1; index < st_om_table_limit; ++index) {
         om_header  *head = OM_table_get(index);
         unsigned char present;
@@ -197,6 +212,20 @@ OM_image_load(const char *path, char *errbuf, size_t errlen)
         fail(errbuf, errlen, "%s: bad object count", path);
         fclose(f);
         return -1;
+    }
+    {
+        unsigned    slot;
+
+        for (slot = 0; slot < ST_VM_STATE_SLOTS; ++slot) {
+            uint64_t    value;
+
+            if (read_u64(f, &value) != 0) {
+                fail(errbuf, errlen, "%s: truncated header", path);
+                fclose(f);
+                return -1;
+            }
+            st_om_vm_state[slot] = (st_oop) value;
+        }
     }
 
     if (OM_init() != 0) {

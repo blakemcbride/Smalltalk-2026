@@ -46,6 +46,8 @@ GFX_set_display(st_oop form)
     OM_increase_ref(form);
     OM_decrease_ref(display_form);
     display_form = form;
+    /*  Published so a snapshot carries it -- see om.h.  */
+    st_om_vm_state[ST_VM_DISPLAY] = form;
     GFX_damage_all();
 }
 

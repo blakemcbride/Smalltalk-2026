@@ -55,6 +55,7 @@ st_oop      SCHED_active_process(void);
 /*  Blue Book list operations.  */
 int         SCHED_is_empty_list(st_oop list);
 st_oop      SCHED_remove_first_link(st_oop list);
+st_oop      SCHED_pending_process(void);
 void        SCHED_add_last_link(st_oop link, st_oop list);
 
 /*  Process state changes.  */

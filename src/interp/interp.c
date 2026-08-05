@@ -303,6 +303,9 @@ provide_roots(om_visit_fn visit)
     }
     visit(GFX_display_form());
     visit(SCHED_input_semaphore());
+    visit(SCHED_pending_process());
+    visit(st_om_vm_state[ST_VM_INPUT_SEMAPHORE]);
+    visit(st_om_vm_state[ST_VM_DISPLAY]);
     if (extra_roots)
         extra_roots(visit);
 }
@@ -727,6 +730,20 @@ ST_interp_init(char *errbuf, size_t errlen)
             snprintf(errbuf, errlen, "scheduler association holds no scheduler");
         return -1;
     }
+    /*
+     *  Reconnect the VM to the image it was saved from.
+     *
+     *  Only if nothing is connected yet: a bootstrap has already made these
+     *  connections for real, and the slots hold what it made.  A reload has
+     *  the slots and nothing else, which is the case this exists for.
+     */
+    if (st_om_vm_state[ST_VM_DISPLAY] != ST_NIL
+     && GFX_display_form() == ST_NIL)
+        GFX_set_display(st_om_vm_state[ST_VM_DISPLAY]);
+    if (st_om_vm_state[ST_VM_INPUT_SEMAPHORE] != ST_NIL
+     && SCHED_input_semaphore() == ST_NIL)
+        SCHED_set_input_semaphore(st_om_vm_state[ST_VM_INPUT_SEMAPHORE]);
+
     /*  ProcessorScheduler: activeProcess is its second instance variable.  */
     process = OM_fetch_pointer(1, scheduler);
     if (!OM_is_present(process)) {

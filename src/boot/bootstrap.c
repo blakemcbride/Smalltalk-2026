@@ -2234,13 +2234,6 @@ install_user_interface(void)
     directly[] = {
         { "Object",      "initializeDependentsFields" },
         { "Object",      "initializeErrorRecursion" },
-        /*
-         *  InputSensor class>>install makes the InputState that reads the
-         *  hardware and keeps it in a class variable.  Like the cursor and
-         *  the scheduler, it is made when an image is built; without it every
-         *  question about the mouse or the keyboard is asked of nil.
-         */
-        { "InputSensor", "install" },
         { "InputSensor", "initMap" },
         /*
          *  Behavior class>>init, not initialize, so BOOT_run_initializers
@@ -2592,6 +2585,13 @@ BOOT_install_scheduler(const char *startup_source)
     OM_increase_ref(scheduler);
     OM_store_pointer(ST_SCHEDULER_PROCESS_LISTS, scheduler, lists);
 
+    /*
+     *  Processor is named before anything is asked to run, because things
+     *  that want to run ask for it by name.
+     */
+    OM_store_pointer(ST_ASSOCIATION_VALUE, ST_SCHEDULER_ASSOCIATION, scheduler);
+    define_global("Processor", scheduler);
+
     /*  The startup method, compiled from source like any other.  */
     memset(&ctx, 0, sizeof ctx);
     ctx.intern_symbol      = BOOT_intern_symbol;
@@ -2627,12 +2627,46 @@ BOOT_install_scheduler(const char *startup_source)
         return 0;
     OM_increase_ref(process);
     OM_store_pointer(ST_PROCESS_SUSPENDED_CONTEXT, process, context);
-    OM_store_pointer(ST_PROCESS_PRIORITY, process, OM_int_oop(4));
     OM_store_pointer(ST_PROCESS_MY_LIST, process, ST_NIL);
-
+    /*
+     *  Highest priority for now, and its real one further down.
+     *
+     *  What follows resumes processes, and resuming one that outranks the
+     *  active process transfers to it -- which here would nominate a process
+     *  no interpreter is running to collect, and leave this one both active
+     *  and on a run queue.  At the top priority every resume can only queue.
+     */
+    OM_store_pointer(ST_PROCESS_PRIORITY, process, OM_int_oop(8));
     OM_store_pointer(ST_SCHEDULER_ACTIVE_PROCESS, scheduler, process);
-    OM_store_pointer(ST_ASSOCIATION_VALUE, ST_SCHEDULER_ASSOCIATION, scheduler);
-    define_global("Processor", scheduler);
+
+    /*
+     *  InputSensor class>>install makes the InputState that reads the
+     *  hardware, keeps it in a class variable, forks the process that drains
+     *  the event queue, and hands the VM the semaphore to signal -- which is
+     *  what primitive 93 is for, and the only way a key or a mouse button
+     *  ever reaches the image.
+     *
+     *  It runs here, and not with the other initialisers, because all three
+     *  of those steps need a scheduler: the process it forks takes its
+     *  priority from Processor activePriority, so with no Processor -- or a
+     *  Processor with no active process -- the method stops at its fourth
+     *  line and the semaphore is never installed.  Nothing announces that;
+     *  input simply never arrives, which is a hard thing to go looking for.
+     */
+    {
+        st_oop  sensor_class = BOOT_global("InputSensor");
+
+        if (OM_is_present(sensor_class)) {
+            st_oop  m = lookup_in_chain(OM_fetch_class(sensor_class),
+                                        "install");
+
+            if (OM_is_present(m))
+                run_method_on(m, sensor_class, 4000000);
+        }
+    }
+
+    /*  Its real priority: the one user code runs at.  */
+    OM_store_pointer(ST_PROCESS_PRIORITY, process, OM_int_oop(4));
     return 1;
 }
 

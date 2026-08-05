@@ -268,6 +268,52 @@ test_image_round_trip(void)
     remove(path);
 }
 
+/*
+ *  The VM's own connections to the image, across a save and a reload.
+ *
+ *  Two of them are held in C rather than in any instance variable -- the
+ *  semaphore primitive 93 installed for input and the Form primitive 102
+ *  made the display -- so a format that stored only objects dropped both,
+ *  and a reloaded image came back up with nothing to signal when a key or a
+ *  mouse button arrived.  The events were queued and went nowhere.
+ */
+static void
+test_vm_state_round_trip(void)
+{
+    const char *path = "build/test-vm-state.image";
+    st_oop      semaphore;
+    st_oop      form;
+    char        err[256];
+
+    semaphore = OM_instantiate_pointers(ST_CLASS_ARRAY, 3);
+    form      = OM_instantiate_pointers(ST_CLASS_ARRAY, 4);
+    st_om_vm_state[ST_VM_INPUT_SEMAPHORE] = semaphore;
+    st_om_vm_state[ST_VM_DISPLAY]         = form;
+
+    /*  Held, so the collector on load keeps what the slots point at.  */
+    root_object = semaphore;
+    OM_set_root_provider(provide_root);
+    OM_increase_ref(form);
+
+    CHECK_EQ_INT(OM_image_save(path, err, sizeof err), 0);
+
+    /*  Cleared, so the values below can only have come from the file.  */
+    st_om_vm_state[ST_VM_INPUT_SEMAPHORE] = ST_NIL;
+    st_om_vm_state[ST_VM_DISPLAY]         = ST_NIL;
+
+    CHECK_EQ_INT(OM_image_load(path, err, sizeof err), 0);
+    if (err[0])
+        printf("  load said: %s\n", err);
+
+    CHECK_EQ_INT(st_om_vm_state[ST_VM_INPUT_SEMAPHORE], semaphore);
+    CHECK_EQ_INT(st_om_vm_state[ST_VM_DISPLAY], form);
+
+    st_om_vm_state[ST_VM_INPUT_SEMAPHORE] = ST_NIL;
+    st_om_vm_state[ST_VM_DISPLAY]         = ST_NIL;
+    OM_set_root_provider(NULL);
+    remove(path);
+}
+
 int
 main(void)
 {
@@ -284,6 +330,7 @@ main(void)
     test_collects_cycles();
     test_become();
     test_image_round_trip();
+    test_vm_state_round_trip();
 
     printf("  table holds %u entries, %u free\n", st_om_table_limit,
            OM_oops_left());

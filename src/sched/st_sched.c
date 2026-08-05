@@ -10,6 +10,7 @@
 #include "prim.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 /*
@@ -92,6 +93,18 @@ SCHED_remove_first_link(st_oop list)
     if (!OM_is_present(first) || !OM_pointer_bit(first)
      || OM_fetch_word_length(first) <= ST_LINK_NEXT)
         return ST_NIL;
+
+    /*
+     *  Hold it before the list lets go.
+     *
+     *  The list is the only thing referring to a waiting process, so
+     *  unlinking it drops the last reference and it is reclaimed before the
+     *  caller has seen it -- the scheduler then resumes an object that is no
+     *  longer there.  The reference is taken here, where it is still safe to
+     *  take, and every caller releases it once it has stored the process
+     *  somewhere that holds it.
+     */
+    OM_increase_ref(first);
     last = OM_fetch_pointer(ST_LIST_LAST_LINK, list);
     next = (first == last) ? ST_NIL
                            : OM_fetch_pointer(ST_LINK_NEXT, first);
@@ -159,11 +172,29 @@ SCHED_sleep(st_oop process)
     SCHED_add_last_link(process, list);
 }
 
+/*
+ *  Nominate the process to run when the interpreter next reaches a point
+ *  where it can switch.
+ *
+ *  The nomination is held in C, so it is counted here and visited by the
+ *  root walk -- a reference held only in C protects nothing, because a
+ *  marking collection recomputes every count from the roots.  Without the
+ *  count the process nominated by removeFirstLinkOf: belongs to nobody at
+ *  all between the two, and is reclaimed before it ever runs.
+ */
 void
 SCHED_transfer_to(st_oop process)
 {
+    OM_increase_ref(process);
+    OM_decrease_ref(new_process);       /*  any nomination this supersedes  */
     new_process_waiting = 1;
     new_process         = process;
+}
+
+st_oop
+SCHED_pending_process(void)
+{
+    return new_process;
 }
 
 /*
@@ -201,6 +232,8 @@ SCHED_suspend_active(void)
         return;
     }
     SCHED_transfer_to(next);
+    /*  The nomination holds it now; this releases the loan from removal.  */
+    OM_decrease_ref(next);
 }
 
 /*
@@ -246,7 +279,13 @@ SCHED_synchronous_signal(st_oop semaphore)
                              OM_int_oop(OM_int_value(excess) + 1));
         return;
     }
-    SCHED_resume(SCHED_remove_first_link(semaphore));
+    {
+        st_oop  woken = SCHED_remove_first_link(semaphore);
+
+        SCHED_resume(woken);
+        /*  A list or the nomination holds it; release the removal's loan.  */
+        OM_decrease_ref(woken);
+    }
 }
 
 void
@@ -287,6 +326,9 @@ SCHED_check_process_switch(void)
                      new_process);
     ST_set_active_context(
         OM_fetch_pointer(ST_PROCESS_SUSPENDED_CONTEXT, new_process));
+    /*  activeProcess holds it now; this releases the nomination's count.  */
+    OM_decrease_ref(new_process);
+    new_process = ST_NIL;
 }
 
 /*  ----------  Primitives 85 to 88  ----------  */
@@ -360,6 +402,8 @@ SCHED_set_input_semaphore(st_oop semaphore)
     OM_increase_ref(semaphore);
     OM_decrease_ref(input_semaphore);
     input_semaphore = semaphore;
+    /*  Published so a snapshot carries it -- see om.h.  */
+    st_om_vm_state[ST_VM_INPUT_SEMAPHORE] = semaphore;
 }
 
 st_oop

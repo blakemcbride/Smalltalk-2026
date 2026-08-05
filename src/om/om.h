@@ -48,4 +48,26 @@ OM_is_present(st_oop p)
     return p != ST_NIL && OM_is_object(p);
 }
 
+/*
+ *  VM state a snapshot has to carry.
+ *
+ *  Two of the VM's connections to the image are held in C, not in any
+ *  object's instance variable: the semaphore primitive 93 installed for
+ *  input, and the Form primitive 102 made the display.  Objects are all a
+ *  snapshot stores, so both connections were silently dropped by a save and
+ *  reload, and the image came back up with no way to be told about a key or
+ *  a mouse button -- the events were queued and the semaphore they signalled
+ *  was nobody's.
+ *
+ *  Smalltalk-80 reconnects by sending Smalltalk install on resume, which is
+ *  what SystemDictionary>>install exists for; but that is the image putting
+ *  the VM back together, and it cannot run before the VM can run it.  These
+ *  slots are the VM remembering its own connections, which is what they are.
+ */
+#define ST_VM_STATE_SLOTS           2
+#define ST_VM_INPUT_SEMAPHORE       0
+#define ST_VM_DISPLAY               1
+
+extern st_oop   st_om_vm_state[ST_VM_STATE_SLOTS];
+
 #endif  /*  ST_OM_H  */

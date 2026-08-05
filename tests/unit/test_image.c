@@ -693,6 +693,40 @@ test_process_scheduler(void)
 
     /*  Eight priorities, each with a list of its own.  */
     check_integer("(Processor instVarAt: 1) size", 8);
+
+    /*
+     *  And the VM has been handed the semaphore to signal when input
+     *  arrives.  InputSensor class>>install is what installs it, by way of
+     *  primitive 93, and it can only run once there is a Processor with an
+     *  active process to take a priority from -- the process it forks asks
+     *  for Processor activePriority.  Run any earlier and the method stops
+     *  before its last line with no complaint anyone would notice, and the
+     *  image is left with no way to be told about a key or a mouse button:
+     *  the events queue up and the semaphore they signal is nobody\'s.
+     *
+     *  So this is asserted here, immediately after the scheduler is built,
+     *  because that ordering is the whole of what makes it work.
+     */
+    ++st_test_checks;
+    if (!OM_is_present(SCHED_input_semaphore())) {
+        ++st_test_failures;
+        printf("  FAIL no input semaphore was installed\n");
+    }
+
+    /*
+     *  Yielding, which is the smallest thing that needs two processes.
+     *
+     *  ProcessorScheduler>>yield forks a process to signal a semaphore and
+     *  waits on it, so it exercises the whole handoff: the forked process is
+     *  queued, control transfers to it, it signals, the waiting process is
+     *  taken off the semaphore and resumed, and control comes back.  Each of
+     *  those steps moves a process from a place that refers to it to one
+     *  that does not yet, and every one of them was, at some point, the
+     *  moment the process was reclaimed and the system reported that every
+     *  process was blocked.
+     */
+    check_oop("Processor yield. ^true", ST_TRUE, "true");
+    check_integer("Processor yield. ^3 + 4", 7);
 }
 
 /*
@@ -880,13 +914,32 @@ test_input(void)
     check_integer("Sensor cursorPoint y", 240);
 
     /*
-     *  Buttons are not asserted here, and the reason is worth stating: the
-     *  pointer's position is polled straight from the VM by primitive 90,
-     *  but the button state is kept by InputState and updated by the input
-     *  PROCESS as it drains the event queue.  This harness stands a context
-     *  up and interprets it directly, so no process runs and the events sit
-     *  where they were put.  A booted image drains them -- see -inject.
+     *  Buttons take the longer way round, and it is worth saying which.
+     *
+     *  The pointer's position is polled straight from the VM by primitive
+     *  90, so it answers whatever was last injected.  The button state is
+     *  not polled: it is kept by InputState and updated by the input PROCESS
+     *  as it drains the event queue, which it does when the semaphore
+     *  primitive 93 installed is signalled.  So nothing here is true until a
+     *  process other than this one has run, and the yield is what lets it.
+     *
+     *  Codes 128, 129 and 130 are the blue, yellow and red buttons, and
+     *  InputState keeps them as bits 1, 2 and 4 in that order.
      */
+    GFX_inject_button(130, 1);
+    check_integer("Processor yield. ^Sensor buttons", 4);
+    check_oop("^Sensor anyButtonPressed", ST_TRUE, "true");
+    check_oop("^Sensor redButtonPressed", ST_TRUE, "true");
+
+    GFX_inject_button(130, 0);
+    check_integer("Processor yield. ^Sensor buttons", 0);
+    check_oop("^Sensor noButtonPressed", ST_TRUE, "true");
+
+    /*  And the keyboard, which arrives on the same queue.  */
+    GFX_inject_key('A', 1);
+    GFX_inject_key('A', 0);
+    check_oop("Processor yield. ^Sensor keyboardPressed", ST_TRUE, "true");
+    check_integer("Processor yield. ^Sensor keyboard asInteger", 'A');
 
     /*
      *  A controller wants control when the pointer is over its view, and
