@@ -17,11 +17,31 @@ rather than assumed:
 | General pragmas `<foo: 1>` | Only `<primitive: N>` is recognised |
 | Block-local temporaries `[:x \| \| t \| ...]` | Not supported — parse error |
 | Byte arrays `#[1 2 3]` | Not supported — `#` must begin a symbol |
-| Scaled decimals `1.23s2` | Not supported, and **fails silently**: it lexes as `1.23` then a unary send `s2`, so it answers nil instead of erroring |
+| Scaled decimals `1.23s2` | Not supported: it lexes as `1.23` then a unary send `#s2`, which is a runtime doesNotUnderstand |
 | Named primitives `<primitive: 'p' module: 'M'>` | Not supported |
 
-The silent failure is the only one of these that is arguably a bug rather than
-an absent feature, since a Blue Book compiler should reject `1.23s2` outright.
+Four of the six are rejected at compile time, which is what an absent feature
+should look like. The scaled decimal is the one that compiles, and it was
+recorded here as arguably a bug on the grounds that a Blue Book compiler ought
+to reject `1.23s2` outright. Measured, that turns out to be wrong, and the
+reason is worth keeping:
+
+```
+$ ./st80 -bootstrap -manifest sources/MANIFEST -eval '^3factorial'
+6
+```
+
+A unary selector needs no space before it, so `3factorial` is `3 factorial`,
+and `1.23s2` is `1.23 s2` by exactly the same rule. There is no `s` suffix in
+the Blue Book number grammar, so `s2` is an ordinary unary selector and Float
+does not implement it. Answering `nil` after a doesNotUnderstand is what this
+system does with every unimplemented unary send.
+
+So the compiler is right and the note was wrong. What it costs is that adding
+scaled decimals later is not a free extension the way `{`, `#[` and `<foo:>`
+are: those are all currently syntax errors, so recognising them can break
+nothing, whereas `1.23s2` already means something today. It is the only one of
+the six with an existing meaning to take away.
 
 The survey follows as written.
 
