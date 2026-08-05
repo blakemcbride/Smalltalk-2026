@@ -1,0 +1,16 @@
+build/
+st80
+*.o
+*.a
+*.d
+
+# The Xerox Smalltalk-80 virtual image, its sources, and the Xerox reference
+# execution traces.  These carry no license grant from any host -- not
+# Wolczko's site, not the archive.org mirror.  They are used here as a
+# private development oracle only and must never be committed or
+# redistributed.  See doc/LICENSING.md.
+oracle/
+
+# The bootstrapped image is a build product.
+*.image
+*.changes
