@@ -155,6 +155,21 @@ check_integer(const char *expression, st_int want)
 }
 
 static void
+check_oop(const char *expression, st_oop want, const char *label)
+{
+    st_oop  value = evaluate(expression);
+
+    ++st_test_checks;
+    if (value != want) {
+        char    text[128];
+
+        ++st_test_failures;
+        ST_print_object(value, text, sizeof text);
+        printf("  FAIL %s: got %s, want %s\n", expression, text, label);
+    }
+}
+
+static void
 check_class(const char *expression, const char *class_name)
 {
     st_oop  value = evaluate(expression);
@@ -245,6 +260,76 @@ test_collections(void)
     check_class("3/4", "Fraction");
 }
 
+/*
+ *  printString is the deepest thing here: it runs Stream, WriteStream,
+ *  String, Character and Symbol together, and it needed the class variables
+ *  that BOOT_run_initializers now sets, plus primitives 63 and 64.
+ */
+static void
+test_printing(void)
+{
+    check_integer("42 printString size", 2);
+    check_integer("$A printString size", 2);
+    check_integer("'hello' printString size", 7);       /*  with the quotes */
+    check_integer("#(1 2 3) printString size", 8);      /*  "(1 2 3 )"      */
+    check_integer("3 printString first asciiValue", 51);/*  $3              */
+}
+
+/*
+ *  Symbols, which are what made this hard: interning consults a table that
+ *  Symbol class>>initialize builds by interning, so a new image cannot
+ *  bootstrap it from inside.  BOOT_run_initializers seeds it from C and then
+ *  places every entry with the image's OWN intern:, so the hash is the
+ *  library's and identity survives.
+ */
+static void
+test_symbols(void)
+{
+    check_integer("#foo size", 3);
+    check_oop("#foo = 'foo'", ST_FALSE, "false");   /*  Symbol>>= is identity */
+    check_oop("'foo' = #foo", ST_TRUE,  "true");    /*  String>>= is by value */
+}
+
+/*
+ *  BOOT_string_hash duplicates String>>hash in C, to place symbols in the
+ *  library's table without interpreting a send per symbol.  A duplicate that
+ *  is merely believed is a bug with a long fuse, so it is checked here
+ *  against the image's own answer, for strings that reach every branch of
+ *  the formula: empty, one character, two, and longer.
+ */
+static void
+test_string_hash_agrees(void)
+{
+    static const char *const samples[] = {
+        "", "a", "z", "ab", "foo", "hello", "printString",
+        "at:put:", "instanceVariableNames:", "x"
+    };
+    unsigned    i;
+
+    for (i = 0; i < sizeof samples / sizeof samples[0]; ++i) {
+        char    expression[128];
+        st_oop  from_image;
+        st_oop  interned = BOOT_intern_symbol(samples[i], NULL);
+        uint32_t from_c  = BOOT_string_hash(interned);
+
+        snprintf(expression, sizeof expression, "'%s' hash", samples[i]);
+        from_image = evaluate(expression);
+        /*  Recomputed after evaluate, which collects.  */
+        from_c = BOOT_string_hash(interned);
+
+        ++st_test_checks;
+        if (!OM_is_int(from_image)
+         || (uint32_t) OM_int_value(from_image) != from_c) {
+            char    text[128];
+
+            ++st_test_failures;
+            ST_print_object(from_image, text, sizeof text);
+            printf("  FAIL hash of \"%s\": C says %u, the image says %s\n",
+                   samples[i], from_c, text);
+        }
+    }
+}
+
 static void
 test_strings(void)
 {
@@ -252,6 +337,8 @@ test_strings(void)
     check_integer("('ab' , 'cd') size", 4);
     check_integer("('hello' copyFrom: 2 to: 4) size", 3);
     check_integer("('hello' occurrencesOf: $l)", 2);
+    check_integer("('hello' reverse) first asciiValue", 111);   /*  $o  */
+    check_integer("((String new: 2) at: 1 put: $z) asInteger", 122);
 }
 
 /*
@@ -273,17 +360,26 @@ static void
 report_frontier(void)
 {
     static const char *const pending[] = {
-        "42 printString size",
-        "$A printString size",
-        "#(1 2 3) printString size",
-        "1 -> 2",
-        "('hello' reverse) first asciiValue",
-        "'hello' asSymbol size"
+        /*
+         *  Symbol interning.  The table is seeded correctly -- all 3601
+         *  symbols are placed, and test_string_hash_agrees proves the bucket
+         *  each one lands in is the bucket the image would choose -- but
+         *  Symbol class>>hasInterned:ifTrue: does not return from a scan of a
+         *  non-empty bucket.  Every piece of that scan answers correctly when
+         *  evaluated on its own, so the fault is in the whole activation
+         *  rather than in any step of it, and it is unfinished business.
+         */
+        "'hello' asSymbol size",
+        "#foo == 'foo' asSymbol",
+        "(1 to: 5) asOrderedCollection printString size",
+        "(Set new add: 3; yourself) printString size",
+        "Object new printString size",
+        "3.5 printString size",
+        "(Dictionary new at: 1 put: 2; yourself) printString size"
     };
     unsigned    i;
 
-    printf("  not yet working (Phase 8: class-side initialize has never"
-           " been run):\n");
+    printf("  not yet working:\n");
     for (i = 0; i < sizeof pending / sizeof pending[0]; ++i) {
         st_oop  value = evaluate(pending[i]);
         char    text[128];
@@ -322,9 +418,30 @@ main(void)
     if (!build_once())
         return ST_TEST_END();
 
+    /*
+     *  The step a fileIn does not do and an image build does.  Without it the
+     *  library's class variables are all nil, and printString, Symbol
+     *  interning and Character creation all walk into nil.
+     */
+    {
+        st_boot_init_report init;
+
+        BOOT_run_initializers(&init);
+        printf("  %u class initializers, %u ran, %u unfinished",
+               init.defined, init.ran, init.unfinished);
+        if (init.unfinished)
+            printf(" (first: %s)", init.first_unfinished);
+        printf("\n");
+        CHECK(init.defined >= 45);
+        CHECK(init.ran >= 40);
+    }
+
     test_classes_present();
     test_arithmetic();
     test_collections();
+    test_printing();
+    test_symbols();
+    test_string_hash_agrees();
     test_strings();
     test_graphics_objects();
     report_frontier();

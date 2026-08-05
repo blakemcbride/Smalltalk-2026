@@ -128,6 +128,8 @@ static st_atomic_int    evaluations;
 static void
 provide_test_roots(om_visit_fn visit)
 {
+    /*  Installing our own replaces the bootstrap's, so chain to it.  */
+    BOOT_provide_roots(visit);
     visit(method_arithmetic);
     visit(method_sends);
     visit(method_allocating);

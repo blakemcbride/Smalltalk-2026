@@ -45,6 +45,7 @@ typedef struct {
      */
     /*  nil -> the metaclass, for super sends in class methods.  */
     st_oop      metaclass_association;
+    int         reserved_pointer;
 
     char        cvars[MAX_IVARS][64];
     st_oop      cvar_assoc[MAX_IVARS];
@@ -480,6 +481,12 @@ make_format(unsigned fixed, int pointers, int indexable, int bytes)
 #define CLASS_POOL              7
 #define CLASS_SHARED_POOLS      8
 #define CLASS_FIXED_FIELDS      9
+/*
+ *  Slack in the classes the interpreter names by fixed pointer, for their
+ *  class-side instance variables.  The most any class in the 1983 library
+ *  declares is six.
+ */
+#define CLASS_PLACEHOLDER_EXTRA 16
 
 #define METACLASS_THIS_CLASS    6
 #define METACLASS_FIXED_FIELDS  7
@@ -829,6 +836,31 @@ parse_methods_for(const char *text, char *class_name, size_t namelen,
  *  with the class field left nil.  Nothing reads it yet, and leaving it
  *  empty is what breaks the circularity.
  */
+/*
+ *  Instance-variable layout has to be settled BEFORE the class objects are
+ *  allocated: a class object is an instance of its metaclass, so its size
+ *  includes the class-side instance variables, and those are only known once
+ *  the superclass chains have been walked.
+ */
+static int
+resolve_all_ivars(void)
+{
+    unsigned    i;
+
+    for (i = 0; i < class_count; ++i) {
+        if (!resolve_ivars(&classes[i], 0))
+            return 0;
+    }
+    return 1;
+}
+
+/*  How many fields a class object needs: Class's own, plus the class-side. */
+static unsigned
+class_object_size(const boot_class *c)
+{
+    return CLASS_FIXED_FIELDS + c->all_class_ivar_count;
+}
+
 static int
 allocate_class_objects(void)
 {
@@ -856,7 +888,24 @@ allocate_class_objects(void)
                 c->class_oop = reserved;
             else
                 c->class_oop = OM_instantiate_pointers(ST_NIL,
-                                                       CLASS_FIXED_FIELDS);
+                                                       class_object_size(c));
+            c->reserved_pointer = (reserved != ST_OOP_INVALID);
+        }
+        /*
+         *  A class the interpreter names by fixed pointer was allocated
+         *  before any source was read, so its size is whatever the
+         *  placeholder got.  If the class turns out to declare class-side
+         *  instance variables that do not fit, say so: the alternative is a
+         *  store past the end of a class object, which corrupts the heap
+         *  somewhere else entirely.
+         */
+        if (c->reserved_pointer
+         && OM_fetch_word_length(c->class_oop) < class_object_size(c)) {
+            boot_fail("%s needs %u fields but its reserved pointer has %u"
+                      " -- raise CLASS_PLACEHOLDER_EXTRA", c->name,
+                      class_object_size(c),
+                      (unsigned) OM_fetch_word_length(c->class_oop));
+            return 0;
         }
         if (!OM_is_object(c->class_oop)) {
             boot_fail("out of memory allocating class %s", c->name);
@@ -922,7 +971,7 @@ link_class_objects(void)
                          super ? super->metaclass_oop
                                : BOOT_global("Class"));
         OM_store_pointer(CLASS_FORMAT, c->metaclass_oop,
-                         make_format(c->class_ivar_count, 1, 0, 0));
+                         make_format(class_object_size(c), 1, 0, 0));
         OM_store_pointer(METACLASS_THIS_CLASS, c->metaclass_oop, c->class_oop);
         OM_set_class_of_object(c->metaclass_oop, metaclass_class);
 
@@ -952,10 +1001,24 @@ compile_into(boot_class *c, int class_side, const char *source,
      *  reads bits.  Neither can see the other's.
      */
     if (class_side) {
-        for (i = 0; i < c->all_class_ivar_count; ++i)
-            ivar_pointers[i] = c->all_class_ivars[i];
+        /*
+         *  A class method's receiver is the class OBJECT, whose first fields
+         *  are Class's own instance variables -- superclass, methodDict,
+         *  name and the rest.  The class-side ones follow.  Numbering the
+         *  class-side variables from zero instead puts the first of them on
+         *  top of superclass, and a store lands past the end of the object.
+         */
+        boot_class *shape = find_class("Class");
+        unsigned    n = 0;
+
+        if (shape) {
+            for (i = 0; i < shape->all_ivar_count && n < MAX_IVARS; ++i)
+                ivar_pointers[n++] = shape->all_ivars[i];
+        }
+        for (i = 0; i < c->all_class_ivar_count && n < MAX_IVARS; ++i)
+            ivar_pointers[n++] = c->all_class_ivars[i];
         ctx.instance_variables      = ivar_pointers;
-        ctx.instance_variable_count = c->all_class_ivar_count;
+        ctx.instance_variable_count = n;
     }  else  {
         for (i = 0; i < c->all_ivar_count; ++i)
             ivar_pointers[i] = c->all_ivars[i];
@@ -1166,7 +1229,8 @@ allocate_fixed_objects(void)
             p = OM_instantiate_pointers(ST_NIL, 0);
             break;
         case FIX_CLASS:
-            p = OM_instantiate_pointers(ST_NIL, CLASS_FIXED_FIELDS);
+            p = OM_instantiate_pointers(ST_NIL, CLASS_FIXED_FIELDS
+                                                + CLASS_PLACEHOLDER_EXTRA);
             break;
         case FIX_SYMBOL:
         case FIX_SYSTEM_DICT:
@@ -1362,6 +1426,8 @@ boot_build_locked(const char *const *paths, unsigned path_count,
                             : (classes[k].words ? " words" : " pointers"))
                         : "");
     }
+    if (!resolve_all_ivars())
+        return -1;
     if (!allocate_class_objects())
         return -1;
     if (!link_class_objects())
@@ -1412,7 +1478,287 @@ BOOT_build(const char *const *paths, unsigned path_count,
     int status = boot_build_locked(paths, path_count, out);
 
     result = NULL;
+    /*  Nothing C holds survives a collection unless the walk can see it.  */
+    ST_interp_install_roots(BOOT_provide_roots);
     return status;
+}
+
+/*  ----------  Roots  ----------  */
+
+/*
+ *  Everything the bootstrap holds in C.
+ *
+ *  A marking collection rebuilds every reference count from this walk, so
+ *  the OM_increase_ref calls scattered through this file protect nothing on
+ *  their own -- interp.h says so in as many words, and the bootstrap was
+ *  ignoring it.  The symptom was a symbol being freed and its table slot
+ *  reused while C still held the pointer, which then read as a different
+ *  string entirely: the same text hashed to two different values depending
+ *  on whether a collection had happened in between.
+ */
+void
+BOOT_provide_roots(om_visit_fn visit)
+{
+    unsigned    i;
+    unsigned    k;
+
+    visit(smalltalk);
+    visit(globals_values);
+    for (i = 0; i < symbol_count; ++i)
+        visit(symbols[i]);
+    for (i = 0; i < class_count; ++i) {
+        visit(classes[i].class_oop);
+        visit(classes[i].metaclass_oop);
+        visit(classes[i].metaclass_association);
+        for (k = 0; k < classes[i].cvar_count; ++k)
+            visit(classes[i].cvar_assoc[k]);
+    }
+}
+
+/*  ----------  Class-side initialisers  ----------  */
+
+/*
+ *  Look a selector up in one method dictionary, without walking superclasses.
+ *
+ *  Not walking is the point: Object class>>initialize would otherwise be
+ *  found for every class in the image and run 226 times.  Only a class that
+ *  DEFINES an initializer should get one.
+ */
+static st_oop
+method_in_dictionary(st_oop dict, const char *selector)
+{
+    uint32_t    capacity;
+    uint32_t    slot;
+    st_oop      wanted;
+
+    if (!OM_is_present(dict))
+        return ST_OOP_INVALID;
+    wanted   = BOOT_intern_symbol(selector, NULL);
+    capacity = OM_method_dict_capacity(dict);
+    for (slot = 0; slot < capacity; ++slot) {
+        if (OM_method_dict_key(dict, slot) == wanted)
+            return OM_method_dict_value(dict, slot);
+    }
+    return ST_OOP_INVALID;
+}
+
+/*
+ *  Activate one method on one receiver and run it to completion.
+ *
+ *  A context whose sender is nil, exactly as the drivers build for a doIt,
+ *  so a return with no sender simply stops the interpreter.
+ */
+static int
+run_method_with(st_oop method, st_oop receiver, const st_oop *args,
+                unsigned argc, uint64_t budget)
+{
+    st_oop      context = OM_instantiate_pointers(ST_CLASS_METHOD_CONTEXT, 64);
+    unsigned    i;
+
+    if (!OM_is_present(context))
+        return 0;
+    OM_store_pointer(ST_CTX_SENDER, context, ST_NIL);
+    OM_store_pointer(ST_CTX_METHOD, context, method);
+    OM_store_pointer(ST_CTX_RECEIVER, context, receiver);
+    /*  Arguments are the first temporaries, which is where the frame keeps
+     *  them and where the compiler numbers them from.  */
+    for (i = 0; i < argc; ++i)
+        OM_store_pointer(ST_CTX_TEMP_FRAME_START + i, context, args[i]);
+    OM_store_pointer(ST_CTX_IP, context,
+                     OM_int_oop((st_int)
+                        (BOOT_method_initial_ip(method) + 1)));
+    /*  The stack begins ABOVE the temporaries, not at zero.  */
+    OM_store_pointer(ST_CTX_SP, context,
+                     OM_int_oop((st_int) ST_header_temporary_count(
+                                    OM_fetch_pointer(0, method))));
+
+    memset(&st_vm, 0, sizeof st_vm);
+    st_vm.active_context = ST_NIL;
+    ST_set_active_context(context);
+    st_vm.running      = 1;
+    st_vm.return_value = ST_NIL;
+    ST_interp_run(budget);
+    return !st_vm.running;
+}
+
+static int
+run_method_on(st_oop method, st_oop receiver, uint64_t budget)
+{
+    return run_method_with(method, receiver, NULL, 0, budget);
+}
+
+/*
+ *  Give the library a symbol table holding the symbols we already interned.
+ *
+ *  Symbol class>>initialize cannot run in a new image: it interns 128
+ *  one-character symbols, interning consults hasInterned:ifTrue:, and that
+ *  reads the very table being built.  In a real 1983 image build the
+ *  circularity never arises because the image is MUTATED from an older one
+ *  that already had a table.  Building from nothing, we have to close the
+ *  loop ourselves.
+ *
+ *  The tables are created here, but the entries are placed by sending the
+ *  image's own intern: -- so the bucket is chosen by the library's
+ *  String>>hash rather than by a copy of it in C that could drift.  intern:
+ *  answers an argument that is already a Symbol unchanged, so the symbols
+ *  the compiler put in the literal frames stay the identical objects and
+ *  #foo == 'foo' asSymbol holds.
+ */
+#define USTABLE_BUCKETS 512
+
+/*
+ *  String>>hash, as the 1983 library computes it:
+ *
+ *      hash
+ *          | l m |
+ *          (l _ m _ self size) <= 2
+ *            ifTrue: [l = 2 ifTrue: [m _ 3]
+ *                     ifFalse: [l = 1
+ *                                 ifTrue: [^((self at: 1) asciiValue
+ *                                             bitAnd: 127) * 106].
+ *                               ^21845]].
+ *          ^(self at: 1) asciiValue * 48 + ((self at: (m - 1)) asciiValue + l)
+ *
+ *  Smalltalk indexes from one, so "self at: (m - 1)" is byte m - 2 here.
+ */
+uint32_t
+BOOT_string_hash(st_oop string)
+{
+    uint32_t    length;
+    uint32_t    m;
+
+    if (!OM_is_present(string))
+        return 0;
+    length = OM_fetch_byte_length(string);
+    if (length == 0)
+        return 21845;
+    if (length == 1)
+        return (uint32_t) (OM_fetch_byte(0, string) & 127) * 106;
+    m = (length == 2) ? 3 : length;
+    return (uint32_t) OM_fetch_byte(0, string) * 48
+         + (uint32_t) OM_fetch_byte(m - 2, string) + length;
+}
+
+static int
+seed_symbol_table(st_boot_init_report *out)
+{
+    boot_class *symbol = find_class("Symbol");
+    st_oop      single;
+    st_oop      table;
+    st_oop      assoc;
+    st_oop      intern;
+    unsigned    i;
+
+    if (!symbol || !OM_is_present(symbol->metaclass_oop))
+        return 1;               /*  a kernel without Symbol: nothing to do */
+
+    single = OM_instantiate_pointers(ST_CLASS_ARRAY, 128);
+    table  = OM_instantiate_pointers(ST_CLASS_ARRAY, USTABLE_BUCKETS);
+    if (!OM_is_present(single) || !OM_is_present(table))
+        return 0;
+    OM_increase_ref(single);
+    OM_increase_ref(table);
+
+    for (i = 0; i < 128; ++i) {
+        char    text[2];
+
+        text[0] = (char) i;
+        text[1] = '\0';
+        OM_store_pointer(i, single, BOOT_intern_symbol(text, NULL));
+    }
+    for (i = 0; i < USTABLE_BUCKETS; ++i) {
+        st_oop  bucket = OM_instantiate_pointers(ST_CLASS_ARRAY, 0);
+
+        if (!OM_is_present(bucket))
+            return 0;
+        OM_store_pointer(i, table, bucket);
+    }
+
+    assoc = class_variable_association(symbol, "SingleCharSymbols", 0);
+    if (assoc != ST_OOP_INVALID)
+        OM_store_pointer(ST_ASSOCIATION_VALUE, assoc, single);
+    assoc = class_variable_association(symbol, "USTable", 0);
+    if (assoc != ST_OOP_INVALID)
+        OM_store_pointer(ST_ASSOCIATION_VALUE, assoc, table);
+
+    /*  Now hand every symbol we interned to the library's own intern:.  */
+    intern = method_in_dictionary(
+                 OM_fetch_pointer(CLASS_METHOD_DICT, symbol->metaclass_oop),
+                 "intern:");
+    if (!OM_is_present(intern))
+        return 1;
+    out->symbols_total = symbol_count;
+
+    /*
+     *  Place every symbol directly, computing the bucket in C.
+     *
+     *  The obvious alternative -- sending the image's own intern: 3601 times
+     *  -- was tried and abandoned: it added two and a half seconds to every
+     *  bootstrap and still placed only a sixth of them.  So the hash is
+     *  computed here instead, which duplicates String>>hash in C, which is
+     *  exactly the sort of copy that drifts.  What makes it safe is that the
+     *  copy is CHECKED: tests/unit/test_image.c asks the image for the hash
+     *  of a sample of symbols and fails if this disagrees with any of them.
+     *  A duplicate that is asserted equal is a cache; one that is trusted is
+     *  a bug waiting for a rainy day.
+     */
+    for (i = 0; i < symbol_count; ++i) {
+        st_oop      sym = symbols[i];
+        uint32_t    index = BOOT_string_hash(sym) % USTABLE_BUCKETS;
+        st_oop      bucket = OM_fetch_pointer(index, table);
+        uint32_t    n = OM_is_present(bucket)
+                            ? OM_fetch_word_length(bucket) : 0;
+        st_oop      grown = OM_instantiate_pointers(ST_CLASS_ARRAY, n + 1);
+        uint32_t    k;
+
+        if (!OM_is_present(grown))
+            return 0;
+        for (k = 0; k < n; ++k)
+            OM_store_pointer(k, grown, OM_fetch_pointer(k, bucket));
+        OM_store_pointer(n, grown, sym);
+        OM_store_pointer(index, table, grown);
+        ++out->symbols_seeded;
+    }
+    return 1;
+}
+
+int
+BOOT_run_initializers(st_boot_init_report *out)
+{
+    unsigned    i;
+
+    memset(out, 0, sizeof *out);
+    if (!seed_symbol_table(out))
+        return -1;
+    for (i = 0; i < class_count; ++i) {
+        boot_class *c = &classes[i];
+        st_oop      dict;
+        st_oop      method;
+
+        if (!OM_is_present(c->metaclass_oop))
+            continue;
+        dict   = OM_fetch_pointer(CLASS_METHOD_DICT, c->metaclass_oop);
+        method = method_in_dictionary(dict, "initialize");
+        if (!OM_is_present(method))
+            continue;
+
+        ++out->defined;
+        if (run_method_on(method, c->class_oop, 20000000)) {
+            ++out->ran;
+        }  else  {
+            if (!out->first_unfinished[0])
+                snprintf(out->first_unfinished,
+                         sizeof out->first_unfinished, "%.63s", c->name);
+            ++out->unfinished;
+        }
+        /*
+         *  Each initializer's working objects are unreachable once it
+         *  returns, and there are dozens of them.  Collecting between keeps
+         *  a runaway from starving the ones that follow.
+         */
+        OM_collect();
+    }
+    return 0;
 }
 
 uint32_t

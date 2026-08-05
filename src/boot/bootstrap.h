@@ -82,6 +82,51 @@ unsigned BOOT_undeclared(const char **names, unsigned max);
 
 /*  How many of those began with a lower-case letter -- probable bugs.  */
 unsigned BOOT_undeclared_lowercase(void);
+
+/*
+ *  What running the class-side initializers did.
+ */
+typedef struct {
+    unsigned    defined;        /*  classes with a class-side initialize  */
+    unsigned    ran;            /*  ... that finished                     */
+    unsigned    unfinished;     /*  ... that exceeded the bytecode budget */
+    char        first_unfinished[64];
+    unsigned    symbols_seeded;     /*  entries placed in the library table */
+    unsigned    symbols_total;
+} st_boot_init_report;
+
+/*
+ *  Send #initialize to every class that defines one, in definition order.
+ *
+ *  This is the step an image build performs and a fileIn does not: the
+ *  library's class variables -- CharacterTable, the text constants, the
+ *  Symbol table -- are set by these methods and are nil without them.
+ *
+ *  Each initializer gets its own bytecode budget, so one that cannot
+ *  complete (because it wants a Display, or a file) costs one budget rather
+ *  than the whole build.  Answers 0 always: a class that will not initialise
+ *  is a fact to report, not a reason to refuse the image.
+ */
+int BOOT_run_initializers(st_boot_init_report *out);
+
+/*
+ *  String>>hash as the 1983 library computes it, in C.
+ *
+ *  A deliberate duplicate, used to place symbols in the library's own hash
+ *  table without interpreting 3601 sends.  tests/unit/test_image.c asserts
+ *  it agrees with the image, which is what keeps a copy from drifting.
+ */
+uint32_t BOOT_string_hash(st_oop string);
+
+/*
+ *  Visit everything the bootstrap holds from C: the globals, the symbols,
+ *  the class and metaclass objects and the class-variable bindings.
+ *
+ *  BOOT_build installs this as the interpreter's extra root provider.  A
+ *  caller that installs one of its own must call this from it, or the image
+ *  the bootstrap just built will be collected out from under it.
+ */
+void BOOT_provide_roots(om_visit_fn visit);
 st_oop  BOOT_lookup_global(const char *name, void *user);
 
 /*  Byte offset of a method's first bytecode, past the header and literals. */

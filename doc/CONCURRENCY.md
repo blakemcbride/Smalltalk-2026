@@ -133,6 +133,21 @@ Two lessons generalise:
   place each time. `WORKER_unparked_count()` checks the property itself from
   inside the safepoint, and catches the same bug on every single run.
 
+## Roots are the walk, not the count
+
+A marking collection rebuilds every reference count from the root walk, so a
+reference held only in C protects nothing — `interp.h` says exactly that, and
+the bootstrap ignored it for months. It held 3601 symbols, every class and
+metaclass object and every class-variable binding in C arrays, with
+`OM_increase_ref` called on each, and none of it was visited.
+
+The symptom was not a crash. It was that `BOOT_string_hash` answered two
+different values for the same symbol depending on whether a collection had
+happened in between: the symbol had been freed, its object-table slot handed
+to something else, and the bytes read back belonged to a different string.
+A crash would have been kinder. `BOOT_provide_roots` now visits all of it,
+and a caller that installs its own provider must chain to it.
+
 ## Status
 
 The contract is settled; the implementation lands in Phase 7. Phases 0 through 6

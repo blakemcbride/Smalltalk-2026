@@ -381,6 +381,75 @@ primitive_at_put(void)
     return 1;
 }
 
+/*
+ *  63 and 64: String at: and at:put:.
+ *
+ *  The same access as 60 and 61 but in Characters rather than in the byte
+ *  values, which is why the Blue Book gives them numbers of their own.  A
+ *  String's elements ARE Characters as far as Smalltalk is concerned; only
+ *  the storage is bytes.
+ *
+ *  Symbol class>>intern: cannot run without 64: it builds a new Symbol with
+ *  "super at: j put: (aString at: j)", so an image whose VM lacks it can
+ *  intern nothing, and a library that cannot intern cannot print, because
+ *  printString goes looking for a Symbol before it gets anywhere.
+ */
+static int
+primitive_string_at(void)
+{
+    st_oop      object = ST_stack_value(1);
+    uint32_t    index;
+    om_shape    shape;
+    int         length;
+
+    if (!OM_is_object(object)
+     || !positive_16bit_value(ST_stack_value(0), &index))
+        return 0;
+    shape  = shape_of_class(OM_fetch_class(object));
+    length = indexable_length(object, &shape);
+    if (shape.pointers || shape.words || index < 1 || (int) index > length)
+        return 0;
+    {
+        uint8_t     byte = OM_fetch_byte(index - 1, object);
+        st_oop      ch = OM_fetch_pointer(byte, ST_CHARACTER_TABLE);
+
+        if (!OM_is_object(ch))
+            return 0;
+        ST_pop_n(2);
+        ST_push(ch);
+    }
+    return 1;
+}
+
+static int
+primitive_string_at_put(void)
+{
+    st_oop      object = ST_stack_value(2);
+    st_oop      value  = ST_stack_value(0);
+    uint32_t    index;
+    om_shape    shape;
+    int         length;
+    st_oop      code;
+
+    if (!OM_is_object(object)
+     || !positive_16bit_value(ST_stack_value(1), &index))
+        return 0;
+    shape  = shape_of_class(OM_fetch_class(object));
+    length = indexable_length(object, &shape);
+    if (shape.pointers || shape.words || index < 1 || (int) index > length)
+        return 0;
+    /*  The argument must be a Character; its value is its only field.  */
+    if (!OM_is_object(value) || OM_fetch_class(value) != ST_CLASS_CHARACTER)
+        return 0;
+    code = OM_fetch_pointer(0, value);
+    if (!OM_is_int(code) || OM_int_value(code) < 0 || OM_int_value(code) > 255)
+        return 0;
+    OM_store_byte(index - 1, object, (uint8_t) OM_int_value(code));
+    ST_pop_n(3);
+    ST_push(value);
+    return 1;
+}
+
 static int
 primitive_size(void)
 {
@@ -1035,6 +1104,8 @@ ST_primitive_dispatch(unsigned index)
     case 60:  return primitive_at();
     case 61:  return primitive_at_put();
     case 62:  return primitive_size();
+    case 63:  return primitive_string_at();
+    case 64:  return primitive_string_at_put();
     case 70:  return primitive_new();
     case 71:  return primitive_new_with_arg();
     case 72:  return primitive_become();
