@@ -59,6 +59,12 @@ struct st_worker {
     st_thread       thread;
     st_atomic_int   at_safepoint;
     st_atomic_int   running;
+    /*
+     *  Distinct from running.  A worker that has finished need not park; a
+     *  worker that has not started yet must.  Both read running == 0 under
+     *  the old timing, which is precisely how they came to be confused.
+     */
+    st_atomic_int   exited;
 
     /*  Statistics, for the scaling benchmark.  */
     uint64_t        bytecodes;
@@ -111,6 +117,16 @@ void    WORKER_release_safepoint(void);
 
 /*  Run fn with every worker parked.  Returns what fn returned.  */
 uint32_t WORKER_at_safepoint(uint32_t (*fn)(void *user), void *user);
+
+/*
+ *  How many workers are neither parked nor finished, excluding the caller.
+ *
+ *  Inside a safepoint this must be zero -- that IS the safepoint's contract,
+ *  and it is what makes the collector's exclusive access exclusive.  It is
+ *  exported so a test can assert the property directly rather than wait for
+ *  a violation to corrupt something and hope a sanitizer notices.
+ */
+unsigned WORKER_unparked_count(void);
 
 #ifdef __cplusplus
 }

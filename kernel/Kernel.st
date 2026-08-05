@@ -449,3 +449,35 @@ x: ax y: ay
 !SystemDictionary methodsFor: 'accessing'!
 associations
     ^associations! !
+
+"value and value: have one-byte sends of their own; the wider arities are
+ ordinary messages, so they need methods.  All of them are primitive 81,
+ which reads the argument count from the send itself."!
+
+!BlockContext methodsFor: 'evaluating'!
+value
+    <primitive: 81>
+    ^self primitiveFailed!
+value: a
+    <primitive: 81>
+    ^self primitiveFailed!
+value: a value: b
+    <primitive: 81>
+    ^self primitiveFailed!
+value: a value: b value: c
+    <primitive: 81>
+    ^self primitiveFailed!
+numArgs
+    ^blockArgumentCount! !
+
+!Number methodsFor: 'intervals'!
+to: stop do: aBlock
+    "Not inlined by the compiler, matching the 1983 one, so this is a real
+     loop over a real block."
+    | i |
+    i := self.
+    [i <= stop] whileTrue: [aBlock value: i. i := i + 1]!
+timesRepeat: aBlock
+    | i |
+    i := 1.
+    [i <= self] whileTrue: [aBlock value. i := i + 1]! !

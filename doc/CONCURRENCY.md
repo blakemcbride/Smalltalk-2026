@@ -105,6 +105,34 @@ Smalltalk `Process` objects remain green and cheap, multiplexed M:N over the
 worker pool with per-worker ready queues and work stealing. `Processor
 activeProcess` is per-worker state.
 
+## The safepoint's contract, and one way it was broken
+
+While a safepoint is held, every worker other than the requester must be parked
+or finished. That is what makes the collector's access to the object table
+exclusive, and everything else in this document rests on it.
+
+The hazard worth recording is how easily that contract admits a *third* state.
+`WORKER_start` publishes `worker_count` before it creates any threads, so the
+requester walks every slot; but each worker originally announced itself by
+setting its own `running` flag as its first instruction. Between the two, a
+worker that had been created and had not yet started read `running == 0` — the
+same thing a worker that had already *finished* reads, and finished workers must
+be skipped or the protocol never terminates. So the requester skipped it,
+collected, and that worker's first act was to allocate into the table being
+swept. The object it made had no references yet, so the collector reclaimed it
+and handed its table slot to the next allocation, which freed the body its
+creator was still initialising.
+
+Two lessons generalise:
+
+- **Not-yet-started and already-finished are opposite obligations, and one flag
+  cannot carry both.** Workers now have `running` and `exited`, and are marked
+  running before they are created.
+- **Assert the invariant, not its consequences.** As a corrupted-memory symptom
+  this reproduced about twice in twenty-five runs under ASAN, in a different
+  place each time. `WORKER_unparked_count()` checks the property itself from
+  inside the safepoint, and catches the same bug on every single run.
+
 ## Status
 
 The contract is settled; the implementation lands in Phase 7. Phases 0 through 6

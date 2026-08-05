@@ -68,6 +68,26 @@ typedef struct {
 
 typedef struct st_lexer st_lexer;
 
+/*
+ *  A saved position, so the compiler can reconsider.
+ *
+ *  Two constructs need it.  The receiver of whileTrue: is a block whose body
+ *  belongs at the loop head rather than in a BlockContext, and that is only
+ *  known after the block has been read.  And a cascade's first message needs
+ *  a duplicated receiver, which is only known when the semicolon appears.
+ *  Both rewind and compile again.
+ */
+typedef struct {
+    size_t          pos;
+    unsigned        line;
+    int             has_peek;
+    st_token        peeked;
+    st_token_kind   last_kind;
+} st_lexer_state;
+
+void        LEX_save(st_lexer *lx, st_lexer_state *out);
+void        LEX_restore(st_lexer *lx, const st_lexer_state *state);
+
 st_lexer   *LEX_open(const char *source);
 void        LEX_close(st_lexer *lx);
 

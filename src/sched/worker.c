@@ -80,7 +80,9 @@ WORKER_poll_slow(void)
  *  Two exclusions, both required for the protocol to terminate:
  *
  *      A worker that has finished its body will never poll again, so
- *      waiting for it would hang forever.
+ *      waiting for it would hang forever.  Note the asymmetry with a worker
+ *      that has not STARTED its body: that one must be waited for, and
+ *      WORKER_start marks it running before creating it so that it is.
  *
  *      The requester itself is a worker in the common case -- a collection
  *      is triggered by whoever ran out of room -- and it plainly will not
@@ -98,6 +100,24 @@ threads_to_park(const st_worker *requester)
         if (&workers[i] == requester)
             continue;
         if (ST_load_relaxed(&workers[i].running))
+            ++n;
+    }
+    return n;
+}
+
+unsigned
+WORKER_unparked_count(void)
+{
+    const st_worker    *self = current_worker;
+    unsigned            n = 0;
+    unsigned            i;
+
+    for (i = 0; i < worker_count; ++i) {
+        if (&workers[i] == self)
+            continue;
+        if (ST_load_seq(&workers[i].exited))
+            continue;
+        if (!ST_load_seq(&workers[i].at_safepoint))
             ++n;
     }
     return n;
@@ -168,7 +188,7 @@ worker_main(void *arg)
     snprintf(name, sizeof name, "st-worker-%u", self->index);
     ST_thread_set_name(name);
 
-    ST_store_seq(&self->running, 1);
+    /*  running was set by WORKER_start, before this thread existed.  */
     if (self->body)
         self->body(self, self->user);
 
@@ -179,6 +199,7 @@ worker_main(void *arg)
      *  that will never poll again.
      */
     ST_mutex_lock(&safepoint_lock);
+    ST_store_seq(&self->exited, 1);
     ST_store_seq(&self->running, 0);
     ST_cond_broadcast(&safepoint_reached);
     ST_mutex_unlock(&safepoint_lock);
@@ -213,15 +234,37 @@ WORKER_start(unsigned count, void (*body)(st_worker *self, void *user),
 
     memset(workers, 0, sizeof workers);
     worker_count = count;
+    /*
+     *  A worker counts as running from the moment it is created, not from
+     *  the moment it starts.
+     *
+     *  Setting this inside the thread itself opens a window that is invisible
+     *  in every ordinary run and fatal in the ones that matter: worker_count
+     *  is already the full count, so threads_to_park walks every slot, but a
+     *  thread that has not reached its first instruction still reads
+     *  running == 0 and is skipped.  A collection requested during start-up
+     *  therefore proceeds without waiting for it, and that worker's first act
+     *  is to allocate -- into the table the collector is sweeping.  The
+     *  object it creates has no references yet, so the collector reclaims it
+     *  and hands its table slot to the next allocation, which frees the body
+     *  its creator is still initialising.
+     *
+     *  Counting an unstarted worker costs at most a short wait: it will reach
+     *  a poll, because polling is what the interpreter loop does.
+     */
     for (i = 0; i < count; ++i) {
         workers[i].index = i;
         workers[i].body  = body;
         workers[i].user  = user;
-        ST_store_seq(&workers[i].running, 0);
+        ST_store_seq(&workers[i].running, 1);
+        ST_store_seq(&workers[i].exited, 0);
         ST_store_seq(&workers[i].at_safepoint, 0);
     }
     for (i = 0; i < count; ++i) {
         if (ST_thread_create(&workers[i].thread, worker_main, &workers[i]) != 0) {
+            /*  This one will never start, so nothing may wait for it.  */
+            ST_store_seq(&workers[i].exited, 1);
+            ST_store_seq(&workers[i].running, 0);
             worker_count = i;
             WORKER_stop();
             return -1;

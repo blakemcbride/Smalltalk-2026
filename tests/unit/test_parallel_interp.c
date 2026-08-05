@@ -55,7 +55,15 @@ compile_expression(const char *expression)
     ctx.make_array         = BOOT_make_array;
     ctx.lookup_global      = BOOT_lookup_global;
 
-    snprintf(source, sizeof source, "doIt ^%s", expression);
+    /*
+     *  An expression with a caret in it is already a method body, temporary
+     *  declarations and all, so it is used as written.  Anything else is a
+     *  single expression whose value is wanted.
+     */
+    if (strchr(expression, '^'))
+        snprintf(source, sizeof source, "doIt %s", expression);
+    else
+        snprintf(source, sizeof source, "doIt ^%s", expression);
     if (COMPILE_method(source, &ctx, &res) != 0) {
         printf("  cannot compile \"%s\": %s\n", expression, res.error);
         return ST_OOP_INVALID;
@@ -82,7 +90,15 @@ run_method(st_oop method)
     OM_store_pointer(ST_CTX_RECEIVER, context, ST_NIL);
     OM_store_pointer(ST_CTX_IP, context,
                      OM_int_oop((st_int) (BOOT_method_initial_ip(method) + 1)));
-    OM_store_pointer(ST_CTX_SP, context, OM_int_oop(0));
+    /*
+     *  The stack begins ABOVE the temporaries.  A stack pointer of zero puts
+     *  the first push on top of temporary zero, so a method that declares
+     *  any variables overwrites them with its own working stack -- which
+     *  looks exactly like a compiler bug and is not one.
+     */
+    OM_store_pointer(ST_CTX_SP, context,
+                     OM_int_oop((st_int) ST_header_temporary_count(
+                                    OM_fetch_pointer(0, method))));
 
     st_vm.active_context = ST_NIL;
     ST_set_active_context(context);
@@ -212,6 +228,33 @@ test_parallel_execution(void)
  *  reclaims a running thread's stack and the answers stop adding up.
  */
 static st_atomic_int    collections;
+static st_atomic_int    unparked_seen;
+
+/*
+ *  The safepoint's whole contract, asserted from inside one.
+ *
+ *  This runs as the collection body, so by the time it is called every other
+ *  worker is required to be parked or finished.  Checking it here is worth
+ *  more than checking a consequence: the bug this pins let workers that had
+ *  been CREATED but had not yet run their first instruction slip past the
+ *  requester, because they were indistinguishable from workers that had
+ *  already finished.  They then allocated into the object table while the
+ *  collector swept it, and the damage only became visible later, somewhere
+ *  else, about one run in ten under ASAN.
+ *
+ *  Collecting on round zero is deliberate: that is when the pool is still
+ *  being created, which is the only time the window is open.
+ */
+static uint32_t
+collect_checking_safepoint(void *unused)
+{
+    unsigned    unparked = WORKER_unparked_count();
+
+    (void) unused;
+    if (unparked != 0)
+        ST_fetch_add_relaxed(&unparked_seen, (int) unparked);
+    return 0;
+}
 
 static void
 worker_with_collections(st_worker *self, void *user)
@@ -227,7 +270,17 @@ worker_with_collections(st_worker *self, void *user)
             ST_fetch_add_relaxed(&wrong_answers, 1);
         ST_fetch_add_relaxed(&evaluations, 1);
 
-        if (self->index == 0 && (round % 30) == 29) {
+        /*
+         *  Round 0 is the interesting one, and it is here on purpose.  A
+         *  collection requested while the pool is still being created is the
+         *  case that found a real bug: threads_to_park skipped workers that
+         *  had been created but had not yet run their first instruction, so
+         *  the collector swept the object table while those workers were
+         *  allocating into it.  Under ASAN that surfaced as a write to a
+         *  freed object body about one run in ten.
+         */
+        if (self->index == 0 && (round == 0 || (round % 30) == 29)) {
+            WORKER_at_safepoint(collect_checking_safepoint, NULL);
             OM_collect();
             ST_fetch_add_relaxed(&collections, 1);
         }
@@ -254,6 +307,7 @@ test_collection_under_execution(void)
     ST_store_seq(&wrong_answers, 0);
     ST_store_seq(&evaluations, 0);
     ST_store_seq(&collections, 0);
+    ST_store_seq(&unparked_seen, 0);
 
     ST_interp_install_roots(provide_test_roots);
     ST_interp_register();
@@ -265,6 +319,12 @@ test_collection_under_execution(void)
            ST_load_seq(&collections), workers, ST_load_seq(&evaluations));
     CHECK(ST_load_seq(&collections) > 0);
     CHECK_EQ_INT(ST_load_seq(&wrong_answers), 0);
+
+    /*  Nobody was still running while a safepoint was held.  */
+    if (ST_load_seq(&unparked_seen) != 0)
+        printf("  %d worker(s) were unparked inside a safepoint\n",
+               ST_load_seq(&unparked_seen));
+    CHECK_EQ_INT(ST_load_seq(&unparked_seen), 0);
 
     ST_interp_unregister();
     OM_shutdown();

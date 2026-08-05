@@ -58,6 +58,8 @@ usage(const char *argv0)
     printf("  -trace3 <image> [n]   send trace, Xerox trace3 format\n");
     printf("  -inspect <image> <oop>  describe one object (oop in hex)\n");
     printf("  -help                 this message\n");
+    printf("\n");
+    printf("  ST_EVAL_TRACE=1       trace the bytecodes an -eval runs\n");
 }
 
 static void
@@ -434,7 +436,15 @@ evaluate(const char *expression, char *errbuf, size_t errlen)
     ctx.make_array         = BOOT_make_array;
     ctx.lookup_global      = BOOT_lookup_global;
 
-    snprintf(source, sizeof source, "doIt ^%s", expression);
+    /*
+     *  An expression with a caret in it is already a method body, temporary
+     *  declarations and all, so it is used as written.  Anything else is a
+     *  single expression whose value is wanted.
+     */
+    if (strchr(expression, '^'))
+        snprintf(source, sizeof source, "doIt %s", expression);
+    else
+        snprintf(source, sizeof source, "doIt ^%s", expression);
     if (COMPILE_method(source, &ctx, &res) != 0) {
         snprintf(errbuf, errlen, "%s", res.error);
         return ST_OOP_INVALID;
@@ -456,14 +466,25 @@ evaluate(const char *expression, char *errbuf, size_t errlen)
     OM_store_pointer(ST_CTX_IP, context,
                      OM_int_oop((st_int)
                         (BOOT_method_initial_ip(method) + 1)));
-    OM_store_pointer(ST_CTX_SP, context, OM_int_oop(0));
+    /*
+     *  The stack begins ABOVE the temporaries.  A stack pointer of zero puts
+     *  the first push on top of temporary zero, so a method that declares
+     *  any variables overwrites them with its own working stack -- which
+     *  looks exactly like a compiler bug and is not one.
+     */
+    OM_store_pointer(ST_CTX_SP, context,
+                     OM_int_oop((st_int) ST_header_temporary_count(
+                                    OM_fetch_pointer(0, method))));
 
     memset(&st_vm, 0, sizeof st_vm);
     st_vm.active_context = ST_NIL;
     ST_set_active_context(context);
     st_vm.running      = 1;
     st_vm.return_value = ST_NIL;
+    if (getenv("ST_EVAL_TRACE"))
+        ST_trace_set(ST_TRACE_BYTECODES, stderr);
     ST_interp_run(2000000);
+    ST_trace_set(ST_TRACE_OFF, NULL);
     if (st_vm.running) {
         snprintf(errbuf, errlen, "expression did not finish in 2M bytecodes");
         return ST_OOP_INVALID;
@@ -564,6 +585,46 @@ do_inspect(const char *path, const char *oop_text)
     printf("\n");
     if (OM_class_name_of(p, name, sizeof name))
         printf("is the class   : %s\n", name);
+    /*
+     *  A CompiledMethod is worth more than a hex dump.  The plan's compiler
+     *  gate is a bytecode-for-bytecode diff against the methods Xerox
+     *  compiled in 1983, and this is the side of that diff that cannot be
+     *  produced any other way.
+     */
+    if (OM_fetch_class(p) == ST_CLASS_COMPILED_METHOD) {
+        st_oop      header = OM_fetch_pointer(0, p);
+        unsigned    literals = ST_header_literal_count(header);
+        unsigned    start = (literals + ST_METHOD_LITERAL_START)
+                            * (unsigned) sizeof(st_oop);
+        unsigned    n = OM_fetch_byte_length(p);
+        unsigned    i;
+
+        printf("header         : 16r%X\n", (unsigned) header);
+        printf("  flag value   : %u\n", ST_header_flag_value(header));
+        printf("  temporaries  : %u\n", ST_header_temporary_count(header));
+        printf("  literals     : %u\n", literals);
+        printf("  large context: %u\n", ST_header_large_context(header));
+        for (i = ST_METHOD_LITERAL_START;
+             i < literals + ST_METHOD_LITERAL_START; ++i) {
+            st_oop  lit = OM_fetch_pointer(i, p);
+
+            printf("  literal %-2u   : 16r%X", i - ST_METHOD_LITERAL_START,
+                   (unsigned) lit);
+            if (OM_is_int(lit))
+                printf(" = %lld", (long long) OM_int_value(lit));
+            else if (OM_is_object(lit) && !OM_pointer_bit(lit)) {
+                OM_string_of(lit, name, sizeof name);
+                printf(" = \"%s\"", name);
+            }
+            printf("\n");
+        }
+        printf("bytecodes      :");
+        for (i = start; i < n; ++i)
+            printf(" %u", OM_fetch_byte(i, p));
+        printf("\n");
+        OM_shutdown();
+        return 0;
+    }
     if (!OM_pointer_bit(p)) {
         OM_string_of(p, name, sizeof name);
         printf("as text        : \"%s\"\n", name);

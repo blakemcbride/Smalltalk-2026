@@ -70,7 +70,15 @@ evaluate(const char *expression)
     ctx.make_array         = BOOT_make_array;
     ctx.lookup_global      = BOOT_lookup_global;
 
-    snprintf(source, sizeof source, "doIt ^%s", expression);
+    /*
+     *  An expression with a caret in it is already a method body, temporary
+     *  declarations and all, so it is used as written.  Anything else is a
+     *  single expression whose value is wanted.
+     */
+    if (strchr(expression, '^'))
+        snprintf(source, sizeof source, "doIt %s", expression);
+    else
+        snprintf(source, sizeof source, "doIt ^%s", expression);
     if (COMPILE_method(source, &ctx, &res) != 0) {
         printf("  cannot compile \"%s\": %s\n", expression, res.error);
         return ST_OOP_INVALID;
@@ -84,7 +92,15 @@ evaluate(const char *expression)
     OM_store_pointer(ST_CTX_IP, context,
                      OM_int_oop((st_int)
                         (BOOT_method_initial_ip(res.method) + 1)));
-    OM_store_pointer(ST_CTX_SP, context, OM_int_oop(0));
+    /*
+     *  The stack begins ABOVE the temporaries.  A stack pointer of zero puts
+     *  the first push on top of temporary zero, so a method that declares
+     *  any variables overwrites them with its own working stack -- which
+     *  looks exactly like a compiler bug and is not one.
+     */
+    OM_store_pointer(ST_CTX_SP, context,
+                     OM_int_oop((st_int) ST_header_temporary_count(
+                                    OM_fetch_pointer(0, res.method))));
 
     memset(&st_vm, 0, sizeof st_vm);
     st_vm.active_context = ST_NIL;

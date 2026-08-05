@@ -34,8 +34,18 @@ typedef struct {
     unsigned    name_count;
     unsigned    argument_count;
 
+    /*
+     *  Where an inlined loop's nil answer was emitted, if the last thing
+     *  emitted was one.  A loop in statement position has no value anyone
+     *  wants, and pushing nil only to pop it off is two dead bytes that the
+     *  1983 compiler does not emit -- see discard_statement_value.
+     */
+    size_t      loop_nil_end;
+
     int         failed;
 } st_compiler;
+
+#define NO_LOOP_NIL     ((size_t) -1)
 
 /*  ----------  Diagnostics  ----------  */
 
@@ -245,19 +255,26 @@ emit_send(st_compiler *c, const char *selector, unsigned argc, int to_super)
 }
 
 /*
- *  Jumps.  The distance is unknown when the jump is emitted, so a
- *  placeholder goes down and is patched once the target is reached.  Both
- *  the one-byte and two-byte forms exist; we always emit the two-byte form
- *  for forward jumps and choose the short form only when the distance is
- *  known to fit.
+ *  Jumps.  Three forms, and picking the wrong one fails silently -- an
+ *  unconditional jump where a branch belongs simply always takes the arm.
+ *
+ *      164..167   jump
+ *      168..171   pop and jump if true
+ *      172..175   pop and jump if false
+ *
+ *  The distance is unknown when the jump is emitted, so a placeholder goes
+ *  down and is patched once the target is known.
  */
+#define JUMP_ALWAYS     164
+#define JUMP_IF_TRUE    168
+#define JUMP_IF_FALSE   172
+
 static unsigned
-emit_jump_placeholder(st_compiler *c, int on_false)
+emit_jump_placeholder(st_compiler *c, uint8_t opcode)
 {
     unsigned    at_byte = c->out->length;
 
-    /*  172..175 pop and jump on false; 160..167 unconditional.  */
-    emit(c, (uint8_t) (on_false ? 172 : 164));
+    emit(c, opcode);
     emit(c, 0);
     return at_byte;
 }
@@ -266,46 +283,52 @@ static void
 patch_jump(st_compiler *c, unsigned at_byte)
 {
     int32_t     distance;
-    uint8_t     opcode;
+    uint8_t     base;
 
     if (c->failed)
         return;
     distance = (int32_t) c->out->length - (int32_t) (at_byte + 2);
-    opcode   = c->out->bytecodes[at_byte];
-    if (opcode >= 172) {
-        if (distance < 0 || distance > 1023) {
-            fail(c, "conditional jump out of range");
-            return;
-        }
-        c->out->bytecodes[at_byte]     = (uint8_t) (172 + (distance >> 8));
-        c->out->bytecodes[at_byte + 1] = (uint8_t) (distance & 255);
-    }  else  {
+    base     = (uint8_t) (c->out->bytecodes[at_byte] & 0xFC);
+
+    if (base == JUMP_ALWAYS) {
         if (distance < -1024 || distance > 1023) {
             fail(c, "jump out of range");
             return;
         }
-        c->out->bytecodes[at_byte]     = (uint8_t) (164 + (distance >> 8));
+        c->out->bytecodes[at_byte] =
+            (uint8_t) (JUMP_ALWAYS + (distance >> 8));
         c->out->bytecodes[at_byte + 1] = (uint8_t) (distance & 255);
+        return;
     }
+    /*  A conditional jump only ever goes forward here.  */
+    if (distance < 0 || distance > 1023) {
+        fail(c, "conditional jump out of range");
+        return;
+    }
+    c->out->bytecodes[at_byte]     = (uint8_t) (base + (distance >> 8));
+    c->out->bytecodes[at_byte + 1] = (uint8_t) (distance & 255);
 }
 
 /*
- *  A backward jump, for loops.  Unused until whileTrue: is compiled inline;
- *  kept because the encoding is the awkward part and it is already right.
+ *  A backward jump, for loops.  The distance is negative and known.
+ *
+ *  The unconditional jump encodes its offset as (opcode - 164) * 256 plus
+ *  the following byte, so the high part is a SIGNED three-bit quantity and
+ *  must not be masked -- masking turns -1 into 7, which is opcode 171, a
+ *  pop-and-jump-on-true.  A loop compiled that way falls straight out and
+ *  the body never runs.
  */
-#if defined(__GNUC__) || defined(__clang__)
-__attribute__((unused))
-#endif
 static void
 emit_jump_back_to(st_compiler *c, unsigned target)
 {
     int32_t     distance = (int32_t) target - (int32_t) (c->out->length + 2);
+    int32_t     high     = distance >> 8;
 
-    if (distance < -1024) {
-        fail(c, "loop is too long");
+    if (high < -4 || high > 3) {
+        fail(c, "loop is too long to jump back over");
         return;
     }
-    emit(c, (uint8_t) (164 + ((distance >> 8) & 7)));
+    emit(c, (uint8_t) (JUMP_ALWAYS + high));
     emit(c, (uint8_t) (distance & 255));
 }
 
@@ -553,10 +576,17 @@ compile_primary(st_compiler *c, var_ref *out_var)
             return;
         }
 
-        emit(c, 112);                       /*  push self (the home)  */
+        /*
+         *  blockCopy: takes the HOME CONTEXT, not the receiver.  Pushing
+         *  self happens to work whenever self is a context-like object and
+         *  fails everywhere else -- in a doIt, self is nil, and the block is
+         *  then built out of nil.  Bytecode 137 pushes thisContext, which is
+         *  what the 1983 compiler emits and what trace2 shows.
+         */
+        emit(c, 137);                       /*  push active context  */
         emit_push_integer(c, (int64_t) argc);
         emit(c, 200);                       /*  blockCopy:  */
-        jump_at = emit_jump_placeholder(c, 0);
+        jump_at = emit_jump_placeholder(c, JUMP_ALWAYS);
 
         /*  Block arguments arrive already stored in the block's frame.  */
         {
@@ -567,6 +597,10 @@ compile_primary(st_compiler *c, var_ref *out_var)
         }
         compile_statements(c, 1);
         emit(c, 125);                       /*  return stack top from block  */
+        if (!accept(c, ST_TOK_RBRACKET)) {
+            fail(c, "expected ] closing a block");
+            return;
+        }
         patch_jump(c, jump_at);
 
         c->name_count = first_arg;          /*  arguments leave scope  */
@@ -579,37 +613,213 @@ compile_primary(st_compiler *c, var_ref *out_var)
 }
 
 /*
- *  Inlined control flow.  The Blue Book compiler turns these into jumps, and
- *  the reference traces confirm it: a conditional appears as a jump
- *  bytecode, never as a send of ifTrue:.
+ *  ----------  Inlined control flow  ----------
+ *
+ *  The Blue Book compiler turns conditionals and loops into jumps rather
+ *  than sends, and the reference traces confirm it: a conditional appears as
+ *  bytecode 172, never as a send of ifTrue:.  Doing the same is not an
+ *  optimization here, it is a requirement -- Boolean has no ifTrue: method
+ *  to fall back on, and a loop compiled as sends would grow the sender chain
+ *  once per iteration.
+ *
+ *  to:do: is deliberately NOT inlined.  The reference traces show it
+ *  arriving as a real send with a block argument, so the 1983 compiler left
+ *  it alone and so do we.
+ */
+
+/*  Save and restore enough to compile a stretch of source a second time.  */
+typedef struct {
+    st_lexer_state  lexer;
+    st_token        token;
+    unsigned        length;
+    unsigned        literal_count;
+    unsigned        name_count;
+} compiler_mark;
+
+static void
+mark(st_compiler *c, compiler_mark *m)
+{
+    LEX_save(c->lx, &m->lexer);
+    m->token         = c->token;
+    m->length        = c->out->length;
+    m->literal_count = c->out->literal_count;
+    m->name_count    = c->name_count;
+}
+
+static void
+rewind_to(st_compiler *c, const compiler_mark *m)
+{
+    LEX_restore(c->lx, &m->lexer);
+    c->token               = m->token;
+    c->out->length         = m->length;
+    /*
+     *  Literals added by the abandoned attempt are dropped too.  They are
+     *  only reachable by index, and the indices are about to be reused.
+     */
+    c->out->literal_count  = m->literal_count;
+    c->name_count          = m->name_count;
+}
+
+/*
+ *  Compile a literal block's body in place, with no BlockContext.  Answers 0
+ *  if what follows is not a block that can be inlined -- one taking
+ *  arguments cannot, since there is no frame to put them in.
  */
 static int
-try_inline_conditional(st_compiler *c, const char *selector)
+at_inlinable_block(st_compiler *c)
 {
-    if (strcmp(selector, "ifTrue:") == 0 || strcmp(selector, "ifFalse:") == 0) {
-        unsigned    jump_at;
-        int         on_false = (selector[2] == 'T');
+    st_token    look;
 
-        if (!at(c, ST_TOK_LBRACKET))
-            return 0;                   /*  not a literal block: send it  */
-        jump_at = emit_jump_placeholder(c, on_false);
-        advance(c);                     /*  past [  */
-        compile_statements(c, 1);
-        if (!accept(c, ST_TOK_RBRACKET)) {
-            fail(c, "expected ] closing a conditional");
+    if (!at(c, ST_TOK_LBRACKET))
+        return 0;
+    /*  A block with arguments begins with a colon and needs a real frame.  */
+    LEX_peek(c->lx, &look);
+    return look.kind != ST_TOK_COLON;
+}
+
+static void
+compile_inline_block(st_compiler *c)
+{
+    advance(c);                         /*  past [  */
+    compile_statements(c, 1);
+    if (!accept(c, ST_TOK_RBRACKET))
+        fail(c, "expected ] closing an inlined block");
+}
+
+/*
+ *  cond ifTrue: [a] ifFalse: [b] and its relatives.  The receiver's code has
+ *  already been emitted; what is left is to branch around one arm or the
+ *  other.  An arm that is absent answers nil, which is what the message
+ *  would have answered.
+ */
+static int
+compile_inline_conditional(st_compiler *c, const char *first)
+{
+    int         jump_on_false;
+    int         has_else = 0;
+    unsigned    branch;
+    unsigned    skip;
+    char        second[64] = "";
+
+    if (strcmp(first, "ifTrue:") == 0)
+        jump_on_false = 1;
+    else if (strcmp(first, "ifFalse:") == 0)
+        jump_on_false = 0;
+    else
+        return 0;
+    if (!at_inlinable_block(c))
+        return 0;
+
+    branch = emit_jump_placeholder(c,
+                    jump_on_false ? JUMP_IF_FALSE : JUMP_IF_TRUE);
+    compile_inline_block(c);
+
+    /*  A second keyword makes it the two-armed form.  */
+    if (at(c, ST_TOK_KEYWORD)) {
+        snprintf(second, sizeof second, "%.63s", c->token.text);
+        if ((jump_on_false && strcmp(second, "ifFalse:") == 0)
+         || (!jump_on_false && strcmp(second, "ifTrue:") == 0)) {
+            advance(c);
+            if (!at_inlinable_block(c)) {
+                fail(c, "the second arm of %s%s must be a literal block",
+                     first, second);
+                return 1;
+            }
+            has_else = 1;
+        }
+    }
+
+    skip = emit_jump_placeholder(c, JUMP_ALWAYS);
+    patch_jump(c, branch);
+    if (has_else)
+        compile_inline_block(c);
+    else
+        emit(c, 115);                   /*  the untaken arm answers nil  */
+    patch_jump(c, skip);
+    return 1;
+}
+
+/*
+ *  a and: [b] is a conditional that answers a boolean rather than nil, so
+ *  the untaken arm pushes the constant that short-circuited it.
+ */
+static int
+compile_inline_and_or(st_compiler *c, const char *selector)
+{
+    int         is_and;
+    unsigned    branch;
+    unsigned    skip;
+
+    if (strcmp(selector, "and:") == 0)
+        is_and = 1;
+    else if (strcmp(selector, "or:") == 0)
+        is_and = 0;
+    else
+        return 0;
+    if (!at_inlinable_block(c))
+        return 0;
+
+    /*  and: short-circuits when false; or: when true.  */
+    branch = emit_jump_placeholder(c, is_and ? JUMP_IF_FALSE : JUMP_IF_TRUE);
+    compile_inline_block(c);
+    skip = emit_jump_placeholder(c, JUMP_ALWAYS);
+    patch_jump(c, branch);
+    emit(c, (uint8_t) (is_and ? 114 : 113));    /*  false, or true  */
+    patch_jump(c, skip);
+    return 1;
+}
+
+/*
+ *  [cond] whileTrue: [body].
+ *
+ *  Unlike the conditionals, the receiver must NOT already have been emitted:
+ *  its block is the loop's test and belongs at the top of the loop, to be
+ *  re-executed each time round.  The caller therefore rewinds to before the
+ *  receiver and calls this, which reads both blocks itself.
+ */
+static int
+compile_inline_while(st_compiler *c)
+{
+    unsigned    loop_top;
+    unsigned    exit_branch;
+    int         while_true;
+    char        selector[64];
+
+    if (!at_inlinable_block(c))
+        return 0;
+
+    loop_top = c->out->length;
+    compile_inline_block(c);            /*  the test  */
+
+    if (!at(c, ST_TOK_KEYWORD) && !at(c, ST_TOK_IDENTIFIER))
+        return 0;
+    snprintf(selector, sizeof selector, "%.63s", c->token.text);
+    if (strcmp(selector, "whileTrue:") == 0 || strcmp(selector, "whileTrue") == 0)
+        while_true = 1;
+    else if (strcmp(selector, "whileFalse:") == 0
+          || strcmp(selector, "whileFalse") == 0)
+        while_true = 0;
+    else
+        return 0;
+    advance(c);
+
+    /*  Leave when the test answers the opposite of what the loop wants.  */
+    exit_branch = emit_jump_placeholder(c,
+                        while_true ? JUMP_IF_FALSE : JUMP_IF_TRUE);
+
+    if (selector[strlen(selector) - 1] == ':') {
+        if (!at_inlinable_block(c)) {
+            fail(c, "the body of %s must be a literal block", selector);
             return 1;
         }
-        {
-            /*  The value of the whole expression is nil when not taken.  */
-            unsigned    skip = emit_jump_placeholder(c, 0);
-
-            patch_jump(c, jump_at);
-            emit(c, 115);               /*  push nil  */
-            patch_jump(c, skip);
-        }
-        return 1;
+        compile_inline_block(c);
+        emit(c, 135);                   /*  discard the body's value  */
     }
-    return 0;
+    emit_jump_back_to(c, loop_top);
+    patch_jump(c, exit_branch);
+    emit(c, 115);                       /*  a loop answers nil  */
+    c->loop_nil_end = c->out->length;
+    return 1;
 }
 
 static void
@@ -667,28 +877,23 @@ compile_keyword_message(st_compiler *c, int receiver_is_super)
     if (!at(c, ST_TOK_KEYWORD))
         return;
 
-    /*  Try the inlined forms before building a real send.  */
-    {
-        char    first[256];
-        st_token look;
+    /*
+     *  The inlined forms, tried before building a send.  Each rewinds if the
+     *  shape is not the one it handles -- an argument that is not a literal
+     *  block, say -- and the ordinary keyword loop below picks it up.
+     */
+    if (!receiver_is_super) {
+        compiler_mark   here;
+        char            first[64];
 
-        snprintf(first, sizeof first, "%s", c->token.text);
-        LEX_peek(c->lx, &look);
-        if ((strcmp(first, "ifTrue:") == 0 || strcmp(first, "ifFalse:") == 0)
-         && look.kind == ST_TOK_LBRACKET) {
-            st_token    saved = c->token;
-
-            advance(c);
-            if (try_inline_conditional(c, first)) {
-                /*  A trailing ifFalse: after ifTrue: is not handled by the
-                 *  simple form above; fall back to a send if one appears.  */
-                if (at(c, ST_TOK_KEYWORD))
-                    fail(c, "chained %s is not compiled inline yet",
-                         c->token.text);
-                return;
-            }
-            c->token = saved;
-        }
+        snprintf(first, sizeof first, "%.63s", c->token.text);
+        mark(c, &here);
+        advance(c);
+        if (compile_inline_conditional(c, first))
+            return;
+        if (compile_inline_and_or(c, first))
+            return;
+        rewind_to(c, &here);
     }
 
     while (at(c, ST_TOK_KEYWORD)) {
@@ -702,19 +907,51 @@ compile_keyword_message(st_compiler *c, int receiver_is_super)
     emit_send(c, selector, argc, receiver_is_super);
 }
 
+/*
+ *  A cascade sends several messages to one receiver, evaluated once.
+ *
+ *      <receiver>
+ *      dup ; <args> send msg1 ; pop
+ *      dup ; <args> send msg2 ; pop
+ *            <args> send msgN          "the last one consumes the receiver"
+ *
+ *  Whether a message needs the receiver kept is only known once the NEXT
+ *  token has been read, by which point the message is compiled.  So each is
+ *  compiled speculatively with the duplication in place, and the last one --
+ *  the one no semicolon follows -- is rewound and compiled again without it.
+ *
+ *  The mark is taken after the receiver, not before: the receiver's code is
+ *  correct and stays, and only the messages are reconsidered.
+ */
 static void
-compile_cascade(st_compiler *c)
+compile_cascade(st_compiler *c, const compiler_mark *after_receiver)
 {
+    if (!at(c, ST_TOK_SEMICOLON))
+        return;
+
+    /*  Redo the first message, this time keeping the receiver.  */
+    rewind_to(c, after_receiver);
+    emit(c, 136);                       /*  duplicate the receiver  */
+    compile_keyword_message(c, 0);
+    if (c->failed)
+        return;
+
     while (at(c, ST_TOK_SEMICOLON)) {
-        /*
-         *  A cascade re-sends to the receiver of the last message.  The
-         *  receiver was duplicated before that send, so it is still below
-         *  the result: drop the result and send again.
-         */
+        compiler_mark   before_message;
+
         advance(c);
-        emit(c, 135);                   /*  pop the previous result  */
-        emit(c, 136);                   /*  duplicate the receiver   */
+        emit(c, 135);                   /*  drop the previous answer  */
+        mark(c, &before_message);
+        emit(c, 136);
         compile_keyword_message(c, 0);
+        if (c->failed)
+            return;
+        if (!at(c, ST_TOK_SEMICOLON)) {
+            /*  That was the last, so it should have consumed the receiver. */
+            rewind_to(c, &before_message);
+            compile_keyword_message(c, 0);
+            return;
+        }
     }
 }
 
@@ -747,14 +984,75 @@ compile_expression(st_compiler *c)
         }
     }
     {
-        int         is_super = at(c, ST_TOK_IDENTIFIER)
-                            && strcmp(c->token.text, "super") == 0;
-        var_ref     v;
+        int             is_super = at(c, ST_TOK_IDENTIFIER)
+                                && strcmp(c->token.text, "super") == 0;
+        var_ref         v;
+        compiler_mark   before_receiver;
+        compiler_mark   after_receiver;
 
-        compile_primary(c, &v);
+        /*
+         *  Marked before anything is emitted.  whileTrue: needs its receiver
+         *  block compiled as the loop's test rather than built as a block,
+         *  and that is only known once the block has been read past.
+         */
+        mark(c, &before_receiver);
+        if (at_inlinable_block(c)) {
+            compiler_mark   after_block;
+
+            compile_primary(c, &v);
+            mark(c, &after_block);
+            if (at(c, ST_TOK_KEYWORD) || at(c, ST_TOK_IDENTIFIER)) {
+                const char *sel = c->token.text;
+
+                if (strncmp(sel, "whileTrue", 9) == 0
+                 || strncmp(sel, "whileFalse", 10) == 0) {
+                    rewind_to(c, &before_receiver);
+                    if (compile_inline_while(c))
+                        return;
+                    rewind_to(c, &before_receiver);
+                    compile_primary(c, &v);
+                }  else  {
+                    rewind_to(c, &after_block);
+                }
+            }
+        }  else  {
+            compile_primary(c, &v);
+        }
+        /*
+         *  Marked after the receiver, for the cascade: its messages may need
+         *  recompiling, the receiver never does.
+         */
+        mark(c, &after_receiver);
         compile_keyword_message(c, is_super);
-        compile_cascade(c);
+        compile_cascade(c, &after_receiver);
     }
+}
+
+/*
+ *  Drop the value of a statement nobody asked for.
+ *
+ *  Normally that is bytecode 135.  But when the statement was an inlined
+ *  loop, the value being dropped is a nil this compiler pushed one byte ago
+ *  for no other purpose, so the push is removed instead and no pop is
+ *  emitted.  That is what LinkedList>>do: does in the 1983 image: the
+ *  backward jump is followed immediately by returnSelf.
+ *
+ *  The test is positional, which is what makes it safe.  If the loop was
+ *  nested inside a larger expression, something will have been emitted after
+ *  the nil and the lengths will not match, so the push stays.  Deleting the
+ *  byte cannot disturb a jump either: the only jump that targets it is the
+ *  loop exit, and with nothing after it the same offset now lands on
+ *  whatever follows -- which is precisely where the loop should exit to.
+ */
+static void
+discard_statement_value(st_compiler *c)
+{
+    if (c->loop_nil_end == c->out->length && c->out->length > 0) {
+        --c->out->length;
+        c->loop_nil_end = NO_LOOP_NIL;
+        return;
+    }
+    emit(c, 135);
 }
 
 static void
@@ -784,18 +1082,29 @@ compile_statements(st_compiler *c, int inside_block)
         if (accept(c, ST_TOK_PERIOD)) {
             if (at(c, ST_TOK_END) || at(c, ST_TOK_RBRACKET)) {
                 /*  A trailing period leaves nothing on the stack.  */
-                emit(c, 135);
+                discard_statement_value(c);
                 emitted = 0;
                 break;
             }
-            emit(c, 135);               /*  discard the statement's value  */
+            discard_statement_value(c); /*  discard the statement's value  */
             emitted = 0;
             continue;
         }
         break;
     }
-    if (inside_block && !emitted)
-        emit(c, 115);                   /*  an empty block answers nil  */
+    /*
+     *  What the last statement leaves behind is the one place a block and a
+     *  method differ.  A block answers its last statement, so the value has
+     *  to stay; a method answers self, so the value is dropped and the
+     *  caller's returnSelf finds a clean stack.  An empty block still has to
+     *  answer something.
+     */
+    if (!emitted) {
+        if (inside_block)
+            emit(c, 115);               /*  an empty block answers nil  */
+    } else if (!inside_block) {
+        discard_statement_value(c);     /*  a method answers self, not this */
+    }
 }
 
 /*  ----------  The method pattern  ----------  */
@@ -857,6 +1166,7 @@ COMPILE_to_bytecodes(const char *source, const st_compile_context *ctx,
 
     memset(out, 0, sizeof *out);
     memset(&c, 0, sizeof c);
+    c.loop_nil_end = NO_LOOP_NIL;
     c.ctx = ctx;
     c.out = out;
     c.lx  = LEX_open(source);

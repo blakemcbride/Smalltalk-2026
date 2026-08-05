@@ -50,6 +50,26 @@ LEX_close(st_lexer *lx)
     free(lx);
 }
 
+void
+LEX_save(st_lexer *lx, st_lexer_state *out)
+{
+    out->pos       = lx->pos;
+    out->line      = lx->line;
+    out->has_peek  = lx->has_peek;
+    out->peeked    = lx->peeked;
+    out->last_kind = lx->last_kind;
+}
+
+void
+LEX_restore(st_lexer *lx, const st_lexer_state *state)
+{
+    lx->pos       = state->pos;
+    lx->line      = state->line;
+    lx->has_peek  = state->has_peek;
+    lx->peeked    = state->peeked;
+    lx->last_kind = state->last_kind;
+}
+
 const char *
 LEX_error(const st_lexer *lx)
 {

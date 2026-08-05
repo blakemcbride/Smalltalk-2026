@@ -142,8 +142,15 @@ test_returns(void)
     /*  Anything else becomes literal 0, pushed by bytecode 32.  */
     CHECK_CODE("foo ^3", "^3", 32, 124);
 
-    /*  A method with no return answers the receiver: 120.  */
-    CHECK_CODE("foo 1", "no explicit return", 118, 120);
+    /*
+     *  A method with no return answers the receiver: 120.  The statement's
+     *  own value is dropped first, which is not merely tidiness -- 74 of the
+     *  114 methods in a 250-method sample of the 1983 image do exactly this,
+     *  and the other 40 end in a storing bytecode that has already consumed
+     *  the value.  Object>>changed is the canonical shape:
+     *      self changed: self   ->   112 112 224 135 120
+     */
+    CHECK_CODE("foo 1", "no explicit return", 118, 135, 120);
 }
 
 static void
@@ -223,11 +230,17 @@ test_blocks(void)
      *  A block is: push the home context, push the argument count,
      *  blockCopy:, jump over the body, body, return-from-block.
      *  Bytecode 200 is blockCopy: and 125 is the block return.
+     *
+     *  The context is pushed with 137, not with 112.  In a method they are
+     *  easy to confuse because both leave something plausible on the stack,
+     *  but 112 is self -- and a block copied from the receiver rather than
+     *  from the context has no home, no outer temporaries and, in a doIt
+     *  where self is nil, no anything.
      */
     CHECK_CODE("foo ^[1]", "empty-ish block",
-               112, 117, 200, 164, 2, 118, 125, 124);
+               137, 117, 200, 164, 2, 118, 125, 124);
     CHECK_CODE("foo ^[:a | a]", "block with an argument",
-               112, 118, 200, 164, 3, 104, 16, 125, 124);
+               137, 118, 200, 164, 3, 104, 16, 125, 124);
 }
 
 static void
@@ -240,6 +253,80 @@ test_conditionals(void)
      */
     CHECK_CODE("foo ^true ifTrue: [1]", "ifTrue:",
                113, 172, 3, 118, 164, 1, 115, 124);
+
+    /*  ifFalse: branches on TRUE, bytecode 168 -- a different opcode, and
+     *  emitting the unconditional jump instead is silently always-taken.  */
+    CHECK_CODE("foo ^true ifFalse: [1]", "ifFalse:",
+               113, 168, 3, 118, 164, 1, 115, 124);
+
+    /*  Both arms present: no nil, and the first arm jumps over the second. */
+    CHECK_CODE("foo ^true ifTrue: [1] ifFalse: [2]", "ifTrue:ifFalse:",
+               113, 172, 3, 118, 164, 1, 119, 124);
+    CHECK_CODE("foo ^true ifFalse: [1] ifTrue: [2]", "ifFalse:ifTrue:",
+               113, 168, 3, 118, 164, 1, 119, 124);
+
+    /*  and: and or: short-circuit to a constant rather than to nil.  */
+    CHECK_CODE("foo ^true and: [false]", "and:",
+               113, 172, 3, 114, 164, 1, 114, 124);
+    CHECK_CODE("foo ^true or: [false]", "or:",
+               113, 168, 3, 114, 164, 1, 113, 124);
+}
+
+/*
+ *  A loop's test belongs at the top of the loop, re-executed each time
+ *  round, so the receiver block is inlined rather than built.  The jump back
+ *  is the awkward part: its offset is negative, and the high three bits are
+ *  signed -- masking them turns -1 into 7, which is a pop-and-jump-on-true
+ *  and falls straight out of the loop.
+ */
+static void
+test_loops(void)
+{
+    /*
+     *  In statement position the loop's nil answer is not emitted at all, so
+     *  the backward jump is followed straight by returnSelf.  That is the
+     *  1983 shape exactly -- LinkedList>>do: compiles to
+     *      0 105 17 115 198 168 9 16 17 202 135 17 208 105 163 242 120
+     *  which is the same skeleton: test, branch out, body, pop, jump back,
+     *  return, with nothing in between.
+     */
+    CHECK_CODE("foo [false] whileTrue: [1]", "whileTrue:",
+               114,             /*  the test: push false     */
+               172, 4,          /*  leave when false         */
+               118,             /*  the body                 */
+               135,             /*  discard the body's value */
+               163, 249,        /*  jump back -7 to the test */
+               120);
+    CHECK_CODE("foo [false] whileFalse: [1]", "whileFalse:",
+               114, 168, 4, 118, 135, 163, 249, 120);
+
+    /*  A test-only loop has no body to discard.  */
+    CHECK_CODE("foo [false] whileTrue", "whileTrue",
+               114, 172, 2, 163, 251, 120);
+
+    /*  But where the value IS wanted the nil stays.  */
+    CHECK_CODE("foo ^[false] whileTrue: [1]", "whileTrue: for value",
+               114, 172, 4, 118, 135, 163, 249, 115, 124);
+
+    /*  And a loop nested in a larger expression keeps it too, which is what
+     *  makes dropping the byte safe: the test is positional.  */
+    CHECK_CODE("foo ^([false] whileTrue: [1]) isNil", "nested loop",
+               114, 172, 4, 118, 135, 163, 249, 115, 208, 124);
+}
+
+/*
+ *  A cascade evaluates its receiver once and duplicates it before every
+ *  message but the last.
+ */
+static void
+test_cascades(void)
+{
+    CHECK_CODE("foo ^self one; two; three", "cascade of three unary sends",
+               112,             /*  the receiver, once            */
+               136, 208,        /*  dup, send one                 */
+               135, 136, 209,   /*  drop, dup, send two           */
+               135, 210,        /*  drop, send three -- no dup    */
+               124);
 }
 
 /*  ----------  The chunk reader  ----------  */
@@ -366,6 +453,8 @@ main(void)
     test_assignment();
     test_blocks();
     test_conditionals();
+    test_loops();
+    test_cascades();
 
     return ST_TEST_END();
 }
