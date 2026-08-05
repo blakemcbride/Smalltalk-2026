@@ -44,12 +44,50 @@ typedef struct {
     unsigned    argument_count;
 
     /*
+     *  The most names ever in scope at once.
+     *
+     *  name_count falls back when a block's arguments go out of scope, so it
+     *  ends the method describing only the method's own temporaries -- while
+     *  the frame has to be big enough for every slot any block ever used.
+     *  The context holds the temporaries first and the working stack
+     *  immediately above them, so undercounting does not merely waste room:
+     *  the stack starts ON TOP of the block arguments, and a block storing
+     *  its argument overwrites whatever the stack had put there.
+     *
+     *  VariableNode class>>initialize is where this surfaced.  It reads
+     *  "encoder fillDict: ... mapping: ((1 to: n) collect: [:i | ...]) ...",
+     *  and the block argument shared its slot with the first thing pushed
+     *  for that send, which was the encoder.  The send went out with 32 --
+     *  the last value of i -- as its receiver, so the compiler's own tables
+     *  were never built and every method compiled inside the image came out
+     *  in a larger dialect than the same source compiled in C.
+     */
+    unsigned    max_names;
+
+    /*
      *  Where an inlined loop's nil answer was emitted, if the last thing
      *  emitted was one.  A loop in statement position has no value anyone
      *  wants, and pushing nil only to pop it off is two dead bytes that the
      *  1983 compiler does not emit -- see discard_statement_value.
      */
     size_t      loop_nil_end;
+
+    /*
+     *  Where a store that did NOT pop its value was emitted, if it was the
+     *  last thing emitted.
+     *
+     *  An assignment leaves its value on the stack, because "b _ a _ 1" is
+     *  legal and the inner one has to answer something.  In statement
+     *  position nobody wants it, and the bytecode set has a store-and-pop
+     *  for exactly that -- one byte where a store and a separate pop are
+     *  three.  The 1983 compiler emits it; recording where the store began
+     *  is what lets discard_statement_value go back and do the same.
+     */
+    size_t      store_at;
+    size_t      store_end;
+    int         store_kind;
+    unsigned    store_index;
+    st_oop      store_association;
 
     /*  Whether a super send was emitted, and so needs the class literal.  */
     int         used_super;
@@ -76,6 +114,12 @@ typedef struct {
 } st_compiler;
 
 #define NO_LOOP_NIL     ((size_t) -1)
+#define NO_STORE        ((size_t) -1)
+
+/*  Which of the three store emitters left the value on the stack.  */
+#define STORE_TEMPORARY         0
+#define STORE_RECEIVER          1
+#define STORE_LITERAL           2
 
 /*  ----------  Diagnostics  ----------  */
 
@@ -200,35 +244,57 @@ emit_push_receiver_variable(st_compiler *c, unsigned index)
     }
 }
 
+/*  Remember a store that left its value, so a statement can take it back.  */
+static void
+note_store(st_compiler *c, size_t at, int kind, unsigned index, st_oop assoc)
+{
+    c->store_at          = at;
+    c->store_end         = c->out->length;
+    c->store_kind        = kind;
+    c->store_index       = index;
+    c->store_association = assoc;
+}
+
 static void
 emit_store_temporary(st_compiler *c, unsigned index, int pop)
 {
+    size_t  at = c->out->length;
+
     if (pop && index < 8) {
         emit(c, (uint8_t) (104 + index));
         return;
     }
     emit(c, (uint8_t) (pop ? 130 : 129));
     emit(c, (uint8_t) (0x40 | (index & 63)));
+    if (!pop)
+        note_store(c, at, STORE_TEMPORARY, index, ST_NIL);
 }
 
 static void
 emit_store_receiver_variable(st_compiler *c, unsigned index, int pop)
 {
+    size_t  at = c->out->length;
+
     if (pop && index < 8) {
         emit(c, (uint8_t) (96 + index));
         return;
     }
     emit(c, (uint8_t) (pop ? 130 : 129));
     emit(c, (uint8_t) (index & 63));
+    if (!pop)
+        note_store(c, at, STORE_RECEIVER, index, ST_NIL);
 }
 
 static void
 emit_store_literal_variable(st_compiler *c, st_oop association, int pop)
 {
     unsigned    index = literal_index(c, association);
+    size_t      at = c->out->length;
 
     emit(c, (uint8_t) (pop ? 130 : 129));
     emit(c, (uint8_t) (0xC0 | (index & 63)));
+    if (!pop)
+        note_store(c, at, STORE_LITERAL, index, association);
 }
 
 /*
@@ -319,6 +385,28 @@ patch_jump(st_compiler *c, unsigned at_byte)
 
     if (c->failed)
         return;
+    /*
+     *  A jump now lands where the code currently ends, so the byte before
+     *  that end is no longer the last thing emitted in any sense that
+     *  matters: it sits between a jump and its target.
+     *
+     *  discard_statement_value deletes a trailing "push nil" that an inlined
+     *  loop pushed and nobody wanted, on the reasoning that the only jump
+     *  reaching it is the loop's own exit, which lands on whatever follows
+     *  either way.  That reasoning holds only until some OTHER jump is
+     *  patched to just past it.  It happens whenever a loop is the last
+     *  statement of an arm of an inlined ifTrue:ifFalse:, because the jump
+     *  over the second arm is patched to exactly that point: deleting the
+     *  nil afterwards left that jump pointing one byte past the end of the
+     *  method, and execution ran off into the source-pointer trailer.
+     *
+     *  Number>>to:by:do: is written that way, so "5 to: 1 by: -1 do: [...]"
+     *  read three bytes of a source position as a push and a send, and
+     *  reported that nil did not understand a selector that was not a
+     *  Symbol.  Anything reaching reverseDo: went the same way.
+     */
+    c->loop_nil_end = NO_LOOP_NIL;
+    c->store_end    = NO_STORE;
     distance = (int32_t) c->out->length - (int32_t) (at_byte + 2);
     base     = (uint8_t) (c->out->bytecodes[at_byte] & 0xFC);
 
@@ -520,9 +608,45 @@ parse_literal_array(st_compiler *c)
                                            ST_CHARACTER_TABLE);
             advance(c);
             break;
+        case ST_TOK_KEYWORD: {
+            /*
+             *  Keyword parts that touch are one selector.
+             *
+             *  The lexer hands back a token per keyword, because that is
+             *  what a message send needs; inside a literal array they have
+             *  to be joined again, since "#(ifTrue:ifFalse:)" holds one
+             *  symbol and "#(ifTrue: ifFalse:)" holds two, and nothing but
+             *  the space between them says which.
+             *
+             *  Splitting them silently produced Symbols that were spelled
+             *  right individually and were not the selectors meant.
+             *  MessageNode class>>initialize builds MacroSelectors from a
+             *  literal array of exactly this shape, and the compiler inside
+             *  the image looks a selector up in it by identity -- so with
+             *  the array holding #ifTrue: and #ifFalse: where
+             *  #ifTrue:ifFalse: belonged, the lookup answered nothing,
+             *  nothing was ever recognised as a macro, and the image
+             *  compiled every conditional and every loop as a real message
+             *  send with real blocks.
+             */
+            char        joined[256];
+            size_t      n = 0;
+
+            for (;;) {
+                const char *part = c->token.text;
+
+                while (*part && n + 1 < sizeof joined)
+                    joined[n++] = *part++;
+                advance(c);
+                if (!at(c, ST_TOK_KEYWORD) || c->token.after_space)
+                    break;
+            }
+            joined[n] = '\0';
+            element = c->ctx->intern_symbol(joined, c->ctx->user);
+            break;
+        }
         case ST_TOK_SYMBOL:
         case ST_TOK_IDENTIFIER:
-        case ST_TOK_KEYWORD:
         case ST_TOK_BINARY:
             element = c->ctx->intern_symbol(c->token.text, c->ctx->user);
             advance(c);
@@ -704,6 +828,9 @@ compile_primary(st_compiler *c, var_ref *out_var)
         }
         patch_jump(c, jump_at);
 
+        /*  The frame still has to hold them; see max_names.  */
+        if (c->name_count > c->max_names)
+            c->max_names = c->name_count;
         c->name_count = first_arg;          /*  arguments leave scope  */
         return;
     }
@@ -1200,6 +1327,28 @@ discard_statement_value(st_compiler *c)
         c->loop_nil_end = NO_LOOP_NIL;
         return;
     }
+    /*
+     *  An assignment whose value nobody wanted: emit it again as the
+     *  store-and-pop it should have been.  Same positional test as above,
+     *  and cleared by patch_jump for the same reason -- a jump landing at
+     *  the current end means these bytes are a target and must not move.
+     */
+    if (c->store_end == c->out->length && c->store_end != NO_STORE) {
+        c->out->length = c->store_at;
+        c->store_end   = NO_STORE;
+        switch (c->store_kind) {
+        case STORE_TEMPORARY:
+            emit_store_temporary(c, c->store_index, 1);
+            break;
+        case STORE_RECEIVER:
+            emit_store_receiver_variable(c, c->store_index, 1);
+            break;
+        default:
+            emit_store_literal_variable(c, c->store_association, 1);
+            break;
+        }
+        return;
+    }
     emit(c, 135);
 }
 
@@ -1457,6 +1606,8 @@ COMPILE_to_bytecodes(const char *source, const st_compile_context *ctx,
     memset(out, 0, sizeof *out);
     memset(&c, 0, sizeof c);
     c.loop_nil_end = NO_LOOP_NIL;
+    c.store_end    = NO_STORE;
+    c.max_names    = 0;
     c.ctx = ctx;
     c.out = out;
     c.lx  = LEX_open(source);
@@ -1498,14 +1649,16 @@ COMPILE_to_bytecodes(const char *source, const st_compile_context *ctx,
     append_method_class_literal(&c);
 
     out->argument_count  = c.argument_count;
-    out->temporary_count = c.name_count;
+    if (c.name_count > c.max_names)
+        c.max_names = c.name_count;
+    out->temporary_count = c.max_names;
     /*
      *  Temporaries and stack share the frame, so both count.  Twelve slots
      *  is what a small context has past its fixed fields; anything more
      *  needs the large one.
      */
     out->needs_large_context =
-        (c.name_count + max_stack_depth(out) > 12);
+        (c.max_names + max_stack_depth(out) > 12);
 
     LEX_close(c.lx);
     return c.failed ? -1 : 0;

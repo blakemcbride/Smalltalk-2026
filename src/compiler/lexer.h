@@ -64,6 +64,16 @@ typedef struct {
     double          real;
     unsigned        line;
     unsigned        primitive;      /*  for ST_TOK_PRIMITIVE  */
+    /*
+     *  Whether anything -- space, tab, newline or a comment -- stood between
+     *  this token and the one before it.
+     *
+     *  Only a literal array needs it, and it needs it badly.  Inside one,
+     *  "#(ifTrue:ifFalse:)" is a single symbol and "#(ifTrue: ifFalse:)" is
+     *  two, and the lexer hands back two keyword tokens either way; nothing
+     *  else in the token distinguishes them.
+     */
+    int             after_space;
 } st_token;
 
 typedef struct st_lexer st_lexer;

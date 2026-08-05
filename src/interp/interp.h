@@ -240,6 +240,10 @@ void        ST_report_backtrace(void);
  *  failures which survive the last pass are ever printed.
  */
 void        ST_set_error_reporting(int on);
+
+/*  Reading a method: its bytecode names and how wide each one is.  */
+void        ST_bytecode_name(uint8_t code, char *buf, size_t buflen);
+unsigned    ST_bytecode_operand_bytes(uint8_t code);
 int         ST_errors_reported(void);
 
 #endif  /*  ST_INTERP_H  */

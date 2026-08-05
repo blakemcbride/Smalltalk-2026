@@ -2591,6 +2591,41 @@ install_system_organization(void)
  *  C -- which is how a Smalltalk decides what to do on waking up.
  */
 /*
+ *  Hand the image the class variables the 1983 sources never assign.
+ *
+ *  SystemDictionary's SpecialSelectors is one, and it is not an oversight in
+ *  the sources: a 1983 image was built from an older image that already had
+ *  it, so nothing in the text ever needs to say what it is.  Built from
+ *  nothing, it stays nil, and nothing complains -- it is read by
+ *  "Smalltalk specialSelectorSize", which answers "nil size // 2" and
+ *  therefore fails quietly wherever a size of zero is an acceptable answer.
+ *
+ *  What reads it is the compiler.  VariableNode class>>initialize builds
+ *  StdSelectors from it, and StdSelectors is how the image decides that "+"
+ *  is bytecode 176 rather than an ordinary send of a literal selector.  With
+ *  it nil, every method compiled INSIDE the image came out in a different
+ *  and larger dialect than the same source compiled in C -- which is exactly
+ *  the disagreement the self-hosting check exists to catch.
+ *
+ *  The VM has the table already, because the interpreter needs it to run
+ *  bytecodes 176 to 207 at all.  The image is given that same object rather
+ *  than a copy, so the two cannot drift apart.
+ */
+static void
+install_special_selectors(void)
+{
+    boot_class *dict = find_class("SystemDictionary");
+    st_oop      assoc;
+
+    if (!dict)
+        return;
+    assoc = class_variable_association(dict, "SpecialSelectors", 0);
+    if (assoc == ST_OOP_INVALID || !OM_is_present(assoc))
+        return;
+    OM_store_pointer(ST_ASSOCIATION_VALUE, assoc, ST_SPECIAL_SELECTORS);
+}
+
+/*
  *  The scheduler object itself, and the name Processor for it.
  *
  *  Separated from the startup process because the class initializers need
@@ -3142,6 +3177,12 @@ BOOT_run_initializers(st_boot_init_report *out)
      *  forks its timing process at Processor timingPriority.
      */
     install_processor_object();
+
+    /*
+     *  And the special selectors, before VariableNode class>>initialize
+     *  builds the compiler's table out of them.
+     */
+    install_special_selectors();
 
     ST_set_error_reporting(0);
     run_class_initializers(out);

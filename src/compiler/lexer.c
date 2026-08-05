@@ -243,8 +243,13 @@ lex_token(st_lexer *lx, st_token *out)
 {
     char    c;
 
-    memset(out, 0, sizeof *out);
-    skip_blanks(lx);
+    {
+        size_t  before = lx->pos;
+
+        memset(out, 0, sizeof *out);
+        skip_blanks(lx);
+        out->after_space = (lx->pos != before) || before == 0;
+    }
     out->line = lx->line;
     if (at_end(lx)) {
         out->kind = ST_TOK_END;

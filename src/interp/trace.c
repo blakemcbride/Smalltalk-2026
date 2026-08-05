@@ -96,8 +96,8 @@ static const char *const special_selectors[16] = {
     "blockCopy:", "value", "value:", "do:", "new", "new:", "x", "y"
 };
 
-static void
-describe_bytecode(uint8_t code, char *buf, size_t buflen)
+void
+ST_bytecode_name(uint8_t code, char *buf, size_t buflen)
 {
     if (code <= 15) {
         snprintf(buf, buflen, "Push Receiver Instance Variable %u", code);
@@ -182,6 +182,31 @@ describe_bytecode(uint8_t code, char *buf, size_t buflen)
     }
 }
 
+/*
+ *  How many bytes follow a bytecode as its operands.
+ *
+ *  The extended forms take one or two; the long jumps take one, and the
+ *  short jumps encode their distance in the opcode and take none.  Getting
+ *  this wrong when reading a method disassembles the operand as if it were
+ *  an instruction, which is precisely the confusion a disassembler exists
+ *  to prevent.
+ */
+unsigned
+ST_bytecode_operand_bytes(uint8_t code)
+{
+    switch (code) {
+    case 128: case 129: case 130: case 131: case 133:
+        return 1;
+    case 132: case 134:
+        return 2;
+    default:
+        /*  Long jumps: 160..175.  Short jumps 144..159 carry their own.  */
+        if (code >= 160 && code <= 175)
+            return 1;
+        return 0;
+    }
+}
+
 void
 ST_trace_bytecode(uint8_t code, st_oop method, uint32_t ip)
 {
@@ -191,7 +216,7 @@ ST_trace_bytecode(uint8_t code, st_oop method, uint32_t ip)
     (void) ip;
     if (trace_mode != ST_TRACE_BYTECODES)
         return;
-    describe_bytecode(code, desc, sizeof desc);
+    ST_bytecode_name(code, desc, sizeof desc);
     fprintf(trace_out, "Bytecode <%u> %s\n", (unsigned) code, desc);
 }
 

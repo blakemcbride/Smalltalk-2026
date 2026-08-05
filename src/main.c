@@ -43,6 +43,9 @@
 #define ST_OM_NAME      "none configured"
 #endif
 
+static int  do_disasm(const char *path, const char *class_name,
+                      const char *selector);
+
 static void
 usage(const char *argv0)
 {
@@ -61,6 +64,7 @@ usage(const char *argv0)
     printf("  -trace2 <image> [n]   bytecode trace, Xerox trace2 format\n");
     printf("  -trace3 <image> [n]   send trace, Xerox trace3 format\n");
     printf("  -inspect <image> <oop>  describe one object (oop in hex)\n");
+    printf("  -disasm <image> <Class> <selector>   dump a method's bytecodes\n");
     printf("  -syntax <f.st...>     compile every method and report failures\n");
     printf("  -help                 this message\n");
     printf("\n");
@@ -530,6 +534,141 @@ evaluate(const char *expression, char *errbuf, size_t errlen)
 }
 
 /*
+ *  Dump a method: its header, its literal frame, and its bytecodes.
+ *
+ *  The image can do this itself -- CompiledMethod>>symbolic is in the 1983
+ *  sources -- but it needs a working image to do it, which is exactly what
+ *  one does not have when a method is misbehaving.  This reads the bytes.
+ */
+static int
+do_disasm(const char *path, const char *class_name, const char *selector)
+{
+    st_oop      cls;
+    st_oop      method;
+    st_oop      header;
+    uint32_t    literals;
+    uint32_t    start;
+    uint32_t    n;
+    uint32_t    i;
+    int         meta = 0;
+    char        name[128];
+
+    if (load(path) != 0)
+        return 1;
+
+    snprintf(name, sizeof name, "%s", class_name);
+    /*  "Foo class" names the metaclass, where class-side methods live.  */
+    {
+        char   *space = strstr(name, " class");
+
+        if (space) {
+            *space = '\0';
+            meta = 1;
+        }
+    }
+    /*
+     *  Looked up in the image's own Smalltalk, not the builder's table:
+     *  this reads an image off disk, and nothing built it in this process.
+     */
+    cls = ST_NIL;
+    {
+        uint32_t    n = OM_is_present(ST_SMALLTALK)
+                            ? OM_fetch_word_length(ST_SMALLTALK) : 0;
+        uint32_t    k;
+
+        for (k = 0; k < n; ++k) {
+            st_oop  entry = OM_fetch_pointer(k, ST_SMALLTALK);
+            char    text[128];
+
+            if (!OM_is_present(entry) || !OM_pointer_bit(entry)
+             || OM_fetch_word_length(entry) < 2)
+                continue;
+            OM_string_of(OM_fetch_pointer(0, entry), text, sizeof text);
+            if (strcmp(text, name) == 0) {
+                cls = OM_fetch_pointer(1, entry);
+                break;
+            }
+        }
+    }
+    if (!OM_is_present(cls)) {
+        fprintf(stderr, "st80: no class named %s\n", name);
+        return 1;
+    }
+    if (meta)
+        cls = OM_fetch_class(cls);
+
+    /*  Up the chain, as a send would go.  */
+    method = ST_NIL;
+    {
+        st_oop  search = cls;
+
+        while (OM_is_present(search) && !OM_is_present(method)) {
+            st_oop      dict = OM_fetch_pointer(1, search);
+            uint32_t    capacity = OM_method_dict_capacity(dict);
+            uint32_t    slot;
+
+            for (slot = 0; slot < capacity; ++slot) {
+                st_oop      key = OM_method_dict_key(dict, slot);
+                char        text[128];
+
+                if (!OM_is_present(key))
+                    continue;
+                OM_string_of(key, text, sizeof text);
+                if (strcmp(text, selector) == 0) {
+                    method = OM_method_dict_value(dict, slot);
+                    break;
+                }
+            }
+            search = OM_fetch_pointer(0, search);    /*  superclass  */
+        }
+    }
+    if (!OM_is_present(method)) {
+        fprintf(stderr, "st80: %s does not understand #%s\n",
+                class_name, selector);
+        return 1;
+    }
+
+    header   = OM_fetch_pointer(0, method);
+    literals = ST_header_literal_count(header);
+    start    = BOOT_method_initial_ip(method);
+    n        = OM_fetch_byte_length(method);
+
+    printf("%s>>%s\n", class_name, selector);
+    printf("  header      : %lld (flag %u, %u temporaries, %u literals%s)\n",
+           (long long) OM_int_value(header),
+           ST_header_flag_value(header),
+           ST_header_temporary_count(header),
+           literals,
+           ST_header_large_context(header) ? ", large context" : "");
+    for (i = 0; i < literals; ++i) {
+        char    text[128];
+
+        ST_print_object(OM_fetch_pointer(1 + i, method), text, sizeof text);
+        printf("  literal %-3u : %s\n", i, text);
+    }
+    /*  The last three bytes are the source pointer, not code.  */
+    if (n > start + 3)
+        n -= 3;
+    printf("  bytecodes   : %u..%u\n", start, n - 1);
+    for (i = start; i < n; ++i) {
+        char        text[128];
+        uint8_t     b = (uint8_t) OM_fetch_byte(i, method);
+        unsigned    extra = ST_bytecode_operand_bytes(b);
+        unsigned    k;
+
+        ST_bytecode_name(b, text, sizeof text);
+        printf("    %4u: %3u", i, b);
+        for (k = 1; k <= extra && i + k < n; ++k)
+            printf(" %3u", (unsigned) (uint8_t) OM_fetch_byte(i + k, method));
+        for (k = extra; k < 2; ++k)
+            printf("    ");
+        printf("  %s\n", text);
+        i += extra;
+    }
+    return 0;
+}
+
+/*
  *  Write the display out as a portable bitmap, so what the image drew can be
  *  looked at without a window -- and so a headless run can prove it drew
  *  anything at all.  Used by -run and by -bootstrap alike: a bootstrapped
@@ -664,8 +803,25 @@ do_bootstrap(const char *const *sources, unsigned count, const char *out_path,
             fprintf(stderr, "st80: %s\n", err);
             return 1;
         }
-        ST_print_object(value, text, sizeof text);
-        printf("%s\n", text);
+        /*
+         *  A String or Symbol answers its own text.  ST_print_object names
+         *  the class, which is right for an object with no obvious reading
+         *  and useless for the one kind that has one -- and the one kind
+         *  that has one is how the image reports anything at all.
+         */
+        if (OM_is_object(value)
+         && (OM_fetch_class(value) == ST_CLASS_STRING
+          || OM_fetch_class(value) == BOOT_global("Symbol"))) {
+            uint32_t    n = OM_fetch_byte_length(value);
+            uint32_t    k;
+
+            for (k = 0; k < n; ++k)
+                putchar((char) OM_fetch_byte(k, value));
+            putchar('\n');
+        }  else  {
+            ST_print_object(value, text, sizeof text);
+            printf("%s\n", text);
+        }
     }
     write_screenshot();
     if (out_path) {
@@ -964,6 +1120,8 @@ main(int argc, char **argv)
                             (i + 2 < argc) ? strtoull(argv[i + 2], NULL, 0) : 0);
         if (!strcmp(argv[i], "-inspect") && i + 2 < argc)
             return do_inspect(argv[i + 1], argv[i + 2]);
+        if (!strcmp(argv[i], "-disasm") && i + 3 < argc)
+            return do_disasm(argv[i + 1], argv[i + 2], argv[i + 3]);
     }
     print_version();
     return 0;

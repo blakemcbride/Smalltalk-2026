@@ -929,6 +929,183 @@ test_compile_inspect_debug(void)
 }
 
 /*
+ *  Self-hosting: the image's own compiler agrees with the C one.
+ *
+ *  This is the check the plan sets for the compiler, and it is worth being
+ *  precise about why it is the right one.  That a method compiled inside the
+ *  image RUNS proves the image can compile; it does not prove the two
+ *  compilers agree, and they have to, because everything already in the
+ *  image was built by the C compiler and everything compiled from now on is
+ *  built by the image's.  A disagreement would be a system whose methods
+ *  came in two dialects.
+ *
+ *  So the same source goes through both and the bytecodes are compared byte
+ *  for byte.  The last three bytes are the source pointer, which is where
+ *  the text was put rather than what was compiled, and the two put it in
+ *  different places; everything before them must be identical.
+ */
+static void
+check_same_bytecodes(const char *selector, const char *source)
+{
+    st_compile_context  ctx;
+    st_compile_result   res;
+    char                expression[1024];
+    st_oop              theirs;
+    st_oop              ours;
+    uint32_t            n_ours;
+    uint32_t            n_theirs;
+    uint32_t            start_ours;
+    uint32_t            start_theirs;
+    uint32_t            i;
+
+    /*
+     *  Compile it inside the image, through Behavior>>compile:.
+     *
+     *  The source becomes a Smalltalk string literal, so every quote in it
+     *  has to be doubled on the way in -- which is the lexer's escape and
+     *  not this file's business, except that getting it wrong makes the
+     *  image reject the text and look like a compiler that cannot handle
+     *  string literals.
+     */
+    {
+        char       *w = expression;
+        const char *r;
+        const char *prefix = "Object compile: '";
+        const char *suffix = "' classified: 'self-hosting check'"
+                             " notifying: nil. ^1";
+
+        for (r = prefix; *r; ++r)
+            *w++ = *r;
+        for (r = source; *r; ++r) {
+            *w++ = *r;
+            if (*r == '\'')
+                *w++ = '\'';
+        }
+        for (r = suffix; *r; ++r)
+            *w++ = *r;
+        *w = '\0';
+    }
+    evaluate(expression);
+
+    snprintf(expression, sizeof expression,
+             "^Object compiledMethodAt: #%s", selector);
+    theirs = evaluate(expression);
+
+    ++st_test_checks;
+    if (!OM_is_present(theirs)) {
+        ++st_test_failures;
+        printf("  FAIL the image compiled no method for #%s\n", selector);
+        return;
+    }
+
+    /*  And in C, from the same text.  */
+    memset(&ctx, 0, sizeof ctx);
+    ctx.intern_symbol      = BOOT_intern_symbol;
+    ctx.make_string        = BOOT_make_string;
+    ctx.make_float         = BOOT_make_float;
+    ctx.make_large_integer = BOOT_make_large_integer;
+    ctx.make_array         = BOOT_make_array;
+    ctx.make_character     = BOOT_make_character;
+    ctx.lookup_global      = BOOT_lookup_global;
+    /*  A send to super needs the method's class in the literal frame.  */
+    ctx.method_class_association = BOOT_lookup_global("Object", NULL);
+    if (COMPILE_method(source, &ctx, &res) != 0) {
+        ++st_test_checks;
+        ++st_test_failures;
+        printf("  FAIL C could not compile #%s: %s\n", selector, res.error);
+        return;
+    }
+    ours = res.method;
+
+    /*  Same header means same argument, temporary and literal counts.  */
+    CHECK_EQ_INT(OM_fetch_pointer(0, ours), OM_fetch_pointer(0, theirs));
+
+    start_ours   = BOOT_method_initial_ip(ours);
+    start_theirs = BOOT_method_initial_ip(theirs);
+    n_ours   = OM_fetch_byte_length(ours);
+    n_theirs = OM_fetch_byte_length(theirs);
+
+    /*  Less the three-byte source pointer each carries.  */
+    n_ours   = (n_ours   > start_ours   + 3) ? n_ours   - 3 : start_ours;
+    n_theirs = (n_theirs > start_theirs + 3) ? n_theirs - 3 : start_theirs;
+
+    ++st_test_checks;
+    if (n_ours - start_ours != n_theirs - start_theirs) {
+        ++st_test_failures;
+        printf("  FAIL #%s: C emitted %u bytecodes, the image %u\n",
+               selector, n_ours - start_ours, n_theirs - start_theirs);
+        return;
+    }
+
+    for (i = 0; i < n_ours - start_ours; ++i) {
+        uint8_t a = (uint8_t) OM_fetch_byte(start_ours + i, ours);
+        uint8_t b = (uint8_t) OM_fetch_byte(start_theirs + i, theirs);
+
+        ++st_test_checks;
+        if (a != b) {
+            ++st_test_failures;
+            printf("  FAIL #%s bytecode %u: C emitted %u, the image %u\n",
+                   selector, i, a, b);
+            return;
+        }
+    }
+}
+
+static void
+test_self_hosting(void)
+{
+    /*  A literal return, the smallest method there is.  */
+    check_same_bytecodes("shAnswer", "shAnswer ^42");
+    /*  Arguments, temporaries and assignment.  */
+    check_same_bytecodes("shAdd:to:",
+                         "shAdd: a to: b | t | t _ a + b. ^t");
+    /*
+     *  A conditional is left out for now, and the reason is recorded rather
+     *  than hidden: the 1983 compiler has one-byte forms for a jump of eight
+     *  bytes or less and this one always emits the two-byte form, so an
+     *  inlined ifTrue:ifFalse: comes out two bytes longer.  The instructions
+     *  are otherwise the same and in the same order.  Choosing the short
+     *  form needs the distance before the body is compiled, which is what
+     *  the 1983 compiler's separate sizing pass is for.
+     */
+    /*  A loop, which is a backward jump.  */
+    check_same_bytecodes("shSum:",
+                         "shSum: n | s | s _ 0. 1 to: n do: [:i | s _ s + i]."
+                         " ^s");
+    /*
+     *  Literals of every kind the frame can hold are checked below rather
+     *  than here, because the two compilers number the literal frame in
+     *  different orders and so disagree on the index in every push that
+     *  names one.  Ours assigns an index when it emits the push; the 1983
+     *  one assigns a selector its index while parsing, before the sizing
+     *  pass gets to the variables, so a selector mentioned later can hold a
+     *  lower index than a variable pushed earlier.  Same literals, same
+     *  instructions, different numbering.
+     */
+    /*  A cascade, and a send to super.  */
+
+    check_same_bytecodes("shSuper", "shSuper ^super printString");
+
+    /*
+     *  And where the numbering differs, that the two agree on what the
+     *  method DOES, which is the part that has to be true.
+     */
+    check_oop("Object compile: 'shLiterals ^Array with: ''text'' with: #sym"
+              " with: $c with: 3.5' classified: 'self-hosting check'"
+              " notifying: nil."
+              " ^(3 shLiterals) = (Array with: 'text' with: #sym"
+              " with: $c with: 3.5)", ST_TRUE, "true");
+    check_oop("Object compile: 'shCascade | s | s _ WriteStream on:"
+              " String new. s nextPut: $a; nextPut: $b. ^s contents'"
+              " classified: 'self-hosting check' notifying: nil."
+              " ^(3 shCascade) = 'ab'", ST_TRUE, "true");
+    /*  A block with its own argument, closing over an outer temporary.  */
+    check_same_bytecodes("shClosure",
+                         "shClosure | t | t _ 0."
+                         " #(1 2 3) do: [:each | t _ t + each]. ^t");
+}
+
+/*
  *  Every class the image defines is reachable by name from Smalltalk.
  *
  *  A binding is made the first time a name is needed, and for the first
@@ -1142,6 +1319,7 @@ main(void)
     test_browser();
     test_compile_inspect_debug();
     test_globals_are_reachable_by_name();
+    test_self_hosting();
     test_input();
     test_printing_deep();
     test_mixed_arithmetic();

@@ -248,15 +248,20 @@ static void
 test_assignment(void)
 {
     /*
-     *  An assignment leaves its value on the stack, so a statement-level one
-     *  is followed by a pop.  The 1983 compiler folded the two into a single
-     *  pop-and-store; ours does not yet, which is a difference in bytes and
-     *  not in meaning.  Recorded here so the divergence is deliberate.
+     *  An assignment leaves its value on the stack, because "b := a := 1" is
+     *  legal and the inner one has to answer something.  At statement level
+     *  nobody wants it, and the bytecode set has a store-and-pop for exactly
+     *  that: one byte where a store and a separate pop are three.
+     *
+     *  This used to record the three-byte form as a deliberate divergence
+     *  from the 1983 compiler.  It is no longer a divergence -- the two now
+     *  agree byte for byte, which is what test_self_hosting checks by
+     *  compiling the same source in both and comparing.
      */
     CHECK_CODE("foo | a | a := 1. ^a", "assign then return",
-               118, 129, 64, 135, 16, 124);
+               118, 104, 16, 124);
     CHECK_CODE("foo x := 1. ^x", "assign an instance variable",
-               118, 129, 0, 135, 0, 124);
+               118, 96, 0, 124);
 }
 
 static void
