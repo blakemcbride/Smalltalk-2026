@@ -127,6 +127,14 @@ uint32_t BOOT_string_hash(st_oop string);
  *  the bootstrap just built will be collected out from under it.
  */
 void BOOT_provide_roots(om_visit_fn visit);
+
+/*
+ *  Create the DisplayScreen the image draws on and bind it to Display.
+ *
+ *  A 1983 image inherits its screen from the image it was built from; one
+ *  built from sources has to be given a first.
+ */
+int BOOT_install_display(unsigned width, unsigned height);
 st_oop  BOOT_lookup_global(const char *name, void *user);
 
 /*  Byte offset of a method's first bytecode, past the header and literals. */

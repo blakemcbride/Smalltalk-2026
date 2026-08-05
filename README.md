@@ -176,9 +176,23 @@ Float — LargeInteger division, all at once. So does mixed-mode arithmetic,
 in both directions: `3 + 1.5` and `3.5 >= 0` both coerce to the higher
 generality and retry.
 
-BitBlt runs from the library too: a Form filled through `BitBlt` comes back
-with every word set, which is the case Chapter 18's word count gets wrong by
-one unless the boundary test is `<=`.
+**The bootstrapped image draws.** It is given a 640x480 `DisplayScreen` — a
+1983 image inherits one from the image it was built from, so a first has to
+be made — and then draws on it with Xerox's own `Form` and `BitBlt` through
+primitive 96:
+
+```sh
+$ ./st80 -bootstrap -manifest sources/MANIFEST -screenshot screen.pbm \
+      -eval 'Display fill: (40@40 corner: 200@120) rule: 3 mask: Form black.
+             Display fill: (60@60 corner: 180@100) rule: 3 mask: Form white.
+             Display fill: (240@40 corner: 400@120) rule: 3 mask: Form gray.
+             ^Display width'
+st80: wrote screen.pbm, 14400 of 307200 pixels are ink
+```
+
+A black frame with white knocked out of it, and a correctly dithered gray —
+the counts are exact, because a fill covers precisely the rectangle asked for
+and gray covers half of it.
 
 `tests/unit/test_library.c` gates on the library compiling and
 `tests/unit/test_image.c` on it running.

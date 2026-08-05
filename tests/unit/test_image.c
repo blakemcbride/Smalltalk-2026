@@ -24,6 +24,7 @@
 #include "interp.h"
 #include "compiler.h"
 #include "bootstrap.h"
+#include "gfx.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -453,6 +454,78 @@ test_bitblt(void)
                   16 * 65535);
 }
 
+/*  How many pixels of the Display are set.  */
+static long
+display_ink(void)
+{
+    gfx_form    form;
+    int         x;
+    int         y;
+    long        ink = 0;
+
+    if (!GFX_form_from_oop(GFX_display_form(), &form))
+        return -1;
+    for (y = 0; y < form.height; ++y) {
+        for (x = 0; x < form.width; ++x) {
+            uint16_t    word = form.bits[(size_t) y * form.raster + (x >> 4)];
+
+            ink += (word >> (15 - (x & 15))) & 1;
+        }
+    }
+    return ink;
+}
+
+static void
+check_ink(const char *expression, long want)
+{
+    long    got;
+
+    evaluate(expression);
+    got = display_ink();
+    ++st_test_checks;
+    if (got != want) {
+        ++st_test_failures;
+        printf("  FAIL %s: %ld pixels of ink, want %ld\n", expression, got,
+               want);
+    }
+}
+
+/*
+ *  The image drawing on a screen of its own.
+ *
+ *  A 1983 image inherits its Display from the image it was built from; this
+ *  one is given a first by BOOT_install_display, and then draws on it with
+ *  Xerox's own Form and BitBlt code through primitive 96.  The counts are
+ *  exact because the areas are: a fill covers precisely the rectangle asked
+ *  for, and gray covers half of it.
+ */
+static void
+test_display(void)
+{
+    CHECK(BOOT_install_display(640, 480));
+    check_integer("Display width", 640);
+    check_integer("Display height", 480);
+    check_integer("Display bits size", 40 * 480);
+
+    /*  Nothing drawn yet.  */
+    CHECK_EQ_INT(display_ink(), 0);
+
+    /*  160 x 80 = 12800.  */
+    check_ink("Display fill: (40@40 corner: 200@120) rule: 3 mask: Form black."
+              " ^Display width", 12800);
+
+    /*  A white rectangle knocked out of it: 120 x 40 = 4800 fewer.  */
+    check_ink("Display fill: (60@60 corner: 180@100) rule: 3 mask: Form white."
+              " ^Display width", 12800 - 4800);
+
+    /*  Gray is a halftone, so it covers half of its 160 x 80.  */
+    check_ink("Display fill: (240@40 corner: 400@120) rule: 3 mask: Form gray."
+              " ^Display width", 12800 - 4800 + 6400);
+
+    /*  And back to white.  */
+    check_ink("Display white. ^Display width", 0);
+}
+
 /*
  *  Printing, which is the deepest path in the library: printOn: runs Stream,
  *  WriteStream, String, Symbol, Character and -- for a Float -- LargeInteger
@@ -531,6 +604,7 @@ main(void)
     test_strings();
     test_graphics_objects();
     test_bitblt();
+    test_display();
     test_printing_deep();
     test_mixed_arithmetic();
 

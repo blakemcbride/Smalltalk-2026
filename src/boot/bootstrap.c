@@ -10,6 +10,7 @@
 #include "compiler.h"
 #include "interp.h"
 #include "census.h"
+#include "gfx.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -1599,6 +1600,61 @@ BOOT_provide_roots(om_visit_fn visit)
         for (k = 0; k < classes[i].cvar_count; ++k)
             visit(classes[i].cvar_assoc[k]);
     }
+}
+
+/*  ----------  The display  ----------  */
+
+/*
+ *  Give the image a screen to draw on.
+ *
+ *  In a 1983 image Display is a DisplayScreen that was made when the image
+ *  was built and has been carried forward by every snapshot since.  Building
+ *  from nothing, someone has to make the first one, and it cannot be
+ *  Smalltalk code: DisplayScreen class>>new would need a Display to ask how
+ *  big the screen is.
+ *
+ *  The bits are a WordArray of whole words per scan line, which is what
+ *  Form>>setExtent:fromArray:setOffset: would allocate and what BitBlt
+ *  assumes.  Telling the graphics layer which Form is the screen is what
+ *  primitive 102 does when Smalltalk sends beDisplay; doing it here means an
+ *  image can draw before it has run any code of its own.
+ */
+int
+BOOT_install_display(unsigned width, unsigned height)
+{
+    st_oop      screen_class = BOOT_global("DisplayScreen");
+    st_oop      word_array   = BOOT_global("WordArray");
+    st_oop      screen;
+    st_oop      bits;
+    st_oop      origin;
+    uint32_t    raster = (width + 15) / 16;
+
+    if (!OM_is_present(screen_class) || !OM_is_present(word_array)) {
+        boot_fail("the sources must define DisplayScreen and WordArray");
+        return 0;
+    }
+    bits = OM_instantiate_words(word_array, raster * height);
+    if (!OM_is_present(bits))
+        return 0;
+    screen = OM_instantiate_pointers(screen_class, 4);
+    if (!OM_is_present(screen))
+        return 0;
+    OM_increase_ref(screen);
+
+    origin = OM_instantiate_pointers(ST_CLASS_POINT, 2);
+    if (!OM_is_present(origin))
+        return 0;
+    OM_store_pointer(0, origin, OM_int_oop(0));
+    OM_store_pointer(1, origin, OM_int_oop(0));
+
+    OM_store_pointer(ST_FORM_BITS,   screen, bits);
+    OM_store_pointer(ST_FORM_WIDTH,  screen, OM_int_oop((st_int) width));
+    OM_store_pointer(ST_FORM_HEIGHT, screen, OM_int_oop((st_int) height));
+    OM_store_pointer(ST_FORM_OFFSET, screen, origin);
+
+    define_global("Display", screen);
+    GFX_set_display(screen);
+    return 1;
 }
 
 /*  ----------  Class-side initialisers  ----------  */

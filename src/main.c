@@ -52,7 +52,7 @@ usage(const char *argv0)
     printf("  -bootstrap <a.st...> [-manifest f] [-o image] [-eval expr]\n");
     printf("                        build an image from source\n");
     printf("  -run <image> [n]      run the image, opening a window\n");
-    printf("  -screenshot <f.pbm>   with -run, write the display when it stops\n");
+    printf("  -screenshot <f.pbm>   with -run or -bootstrap, write the display\n");
     printf("  -census <image>       load an image and summarize it\n");
     printf("  -classes <image>      list every class, in class.oops format\n");
     printf("  -methods <image>      list every method, in method.oops format\n");
@@ -209,6 +209,8 @@ do_trace(const char *path, st_trace_mode mode, uint64_t limit)
 
 static const char *shot_path;
 
+static void write_screenshot(void);
+
 static int
 do_run(const char *path, uint64_t max_cycles)
 {
@@ -248,35 +250,7 @@ do_run(const char *path, uint64_t max_cycles)
      *  can be looked at without a window -- and so a headless run can prove
      *  it drew anything at all.
      */
-    if (shot_path && GFX_display_form() != ST_NIL) {
-        gfx_form    form;
-
-        if (GFX_form_from_oop(GFX_display_form(), &form)) {
-            FILE   *f = fopen(shot_path, "wb");
-
-            if (f) {
-                int     x;
-                int     y;
-                long    ink = 0;
-
-                fprintf(f, "P1\n%d %d\n", form.width, form.height);
-                for (y = 0; y < form.height; ++y) {
-                    for (x = 0; x < form.width; ++x) {
-                        uint16_t    word = form.bits[(size_t) y * form.raster
-                                                     + (x >> 4)];
-                        int         bit = (word >> (15 - (x & 15))) & 1;
-
-                        ink += bit;
-                        fputc(bit ? '1' : '0', f);
-                        fputc(x + 1 == form.width ? '\n' : ' ', f);
-                    }
-                }
-                fclose(f);
-                fprintf(stderr, "st80: wrote %s, %ld of %d pixels are ink\n",
-                        shot_path, ink, form.width * form.height);
-            }
-        }
-    }
+    write_screenshot();
     fprintf(stderr, "st80: stopped after %llu bytecodes; "
                     "%u collections reclaimed %u objects; "
                     "%u words and %u table entries free\n",
@@ -496,6 +470,47 @@ evaluate(const char *expression, char *errbuf, size_t errlen)
     return st_vm.return_value;
 }
 
+/*
+ *  Write the display out as a portable bitmap, so what the image drew can be
+ *  looked at without a window -- and so a headless run can prove it drew
+ *  anything at all.  Used by -run and by -bootstrap alike: a bootstrapped
+ *  image has a Display of its own now, and being able to see what it put
+ *  there is the only way to tell drawing from not drawing.
+ */
+static void
+write_screenshot(void)
+{
+    gfx_form    form;
+    FILE       *f;
+    int         x;
+    int         y;
+    long        ink = 0;
+
+    if (!shot_path || GFX_display_form() == ST_NIL)
+        return;
+    if (!GFX_form_from_oop(GFX_display_form(), &form))
+        return;
+    f = fopen(shot_path, "wb");
+    if (!f) {
+        fprintf(stderr, "st80: cannot write %s\n", shot_path);
+        return;
+    }
+    fprintf(f, "P1\n%d %d\n", form.width, form.height);
+    for (y = 0; y < form.height; ++y) {
+        for (x = 0; x < form.width; ++x) {
+            uint16_t    word = form.bits[(size_t) y * form.raster + (x >> 4)];
+            int         bit  = (word >> (15 - (x & 15))) & 1;
+
+            ink += bit;
+            fputc(bit ? '1' : '0', f);
+            fputc(x + 1 == form.width ? '\n' : ' ', f);
+        }
+    }
+    fclose(f);
+    fprintf(stderr, "st80: wrote %s, %ld of %d pixels are ink\n",
+            shot_path, ink, form.width * form.height);
+}
+
 static int
 do_bootstrap(const char *const *sources, unsigned count, const char *out_path,
              const char *expression)
@@ -538,6 +553,14 @@ do_bootstrap(const char *const *sources, unsigned count, const char *out_path,
         }
     }
 
+    /*
+     *  The screen first: several class initializers ask Display how big it
+     *  is, and a nil Display makes them fail for a reason that has nothing
+     *  to do with what they are initialising.
+     */
+    if (!BOOT_install_display(640, 480))
+        fprintf(stderr, "st80: no display installed\n");
+
     {
         st_boot_init_report init;
 
@@ -561,6 +584,7 @@ do_bootstrap(const char *const *sources, unsigned count, const char *out_path,
         ST_print_object(value, text, sizeof text);
         printf("%s\n", text);
     }
+    write_screenshot();
     if (out_path) {
 #ifdef ST_OM_MT
         if (OM_image_save(out_path, err, sizeof err) != 0) {
@@ -811,6 +835,8 @@ main(int argc, char **argv)
                     out_path = argv[++j];
                 }  else if (!strcmp(argv[j], "-eval") && j + 1 < argc) {
                     expression = argv[++j];
+                }  else if (!strcmp(argv[j], "-screenshot") && j + 1 < argc) {
+                    shot_path = argv[++j];
                 }  else if (!strcmp(argv[j], "-manifest") && j + 1 < argc) {
                     if (!read_manifest(argv[++j], &sources)) {
                         path_list_free(&sources);
