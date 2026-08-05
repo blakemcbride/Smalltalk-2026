@@ -63,6 +63,15 @@ typedef struct {
 static boot_class   classes[MAX_CLASSES];
 static unsigned     class_count;
 
+/*
+ *  Whether the library's symbol table exists yet.  Until it does there is
+ *  nowhere to put a symbol; afterwards every symbol interned has to go in,
+ *  or "#foo == 'foo' asSymbol" answers false -- the compiler would hold one
+ *  Symbol and the image would make itself another.
+ */
+static int          symbol_table_ready;
+static st_oop       symbol_table;
+
 static st_oop       symbols[MAX_SYMBOLS];
 static char         symbol_text[MAX_SYMBOLS][64];
 static unsigned     symbol_count;
@@ -126,6 +135,8 @@ make_string_object(const char *text)
     return s;
 }
 
+static int place_in_symbol_table(st_oop sym);
+
 st_oop
 BOOT_intern_symbol(const char *text, void *user)
 {
@@ -152,6 +163,11 @@ BOOT_intern_symbol(const char *text, void *user)
     }
     /*  Symbols are permanent; nothing else keeps the table alive.  */
     OM_increase_ref(s);
+    /*
+     *  Once the library has a symbol table, a symbol that is not in it is a
+     *  second Symbol with the same characters waiting to happen.
+     */
+    place_in_symbol_table(s);
     return s;
 }
 
@@ -165,17 +181,29 @@ BOOT_make_string(const char *text, void *user)
 st_oop
 BOOT_make_float(double value, void *user)
 {
-    st_oop  f = OM_instantiate_words(BOOT_global("Float"), 4);
-    union { double d; uint16_t w[4]; } bits;
-    unsigned i;
+    /*
+     *  A Smalltalk-80 Float is IEEE 754 SINGLE precision: two 16-bit words,
+     *  most significant first.  That is what Chapter 30 specifies, what the
+     *  1983 image contains, and what the interpreter's own make_float emits
+     *  for every computed result.
+     *
+     *  This used to store the host's double in native word order, which was
+     *  wrong twice over.  The size disagreed, so a literal and a computed
+     *  value of the same number were different shapes; and the order
+     *  disagreed with the reader, which takes the words most significant
+     *  first.  The visible effect was that 3.5 exponent answered -1060: the
+     *  bits were being read as a completely different number.
+     */
+    union { float f; uint32_t u; } bits;
+    st_oop  p = OM_instantiate_words(BOOT_global("Float"), 2);
 
     (void) user;
-    if (!OM_is_object(f))
+    if (!OM_is_object(p))
         return ST_NIL;
-    bits.d = value;
-    for (i = 0; i < 4; ++i)
-        OM_store_word(i, f, bits.w[i]);
-    return f;
+    bits.f = (float) value;
+    OM_store_word(0, p, (uint16_t) (bits.u >> 16));
+    OM_store_word(1, p, (uint16_t) (bits.u & 0xFFFF));
+    return p;
 }
 
 st_oop
@@ -1504,6 +1532,7 @@ BOOT_provide_roots(om_visit_fn visit)
 
     visit(smalltalk);
     visit(globals_values);
+    visit(symbol_table);
     for (i = 0; i < symbol_count; ++i)
         visit(symbols[i]);
     for (i = 0; i < class_count; ++i) {
@@ -1606,6 +1635,7 @@ run_method_on(st_oop method, st_oop receiver, uint64_t budget)
  */
 #define USTABLE_BUCKETS 512
 
+
 /*
  *  String>>hash, as the 1983 library computes it:
  *
@@ -1637,6 +1667,42 @@ BOOT_string_hash(st_oop string)
     m = (length == 2) ? 3 : length;
     return (uint32_t) OM_fetch_byte(0, string) * 48
          + (uint32_t) OM_fetch_byte(m - 2, string) + length;
+}
+
+/*
+ *  Add one symbol to the library's hash table, in the bucket the image's own
+ *  String>>hash chooses.  Buckets are Arrays grown by copying, which is what
+ *  Symbol class>>intern: does; there are 3601 symbols over 512 buckets, so
+ *  the copies are of seven elements and the shape stays what the library
+ *  expects rather than something faster that it cannot read.
+ */
+static int
+place_in_symbol_table(st_oop sym)
+{
+    uint32_t    index;
+    st_oop      bucket;
+    uint32_t    n;
+    st_oop      grown;
+    uint32_t    k;
+
+    if (!symbol_table_ready || !OM_is_present(symbol_table)
+     || !OM_is_present(sym))
+        return 0;
+    index  = BOOT_string_hash(sym) % USTABLE_BUCKETS;
+    bucket = OM_fetch_pointer(index, symbol_table);
+    n      = OM_is_present(bucket) ? OM_fetch_word_length(bucket) : 0;
+    for (k = 0; k < n; ++k) {
+        if (OM_fetch_pointer(k, bucket) == sym)
+            return 0;           /*  already there  */
+    }
+    grown = OM_instantiate_pointers(ST_CLASS_ARRAY, n + 1);
+    if (!OM_is_present(grown))
+        return 0;
+    for (k = 0; k < n; ++k)
+        OM_store_pointer(k, grown, OM_fetch_pointer(k, bucket));
+    OM_store_pointer(n, grown, sym);
+    OM_store_pointer(index, symbol_table, grown);
+    return 1;
 }
 
 static int
@@ -1680,6 +1746,7 @@ seed_symbol_table(st_boot_init_report *out)
     assoc = class_variable_association(symbol, "USTable", 0);
     if (assoc != ST_OOP_INVALID)
         OM_store_pointer(ST_ASSOCIATION_VALUE, assoc, table);
+    symbol_table = table;
 
     /*  Now hand every symbol we interned to the library's own intern:.  */
     intern = method_in_dictionary(
@@ -1689,6 +1756,7 @@ seed_symbol_table(st_boot_init_report *out)
         return 1;
     out->symbols_total = symbol_count;
 
+    symbol_table_ready = 1;
     /*
      *  Place every symbol directly, computing the bucket in C.
      *
@@ -1703,21 +1771,8 @@ seed_symbol_table(st_boot_init_report *out)
      *  a bug waiting for a rainy day.
      */
     for (i = 0; i < symbol_count; ++i) {
-        st_oop      sym = symbols[i];
-        uint32_t    index = BOOT_string_hash(sym) % USTABLE_BUCKETS;
-        st_oop      bucket = OM_fetch_pointer(index, table);
-        uint32_t    n = OM_is_present(bucket)
-                            ? OM_fetch_word_length(bucket) : 0;
-        st_oop      grown = OM_instantiate_pointers(ST_CLASS_ARRAY, n + 1);
-        uint32_t    k;
-
-        if (!OM_is_present(grown))
-            return 0;
-        for (k = 0; k < n; ++k)
-            OM_store_pointer(k, grown, OM_fetch_pointer(k, bucket));
-        OM_store_pointer(n, grown, sym);
-        OM_store_pointer(index, table, grown);
-        ++out->symbols_seeded;
+        if (place_in_symbol_table(symbols[i]))
+            ++out->symbols_seeded;
     }
     return 1;
 }

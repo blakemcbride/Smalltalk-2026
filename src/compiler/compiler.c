@@ -392,9 +392,30 @@ resolve(st_compiler *c, const char *name)
     if (strcmp(name, "true") == 0)        { v.kind = VAR_TRUE;         return v; }
     if (strcmp(name, "false") == 0)       { v.kind = VAR_FALSE;        return v; }
 
-    /*  Arguments and temporaries shadow instance variables, which shadow
-     *  globals -- innermost scope first.  */
-    for (i = 0; i < c->name_count; ++i) {
+    /*
+     *  Arguments and temporaries shadow instance variables, which shadow
+     *  globals -- innermost scope first.
+     *
+     *  Innermost means LAST here.  Names are appended to one frame as their
+     *  scopes open: the method's arguments, then its temporaries, then a
+     *  block's arguments, then a nested block's.  So the newest declaration
+     *  of a name is the innermost one, and the search has to run backwards.
+     *
+     *  Running it forwards is wrong in a way that stays hidden until a block
+     *  argument happens to share a name with a method temporary.  Then the
+     *  block's uses of the name read the METHOD's slot, which nothing ever
+     *  writes, while the loop faithfully stores each value into the block's.
+     *  Symbol class>>hasInterned:ifTrue: is exactly that shape --
+     *
+     *      | v i ascii |
+     *      ...
+     *      1 to: v size do: [:i | ... (v at: i) ... ]
+     *
+     *  -- so every element access became "v at: nil", and interning any
+     *  symbol whose bucket was not empty walked into the error path instead
+     *  of answering.
+     */
+    for (i = c->name_count; i-- > 0; ) {
         if (strcmp(c->names[i], name) == 0) {
             v.kind  = VAR_TEMPORARY;
             v.index = i;

@@ -333,6 +333,41 @@ test_loops(void)
  *  A cascade evaluates its receiver once and duplicates it before every
  *  message but the last.
  */
+/*
+ *  An inner declaration shadows an outer one of the same name.
+ *
+ *  Names share one frame, appended as their scopes open, so the innermost
+ *  declaration is the LAST -- and resolving forwards therefore picked the
+ *  outermost.  It stays invisible until a block argument shares a name with
+ *  a method temporary, which the 1983 library does:
+ *
+ *      hasInterned: aString ifTrue: symBlock
+ *          | v i ascii |
+ *          1 to: v size do: [:i | ... (v at: i) ... ]
+ *
+ *  Reads of i inside the block took the method's slot, which nothing writes,
+ *  while the loop stored each value into the block's.
+ */
+static void
+test_scope_shadowing(void)
+{
+    /*  Two temporaries, then a block argument reusing the second's name.
+     *  Inside the block, "b" must be temporary 2 (the block's), not 1.  */
+    CHECK_CODE("foo | a b | ^[:b | b]", "block argument shadows a temporary",
+               137, 118, 200, 164, 3, 106, 18, 125, 124);
+
+    /*  Without the collision the same block uses the next free slot.  */
+    CHECK_CODE("foo | a b | ^[:c | c]", "block argument, no collision",
+               137, 118, 200, 164, 3, 106, 18, 125, 124);
+
+    /*  A method argument shadowed by a block argument, likewise.  */
+    CHECK_CODE("foo: x ^[:x | x]", "block argument shadows an argument",
+               137, 118, 200, 164, 3, 105, 17, 125, 124);
+
+    /*  And outside the block the outer name is still the outer slot.  */
+    CHECK_CODE("foo: x ^x", "the outer name outside the block", 16, 124);
+}
+
 static void
 test_cascades(void)
 {
@@ -530,6 +565,7 @@ main(void)
     test_conditionals();
     test_loops();
     test_cascades();
+    test_scope_shadowing();
 
     return ST_TEST_END();
 }

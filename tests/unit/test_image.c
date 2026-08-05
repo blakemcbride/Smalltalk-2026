@@ -256,6 +256,12 @@ test_collections(void)
     check_integer("(#(3 1 2) asSortedCollection) first", 1);
 
     check_class("Dictionary new", "Dictionary");
+    /*  printString on the structured collections, which needs Stream,
+     *  Symbol and Character all working together.  */
+    check_integer("(Set new add: 3; yourself) printString size", 8);
+    check_integer("Object new printString size", 9);
+    check_integer("(Dictionary new at: 1 put: 2; yourself) printString size",
+                  18);
     check_class("(WriteStream on: String new)", "WriteStream");
     check_class("3/4", "Fraction");
 }
@@ -286,8 +292,40 @@ static void
 test_symbols(void)
 {
     check_integer("#foo size", 3);
+    check_integer("'hello' asSymbol size", 5);
     check_oop("#foo = 'foo'", ST_FALSE, "false");   /*  Symbol>>= is identity */
     check_oop("'foo' = #foo", ST_TRUE,  "true");    /*  String>>= is by value */
+
+    /*
+     *  Identity is the whole point of a Symbol, and it holds three ways: two
+     *  lookups of the same text, a lookup against a symbol the COMPILER made
+     *  while building the library, and a lookup against one made after the
+     *  table existed.  The third is why BOOT_intern_symbol places into the
+     *  table rather than only seeding it once.
+     */
+    check_oop("'hello' asSymbol == 'hello' asSymbol", ST_TRUE, "true");
+    check_oop("#printString == 'printString' asSymbol", ST_TRUE, "true");
+    check_oop("#at:put: == 'at:put:' asSymbol", ST_TRUE, "true");
+    check_oop("#zzz == 'zzz' asSymbol", ST_TRUE, "true");
+}
+
+/*
+ *  Floats are IEEE single precision in two words, most significant first --
+ *  Chapter 30, and what the interpreter emits for every computed result.
+ *  The bootstrap used to store the host's double in native word order, so a
+ *  literal and a computed value of the same number were neither the same
+ *  shape nor the same bits: 3.5 exponent answered -1060.
+ */
+static void
+test_floats(void)
+{
+    check_integer("3.5 truncated", 3);
+    check_integer("3.5 rounded", 4);
+    check_integer("3.5 exponent", 1);
+    check_integer("(3.5 + 1.5) truncated", 5);
+    check_integer("(3.5 * 2) truncated", 7);
+    check_integer("7 asFloat truncated", 7);
+    check_oop("3.5 < 4.0", ST_TRUE, "true");
 }
 
 /*
@@ -360,22 +398,12 @@ static void
 report_frontier(void)
 {
     static const char *const pending[] = {
-        /*
-         *  Symbol interning.  The table is seeded correctly -- all 3601
-         *  symbols are placed, and test_string_hash_agrees proves the bucket
-         *  each one lands in is the bucket the image would choose -- but
-         *  Symbol class>>hasInterned:ifTrue: does not return from a scan of a
-         *  non-empty bucket.  Every piece of that scan answers correctly when
-         *  evaluated on its own, so the fault is in the whole activation
-         *  rather than in any step of it, and it is unfinished business.
-         */
-        "'hello' asSymbol size",
-        "#foo == 'foo' asSymbol",
-        "(1 to: 5) asOrderedCollection printString size",
-        "(Set new add: 3; yourself) printString size",
-        "Object new printString size",
+        /*  Float printing: absPrintOn:digits: and LargeInteger division.  */
         "3.5 printString size",
-        "(Dictionary new at: 1 put: 2; yourself) printString size"
+        /*  OrderedCollection's printOn: walks its own do:, which does not
+         *  terminate here even though its size, do: and collect: all do.  */
+        "(1 to: 5) asOrderedCollection printString size",
+        "(OrderedCollection new add: 1; yourself) printString size"
     };
     unsigned    i;
 
@@ -433,7 +461,7 @@ main(void)
             printf(" (first: %s)", init.first_unfinished);
         printf("\n");
         CHECK(init.defined >= 45);
-        CHECK(init.ran >= 40);
+        CHECK_EQ_INT(init.ran, init.defined);   /*  all of them  */
     }
 
     test_classes_present();
@@ -442,6 +470,7 @@ main(void)
     test_printing();
     test_symbols();
     test_string_hash_agrees();
+    test_floats();
     test_strings();
     test_graphics_objects();
     report_frontier();

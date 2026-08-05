@@ -164,12 +164,16 @@ Xerox's own methods, not by anything in this project.
 
 The bootstrap also runs the step a fileIn does not and an image build does:
 it sends `initialize` to the 45 classes that define one, which is what sets
-the class variables the library reads. 40 of the 45 complete.
+the class variables the library reads. All 45 complete.
+
+Symbols are unique, which is what makes `==` mean anything for them:
+`#printString == 'printString' asSymbol` is true, whether the symbol was made
+by the compiler while building the library or by the image afterwards.
 
 `tests/unit/test_library.c` gates on the library compiling;
 `tests/unit/test_image.c` gates on it running, and prints on every run the
-frontier that does not work yet — chiefly `Symbol` interning, where the table
-is seeded correctly but `hasInterned:ifTrue:` does not return from a scan.
+frontier that does not work yet — Float printing and `OrderedCollection`'s
+`printOn:`.
 
 **The language stops at the Blue Book.** The grammar this compiler accepts is
 the 1983 one, deliberately: dynamic arrays, general pragmas, block-local
