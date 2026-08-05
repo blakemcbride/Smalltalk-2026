@@ -1,0 +1,106 @@
+# Smalltalk-2026 -- Windows build with MSVC's nmake
+#
+#   nmake /f Makefile.msvc
+#   nmake /f Makefile.msvc test
+#   nmake /f Makefile.msvc clean
+#
+# Variables:
+#   OM=bb        16-bit Blue Book object memory (default)
+#   OM=mt        64-bit threaded object memory
+#   SDL3=path    root of an SDL3 development package; without it the
+#                graphics layer builds as a headless stub
+#
+# Requires Visual Studio 2022 version 17.8 or later.  Two reasons, both
+# load-bearing rather than incidental: C11 atomics arrived in 17.5, and the
+# C11 support this code relies on stabilized in 17.8.  clang-cl works too and
+# is what most portable C projects reach for on Windows, since it brings the
+# full GCC and Clang atomics with it.
+#
+# Note what is NOT here: <threads.h>.  Apple ships no such header, so the
+# portability layer is a shim over pthreads and the Win32 API, and Windows
+# gets SRWLOCK, CONDITION_VARIABLE and fiber-local storage -- FLS rather than
+# TLS because it is the only Win32 flavour with a destructor callback, which
+# is what pthread_key_create provides on the other side.
+
+!IFNDEF OM
+OM = bb
+!ENDIF
+
+CC       = cl
+CFLAGS   = /nologo /std:c11 /W4 /O2 /Zi /D_CRT_SECURE_NO_WARNINGS
+LDFLAGS  = /nologo
+
+!IF "$(OM)" == "bb"
+OMDEF = /DST_OM_BB
+!ELSE
+!IF "$(OM)" == "mt"
+OMDEF = /DST_OM_MT
+!ELSE
+!ERROR OM must be bb or mt
+!ENDIF
+!ENDIF
+
+INCLUDES = /Isrc /Isrc\port /Isrc\om /Isrc\interp /Isrc\gfx /Isrc\sched \
+           /Isrc\compiler /Isrc\boot /Itests
+
+!IFDEF SDL3
+SDLDEF  = /DST_HAVE_SDL3 /I"$(SDL3)\include"
+SDLLIBS = "$(SDL3)\lib\SDL3.lib"
+!ELSE
+SDLDEF  =
+SDLLIBS =
+!ENDIF
+
+CPPFLAGS = $(INCLUDES) $(OMDEF) $(SDLDEF)
+BUILD    = build\$(OM)-msvc
+
+CORE_OBJ = \
+    $(BUILD)\st_port.obj \
+    $(BUILD)\interp.obj $(BUILD)\prim.obj $(BUILD)\trace.obj \
+    $(BUILD)\st_sched.obj \
+    $(BUILD)\bitblt.obj $(BUILD)\display.obj \
+    $(BUILD)\chunk.obj $(BUILD)\lexer.obj $(BUILD)\compiler.obj \
+    $(BUILD)\census.obj
+
+!IF "$(OM)" == "bb"
+OM_OBJ = $(BUILD)\om_bb.obj $(BUILD)\image_bb.obj
+!ELSE
+OM_OBJ = $(BUILD)\om_mt.obj $(BUILD)\image_mt.obj
+!ENDIF
+
+OBJ = $(CORE_OBJ) $(OM_OBJ)
+BIN = st80.exe
+
+all: $(BIN)
+
+$(BUILD):
+	@if not exist $(BUILD) mkdir $(BUILD)
+
+{src\port\}.c{$(BUILD)\}.obj::
+	$(CC) $(CFLAGS) $(CPPFLAGS) /c /Fo$(BUILD)\ $<
+{src\om\}.c{$(BUILD)\}.obj::
+	$(CC) $(CFLAGS) $(CPPFLAGS) /c /Fo$(BUILD)\ $<
+{src\interp\}.c{$(BUILD)\}.obj::
+	$(CC) $(CFLAGS) $(CPPFLAGS) /c /Fo$(BUILD)\ $<
+{src\gfx\}.c{$(BUILD)\}.obj::
+	$(CC) $(CFLAGS) $(CPPFLAGS) /c /Fo$(BUILD)\ $<
+{src\sched\}.c{$(BUILD)\}.obj::
+	$(CC) $(CFLAGS) $(CPPFLAGS) /c /Fo$(BUILD)\ $<
+{src\compiler\}.c{$(BUILD)\}.obj::
+	$(CC) $(CFLAGS) $(CPPFLAGS) /c /Fo$(BUILD)\ $<
+
+$(BIN): $(BUILD) $(OBJ) src\main.c
+	$(CC) $(CFLAGS) $(CPPFLAGS) /c /Fo$(BUILD)\ src\main.c
+	$(CC) $(LDFLAGS) /Fe$(BIN) $(BUILD)\main.obj $(OBJ) $(SDLLIBS)
+
+test: $(BIN)
+	$(CC) $(CFLAGS) $(CPPFLAGS) /Fe$(BUILD)\test_port.exe \
+	    tests\unit\test_port.c $(OBJ) $(SDLLIBS)
+	$(BUILD)\test_port.exe
+	$(CC) $(CFLAGS) $(CPPFLAGS) /Fe$(BUILD)\test_compiler.exe \
+	    tests\unit\test_compiler.c $(OBJ) $(SDLLIBS)
+	$(BUILD)\test_compiler.exe
+
+clean:
+	@if exist build rmdir /s /q build
+	@if exist $(BIN) del $(BIN)

@@ -19,6 +19,16 @@
 #include <stdlib.h>
 #include <string.h>
 
+/*
+ *  SDL3 dropped the static SDLmain library: the translation unit holding
+ *  main() includes this header instead.  It matters most on macOS, where SDL
+ *  has to be the one that stands up the Cocoa run loop on the thread that
+ *  entered main() -- that thread and no other can own the window.
+ */
+#ifdef ST_HAVE_SDL3
+#include <SDL3/SDL_main.h>
+#endif
+
 #define ST_VERSION      "0.1.0-phase1"
 
 #if defined(ST_OM_BB)

@@ -39,6 +39,10 @@
 /*  trace2 covers this many bytecodes; running further would append lines.  */
 #define TRACE2_CYCLES   499
 
+/*
+ *  Capture the trace.  A temporary file rather than open_memstream, which is
+ *  POSIX and has no Windows counterpart.
+ */
 static char *
 run_trace(st_trace_mode mode, uint64_t cycles, size_t *len_out)
 {
@@ -47,7 +51,7 @@ run_trace(st_trace_mode mode, uint64_t cycles, size_t *len_out)
     FILE       *stream;
     char        err[256];
 
-    stream = open_memstream(&buffer, &len);
+    stream = tmpfile();
     if (!stream)
         return NULL;
     if (OM_init() != 0 || OM_image_load(IMAGE_PATH, err, sizeof err) != 0) {
@@ -66,6 +70,26 @@ run_trace(st_trace_mode mode, uint64_t cycles, size_t *len_out)
     ST_trace_set(mode, stream);
     ST_interp_run(cycles);
     ST_trace_set(ST_TRACE_OFF, NULL);
+
+    {
+        long    size;
+
+        fflush(stream);
+        if (fseek(stream, 0, SEEK_END) != 0 || (size = ftell(stream)) < 0) {
+            fclose(stream);
+            OM_shutdown();
+            return NULL;
+        }
+        rewind(stream);
+        buffer = (char *) malloc((size_t) size + 1);
+        if (!buffer) {
+            fclose(stream);
+            OM_shutdown();
+            return NULL;
+        }
+        len = fread(buffer, 1, (size_t) size, stream);
+        buffer[len] = '\0';
+    }
     fclose(stream);
     OM_shutdown();
     *len_out = len;

@@ -343,7 +343,7 @@ index_method(st_oop cls, st_oop selector, st_oop method, void *user)
     snprintf(text, sizeof text, "<%s>%s", cname, sel);
     /*  st_oop is 16 bits, so every value indexes the table.  */
     if (!method_index[method])
-        method_index[method] = strdup(text);
+        method_index[method] = st_test_strdup(text);
 }
 
 static void

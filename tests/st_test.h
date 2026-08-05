@@ -23,21 +23,37 @@
 #define ST_TEST_H
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <inttypes.h>
 
 /*
- *  Unused when a suite compiles to its skip stub, which happens whenever a
- *  test applies to only one object memory.
+ *  A suite that applies to only one object memory compiles to a skip stub
+ *  under the other, leaving these unused.
  */
 #if defined(__GNUC__) || defined(__clang__)
-#define ST_TEST_MAYBE_UNUSED    __attribute__((unused))
+#define ST_TEST_UNUSED      __attribute__((unused))
 #else
-#define ST_TEST_MAYBE_UNUSED
+#define ST_TEST_UNUSED
 #endif
 
-static int      st_test_checks    ST_TEST_MAYBE_UNUSED;
-static int      st_test_failures  ST_TEST_MAYBE_UNUSED;
+static int      st_test_checks    ST_TEST_UNUSED;
+static int      st_test_failures  ST_TEST_UNUSED;
+
+/*
+ *  strdup is POSIX rather than C, and MSVC spells it with an underscore
+ *  while warning about the plain name.  Tests use this instead.
+ */
+ST_TEST_UNUSED static char *
+st_test_strdup(const char *s)
+{
+    size_t  n = strlen(s) + 1;
+    char   *copy = (char *) malloc(n);
+
+    if (copy)
+        memcpy(copy, s, n);
+    return copy;
+}
 
 #define ST_TEST_BEGIN(name)                                             \
     do {                                                                \
