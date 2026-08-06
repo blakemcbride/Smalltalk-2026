@@ -171,9 +171,37 @@ instantiate(st_oop class_pointer, uint32_t size, uint32_t format,
     ST_mutex_lock(&table_lock);
     index = table_alloc_locked();
     if (index == 0) {
+        /*
+         *  The table is full, which is a reason to collect and was not
+         *  treated as one.
+         *
+         *  There are two ways to run out here and only one of them was
+         *  handled: a failed calloc collects and retries, a few lines above,
+         *  but a full object table simply gave up.  So a long run died with
+         *  every one of the four million table entries in use and three
+         *  hundred million words of heap still free, having collected once
+         *  in a hundred and seventy-four million bytecodes.  The desktop
+         *  loop allocates a context per iteration and asks for nothing else,
+         *  so it is exactly the shape of program that exhausts the table
+         *  first.
+         *
+         *  The lock is dropped before collecting.  A collection parks every
+         *  other worker at a safepoint and then walks the table; holding the
+         *  table lock across that deadlocks against any worker that reaches
+         *  its safepoint by way of an allocation.
+         */
         ST_mutex_unlock(&table_lock);
-        free(head);
-        return ST_OOP_INVALID;
+        if (OM_collect() == 0) {
+            free(head);
+            return ST_OOP_INVALID;
+        }
+        ST_mutex_lock(&table_lock);
+        index = table_alloc_locked();
+        if (index == 0) {
+            ST_mutex_unlock(&table_lock);
+            free(head);
+            return ST_OOP_INVALID;
+        }
     }
     OM_table_set(index, head);
     if (index >= (uint32_t) ST_load_relaxed(&st_om_table_limit))

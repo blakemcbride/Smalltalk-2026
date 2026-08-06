@@ -314,6 +314,43 @@ test_vm_state_round_trip(void)
     remove(path);
 }
 
+/*
+ *  Running out of object table entries is a reason to collect.
+ *
+ *  There are two ways to run out and only one of them used to be handled: a
+ *  failed calloc collected and retried, a full object table gave up.  So a
+ *  long run died with every table entry in use and hundreds of millions of
+ *  words of heap still free -- the desktop loop allocates a context per
+ *  iteration and asks for nothing else, which is exactly the shape of
+ *  program that exhausts the table first and the heap never.
+ *
+ *  The 16-bit memory, written from Chapter 30, had always handled both.
+ *
+ *  This allocates past the table's size without keeping any of it, so every
+ *  entry is garbage by the time the table fills.  A collection has to happen
+ *  and allocation has to carry on.
+ */
+static void
+test_full_table_collects(void)
+{
+    uint32_t    before = st_om_collections;
+    uint32_t    i;
+    uint32_t    failures = 0;
+    uint32_t    total = ST_OM_MAX_OBJECTS + (ST_OM_MAX_OBJECTS / 4);
+
+    for (i = 0; i < total; ++i) {
+        st_oop  p = OM_instantiate_pointers(ST_CLASS_ARRAY, 2);
+
+        if (!OM_is_object(p)) {
+            ++failures;
+            break;
+        }
+    }
+    CHECK_EQ_INT(failures, 0);
+    /*  And it got there by collecting, not by the table being large.  */
+    CHECK(st_om_collections > before);
+}
+
 int
 main(void)
 {
@@ -331,6 +368,7 @@ main(void)
     test_become();
     test_image_round_trip();
     test_vm_state_round_trip();
+    test_full_table_collects();
 
     printf("  table holds %u entries, %u free\n", st_om_table_limit,
            OM_oops_left());
