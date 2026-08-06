@@ -264,6 +264,16 @@ do_run(const char *path, uint64_t max_cycles)
 {
     char        err[256];
     uint64_t    total = 0;
+    /*
+     *  Why the run ended.
+     *
+     *  There are four ways out of the loop below and they used to look
+     *  identical from outside -- the same "stopped after N bytecodes" line
+     *  whether the window had been closed, the image had nothing left to
+     *  run, or a limit had been reached.  A system that stops on its own is
+     *  the one case where the reason is the whole of what you want to know.
+     */
+    const char *why = "the image stopped";
 
     if (load(path) != 0)
         return 1;
@@ -284,8 +294,10 @@ do_run(const char *path, uint64_t max_cycles)
             run_inject_script();
             inject_script = NULL;
         }
-        if (max_cycles && total >= max_cycles)
+        if (max_cycles && total >= max_cycles) {
+            why = "the bytecode limit was reached";
             break;
+        }
 
         if (!GFX_is_open() && GFX_display_form() != ST_NIL) {
             gfx_form    form;
@@ -300,8 +312,10 @@ do_run(const char *path, uint64_t max_cycles)
                         form.width, form.height);
             }
         }
-        if (GFX_is_open() && !GFX_pump())
+        if (GFX_is_open() && !GFX_pump()) {
+            why = "the window was closed";
             break;
+        }
     }
     /*
      *  Write the display out as a portable bitmap, so what the image drew
@@ -309,6 +323,7 @@ do_run(const char *path, uint64_t max_cycles)
      *  it drew anything at all.
      */
     write_screenshot();
+    fprintf(stderr, "st80: %s\n", why);
     fprintf(stderr, "st80: stopped after %llu bytecodes; "
                     "%u collections reclaimed %u objects; "
                     "%u words and %u table entries free\n",

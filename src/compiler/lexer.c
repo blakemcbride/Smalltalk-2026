@@ -114,7 +114,14 @@ skip_blanks(st_lexer *lx)
 
         while (!at_end(lx)) {
             c = lx->source[lx->pos];
-            if (c == '\n')
+            /*
+             *  A line ends on either, and a CRLF pair ends one line rather
+             *  than two.  Source read through the chunk reader arrives as
+             *  carriage returns; an expression handed straight to -eval
+             *  arrives however the shell wrote it.
+             */
+            if (c == '\r' || (c == '\n' && (lx->pos == 0
+                                || lx->source[lx->pos - 1] != '\r')))
                 ++lx->line;
             if (c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\f')
                 ++lx->pos;

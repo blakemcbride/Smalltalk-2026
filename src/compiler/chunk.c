@@ -171,18 +171,34 @@ CHUNK_next(st_chunk_reader *r, st_chunk *out)
             ++r->pos;
             break;
         }
-        if (c == '\r') {
-            /*  Normalize to newline so the parser sees one convention.  */
-            if (!append(r, &used, '\n'))
+        if (c == '\r' || c == '\n') {
+            /*
+             *  Every line ending becomes a carriage return, because that is
+             *  what a line ending IS in Smalltalk-80.
+             *
+             *  Character cr is 13 and the text machinery knows no other
+             *  separator: Paragraph, CharacterScanner and String>>lines all
+             *  break on it, and the 1983 sources file is written with it.
+             *  Normalizing to a linefeed instead -- the C convention, and
+             *  what these files arrive in -- reads back as text with no line
+             *  breaks at all.
+             *
+             *  It shows up as a menu.  The system menu's labels are one
+             *  string with nine separators in it, and composed with those as
+             *  linefeeds it came out 872 pixels wide and 8 high: ten items
+             *  side by side on a single line, off the edge of the screen.
+             *  Nothing reported anything, because a Paragraph with no line
+             *  breaks is a perfectly good Paragraph.
+             */
+            if (!append(r, &used, '\r'))
                 return 0;
             ++r->line;
             ++r->pos;
-            if (r->pos < r->length && r->source[r->pos] == '\n')
+            /*  A CRLF pair is one ending, not two.  */
+            if (c == '\r' && r->pos < r->length && r->source[r->pos] == '\n')
                 ++r->pos;
             continue;
         }
-        if (c == '\n')
-            ++r->line;
 
         /*
          *  Track strings and comments, so that a chunk of nothing but a
@@ -225,7 +241,7 @@ CHUNK_next(st_chunk_reader *r, st_chunk *out)
                 state = 0;
             }
         }
-        if (c != '\n' && c != ' ' && c != '\t' && c != '\f') {
+        if (c != '\r' && c != '\n' && c != ' ' && c != '\t' && c != '\f') {
             saw_content = 1;
             if (!was_comment && state != 2)
                 saw_code = 1;

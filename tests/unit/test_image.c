@@ -1186,6 +1186,51 @@ test_globals_are_reachable_by_name(void)
 }
 
 /*
+ *  A multi-line string is multi-line, and the system menu is the proof.
+ *
+ *  Smalltalk-80 separates lines with Character cr, which is 13.  Not the
+ *  linefeed C uses -- Paragraph, CharacterScanner and String>>lines all
+ *  break on 13 and on nothing else, and the 1983 sources file is written
+ *  with it.  The chunk reader used to normalize every ending to a linefeed,
+ *  which is the sensible thing to do for a C program reading a text file and
+ *  produces an image in which no string has any line breaks in it.
+ *
+ *  Nothing reports that.  A Paragraph with no line breaks is a perfectly
+ *  good Paragraph; it is just one line long.  The system menu is ten items
+ *  in one string separated by nine of them, so it composed to 872 pixels
+ *  wide and 8 high -- ten labels side by side, running off the screen.  From
+ *  the outside, pressing the yellow button on the desktop did nothing at all.
+ */
+static void
+test_menus_compose_as_lines(void)
+{
+    /*  The separators survived into the image as carriage returns.  */
+    check_integer("^(ScreenController class classPool at: #ScreenYellowButtonMenu)"
+                  " isNil ifTrue: [0] ifFalse: [1]", 1);
+    check_integer("PopUpMenu compile: 'shLabels ^labelString'"
+                  " classified: 'line ending check' notifying: nil."
+                  " ^((ScreenController class classPool"
+                  " at: #ScreenYellowButtonMenu) shLabels)"
+                  " occurrencesOf: (Character value: 13)", 9);
+    check_integer("^((ScreenController class classPool"
+                  " at: #ScreenYellowButtonMenu) shLabels)"
+                  " occurrencesOf: (Character value: 10)", 0);
+
+    /*
+     *  And the menu composed to ten lines rather than one.  Eight pixels a
+     *  line in this font, so eighty tall and narrow enough to fit -- not
+     *  872 by 8, which is what one line of all ten items measures.
+     */
+    check_integer("PopUpMenu compile: 'shForm ^form'"
+                  " classified: 'line ending check' notifying: nil."
+                  " ^((ScreenController class classPool"
+                  " at: #ScreenYellowButtonMenu) shForm) height", 80);
+    check_oop("^(((ScreenController class classPool"
+              " at: #ScreenYellowButtonMenu) shForm) width < 300)",
+              ST_TRUE, "true");
+}
+
+/*
  *  Input, through the path a window's events take.
  *
  *  GFX_inject_* does exactly what the SDL handlers do -- move the pointer,
@@ -1359,6 +1404,7 @@ main(void)
     test_globals_are_reachable_by_name();
     test_self_hosting();
     test_class_variables_from_the_image();
+    test_menus_compose_as_lines();
     test_input();
     test_printing_deep();
     test_mixed_arithmetic();

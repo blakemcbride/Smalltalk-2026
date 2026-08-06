@@ -533,7 +533,7 @@ test_chunk_reader(void)
     CHECK_EQ_STR(chunk.text, "Foo methodsFor: 'x'");
     CHECK(CHUNK_next(r, &chunk));           /*  the method                 */
     CHECK_EQ_INT(chunk.is_reader, 0);
-    CHECK_EQ_STR(chunk.text, "\nbar ^1");
+    CHECK_EQ_STR(chunk.text, "\rbar ^1");
     CHECK(CHUNK_next(r, &chunk));           /*  "! !" closes the category   */
     CHECK_EQ_INT(chunk.is_empty, 1);
     CHUNK_close(r);
@@ -598,11 +598,36 @@ test_chunk_reader(void)
     CHECK_EQ_STR(chunk.text, "f ^'say \"hi\"'");
     CHUNK_close(r);
 
-    /*  The 1983 files end lines with CR, which must read as a newline.  */
+    /*
+     *  Every line ending reads as a carriage return, because that is what a
+     *  line ending is in Smalltalk-80: Character cr is 13, and Paragraph,
+     *  CharacterScanner and String>>lines know no other separator.  These
+     *  files arrive with linefeeds and the 1983 ones used carriage returns;
+     *  both become one.
+     *
+     *  Normalizing the other way -- to the linefeed C uses -- produced an
+     *  image whose every multi-line string had no line breaks in it at all.
+     *  The system menu composed its ten items side by side into a Paragraph
+     *  872 pixels wide and 8 high, which is off the screen and looks exactly
+     *  like no menu appearing when the yellow button is pressed.
+     */
     r = CHUNK_open_string("a\rb!");
     CHECK(r != NULL);
     CHECK(CHUNK_next(r, &chunk));
-    CHECK_EQ_STR(chunk.text, "a\nb");
+    CHECK_EQ_STR(chunk.text, "a\rb");
+    CHUNK_close(r);
+
+    /*  A linefeed is the same ending, and CRLF is one ending not two.  */
+    r = CHUNK_open_string("a\nb!");
+    CHECK(r != NULL);
+    CHECK(CHUNK_next(r, &chunk));
+    CHECK_EQ_STR(chunk.text, "a\rb");
+    CHUNK_close(r);
+
+    r = CHUNK_open_string("a\r\nb!");
+    CHECK(r != NULL);
+    CHECK(CHUNK_next(r, &chunk));
+    CHECK_EQ_STR(chunk.text, "a\rb");
     CHUNK_close(r);
 }
 
