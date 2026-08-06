@@ -1186,6 +1186,84 @@ test_globals_are_reachable_by_name(void)
 }
 
 /*
+ *  Changing the image, which is the half the audit did not cover.
+ *
+ *  Everything above asks whether what the bootstrap BUILT can be found.
+ *  These ask whether what the image builds afterwards can be -- recompiling
+ *  a method, removing one, adding enough of them that the image has to grow
+ *  a method dictionary itself, interning a name nothing had used, and
+ *  defining a whole class.  That is what a Browser does all day.
+ *
+ *  The growth case is the interesting one: twenty-four methods into a class
+ *  with two makes HashedCollection>>grow build a dictionary the bootstrap
+ *  never touched, and the interpreter then has to read it.
+ */
+static void
+test_changing_the_image(void)
+{
+    /*  Recompiling replaces the method rather than adding a second.  */
+    check_integer("Integer compile: 'shV ^99' classified: 'sh' notifying: nil."
+                  " ^3 shV", 99);
+    check_integer("Integer compile: 'shV ^100' classified: 'sh' notifying: nil."
+                  " ^3 shV", 100);
+
+    /*  Removing it, which goes through MethodDictionary>>become:.  */
+    check_integer("Integer compile: 'shGone ^5' classified: 'sh' notifying: nil."
+                  " ^3 shGone", 5);
+    check_integer("Integer removeSelector: #shGone."
+                  " ^(Integer includesSelector: #shGone)"
+                  " ifTrue: [1] ifFalse: [0]", 0);
+
+    /*  Enough methods to make the image grow the dictionary, then send them. */
+    check_integer("| bad | bad _ 0. 1 to: 24 do: [:i |"
+                  " Link compile: 'shM' , i printString , ' ^' , i printString"
+                  " classified: 'sh grown' notifying: nil]."
+                  " 1 to: 24 do: [:i |"
+                  " ((Link new perform: ('shM' , i printString) asSymbol) = i)"
+                  " ifFalse: [bad _ bad + 1]]. ^bad", 0);
+    check_integer("| bad | bad _ 0. 1 to: 24 do: [:i |"
+                  " (Link includesSelector: ('shM' , i printString) asSymbol)"
+                  " ifFalse: [bad _ bad + 1]]. ^bad", 0);
+
+    /*  A name nothing had used interns to one object.  */
+    check_oop("^'shBrandNewNameNothingUsed' asSymbol"
+              " == 'shBrandNewNameNothingUsed' asSymbol", ST_TRUE, "true");
+    check_integer("| s | Link compile: 'shFreshName ^7' classified: 'sh'"
+                  " notifying: nil. s _ 'shFreshName' asSymbol."
+                  " ^Link new perform: s", 7);
+
+    /*  Globals come and go.  */
+    check_integer("Smalltalk at: #ShTestGlobal put: 42."
+                  " ^Smalltalk at: #ShTestGlobal", 42);
+    check_integer("Smalltalk removeKey: #ShTestGlobal."
+                  " ^(Smalltalk includesKey: #ShTestGlobal)"
+                  " ifTrue: [1] ifFalse: [0]", 0);
+
+    /*
+     *  And a class defined from inside the image, with an instance variable
+     *  and a class variable, and a method that reads both.
+     */
+    check_integer("Object subclass: #ShTestClass"
+                  " instanceVariableNames: 'aa bb'"
+                  " classVariableNames: 'CC' poolDictionaries: ''"
+                  " category: 'Sh-Test'."
+                  " (Smalltalk at: #ShTestClass) compile:"
+                  " 'shSet CC _ 5. aa _ 3. ^aa + CC'"
+                  " classified: 'sh' notifying: nil."
+                  " ^(Smalltalk at: #ShTestClass) new shSet", 8);
+    check_integer("^(Smalltalk at: #ShTestClass) allInstVarNames size", 2);
+
+    /*  The organization follows along, since that is what a Browser lists.  */
+    check_oop("Link compile: 'shOrgTest ^1' classified: 'sh category'"
+              " notifying: nil."
+              " ^(Link organization listAtCategoryNamed: #'sh category')"
+              " includes: #shOrgTest", ST_TRUE, "true");
+    check_oop("Link removeSelector: #shOrgTest."
+              " ^((Link organization listAtCategoryNamed: #'sh category')"
+              " includes: #shOrgTest) not", ST_TRUE, "true");
+}
+
+/*
  *  The audit: everything the bootstrap builds in C, checked the way the
  *  image looks at it rather than the way the interpreter does.
  *
@@ -1645,6 +1723,7 @@ main(void)
     test_class_variables_from_the_image();
     test_browsing_finds_every_method();
     test_audit_what_the_image_searches();
+    test_changing_the_image();
     test_class_side_instance_variables();
     test_menus_compose_as_lines();
     test_quit();
