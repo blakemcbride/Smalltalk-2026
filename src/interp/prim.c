@@ -652,11 +652,7 @@ primitive_object_hash(void)
 
     if (!OM_is_object(object))
         return 0;               /*  a SmallInteger is its own hash  */
-#ifdef ST_OM_MT
-    hash = OM_head(object)->hash & 0x3FFF;
-#else
-    hash = (uint32_t) (object >> 1) & 0x3FFF;
-#endif
+    hash = OM_identity_hash(object);
     return answer_positive_16bit(hash, 1);
 }
 

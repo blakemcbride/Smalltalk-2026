@@ -775,21 +775,51 @@ method_dictionary_at_put(st_oop dict, st_oop selector, st_oop method)
     if (dict == ST_NIL || !OM_is_object(dict))
         return 0;
     capacity = OM_method_dict_capacity(dict);
-    uint32_t    slot;
+    uint32_t    probe;
+    uint32_t    start;
     st_oop      values = OM_fetch_pointer(ST_MD_VALUE_ARRAY, dict);
     st_oop      tally;
 
-    if (values == ST_NIL || !OM_is_object(values))
+    if (values == ST_NIL || !OM_is_object(values) || capacity == 0)
         return 0;
 
-    for (slot = 0; slot < capacity; ++slot) {
-        st_oop  key = OM_fetch_pointer(ST_MD_FIRST_KEY + slot, dict);
+    /*
+     *  Placed where the image will look for it.
+     *
+     *  IdentityDictionary>>findKeyOrNil: begins at "key asOop \\ length + 1"
+     *  and probes forward, wrapping.  Filling from slot zero instead is
+     *  invisible to the interpreter, which scans the whole dictionary, and
+     *  wrong for everything in the image, which does not: includesSelector:,
+     *  compiledMethodAt: and sourceCodeAt: all go through the hash.
+     *
+     *  Sends therefore worked while the Browser did not.  Selecting a
+     *  message showed "key not found" for three selectors in five -- the
+     *  ones whose slot happened not to lie on the probe path from their own
+     *  hash.  The other two in five worked, which made it look like
+     *  particular methods were broken rather than every one of them.
+     */
+    start = (uint32_t) OM_identity_hash(selector) % capacity;
+    for (probe = 0; probe < capacity; ++probe) {
+        uint32_t    slot = (start + probe) % capacity;
+        st_oop      key = OM_fetch_pointer(ST_MD_FIRST_KEY + slot, dict);
 
-        if (key == selector || key == ST_NIL) {
+        if (key == selector) {
+            OM_store_pointer(slot, values, method);
+            return 1;
+        }
+        if (key == ST_NIL) {
+            tally = OM_fetch_pointer(ST_MD_TALLY, dict);
+            /*
+             *  Room to spare, as HashedCollection>>fullCheck keeps.  A
+             *  dictionary with no nil in it never ends the image's probe on
+             *  a selector it does not hold.
+             */
+            if (OM_is_int(tally)
+             && (OM_int_value(tally) + 1) * 4 > (st_int) capacity * 3)
+                return 0;       /*  too full; the caller grows and retries  */
             OM_store_pointer(ST_MD_FIRST_KEY + slot, dict, selector);
             OM_store_pointer(slot, values, method);
-            tally = OM_fetch_pointer(ST_MD_TALLY, dict);
-            if (key == ST_NIL && OM_is_int(tally))
+            if (OM_is_int(tally))
                 OM_store_pointer(ST_MD_TALLY, dict,
                                  OM_int_oop(OM_int_value(tally) + 1));
             return 1;
@@ -2628,6 +2658,43 @@ install_special_selectors(void)
 }
 
 /*
+ *  Give every class and metaclass a method dictionary, even an empty one.
+ *
+ *  One was made when the first method was installed, so a class with no
+ *  methods on a side -- and most classes have no class-side methods at all
+ *  -- was left with nil there.  The interpreter does not mind: lookup tests
+ *  for a dictionary before walking it and moves on up the chain.
+ *
+ *  Everything in the image does mind.  Behavior>>selectors is
+ *  "^methodDict keys", so it is a doesNotUnderstand on nil, and the Browser
+ *  asks for exactly that as soon as the class side of such a class is
+ *  selected.  An empty dictionary answers an empty set and the Browser shows
+ *  an empty list, which is the truth.
+ */
+static void
+install_empty_method_dictionaries(void)
+{
+    unsigned    i;
+
+    for (i = 0; i < class_count; ++i) {
+        boot_class *c = &classes[i];
+        unsigned    side;
+
+        for (side = 0; side < 2; ++side) {
+            st_oop  target = side ? c->metaclass_oop : c->class_oop;
+            st_oop  dict;
+
+            if (!OM_is_present(target))
+                continue;
+            dict = OM_fetch_pointer(CLASS_METHOD_DICT, target);
+            if (dict == ST_NIL || !OM_is_object(dict))
+                OM_store_pointer(CLASS_METHOD_DICT, target,
+                                 make_method_dictionary(4));
+        }
+    }
+}
+
+/*
  *  Give every class a classPool holding its class variables.
  *
  *  A class variable is reached two ways.  A method already compiled holds
@@ -3262,6 +3329,7 @@ BOOT_run_initializers(st_boot_init_report *out)
      *  builds the compiler's table out of them.
      */
     install_special_selectors();
+    install_empty_method_dictionaries();
     install_class_pools();
 
     ST_set_error_reporting(0);

@@ -1186,6 +1186,74 @@ test_globals_are_reachable_by_name(void)
 }
 
 /*
+ *  What the Browser needs, which is more than what a send needs.
+ *
+ *  Two things were wrong here and both were invisible to the interpreter.
+ *
+ *  A method dictionary is an IdentityDictionary, and findKeyOrNil: begins
+ *  probing at "key asOop \\ length + 1".  The bootstrap filled it from slot
+ *  zero instead.  Lookup scans the whole dictionary, so every send in the
+ *  system worked; includesSelector:, compiledMethodAt: and sourceCodeAt: all
+ *  go through the hash, so three selectors in five answered "key not found"
+ *  -- the ones whose slot did not happen to lie on the probe path from their
+ *  own hash.  The other two in five worked, which made it look like
+ *  particular methods were broken rather than all of them.
+ *
+ *  And a dictionary was made only when a class received its first method, so
+ *  a class with no methods on a side -- which is most classes, on the class
+ *  side -- had nil there.  Lookup steps over that happily.  Behavior>>
+ *  selectors is "^methodDict keys", which does not.
+ */
+static void
+test_browsing_finds_every_method(void)
+{
+    /*
+     *  Every selector the organization lists is findable by the image's own
+     *  hashing, on both sides of every class.  4521 of them, and the count
+     *  is the same one the bootstrap reports compiling.
+     */
+    check_integer("| bad cls | bad _ 0."
+                  " SystemOrganization categories do: [:cat |"
+                  " (SystemOrganization listAtCategoryNamed: cat) do: [:nm |"
+                  " cls _ Smalltalk at: nm."
+                  " (Array with: cls with: cls class) do: [:c |"
+                  " c organization isNil ifFalse: ["
+                  " c organization categories do: [:mc |"
+                  " (c organization listAtCategoryNamed: mc) do: [:sel |"
+                  " (c includesSelector: sel) ifFalse: [bad _ bad + 1]]]]]]]."
+                  " ^bad", 0);
+
+    /*
+     *  And every class and metaclass answers selectors at all -- at least
+     *  the 4521 the bootstrap compiled, plus whatever the checks above have
+     *  compiled into the image since.
+     */
+    check_integer("| n cls | n _ 0."
+                  " SystemOrganization categories do: [:cat |"
+                  " (SystemOrganization listAtCategoryNamed: cat) do: [:nm |"
+                  " cls _ Smalltalk at: nm."
+                  " (Array with: cls with: cls class) do: [:c |"
+                  " n _ n + c selectors size]]]."
+                  " ^n >= 4521 ifTrue: [1] ifFalse: [0]", 1);
+
+    /*
+     *  And the path a person takes: a category, a class, a protocol, a
+     *  message, and the source of it.
+     */
+    check_oop("| b | b _ Browser new on: SystemOrganization."
+              " b category: b categoryList first."
+              " b className: b classList first."
+              " b protocol: b protocolList first."
+              " b selector: b selectorList first."
+              " ^b text size > 0", ST_TRUE, "true");
+    check_integer("| n | n _ 0."
+                  " (Array with: Point with: Point class with: Rectangle)"
+                  " do: [:c | c selectors do: [:sel |"
+                  " n _ n + (c sourceCodeAt: sel) size]]."
+                  " ^n > 5000 ifTrue: [1] ifFalse: [0]", 1);
+}
+
+/*
  *  Class-side instance variables, which a class definition declares in its
  *  second half:
  *
@@ -1480,6 +1548,7 @@ main(void)
     test_globals_are_reachable_by_name();
     test_self_hosting();
     test_class_variables_from_the_image();
+    test_browsing_finds_every_method();
     test_class_side_instance_variables();
     test_menus_compose_as_lines();
     test_quit();

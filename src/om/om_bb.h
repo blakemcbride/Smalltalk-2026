@@ -463,4 +463,16 @@ extern uint32_t     st_om_image_ot_words;
 }
 #endif
 
+/*
+ *  The identity hash, as the image sees it.
+ *
+ *  IdentityDictionary>>findKeyOrNil: starts probing at "key asOop \\ length
+ *  + 1", so anything built in C that the image will later look up has to
+ *  agree with this exactly -- a method dictionary filled from slot zero is
+ *  perfectly good to the interpreter, which scans, and invisible to the
+ *  image, which hashes.  Primitive 75 answers this and nothing else may
+ *  compute it differently.
+ */
+#define OM_identity_hash(p)     (((uint32_t) (p) >> 1) & 0x3FFF)
+
 #endif  /*  ST_OM_BB_H  */
