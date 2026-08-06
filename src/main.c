@@ -21,6 +21,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <math.h>
 #include <string.h>
 
 /*
@@ -58,6 +59,7 @@ usage(const char *argv0)
     printf("  -run <image> [n]      run the image, opening a window\n");
     printf("  -screenshot <f.pbm>   with -run or -bootstrap, write the display\n");
     printf("  -inject <script>      post input: m X Y, d CODE, u CODE, k CODE\n");
+    printf("  -wiggle               move the pointer continuously, no clicks\n");
     printf("  -census <image>       load an image and summarize it\n");
     printf("  -classes <image>      list every class, in class.oops format\n");
     printf("  -methods <image>      list every method, in method.oops format\n");
@@ -69,6 +71,7 @@ usage(const char *argv0)
     printf("  -help                 this message\n");
     printf("\n");
     printf("  ST_EVAL_TRACE=1       trace the bytecodes an -eval runs\n");
+    printf("  ST_BOTTOM_LOG=1       report a return off the bottom of a stack\n");
 }
 
 static void
@@ -225,6 +228,7 @@ static const char *shot_path;
  *  drives is the real path.
  */
 static const char *inject_script;
+static int         wiggle;
 
 static void
 run_inject_script(void)
@@ -293,6 +297,30 @@ do_run(const char *path, uint64_t max_cycles)
         if (inject_script && total >= SLICE_BYTECODES) {
             run_inject_script();
             inject_script = NULL;
+        }
+        /*
+         *  Move the pointer, and nothing else.
+         *
+         *  A user resting a hand on the mouse posts a stream of motion and
+         *  no buttons at all, which is a load nothing else here produces:
+         *  two events and two semaphore signals per move, each waking a
+         *  process that outranks the one running.  Reproducing that without
+         *  a mouse is the only way to test it.
+         */
+        if (wiggle) {
+            static int  step;
+            gfx_form    form;
+
+            if (GFX_form_from_oop(GFX_display_form(), &form)) {
+                /*  A circle, so it keeps moving and stays on the screen.  */
+                double  a = (double) step * 0.05;
+                int     cx = form.width / 2;
+                int     cy = form.height / 2;
+
+                GFX_inject_mouse(cx + (int) (cos(a) * (form.width / 3)),
+                                 cy + (int) (sin(a) * (form.height / 3)));
+                ++step;
+            }
         }
         if (max_cycles && total >= max_cycles) {
             why = "the bytecode limit was reached";
@@ -1118,6 +1146,10 @@ main(int argc, char **argv)
         }
         if (!strcmp(argv[i], "-screenshot") && i + 1 < argc) {
             shot_path = argv[++i];
+            continue;
+        }
+        if (!strcmp(argv[i], "-wiggle")) {
+            wiggle = 1;
             continue;
         }
         if (!strcmp(argv[i], "-inject") && i + 1 < argc) {

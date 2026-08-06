@@ -1284,6 +1284,37 @@ test_input(void)
     check_integer("Processor yield. ^Sensor keyboard asInteger", 'A');
 
     /*
+     *  Moving the pointer and nothing else, which is its own kind of load.
+     *
+     *  Every motion posts an X event and a Y event, so it signals the input
+     *  semaphore twice, and both are drained in one pass before any bytecode
+     *  runs.  A transfer only NOMINATES a process -- the switch happens when
+     *  the interpreter next reaches the top of its loop -- so the second
+     *  signal was scheduling against an activeProcess that had already been
+     *  displaced, and put it on a run queue a second time.
+     *
+     *  A process chained onto a list twice has a nextLink pointing at
+     *  itself, and is both running and queued.  Suspending it then hands
+     *  control straight back to itself, so a terminating process returns
+     *  from the terminate it was never meant to return from, off the bottom
+     *  of its stack, and the whole image stops.  Resting a hand on the mouse
+     *  did it in well under a second.
+     */
+    {
+        int i;
+
+        for (i = 0; i < 200; ++i) {
+            GFX_inject_mouse(100 + (i % 400), 80 + (i % 300));
+            evaluate("Processor yield. ^1");
+        }
+    }
+    check_oop("Processor yield. ^true", ST_TRUE, "true");
+    /*  Still only ever on one list, so the queues are still walkable.  */
+    check_oop("| n | n _ 0. 1 to: 8 do: [:i |"
+              " ((Processor instVarAt: 1) at: i) do: [:p | n _ n + 1]]."
+              " ^n < 100", ST_TRUE, "true");
+
+    /*
      *  A controller wants control when the pointer is over its view, and
      *  does not when it is not.  Moving the pointer changes the answer,
      *  which is the whole of how MVC decides who is in charge.

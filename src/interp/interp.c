@@ -559,6 +559,11 @@ do_return(st_oop result, st_oop to_context, int from_block)
      */
     if (sender == ST_NIL || !OM_is_object(sender)) {
         /*  The bottom of the world: keep the answer and stop.  */
+        if (getenv("ST_BOTTOM_LOG")) {
+            fprintf(stderr, "st80: returned off the bottom at cycle %llu\n",
+                    (unsigned long long) st_vm.cycle);
+            ST_report_backtrace();
+        }
         st_vm.return_value = result;
         st_vm.running      = 0;
         return;

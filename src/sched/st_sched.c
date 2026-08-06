@@ -120,6 +120,12 @@ SCHED_remove_first_link(st_oop list)
      *  while it is still being written to.
      */
     OM_store_pointer(ST_LINK_NEXT, first, ST_NIL);
+    /*
+     *  And it is on no list now, which is what myList is for.  Leaving it
+     *  set says the process is still queued when it is not, and the guard in
+     *  addLastLink: below believes it.
+     */
+    OM_store_pointer(ST_PROCESS_MY_LIST, first, ST_NIL);
     if (first == last) {
         OM_store_pointer(ST_LIST_FIRST_LINK, list, ST_NIL);
         OM_store_pointer(ST_LIST_LAST_LINK, list, ST_NIL);
@@ -137,6 +143,19 @@ SCHED_add_last_link(st_oop link, st_oop list)
      || !OM_pointer_bit(link) || !OM_pointer_bit(list)
      || OM_fetch_word_length(link) <= ST_PROCESS_MY_LIST
      || OM_fetch_word_length(list) <= ST_LIST_LAST_LINK)
+        return;
+    /*
+     *  A process already on a list is not put on another.
+     *
+     *  Chaining one twice makes its nextLink point at itself, and from then
+     *  on the list either loops forever or ends early depending on which end
+     *  is walked.  It is also how a process comes to be both running and
+     *  queued, so that suspending it hands control back to itself: the
+     *  scheduler transfers to the process it just left, execution carries on
+     *  from where it was, and a terminating process returns from the
+     *  terminate it was never supposed to return from.
+     */
+    if (OM_is_present(OM_fetch_pointer(ST_PROCESS_MY_LIST, link)))
         return;
     if (SCHED_is_empty_list(list))
         OM_store_pointer(ST_LIST_FIRST_LINK, list, link);
@@ -241,10 +260,30 @@ SCHED_suspend_active(void)
  *  lower or equal one merely queues it.  Under the green scheduler this is
  *  the whole of the preemption rule.
  */
+/*
+ *  The process that will be running, which is not always the one that is.
+ *
+ *  A transfer only NOMINATES; the switch happens when the interpreter next
+ *  reaches the top of its loop.  Until then activeProcess still names the
+ *  process being left, and scheduling against it gets the wrong answer as
+ *  soon as two things want to preempt before a single bytecode boundary --
+ *  the second displaces a process that has already been displaced and puts
+ *  it on a run queue a second time.
+ *
+ *  Moving the mouse does exactly that.  Every motion posts an X event and a
+ *  Y event, each signalling the input semaphore, and both are drained in one
+ *  pass before any bytecode runs.
+ */
+static st_oop
+effective_active_process(void)
+{
+    return new_process_waiting ? new_process : SCHED_active_process();
+}
+
 void
 SCHED_resume(st_oop process)
 {
-    st_oop  active = SCHED_active_process();
+    st_oop  active = effective_active_process();
     st_oop  active_priority;
     st_oop  new_priority;
 
