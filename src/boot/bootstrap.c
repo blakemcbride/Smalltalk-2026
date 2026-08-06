@@ -1157,6 +1157,29 @@ link_class_objects(void)
     }
     metaclass_class = metaclass_entry->class_oop;
 
+    /*
+     *  Every class is named before any of them is furnished.
+     *
+     *  The loop below builds each class an Array of its instance variable
+     *  names, whose elements are Strings, and it used to name the class only
+     *  at the END of its own iteration.  So a class that came before Array
+     *  in the file order -- ArrayedCollection, Collection,
+     *  SequenceableCollection, and Array itself -- got an Array with no
+     *  class, built at a moment when nothing was called Array yet.
+     *
+     *  An object with no class answers no messages.  Nothing noticed,
+     *  because the interpreter never asks a class for its instance variable
+     *  names; only the image does, and only when something wants to see
+     *  inside an object.  Behavior>>allInstVarNames walks the superclass
+     *  chain adding each class's names to the last, so asking ANY collection
+     *  what its fields are called failed -- and that is the first thing an
+     *  Inspector does.
+     */
+    for (i = 0; i < class_count; ++i) {
+        if (OM_is_present(classes[i].class_oop))
+            define_global(classes[i].name, classes[i].class_oop);
+    }
+
     for (i = 0; i < class_count; ++i) {
         boot_class *c = &classes[i];
         boot_class *super;

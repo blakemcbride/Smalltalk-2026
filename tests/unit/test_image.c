@@ -1186,6 +1186,101 @@ test_globals_are_reachable_by_name(void)
 }
 
 /*
+ *  The audit: everything the bootstrap builds in C, checked the way the
+ *  image looks at it rather than the way the interpreter does.
+ *
+ *  Three bugs of one shape came out of the Browser, and the shape is worth
+ *  naming: the VM is more forgiving than the image.  Method lookup SCANS a
+ *  dictionary, so entries in the wrong slots are invisible to it; lookup
+ *  steps over a nil dictionary, so a missing one is invisible; a compiled
+ *  method holds its variable's Association, so an empty classPool is
+ *  invisible.  Every one of those was fine to run and broken to browse.
+ *
+ *  So the invariant is: whatever a scan finds, a hashed lookup must find
+ *  too, and whatever the image will search must be searchable the image's
+ *  way.  These check that across every structure the bootstrap builds.
+ */
+static void
+test_audit_what_the_image_searches(void)
+{
+    /*
+     *  The symbol table, built in C with String>>hash duplicated there.
+     *  Every selector in the system must come back as the same object when
+     *  its characters are interned again.
+     */
+    check_integer("| bad cls | bad _ 0."
+                  " SystemOrganization categories do: [:cat |"
+                  " (SystemOrganization listAtCategoryNamed: cat) do: [:nm |"
+                  " cls _ Smalltalk at: nm."
+                  " (Array with: cls with: cls class) do: [:c |"
+                  " c selectors do: [:sel |"
+                  " (sel asString asSymbol == sel)"
+                  " ifFalse: [bad _ bad + 1]]]]]. ^bad", 0);
+    check_integer("| bad | bad _ 0."
+                  " SystemOrganization categories do: [:cat |"
+                  " (SystemOrganization listAtCategoryNamed: cat) do: [:nm |"
+                  " (nm asString asSymbol == nm) ifFalse: [bad _ bad + 1]."
+                  " ((Smalltalk at: nm) name asSymbol == nm)"
+                  " ifFalse: [bad _ bad + 1]]]. ^bad", 0);
+
+    /*  Smalltalk itself, and every Dictionary it holds.  */
+    check_integer("| bad | bad _ 0."
+                  " Smalltalk keys do: [:k |"
+                  " (Smalltalk includesKey: k) ifFalse: [bad _ bad + 1]]."
+                  " Smalltalk do: [:v | (v isKindOf: Dictionary) ifTrue: ["
+                  " v keys do: [:k2 |"
+                  " (v includesKey: k2) ifFalse: [bad _ bad + 1]]]]."
+                  " ^bad", 0);
+
+    /*  The class pools, which hold the class variables by name.  */
+    check_integer("| bad cls p | bad _ 0."
+                  " SystemOrganization categories do: [:cat |"
+                  " (SystemOrganization listAtCategoryNamed: cat) do: [:nm |"
+                  " cls _ Smalltalk at: nm. p _ cls classPool."
+                  " p keys do: [:k |"
+                  " (p includesKey: k) ifFalse: [bad _ bad + 1]]]]. ^bad", 0);
+
+    /*  Every class organization answers for every category it lists.  */
+    check_integer("| bad cls o | bad _ 0."
+                  " SystemOrganization categories do: [:cat |"
+                  " (SystemOrganization listAtCategoryNamed: cat) do: [:nm |"
+                  " cls _ Smalltalk at: nm."
+                  " (Array with: cls with: cls class) do: [:c |"
+                  " o _ c organization. o isNil ifFalse: ["
+                  " o categories do: [:mc |"
+                  " (o listAtCategoryNamed: mc) isNil"
+                  " ifTrue: [bad _ bad + 1]]]]]]. ^bad", 0);
+
+    /*  The Character table, which is indexed rather than hashed.  */
+    check_integer("| bad | bad _ 0. 0 to: 255 do: [:i |"
+                  " ((Character value: i) asInteger = i)"
+                  " ifFalse: [bad _ bad + 1]."
+                  " ((Character value: i) == (Character value: i))"
+                  " ifFalse: [bad _ bad + 1]]. ^bad", 0);
+
+    /*
+     *  And the instance variable names, which only the image ever reads.
+     *
+     *  Each class is given an Array of them, and the array was made before
+     *  anything was called Array for the four classes that come before it in
+     *  file order -- so those four had one with no class, which answers no
+     *  messages at all.  Behavior>>allInstVarNames adds each class's names
+     *  to its superclass's, so asking any collection what its fields are
+     *  called failed, which is the first thing an Inspector does.
+     */
+    check_oop("| n cls | n _ 0."
+              " SystemOrganization categories do: [:cat |"
+              " (SystemOrganization listAtCategoryNamed: cat) do: [:nm |"
+              " cls _ Smalltalk at: nm."
+              " n _ n + cls allInstVarNames size]]."
+              " ^n > 1500", ST_TRUE, "true");
+    check_integer("^(Inspector new inspect: 3@4) fieldList size", 3);
+    check_oop("^((Inspector new inspect:"
+              " (OrderedCollection with: 1 with: 2)) fieldList size > 2)",
+              ST_TRUE, "true");
+}
+
+/*
  *  What the Browser needs, which is more than what a send needs.
  *
  *  Two things were wrong here and both were invisible to the interpreter.
@@ -1549,6 +1644,7 @@ main(void)
     test_self_hosting();
     test_class_variables_from_the_image();
     test_browsing_finds_every_method();
+    test_audit_what_the_image_searches();
     test_class_side_instance_variables();
     test_menus_compose_as_lines();
     test_quit();
