@@ -435,6 +435,24 @@ GFX_pump(void)
     if (!window)
         return 1;
     while (SDL_PollEvent(&event)) {
+        /*
+         *  Put the event's coordinates into the display's own space.
+         *
+         *  The renderer presents a 640 by 480 logical surface letterboxed
+         *  into whatever size the window happens to be, and the window is
+         *  resizable -- so SDL reports a pointer position in WINDOW pixels
+         *  while everything above here counts in the Form's.  The two agree
+         *  only when the window is exactly the size of the display and the
+         *  screen is not scaled, which is to say on this machine and not on
+         *  the next one.
+         *
+         *  Unconverted, the pointer the image believes in drifts further
+         *  from the real one the further from the origin it goes, and by a
+         *  factor rather than an offset.  It shows up as a menu that opens
+         *  somewhere other than under the cursor, which is a hard thing to
+         *  read as a coordinate-space mistake.
+         */
+        SDL_ConvertEventToRenderCoordinates(renderer, &event);
         switch (event.type) {
         case SDL_EVENT_QUIT:
         case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
