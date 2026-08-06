@@ -421,6 +421,8 @@ name_method(st_oop receiver, st_oop method, char *out, size_t len)
  */
 #define BACKTRACE_LIMIT     24
 
+int         ST_quit_requested;
+
 static int  errors_reported = 1;
 
 void

@@ -1208,6 +1208,20 @@ ST_primitive_dispatch(unsigned index)
     case 101: return primitive_be_cursor();
     case 102: return primitive_be_display();
     case 105: return primitive_replace_from_to_with_starting_at();
+    case 113:
+        /*
+         *  quit.  Stop, and let the driver leave.
+         *
+         *  Without it, SystemDictionary>>quitPrimitive fell through to
+         *  "self primitiveFailed", so choosing "Quit, without saving" from
+         *  the system menu raised an error and printed a backtrace instead
+         *  of quitting -- the one menu item whose whole job is to leave.
+         *
+         *  The receiver stays on the stack; nothing will read it.
+         */
+        ST_quit_requested = 1;
+        st_vm.running = 0;
+        return 1;
     case 112:                   /*  coreLeft  */
         return answer_positive(OM_core_left(), 1);
     case 115:                   /*  oopsLeft  */

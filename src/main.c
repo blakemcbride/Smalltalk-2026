@@ -279,6 +279,7 @@ do_run(const char *path, uint64_t max_cycles)
      */
     const char *why = "the image stopped";
 
+
     if (load(path) != 0)
         return 1;
     SCHED_reset();
@@ -351,6 +352,8 @@ do_run(const char *path, uint64_t max_cycles)
      *  it drew anything at all.
      */
     write_screenshot();
+    if (ST_quit_requested)
+        why = "the image quit";
     fprintf(stderr, "st80: %s\n", why);
     fprintf(stderr, "st80: stopped after %llu bytecodes; "
                     "%u collections reclaimed %u objects; "

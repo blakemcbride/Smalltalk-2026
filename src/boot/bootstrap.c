@@ -832,11 +832,12 @@ split_words(const char *text, char table[][64], unsigned *count,
     while (*p && *count < limit) {
         size_t  n = 0;
 
-        while (*p == ' ' || *p == '\t' || *p == '\n')
+        while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')
             ++p;
         if (!*p)
             break;
-        while (*p && *p != ' ' && *p != '\t' && *p != '\n' && n + 1 < 64)
+        while (*p && *p != ' ' && *p != '\t' && *p != '\n' && *p != '\r'
+            && n + 1 < 64)
             table[*count][n++] = *p++;
         table[*count][n] = '\0';
         if (n)
@@ -897,7 +898,8 @@ parse_class_definition(const char *text)
 
     /*  The superclass name is the word before the keyword.  */
     p = at;
-    while (p > text && (p[-1] == ' ' || p[-1] == '\n' || p[-1] == '\t'))
+    while (p > text && (p[-1] == ' ' || p[-1] == '\n' || p[-1] == '\r'
+                     || p[-1] == '\t'))
         --p;
     {
         const char *end = p;
@@ -965,7 +967,7 @@ parse_class_side_definition(const char *text)
         return 0;
 
     p = text;
-    while (*p == ' ' || *p == '\n' || *p == '\t')
+    while (*p == ' ' || *p == '\n' || *p == '\r' || *p == '\t')
         ++p;
     while (p < at && (isalnum((unsigned char) *p) || *p == '_')
         && n + 1 < sizeof name)
@@ -1007,7 +1009,7 @@ parse_methods_for(const char *text, char *class_name, size_t namelen,
     /*  The protocol this run of methods belongs to, for the Browser.  */
     if (category && catlen)
         quoted_after(at, "methodsFor:", category, catlen);
-    while (*p == ' ' || *p == '\n' || *p == '\t')
+    while (*p == ' ' || *p == '\n' || *p == '\r' || *p == '\t')
         ++p;
     while (*p && (isalnum((unsigned char) *p) || *p == '_') && n + 1 < namelen)
         class_name[n++] = *p++;

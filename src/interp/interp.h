@@ -239,6 +239,9 @@ void        ST_report_backtrace(void);
  *  of them want a text style that a later one builds -- so that only
  *  failures which survive the last pass are ever printed.
  */
+/*  Set by primitive 113, so the driver knows the image meant to leave.  */
+extern int  ST_quit_requested;
+
 void        ST_set_error_reporting(int on);
 
 /*  Reading a method: its bytecode names and how wide each one is.  */

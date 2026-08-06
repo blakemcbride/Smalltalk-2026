@@ -1186,6 +1186,51 @@ test_globals_are_reachable_by_name(void)
 }
 
 /*
+ *  Class-side instance variables, which a class definition declares in its
+ *  second half:
+ *
+ *      Form class
+ *        instanceVariableNames: 'whiteMask darkGrayMask grayMask ...'
+ *
+ *  and which hold the stock Forms every piece of drawing asks for.  The
+ *  bootstrap parses that header itself, and it treated a newline as
+ *  whitespace and a carriage return as part of a name -- so when the chunk
+ *  reader started answering carriage returns, every one of these became an
+ *  undeclared global bound to nil.
+ *
+ *  Nothing failed.  The suite stayed green through it, because nothing here
+ *  had ever asked Form for a Form.  That is the gap this closes.
+ */
+static void
+test_class_side_instance_variables(void)
+{
+    check_oop("^Form gray isNil", ST_FALSE, "false");
+    check_oop("^Form black isNil", ST_FALSE, "false");
+    check_oop("^Form white isNil", ST_FALSE, "false");
+    check_oop("^Form lightGray isNil", ST_FALSE, "false");
+    /*  And they are real Forms, not something that merely is not nil.  */
+    check_integer("^Form gray width", 16);
+    check_integer("^Form gray height", 16);
+}
+
+/*
+ *  Quitting.  SystemDictionary>>quitPrimitive is primitive 113, and with it
+ *  unimplemented the method fell through to "self primitiveFailed" -- so
+ *  choosing "Quit, without saving" from the system menu raised an error and
+ *  printed a backtrace instead of quitting, which is the one menu item whose
+ *  whole job is to leave.
+ */
+static void
+test_quit(void)
+{
+    CHECK_EQ_INT(ST_quit_requested, 0);
+    evaluate("Smalltalk quit. ^1");
+    CHECK_EQ_INT(ST_quit_requested, 1);
+    /*  Cleared, so the checks after this one still have an interpreter.  */
+    ST_quit_requested = 0;
+}
+
+/*
  *  A multi-line string is multi-line, and the system menu is the proof.
  *
  *  Smalltalk-80 separates lines with Character cr, which is 13.  Not the
@@ -1435,7 +1480,9 @@ main(void)
     test_globals_are_reachable_by_name();
     test_self_hosting();
     test_class_variables_from_the_image();
+    test_class_side_instance_variables();
     test_menus_compose_as_lines();
+    test_quit();
     test_input();
     test_printing_deep();
     test_mixed_arithmetic();
