@@ -22,11 +22,30 @@
 
 typedef struct {
     st_names    files;
+    int        *dialects;           /*  one per file  */
+    unsigned    dialect_capacity;
     st_names    exclude;
     st_names    loaded;             /*  profiles already expanded  */
     char       *error;
     size_t      error_len;
 } expansion;
+
+/*  Add a file, remembering which dialect the profile that named it uses.  */
+static int
+add_file(expansion *e, const char *path, int dialect)
+{
+    if (e->files.count == e->dialect_capacity) {
+        unsigned    want = e->dialect_capacity ? e->dialect_capacity * 2 : 256;
+        int        *grown = (int *) realloc(e->dialects, want * sizeof *grown);
+
+        if (!grown)
+            return 0;
+        e->dialects         = grown;
+        e->dialect_capacity = want;
+    }
+    e->dialects[e->files.count] = dialect;
+    return SRC_names_add(&e->files, path);
+}
 
 static int expand_one(expansion *e, const char *path, unsigned depth);
 
@@ -124,7 +143,7 @@ compare_names(const void *a, const void *b)
  *  a qsort.
  */
 static int
-add_directory(expansion *e, const char *dir)
+add_directory(expansion *e, const char *dir, int dialect)
 {
     st_names    found;
     unsigned    i;
@@ -183,7 +202,7 @@ add_directory(expansion *e, const char *dir)
         class_name_of(path, name, sizeof name);
         if (names_contain(&e->exclude, name))
             continue;
-        ok = SRC_names_add(&e->files, path);
+        ok = add_file(e, path, dialect);
     }
     SRC_names_free(&found);
     return ok;
@@ -192,7 +211,7 @@ add_directory(expansion *e, const char *dir)
 /*  ----------  Manifests  ----------  */
 
 static int
-add_manifest(expansion *e, const char *path)
+add_manifest(expansion *e, const char *path, int dialect)
 {
     FILE   *f = fopen(path, "r");
     char    line[1024];
@@ -212,7 +231,7 @@ add_manifest(expansion *e, const char *path)
         class_name_of(line, name, sizeof name);
         if (names_contain(&e->exclude, name))
             continue;
-        SRC_names_add(&e->files, line);
+        add_file(e, line, dialect);
     }
     fclose(f);
     return 1;
@@ -231,6 +250,8 @@ expand_one(expansion *e, const char *path, unsigned depth)
     char            base[1024];
     char            detail[512];
     const st_names *list;
+    const char     *dialect_name;
+    int             dialect = ST_DIALECT_BLUE_BOOK;
     unsigned        i;
     int             ok = 1;
 
@@ -270,6 +291,18 @@ expand_one(expansion *e, const char *path, unsigned depth)
      *  Exclusions are collected before anything is added, so that a profile
      *  can exclude something a profile it requires would otherwise bring.
      */
+    dialect_name = SRC_ston_value(pairs, count, "dialect");
+    if (dialect_name) {
+        if (strcmp(dialect_name, "closures") == 0) {
+            dialect = ST_DIALECT_CLOSURES;
+        }  else if (strcmp(dialect_name, "bluebook") != 0) {
+            snprintf(e->error, e->error_len,
+                     "%s: unknown dialect '%s'", path, dialect_name);
+            free(text);
+            return 0;
+        }
+    }
+
     list = SRC_ston_list(pairs, count, "exclude");
     for (i = 0; list && i < list->count; ++i)
         SRC_names_add(&e->exclude, list->items[i]);
@@ -298,7 +331,7 @@ expand_one(expansion *e, const char *path, unsigned depth)
             ok = 0;
             break;
         }
-        ok = add_manifest(e, manifest);
+        ok = add_manifest(e, manifest, dialect);
     }
 
     list = SRC_ston_list(pairs, count, "packages");
@@ -310,7 +343,7 @@ expand_one(expansion *e, const char *path, unsigned depth)
             ok = 0;
             break;
         }
-        ok = add_directory(e, dir);
+        ok = add_directory(e, dir, dialect);
     }
 
     list = SRC_ston_list(pairs, count, "files");
@@ -326,7 +359,7 @@ expand_one(expansion *e, const char *path, unsigned depth)
         class_name_of(file, name, sizeof name);
         if (names_contain(&e->exclude, name))
             continue;
-        ok = SRC_names_add(&e->files, file);
+        ok = add_file(e, file, dialect);
     }
 
     SRC_ston_free(pairs, count);
@@ -335,7 +368,8 @@ expand_one(expansion *e, const char *path, unsigned depth)
 }
 
 int
-PROFILE_expand(const char *path, st_names *out, char *error, size_t error_len)
+PROFILE_expand(const char *path, st_names *out, int **dialects, char *error,
+               size_t error_len)
 {
     expansion   e;
     int         ok;
@@ -351,9 +385,16 @@ PROFILE_expand(const char *path, st_names *out, char *error, size_t error_len)
     SRC_names_free(&e.loaded);
     if (!ok) {
         SRC_names_free(&e.files);
+        free(e.dialects);
         memset(out, 0, sizeof *out);
+        if (dialects)
+            *dialects = NULL;
         return 0;
     }
     *out = e.files;
+    if (dialects)
+        *dialects = e.dialects;
+    else
+        free(e.dialects);
     return 1;
 }

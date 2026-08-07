@@ -516,12 +516,13 @@ test_profiles(void)
 {
     st_names    files;
     char        error[512] = "";
+    int        *dialects = NULL;
     unsigned    bluebook_count;
     unsigned    i;
     int         saw_probe = 0;
     int         saw_sources = 0;
 
-    if (!PROFILE_expand("profiles/bluebook.profile", &files, error,
+    if (!PROFILE_expand("profiles/bluebook.profile", &files, NULL, error,
                         sizeof error)) {
         printf("  skipped profiles: %s\n", error);
         return;
@@ -538,7 +539,7 @@ test_profiles(void)
     SRC_names_free(&files);
 
     /*  st2026 requires bluebook and adds the lib package on top.  */
-    CHECK(PROFILE_expand("profiles/st2026.profile", &files, error,
+    CHECK(PROFILE_expand("profiles/st2026.profile", &files, &dialects, error,
                          sizeof error));
     CHECK(files.count > bluebook_count);
     for (i = 0; i < files.count; ++i) {
@@ -551,6 +552,22 @@ test_profiles(void)
      *  has to mean if a package is to extend what it sits on.
      */
     CHECK(strstr(files.items[0], "sources/") != NULL);
+    /*
+     *  And the dialect follows the profile that named the file: the 1983
+     *  library required from bluebook.profile stays Blue Book, and lib/,
+     *  which st2026.profile names itself, is closures.  One image, two
+     *  languages, which is what on:do: needs -- it takes blocks that have
+     *  to be real closures.
+     */
+    if (dialects) {
+        for (i = 0; i < files.count; ++i) {
+            if (strstr(files.items[i], "sources/"))
+                CHECK_EQ_INT(dialects[i], ST_DIALECT_BLUE_BOOK);
+            if (strstr(files.items[i], "lib/"))
+                CHECK_EQ_INT(dialects[i], ST_DIALECT_CLOSURES);
+        }
+    }
+    free(dialects);
     /*  And a directory is taken in sorted order, so a build repeats.  */
     for (i = 1; i < files.count; ++i) {
         if (strstr(files.items[i - 1], "lib/Probe/")

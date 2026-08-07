@@ -780,13 +780,13 @@ write_screenshot(void)
 }
 
 static int
-do_bootstrap(const char *const *sources, unsigned count, const char *out_path,
-             const char *expression, const char *startup)
+do_bootstrap(const char *const *sources, const int *dialects, unsigned count,
+             const char *out_path, const char *expression, const char *startup)
 {
     st_bootstrap_result result;
     char                err[512];
 
-    if (BOOT_build(sources, count, &result) != 0) {
+    if (BOOT_build_dialects(sources, dialects, count, &result) != 0) {
         fprintf(stderr, "st80: bootstrap failed: %s\n", result.error);
         return 1;
     }
@@ -1056,6 +1056,29 @@ typedef struct {
     unsigned    capacity;
 } path_list;
 
+/*  The dialect each of those paths is written in, kept in step with it.  */
+typedef struct {
+    int        *items;
+    unsigned    count;
+    unsigned    capacity;
+} dialect_list;
+
+static int
+dialect_list_add(dialect_list *l, int dialect)
+{
+    if (l->count == l->capacity) {
+        unsigned    want = l->capacity ? l->capacity * 2 : 32;
+        int        *grown = (int *) realloc(l->items, want * sizeof *grown);
+
+        if (!grown)
+            return 0;
+        l->items    = grown;
+        l->capacity = want;
+    }
+    l->items[l->count++] = dialect;
+    return 1;
+}
+
 static int
 path_list_add(path_list *l, const char *path)
 {
@@ -1140,10 +1163,12 @@ main(int argc, char **argv)
             const char *out_path = NULL;
             const char *expression = NULL;
             const char *startup = NULL;
-            int         j;
-            int         status;
+            int          j;
+            int          status;
+            dialect_list dialects;
 
             memset(&sources, 0, sizeof sources);
+            memset(&dialects, 0, sizeof dialects);
             for (j = i + 1; j < argc; ++j) {
                 if (!strcmp(argv[j], "-o") && j + 1 < argc) {
                     out_path = argv[++j];
@@ -1156,31 +1181,47 @@ main(int argc, char **argv)
                 }  else if (!strcmp(argv[j], "-screenshot") && j + 1 < argc) {
                     shot_path = argv[++j];
                 }  else if (!strcmp(argv[j], "-manifest") && j + 1 < argc) {
+                    unsigned    before = sources.count;
+
                     if (!read_manifest(argv[++j], &sources)) {
                         path_list_free(&sources);
                         return 1;
                     }
+                    while (dialects.count < sources.count) {
+                        (void) before;
+                        dialect_list_add(&dialects, ST_DIALECT_BLUE_BOOK);
+                    }
                 }  else if (!strcmp(argv[j], "-profile") && j + 1 < argc) {
                     st_names    expanded;
+                    int        *expanded_dialects = NULL;
                     char        err[512];
                     unsigned    k;
 
-                    if (!PROFILE_expand(argv[++j], &expanded, err,
-                                        sizeof err)) {
+                    if (!PROFILE_expand(argv[++j], &expanded,
+                                        &expanded_dialects, err, sizeof err)) {
                         fprintf(stderr, "st80: %s\n", err);
                         path_list_free(&sources);
                         return 1;
                     }
                     for (k = 0; k < expanded.count; ++k) {
-                        if (!path_list_add(&sources, expanded.items[k])) {
+                        if (!path_list_add(&sources, expanded.items[k])
+                         || !dialect_list_add(&dialects,
+                                              expanded_dialects
+                                                ? expanded_dialects[k]
+                                                : ST_DIALECT_BLUE_BOOK)) {
                             fprintf(stderr, "st80: out of memory\n");
                             SRC_names_free(&expanded);
+                            free(expanded_dialects);
                             path_list_free(&sources);
                             return 1;
                         }
                     }
                     SRC_names_free(&expanded);
-                }  else if (!path_list_add(&sources, argv[j])) {
+                    free(expanded_dialects);
+                }  else if (!path_list_add(&sources, argv[j])
+                         || !dialect_list_add(&dialects,
+                                use_closures ? ST_DIALECT_CLOSURES
+                                             : ST_DIALECT_BLUE_BOOK)) {
                     fprintf(stderr, "st80: out of memory\n");
                     path_list_free(&sources);
                     return 1;
@@ -1192,9 +1233,10 @@ main(int argc, char **argv)
                 return 1;
             }
             status = do_bootstrap((const char *const *) sources.items,
-                                  sources.count, out_path, expression,
-                                  startup);
+                                  dialects.items, sources.count, out_path,
+                                  expression, startup);
             path_list_free(&sources);
+            free(dialects.items);
             return status;
         }
         if (!strcmp(argv[i], "-screenshot") && i + 1 < argc) {

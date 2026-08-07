@@ -65,6 +65,17 @@ typedef struct {
 int     BOOT_build(const char *const *paths, unsigned path_count,
                    st_bootstrap_result *out);
 
+/*
+ *  The same, with a dialect per file.
+ *
+ *  Which language a file is written in is a property of the PACKAGE, not of
+ *  the system: sources/ is Blue Book and always will be, lib/ is closures,
+ *  and an image is made of both.  `dialects` is one ST_DIALECT_* per path,
+ *  or NULL for all Blue Book, which is what BOOT_build passes.
+ */
+int     BOOT_build_dialects(const char *const *paths, const int *dialects,
+                            unsigned path_count, st_bootstrap_result *out);
+
 /*  Look up a global by name in the bootstrapped SystemDictionary.  */
 st_oop  BOOT_global(const char *name);
 

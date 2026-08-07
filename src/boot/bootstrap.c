@@ -365,6 +365,16 @@ static int place_in_symbol_table(st_oop sym);
 static int remember_source(const char *text, unsigned *file_index,
                            size_t *position);
 static void install_closure_support(void);
+
+/*
+ *  Which language the file being read is written in.
+ *
+ *  A property of the package rather than of the system: sources/ is Blue
+ *  Book and always will be, lib/ is closures, and one image is made of
+ *  both.  The profile says which is which; this is where it lands.
+ */
+static const int   *path_dialects;
+static int          current_dialect;
 uint32_t BOOT_string_hash_of_text(const char *text, size_t length);
 static int adopt_symbols(void);
 static int adopt_associations(void);
@@ -1416,6 +1426,7 @@ compile_into(boot_class *c, int class_side, const char *source,
     ctx.make_byte_array    = BOOT_make_byte_array;
     ctx.make_character     = BOOT_make_character;
     ctx.lookup_global      = BOOT_lookup_global;
+    ctx.dialect            = current_dialect;
 
     if (COMPILE_method(source, &ctx, &res) != 0) {
         boot_fail("%s:%u: in %s%s: %s", file, line + res.error_line,
@@ -1947,8 +1958,8 @@ reset_bootstrap_state(void)
 }
 
 static int
-boot_build_locked(const char *const *paths, unsigned path_count,
-                  st_bootstrap_result *out)
+boot_build_locked(const char *const *paths, const int *dialects,
+                  unsigned path_count, st_bootstrap_result *out)
 {
     unsigned    i;
 
@@ -1974,8 +1985,11 @@ boot_build_locked(const char *const *paths, unsigned path_count,
      */
     OM_store_pointer(0, ST_SMALLTALK, globals_values);
 
+    path_dialects = dialects;
+
     /*  Pass zero: read every definition, so forward references resolve.  */
     for (i = 0; i < path_count; ++i) {
+        current_dialect = dialects ? dialects[i] : ST_DIALECT_BLUE_BOOK;
         if (!read_source(paths[i], 1))
             return -1;
     }
@@ -2027,6 +2041,7 @@ boot_build_locked(const char *const *paths, unsigned path_count,
 
     /*  Pass two: compile, now that every name resolves.  */
     for (i = 0; i < path_count; ++i) {
+        current_dialect = dialects ? dialects[i] : ST_DIALECT_BLUE_BOOK;
         if (!read_source(paths[i], 0))
             return -1;
     }
@@ -2079,15 +2094,23 @@ install_closure_support(void)
  *  The pointer is dropped here, where the counting ends.
  */
 int
-BOOT_build(const char *const *paths, unsigned path_count,
-           st_bootstrap_result *out)
+BOOT_build_dialects(const char *const *paths, const int *dialects,
+                    unsigned path_count, st_bootstrap_result *out)
 {
-    int status = boot_build_locked(paths, path_count, out);
+    int status = boot_build_locked(paths, dialects, path_count, out);
 
     result = NULL;
+    path_dialects = NULL;
     /*  Nothing C holds survives a collection unless the walk can see it.  */
     ST_interp_install_roots(BOOT_provide_roots);
     return status;
+}
+
+int
+BOOT_build(const char *const *paths, unsigned path_count,
+           st_bootstrap_result *out)
+{
+    return BOOT_build_dialects(paths, NULL, path_count, out);
 }
 
 /*

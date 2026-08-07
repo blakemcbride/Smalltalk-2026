@@ -30,17 +30,27 @@
 #define ST_PROFILE_H
 
 #include "source.h"
+#include "compiler.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 /*
- *  Expand a profile into the list of source files to load, in order.
- *  Answers 0 and fills `error` on failure.  The caller frees `out`.
+ *  Expand a profile into the list of source files to load, in order, and
+ *  the dialect each is written in.
+ *
+ *  A profile's #dialect applies to everything IT names; a required profile
+ *  keeps its own.  That is what lets one image hold the 1983 library as
+ *  Blue Book and lib/ as closures, which is the whole point of having the
+ *  key: on:do: and ensure: take blocks that have to be real closures.
+ *
+ *  `dialects` is filled with one ST_DIALECT_* per file and must be freed by
+ *  the caller; pass NULL if they are not wanted.  Answers 0 and fills
+ *  `error` on failure.
  */
-int PROFILE_expand(const char *path, st_names *out, char *error,
-                   size_t error_len);
+int PROFILE_expand(const char *path, st_names *out, int **dialects,
+                   char *error, size_t error_len);
 
 #ifdef __cplusplus
 }

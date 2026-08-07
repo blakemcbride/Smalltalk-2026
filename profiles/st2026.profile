@@ -8,5 +8,6 @@ mechanical answer.
 Profile {
 	#name     : 'st2026',
 	#requires : [ 'bluebook' ],
+	#dialect  : 'closures',
 	#packages : [ '../lib/Kernel', '../lib/Probe' ]
 }

@@ -2622,6 +2622,8 @@ compile_pattern(st_compiler *c)
             return;
         }
         snprintf(c->names[c->name_count++], 64, "%.63s", c->token.text);
+        if (c->dialect == ST_DIALECT_CLOSURES && c->pass == 0)
+            declare(c, c->token.text, 1);
         ++c->argument_count;
         advance(c);
         return;
@@ -2640,6 +2642,14 @@ compile_pattern(st_compiler *c)
             }
             if (c->name_count < MAX_TEMPS)
                 snprintf(c->names[c->name_count++], 64, "%.63s", c->token.text);
+            /*
+             *  A method's arguments are names in scope zero exactly as its
+             *  temporaries are.  Missing them here was invisible in every
+             *  doIt, because a doIt takes none -- so the first thing to
+             *  notice was a class-side method answering "nil metres".
+             */
+            if (c->dialect == ST_DIALECT_CLOSURES && c->pass == 0)
+                declare(c, c->token.text, 1);
             ++c->argument_count;
             advance(c);
         }
