@@ -7,6 +7,7 @@
 
 #include "bootstrap.h"
 #include "chunk.h"
+#include "source.h"
 #include "compiler.h"
 #include "interp.h"
 #include "census.h"
@@ -46,43 +47,11 @@
  *  `const char *const *` with no copy.  A pointer that moves under the
  *  compiler would be a fine way to spend a week.
  */
-typedef struct {
-    char      **items;
-    unsigned    count;
-    unsigned    capacity;
-} name_list;
+/*  Shared with the source readers; see src/compiler/source.h.  */
+typedef st_names name_list;
 
-static int
-name_list_add(name_list *l, const char *text)
-{
-    if (l->count == l->capacity) {
-        unsigned    want = l->capacity ? l->capacity * 2 : 8;
-        char      **grown = (char **) realloc(l->items, want * sizeof *grown);
-
-        if (!grown)
-            return 0;
-        l->items    = grown;
-        l->capacity = want;
-    }
-    l->items[l->count] = strdup(text);
-    if (!l->items[l->count])
-        return 0;
-    ++l->count;
-    return 1;
-}
-
-static void
-name_list_free(name_list *l)
-{
-    unsigned    i;
-
-    for (i = 0; i < l->count; ++i)
-        free(l->items[i]);
-    free(l->items);
-    l->items    = NULL;
-    l->count    = 0;
-    l->capacity = 0;
-}
+#define name_list_add   SRC_names_add
+#define name_list_free  SRC_names_free
 
 /*  ----------  Bootstrap state  ----------  */
 
@@ -354,6 +323,25 @@ boot_fail(const char *fmt, ...)
         return;
     va_start(ap, fmt);
     vsnprintf(result->error, sizeof result->error, fmt, ap);
+    va_end(ap);
+}
+
+/*
+ *  Something the build could not act on, which is not a reason to stop.
+ *
+ *  A porting effort needs the whole list rather than the first item, so
+ *  these go to stderr as they happen and are counted; boot_fail is for the
+ *  things that end the build.
+ */
+static void
+boot_note(const char *fmt, ...)
+{
+    va_list ap;
+
+    va_start(ap, fmt);
+    fprintf(stderr, "st80: ");
+    vfprintf(stderr, fmt, ap);
+    fprintf(stderr, "\n");
     va_end(ap);
 }
 
@@ -1095,49 +1083,7 @@ method_dictionary_at_put(st_oop dict, st_oop selector, st_oop method)
 
 /*  ----------  Parsing the source  ----------  */
 
-/*  Pull the contents of the first single-quoted string out of a chunk.  */
-static int
-quoted_after(const char *text, const char *keyword, char *out, size_t outlen)
-{
-    const char *p = strstr(text, keyword);
-    const char *q;
-    size_t      n = 0;
 
-    out[0] = '\0';
-    if (!p)
-        return 0;
-    p += strlen(keyword);
-    q = strchr(p, '\'');
-    if (!q)
-        return 0;
-    ++q;
-    while (*q && *q != '\'' && n + 1 < outlen)
-        out[n++] = *q++;
-    out[n] = '\0';
-    return 1;
-}
-
-static void
-split_words(const char *text, name_list *out, unsigned limit)
-{
-    const char *p = text;
-
-    while (*p && out->count < limit) {
-        char    word[256];
-        size_t  n = 0;
-
-        while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')
-            ++p;
-        if (!*p)
-            break;
-        while (*p && *p != ' ' && *p != '\t' && *p != '\n' && *p != '\r'
-            && n + 1 < sizeof word)
-            word[n++] = *p++;
-        word[n] = '\0';
-        if (n)
-            name_list_add(out, word);
-    }
-}
 
 /*
  *  A class definition chunk:
@@ -1151,95 +1097,6 @@ split_words(const char *text, name_list *out, unsigned limit)
  *  variableSubclass:, variableByteSubclass: and variableWordSubclass: say
  *  the instances are indexable and how.
  */
-static int
-parse_class_definition(const char *text)
-{
-    static const struct {
-        const char *keyword;
-        int         indexable;
-        int         bytes;
-        int         words;
-    } forms[] = {
-        { " variableByteSubclass: #", 1, 1, 0 },
-        { " variableWordSubclass: #", 1, 0, 1 },
-        { " variableSubclass: #",     1, 0, 0 },
-        { " subclass: #",             0, 0, 0 }
-    };
-    unsigned    f;
-    const char *at = NULL;
-    unsigned    form = 0;
-    boot_class *c;
-    const char *p;
-    size_t      n;
-    char        ivars[512];
-
-    for (f = 0; f < sizeof forms / sizeof forms[0]; ++f) {
-        at = strstr(text, forms[f].keyword);
-        if (at) {
-            form = f;
-            break;
-        }
-    }
-    if (!at)
-        return 0;
-
-    c = new_class_entry();
-    if (!c) {
-        boot_fail("out of memory for class number %u", class_count + 1);
-        return 0;
-    }
-
-    /*  The superclass name is the word before the keyword.  */
-    p = at;
-    while (p > text && (p[-1] == ' ' || p[-1] == '\n' || p[-1] == '\r'
-                     || p[-1] == '\t'))
-        --p;
-    {
-        const char *end = p;
-
-        while (p > text && (isalnum((unsigned char) p[-1]) || p[-1] == '_'))
-            --p;
-        n = (size_t) (end - p);
-        if (n >= sizeof c->superclass)
-            n = sizeof c->superclass - 1;
-        memcpy(c->superclass, p, n);
-        c->superclass[n] = '\0';
-    }
-
-    p = at + strlen(forms[form].keyword);
-    n = 0;
-    while (*p && (isalnum((unsigned char) *p) || *p == '_')
-        && n + 1 < sizeof c->name)
-        c->name[n++] = *p++;
-    c->name[n] = '\0';
-    if (!c->name[0])
-        return 0;
-
-    c->indexable = forms[form].indexable;
-    c->bytes     = forms[form].bytes;
-    c->words     = forms[form].words;
-
-    if (quoted_after(text, "instanceVariableNames:", ivars, sizeof ivars))
-        split_words(ivars, &c->ivars, MAX_IVARS);
-    if (quoted_after(text, "classVariableNames:", ivars, sizeof ivars)) {
-        name_list    named;
-        unsigned     k;
-
-        memset(&named, 0, sizeof named);
-        split_words(ivars, &named, MAX_IVARS);
-        for (k = 0; k < named.count; ++k)
-            add_cvar(c, named.items[k]);
-        name_list_free(&named);
-    }
-    if (quoted_after(text, "poolDictionaries:", ivars, sizeof ivars))
-        split_words(ivars, &c->pools, 4);
-    if (quoted_after(text, "category:", ivars, sizeof ivars))
-        snprintf(c->category, sizeof c->category, "%.63s", ivars);
-
-    if (result)
-        ++result->classes_created;
-    return 1;
-}
 
 /*
  *  The metaclass side of a class definition:
@@ -1250,39 +1107,6 @@ parse_class_definition(const char *text)
  *  These are instance variables of the metaclass, so they are in scope in
  *  class methods and nowhere else.  Form class>>initialize assigns to them.
  */
-static int
-parse_class_side_definition(const char *text)
-{
-    const char *at = strstr(text, " class");
-    boot_class *c;
-    char        name[64];
-    char        ivars[512];
-    size_t      n = 0;
-    const char *p;
-
-    if (!at || !strstr(text, "instanceVariableNames:"))
-        return 0;
-    /*  Anything else on the line means this is not a bare "Foo class".  */
-    if (strstr(text, "subclass:"))
-        return 0;
-
-    p = text;
-    while (*p == ' ' || *p == '\n' || *p == '\r' || *p == '\t')
-        ++p;
-    while (p < at && (isalnum((unsigned char) *p) || *p == '_')
-        && n + 1 < sizeof name)
-        name[n++] = *p++;
-    name[n] = '\0';
-    if (!name[0] || p != at)
-        return 0;
-
-    c = find_class(name);
-    if (!c)
-        return 0;
-    if (quoted_after(text, "instanceVariableNames:", ivars, sizeof ivars))
-        split_words(ivars, &c->class_ivars, MAX_IVARS);
-    return 1;
-}
 
 /*
  *  A methods-for chunk introduces a run of method chunks:
@@ -1293,35 +1117,6 @@ parse_class_side_definition(const char *text)
  *
  *  "Point class methodsFor:" puts them on the metaclass instead.
  */
-static int
-parse_methods_for(const char *text, char *class_name, size_t namelen,
-                  int *class_side, char *category, size_t catlen)
-{
-    const char *at = strstr(text, "methodsFor:");
-    const char *p  = text;
-    size_t      n  = 0;
-
-    *class_side = 0;
-    if (category && catlen)
-        category[0] = '\0';
-    if (!at)
-        return 0;
-    /*  The protocol this run of methods belongs to, for the Browser.  */
-    if (category && catlen)
-        quoted_after(at, "methodsFor:", category, catlen);
-    while (*p == ' ' || *p == '\n' || *p == '\r' || *p == '\t')
-        ++p;
-    while (*p && (isalnum((unsigned char) *p) || *p == '_') && n + 1 < namelen)
-        class_name[n++] = *p++;
-    class_name[n] = '\0';
-    if (!class_name[0])
-        return 0;
-    while (*p == ' ')
-        ++p;
-    if (strncmp(p, "class", 5) == 0)
-        *class_side = 1;
-    return 1;
-}
 
 /*  ----------  The three passes  ----------  */
 
@@ -1662,78 +1457,163 @@ compile_into(boot_class *c, int class_side, const char *source,
 
 /*  ----------  Reading a source file  ----------  */
 
+/*
+ *  The bootstrap as a sink for source events.  See src/compiler/source.h.
+ *
+ *  Which pass this is decides which events matter.  Pass zero takes class
+ *  definitions and nothing else, so that every class name exists before any
+ *  method is compiled and load order stops mattering; pass two takes methods
+ *  and ignores definitions it has already seen.  That split is what lets a
+ *  package format work at all, and it was already here -- it just used to be
+ *  spelled `definitions_only` inside one function that also knew what a
+ *  chunk was.
+ */
+typedef struct {
+    int     definitions;            /*  pass zero rather than pass two  */
+    int     rejected;               /*  shapes this system cannot build */
+} boot_sink_state;
+
+static int
+sink_class_def(const st_source_class_def *def, void *user)
+{
+    boot_sink_state    *state = (boot_sink_state *) user;
+    boot_class         *c;
+    unsigned            i;
+
+    if (!state->definitions)
+        return 1;
+
+    if (def->unsupported_shape) {
+        boot_note("%s: %s classes are not supported here", def->name,
+                  def->unsupported_shape);
+        ++state->rejected;
+        return 1;
+    }
+    if (def->traits && def->traits[0]) {
+        boot_note("%s: traits (%s) are not supported here", def->name,
+                  def->traits);
+        ++state->rejected;
+        return 1;
+    }
+    if (find_class(def->name)) {
+        /*
+         *  Two packages defining one class.  Silent until now, because the
+         *  entry was appended and find_class answered the first -- so the
+         *  second definition's instance variables simply vanished.
+         */
+        boot_fail("class %s is defined twice", def->name);
+        return 0;
+    }
+
+    c = new_class_entry();
+    if (!c) {
+        boot_fail("out of memory for class number %u", class_count + 1);
+        return 0;
+    }
+    snprintf(c->name, sizeof c->name, "%.63s", def->name);
+    snprintf(c->superclass, sizeof c->superclass, "%.63s", def->superclass);
+    snprintf(c->category, sizeof c->category, "%.63s", def->category);
+    c->indexable = def->indexable;
+    c->bytes     = def->bytes;
+    c->words     = def->words;
+
+    for (i = 0; def->ivars && i < def->ivars->count; ++i)
+        name_list_add(&c->ivars, def->ivars->items[i]);
+    for (i = 0; def->class_ivars && i < def->class_ivars->count; ++i)
+        name_list_add(&c->class_ivars, def->class_ivars->items[i]);
+    for (i = 0; def->cvars && i < def->cvars->count; ++i)
+        add_cvar(c, def->cvars->items[i]);
+    for (i = 0; def->pools && i < def->pools->count; ++i)
+        name_list_add(&c->pools, def->pools->items[i]);
+
+    if (result)
+        ++result->classes_created;
+    return 1;
+}
+
+static int
+sink_class_side_def(const char *name, const st_names *ivars, void *user)
+{
+    boot_sink_state    *state = (boot_sink_state *) user;
+    boot_class         *c;
+    unsigned            i;
+
+    if (!state->definitions)
+        return 1;
+    c = find_class(name);
+    if (!c)
+        return 1;                   /*  as before: not ours, not an error  */
+    for (i = 0; i < ivars->count; ++i)
+        name_list_add(&c->class_ivars, ivars->items[i]);
+    return 1;
+}
+
+static int
+sink_comment(const char *class_name, int class_side, const char *text,
+             void *user)
+{
+    /*
+     *  Class comments are carried by Tonel and not by the chunk files this
+     *  system reads, and nothing installs them yet.  Accepting and dropping
+     *  them keeps the two formats producing the same image, which is the
+     *  property Phase C is gated on.
+     */
+    (void) class_name;
+    (void) class_side;
+    (void) text;
+    (void) user;
+    return 1;
+}
+
+static int
+sink_method(const char *class_name, int class_side, const char *category,
+            const char *source, const char *file, unsigned line, void *user)
+{
+    boot_sink_state    *state = (boot_sink_state *) user;
+    boot_class         *c;
+
+    if (state->definitions)
+        return 1;
+    c = find_class(class_name);
+    if (!c) {
+        boot_fail("%s:%u: methods for unknown class %s", file, line,
+                  class_name);
+        return 0;
+    }
+    return compile_into(c, class_side, source, file, line, category);
+}
+
+static void
+sink_diagnostic(const char *file, unsigned line, const char *message,
+                void *user)
+{
+    boot_sink_state    *state = (boot_sink_state *) user;
+
+    ++state->rejected;
+    boot_note("%s:%u: %s", file, line, message);
+}
+
+static const st_source_sink boot_sink = {
+    sink_class_def,
+    sink_class_side_def,
+    sink_comment,
+    sink_method,
+    sink_diagnostic
+};
+
 static int
 read_source(const char *path, int definitions_only)
 {
-    st_chunk_reader    *reader;
-    st_chunk            chunk;
-    char                err[256];
-    char                class_name[64];
-    char                protocol[64] = "";
-    int                 class_side = 0;
-    /*
-     *  The class being filed into, held as an INDEX rather than a pointer.
-     *
-     *  The class table is grown with realloc now, so it moves, and a file
-     *  that defines a class after it has already filed methods into another
-     *  would leave a pointer here addressing freed memory.  An index cannot
-     *  go stale: entries are only ever appended.
-     */
-    unsigned            current = 0;
-    int                 have_current = 0;
-    int                 in_methods = 0;
+    boot_sink_state state;
+    char            err[512];
 
-    reader = CHUNK_open(path, err, sizeof err);
-    if (!reader) {
-        boot_fail("%s", err);
+    memset(&state, 0, sizeof state);
+    state.definitions = definitions_only;
+    if (!SRC_read(path, &boot_sink, &state, err, sizeof err)) {
+        if (err[0])
+            boot_fail("%s", err);
         return 0;
     }
-    while (CHUNK_next(reader, &chunk)) {
-        /*
-         *  A chunk with nothing to compile closes the method category.  That
-         *  is the empty chunk of the "! !" idiom, and equally the comment
-         *  the markbush sources use in its place.
-         */
-        if (!chunk.has_code) {
-            in_methods   = 0;
-            have_current = 0;
-            continue;
-        }
-        if (chunk.is_reader) {
-            if (parse_methods_for(chunk.text, class_name, sizeof class_name,
-                                  &class_side, protocol, sizeof protocol)) {
-                {
-                    boot_class *found = find_class(class_name);
-
-                    have_current = found != NULL;
-                    if (found)
-                        current = (unsigned) (found - classes);
-                }
-                in_methods = 1;
-                if (!have_current && !definitions_only) {
-                    boot_fail("%s:%u: methods for unknown class %s", path,
-                              CHUNK_line(reader), class_name);
-                    CHUNK_close(reader);
-                    return 0;
-                }
-            }
-            continue;
-        }
-        if (in_methods) {
-            if (!definitions_only && have_current
-             && !compile_into(&classes[current], class_side, chunk.text, path,
-                              CHUNK_line(reader), protocol)) {
-                CHUNK_close(reader);
-                return 0;
-            }
-            continue;
-        }
-        if (definitions_only) {
-            if (!parse_class_side_definition(chunk.text))
-                parse_class_definition(chunk.text);
-        }
-    }
-    CHUNK_close(reader);
     return 1;
 }
 
