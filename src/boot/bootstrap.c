@@ -21,7 +21,13 @@
 #include <ctype.h>
 
 #define MAX_IVARS       256
-#define MAX_SYMBOLS     8192
+/*
+ *  Initial sizes, not ceilings.  Every table below this line grows; the
+ *  names say "first guess" rather than "limit" because the difference is
+ *  what stops a Pharo-scale library hitting a wall the 1983 one never
+ *  approached.
+ */
+#define SYMBOLS_FIRST   8192
 
 /*  ----------  Names  ----------  */
 
@@ -176,13 +182,139 @@ new_class_entry(void)
 static int          symbol_table_ready;
 static st_oop       symbol_table;
 
-static st_oop       symbols[MAX_SYMBOLS];
+/*
+ *  Every Symbol this side has made, and an index over them.
+ *
+ *  The array alone was scanned linearly on every intern, comparing the text
+ *  against each Symbol's own bytes.  For a 3,549-symbol library that is a
+ *  few million comparisons and unnoticeable; for the forty thousand a Pharo
+ *  library interns it is most of a billion, because the cost is quadratic in
+ *  a number that is about to grow by an order of magnitude.
+ *
+ *  So there is an open-addressed index beside it, holding indices rather
+ *  than pointers so that growing the array does not invalidate it.  The
+ *  index is a lookup aid and nothing else: the answer always comes from the
+ *  Symbol's own bytes, which is the rule the linear scan was already
+ *  following and the reason it was correct where a cached copy of the text
+ *  had not been.
+ */
+static st_oop      *symbols;
 static unsigned     symbol_count;
+static unsigned     symbol_capacity;
+
+static uint32_t    *symbol_index;       /*  slot -> position + 1, 0 empty  */
+static unsigned     symbol_index_size;  /*  a power of two                 */
+
+static uint32_t BOOT_string_hash_of_text(const char *text, size_t length);
+
+/*  Does the Symbol at `position` spell `text`?  */
+static int
+symbol_is(unsigned position, const char *text, size_t n)
+{
+    size_t  k;
+
+    if (OM_fetch_byte_length(symbols[position]) != n)
+        return 0;
+    for (k = 0; k < n; ++k) {
+        if (OM_fetch_byte((uint32_t) k, symbols[position]) != (uint8_t) text[k])
+            return 0;
+    }
+    return 1;
+}
+
+static void symbol_index_insert(unsigned position);
+
+static int
+symbol_index_rebuild(unsigned want)
+{
+    unsigned    i;
+
+    free(symbol_index);
+    symbol_index_size = want;
+    symbol_index = (uint32_t *) calloc(want, sizeof *symbol_index);
+    if (!symbol_index) {
+        symbol_index_size = 0;
+        return 0;
+    }
+    for (i = 0; i < symbol_count; ++i)
+        symbol_index_insert(i);
+    return 1;
+}
+
+static void
+symbol_index_insert(unsigned position)
+{
+    uint32_t    n = (uint32_t) OM_fetch_byte_length(symbols[position]);
+    char        text[512];
+    uint32_t    slot;
+    uint32_t    i;
+
+    if (n >= sizeof text)
+        return;                     /*  found by the scan below instead  */
+    for (i = 0; i < n; ++i)
+        text[i] = (char) OM_fetch_byte(i, symbols[position]);
+    slot = BOOT_string_hash_of_text(text, n) & (symbol_index_size - 1);
+    while (symbol_index[slot] != 0)
+        slot = (slot + 1) & (symbol_index_size - 1);
+    symbol_index[slot] = position + 1;
+}
+
+/*  The position of the Symbol spelling `text`, or -1.  */
+static long
+symbol_find(const char *text, size_t n)
+{
+    uint32_t    slot;
+
+    if (symbol_index_size == 0 || n >= 512) {
+        unsigned    i;              /*  the long ones, and before the index */
+
+        for (i = 0; i < symbol_count; ++i) {
+            if (symbol_is(i, text, n))
+                return (long) i;
+        }
+        return -1;
+    }
+    slot = BOOT_string_hash_of_text(text, n) & (symbol_index_size - 1);
+    while (symbol_index[slot] != 0) {
+        unsigned    position = symbol_index[slot] - 1;
+
+        if (symbol_is(position, text, n))
+            return (long) position;
+        slot = (slot + 1) & (symbol_index_size - 1);
+    }
+    return -1;
+}
+
+/*  Remember a Symbol, growing both the array and the index as needed.  */
+static int
+symbol_remember(st_oop s)
+{
+    if (symbol_count == symbol_capacity) {
+        unsigned    want = symbol_capacity ? symbol_capacity * 2 : SYMBOLS_FIRST;
+        st_oop     *grown = (st_oop *) realloc(symbols, want * sizeof *grown);
+
+        if (!grown)
+            return 0;
+        symbols         = grown;
+        symbol_capacity = want;
+    }
+    symbols[symbol_count++] = s;
+    /*  Keep the index under half full, which is what keeps probes short.  */
+    if (symbol_count * 2 >= symbol_index_size) {
+        unsigned    want = symbol_index_size ? symbol_index_size * 2 : 8192;
+
+        if (!symbol_index_rebuild(want))
+            return 1;               /*  the scan still answers correctly  */
+    }  else  {
+        symbol_index_insert(symbol_count - 1);
+    }
+    return 1;
+}
 
 static st_oop       smalltalk;          /*  the SystemDictionary  */
 static st_oop       globals_values;
 static unsigned     global_count;
-#define MAX_GLOBALS 1024
+#define GLOBALS_FIRST 1024
 
 /*  How many buckets the library's symbol table has.  */
 #define USTABLE_BUCKETS 512
@@ -272,17 +404,11 @@ BOOT_intern_symbol(const char *text, void *user)
      *  same text is a thing to keep in step, and this one had already
      *  drifted; the Symbol itself cannot.
      */
-    for (i = 0; i < symbol_count; ++i) {
-        size_t  k;
+    {
+        long    found = symbol_find(text, n);
 
-        if (OM_fetch_byte_length(symbols[i]) != n)
-            continue;
-        for (k = 0; k < n; ++k) {
-            if (OM_fetch_byte((uint32_t) k, symbols[i]) != (uint8_t) text[k])
-                break;
-        }
-        if (k == n)
-            return symbols[i];
+        if (found >= 0)
+            return symbols[found];
     }
     /*
      *  Then the library's own table, if it exists yet.
@@ -315,8 +441,7 @@ BOOT_intern_symbol(const char *text, void *user)
             }
             if (k == n) {
                 /*  Remember it so the next lookup is the quick one.  */
-                if (symbol_count < MAX_SYMBOLS)
-                    symbols[symbol_count++] = candidate;
+                symbol_remember(candidate);
                 return candidate;
             }
         }
@@ -327,12 +452,8 @@ BOOT_intern_symbol(const char *text, void *user)
         return ST_NIL;
     for (i = 0; i < n; ++i)
         OM_store_byte(i, s, (uint8_t) text[i]);
-    if (symbol_count < MAX_SYMBOLS) {
-        symbols[symbol_count] = s;
-        ++symbol_count;
-        if (result)
-            ++result->symbols_interned;
-    }
+    if (symbol_remember(s) && result)
+        ++result->symbols_interned;
     /*  Symbols are permanent; nothing else keeps the table alive.  */
     OM_increase_ref(s);
     /*
@@ -537,9 +658,39 @@ define_global(const char *name, st_oop value)
         OM_store_pointer(ST_ASSOCIATION_VALUE, association, value);
         return association;
     }
-    if (global_count >= MAX_GLOBALS) {
-        boot_fail("more than %d globals", MAX_GLOBALS);
-        return ST_NIL;
+    /*
+     *  Grow the binding array when it fills.
+     *
+     *  It starts at GLOBALS_FIRST and doubles, rather than starting small and
+     *  growing, because its size is visible: it is an object IN the image,
+     *  and a Blue Book build must produce the same image it always has.  The
+     *  1983 library needs about three hundred bindings, so it never grows at
+     *  all and nothing moves; a Pharo-scale one grows and the image is a
+     *  different image anyway.
+     */
+    if (global_count >= OM_fetch_word_length(globals_values)) {
+        uint32_t    have = OM_fetch_word_length(globals_values);
+        st_oop      grown = OM_instantiate_pointers(ST_NIL, have * 2);
+        uint32_t    i;
+
+        if (!OM_is_object(grown)) {
+            boot_fail("out of memory for global number %u", global_count + 1);
+            return ST_NIL;
+        }
+        for (i = 0; i < have; ++i)
+            OM_store_pointer(i, grown, OM_fetch_pointer(i, globals_values));
+        OM_increase_ref(grown);
+        /*
+         *  Republish through Smalltalk while it is still the placeholder
+         *  whose field 0 is this array.  Once install_system_dictionary has
+         *  swapped in a real SystemDictionary that field means something
+         *  else, and this array is the bootstrap's private view.
+         */
+        if (OM_is_present(smalltalk)
+         && OM_fetch_pointer(0, smalltalk) == globals_values)
+            OM_store_pointer(0, smalltalk, grown);
+        OM_decrease_ref(globals_values);
+        globals_values = grown;
     }
     key         = BOOT_intern_symbol(name, NULL);
     /*
@@ -607,8 +758,9 @@ static struct {
     int         class_side;
     st_oop      selector;
     char        protocol[64];
-} method_protocols[6000];
+} *method_protocols;
 static unsigned     method_protocol_count;
+static unsigned     method_protocol_capacity;
 
 /*
  *  Every method's source, in one buffer, in chunk format.
@@ -1481,8 +1633,22 @@ compile_into(boot_class *c, int class_side, const char *source,
     }
 
     /*  Remember where it belongs, so the class can be organized later.  */
-    if (protocol && protocol[0] && method_protocol_count < 6000) {
-        unsigned    slot = method_protocol_count++;
+    if (protocol && protocol[0]) {
+        unsigned    slot;
+
+        if (method_protocol_count == method_protocol_capacity) {
+            unsigned    want = method_protocol_capacity
+                                 ? method_protocol_capacity * 2 : 8192;
+            void       *grown = realloc(method_protocols,
+                                        want * sizeof *method_protocols);
+
+            if (!grown)
+                return 1;           /*  the method is in; only the Browser
+                                        pane loses this entry  */
+            method_protocols         = grown;
+            method_protocol_capacity = want;
+        }
+        slot = method_protocol_count++;
 
         method_protocols[slot].class_index = (unsigned) (c - classes);
         method_protocols[slot].class_side  = class_side;
@@ -1784,6 +1950,42 @@ finish_fixed_objects(void)
 
 /*  ----------  Driver  ----------  */
 
+/*
+ *  Forget everything from a previous build.
+ *
+ *  Zeroing the counts was enough while every table was a fixed array.  It is
+ *  not now: the class entries own strdup'd names, and the symbol index holds
+ *  POSITIONS into an array that is about to be refilled with entirely
+ *  different Symbols -- so a stale index would answer a lookup with a
+ *  confident wrong Symbol rather than with nothing.
+ */
+static void
+reset_bootstrap_state(void)
+{
+    unsigned    i;
+
+    for (i = 0; i < class_count; ++i) {
+        name_list_free(&classes[i].ivars);
+        name_list_free(&classes[i].class_ivars);
+        name_list_free(&classes[i].cvars);
+        name_list_free(&classes[i].pools);
+        name_list_free(&classes[i].all_ivars);
+        name_list_free(&classes[i].all_class_ivars);
+        free(classes[i].cvar_assoc);
+        classes[i].cvar_assoc = NULL;
+    }
+    if (classes)
+        memset(classes, 0, class_capacity * sizeof *classes);
+    class_count = 0;
+
+    symbol_count = 0;
+    free(symbol_index);
+    symbol_index      = NULL;
+    symbol_index_size = 0;
+
+    method_protocol_count = 0;
+}
+
 static int
 boot_build_locked(const char *const *paths, unsigned path_count,
                   st_bootstrap_result *out)
@@ -1792,8 +1994,7 @@ boot_build_locked(const char *const *paths, unsigned path_count,
 
     result = out;
     memset(out, 0, sizeof *out);
-    class_count  = 0;
-    symbol_count = 0;
+    reset_bootstrap_state();
     reserved_class_count = 0;
     global_count = 0;
 
@@ -1805,7 +2006,7 @@ boot_build_locked(const char *const *paths, unsigned path_count,
         return -1;
 
     smalltalk      = ST_SMALLTALK;
-    globals_values = OM_instantiate_pointers(ST_NIL, MAX_GLOBALS);
+    globals_values = OM_instantiate_pointers(ST_NIL, GLOBALS_FIRST);
     OM_increase_ref(globals_values);
     /*
      *  Published immediately, so that a lookup during the bootstrap finds
