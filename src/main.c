@@ -16,6 +16,18 @@
 #include "st_sched.h"
 #include "bootstrap.h"
 #include "profile.h"
+
+/*
+ *  Compile expressions as closures rather than Blue Book blocks.
+ *
+ *  A developer switch for now.  Which dialect a package is written in
+ *  belongs in its profile eventually; until the library is ported there is
+ *  nothing to attach it to, and being able to run one expression both ways
+ *  is exactly what is wanted while the two are being compared.
+ */
+static int  use_closures;
+
+#define EVAL_BYTECODE_BUDGET    UINT64_C(200000000)
 #include "compiler.h"
 #include "chunk.h"
 #include "survey.h"
@@ -55,7 +67,7 @@ usage(const char *argv0)
     printf("\n");
     printf("  -version              print version and build configuration\n");
     printf("  -bootstrap <a.st...> [-profile p] [-manifest f] [-o image]\n");
-    printf("                       [-eval expr] [-startup expr]\n");
+    printf("                       [-eval expr] [-startup expr] [-closures]\n");
     printf("                        [-startup expr]  what a saved image resumes\n");
     printf("                        build an image from source\n");
     printf("  -run <image> [n]      run the image, opening a window\n");
@@ -520,6 +532,8 @@ evaluate(const char *expression, char *errbuf, size_t errlen)
     ctx.make_byte_array    = BOOT_make_byte_array;
     ctx.make_character     = BOOT_make_character;
     ctx.lookup_global      = BOOT_lookup_global;
+    ctx.dialect            = use_closures ? ST_DIALECT_CLOSURES
+                                          : ST_DIALECT_BLUE_BOOK;
 
     /*
      *  An expression with a caret in it is already a method body, temporary
@@ -573,10 +587,17 @@ evaluate(const char *expression, char *errbuf, size_t errlen)
             ST_trace_set(mode[0] == 's' ? ST_TRACE_SENDS : ST_TRACE_BYTECODES,
                          stderr);
     }
-    ST_interp_run(2000000);
+    /*
+     *  Generous, because the budget is only here to stop a runaway
+     *  expression: two million was enough for a probe and not enough for a
+     *  recursive block, and an expression that fails for want of budget
+     *  looks exactly like one that is wrong.
+     */
+    ST_interp_run(EVAL_BYTECODE_BUDGET);
     ST_trace_set(ST_TRACE_OFF, NULL);
     if (st_vm.running) {
-        snprintf(errbuf, errlen, "expression did not finish in 2M bytecodes");
+        snprintf(errbuf, errlen, "expression did not finish in %llu bytecodes",
+                 (unsigned long long) EVAL_BYTECODE_BUDGET);
         return ST_OOP_INVALID;
     }
     return st_vm.return_value;
@@ -1130,6 +1151,8 @@ main(int argc, char **argv)
                     expression = argv[++j];
                 }  else if (!strcmp(argv[j], "-startup") && j + 1 < argc) {
                     startup = argv[++j];
+                }  else if (!strcmp(argv[j], "-closures")) {
+                    use_closures = 1;
                 }  else if (!strcmp(argv[j], "-screenshot") && j + 1 < argc) {
                     shot_path = argv[++j];
                 }  else if (!strcmp(argv[j], "-manifest") && j + 1 < argc) {

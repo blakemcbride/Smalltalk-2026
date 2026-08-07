@@ -30,7 +30,18 @@ extern "C" {
  *  the names of instance variables, so a bare identifier can be resolved,
  *  and a way to look up globals.
  */
+/*
+ *  Which language to compile.
+ *
+ *  Blue Book is the default and is what the 1983 library, the self-hosting
+ *  check and the trace oracle all use; the closure machinery is reached
+ *  only when a caller asks for it, so none of them can be affected by it.
+ */
+#define ST_DIALECT_BLUE_BOOK    0
+#define ST_DIALECT_CLOSURES     1
+
 typedef struct {
+    int                 dialect;
     const char *const  *instance_variables;
     unsigned            instance_variable_count;
 

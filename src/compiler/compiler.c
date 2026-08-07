@@ -31,13 +31,106 @@ typedef struct {
     unsigned        length;
     unsigned        literal_count;
     unsigned        name_count;
+    /*
+     *  Blocks are numbered as the parser meets them, so an abandoned parse
+     *  must give its numbers back -- otherwise the two passes disagree about
+     *  which scope a block is, and every frame index after it is wrong.
+     */
+    unsigned        block_seen;
+    unsigned        decl_count;
 } compiler_mark;
+
+/*
+ *  ----------  Scopes, for the closure dialect  ----------
+ *
+ *  A Blue Book block has no frame of its own: its arguments and temporaries
+ *  live in the home method's, which is exactly why two activations of one
+ *  block tread on each other.  A closure activation has a frame, so the
+ *  compiler has to know which frame every name belongs to -- and that is a
+ *  whole-method property, which is why this dialect needs two passes.
+ *
+ *  Each frame is laid out
+ *
+ *      [ arguments ][ copied values ][ vector ][ local temporaries ]
+ *
+ *  A name referenced from an inner scope and ASSIGNED anywhere cannot be
+ *  copied by value, because the two scopes have to see each other's stores.
+ *  It moves into a "vector" -- an Array in a frame slot -- and inner scopes
+ *  copy the vector instead, so they share the variable rather than its
+ *  value.  A name that is captured but never assigned is copied directly;
+ *  that is the common case and it costs nothing.
+ *
+ *  The bookkeeping that makes this more than an afternoon: a block nested
+ *  two deep that reads a grandparent's boxed name needs the grandparent's
+ *  VECTOR, which means the block's parent must copy that vector too, even
+ *  though the parent never mentions the name.  Needs therefore propagate up
+ *  the scope tree, which is what record_need does.
+ *
+ *  Simplifying to one vector for the whole method would be wrong in a way
+ *  that hides: an outer block's own captured temporaries would then be
+ *  shared between that block's own activations.
+ */
+
+#define MAX_DECLS       192
+#define MAX_SCOPES      32
+#define MAX_COPIED      15      /*  numCopied is four bits in bytecode 143  */
+#define MAX_NEEDS       512
+
+typedef struct {
+    char        name[64];
+    unsigned    scope;
+    int         is_argument;
+    int         assigned;       /*  appears as an assignment target  */
+    int         captured;       /*  read or written from an inner scope  */
+    /*  Decided between the passes.  */
+    int         remote;         /*  lives in its scope's vector  */
+    unsigned    slot;           /*  frame slot, or slot within the vector  */
+} var_decl;
+
+typedef struct {
+    int         is_vector;      /*  copying a scope's vector, not a value  */
+    unsigned    which;          /*  scope id if is_vector, else decl index  */
+    unsigned    slot;           /*  where it lands in this frame           */
+} copied_item;
+
+typedef struct {
+    unsigned    parent;
+    unsigned    argc;
+    int         has_vector;
+    unsigned    vector_size;
+    unsigned    vector_slot;
+    copied_item copied[MAX_COPIED];
+    unsigned    copied_count;
+    unsigned    locals;         /*  non-remote, non-argument names  */
+    unsigned    frame_size;     /*  args + copied + vector + locals  */
+} scope_info;
 
 typedef struct {
     st_lexer                   *lx;
     st_token                    token;      /*  the current token  */
     const st_compile_context   *ctx;
     st_compiled_code           *out;
+
+    /*
+     *  Which language this is being compiled as.  Blue Book is the default
+     *  and is byte-for-byte what it always was: the closure machinery below
+     *  is reached only when the caller asks for it, so the 1983 library and
+     *  the trace oracle cannot be affected by any of it.
+     */
+    int         dialect;
+    int         pass;           /*  0 records names, 1 emits  */
+
+    var_decl    decls[MAX_DECLS];
+    unsigned    decl_count;
+    scope_info  scopes[MAX_SCOPES];
+    unsigned    scope_count;
+    unsigned    current_scope;
+    unsigned    block_seen;     /*  how many real blocks so far, both passes */
+    struct {
+        unsigned    scope;
+        unsigned    decl;
+    }           needs[MAX_NEEDS];
+    unsigned    need_count;
 
     /*  Argument and temporary names, arguments first as the frame expects. */
     char        names[MAX_TEMPS][64];
@@ -256,6 +349,15 @@ note_store(st_compiler *c, size_t at, int kind, unsigned index, st_oop assoc)
     c->store_association = assoc;
 }
 
+/*  Store into a name held in a vector.  141 keeps the value, 142 pops it. */
+static void
+emit_store_remote(st_compiler *c, unsigned index, unsigned vector, int pop)
+{
+    emit(c, (uint8_t) (pop ? 142 : 141));
+    emit(c, (uint8_t) index);
+    emit(c, (uint8_t) vector);
+}
+
 static void
 emit_store_temporary(st_compiler *c, unsigned index, int pop)
 {
@@ -458,17 +560,320 @@ emit_jump_back_to(st_compiler *c, unsigned target)
 typedef enum {
     VAR_NONE, VAR_TEMPORARY, VAR_INSTANCE, VAR_GLOBAL,
     VAR_SELF, VAR_SUPER, VAR_THIS_CONTEXT,
-    VAR_NIL, VAR_TRUE, VAR_FALSE
+    VAR_NIL, VAR_TRUE, VAR_FALSE,
+    /*
+     *  A temporary held in a vector rather than a frame slot, because some
+     *  inner block shares it.  `index` is the slot within the vector and
+     *  `vector` is the frame slot holding the vector.  Closure dialect only.
+     */
+    VAR_REMOTE
 } var_kind;
 
 typedef struct {
     var_kind    kind;
     unsigned    index;
+    unsigned    vector;
     st_oop      association;
 } var_ref;
 
+/*  ----------  Scope analysis  ----------  */
+
+/*  Is `inner` `outer`, or nested inside it?  */
+static int
+scope_within(const st_compiler *c, unsigned inner, unsigned outer)
+{
+    for (;;) {
+        if (inner == outer)
+            return 1;
+        if (inner == 0)
+            return 0;
+        inner = c->scopes[inner].parent;
+    }
+}
+
+/*
+ *  The innermost declaration of `name` visible from the current scope, or
+ *  -1.  Backwards, so an inner declaration shadows an outer one of the same
+ *  name -- which is the rule the flat Blue Book frame also follows, for the
+ *  same reason.
+ */
+static long
+find_decl(const st_compiler *c, const char *name)
+{
+    unsigned    i;
+
+    for (i = c->decl_count; i-- > 0; ) {
+        if (strcmp(c->decls[i].name, name) == 0
+         && scope_within(c, c->current_scope, c->decls[i].scope))
+            return (long) i;
+    }
+    return -1;
+}
+
+static void
+declare(st_compiler *c, const char *name, int is_argument)
+{
+    var_decl   *d;
+
+    if (c->decl_count >= MAX_DECLS) {
+        fail(c, "too many names in one method");
+        return;
+    }
+    d = &c->decls[c->decl_count++];
+    memset(d, 0, sizeof *d);
+    snprintf(d->name, sizeof d->name, "%.63s", name);
+    d->scope       = c->current_scope;
+    d->is_argument = is_argument;
+    if (is_argument)
+        ++c->scopes[c->current_scope].argc;
+}
+
+/*
+ *  Record that `scope` needs decl `decl`, which is declared further out.
+ *
+ *  Every scope between the two needs it as well: a block can only copy from
+ *  the frame it is being created in, so an item has to be handed down one
+ *  level at a time.  This is the propagation that makes the analysis a tree
+ *  walk rather than a lookup.
+ */
+static void
+record_need(st_compiler *c, unsigned scope, unsigned decl)
+{
+    unsigned    declaring = c->decls[decl].scope;
+    unsigned    s;
+
+    for (s = scope; s != declaring && s != 0; s = c->scopes[s].parent) {
+        unsigned    i;
+        int         already = 0;
+
+        for (i = 0; i < c->need_count; ++i) {
+            if (c->needs[i].scope == s && c->needs[i].decl == decl) {
+                already = 1;
+                break;
+            }
+        }
+        if (already)
+            continue;
+        if (c->need_count >= MAX_NEEDS) {
+            fail(c, "too many captured names in one method");
+            return;
+        }
+        c->needs[c->need_count].scope = s;
+        c->needs[c->need_count].decl  = decl;
+        ++c->need_count;
+    }
+}
+
+/*  Note a use of decl `d` from the current scope.  */
+static void
+note_use(st_compiler *c, long d, int assigning)
+{
+    var_decl   *decl;
+
+    if (d < 0)
+        return;
+    decl = &c->decls[d];
+    if (assigning)
+        decl->assigned = 1;
+    if (decl->scope != c->current_scope) {
+        decl->captured = 1;
+        record_need(c, c->current_scope, (unsigned) d);
+    }
+}
+
+/*
+ *  Between the passes: decide what is remote and lay every frame out.
+ *
+ *  A name is remote when an inner scope shares it AND something assigns it.
+ *  Captured-but-never-assigned is copied by value, which is the common case
+ *  -- a block reading an enclosing temporary costs one slot and no
+ *  indirection.
+ */
+static void
+plan_frames(st_compiler *c)
+{
+    unsigned    i;
+    unsigned    s;
+
+    for (i = 0; i < c->decl_count; ++i)
+        c->decls[i].remote = c->decls[i].captured && c->decls[i].assigned;
+
+    for (s = 0; s < c->scope_count; ++s) {
+        scope_info *scope = &c->scopes[s];
+        unsigned    next;
+
+        scope->copied_count = 0;
+        scope->vector_size  = 0;
+        scope->has_vector   = 0;
+        scope->locals       = 0;
+
+        /*  Slots within this scope's vector, in declaration order.  */
+        for (i = 0; i < c->decl_count; ++i) {
+            if (c->decls[i].scope == s && c->decls[i].remote)
+                c->decls[i].slot = scope->vector_size++;
+        }
+        scope->has_vector = scope->vector_size > 0;
+
+        /*  Arguments first, in declaration order, as an activation fills them. */
+        next = 0;
+        for (i = 0; i < c->decl_count; ++i) {
+            if (c->decls[i].scope == s && c->decls[i].is_argument
+             && !c->decls[i].remote)
+                c->decls[i].slot = next;
+            if (c->decls[i].scope == s && c->decls[i].is_argument)
+                ++next;
+        }
+        /*
+         *  A remote argument still ARRIVES in a frame slot -- the activation
+         *  puts it there -- and the prologue moves it into the vector.  So
+         *  the slot is reserved either way, and remembered separately.
+         */
+        next = scope->argc;
+
+        /*  Then the copied values, one slot each.  */
+        for (i = 0; i < c->need_count; ++i) {
+            unsigned    decl;
+            unsigned    from;
+            int         is_vector;
+            unsigned    which;
+            unsigned    k;
+            int         already = 0;
+
+            if (c->needs[i].scope != s)
+                continue;
+            decl      = c->needs[i].decl;
+            from      = c->decls[decl].scope;
+            is_vector = c->decls[decl].remote;
+            which     = is_vector ? from : decl;
+
+            for (k = 0; k < scope->copied_count; ++k) {
+                if (scope->copied[k].is_vector == is_vector
+                 && scope->copied[k].which == which) {
+                    already = 1;
+                    break;
+                }
+            }
+            if (already)
+                continue;
+            if (scope->copied_count >= MAX_COPIED) {
+                fail(c, "a block captures more than %d names", MAX_COPIED);
+                return;
+            }
+            scope->copied[scope->copied_count].is_vector = is_vector;
+            scope->copied[scope->copied_count].which     = which;
+            scope->copied[scope->copied_count].slot      = next++;
+            ++scope->copied_count;
+        }
+
+        /*  Then this scope's own vector, if it has one.  */
+        if (scope->has_vector)
+            scope->vector_slot = next++;
+
+        /*  Then the local temporaries that stayed in the frame.  */
+        for (i = 0; i < c->decl_count; ++i) {
+            if (c->decls[i].scope == s && !c->decls[i].is_argument
+             && !c->decls[i].remote) {
+                c->decls[i].slot = next++;
+                ++scope->locals;
+            }
+        }
+        scope->frame_size = next;
+    }
+}
+
+/*  Where scope `s` keeps scope `from`'s vector, as a frame slot of s.  */
+static int
+copied_vector_slot(const st_compiler *c, unsigned s, unsigned from,
+                   unsigned *slot)
+{
+    unsigned    k;
+
+    if (s == from) {
+        if (!c->scopes[s].has_vector)
+            return 0;
+        *slot = c->scopes[s].vector_slot;
+        return 1;
+    }
+    for (k = 0; k < c->scopes[s].copied_count; ++k) {
+        if (c->scopes[s].copied[k].is_vector
+         && c->scopes[s].copied[k].which == from) {
+            *slot = c->scopes[s].copied[k].slot;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/*  Where scope `s` keeps decl `decl`'s copied value, as a frame slot of s. */
+static int
+copied_value_slot(const st_compiler *c, unsigned s, unsigned decl,
+                  unsigned *slot)
+{
+    unsigned    k;
+
+    for (k = 0; k < c->scopes[s].copied_count; ++k) {
+        if (!c->scopes[s].copied[k].is_vector
+         && c->scopes[s].copied[k].which == decl) {
+            *slot = c->scopes[s].copied[k].slot;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/*
+ *  Resolve a name in the closure dialect.  Answers 0 if it is not a
+ *  temporary at all, and the caller falls through to instance variables and
+ *  globals exactly as before.
+ */
+static int
+resolve_scoped(st_compiler *c, const char *name, int assigning, var_ref *out)
+{
+    long        d = find_decl(c, name);
+    var_decl   *decl;
+    unsigned    slot;
+
+    if (d < 0)
+        return 0;
+    note_use(c, d, assigning);
+    decl = &c->decls[d];
+
+    if (c->pass == 0) {
+        /*
+         *  Nothing is laid out yet, so answer something structurally right
+         *  and numerically meaningless.  The bytes of this pass are thrown
+         *  away; only the names it records are kept.
+         */
+        out->kind  = VAR_TEMPORARY;
+        out->index = 0;
+        return 1;
+    }
+    if (decl->remote) {
+        if (!copied_vector_slot(c, c->current_scope, decl->scope, &slot)) {
+            fail(c, "'%s' is shared but its vector is not in scope", name);
+            return 1;
+        }
+        out->kind   = VAR_REMOTE;
+        out->index  = decl->slot;
+        out->vector = slot;
+        return 1;
+    }
+    if (decl->scope == c->current_scope) {
+        out->kind  = VAR_TEMPORARY;
+        out->index = decl->slot;
+        return 1;
+    }
+    if (!copied_value_slot(c, c->current_scope, (unsigned) d, &slot)) {
+        fail(c, "'%s' is used in a block that did not capture it", name);
+        return 1;
+    }
+    out->kind  = VAR_TEMPORARY;
+    out->index = slot;
+    return 1;
+}
+
 static var_ref
-resolve(st_compiler *c, const char *name)
+resolve_for(st_compiler *c, const char *name, int assigning)
 {
     var_ref     v;
     unsigned    i;
@@ -480,6 +885,30 @@ resolve(st_compiler *c, const char *name)
     if (strcmp(name, "nil") == 0)         { v.kind = VAR_NIL;          return v; }
     if (strcmp(name, "true") == 0)        { v.kind = VAR_TRUE;         return v; }
     if (strcmp(name, "false") == 0)       { v.kind = VAR_FALSE;        return v; }
+
+    if (c->dialect == ST_DIALECT_CLOSURES) {
+        if (resolve_scoped(c, name, assigning, &v))
+            return v;
+        /*  Fall through to instance variables and globals, as below.  */
+        for (i = 0; i < c->ctx->instance_variable_count; ++i) {
+            if (strcmp(c->ctx->instance_variables[i], name) == 0) {
+                v.kind  = VAR_INSTANCE;
+                v.index = i;
+                return v;
+            }
+        }
+        if (c->ctx->lookup_global) {
+            st_oop  association = c->ctx->lookup_global(name, c->ctx->user);
+
+            if (association != ST_NIL && association != ST_OOP_INVALID) {
+                v.kind        = VAR_GLOBAL;
+                v.association = association;
+                return v;
+            }
+        }
+        v.kind = VAR_NONE;
+        return v;
+    }
 
     /*
      *  Arguments and temporaries shadow instance variables, which shadow
@@ -531,10 +960,21 @@ resolve(st_compiler *c, const char *name)
     return v;
 }
 
+static var_ref
+resolve(st_compiler *c, const char *name)
+{
+    return resolve_for(c, name, 0);
+}
+
 static void
 emit_push_variable(st_compiler *c, const var_ref *v, const char *name)
 {
     switch (v->kind) {
+    case VAR_REMOTE:
+        emit(c, 140);
+        emit(c, (uint8_t) v->index);
+        emit(c, (uint8_t) v->vector);
+        break;
     case VAR_SELF:
     case VAR_SUPER:      emit(c, 112); break;
     case VAR_TRUE:       emit(c, 113); break;
@@ -556,6 +996,8 @@ static void compile_expression(st_compiler *c);
 static void compile_statements(st_compiler *c, int inside_block);
 static void mark(st_compiler *c, compiler_mark *m);
 static void rewind_to(st_compiler *c, const compiler_mark *m);
+static void compile_closure(st_compiler *c);
+static void emit_push_temporary(st_compiler *c, unsigned index);
 
 /*  Push a small integer using the shortest form available.  */
 static void
@@ -918,6 +1360,187 @@ parse_pragma(st_compiler *c)
     return !c->failed;
 }
 
+/*
+ *  ----------  A block, in the closure dialect  ----------
+ *
+ *  The current token is '['.  Emits
+ *
+ *      <push each copied value from this frame>
+ *      143 (numCopied<<4 | numArgs) sizeHi sizeLo
+ *      <the block's prologue>
+ *      <its body>
+ *      125
+ *
+ *  and nothing else: 143 skips its own body, so there is no jump around it
+ *  the way blockCopy: needs one.
+ *
+ *  Both passes come through here.  The first is looking only for names, so
+ *  it emits a shape rather than the right bytes; the second has the frames
+ *  laid out and emits for real.  Running the same parser twice is what keeps
+ *  the two in step -- an independent analysis would have to re-derive which
+ *  blocks are real blocks and which are inlined conditionals, and stay in
+ *  agreement about it forever.
+ */
+static void
+compile_closure(st_compiler *c)
+{
+    unsigned        outer_scope = c->current_scope;
+    unsigned        scope;
+    scope_info     *info;
+    unsigned        argc = 0;
+    size_t          size_at;
+    size_t          body_start;
+    unsigned        i;
+
+    /*
+     *  Blocks are numbered in the order the parser meets them, which is the
+     *  same order in both passes because the parse is the same.  mark and
+     *  rewind_to save this along with the literal count, so an abandoned
+     *  attempt does not shift the numbering.
+     */
+    scope = ++c->block_seen;
+    if (scope >= MAX_SCOPES) {
+        fail(c, "blocks are nested or repeated more than %d times",
+             MAX_SCOPES);
+        return;
+    }
+    if (c->pass == 0) {
+        if (scope >= c->scope_count)
+            c->scope_count = scope + 1;
+        memset(&c->scopes[scope], 0, sizeof c->scopes[scope]);
+        c->scopes[scope].parent = outer_scope;
+    }
+    info = &c->scopes[scope];
+
+    advance(c);                             /*  past '['  */
+    c->current_scope = scope;
+
+    while (at(c, ST_TOK_COLON)) {
+        advance(c);
+        if (!at(c, ST_TOK_IDENTIFIER)) {
+            fail(c, "expected a block argument name");
+            c->current_scope = outer_scope;
+            return;
+        }
+        if (c->pass == 0)
+            declare(c, c->token.text, 1);
+        ++argc;
+        advance(c);
+    }
+    if (argc > 0 && !at(c, ST_TOK_RBRACKET) && !accept(c, ST_TOK_BAR)) {
+        fail(c, "expected | after block arguments");
+        c->current_scope = outer_scope;
+        return;
+    }
+    /*  Block-local temporaries, which here really are local.  */
+    if (at(c, ST_TOK_BAR)) {
+        compiler_mark   before_temps;
+
+        mark(c, &before_temps);
+        advance(c);
+        while (at(c, ST_TOK_IDENTIFIER)) {
+            if (c->pass == 0)
+                declare(c, c->token.text, 0);
+            advance(c);
+        }
+        if (!accept(c, ST_TOK_BAR))
+            rewind_to(c, &before_temps);
+    }
+
+    /*  The copied values, taken from the frame this block is created in.  */
+    if (c->pass == 1) {
+        for (i = 0; i < info->copied_count; ++i) {
+            unsigned    slot;
+
+            if (info->copied[i].is_vector) {
+                if (!copied_vector_slot(c, outer_scope,
+                                        info->copied[i].which, &slot)) {
+                    fail(c, "a shared name's vector is not in scope");
+                    c->current_scope = outer_scope;
+                    return;
+                }
+            }  else  {
+                unsigned    decl = info->copied[i].which;
+
+                if (c->decls[decl].scope == outer_scope) {
+                    slot = c->decls[decl].slot;
+                }  else if (!copied_value_slot(c, outer_scope, decl, &slot)) {
+                    fail(c, "a captured name is not in scope");
+                    c->current_scope = outer_scope;
+                    return;
+                }
+            }
+            emit_push_temporary(c, slot);
+        }
+    }
+
+    emit(c, 143);
+    emit(c, (uint8_t) ((c->pass == 1 ? (info->copied_count << 4) : 0)
+                       | (argc & 15)));
+    size_at = c->out->length;
+    emit(c, 0);
+    emit(c, 0);
+    body_start = c->out->length;
+
+    /*
+     *  The prologue.  The vector is made first, because a remote argument
+     *  has to be moved into it; then one nil per local temporary, which is
+     *  how the frame grows past the copied values.
+     */
+    if (c->pass == 1) {
+        if (info->has_vector) {
+            emit(c, 138);
+            emit(c, (uint8_t) info->vector_size);
+        }
+        for (i = 0; i < c->decl_count; ++i) {
+            if (c->decls[i].scope != scope || !c->decls[i].is_argument
+             || !c->decls[i].remote)
+                continue;
+            /*
+             *  An argument arrives in its frame slot however it is stored,
+             *  so a shared one is moved across before anything reads it.
+             *  Its frame slot is its position among the arguments.
+             */
+            {
+                unsigned    k;
+                unsigned    position = 0;
+
+                for (k = 0; k < i; ++k) {
+                    if (c->decls[k].scope == scope && c->decls[k].is_argument)
+                        ++position;
+                }
+                emit_push_temporary(c, position);
+                emit_store_remote(c, c->decls[i].slot, info->vector_slot, 1);
+            }
+        }
+        for (i = 0; i < info->locals; ++i)
+            emit(c, 115);               /*  push nil  */
+    }
+
+    compile_statements(c, 1);
+    emit(c, 125);                       /*  return stack top from block  */
+    if (!accept(c, ST_TOK_RBRACKET))
+        fail(c, "expected ] closing a block");
+
+    {
+        size_t  size = c->out->length - body_start;
+
+        if (size > 0xFFFF) {
+            fail(c, "a block body is longer than 65535 bytes");
+        }  else  {
+            c->out->bytecodes[size_at]     = (uint8_t) (size >> 8);
+            c->out->bytecodes[size_at + 1] = (uint8_t) (size & 0xFF);
+        }
+    }
+    c->current_scope = outer_scope;
+    /*
+     *  A jump can no longer land where the peepholes think the end is.
+     *  Same reason patch_jump clears them.
+     */
+    c->loop_nil_end = NO_LOOP_NIL;
+    c->store_end    = NO_STORE;
+}
+
 /*  A primary: a literal, a variable, a parenthesised expression, a block.  */
 static void
 compile_primary(st_compiler *c, var_ref *out_var)
@@ -1048,7 +1671,13 @@ compile_primary(st_compiler *c, var_ref *out_var)
         if (!accept(c, ST_TOK_RPAREN))
             fail(c, "expected )");
         return;
-    case ST_TOK_LBRACKET: {
+    case ST_TOK_LBRACKET:
+        if (c->dialect == ST_DIALECT_CLOSURES) {
+            compile_closure(c);
+            return;
+        }
+        goto blue_book_block;
+    blue_book_block: {
         /*
          *  A block compiles to blockCopy: followed by a jump over its body.
          *  The jump is what the interpreter's initial instruction pointer
@@ -1245,6 +1874,8 @@ mark(st_compiler *c, compiler_mark *m)
     m->length        = c->out->length;
     m->literal_count = c->out->literal_count;
     m->name_count    = c->name_count;
+    m->block_seen    = c->block_seen;
+    m->decl_count    = c->decl_count;
 }
 
 static void
@@ -1259,6 +1890,8 @@ rewind_to(st_compiler *c, const compiler_mark *m)
      */
     c->out->literal_count  = m->literal_count;
     c->name_count          = m->name_count;
+    c->block_seen          = m->block_seen;
+    c->decl_count          = m->decl_count;
 }
 
 /*
@@ -1625,9 +2258,15 @@ compile_expression(st_compiler *c)
             advance(c);                 /*  past the name  */
             advance(c);                 /*  past :=        */
             compile_expression(c);
-            v = resolve(c, name);
+            /*
+             *  Resolved as an ASSIGNMENT, which is what tells the closure
+             *  analysis this name cannot be captured by value: two scopes
+             *  that both see a store have to see each other's.
+             */
+            v = resolve_for(c, name, 1);
             switch (v.kind) {
             case VAR_TEMPORARY: emit_store_temporary(c, v.index, 0); break;
+            case VAR_REMOTE:    emit_store_remote(c, v.index, v.vector, 0); break;
             case VAR_INSTANCE:  emit_store_receiver_variable(c, v.index, 0); break;
             case VAR_GLOBAL:    emit_store_literal_variable(c, v.association, 0); break;
             default:
@@ -2014,81 +2653,168 @@ COMPILE_to_bytecodes(const char *source, const st_compile_context *ctx,
                      st_compiled_code *out)
 {
     st_compiler c;
+    int         pass;
 
     memset(out, 0, sizeof *out);
     memset(&c, 0, sizeof c);
-    c.loop_nil_end = NO_LOOP_NIL;
-    c.store_end    = NO_STORE;
-    c.max_names    = 0;
-    c.ctx = ctx;
-    c.out = out;
-    c.lx  = LEX_open(source);
-    if (!c.lx) {
-        snprintf(out->error, sizeof out->error, "out of memory");
-        return -1;
-    }
-    advance(&c);
-    compile_pattern(&c);
-
-    /*  Temporaries, if any.  */
-    if (at(&c, ST_TOK_BAR)) {
-        advance(&c);
-        while (at(&c, ST_TOK_IDENTIFIER)) {
-            if (c.name_count < MAX_TEMPS)
-                snprintf(c.names[c.name_count++], 64, "%.63s", c.token.text);
-            advance(&c);
-        }
-        if (!accept(&c, ST_TOK_BAR))
-            fail(&c, "expected | after temporaries");
-    }
+    c.ctx     = ctx;
+    c.out     = out;
+    c.dialect = ctx->dialect;
 
     /*
-     *  Pragmas, if any.  A loop rather than one test: Squeak allows several
-     *  per method and Pharo source uses that freely.
+     *  The Blue Book dialect runs once.  The closure dialect runs the same
+     *  parser twice: numCopied, which names are shared, and every frame's
+     *  index map are whole-method facts, and all three are needed before the
+     *  first byte of the first block can be emitted.
      *
-     *  Each is read speculatively, because '<' is also an ordinary binary
-     *  selector and a method may perfectly well begin with one -- "x < 3
-     *  ifTrue: [...]" as the first statement of a method with no
-     *  temporaries.  A parse that does not reach a closing '>' rewinds and
-     *  the statement compiler gets the '<' back.
+     *  Twice through the parser rather than an AST because the set of blocks
+     *  that are real blocks -- as opposed to the bodies of inlined
+     *  conditionals and loops -- is decided by this parser, with two
+     *  rewind-and-retry sites in it.  An independent analysis would have to
+     *  re-derive those decisions and agree with them forever; the same
+     *  parser agrees by construction.
      */
-    while (!c.failed && at(&c, ST_TOK_BINARY) && strcmp(c.token.text, "<") == 0) {
-        compiler_mark   before_pragma;
-
-        mark(&c, &before_pragma);
-        if (!parse_pragma(&c)) {
-            if (c.failed)
-                break;
-            rewind_to(&c, &before_pragma);
-            break;
+    for (pass = 0; pass <= (c.dialect == ST_DIALECT_CLOSURES); ++pass) {
+        c.pass          = pass;
+        c.loop_nil_end  = NO_LOOP_NIL;
+        c.store_end     = NO_STORE;
+        c.max_names     = 0;
+        c.name_count    = 0;
+        c.argument_count = 0;
+        c.used_super    = 0;
+        c.failed        = 0;
+        c.block_seen    = 0;
+        c.current_scope = 0;
+        out->length        = 0;
+        out->literal_count = 0;
+        out->error[0]      = '\0';
+        if (pass == 0) {
+            c.decl_count  = 0;
+            c.need_count  = 0;
+            c.scope_count = 1;
+            memset(&c.scopes[0], 0, sizeof c.scopes[0]);
         }
-    }
 
-    compile_statements(&c, 0);
+        c.lx = LEX_open(source);
+        if (!c.lx) {
+            snprintf(out->error, sizeof out->error, "out of memory");
+            return -1;
+        }
+        advance(&c);
+        compile_pattern(&c);
 
-    /*
-     *  A method with no explicit return answers the receiver, which the
-     *  one-byte "return self" bytecode does directly.
-     */
-    if (!c.failed) {
-        if (out->length == 0 || out->bytecodes[out->length - 1] != 124)
-            emit(&c, 120);
+        /*  Temporaries, if any.  */
+        if (at(&c, ST_TOK_BAR)) {
+            advance(&c);
+            while (at(&c, ST_TOK_IDENTIFIER)) {
+                if (c.name_count < MAX_TEMPS)
+                    snprintf(c.names[c.name_count++], 64, "%.63s",
+                             c.token.text);
+                if (c.dialect == ST_DIALECT_CLOSURES && pass == 0)
+                    declare(&c, c.token.text, 0);
+                advance(&c);
+            }
+            if (!accept(&c, ST_TOK_BAR))
+                fail(&c, "expected | after temporaries");
+        }
+
+        /*
+         *  Pragmas, if any.  A loop rather than one test: Squeak allows
+         *  several per method and Pharo source uses that freely.
+         *
+         *  Each is read speculatively, because '<' is also an ordinary
+         *  binary selector and a method may perfectly well begin with one --
+         *  "x < 3 ifTrue: [...]" as the first statement of a method with no
+         *  temporaries.  A parse that does not reach a closing '>' rewinds
+         *  and the statement compiler gets the '<' back.
+         */
+        while (!c.failed && at(&c, ST_TOK_BINARY)
+            && strcmp(c.token.text, "<") == 0) {
+            compiler_mark   before_pragma;
+
+            mark(&c, &before_pragma);
+            if (!parse_pragma(&c)) {
+                if (c.failed)
+                    break;
+                rewind_to(&c, &before_pragma);
+                break;
+            }
+        }
+
+        /*
+         *  The method's own frame, laid out once its names are known.  Its
+         *  prologue builds the vector if any block shares a variable with
+         *  it, and moves any shared argument into it.
+         */
+        if (c.dialect == ST_DIALECT_CLOSURES && pass == 1) {
+            scope_info *method_scope = &c.scopes[0];
+            unsigned    i;
+
+            if (method_scope->has_vector) {
+                emit(&c, 138);
+                emit(&c, (uint8_t) method_scope->vector_size);
+                emit_store_temporary(&c, method_scope->vector_slot, 1);
+            }
+            for (i = 0; i < c.decl_count; ++i) {
+                unsigned    k;
+                unsigned    position = 0;
+
+                if (c.decls[i].scope != 0 || !c.decls[i].is_argument
+                 || !c.decls[i].remote)
+                    continue;
+                for (k = 0; k < i; ++k) {
+                    if (c.decls[k].scope == 0 && c.decls[k].is_argument)
+                        ++position;
+                }
+                emit_push_temporary(&c, position);
+                emit_store_remote(&c, c.decls[i].slot,
+                                  method_scope->vector_slot, 1);
+            }
+        }
+
+        compile_statements(&c, 0);
+
+        /*
+         *  A method with no explicit return answers the receiver, which the
+         *  one-byte "return self" bytecode does directly.
+         */
+        if (!c.failed) {
+            if (out->length == 0 || out->bytecodes[out->length - 1] != 124)
+                emit(&c, 120);
+        }
+        append_method_class_literal(&c);
+        LEX_close(c.lx);
+
+        if (c.failed)
+            return -1;
+        if (pass == 0)
+            plan_frames(&c);
+        if (c.failed)
+            return -1;
     }
-    append_method_class_literal(&c);
 
     out->argument_count  = c.argument_count;
-    if (c.name_count > c.max_names)
-        c.max_names = c.name_count;
-    out->temporary_count = c.max_names;
+    if (c.dialect == ST_DIALECT_CLOSURES) {
+        /*
+         *  The method's frame holds its arguments, whatever it copied (it
+         *  copies nothing -- it is the outermost scope), its vector and its
+         *  local temporaries.  A shared name is in the vector rather than a
+         *  slot, so it is not counted twice.
+         */
+        out->temporary_count = c.scopes[0].frame_size;
+    }  else  {
+        if (c.name_count > c.max_names)
+            c.max_names = c.name_count;
+        out->temporary_count = c.max_names;
+    }
     /*
      *  Temporaries and stack share the frame, so both count.  Twelve slots
      *  is what a small context has past its fixed fields; anything more
      *  needs the large one.
      */
     out->needs_large_context =
-        (c.max_names + max_stack_depth(out) > 12);
+        (out->temporary_count + max_stack_depth(out) > 12);
 
-    LEX_close(c.lx);
     return c.failed ? -1 : 0;
 }
 

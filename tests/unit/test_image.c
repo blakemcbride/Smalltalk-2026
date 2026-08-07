@@ -31,6 +31,19 @@
 #include <string.h>
 
 #define MANIFEST    "sources/MANIFEST"
+
+/*
+ *  The image these tests build is the 1983 library plus the one package
+ *  lib/ adds for closures.  Both halves are named so that a count which
+ *  moves says WHICH half moved: the Xerox numbers are what they have always
+ *  been, and anything else is ours.
+ */
+#define BLUEBOOK_CLASSES        226
+#define BLUEBOOK_METHODS        4521
+#define BLUEBOOK_CATEGORIES     41
+#define LIB_CLASSES             1       /*  BlockClosure          */
+#define LIB_METHODS             15
+#define LIB_CATEGORIES          1       /*  Kernel-Closures       */
 #define MAX_SOURCES 512
 
 static char     paths[MAX_SOURCES][256];
@@ -54,6 +67,16 @@ load_manifest(void)
             snprintf(paths[path_count++], sizeof paths[0], "%s", line);
     }
     fclose(f);
+    /*
+     *  And the closure package, which is ours rather than Xerox's and so
+     *  lives in lib/ -- sources/ is frozen.  Without it the closure
+     *  bytecodes have no BlockClosure to make and every closure expression
+     *  stops the interpreter, which is exactly the arrangement that keeps
+     *  the 1983 image from ever meeting one.
+     */
+    if (path_count < MAX_SOURCES)
+        snprintf(paths[path_count++], sizeof paths[0],
+                 "lib/Kernel/BlockClosure.class.st");
     return path_count > 0;
 }
 
@@ -73,9 +96,9 @@ build_once(void)
     printf("  %u classes, %u methods, %u symbols\n", res.classes_created,
            res.methods_compiled, res.symbols_interned);
 
-    CHECK_EQ_INT(res.classes_created, 226);
+    CHECK_EQ_INT(res.classes_created, BLUEBOOK_CLASSES + LIB_CLASSES);
     /*  4517 from the MIT sources, plus the few in kernel/Bootstrap.st.  */
-    CHECK_EQ_INT(res.methods_compiled, 4521);
+    CHECK_EQ_INT(res.methods_compiled, BLUEBOOK_METHODS + LIB_METHODS);
     built = 1;
     return 1;
 }
@@ -84,6 +107,9 @@ build_once(void)
  *  Evaluate as the driver does: compile the expression as a method body,
  *  stand up a context whose sender is nil, and run.
  */
+/*  Which dialect the expressions below are compiled as.  */
+static int  test_dialect = ST_DIALECT_BLUE_BOOK;
+
 static st_oop
 evaluate(const char *expression)
 {
@@ -101,6 +127,7 @@ evaluate(const char *expression)
     ctx.make_byte_array    = BOOT_make_byte_array;
     ctx.make_character     = BOOT_make_character;
     ctx.lookup_global      = BOOT_lookup_global;
+    ctx.dialect            = test_dialect;
 
     /*
      *  Collect first.  Every doIt here is unreachable the moment it finishes,
@@ -355,6 +382,89 @@ test_blocks_activate_separately(void)
      *  because both wrote the same home slot.  When Phase D lands this
      *  answers 7 and the test changes with the behaviour it describes.
      */
+    check_integer("| b c | c := [:m | m * 10]. b := [:n | (c value: 99). n]. "
+                  "^b value: 7", 99);
+}
+
+/*
+ *  Closures.
+ *
+ *  Everything here is compiled in the closure dialect, and every one of
+ *  these answers differently -- or not at all -- as a Blue Book block.  A
+ *  BlockContext keeps its arguments and temporaries in the HOME method's
+ *  frame, so two activations of one block share them; a closure has a frame
+ *  of its own and captures what it needs.
+ *
+ *  The 1983 library and the trace oracle never see any of this: the dialect
+ *  is a field in the compile context and defaults to Blue Book.
+ */
+static void
+test_closures(void)
+{
+    test_dialect = ST_DIALECT_CLOSURES;
+
+    /*  The plain shapes, which must go on working.  */
+    check_integer("[3 + 4] value", 7);
+    check_integer("[:a :b | a * b] value: 6 value: 7", 42);
+    check_integer("(1 to: 5) inject: 0 into: [:a :b | a + b]", 15);
+    check_integer("((1 to: 20) collect: [:i | i * i]) last", 400);
+    check_integer("[:x | | y | y := x * 3. y + 1] value: 5", 16);
+    check_integer("| n | n := 0. [n < 5] whileTrue: [n := n + 1]. ^n", 5);
+
+    /*
+     *  Recursion.  This is the case Phase B could not fix and named as
+     *  Phase D's: it answered nil, because the second activation of the
+     *  block overwrote the first one's argument.
+     */
+    check_integer("| f | f := [:n | n < 2 ifTrue: [n] "
+                  "ifFalse: [(f value: n - 1) + (f value: n - 2)]]. "
+                  "^f value: 25", 75025);
+    check_integer("| f | f := [:n | n = 0 ifTrue: [1] "
+                  "ifFalse: [n * (f value: n - 1)]]. ^f value: 10", 3628800);
+
+    /*
+     *  Capture by value, and capture by reference.  A name a block only
+     *  reads is copied; one that anything assigns has to be shared, or the
+     *  two scopes would stop seeing each other's stores.
+     */
+    check_integer("| t | t := 5. ^[t + 1] value", 6);
+    check_integer("| t | t := 5. [t := t * 2] value. ^t", 10);
+    check_integer("| t b | t := 1. b := [t]. t := 99. ^b value", 99);
+    check_integer("| s | s := 0. (1 to: 10) do: [:i | s := s + i]. ^s", 55);
+
+    /*
+     *  A block outliving the method that made it, and each activation
+     *  capturing its own copy.  Neither is possible with a BlockContext:
+     *  its home is gone, and its argument slot is shared.
+     */
+    check_integer("| mk | mk := [:n | [n * 2]]. "
+                  "^((mk value: 5) value) + ((mk value: 7) value)", 24);
+    check_integer("| c | c := [:n | [:m | n + m]]. ^(c value: 10) value: 5",
+                  15);
+    check_integer("| a | a := OrderedCollection new. "
+                  "(1 to: 3) do: [:i | a add: [i]]. "
+                  "^(a collect: [:b | b value]) inject: 0 into: [:x :y | x + y]",
+                  6);
+
+    /*  Non-local return, out of a block and out of a nested one.  */
+    check_oop("| b | b := [:x | x > 3 ifTrue: [^#big]. #small]. ^b value: 5",
+              BOOT_intern_symbol("big", NULL), "#big");
+    check_oop("| b | b := [:x | x > 3 ifTrue: [^#big]. #small]. ^b value: 1",
+              BOOT_intern_symbol("small", NULL), "#small");
+    check_integer("| f | f := [:c | c do: [:e | e > 2 ifTrue: [^e]]. 0]. "
+                  "^f value: #(1 2 3 4)", 3);
+    check_integer("^(1 to: 10) detect: [:i | i > 6]", 7);
+
+    /*
+     *  And the boundary Phase B recorded.  As a Blue Book block this
+     *  answers 99, because both blocks are given the same home slot; as
+     *  closures each argument is its own.  The assertion changes with the
+     *  behaviour it describes, which is what it was written for.
+     */
+    check_integer("| b c | c := [:m | m * 10]. b := [:n | (c value: 99). n]. "
+                  "^b value: 7", 7);
+
+    test_dialect = ST_DIALECT_BLUE_BOOK;
     check_integer("| b c | c := [:m | m * 10]. b := [:n | (c value: 99). n]. "
                   "^b value: 7", 99);
 }
@@ -919,7 +1029,8 @@ test_system_organization(void)
 {
     check_oop("SystemOrganization isNil", ST_FALSE, "false");
     /*  One per source directory.  */
-    check_integer("SystemOrganization categories size", 41);
+    check_integer("SystemOrganization categories size",
+                  BLUEBOOK_CATEGORIES + LIB_CATEGORIES);
 }
 
 /*
@@ -1027,7 +1138,8 @@ test_browser(void)
 static void
 test_browsing(void)
 {
-    check_integer("(Browser new on: SystemOrganization) categoryList size", 41);
+    check_integer("(Browser new on: SystemOrganization) categoryList size",
+                  BLUEBOOK_CATEGORIES + LIB_CATEGORIES);
 
     /*  Kernel-Objects holds Boolean, False, Object, True, UndefinedObject.  */
     check_integer("| b | b := Browser new on: SystemOrganization."
@@ -1047,12 +1159,12 @@ test_browsing(void)
     check_integer("((Boolean sourceCodeAt: #not) asText"
                   " makeSelectorBoldIn: Boolean) size", 122);
     /*
-     *  One byte more than the source it holds: a filler at the front, so
-     *  that nothing real starts at position zero, which a CompiledMethod
-     *  reads as "no source at all".  See
+     *  The 1983 library's source, the closure package's on top of it, and
+     *  one filler byte at the front so that nothing real starts at position
+     *  zero -- which a CompiledMethod reads as "no source at all".  See
      *  test_every_method_can_find_its_source.
      */
-    check_integer("(SourceFiles at: 1) contents size", 1203448);
+    check_integer("(SourceFiles at: 1) contents size", 1204427);
 }
 
 /*
@@ -1892,6 +2004,7 @@ main(void)
     test_integers_larger_than_a_smallinteger();
     test_blocks_activate_separately();
     test_every_method_can_find_its_source();
+    test_closures();
 
     OM_shutdown();
     return ST_TEST_END();
