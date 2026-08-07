@@ -29,7 +29,8 @@ uint32_t    st_om_image_ot_words;
 
 #define IMAGE_MAGIC     "ST26MT\0\0"
 #define IMAGE_MAGIC_LEN 8
-#define IMAGE_VERSION   2       /*  2 added the VM-state slots  */
+/*  2 added the VM-state slots; 3 added BlockClosure to them.  */
+#define IMAGE_VERSION   3
 
 static void
 fail(char *errbuf, size_t errlen, const char *fmt, ...)

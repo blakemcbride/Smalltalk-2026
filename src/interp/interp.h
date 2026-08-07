@@ -41,9 +41,36 @@ extern "C" {
 #define ST_CTX_METHOD               3
 #define ST_CTX_BLOCK_ARG_COUNT      3
 #define ST_CTX_INITIAL_IP           4
+/*
+ *  For a MethodContext, field 4 is the closure being run, or nil.
+ *
+ *  This is the slot Xerox called receiverMap and never used --
+ *  MethodContext's own comment says "unused (we expect to use it later for
+ *  multiple inheritance)" -- so Squeak's layout of
+ *  "sender pc stackp method closureOrNil receiver" drops onto the Blue
+ *  Book's with nothing moved and ST_CTX_TEMP_FRAME_START still 6.  That it
+ *  really is unused is measured against the shipped 1983 image by
+ *  tests/unit/test_trace.c and not merely believed.
+ *
+ *  A BlockContext keeps calling field 4 its startpc.  The two never meet:
+ *  they are different classes and the interpreter dispatches on that.
+ */
+#define ST_CTX_CLOSURE              4
 #define ST_CTX_HOME                 5
 #define ST_CTX_RECEIVER             5
 #define ST_CTX_TEMP_FRAME_START     6
+
+/*
+ *  ----------  BlockClosure  ----------
+ *
+ *  Three named fields and then one indexed slot per captured value.  The
+ *  layout is Squeak's because the primitive numbers that go with it are the
+ *  ones Pharo source declares.
+ */
+#define ST_CLOSURE_OUTER_CONTEXT    0
+#define ST_CLOSURE_STARTPC          1
+#define ST_CLOSURE_NUM_ARGS         2
+#define ST_CLOSURE_FIRST_COPIED     3
 
 /*  The large-context flag in a method header picks between these.  */
 #define ST_SMALL_CONTEXT_SLOTS      (ST_CTX_TEMP_FRAME_START + 12)
@@ -230,6 +257,9 @@ void    ST_print_object(st_oop p, char *buf, size_t buflen);
 
 /*  Where the running send came from, innermost first.  Diagnostics only.  */
 unsigned    ST_method_primitive_index(st_oop method);
+int         ST_activate_closure(st_oop closure, uint32_t argc);
+/*  Is this a BlockClosure?  False in a build with no BlockClosure at all.  */
+int         ST_is_block_closure(st_oop p);
 void        ST_report_backtrace(void);
 
 /*

@@ -64,9 +64,23 @@ OM_is_present(st_oop p)
  *  the VM back together, and it cannot run before the VM can run it.  These
  *  slots are the VM remembering its own connections, which is what they are.
  */
-#define ST_VM_STATE_SLOTS           2
-#define ST_VM_INPUT_SEMAPHORE       0
-#define ST_VM_DISPLAY               1
+/*
+ *  Closures added two more, and for a different reason worth recording.
+ *
+ *  BlockClosure and the selector aboutToReturn:through: have to be reachable
+ *  from C, and the obvious place -- a new guaranteed object pointer -- is
+ *  not available: the Blue Book's table ends at 56, and the OM=bb build
+ *  loads a real 1983 image in which 58 and upward are ordinary objects.
+ *  Putting them here instead has a second effect that turns out to be the
+ *  whole coexistence story: in a bb build these slots are nil, so every
+ *  closure primitive fails and the closure bytecodes are unreachable.  The
+ *  1983 image cannot see closures at all, which is what keeps trace2 exact.
+ */
+#define ST_VM_STATE_SLOTS               4
+#define ST_VM_INPUT_SEMAPHORE           0
+#define ST_VM_DISPLAY                   1
+#define ST_VM_CLASS_BLOCK_CLOSURE       2
+#define ST_VM_SELECTOR_ABOUT_TO_RETURN  3
 
 extern st_oop   st_om_vm_state[ST_VM_STATE_SLOTS];
 

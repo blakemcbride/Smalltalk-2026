@@ -755,12 +755,95 @@ copy_block_for_activation(st_oop block)
     return copy;
 }
 
+/*
+ *  Activating a BlockClosure.  Squeak's numbers, because ported Pharo
+ *  source declares exactly these and has to keep working unedited:
+ *  201 to 205 are value through value:value:value:value:, 206 is
+ *  valueWithArguments:, and 221/222 are the valueNoContextSwitch pair --
+ *  aliases here, since a process switch is decided once per bytecode rather
+ *  than at a send, so there is nothing to suppress.
+ */
+static int
+primitive_closure_value(uint32_t argc)
+{
+    st_oop  closure = ST_stack_value(argc);
+    st_oop  want;
+
+    if (!ST_is_block_closure(closure))
+        return 0;
+    want = OM_fetch_pointer(ST_CLOSURE_NUM_ARGS, closure);
+    if (!OM_is_int(want) || (uint32_t) OM_int_value(want) != argc)
+        return 0;                   /*  the Smalltalk body reports it  */
+    return ST_activate_closure(closure, argc);
+}
+
+/*
+ *  valueWithArguments:, for both kinds of block.
+ *
+ *  The arguments arrive in an Array and have to be spread onto the stack
+ *  where an activation expects to find them.  Primitive 82 is the Blue Book
+ *  number for the BlockContext form -- declared by BlockContext since 1983
+ *  and never implemented here, which mattered because its Smalltalk
+ *  fallback has the argument-count test inverted and cannot work either.
+ */
+static int
+primitive_value_with_arguments(int closure_form)
+{
+    st_oop      block = ST_stack_value(1);
+    st_oop      args  = ST_stack_value(0);
+    st_oop      want;
+    uint32_t    argc;
+    uint32_t    i;
+
+    if (!OM_is_object(args) || OM_fetch_class(args) != ST_CLASS_ARRAY)
+        return 0;
+    argc = OM_fetch_word_length(args);
+
+    if (closure_form) {
+        if (!ST_is_block_closure(block))
+            return 0;
+        want = OM_fetch_pointer(ST_CLOSURE_NUM_ARGS, block);
+    }  else  {
+        if (!OM_is_object(block)
+         || OM_fetch_class(block) != ST_CLASS_BLOCK_CONTEXT)
+            return 0;
+        want = OM_fetch_pointer(ST_CTX_BLOCK_ARG_COUNT, block);
+    }
+    if (!OM_is_int(want) || (uint32_t) OM_int_value(want) != argc)
+        return 0;
+
+    /*
+     *  Replace the Array with its elements: the receiver stays where it is
+     *  and the activation then finds exactly what an ordinary send left.
+     */
+    ST_pop_n(1);
+    for (i = 0; i < argc; ++i)
+        ST_push(OM_fetch_pointer(i, args));
+
+    if (closure_form)
+        return ST_activate_closure(block, argc);
+    {
+        st_oop  activation = copy_block_for_activation(block);
+
+        if (activation == ST_OOP_INVALID)
+            return 0;
+        return ST_activate_block(activation, argc);
+    }
+}
+
 static int
 primitive_value(uint32_t argc)
 {
     st_oop  block = ST_stack_value(argc);
     st_oop  activation;
 
+    /*
+     *  Bytecodes 201 and 202 come here before any lookup, and a closure is
+     *  a perfectly good receiver for them -- so take it rather than failing
+     *  into a send that would only arrive back at primitive 201.
+     */
+    if (ST_is_block_closure(block))
+        return primitive_closure_value(argc);
     if (!OM_is_object(block) || OM_fetch_class(block) != ST_CLASS_BLOCK_CONTEXT)
         return 0;
     {
@@ -1375,6 +1458,26 @@ ST_primitive_dispatch(unsigned index)
          */
         ST_pop_n(3);
         return 1;
+    /*
+     *  82: BlockContext>>valueWithArguments:, a Blue Book number that was
+     *  declared by the 1983 library and never implemented here.
+     */
+    case 82: return primitive_value_with_arguments(0);
+
+    /*
+     *  201-206 and 221-222: BlockClosure.  Squeak's numbers, kept because
+     *  ported Pharo source declares them.  Every one fails harmlessly in a
+     *  build with no BlockClosure, because ST_is_block_closure answers no.
+     */
+    case 201: return primitive_closure_value(0);
+    case 202: return primitive_closure_value(1);
+    case 203: return primitive_closure_value(2);
+    case 204: return primitive_closure_value(3);
+    case 205: return primitive_closure_value(4);
+    case 206: return primitive_value_with_arguments(1);
+    case 221: return primitive_closure_value(0);
+    case 222: return primitive_closure_value(1);
+
     case 110: return primitive_equivalent();
     case 111: return primitive_class();
     default:  return 0;

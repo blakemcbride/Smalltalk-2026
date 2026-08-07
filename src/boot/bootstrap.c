@@ -364,6 +364,7 @@ make_string_object(const char *text)
 static int place_in_symbol_table(st_oop sym);
 static int remember_source(const char *text, unsigned *file_index,
                            size_t *position);
+static void install_closure_support(void);
 uint32_t BOOT_string_hash_of_text(const char *text, size_t length);
 static int adopt_symbols(void);
 static int adopt_associations(void);
@@ -2030,9 +2031,42 @@ boot_build_locked(const char *const *paths, unsigned path_count,
             return -1;
     }
 
+    install_closure_support();
     return 0;
 }
 
+
+/*
+ *  Tell the VM where BlockClosure is, if the profile loaded one.
+ *
+ *  Not a guaranteed object pointer: the Blue Book's table ends at 56 and a
+ *  bb build reads a real 1983 image where the numbers above that are
+ *  ordinary objects.  The VM-state slots are the right home, and they carry
+ *  through a snapshot, which a C static would not.
+ *
+ *  A profile without BlockClosure leaves the slot nil, and then every
+ *  closure primitive fails and the closure bytecodes are unreachable.  That
+ *  is not a degraded mode, it is the Blue Book, and it is what the bb build
+ *  runs.
+ */
+static void
+install_closure_support(void)
+{
+    st_oop  closure_class = BOOT_global("BlockClosure");
+
+    if (OM_is_present(closure_class)) {
+        st_om_vm_state[ST_VM_CLASS_BLOCK_CLOSURE] = closure_class;
+        OM_increase_ref(closure_class);
+    }
+    {
+        st_oop  selector = BOOT_intern_symbol("aboutToReturn:through:", NULL);
+
+        if (OM_is_present(selector)) {
+            st_om_vm_state[ST_VM_SELECTOR_ABOUT_TO_RETURN] = selector;
+            OM_increase_ref(selector);
+        }
+    }
+}
 
 /*
  *  BOOT_build kept the caller's result pointer in a static so that later

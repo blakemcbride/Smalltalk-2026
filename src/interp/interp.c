@@ -314,6 +314,8 @@ provide_roots(om_visit_fn visit)
     visit(SCHED_pending_process());
     visit(st_om_vm_state[ST_VM_INPUT_SEMAPHORE]);
     visit(st_om_vm_state[ST_VM_DISPLAY]);
+    visit(st_om_vm_state[ST_VM_CLASS_BLOCK_CLOSURE]);
+    visit(st_om_vm_state[ST_VM_SELECTOR_ABOUT_TO_RETURN]);
     if (extra_roots)
         extra_roots(visit);
 }
@@ -552,6 +554,107 @@ ST_activate_block(st_oop block, uint32_t argc)
     store_context_registers();
     ++st_vm.call_depth;
     set_active_context(block);
+    return 1;
+}
+
+/*
+ *  Is this a BlockClosure?
+ *
+ *  Through the VM-state slot rather than a guaranteed pointer, so that a
+ *  build with no BlockClosure loaded -- the Blue Book one, and the bb build
+ *  reading the 1983 image -- answers no to everything and never reaches any
+ *  of the code below.  That is the whole of how the two block mechanisms
+ *  coexist.
+ */
+int
+ST_is_block_closure(st_oop p)
+{
+    st_oop  closure_class = st_om_vm_state[ST_VM_CLASS_BLOCK_CLOSURE];
+
+    return OM_is_present(closure_class) && OM_is_object(p)
+        && OM_fetch_class(p) == closure_class;
+}
+
+/*
+ *  Activating a closure.  Beside ST_activate_block for the same reason: it
+ *  is a context switch and the registers live here.
+ *
+ *  The difference from a BlockContext is the whole point.  A BlockContext IS
+ *  the frame, so activating one writes into the object somebody is holding,
+ *  and its variables live in the home method's temporaries.  A closure is
+ *  only a description; each activation builds a MethodContext of its own,
+ *  whose field 4 names the closure it is running, and whose temporary frame
+ *  holds the arguments and the copied values.  fetch_context_registers
+ *  needs no change for that: it already takes anything that is not a
+ *  BlockContext as its own home, so the temporary bytecodes address this
+ *  frame rather than an enclosing one.
+ */
+int
+ST_activate_closure(st_oop closure, uint32_t argc)
+{
+    st_oop      outer;
+    st_oop      method;
+    st_oop      receiver;
+    st_oop      ctx;
+    uint32_t    copied;
+    uint32_t    slots;
+    uint32_t    i;
+
+    outer = OM_fetch_pointer(ST_CLOSURE_OUTER_CONTEXT, closure);
+    if (!OM_is_present(outer))
+        return 0;
+    /*
+     *  The method and receiver come from the closure's birthplace, and a
+     *  closure activation carries both, so this reads correctly however
+     *  deeply closures are nested.  Note do_return nils a returning
+     *  context's sender and ip but leaves its method and receiver intact --
+     *  which is exactly what lets a closure outlive its creator.
+     */
+    method   = OM_fetch_pointer(ST_CTX_METHOD, outer);
+    receiver = OM_fetch_pointer(ST_CTX_RECEIVER, outer);
+    if (!OM_is_object(method))
+        return 0;
+
+    copied = OM_fetch_word_length(closure);
+    if (copied < ST_CLOSURE_FIRST_COPIED)
+        return 0;
+    copied -= ST_CLOSURE_FIRST_COPIED;
+
+    slots = ST_header_large_context(method_header(method))
+                ? ST_LARGE_CONTEXT_SLOTS : ST_SMALL_CONTEXT_SLOTS;
+    if (argc + copied + ST_CTX_TEMP_FRAME_START > slots)
+        return 0;                   /*  the frame cannot hold them  */
+
+    ctx = OM_instantiate_pointers(ST_CLASS_METHOD_CONTEXT, slots);
+    if (!OM_is_object(ctx))
+        return 0;
+
+    /*
+     *  The frame is [arguments][copied values][the block's own temporaries
+     *  and working stack], which is what the operand indices of the remote
+     *  temporary bytecodes are counted against.
+     */
+    for (i = 0; i < argc; ++i)
+        OM_store_pointer(ST_CTX_TEMP_FRAME_START + i, ctx,
+                         ST_stack_value(argc - 1 - i));
+    for (i = 0; i < copied; ++i)
+        OM_store_pointer(ST_CTX_TEMP_FRAME_START + argc + i, ctx,
+                         OM_fetch_pointer(ST_CLOSURE_FIRST_COPIED + i,
+                                          closure));
+    ST_pop_n(argc + 1);
+
+    OM_store_pointer(ST_CTX_SENDER,   ctx, st_vm.active_context);
+    OM_store_pointer(ST_CTX_IP,       ctx,
+                     OM_fetch_pointer(ST_CLOSURE_STARTPC, closure));
+    OM_store_pointer(ST_CTX_SP,       ctx,
+                     OM_int_oop((st_int) (argc + copied)));
+    OM_store_pointer(ST_CTX_METHOD,   ctx, method);
+    OM_store_pointer(ST_CTX_CLOSURE,  ctx, closure);
+    OM_store_pointer(ST_CTX_RECEIVER, ctx, receiver);
+
+    store_context_registers();
+    ++st_vm.call_depth;
+    set_active_context(ctx);
     return 1;
 }
 
@@ -1060,6 +1163,127 @@ ST_interp_run(uint64_t limit)
         case 135: ST_pop_n(1); break;
         case 136: ST_push(ST_stack_top()); break;
         case 137: ST_push(st_vm.active_context); break;
+
+        /*
+         *  ----------  138, 140-143: the closure set  ----------
+         *
+         *  Squeak's V3PlusClosures assignment, which occupies exactly the
+         *  codes the Blue Book leaves unassigned.  None of these is emitted
+         *  when compiling in the Blue Book dialect, and none is reachable at
+         *  all in a build with no BlockClosure, so the 1983 image never
+         *  meets one.
+         */
+
+        /*
+         *  138: push a new Array.  The top bit of the operand says the
+         *  elements come off the stack, deepest first, which is how a
+         *  dynamic array { a. b } is built; without it the array arrives
+         *  full of nil, which is how a shared temporary vector starts.
+         */
+        case 138: {
+            uint8_t     descriptor = next_byte();
+            uint32_t    size = descriptor & 127;
+            st_oop      array = OM_instantiate_pointers(ST_CLASS_ARRAY, size);
+
+            if (!OM_is_object(array)) {
+                st_vm.running = 0;
+                break;
+            }
+            if (descriptor & 128) {
+                uint32_t    i;
+
+                for (i = 0; i < size; ++i)
+                    OM_store_pointer(i, array, ST_stack_value(size - 1 - i));
+                ST_pop_n(size);
+            }
+            ST_push(array);
+            break;
+        }
+
+        /*
+         *  140-142: a temporary shared with a block that outlives its
+         *  frame.  It lives in an Array held by a frame slot -- the vector
+         *  -- so that copying the vector into a closure shares the variable
+         *  rather than its value.  The operands are the slot within the
+         *  vector and then the frame temporary holding the vector.
+         */
+        case 140: {
+            uint32_t    index = next_byte();
+            uint32_t    vector = next_byte();
+
+            ST_push(OM_fetch_pointer(index,
+                        OM_fetch_pointer(ST_CTX_TEMP_FRAME_START + vector,
+                                         st_vm.home_context)));
+            break;
+        }
+        case 141: {
+            uint32_t    index = next_byte();
+            uint32_t    vector = next_byte();
+
+            OM_store_pointer(index,
+                OM_fetch_pointer(ST_CTX_TEMP_FRAME_START + vector,
+                                 st_vm.home_context),
+                ST_stack_top());
+            break;
+        }
+        case 142: {
+            uint32_t    index = next_byte();
+            uint32_t    vector = next_byte();
+
+            OM_store_pointer(index,
+                OM_fetch_pointer(ST_CTX_TEMP_FRAME_START + vector,
+                                 st_vm.home_context),
+                ST_pop());
+            break;
+        }
+
+        /*
+         *  143: make a closure and skip its body.
+         *
+         *  The body is inline in the enclosing method, so the closure needs
+         *  only where it starts; the jump past it is part of this bytecode
+         *  rather than a separate one, which is where it differs from the
+         *  Blue Book's blockCopy: followed by a jump.
+         */
+        case 143: {
+            uint8_t     counts = next_byte();
+            uint32_t    high = next_byte();
+            uint32_t    low = next_byte();
+            uint32_t    block_size = high * 256 + low;
+            uint32_t    argc = counts & 15;
+            uint32_t    copied = (uint32_t) counts >> 4;
+            st_oop      closure_class =
+                            st_om_vm_state[ST_VM_CLASS_BLOCK_CLOSURE];
+            st_oop      closure;
+            uint32_t    i;
+
+            if (!OM_is_present(closure_class)) {
+                fprintf(stderr, "st80: a closure was built with no "
+                                "BlockClosure loaded\n");
+                st_vm.running = 0;
+                break;
+            }
+            closure = OM_instantiate_pointers(closure_class,
+                                              ST_CLOSURE_FIRST_COPIED + copied);
+            if (!OM_is_object(closure)) {
+                st_vm.running = 0;
+                break;
+            }
+            OM_store_pointer(ST_CLOSURE_OUTER_CONTEXT, closure,
+                             st_vm.active_context);
+            /*  One-relative, like every instruction pointer in a context.  */
+            OM_store_pointer(ST_CLOSURE_STARTPC, closure,
+                             OM_int_oop((st_int) st_vm.instruction_pointer + 1));
+            OM_store_pointer(ST_CLOSURE_NUM_ARGS, closure,
+                             OM_int_oop((st_int) argc));
+            for (i = 0; i < copied; ++i)
+                OM_store_pointer(ST_CLOSURE_FIRST_COPIED + i, closure,
+                                 ST_stack_value(copied - 1 - i));
+            ST_pop_n(copied);
+            ST_push(closure);
+            st_vm.instruction_pointer += block_size;
+            break;
+        }
 
         /*  144-151: unconditional short jump  */
         case 144: case 145: case 146: case 147:
