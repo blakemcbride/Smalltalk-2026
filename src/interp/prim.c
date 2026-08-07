@@ -763,6 +763,90 @@ copy_block_for_activation(st_oop block)
  *  aliases here, since a process switch is decided once per bytecode rather
  *  than at a send, so there is nothing to suppress.
  */
+/*
+ *  248: Object>>primitiveReportOnStandardError: aString
+ *
+ *  A headless image has no way to say anything.  Transcript is a
+ *  TextCollector: it draws, and drawing is exactly what is unavailable when
+ *  there is no screen -- so an unhandled error could only be seen by the
+ *  one means that was not there.  One line to stderr costs nothing and
+ *  makes every headless diagnostic possible, this one first.
+ */
+static int
+primitive_report_on_standard_error(void)
+{
+    st_oop      text = ST_stack_value(0);
+    uint32_t    n;
+    uint32_t    i;
+
+    if (!OM_is_object(text))
+        return 0;
+    /*
+     *  Silent when the VM's own reporting is off.  The bootstrap turns it
+     *  off deliberately for the first pass of the class initializers, which
+     *  is expected to fail partway; a report that ignored that would print
+     *  the same handful of failures on every build and teach nobody
+     *  anything.
+     */
+    if (ST_errors_reported()) {
+        n = OM_fetch_byte_length(text);
+        for (i = 0; i < n; ++i)
+            fputc(OM_fetch_byte(i, text), stderr);
+        fputc('\n', stderr);
+        fflush(stderr);
+    }
+    ST_pop_n(1);                    /*  answers the receiver  */
+    return 1;
+}
+
+/*  Is this object a context of either kind?  */
+static int
+is_a_context(st_oop p)
+{
+    st_oop  cls;
+
+    if (!OM_is_object(p))
+        return 0;
+    cls = OM_fetch_class(p);
+    return cls == ST_CLASS_METHOD_CONTEXT || cls == ST_CLASS_BLOCK_CONTEXT;
+}
+
+/*
+ *  246: ContextPart>>return: value.  Abandon everything up to and including
+ *  the receiver, and let the send that created it answer `value`.
+ */
+static int
+primitive_context_return(void)
+{
+    st_oop  ctx   = ST_stack_value(1);
+    st_oop  value = ST_stack_value(0);
+
+    if (!is_a_context(ctx))
+        return 0;
+    if (!OM_is_present(OM_fetch_pointer(ST_CTX_SENDER, ctx)))
+        return 0;                   /*  nothing to answer to  */
+    ST_pop_n(2);
+    ST_return_to(value, ctx);
+    return 1;
+}
+
+/*
+ *  247: ContextPart>>resume: value.  Carry on where the receiver stopped,
+ *  as though the send it was waiting on had answered `value`.
+ */
+static int
+primitive_context_resume(void)
+{
+    st_oop  ctx   = ST_stack_value(1);
+    st_oop  value = ST_stack_value(0);
+
+    if (!is_a_context(ctx))
+        return 0;
+    ST_pop_n(2);
+    ST_resume_at(value, ctx);
+    return 1;
+}
+
 static int
 primitive_closure_value(uint32_t argc)
 {
@@ -1458,6 +1542,17 @@ ST_primitive_dispatch(unsigned index)
          */
         ST_pop_n(3);
         return 1;
+    /*
+     *  246 and 247: jumping to a context, which the exception library
+     *  cannot say in Smalltalk.  This system's own numbers -- the reserved
+     *  240-255 block, documented in doc/CONCURRENCY.md -- because Squeak
+     *  builds Context>>return: out of process machinery this VM does not
+     *  have and ported source never names a number for it.
+     */
+    case 246: return primitive_context_return();
+    case 248: return primitive_report_on_standard_error();
+    case 247: return primitive_context_resume();
+
     /*
      *  82: BlockContext>>valueWithArguments:, a Blue Book number that was
      *  declared by the 1983 library and never implemented here.

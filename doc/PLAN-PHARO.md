@@ -300,7 +300,7 @@ still passes in Blue Book dialect — it compares against the image's *own* 1983
 any unconditional change to block emission fails there loudly; closure bytecode tests match
 the verified tables.
 
-### E — Non-local return, unwinding, exceptions
+### E — Non-local return, unwinding, exceptions *(done)*
 Rewrite `return_value` (`interp.c:598-606`) so the `ST_CLASS_BLOCK_CONTEXT` arm is *literally
 the three lines it is today* and everything new is in the `else`. **Do not touch `do_return`** —
 the nil-sender bottom-of-the-world stop is what `-eval` depends on (`main.c:504-530`).
@@ -324,10 +324,36 @@ into `Error>>defaultAction`; `doesNotUnderstand:` keeps its `tryCopyingCodeFor:`
 then signals `MessageNotUnderstood`. Every existing caller is unchanged, unhandled errors
 still open the same debugger, and `on:do:` now works.
 
-**Gate:** `[1/0] on: ZeroDivide do: [:e | e return: 42]` → 42; `[^1] ensure: [flag := true]`
-sets the flag; `nil foo` raises a catchable `MessageNotUnderstood`; an unhandled error still
-reaches `NotifierView`; `test_compile_inspect_debug` and `test_browsing` still pass; a
-headless bootstrap reports errors as **text**, never by drawing.
+**Gate, as met.** `[1/0] on: ZeroDivide do: [:e | e return: 42]` answers 42. A `^` out
+through an `ensure:` runs the unwind block and not the statement after it; **two nested
+`ensure:`s both run, innermost first** — the case these implementations usually get wrong.
+`ifCurtailed:` runs its block only on the early exit. `nil foo` is a catchable
+`MessageNotUnderstood` whose handler can read `e message selector`. `retry`, `pass` and
+`resume:` work. Unhandled errors report as text *and* still reach `NotifierView`.
+`test_compile_inspect_debug` and `test_browsing` pass; `trace2`/`trace3` byte-exact.
+
+**Two bugs found on the way, both older than this phase.**
+
+`ST_SELECTOR_DOES_NOT_UNDERSTAND` and its three companions were allocated as **empty
+objects whose text was never filled in**, and never interned. The bootstrap table has
+carried the spelling since the file was written and nothing read it — so the interpreter
+looked up a blank symbol, matched nothing, and **`doesNotUnderstand:` had never once been
+sent to the image**: every unhandled message went to the VM's own fallback report instead
+of the 1983 `NotifierView` the library expects. `mustBeBoolean`, `cannotReturn:` and
+`cannotInterpret` were in the same state. Filling them is only half the fix; they must
+also be interned, or the next mention of the same characters makes a second Symbol and the
+fixed pointer still finds nothing.
+
+And a headless image had **no way to say anything**. `Transcript` is a `TextCollector`: it
+draws, and drawing is exactly what is missing when there is no screen — so an unhandled
+error could only be reported by the one means that was unavailable. Primitive 248 writes a
+String to stderr, and respects the same reporting switch the VM's own diagnostics use, so
+the bootstrap's deliberately-silent first initializer pass stays silent.
+
+**Still open:** `signal` walks the sender chain on every raise, which is fine at this scale
+and is the obvious thing to make faster later; and `resume:` is only correct for
+exceptions signalled from a context that is still live, which is what `isResumable` is
+for.
 
 ### F — The Pharo object model
 This is what "load Pharo's kernel" costs, and it is the phase most likely to be revised

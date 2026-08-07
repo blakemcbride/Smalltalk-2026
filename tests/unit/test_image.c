@@ -41,13 +41,17 @@
 #define BLUEBOOK_CLASSES        226
 #define BLUEBOOK_METHODS        4521
 #define BLUEBOOK_CATEGORIES     41
-#define LIB_CLASSES             1       /*  BlockClosure          */
-#define LIB_METHODS             15
-#define LIB_CATEGORIES          1       /*  Kernel-Closures       */
+#define LIB_CLASSES             7       /*  BlockClosure, the exceptions,
+                                            and the Unwind fixture         */
+#define LIB_METHODS             81
+#define LIB_CATEGORIES          3       /*  Kernel-Closures, -Exceptions,
+                                            Probe-Core                     */
 #define MAX_SOURCES 512
 
 static char     paths[MAX_SOURCES][256];
 static unsigned path_count;
+/*  Where the Blue Book files stop and ours begin.  */
+static unsigned first_of_ours;
 static int      built;
 
 static int
@@ -68,15 +72,36 @@ load_manifest(void)
     }
     fclose(f);
     /*
-     *  And the closure package, which is ours rather than Xerox's and so
-     *  lives in lib/ -- sources/ is frozen.  Without it the closure
-     *  bytecodes have no BlockClosure to make and every closure expression
-     *  stops the interpreter, which is exactly the arrangement that keeps
-     *  the 1983 image from ever meeting one.
+     *  And ours, which live in lib/ because sources/ is frozen.  Without
+     *  BlockClosure the closure bytecodes have nothing to make and every
+     *  closure expression stops the interpreter, which is exactly the
+     *  arrangement that keeps the 1983 image from ever meeting one.
+     *
+     *  These are the files profiles/st2026.profile names, listed again
+     *  because this test builds its image directly rather than through a
+     *  profile.  They compile as CLOSURES; everything above is Blue Book.
      */
-    if (path_count < MAX_SOURCES)
-        snprintf(paths[path_count++], sizeof paths[0],
-                 "lib/Kernel/BlockClosure.class.st");
+    {
+        static const char *const ours[] = {
+            "lib/Kernel/BlockClosure.class.st",
+            "lib/Kernel-Exceptions/Exception.class.st",
+            "lib/Kernel-Exceptions/Error.class.st",
+            "lib/Kernel-Exceptions/Warning.class.st",
+            "lib/Kernel-Exceptions/ZeroDivide.class.st",
+            "lib/Kernel-Exceptions/MessageNotUnderstood.class.st",
+            "lib/Kernel-Exceptions/BlockClosure.extension.st",
+            "lib/Kernel-Exceptions/ContextPart.extension.st",
+            "lib/Kernel-Exceptions/Object.extension.st",
+            "lib/Kernel-Exceptions/SmallInteger.extension.st",
+            "lib/Probe/Unwind.class.st"
+        };
+        unsigned    k;
+
+        first_of_ours = path_count;
+        for (k = 0; k < sizeof ours / sizeof ours[0]
+                 && path_count < MAX_SOURCES; ++k)
+            snprintf(paths[path_count++], sizeof paths[0], "%s", ours[k]);
+    }
     return path_count > 0;
 }
 
@@ -89,9 +114,17 @@ build_once(void)
 
     for (i = 0; i < path_count; ++i)
         list[i] = paths[i];
-    if (BOOT_build(list, path_count, &res) != 0) {
-        printf("  bootstrap failed: %s\n", res.error);
-        return 0;
+    {
+        static int  dialects[MAX_SOURCES];
+        unsigned    k;
+
+        for (k = 0; k < path_count; ++k)
+            dialects[k] = (k >= first_of_ours) ? ST_DIALECT_CLOSURES
+                                               : ST_DIALECT_BLUE_BOOK;
+        if (BOOT_build_dialects(list, dialects, path_count, &res) != 0) {
+            printf("  bootstrap failed: %s\n", res.error);
+            return 0;
+        }
     }
     printf("  %u classes, %u methods, %u symbols\n", res.classes_created,
            res.methods_compiled, res.symbols_interned);
@@ -467,6 +500,96 @@ test_closures(void)
     test_dialect = ST_DIALECT_BLUE_BOOK;
     check_integer("| b c | c := [:m | m * 10]. b := [:n | (c value: 99). n]. "
                   "^b value: 7", 99);
+}
+
+/*
+ *  Exceptions.
+ *
+ *  Smalltalk-80 has none.  It has Object>>error:, which opens a debugger,
+ *  and the convention of passing a block to run when something is not
+ *  found; neither can be caught and neither lets a caller decide.
+ *
+ *  What makes this implementable is that a marked frame can be found by
+ *  walking senders.  on:do: declares <primitive: 199> and ensure: declares
+ *  <primitive: 198>; neither number is implemented, an unimplemented
+ *  primitive fails, so the Smalltalk body runs and the number is left on
+ *  the frame as a LABEL.  D0 asked the shipped 1983 image whether it uses
+ *  either for anything real: its highest primitive is 135.
+ */
+static void
+test_exceptions(void)
+{
+    test_dialect = ST_DIALECT_CLOSURES;
+
+    /*  Catching, and the value of the protected block when nothing is
+        signalled.  */
+    check_integer("[3 + 4] on: Error do: [:e | 0]", 7);
+    check_integer("[Error new signal] on: Error do: [:e | 42]", 42);
+    check_integer("[Error new signal] on: Error do: [:e | e return: 5]", 5);
+
+    /*  The class hierarchy decides what a handler catches.  */
+    check_oop("[Error new signal] on: Exception do: [:e | true]", ST_TRUE,
+              "true");
+    check_integer("[[Error new signal] on: ZeroDivide do: [:e | 1]] "
+                  "on: Error do: [:e | 2]", 2);
+    check_oop("[Warning new signal] on: Error do: [:e | true]", ST_NIL,
+              "nil, from the default action");
+
+    /*  The gate the plan names.  */
+    check_integer("[1/0] on: ZeroDivide do: [:e | e return: 42]", 42);
+    check_integer("[nil foo] on: MessageNotUnderstood do: [:e | 1]", 1);
+    check_integer("[nil error: 'x'] on: Error do: [:e | 9]", 9);
+
+    /*  retry, pass and resume.  */
+    check_integer("| n | n := 0. ^[n := n + 1. n < 3 ifTrue: [Error new signal]. n] "
+                  "on: Error do: [:e | e retry]", 3);
+    check_integer("[[Error new signal] on: Error do: [:e | e pass]] "
+                  "on: Error do: [:e | 8]", 8);
+    check_integer("[Warning new signal] on: Warning do: [:e | e resume: 9]", 9);
+
+    /*  Ordinary division is unaffected by the ZeroDivide override.  */
+    check_integer("7 // 2", 3);
+    check_integer("7 \\\\ 2", 1);
+    check_integer("(1/2) denominator", 2);
+
+    /*
+     *  Unwinding.  These need real methods: in a doIt every ^ targets the
+     *  doIt and there is nothing left to look at afterwards.  Unwind
+     *  records what happened in what order, which is the whole question.
+     */
+    check_oop("Unwind reset. ^Unwind normal",
+              BOOT_intern_symbol("normal", NULL), "#normal");
+    check_integer("Unwind reset. Unwind normal. ^Unwind trace size", 3);
+    check_oop("Unwind reset. ^Unwind earlyReturn",
+              BOOT_intern_symbol("early", NULL), "#early");
+    /*  body and unwound, and NOT the statement after the ensure:.  */
+    check_integer("Unwind reset. Unwind earlyReturn. ^Unwind trace size", 2);
+    check_oop("Unwind reset. Unwind earlyReturn. ^Unwind trace last",
+              BOOT_intern_symbol("unwound", NULL), "#unwound");
+
+    /*  Two ensure: frames between the ^ and its home: both run, inner
+        first.  This is the case these implementations usually get wrong. */
+    check_integer("Unwind reset. Unwind nested. ^Unwind trace size", 3);
+    check_oop("Unwind reset. Unwind nested. ^Unwind trace at: 2",
+              BOOT_intern_symbol("inner", NULL), "#inner");
+    check_oop("Unwind reset. Unwind nested. ^Unwind trace at: 3",
+              BOOT_intern_symbol("outer", NULL), "#outer");
+
+    /*  ifCurtailed: runs only when the receiver does not finish.  */
+    check_integer("Unwind reset. Unwind curtailedNormally. ^Unwind trace size",
+                  1);
+    check_integer("Unwind reset. Unwind curtailedEarly. ^Unwind trace size", 2);
+
+    /*
+     *  And a block returning from a method that has already returned.  The
+     *  VM sends cannotReturn:, which until this package existed nothing
+     *  implemented -- so it stopped quietly and kept the value, which looks
+     *  exactly like success.
+     */
+    check_oop("[Unwind escapingBlock value] on: Error do: [:e | true]",
+              ST_TRUE, "true");
+
+    test_dialect = ST_DIALECT_BLUE_BOOK;
 }
 
 /*
@@ -1164,7 +1287,7 @@ test_browsing(void)
      *  zero -- which a CompiledMethod reads as "no source at all".  See
      *  test_every_method_can_find_its_source.
      */
-    check_integer("(SourceFiles at: 1) contents size", 1204427);
+    check_integer("(SourceFiles at: 1) contents size", 1213433);
 }
 
 /*
@@ -2005,6 +2128,7 @@ main(void)
     test_blocks_activate_separately();
     test_every_method_can_find_its_source();
     test_closures();
+    test_exceptions();
 
     OM_shutdown();
     return ST_TEST_END();

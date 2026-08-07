@@ -1763,17 +1763,41 @@ allocate_fixed_objects(void)
             p = OM_instantiate_pointers(ST_NIL, CLASS_FIXED_FIELDS
                                                 + CLASS_PLACEHOLDER_EXTRA);
             break;
-        case FIX_SYMBOL:
+        case FIX_SYMBOL: {
+            /*
+             *  A selector the interpreter sends by fixed pointer, and it has
+             *  to spell something.
+             *
+             *  These were allocated empty and left empty -- the table has
+             *  carried the text since the file was written and nothing read
+             *  it.  So the VM looked up a BLANK symbol, matched nothing, and
+             *  doesNotUnderstand: was never once sent to the image in the
+             *  history of this bootstrap: every unhandled message went to
+             *  the VM's own fallback report instead of to the 1983
+             *  NotifierView the library expects.  mustBeBoolean,
+             *  cannotReturn: and cannotInterpret were in the same state.
+             *
+             *  Filling them is only half of it.  They must also be INTERNED,
+             *  or the next mention of the same characters makes a second
+             *  Symbol, the method is installed under that one, and the
+             *  interpreter looking up the fixed pointer still finds nothing.
+             */
+            size_t  n = fixed[i].text ? strlen(fixed[i].text) : 0;
+            size_t  k;
+
+            p = OM_instantiate_bytes(ST_NIL, (uint32_t) n);
+            if (!OM_is_object(p))
+                break;
+            for (k = 0; k < n; ++k)
+                OM_store_byte((uint32_t) k, p, (uint8_t) fixed[i].text[k]);
+            OM_increase_ref(p);
+            symbol_remember(p);
+            break;
+        }
         case FIX_SYSTEM_DICT:
         case FIX_ASSOCIATION:
         case FIX_ARRAY:
-            /*
-             *  Symbols are byte objects and the rest are pointer objects,
-             *  but all of them are filled in later; what matters here is
-             *  only that each takes the next index.
-             */
-            p = OM_instantiate_pointers(ST_NIL,
-                    fixed[i].kind == FIX_SYMBOL ? 0 : fixed[i].size);
+            p = OM_instantiate_pointers(ST_NIL, fixed[i].size);
             break;
         }
         if (fixed[i].kind == FIX_CLASS && fixed[i].text

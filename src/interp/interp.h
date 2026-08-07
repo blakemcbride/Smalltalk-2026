@@ -258,6 +258,10 @@ void    ST_print_object(st_oop p, char *buf, size_t buflen);
 /*  Where the running send came from, innermost first.  Diagnostics only.  */
 unsigned    ST_method_primitive_index(st_oop method);
 int         ST_activate_closure(st_oop closure, uint32_t argc);
+/*  Complete the send that made `ctx`, with `value`.  Primitive 246.  */
+void        ST_return_to(st_oop value, st_oop ctx);
+/*  Make `ctx` current again, `value` being what it was waiting for.  247.  */
+void        ST_resume_at(st_oop value, st_oop ctx);
 /*  Is this a BlockClosure?  False in a build with no BlockClosure at all.  */
 int         ST_is_block_closure(st_oop p);
 void        ST_report_backtrace(void);

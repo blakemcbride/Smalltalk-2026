@@ -707,6 +707,44 @@ do_return(st_oop result, st_oop to_context, int from_block)
 }
 
 /*
+ *  ----------  Jumping to a context  ----------
+ *
+ *  Two operations the exception library cannot express in Smalltalk, both
+ *  of them do_return's machinery under a different name.
+ *
+ *  ST_return_to abandons the running context and everything it called, and
+ *  completes the send that created `ctx` with `value` -- which is how a
+ *  handler makes its on:do: answer.  ST_resume_at goes the other way: it
+ *  makes a suspended context current again with `value` pushed as the
+ *  result of the send it stopped at, which is what a resumable exception
+ *  needs.
+ *
+ *  Neither stores the outgoing registers, for the same reason do_return
+ *  does not: the context they are leaving is not coming back.
+ */
+void
+ST_return_to(st_oop value, st_oop ctx)
+{
+    st_oop  sender;
+
+    if (!OM_is_object(ctx))
+        return;
+    sender = OM_fetch_pointer(ST_CTX_SENDER, ctx);
+    do_return(value, sender, 0);
+}
+
+void
+ST_resume_at(st_oop value, st_oop ctx)
+{
+    if (!OM_is_object(ctx))
+        return;
+    OM_store_pointer(ST_CTX_SENDER, st_vm.active_context, ST_NIL);
+    OM_store_pointer(ST_CTX_IP, st_vm.active_context, ST_NIL);
+    set_active_context(ctx);
+    ST_push(value);
+}
+
+/*
  *  The first unwind-protected context strictly between `from` and `home`,
  *  or nil; *home_found says whether home was reached at all.
  *
