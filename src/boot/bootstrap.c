@@ -362,7 +362,8 @@ make_string_object(const char *text)
 }
 
 static int place_in_symbol_table(st_oop sym);
-static size_t remember_source(const char *text);
+static int remember_source(const char *text, unsigned *file_index,
+                           size_t *position);
 uint32_t BOOT_string_hash_of_text(const char *text, size_t length);
 static int adopt_symbols(void);
 static int adopt_associations(void);
@@ -759,9 +760,51 @@ static unsigned     method_protocol_capacity;
  *  position: and nextChunk, which any PositionableStream does -- so the
  *  sources live in a String and the image reads them the ordinary way.
  */
-static char        *source_text;
-static size_t       source_length;
-static size_t       source_capacity;
+/*
+ *  Where method source is kept, and why there is more than one of it.
+ *
+ *  Chapter 27 puts a method's source location in the last three bytes of
+ *  the CompiledMethod: twenty-two bits of position and, above them, two
+ *  bits naming one of four files.  Convention gives 1 to .sources and 2 to
+ *  .changes, so a build that outgrows one file spills into 3 and then 4.
+ *
+ *  Two things about that trailer are load-bearing and were not respected.
+ *
+ *  Twenty-two bits is 4,194,303, and beyond it the position simply would
+ *  not fit -- so the old code STORED NOTHING and said nothing, which is the
+ *  worst of the available behaviours: every method past the boundary loses
+ *  its source and the Browser shows an empty pane with no explanation.  The
+ *  1983 library is 1.4 MB and never came near it; a Pharo-scale one does.
+ *  It is now reported, and there are three files rather than one.
+ *
+ *  And position ZERO means "no source" to CompiledMethod>>getSource, so
+ *  whatever landed at offset 0 was invisible.  Exactly one method did --
+ *  the first one compiled, ArrayedCollection class>>new -- and it has been
+ *  sourceless since the bootstrap was written.  A single filler byte at the
+ *  front of each file means nothing starts at zero.
+ */
+#define SOURCE_FILES        4
+#define SOURCE_CHANGES      1       /*  index 2 to the image; stays empty  */
+/*
+ *  62 << 16 rather than the full 22 bits: setSourcePosition:inFile: warns
+ *  on the Transcript above that, and a build that prints "Source file is
+ *  getting full" thousands of times has told nobody anything.
+ */
+#define SOURCE_FILE_LIMIT   (62u << 16)
+
+typedef struct {
+    char       *text;
+    size_t      length;
+    size_t      capacity;
+} source_file;
+
+static source_file  source_files[SOURCE_FILES];
+static unsigned     source_current;     /*  which file is being filled  */
+static unsigned     source_overflowed;  /*  methods that lost their source */
+
+/*  Kept for the code that reports on the whole of it.  */
+#define source_text     (source_files[0].text)
+#define source_length   (source_files[0].length)
 
 unsigned
 BOOT_undeclared(const char **names, unsigned max)
@@ -1415,15 +1458,30 @@ compile_into(boot_class *c, int class_side, const char *source,
      *  of the position and, above those, the file number.
      */
     {
-        size_t      position = remember_source(source);
+        unsigned    file_index = 0;
+        size_t      position = 0;
         uint32_t    size = OM_fetch_byte_length(res.method);
 
-        if (size >= 3 && position <= 0x3FFFFF) {
+        if (!remember_source(source, &file_index, &position)) {
+            /*
+             *  Loud, and once.  Losing a method's source is invisible from
+             *  inside -- the Browser simply shows an empty pane -- so the
+             *  only place it can be reported is here.
+             */
+            if (source_overflowed == 1)
+                boot_note("%s:%u: out of source-file room; methods from here "
+                          "on will have no source", file, line);
+        }  else if (size >= 3) {
             OM_store_byte(size - 3, res.method, (uint8_t) (position & 0xFF));
             OM_store_byte(size - 2, res.method,
                           (uint8_t) ((position >> 8) & 0xFF));
+            /*
+             *  The top two bits name the file, one-relative to the image:
+             *  CompiledMethod>>fileIndex is "self last // 64 + 1".
+             */
             OM_store_byte(size - 1, res.method,
-                          (uint8_t) ((position >> 16) & 0x3F));
+                          (uint8_t) (((file_index & 3) << 6)
+                                     | ((position >> 16) & 0x3F)));
         }
     }
 
@@ -1864,6 +1922,21 @@ reset_bootstrap_state(void)
     symbol_index_size = 0;
 
     method_protocol_count = 0;
+
+    /*
+     *  The source files, which nothing used to reset -- so a second build
+     *  in one process appended to the first one's text and carried its
+     *  length forward.  Harmless while the positions were still monotonic
+     *  and fatal once there is a per-file limit to run into.
+     */
+    for (i = 0; i < SOURCE_FILES; ++i) {
+        free(source_files[i].text);
+        source_files[i].text     = NULL;
+        source_files[i].length   = 0;
+        source_files[i].capacity = 0;
+    }
+    source_current    = 0;
+    source_overflowed = 0;
 }
 
 static int
@@ -2050,37 +2123,79 @@ adopt_associations(void)
 }
 
 /*
- *  Append one method's source in chunk format and answer where it started.
+ *  Append one method's source in chunk format, answering which file it went
+ *  in and where it started.
  *
  *  A bang inside the text is doubled, which is the chunk format's own escape
- *  and what nextChunk undoes on the way back out.
+ *  and what nextChunk undoes on the way back out.  Answers 0 when there is
+ *  nowhere left to put it, which the caller reports.
  */
-static size_t
-remember_source(const char *text)
+static int
+remember_source(const char *text, unsigned *file_index, size_t *position)
 {
-    size_t  start = source_length;
-    size_t  i;
-    size_t  n = strlen(text);
+    size_t          n = strlen(text);
+    size_t          doubled = 0;
+    size_t          i;
+    source_file    *f;
 
+    for (i = 0; i < n; ++i) {
+        if (text[i] == '!')
+            ++doubled;
+    }
+    /*  The text, its doubled bangs, the terminating bang, and the filler.  */
+    {
+        size_t  want = n + doubled + 2;
+
+        while (source_current < SOURCE_FILES) {
+            size_t  have = source_files[source_current].length;
+
+            if (source_current == SOURCE_CHANGES) {
+                ++source_current;       /*  reserved for the changes file  */
+                continue;
+            }
+            if (have + want <= SOURCE_FILE_LIMIT)
+                break;
+            ++source_current;
+        }
+        if (source_current >= SOURCE_FILES) {
+            ++source_overflowed;
+            return 0;
+        }
+        f = &source_files[source_current];
+        if (f->length + want > f->capacity) {
+            size_t  grow = f->capacity ? f->capacity * 2 : 65536;
+
+            while (grow < f->length + want)
+                grow *= 2;
+            {
+                char *grown = (char *) realloc(f->text, grow);
+
+                if (!grown)
+                    return 0;
+                f->text     = grown;
+                f->capacity = grow;
+            }
+        }
+    }
+    /*
+     *  The filler.  Position zero is how a CompiledMethod says it has no
+     *  source at all, so nothing real may start there.
+     */
+    if (f->length == 0)
+        f->text[f->length++] = '!';
+
+    *file_index = source_current;
+    *position   = f->length;
     for (i = 0; i <= n; ++i) {
         char    c = (i < n) ? text[i] : '!';
-        int     doubled = (i < n && c == '!');
 
-        if (source_length + 3 > source_capacity) {
-            size_t  want = source_capacity ? source_capacity * 2 : 65536;
-            char   *grown = (char *) realloc(source_text, want);
-
-            if (!grown)
-                return 0;
-            source_text = grown;
-            source_capacity = want;
-        }
-        source_text[source_length++] = c;
-        if (doubled)
-            source_text[source_length++] = c;
+        f->text[f->length++] = c;
+        if (i < n && c == '!')
+            f->text[f->length++] = c;
     }
-    return start;
+    return 1;
 }
+
 
 /*  ----------  Roots  ----------  */
 
@@ -2763,16 +2878,30 @@ install_sources(void)
      || !OM_is_present(string_class) || source_length == 0)
         return 1;
 
+    /*
+     *  Two entries unless a spill file was needed, which keeps the ordinary
+     *  case exactly the shape the 1983 convention describes: 1 is .sources
+     *  and 2 is .changes.
+     */
+    {
+        unsigned    used = 2;
+        unsigned    k;
+
+        for (k = SOURCE_CHANGES + 1; k < SOURCE_FILES; ++k) {
+            if (source_files[k].length)
+                used = k + 1;
+        }
+        files = OM_instantiate_pointers(array_class, used);
+    }
+    if (!OM_is_present(files))
+        return 0;
+    OM_increase_ref(files);
+
     text = OM_instantiate_bytes(string_class, (uint32_t) source_length);
     if (!OM_is_present(text))
         return 0;
     for (i = 0; i < source_length; ++i)
         OM_store_byte((uint32_t) i, text, (uint8_t) source_text[i]);
-
-    files = OM_instantiate_pointers(array_class, 2);
-    if (!OM_is_present(files))
-        return 0;
-    OM_increase_ref(files);
 
     {
         /*
@@ -2797,7 +2926,31 @@ install_sources(void)
         arg = empty;
         if (run_method_with(on, stream_class, &arg, 1, 4000000)
          && OM_is_present(st_vm.return_value))
-            OM_store_pointer(1, files, st_vm.return_value);
+            OM_store_pointer(SOURCE_CHANGES, files, st_vm.return_value);
+
+        /*  Any spill file gets a stream of its own, read the same way.  */
+        {
+            unsigned    k;
+
+            for (k = SOURCE_CHANGES + 1; k < SOURCE_FILES; ++k) {
+                st_oop      more;
+                size_t      j;
+
+                if (!source_files[k].length)
+                    continue;
+                more = OM_instantiate_bytes(string_class,
+                                    (uint32_t) source_files[k].length);
+                if (!OM_is_present(more))
+                    return 0;
+                for (j = 0; j < source_files[k].length; ++j)
+                    OM_store_byte((uint32_t) j, more,
+                                  (uint8_t) source_files[k].text[j]);
+                arg = more;
+                if (run_method_with(with, stream_class, &arg, 1, 4000000)
+                 && OM_is_present(st_vm.return_value))
+                    OM_store_pointer(k, files, st_vm.return_value);
+            }
+        }
     }
     define_global("SourceFiles", files);
     return 1;

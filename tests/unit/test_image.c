@@ -360,6 +360,48 @@ test_blocks_activate_separately(void)
 }
 
 /*
+ *  Every method can find its own source.
+ *
+ *  Chapter 27 keeps a method's source location in its last three bytes, and
+ *  CompiledMethod>>getSource reads position ZERO as "there is no source" --
+ *  so whatever was written at offset 0 of the sources file was invisible.
+ *  Exactly one method was: the first one compiled, which for this manifest
+ *  is ArrayedCollection class>>new, and it had been sourceless since the
+ *  bootstrap was written.  Nothing announces that; the Browser just shows
+ *  an empty pane.
+ *
+ *  A filler byte at the front of each file fixes it, and the assertions
+ *  below are spread across the load order because the failure was
+ *  positional -- checking any method but the first would have passed all
+ *  along.
+ */
+static void
+test_every_method_can_find_its_source(void)
+{
+    /*  The first method compiled, which is the one that used to be lost.  */
+    check_oop("(ArrayedCollection class compiledMethodAt: #new) getSource "
+              "isNil", ST_FALSE, "false");
+    check_integer("(ArrayedCollection class compiledMethodAt: #new) getSource "
+                  "size", 64);
+    check_integer("(ArrayedCollection class compiledMethodAt: #new) fileIndex",
+                  1);
+
+    /*  The middle and the end of the load order.  */
+    check_oop("(Collection compiledMethodAt: #add:) getSource isNil",
+              ST_FALSE, "false");
+    check_oop("(SystemDictionary compiledMethodAt: #install) getSource isNil",
+              ST_FALSE, "false");
+
+    /*
+     *  Two entries: 1 is .sources and 2 is .changes, which is the 1983
+     *  convention.  A build needing more spills into 3 and 4 -- there is
+     *  room for four in the two bits above the position -- and this library
+     *  is nowhere near the limit.
+     */
+    check_integer("SourceFiles size", 2);
+}
+
+/*
  *  Collections, which is where the library really starts.  Every one of
  *  these runs hundreds of bytecodes through Xerox's own code.
  */
@@ -1004,7 +1046,13 @@ test_browsing(void)
     check_integer("(Boolean sourceCodeAt: #not) size", 122);
     check_integer("((Boolean sourceCodeAt: #not) asText"
                   " makeSelectorBoldIn: Boolean) size", 122);
-    check_integer("(SourceFiles at: 1) contents size", 1203447);
+    /*
+     *  One byte more than the source it holds: a filler at the front, so
+     *  that nothing real starts at position zero, which a CompiledMethod
+     *  reads as "no source at all".  See
+     *  test_every_method_can_find_its_source.
+     */
+    check_integer("(SourceFiles at: 1) contents size", 1203448);
 }
 
 /*
@@ -1843,6 +1891,7 @@ main(void)
     test_mixed_arithmetic();
     test_integers_larger_than_a_smallinteger();
     test_blocks_activate_separately();
+    test_every_method_can_find_its_source();
 
     OM_shutdown();
     return ST_TEST_END();
