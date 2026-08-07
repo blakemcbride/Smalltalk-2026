@@ -251,6 +251,67 @@ test_arithmetic(void)
 }
 
 /*
+ *  Arithmetic that leaves SmallInteger range.
+ *
+ *  A primitive is required to FAIL when its result will not fit, because
+ *  failing is what runs the Smalltalk body that promotes to a
+ *  LargePositiveInteger.  Multiplication did not: it formed a * b in
+ *  int64_t, that wrapped, and whenever the wrapped value happened to land
+ *  back inside +/-2^62 the primitive answered it and the promotion never
+ *  ran.  21 factorial is exactly such a value -- it came out as
+ *  -4249290049419214848, negative, a SmallInteger, and wrong by 2^64.
+ *
+ *  That is the shape worth testing for rather than the number: a primitive
+ *  quietly succeeding where it had to fail leaves no trace anywhere, since
+ *  failing is the ordinary path and nothing announces not taking it.  So
+ *  each check below is an identity that only holds if the promotion
+ *  happened, not a comparison against a constant someone could update to
+ *  match a wrong answer.
+ */
+static void
+test_integers_larger_than_a_smallinteger(void)
+{
+    /*
+     *  20! fits and 21! does not, so the boundary is crossed here.
+     *  check_integer rather than check_class for the small one: a
+     *  SmallInteger is a tagged immediate, so it is not "present" as an
+     *  object and check_class cannot see it.  Requiring the exact value is
+     *  the stronger check anyway.
+     */
+    check_integer("20 factorial", 2432902008176640000LL);
+    check_class("21 factorial", "LargePositiveInteger");
+    check_integer("21 factorial // 20 factorial", 21);
+    check_integer("21 factorial - 21 factorial", 0);
+    check_integer("21 factorial printString size", 20);
+
+    /*  The wrapped product used to be a plausible small number.  */
+    check_class("3037000500 * 3037000500", "LargePositiveInteger");
+    check_integer("(3037000500 * 3037000500) // 3037000500", 3037000500);
+
+    /*  raisedTo: multiplies, so it wrapped to 0 for anything past 2^63.  */
+    check_class("2 raisedTo: 70", "LargePositiveInteger");
+    check_integer("(2 raisedTo: 70) // (2 raisedTo: 69)", 2);
+    check_integer("(2 raisedTo: 70) printString size", 22);
+
+    /*
+     *  Addition never wrapped -- two SmallIntegers always fit int64_t --
+     *  but its promotion answered 2^32, because the image builds a
+     *  LargePositiveInteger with bitShift: and the primitive refused every
+     *  shift of 31 or more.  That bound was inherited from the 16-bit
+     *  memory, where it was right.
+     */
+    check_class("4611686018427387903 + 1", "LargePositiveInteger");
+    check_integer("4611686018427387903 + 1 - 1", 4611686018427387903LL);
+    check_integer("(1 bitShift: 40)", 1099511627776LL);
+    check_integer("(1 bitShift: 40) bitShift: -40", 1);
+    check_class("1 bitShift: 62", "LargePositiveInteger");
+
+    /*  And the negative side, which shifts and multiplies differently.  */
+    check_integer("(0 - 21 factorial) + 21 factorial", 0);
+    check_class("0 - 21 factorial", "LargeNegativeInteger");
+}
+
+/*
  *  Collections, which is where the library really starts.  Every one of
  *  these runs hundreds of bytecodes through Xerox's own code.
  */
@@ -1732,6 +1793,7 @@ main(void)
     test_input();
     test_printing_deep();
     test_mixed_arithmetic();
+    test_integers_larger_than_a_smallinteger();
 
     OM_shutdown();
     return ST_TEST_END();

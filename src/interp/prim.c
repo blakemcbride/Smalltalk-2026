@@ -150,7 +150,71 @@ answer_boolean(int value, uint32_t pop)
  *  SmallInteger range.  That failure is what sends control into the
  *  Smalltalk body, which promotes to LargePositiveInteger -- so an
  *  "overflow" here is ordinary arithmetic, not an error.
+ *
+ *  answer_integer is what enforces that, and for + and - it is enough,
+ *  because the SUM of two SmallIntegers always fits st_int and can be
+ *  tested exactly:
+ *
+ *      bb   st_int is int32_t and the range is +/-16384, so two of them
+ *           cannot come within three orders of magnitude of overflowing.
+ *      mt   st_int is int64_t and the range is +/-2^62, so the widest
+ *           possible sum is 2*(2^62-1) = 2^63-2 and the widest difference
+ *           is 2^63-1 -- INT64_MAX exactly, and the low end lands on
+ *           INT64_MIN exactly.  Both are representable, so a + b is the
+ *           true value and answer_integer sees it.
+ *
+ *  MULTIPLICATION is different and this is where the bug was.  21 factorial
+ *  is 20 factorial times 21, whose true value needs 66 bits; a * b wrapped,
+ *  the wrapped value was -4249290049419214848, that is comfortably inside
+ *  +/-2^62, so answer_integer was handed something that fit and the
+ *  primitive SUCCEEDED with an answer off by 2^64.  The Smalltalk body that
+ *  would have promoted it never ran.
+ *
+ *  It is the shape this system keeps producing: the VM being more forgiving
+ *  than the image expects.  A primitive that quietly succeeds where it was
+ *  required to fail is invisible, because failing is the normal path and
+ *  nothing reports not taking it.  So the overflow has to be detected
+ *  BEFORE the product is formed, which is what multiply_fits does.
  */
+
+/*
+ *  a * b, answered through *out, or 0 if it leaves SmallInteger range.
+ *
+ *  Checked by division rather than by computing and looking, because
+ *  computing is the thing that must not happen: signed overflow is
+ *  undefined behaviour, so a wrapped product is not merely a wrong number
+ *  the compiler is entitled to assume cannot occur.  Division truncates
+ *  toward zero in C99, which is what makes each comparison exact.
+ *
+ *  There is no ST_INT_MIN / -1 trap here: ST_INT_MIN is -2^62, not
+ *  INT64_MIN, so its negation is representable.
+ */
+static int
+multiply_fits(st_int a, st_int b, st_int *out)
+{
+    if (a == 0 || b == 0) {
+        *out = 0;
+        return 1;
+    }
+    if (a > 0) {
+        if (b > 0) {
+            if (a > ST_INT_MAX / b)
+                return 0;
+        } else if (b < ST_INT_MIN / a) {
+            return 0;
+        }
+    } else {
+        if (b > 0) {
+            if (a < ST_INT_MIN / b)
+                return 0;
+        } else if (a < ST_INT_MAX / b) {
+            return 0;
+        }
+    }
+    *out = a * b;
+    return 1;
+}
+
 static int
 arithmetic_primitive(unsigned index)
 {
@@ -169,7 +233,13 @@ arithmetic_primitive(unsigned index)
     case 6:  return answer_boolean(a >= b, 2);
     case 7:  return answer_boolean(a == b, 2);
     case 8:  return answer_boolean(a != b, 2);
-    case 9:  return answer_integer(a * b, 2);
+    case 9: {                       /*  *  */
+        st_int  product;
+
+        if (!multiply_fits(a, b, &product))
+            return 0;               /*  the Smalltalk body promotes it  */
+        return answer_integer(product, 2);
+    }
     case 10:
         if (b == 0 || a % b != 0)
             return 0;               /*  inexact division is not a SmallInteger */
@@ -201,22 +271,43 @@ arithmetic_primitive(unsigned index)
     case 14: return answer_integer(a & b, 2);
     case 15: return answer_integer(a | b, 2);
     case 16: return answer_integer(a ^ b, 2);
-    case 17:                        /*  bitShift:  */
-        if (b >= 0) {
-            if (b >= 31)
-                return 0;
-            {
-                st_int  shifted = a << b;
+    case 17: {                      /*  bitShift:  */
+        /*
+         *  How far a shift can go before it stops being defined at all.
+         *  Two below the width leaves room for the sign bit and for the
+         *  one bit a shift by exactly that amount would need.
+         */
+        enum { SHIFT_LIMIT = (int) (sizeof(st_int) * 8) - 2 };
 
-                /*  Fail if any significant bit was pushed out.  */
-                if ((shifted >> b) != a)
-                    return 0;
-                return answer_integer(shifted, 2);
-            }
+        if (b >= 0) {
+            st_int  shifted;
+
+            if (b >= SHIFT_LIMIT)
+                return 0;
+            /*
+             *  A left shift by multiplication, deliberately.
+             *
+             *  "a << b" is undefined for negative a, and undefined again if
+             *  the result overflows -- so the old "shift, then check that
+             *  shifting back agrees" could not detect what it was testing
+             *  for: the compiler is entitled to assume the overflow never
+             *  happened and fold the check away.  Multiplying by 2^b is the
+             *  same value with none of that, and it reuses the one place
+             *  overflow is decided.
+             *
+             *  The old bound of 31 was inherited from the 16-bit memory and
+             *  refused shifts this memory can represent perfectly well:
+             *  1 bitShift: 40 fell back to the Smalltalk body for no reason.
+             */
+            if (!multiply_fits(a, (st_int) 1 << b, &shifted))
+                return 0;
+            return answer_integer(shifted, 2);
         }
-        if (b <= -31)
+        /*  A right shift is arithmetic: it cannot leave the range.  */
+        if (-b >= SHIFT_LIMIT)
             return answer_integer(a < 0 ? -1 : 0, 2);
         return answer_integer(a >> (-b), 2);
+    }
     default:
         return 0;
     }
