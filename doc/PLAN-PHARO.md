@@ -229,7 +229,7 @@ Two things nothing reset between builds turned up here: the symbol index, which 
 have answered a lookup with a confident wrong Symbol, and the source text, which
 accumulated.
 
-### D — Full closures
+### D — Full closures *(done)*
 The largest VM change, and after Phase B's correction the only thing that can make blocks
 genuinely re-entrant: block arguments and temporaries have to live in the activation's own
 frame, which is what `pushClosureCopy` and the remote-temp bytecodes are for.
@@ -251,13 +251,21 @@ static evidence is strong but the shipped `VirtualImage` was built by Xerox.
   beside `ST_activate_block`; primitives 201–206, 221–222, and 82 (`valueWithArguments:`,
   missing today although `BlockContext.stClass:116` declares it and its Smalltalk fallback
   has an inverted test).
-**Status: D0 through D4 are done and committed; D5, the compiler, is not.** The VM can
-run closures — the bytecodes, `BlockClosure`, the activation, the primitives and the
-non-local return are all in and `trace2`/`trace3` are still byte-exact — but nothing
-emits a closure bytecode yet, so `fib 25` still fails and the Phase B aliasing assertion
-still holds. What D5 needs is set out below; it is a compiler project of its own, and the
-thing to resist is doing it approximately, because the two things it puts at risk are
-`test_self_hosting` and the trace oracle.
+**Done.** `fib 25` answers 75025 as a recursive block; each iteration of
+`(1 to: 3) do: [:i | a add: [i]]` captures its own `i`; a block outlives the method that
+made it; and Phase B's aliasing case is asserted **both ways** in one test — 99 as Blue
+Book blocks, 7 as closures. The two assumptions D0 measured against the shipped 1983
+image held: 35 contexts, none using field 4; 4505 methods, highest primitive 135.
+
+The dialect is a field in the compile context and defaults to Blue Book, so the 1983
+library, `test_self_hosting` and the trace oracle never meet any of it. `trace2` and
+`trace3` stayed byte-exact through every step, including the rewrite of `return_value`.
+
+Two things remain open and are Phase F/G work rather than D's: **a package cannot yet
+declare its dialect** — `-closures` is a developer switch on `-eval`, and the real answer
+is a `#dialect` key in a profile; and **`cannotReturn:` cannot be exercised end to end**
+until closures can be compiled into methods rather than only doIts, because in a doIt
+every `^` targets the doIt itself, which is always alive.
 
 - **The compiler needs two passes.** `numCopied`, which names are remote, and each frame's
   index map are whole-method properties known before the first byte of a block is emitted.
