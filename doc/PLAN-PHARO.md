@@ -251,6 +251,14 @@ static evidence is strong but the shipped `VirtualImage` was built by Xerox.
   beside `ST_activate_block`; primitives 201–206, 221–222, and 82 (`valueWithArguments:`,
   missing today although `BlockContext.stClass:116` declares it and its Smalltalk fallback
   has an inverted test).
+**Status: D0 through D4 are done and committed; D5, the compiler, is not.** The VM can
+run closures — the bytecodes, `BlockClosure`, the activation, the primitives and the
+non-local return are all in and `trace2`/`trace3` are still byte-exact — but nothing
+emits a closure bytecode yet, so `fib 25` still fails and the Phase B aliasing assertion
+still holds. What D5 needs is set out below; it is a compiler project of its own, and the
+thing to resist is doing it approximately, because the two things it puts at risk are
+`test_self_hosting` and the trace oracle.
+
 - **The compiler needs two passes.** `numCopied`, which names are remote, and each frame's
   index map are whole-method properties known before the first byte of a block is emitted.
   Run *the same recursive-descent parser twice* — pass 0 records variable uses, pass 1 emits.
@@ -265,6 +273,19 @@ static evidence is strong but the shipped `VirtualImage` was built by Xerox.
   (`compiler.c:755-785`) is a Blue Book artifact and must be dead in closure mode.
 - Frame ceiling: `numArgs + numCopied + numLocals + stackDepth ≤ 32`. Emit a compiler
   **error**, not the silent heap corruption documented at `compiler.c:1459-1476`.
+- **The part with the real bookkeeping in it**, written down because it is what makes D5
+  a project rather than an afternoon. Each scope's frame is `[args][copied][locals]`, and
+  a scope that has any captured-and-assigned variable needs a *vector* — an `Array` in a
+  frame slot — so that copying it into a closure shares the variable rather than its
+  value. A block nested two deep that reads a grandparent's boxed variable needs the
+  grandparent's vector, which means its parent must copy that vector too even though the
+  parent never mentions it: the copied sets propagate up the scope tree. Simplifying by
+  giving the whole method one vector is wrong, and wrong in a way that hides — an outer
+  block's own captured temporaries would then be shared between its own activations.
+- Reserve three stack slots in `max_stack_depth` for any method with a `^` inside a
+  non-inlined block: `cannotReturn:` and `aboutToReturn:through:` push onto the returning
+  frame, which was sized for its own maximum depth. Getting this wrong reproduces the
+  silent corruption at `compiler.c:1459-1476`, on the error path only.
 
 **Gate:** trace2 and trace3 byte-identical; `test_self_hosting` (`test_image.c:1055-1106`)
 still passes in Blue Book dialect — it compares against the image's *own* 1983 compiler, so
