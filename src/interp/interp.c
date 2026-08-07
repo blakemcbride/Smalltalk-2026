@@ -706,12 +706,151 @@ do_return(st_oop result, st_oop to_context, int from_block)
     OM_decrease_ref(sender);
 }
 
+/*
+ *  The first unwind-protected context strictly between `from` and `home`,
+ *  or nil; *home_found says whether home was reached at all.
+ *
+ *  "Unwind-protected" is a method whose primitive index is 198 -- not a
+ *  primitive at all but a MARK, which is why nothing in prim.c implements
+ *  it: an unknown primitive already fails, so ensure: and ifCurtailed: run
+ *  their Smalltalk bodies and the number is left as a label a walk can see.
+ *  199 is the same trick for a handler.  Squeak does exactly this, and the
+ *  1983 image was asked whether it uses either number for anything real:
+ *  its highest primitive is 135.
+ */
+static st_oop
+find_unwind_between(st_oop from, st_oop home, int *home_found)
+{
+    st_oop  ctx = OM_fetch_pointer(ST_CTX_SENDER, from);
+
+    *home_found = 0;
+    while (OM_is_present(ctx)) {
+        if (ctx == home) {
+            *home_found = 1;
+            return ST_NIL;
+        }
+        if (ST_method_primitive_index(OM_fetch_pointer(ST_CTX_METHOD, ctx))
+                == 198)
+            return ctx;
+        ctx = OM_fetch_pointer(ST_CTX_SENDER, ctx);
+    }
+    return ST_NIL;
+}
+
+/*
+ *  A non-local return whose home method has already returned.
+ *
+ *  The selector is looked up before it is sent, because the 1983 library
+ *  does not implement cannotReturn: -- it is named by SystemTracer as a
+ *  special oop and nothing else.  Sending it blind would land in
+ *  doesNotUnderstand:, which opens a NotifierView, which asks Sensor for
+ *  the cursor position, which is the reporting recursion this file already
+ *  guards against elsewhere.  With nobody to tell, behave as before: stop
+ *  and keep the value.
+ */
+static void
+send_cannot_return(st_oop ctx, st_oop result)
+{
+    st_oop  found = ST_NIL;
+
+    if (!OM_is_present(lookup_method(ST_SELECTOR_CANNOT_RETURN,
+                                     OM_fetch_class(ctx), &found))) {
+        st_vm.return_value = result;
+        st_vm.running = 0;
+        return;
+    }
+    ST_push(ctx);
+    ST_push(result);
+    ST_send_selector(ST_SELECTOR_CANNOT_RETURN, 1);
+}
+
+static void
+send_about_to_return(st_oop ctx, st_oop result, st_oop unwind)
+{
+    st_oop  selector = st_om_vm_state[ST_VM_SELECTOR_ABOUT_TO_RETURN];
+    st_oop  found = ST_NIL;
+
+    if (!OM_is_present(selector)
+     || !OM_is_present(lookup_method(selector, OM_fetch_class(ctx), &found))) {
+        /*
+         *  No ensure: machinery in this image.  Returning without running
+         *  the unwind blocks is what the system did before there were any.
+         */
+        do_return(result, OM_fetch_pointer(ST_CTX_SENDER,
+                              OM_fetch_pointer(ST_CLOSURE_OUTER_CONTEXT,
+                                  OM_fetch_pointer(ST_CTX_CLOSURE, ctx))), 0);
+        return;
+    }
+    ST_push(ctx);
+    ST_push(result);
+    ST_push(unwind);
+    ST_send_selector(selector, 2);
+}
+
+/*
+ *  Returning from a method, which is also how a block returns out of one.
+ *
+ *  The BlockContext arm below is exactly the three lines this function used
+ *  to be, and is meant to stay that way: it is on the trace2 path, which
+ *  runs blockCopy: twice, and the value of that oracle depends on this code
+ *  being untouched rather than carefully preserved.  Everything closures
+ *  need is in the other arm, and do_return itself is not modified at all --
+ *  its nil-sender stop is what -eval depends on to get an answer back.
+ */
 static void
 return_value(st_oop result)
 {
-    st_oop  home = st_vm.home_context;
+    st_oop  ctx = st_vm.active_context;
+    st_oop  home;
     st_oop  sender;
 
+    if (OM_fetch_class(ctx) == ST_CLASS_BLOCK_CONTEXT) {
+        home   = st_vm.home_context;
+        sender = OM_fetch_pointer(ST_CTX_SENDER, home);
+        do_return(result, sender, 0);
+        return;
+    }
+
+    /*
+     *  A MethodContext.  Field 4 is nil for an ordinary method -- measured
+     *  true of every context in the 1983 image -- so the loop below exits
+     *  at once and this is the old behaviour with one extra read.
+     */
+    home = ctx;
+    for (;;) {
+        st_oop  closure = OM_fetch_pointer(ST_CTX_CLOSURE, home);
+        st_oop  outer;
+
+        if (!OM_is_present(closure))
+            break;
+        outer = OM_fetch_pointer(ST_CLOSURE_OUTER_CONTEXT, closure);
+        if (!OM_is_object(outer)
+         || OM_fetch_class(outer) != ST_CLASS_METHOD_CONTEXT) {
+            send_cannot_return(ctx, result);
+            return;
+        }
+        home = outer;
+    }
+
+    if (home == ctx) {
+        sender = OM_fetch_pointer(ST_CTX_SENDER, home);
+        do_return(result, sender, 0);
+        return;
+    }
+    {
+        int     found = 0;
+        st_oop  unwind = find_unwind_between(ctx, home, &found);
+
+        if (OM_is_present(unwind)) {
+            send_about_to_return(ctx, result, unwind);
+            return;
+        }
+        if (!found) {
+            /*  The home method returned before this block ran.  */
+            send_cannot_return(ctx, result);
+            return;
+        }
+    }
     sender = OM_fetch_pointer(ST_CTX_SENDER, home);
     do_return(result, sender, 0);
 }
