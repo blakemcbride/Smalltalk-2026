@@ -157,6 +157,19 @@ ST_bytecode_name(uint8_t code, char *buf, size_t buflen)
         snprintf(buf, buflen, "Duplicate Stack Top");
     }  else if (code == 137) {
         snprintf(buf, buflen, "Push Active Context");
+    }  else if (code == 138) {
+        snprintf(buf, buflen, "Push New Array");
+    }  else if (code == 140) {
+        snprintf(buf, buflen, "Push Remote Temp");
+    }  else if (code == 141) {
+        snprintf(buf, buflen, "Store Remote Temp");
+    }  else if (code == 142) {
+        snprintf(buf, buflen, "Pop and Store Remote Temp");
+    }  else if (code == 143) {
+        snprintf(buf, buflen, "Push Closure Copy");
+    }  else if (code == 126 || code == 127 || code == 139) {
+        /*  Unassigned in the Blue Book and unassigned in Squeak too.  */
+        snprintf(buf, buflen, "Unused Bytecode %u", code);
     }  else if (code <= 151) {
         snprintf(buf, buflen, "Jump %u", code - 143);
     }  else if (code <= 159) {
@@ -199,6 +212,18 @@ ST_bytecode_operand_bytes(uint8_t code)
         return 1;
     case 132: case 134:
         return 2;
+    /*
+     *  The closure set.  138 takes a size whose top bit says whether to pop
+     *  the elements; 140 to 142 take a slot and the frame temporary holding
+     *  the vector; 143 takes a packed argument/copied count and a two-byte
+     *  body length.  See src/interp/interp.c for the encodings.
+     */
+    case 138:
+        return 1;
+    case 140: case 141: case 142:
+        return 2;
+    case 143:
+        return 3;
     default:
         /*  Long jumps: 160..175.  Short jumps 144..159 carry their own.  */
         if (code >= 160 && code <= 175)

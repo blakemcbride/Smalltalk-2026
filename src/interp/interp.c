@@ -164,8 +164,16 @@ method_initial_ip(st_oop method)
             + ST_METHOD_LITERAL_START) * (uint32_t) sizeof(st_oop);
 }
 
-static unsigned
-method_primitive_index(st_oop method)
+/*
+ *  A method's primitive index, or 0.
+ *
+ *  Exported because two things outside the dispatch path need it: the trace
+ *  test, which asks the 1983 image whether it uses 198 or 199 for anything
+ *  (they are about to mean "unwind" and "handler"), and the non-local
+ *  return, which finds an unwind-protected frame by exactly that number.
+ */
+unsigned
+ST_method_primitive_index(st_oop method)
 {
     st_oop      header = method_header(method);
     unsigned    literals;
@@ -787,7 +795,7 @@ execute_new_method(st_oop receiver, st_oop selector, st_oop lookup_class,
         st_vm.running = 0;
         return;
     }
-    st_vm.primitive_index = method_primitive_index(method);
+    st_vm.primitive_index = ST_method_primitive_index(method);
     if (st_vm.primitive_index > 0) {
         ST_trace_primitive(st_vm.primitive_index);
         st_vm.success = 1;

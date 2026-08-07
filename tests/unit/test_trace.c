@@ -250,6 +250,71 @@ test_trace3_prefix(void)
     free(actual);
 }
 
+/*
+ *  ----------  What the closure design rests on  ----------
+ *
+ *  Squeak's closures put a MethodContext's closure in the field this layout
+ *  calls ST_CTX_INITIAL_IP, and mark an unwind-protected method with
+ *  primitive 198 and a handler with 199.  Both are only safe here if the
+ *  1983 image never uses either -- and the evidence for that is documentary
+ *  rather than measured: MethodContext declares field 4 as "receiverMap",
+ *  its own comment says "unused (we expect to use it later for multiple
+ *  inheritance)", and nothing in sources/ assigns it; the primitive numbers
+ *  the 1983 library declares stop well below 198.
+ *
+ *  Documentary is not good enough for something everything else depends on.
+ *  The shipped VirtualImage was built by Xerox from sources that need not
+ *  match the ones vendored here, so this asks the image itself.
+ */
+static void
+test_the_image_leaves_room_for_closures(void)
+{
+    char        err[256];
+    st_oop      p;
+    unsigned    contexts = 0;
+    unsigned    used_field_4 = 0;
+    unsigned    methods = 0;
+    unsigned    marker_primitives = 0;
+    unsigned    highest_primitive = 0;
+
+    if (OM_init() != 0 || OM_image_load(IMAGE_PATH, err, sizeof err) != 0) {
+        printf("  cannot load %s: %s\n", IMAGE_PATH, err);
+        CHECK(0);
+        return;
+    }
+    for (p = OM_first_object(); p != ST_OOP_INVALID; p = OM_next_object(p)) {
+        st_oop  class_oop = OM_fetch_class(p);
+
+        if (class_oop == ST_CLASS_METHOD_CONTEXT) {
+            ++contexts;
+            if (OM_is_present(OM_fetch_pointer(ST_CTX_INITIAL_IP, p)))
+                ++used_field_4;
+            continue;
+        }
+        if (class_oop == ST_CLASS_COMPILED_METHOD) {
+            unsigned    primitive;
+
+            ++methods;
+            primitive = ST_method_primitive_index(p);
+            if (primitive > highest_primitive)
+                highest_primitive = primitive;
+            if (primitive == 198 || primitive == 199)
+                ++marker_primitives;
+        }
+    }
+    printf("  %u contexts, %u using field 4; %u methods, highest primitive %u\n",
+           contexts, used_field_4, methods, highest_primitive);
+
+    /*  Field 4 is free for closureOrNil.  */
+    CHECK(contexts > 0);
+    CHECK_EQ_INT((int) used_field_4, 0);
+    /*  198 and 199 are free to mean "unwind" and "handler".  */
+    CHECK(methods > 1000);
+    CHECK_EQ_INT((int) marker_primitives, 0);
+
+    OM_shutdown();
+}
+
 int
 main(void)
 {
@@ -259,6 +324,7 @@ main(void)
         printf("  SKIP: %s missing -- see doc/LICENSING.md\n", IMAGE_PATH);
         return ST_TEST_END();
     }
+    test_the_image_leaves_room_for_closures();
     test_trace2();
     test_trace3_prefix();
     return ST_TEST_END();

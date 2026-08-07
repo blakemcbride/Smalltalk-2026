@@ -1899,6 +1899,37 @@ max_stack_depth(const st_compiled_code *code)
             effect = 1;                 /*  duplicate                    */
         }  else if (b == 137) {
             effect = 1;                 /*  push active context          */
+        }  else if (b == 138) {
+            /*
+             *  Push New Array.  The operand's top bit says the elements
+             *  come off the stack, in which case n go away and the array
+             *  arrives; otherwise nothing is consumed.
+             */
+            uint8_t size = code->bytecodes[++i];
+
+            effect = (size & 128) ? 1 - (int) (size & 127) : 1;
+        }  else if (b == 140) {
+            i += 2;                     /*  push remote temp             */
+            effect = 1;
+        }  else if (b == 141) {
+            i += 2;                     /*  store remote temp, keeps it  */
+            effect = 0;
+        }  else if (b == 142) {
+            i += 2;                     /*  pop and store remote temp    */
+            effect = -1;
+        }  else if (b == 143) {
+            /*
+             *  Push Closure Copy.  The copied values are popped and the
+             *  closure is pushed; the body is skipped rather than walked,
+             *  because its depth belongs to its own frame and not to this
+             *  one.
+             */
+            uint8_t counts = code->bytecodes[i + 1];
+            unsigned block_size = (unsigned) code->bytecodes[i + 2] * 256
+                                + code->bytecodes[i + 3];
+
+            effect = 1 - (int) (counts >> 4);
+            i += 3 + block_size;
         }  else if (b >= 96 && b <= 111) {
             effect = -1;                /*  pop and store                */
         }  else if (b >= 144 && b <= 175) {

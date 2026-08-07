@@ -229,6 +229,7 @@ void    ST_print_object(st_oop p, char *buf, size_t buflen);
 #endif
 
 /*  Where the running send came from, innermost first.  Diagnostics only.  */
+unsigned    ST_method_primitive_index(st_oop method);
 void        ST_report_backtrace(void);
 
 /*
