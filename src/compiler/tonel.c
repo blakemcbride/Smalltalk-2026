@@ -56,10 +56,7 @@
 #include <string.h>
 
 typedef struct {
-    const char *text;
-    size_t      length;
-    size_t      pos;
-    unsigned    line;
+    st_cursor   c;
     const char *path;
 
     const st_source_sink   *sink;
@@ -78,7 +75,7 @@ fail(tonel *t, const char *fmt, ...)
     vsnprintf(detail, sizeof detail, fmt, ap);
     va_end(ap);
     if (t->error && t->error_len && !t->error[0])
-        snprintf(t->error, t->error_len, "%s:%u: %s", t->path, t->line,
+        snprintf(t->error, t->error_len, "%s:%u: %s", t->path, t->c.line,
                  detail);
 }
 
@@ -92,222 +89,25 @@ note(tonel *t, const char *fmt, ...)
     vsnprintf(detail, sizeof detail, fmt, ap);
     va_end(ap);
     if (t->sink->diagnostic)
-        t->sink->diagnostic(t->path, t->line, detail, t->user);
+        t->sink->diagnostic(t->path, t->c.line, detail, t->user);
 }
 
-static int  at_end(const tonel *t)  { return t->pos >= t->length; }
-static char here(const tonel *t)    { return t->pos < t->length
-                                             ? t->text[t->pos] : '\0'; }
+static int  at_end(const tonel *t) { return t->c.pos >= t->c.length; }
+static char here(const tonel *t)
+{ return t->c.pos < t->c.length ? t->c.text[t->c.pos] : '\0'; }
 
 static void
 advance(tonel *t)
 {
-    if (t->pos < t->length && t->text[t->pos] == '\n')
-        ++t->line;
-    ++t->pos;
+    if (t->c.pos < t->c.length && t->c.text[t->c.pos] == '\n')
+        ++t->c.line;
+    ++t->c.pos;
 }
 
-/*  ----------  Skipping  ----------  */
-
-/*
- *  Whitespace and comments.  The last comment seen is kept, because a class
- *  comment in Tonel is simply the comment that precedes the definition.
- */
 static void
 skip_separators(tonel *t, char *comment, size_t comment_len)
 {
-    for (;;) {
-        while (!at_end(t) && isspace((unsigned char) here(t)))
-            advance(t);
-        if (here(t) != '"')
-            return;
-        advance(t);
-        {
-            size_t  n = 0;
-
-            while (!at_end(t)) {
-                if (here(t) == '"') {
-                    advance(t);
-                    if (here(t) != '"')
-                        break;      /*  the comment ends  */
-                }
-                if (comment && n + 1 < comment_len)
-                    comment[n++] = here(t);
-                advance(t);
-            }
-            if (comment && comment_len)
-                comment[n] = '\0';
-        }
-    }
-}
-
-/*  ----------  A very small STON  ----------  */
-
-/*
- *  Only what a Tonel header holds: an object of #key : value pairs, where a
- *  value is a symbol, a string, a list of them, a number, or a constant.
- *  Values arrive as text; the caller knows which keys mean what.
- */
-
-typedef struct {
-    char        key[64];
-    char        value[256];         /*  scalars  */
-    st_names    list;               /*  [ ... ]  */
-    int         is_list;
-    int         is_nil;
-} ston_pair;
-
-#define STON_MAX_PAIRS  24
-
-static int
-ston_scalar(tonel *t, char *out, size_t out_len, int *is_nil)
-{
-    size_t  n = 0;
-
-    *is_nil = 0;
-    if (here(t) == '\'' || here(t) == '"') {
-        char    quote = here(t);
-
-        advance(t);
-        while (!at_end(t)) {
-            if (here(t) == quote) {
-                advance(t);
-                if (here(t) != quote)
-                    break;
-            }
-            if (n + 1 < out_len)
-                out[n++] = here(t);
-            advance(t);
-        }
-        out[n] = '\0';
-        return 1;
-    }
-    if (here(t) == '#') {
-        advance(t);
-        if (here(t) == '\'')
-            return ston_scalar(t, out, out_len, is_nil);
-    }
-    while (!at_end(t) && (isalnum((unsigned char) here(t)) || here(t) == '_'
-                       || here(t) == ':' || here(t) == '-' || here(t) == '.'
-                       || here(t) == '+' || here(t) == '*' || here(t) == '@')) {
-        if (n + 1 < out_len)
-            out[n++] = here(t);
-        advance(t);
-    }
-    out[n] = '\0';
-    if (strcmp(out, "nil") == 0)
-        *is_nil = 1;
-    return n > 0;
-}
-
-/*  Parse "{ #a : b, #c : [ d, e ] }".  The current character is '{'.  */
-static int
-ston_object(tonel *t, ston_pair *pairs, unsigned *count, unsigned max)
-{
-    *count = 0;
-    if (here(t) != '{') {
-        fail(t, "expected { to open a Tonel header");
-        return 0;
-    }
-    advance(t);
-    for (;;) {
-        ston_pair  *p;
-        int         ignored;
-
-        skip_separators(t, NULL, 0);
-        if (here(t) == '}') {
-            advance(t);
-            return 1;
-        }
-        if (at_end(t)) {
-            fail(t, "a Tonel header is not closed");
-            return 0;
-        }
-        if (here(t) == ',') {
-            advance(t);
-            continue;
-        }
-        p = (*count < max) ? &pairs[(*count)++] : NULL;
-        {
-            char    key[64];
-
-            if (!ston_scalar(t, key, sizeof key, &ignored)) {
-                fail(t, "expected a key in a Tonel header");
-                return 0;
-            }
-            if (p)
-                snprintf(p->key, sizeof p->key, "%s", key);
-        }
-        skip_separators(t, NULL, 0);
-        if (here(t) != ':') {
-            fail(t, "expected : after a Tonel header key");
-            return 0;
-        }
-        advance(t);
-        skip_separators(t, NULL, 0);
-
-        if (here(t) == '[') {
-            advance(t);
-            for (;;) {
-                char    item[256];
-                int     item_nil;
-
-                skip_separators(t, NULL, 0);
-                if (here(t) == ']') {
-                    advance(t);
-                    break;
-                }
-                if (at_end(t)) {
-                    fail(t, "a Tonel list is not closed");
-                    return 0;
-                }
-                if (here(t) == ',') {
-                    advance(t);
-                    continue;
-                }
-                if (!ston_scalar(t, item, sizeof item, &item_nil)) {
-                    fail(t, "expected a name in a Tonel list");
-                    return 0;
-                }
-                if (p && item[0])
-                    SRC_names_add(&p->list, item);
-            }
-            if (p)
-                p->is_list = 1;
-        }  else  {
-            char    value[256];
-            int     value_nil;
-
-            if (!ston_scalar(t, value, sizeof value, &value_nil)) {
-                fail(t, "expected a value in a Tonel header");
-                return 0;
-            }
-            if (p) {
-                snprintf(p->value, sizeof p->value, "%s", value);
-                p->is_nil = value_nil;
-            }
-        }
-    }
-}
-
-static const ston_pair *
-pair_named(const ston_pair *pairs, unsigned count, const char *key)
-{
-    unsigned    i;
-
-    for (i = 0; i < count; ++i) {
-        if (strcmp(pairs[i].key, key) == 0)
-            return &pairs[i];
-    }
-    return NULL;
-}
-
-static const char *
-value_named(const ston_pair *pairs, unsigned count, const char *key)
-{
-    const ston_pair *p = pair_named(pairs, count, key);
-
-    return (p && !p->is_nil) ? p->value : NULL;
+    SRC_skip_separators(&t->c, comment, comment_len);
 }
 
 /*  ----------  Method bodies  ----------  */
@@ -348,7 +148,7 @@ skip_method_body(tonel *t)
             }
             continue;
         }
-        if (c == '#' && t->pos + 1 < t->length && t->text[t->pos + 1] == '(') {
+        if (c == '#' && t->c.pos + 1 < t->c.length && t->c.text[t->c.pos + 1] == '(') {
             int parens = 0;         /*  a literal array, with its own rules */
 
             advance(t);
@@ -395,7 +195,7 @@ skip_method_body(tonel *t)
             --depth;
             advance(t);
             if (depth == 0)
-                return t->pos;
+                return t->c.pos;
             continue;
         }
         advance(t);
@@ -426,7 +226,7 @@ read_method(tonel *t, const char *category)
     int         ok;
 
     skip_separators(t, NULL, 0);
-    line_at_pattern = t->line;
+    line_at_pattern = t->c.line;
     while (!at_end(t) && (isalnum((unsigned char) here(t)) || here(t) == '_')
         && n + 1 < sizeof class_name) {
         class_name[n++] = here(t);
@@ -438,17 +238,17 @@ read_method(tonel *t, const char *category)
         return 0;
     }
     skip_separators(t, NULL, 0);
-    if (strncmp(t->text + t->pos, "class", 5) == 0
-     && !isalnum((unsigned char) t->text[t->pos + 5])) {
+    if (strncmp(t->c.text + t->c.pos, "class", 5) == 0
+     && !isalnum((unsigned char) t->c.text[t->c.pos + 5])) {
         class_side = 1;
-        t->pos += 5;
+        t->c.pos += 5;
         skip_separators(t, NULL, 0);
     }
-    if (strncmp(t->text + t->pos, ">>", 2) != 0) {
+    if (strncmp(t->c.text + t->c.pos, ">>", 2) != 0) {
         fail(t, "expected >> after %s", class_name);
         return 0;
     }
-    t->pos += 2;
+    t->c.pos += 2;
 
     /*  Everything up to the opening bracket is the message pattern.  */
     skip_separators(t, NULL, 0);
@@ -466,7 +266,7 @@ read_method(tonel *t, const char *category)
         return 0;
     }
 
-    body_start = t->pos + 1;
+    body_start = t->c.pos + 1;
     body_end   = skip_method_body(t);
     if (body_end == 0)
         return 0;
@@ -489,9 +289,9 @@ read_method(tonel *t, const char *category)
          *  and String>>lines only ever split on it.
          */
         for (i = body_start; i < body_end; ++i) {
-            char    c = t->text[i];
+            char    c = t->c.text[i];
 
-            if (c == '\r' && i + 1 < body_end && t->text[i + 1] == '\n')
+            if (c == '\r' && i + 1 < body_end && t->c.text[i + 1] == '\n')
                 continue;
             source[k++] = (c == '\n') ? '\r' : c;
         }
@@ -542,9 +342,8 @@ TONEL_read(const char *path, const st_source_sink *sink, void *user,
     char       *text;
     char        comment[4096];
     char        type[64];
-    ston_pair   pairs[STON_MAX_PAIRS];
+    st_ston_pair pairs[ST_STON_MAX_PAIRS];
     unsigned    pair_count = 0;
-    unsigned    i;
     int         ok = 1;
     int         is_extension = 0;
 
@@ -578,9 +377,9 @@ TONEL_read(const char *path, const st_source_sink *sink, void *user,
 
     memset(&t, 0, sizeof t);
     memset(pairs, 0, sizeof pairs);
-    t.text      = text;
-    t.length    = (size_t) size;
-    t.line      = 1;
+    t.c.text    = text;
+    t.c.length  = (size_t) size;
+    t.c.line    = 1;
     t.path      = path;
     t.sink      = sink;
     t.user      = user;
@@ -607,7 +406,8 @@ TONEL_read(const char *path, const st_source_sink *sink, void *user,
         return 0;
     }
     skip_separators(&t, NULL, 0);
-    if (!ston_object(&t, pairs, &pair_count, STON_MAX_PAIRS)) {
+    if (!SRC_ston_object(&t.c, pairs, &pair_count, ST_STON_MAX_PAIRS,
+                         error, error_len)) {
         free(text);
         return 0;
     }
@@ -621,7 +421,7 @@ TONEL_read(const char *path, const st_source_sink *sink, void *user,
         is_extension = 1;
     }  else if (strcmp(type, "Trait") == 0) {
         note(&t, "%s: traits are not supported here",
-             value_named(pairs, pair_count, "name"));
+             SRC_ston_value(pairs, pair_count, "name"));
         free(text);
         return 1;
     }  else if (strcmp(type, "Class") != 0) {
@@ -632,35 +432,35 @@ TONEL_read(const char *path, const st_source_sink *sink, void *user,
 
     if (!is_extension) {
         st_source_class_def def;
-        const ston_pair    *ivars  = pair_named(pairs, pair_count, "instVars");
-        const ston_pair    *cvars  = pair_named(pairs, pair_count, "classVars");
-        const ston_pair    *civars = pair_named(pairs, pair_count,
-                                                "classInstVars");
-        const ston_pair    *pools  = pair_named(pairs, pair_count, "pools");
-        const char         *super  = value_named(pairs, pair_count,
+        const st_names     *ivars  = SRC_ston_list(pairs, pair_count, "instVars");
+        const st_names     *cvars  = SRC_ston_list(pairs, pair_count, "classVars");
+        const st_names     *civars = SRC_ston_list(pairs, pair_count,
+                                                  "classInstVars");
+        const st_names     *pools  = SRC_ston_list(pairs, pair_count, "pools");
+        const char         *super  = SRC_ston_value(pairs, pair_count,
                                                  "superclass");
         const char         *category;
         st_names            empty;
 
         memset(&empty, 0, sizeof empty);
         memset(&def, 0, sizeof def);
-        def.name       = value_named(pairs, pair_count, "name");
+        def.name       = SRC_ston_value(pairs, pair_count, "name");
         def.superclass = super ? super : "nil";
         /*
          *  Tonel v3 splits what v1 called a category into a package and a
          *  tag, and keeps #category for compatibility.  Either answers the
          *  question the Browser asks.
          */
-        category = value_named(pairs, pair_count, "category");
+        category = SRC_ston_value(pairs, pair_count, "category");
         if (!category)
-            category = value_named(pairs, pair_count, "package");
+            category = SRC_ston_value(pairs, pair_count, "package");
         def.category    = category ? category : "";
-        def.ivars       = ivars  ? &ivars->list  : &empty;
-        def.cvars       = cvars  ? &cvars->list  : &empty;
-        def.class_ivars = civars ? &civars->list : &empty;
-        def.pools       = pools  ? &pools->list  : &empty;
-        def.traits      = value_named(pairs, pair_count, "traits");
-        apply_type(value_named(pairs, pair_count, "type"), &def);
+        def.ivars       = ivars  ? ivars  : &empty;
+        def.cvars       = cvars  ? cvars  : &empty;
+        def.class_ivars = civars ? civars : &empty;
+        def.pools       = pools  ? pools  : &empty;
+        def.traits      = SRC_ston_value(pairs, pair_count, "traits");
+        apply_type(SRC_ston_value(pairs, pair_count, "type"), &def);
 
         if (!def.name) {
             free(text);
@@ -676,7 +476,7 @@ TONEL_read(const char *path, const st_source_sink *sink, void *user,
     /*  Methods, each optionally preceded by its own metadata.  */
     while (ok) {
         char        category[256] = "";
-        ston_pair   method_meta[STON_MAX_PAIRS];
+        st_ston_pair method_meta[ST_STON_MAX_PAIRS];
         unsigned    meta_count = 0;
 
         skip_separators(&t, NULL, 0);
@@ -686,27 +486,25 @@ TONEL_read(const char *path, const st_source_sink *sink, void *user,
         if (here(&t) == '{') {
             const char *named;
 
-            if (!ston_object(&t, method_meta, &meta_count, STON_MAX_PAIRS)) {
+            if (!SRC_ston_object(&t.c, method_meta, &meta_count,
+                                 ST_STON_MAX_PAIRS, error, error_len)) {
                 ok = 0;
                 break;
             }
-            named = value_named(method_meta, meta_count, "category");
+            named = SRC_ston_value(method_meta, meta_count, "category");
             if (named)
                 snprintf(category, sizeof category, "%s", named);
             skip_separators(&t, NULL, 0);
             if (at_end(&t)) {
-                for (i = 0; i < meta_count; ++i)
-                    SRC_names_free(&method_meta[i].list);
+                            SRC_ston_free(method_meta, meta_count);
                 break;
             }
         }
         ok = read_method(&t, category);
-        for (i = 0; i < meta_count; ++i)
-            SRC_names_free(&method_meta[i].list);
+        SRC_ston_free(method_meta, meta_count);
     }
 
-    for (i = 0; i < pair_count; ++i)
-        SRC_names_free(&pairs[i].list);
+    SRC_ston_free(pairs, pair_count);
     free(text);
     return ok;
 }

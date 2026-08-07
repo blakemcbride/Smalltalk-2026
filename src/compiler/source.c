@@ -53,6 +53,266 @@ SRC_names_free(st_names *l)
     l->capacity = 0;
 }
 
+/*  ----------  Files  ----------  */
+
+char *
+SRC_slurp(const char *path, size_t *length, char *error, size_t error_len)
+{
+    FILE   *f = fopen(path, "rb");
+    long    size;
+    char   *text;
+
+    if (length)
+        *length = 0;
+    if (!f) {
+        snprintf(error, error_len, "cannot open %s", path);
+        return NULL;
+    }
+    fseek(f, 0, SEEK_END);
+    size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (size < 0) {
+        fclose(f);
+        snprintf(error, error_len, "cannot size %s", path);
+        return NULL;
+    }
+    text = (char *) malloc((size_t) size + 1);
+    if (!text) {
+        fclose(f);
+        snprintf(error, error_len, "out of memory reading %s", path);
+        return NULL;
+    }
+    if (fread(text, 1, (size_t) size, f) != (size_t) size) {
+        fclose(f);
+        free(text);
+        snprintf(error, error_len, "cannot read %s", path);
+        return NULL;
+    }
+    fclose(f);
+    text[size] = '\0';
+    if (length)
+        *length = (size_t) size;
+    return text;
+}
+
+/*  ----------  A very small STON  ----------  */
+
+static int  cur_at_end(const st_cursor *c) { return c->pos >= c->length; }
+static char cur_here(const st_cursor *c)
+{ return c->pos < c->length ? c->text[c->pos] : '\0'; }
+
+static void
+cur_advance(st_cursor *c)
+{
+    if (c->pos < c->length && c->text[c->pos] == '\n')
+        ++c->line;
+    ++c->pos;
+}
+
+void
+SRC_skip_separators(st_cursor *c, char *comment, size_t comment_len)
+{
+    for (;;) {
+        while (!cur_at_end(c) && isspace((unsigned char) cur_here(c)))
+            cur_advance(c);
+        if (cur_here(c) != '"')
+            return;
+        cur_advance(c);
+        {
+            size_t  n = 0;
+
+            while (!cur_at_end(c)) {
+                if (cur_here(c) == '"') {
+                    cur_advance(c);
+                    if (cur_here(c) != '"')
+                        break;      /*  the comment ends  */
+                }
+                if (comment && n + 1 < comment_len)
+                    comment[n++] = cur_here(c);
+                cur_advance(c);
+            }
+            if (comment && comment_len)
+                comment[n] = '\0';
+        }
+    }
+}
+
+static int
+ston_scalar(st_cursor *c, char *out, size_t out_len, int *is_nil)
+{
+    size_t  n = 0;
+
+    *is_nil = 0;
+    if (cur_here(c) == '\'' || cur_here(c) == '"') {
+        char    quote = cur_here(c);
+
+        cur_advance(c);
+        while (!cur_at_end(c)) {
+            if (cur_here(c) == quote) {
+                cur_advance(c);
+                if (cur_here(c) != quote)
+                    break;
+            }
+            if (n + 1 < out_len)
+                out[n++] = cur_here(c);
+            cur_advance(c);
+        }
+        out[n] = '\0';
+        return 1;
+    }
+    if (cur_here(c) == '#') {
+        cur_advance(c);
+        if (cur_here(c) == '\'')
+            return ston_scalar(c, out, out_len, is_nil);
+    }
+    while (!cur_at_end(c)
+        && (isalnum((unsigned char) cur_here(c)) || cur_here(c) == '_'
+         || cur_here(c) == ':' || cur_here(c) == '-' || cur_here(c) == '.'
+         || cur_here(c) == '+' || cur_here(c) == '*' || cur_here(c) == '@'
+         || cur_here(c) == '/')) {
+        if (n + 1 < out_len)
+            out[n++] = cur_here(c);
+        cur_advance(c);
+    }
+    out[n] = '\0';
+    if (strcmp(out, "nil") == 0)
+        *is_nil = 1;
+    return n > 0;
+}
+
+int
+SRC_ston_object(st_cursor *c, st_ston_pair *pairs, unsigned *count,
+                unsigned max, char *error, size_t error_len)
+{
+    *count = 0;
+    if (cur_here(c) != '{') {
+        snprintf(error, error_len, "line %u: expected { to open a header",
+                 c->line);
+        return 0;
+    }
+    cur_advance(c);
+    for (;;) {
+        st_ston_pair   *p;
+        int             ignored;
+
+        SRC_skip_separators(c, NULL, 0);
+        if (cur_here(c) == '}') {
+            cur_advance(c);
+            return 1;
+        }
+        if (cur_at_end(c)) {
+            snprintf(error, error_len, "line %u: a header is not closed",
+                     c->line);
+            return 0;
+        }
+        if (cur_here(c) == ',') {
+            cur_advance(c);
+            continue;
+        }
+        p = (*count < max) ? &pairs[(*count)++] : NULL;
+        {
+            char    key[64];
+
+            if (!ston_scalar(c, key, sizeof key, &ignored)) {
+                snprintf(error, error_len, "line %u: expected a key", c->line);
+                return 0;
+            }
+            if (p)
+                snprintf(p->key, sizeof p->key, "%s", key);
+        }
+        SRC_skip_separators(c, NULL, 0);
+        if (cur_here(c) != ':') {
+            snprintf(error, error_len, "line %u: expected : after a key",
+                     c->line);
+            return 0;
+        }
+        cur_advance(c);
+        SRC_skip_separators(c, NULL, 0);
+
+        if (cur_here(c) == '[') {
+            cur_advance(c);
+            for (;;) {
+                char    item[256];
+                int     item_nil;
+
+                SRC_skip_separators(c, NULL, 0);
+                if (cur_here(c) == ']') {
+                    cur_advance(c);
+                    break;
+                }
+                if (cur_at_end(c)) {
+                    snprintf(error, error_len, "line %u: a list is not closed",
+                             c->line);
+                    return 0;
+                }
+                if (cur_here(c) == ',') {
+                    cur_advance(c);
+                    continue;
+                }
+                if (!ston_scalar(c, item, sizeof item, &item_nil)) {
+                    snprintf(error, error_len, "line %u: expected a name",
+                             c->line);
+                    return 0;
+                }
+                if (p && item[0])
+                    SRC_names_add(&p->list, item);
+            }
+            if (p)
+                p->is_list = 1;
+        }  else  {
+            char    value[256];
+            int     value_nil;
+
+            if (!ston_scalar(c, value, sizeof value, &value_nil)) {
+                snprintf(error, error_len, "line %u: expected a value",
+                         c->line);
+                return 0;
+            }
+            if (p) {
+                snprintf(p->value, sizeof p->value, "%s", value);
+                p->is_nil = value_nil;
+            }
+        }
+    }
+}
+
+void
+SRC_ston_free(st_ston_pair *pairs, unsigned count)
+{
+    unsigned    i;
+
+    for (i = 0; i < count; ++i)
+        SRC_names_free(&pairs[i].list);
+}
+
+static const st_ston_pair *
+ston_pair_named(const st_ston_pair *pairs, unsigned count, const char *key)
+{
+    unsigned    i;
+
+    for (i = 0; i < count; ++i) {
+        if (strcmp(pairs[i].key, key) == 0)
+            return &pairs[i];
+    }
+    return NULL;
+}
+
+const char *
+SRC_ston_value(const st_ston_pair *pairs, unsigned count, const char *key)
+{
+    const st_ston_pair *p = ston_pair_named(pairs, count, key);
+
+    return (p && !p->is_nil && !p->is_list) ? p->value : NULL;
+}
+
+const st_names *
+SRC_ston_list(const st_ston_pair *pairs, unsigned count, const char *key)
+{
+    const st_ston_pair *p = ston_pair_named(pairs, count, key);
+
+    return (p && p->is_list) ? &p->list : NULL;
+}
+
 /*  ----------  Scraping chunk text  ----------  */
 
 /*  Pull the contents of the first single-quoted string out of a chunk.  */

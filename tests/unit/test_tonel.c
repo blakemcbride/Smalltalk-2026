@@ -21,6 +21,7 @@
 #include "st_test.h"
 
 #include "source.h"
+#include "profile.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -504,6 +505,61 @@ test_the_format_is_chosen_by_suffix(void)
     CHECK_EQ_STR(SRC_format_of("kernel/Kernel.st"), "chunk");
 }
 
+/*
+ *  Profiles: which files make an image.
+ *
+ *  Run from the top of the tree, so the profiles and the library are where
+ *  the repository puts them; skipped rather than failed otherwise.
+ */
+static void
+test_profiles(void)
+{
+    st_names    files;
+    char        error[512] = "";
+    unsigned    bluebook_count;
+    unsigned    i;
+    int         saw_probe = 0;
+    int         saw_sources = 0;
+
+    if (!PROFILE_expand("profiles/bluebook.profile", &files, error,
+                        sizeof error)) {
+        printf("  skipped profiles: %s\n", error);
+        return;
+    }
+    /*  The 1983 manifest, entry for entry.  */
+    CHECK(files.count > 200);
+    bluebook_count = files.count;
+    for (i = 0; i < files.count; ++i) {
+        if (strncmp(files.items[i], "sources/", 8) == 0
+         || strstr(files.items[i], "/sources/"))
+            saw_sources = 1;
+    }
+    CHECK(saw_sources);
+    SRC_names_free(&files);
+
+    /*  st2026 requires bluebook and adds the lib package on top.  */
+    CHECK(PROFILE_expand("profiles/st2026.profile", &files, error,
+                         sizeof error));
+    CHECK(files.count > bluebook_count);
+    for (i = 0; i < files.count; ++i) {
+        if (strstr(files.items[i], "lib/Probe/"))
+            saw_probe = 1;
+    }
+    CHECK(saw_probe);
+    /*
+     *  A required profile's files come first, which is what "requires"
+     *  has to mean if a package is to extend what it sits on.
+     */
+    CHECK(strstr(files.items[0], "sources/") != NULL);
+    /*  And a directory is taken in sorted order, so a build repeats.  */
+    for (i = 1; i < files.count; ++i) {
+        if (strstr(files.items[i - 1], "lib/Probe/")
+         && strstr(files.items[i], "lib/Probe/"))
+            CHECK(strcmp(files.items[i - 1], files.items[i]) < 0);
+    }
+    SRC_names_free(&files);
+}
+
 int
 main(void)
 {
@@ -517,6 +573,7 @@ main(void)
     test_shapes_we_cannot_build_are_reported();
     test_both_tonel_spellings();
     test_a_package_file_defines_nothing();
+    test_profiles();
 
     return ST_TEST_END();
 }

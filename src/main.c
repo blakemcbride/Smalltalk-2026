@@ -15,6 +15,7 @@
 #include "gfx.h"
 #include "st_sched.h"
 #include "bootstrap.h"
+#include "profile.h"
 #include "compiler.h"
 #include "chunk.h"
 #include "survey.h"
@@ -53,7 +54,8 @@ usage(const char *argv0)
     printf("usage: %s [options]\n", argv0);
     printf("\n");
     printf("  -version              print version and build configuration\n");
-    printf("  -bootstrap <a.st...> [-manifest f] [-o image] [-eval expr]\n");
+    printf("  -bootstrap <a.st...> [-profile p] [-manifest f] [-o image]\n");
+    printf("                       [-eval expr] [-startup expr]\n");
     printf("                        [-startup expr]  what a saved image resumes\n");
     printf("                        build an image from source\n");
     printf("  -run <image> [n]      run the image, opening a window\n");
@@ -1131,6 +1133,26 @@ main(int argc, char **argv)
                         path_list_free(&sources);
                         return 1;
                     }
+                }  else if (!strcmp(argv[j], "-profile") && j + 1 < argc) {
+                    st_names    expanded;
+                    char        err[512];
+                    unsigned    k;
+
+                    if (!PROFILE_expand(argv[++j], &expanded, err,
+                                        sizeof err)) {
+                        fprintf(stderr, "st80: %s\n", err);
+                        path_list_free(&sources);
+                        return 1;
+                    }
+                    for (k = 0; k < expanded.count; ++k) {
+                        if (!path_list_add(&sources, expanded.items[k])) {
+                            fprintf(stderr, "st80: out of memory\n");
+                            SRC_names_free(&expanded);
+                            path_list_free(&sources);
+                            return 1;
+                        }
+                    }
+                    SRC_names_free(&expanded);
                 }  else if (!path_list_add(&sources, argv[j])) {
                     fprintf(stderr, "st80: out of memory\n");
                     path_list_free(&sources);

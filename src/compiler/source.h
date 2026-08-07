@@ -96,6 +96,57 @@ typedef struct {
 } st_source_sink;
 
 /*
+ *  ----------  A very small STON  ----------
+ *
+ *  Tonel headers are written in it, and so are the profiles that say which
+ *  packages make an image, so there is one reader rather than two.  Only
+ *  what those two need: an object of `#key : value` pairs, where a value is
+ *  a symbol, a string, a list of them, a number, or a constant.  Values
+ *  arrive as text and the caller knows which keys mean what.
+ */
+
+typedef struct {
+    const char *text;
+    size_t      length;
+    size_t      pos;
+    unsigned    line;
+} st_cursor;
+
+typedef struct {
+    char        key[64];
+    char        value[256];         /*  a scalar  */
+    st_names    list;               /*  a [ ... ] */
+    int         is_list;
+    int         is_nil;
+} st_ston_pair;
+
+#define ST_STON_MAX_PAIRS   32
+
+/*  Whitespace and "comments"; the last comment seen is kept if asked for.  */
+void        SRC_skip_separators(st_cursor *c, char *comment,
+                                size_t comment_len);
+
+/*
+ *  Read "{ #a : b, #c : [ d, e ] }" at the cursor.  Answers 0 and fills
+ *  `error` on a malformed header.  The caller frees each pair's list.
+ */
+int         SRC_ston_object(st_cursor *c, st_ston_pair *pairs,
+                            unsigned *count, unsigned max,
+                            char *error, size_t error_len);
+void        SRC_ston_free(st_ston_pair *pairs, unsigned count);
+
+/*  A scalar value by key, or NULL when absent or nil.  */
+const char *SRC_ston_value(const st_ston_pair *pairs, unsigned count,
+                           const char *key);
+/*  A list value by key, or NULL.  */
+const st_names *SRC_ston_list(const st_ston_pair *pairs, unsigned count,
+                              const char *key);
+
+/*  Slurp a whole file.  The caller frees the result.  */
+char       *SRC_slurp(const char *path, size_t *length, char *error,
+                      size_t error_len);
+
+/*
  *  Read one file, dispatching on its suffix:
  *
  *      .st  .stClass                the 1983 bang/chunk format
