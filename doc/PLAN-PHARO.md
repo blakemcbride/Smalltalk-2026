@@ -184,7 +184,7 @@ recursions that now work *and* asserts the aliasing case above, so the boundary 
 recorded rather than left to be rediscovered — when Phase D lands, that assertion changes
 with the behaviour it describes. trace2 and trace3 stay byte-exact.
 
-### C — Tonel loader and the source pipeline
+### C — Tonel loader and the source pipeline *(done)*
 Extract the event dispatch currently inline in `read_source` (`bootstrap.c:1380-1438`) into
 `src/compiler/source.h` — a sink with `class_def` / `class_side_def` / `comment` / `method` /
 `diagnostic` callbacks — and give it two producers: the existing chunk reader and a new
@@ -210,10 +210,24 @@ bits of byte 3 select one of four — which is what the 1983 scheme was for.
 Reject loudly, and keep going, on `#type : 'immediate' | 'weak' | 'ephemeron'`, `#slots`,
 `#traits` — with a total at the end. A porting effort needs the whole list, not the first item.
 
-**Gate:** `bluebook.profile` produces a **byte-identical image** to today's
-`-manifest sources/MANIFEST`; a Tonel package and an equivalent chunk file produce
-identical method dictionaries (`census.c` already gives the oracle); a hand-written 5-class
-Tonel package in `lib/` loads and answers correctly.
+**Gate, as met:** `bluebook.profile` produced a **byte-identical image** to
+`-manifest sources/MANIFEST` at every step of C1–C5, which is the only way to know a
+refactor of this size changed nothing. The same class written both ways produces
+identical selectors, identical bytecodes and identical object pointers. `lib/Probe` is
+five classes, a chain three deep, class variables, class-side instance variables and an
+extension to `Object`, loaded through `profiles/st2026.profile`.
+
+C6 deliberately changes the image, which is the point of it: **the first method compiled
+had no source at all**, because `getSource` reads position zero as "none" and that is
+where the first method landed. One filler byte fixes it, and the sources file is one byte
+longer. The 22-bit ceiling that used to drop a method's source silently now spills into
+files 3 and 4 and reports when it runs out — verified by forcing the per-file limit to
+600 KB, where `SystemDictionary>>install` lands in file 3 and reads back through the
+image's own `RemoteString`.
+
+Two things nothing reset between builds turned up here: the symbol index, which would
+have answered a lookup with a confident wrong Symbol, and the source text, which
+accumulated.
 
 ### D — Full closures
 The largest VM change, and after Phase B's correction the only thing that can make blocks
