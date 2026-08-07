@@ -98,6 +98,7 @@ evaluate(const char *expression)
     ctx.make_float         = BOOT_make_float;
     ctx.make_large_integer = BOOT_make_large_integer;
     ctx.make_array         = BOOT_make_array;
+    ctx.make_byte_array    = BOOT_make_byte_array;
     ctx.make_character     = BOOT_make_character;
     ctx.lookup_global      = BOOT_lookup_global;
 
@@ -1005,6 +1006,7 @@ check_same_bytecodes(const char *selector, const char *source)
     ctx.make_float         = BOOT_make_float;
     ctx.make_large_integer = BOOT_make_large_integer;
     ctx.make_array         = BOOT_make_array;
+    ctx.make_byte_array    = BOOT_make_byte_array;
     ctx.make_character     = BOOT_make_character;
     ctx.lookup_global      = BOOT_lookup_global;
     /*  A send to super needs the method's class in the literal frame.  */

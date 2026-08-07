@@ -17,6 +17,18 @@
  *      #foo    a symbol; #+ and #at:put: are symbols too.
  *      #(...)  a literal array, which may nest and whose bare words are
  *              symbols rather than variables.
+ *
+ *  Two forms below are post-Blue-Book, from the Squeak/Pharo lineage.  Both
+ *  were hard lex errors here until now, so recognising them takes no meaning
+ *  away from anything -- which is the whole reason they are cheap to add:
+ *
+ *      {...}   a dynamic array, whose elements are expressions evaluated at
+ *              run time rather than the compile-time literals #(...) takes.
+ *      #[...]  a literal ByteArray.
+ *
+ *  See doc/LanguageExtensions.md for the survey and for the one extension
+ *  deliberately NOT added: 1.23s2 already parses as the unary send "1.23 s2",
+ *  so it is the only candidate with an existing meaning to take away.
  *      2r1010  a radix number; 16rFF is 255.  Also 1e3 and 1.5e-3.
  *      -       a minus sign binds to a numeric literal that follows it
  *              directly, so "3-4" is a send but "3 -4" is two literals.
@@ -43,6 +55,7 @@ typedef enum {
     ST_TOK_STRING,          /*  'text'            */
     ST_TOK_SYMBOL,          /*  #foo #+ #at:put:  */
     ST_TOK_ARRAY_OPEN,      /*  #(                */
+    ST_TOK_BYTE_ARRAY_OPEN, /*  #[                */
     ST_TOK_ASSIGN,          /*  _ or :=           */
     ST_TOK_RETURN,          /*  ^                 */
     ST_TOK_SEMICOLON,       /*  ;                 */
@@ -53,7 +66,8 @@ typedef enum {
     ST_TOK_RPAREN,
     ST_TOK_LBRACKET,
     ST_TOK_RBRACKET,
-    ST_TOK_PRIMITIVE,       /*  <primitive: 60>   */
+    ST_TOK_LBRACE,          /*  {                 */
+    ST_TOK_RBRACE,          /*  }                 */
     ST_TOK_ERROR
 } st_token_kind;
 
@@ -63,7 +77,6 @@ typedef struct {
     int64_t         integer;
     double          real;
     unsigned        line;
-    unsigned        primitive;      /*  for ST_TOK_PRIMITIVE  */
     /*
      *  Whether anything -- space, tab, newline or a comment -- stood between
      *  this token and the one before it.

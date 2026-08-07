@@ -351,6 +351,17 @@ lex_token(st_lexer *lx, st_token *out)
             out->kind = ST_TOK_ARRAY_OPEN;
             return 1;
         }
+        if (!at_end(lx) && lx->source[lx->pos] == '[') {
+            /*
+             *  A literal ByteArray.  This has to be tested before the
+             *  binary-character branch below or it would never be reached:
+             *  '[' is not a binary character, so #[ used to fall all the way
+             *  through to "# must be followed by a symbol".
+             */
+            ++lx->pos;
+            out->kind = ST_TOK_BYTE_ARRAY_OPEN;
+            return 1;
+        }
         if (!at_end(lx) && lx->source[lx->pos] == '\'') {
             /*  #'with spaces' is a symbol spelled as a string.  */
             st_token    inner;
@@ -440,6 +451,16 @@ lex_token(st_lexer *lx, st_token *out)
         out->kind = ST_TOK_RBRACKET;
         return 1;
 
+    case '{':
+        ++lx->pos;
+        out->kind = ST_TOK_LBRACE;
+        return 1;
+
+    case '}':
+        ++lx->pos;
+        out->kind = ST_TOK_RBRACE;
+        return 1;
+
     case '_':
         /*
          *  The 1983 assignment arrow.  A leading underscore in an
@@ -459,38 +480,19 @@ lex_token(st_lexer *lx, st_token *out)
         out->kind = ST_TOK_COLON;
         return 1;
 
-    case '<': {
-        /*
-         *  A primitive pragma, <primitive: 60>.  Anything else beginning
-         *  with < is an ordinary binary selector.
-         */
-        size_t      save = lx->pos;
-        unsigned    line_save = lx->line;
-
-        ++lx->pos;
-        skip_blanks(lx);
-        if (!at_end(lx) && strncmp(lx->source + lx->pos, "primitive:", 10) == 0) {
-            unsigned    value = 0;
-
-            lx->pos += 10;
-            skip_blanks(lx);
-            while (!at_end(lx) && isdigit((unsigned char) lx->source[lx->pos])) {
-                value = value * 10 + (unsigned) (lx->source[lx->pos] - '0');
-                ++lx->pos;
-            }
-            skip_blanks(lx);
-            if (!at_end(lx) && lx->source[lx->pos] == '>') {
-                ++lx->pos;
-                out->kind      = ST_TOK_PRIMITIVE;
-                out->primitive = value;
-                return 1;
-            }
-        }
-        lx->pos  = save;
-        lx->line = line_save;
-        break;
-    }
-
+    /*
+     *  '<' used to be special-cased here, scanning the whole of
+     *  "<primitive: 60>" into one token by reading raw characters.  That
+     *  recognised the one pragma the Blue Book has and could not be extended
+     *  to the general form -- <foo: 1>, several per method, or a named
+     *  primitive -- without the lexer learning the grammar.
+     *
+     *  So it is gone, and '<' is an ordinary binary selector again.  Pragmas
+     *  are recognised by the PARSER, which knows the one position they can
+     *  appear in and can speculatively read and rewind like everything else
+     *  in this compiler.  Removing the case is what makes that possible; it
+     *  is a special case deleted, not one added.
+     */
     default:
         break;
     }
@@ -522,6 +524,14 @@ lex_token(st_lexer *lx, st_token *out)
           || lx->last_kind == ST_TOK_LPAREN
           || lx->last_kind == ST_TOK_LBRACKET
           || lx->last_kind == ST_TOK_ARRAY_OPEN
+          /*
+           *  The two openers below are new, and forgetting either of them
+           *  would be silent: "{-1. 2}" would lex the minus as a binary
+           *  selector with no left operand and fail somewhere later, in a
+           *  message that named neither the brace nor the minus.
+           */
+          || lx->last_kind == ST_TOK_LBRACE
+          || lx->last_kind == ST_TOK_BYTE_ARRAY_OPEN
           || lx->last_kind == ST_TOK_SEMICOLON
           || lx->last_kind == ST_TOK_PERIOD
           || lx->last_kind == ST_TOK_BAR

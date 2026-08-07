@@ -325,6 +325,32 @@ BOOT_make_array(st_oop *elements, unsigned count, void *user)
     return array;
 }
 
+/*
+ *  A literal ByteArray, for #[1 2 3].
+ *
+ *  ByteArray is an ordinary class in the 1983 library rather than one the
+ *  interpreter names, so this looks it up like any other global; a profile
+ *  that has not loaded it gets nil and a compile-time complaint rather than
+ *  a byte array full of nothing.
+ */
+st_oop
+BOOT_make_byte_array(const uint8_t *bytes, unsigned count, void *user)
+{
+    st_oop      class_oop = BOOT_global("ByteArray");
+    st_oop      array;
+    unsigned    i;
+
+    (void) user;
+    if (!OM_is_object(class_oop))
+        return ST_NIL;
+    array = OM_instantiate_bytes(class_oop, count);
+    if (!OM_is_object(array))
+        return ST_NIL;
+    for (i = 0; i < count; ++i)
+        OM_store_byte(i, array, bytes[i]);
+    return array;
+}
+
 /*  Characters are unique per code point, which is what makes == work.  */
 st_oop
 BOOT_make_character(unsigned code, void *user)
@@ -1304,6 +1330,7 @@ compile_into(boot_class *c, int class_side, const char *source,
     ctx.make_float         = BOOT_make_float;
     ctx.make_large_integer = BOOT_make_large_integer;
     ctx.make_array         = BOOT_make_array;
+    ctx.make_byte_array    = BOOT_make_byte_array;
     ctx.make_character     = BOOT_make_character;
     ctx.lookup_global      = BOOT_lookup_global;
 
@@ -2896,6 +2923,7 @@ BOOT_install_scheduler(const char *startup_source)
     ctx.make_float         = BOOT_make_float;
     ctx.make_large_integer = BOOT_make_large_integer;
     ctx.make_array         = BOOT_make_array;
+    ctx.make_byte_array    = BOOT_make_byte_array;
     ctx.make_character     = BOOT_make_character;
     ctx.lookup_global      = BOOT_lookup_global;
     snprintf(source, sizeof source, "startUp %s", startup_source);

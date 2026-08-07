@@ -51,6 +51,8 @@ static st_oop stub_large(int64_t v, void *user)
 { (void) v; (void) user; return 2004; }
 static st_oop stub_array(st_oop *e, unsigned n, void *user)
 { (void) e; (void) n; (void) user; return 2006; }
+static st_oop stub_byte_array(const uint8_t *b, unsigned n, void *user)
+{ (void) b; (void) n; (void) user; return 2008; }
 static st_oop stub_character(unsigned code, void *user)
 { (void) user; return (st_oop) (4000 + code * 2); }
 static st_oop stub_global(const char *name, void *user)
@@ -77,6 +79,7 @@ context(void)
     ctx.make_float         = stub_float;
     ctx.make_large_integer = stub_large;
     ctx.make_array         = stub_array;
+    ctx.make_byte_array    = stub_byte_array;
     ctx.make_character     = stub_character;
     /*  A super send needs a method class; any Association will do here.  */
     ctx.method_class_association = 5000;
@@ -693,6 +696,170 @@ test_lexer_details(void)
     LEX_close(lx);
 }
 
+/*
+ *  ----------  Post-Blue-Book syntax  ----------
+ *
+ *  Four forms the 1983 grammar does not have, and which doc/LanguageExtensions
+ *  measured as clean parse errors before this -- which is why adding them can
+ *  take no meaning away from anything that compiled before.  The fifth
+ *  candidate, the scaled decimal 1.23s2, is deliberately absent: it already
+ *  parses as the unary send "1.23 s2" and is the only one with a meaning to
+ *  lose.
+ */
+
+/*  Compile and answer the primitive number the pragmas asked for.  */
+static unsigned
+primitive_of(const char *source, const char *label)
+{
+    st_compile_context  ctx = context();
+    st_compiled_code    code;
+
+    symbol_count = 0;
+    if (COMPILE_to_bytecodes(source, &ctx, &code) != 0) {
+        printf("  %s: compile failed at line %u: %s\n", label,
+               code.error_line, code.error);
+        CHECK(0);
+        return (unsigned) -1;
+    }
+    return code.primitive;
+}
+
+static void
+test_dynamic_arrays(void)
+{
+    /*
+     *  { } is code, not a literal: build an Array and fill it, one dup /
+     *  index / value / at:put: / pop per element.  205 is new:, 193 is
+     *  at:put:, both one-byte special selectors.
+     */
+    CHECK_CODE("foo ^{ }", "an empty dynamic array",
+               64, 117, 205, 124);
+    CHECK_CODE("foo ^{ 1. 2 }", "two elements",
+               64, 119, 205,
+               136, 118, 118, 193, 135,
+               136, 119, 119, 193, 135,
+               124);
+    /*  A trailing period is allowed and does not add an element.  */
+    CHECK_CODE("foo ^{ 1. }", "a trailing period",
+               64, 118, 205,
+               136, 118, 118, 193, 135,
+               124);
+    /*  Elements are expressions, which is the whole point.  */
+    CHECK_CODE("foo ^{ 1 + 2 }", "an expression element",
+               64, 118, 205,
+               136, 118, 118, 119, 176, 193, 135,
+               124);
+    /*
+     *  A negative literal directly after the brace.  The lexer decides
+     *  whether '-' starts a number by what came before it, so the opening
+     *  brace had to join that list; without it this is a binary send with no
+     *  left operand and the failure surfaces somewhere else entirely.
+     */
+    CHECK_CODE("foo ^{ -1 }", "a negative first element",
+               64, 118, 205,
+               136, 118, 116, 193, 135,
+               124);
+}
+
+static void
+test_byte_arrays(void)
+{
+    /*  A pure literal, like #(...), so one push and nothing else.  */
+    CHECK_CODE("foo ^#[1 2 255]", "a byte array", 32, 124);
+    CHECK_CODE("foo ^#[]", "an empty byte array", 32, 124);
+    /*  And it nests inside a literal array.  */
+    CHECK_CODE("foo ^#(#[1 2] #[3 4])", "byte arrays inside an array",
+               32, 124);
+
+    /*  Out of range is reported rather than truncated.  */
+    {
+        st_compile_context  ctx = context();
+        st_compiled_code    code;
+
+        symbol_count = 0;
+        CHECK(COMPILE_to_bytecodes("foo ^#[1 256]", &ctx, &code) != 0);
+        symbol_count = 0;
+        CHECK(COMPILE_to_bytecodes("foo ^#[1 $a]", &ctx, &code) != 0);
+    }
+}
+
+static void
+test_block_temporaries(void)
+{
+    /*
+     *  [:x | | t | ...] -- the temporary gets a frame slot of its own and is
+     *  nilled at every activation, which is the 115 / 105 pair after the
+     *  argument store.  A block in this dialect shares its home's frame, so
+     *  without that a second evaluation would see what the first left.
+     */
+    CHECK_CODE("foo ^[:x | | t | t]", "an argument and a temporary",
+               137, 118, 200, 164, 5,
+               104,                 /*  store the argument into slot 0  */
+               115, 105,            /*  nil the temporary, slot 1       */
+               17,                  /*  push it                          */
+               125, 124);
+    CHECK_CODE("foo ^[ | t | t]", "a temporary and no arguments",
+               137, 117, 200, 164, 4,
+               115, 104,
+               16,
+               125, 124);
+
+    /*
+     *  The bar that opens a declaration is the same token a binary send
+     *  uses, so this must not become one.  After the argument bar the parser
+     *  is sitting on an identifier, not a bar, and never tries.
+     */
+    CHECK_CODE("foo ^[:a | a | false]", "a binary bar inside a block",
+               137, 118, 200, 164, 5,
+               104, 16, 114, 224,
+               125, 124);
+}
+
+static void
+test_pragmas(void)
+{
+    /*  The Blue Book form still works; it is most of the 1983 library.  */
+    CHECK_EQ_INT((int) primitive_of("foo <primitive: 60> ^self", "classic"), 60);
+
+    /*  Squeak generalised the notation.  Anything else is parsed and dropped. */
+    CHECK_EQ_INT((int) primitive_of("foo <pharoStyle> ^1", "unary"), 0);
+    CHECK_CODE("foo <pharoStyle> ^1", "a unary pragma leaves no trace",
+               118, 124);
+    CHECK_CODE("foo <author: 'Blake'> <deprecated: 'x'> ^1",
+               "several pragmas per method", 118, 124);
+    CHECK_CODE("foo <a: 1 b: 'two' c: #three d: $4 e: 3.5 f: true g: #(1 2)> ^1",
+               "every literal kind in one pragma", 118, 124);
+
+    /*  A named primitive is Squeak's 117, and its descriptor is literal 0.  */
+    CHECK_EQ_INT((int) primitive_of("foo <primitive: 'fn' module: 'M'> ^self",
+                                    "named"), 117);
+    {
+        st_compile_context  ctx = context();
+        st_compiled_code    code;
+
+        symbol_count = 0;
+        CHECK(COMPILE_to_bytecodes("foo <primitive: 'fn' module: 'M'> ^self",
+                                   &ctx, &code) == 0);
+        CHECK(code.literal_count >= 1);
+        /*
+         *  The descriptor is an Array, so stub_array's 2006.  What is being
+         *  checked is the INDEX: Squeak puts it at 0 and ported source knows
+         *  that, so anything interned ahead of it would be a silent break.
+         */
+        CHECK_EQ_INT((int) code.literals[0], 2006);
+    }
+
+    /*
+     *  '<' is also an ordinary binary selector, and a method with no
+     *  temporaries may begin with one.  A speculative pragma parse that does
+     *  not reach a closing '>' has to rewind and give the token back.
+     */
+    CHECK_CODE("foo ^x < 3", "a leading less-than is a send",
+               0, 32, 178, 124);
+    CHECK_CODE("foo <primitive: 70> ^x < 3",
+               "a pragma and then a less-than", 0, 32, 178, 124);
+}
+
 int
 main(void)
 {
@@ -712,6 +879,10 @@ main(void)
     test_block_argument_slots();
     test_negative_after_binary();
     test_context_size();
+    test_dynamic_arrays();
+    test_byte_arrays();
+    test_block_temporaries();
+    test_pragmas();
 
     return ST_TEST_END();
 }

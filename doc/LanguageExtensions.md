@@ -1,30 +1,34 @@
 # Post-Blue-Book language extensions
 
 A survey of what the Squeak/Pharo lineage added to the Smalltalk-80 grammar,
-and what only looks added.  **Deferred: this is for discussion once the nine
-phases of `PLAN.md` are complete.**  Nothing here is a commitment, and none of
-it belongs in the system before the Blue Book language it extends is finished.
+and what only looks added.
 
-It is filed now because the compiler is fresh and the question of where the
-1983 grammar stops is exactly the question the compiler had to answer.
+It was filed while the compiler was fresh, because the question of where the
+1983 grammar stops is exactly the question the compiler had to answer. It was
+deferred until the nine phases of `PLAN.md` were complete. **They are, and
+Phase A of `PLAN-PHARO.md` has now implemented five of the six** — the
+prerequisite for compiling Pharo source at all.
 
-Where the five candidate extensions stand in this system today, measured
-rather than assumed:
+Where the six candidates stand, measured rather than assumed:
 
 | Extension | Today |
 |---|---|
-| Dynamic arrays `{ a. b }` | Not supported — the lexer rejects `{` |
-| General pragmas `<foo: 1>` | Only `<primitive: N>` is recognised |
-| Block-local temporaries `[:x \| \| t \| ...]` | Not supported — parse error |
-| Byte arrays `#[1 2 3]` | Not supported — `#` must begin a symbol |
-| Scaled decimals `1.23s2` | Not supported: it lexes as `1.23` then a unary send `#s2`, which is a runtime doesNotUnderstand |
-| Named primitives `<primitive: 'p' module: 'M'>` | Not supported |
+| Dynamic arrays `{ a. b }` | **Implemented.** Compiled as `Array new: n` filled by `at:put:`, so it needs no new bytecode |
+| General pragmas `<foo: 1>` | **Implemented**, several per method, all literal argument kinds. Parsed and discarded except the two primitive forms |
+| Block-local temporaries `[:x \| \| t \| ...]` | **Implemented.** Each gets a frame slot and is nilled at every activation |
+| Byte arrays `#[1 2 3]` | **Implemented**, including nested inside `#(...)` |
+| Named primitives `<primitive: 'p' module: 'M'>` | **Implemented** as Squeak's primitive 117 with the descriptor as literal 0. The VM does not yet dispatch it |
+| Scaled decimals `1.23s2` | **Not implemented, deliberately.** See below |
 
-Four of the six are rejected at compile time, which is what an absent feature
-should look like. The scaled decimal is the one that compiles, and it was
-recorded here as arguably a bug on the grounds that a Blue Book compiler ought
-to reject `1.23s2` outright. Measured, that turns out to be wrong, and the
-reason is worth keeping:
+The first four were clean parse errors before, which is what an absent feature
+should look like, and is why adding them could take no meaning away from
+anything that compiled: the 1983 library still compiles 4,521 of 4,521 methods,
+and `trace2` is still byte-exact.
+
+The scaled decimal is the one that already compiles, and it was recorded here
+as arguably a bug on the grounds that a Blue Book compiler ought to reject
+`1.23s2` outright. Measured, that turns out to be wrong, and the reason is why
+it is the one left alone:
 
 ```
 $ ./st80 -bootstrap -manifest sources/MANIFEST -eval '^3factorial'
@@ -38,10 +42,31 @@ does not implement it. Answering `nil` after a doesNotUnderstand is what this
 system does with every unimplemented unary send.
 
 So the compiler is right and the note was wrong. What it costs is that adding
-scaled decimals later is not a free extension the way `{`, `#[` and `<foo:>`
-are: those are all currently syntax errors, so recognising them can break
-nothing, whereas `1.23s2` already means something today. It is the only one of
-the six with an existing meaning to take away.
+scaled decimals is not a free extension the way `{`, `#[` and `<foo:>` were:
+those were all syntax errors, so recognising them could break nothing, whereas
+`1.23s2` already means something. It is the only one of the six with an
+existing meaning to take away, there is no `ScaledDecimal` class in the 1983
+library for it to answer, and Pharo code needing exact decimals is rare — so it
+stays out. Should it ever go in, it must require the `s` to be followed by
+digits and then a non-alphanumeric, so that `1.23some` remains a unary send.
+
+## What the implementation cost, and one thing it removed
+
+The pragma work is worth recording because it made the lexer *smaller*.
+`<primitive: 60>` used to be scanned into a single token by reading raw
+characters, which recognised the one pragma the Blue Book has and could not be
+generalised without teaching the lexer the grammar. That case is now deleted:
+`<` is an ordinary binary selector again, and pragmas are recognised by the
+parser, which knows the single position they may appear in and can speculate
+and rewind like everything else here. A method with no temporaries whose first
+statement is `a < 3 ifTrue: [...]` still compiles to a send, because a
+speculative parse that never reaches a closing `>` gives the token back.
+
+The one new hazard is that binary selectors are greedy up to two characters, so
+a closing `>` immediately followed by another binary character arrives as one
+token and the pragma is not recognised. Pragmas end lines in practice, and all
+4,521 library methods still compile, but the limit is real rather than
+theoretical.
 
 The survey follows as written.
 

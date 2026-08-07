@@ -22,6 +22,7 @@
 #define MAX_TEMPS       64
 #define MAX_ARGS        16
 #define MAX_BLOCK_DEPTH 16
+#define MAX_BYTE_ARRAY  1024
 
 /*  Save and restore enough to compile a stretch of source a second time.  */
 typedef struct {
@@ -553,6 +554,8 @@ emit_push_variable(st_compiler *c, const var_ref *v, const char *name)
 
 static void compile_expression(st_compiler *c);
 static void compile_statements(st_compiler *c, int inside_block);
+static void mark(st_compiler *c, compiler_mark *m);
+static void rewind_to(st_compiler *c, const compiler_mark *m);
 
 /*  Push a small integer using the shortest form available.  */
 static void
@@ -569,6 +572,8 @@ emit_push_integer(st_compiler *c, int64_t value)
     }
     emit_push_literal_constant(c, OM_int_oop((st_int) value));
 }
+
+static st_oop parse_byte_array(st_compiler *c);
 
 /*
  *  A literal array.  Bare words inside are symbols rather than variables,
@@ -656,6 +661,10 @@ parse_literal_array(st_compiler *c)
             advance(c);
             element = parse_literal_array(c);
             break;
+        case ST_TOK_BYTE_ARRAY_OPEN:
+            /*  #(#[1 2] #[3 4]) -- a byte array nests like any literal.  */
+            element = parse_byte_array(c);
+            break;
         default:
             fail(c, "unexpected token in a literal array");
             return ST_NIL;
@@ -665,6 +674,248 @@ parse_literal_array(st_compiler *c)
     }
     accept(c, ST_TOK_RPAREN);
     return c->ctx->make_array(elements, count, c->ctx->user);
+}
+
+/*
+ *  A literal ByteArray, #[1 2 3].  The current token is the opening #[.
+ *
+ *  Every element must be an integer that fits in a byte.  Anything else is
+ *  reported rather than coerced or skipped: a byte array whose elements were
+ *  quietly dropped would be the wrong length, and length is the only thing
+ *  the reader of a byte array has to go on.
+ */
+static st_oop
+parse_byte_array(st_compiler *c)
+{
+    uint8_t     bytes[MAX_BYTE_ARRAY];
+    unsigned    count = 0;
+
+    advance(c);
+    while (!c->failed && !at(c, ST_TOK_RBRACKET) && !at(c, ST_TOK_END)) {
+        if (!at(c, ST_TOK_INTEGER)) {
+            fail(c, "a byte array holds whole numbers 0 to 255");
+            return ST_NIL;
+        }
+        if (c->token.integer < 0 || c->token.integer > 255) {
+            fail(c, "%lld does not fit in a byte",
+                 (long long) c->token.integer);
+            return ST_NIL;
+        }
+        if (count >= MAX_BYTE_ARRAY) {
+            fail(c, "a byte array literal holds at most %u bytes",
+                 (unsigned) MAX_BYTE_ARRAY);
+            return ST_NIL;
+        }
+        bytes[count++] = (uint8_t) c->token.integer;
+        advance(c);
+    }
+    if (!accept(c, ST_TOK_RBRACKET)) {
+        fail(c, "a byte array must end with ]");
+        return ST_NIL;
+    }
+    if (!c->ctx->make_byte_array)
+        return ST_NIL;
+    return c->ctx->make_byte_array(bytes, count, c->ctx->user);
+}
+
+/*
+ *  ----------  Pragmas  ----------
+ *
+ *  The Blue Book has exactly one, <primitive: 60>, and the lexer used to
+ *  scan it as a single token.  Squeak generalised the notation to arbitrary
+ *  annotations, and Pharo source is full of them, so they are recognised
+ *  here instead -- in the parser, which knows that the only place a pragma
+ *  can appear is between the temporaries and the first statement.
+ *
+ *  Everything but the two primitive forms is parsed and discarded.  Keeping
+ *  them would need a CompiledMethod with somewhere to put them, which in
+ *  Pharo is an AdditionalMethodState in the literal frame; that is its own
+ *  piece of work and it belongs with the rest of the object model.  Parsing
+ *  and discarding is what unblocks compiling the source.
+ */
+
+typedef struct {
+    st_oop      value;
+    int         is_integer;
+    int64_t     integer;
+    int         is_string;
+    char        text[256];
+} pragma_arg;
+
+/*  One literal argument of a pragma.  Answers 0 if the token is not one.  */
+static int
+pragma_literal(st_compiler *c, pragma_arg *out)
+{
+    memset(out, 0, sizeof *out);
+    out->value = ST_NIL;
+
+    switch (c->token.kind) {
+    case ST_TOK_INTEGER:
+        out->is_integer = 1;
+        out->integer    = c->token.integer;
+        out->value      = OM_int_fits((st_int) c->token.integer)
+                            ? OM_int_oop((st_int) c->token.integer)
+                            : c->ctx->make_large_integer(c->token.integer,
+                                                         c->ctx->user);
+        break;
+    case ST_TOK_FLOAT:
+        out->value = c->ctx->make_float(c->token.real, c->ctx->user);
+        break;
+    case ST_TOK_STRING:
+        out->is_string = 1;
+        snprintf(out->text, sizeof out->text, "%s", c->token.text);
+        out->value = c->ctx->make_string(c->token.text, c->ctx->user);
+        break;
+    case ST_TOK_SYMBOL:
+        snprintf(out->text, sizeof out->text, "%s", c->token.text);
+        out->value = c->ctx->intern_symbol(c->token.text, c->ctx->user);
+        break;
+    case ST_TOK_CHARACTER:
+        out->value = c->ctx->make_character
+                        ? c->ctx->make_character((unsigned) c->token.integer,
+                                                 c->ctx->user)
+                        : OM_fetch_pointer((uint32_t) c->token.integer,
+                                           ST_CHARACTER_TABLE);
+        break;
+    case ST_TOK_IDENTIFIER:
+        /*  true, false and nil are the only bare words a pragma may hold.  */
+        if (strcmp(c->token.text, "true") == 0)
+            out->value = ST_TRUE;
+        else if (strcmp(c->token.text, "false") == 0)
+            out->value = ST_FALSE;
+        else if (strcmp(c->token.text, "nil") == 0)
+            out->value = ST_NIL;
+        else
+            return 0;
+        break;
+    case ST_TOK_ARRAY_OPEN:
+        advance(c);
+        out->value = parse_literal_array(c);
+        return !c->failed;
+    case ST_TOK_BYTE_ARRAY_OPEN:
+        out->value = parse_byte_array(c);
+        return !c->failed;
+    default:
+        return 0;
+    }
+    advance(c);
+    return 1;
+}
+
+/*
+ *  Act on a pragma that parsed.  Only the two primitive forms mean anything
+ *  to this compiler; the rest are accepted and dropped.
+ */
+static void
+apply_pragma(st_compiler *c, const char *selector,
+             const pragma_arg *args, unsigned argc)
+{
+    if (strcmp(selector, "primitive:") == 0 && argc == 1
+     && args[0].is_integer) {
+        if (args[0].integer < 1 || args[0].integer > 255) {
+            fail(c, "primitive number %lld is out of range",
+                 (long long) args[0].integer);
+            return;
+        }
+        c->out->primitive = (unsigned) args[0].integer;
+        return;
+    }
+    if (strcmp(selector, "primitive:module:") == 0 && argc == 2
+     && args[0].is_string && args[1].is_string) {
+        /*
+         *  A named primitive, <primitive: 'fn' module: 'Mod'>.
+         *
+         *  Squeak's encoding, which ported source depends on by number:
+         *  primitive index 117, and the method's FIRST literal is the
+         *  descriptor {module. function. sessionID. address}.  The last two
+         *  are the VM's own scratch and start at zero.
+         *
+         *  "First" is the load-bearing word.  Pragmas are parsed before any
+         *  statement, so the literal frame is still empty and the descriptor
+         *  necessarily lands at index 0 -- but a later change that interned
+         *  something earlier would move it silently, so the check is here
+         *  rather than in a comment.
+         */
+        st_oop      descriptor[4];
+        st_oop      array;
+
+        if (c->out->literal_count != 0) {
+            fail(c, "a named primitive's descriptor must be the first "
+                    "literal, and something is already there");
+            return;
+        }
+        descriptor[0] = args[1].value;          /*  module    */
+        descriptor[1] = args[0].value;          /*  function  */
+        descriptor[2] = OM_int_oop(0);
+        descriptor[3] = OM_int_oop(0);
+        array = c->ctx->make_array(descriptor, 4, c->ctx->user);
+        if (literal_index(c, array) != 0) {
+            fail(c, "a named primitive's descriptor must be the first "
+                    "literal");
+            return;
+        }
+        c->out->primitive = 117;
+        return;
+    }
+    /*  Any other pragma is well-formed and means nothing here.  */
+    (void) args;
+    (void) argc;
+}
+
+/*
+ *  Read one pragma.  The current token is the opening '<'.  Answers 1 if a
+ *  well-formed pragma was consumed and 0 if this is not one, in which case
+ *  the caller rewinds and '<' goes back to being a binary selector.
+ */
+static int
+parse_pragma(st_compiler *c)
+{
+    char        selector[256];
+    pragma_arg  args[8];
+    unsigned    argc = 0;
+    size_t      n = 0;
+
+    advance(c);                                 /*  past '<'  */
+    selector[0] = '\0';
+
+    if (at(c, ST_TOK_IDENTIFIER)) {
+        snprintf(selector, sizeof selector, "%s", c->token.text);
+        advance(c);
+    } else if (at(c, ST_TOK_BINARY)) {
+        snprintf(selector, sizeof selector, "%s", c->token.text);
+        advance(c);
+        if (argc >= 8 || !pragma_literal(c, &args[argc]))
+            return 0;
+        ++argc;
+    } else if (at(c, ST_TOK_KEYWORD)) {
+        while (at(c, ST_TOK_KEYWORD)) {
+            const char *part = c->token.text;
+
+            while (*part && n + 1 < sizeof selector)
+                selector[n++] = *part++;
+            selector[n] = '\0';
+            advance(c);
+            if (argc >= 8 || !pragma_literal(c, &args[argc]))
+                return 0;
+            ++argc;
+        }
+    } else {
+        return 0;
+    }
+
+    /*
+     *  The closing '>'.  It has to be a bar '>' and nothing else: binary
+     *  selectors are greedy up to two characters, so a '>' immediately
+     *  followed by another binary character arrives as one token and this is
+     *  not the pragma it looks like.  Answering 0 rewinds, which is the
+     *  right outcome -- better a compile error naming the line than a pragma
+     *  that swallowed the character after it.
+     */
+    if (!at(c, ST_TOK_BINARY) || strcmp(c->token.text, ">") != 0)
+        return 0;
+    advance(c);
+    apply_pragma(c, selector, args, argc);
+    return !c->failed;
 }
 
 /*  A primary: a literal, a variable, a parenthesised expression, a block.  */
@@ -713,6 +964,72 @@ compile_primary(st_compiler *c, var_ref *out_var)
         emit_push_literal_constant(c, array);
         return;
     }
+    case ST_TOK_BYTE_ARRAY_OPEN:
+        emit_push_literal_constant(c, parse_byte_array(c));
+        return;
+    case ST_TOK_LBRACE: {
+        /*
+         *  A dynamic array, { a. b. c }.
+         *
+         *  Unlike #(...) the elements are expressions evaluated at run time,
+         *  so this is code rather than a literal:
+         *
+         *      push Array; push n; send new:
+         *      for each element:  dup; push i; <element>; at:put:; pop
+         *
+         *  at:put: answers the value it stored rather than the collection,
+         *  which is why each element ends with a pop rather than leaving the
+         *  array on top.
+         *
+         *  The size has to be pushed before any element is compiled, and it
+         *  is not known until they all have been -- so the elements are
+         *  compiled once to count them, the buffer is rewound, and they are
+         *  compiled again for real.  That is the same mark/rewind the
+         *  cascade and whileTrue: receiver already use, for the same reason:
+         *  a decision that can only be made after reading ahead.  The cost is
+         *  compiling nested braces 2^depth times, which in practice is twice.
+         */
+        compiler_mark   first_element;
+        unsigned        count = 0;
+        unsigned        i;
+        var_ref         array_class;
+
+        advance(c);
+        mark(c, &first_element);
+        while (!c->failed && !at(c, ST_TOK_RBRACE) && !at(c, ST_TOK_END)) {
+            compile_expression(c);
+            ++count;
+            if (!accept(c, ST_TOK_PERIOD))
+                break;
+        }
+        if (c->failed)
+            return;
+        rewind_to(c, &first_element);
+        /*
+         *  The rewind moved the end of the buffer backwards, so any recorded
+         *  offset into it is now stale -- the same hazard patch_jump guards
+         *  against, and worth the two lines rather than the argument that
+         *  nothing can reach it from here.
+         */
+        c->loop_nil_end = 0;
+        c->store_end    = 0;
+
+        array_class = resolve(c, "Array");
+        emit_push_variable(c, &array_class, "Array");
+        emit_push_integer(c, (int64_t) count);
+        emit_send(c, "new:", 1, 0);
+        for (i = 1; i <= count; ++i) {
+            emit(c, 136);                   /*  dup the array          */
+            emit_push_integer(c, (int64_t) i);
+            compile_expression(c);
+            emit_send(c, "at:put:", 2, 0);
+            emit(c, 135);                   /*  drop at:put:'s answer  */
+            accept(c, ST_TOK_PERIOD);
+        }
+        if (!accept(c, ST_TOK_RBRACE))
+            fail(c, "a dynamic array must end with }");
+        return;
+    }
     case ST_TOK_IDENTIFIER: {
         char        name[256];
         var_ref     v;
@@ -741,6 +1058,8 @@ compile_primary(st_compiler *c, var_ref *out_var)
         unsigned    first_arg = c->name_count;
         unsigned    arg_slots[MAX_ARGS];
         unsigned    jump_at;
+        unsigned    temp_first = c->name_count;
+        unsigned    temp_count = 0;
 
         advance(c);
         while (at(c, ST_TOK_COLON)) {
@@ -797,6 +1116,51 @@ compile_primary(st_compiler *c, var_ref *out_var)
         }
 
         /*
+         *  Block-local temporaries, [:x | | t | ...].  Post-Blue-Book.
+         *
+         *  The bar that opens them is the same token a binary send uses, and
+         *  the difference is only visible at the end: "[:a | b | c]" is the
+         *  send "b | c", while "[:a | | t | c]" is a declaration.  Both begin
+         *  after the argument bar with something the parser has already
+         *  consumed, so this speculatively reads BAR IDENTIFIER* BAR and
+         *  rewinds if the closing bar never arrives -- the same mark/rewind
+         *  the cascade and the whileTrue: receiver use.  rewind_to restores
+         *  name_count too, so a failed attempt leaves no names behind.
+         *
+         *  Note we are only ever HERE when the token is a bar in declaration
+         *  position: after arguments their own bar has been eaten, so
+         *  "[:a | b | c]" is sitting on the identifier b, not on a bar, and
+         *  never enters this at all.
+         */
+        temp_first = c->name_count;
+        if (at(c, ST_TOK_BAR)) {
+            compiler_mark   before_temps;
+
+            mark(c, &before_temps);
+            advance(c);
+            while (at(c, ST_TOK_IDENTIFIER)) {
+                /*
+                 *  Unlike a block ARGUMENT, a declared temporary never shares
+                 *  an enclosing slot of the same name.  The argument rule is
+                 *  a 1983 artifact the library depends on (see above); a
+                 *  declaration means "a new variable", and appending it gives
+                 *  that for free, because resolve searches names backwards
+                 *  and so finds the innermost.
+                 */
+                if (c->name_count < MAX_TEMPS) {
+                    snprintf(c->names[c->name_count], 64, "%.63s",
+                             c->token.text);
+                    ++c->name_count;
+                }
+                advance(c);
+            }
+            if (accept(c, ST_TOK_BAR))
+                temp_count = c->name_count - temp_first;
+            else
+                rewind_to(c, &before_temps);
+        }
+
+        /*
          *  blockCopy: takes the HOME CONTEXT, not the receiver.  Pushing
          *  self happens to work whenever self is a context-like object and
          *  fails everywhere else -- in a doIt, self is nil, and the block is
@@ -819,6 +1183,23 @@ compile_primary(st_compiler *c, var_ref *out_var)
 
             for (i = 0; i < argc && i < MAX_ARGS; ++i)
                 emit_store_temporary(c, arg_slots[argc - 1 - i], 1);
+        }
+        /*
+         *  Block temporaries start at nil on every activation, and here they
+         *  have to be told so explicitly.  A method's temporaries are nil
+         *  because its context is freshly made; a block in this dialect
+         *  borrows its home's frame, so a block evaluated a second time --
+         *  inside a do:, say -- would otherwise still see what the first
+         *  evaluation left in the slot.  Emitted after the arguments, which
+         *  are popped off the stack and must not have nils pushed over them.
+         */
+        {
+            unsigned    i;
+
+            for (i = 0; i < temp_count; ++i) {
+                emit(c, 115);               /*  push nil  */
+                emit_store_temporary(c, temp_first + i, 1);
+            }
         }
         compile_statements(c, 1);
         emit(c, 125);                       /*  return stack top from block  */
@@ -1630,10 +2011,26 @@ COMPILE_to_bytecodes(const char *source, const st_compile_context *ctx,
             fail(&c, "expected | after temporaries");
     }
 
-    /*  A primitive pragma, if any.  */
-    if (at(&c, ST_TOK_PRIMITIVE)) {
-        out->primitive = c.token.primitive;
-        advance(&c);
+    /*
+     *  Pragmas, if any.  A loop rather than one test: Squeak allows several
+     *  per method and Pharo source uses that freely.
+     *
+     *  Each is read speculatively, because '<' is also an ordinary binary
+     *  selector and a method may perfectly well begin with one -- "x < 3
+     *  ifTrue: [...]" as the first statement of a method with no
+     *  temporaries.  A parse that does not reach a closing '>' rewinds and
+     *  the statement compiler gets the '<' back.
+     */
+    while (!c.failed && at(&c, ST_TOK_BINARY) && strcmp(c.token.text, "<") == 0) {
+        compiler_mark   before_pragma;
+
+        mark(&c, &before_pragma);
+        if (!parse_pragma(&c)) {
+            if (c.failed)
+                break;
+            rewind_to(&c, &before_pragma);
+            break;
+        }
     }
 
     compile_statements(&c, 0);

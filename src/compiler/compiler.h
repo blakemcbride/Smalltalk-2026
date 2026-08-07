@@ -50,6 +50,14 @@ typedef struct {
     st_oop            (*make_array)(st_oop *elements, unsigned count,
                                     void *user);
     /*
+     *  A literal ByteArray, for #[1 2 3].  Post-Blue-Book; a 1983 image never
+     *  needed it because the syntax did not exist.  When NULL the literal
+     *  answers nil, which is enough for -syntax to check the grammar without
+     *  an object memory.
+     */
+    st_oop            (*make_byte_array)(const uint8_t *bytes, unsigned count,
+                                         void *user);
+    /*
      *  A character literal.  Characters are unique per code point, so this
      *  is a lookup rather than a construction, and in an image it is a fetch
      *  from CharacterTable.  It goes through the context like every other
