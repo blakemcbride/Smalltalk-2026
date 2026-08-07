@@ -152,13 +152,37 @@ one of the six with an existing meaning to take away.
 **Gate:** `./st80 -syntax sources/...` reports the same failure count as today; `make test`
 under both `OM=bb` and `OM=mt` green; trace2 byte-identical; new unit tests for each form.
 
-### B — Block re-entrancy
-Make `primitive_value` (`prim.c:617-631`) allocate a fresh `BlockContext` copying
-`initialIP`, `numArgs` and `home`, then activate the copy. ~30 lines, no bytecode or
-compiler change.
+### B — Block re-entrancy *(done; scope corrected in contact)*
+`primitive_value` allocates a fresh `BlockContext` copying `initialIP`, `numArgs` and
+`home`, and activates the copy. ~30 lines, no bytecode or compiler change.
 
-**Gate:** a recursive block computes `fib 25`; two workers evaluate the same block object
-10⁶ times with correct answers, TSAN-clean.
+**This phase was planned against a wrong diagnosis and the correction is worth keeping.**
+The plan assumed copying the context would make blocks re-entrant and named `fib 25` as
+the gate. It does not, and could not. A `BlockContext` being both closure and activation
+record is only *half* the reason Blue Book blocks are not re-entrant; the other half is
+that a block's **arguments and temporaries live in the home method's frame**, not the
+block's. Two activations of one block therefore share the variable, and so do two
+*different* blocks in the same method, which the compiler may hand the same slot:
+
+```
+| b c | c := [:m | m * 10]. b := [:n | (c value: 99). n]. b value: 7   "answers 99"
+```
+
+No amount of copying reaches that. It is what closures exist to fix, so **`fib 25` moves
+to Phase D**, and Phase D is now load-bearing rather than merely desirable.
+
+What the copy does buy, and what it is worth: each activation gets its own instruction
+pointer, stack pointer and caller. That makes **two workers able to evaluate one shared
+block object** — the bug `forkParallel:` would have met on its first day — and it fixes
+recursion wherever the outer activation's values are already on the stack before the
+inner call, which is most single recursions (`factorial` works, `fib` does not).
+
+**Gate, as met:** `test_parallel_mvc` binds one block object into a global and has all 31
+workers send `value` to it, 2,480 times per run; reverting the copy makes that fail with
+~106 wrong answers, so the test fails for the right reason. `test_image` asserts the
+recursions that now work *and* asserts the aliasing case above, so the boundary is
+recorded rather than left to be rediscovered — when Phase D lands, that assertion changes
+with the behaviour it describes. trace2 and trace3 stay byte-exact.
 
 ### C — Tonel loader and the source pipeline
 Extract the event dispatch currently inline in `read_source` (`bootstrap.c:1380-1438`) into
@@ -192,7 +216,11 @@ identical method dictionaries (`census.c` already gives the oracle); a hand-writ
 Tonel package in `lib/` loads and answers correctly.
 
 ### D — Full closures
-The largest VM change. Before writing any of it, add to `tests/unit/test_trace.c` an
+The largest VM change, and after Phase B's correction the only thing that can make blocks
+genuinely re-entrant: block arguments and temporaries have to live in the activation's own
+frame, which is what `pushClosureCopy` and the remote-temp bytecodes are for.
+
+Before writing any of it, add to `tests/unit/test_trace.c` an
 assertion over the loaded Xerox image that **every live `MethodContext` has field 4 nil**
 and **no method has primitive index 198 or 199**. The whole design rests on those two facts;
 static evidence is strong but the shipped `VirtualImage` was built by Xerox.

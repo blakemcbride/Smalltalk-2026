@@ -312,6 +312,54 @@ test_integers_larger_than_a_smallinteger(void)
 }
 
 /*
+ *  Evaluating a block twice at once.
+ *
+ *  A Blue Book BlockContext is the closure and the activation record in one
+ *  object, so ST_activate_block used to write the instruction pointer, the
+ *  stack pointer and the caller into the very object somebody was holding.
+ *  Each activation now gets its own record, which is what these check.
+ *
+ *  What it does NOT fix, and no amount of copying could: a block's
+ *  ARGUMENTS live in the home method's temporary frame, not the block's.
+ *  Two activations of one block therefore share the variable, and so do two
+ *  different blocks in the same method, which the compiler may give the
+ *  same slot.  That is what closures are for and it is Phase D.  The tests
+ *  below are written to say which side of that line each case is on.
+ */
+static void
+test_blocks_activate_separately(void)
+{
+    /*
+     *  Recursion where the outer value is already on the stack before the
+     *  inner call.  This answered nil until each activation got its own
+     *  record; it is the case the copy fixes.
+     */
+    check_integer("| f | f := [:n | n = 0 ifTrue: [1] "
+                  "ifFalse: [n * (f value: n - 1)]]. ^f value: 10",
+                  3628800);
+    check_integer("| f | f := [:n | n = 0 ifTrue: [0] "
+                  "ifFalse: [1 + (f value: n - 1)]]. ^f value: 100", 100);
+
+    /*  A block reached again from inside itself, without arguments.  */
+    check_integer("| n b | n := 0. b := [n := n + 1. "
+                  "n < 5 ifTrue: [b value]. n]. ^b value", 5);
+
+    /*  Ordinary re-use, which worked before and must keep working.  */
+    check_integer("| b | b := [:n | n * 2]. ^(b value: 3) + (b value: 4)", 14);
+    check_integer("((1 to: 5) collect: [:i | i * i]) last", 25);
+    check_integer("(1 to: 10) inject: 0 into: [:a :b | a + b]", 55);
+
+    /*
+     *  And the boundary, asserted rather than left to be discovered.  The
+     *  argument of the outer activation is gone after the inner one runs,
+     *  because both wrote the same home slot.  When Phase D lands this
+     *  answers 7 and the test changes with the behaviour it describes.
+     */
+    check_integer("| b c | c := [:m | m * 10]. b := [:n | (c value: 99). n]. "
+                  "^b value: 7", 99);
+}
+
+/*
  *  Collections, which is where the library really starts.  Every one of
  *  these runs hundreds of bytecodes through Xerox's own code.
  */
@@ -1794,6 +1842,7 @@ main(void)
     test_printing_deep();
     test_mixed_arithmetic();
     test_integers_larger_than_a_smallinteger();
+    test_blocks_activate_separately();
 
     OM_shutdown();
     return ST_TEST_END();

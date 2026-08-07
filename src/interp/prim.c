@@ -705,10 +705,61 @@ primitive_block_copy(void)
  */
 int         ST_activate_block(st_oop block, uint32_t argc);
 
+/*
+ *  A fresh activation record for a block, copying what makes it that block.
+ *
+ *  A Blue Book BlockContext is two things at once: the closure, which
+ *  blockCopy: made and which somebody holds, AND the frame an activation
+ *  runs in.  ST_activate_block writes the instruction pointer, the stack
+ *  pointer, the caller and the arguments into it -- so evaluating a block
+ *  while an evaluation of the SAME block object is already in progress
+ *  overwrites the state of the one still running.  Three consequences, and
+ *  only the first is a 1983 behaviour worth preserving anywhere:
+ *
+ *      A recursive block corrupts its own frame.  fib and factorial written
+ *      as blocks answer nil.  Xerox's blocks did this too.
+ *
+ *      Two workers cannot evaluate one block object at the same time.  That
+ *      is not a compatibility question, it is a correctness bug in a system
+ *      whose point is parallelism, and forkParallel: would meet it the
+ *      moment it handed one block to N workers.
+ *
+ *      A block cannot outlive its home.  This does NOT fix that; real
+ *      closures do, and they are Phase D.
+ *
+ *  So each activation gets its own record and the original stays the
+ *  pristine closure.  Its identity is what nobody may share; the home it
+ *  points at is shared deliberately, because that is what closing over an
+ *  enclosing frame means -- and under threads a race there is the program's
+ *  business, exactly as doc/CONCURRENCY.md already says of every field.
+ *
+ *  The copy is held only in C until ST_activate_block makes it the active
+ *  context, which counts it.  That is safe here for the reason it is safe
+ *  in primitive_block_copy above: nothing between the two allocates, and a
+ *  collection cannot run where nothing allocates.
+ */
+static st_oop
+copy_block_for_activation(st_oop block)
+{
+    uint32_t    size = OM_fetch_word_length(block);
+    st_oop      copy = OM_instantiate_pointers(ST_CLASS_BLOCK_CONTEXT, size);
+
+    if (!OM_is_object(copy))
+        return ST_OOP_INVALID;
+    OM_store_pointer(ST_CTX_INITIAL_IP, copy,
+                     OM_fetch_pointer(ST_CTX_INITIAL_IP, block));
+    OM_store_pointer(ST_CTX_BLOCK_ARG_COUNT, copy,
+                     OM_fetch_pointer(ST_CTX_BLOCK_ARG_COUNT, block));
+    OM_store_pointer(ST_CTX_HOME, copy,
+                     OM_fetch_pointer(ST_CTX_HOME, block));
+    return copy;
+}
+
 static int
 primitive_value(uint32_t argc)
 {
     st_oop  block = ST_stack_value(argc);
+    st_oop  activation;
 
     if (!OM_is_object(block) || OM_fetch_class(block) != ST_CLASS_BLOCK_CONTEXT)
         return 0;
@@ -718,7 +769,10 @@ primitive_value(uint32_t argc)
         if (!OM_is_int(want) || (uint32_t) OM_int_value(want) != argc)
             return 0;
     }
-    return ST_activate_block(block, argc);
+    activation = copy_block_for_activation(block);
+    if (activation == ST_OOP_INVALID)
+        return 0;
+    return ST_activate_block(activation, argc);
 }
 
 /*

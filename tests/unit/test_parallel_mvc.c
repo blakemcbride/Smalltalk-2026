@@ -62,6 +62,8 @@ load_manifest(void)
     return path_count > 0;
 }
 
+static st_oop probe_lookup_global(const char *name, void *user);
+
 /*
  *  Compilation allocates, so it happens once on the main thread before the
  *  workers start.  What the workers do is execute, which is the part that
@@ -82,7 +84,7 @@ compile_expression(const char *expression)
     ctx.make_array         = BOOT_make_array;
     ctx.make_byte_array    = BOOT_make_byte_array;
     ctx.make_character     = BOOT_make_character;
-    ctx.lookup_global      = BOOT_lookup_global;
+    ctx.lookup_global      = probe_lookup_global;
 
     if (strchr(expression, '^'))
         snprintf(source, sizeof source, "doIt %s", expression);
@@ -124,7 +126,39 @@ run_method(st_oop method)
 
 /*  ----------  The shared work  ----------  */
 
-#define WORK_COUNT  4
+
+/*
+ *  The last two share ONE block object between every worker.
+ *
+ *  The others each build their own block as they run, so however many
+ *  threads evaluate them at once, no two are ever inside the same
+ *  BlockContext.  That is the case that always worked and it is not the
+ *  case that matters here: a Blue Book BlockContext is the closure and the
+ *  activation record in one object, so activating a block wrote the
+ *  instruction pointer, the stack pointer and the caller into the object
+ *  itself.  Two workers evaluating one shared block therefore ran each
+ *  other's program counter.  Each activation now takes a copy.
+ *
+ *  The block is made once, bound to a name in C, and every worker's
+ *  expression is compiled against that binding -- so all of them name the
+ *  same object, which is exactly what forkParallel: will do the day it
+ *  exists.  The binding is made here rather than with "Smalltalk at:put:"
+ *  because BOOT_global reads the bootstrap's own table and the image's
+ *  SystemDictionary is a different one.
+ */
+static const char *const setup_expression = "[3 + 4]";
+
+static st_oop   shared_block_binding;
+
+static st_oop
+probe_lookup_global(const char *name, void *user)
+{
+    if (strcmp(name, "SharedProbeBlock") == 0 && shared_block_binding != 0)
+        return shared_block_binding;
+    return BOOT_lookup_global(name, user);
+}
+
+#define WORK_COUNT  6
 
 static struct {
     const char *expression;
@@ -134,7 +168,9 @@ static struct {
     { "(1 to: 100) inject: 0 into: [:a :b | a + b]",       5050, 0 },
     { "((1 to: 20) collect: [:i | i * i]) last",            400, 0 },
     { "((3/4) + (1/4)) * 40",                                40, 0 },
-    { "(0@0 corner: 12@11) area",                           132, 0 }
+    { "(0@0 corner: 12@11) area",                           132, 0 },
+    { "SharedProbeBlock value",                               7, 0 },
+    { "SharedProbeBlock value + SharedProbeBlock value",     14, 0 }
 };
 
 static st_atomic_int    wrong_answers;
@@ -148,6 +184,7 @@ provide_test_roots(om_visit_fn visit)
 
     /*  Installing our own replaces the bootstrap's, so chain to it.  */
     BOOT_provide_roots(visit);
+    visit(shared_block_binding);
     for (i = 0; i < WORK_COUNT; ++i)
         visit(work[i].method);
 }
@@ -216,15 +253,46 @@ main(void)
     CHECK(OM_is_present(BOOT_global("SystemOrganization")));
     CHECK(OM_is_present(BOOT_global("DefaultTextStyle")));
 
+    /*
+     *  The roots and this thread's registration go in before anything is
+     *  run, because the setup below runs Smalltalk and therefore allocates.
+     *  provide_test_roots visits work[i].method while those are still zero,
+     *  which the mark visitor ignores.
+     */
+    ST_interp_install_roots(provide_test_roots);
+    ST_interp_register();
+
+    /*
+     *  Make the shared block and name it, before the expressions that use
+     *  it are compiled -- they resolve SharedProbeBlock at compile time.
+     */
+    {
+        st_oop  setup = compile_expression(setup_expression);
+        st_oop  block;
+
+        CHECK(setup != ST_OOP_INVALID);
+        if (setup == ST_OOP_INVALID)
+            return ST_TEST_END();
+        block = run_method(setup);
+        CHECK(OM_is_present(block));
+        CHECK_EQ_INT(OM_fetch_class(block), ST_CLASS_BLOCK_CONTEXT);
+
+        shared_block_binding =
+            OM_instantiate_pointers(BOOT_global("Association"), 2);
+        CHECK(OM_is_present(shared_block_binding));
+        OM_store_pointer(ST_ASSOCIATION_KEY, shared_block_binding,
+                         BOOT_intern_symbol("SharedProbeBlock", NULL));
+        OM_store_pointer(ST_ASSOCIATION_VALUE, shared_block_binding, block);
+        OM_increase_ref(shared_block_binding);
+        OM_decrease_ref(setup);
+    }
+
     for (i = 0; i < WORK_COUNT; ++i) {
         work[i].method = compile_expression(work[i].expression);
         CHECK(work[i].method != ST_OOP_INVALID);
         if (work[i].method == ST_OOP_INVALID)
             return ST_TEST_END();
     }
-
-    ST_interp_install_roots(provide_test_roots);
-    ST_interp_register();
 
     /*  Confirm the answers on one thread before asking many for them.  */
     for (i = 0; i < WORK_COUNT; ++i) {
