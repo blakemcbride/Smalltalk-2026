@@ -20,19 +20,71 @@
 #include <string.h>
 #include <ctype.h>
 
-#define MAX_CLASSES     512
-#define MAX_IVARS       64
+#define MAX_IVARS       256
 #define MAX_SYMBOLS     8192
+
+/*  ----------  Names  ----------  */
+
+/*
+ *  A growable list of names.
+ *
+ *  This used to be char[64][64] inline in boot_class, six times over, which
+ *  made one class 25 KB and the fixed table of 512 of them twelve megabytes
+ *  of BSS.  That is survivable for a 226-class library and is not survivable
+ *  for a Pharo-scale one: the same shape at 8192 classes is two hundred
+ *  megabytes, all of it resident, nearly all of it empty.
+ *
+ *  Separately allocated strings rather than one arena of offsets, because an
+ *  arena has to be reallocated as it grows and reallocation moves it -- and
+ *  the whole point of `items` is that it can be handed to the compiler as
+ *  `const char *const *` with no copy.  A pointer that moves under the
+ *  compiler would be a fine way to spend a week.
+ */
+typedef struct {
+    char      **items;
+    unsigned    count;
+    unsigned    capacity;
+} name_list;
+
+static int
+name_list_add(name_list *l, const char *text)
+{
+    if (l->count == l->capacity) {
+        unsigned    want = l->capacity ? l->capacity * 2 : 8;
+        char      **grown = (char **) realloc(l->items, want * sizeof *grown);
+
+        if (!grown)
+            return 0;
+        l->items    = grown;
+        l->capacity = want;
+    }
+    l->items[l->count] = strdup(text);
+    if (!l->items[l->count])
+        return 0;
+    ++l->count;
+    return 1;
+}
+
+static void
+name_list_free(name_list *l)
+{
+    unsigned    i;
+
+    for (i = 0; i < l->count; ++i)
+        free(l->items[i]);
+    free(l->items);
+    l->items    = NULL;
+    l->count    = 0;
+    l->capacity = 0;
+}
 
 /*  ----------  Bootstrap state  ----------  */
 
 typedef struct {
     char        name[64];
     char        superclass[64];
-    char        ivars[MAX_IVARS][64];
-    unsigned    ivar_count;
-    char        class_ivars[MAX_IVARS][64];
-    unsigned    class_ivar_count;
+    name_list   ivars;
+    name_list   class_ivars;
     int         indexable;
     int         bytes;              /*  byte-indexable rather than pointer  */
     int         words;
@@ -53,24 +105,67 @@ typedef struct {
     char        category[64];
 
     /*  Pool dictionaries this class shares, by name.  */
-    char        pools[4][64];
-    unsigned    pool_count;
+    name_list   pools;
 
-    char        cvars[MAX_IVARS][64];
-    st_oop      cvar_assoc[MAX_IVARS];
-    unsigned    cvar_count;
+    /*  Class variables, and the Association each one is bound to.  */
+    name_list   cvars;
+    st_oop     *cvar_assoc;             /*  cvars.capacity entries  */
 
     /*  Instance variables including every inherited one, in frame order.  */
-    char        all_ivars[MAX_IVARS][64];
-    unsigned    all_ivar_count;
+    name_list   all_ivars;
     /*  The same for the metaclass side, which has its own parallel chain.  */
-    char        all_class_ivars[MAX_IVARS][64];
-    unsigned    all_class_ivar_count;
+    name_list   all_class_ivars;
     int         resolved;
 } boot_class;
 
-static boot_class   classes[MAX_CLASSES];
+/*
+ *  The class table, grown on demand rather than reserved.  There is no
+ *  MAX_CLASSES any more; the ceiling is memory.
+ */
+static boot_class  *classes;
 static unsigned     class_count;
+static unsigned     class_capacity;
+
+/*
+ *  Add a class variable and its (initially unbound) Association slot.  The
+ *  two arrays must grow together or the binding belongs to the wrong name.
+ */
+static int
+add_cvar(boot_class *c, const char *name)
+{
+    unsigned    was = c->cvars.capacity;
+
+    if (!name_list_add(&c->cvars, name))
+        return 0;
+    if (c->cvars.capacity != was) {
+        st_oop *grown = (st_oop *) realloc(c->cvar_assoc,
+                                           c->cvars.capacity * sizeof *grown);
+
+        if (!grown)
+            return 0;
+        c->cvar_assoc = grown;
+    }
+    c->cvar_assoc[c->cvars.count - 1] = 0;
+    return 1;
+}
+
+static boot_class *
+new_class_entry(void)
+{
+    if (class_count == class_capacity) {
+        unsigned    want = class_capacity ? class_capacity * 2 : 256;
+        boot_class *grown = (boot_class *) realloc(classes,
+                                                   want * sizeof *grown);
+
+        if (!grown)
+            return NULL;
+        memset(grown + class_capacity, 0,
+               (want - class_capacity) * sizeof *grown);
+        classes        = grown;
+        class_capacity = want;
+    }
+    return &classes[class_count++];
+}
 
 /*
  *  Whether the library's symbol table exists yet.  Until it does there is
@@ -559,8 +654,8 @@ class_variable_association(boot_class *c, const char *name, unsigned depth)
 
     if (!c || depth > 64)
         return ST_OOP_INVALID;
-    for (i = 0; i < c->cvar_count; ++i) {
-        if (strcmp(c->cvars[i], name) != 0)
+    for (i = 0; i < c->cvars.count; ++i) {
+        if (strcmp(c->cvars.items[i], name) != 0)
             continue;
         if (c->cvar_assoc[i] == 0) {
             st_oop  key = BOOT_intern_symbol(name, NULL);
@@ -631,12 +726,12 @@ BOOT_lookup_global(const char *name, void *user)
          *  a pool is almost certainly one of that pool's.  Remember it so the
          *  binding can be put where the pool's own initializer will find it.
          */
-        if (c && c->pool_count > 0 && assoc != ST_OOP_INVALID
+        if (c && c->pools.count > 0 && assoc != ST_OOP_INVALID
          && pool_binding_count < 512
          && (name[0] >= 'A' && name[0] <= 'Z')) {
             pool_bindings[pool_binding_count].association = assoc;
             snprintf(pool_bindings[pool_binding_count].pool, 64, "%.63s",
-                     c->pools[0]);
+                     c->pools.items[0]);
             ++pool_binding_count;
         }
         return assoc;
@@ -718,7 +813,7 @@ resolve_ivars(boot_class *c, unsigned depth)
         boot_fail("class %s has a cycle in its superclass chain", c->name);
         return 0;
     }
-    c->all_ivar_count = 0;
+    c->all_ivars.count = 0;
     if (c->superclass[0] && strcmp(c->superclass, "nil") != 0) {
         super = find_class(c->superclass);
         if (!super) {
@@ -728,10 +823,8 @@ resolve_ivars(boot_class *c, unsigned depth)
         }
         if (!resolve_ivars(super, depth + 1))
             return 0;
-        for (i = 0; i < super->all_ivar_count; ++i) {
-            snprintf(c->all_ivars[c->all_ivar_count], 64, "%.63s",
-                     super->all_ivars[i]);
-            ++c->all_ivar_count;
+        for (i = 0; i < super->all_ivars.count; ++i) {
+            name_list_add(&c->all_ivars, super->all_ivars.items[i]);
         }
         /*
          *  Metaclasses form their own chain, parallel to the classes': the
@@ -739,10 +832,9 @@ resolve_ivars(boot_class *c, unsigned depth)
          *  superclass.  So a class method of Form sees the class-side
          *  instance variables of DisplayMedium, Object and so on.
          */
-        for (i = 0; i < super->all_class_ivar_count; ++i) {
-            snprintf(c->all_class_ivars[c->all_class_ivar_count], 64, "%.63s",
-                     super->all_class_ivars[i]);
-            ++c->all_class_ivar_count;
+        for (i = 0; i < super->all_class_ivars.count; ++i) {
+            name_list_add(&c->all_class_ivars,
+                          super->all_class_ivars.items[i]);
         }
         /*  Shape is inherited unless the subclass declares its own.  */
         if (!c->indexable && super->indexable) {
@@ -751,16 +843,11 @@ resolve_ivars(boot_class *c, unsigned depth)
             c->words     = super->words;
         }
     }
-    for (i = 0; i < c->ivar_count && c->all_ivar_count < MAX_IVARS; ++i) {
-        snprintf(c->all_ivars[c->all_ivar_count], 64, "%.63s", c->ivars[i]);
-        ++c->all_ivar_count;
-    }
-    for (i = 0; i < c->class_ivar_count
-             && c->all_class_ivar_count < MAX_IVARS; ++i) {
-        snprintf(c->all_class_ivars[c->all_class_ivar_count], 64, "%.63s",
-                 c->class_ivars[i]);
-        ++c->all_class_ivar_count;
-    }
+    for (i = 0; i < c->ivars.count && c->all_ivars.count < MAX_IVARS; ++i)
+        name_list_add(&c->all_ivars, c->ivars.items[i]);
+    for (i = 0; i < c->class_ivars.count
+             && c->all_class_ivars.count < MAX_IVARS; ++i)
+        name_list_add(&c->all_class_ivars, c->class_ivars.items[i]);
     c->resolved = 1;
     return 1;
 }
@@ -879,13 +966,12 @@ quoted_after(const char *text, const char *keyword, char *out, size_t outlen)
 }
 
 static void
-split_words(const char *text, char table[][64], unsigned *count,
-            unsigned limit)
+split_words(const char *text, name_list *out, unsigned limit)
 {
     const char *p = text;
 
-    *count = 0;
-    while (*p && *count < limit) {
+    while (*p && out->count < limit) {
+        char    word[256];
         size_t  n = 0;
 
         while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')
@@ -893,11 +979,11 @@ split_words(const char *text, char table[][64], unsigned *count,
         if (!*p)
             break;
         while (*p && *p != ' ' && *p != '\t' && *p != '\n' && *p != '\r'
-            && n + 1 < 64)
-            table[*count][n++] = *p++;
-        table[*count][n] = '\0';
+            && n + 1 < sizeof word)
+            word[n++] = *p++;
+        word[n] = '\0';
         if (n)
-            ++(*count);
+            name_list_add(out, word);
     }
 }
 
@@ -945,12 +1031,11 @@ parse_class_definition(const char *text)
     if (!at)
         return 0;
 
-    if (class_count >= MAX_CLASSES) {
-        boot_fail("more than %d classes", MAX_CLASSES);
+    c = new_class_entry();
+    if (!c) {
+        boot_fail("out of memory for class number %u", class_count + 1);
         return 0;
     }
-    c = &classes[class_count];
-    memset(c, 0, sizeof *c);
 
     /*  The superclass name is the word before the keyword.  */
     p = at;
@@ -983,15 +1068,22 @@ parse_class_definition(const char *text)
     c->words     = forms[form].words;
 
     if (quoted_after(text, "instanceVariableNames:", ivars, sizeof ivars))
-        split_words(ivars, c->ivars, &c->ivar_count, MAX_IVARS);
-    if (quoted_after(text, "classVariableNames:", ivars, sizeof ivars))
-        split_words(ivars, c->cvars, &c->cvar_count, MAX_IVARS);
+        split_words(ivars, &c->ivars, MAX_IVARS);
+    if (quoted_after(text, "classVariableNames:", ivars, sizeof ivars)) {
+        name_list    named;
+        unsigned     k;
+
+        memset(&named, 0, sizeof named);
+        split_words(ivars, &named, MAX_IVARS);
+        for (k = 0; k < named.count; ++k)
+            add_cvar(c, named.items[k]);
+        name_list_free(&named);
+    }
     if (quoted_after(text, "poolDictionaries:", ivars, sizeof ivars))
-        split_words(ivars, c->pools, &c->pool_count, 4);
+        split_words(ivars, &c->pools, 4);
     if (quoted_after(text, "category:", ivars, sizeof ivars))
         snprintf(c->category, sizeof c->category, "%.63s", ivars);
 
-    ++class_count;
     if (result)
         ++result->classes_created;
     return 1;
@@ -1036,7 +1128,7 @@ parse_class_side_definition(const char *text)
     if (!c)
         return 0;
     if (quoted_after(text, "instanceVariableNames:", ivars, sizeof ivars))
-        split_words(ivars, c->class_ivars, &c->class_ivar_count, MAX_IVARS);
+        split_words(ivars, &c->class_ivars, MAX_IVARS);
     return 1;
 }
 
@@ -1108,7 +1200,7 @@ resolve_all_ivars(void)
 static unsigned
 class_object_size(const boot_class *c)
 {
-    return CLASS_FIXED_FIELDS + c->all_class_ivar_count;
+    return CLASS_FIXED_FIELDS + c->all_class_ivars.count;
 }
 
 static int
@@ -1222,16 +1314,17 @@ link_class_objects(void)
         OM_store_pointer(CLASS_SUPERCLASS, c->class_oop,
                          super ? super->class_oop : ST_NIL);
         OM_store_pointer(CLASS_FORMAT, c->class_oop,
-                         make_format(c->all_ivar_count, !c->bytes && !c->words,
+                         make_format(c->all_ivars.count, !c->bytes && !c->words,
                                      c->indexable, c->bytes));
         OM_store_pointer(CLASS_NAME, c->class_oop,
                          BOOT_intern_symbol(c->name, NULL));
         OM_set_class_of_object(c->class_oop, c->metaclass_oop);
 
         ivar_array = OM_instantiate_pointers(BOOT_global("Array"),
-                                             c->ivar_count);
-        for (v = 0; v < c->ivar_count; ++v)
-            OM_store_pointer(v, ivar_array, make_string_object(c->ivars[v]));
+                                             c->ivars.count);
+        for (v = 0; v < c->ivars.count; ++v)
+            OM_store_pointer(v, ivar_array,
+                             make_string_object(c->ivars.items[v]));
         OM_store_pointer(CLASS_INSTANCE_VARS, c->class_oop, ivar_array);
 
         /*
@@ -1285,18 +1378,17 @@ compile_into(boot_class *c, int class_side, const char *source,
         unsigned    n = 0;
 
         if (shape) {
-            for (i = 0; i < shape->all_ivar_count && n < MAX_IVARS; ++i)
-                ivar_pointers[n++] = shape->all_ivars[i];
+            for (i = 0; i < shape->all_ivars.count && n < MAX_IVARS; ++i)
+                ivar_pointers[n++] = shape->all_ivars.items[i];
         }
-        for (i = 0; i < c->all_class_ivar_count && n < MAX_IVARS; ++i)
-            ivar_pointers[n++] = c->all_class_ivars[i];
+        for (i = 0; i < c->all_class_ivars.count && n < MAX_IVARS; ++i)
+            ivar_pointers[n++] = c->all_class_ivars.items[i];
         ctx.instance_variables      = ivar_pointers;
         ctx.instance_variable_count = n;
     }  else  {
-        for (i = 0; i < c->all_ivar_count; ++i)
-            ivar_pointers[i] = c->all_ivars[i];
-        ctx.instance_variables      = ivar_pointers;
-        ctx.instance_variable_count = c->all_ivar_count;
+        /*  No copy: name_list already holds exactly this shape.  */
+        ctx.instance_variables      = (const char *const *) c->all_ivars.items;
+        ctx.instance_variable_count = c->all_ivars.count;
     }
     ctx.user = c;
 
@@ -1413,7 +1505,16 @@ read_source(const char *path, int definitions_only)
     char                class_name[64];
     char                protocol[64] = "";
     int                 class_side = 0;
-    boot_class         *current = NULL;
+    /*
+     *  The class being filed into, held as an INDEX rather than a pointer.
+     *
+     *  The class table is grown with realloc now, so it moves, and a file
+     *  that defines a class after it has already filed methods into another
+     *  would leave a pointer here addressing freed memory.  An index cannot
+     *  go stale: entries are only ever appended.
+     */
+    unsigned            current = 0;
+    int                 have_current = 0;
     int                 in_methods = 0;
 
     reader = CHUNK_open(path, err, sizeof err);
@@ -1428,16 +1529,22 @@ read_source(const char *path, int definitions_only)
          *  the markbush sources use in its place.
          */
         if (!chunk.has_code) {
-            in_methods = 0;
-            current    = NULL;
+            in_methods   = 0;
+            have_current = 0;
             continue;
         }
         if (chunk.is_reader) {
             if (parse_methods_for(chunk.text, class_name, sizeof class_name,
                                   &class_side, protocol, sizeof protocol)) {
-                current    = find_class(class_name);
+                {
+                    boot_class *found = find_class(class_name);
+
+                    have_current = found != NULL;
+                    if (found)
+                        current = (unsigned) (found - classes);
+                }
                 in_methods = 1;
-                if (!current && !definitions_only) {
+                if (!have_current && !definitions_only) {
                     boot_fail("%s:%u: methods for unknown class %s", path,
                               CHUNK_line(reader), class_name);
                     CHUNK_close(reader);
@@ -1447,8 +1554,8 @@ read_source(const char *path, int definitions_only)
             continue;
         }
         if (in_methods) {
-            if (!definitions_only && current
-             && !compile_into(current, class_side, chunk.text, path,
+            if (!definitions_only && have_current
+             && !compile_into(&classes[current], class_side, chunk.text, path,
                               CHUNK_line(reader), protocol)) {
                 CHUNK_close(reader);
                 return 0;
@@ -1722,7 +1829,7 @@ boot_build_locked(const char *const *paths, unsigned path_count,
         for (k = 0; k < class_count; ++k)
             fprintf(stderr, "    %-24s super=%-20s ivars=%u%s\n",
                     classes[k].name, classes[k].superclass,
-                    classes[k].ivar_count,
+                    classes[k].ivars.count,
                     classes[k].indexable
                         ? (classes[k].bytes ? " bytes"
                             : (classes[k].words ? " words" : " pointers"))
@@ -1922,7 +2029,7 @@ BOOT_provide_roots(om_visit_fn visit)
         visit(classes[i].class_oop);
         visit(classes[i].metaclass_oop);
         visit(classes[i].metaclass_association);
-        for (k = 0; k < classes[i].cvar_count; ++k)
+        for (k = 0; k < classes[i].cvars.count; ++k)
             visit(classes[i].cvar_assoc[k]);
     }
 }
@@ -2785,23 +2892,23 @@ install_class_pools(void)
         unsigned    k;
         unsigned    present = 0;
 
-        if (!OM_is_present(c->class_oop) || c->cvar_count == 0)
+        if (!OM_is_present(c->class_oop) || c->cvars.count == 0)
             continue;
-        for (k = 0; k < c->cvar_count; ++k)
+        for (k = 0; k < c->cvars.count; ++k)
             if (c->cvar_assoc[k] != 0)
                 ++present;
         if (present == 0)
             continue;
 
         /*  Room to spare: a hashed collection that fills up stops working. */
-        arg = OM_int_oop((st_int) (c->cvar_count * 4 + 8));
+        arg = OM_int_oop((st_int) (c->cvars.count * 4 + 8));
         if (!run_method_with(new_with, dict_class, &arg, 1, 2000000))
             continue;
         pool = st_vm.return_value;
         if (!OM_is_present(pool))
             continue;
 
-        for (k = 0; k < c->cvar_count; ++k) {
+        for (k = 0; k < c->cvars.count; ++k) {
             st_oop  arg2;
 
             if (c->cvar_assoc[k] == 0)
