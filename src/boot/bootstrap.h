@@ -48,6 +48,14 @@ typedef struct {
     unsigned    classes_created;
     unsigned    methods_compiled;
     unsigned    symbols_interned;
+    /*
+     *  Classes a source file described and this system could not build --
+     *  immediates, weak and ephemeron shapes, traits.  Each is named on
+     *  stderr as it happens; this is the total, because a porting effort
+     *  needs to know the size of what it is missing and not just the first
+     *  item.
+     */
+    unsigned    classes_rejected;
 } st_bootstrap_result;
 
 /*

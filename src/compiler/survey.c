@@ -7,7 +7,7 @@
 
 #include "survey.h"
 #include "compiler.h"
-#include "chunk.h"
+#include "source.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -86,69 +86,77 @@ selector_of(const char *source, char *out, size_t outlen)
     out[n] = '\0';
 }
 
+/*
+ *  One method, compiled and thrown away.
+ *
+ *  The survey used to drive the chunk reader itself, which meant it read
+ *  exactly one of the two formats -- and read the other as a file with no
+ *  methods in it, reporting "0 methods, 0 failed" for a Tonel package.  A
+ *  checker that answers "nothing wrong" for a file it did not understand is
+ *  worse than one that refuses, so it goes through SRC_read like everything
+ *  else and gets both.
+ */
+static int
+survey_method(const char *class_name, int class_side, const char *category,
+              const char *source, const char *file, unsigned line, void *user)
+{
+    st_survey          *s = (st_survey *) user;
+    st_compile_context  ctx;
+    st_compiled_code    code;
+
+    (void) class_side;
+    (void) category;
+    (void) file;
+    (void) line;
+
+    memset(&ctx, 0, sizeof ctx);
+    ctx.intern_symbol      = syn_symbol;
+    ctx.make_string        = syn_string;
+    ctx.make_float         = syn_float;
+    ctx.make_large_integer = syn_large;
+    ctx.make_array         = syn_array;
+    ctx.make_byte_array    = syn_byte_array;
+    ctx.make_character     = syn_character;
+    ctx.lookup_global      = syn_global;
+    ctx.method_class_association = 5000;
+
+    ++s->methods;
+    if (COMPILE_to_bytecodes(source, &ctx, &code) != 0) {
+        char    selector[160];
+
+        ++s->failed;
+        selector_of(source, selector, sizeof selector);
+        record(s, code.error, selector, class_name);
+    }
+    return 1;
+}
+
+static void
+survey_diagnostic(const char *file, unsigned line, const char *message,
+                  void *user)
+{
+    st_survey  *s = (st_survey *) user;
+
+    (void) file;
+    (void) line;
+    record(s, message, "", "");
+    ++s->failed;
+}
+
+static const st_source_sink survey_sink = {
+    NULL, NULL, NULL, survey_method, survey_diagnostic
+};
+
 void
 SURVEY_file(st_survey *s, const char *path)
 {
-    st_chunk_reader    *reader;
-    st_chunk            chunk;
-    char                err[256];
-    char                class_name[128] = "?";
-    int                 in_methods = 0;
+    char    err[512];
 
-    reader = CHUNK_open(path, err, sizeof err);
-    if (!reader) {
+    if (!SRC_read(path, &survey_sink, s, err, sizeof err)) {
         ++s->unreadable;
         return;
     }
     ++s->files;
-    while (CHUNK_next(reader, &chunk)) {
-        if (chunk.is_reader) {
-            /*  "!Foo methodsFor: 'x'!" and "!Foo class methodsFor: 'x'!"  */
-            in_methods = (strstr(chunk.text, "methodsFor:") != NULL);
-            if (in_methods) {
-                size_t  n = 0;
-
-                while (chunk.text[n] && chunk.text[n] != ' '
-                    && n + 1 < sizeof class_name) {
-                    class_name[n] = chunk.text[n];
-                    ++n;
-                }
-                class_name[n] = '\0';
-            }
-            continue;
-        }
-        if (!in_methods)
-            continue;               /*  a class definition or a comment  */
-        if (!chunk.has_code) {
-            in_methods = 0;
-            continue;
-        }
-        {
-            st_compile_context  ctx;
-            st_compiled_code    code;
-
-            memset(&ctx, 0, sizeof ctx);
-            ctx.intern_symbol      = syn_symbol;
-            ctx.make_string        = syn_string;
-            ctx.make_float         = syn_float;
-            ctx.make_large_integer = syn_large;
-            ctx.make_array         = syn_array;
-            ctx.make_byte_array    = syn_byte_array;
-            ctx.make_character     = syn_character;
-            ctx.lookup_global      = syn_global;
-            ctx.method_class_association = 5000;
-
-            ++s->methods;
-            if (COMPILE_to_bytecodes(chunk.text, &ctx, &code) != 0) {
-                char    selector[160];
-
-                ++s->failed;
-                selector_of(chunk.text, selector, sizeof selector);
-                record(s, code.error, selector, class_name);
-            }
-        }
-    }
-    CHUNK_close(reader);
 }
 
 static int

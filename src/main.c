@@ -772,6 +772,10 @@ do_bootstrap(const char *const *sources, unsigned count, const char *out_path,
     fprintf(stderr, "st80: %u classes, %u methods, %u symbols\n",
             result.classes_created, result.methods_compiled,
             result.symbols_interned);
+    if (result.classes_rejected)
+        fprintf(stderr, "st80: %u class definitions this system cannot build "
+                        "were skipped (named above)\n",
+                result.classes_rejected);
     {
         /*
          *  Names nothing defined.  Capitalised ones are ordinary forward

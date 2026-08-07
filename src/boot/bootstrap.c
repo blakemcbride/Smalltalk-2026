@@ -1545,12 +1545,16 @@ sink_class_def(const st_source_class_def *def, void *user)
         boot_note("%s: %s classes are not supported here", def->name,
                   def->unsupported_shape);
         ++state->rejected;
+        if (result)
+            ++result->classes_rejected;
         return 1;
     }
     if (def->traits && def->traits[0]) {
         boot_note("%s: traits (%s) are not supported here", def->name,
                   def->traits);
         ++state->rejected;
+        if (result)
+            ++result->classes_rejected;
         return 1;
     }
     if (find_class(def->name)) {
@@ -1648,6 +1652,8 @@ sink_diagnostic(const char *file, unsigned line, const char *message,
     boot_sink_state    *state = (boot_sink_state *) user;
 
     ++state->rejected;
+    if (result)
+        ++result->classes_rejected;
     boot_note("%s:%u: %s", file, line, message);
 }
 
