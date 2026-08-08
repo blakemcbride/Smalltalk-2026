@@ -71,8 +71,17 @@ typedef struct {
     int         weak;               /*  the indexed fields are weak  */
 
     /*
-     *  Set by formats that can express them, so the sink can refuse with a
-     *  name rather than mis-build the class.  NULL when absent.
+     *  A Trait rather than a Class.  It defines no instances and gets no
+     *  place in the superclass chain; it is a named bag of methods that
+     *  classes name in #traits.  The methods that follow it in the file
+     *  arrive as ordinary method events naming the trait.
+     */
+    int         is_trait;
+
+    /*
+     *  The trait composition, verbatim -- "TA + TB".  Kept as written so a
+     *  sink that cannot honour an operator can refuse the class and quote
+     *  the expression that made it do so.  NULL when absent.
      */
     const char *traits;
     const char *unsupported_shape;  /*  "immediate", "weak", "ephemeron" ... */
@@ -119,6 +128,14 @@ typedef struct {
     st_names    list;               /*  a [ ... ] */
     int         is_list;
     int         is_nil;
+    /*
+     *  A list entry carried "=> Something", as Pharo's #slots does when a
+     *  slot is not a plain instance variable: #a => WeakSlot.  The first
+     *  such qualifier is kept, so a reader can refuse the class by name
+     *  rather than by failing to parse it.
+     */
+    int         is_qualified;
+    char        qualifier[64];
 } st_ston_pair;
 
 #define ST_STON_MAX_PAIRS   32
@@ -142,6 +159,9 @@ const char *SRC_ston_value(const st_ston_pair *pairs, unsigned count,
 /*  A list value by key, or NULL.  */
 const st_names *SRC_ston_list(const st_ston_pair *pairs, unsigned count,
                               const char *key);
+/*  The pair itself, for a caller that needs to know it was qualified.  */
+const st_ston_pair *SRC_ston_pair_named(const st_ston_pair *pairs,
+                                        unsigned count, const char *key);
 
 /*  Slurp a whole file.  The caller frees the result.  */
 char       *SRC_slurp(const char *path, size_t *length, char *error,

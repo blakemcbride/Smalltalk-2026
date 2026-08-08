@@ -256,6 +256,34 @@ SRC_ston_object(st_cursor *c, st_ston_pair *pairs, unsigned *count,
                 }
                 if (p && item[0])
                     SRC_names_add(&p->list, item);
+                /*
+                 *  "#a => WeakSlot".  Pharo writes this in #slots when a
+                 *  slot is more than an instance variable.  Reading it and
+                 *  remembering the kind lets a class be refused by name;
+                 *  not reading it at all makes the header a parse error,
+                 *  which says nothing useful about why.
+                 */
+                SRC_skip_separators(c, NULL, 0);
+                if (cur_here(c) == '=' && c->pos + 1 < c->length
+                 && c->text[c->pos + 1] == '>') {
+                    char    kind[64];
+                    int     kind_nil;
+
+                    cur_advance(c);
+                    cur_advance(c);
+                    SRC_skip_separators(c, NULL, 0);
+                    if (!ston_scalar(c, kind, sizeof kind, &kind_nil)) {
+                        snprintf(error, error_len,
+                                 "line %u: expected a slot kind after =>",
+                                 c->line);
+                        return 0;
+                    }
+                    if (p && !p->is_qualified) {
+                        p->is_qualified = 1;
+                        snprintf(p->qualifier, sizeof p->qualifier, "%s",
+                                 kind);
+                    }
+                }
             }
             if (p)
                 p->is_list = 1;
@@ -285,8 +313,8 @@ SRC_ston_free(st_ston_pair *pairs, unsigned count)
         SRC_names_free(&pairs[i].list);
 }
 
-static const st_ston_pair *
-ston_pair_named(const st_ston_pair *pairs, unsigned count, const char *key)
+const st_ston_pair *
+SRC_ston_pair_named(const st_ston_pair *pairs, unsigned count, const char *key)
 {
     unsigned    i;
 
@@ -300,7 +328,7 @@ ston_pair_named(const st_ston_pair *pairs, unsigned count, const char *key)
 const char *
 SRC_ston_value(const st_ston_pair *pairs, unsigned count, const char *key)
 {
-    const st_ston_pair *p = ston_pair_named(pairs, count, key);
+    const st_ston_pair *p = SRC_ston_pair_named(pairs, count, key);
 
     return (p && !p->is_nil && !p->is_list) ? p->value : NULL;
 }
@@ -308,7 +336,7 @@ SRC_ston_value(const st_ston_pair *pairs, unsigned count, const char *key)
 const st_names *
 SRC_ston_list(const st_ston_pair *pairs, unsigned count, const char *key)
 {
-    const st_ston_pair *p = ston_pair_named(pairs, count, key);
+    const st_ston_pair *p = SRC_ston_pair_named(pairs, count, key);
 
     return (p && p->is_list) ? &p->list : NULL;
 }

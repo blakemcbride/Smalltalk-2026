@@ -87,12 +87,59 @@ typedef struct {
     name_list   cvars;
     st_oop     *cvar_assoc;             /*  cvars.capacity entries  */
 
+    /*
+     *  The trait composition this class declared, verbatim -- "TA + TB".
+     *  Empty when it declared none.  Kept as written so a report can quote
+     *  it, and applied only after every method has been compiled.
+     */
+    char        traits[256];
+
     /*  Instance variables including every inherited one, in frame order.  */
     name_list   all_ivars;
     /*  The same for the metaclass side, which has its own parallel chain.  */
     name_list   all_class_ivars;
     int         resolved;
 } boot_class;
+
+/*
+ *  ----------  Traits  ----------
+ *
+ *  A trait is a named bag of methods with no instances and no place in the
+ *  superclass chain, and it is applied by FLATTENING: every method it
+ *  provides is compiled into each class that names it.
+ *
+ *  Flattening copies SOURCE and compiles it once per using class, rather
+ *  than compiling once and copying the CompiledMethod.  That is not an
+ *  implementation detail: a Blue Book method names an instance variable by
+ *  its index in the frame and holds its own class binding in the literal
+ *  frame, so the same method object in two classes would read whichever
+ *  field happened to sit at that index.  Recompiling per class is what makes
+ *  a trait method mean the same thing in every class that takes it.
+ *
+ *  Only "+" is implemented.  Exclusion ("-") and aliasing ("@") are refused
+ *  by name, with the expression quoted, because a composition silently
+ *  losing its exclusion would load and then behave differently.
+ */
+typedef struct {
+    char       *source;
+    char       *file;
+    unsigned    line;
+    char        category[64];
+    int         class_side;
+    int         dialect;
+} trait_method;
+
+typedef struct {
+    char            name[64];
+    char            composition[256];   /*  traits this trait itself uses  */
+    trait_method   *methods;
+    unsigned        method_count;
+    unsigned        method_capacity;
+} boot_trait;
+
+static boot_trait  *traits;
+static unsigned     trait_count;
+static unsigned     trait_capacity;
 
 /*
  *  The class table, grown on demand rather than reserved.  There is no
@@ -970,6 +1017,90 @@ find_class(const char *name)
     return NULL;
 }
 
+static boot_trait *
+find_trait(const char *name)
+{
+    unsigned    i;
+
+    for (i = 0; i < trait_count; ++i) {
+        if (strcmp(traits[i].name, name) == 0)
+            return &traits[i];
+    }
+    return NULL;
+}
+
+static boot_trait *
+new_trait_entry(void)
+{
+    if (trait_count == trait_capacity) {
+        unsigned    want  = trait_capacity ? trait_capacity * 2 : 16;
+        void       *grown = realloc(traits, want * sizeof *traits);
+
+        if (!grown)
+            return NULL;
+        traits = grown;
+        memset(traits + trait_capacity, 0,
+               (want - trait_capacity) * sizeof *traits);
+        trait_capacity = want;
+    }
+    return &traits[trait_count++];
+}
+
+static int
+trait_add_method(boot_trait *t, int class_side, const char *category,
+                 const char *source, const char *file, unsigned line,
+                 int dialect)
+{
+    trait_method   *m;
+
+    if (t->method_count == t->method_capacity) {
+        unsigned    want  = t->method_capacity ? t->method_capacity * 2 : 16;
+        void       *grown = realloc(t->methods, want * sizeof *t->methods);
+
+        if (!grown)
+            return 0;
+        t->methods = grown;
+        memset(t->methods + t->method_capacity, 0,
+               (want - t->method_capacity) * sizeof *t->methods);
+        t->method_capacity = want;
+    }
+    m = &t->methods[t->method_count];
+    m->source = strdup(source);
+    m->file   = strdup(file ? file : "");
+    if (!m->source || !m->file) {
+        free(m->source);
+        free(m->file);
+        memset(m, 0, sizeof *m);
+        return 0;
+    }
+    m->line       = line;
+    m->class_side = class_side;
+    m->dialect    = dialect;
+    snprintf(m->category, sizeof m->category, "%.63s",
+             category ? category : "");
+    ++t->method_count;
+    return 1;
+}
+
+static void
+free_traits(void)
+{
+    unsigned    i;
+    unsigned    k;
+
+    for (i = 0; i < trait_count; ++i) {
+        for (k = 0; k < traits[i].method_count; ++k) {
+            free(traits[i].methods[k].source);
+            free(traits[i].methods[k].file);
+        }
+        free(traits[i].methods);
+    }
+    free(traits);
+    traits         = NULL;
+    trait_count    = 0;
+    trait_capacity = 0;
+}
+
 /*
  *  The format word, in the layout derived from the 1983 image itself:
  *  bit 15 pointers, bit 14 not-bytes, bit 13 indexable, bits 1..11 the count
@@ -1586,19 +1717,40 @@ sink_class_def(const st_source_class_def *def, void *user)
         return 1;
 
     if (def->unsupported_shape) {
-        boot_note("%s: %s classes are not supported here", def->name,
+        boot_note("%s: %s is not supported here", def->name,
                   def->unsupported_shape);
         ++state->rejected;
         if (result)
             ++result->classes_rejected;
         return 1;
     }
-    if (def->traits && def->traits[0]) {
-        boot_note("%s: traits (%s) are not supported here", def->name,
-                  def->traits);
-        ++state->rejected;
+    /*
+     *  A trait defines no instances and takes no place in the superclass
+     *  chain, so it is not a class entry at all: it is a named bag of
+     *  method source that classes name in #traits.  Its methods arrive
+     *  next, as ordinary method events naming it.
+     */
+    if (def->is_trait) {
+        boot_trait *t;
+
+        if (find_class(def->name)) {
+            boot_fail("%s is defined as both a class and a trait", def->name);
+            return 0;
+        }
+        if (find_trait(def->name)) {
+            boot_fail("trait %s is defined twice", def->name);
+            return 0;
+        }
+        t = new_trait_entry();
+        if (!t) {
+            boot_fail("out of memory for trait %s", def->name);
+            return 0;
+        }
+        snprintf(t->name, sizeof t->name, "%.63s", def->name);
+        snprintf(t->composition, sizeof t->composition, "%.255s",
+                 def->traits ? def->traits : "");
         if (result)
-            ++result->classes_rejected;
+            ++result->traits_created;
         return 1;
     }
     if (find_class(def->name)) {
@@ -1619,6 +1771,8 @@ sink_class_def(const st_source_class_def *def, void *user)
     snprintf(c->name, sizeof c->name, "%.63s", def->name);
     snprintf(c->superclass, sizeof c->superclass, "%.63s", def->superclass);
     snprintf(c->category, sizeof c->category, "%.63s", def->category);
+    snprintf(c->traits, sizeof c->traits, "%.255s",
+             def->traits ? def->traits : "");
     c->indexable = def->indexable;
     c->bytes     = def->bytes;
     c->words     = def->words;
@@ -1678,7 +1832,25 @@ sink_method(const char *class_name, int class_side, const char *category,
 {
     boot_sink_state    *state = (boot_sink_state *) user;
     boot_class         *c;
+    boot_trait         *t;
 
+    /*
+     *  A trait's methods are kept as source and compiled later, once per
+     *  class that takes them.  They are captured in the DEFINITIONS pass,
+     *  so that a class using a trait defined in a file read after it still
+     *  finds the methods -- the same reason definitions are read first.
+     */
+    t = find_trait(class_name);
+    if (t) {
+        if (!state->definitions)
+            return 1;               /*  captured already  */
+        if (!trait_add_method(t, class_side, category, source, file, line,
+                              current_dialect)) {
+            boot_fail("out of memory for a method of trait %s", class_name);
+            return 0;
+        }
+        return 1;
+    }
     if (state->definitions)
         return 1;
     c = find_class(class_name);
@@ -1997,6 +2169,7 @@ reset_bootstrap_state(void)
     symbol_index_size = 0;
 
     method_protocol_count = 0;
+    free_traits();
 
     /*
      *  The source files, which nothing used to reset -- so a second build
@@ -2012,6 +2185,295 @@ reset_bootstrap_state(void)
     }
     source_current    = 0;
     source_overflowed = 0;
+}
+
+/*  ----------  Applying a trait  ----------  */
+
+static st_oop   method_in_dictionary(st_oop dict, const char *selector);
+
+/*
+ *  One method a composition provides, with the trait it came from.
+ *
+ *  The origin is carried because a conflict has to be reported by naming
+ *  both sides, and because the protocol the method lands in records where
+ *  its source lives.
+ */
+typedef struct {
+    const trait_method  *method;
+    const boot_trait    *origin;
+    char                 selector[256];
+    int                  conflicted;
+} flat_method;
+
+typedef struct {
+    flat_method    *items;
+    unsigned        count;
+    unsigned        capacity;
+} flat_list;
+
+static void
+flat_free(flat_list *l)
+{
+    free(l->items);
+    l->items    = NULL;
+    l->count    = 0;
+    l->capacity = 0;
+}
+
+static flat_method *
+flat_find(flat_list *l, const char *selector, int class_side)
+{
+    unsigned    i;
+
+    for (i = 0; i < l->count; ++i) {
+        if (l->items[i].method->class_side == class_side
+         && strcmp(l->items[i].selector, selector) == 0)
+            return &l->items[i];
+    }
+    return NULL;
+}
+
+static int
+flat_add(flat_list *l, const flat_method *item)
+{
+    if (l->count == l->capacity) {
+        unsigned    want  = l->capacity ? l->capacity * 2 : 32;
+        void       *grown = realloc(l->items, want * sizeof *l->items);
+
+        if (!grown)
+            return 0;
+        l->items    = grown;
+        l->capacity = want;
+    }
+    l->items[l->count++] = *item;
+    return 1;
+}
+
+/*
+ *  Split "TA + TB" into its terms.
+ *
+ *  Answers 0 and reports when the expression uses an operator this system
+ *  does not implement.  Exclusion and aliasing change WHICH methods a class
+ *  gets; honouring the "+" and ignoring the rest would produce a class that
+ *  loaded cleanly and had the wrong methods in it, which is the one outcome
+ *  worth refusing outright.
+ */
+static int
+split_composition(const char *composition, const char *who,
+                  st_names *terms)
+{
+    const char *p = composition;
+
+    while (*p) {
+        char        term[128];
+        size_t      n = 0;
+
+        while (*p && isspace((unsigned char) *p))
+            ++p;
+        if (*p == '-' || *p == '@') {
+            boot_note("%s: trait composition '%s' uses '%c', which this "
+                      "system does not implement", who, composition, *p);
+            return 0;
+        }
+        while (*p && *p != '+' && !isspace((unsigned char) *p)) {
+            if (*p == '-' || *p == '@') {
+                boot_note("%s: trait composition '%s' uses '%c', which this "
+                          "system does not implement", who, composition, *p);
+                return 0;
+            }
+            if (n + 1 < sizeof term)
+                term[n++] = *p;
+            ++p;
+        }
+        term[n] = '\0';
+        if (n)
+            SRC_names_add(terms, term);
+        while (*p && (isspace((unsigned char) *p) || *p == '+'))
+            ++p;
+    }
+    return 1;
+}
+
+/*
+ *  Everything a composition provides, flattened.
+ *
+ *  Within one trait, its own methods override the ones it takes from the
+ *  traits it composes -- that is not a conflict, it is what composing means.
+ *  BETWEEN two traits at the same level it is a conflict, and neither is
+ *  installed: a silent first-wins would make the answer depend on the order
+ *  the names were written, which is exactly the bug traits exist to avoid.
+ *  A trait reached twice by different paths is one trait, not a conflict.
+ */
+static int
+gather_trait(const char *name, const char *who, flat_list *out,
+             st_names *visiting)
+{
+    boot_trait *t = find_trait(name);
+    unsigned    i;
+    st_names    terms;
+    int         ok = 1;
+
+    if (!t) {
+        boot_note("%s: unknown trait %s", who, name);
+        return 0;
+    }
+    for (i = 0; i < visiting->count; ++i) {
+        if (strcmp(visiting->items[i], name) == 0)
+            return 1;               /*  a cycle, or a diamond; once is enough */
+    }
+    SRC_names_add(visiting, name);
+
+    memset(&terms, 0, sizeof terms);
+    if (!split_composition(t->composition, t->name, &terms)) {
+        SRC_names_free(&terms);
+        return 0;
+    }
+    for (i = 0; ok && i < terms.count; ++i)
+        ok = gather_trait(terms.items[i], who, out, visiting);
+    SRC_names_free(&terms);
+    if (!ok)
+        return 0;
+
+    /*  Its own methods, which override anything it composed.  */
+    for (i = 0; i < t->method_count; ++i) {
+        flat_method  item;
+        flat_method *existing;
+
+        memset(&item, 0, sizeof item);
+        item.method = &t->methods[i];
+        item.origin = t;
+        if (COMPILE_selector_of(t->methods[i].source, item.selector,
+                                sizeof item.selector) != 0) {
+            boot_note("%s:%u: in trait %s: not a method pattern",
+                      t->methods[i].file, t->methods[i].line, t->name);
+            return 0;
+        }
+        existing = flat_find(out, item.selector, t->methods[i].class_side);
+        if (existing)
+            *existing = item;       /*  the composing trait wins  */
+        else if (!flat_add(out, &item))
+            return 0;
+    }
+    return 1;
+}
+
+/*
+ *  Merge one trait's flattened methods into a class's, detecting conflicts
+ *  between siblings in the class's own composition.
+ */
+static int
+merge_sibling(flat_list *into, flat_list *from, const char *who)
+{
+    unsigned    i;
+
+    for (i = 0; i < from->count; ++i) {
+        flat_method *existing = flat_find(into, from->items[i].selector,
+                                          from->items[i].method->class_side);
+
+        if (!existing) {
+            if (!flat_add(into, &from->items[i]))
+                return 0;
+            continue;
+        }
+        if (existing->origin == from->items[i].origin)
+            continue;               /*  one trait reached twice  */
+        if (!existing->conflicted) {
+            boot_note("%s: %s%s is provided by both %s and %s; neither is "
+                      "installed", who,
+                      from->items[i].method->class_side ? "class>>" : "",
+                      from->items[i].selector,
+                      existing->origin->name, from->items[i].origin->name);
+            existing->conflicted = 1;
+        }
+    }
+    return 1;
+}
+
+/*
+ *  Apply every class's trait composition, after all of its own methods are
+ *  compiled -- a method the class defines itself always wins, and it can
+ *  only be known to be there once the compile pass has run.
+ */
+static int
+flatten_traits(void)
+{
+    unsigned    ci;
+
+    for (ci = 0; ci < class_count; ++ci) {
+        boot_class *c = &classes[ci];
+        st_names    terms;
+        flat_list   all;
+        unsigned    i;
+        int         ok = 1;
+
+        if (!c->traits[0])
+            continue;
+
+        memset(&terms, 0, sizeof terms);
+        memset(&all, 0, sizeof all);
+        if (!split_composition(c->traits, c->name, &terms)) {
+            SRC_names_free(&terms);
+            if (result)
+                ++result->traits_rejected;
+            continue;
+        }
+        for (i = 0; ok && i < terms.count; ++i) {
+            flat_list   one;
+            st_names    visiting;
+
+            memset(&one, 0, sizeof one);
+            memset(&visiting, 0, sizeof visiting);
+            ok = gather_trait(terms.items[i], c->name, &one, &visiting);
+            SRC_names_free(&visiting);
+            if (ok)
+                ok = merge_sibling(&all, &one, c->name);
+            flat_free(&one);
+        }
+        SRC_names_free(&terms);
+        if (!ok) {
+            flat_free(&all);
+            if (result)
+                ++result->traits_rejected;
+            continue;
+        }
+
+        for (i = 0; i < all.count; ++i) {
+            const trait_method *m = all.items[i].method;
+            st_oop              target;
+            char                protocol[64];
+            int                 saved;
+
+            if (all.items[i].conflicted)
+                continue;
+            target = m->class_side ? c->metaclass_oop : c->class_oop;
+            if (OM_is_present(method_in_dictionary(
+                    OM_fetch_pointer(CLASS_METHOD_DICT, target),
+                    all.items[i].selector)))
+                continue;           /*  the class says it itself  */
+
+            /*
+             *  The protocol says where the source lives.  A leading star is
+             *  the convention for "defined elsewhere", which is exactly
+             *  true here -- and it puts every flattened method together in
+             *  the Browser, where the trait's file is the place to edit it.
+             */
+            snprintf(protocol, sizeof protocol, "*trait:%.40s",
+                     all.items[i].origin->name);
+            saved = current_dialect;
+            current_dialect = m->dialect;
+            if (!compile_into(c, m->class_side, m->source, m->file, m->line,
+                              protocol)) {
+                current_dialect = saved;
+                flat_free(&all);
+                return 0;
+            }
+            current_dialect = saved;
+            if (result)
+                ++result->methods_flattened;
+        }
+        flat_free(&all);
+    }
+    return 1;
 }
 
 static int
@@ -2102,6 +2564,9 @@ boot_build_locked(const char *const *paths, const int *dialects,
         if (!read_source(paths[i], 0))
             return -1;
     }
+
+    if (!flatten_traits())
+        return -1;
 
     install_closure_support();
     return 0;

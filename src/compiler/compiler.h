@@ -145,6 +145,12 @@ typedef struct {
     unsigned    error_line;
 } st_compiled_code;
 
+/*
+ *  Answer the selector a method's source declares, without compiling it.
+ *  0 on success; -1 if the text does not begin with a message pattern.
+ */
+int     COMPILE_selector_of(const char *source, char *out, size_t out_len);
+
 int     COMPILE_to_bytecodes(const char *source, const st_compile_context *ctx,
                              st_compiled_code *out);
 

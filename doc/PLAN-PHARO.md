@@ -388,7 +388,7 @@ accepted in either order and any number of times**. The Blue Book puts temporari
 and has one pragma; Pharo writes the pragma first at least as often, and a reader that
 insists on one order rejects ordinary source for a reason that is about nothing.
 
-### F — The Pharo object model *(F1 weak references, F2 pragmas — done)*
+### F — The Pharo object model *(F1–F4 done; F5, the primitive report, remains)*
 This is what "load Pharo's kernel" costs, and it is the phase most likely to be revised
 in contact.
 
@@ -418,10 +418,22 @@ in contact.
   weak reference made in that same frame. Making it precise needs every parked worker to
   write its registers back at the safepoint first — worth doing, and a separate change with
   its own risk.
-- **Slots.** Support plain `#instVars` (which is what most of Pharo's kernel uses) and
-  `#slots : [...]` where every entry is a plain slot. Reject indexed/weak/custom slot types
-  with a named report. Full `Slot>>read:`/`write:to:` indirection would mean rewriting
-  variable resolution in the compiler — defer until a class you actually want requires it.
+- **Slots — done.** `#slots : [ 'a', 'b' ]` is Tonel v3's spelling of `#instVars`, and for a
+  plain slot the two say exactly the same thing, so a plain-slot class loads and behaves like
+  any other. A slot with a *kind* — `#a => WeakSlot` — is refused **by the name of the kind**,
+  which meant teaching the STON reader to read `=>` at all rather than letting the header fail
+  to parse: a rejection that cannot say *what* was rejected tells a porting effort nothing.
+  Full `Slot>>read:`/`write:to:` indirection would mean rewriting variable resolution in the
+  compiler, and waits for a class that actually needs it.
+
+- **Immediates — done, and narrower than the word suggests.** An immediate has no object
+  header: the value *is* the pointer. There is one tag bit in this memory and `SmallInteger`
+  has it, so a **new** immediate class cannot be made here at all. But the two classes Pharo
+  declares immediate are already immediate here by other means — `SmallInteger` is the tagged
+  one, and every `Character` is a unique entry in `CharacterTable`, which is what makes
+  `$a == $a` true. So those two declarations load and any other is refused by name. That is
+  the honest reading of the constraint: Pharo's own headers pass through, without pretending
+  a third immediate class could work.
 - **`Pragma` and `AdditionalMethodState` — done.** Phase A parsed pragmas and threw them
   away; they are objects now, so a framework can act on them — SUnit's `<test>`, and the
   `<shared: #serialize>` that Phase L's audit wants.
@@ -435,10 +447,46 @@ in contact.
   Blue Book case.
 - **Immediates.** Map `#type : 'immediate'` onto our tagging for `SmallInteger` and our
   `CharacterTable` for `Character`. `SmallFloat64` is Spur-only; Pharo's `Float` works boxed.
-- **Traits.** Load-time flattening: copy the composed traits' methods into the class,
-  recording origin in the protocol string (`*trait:TA`). Implement `+` only; reject `-` and
-  `@`. ~200 lines for ~80% of the value. Real trait reflection and update propagation are
-  out of scope.
+- **Traits — done, by flattening.** A trait is a named bag of methods with no instances and
+  no place in the superclass chain, and it is applied by compiling its **source** into each
+  class that names it — once per class, not once with the method object shared.
+
+  That is not an implementation detail. A Blue Book method names an instance variable by its
+  **index in the frame** and carries its own class binding in the literal frame, so one
+  CompiledMethod installed in two classes would read whichever field happened to sit at that
+  index. Recompiling per class is what makes a trait method mean the same thing everywhere it
+  lands, and it is why flattening is the honest way to do traits on this VM rather than a
+  shortcut.
+
+  The rules, and each one is a way of refusing to be silently wrong:
+
+  - **A method the class defines itself always wins.** That is why flattening runs after the
+    whole compile pass — until then there is no way to know what the class says for itself.
+  - **A selector provided by two sibling traits installs neither**, and both traits are named.
+    A first-wins would make the answer depend on the order the names were written, which is
+    the bug traits exist to avoid.
+  - **Within one trait, its own methods override the ones it composes.** That is not a
+    conflict; it is what composing means. A trait reached twice by different paths is one
+    trait, not a conflict.
+  - **`+` only.** `-` (exclusion) and `@` (aliasing) change *which* methods a class gets, so
+    honouring the `+` and dropping the rest would load cleanly and put the wrong methods in
+    the class. Refused by name, with the expression quoted.
+  - **Class-side methods come across from `#traits` alone.** Pharo's mechanical companion
+    `#classTraits : 'TFoo classTrait'` therefore says nothing new and is accepted and dropped;
+    a `#classTraits` composed differently from `#traits` is refused, because that one *is* a
+    statement this system would lose.
+  - **A trait with instance variables is refused.** It would have to add a field to every
+    class that takes it, changing instance shape from a direction nothing else here does.
+
+  A composition that cannot be honoured is counted **apart from** a class definition that was
+  skipped, and reported on its own line — the class was built, its own methods are in it, and
+  what is missing is the trait's. Calling that "skipped" would misdescribe what is in the
+  image. Each flattened method's protocol records where its source lives (`*trait:TGreeting`),
+  which puts them together in the Browser under the convention that already means "defined
+  elsewhere".
+
+  Real trait reflection and update propagation remain out of scope: a trait is not an object
+  in the image, and changing one does not re-flatten the classes that took it.
 - **The primitive set.** Extract mechanically from Pharo's Tonel sources every
   `<primitive: N>` its kernel invokes; implement them; report the remainder. This converts
   an unbounded question into a finite checklist.

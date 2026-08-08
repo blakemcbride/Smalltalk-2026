@@ -2724,6 +2724,40 @@ compile_pattern(st_compiler *c)
     fail(c, "expected a method pattern");
 }
 
+/*
+ *  The selector a method's source declares, without compiling it.
+ *
+ *  Flattening a trait needs to know whether the using class already defines
+ *  the selector BEFORE it compiles the trait's version, because the class's
+ *  own method wins and compiling to find out would have installed it.
+ *
+ *  It runs the real pattern parser over the real lexer rather than a second
+ *  little scanner, so a comment before the pattern, a keyword message split
+ *  over lines and a selector like "|" are read exactly as the compiler
+ *  reads them -- there is no second grammar here to drift out of step.
+ */
+int
+COMPILE_selector_of(const char *source, char *out, size_t out_len)
+{
+    st_compiler         c;
+    st_compiled_code    code;
+
+    memset(&c, 0, sizeof c);
+    memset(&code, 0, sizeof code);
+    c.out     = &code;
+    c.dialect = ST_DIALECT_BLUE_BOOK;   /*  the pattern is dialect-free  */
+    c.lx      = LEX_open(source);
+    if (!c.lx)
+        return -1;
+    advance(&c);
+    compile_pattern(&c);
+    LEX_close(c.lx);
+    if (c.failed || !code.selector[0])
+        return -1;
+    snprintf(out, out_len, "%s", code.selector);
+    return 0;
+}
+
 int
 COMPILE_to_bytecodes(const char *source, const st_compile_context *ctx,
                      st_compiled_code *out)

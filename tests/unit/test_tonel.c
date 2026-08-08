@@ -46,7 +46,7 @@ typedef struct {
     char        ivars[512];
     char        class_ivars[512];
     char        cvars[512];
-    int         indexable, bytes, words, weak;
+    int         indexable, bytes, words, weak, is_trait;
     char        unsupported[64];
     char        traits[128];
 } rec_class;
@@ -100,6 +100,7 @@ rec_class_def(const st_source_class_def *def, void *user)
              def->unsupported_shape ? def->unsupported_shape : "");
     snprintf(c->traits, sizeof c->traits, "%s",
              def->traits ? def->traits : "");
+    c->is_trait = def->is_trait;
     return 1;
 }
 
@@ -419,7 +420,7 @@ test_shapes_we_cannot_build_are_reported(void)
         &r, error, sizeof error));
     CHECK_EQ_INT((int) r.class_count, 1);
     if (r.class_count)
-        CHECK_EQ_STR(r.classes[0].unsupported, "immediate");
+        CHECK_EQ_STR(r.classes[0].unsupported, "an immediate class");
 
     /*
      *  Weak is built now rather than refused: indexed, with the collector
@@ -464,12 +465,107 @@ test_shapes_we_cannot_build_are_reported(void)
         CHECK_EQ_INT(r.classes[0].bytes, 1);
     }
 
-    /*  A trait is reported and skipped, not silently flattened.  */
+    /*
+     *  #slots is Tonel v3's spelling of #instVars, and for a PLAIN slot the
+     *  two say the same thing.
+     */
+    CHECK(read_text("slots.class.st",
+        "Class { #name : 'S', #superclass : 'Object', "
+        "#slots : [ 'a', 'b' ] }\n", &r, error, sizeof error));
+    if (r.class_count) {
+        CHECK_EQ_STR(r.classes[0].ivars, "a b");
+        CHECK_EQ_STR(r.classes[0].unsupported, "");
+    }
+
+    /*
+     *  A slot with a KIND is a metamodel feature this system does not have,
+     *  where reading and writing the variable go through the slot object.
+     *  It is refused by the name of the kind -- and it is worth reading the
+     *  "=>" at all, because a header the reader cannot parse says nothing
+     *  useful about why it was rejected.
+     */
+    CHECK(read_text("kinded.class.st",
+        "Class { #name : 'K', #superclass : 'Object', "
+        "#slots : [ 'a', #b => WeakSlot ] }\n", &r, error, sizeof error));
+    if (r.class_count)
+        CHECK_EQ_STR(r.classes[0].unsupported, "a slot of kind WeakSlot");
+
+    /*
+     *  An immediate has no object header: the value IS the pointer.  There
+     *  is one tag bit here and SmallInteger has it, so a new immediate
+     *  class cannot be made -- but the two Pharo declares immediate are
+     *  already immediate here by other means, so its own declarations load.
+     */
+    CHECK(read_text("imm-small.class.st",
+        "Class { #name : 'SmallInteger', #superclass : 'Integer', "
+        "#type : 'immediate' }\n", &r, error, sizeof error));
+    if (r.class_count)
+        CHECK_EQ_STR(r.classes[0].unsupported, "");
+    CHECK(read_text("imm-char.class.st",
+        "Class { #name : 'Character', #superclass : 'Magnitude', "
+        "#type : 'immediate' }\n", &r, error, sizeof error));
+    if (r.class_count)
+        CHECK_EQ_STR(r.classes[0].unsupported, "");
+    CHECK(read_text("imm-other.class.st",
+        "Class { #name : 'Mine', #superclass : 'Object', "
+        "#type : 'immediate' }\n", &r, error, sizeof error));
+    if (r.class_count)
+        CHECK_EQ_STR(r.classes[0].unsupported, "an immediate class");
+
+    /*
+     *  A trait arrives as a definition like any other, flagged -- it has no
+     *  superclass and defines no instances, and its methods follow it as
+     *  ordinary method events naming it.  What the sink does with that is
+     *  the sink's business; the reader's job is to say so.
+     */
     CHECK(read_text("t.trait.st",
         "Trait { #name : 'TFoo', #category : 'P' }\n"
-        "TFoo >> hello [ ^1 ]\n", &r, error, sizeof error));
-    CHECK_EQ_INT((int) r.class_count, 0);
-    CHECK(r.diagnostics > 0);
+        "TFoo >> hello [ ^1 ]\n"
+        "TFoo class >> greeting [ ^2 ]\n", &r, error, sizeof error));
+    CHECK_EQ_INT((int) r.class_count, 1);
+    if (r.class_count) {
+        CHECK_EQ_INT(r.classes[0].is_trait, 1);
+        CHECK_EQ_STR(r.classes[0].name, "TFoo");
+        CHECK_EQ_STR(r.classes[0].unsupported, "");
+    }
+    CHECK_EQ_INT((int) r.method_count, 2);
+    if (r.method_count == 2) {
+        CHECK_EQ_STR(r.methods[0].class_name, "TFoo");
+        CHECK_EQ_INT(r.methods[0].class_side, 0);
+        CHECK_EQ_INT(r.methods[1].class_side, 1);
+    }
+
+    /*
+     *  A trait with state would have to add a field to every class that
+     *  takes it, so it is refused rather than loaded without its variable.
+     */
+    CHECK(read_text("tstate.trait.st",
+        "Trait { #name : 'TState', #instVars : [ 'count' ] }\n",
+        &r, error, sizeof error));
+    if (r.class_count)
+        CHECK_EQ_STR(r.classes[0].unsupported,
+                     "a trait with instance variables");
+
+    /*
+     *  #classTraits is written mechanically beside #traits and says nothing
+     *  the other does not, because a trait here carries its class-side
+     *  methods with it.  The companion form is accepted and dropped...
+     */
+    CHECK(read_text("uses.class.st",
+        "Class { #name : 'U', #superclass : 'Object', "
+        "#traits : 'TA + TB', #classTraits : 'TA classTrait + TB classTrait' }\n",
+        &r, error, sizeof error));
+    if (r.class_count) {
+        CHECK_EQ_STR(r.classes[0].traits, "TA + TB");
+        CHECK_EQ_STR(r.classes[0].unsupported, "");
+    }
+    /*  ...and anything else is a statement that would be silently lost.  */
+    CHECK(read_text("own.class.st",
+        "Class { #name : 'V', #superclass : 'Object', "
+        "#traits : 'TA', #classTraits : 'TB classTrait' }\n",
+        &r, error, sizeof error));
+    if (r.class_count)
+        CHECK_EQ_STR(r.classes[0].unsupported, "a #classTraits of its own");
 }
 
 /*

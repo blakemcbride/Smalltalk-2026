@@ -805,6 +805,10 @@ do_bootstrap(const char *const *sources, const int *dialects, unsigned count,
         fprintf(stderr, "st80: %u class definitions this system cannot build "
                         "were skipped (named above)\n",
                 result.classes_rejected);
+    if (result.traits_rejected)
+        fprintf(stderr, "st80: %u classes were built without the traits they "
+                        "asked for (named above)\n",
+                result.traits_rejected);
     {
         /*
          *  Names nothing defined.  Capitalised ones are ordinary forward

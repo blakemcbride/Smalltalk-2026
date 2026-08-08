@@ -79,19 +79,6 @@ fail(tonel *t, const char *fmt, ...)
                  detail);
 }
 
-static void
-note(tonel *t, const char *fmt, ...)
-{
-    va_list ap;
-    char    detail[256];
-
-    va_start(ap, fmt);
-    vsnprintf(detail, sizeof detail, fmt, ap);
-    va_end(ap);
-    if (t->sink->diagnostic)
-        t->sink->diagnostic(t->path, t->c.line, detail, t->user);
-}
-
 static int  at_end(const tonel *t) { return t->c.pos >= t->c.length; }
 static char here(const tonel *t)
 { return t->c.pos < t->c.length ? t->c.text[t->c.pos] : '\0'; }
@@ -327,6 +314,23 @@ apply_type(const char *type, st_source_class_def *def)
          */
         def->indexable = 1;
         def->weak      = 1;
+    }  else if (strcmp(type, "immediate") == 0) {
+        /*
+         *  An immediate has no object header: the value IS the pointer.
+         *  There is one tag bit in this memory and SmallInteger has it, so
+         *  a NEW immediate class cannot be made.
+         *
+         *  But the two Pharo declares immediate are already immediate here
+         *  by other means -- SmallInteger is the tagged one, and every
+         *  Character is a unique entry in CharacterTable, which is what
+         *  makes $a == $a true.  Accepting those two and refusing the rest
+         *  is the honest reading: it lets Pharo's own declarations load
+         *  without pretending a third one could.
+         */
+        if (!def->name
+         || (strcmp(def->name, "SmallInteger") != 0
+          && strcmp(def->name, "Character") != 0))
+            def->unsupported_shape = "an immediate class";
     }  else if (strcmp(type, "normal") != 0) {
         /*
          *  immediate, ephemeron, compiledMethod.  Each needs object-memory
@@ -344,6 +348,56 @@ apply_type(const char *type, st_source_class_def *def)
     }
 }
 
+/*
+ *  Whether #classTraits is the mechanical companion of #traits.
+ *
+ *  Pharo writes the pair together: a class using TFoo gets
+ *  #traits : 'TFoo' and #classTraits : 'TFoo classTrait'.  The second says
+ *  nothing the first does not, because a trait here carries its class-side
+ *  methods with it, so the companion form is accepted and dropped.  Anything
+ *  else -- a class trait composed differently from its instance trait -- is
+ *  a real statement this system would silently lose, so the class is
+ *  refused instead.
+ *
+ *  The test is the whole of the check: delete every "classTrait" and see
+ *  whether what is left is #traits, whitespace aside.
+ */
+static int
+same_words(const char *a, const char *b)
+{
+    for (;;) {
+        while (*a && isspace((unsigned char) *a))
+            ++a;
+        while (*b && isspace((unsigned char) *b))
+            ++b;
+        if (!*a || !*b)
+            return !*a && !*b;
+        if (*a != *b)
+            return 0;
+        ++a;
+        ++b;
+    }
+}
+
+static int
+class_traits_are_mechanical(const char *class_traits, const char *traits)
+{
+    static const char   suffix[] = "classTrait";
+    char                stripped[256];
+    size_t              n = 0;
+    const char         *p = class_traits;
+
+    while (*p && n + 1 < sizeof stripped) {
+        if (strncmp(p, suffix, sizeof suffix - 1) == 0) {
+            p += sizeof suffix - 1;
+            continue;
+        }
+        stripped[n++] = *p++;
+    }
+    stripped[n] = '\0';
+    return same_words(stripped, traits ? traits : "");
+}
+
 int
 TONEL_read(const char *path, const st_source_sink *sink, void *user,
            char *error, size_t error_len)
@@ -358,6 +412,7 @@ TONEL_read(const char *path, const st_source_sink *sink, void *user,
     unsigned    pair_count = 0;
     int         ok = 1;
     int         is_extension = 0;
+    int         is_trait = 0;
 
     f = fopen(path, "rb");
     if (!f) {
@@ -432,10 +487,7 @@ TONEL_read(const char *path, const st_source_sink *sink, void *user,
     if (strcmp(type, "Extension") == 0) {
         is_extension = 1;
     }  else if (strcmp(type, "Trait") == 0) {
-        note(&t, "%s: traits are not supported here",
-             SRC_ston_value(pairs, pair_count, "name"));
-        free(text);
-        return 1;
+        is_trait = 1;
     }  else if (strcmp(type, "Class") != 0) {
         free(text);
         snprintf(error, error_len, "%s: unknown Tonel type '%s'", path, type);
@@ -445,6 +497,8 @@ TONEL_read(const char *path, const st_source_sink *sink, void *user,
     if (!is_extension) {
         st_source_class_def def;
         const st_names     *ivars  = SRC_ston_list(pairs, pair_count, "instVars");
+        const st_ston_pair *slots  = SRC_ston_pair_named(pairs, pair_count,
+                                                        "slots");
         const st_names     *cvars  = SRC_ston_list(pairs, pair_count, "classVars");
         const st_names     *civars = SRC_ston_list(pairs, pair_count,
                                                   "classInstVars");
@@ -453,11 +507,13 @@ TONEL_read(const char *path, const st_source_sink *sink, void *user,
                                                  "superclass");
         const char         *category;
         st_names            empty;
+        char                shape[128];
 
         memset(&empty, 0, sizeof empty);
         memset(&def, 0, sizeof def);
         def.name       = SRC_ston_value(pairs, pair_count, "name");
         def.superclass = super ? super : "nil";
+        def.is_trait   = is_trait;
         /*
          *  Tonel v3 splits what v1 called a category into a package and a
          *  tag, and keeps #category for compatibility.  Either answers the
@@ -467,12 +523,44 @@ TONEL_read(const char *path, const st_source_sink *sink, void *user,
         if (!category)
             category = SRC_ston_value(pairs, pair_count, "package");
         def.category    = category ? category : "";
+        /*
+         *  #slots is Tonel v3's spelling of #instVars, and for a plain slot
+         *  the two say the same thing: a named field of the instance.  A
+         *  slot with a KIND -- "#a => WeakSlot" -- is a metamodel feature
+         *  this system does not have, where reading and writing the
+         *  variable go through the slot object.  Building it as an ordinary
+         *  instance variable would load and then behave differently, so it
+         *  is refused by the name of the kind.
+         */
+        if (slots && slots->is_qualified) {
+            snprintf(shape, sizeof shape, "a slot of kind %.63s",
+                     slots->qualifier);
+            def.unsupported_shape = shape;
+        }  else if (slots && !ivars) {
+            ivars = &slots->list;
+        }
         def.ivars       = ivars  ? ivars  : &empty;
         def.cvars       = cvars  ? cvars  : &empty;
         def.class_ivars = civars ? civars : &empty;
         def.pools       = pools  ? pools  : &empty;
         def.traits      = SRC_ston_value(pairs, pair_count, "traits");
         apply_type(SRC_ston_value(pairs, pair_count, "type"), &def);
+        /*
+         *  A trait with state would have to add fields to every class that
+         *  uses it, which changes instance shape from a direction nothing
+         *  else here does.  Refused by name rather than loaded without its
+         *  variables, which would compile and then read the wrong field.
+         */
+        if (is_trait && def.ivars->count)
+            def.unsupported_shape = "a trait with instance variables";
+        {
+            const char *class_traits = SRC_ston_value(pairs, pair_count,
+                                                      "classTraits");
+
+            if (class_traits && class_traits[0]
+             && !class_traits_are_mechanical(class_traits, def.traits))
+                def.unsupported_shape = "a #classTraits of its own";
+        }
 
         if (!def.name) {
             free(text);

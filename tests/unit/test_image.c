@@ -24,6 +24,7 @@
 #include "interp.h"
 #include "compiler.h"
 #include "bootstrap.h"
+#include "census.h"
 #include "gfx.h"
 #include "st_sched.h"
 
@@ -41,9 +42,9 @@
 #define BLUEBOOK_CLASSES        226
 #define BLUEBOOK_METHODS        4521
 #define BLUEBOOK_CATEGORIES     41
-#define LIB_CLASSES             10       /*  BlockClosure, the exceptions,
+#define LIB_CLASSES             12       /*  BlockClosure, the exceptions,
                                             and the Unwind fixture         */
-#define LIB_METHODS             110
+#define LIB_METHODS             115
 /*
  *  Three, not five: the extension packages define no CLASSES, and a
  *  category is a property of a class definition.  Kernel-Methods-Fixes and
@@ -105,6 +106,9 @@ load_manifest(void)
             "lib/Kernel-Exceptions/SmallInteger.extension.st",
             "lib/Kernel-Methods/MethodContext.extension.st",
             "lib/Kernel-Methods/CompiledMethod.extension.st",
+            "lib/Probe/Greeter.class.st",
+            "lib/Probe/Slotted.class.st",
+            "lib/Probe/TGreeting.trait.st",
             "lib/Probe/Unwind.class.st"
         };
         unsigned    k;
@@ -144,6 +148,14 @@ build_once(void)
     CHECK_EQ_INT(res.classes_created, BLUEBOOK_CLASSES + LIB_CLASSES);
     /*  4517 from the MIT sources, plus the few in kernel/Bootstrap.st.  */
     CHECK_EQ_INT(res.methods_compiled, BLUEBOOK_METHODS + LIB_METHODS);
+    /*
+     *  One trait, and two of its three methods flattened into Greeter --
+     *  the third is #subject, which Greeter defines itself and therefore
+     *  keeps.  A trait creates no class, so classes_created does not move.
+     */
+    CHECK_EQ_INT(res.traits_created, 1);
+    CHECK_EQ_INT(res.methods_flattened, 2);
+    CHECK_EQ_INT(res.traits_rejected, 0);
     built = 1;
     return 1;
 }
@@ -253,6 +265,34 @@ check_oop(const char *expression, st_oop want, const char *label)
         ST_print_object(value, text, sizeof text);
         printf("  FAIL %s: got %s, want %s\n", expression, text, label);
     }
+}
+
+/*
+ *  A String or Symbol answer, compared by its characters.
+ */
+static void
+check_string(const char *expression, const char *want)
+{
+    st_oop  value = evaluate(expression);
+    char    text[256];
+
+    ++st_test_checks;
+    if (!OM_is_present(value)) {
+        ++st_test_failures;
+        printf("  FAIL %s: no answer, want '%s'\n", expression, want);
+        return;
+    }
+    OM_string_of(value, text, sizeof text);
+    if (strcmp(text, want) != 0) {
+        ++st_test_failures;
+        printf("  FAIL %s: got '%s', want '%s'\n", expression, text, want);
+    }
+}
+
+static void
+check_boolean(const char *expression, int want)
+{
+    check_oop(expression, want ? ST_TRUE : ST_FALSE, want ? "true" : "false");
 }
 
 static void
@@ -649,6 +689,27 @@ static void
 test_pragmas_are_objects(void)
 {
     test_dialect = ST_DIALECT_CLOSURES;
+
+    /*  Tonel v3 writes #slots where v1 writes #instVars; for a plain slot
+        they say the same thing, and the class behaves the same.  */
+    check_integer("(Slotted new left: 3 right: 4) sum", 7);
+
+    /*
+     *  A trait is applied by flattening: its source is compiled into the
+     *  using class.  Greeter takes TGreeting whole and overrides #subject,
+     *  so #greeting comes from the trait and calls the CLASS's version --
+     *  which is the property that makes flattening worth doing rather than
+     *  copying a CompiledMethod, since a copied method would carry the
+     *  trait's own literal frame and instance-variable indices.
+     */
+    check_string("Greeter new greeting", "hello from a class");
+    /*  Class-side trait methods come across too, from #traits alone.  */
+    check_string("Greeter defaultGreeting", "hello");
+    /*  And the flattened method records where its source lives.  */
+    check_string("(Greeter organization categoryOfElement: #greeting)",
+                 "*trait:TGreeting");
+    /*  A trait creates no class: it is not in the system dictionary.  */
+    check_boolean("Smalltalk includesKey: #TGreeting", 0);
 
     /*  A method with no pragmas has none, and costs no literal.  */
     check_integer("(Unwind class compiledMethodAt: #normal) pragmas size", 0);
@@ -1469,7 +1530,7 @@ test_browsing(void)
      *  zero -- which a CompiledMethod reads as "no source at all".  See
      *  test_every_method_can_find_its_source.
      */
-    check_integer("(SourceFiles at: 1) contents size", 1219900);
+    check_integer("(SourceFiles at: 1) contents size", 1220055);
 }
 
 /*

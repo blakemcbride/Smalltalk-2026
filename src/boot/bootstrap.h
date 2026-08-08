@@ -47,6 +47,15 @@ typedef struct {
 
     unsigned    classes_created;
     unsigned    methods_compiled;
+
+    /*
+     *  Traits are flattened, so they create no class and their methods are
+     *  counted where they land -- in methods_compiled, once per using
+     *  class.  These two say how much of that came from a trait, which is
+     *  the only place the distinction is still visible afterwards.
+     */
+    unsigned    traits_created;
+    unsigned    methods_flattened;
     unsigned    symbols_interned;
     /*
      *  Classes a source file described and this system could not build --
@@ -56,6 +65,14 @@ typedef struct {
      *  item.
      */
     unsigned    classes_rejected;
+
+    /*
+     *  Classes whose trait composition could not be honoured.  Counted
+     *  apart from classes_rejected because the class WAS built: it exists,
+     *  its own methods are in it, and what is missing is the trait's --
+     *  which is a different thing to tell someone than "skipped".
+     */
+    unsigned    traits_rejected;
 } st_bootstrap_result;
 
 /*
