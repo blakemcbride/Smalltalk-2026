@@ -733,6 +733,43 @@ ST_return_to(st_oop value, st_oop ctx)
     do_return(value, sender, 0);
 }
 
+/*
+ *  Begin an activation again from its first bytecode.
+ *
+ *  This is what retry needs.  Re-sending on:do: from inside the handler
+ *  would work once and grow the stack every time, so a retry that keeps
+ *  failing runs out of memory rather than looping -- which is how an
+ *  infinite retry crashed instead of hanging.  Restarting reuses the frame,
+ *  and the arguments are already in it.
+ *
+ *  The reset happens here rather than through the 1983
+ *  MethodContext>>restart, which resets a frame for the Debugger to resume
+ *  later and sets its stack pointer to "numArgs + numTemps".  The header's
+ *  temporary count already counts the arguments -- it is what
+ *  activate_new_method uses for the stack pointer directly -- so that sum
+ *  is the arguments twice, and the frame would come back with two junk
+ *  slots below its stack.  Whether that was ever right for Xerox's own
+ *  encoding is a question for the Debugger and not for this.
+ */
+void
+ST_restart_at(st_oop ctx)
+{
+    st_oop  method;
+
+    if (!OM_is_object(ctx))
+        return;
+    method = OM_fetch_pointer(ST_CTX_METHOD, ctx);
+    if (!OM_is_object(method))
+        return;
+    OM_store_pointer(ST_CTX_IP, ctx,
+                     OM_int_oop((st_int) method_initial_ip(method) + 1));
+    OM_store_pointer(ST_CTX_SP, ctx,
+                     OM_int_oop((st_int) method_temporary_count(method)));
+    OM_store_pointer(ST_CTX_SENDER, st_vm.active_context, ST_NIL);
+    OM_store_pointer(ST_CTX_IP, st_vm.active_context, ST_NIL);
+    set_active_context(ctx);
+}
+
 void
 ST_resume_at(st_oop value, st_oop ctx)
 {
@@ -756,6 +793,29 @@ ST_resume_at(st_oop value, st_oop ctx)
  *  1983 image was asked whether it uses either number for anything real:
  *  its highest primitive is 135.
  */
+/*
+ *  The primitive number a frame's method declares, or 0.
+ *
+ *  The class check is not defensive tidiness.  A BlockContext's field 3 is
+ *  its ARGUMENT COUNT, not a method -- the two layouts share the slot --
+ *  so reading it as a method on the way past a Blue Book block would take
+ *  the body of a SmallInteger.  One image holds both kinds now, sources/
+ *  being Blue Book and lib/ closures, so such a frame is not a hypothesis.
+ */
+unsigned
+ST_context_primitive(st_oop ctx)
+{
+    st_oop  method;
+
+    if (!OM_is_object(ctx)
+     || OM_fetch_class(ctx) != ST_CLASS_METHOD_CONTEXT)
+        return 0;
+    method = OM_fetch_pointer(ST_CTX_METHOD, ctx);
+    if (!OM_is_object(method))
+        return 0;
+    return ST_method_primitive_index(method);
+}
+
 static st_oop
 find_unwind_between(st_oop from, st_oop home, int *home_found)
 {
@@ -767,8 +827,7 @@ find_unwind_between(st_oop from, st_oop home, int *home_found)
             *home_found = 1;
             return ST_NIL;
         }
-        if (ST_method_primitive_index(OM_fetch_pointer(ST_CTX_METHOD, ctx))
-                == 198)
+        if (ST_context_primitive(ctx) == 198)
             return ctx;
         ctx = OM_fetch_pointer(ST_CTX_SENDER, ctx);
     }

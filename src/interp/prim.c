@@ -812,6 +812,32 @@ is_a_context(st_oop p)
 }
 
 /*
+ *  Is `ctx` still on the stack -- that is, reachable from here by senders?
+ *
+ *  Both of the jumps below need this and neither can do without it.  A
+ *  context that has already returned still looks perfectly well formed: it
+ *  has a method, a receiver and a program counter, because do_return nils
+ *  the fields of the frame it leaves and not of everything that frame
+ *  called.  Jumping into one would carry on inside an activation nothing
+ *  refers to any more, over a stack that has been reused.  That happens the
+ *  moment an exception outlives its handler -- stored in a variable and
+ *  resumed later -- which is a mistake worth a message rather than a crash.
+ */
+static int
+context_is_live(st_oop ctx)
+{
+    st_oop      scan = st_vm.active_context;
+    unsigned    guard = 0;
+
+    while (OM_is_present(scan) && guard++ < 100000) {
+        if (scan == ctx)
+            return 1;
+        scan = OM_fetch_pointer(ST_CTX_SENDER, scan);
+    }
+    return 0;
+}
+
+/*
  *  246: ContextPart>>return: value.  Abandon everything up to and including
  *  the receiver, and let the send that created it answer `value`.
  */
@@ -825,6 +851,8 @@ primitive_context_return(void)
         return 0;
     if (!OM_is_present(OM_fetch_pointer(ST_CTX_SENDER, ctx)))
         return 0;                   /*  nothing to answer to  */
+    if (!context_is_live(ctx))
+        return 0;
     ST_pop_n(2);
     ST_return_to(value, ctx);
     return 1;
@@ -840,10 +868,93 @@ primitive_context_resume(void)
     st_oop  ctx   = ST_stack_value(1);
     st_oop  value = ST_stack_value(0);
 
-    if (!is_a_context(ctx))
+    if (!is_a_context(ctx) || !context_is_live(ctx))
         return 0;
     ST_pop_n(2);
     ST_resume_at(value, ctx);
+    return 1;
+}
+
+/*
+ *  195 and 197: walking the sender chain, in C.
+ *
+ *  Squeak's numbers, and Squeak's reason for having them: both are pure
+ *  OPTIMISATIONS with working Smalltalk bodies behind them, so a build
+ *  without them is slower and not different.  Signalling walked the chain
+ *  a send at a time, and each step asked a method for its primitive number
+ *  through three more sends -- fine at this scale and the obvious thing to
+ *  stop doing.
+ *
+ *  The walk is all they do.  Whether a handler HANDLES this exception is a
+ *  Smalltalk question -- it sends #handles: -- and so is whether it is
+ *  currently disabled, so the caller loops over these.
+ */
+static int
+primitive_find_next_handler(void)
+{
+    st_oop  ctx = ST_stack_value(0);
+    st_oop  scan;
+
+    if (!is_a_context(ctx))
+        return 0;
+    scan = OM_fetch_pointer(ST_CTX_SENDER, ctx);
+    while (OM_is_present(scan)) {
+        if (ST_context_primitive(scan) == 199) {
+            ST_pop_n(1);
+            ST_push(scan);
+            return 1;
+        }
+        scan = OM_fetch_pointer(ST_CTX_SENDER, scan);
+    }
+    ST_pop_n(1);
+    ST_push(ST_NIL);
+    return 1;
+}
+
+static int
+primitive_find_next_unwind_up_to(void)
+{
+    st_oop  ctx   = ST_stack_value(1);
+    st_oop  limit = ST_stack_value(0);
+    st_oop  scan;
+
+    if (!is_a_context(ctx))
+        return 0;
+    scan = OM_fetch_pointer(ST_CTX_SENDER, ctx);
+    while (OM_is_present(scan) && scan != limit) {
+        if (ST_context_primitive(scan) == 198) {
+            ST_pop_n(2);
+            ST_push(scan);
+            return 1;
+        }
+        scan = OM_fetch_pointer(ST_CTX_SENDER, scan);
+    }
+    ST_pop_n(2);
+    ST_push(ST_NIL);
+    return 1;
+}
+
+/*
+ *  249: ContextPart>>restartAndJump.  Run this activation again from the
+ *  top, with the arguments it already has.
+ *
+ *  Not spelled "restart": MethodContext>>restart is a 1983 method that
+ *  resets a frame without continuing it, and taking that name would shadow
+ *  a Debugger operation with something that does more.
+ */
+static int
+primitive_context_restart(void)
+{
+    st_oop  ctx = ST_stack_value(0);
+
+    if (!is_a_context(ctx))
+        return 0;
+    if (OM_fetch_class(ctx) != ST_CLASS_METHOD_CONTEXT)
+        return 0;                   /*  a block frame has no pattern to redo */
+    if (!context_is_live(ctx))
+        return 0;
+    ST_pop_n(1);
+    ST_restart_at(ctx);
     return 1;
 }
 
@@ -1549,8 +1660,11 @@ ST_primitive_dispatch(unsigned index)
      *  builds Context>>return: out of process machinery this VM does not
      *  have and ported source never names a number for it.
      */
+    case 195: return primitive_find_next_unwind_up_to();
+    case 197: return primitive_find_next_handler();
     case 246: return primitive_context_return();
     case 248: return primitive_report_on_standard_error();
+    case 249: return primitive_context_restart();
     case 247: return primitive_context_resume();
 
     /*

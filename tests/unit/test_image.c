@@ -43,7 +43,7 @@
 #define BLUEBOOK_CATEGORIES     41
 #define LIB_CLASSES             7       /*  BlockClosure, the exceptions,
                                             and the Unwind fixture         */
-#define LIB_METHODS             81
+#define LIB_METHODS             85
 #define LIB_CATEGORIES          3       /*  Kernel-Closures, -Exceptions,
                                             Probe-Core                     */
 #define MAX_SOURCES 512
@@ -540,12 +540,37 @@ test_exceptions(void)
     check_integer("[nil foo] on: MessageNotUnderstood do: [:e | 1]", 1);
     check_integer("[nil error: 'x'] on: Error do: [:e | 9]", 9);
 
+    /*
+     *  A handler is disabled while it runs, so anything IT signals goes to
+     *  the next handler out.  Without that the search that was meant to
+     *  move outwards finds the same frame again and goes round for ever --
+     *  an exception a handler could not deal with hung the image.
+     */
+    check_oop("[[Error new signal] on: Error do: [:e | Error new signal. 1]] "
+              "on: Error do: [:e2 | true]", ST_TRUE, "true");
+
     /*  retry, pass and resume.  */
     check_integer("| n | n := 0. ^[n := n + 1. n < 3 ifTrue: [Error new signal]. n] "
                   "on: Error do: [:e | e retry]", 3);
     check_integer("[[Error new signal] on: Error do: [:e | e pass]] "
                   "on: Error do: [:e | 8]", 8);
     check_integer("[Warning new signal] on: Warning do: [:e | e resume: 9]", 9);
+    /*  Resuming really goes back to the signal point, not past it.  */
+    check_integer("[(Warning new signal) + 1] on: Warning do: [:e | e resume: 9]",
+                  10);
+    /*
+     *  And an exception resumed after its handler returned is refused.  A
+     *  returned context still looks well formed -- do_return nils the
+     *  fields of the frame it leaves, not of everything that frame called
+     *  -- so the test has to be whether it is still reachable, and that is
+     *  in the primitive rather than here.
+     */
+    check_oop("| saved | [Warning new signal] on: Warning do: "
+              "[:e | saved := e. e return: 1]. "
+              "^[saved resume: 2] on: Error do: [:x | true]", ST_TRUE, "true");
+    /*  retry restarts the frame rather than nesting another one.  */
+    check_integer("| n | n := 0. ^[n := n + 1. n < 5 ifTrue: [Error new signal]. n] "
+                  "on: Error do: [:e | e retry]", 5);
 
     /*  Ordinary division is unaffected by the ZeroDivide override.  */
     check_integer("7 // 2", 3);
@@ -1287,7 +1312,7 @@ test_browsing(void)
      *  zero -- which a CompiledMethod reads as "no source at all".  See
      *  test_every_method_can_find_its_source.
      */
-    check_integer("(SourceFiles at: 1) contents size", 1213433);
+    check_integer("(SourceFiles at: 1) contents size", 1217020);
 }
 
 /*

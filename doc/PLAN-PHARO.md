@@ -350,10 +350,32 @@ error could only be reported by the one means that was unavailable. Primitive 24
 String to stderr, and respects the same reporting switch the VM's own diagnostics use, so
 the bootstrap's deliberately-silent first initializer pass stays silent.
 
-**Still open:** `signal` walks the sender chain on every raise, which is fine at this scale
-and is the obvious thing to make faster later; and `resume:` is only correct for
-exceptions signalled from a context that is still live, which is what `isResumable` is
-for.
+**Both loose ends closed, and each turned out to hide a real defect.**
+
+Making the search faster meant reading a frame's primitive number in C, and that exposed
+a latent crash in D4's `find_unwind_between`: a `BlockContext`'s field 3 is its **argument
+count**, not a method — the two layouts share the slot — so walking past a Blue Book block
+during a closure's non-local return took the body of a SmallInteger. One image holds both
+kinds now, so such a frame is not a hypothesis. The walk is Squeak's primitives 195 and
+197, both optimisations with the Smalltalk bodies kept behind them.
+
+Making `resume:` safe meant asking what "still live" means, and the honest answer is
+**reachability**, not a nil program counter: `do_return` nils the fields of the frame it
+leaves, not of everything that frame called, so a returned context still looks perfectly
+well formed. The check is in primitives 246, 247 and 249 rather than in Smalltalk, so
+every jump is safe by construction.
+
+The same pass found that **a handler was not disabled while it ran**, so anything it
+signalled found the same frame again and the search that was meant to move outwards went
+round for ever — an exception a handler could not deal with hung the image instead of
+reaching the handler outside it. And `retry` re-sent `on:do:` rather than restarting its
+frame, so a retry that never succeeded grew the stack until it dumped core; it restarts
+now and loops, which is what a retry that never succeeds should do.
+
+One compiler change came out of writing the package: **pragmas and temporaries are
+accepted in either order and any number of times**. The Blue Book puts temporaries first
+and has one pragma; Pharo writes the pragma first at least as often, and a reader that
+insists on one order rejects ordinary source for a reason that is about nothing.
 
 ### F — The Pharo object model
 This is what "load Pharo's kernel" costs, and it is the phase most likely to be revised

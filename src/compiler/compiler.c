@@ -2713,43 +2713,57 @@ COMPILE_to_bytecodes(const char *source, const st_compile_context *ctx,
         advance(&c);
         compile_pattern(&c);
 
-        /*  Temporaries, if any.  */
-        if (at(&c, ST_TOK_BAR)) {
-            advance(&c);
-            while (at(&c, ST_TOK_IDENTIFIER)) {
-                if (c.name_count < MAX_TEMPS)
-                    snprintf(c.names[c.name_count++], 64, "%.63s",
-                             c.token.text);
-                if (c.dialect == ST_DIALECT_CLOSURES && pass == 0)
-                    declare(&c, c.token.text, 0);
-                advance(&c);
-            }
-            if (!accept(&c, ST_TOK_BAR))
-                fail(&c, "expected | after temporaries");
-        }
-
         /*
-         *  Pragmas, if any.  A loop rather than one test: Squeak allows
-         *  several per method and Pharo source uses that freely.
+         *  Temporaries and pragmas, in either order and any number of
+         *  times.
          *
-         *  Each is read speculatively, because '<' is also an ordinary
-         *  binary selector and a method may perfectly well begin with one --
-         *  "x < 3 ifTrue: [...]" as the first statement of a method with no
-         *  temporaries.  A parse that does not reach a closing '>' rewinds
-         *  and the statement compiler gets the '<' back.
+         *  The Blue Book puts the temporaries first and has one pragma.
+         *  Pharo writes the pragma first at least as often, and a reader
+         *  that insists on one order rejects perfectly ordinary source for
+         *  a reason that is about nothing.  Looping over both until neither
+         *  matches accepts every arrangement and costs a few lines.
          */
-        while (!c.failed && at(&c, ST_TOK_BINARY)
-            && strcmp(c.token.text, "<") == 0) {
-            compiler_mark   before_pragma;
+        for (;;) {
+            int progress = 0;
 
-            mark(&c, &before_pragma);
-            if (!parse_pragma(&c)) {
-                if (c.failed)
-                    break;
-                rewind_to(&c, &before_pragma);
-                break;
+            if (at(&c, ST_TOK_BAR)) {
+                advance(&c);
+                while (at(&c, ST_TOK_IDENTIFIER)) {
+                    if (c.name_count < MAX_TEMPS)
+                        snprintf(c.names[c.name_count++], 64, "%.63s",
+                                 c.token.text);
+                    if (c.dialect == ST_DIALECT_CLOSURES && pass == 0)
+                        declare(&c, c.token.text, 0);
+                    advance(&c);
+                }
+                if (!accept(&c, ST_TOK_BAR))
+                    fail(&c, "expected | after temporaries");
+                progress = 1;
             }
+            /*
+             *  A pragma is read speculatively, because '<' is also an
+             *  ordinary binary selector and a method may begin with one --
+             *  "x < 3 ifTrue: [...]" as the first statement of a method
+             *  with no temporaries.  A parse that does not reach a closing
+             *  '>' rewinds and the statement compiler gets the token back.
+             */
+            while (!c.failed && at(&c, ST_TOK_BINARY)
+                && strcmp(c.token.text, "<") == 0) {
+                compiler_mark   before_pragma;
+
+                mark(&c, &before_pragma);
+                if (!parse_pragma(&c)) {
+                    if (c.failed)
+                        break;
+                    rewind_to(&c, &before_pragma);
+                    goto done_prelude;
+                }
+                progress = 1;
+            }
+            if (!progress || c.failed)
+                break;
         }
+    done_prelude:
 
         /*
          *  The method's own frame, laid out once its names are known.  Its

@@ -11,8 +11,19 @@ Extension { #name : 'ContextPart' }
 
 { #category : '*Kernel-Exceptions' }
 ContextPart >> isHandlerContext [
-	"Marked by BlockClosure>>on:do:."
-	^self method primitive = 199
+	"Marked by BlockClosure>>on:do:, and not already handling something."
+	^self method primitive = 199 and: [self handlerIsActive]
+]
+
+{ #category : '*Kernel-Exceptions' }
+ContextPart >> handlerIsActive [
+	"on:do: keeps this in its third temporary; see the comment there."
+	^(self tempAt: 3) == true
+]
+
+{ #category : '*Kernel-Exceptions' }
+ContextPart >> handlerIsActive: aBoolean [
+	self tempAt: 3 put: aBoolean
 ]
 
 { #category : '*Kernel-Exceptions' }
@@ -32,8 +43,23 @@ ContextPart >> return: aValue [
 { #category : '*Kernel-Exceptions' }
 ContextPart >> resume: aValue [
 	"Carry on where I stopped, as though the send I was waiting on had
-	 answered aValue."
+	 answered aValue.
+
+	 The primitive refuses a context that is no longer on the stack, which
+	 is what an exception resumed after its handler returned would be."
 	<primitive: 247>
+	^Error new signal: 'that context has already returned'
+]
+
+{ #category : '*Kernel-Exceptions' }
+ContextPart >> restartAndJump [
+	"Begin this activation again from its first bytecode, keeping the
+	 arguments it already has, and carry on in it.
+
+	 Not called restart: MethodContext>>restart is a 1983 method that
+	 resets a frame for the Debugger to resume separately, and this does
+	 both at once."
+	<primitive: 249>
 	^self primitiveFailed
 ]
 
@@ -65,7 +91,27 @@ ContextPart >> homeContext [
 ]
 
 { #category : '*Kernel-Exceptions' }
+ContextPart >> findNextHandlerContext [
+	"The next frame outwards marked by on:do:, or nil.
+
+	 The primitive is Squeak's and is an optimisation only: the body below
+	 does the same walk a send at a time, and asks each method for its
+	 primitive number through three more sends.  Without the primitive this
+	 is slower and not different."
+	<primitive: 197>
+	| ctx |
+	ctx := self sender.
+	[ctx isNil] whileFalse: [
+		ctx method primitive = 199 ifTrue: [^ctx].
+		ctx := ctx sender].
+	^nil
+]
+
+{ #category : '*Kernel-Exceptions' }
 ContextPart >> findNextUnwindUpTo: aContext [
+	"The next frame outwards marked by ensure: or ifCurtailed:, stopping at
+	 aContext.  Squeak's primitive 195, and an optimisation only."
+	<primitive: 195>
 	| ctx |
 	ctx := self sender.
 	[ctx isNil or: [ctx == aContext]] whileFalse: [

@@ -12,8 +12,19 @@ Extension { #name : 'BlockClosure' }
 { #category : '*Kernel-Exceptions' }
 BlockClosure >> on: anExceptionClass do: aHandlerBlock [
 	"Evaluate the receiver.  If it signals something anExceptionClass
-	 handles, evaluate aHandlerBlock with the exception instead."
+	 handles, evaluate aHandlerBlock with the exception instead.
+
+	 handlerActive is the third temporary, and it is what stops a handler
+	 catching its own signals.  Without it, raising anything inside a
+	 handler finds this same frame again and the search that was supposed
+	 to move outwards goes round for ever -- so the exception a handler
+	 could not deal with hangs the image instead of reaching the handler
+	 outside it.  Exception>>runHandler clears it for the duration and puts
+	 it back, because a resumed exception leaves this frame in place and
+	 still wanting to catch things."
+	| handlerActive |
 	<primitive: 199>
+	handlerActive := true.
 	^self value
 ]
 

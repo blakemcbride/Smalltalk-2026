@@ -850,6 +850,21 @@ test_pragmas(void)
     }
 
     /*
+     *  Either order, any number of times.  The Blue Book puts temporaries
+     *  first and has one pragma; Pharo writes the pragma first at least as
+     *  often, and a reader that insists on one order rejects ordinary
+     *  source for a reason that is about nothing.
+     */
+    CHECK_EQ_INT((int) primitive_of("foo <primitive: 60> | a | ^a",
+                                    "pragma then temporaries"), 60);
+    CHECK_EQ_INT((int) primitive_of("foo | a | <primitive: 60> ^a",
+                                    "temporaries then pragma"), 60);
+    CHECK_EQ_INT((int) primitive_of("foo <a: 1> | x | <primitive: 60> <b: 2> ^x",
+                                    "interleaved"), 60);
+    CHECK_CODE("foo <a: 1> | x | <b: 2> ^x", "interleaved leaves no trace",
+               16, 124);
+
+    /*
      *  '<' is also an ordinary binary selector, and a method with no
      *  temporaries may begin with one.  A speculative pragma parse that does
      *  not reach a closing '>' has to rewind and give the token back.
