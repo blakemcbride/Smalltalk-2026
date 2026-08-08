@@ -6,6 +6,7 @@
  */
 
 #include "survey.h"
+#include "prim.h"
 #include "compiler.h"
 #include "source.h"
 
@@ -89,6 +90,54 @@ selector_of(const char *source, char *out, size_t outlen)
 }
 
 /*
+ *  Remember that a method asked for a primitive.
+ *
+ *  Keyed on the number AND, for a named primitive, on the module and
+ *  function -- primitive 117 is a doorway, not a primitive, and collapsing
+ *  every callout through it into one row would hide the whole question.
+ */
+static void
+record_primitive(st_survey *s, const st_compiled_code *code,
+                 const char *class_name, int class_side, const char *source)
+{
+    char        name[160] = "";
+    unsigned    i;
+
+    if (code->primitive == 117 && code->primitive_name[0])
+        snprintf(name, sizeof name, "'%.63s' module: '%.63s'",
+                 code->primitive_name, code->primitive_module);
+
+    for (i = 0; i < s->primitive_count; ++i) {
+        if (s->primitives[i].number == code->primitive
+         && strcmp(s->primitives[i].name, name) == 0) {
+            ++s->primitives[i].methods;
+            return;
+        }
+    }
+    if (s->primitive_count == ST_SURVEY_MAX_PRIMITIVES) {
+        ++s->primitives_overflowed;
+        return;
+    }
+    i = s->primitive_count++;
+    s->primitives[i].number  = code->primitive;
+    s->primitives[i].methods = 1;
+    snprintf(s->primitives[i].name, sizeof s->primitives[i].name, "%s", name);
+    {
+        char    selector[160];
+
+        /*
+         *  The real selector, not the first line: a 1983 method puts its
+         *  pattern and its comment on one line, so the line is a paragraph.
+         */
+        if (COMPILE_selector_of(source, selector, sizeof selector) != 0)
+            snprintf(selector, sizeof selector, "?");
+        snprintf(s->primitives[i].example, sizeof s->primitives[i].example,
+                 "%s%s>>%s", class_name ? class_name : "?",
+                 class_side ? " class" : "", selector);
+    }
+}
+
+/*
  *  One method, compiled and thrown away.
  *
  *  The survey used to drive the chunk reader itself, which meant it read
@@ -130,7 +179,10 @@ survey_method(const char *class_name, int class_side, const char *category,
         ++s->failed;
         selector_of(source, selector, sizeof selector);
         record(s, code.error, selector, class_name);
+        return 1;
     }
+    if (code.primitive)
+        record_primitive(s, &code, class_name, class_side, source);
     return 1;
 }
 
@@ -191,4 +243,88 @@ SURVEY_report(st_survey *s, FILE *out)
     for (i = 0; i < s->kind_count; ++i)
         fprintf(out, "%-8u  %-52s  %s\n", s->kinds[i].count, s->kinds[i].text,
                 s->kinds[i].example);
+}
+
+/*
+ *  Every primitive the surveyed source asked for, against what this VM does
+ *  with it.
+ *
+ *  Four outcomes, not two, because two of them would be a lie.  A primitive
+ *  that is ACCEPTED succeeds and does nothing, so the method's Smalltalk
+ *  fallback -- which is where the real work usually lives -- never runs: it
+ *  belongs on the list of things to look at, but not on the list of things
+ *  to implement.  A primitive that is a TAG must keep failing, because it
+ *  is a label read by a walk up the sender chain and implementing it would
+ *  break the exception system.  Only ABSENT is work.
+ */
+static int
+primitive_order(const void *a, const void *b)
+{
+    const st_survey_primitive *x = a;
+    const st_survey_primitive *y = b;
+
+    if (x->number != y->number)
+        return x->number < y->number ? -1 : 1;
+    return strcmp(x->name, y->name);
+}
+
+unsigned
+SURVEY_primitive_report(st_survey *s, FILE *out)
+{
+    static const char *const heading[] = {
+        "not implemented here -- this is the work",
+        "implemented",
+        "accepted, and does nothing",
+        "deliberately absent: a mark, not an operation"
+    };
+    static const st_primitive_status order[] = {
+        ST_PRIM_ABSENT, ST_PRIM_ACCEPTED, ST_PRIM_TAG, ST_PRIM_PRESENT
+    };
+    unsigned    totals[4] = { 0, 0, 0, 0 };
+    unsigned    group;
+    unsigned    i;
+
+    qsort(s->primitives, s->primitive_count, sizeof s->primitives[0],
+          primitive_order);
+
+    fprintf(out, "%u file%s, %u method%s, %u distinct primitive%s\n",
+            s->files, s->files == 1 ? "" : "s",
+            s->methods, s->methods == 1 ? "" : "s",
+            s->primitive_count, s->primitive_count == 1 ? "" : "s");
+
+    for (group = 0; group < 4; ++group) {
+        int     printed_heading = 0;
+
+        for (i = 0; i < s->primitive_count; ++i) {
+            const char         *name = NULL;
+            st_primitive_status status =
+                ST_primitive_status_of(s->primitives[i].number, &name);
+
+            if (status != order[group])
+                continue;
+            ++totals[order[group]];
+            if (!printed_heading) {
+                fprintf(out, "\n  %s\n", heading[order[group]]);
+                printed_heading = 1;
+            }
+            fprintf(out, "  %4u  %-44.44s %5u  %s\n",
+                    s->primitives[i].number,
+                    s->primitives[i].name[0] ? s->primitives[i].name
+                                             : (name ? name : ""),
+                    s->primitives[i].methods,
+                    s->primitives[i].example);
+        }
+    }
+
+    fprintf(out, "\n  %u implemented, %u accepted-and-inert, %u deliberately "
+                 "absent, %u to implement\n",
+            totals[ST_PRIM_PRESENT], totals[ST_PRIM_ACCEPTED],
+            totals[ST_PRIM_TAG], totals[ST_PRIM_ABSENT]);
+    if (s->primitives_overflowed)
+        fprintf(out, "  %u more did not fit in the table and are NOT "
+                     "counted above\n", s->primitives_overflowed);
+    if (s->failed)
+        fprintf(out, "  %u method%s did not compile and asked for nothing\n",
+                s->failed, s->failed == 1 ? "" : "s");
+    return totals[ST_PRIM_ABSENT];
 }

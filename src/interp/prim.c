@@ -1723,6 +1723,146 @@ ST_primitive_dispatch(unsigned index)
 }
 
 /*
+ *  ----------  The table, beside the switch  ----------
+ *
+ *  This says the same thing the dispatch switch above says, in a form a
+ *  report can read.  It is maintained by hand and it sits here, immediately
+ *  after the switch, because the only thing keeping the two in step is that
+ *  they are impossible to read apart -- a table in another file would drift
+ *  within a month.
+ *
+ *  test_primitives walks 1..255 and checks that every number the table
+ *  claims is one the compiler will accept and that the four deliberate
+ *  cases are still the four deliberate cases, which catches the edits that
+ *  matter without pretending to catch every one.
+ */
+typedef struct {
+    unsigned            number;
+    st_primitive_status status;
+    const char         *name;
+} primitive_entry;
+
+static const primitive_entry primitive_table[] = {
+    {   1, ST_PRIM_PRESENT,  "SmallInteger +"                   },
+    {   2, ST_PRIM_PRESENT,  "SmallInteger -"                   },
+    {   3, ST_PRIM_PRESENT,  "SmallInteger <"                   },
+    {   4, ST_PRIM_PRESENT,  "SmallInteger >"                   },
+    {   5, ST_PRIM_PRESENT,  "SmallInteger <="                  },
+    {   6, ST_PRIM_PRESENT,  "SmallInteger >="                  },
+    {   7, ST_PRIM_PRESENT,  "SmallInteger ="                   },
+    {   8, ST_PRIM_PRESENT,  "SmallInteger ~="                  },
+    {   9, ST_PRIM_PRESENT,  "SmallInteger *"                   },
+    {  10, ST_PRIM_PRESENT,  "SmallInteger /"                   },
+    {  11, ST_PRIM_PRESENT,  "SmallInteger \\\\"                  },
+    {  12, ST_PRIM_PRESENT,  "SmallInteger //"                  },
+    {  13, ST_PRIM_PRESENT,  "SmallInteger quo:"                },
+    {  14, ST_PRIM_PRESENT,  "SmallInteger bitAnd:"             },
+    {  15, ST_PRIM_PRESENT,  "SmallInteger bitOr:"              },
+    {  16, ST_PRIM_PRESENT,  "SmallInteger bitXor:"             },
+    {  17, ST_PRIM_PRESENT,  "SmallInteger bitShift:"           },
+    {  18, ST_PRIM_PRESENT,  "Number @"                         },
+    {  40, ST_PRIM_PRESENT,  "SmallInteger asFloat"             },
+    {  41, ST_PRIM_PRESENT,  "Float +"                          },
+    {  42, ST_PRIM_PRESENT,  "Float -"                          },
+    {  43, ST_PRIM_PRESENT,  "Float <"                          },
+    {  44, ST_PRIM_PRESENT,  "Float >"                          },
+    {  45, ST_PRIM_PRESENT,  "Float <="                         },
+    {  46, ST_PRIM_PRESENT,  "Float >="                         },
+    {  47, ST_PRIM_PRESENT,  "Float ="                          },
+    {  48, ST_PRIM_PRESENT,  "Float ~="                         },
+    {  49, ST_PRIM_PRESENT,  "Float *"                          },
+    {  50, ST_PRIM_PRESENT,  "Float /"                          },
+    {  51, ST_PRIM_PRESENT,  "Float truncated"                  },
+    {  52, ST_PRIM_PRESENT,  "Float fractionPart"               },
+    {  53, ST_PRIM_PRESENT,  "Float exponent"                   },
+    {  54, ST_PRIM_PRESENT,  "Float timesTwoPower:"             },
+    {  60, ST_PRIM_PRESENT,  "Object at:"                       },
+    {  61, ST_PRIM_PRESENT,  "Object at:put:"                   },
+    {  62, ST_PRIM_PRESENT,  "Object size"                      },
+    {  63, ST_PRIM_PRESENT,  "String at:"                       },
+    {  64, ST_PRIM_PRESENT,  "String at:put:"                   },
+    {  68, ST_PRIM_PRESENT,  "CompiledMethod objectAt:"         },
+    {  69, ST_PRIM_PRESENT,  "CompiledMethod objectAt:put:"     },
+    {  70, ST_PRIM_PRESENT,  "Behavior new"                     },
+    {  71, ST_PRIM_PRESENT,  "Behavior new:"                    },
+    {  72, ST_PRIM_PRESENT,  "Object become:"                   },
+    {  73, ST_PRIM_PRESENT,  "Object instVarAt:"                },
+    {  74, ST_PRIM_PRESENT,  "Object instVarAt:put:"            },
+    {  75, ST_PRIM_PRESENT,  "Object identityHash"              },
+    {  77, ST_PRIM_PRESENT,  "Behavior someInstance"            },
+    {  78, ST_PRIM_PRESENT,  "Object nextInstance"              },
+    {  79, ST_PRIM_PRESENT,  "Behavior newMethod:header:"       },
+    {  80, ST_PRIM_PRESENT,  "ContextPart blockCopy:"           },
+    {  81, ST_PRIM_PRESENT,  "BlockContext value"               },
+    {  82, ST_PRIM_PRESENT,  "BlockContext valueWithArguments:" },
+    {  83, ST_PRIM_PRESENT,  "Object perform:"                  },
+    {  84, ST_PRIM_PRESENT,  "Object perform:withArguments:"    },
+    {  85, ST_PRIM_PRESENT,  "Semaphore signal"                 },
+    {  86, ST_PRIM_PRESENT,  "Semaphore wait"                   },
+    {  87, ST_PRIM_PRESENT,  "Process resume"                   },
+    {  88, ST_PRIM_PRESENT,  "Process suspend"                  },
+    {  89, ST_PRIM_ACCEPTED, "flushCache -- there is no method cache yet" },
+    {  90, ST_PRIM_PRESENT,  "InputSensor mousePoint"           },
+    {  91, ST_PRIM_ACCEPTED, "cursorLocPut: -- the host owns the pointer" },
+    {  92, ST_PRIM_ACCEPTED, "cursorLink:"                      },
+    {  93, ST_PRIM_PRESENT,  "InputSensor primInputSemaphore:"  },
+    {  94, ST_PRIM_ACCEPTED, "sampleInterval:"                  },
+    {  95, ST_PRIM_PRESENT,  "InputSensor inputWord"            },
+    {  96, ST_PRIM_PRESENT,  "BitBlt copyBits"                  },
+    {  98, ST_PRIM_PRESENT,  "Time primSecondsClockInto:"       },
+    {  99, ST_PRIM_PRESENT,  "Time primMillisecondClockInto:"   },
+    { 101, ST_PRIM_PRESENT,  "Cursor beCursor"                  },
+    { 102, ST_PRIM_PRESENT,  "DisplayScreen beDisplay"          },
+    { 105, ST_PRIM_PRESENT,  "String replaceFrom:to:with:startingAt:" },
+    { 110, ST_PRIM_PRESENT,  "Object =="                        },
+    { 111, ST_PRIM_PRESENT,  "Object class"                     },
+    { 112, ST_PRIM_PRESENT,  "SystemDictionary coreLeft"        },
+    { 113, ST_PRIM_PRESENT,  "SystemDictionary quitPrimitive"   },
+    { 115, ST_PRIM_PRESENT,  "SystemDictionary oopsLeft"        },
+    { 116, ST_PRIM_ACCEPTED, "signal:atOopsLeft:wordsLeft: -- no low-space "
+                             "warning yet"                      },
+    { 195, ST_PRIM_PRESENT,  "ContextPart findNextUnwindContextUpTo:" },
+    { 197, ST_PRIM_PRESENT,  "ContextPart findNextHandlerContext"     },
+    { 198, ST_PRIM_TAG,      "unwind mark -- ensure:/ifCurtailed:, read by "
+                             "a walk up the sender chain"       },
+    { 199, ST_PRIM_TAG,      "handler mark -- on:do:, read by a walk up "
+                             "the sender chain"                 },
+    { 201, ST_PRIM_PRESENT,  "BlockClosure value"               },
+    { 202, ST_PRIM_PRESENT,  "BlockClosure value:"              },
+    { 203, ST_PRIM_PRESENT,  "BlockClosure value:value:"        },
+    { 204, ST_PRIM_PRESENT,  "BlockClosure value:value:value:"  },
+    { 205, ST_PRIM_PRESENT,  "BlockClosure value:value:value:value:" },
+    { 206, ST_PRIM_PRESENT,  "BlockClosure valueWithArguments:" },
+    { 221, ST_PRIM_PRESENT,  "BlockClosure valueNoContextSwitch" },
+    { 222, ST_PRIM_PRESENT,  "BlockClosure valueNoContextSwitch:" },
+    { 246, ST_PRIM_PRESENT,  "ContextPart return: -- this system's own"  },
+    { 247, ST_PRIM_PRESENT,  "ContextPart resume: -- this system's own"  },
+    { 248, ST_PRIM_PRESENT,  "Object reportOnStandardError -- this "
+                             "system's own"                     },
+    { 249, ST_PRIM_PRESENT,  "ContextPart restartAndJump -- this system's "
+                             "own"                              },
+    { 250, ST_PRIM_PRESENT,  "SystemDictionary garbageCollect -- this "
+                             "system's own"                     }
+};
+
+st_primitive_status
+ST_primitive_status_of(unsigned index, const char **name)
+{
+    size_t  i;
+
+    for (i = 0; i < sizeof primitive_table / sizeof primitive_table[0]; ++i) {
+        if (primitive_table[i].number == index) {
+            if (name)
+                *name = primitive_table[i].name;
+            return primitive_table[i].status;
+        }
+    }
+    if (name)
+        *name = NULL;
+    return ST_PRIM_ABSENT;
+}
+
+/*
  *  The special-selector bytecodes.  The arithmetic group runs only when the
  *  receiver is a SmallInteger; everything else falls through to a real send,
  *  which is why "aMetaclass new" appears in the reference traces as a send

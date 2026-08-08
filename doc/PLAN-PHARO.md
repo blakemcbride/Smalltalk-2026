@@ -388,7 +388,7 @@ accepted in either order and any number of times**. The Blue Book puts temporari
 and has one pragma; Pharo writes the pragma first at least as often, and a reader that
 insists on one order rejects ordinary source for a reason that is about nothing.
 
-### F — The Pharo object model *(F1–F4 done; F5, the primitive report, remains)*
+### F — The Pharo object model *(F1–F5 done; second gate blocked on a provenance decision)*
 This is what "load Pharo's kernel" costs, and it is the phase most likely to be revised
 in contact.
 
@@ -487,12 +487,65 @@ in contact.
 
   Real trait reflection and update propagation remain out of scope: a trait is not an object
   in the image, and changing one does not re-flatten the classes that took it.
-- **The primitive set.** Extract mechanically from Pharo's Tonel sources every
-  `<primitive: N>` its kernel invokes; implement them; report the remainder. This converts
-  an unbounded question into a finite checklist.
+- **The primitive set — the tool is done; the Pharo corpus it is aimed at is not here yet.**
+  `st80 -primitives <files|-profile p>` compiles every method in a body of source and reports
+  every primitive it asks the VM for, against what this VM does with it. It reads both source
+  formats, because it goes through the same reader everything else does.
 
-**Gate:** the extraction report exists and shrinks; a Pharo kernel class from Tier 1 that
-uses weak references, pragmas and a trait loads and passes its own SUnit tests.
+  The report has **four** outcomes rather than two, and the extra two are the point:
+
+  | | |
+  |---|---|
+  | **implemented** | the VM answers it |
+  | **accepted, and does nothing** | succeeds without doing anything, so the method's Smalltalk fallback — usually where the real work is — never runs. Not the same as implemented, and a silent failure rather than a loud one. Five of them: 89, 91, 92, 94, 116 |
+  | **deliberately absent** | 198 and 199 are *marks*, read by a walk up the sender chain. They must keep failing; implementing either would break `ensure:` and `on:do:` |
+  | **not implemented** | the work |
+
+  Primitive **117 is a doorway, not a primitive**: a named primitive gets one row per
+  `(module, function)`, because a report that folded every plugin callout into a single row
+  saying "117" would answer nothing at all. That needed the compiler to carry the two strings
+  on `st_compiled_code`, since the number alone does not have them.
+
+  Against the 1983 library the answer is 109 distinct primitives, 32 to implement — chiefly
+  `LargePositiveInteger` arithmetic (21–37), the stream primitives (65–67), snapshot (97) and
+  the Alto/Posix file primitives. Against `st2026.profile` it is 126, of which 87 are
+  implemented, and 198/199 appear under *deliberately absent* pointing at `BlockClosure>>ensure:`
+  and `on:do:` — which is the report describing the exception system correctly.
+
+  The table it reads lives in `prim.c` immediately after the dispatch switch, because the only
+  thing keeping the two in step is that they are impossible to read apart.
+
+**Gate:** *partly met.* The extraction report exists, runs over both formats, and gives a
+number that can shrink. The other half of the gate — a Pharo kernel class that uses weak
+references, pragmas and a trait, loading and passing its own SUnit tests — **cannot be
+claimed, because no Pharo source is vendored under `pharo/` yet.** Every mechanism it needs
+is now in place and tested against hand-written equivalents in `lib/Probe/`; what is missing
+is a provenance decision, not code. See *Before F can be closed* below.
+
+#### Before F can be closed: a decision that is not a coding decision
+
+Every mechanism F was about now exists and is tested — weak references, pragmas as objects,
+slots, immediates, traits, and the primitive report. All of it is exercised against
+hand-written Tonel in `lib/`, which proves the mechanisms work but proves nothing about
+Pharo, because **no Pharo source is vendored under `pharo/` yet.**
+
+That is deliberate, and it is not something to do unilaterally. Importing Pharo means:
+
+- **Licensing.** Pharo is MIT with parts under Apache-2.0. Every imported file keeps its
+  notice, and each package needs a `PROVENANCE.md` recording the upstream repository, the
+  commit SHA, the license, and every local edit — otherwise "how far have we drifted"
+  stops having a mechanical answer, which is the property the whole `sources/`-is-frozen
+  discipline exists to protect.
+- **Scope.** Which packages, at which Pharo version. The ratchet's Tier 1 is the natural
+  first import (SUnit first, since it turns "did the port work" from a judgement into a
+  green bar), but that is a choice about what this project is, not a technical detail.
+- **Size.** Pharo's kernel is a large body of source to take into the repository, and it is
+  the point at which this stops being a Smalltalk-80 with extensions.
+
+Until that decision is made, F's second gate stays unclaimed and the phase is honestly
+described as *mechanisms done, corpus absent*. Running `st80 -primitives -profile <p>` over
+a vendored Pharo package is the first thing to do the day it lands: it turns the port into
+a number on day one.
 
 ### G — Kernel protocol and the first ratchet turns
 `Object` protocol (`displayString`, `printNl`, `ifNil:`, `assert:`), Collection protocol

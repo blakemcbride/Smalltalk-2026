@@ -1310,6 +1310,10 @@ apply_pragma(st_compiler *c, const char *selector,
             return;
         }
         c->out->primitive = 117;
+        snprintf(c->out->primitive_name, sizeof c->out->primitive_name,
+                 "%.63s", args[0].text);
+        snprintf(c->out->primitive_module, sizeof c->out->primitive_module,
+                 "%.63s", args[1].text);
         return;
     }
     /*

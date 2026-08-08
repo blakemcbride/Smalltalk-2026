@@ -82,6 +82,9 @@ usage(const char *argv0)
     printf("  -inspect <image> <oop>  describe one object (oop in hex)\n");
     printf("  -disasm <image> <Class> <selector>   dump a method's bytecodes\n");
     printf("  -syntax <f.st...>     compile every method and report failures\n");
+    printf("  -primitives <f.st...> every primitive that source asks the VM "
+           "for\n");
+    printf("        both of the above also take -profile <p.profile>\n");
     printf("  -help                 this message\n");
     printf("\n");
     printf("  ST_EVAL_TRACE=1       trace the bytecodes an -eval runs\n");
@@ -1046,17 +1049,75 @@ do_inspect(const char *path, const char *oop_text)
 }
 
 
+/*
+ *  Feed a survey from the command line: named files, and "-profile p" for
+ *  everything a profile names.
+ *
+ *  A profile is the unit in which this system says what an image is made
+ *  of, so it is the unit both of these reports want to be asked about.
+ *  Answers 0 if a profile could not be read.
+ */
+static int
+survey_arguments(st_survey *survey, int argc, char **argv)
+{
+    int     i;
+
+    for (i = 0; i < argc; ++i) {
+        st_names    expanded;
+        int        *expanded_dialects = NULL;
+        char        err[512];
+        unsigned    k;
+
+        if (strcmp(argv[i], "-profile") != 0 || i + 1 >= argc) {
+            SURVEY_file(survey, argv[i]);
+            continue;
+        }
+        if (!PROFILE_expand(argv[++i], &expanded, &expanded_dialects,
+                            err, sizeof err)) {
+            fprintf(stderr, "st80: %s\n", err);
+            return 0;
+        }
+        for (k = 0; k < expanded.count; ++k)
+            SURVEY_file(survey, expanded.items[k]);
+        SRC_names_free(&expanded);
+        free(expanded_dialects);
+    }
+    return 1;
+}
+
 static int
 do_syntax(int argc, char **argv)
 {
     st_survey   survey;
-    int         i;
 
     SURVEY_init(&survey);
-    for (i = 0; i < argc; ++i)
-        SURVEY_file(&survey, argv[i]);
+    if (!survey_arguments(&survey, argc, argv))
+        return 1;
     SURVEY_report(&survey, stdout);
     return (survey.failed || survey.unreadable) ? 1 : 0;
+}
+
+/*
+ *  Which primitives a body of source asks the VM for.
+ *
+ *  The port's finite question.  Source names primitives by number, the
+ *  numbers are enumerable, and what is left after the ones this VM answers
+ *  is the work -- so this converts "will Pharo's kernel run here" from a
+ *  judgement into a list that gets shorter.
+ *
+ *  It exits 0 whatever it finds: an unimplemented primitive is the report's
+ *  subject, not its failure.
+ */
+static int
+do_primitives(int argc, char **argv)
+{
+    st_survey   survey;
+
+    SURVEY_init(&survey);
+    if (!survey_arguments(&survey, argc, argv))
+        return 1;
+    SURVEY_primitive_report(&survey, stdout);
+    return survey.unreadable ? 1 : 0;
 }
 
 
@@ -1164,6 +1225,8 @@ main(int argc, char **argv)
         }
         if (!strcmp(argv[i], "-syntax") && i + 1 < argc)
             return do_syntax(argc - i - 1, argv + i + 1);
+        if (!strcmp(argv[i], "-primitives") && i + 1 < argc)
+            return do_primitives(argc - i - 1, argv + i + 1);
         if (!strcmp(argv[i], "-census") && i + 1 < argc)
             return do_census(argv[i + 1]);
         if (!strcmp(argv[i], "-classes") && i + 1 < argc)

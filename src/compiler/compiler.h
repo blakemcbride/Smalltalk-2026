@@ -139,6 +139,14 @@ typedef struct {
     unsigned    argument_count;
     unsigned    temporary_count;
     unsigned    primitive;
+    /*
+     *  For a named primitive -- <primitive: 'fn' module: 'Mod'> -- the two
+     *  strings, which primitive 117 alone does not tell you.  A report on
+     *  what a body of source asks the VM for is worth very little if every
+     *  module callout in it is spelled "117".
+     */
+    char        primitive_name[64];
+    char        primitive_module[64];
     int         needs_large_context;
     char        selector[256];
     char        error[256];

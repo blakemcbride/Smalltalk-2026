@@ -38,6 +38,33 @@ int     ST_primitive_dispatch(unsigned index);
  */
 int     ST_special_selector_primitive(uint8_t code);
 
+/*
+ *  ----------  What this VM actually implements  ----------
+ *
+ *  A porting effort's first question about a body of Smalltalk source is
+ *  which primitives it names that this VM does not answer, and that
+ *  question is only useful if the answer distinguishes four cases rather
+ *  than two.  A primitive that is ACCEPTED and does nothing is not the same
+ *  as one that is implemented: the image's fallback code never runs, so a
+ *  method relying on the effect fails silently instead of loudly.  And a
+ *  primitive that is deliberately absent -- 198 and 199 are LABELS, read by
+ *  a walk up the sender chain, and would break the exception system if they
+ *  ever started succeeding -- must never appear on a list of things to go
+ *  and implement.
+ */
+typedef enum {
+    ST_PRIM_ABSENT = 0,     /*  not implemented; the method body runs      */
+    ST_PRIM_PRESENT,        /*  implemented                                */
+    ST_PRIM_ACCEPTED,       /*  succeeds and does nothing                  */
+    ST_PRIM_TAG             /*  must fail: it is a mark, not an operation  */
+} st_primitive_status;
+
+/*
+ *  What this VM does with a primitive number.  `name` is filled with a
+ *  short description when it is not NULL, and left alone for ST_PRIM_ABSENT.
+ */
+st_primitive_status ST_primitive_status_of(unsigned index, const char **name);
+
 /*  Report a non-boolean where the compiler guaranteed one.  */
 void    ST_must_be_boolean(st_oop value);
 
