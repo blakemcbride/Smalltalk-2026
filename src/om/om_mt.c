@@ -19,6 +19,7 @@ st_atomic_uint   st_om_table_limit;
 
 uint32_t     st_om_collections;
 uint32_t     st_om_reclaimed;
+uint32_t     st_om_weak_cleared;
 
 static uint32_t     free_head;          /*  index chain through class_oop  */
 
@@ -229,6 +230,36 @@ OM_instantiate_pointers(st_oop class_pointer, uint32_t size)
         OM_increase_ref(ST_NIL);
     }
     return p;
+}
+
+/*
+ *  A weak object: the indexed fields past `fixed` are not traced.
+ *
+ *  `fixed` is remembered in the header's spare bits rather than looked up
+ *  from the class at collection time, because the collector runs at a
+ *  safepoint over the raw table and asking a class for its shape there
+ *  would mean following pointers it is in the middle of recounting.
+ */
+st_oop
+OM_instantiate_weak(st_oop class_pointer, uint32_t size, uint32_t fixed)
+{
+    st_oop      p = OM_instantiate_pointers(class_pointer, size);
+    om_header  *head;
+
+    if (p == ST_OOP_INVALID)
+        return p;
+    head = OM_head(p);
+    head->flags |= ST_FMT_WEAK;
+    /*  Up to 63 named fields ahead of the weak part, which is ample.  */
+    head->flags |= (fixed & 0x3F) << 16;
+    return p;
+}
+
+/*  How many fields at the front of a weak object are still strong.  */
+static uint32_t
+weak_fixed_fields(const om_header *head)
+{
+    return (head->flags >> 16) & 0x3F;
 }
 
 st_oop
@@ -537,8 +568,59 @@ collect_at_safepoint(void *unused)
         }
         if (!(head->flags & ST_FMT_POINTERS))
             continue;
+        if (head->flags & ST_FMT_WEAK) {
+            /*
+             *  A weak object's indexed fields are deliberately not visited.
+             *  That is the whole mechanism: what only a weak reference
+             *  points at ends the walk with a count of zero and is
+             *  collected, and the reference is nilled below.
+             */
+            uint32_t    fixed = weak_fixed_fields(head);
+
+            for (i = 0; i < fixed && i < head->size; ++i)
+                mark_visit(ST_oop_load(&((st_oop *) (head + 1))[i]));
+            continue;
+        }
         for (i = 0; i < head->size; ++i)
             mark_visit(ST_oop_load(&((st_oop *) (head + 1))[i]));
+    }
+
+    /*
+     *  Nil the weak references to things that did not survive.
+     *
+     *  Between the walk and the sweep, which is the only moment both facts
+     *  are available: every count is exact, and nothing has been freed yet,
+     *  so a dead target can still be recognised by its zero count rather
+     *  than by reading memory that has been handed back.
+     */
+    for (index = 1; index < (uint32_t) ST_load_relaxed(&st_om_table_limit);
+         ++index) {
+        om_header  *head = OM_table_get(index);
+        st_oop     *slots;
+        uint32_t    fixed;
+        uint32_t    i;
+
+        if (!head || (head->flags & ST_FMT_FREE)
+         || !(head->flags & ST_FMT_WEAK))
+            continue;
+        if (ST_load_relaxed(&head->refcount) == 0)
+            continue;               /*  the weak object is itself dying  */
+        slots = (st_oop *) (head + 1);
+        fixed = weak_fixed_fields(head);
+        for (i = fixed; i < head->size; ++i) {
+            st_oop      target = ST_oop_load(&slots[i]);
+            om_header  *th;
+
+            if (!OM_is_object(target))
+                continue;
+            th = OM_head(target);
+            if (!th || (th->flags & ST_FMT_FREE)
+             || ST_load_relaxed(&th->refcount) != 0)
+                continue;
+            ST_oop_store(&slots[i], ST_NIL);
+            OM_increase_ref(ST_NIL);
+            ++st_om_weak_cleared;
+        }
     }
 
     for (index = 1; index < (uint32_t) ST_load_relaxed(&st_om_table_limit); ++index) {

@@ -46,7 +46,7 @@ typedef struct {
     char        ivars[512];
     char        class_ivars[512];
     char        cvars[512];
-    int         indexable, bytes, words;
+    int         indexable, bytes, words, weak;
     char        unsupported[64];
     char        traits[128];
 } rec_class;
@@ -95,6 +95,7 @@ rec_class_def(const st_source_class_def *def, void *user)
     c->indexable = def->indexable;
     c->bytes     = def->bytes;
     c->words     = def->words;
+    c->weak      = def->weak;
     snprintf(c->unsupported, sizeof c->unsupported, "%s",
              def->unsupported_shape ? def->unsupported_shape : "");
     snprintf(c->traits, sizeof c->traits, "%s",
@@ -420,11 +421,31 @@ test_shapes_we_cannot_build_are_reported(void)
     if (r.class_count)
         CHECK_EQ_STR(r.classes[0].unsupported, "immediate");
 
+    /*
+     *  Weak is built now rather than refused: indexed, with the collector
+     *  not following the indexed part.
+     */
     CHECK(read_text("weak.class.st",
         "Class { #name : 'W', #superclass : 'Object', #type : 'weak' }\n",
         &r, error, sizeof error));
+    if (r.class_count) {
+        CHECK_EQ_STR(r.classes[0].unsupported, "");
+        CHECK_EQ_INT(r.classes[0].indexable, 1);
+        CHECK_EQ_INT(r.classes[0].weak, 1);
+    }
+
+    /*
+     *  An ephemeron still is not.  It is not a weak object with another
+     *  name: its key is weak while its value stays strong for as long as
+     *  the key lives, and deciding that needs the marker to run to a fixed
+     *  point rather than once -- a different collector, not a different
+     *  flag.
+     */
+    CHECK(read_text("eph.class.st",
+        "Class { #name : 'E', #superclass : 'Object', #type : 'ephemeron' }\n",
+        &r, error, sizeof error));
     if (r.class_count)
-        CHECK_EQ_STR(r.classes[0].unsupported, "weak");
+        CHECK_EQ_STR(r.classes[0].unsupported, "ephemeron");
 
     /*  The shapes we CAN build map onto the Blue Book subclass forms.  */
     CHECK(read_text("var.class.st",

@@ -41,9 +41,14 @@
 #define BLUEBOOK_CLASSES        226
 #define BLUEBOOK_METHODS        4521
 #define BLUEBOOK_CATEGORIES     41
-#define LIB_CLASSES             7       /*  BlockClosure, the exceptions,
+#define LIB_CLASSES             8       /*  BlockClosure, the exceptions,
                                             and the Unwind fixture         */
-#define LIB_METHODS             88
+#define LIB_METHODS             94
+/*
+ *  Three, not five: the extension packages define no CLASSES, and a
+ *  category is a property of a class definition.  Kernel-Methods-Fixes and
+ *  System-Runtime only add methods to classes that already exist.
+ */
 #define LIB_CATEGORIES          3       /*  Kernel-Closures, -Exceptions,
                                             Probe-Core                     */
 #define MAX_SOURCES 512
@@ -84,6 +89,8 @@ load_manifest(void)
     {
         static const char *const ours[] = {
             "lib/Kernel/BlockClosure.class.st",
+            "lib/Kernel/WeakArray.class.st",
+            "lib/System/SystemDictionary.extension.st",
             "lib/Kernel-Exceptions/Exception.class.st",
             "lib/Kernel-Exceptions/Error.class.st",
             "lib/Kernel-Exceptions/Warning.class.st",
@@ -615,6 +622,55 @@ test_exceptions(void)
      */
     check_oop("[Unwind escapingBlock value] on: Error do: [:e | true]",
               ST_TRUE, "true");
+
+    test_dialect = ST_DIALECT_BLUE_BOOK;
+}
+
+/*
+ *  Weak references, and a collection that can be asked for.
+ *
+ *  The 1983 library has no garbageCollect anywhere in it -- the image
+ *  simply cannot ask -- which is livable until weak references exist and
+ *  then is not, because a weak slot is cleared BY a collection and there
+ *  was no way to observe the mechanism at all.
+ *
+ *  Asking for one immediately found something worse.  ST_interp_register is
+ *  called from ST_interp_init, which the -run path calls and the doIt path
+ *  does not, so the collector walked an interpreter table with nothing in
+ *  it and freed the running doIt's own context and method -- and the
+ *  interpreter carried on reading bytecodes out of memory that had been
+ *  handed back.  It stayed hidden because nothing could request a
+ *  collection, and an automatic one only happens when the table fills.
+ */
+static void
+test_weak_references(void)
+{
+    test_dialect = ST_DIALECT_CLOSURES;
+
+    /*  A collection in the middle of a doIt, which used to be a crash.  */
+    check_integer("| w | w := WeakArray new: 3. Smalltalk garbageCollect. "
+                  "^w size", 3);
+    check_integer("| a | a := Array new: 4. Smalltalk garbageCollect. "
+                  "a at: 1 put: 7. ^a at: 1", 7);
+
+    /*
+     *  The object is made inside a method that has returned, so nothing but
+     *  the weak slot holds it.  Doing it inline would not test anything:
+     *  the doIt's own stack slot above its stack pointer still names the
+     *  object, and the collector walks every slot of a context rather than
+     *  only the live ones.
+     */
+    check_integer("| w | w := WeakArray new: 3. Unwind fillWeakly: w. "
+                  "^w livingCount", 1);
+    check_integer("| w | w := WeakArray new: 3. Unwind fillWeakly: w. "
+                  "Smalltalk garbageCollect. ^w livingCount", 0);
+    /*  And a strong reference elsewhere keeps it.  */
+    check_integer("| w a | w := WeakArray new: 3. a := Array new: 1. "
+                  "Unwind fillWeakly: w. a at: 1 put: (w at: 1). "
+                  "Smalltalk garbageCollect. ^w livingCount", 1);
+
+    /*  The named fields of a weak class stay strong; only indexed ones go. */
+    check_oop("(WeakArray new: 2) class == WeakArray", ST_TRUE, "true");
 
     test_dialect = ST_DIALECT_BLUE_BOOK;
 }
@@ -1359,7 +1415,7 @@ test_browsing(void)
      *  zero -- which a CompiledMethod reads as "no source at all".  See
      *  test_every_method_can_find_its_source.
      */
-    check_integer("(SourceFiles at: 1) contents size", 1217517);
+    check_integer("(SourceFiles at: 1) contents size", 1218182);
 }
 
 /*
@@ -2202,6 +2258,7 @@ main(void)
     test_closures();
     test_exceptions();
     test_a_restarted_frame_counts_its_arguments_once();
+    test_weak_references();
 
     OM_shutdown();
     return ST_TEST_END();

@@ -320,13 +320,25 @@ apply_type(const char *type, st_source_class_def *def)
     }  else if (strcmp(type, "words") == 0) {
         def->indexable = 1;
         def->words     = 1;
+    }  else if (strcmp(type, "weak") == 0) {
+        /*
+         *  A weak class: indexed, and the collector does not follow those
+         *  indexed fields.  The named ones at the front stay strong.
+         */
+        def->indexable = 1;
+        def->weak      = 1;
     }  else if (strcmp(type, "normal") != 0) {
         /*
-         *  immediate, weak, ephemeron, compiledMethod.  Every one needs
-         *  object-memory support this system does not have, and building
-         *  the class as an ordinary one would be worse than refusing: it
-         *  would load, and then behave differently in a way nothing
-         *  reported.
+         *  immediate, ephemeron, compiledMethod.  Each needs object-memory
+         *  support this system does not have, and building the class as an
+         *  ordinary one would be worse than refusing: it would load, and
+         *  then behave differently with nothing to say so.
+         *
+         *  An ephemeron is not merely a weak object with a different name.
+         *  Its key is weak but its value is strong FOR AS LONG AS the key
+         *  lives, which a single marking pass cannot decide -- it needs a
+         *  fixed point, and that is a different collector rather than a
+         *  different flag.
          */
         def->unsupported_shape = type;
     }

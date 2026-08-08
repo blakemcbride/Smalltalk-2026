@@ -388,13 +388,36 @@ accepted in either order and any number of times**. The Blue Book puts temporari
 and has one pragma; Pharo writes the pragma first at least as often, and a reader that
 insists on one order rejects ordinary source for a reason that is about nothing.
 
-### F — The Pharo object model
+### F — The Pharo object model *(F1 done: weak references)*
 This is what "load Pharo's kernel" costs, and it is the phase most likely to be revised
 in contact.
 
-- **Weak references and ephemerons.** A weak class flag; the marker does not follow weak
-  slots; after marking, dead weak slots are nilled and finalization is queued. Bounded, and
-  our mark-and-recount collector at a safepoint is a friendly place to add it.
+- **Weak references — done.** Bit 12 of the class format word, which the Blue Book leaves
+  free between the indexable flag and the instance size, so a weak class is an ordinary
+  class to everything that does not ask. The marker skips a weak object's *indexed* fields
+  and keeps its named ones strong; between the mark and the sweep — the only moment when
+  every count is exact and nothing has been freed yet — a slot pointing at a zero-count
+  object is nilled. `WeakArray` is in `lib/Kernel/`.
+
+  **Ephemerons are still refused, by name.** An ephemeron is not a weak object with another
+  name: its key is weak while its value stays strong *for as long as the key lives*, and
+  deciding that needs the marker to run to a fixed point rather than once. That is a
+  different collector, not a different flag.
+
+  Two things had to be built before weakness could even be observed, and both were bugs.
+  The 1983 library has **no `garbageCollect` anywhere in it** — the image cannot ask for a
+  collection, so a weak slot could never be seen to clear. And asking for one found that
+  **a collection during a doIt freed the doIt**: `ST_interp_register` is called from
+  `ST_interp_init`, which the `-run` path calls and the doIt path does not, so the collector
+  walked an empty interpreter table and the interpreter carried on reading bytecodes out of
+  freed memory. `provide_roots` now visits the running thread unconditionally, which is the
+  half a future caller cannot forget.
+
+  **Known limitation:** the marker walks every slot of a context, not only those below its
+  stack pointer, so a stale slot in a *running* frame keeps its object alive and defeats a
+  weak reference made in that same frame. Making it precise needs every parked worker to
+  write its registers back at the safepoint first — worth doing, and a separate change with
+  its own risk.
 - **Slots.** Support plain `#instVars` (which is what most of Pharo's kernel uses) and
   `#slots : [...]` where every entry is a plain slot. Reject indexed/weak/custom slot types
   with a named report. Full `Slot>>read:`/`write:to:` indirection would mean rewriting

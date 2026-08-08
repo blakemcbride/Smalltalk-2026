@@ -346,6 +346,13 @@ OM_store_byte(uint32_t byte_index, st_oop p, uint8_t v)
  *      ..._bytes       byte-indexable; size is in bytes, zeroed
  */
 st_oop  OM_instantiate_pointers(st_oop class_pointer, uint32_t size);
+/*
+ *  Weak objects, which the Blue Book memory does not have.  Answers an
+ *  ordinary object: this memory exists to reproduce the 1983 traces, and
+ *  1983 has no weak references to reproduce.
+ */
+#define OM_instantiate_weak(cls, size, fixed) OM_instantiate_pointers((cls), (size))
+#define OM_weak_bit(p)  0u
 st_oop  OM_instantiate_words(st_oop class_pointer, uint32_t size);
 st_oop  OM_instantiate_bytes(st_oop class_pointer, uint32_t size);
 

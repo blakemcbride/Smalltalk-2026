@@ -100,6 +100,13 @@ typedef int64_t     st_int;
 #define ST_FMT_BYTES        0x0004  /*  fields are bytes            */
 #define ST_FMT_MARKED       0x0100  /*  collector mark bit          */
 #define ST_FMT_FREE         0x0200  /*  table entry is unused       */
+/*
+ *  Weak: the collector does not follow this object's INDEXED fields, and
+ *  nils any of them that nothing else keeps alive.  The named fields at the
+ *  front stay strong, which is the Squeak arrangement and the useful one --
+ *  a WeakArray's own instance variables are not the point of it.
+ */
+#define ST_FMT_WEAK         0x0400
 
 typedef struct {
     st_oop          class_oop;
@@ -232,6 +239,12 @@ OM_pointer_bit(st_oop p)
 }
 
 static inline unsigned
+OM_weak_bit(st_oop p)
+{
+    return (OM_head(p)->flags & ST_FMT_WEAK) ? 1u : 0u;
+}
+
+static inline unsigned
 OM_free_bit(st_oop p)
 {
     return (OM_head(p)->flags & ST_FMT_FREE) ? 1u : 0u;
@@ -347,6 +360,9 @@ void    OM_store_pointer(uint32_t field, st_oop p, st_oop value);
 void    OM_deallocate(st_oop p);
 
 st_oop  OM_instantiate_pointers(st_oop class_pointer, uint32_t size);
+/*  As above, but the indexed fields past `fixed` are weak.  */
+st_oop  OM_instantiate_weak(st_oop class_pointer, uint32_t size,
+                            uint32_t fixed);
 st_oop  OM_instantiate_words(st_oop class_pointer, uint32_t size);
 st_oop  OM_instantiate_bytes(st_oop class_pointer, uint32_t size);
 
@@ -383,6 +399,8 @@ st_oop  OM_next_instance_after(st_oop after, st_oop class_oop);
 
 extern uint32_t st_om_collections;
 extern uint32_t st_om_reclaimed;
+/*  How many weak references have been nilled, over the run.  */
+extern uint32_t st_om_weak_cleared;
 
 /*  Set once the fixed objects are in place, so the collector can start.  */
 int     OM_image_load(const char *path, char *errbuf, size_t errlen);

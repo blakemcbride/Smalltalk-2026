@@ -75,6 +75,14 @@ Unwind class >> contextTakingTwoArgs: a and: b [
 ]
 
 { #category : 'cases' }
+Unwind class >> fillWeakly: aWeakArray [
+	"Make something and put it only in a weak slot.  The object is created
+	 in THIS frame, which has returned by the time anybody collects, so
+	 nothing but the weak reference is left holding it."
+	aWeakArray at: 1 put: Object new
+]
+
+{ #category : 'cases' }
 Unwind class >> curtailedNormally [
 	"ifCurtailed: runs its block only when the receiver does NOT finish."
 	[self note: #body] ifCurtailed: [self note: #curtailed].

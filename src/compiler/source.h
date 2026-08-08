@@ -68,6 +68,7 @@ typedef struct {
     int         indexable;
     int         bytes;              /*  byte-indexable rather than pointer  */
     int         words;
+    int         weak;               /*  the indexed fields are weak  */
 
     /*
      *  Set by formats that can express them, so the sink can refuse with a

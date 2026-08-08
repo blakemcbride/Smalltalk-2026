@@ -364,6 +364,7 @@ typedef struct {
     int         pointers;
     int         words;          /*  word-indexable, as opposed to bytes  */
     int         indexable;
+    int         weak;
     uint32_t    fixed;
 } om_shape;
 
@@ -382,6 +383,8 @@ shape_of_class(st_oop cls)
     shape.pointers  = (format >> 15) & 1;
     shape.words     = !shape.pointers && ((format >> 14) & 1);
     shape.indexable = (format >> 13) & 1;
+    /*  Bit 12: the collector does not follow this class's indexed fields. */
+    shape.weak      = (format >> 12) & 1;
     shape.fixed     = (uint32_t) ((format >> 1) & 0x7FF);
     return shape;
 }
@@ -592,7 +595,9 @@ primitive_new_with_arg(void)
     shape = shape_of_class(cls);
     if (!shape.indexable)
         return 0;
-    if (shape.pointers)
+    if (shape.pointers && shape.weak)
+        instance = OM_instantiate_weak(cls, shape.fixed + count, shape.fixed);
+    else if (shape.pointers)
         instance = OM_instantiate_pointers(cls, shape.fixed + count);
     else if (shape.words)
         instance = OM_instantiate_words(cls, count);
@@ -763,6 +768,29 @@ copy_block_for_activation(st_oop block)
  *  aliases here, since a process switch is decided once per bytecode rather
  *  than at a send, so there is nothing to suppress.
  */
+/*
+ *  250: a full collection, on request.
+ *
+ *  The 1983 library has no way to ask for one -- there is no
+ *  garbageCollect anywhere in it -- which among other things means a weak
+ *  reference can never be OBSERVED to let go from inside the image, and so
+ *  cannot be tested there either.
+ *
+ *  Squeak's number for this is 130 and it is not available: PosixFile
+ *  declares 130 and PosixFileDirectory declares 131 in this very library.
+ *  Neither is implemented, so both fail today and their Smalltalk bodies
+ *  run; taking the number would make a file method quietly collect garbage
+ *  instead, which is the kind of silent difference this system spends most
+ *  of its comments avoiding.  250 is in the block reserved for this
+ *  system's own primitives.
+ */
+static int
+primitive_full_collect(void)
+{
+    OM_collect();
+    return 1;                       /*  answers the receiver  */
+}
+
 /*
  *  248: Object>>primitiveReportOnStandardError: aString
  *
@@ -1665,6 +1693,7 @@ ST_primitive_dispatch(unsigned index)
     case 246: return primitive_context_return();
     case 248: return primitive_report_on_standard_error();
     case 249: return primitive_context_restart();
+    case 250: return primitive_full_collect();
     case 247: return primitive_context_resume();
 
     /*

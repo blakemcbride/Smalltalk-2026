@@ -309,6 +309,23 @@ provide_roots(om_visit_fn visit)
         if (vm)
             visit(vm->active_context);
     }
+    /*
+     *  And this thread's, registered or not.
+     *
+     *  Registration happens in ST_interp_init, which the -run path calls
+     *  and the -eval path does not -- so a collection during a doIt walked
+     *  a table with nothing in it and freed the doIt's own context and
+     *  method, and the interpreter carried on reading bytecodes out of
+     *  memory that had been handed back.  It stayed hidden because nothing
+     *  could ASK for a collection from Smalltalk until weak references
+     *  needed one, and an automatic collection only happens when the table
+     *  fills.
+     *
+     *  Registering in the right places is the other half and is done; this
+     *  is the half that cannot be forgotten by a future caller, because the
+     *  thread doing the collecting is always the thread that is running.
+     */
+    visit(st_vm.active_context);
     visit(GFX_display_form());
     visit(SCHED_input_semaphore());
     visit(SCHED_pending_process());

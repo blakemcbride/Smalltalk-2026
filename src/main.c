@@ -575,6 +575,13 @@ evaluate(const char *expression, char *errbuf, size_t errlen)
                      OM_int_oop((st_int) ST_header_temporary_count(
                                     OM_fetch_pointer(0, method))));
 
+    /*
+     *  This thread is about to interpret, so the collector has to be able
+     *  to see its stack.  provide_roots also visits the running thread
+     *  unconditionally; both are cheap and only one of them can be
+     *  forgotten.
+     */
+    ST_interp_register();
     memset(&st_vm, 0, sizeof st_vm);
     st_vm.active_context = ST_NIL;
     ST_set_active_context(context);
