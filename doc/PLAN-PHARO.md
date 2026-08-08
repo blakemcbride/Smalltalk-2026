@@ -547,7 +547,7 @@ described as *mechanisms done, corpus absent*. Running `st80 -primitives -profil
 a vendored Pharo package is the first thing to do the day it lands: it turns the port into
 a number on day one.
 
-### G — Kernel protocol and the first ratchet turns *(G1–G4 done; SUnit remains)*
+### G — Kernel protocol and the first ratchet turns *(done, less the Pharo corpus)*
 
 Four new packages in `lib/`: `Kernel-Protocol`, `Collections-Protocol`, `Streams-Protocol`,
 `Strings-Protocol`. Roughly 120 methods, all extensions — `sources/` is untouched, as always.
@@ -605,14 +605,51 @@ which would have bitten the first person to port anything:
 trace2 and trace3 stayed byte-identical through the compiler change, which is the only
 evidence that would have been worth anything.
 
-Then begin the ratchet: SUnit first — it converts "did the port work" from a judgement call
-into a green bar — then STON, Announcements, Zinc-Character-Encoding, and the Tier 1 kernel
-packages.
+**SUnit — done, written here rather than imported**, since Pharo's is not vendored and SUnit
+is small enough that writing it is cheaper than the provenance decision. `TestCase`,
+`TestSuite`, `TestResult`, `TestFailure` in `lib/SUnit/`, with `lib/SUnit-Tests/` testing
+them — including a fixture whose tests **fail and blow up on purpose**, because a runner that
+quietly reports every failure as a pass is worse than no runner, and nothing but a deliberate
+failure catches that. `st80 -bootstrap … -tests` runs every test in the image and exits
+non-zero if any did not pass, which is what makes the ratchet a number a build script can
+read.
 
-**Gate:** a checked-in corpus of ~500 Pharo one-liners evaluates to the documented answers.
-Extract them mechanically from Pharo's own `>>>` doctest comments — `Collection.class.st`
-is full of them, they are machine-parseable, and they are a free oracle. SUnit's own suite
-passes.
+The distinction SUnit rests on is between a **failure** — the test worked and the answer was
+no — and an **error** — something nobody predicted broke. `TestFailure` is a subclass of
+`Error`, so telling them apart depends entirely on the order the two handlers are nested in
+`TestResult>>runCase:`; get it backwards and every failure is reported as an error, silently.
+
+**Writing it found two more things**, and the first is serious:
+
+- **`ensure:` did not run when an exception unwound past it.** `Exception>>return:` jumped
+  straight to the handler's frame and discarded everything in between without looking at it,
+  so `[[Error signal] ensure: [flag := true]] on: Error do: […]` answered the handler's value
+  and never set the flag. A file left open, a lock left held, and nothing to say so — the
+  exact failure mode `ensure:` exists to prevent, arriving through the one path nobody had
+  tested. `ensure:` on a *normal* return worked, and so did the non-local-return path through
+  `aboutToReturn:through:`, which is why it survived Phase E. The unwind walk now runs before
+  the jump in `return:`, `retry` and `retryUsing:`, and `runUnwindBlock` disarms itself so a
+  frame that more than one path passes through still runs its block exactly once.
+  SUnit found it as *"tearDown did not run after a failing test"*.
+- **The bootstrap never filled any class's `subclasses`.** `Behavior` has four instance
+  variables — `superclass methodDict format subclasses` — and only three were being written,
+  so `Object subclasses` answered an empty `Set` for every class in the image, and with it
+  `allSubclasses`, `withAllSubclasses`, and everything that walks *down* the hierarchy rather
+  than up. It answered **empty rather than failing**, which is why nothing had noticed: the
+  same shape as the method dictionaries that were filled where the image does not look. It is
+  wired now by sending `addSubclass:` rather than building `Set`s in C — Behavior's own method
+  makes the Set, checks the relationship and hashes the entry the way the image hashes it,
+  three things that would each have been a place to get it subtly wrong.
+
+Then the ratchet proper: STON, Announcements, Zinc-Character-Encoding, and the Tier 1 kernel
+packages — all of which wait on the same provenance decision Phase F's second gate does.
+
+**Gate:** *half met, and the same half as Phase F.* SUnit's own suite passes — 12 tests, and
+the whole image's suite is one command. The corpus of ~500 Pharo one-liners, extracted
+mechanically from Pharo's own `>>>` doctest comments, **cannot be built until Pharo source is
+vendored**; it remains the right oracle and the extractor is a small job the day it lands.
+What stands in for it now is the C suite, which grew from 439 checks to 516 over this phase,
+most of them one modern expression each.
 
 ### H — M:N scheduling and atomic semaphores
 Per-worker state in `struct st_worker` (`worker.h:57-75`): `active_process`, ready

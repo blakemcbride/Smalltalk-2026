@@ -84,6 +84,9 @@ usage(const char *argv0)
     printf("  -syntax <f.st...>     compile every method and report failures\n");
     printf("  -primitives <f.st...> every primitive that source asks the VM "
            "for\n");
+    printf("        -tests            with -bootstrap: run every SUnit test "
+           "and exit non-zero\n"
+           "                          if any did not pass\n");
     printf("        both of the above also take -profile <p.profile>\n");
     printf("  -help                 this message\n");
     printf("\n");
@@ -792,7 +795,8 @@ write_screenshot(void)
 
 static int
 do_bootstrap(const char *const *sources, const int *dialects, unsigned count,
-             const char *out_path, const char *expression, const char *startup)
+             const char *out_path, const char *expression, const char *startup,
+             int run_tests)
 {
     st_bootstrap_result result;
     char                err[512];
@@ -883,6 +887,27 @@ do_bootstrap(const char *const *sources, const int *dialects, unsigned count,
                                 " [ScheduledControllers"
                                 " searchForActiveController]"))
         fprintf(stderr, "st80: no startup process installed\n");
+
+    /*
+     *  Run every test in the image and answer through the exit code.
+     *
+     *  The point of SUnit here is to turn "did the port work" from a
+     *  judgement into a number, and that only pays off if a build script
+     *  can ask.  It runs before -eval so that a failing suite stops there
+     *  rather than going on to evaluate something in a broken image.
+     */
+    if (run_tests) {
+        st_oop  passed;
+
+        if (evaluate("TestCase allTests run report", err, sizeof err)
+                == ST_OOP_INVALID) {
+            fprintf(stderr, "st80: %s\n", err);
+            return 1;
+        }
+        passed = evaluate("TestCase allTests run hasPassed", err, sizeof err);
+        if (passed != ST_TRUE)
+            return 1;
+    }
 
     if (expression) {
         st_oop  value = evaluate(expression, err, sizeof err);
@@ -1237,6 +1262,7 @@ main(int argc, char **argv)
             path_list   sources;
             const char *out_path = NULL;
             const char *expression = NULL;
+            int         run_tests  = 0;
             const char *startup = NULL;
             int          j;
             int          status;
@@ -1253,6 +1279,8 @@ main(int argc, char **argv)
                     startup = argv[++j];
                 }  else if (!strcmp(argv[j], "-closures")) {
                     use_closures = 1;
+                }  else if (!strcmp(argv[j], "-tests")) {
+                    run_tests = 1;
                 }  else if (!strcmp(argv[j], "-screenshot") && j + 1 < argc) {
                     shot_path = argv[++j];
                 }  else if (!strcmp(argv[j], "-manifest") && j + 1 < argc) {
@@ -1309,7 +1337,7 @@ main(int argc, char **argv)
             }
             status = do_bootstrap((const char *const *) sources.items,
                                   dialects.items, sources.count, out_path,
-                                  expression, startup);
+                                  expression, startup, run_tests);
             path_list_free(&sources);
             free(dialects.items);
             return status;

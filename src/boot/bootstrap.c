@@ -3530,6 +3530,63 @@ install_user_interface(void)
 }
 
 /*
+ *  Wire the subclass graph.
+ *
+ *  Behavior has four instance variables -- superclass, methodDict, format,
+ *  subclasses -- and the bootstrap filled the first three.  The fourth was
+ *  left nil for every class in the image, so "Object subclasses" answered
+ *  an empty Set, and with it allSubclasses, withAllSubclasses, and every
+ *  piece of reflection that walks DOWN the hierarchy rather than up.
+ *
+ *  It is the same shape as the method-dictionary bug: the image looks
+ *  somewhere the bootstrap never filled, and answers something empty rather
+ *  than failing.  "TestCase allSubclasses" answering nothing at all, in an
+ *  image with three TestCase subclasses in it, is what found this.
+ *
+ *  Done by sending addSubclass:, not by building Sets in C.  Behavior's own
+ *  method makes the Set, checks the relationship, and hashes the entry the
+ *  way the image hashes it -- three things that would each have to be
+ *  reproduced here, and would each be a place to get it subtly wrong.
+ */
+static int
+install_subclass_graph(void)
+{
+    st_oop      behavior = BOOT_global("Behavior");
+    st_oop      add;
+    unsigned    i;
+
+    if (!OM_is_present(behavior))
+        return 1;
+    add = lookup_in_chain(behavior, "addSubclass:");
+    if (!OM_is_present(add))
+        return 1;
+
+    for (i = 0; i < class_count; ++i) {
+        boot_class *c = &classes[i];
+        boot_class *super;
+        st_oop      args[1];
+
+        if (!OM_is_present(c->class_oop))
+            continue;
+        super = superclass_of(c);
+        if (!super || !OM_is_present(super->class_oop))
+            continue;
+        args[0] = c->class_oop;
+        run_method_with(add, super->class_oop, args, 1, 2000000);
+        /*
+         *  And the metaclass side, which has its own parallel chain:
+         *  Foo class's superclass is Superclass class.
+         */
+        if (OM_is_present(c->metaclass_oop)
+         && OM_is_present(super->metaclass_oop)) {
+            args[0] = c->metaclass_oop;
+            run_method_with(add, super->metaclass_oop, args, 1, 2000000);
+        }
+    }
+    return 1;
+}
+
+/*
  *  Give every class an organization: its methods grouped by protocol.
  *
  *  The Browser's third pane lists them, and its fourth lists the selectors
@@ -4457,6 +4514,7 @@ BOOT_run_initializers(st_boot_init_report *out)
     run_class_initializers(out);
 
     install_user_interface();
+    install_subclass_graph();
     install_class_organization();
     install_sources();
     install_system_organization();

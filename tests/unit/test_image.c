@@ -42,16 +42,17 @@
 #define BLUEBOOK_CLASSES        226
 #define BLUEBOOK_METHODS        4521
 #define BLUEBOOK_CATEGORIES     41
-#define LIB_CLASSES             16       /*  BlockClosure, the exceptions,
-                                            and the Unwind fixture         */
-#define LIB_METHODS             242
+#define LIB_CLASSES             23       /*  BlockClosure, the exceptions,
+                                            SUnit, and the fixtures        */
+#define LIB_METHODS             311
 /*
  *  Three, not five: the extension packages define no CLASSES, and a
  *  category is a property of a class definition.  Kernel-Methods-Fixes and
  *  System-Runtime only add methods to classes that already exist.
  */
-#define LIB_CATEGORIES          4       /*  Kernel-Closures, -Exceptions,
-                                            -Pragmas, Probe-Core           */
+#define LIB_CATEGORIES          6       /*  Kernel-Closures, -Exceptions,
+                                            -Pragmas, Probe-Core, SUnit,
+                                            SUnit-Tests                    */
 #define MAX_SOURCES 512
 
 static char     paths[MAX_SOURCES][256];
@@ -132,6 +133,13 @@ load_manifest(void)
             "lib/Streams-Protocol/Symbol.extension.st",
             "lib/Streams-Protocol/Character.extension.st",
             "lib/Strings-Protocol/String.extension.st",
+            "lib/SUnit/TestFailure.class.st",
+            "lib/SUnit/TestResult.class.st",
+            "lib/SUnit/TestCase.class.st",
+            "lib/SUnit/TestSuite.class.st",
+            "lib/SUnit-Tests/SUnitTest.class.st",
+            "lib/SUnit-Tests/SUnitBrokenTest.class.st",
+            "lib/SUnit-Tests/SUnitReportingTest.class.st",
             "lib/Probe/Greeter.class.st",
             "lib/Probe/Initialized.class.st",
             "lib/Probe/SelfMade.class.st",
@@ -186,12 +194,15 @@ build_once(void)
     CHECK_EQ_INT(res.methods_flattened, 2);
     CHECK_EQ_INT(res.traits_rejected, 0);
     /*
-     *  Exactly one: Initialized.  Not Subinitialized, whose chain already
-     *  has one, and not SelfMade, which wrote its own.  A 1983 class never
-     *  qualifies -- the chunk files already say what they mean, and the
-     *  ~34 that want initialization write the idiom out by hand.
+     *  Three: Initialized, TestResult and TestSuite.  Not Subinitialized,
+     *  whose chain already has one, and not SelfMade, which wrote its own.
+     *  A 1983 class never qualifies -- the chunk files already say what
+     *  they mean, and the ~34 that want initialization write the idiom out
+     *  by hand.  SUnit is where the mechanism stops being a demonstration:
+     *  TestSuite new has to answer a suite with an empty collection in it,
+     *  and nothing in SUnit says so.
      */
-    CHECK_EQ_INT(res.news_synthesized, 1);
+    CHECK_EQ_INT(res.news_synthesized, 3);
     built = 1;
     return 1;
 }
@@ -1675,6 +1686,102 @@ test_modern_protocol(void)
                   " c := [t := t + 1. t]]. ^c value + c value", 13);
 }
 
+/*
+ *  SUnit, running its own tests.
+ *
+ *  This is the phase's real deliverable: it turns "did the port work" from
+ *  a judgement call into a number.  Everything above checks one expression
+ *  at a time from C; from here on a ported package can bring its own suite
+ *  and say so itself.
+ *
+ *  The suite is deliberately mixed.  SUnitTest is ordinary passing tests,
+ *  and SUnitReportingTest runs tests that FAIL and BLOW UP on purpose and
+ *  checks the result counted them in the right buckets -- because a runner
+ *  that quietly reports every failure as a pass is worse than no runner,
+ *  and nothing but a deliberate failure catches that.
+ *
+ *  The expressions run in the closure dialect, because the doIt has to
+ *  build the blocks SUnit's assertions take.
+ */
+static void
+test_sunit(void)
+{
+    int saved = test_dialect;
+
+    test_dialect = ST_DIALECT_CLOSURES;
+
+    /*  Every test of SUnit itself passes.  */
+    check_string("| s | s := TestSuite new. s addTestCase: SUnitTest."
+                 " s addTestCase: SUnitReportingTest. ^s run summary",
+                 "12 run, 12 passed, 0 failed, 0 errors");
+    check_boolean("| s | s := TestSuite new. s addTestCase: SUnitTest."
+                  " s addTestCase: SUnitReportingTest. ^s run hasPassed", 1);
+
+    /*
+     *  The subclass graph, which the bootstrap never filled.  Behavior has
+     *  four instance variables and only three of them were being written,
+     *  so "Object subclasses" answered an empty Set for every class in the
+     *  image -- and with it allSubclasses, withAllSubclasses, and anything
+     *  that walks DOWN the hierarchy rather than up.  It answered EMPTY
+     *  rather than failing, which is why nothing noticed: the same shape as
+     *  the method dictionaries that were filled where the image does not
+     *  look.  TestCase allSubclasses finding nothing, in an image with
+     *  three TestCase subclasses in it, is what found it.
+     */
+    check_boolean("Object subclasses size > 50", 1);
+    check_boolean("Collection subclasses includes: SequenceableCollection", 1);
+    check_boolean("Object subclasses includes: Collection", 1);
+    /*  The metaclass side has its own parallel chain and is wired too.  */
+    check_boolean("Object class subclasses includes: Collection class", 1);
+    check_string("(TestCase allSubclasses collect: [:c | c name])"
+                 " asSortedCollection asArray printString",
+                 "(SUnitBrokenTest SUnitReportingTest SUnitTest )");
+    /*
+     *  allTests leaves out the fixture whose tests are meant to go wrong.
+     *  A whole-image run that reported those would cry wolf every build.
+     */
+    check_integer("TestCase allTests tests size", 12);
+
+    /*
+     *  And the three buckets, from the outside as well as from within
+     *  SUnitReportingTest: a pass, a failed assertion, and something
+     *  nobody predicted, told apart.
+     */
+    check_string("SUnitBrokenTest suite run summary",
+                 "3 run, 1 passed, 1 failed, 1 errors");
+
+    /*
+     *  ensure: runs when an EXCEPTION unwinds past it, not only when a
+     *  block returns through it.  SUnit found this: tearDown did not run
+     *  after a failed test, because Exception>>return: jumped to the
+     *  handler's frame and threw away everything in between without
+     *  looking at it.  A file left open and a lock left held, with nothing
+     *  to say so.
+     */
+    check_integer("| f | f := 0."
+                  " [[Error new signal: 'boom'] ensure: [f := 1]]"
+                  " on: Error do: [:e | nil]. ^f", 1);
+    /*  Nested unwinds run innermost first...  */
+    check_string("| f | f := OrderedCollection new."
+                 " [[[Error signal] ensure: [f add: #inner]]"
+                 " ensure: [f add: #outer]] on: Error do: [:e | nil]."
+                 " ^f asArray printString", "(inner outer )");
+    /*  ...and exactly once, however many paths pass through the frame.  */
+    check_integer("| f | f := 0. [[Error signal] ensure: [f := f + 1]]"
+                  " on: Error do: [:e | nil]. ^f", 1);
+    /*  ifCurtailed: fires on the way out and not on a normal return.  */
+    check_integer("| f | f := 0. [[Error signal] ifCurtailed: [f := 1]]"
+                  " on: Error do: [:e | nil]. ^f", 1);
+    check_integer("| f | f := 0. [[7] ifCurtailed: [f := 1]] value. ^f", 0);
+    /*  retry discards the frames in between too, so each go unwinds.  */
+    check_string("| n f | n := 0. f := 0."
+                 " [[n := n + 1. n < 3 ifTrue: [Error signal]. n]"
+                 " ensure: [f := f + 1]] on: Error do: [:e | e retry]."
+                 " ^(Array with: n with: f) printString", "(3 3 )");
+
+    test_dialect = saved;
+}
+
 static void
 test_browsing(void)
 {
@@ -1711,7 +1818,7 @@ test_browsing(void)
      *  zero -- which a CompiledMethod reads as "no source at all".  See
      *  test_every_method_can_find_its_source.
      */
-    check_integer("(SourceFiles at: 1) contents size", 1235955);
+    check_integer("(SourceFiles at: 1) contents size", 1246332);
 }
 
 /*
@@ -2535,6 +2642,7 @@ main(void)
     test_processes();
     test_system_organization();
     test_modern_protocol();
+    test_sunit();
     test_browsing();
     test_browser();
     test_compile_inspect_debug();

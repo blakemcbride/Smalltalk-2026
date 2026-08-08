@@ -10,6 +10,6 @@ Profile {
 	#requires : [ 'bluebook' ],
 	#dialect  : 'closures',
 	#packages : [ '../lib/Kernel', '../lib/Kernel-Exceptions', '../lib/Kernel-Protocol', '../lib/Kernel-Methods', '../lib/Kernel-Pragmas', '../lib/Collections-Protocol', '../lib/Streams-Protocol',
-	              '../lib/Strings-Protocol', '../lib/System',
+	              '../lib/Strings-Protocol', '../lib/System', '../lib/SUnit', '../lib/SUnit-Tests',
 	              '../lib/Probe' ]
 }

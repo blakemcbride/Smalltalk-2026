@@ -137,9 +137,16 @@ ContextPart >> aboutToReturn: aResult through: firstUnwindContext [
 { #category : '*Kernel-Exceptions' }
 ContextPart >> runUnwindBlock [
 	"An ensure: frame keeps its unwind block in its FIRST temporary: it is
-	 the method's only argument, and a method's arguments come first."
+	 the method's only argument, and a method's arguments come first.
+
+	 It disarms itself, because more than one path can pass through the
+	 same frame on the way out -- an exception unwinding to a handler and
+	 then a non-local return through what is left -- and an ensure: block
+	 that ran twice would close the file twice.  Nilling the temporary is
+	 what the isNil guard above was always for."
 	| block |
 	block := self tempAt: 1.
 	block isNil ifTrue: [^nil].
+	self tempAt: 1 put: nil.
 	^block value
 ]

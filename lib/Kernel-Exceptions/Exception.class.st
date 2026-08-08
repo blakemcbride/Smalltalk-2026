@@ -129,9 +129,35 @@ Exception >> runHandler [
 
 { #category : 'handling' }
 Exception >> return: aValue [
-	"Answer aValue from the on:do: that caught me."
+	"Answer aValue from the on:do: that caught me.
+
+	 The unwind first.  Jumping to the handler's frame throws away every
+	 frame between it and the signal, and some of those may be ensure: or
+	 ifCurtailed: frames whose whole purpose is to run something on the way
+	 out.  Without this line
+
+	     [[Error signal] ensure: [flag := true]] on: Error do: [:e | 'caught']
+
+	 answers 'caught' and never sets the flag -- the file is left open, the
+	 lock is left held, and nothing says so.  That is the failure mode
+	 ensure: exists to prevent, arriving through the one path nobody
+	 tested."
 	handlerContext isNil ifTrue: [^aValue].
+	self unwindTo: handlerContext.
 	^handlerContext return: aValue
+]
+
+{ #category : 'private' }
+Exception >> unwindTo: aContext [
+	"Run every unwind action between the signal and aContext, innermost
+	 first -- there may be several nested, and each one's ensure: block
+	 has to run before the frames outside it are discarded."
+	| unwind |
+	signalContext isNil ifTrue: [^self].
+	unwind := signalContext findNextUnwindUpTo: aContext.
+	[unwind isNil] whileFalse: [
+		unwind runUnwindBlock.
+		unwind := unwind findNextUnwindUpTo: aContext]
 ]
 
 { #category : 'handling' }
@@ -149,6 +175,8 @@ Exception >> retry [
 	 with a core dump.  Restarting reuses the frame and can go round for
 	 ever, which is what a retry that never succeeds should do."
 	handlerContext isNil ifTrue: [^self return: nil].
+	"Same reason as return:: restarting discards the frames in between."
+	self unwindTo: handlerContext.
 	handlerContext handlerIsActive: true.
 	^handlerContext restartAndJump
 ]
@@ -156,6 +184,7 @@ Exception >> retry [
 { #category : 'handling' }
 Exception >> retryUsing: aBlock [
 	handlerContext isNil ifTrue: [^self return: nil].
+	self unwindTo: handlerContext.
 	^handlerContext return: aBlock value
 ]
 
