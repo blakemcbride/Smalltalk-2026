@@ -17,6 +17,14 @@ unedited:
 	startpc		the first bytecode of the body, one-relative
 	numArgs		how many arguments value: expects
 	(indexed)	the copied values, one per captured variable
+
+Not here yet, and deliberately named rather than left to be discovered as
+a doesNotUnderstand: **fork, forkAt:, newProcess and newProcessWith:**.
+BlockContext answers all four, and it can, because a BlockContext already
+IS a context and Process forContext: takes one.  A closure is not, so
+making a process out of one needs a way to build its activation without
+running it -- a primitive, and one that belongs with the scheduler work in
+Phase H rather than bolted on here.
 "
 Class {
 	#name : 'BlockClosure',
@@ -109,4 +117,55 @@ BlockClosure >> whileFalse: aBlock [
 { #category : 'controlling' }
 BlockClosure >> repeat [
 	[true] whileTrue: [self value]
+]
+
+{ #category : 'controlling' }
+BlockClosure >> whileTrue [
+	^[self value] whileTrue: []
+]
+
+{ #category : 'controlling' }
+BlockClosure >> whileFalse [
+	^[self value] whileFalse: []
+]
+
+{ #category : 'accessing' }
+BlockClosure >> fixTemps [
+	"Nothing to fix.
+
+	 A BlockContext shares its temporaries with the method it was written
+	 in, so a block kept past that method's return -- a SortedCollection's
+	 sortBlock is the case that matters -- had to copy the home frame or
+	 read whatever the frame became.  A closure copied its values when it
+	 was made, which is the whole difference between the two, so the
+	 answer is the receiver unchanged.
+
+	 It is here because 1983 library code SENDS it: SortedCollection>>
+	 sortBlock: does, and without this every asSortedCollection: in the
+	 image fails the moment the argument is a closure."
+	^self
+]
+
+{ #category : 'accessing' }
+BlockClosure >> home [
+	"The method context this closure was ultimately written in.
+
+	 outerContext is one step out, which for a closure inside a closure is
+	 another closure's activation; home walks the rest of the way."
+	^outerContext ifNotNil: [:c | c home]
+]
+
+{ #category : 'accessing' }
+BlockClosure >> receiver [
+	^outerContext ifNotNil: [:c | c receiver]
+]
+
+{ #category : 'accessing' }
+BlockClosure >> method [
+	^outerContext ifNotNil: [:c | c method]
+]
+
+{ #category : 'private' }
+BlockClosure >> valueError [
+	^self error: 'wrong number of arguments'
 ]

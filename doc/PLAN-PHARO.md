@@ -547,18 +547,63 @@ described as *mechanisms done, corpus absent*. Running `st80 -primitives -profil
 a vendored Pharo package is the first thing to do the day it lands: it turns the port into
 a number on day one.
 
-### G — Kernel protocol and the first ratchet turns
-`Object` protocol (`displayString`, `printNl`, `ifNil:`, `assert:`), Collection protocol
-(`do:separatedBy:`, `sorted:`, `flatCollect:`, `ifEmpty:`, ~80 methods), Dictionary
-(`at:ifAbsentPut:`, `keysAndValuesDo:`), Stream (`<<`, `streamContents:`), String
-(`format:`, `join:`, `substrings:`, `trimBoth`).
+### G — Kernel protocol and the first ratchet turns *(G1–G4 done; SUnit remains)*
 
-`new` → `initialize`: **the loader synthesizes the override.** When a `lib/`/`pharo/` class
-has `initialize` reachable in its loaded superclass chain and defines no class-side `new`,
-emit `Foo class>>new ^super new initialize` — the 1983 idiom. A global `Behavior>>new`
-change would double-initialize the ~34 1983 classes that call `^super new initialize`
-themselves; a per-class flag taxes the hottest allocation path. The loader reports every
-class it did this to, so the list is auditable.
+Four new packages in `lib/`: `Kernel-Protocol`, `Collections-Protocol`, `Streams-Protocol`,
+`Strings-Protocol`. Roughly 120 methods, all extensions — `sources/` is untouched, as always.
+
+`new` → `initialize` — **done, and the rule is about the chain, not the class.** When a class
+a *package format* defined has `initialize` reachable in its loaded superclass chain and
+**nothing between it and `Behavior` defines a class-side `new`**, the loader compiles
+`^super new initialize` into it — the same 1983 idiom the ~34 classes that want
+initialization already write by hand.
+
+The chain part is load-bearing. Give the method to both a class and its subclass and the
+subclass's `initialize` runs **twice**: the subclass's `super new` finds the superclass's
+`new`, which sends `initialize`, which dispatches back down. That is precisely the
+double-initialization a global `Behavior>>new` change would have caused, arrived at from the
+other direction. It runs after the compile pass (until then there is no way to know what a
+class says for itself) and after trait flattening (a trait can be where `initialize` comes
+from), and every class it touches is named in one line of output.
+
+**Three gaps in the existing system surfaced by writing library code against it**, each of
+which would have bitten the first person to port anything:
+
+- **`BlockContext` has no `numArgs`.** The field is there — `nargs`, in the 1983 class
+  definition — but Xerox gave it no accessor, because the only thing that ever needed it was
+  the interpreter, which reads the field directly. `BlockClosure` answers `numArgs`, so
+  every piece of protocol written against "a block" broke the moment it met a Blue Book one.
+- **`on:do:`, `ensure:` and `ifCurtailed:` existed only on `BlockClosure`.** So the exception
+  system was reachable only from code compiled in the closure dialect: the 4,500 methods of
+  the 1983 library could *signal* an `Error` — `Object>>error:` does, since Phase E — and
+  could not catch one. The fix is a copy, word for word, because nothing in those three
+  methods is about closures: the mechanism is a walk up the sender chain looking for a frame
+  whose method declares primitive 199 or 198, and a frame is a frame whichever kind of block
+  made it.
+- **`BlockClosure` could not answer `fixTemps`,** which `SortedCollection>>sortBlock:` sends —
+  so every `asSortedCollection:` in the image failed the moment its argument was a closure.
+  For a closure the answer is the receiver: it copied its values when it was made, which is
+  the whole difference between the two kinds of block.
+
+**And one real compiler bug**, found the same way — by writing `| ch |` inside a `whileTrue:`:
+
+> **Temporaries declared inside an *inlined* block did not parse at all.** They have nowhere
+> of their own to live (the point of inlining is that there is no frame), so they are hoisted
+> into the enclosing method's frame, which is what every Smalltalk that inlines these does.
+>
+> The subtle half is that hoisting must keep the **lexical extent**, and getting that wrong
+> is silent. Two sibling inlined blocks each declaring `t` put two declarations named `t` in
+> one scope; searching the declaration array backwards, **pass zero finds the first and pass
+> one finds the second** — so everything is *computed* about one declaration and *emitted*
+> about the other. If a real closure inside the first block captures `t`, pass zero makes the
+> first `t` remote and pass one emits a plain frame access to the second: a wrong answer with
+> nothing to see. A visibility cursor that advances on every declaration in **both** passes,
+> and is saved and restored around an inlined block, makes the two passes agree and gives
+> correct shadowing for free — `x ifTrue: [| t | t := 1. y ifTrue: [| t | t := 2]. ^t]`
+> answers 1.
+
+trace2 and trace3 stayed byte-identical through the compiler change, which is the only
+evidence that would have been worth anything.
 
 Then begin the ratchet: SUnit first — it converts "did the port work" from a judgement call
 into a green bar — then STON, Announcements, Zinc-Character-Encoding, and the Tier 1 kernel

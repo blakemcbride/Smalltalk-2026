@@ -88,6 +88,15 @@ typedef struct {
     st_oop     *cvar_assoc;             /*  cvars.capacity entries  */
 
     /*
+     *  Whether a package format defined this class, rather than the 1983
+     *  chunk files.  It decides one thing: whether the loader may
+     *  synthesize "new ^super new initialize" for it.  The 1983 classes
+     *  that want that idiom already write it out by hand, and adding a
+     *  second one would run initialize twice.
+     */
+    int         from_package;
+
+    /*
      *  The trait composition this class declared, verbatim -- "TA + TB".
      *  Empty when it declared none.  Kept as written so a report can quote
      *  it, and applied only after every method has been compiled.
@@ -1704,6 +1713,7 @@ compile_into(boot_class *c, int class_side, const char *source,
 typedef struct {
     int     definitions;            /*  pass zero rather than pass two  */
     int     rejected;               /*  shapes this system cannot build */
+    int     package_format;         /*  Tonel rather than 1983 chunks    */
 } boot_sink_state;
 
 static int
@@ -1773,6 +1783,7 @@ sink_class_def(const st_source_class_def *def, void *user)
     snprintf(c->category, sizeof c->category, "%.63s", def->category);
     snprintf(c->traits, sizeof c->traits, "%.255s",
              def->traits ? def->traits : "");
+    c->from_package = state->package_format;
     c->indexable = def->indexable;
     c->bytes     = def->bytes;
     c->words     = def->words;
@@ -1889,7 +1900,8 @@ read_source(const char *path, int definitions_only)
     char            err[512];
 
     memset(&state, 0, sizeof state);
-    state.definitions = definitions_only;
+    state.definitions    = definitions_only;
+    state.package_format = strcmp(SRC_format_of(path), "tonel") == 0;
     if (!SRC_read(path, &boot_sink, &state, err, sizeof err)) {
         if (err[0])
             boot_fail("%s", err);
@@ -2476,6 +2488,127 @@ flatten_traits(void)
     return 1;
 }
 
+/*  ----------  "new" that runs "initialize"  ----------  */
+
+/*
+ *  Pharo-flavoured code writes an initialize method and expects "new" to
+ *  call it.  The 1983 system does not: Behavior>>new is primitive 70 and
+ *  nothing else, and the ~34 classes that want initialization write
+ *  "^super new initialize" out by hand.
+ *
+ *  Changing Behavior>>new globally would run initialize TWICE for every one
+ *  of those thirty-four, and a per-class flag read at allocation time would
+ *  tax the hottest path in the system.  So the loader writes the 1983 idiom
+ *  instead -- the same method those thirty-four already have, for the
+ *  classes that need it and did not say it.
+ *
+ *  Only for classes a package format defined.  A chunk file is 1983 source
+ *  and already means what it says.
+ *
+ *  The rule that keeps it correct is the one about the chain: a class gets
+ *  the synthesized "new" only when NOTHING between it and Behavior has a
+ *  class-side "new" already.  Give it to both a class and its subclass and
+ *  the subclass's initialize runs twice -- the subclass's "super new" finds
+ *  the superclass's "new", which sends initialize, which dispatches back
+ *  down to the subclass.  That is the same double-initialization the global
+ *  change would have caused, arrived at from the other direction.
+ */
+
+/*  The loaded chain, nearest first, as boot_class entries.  */
+static boot_class *
+superclass_of(const boot_class *c)
+{
+    if (!c->superclass[0] || strcmp(c->superclass, "nil") == 0)
+        return NULL;
+    return find_class(c->superclass);
+}
+
+static int
+chain_defines(const boot_class *c, int class_side, const char *selector)
+{
+    const boot_class   *p;
+
+    for (p = c; p; p = superclass_of(p)) {
+        st_oop  target = class_side ? p->metaclass_oop : p->class_oop;
+
+        if (!OM_is_present(target))
+            continue;
+        if (OM_is_present(method_in_dictionary(
+                OM_fetch_pointer(CLASS_METHOD_DICT, target), selector)))
+            return 1;
+    }
+    return 0;
+}
+
+/*  How far below the root a class sits, so parents are decided first.  */
+static unsigned
+chain_depth(const boot_class *c)
+{
+    unsigned            n = 0;
+    const boot_class   *p;
+
+    for (p = superclass_of(c); p && n < 1000; p = superclass_of(p))
+        ++n;
+    return n;
+}
+
+static int
+synthesize_initializing_new(void)
+{
+    static const char   source[] = "new\n\t\"Synthesized by the loader: this "
+                                   "class defines initialize and no "
+                                   "new.\"\n\t^super new initialize";
+    unsigned            depth;
+    unsigned            deepest = 0;
+    unsigned            i;
+    unsigned            made = 0;
+    char                names[512] = "";
+
+    for (i = 0; i < class_count; ++i) {
+        unsigned    d = chain_depth(&classes[i]);
+
+        if (d > deepest)
+            deepest = d;
+    }
+
+    /*
+     *  Shallowest first, so that when a subclass asks "does anything above
+     *  me have new" the answer includes what this pass just wrote.
+     */
+    for (depth = 0; depth <= deepest; ++depth) {
+        for (i = 0; i < class_count; ++i) {
+            boot_class *c = &classes[i];
+
+            if (!c->from_package || chain_depth(c) != depth)
+                continue;
+            if (!OM_is_present(c->class_oop)
+             || !OM_is_present(c->metaclass_oop))
+                continue;
+            if (!chain_defines(c, 0, "initialize"))
+                continue;
+            if (chain_defines(c, 1, "new"))
+                continue;
+            if (!compile_into(c, 1, source, "<the loader>", 0,
+                              "instance creation"))
+                return 0;
+            ++made;
+            if (result)
+                ++result->news_synthesized;
+            if (made <= 12) {
+                size_t  used = strlen(names);
+
+                snprintf(names + used, sizeof names - used, "%s%s",
+                         used ? " " : "", c->name);
+            }
+        }
+    }
+    if (made)
+        boot_note("%u class%s given \"new ^super new initialize\": %s%s",
+                  made, made == 1 ? " was" : "es were", names,
+                  made > 12 ? " ... and more" : "");
+    return 1;
+}
+
 static int
 boot_build_locked(const char *const *paths, const int *dialects,
                   unsigned path_count, st_bootstrap_result *out)
@@ -2566,6 +2699,13 @@ boot_build_locked(const char *const *paths, const int *dialects,
     }
 
     if (!flatten_traits())
+        return -1;
+    /*
+     *  After flattening, because a trait can be where initialize comes
+     *  from -- and after the compile pass, because "does this class say
+     *  new itself" cannot be answered before its methods are in.
+     */
+    if (!synthesize_initializing_new())
         return -1;
 
     install_closure_support();

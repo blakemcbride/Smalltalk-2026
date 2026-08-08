@@ -56,6 +56,12 @@ typedef struct {
      */
     unsigned    traits_created;
     unsigned    methods_flattened;
+
+    /*
+     *  Classes the loader gave "new ^super new initialize" because they
+     *  define initialize and nothing in their chain defines new.
+     */
+    unsigned    news_synthesized;
     unsigned    symbols_interned;
     /*
      *  Classes a source file described and this system could not build --

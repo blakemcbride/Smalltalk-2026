@@ -42,9 +42,9 @@
 #define BLUEBOOK_CLASSES        226
 #define BLUEBOOK_METHODS        4521
 #define BLUEBOOK_CATEGORIES     41
-#define LIB_CLASSES             12       /*  BlockClosure, the exceptions,
+#define LIB_CLASSES             16       /*  BlockClosure, the exceptions,
                                             and the Unwind fixture         */
-#define LIB_METHODS             115
+#define LIB_METHODS             242
 /*
  *  Three, not five: the extension packages define no CLASSES, and a
  *  category is a property of a class definition.  Kernel-Methods-Fixes and
@@ -101,12 +101,41 @@ load_manifest(void)
             "lib/Kernel-Exceptions/ZeroDivide.class.st",
             "lib/Kernel-Exceptions/MessageNotUnderstood.class.st",
             "lib/Kernel-Exceptions/BlockClosure.extension.st",
+            "lib/Kernel-Exceptions/BlockContext.extension.st",
             "lib/Kernel-Exceptions/ContextPart.extension.st",
             "lib/Kernel-Exceptions/Object.extension.st",
             "lib/Kernel-Exceptions/SmallInteger.extension.st",
+            "lib/Kernel-Exceptions/AssertionFailure.class.st",
             "lib/Kernel-Methods/MethodContext.extension.st",
             "lib/Kernel-Methods/CompiledMethod.extension.st",
+            "lib/Kernel-Protocol/Object.extension.st",
+            "lib/Kernel-Protocol/UndefinedObject.extension.st",
+            "lib/Kernel-Protocol/BlockContext.extension.st",
+            "lib/Kernel-Protocol/BlockClosure.extension.st",
+            "lib/Kernel-Protocol/Boolean.extension.st",
+            "lib/Kernel-Protocol/String.extension.st",
+            "lib/Kernel-Protocol/Symbol.extension.st",
+            "lib/Kernel-Protocol/Character.extension.st",
+            "lib/Kernel-Protocol/Number.extension.st",
+            "lib/Kernel-Protocol/Integer.extension.st",
+            "lib/Kernel-Protocol/Collection.extension.st",
+            "lib/Kernel-Protocol/Array.extension.st",
+            "lib/Kernel-Protocol/Behavior.extension.st",
+            "lib/Collections-Protocol/Collection.extension.st",
+            "lib/Collections-Protocol/SequenceableCollection.extension.st",
+            "lib/Collections-Protocol/ArrayedCollection.extension.st",
+            "lib/Collections-Protocol/Dictionary.extension.st",
+            "lib/Streams-Protocol/Stream.extension.st",
+            "lib/Streams-Protocol/SequenceableCollection.extension.st",
+            "lib/Streams-Protocol/Object.extension.st",
+            "lib/Streams-Protocol/String.extension.st",
+            "lib/Streams-Protocol/Symbol.extension.st",
+            "lib/Streams-Protocol/Character.extension.st",
+            "lib/Strings-Protocol/String.extension.st",
             "lib/Probe/Greeter.class.st",
+            "lib/Probe/Initialized.class.st",
+            "lib/Probe/SelfMade.class.st",
+            "lib/Probe/Subinitialized.class.st",
             "lib/Probe/Slotted.class.st",
             "lib/Probe/TGreeting.trait.st",
             "lib/Probe/Unwind.class.st"
@@ -156,6 +185,13 @@ build_once(void)
     CHECK_EQ_INT(res.traits_created, 1);
     CHECK_EQ_INT(res.methods_flattened, 2);
     CHECK_EQ_INT(res.traits_rejected, 0);
+    /*
+     *  Exactly one: Initialized.  Not Subinitialized, whose chain already
+     *  has one, and not SelfMade, which wrote its own.  A 1983 class never
+     *  qualifies -- the chunk files already say what they mean, and the
+     *  ~34 that want initialization write the idiom out by hand.
+     */
+    CHECK_EQ_INT(res.news_synthesized, 1);
     built = 1;
     return 1;
 }
@@ -710,6 +746,23 @@ test_pragmas_are_objects(void)
                  "*trait:TGreeting");
     /*  A trait creates no class: it is not in the system dictionary.  */
     check_boolean("Smalltalk includesKey: #TGreeting", 0);
+
+    /*
+     *  A package class that defines initialize and no new is given the 1983
+     *  idiom by the loader, so Pharo-flavoured code allocates the way it
+     *  expects to.
+     */
+    check_integer("Initialized new count", 1);
+    /*
+     *  And its subclass is NOT given one.  This is the whole reason the rule
+     *  is about the chain rather than the class: Initialized class>>new
+     *  already sends initialize, so a second new here would send it twice --
+     *  the outer super new running this initialize, then the inner one.
+     *  2 means once; 3 would mean the bug.
+     */
+    check_integer("Subinitialized new count", 2);
+    /*  A class that writes its own new keeps it, and its initialize with it.  */
+    check_oop("SelfMade new count", ST_NIL, "nil");
 
     /*  A method with no pragmas has none, and costs no literal.  */
     check_integer("(Unwind class compiledMethodAt: #normal) pragmas size", 0);
@@ -1501,6 +1554,127 @@ test_browser(void)
  *  and hands it over as SourceFiles.  Nothing says that stream has to be a
  *  file: RemoteString asks it only to position: and nextChunk.
  */
+/*
+ *  The protocol forty years added, which 1983 does not have.
+ *
+ *  Every one of these is a send the 1983 image answers with a
+ *  doesNotUnderstand:, and every one of them appears in ordinary modern
+ *  Smalltalk.  They are the difference between "this system runs the Blue
+ *  Book" and "you can write a program in this system".
+ */
+static void
+test_modern_protocol(void)
+{
+    /*  nil and the ifNil: family.  Real sends here, not compiler magic.  */
+    check_string("nil ifNil: ['was nil']", "was nil");
+    check_integer("3 ifNil: [0] ifNotNil: [:x | x * 2]", 6);
+    check_oop("nil ifNotNil: [:x | x]", ST_NIL, "nil");
+    /*  cull: is what lets ifNotNil: take a block of either arity.  */
+    check_integer("4 ifNotNil: [7]", 7);
+    check_integer("4 ifNotNil: [:x | x]", 4);
+
+    /*  displayString drops the syntax printString has to keep.  */
+    check_string("'abc' displayString", "abc");
+    check_string("'abc' printString", "'abc'");
+    check_string("#foo displayString", "foo");
+    check_string("42 displayString", "42");
+    check_string("(1 -> 2) printString", "1->2");
+
+    /*  Testing protocol: Object says no, the class in question says yes.  */
+    check_boolean("3 isNumber", 1);
+    check_boolean("'x' isString", 1);
+    check_boolean("#x isSymbol", 1);
+    check_boolean("$x isCharacter", 1);
+    check_boolean("#(1) isArray", 1);
+    check_boolean("3 isString", 0);
+    check_boolean("Object isBehavior", 1);
+
+    /*  assert: takes a boolean or a block, and signals a catchable Error.  */
+    /*
+     *  These run in the Blue Book dialect, like every expression here, so
+     *  they are also the check that a 1983 block can catch: on:do: used to
+     *  exist only on BlockClosure, which left the 4,500 methods of the
+     *  1983 library able to signal an Error and unable to catch one.
+     */
+    check_string("[Object new assert: 1 = 2. 'no'] on: AssertionFailure"
+                 " do: [:e | e messageText]", "assertion failed");
+    check_string("[Object new assert: [1 = 2] description: 'nope'] on: Error"
+                 " do: [:e | e messageText]", "nope");
+    check_string("[Object new assert: 1 = 1. 'ran'] on: Error do: [:e | 'no']",
+                 "ran");
+
+    /*  Collections.  */
+    check_string("#(3 1 2) sorted printString", "(1 2 3 )");
+    check_string("(#(3 1 2) sorted: [:a :b | a > b]) printString", "(3 2 1 )");
+    check_string("((1 to: 3) flatCollect: [:i | Array with: i with: i])"
+                 " printString", "(1 1 2 2 3 3 )");
+    check_integer("#(1 2 3 4) count: [:e | e even]", 2);
+    check_boolean("#(1 2 3) anySatisfy: [:e | e > 2]", 1);
+    check_boolean("#(1 2 3) allSatisfy: [:e | e > 2]", 0);
+    check_boolean("#(1 2 3) noneSatisfy: [:e | e > 5]", 1);
+    check_string("#() ifEmpty: ['empty']", "empty");
+    check_integer("#(9) ifNotEmpty: [:c | c first]", 9);
+    check_integer("#(1 2 3) sum", 6);
+    check_integer("#(4 9 2) max", 9);
+    check_integer("#(4 9 2) min", 2);
+    check_string("(#(1 2 3 2) copyWithout: 2) printString", "(1 3 )");
+    check_string("#(1 2 3) reversed printString", "(3 2 1 )");
+    check_string("#(1 2 3) allButFirst printString", "(2 3 )");
+    check_string("(#(1 2 3) first: 2) printString", "(1 2 )");
+    check_string("(#(1 2) with: #(10 20) collect: [:a :b | a + b]) printString",
+                 "(11 22 )");
+    check_string("(Array withAll: (1 to: 3)) printString", "(1 2 3 )");
+    check_string("String streamContents: [:s | #(1 2 3)"
+                 " do: [:e | s << e] separatedBy: [s << ', ']]", "1, 2, 3");
+    /*  A Dictionary fills a missing key rather than answering nil twice.  */
+    check_integer("| d | d := Dictionary new."
+                  " ^(d at: #k ifAbsentPut: [1]) + (d at: #k ifAbsentPut: [99])",
+                  2);
+
+    /*  Streams: << is double dispatch, and writes the display form.  */
+    check_string("String streamContents: [:s | s << 'n=' << 42 << ' ' << $x]",
+                 "n=42 x");
+
+    /*  Strings.  */
+    check_string("', ' join: #('a' 'b' 'c')", "a, b, c");
+    check_string("'  padded  ' trimBoth", "padded");
+    /*  substrings: collapses runs; splitOn: keeps the empty field.  */
+    check_string("('a,,b' substrings: ',') asArray printString", "('a' 'b' )");
+    check_string("('a,,b' splitOn: $,) asArray printString", "('a' '' 'b' )");
+    check_string("'{1} and {2}' format: #('this' 'that')", "this and that");
+    check_boolean("'hello' beginsWith: 'he'", 1);
+    check_boolean("'hello' endsWith: 'lo'", 1);
+    check_boolean("'hello' includesSubstring: 'ell'", 1);
+    check_boolean("'hello' beginsWith: 'xx'", 0);
+    check_integer("'42' asInteger", 42);
+    check_integer("'-7x' asInteger", -7);
+    /*  nil, not 0: '0' and 'banana' are different answers.  */
+    check_oop("'banana' asInteger", ST_NIL, "nil");
+
+    /*
+     *  fixTemps, which is why asSortedCollection: works at all under
+     *  closures: SortedCollection>>sortBlock: sends it to the block, and a
+     *  BlockClosure that could not answer it took every sort down with it.
+     */
+    check_string("((#(3 1 2) asSortedCollection: [:a :b | a > b]) asArray)"
+                 " printString", "(3 2 1 )");
+
+    /*
+     *  Temporaries declared inside a block the compiler INLINES.  They are
+     *  hoisted into the enclosing frame, and the thing to check is that
+     *  the hoist stays invisible: the inner t must not be the outer t.
+     */
+    check_integer("| i | i := 0. [i < 3] whileTrue: [| t | t := i. i := t + 1]."
+                  " ^i", 3);
+    check_integer("| r | r := 0. true ifTrue: [| t | t := 10. r := r + t]."
+                  " true ifTrue: [| t | t := 20. r := r + t]. ^r", 30);
+    check_integer("^true ifTrue: [| t | t := 1."
+                  " true ifTrue: [| t | t := 2]. t]", 1);
+    /*  And a real closure may still capture and assign one.  */
+    check_integer("| c | true ifTrue: [| t | t := 5."
+                  " c := [t := t + 1. t]]. ^c value + c value", 13);
+}
+
 static void
 test_browsing(void)
 {
@@ -1511,10 +1685,17 @@ test_browsing(void)
     check_integer("| b | b := Browser new on: SystemOrganization."
                   " b category: #'Kernel-Objects'. ^b classList size", 5);
 
-    /*  Boolean's protocols, and the selectors in the first of them.  */
+    /*
+     *  Boolean's protocols, and the selectors in the first of them.
+     *
+     *  Five, not the four the 1983 image has: lib/Kernel-Protocol adds
+     *  cull: as an extension, and an extension method's protocol is its
+     *  own category with a leading star.  The Browser showing it is the
+     *  Browser working -- that is what the star is for.
+     */
     check_integer("| b | b := Browser new on: SystemOrganization."
                   " b category: #'Kernel-Objects'. b className: #Boolean."
-                  " ^b protocolList size", 4);
+                  " ^b protocolList size", 5);
     check_integer("| b | b := Browser new on: SystemOrganization."
                   " b category: #'Kernel-Objects'. b className: #Boolean."
                   " b protocol: (b protocolList at: 1)."
@@ -1530,7 +1711,7 @@ test_browsing(void)
      *  zero -- which a CompiledMethod reads as "no source at all".  See
      *  test_every_method_can_find_its_source.
      */
-    check_integer("(SourceFiles at: 1) contents size", 1220055);
+    check_integer("(SourceFiles at: 1) contents size", 1235955);
 }
 
 /*
@@ -2353,6 +2534,7 @@ main(void)
     test_process_scheduler();
     test_processes();
     test_system_organization();
+    test_modern_protocol();
     test_browsing();
     test_browser();
     test_compile_inspect_debug();

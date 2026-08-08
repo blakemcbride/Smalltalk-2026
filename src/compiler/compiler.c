@@ -40,6 +40,7 @@ typedef struct {
      */
     unsigned        block_seen;
     unsigned        decl_count;
+    unsigned        decl_visible;
 } compiler_mark;
 
 /*
@@ -124,6 +125,11 @@ typedef struct {
 
     var_decl    decls[MAX_DECLS];
     unsigned    decl_count;
+    /*
+     *  How many of them are lexically in scope at this point.  See
+     *  find_decl for why this is not simply decl_count.
+     */
+    unsigned    decl_visible;
     scope_info  scopes[MAX_SCOPES];
     unsigned    scope_count;
     unsigned    current_scope;
@@ -615,7 +621,26 @@ find_decl(const st_compiler *c, const char *name)
 {
     unsigned    i;
 
-    for (i = c->decl_count; i-- > 0; ) {
+    /*
+     *  From decl_visible, not decl_count.
+     *
+     *  The two passes have to agree on WHICH declaration a name means, and
+     *  without this they do not.  An inlined block's temporaries live in
+     *  the enclosing frame -- there is no other frame for them to live in
+     *  -- so two sibling inlined blocks each declaring "t" put two
+     *  declarations named "t" in one scope.  Searching the whole array
+     *  backwards, pass zero (where only the first exists yet) finds the
+     *  first and pass one finds the second.  Everything downstream is then
+     *  computed about one declaration and emitted about the other: if a
+     *  real closure inside the first block captures t, pass zero makes the
+     *  FIRST t remote and pass one emits a plain frame access to the
+     *  second.  That is a wrong answer with nothing to see.
+     *
+     *  decl_visible advances on every declaration in both passes and is
+     *  saved and restored around an inlined block, so both passes see the
+     *  same names in the same order at the same points.
+     */
+    for (i = c->decl_visible; i-- > 0; ) {
         if (strcmp(c->decls[i].name, name) == 0
          && scope_within(c, c->current_scope, c->decls[i].scope))
             return (long) i;
@@ -623,11 +648,23 @@ find_decl(const st_compiler *c, const char *name)
     return -1;
 }
 
+/*
+ *  Declare a name in the current scope.
+ *
+ *  Called in BOTH passes.  Pass zero builds the array; pass one only walks
+ *  the cursor along it, in the same order, so that a name resolves to the
+ *  same declaration in both.
+ */
 static void
 declare(st_compiler *c, const char *name, int is_argument)
 {
     var_decl   *d;
 
+    if (c->pass != 0) {
+        if (c->decl_visible < c->decl_count)
+            ++c->decl_visible;
+        return;
+    }
     if (c->decl_count >= MAX_DECLS) {
         fail(c, "too many names in one method");
         return;
@@ -639,6 +676,7 @@ declare(st_compiler *c, const char *name, int is_argument)
     d->is_argument = is_argument;
     if (is_argument)
         ++c->scopes[c->current_scope].argc;
+    c->decl_visible = c->decl_count;
 }
 
 /*
@@ -1453,8 +1491,7 @@ compile_closure(st_compiler *c)
             c->current_scope = outer_scope;
             return;
         }
-        if (c->pass == 0)
-            declare(c, c->token.text, 1);
+        declare(c, c->token.text, 1);
         ++argc;
         advance(c);
     }
@@ -1470,8 +1507,7 @@ compile_closure(st_compiler *c)
         mark(c, &before_temps);
         advance(c);
         while (at(c, ST_TOK_IDENTIFIER)) {
-            if (c->pass == 0)
-                declare(c, c->token.text, 0);
+            declare(c, c->token.text, 0);
             advance(c);
         }
         if (!accept(c, ST_TOK_BAR))
@@ -1907,6 +1943,7 @@ mark(st_compiler *c, compiler_mark *m)
     m->name_count    = c->name_count;
     m->block_seen    = c->block_seen;
     m->decl_count    = c->decl_count;
+    m->decl_visible  = c->decl_visible;
 }
 
 static void
@@ -1923,6 +1960,7 @@ rewind_to(st_compiler *c, const compiler_mark *m)
     c->name_count          = m->name_count;
     c->block_seen          = m->block_seen;
     c->decl_count          = m->decl_count;
+    c->decl_visible        = m->decl_visible;
 }
 
 /*
@@ -1942,13 +1980,63 @@ at_inlinable_block(st_compiler *c)
     return look.kind != ST_TOK_COLON;
 }
 
+/*
+ *  Temporaries declared inside a block that is being inlined.
+ *
+ *  They have nowhere of their own to live: the whole point of inlining is
+ *  that there is no BlockContext and no frame, so the statements run in the
+ *  enclosing method's frame and the names are HOISTED into it.  That is
+ *  what every Smalltalk that inlines these does.
+ *
+ *  Hoisting has to keep the LEXICAL extent, though, or the hoist becomes
+ *  visible: the names must stop resolving at the closing bracket, so that
+ *
+ *      x ifTrue: [ | t | t := 1. y ifTrue: [ | t | t := 2 ]. ^t ]
+ *
+ *  answers 1, and so that two sibling blocks each declaring "t" get two
+ *  variables rather than one shared by accident.  Saving and restoring the
+ *  end of the visible name list is the whole of it -- in the Blue Book
+ *  dialect the list IS names[], and in the closure dialect it is the
+ *  declaration cursor.
+ *
+ *  A leading bar here is unambiguous.  A statement cannot begin with a
+ *  binary selector, so "[ | ..." can only be a declaration -- unlike the
+ *  bar after a block's arguments, which needs the speculative read.
+ */
 static void
 compile_inline_block(st_compiler *c)
 {
+    unsigned    outer_names   = c->name_count;
+    unsigned    outer_visible = c->decl_visible;
+
     advance(c);                         /*  past [  */
+    if (at(c, ST_TOK_BAR)) {
+        advance(c);
+        while (at(c, ST_TOK_IDENTIFIER)) {
+            if (c->name_count < MAX_TEMPS) {
+                snprintf(c->names[c->name_count], 64, "%.63s", c->token.text);
+                ++c->name_count;
+                if (c->name_count > c->max_names)
+                    c->max_names = c->name_count;
+            }
+            if (c->dialect == ST_DIALECT_CLOSURES)
+                declare(c, c->token.text, 0);
+            advance(c);
+        }
+        if (!accept(c, ST_TOK_BAR)) {
+            fail(c, "expected | after an inlined block's temporaries");
+            return;
+        }
+    }
     compile_statements(c, 1);
     if (!accept(c, ST_TOK_RBRACKET))
         fail(c, "expected ] closing an inlined block");
+    /*
+     *  The names go out of scope; their frame slots stay reserved, because
+     *  max_names is the high-water mark the frame is sized from.
+     */
+    c->name_count   = outer_names;
+    c->decl_visible = outer_visible;
 }
 
 /*
@@ -2692,7 +2780,7 @@ compile_pattern(st_compiler *c)
             return;
         }
         snprintf(c->names[c->name_count++], 64, "%.63s", c->token.text);
-        if (c->dialect == ST_DIALECT_CLOSURES && c->pass == 0)
+        if (c->dialect == ST_DIALECT_CLOSURES)
             declare(c, c->token.text, 1);
         ++c->argument_count;
         advance(c);
@@ -2718,7 +2806,7 @@ compile_pattern(st_compiler *c)
              *  doIt, because a doIt takes none -- so the first thing to
              *  notice was a class-side method answering "nil metres".
              */
-            if (c->dialect == ST_DIALECT_CLOSURES && c->pass == 0)
+            if (c->dialect == ST_DIALECT_CLOSURES)
                 declare(c, c->token.text, 1);
             ++c->argument_count;
             advance(c);
@@ -2803,6 +2891,7 @@ COMPILE_to_bytecodes(const char *source, const st_compile_context *ctx,
         out->length        = 0;
         out->literal_count = 0;
         out->error[0]      = '\0';
+        c.decl_visible = 0;
         if (pass == 0) {
             c.decl_count  = 0;
             c.need_count  = 0;
@@ -2837,7 +2926,7 @@ COMPILE_to_bytecodes(const char *source, const st_compile_context *ctx,
                     if (c.name_count < MAX_TEMPS)
                         snprintf(c.names[c.name_count++], 64, "%.63s",
                                  c.token.text);
-                    if (c.dialect == ST_DIALECT_CLOSURES && pass == 0)
+                    if (c.dialect == ST_DIALECT_CLOSURES)
                         declare(&c, c.token.text, 0);
                     advance(&c);
                 }
