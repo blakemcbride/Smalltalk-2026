@@ -372,6 +372,17 @@ reaching the handler outside it. And `retry` re-sent `on:do:` rather than restar
 frame, so a retry that never succeeded grew the stack until it dumped core; it restarts
 now and loops, which is what a retry that never succeeds should do.
 
+One more, older than any of this and reported by the class it lives in.
+**`MethodContext>>restart` counted a frame's arguments twice** — it set the stack pointer
+to `numArgs + numTemps`, and `numTemps` already counts the arguments. That is the
+Debugger's restart button, and `restartWith:` after a method under debug is recompiled, so
+a restarted frame came back believing it had two more values below its stack than it did.
+The class contradicts itself about it, which is what made it findable:
+`setSender:receiver:method:arguments:` — twenty lines further down, and the method that
+*creates* a context — says `stackp := method numTemps`, and that one agrees with the
+interpreter. `CompiledMethod>>numStack` had the same double count. Both are corrected in
+`lib/Kernel-Methods/`, because `sources/` is frozen.
+
 One compiler change came out of writing the package: **pragmas and temporaries are
 accepted in either order and any number of times**. The Blue Book puts temporaries first
 and has one pragma; Pharo writes the pragma first at least as often, and a reader that

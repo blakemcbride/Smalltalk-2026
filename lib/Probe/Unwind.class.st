@@ -65,6 +65,16 @@ Unwind class >> escapingBlock [
 ]
 
 { #category : 'cases' }
+Unwind class >> contextTakingTwoArgs: a and: b [
+	"Two arguments and one temporary, so numArgs is 2 and numTemps is 3.
+	 Answers its own frame, which is safe to restart afterwards because
+	 restart only assigns fields."
+	| t |
+	t := a + b.
+	^thisContext
+]
+
+{ #category : 'cases' }
 Unwind class >> curtailedNormally [
 	"ifCurtailed: runs its block only when the receiver does NOT finish."
 	[self note: #body] ifCurtailed: [self note: #curtailed].

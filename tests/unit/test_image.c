@@ -43,7 +43,7 @@
 #define BLUEBOOK_CATEGORIES     41
 #define LIB_CLASSES             7       /*  BlockClosure, the exceptions,
                                             and the Unwind fixture         */
-#define LIB_METHODS             85
+#define LIB_METHODS             88
 #define LIB_CATEGORIES          3       /*  Kernel-Closures, -Exceptions,
                                             Probe-Core                     */
 #define MAX_SOURCES 512
@@ -93,6 +93,8 @@ load_manifest(void)
             "lib/Kernel-Exceptions/ContextPart.extension.st",
             "lib/Kernel-Exceptions/Object.extension.st",
             "lib/Kernel-Exceptions/SmallInteger.extension.st",
+            "lib/Kernel-Methods/MethodContext.extension.st",
+            "lib/Kernel-Methods/CompiledMethod.extension.st",
             "lib/Probe/Unwind.class.st"
         };
         unsigned    k;
@@ -613,6 +615,51 @@ test_exceptions(void)
      */
     check_oop("[Unwind escapingBlock value] on: Error do: [:e | true]",
               ST_TRUE, "true");
+
+    test_dialect = ST_DIALECT_BLUE_BOOK;
+}
+
+/*
+ *  A restarted frame counted its arguments twice.
+ *
+ *  MethodContext>>restart is what the Debugger's restart button does, and
+ *  what restartWith: does after a method under debug is recompiled.  It set
+ *  the stack pointer to "numArgs + numTemps", and numTemps already counts
+ *  the arguments -- so a restarted frame came back believing it had two
+ *  more values below its stack than it did, and then read whatever was in
+ *  those slots.
+ *
+ *  The class contradicts itself about it, which is what made it findable:
+ *  setSender:receiver:method:arguments:, twenty lines further down and the
+ *  method that CREATES a context, says "stackp := method numTemps" -- and
+ *  that one agrees with the interpreter, which sets a new frame's stack
+ *  pointer to the header's temporary count and nothing else.
+ */
+static void
+test_a_restarted_frame_counts_its_arguments_once(void)
+{
+    test_dialect = ST_DIALECT_CLOSURES;
+
+    /*  on:do: takes two arguments and declares one temporary.  */
+    check_integer("(BlockClosure compiledMethodAt: #on:do:) numArgs", 2);
+    check_integer("(BlockClosure compiledMethodAt: #on:do:) numTemps", 3);
+    /*  So the sum the old code used was two too many.  */
+    check_integer("| m | m := BlockClosure compiledMethodAt: #on:do:. "
+                  "^m numArgs + m numTemps", 5);
+
+    /*
+     *  A frame with two arguments and one temporary, restarted.  Its stack
+     *  pointer is instance variable 3 -- sender, pc, stackp.
+     */
+    check_integer("| c | c := Unwind contextTakingTwoArgs: 1 and: 2. "
+                  "c restart. ^c instVarAt: 3", 3);
+    /*  And its program counter goes back to the first bytecode.  */
+    check_oop("| c | c := Unwind contextTakingTwoArgs: 1 and: 2. c restart. "
+              "^c pc = c method initialPC", ST_TRUE, "true");
+
+    /*  numStack had the same double count: 12 slots less 3, not less 5.  */
+    check_integer("(BlockClosure compiledMethodAt: #on:do:) frameSize", 12);
+    check_integer("(BlockClosure compiledMethodAt: #on:do:) numStack", 9);
 
     test_dialect = ST_DIALECT_BLUE_BOOK;
 }
@@ -1312,7 +1359,7 @@ test_browsing(void)
      *  zero -- which a CompiledMethod reads as "no source at all".  See
      *  test_every_method_can_find_its_source.
      */
-    check_integer("(SourceFiles at: 1) contents size", 1217020);
+    check_integer("(SourceFiles at: 1) contents size", 1217517);
 }
 
 /*
@@ -2154,6 +2201,7 @@ main(void)
     test_every_method_can_find_its_source();
     test_closures();
     test_exceptions();
+    test_a_restarted_frame_counts_its_arguments_once();
 
     OM_shutdown();
     return ST_TEST_END();
