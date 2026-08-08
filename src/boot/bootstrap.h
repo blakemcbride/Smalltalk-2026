@@ -92,6 +92,7 @@ st_oop  BOOT_make_float(double value, void *user);
 st_oop  BOOT_make_large_integer(int64_t value, void *user);
 st_oop  BOOT_make_array(st_oop *elements, unsigned count, void *user);
 st_oop  BOOT_make_byte_array(const uint8_t *bytes, unsigned count, void *user);
+st_oop  BOOT_make_method_state(st_oop pragmas, void *user);
 st_oop  BOOT_make_character(unsigned code, void *user);
 
 /*

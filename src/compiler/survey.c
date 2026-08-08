@@ -25,6 +25,8 @@ static st_oop syn_array(st_oop *e, unsigned n, void *u)
 { (void) e; (void) n; (void) u; return 2006; }
 static st_oop syn_byte_array(const uint8_t *b, unsigned n, void *u)
 { (void) b; (void) n; (void) u; return 2008; }
+static st_oop syn_method_state(st_oop pragmas, void *u)
+{ (void) pragmas; (void) u; return 2010; }
 static st_oop syn_character(unsigned c, void *u)
 { (void) u; return (st_oop) (4000 + c * 2); }
 
@@ -116,6 +118,7 @@ survey_method(const char *class_name, int class_side, const char *category,
     ctx.make_large_integer = syn_large;
     ctx.make_array         = syn_array;
     ctx.make_byte_array    = syn_byte_array;
+    ctx.make_method_state  = syn_method_state;
     ctx.make_character     = syn_character;
     ctx.lookup_global      = syn_global;
     ctx.method_class_association = 5000;

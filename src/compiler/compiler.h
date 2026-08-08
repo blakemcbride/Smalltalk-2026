@@ -69,6 +69,21 @@ typedef struct {
     st_oop            (*make_byte_array)(const uint8_t *bytes, unsigned count,
                                          void *user);
     /*
+     *  An AdditionalMethodState holding a method's pragmas, given them as
+     *  an Array of Arrays -- #(#(#author 'Blake') #(#deprecated 'x')).
+     *
+     *  Identified in the literal frame by its CLASS rather than by
+     *  position.  Pharo puts it next-to-last, and next-to-last here is
+     *  where the Blue Book header extension goes when a method declares a
+     *  primitive, so position is not available to borrow.  Scanning a
+     *  frame of at most a few dozen literals for one object of a class
+     *  nothing else instantiates costs nothing and cannot be confused.
+     *
+     *  NULL, or answering nil, when the profile has no such class -- which
+     *  is the Blue Book case, and leaves its methods exactly as they were.
+     */
+    st_oop            (*make_method_state)(st_oop pragmas, void *user);
+    /*
      *  A character literal.  Characters are unique per code point, so this
      *  is a lookup rather than a construction, and in an image it is a fetch
      *  from CharacterTable.  It goes through the context like every other

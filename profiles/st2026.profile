@@ -9,6 +9,6 @@ Profile {
 	#name     : 'st2026',
 	#requires : [ 'bluebook' ],
 	#dialect  : 'closures',
-	#packages : [ '../lib/Kernel', '../lib/Kernel-Exceptions', '../lib/Kernel-Methods', '../lib/System',
+	#packages : [ '../lib/Kernel', '../lib/Kernel-Exceptions', '../lib/Kernel-Methods', '../lib/Kernel-Pragmas', '../lib/System',
 	              '../lib/Probe' ]
 }

@@ -388,7 +388,7 @@ accepted in either order and any number of times**. The Blue Book puts temporari
 and has one pragma; Pharo writes the pragma first at least as often, and a reader that
 insists on one order rejects ordinary source for a reason that is about nothing.
 
-### F — The Pharo object model *(F1 done: weak references)*
+### F — The Pharo object model *(F1 weak references, F2 pragmas — done)*
 This is what "load Pharo's kernel" costs, and it is the phase most likely to be revised
 in contact.
 
@@ -422,10 +422,17 @@ in contact.
   `#slots : [...]` where every entry is a plain slot. Reject indexed/weak/custom slot types
   with a named report. Full `Slot>>read:`/`write:to:` indirection would mean rewriting
   variable resolution in the compiler — defer until a class you actually want requires it.
-- **`Pragma` and `AdditionalMethodState`.** Pharo's convention is a literal-frame one:
-  `literal[n-1]` is the class binding, `literal[n-2]` is the selector *or* an
-  `AdditionalMethodState`. Implementable in `build_header`/`COMPILE_method`
-  (`compiler.c:1670-1785`). This is what turns Phase A's parse-and-discard into real pragmas.
+- **`Pragma` and `AdditionalMethodState` — done.** Phase A parsed pragmas and threw them
+  away; they are objects now, so a framework can act on them — SUnit's `<test>`, and the
+  `<shared: #serialize>` that Phase L's audit wants.
+
+  Pharo's convention could not be borrowed as written. It puts the `AdditionalMethodState`
+  next-to-last in the literal frame, and **next-to-last here is where the Blue Book header
+  extension goes** when a method declares a primitive. So the state is found by its *class*
+  instead: a frame holds a few dozen literals, nothing else instantiates that class, and
+  the scan cannot be confused by position. A profile that has not loaded the class gets
+  nil back from the compiler and its methods are compiled exactly as before, which is the
+  Blue Book case.
 - **Immediates.** Map `#type : 'immediate'` onto our tagging for `SmallInteger` and our
   `CharacterTable` for `Character`. `SmallFloat64` is Spur-only; Pharo's `Float` works boxed.
 - **Traits.** Load-time flattening: copy the composed traits' methods into the class,

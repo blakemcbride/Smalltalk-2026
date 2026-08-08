@@ -69,6 +69,7 @@ evaluate(const char *expression)
     ctx.make_large_integer = BOOT_make_large_integer;
     ctx.make_array         = BOOT_make_array;
     ctx.make_byte_array    = BOOT_make_byte_array;
+    ctx.make_method_state  = BOOT_make_method_state;
     ctx.make_character     = BOOT_make_character;
     ctx.lookup_global      = BOOT_lookup_global;
 

@@ -41,16 +41,16 @@
 #define BLUEBOOK_CLASSES        226
 #define BLUEBOOK_METHODS        4521
 #define BLUEBOOK_CATEGORIES     41
-#define LIB_CLASSES             8       /*  BlockClosure, the exceptions,
+#define LIB_CLASSES             10       /*  BlockClosure, the exceptions,
                                             and the Unwind fixture         */
-#define LIB_METHODS             94
+#define LIB_METHODS             110
 /*
  *  Three, not five: the extension packages define no CLASSES, and a
  *  category is a property of a class definition.  Kernel-Methods-Fixes and
  *  System-Runtime only add methods to classes that already exist.
  */
-#define LIB_CATEGORIES          3       /*  Kernel-Closures, -Exceptions,
-                                            Probe-Core                     */
+#define LIB_CATEGORIES          4       /*  Kernel-Closures, -Exceptions,
+                                            -Pragmas, Probe-Core           */
 #define MAX_SOURCES 512
 
 static char     paths[MAX_SOURCES][256];
@@ -91,6 +91,9 @@ load_manifest(void)
             "lib/Kernel/BlockClosure.class.st",
             "lib/Kernel/WeakArray.class.st",
             "lib/System/SystemDictionary.extension.st",
+            "lib/Kernel-Pragmas/AdditionalMethodState.class.st",
+            "lib/Kernel-Pragmas/Pragma.class.st",
+            "lib/Kernel-Pragmas/CompiledMethod.extension.st",
             "lib/Kernel-Exceptions/Exception.class.st",
             "lib/Kernel-Exceptions/Error.class.st",
             "lib/Kernel-Exceptions/Warning.class.st",
@@ -167,6 +170,7 @@ evaluate(const char *expression)
     ctx.make_large_integer = BOOT_make_large_integer;
     ctx.make_array         = BOOT_make_array;
     ctx.make_byte_array    = BOOT_make_byte_array;
+    ctx.make_method_state  = BOOT_make_method_state;
     ctx.make_character     = BOOT_make_character;
     ctx.lookup_global      = BOOT_lookup_global;
     ctx.dialect            = test_dialect;
@@ -622,6 +626,56 @@ test_exceptions(void)
      */
     check_oop("[Unwind escapingBlock value] on: Error do: [:e | true]",
               ST_TRUE, "true");
+
+    test_dialect = ST_DIALECT_BLUE_BOOK;
+}
+
+/*
+ *  Pragmas the image can read.
+ *
+ *  The Blue Book has one, <primitive: N>, and treats it as syntax rather
+ *  than as an object.  Squeak generalised the notation; making the result
+ *  readable from Smalltalk is what turns it from something the compiler
+ *  throws away into something a program can act on -- which is what SUnit's
+ *  <test> is for, and what the parallel-safety audit's <shared: #serialize>
+ *  will be.
+ *
+ *  The AdditionalMethodState is found by scanning the literal frame for
+ *  one, not at a fixed index: Pharo puts it next to last, and next to last
+ *  here is where the Blue Book header extension goes when a method declares
+ *  a primitive.
+ */
+static void
+test_pragmas_are_objects(void)
+{
+    test_dialect = ST_DIALECT_CLOSURES;
+
+    /*  A method with no pragmas has none, and costs no literal.  */
+    check_integer("(Unwind class compiledMethodAt: #normal) pragmas size", 0);
+    /*  Nor does one whose only pragma is a primitive, which is the
+        compiler's business rather than the image's.  */
+    check_integer("(BlockClosure compiledMethodAt: #on:do:) pragmas size", 0);
+
+    /*  Three of them, keyword and arguments intact.  */
+    check_integer("(Unwind class compiledMethodAt: #annotated) pragmas size",
+                  3);
+    check_oop("(Unwind class compiledMethodAt: #annotated) pragmas first "
+              "keyword == #test", ST_TRUE, "true");
+    check_oop("((Unwind class compiledMethodAt: #annotated) "
+              "pragmaAt: #shared:) argumentAt: 1", 
+              BOOT_intern_symbol("serialize", NULL), "#serialize");
+    check_integer("((Unwind class compiledMethodAt: #annotated) "
+                  "pragmaAt: #deprecated:) arguments first size", 11);
+    check_oop("(Unwind class compiledMethodAt: #annotated) hasPragma: #test",
+              ST_TRUE, "true");
+    check_oop("(Unwind class compiledMethodAt: #annotated) hasPragma: #nope",
+              ST_FALSE, "false");
+    check_oop("((Unwind class compiledMethodAt: #annotated) pragmaAt: #nope) "
+              "isNil", ST_TRUE, "true");
+
+    /*  And the method still runs, which the extra literal must not disturb. */
+    check_oop("Unwind annotated", BOOT_intern_symbol("annotated", NULL),
+              "#annotated");
 
     test_dialect = ST_DIALECT_BLUE_BOOK;
 }
@@ -1415,7 +1469,7 @@ test_browsing(void)
      *  zero -- which a CompiledMethod reads as "no source at all".  See
      *  test_every_method_can_find_its_source.
      */
-    check_integer("(SourceFiles at: 1) contents size", 1218182);
+    check_integer("(SourceFiles at: 1) contents size", 1219900);
 }
 
 /*
@@ -1527,6 +1581,7 @@ check_same_bytecodes(const char *selector, const char *source)
     ctx.make_large_integer = BOOT_make_large_integer;
     ctx.make_array         = BOOT_make_array;
     ctx.make_byte_array    = BOOT_make_byte_array;
+    ctx.make_method_state  = BOOT_make_method_state;
     ctx.make_character     = BOOT_make_character;
     ctx.lookup_global      = BOOT_lookup_global;
     /*  A send to super needs the method's class in the literal frame.  */
@@ -2259,6 +2314,7 @@ main(void)
     test_exceptions();
     test_a_restarted_frame_counts_its_arguments_once();
     test_weak_references();
+    test_pragmas_are_objects();
 
     OM_shutdown();
     return ST_TEST_END();

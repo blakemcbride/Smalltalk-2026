@@ -23,6 +23,8 @@
 #define MAX_ARGS        16
 #define MAX_BLOCK_DEPTH 16
 #define MAX_BYTE_ARRAY  1024
+#define MAX_PRAGMAS     16
+#define MAX_PRAGMA_ARGS 8
 
 /*  Save and restore enough to compile a stretch of source a second time.  */
 typedef struct {
@@ -131,6 +133,17 @@ typedef struct {
         unsigned    decl;
     }           needs[MAX_NEEDS];
     unsigned    need_count;
+
+    /*
+     *  Pragmas the method declared, other than the two primitive forms,
+     *  which mean something to the compiler rather than to the image.
+     */
+    struct {
+        char        keyword[64];
+        st_oop      args[MAX_PRAGMA_ARGS];
+        unsigned    argc;
+    }           pragmas[MAX_PRAGMAS];
+    unsigned    pragma_count;
 
     /*  Argument and temporary names, arguments first as the frame expects. */
     char        names[MAX_TEMPS][64];
@@ -1299,9 +1312,23 @@ apply_pragma(st_compiler *c, const char *selector,
         c->out->primitive = 117;
         return;
     }
-    /*  Any other pragma is well-formed and means nothing here.  */
-    (void) args;
-    (void) argc;
+    /*
+     *  Any other pragma means nothing to the compiler and something to the
+     *  image, so it is kept rather than dropped.  <shared: #serialize> is
+     *  the one the parallel-safety audit is going to want; <test> and
+     *  <deprecated:> are what ported code declares.
+     */
+    if (c->pragma_count < MAX_PRAGMAS) {
+        unsigned    i;
+        unsigned    slot = c->pragma_count++;
+
+        snprintf(c->pragmas[slot].keyword, sizeof c->pragmas[slot].keyword,
+                 "%.63s", selector);
+        c->pragmas[slot].argc = (argc < MAX_PRAGMA_ARGS) ? argc
+                                                         : MAX_PRAGMA_ARGS;
+        for (i = 0; i < c->pragmas[slot].argc; ++i)
+            c->pragmas[slot].args[i] = args[i].value;
+    }
 }
 
 /*
@@ -2458,6 +2485,45 @@ needs_method_class(const st_compiler *c)
         || c->argument_count > 4;
 }
 
+/*
+ *  Put the method's pragmas in its literal frame, as an
+ *  AdditionalMethodState, so the image can read them back.
+ *
+ *  Ahead of the class association, which has to stay last: a super send
+ *  takes its lookup class from literal (count - 1) and would find this
+ *  instead.
+ */
+static void
+add_method_state_literal(st_compiler *c)
+{
+    st_oop      entries[MAX_PRAGMAS];
+    st_oop      pragmas;
+    st_oop      state;
+    unsigned    i;
+
+    if (c->failed || c->pragma_count == 0 || !c->ctx->make_method_state)
+        return;
+    for (i = 0; i < c->pragma_count; ++i) {
+        st_oop      parts[1 + MAX_PRAGMA_ARGS];
+        unsigned    k;
+
+        parts[0] = c->ctx->intern_symbol(c->pragmas[i].keyword, c->ctx->user);
+        for (k = 0; k < c->pragmas[i].argc; ++k)
+            parts[1 + k] = c->pragmas[i].args[k];
+        entries[i] = c->ctx->make_array(parts, 1 + c->pragmas[i].argc,
+                                        c->ctx->user);
+    }
+    pragmas = c->ctx->make_array(entries, c->pragma_count, c->ctx->user);
+    state   = c->ctx->make_method_state(pragmas, c->ctx->user);
+    /*
+     *  A profile with no AdditionalMethodState answers nil, and the method
+     *  is compiled exactly as it was before pragmas were kept.
+     */
+    if (state == ST_NIL || state == ST_OOP_INVALID)
+        return;
+    literal_index(c, state);
+}
+
 static void
 append_method_class_literal(st_compiler *c)
 {
@@ -2695,6 +2761,7 @@ COMPILE_to_bytecodes(const char *source, const st_compile_context *ctx,
         c.failed        = 0;
         c.block_seen    = 0;
         c.current_scope = 0;
+        c.pragma_count  = 0;
         out->length        = 0;
         out->literal_count = 0;
         out->error[0]      = '\0';
@@ -2806,6 +2873,7 @@ COMPILE_to_bytecodes(const char *source, const st_compile_context *ctx,
             if (out->length == 0 || out->bytecodes[out->length - 1] != 124)
                 emit(&c, 120);
         }
+        add_method_state_literal(&c);
         append_method_class_literal(&c);
         LEX_close(c.lx);
 

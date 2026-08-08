@@ -568,6 +568,29 @@ BOOT_make_byte_array(const uint8_t *bytes, unsigned count, void *user)
     return array;
 }
 
+/*
+ *  An AdditionalMethodState holding a method's pragmas.
+ *
+ *  Answers nil when the profile has not loaded the class, and the compiler
+ *  then leaves the method exactly as it was -- which is the Blue Book case
+ *  and keeps its image unchanged.
+ */
+st_oop
+BOOT_make_method_state(st_oop pragmas, void *user)
+{
+    st_oop  class_oop = BOOT_global("AdditionalMethodState");
+    st_oop  state;
+
+    (void) user;
+    if (!OM_is_object(class_oop))
+        return ST_NIL;
+    state = OM_instantiate_pointers(class_oop, 1);
+    if (!OM_is_object(state))
+        return ST_NIL;
+    OM_store_pointer(0, state, pragmas);
+    return state;
+}
+
 /*  Characters are unique per code point, which is what makes == work.  */
 st_oop
 BOOT_make_character(unsigned code, void *user)
@@ -1432,6 +1455,7 @@ compile_into(boot_class *c, int class_side, const char *source,
     ctx.make_large_integer = BOOT_make_large_integer;
     ctx.make_array         = BOOT_make_array;
     ctx.make_byte_array    = BOOT_make_byte_array;
+    ctx.make_method_state  = BOOT_make_method_state;
     ctx.make_character     = BOOT_make_character;
     ctx.lookup_global      = BOOT_lookup_global;
     ctx.dialect            = current_dialect;
@@ -3361,6 +3385,7 @@ BOOT_install_scheduler(const char *startup_source)
     ctx.make_large_integer = BOOT_make_large_integer;
     ctx.make_array         = BOOT_make_array;
     ctx.make_byte_array    = BOOT_make_byte_array;
+    ctx.make_method_state  = BOOT_make_method_state;
     ctx.make_character     = BOOT_make_character;
     ctx.lookup_global      = BOOT_lookup_global;
     snprintf(source, sizeof source, "startUp %s", startup_source);

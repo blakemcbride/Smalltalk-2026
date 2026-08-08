@@ -53,6 +53,8 @@ static st_oop stub_array(st_oop *e, unsigned n, void *user)
 { (void) e; (void) n; (void) user; return 2006; }
 static st_oop stub_byte_array(const uint8_t *b, unsigned n, void *user)
 { (void) b; (void) n; (void) user; return 2008; }
+static st_oop stub_method_state(st_oop pragmas, void *user)
+{ (void) pragmas; (void) user; return 2010; }
 static st_oop stub_character(unsigned code, void *user)
 { (void) user; return (st_oop) (4000 + code * 2); }
 static st_oop stub_global(const char *name, void *user)
@@ -80,6 +82,7 @@ context(void)
     ctx.make_large_integer = stub_large;
     ctx.make_array         = stub_array;
     ctx.make_byte_array    = stub_byte_array;
+    ctx.make_method_state  = stub_method_state;
     ctx.make_character     = stub_character;
     /*  A super send needs a method class; any Association will do here.  */
     ctx.method_class_association = 5000;

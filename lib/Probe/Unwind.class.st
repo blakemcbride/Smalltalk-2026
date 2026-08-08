@@ -83,6 +83,16 @@ Unwind class >> fillWeakly: aWeakArray [
 ]
 
 { #category : 'cases' }
+Unwind class >> annotated [
+	"Three pragmas the compiler has nothing to say about, kept so that the
+	 image can read them back."
+	<test>
+	<deprecated: 'use #normal'>
+	<shared: #serialize>
+	^#annotated
+]
+
+{ #category : 'cases' }
 Unwind class >> curtailedNormally [
 	"ifCurtailed: runs its block only when the receiver does NOT finish."
 	[self note: #body] ifCurtailed: [self note: #curtailed].
