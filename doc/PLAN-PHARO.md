@@ -135,7 +135,7 @@ that code is on the not-portable list.
 
 Lettered to avoid colliding with `doc/PLAN.md`'s 0–9. Each has a gate that can fail.
 
-### A — Syntax extensions
+### A — Syntax extensions *(done)*
 `{ expr. expr }`, `#[1 2 3]`, block-local temporaries, general pragmas (several per method),
 named primitives (`<primitive: 'name' module: 'M'>` → primitive 117, descriptor as literal 0).
 
