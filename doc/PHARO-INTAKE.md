@@ -15,8 +15,8 @@ Taken with `st80 -syntax`, which compiles every method and throws the result awa
 
 | | files | methods | compiled | failed |
 |---|---|---|---|---|
-| **All of Pharo** | 9,443 | 91,210 | **91,009** | 201 (0.22%) |
-| **Kernel** | 94 | 1,670 | **1,669** | 1 (0.06%) |
+| **All of Pharo** | 9,443 | 91,210 | **91,057** | 153 (0.17%) |
+| **Kernel** | 94 | 1,670 | **1,670** | **0** |
 | Collections-Abstract | 6 | 132 | 132 | 0 |
 | Collections-Sequenceable | 20 | 641 | 641 | 0 |
 | Collections-Unordered | 21 | 304 | 302 | 2 |
@@ -26,51 +26,22 @@ Taken with `st80 -syntax`, which compiles every method and throws the result awa
 And `st80 -primitives` on Kernel: **93 distinct primitives, 48 implemented here,
 45 to implement.** That is the finite checklist Phase F5 existed to produce.
 
-Kernel went from 1,639 to 1,669 in one sitting, by fixing what the report named.
+Kernel went from 1,639 to **all of it** by fixing what the report named.
 
-## What the 201 are
+## What the 153 are
 
 Ranked, because the order is the work order:
 
 | count | what | note |
 |---|---|---|
 | 79 | `#( double sx; double shx; )` | a semicolon inside a literal array. Pharo takes it as a symbol; we stop |
-| 50 | closure analysis: *"used in a block that did not capture it"*, *"a captured name is not in scope"*, *"a shared name's vector is not in scope"* | **one bug, three faces** — see below |
 | 21 | `whileTrue:` / `ifTrue:ifFalse:` given a non-literal block | real Smalltalk falls back to a message send; we insist on a literal |
 | 14 | non-ASCII characters in source (`$¶`) | the lexer is byte-oriented |
 | 10 | `[ :index || segment | … ]` | `||` — the argument bar and the temporaries bar with no space between |
-| 27 | assorted | not yet grouped |
+| 29 | assorted | not yet grouped |
 
-### The closure-analysis bug, diagnosed but not fixed
-
-Fifty methods, and one cause. Reproduction, which fails today:
-
-```smalltalk
-F >> minimal [
-	[ [go] whileTrue:
-		[ | t |
-		  t := 1.
-		  [ a isNil and: [t >= 2] ] whileTrue: [ a := nil ] ]
-	] ensure: [ nil ]
-]
-```
-
-A temporary declared in an **inlined** block, inside a **real** block, used from a
-nested inlined block. `compile_inline_while` parses the `whileTrue:` receiver
-speculatively as a real block, which takes a scope number and records that the
-scope *needs* the variable — then rewinds. `mark`/`rewind_to` give back the scope
-number but **not the need**, so the entry goes on naming a number that the next
-real block to be parsed is given, and the emitting pass tries to copy a vector into
-a block that never mentioned the variable.
-
-Two fixes were tried and neither is right: restoring `need_count` wholesale loses
-needs that legitimately survive a rewind (34 Kernel methods break), and filtering
-by scope number against `block_seen` does the same. The needs recorded by an
-abandoned parse are not simply the ones added after the mark, and working out what
-they *are* wants a clear head rather than the end of a long session.
-
-`sources/` compiles 4,521 of 4,521 and trace2 is byte-identical throughout, so the
-bug is reachable only from the closure dialect.
+**The closure-analysis failures are gone** — 50 methods wearing three different
+messages, all one cause. See below.
 
 ## What was fixed to get here
 
@@ -95,6 +66,37 @@ was already being told:
   different header and `SmallFloat64` declares 541–559. The number is recorded and
   not written, and the Smalltalk body is kept — the same thing as a primitive that
   always fails, which is what an unimplemented primitive already does.
+
+### The closure analysis: decided by looking, not by trying
+
+Whether `[cond]` is a real block or the inlined receiver of `whileTrue:` cannot be
+known until the selector *after* it has been read, and the block comes first. That
+used to be settled by compiling it as a **real block**, looking at what came next,
+and rewinding if the answer was `whileTrue:`.
+
+That is sound for tokens and bytecodes, which `rewind_to` gives back. It is unsound
+for the closure analysis, which it cannot: the speculative reading marks every
+enclosing name the block touches as *captured* and records that its scope *needs*
+them, and the inlined reading needs neither. Worse, the two passes disagree about
+which reading happened — pass zero's conclusions describe the **final** one — so when
+pass one re-ran the same speculative parse it could not resolve the names it was
+about to throw away, and failed a method it would otherwise have compiled.
+
+Three fixes were tried against the symptoms and all three were wrong, each in an
+instructive way: giving back the needs alone leaves a variable marked shared with
+nothing to share it through; giving back the capture flags as well fixes the first
+case and breaks a second; giving back the *error* as well lets the parse continue
+and fail later. They were symptoms of one thing — **the block was being parsed
+twice, under two different readings.**
+
+So it is not any more. The lexer scans to the matching bracket — it already knows
+what a comment, a string and a `$]` are — and answers the selector after it. Nothing
+in the compiler is touched, so there is nothing to give back. The speculative
+machinery added while chasing the symptoms was removed once the cause was fixed.
+
+`sources/` compiles 4,521 of 4,521 and trace2 stayed byte-identical, which is the
+only evidence worth anything about a change to how every loop in the system is
+recognised.
 
 And one reporting defect, which cost an hour: the survey folded a failure message
 from its **first apostrophe** to the end, so *"a shared name's vector is not in

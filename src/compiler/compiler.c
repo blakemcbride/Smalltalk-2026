@@ -27,6 +27,9 @@
 #define MAX_PRAGMA_ARGS 8
 
 /*  Save and restore enough to compile a stretch of source a second time.  */
+/*  The most names one method may declare, across every scope in it.  */
+#define MAX_DECLS       192
+
 typedef struct {
     st_lexer_state  lexer;
     st_token        token;
@@ -74,7 +77,6 @@ typedef struct {
  *  shared between that block's own activations.
  */
 
-#define MAX_DECLS       192
 #define MAX_SCOPES      32
 #define MAX_COPIED      15      /*  numCopied is four bits in bytecode 143  */
 #define MAX_NEEDS       512
@@ -2003,6 +2005,7 @@ mark(st_compiler *c, compiler_mark *m)
     m->block_seen    = c->block_seen;
     m->decl_count    = c->decl_count;
     m->decl_visible  = c->decl_visible;
+
 }
 
 static void
@@ -2020,7 +2023,70 @@ rewind_to(st_compiler *c, const compiler_mark *m)
     c->block_seen          = m->block_seen;
     c->decl_count          = m->decl_count;
     c->decl_visible        = m->decl_visible;
+    /*
+     *  Only in pass zero: pass one reads the analysis rather than building
+     *  it, and giving any of it back there would delete conclusions.
+     */
 
+
+
+}
+
+/*
+ *  The selector that follows a literal block, found by LOOKING rather than
+ *  by parsing.
+ *
+ *  "[cond] whileTrue: [body]" has to be compiled inlined -- a jump back,
+ *  no BlockContext -- and "[cond] value" has to be compiled as a real
+ *  block.  Which one it is cannot be known until the selector after the
+ *  block has been read, and the block comes first.
+ *
+ *  This used to be settled by compiling the block as a REAL block, looking
+ *  at what came next, and rewinding if the answer was whileTrue:.  That is
+ *  sound for tokens and bytecodes, which rewind_to gives back, and unsound
+ *  for the closure analysis, which it cannot.  The speculative reading
+ *  marks every enclosing name the block touches as captured and records
+ *  that its scope needs them; the real reading, inlined, needs neither.
+ *  Worse, the two passes disagree about which happened: pass zero's
+ *  conclusions describe the FINAL reading, so when pass one re-runs the
+ *  same speculative parse it cannot resolve the names it is about to throw
+ *  away, and fails a method it would have compiled.
+ *
+ *  So no block is parsed twice under two readings any more.  The lexer
+ *  scans to the matching bracket -- it already knows what a comment, a
+ *  string and a $] are -- and answers the selector after it.  Nothing in
+ *  the compiler is touched, so there is nothing to give back.
+ */
+static void
+selector_after_block(st_compiler *c, char *out, size_t out_len)
+{
+    st_lexer_state  saved;
+    st_token        saved_token = c->token;
+    st_token        tok;
+    int             depth = 0;
+
+    out[0] = '\0';
+    LEX_save(c->lx, &saved);
+    /*  c->token is the opening bracket; the lexer sits just past it.  */
+    depth = 1;
+    for (;;) {
+        if (!LEX_next(c->lx, &tok) || tok.kind == ST_TOK_END
+         || tok.kind == ST_TOK_ERROR)
+            break;
+        if (tok.kind == ST_TOK_LBRACKET)
+            ++depth;
+        else if (tok.kind == ST_TOK_RBRACKET) {
+            if (--depth == 0) {
+                if (LEX_next(c->lx, &tok)
+                 && (tok.kind == ST_TOK_KEYWORD
+                  || tok.kind == ST_TOK_IDENTIFIER))
+                    snprintf(out, out_len, "%s", tok.text);
+                break;
+            }
+        }
+    }
+    LEX_restore(c->lx, &saved);
+    c->token = saved_token;
 }
 
 /*
@@ -2469,24 +2535,22 @@ compile_expression(st_compiler *c)
          */
         mark(c, &before_receiver);
         if (at_inlinable_block(c)) {
-            compiler_mark   after_block;
+            char    next[256];
 
-            compile_primary(c, &v);
-            mark(c, &after_block);
-            if (at(c, ST_TOK_KEYWORD) || at(c, ST_TOK_IDENTIFIER)) {
-                const char *sel = c->token.text;
-
-                if (strncmp(sel, "whileTrue", 9) == 0
-                 || strncmp(sel, "whileFalse", 10) == 0) {
-                    rewind_to(c, &before_receiver);
-                    if (compile_inline_while(c))
-                        return;
-                    rewind_to(c, &before_receiver);
-                    compile_primary(c, &v);
-                }  else  {
-                    rewind_to(c, &after_block);
-                }
+            selector_after_block(c, next, sizeof next);
+            if (strncmp(next, "whileTrue", 9) == 0
+             || strncmp(next, "whileFalse", 10) == 0) {
+                if (compile_inline_while(c))
+                    return;
+                /*
+                 *  It looked like a loop and was not one -- the body was
+                 *  not a literal block.  Nothing has been kept, because
+                 *  compile_inline_while rewinds its own attempt, so this
+                 *  falls through to the ordinary reading.
+                 */
+                rewind_to(c, &before_receiver);
             }
+            compile_primary(c, &v);
         }  else  {
             compile_primary(c, &v);
         }

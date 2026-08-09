@@ -930,6 +930,64 @@ test_the_two_dialects(void)
     }
 }
 
+/*
+ *  Whether a block is inlined or real is decided by LOOKING at what follows
+ *  it, never by parsing it one way and retrying.
+ *
+ *  The retry was sound for tokens and bytecodes, which rewinding gives
+ *  back, and unsound for the closure analysis, which it cannot: reading
+ *  "[cond]" as a real block marks every enclosing name it touches as
+ *  captured and records that its scope needs them, and the inlined reading
+ *  needs neither.  The two passes then disagreed about which reading
+ *  happened -- pass zero's conclusions describe the FINAL one -- so pass
+ *  one could not resolve names it was about to throw away.
+ *
+ *  Fifty methods of Pharo's Kernel and library failed on this, wearing
+ *  three different messages.  The shapes below are the ones that did it.
+ */
+static void
+test_inlined_or_real_is_decided_by_lookahead(void)
+{
+    /*  A temporary of an inlined block, captured by a nested inlined
+        block, all inside a REAL block.  This is the one that failed.  */
+    CHECK(compiles_as(
+        "minimal | go a |"
+        " [ [go] whileTrue:"
+        "     [ | t | t := 1."
+        "       [ a isNil and: [t >= 2] ] whileTrue: [ a := nil ] ]"
+        " ] ensure: [ nil ]",
+        ST_DIALECT_CLOSURES));
+    /*  And with no enclosing real block, which failed differently.  */
+    CHECK(compiles_as(
+        "noEnsure | go a |"
+        " [go] whileTrue:"
+        "   [ | t | t := 1."
+        "     [ a isNil and: [t >= 2] ] whileTrue: [ a := nil ] ]",
+        ST_DIALECT_CLOSURES));
+
+    /*
+     *  The lookahead must not be fooled by a bracket inside a comment, a
+     *  string or a character literal, which is why it goes through the
+     *  lexer rather than counting bytes.
+     */
+    CHECK(compiles_as("foo | go | [go \"a ] here\"] whileTrue: [go := false]",
+                      ST_DIALECT_CLOSURES));
+    CHECK(compiles_as("foo | go | [go] whileTrue: [go := ']' isEmpty]",
+                      ST_DIALECT_CLOSURES));
+    CHECK(compiles_as("foo | go | [go] whileTrue: [go := $] isVowel]",
+                      ST_DIALECT_CLOSURES));
+
+    /*  A block that is NOT a loop receiver is still a real block.  */
+    CHECK_EQ_INT((int) primitive_of("foo ^[1] value", "a real block"), 0);
+    CHECK(compiles_as("foo ^[:x | x] value: 3", ST_DIALECT_CLOSURES));
+    /*  Nested loops, so the bracket counting has to be a count.  */
+    CHECK(compiles_as("foo | a b | [a] whileTrue: [ [b] whileTrue: [b := a] ]",
+                      ST_DIALECT_CLOSURES));
+    /*  And the Blue Book dialect reads all of it the same way.  */
+    CHECK(compiles_as("foo | a b | [a] whileTrue: [ [b] whileTrue: [b _ a] ]",
+                      ST_DIALECT_BLUE_BOOK));
+}
+
 static void
 test_pragmas(void)
 {
@@ -1014,6 +1072,7 @@ main(void)
     test_block_temporaries();
     test_pragmas();
     test_the_two_dialects();
+    test_inlined_or_real_is_decided_by_lookahead();
 
     return ST_TEST_END();
 }
