@@ -71,3 +71,25 @@ SequenceableCollection >> keysAndValuesDo: aBlock [
 	 withIndexDo:, which is Pharo's convention and not a slip."
 	1 to: self size do: [:i | aBlock value: i value: (self at: i)]
 ]
+
+{ #category : '*Collections-Protocol' }
+SequenceableCollection >> sorted: aBlock [
+	"Sorted, and the SAME KIND of collection -- 'hello' sorted is 'ehllo'
+	 and not an Array of five Characters.
+
+	 Collection>>sorted answers an Array because a sorted Set is not a
+	 Set and there is nothing better it could answer.  Here there is:
+	 order is what a sequenceable collection is for, so sorting one has
+	 an obvious answer and the species is it.  Pharo's own doctest for
+	 this method is what said so."
+	| ordered result |
+	ordered := (self asSortedCollection: aBlock) asArray.
+	result := self species new: ordered size.
+	1 to: ordered size do: [:i | result at: i put: (ordered at: i)].
+	^result
+]
+
+{ #category : '*Collections-Protocol' }
+SequenceableCollection >> sorted [
+	^self sorted: [:a :b | a <= b]
+]

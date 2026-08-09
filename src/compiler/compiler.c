@@ -1141,6 +1141,31 @@ parse_literal_array(st_compiler *c)
     while (!c->failed && !at(c, ST_TOK_RPAREN) && !at(c, ST_TOK_END)) {
         st_oop  element = ST_NIL;
 
+        /*
+         *  A minus written against a number is that number's SIGN.
+         *
+         *  The lexer decides this from what came before, because in code
+         *  it is genuinely ambiguous -- "3-4" is a send and "foo: -4" is a
+         *  literal.  Inside #( ) it is not ambiguous at all: there are no
+         *  sends, so a minus can only be a sign or the symbol #-, and the
+         *  space tells them apart.
+         *
+         *  Without this "#(1 5 10 -4)" was FIVE elements -- 1, 5, 10, the
+         *  symbol #-, and 4.  Nothing failed; the array was simply the
+         *  wrong array, and "#(1 5 10 -4) min" answered 1.
+         */
+        if (at(c, ST_TOK_BINARY) && strcmp(c->token.text, "-") == 0) {
+            st_token    look;
+
+            LEX_peek(c->lx, &look);
+            if ((look.kind == ST_TOK_INTEGER || look.kind == ST_TOK_FLOAT)
+             && !look.after_space) {
+                advance(c);             /*  past the minus  */
+                c->token.integer = -c->token.integer;
+                c->token.real    = -c->token.real;
+            }
+        }
+
         switch (c->token.kind) {
         case ST_TOK_INTEGER:
             element = OM_int_fits((st_int) c->token.integer)

@@ -44,7 +44,7 @@
 #define BLUEBOOK_CATEGORIES     41
 #define LIB_CLASSES             23       /*  BlockClosure, the exceptions,
                                             SUnit, and the fixtures        */
-#define LIB_METHODS             311
+#define LIB_METHODS             313
 /*
  *  Three, not five: the extension packages define no CLASSES, and a
  *  category is a property of a class definition.  Kernel-Methods-Fixes and
@@ -1616,6 +1616,28 @@ test_modern_protocol(void)
 
     /*  Collections.  */
     check_string("#(3 1 2) sorted printString", "(1 2 3 )");
+    /*
+     *  A sequenceable collection sorts into its own species -- 'hello'
+     *  sorted is 'ehllo', not five Characters in an Array.  Pharo's own
+     *  doctest for the method is what said so; ours answered the Array
+     *  everything else has to answer, and was wrong to.
+     */
+    check_string("'hello' sorted", "ehllo");
+    check_string("'hello' sorted: [:a :b | a >= b]", "ollhe");
+    /*
+     *  A minus written against a number inside #( ) is that number's sign.
+     *  It is ambiguous in code -- "3-4" is a send -- and not ambiguous in
+     *  a literal array, where there are no sends.  "#(1 5 10 -4)" was FIVE
+     *  elements: 1, 5, 10, the symbol #-, and 4.  Nothing failed; the
+     *  array was simply the wrong array, and its min answered 1.
+     */
+    check_integer("#(1 5 10 -4) size", 4);
+    check_integer("#(1 5 10 -4) min", -4);
+    check_string("#(-1 -2) printString", "(-1 -2 )");
+    check_string("#(1.5 -2.5) printString", "(1.5 -2.5 )");
+    /*  A minus with a space is still the symbol it looks like.  */
+    check_integer("#(a - b) size", 3);
+    check_boolean("(#(a - b) at: 2) == #-", 1);
     check_string("(#(3 1 2) sorted: [:a :b | a > b]) printString", "(3 2 1 )");
     check_string("((1 to: 3) flatCollect: [:i | Array with: i with: i])"
                  " printString", "(1 1 2 2 3 3 )");
@@ -1818,7 +1840,7 @@ test_browsing(void)
      *  zero -- which a CompiledMethod reads as "no source at all".  See
      *  test_every_method_can_find_its_source.
      */
-    check_integer("(SourceFiles at: 1) contents size", 1246332);
+    check_integer("(SourceFiles at: 1) contents size", 1246998);
 }
 
 /*

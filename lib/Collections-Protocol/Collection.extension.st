@@ -6,12 +6,17 @@ apologising for repeatedly: where Pharo answers `self species` -- so that
 collecting over an OrderedCollection gives you an OrderedCollection -- the
 methods here that CHANGE the shape of the result answer an **Array**.
 
-sorted, sorted: and flatCollect: are the three.  A sorted Set is not a Set,
+flatCollect: is the clearest case.  A sorted Set is not a Set,
 and a flattened Bag is not a Bag, so `species` is already the wrong answer
 for two of the three most interesting receivers; Pharo works around that
 with a family of `as:` variants.  An Array is what every one of them can
-answer honestly, it is what Pharo itself answers for `sorted`, and it is
-predictable without knowing the receiver.  The methods that PRESERVE shape
+answer honestly and it is predictable without knowing the receiver.
+
+sorted and sorted: are the exception, and Pharo's own doctest is what
+pointed it out: a SEQUENCEABLE collection has an obvious species to answer,
+because order is what it is for, so SequenceableCollection overrides both
+and 'hello' sorted is 'ehllo'.  The Array answer stands for everything
+else, where there is nothing better.  The methods that PRESERVE shape
 -- select:, reject:, collect:, copyWithout: -- go on using species, because
 there the 1983 answer was already right.
 "

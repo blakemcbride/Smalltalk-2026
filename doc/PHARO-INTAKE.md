@@ -23,6 +23,44 @@ Taken with `st80 -syntax`, which compiles every method and throws the result awa
 | Collections-Strings | 13 | 430 | 427 | 3 |
 | AST-Core | 92 | 1,507 | 1,506 | 1 |
 
+And `st80 -doctests` runs Pharo's **own examples** against this image:
+
+```
+1,426 doctests in 4,790 methods of 106 files:
+   418 passed, 35 wrong, 973 need something not here
+```
+
+Pharo documents a method by putting examples in its comment, in a form meant to be
+read by machine — `"(#(10 20 30) indexOf: 20) >>> 2"`. There are about fifteen
+hundred, they were written by the people who wrote the methods, and they say what a
+method is *for* rather than what it happens to do. That makes them the cheapest
+oracle this port will ever get: nobody has to write them, they cannot drift from the
+code they sit in, and they answer the question that matters — not "does Pharo's
+source parse here" but "does it **mean** here what it means there".
+
+The three outcomes are told apart on purpose, because they are three different pieces
+of news. *Passed* is 418 of Pharo's own examples working against an image with none
+of Pharo's code in it. *Needs something not here* is a class or a selector still to
+port — the work, and the number that should fall. ***Wrong* is the only one that is a
+bug**: the method exists here and disagrees. Each doctest runs under a handler, so a
+missing selector is never miscounted as a wrong answer.
+
+Two of the 35 were found and fixed within the hour, and both were silent:
+
+- **`#(1 5 10 -4)` was five elements** — 1, 5, 10, the symbol `#-`, and 4. A minus
+  written against a number is ambiguous in code (`3-4` is a send) and *not* ambiguous
+  inside `#( )`, where there are no sends. Nothing failed; the array was simply the
+  wrong array, and `#(1 5 10 -4) min` answered 1.
+- **`'hello' sorted` answered an Array of five Characters.** Our `Collection>>sorted`
+  answers an Array by design — a sorted Set is not a Set — but a *sequenceable*
+  collection has an obvious species, because order is what it is for. Pharo's doctest
+  is what pointed out that the general rule had been applied one level too high.
+
+And two it measured rather than fixed: `Float` prints six significant digits where
+Pharo prints shortest-round-trip, and `2 raisedTo: 1/12` is off by 2·10⁻⁷ because
+`ln` and `exp` fall back to the 1983 image's Taylor series — primitives 58 and 59 are
+on the list below.
+
 And `st80 -primitives` on Kernel: **93 distinct primitives, 48 implemented here,
 45 to implement.** That is the finite checklist Phase F5 existed to produce.
 

@@ -28,9 +28,22 @@
 static int  use_closures;
 
 #define EVAL_BYTECODE_BUDGET    UINT64_C(200000000)
+
+/*
+ *  How long one evaluation may run.
+ *
+ *  Generous by default, because -eval is given whole programs.  The doctest
+ *  runner lowers it a hundredfold: an example written in a method comment
+ *  to show what the method does is not a computation, and one that does not
+ *  answer inside a couple of million bytecodes has hit something that does
+ *  not terminate here.  Left at the default, fifteen hundred of them spend
+ *  four seconds each discovering that.
+ */
+static uint64_t evaluate_budget = EVAL_BYTECODE_BUDGET;
 #include "compiler.h"
 #include "chunk.h"
 #include "survey.h"
+#include "doctest.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -87,6 +100,9 @@ usage(const char *argv0)
     printf("        -tests            with -bootstrap: run every SUnit test "
            "and exit non-zero\n"
            "                          if any did not pass\n");
+    printf("        -doctests <f.st>  with -bootstrap: run the \"expr >>> "
+           "value\" examples in\n"
+           "                          that file's method comments\n");
     printf("        both of the above also take -profile <p.profile>\n");
     printf("  -help                 this message\n");
     printf("\n");
@@ -607,11 +623,11 @@ evaluate(const char *expression, char *errbuf, size_t errlen)
      *  recursive block, and an expression that fails for want of budget
      *  looks exactly like one that is wrong.
      */
-    ST_interp_run(EVAL_BYTECODE_BUDGET);
+    ST_interp_run(evaluate_budget);
     ST_trace_set(ST_TRACE_OFF, NULL);
     if (st_vm.running) {
         snprintf(errbuf, errlen, "expression did not finish in %llu bytecodes",
-                 (unsigned long long) EVAL_BYTECODE_BUDGET);
+                 (unsigned long long) evaluate_budget);
         return ST_OOP_INVALID;
     }
     return st_vm.return_value;
@@ -796,7 +812,7 @@ write_screenshot(void)
 static int
 do_bootstrap(const char *const *sources, const int *dialects, unsigned count,
              const char *out_path, const char *expression, const char *startup,
-             int run_tests)
+             int run_tests, const st_names *doctest_paths)
 {
     st_bootstrap_result result;
     char                err[512];
@@ -896,6 +912,88 @@ do_bootstrap(const char *const *sources, const int *dialects, unsigned count,
      *  can ask.  It runs before -eval so that a failing suite stops there
      *  rather than going on to evaluate something in a broken image.
      */
+    /*
+     *  Pharo's own examples, run against this image.
+     *
+     *  They answer the question the port actually cares about.  "st80
+     *  -syntax" says whether Pharo's source parses here; this says whether
+     *  it MEANS here what it means there, and it says so in a number that
+     *  nobody had to write by hand -- the examples came with the methods.
+     *
+     *  A doctest is checked by evaluating "(expression) = (expected)",
+     *  which is what the notation means.  Three outcomes are told apart,
+     *  because they are three different pieces of news: a pass, a WRONG
+     *  ANSWER -- the method exists here and does something else -- and a
+     *  failure to run at all, which is almost always a class or a selector
+     *  this image has not got yet.
+     */
+    if (doctest_paths->count) {
+        st_doctest_list list;
+        unsigned        i;
+        unsigned        passed = 0;
+        unsigned        wrong = 0;
+        unsigned        unrunnable = 0;
+        unsigned        shown = 0;
+        st_oop          raised = BOOT_intern_symbol("stDoctestRaised", NULL);
+        uint64_t        saved_budget = evaluate_budget;
+
+        evaluate_budget = UINT64_C(2000000);
+        memset(&list, 0, sizeof list);
+        for (i = 0; i < doctest_paths->count; ++i) {
+            char    scan_error[512] = "";
+
+            if (!DOCTEST_scan(doctest_paths->items[i], &list,
+                              scan_error, sizeof scan_error))
+                fprintf(stderr, "st80: %s: %s\n",
+                        doctest_paths->items[i], scan_error);
+        }
+        for (i = 0; i < list.count; ++i) {
+            char    source[2048];
+            st_oop  value;
+
+            /*
+             *  Under a handler, so that a selector this image has not got
+             *  is told apart from an answer that is merely different.  The
+             *  two are different news: one is a method to port, the other
+             *  is a method that is here and disagrees -- and only the
+             *  second is a bug.  Without the handler every missing
+             *  selector counted as a wrong answer and printed a backtrace
+             *  on the way past.
+             */
+            snprintf(source, sizeof source,
+                     "^[(%s) = (%s)] on: Error do: [:e | #stDoctestRaised]",
+                     list.items[i].expression, list.items[i].expected);
+            value = evaluate(source, err, sizeof err);
+            if (value == ST_TRUE) {
+                ++passed;
+                continue;
+            }
+            if (value == ST_OOP_INVALID || value == raised)
+                ++unrunnable;
+            else
+                ++wrong;
+            /*
+             *  A few, named, rather than all of them: the point of the
+             *  number is to move, and a thousand lines of output is not
+             *  something anybody reads twice.
+             */
+            if (value != ST_OOP_INVALID && value != raised && shown < 12) {
+                ++shown;
+                fprintf(stderr, "st80:   wrong: %s  (%s:%u, %s)\n",
+                        list.items[i].expression, list.items[i].file,
+                        list.items[i].line, list.items[i].where);
+            }
+        }
+        fprintf(stderr, "st80: %u doctests in %u methods of %u files: "
+                        "%u passed, %u wrong, %u need something not here\n",
+                list.count, list.methods, list.files,
+                passed, wrong, unrunnable);
+        DOCTEST_free(&list);
+        evaluate_budget = saved_budget;
+        if (wrong)
+            return 1;
+    }
+
     if (run_tests) {
         st_oop  passed;
 
@@ -1263,6 +1361,9 @@ main(int argc, char **argv)
             const char *out_path = NULL;
             const char *expression = NULL;
             int         run_tests  = 0;
+            st_names    doctests;
+
+            memset(&doctests, 0, sizeof doctests);
             const char *startup = NULL;
             int          j;
             int          status;
@@ -1281,6 +1382,8 @@ main(int argc, char **argv)
                     use_closures = 1;
                 }  else if (!strcmp(argv[j], "-tests")) {
                     run_tests = 1;
+                }  else if (!strcmp(argv[j], "-doctests") && j + 1 < argc) {
+                    SRC_names_add(&doctests, argv[++j]);
                 }  else if (!strcmp(argv[j], "-screenshot") && j + 1 < argc) {
                     shot_path = argv[++j];
                 }  else if (!strcmp(argv[j], "-manifest") && j + 1 < argc) {
@@ -1337,7 +1440,8 @@ main(int argc, char **argv)
             }
             status = do_bootstrap((const char *const *) sources.items,
                                   dialects.items, sources.count, out_path,
-                                  expression, startup, run_tests);
+                                  expression, startup, run_tests,
+                                  &doctests);
             path_list_free(&sources);
             free(dialects.items);
             return status;
