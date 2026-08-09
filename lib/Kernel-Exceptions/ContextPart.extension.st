@@ -59,7 +59,7 @@ ContextPart >> restartAndJump [
 	 Not called restart: MethodContext>>restart is a 1983 method that
 	 resets a frame for the Debugger to resume separately, and this does
 	 both at once."
-	<primitive: 249>
+	<primitive: 251>
 	^self primitiveFailed
 ]
 

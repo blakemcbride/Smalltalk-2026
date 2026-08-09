@@ -101,6 +101,22 @@ Object >> -> anObject [
 ]
 
 { #category : '*Kernel-Protocol' }
+Object >> ~~ anObject [
+	"Not the same object.  The primitive is the whole of it; the fallback
+	 says the same thing one send more slowly."
+	<primitive: 169>
+	^(self == anObject) not
+]
+
+{ #category : '*Kernel-Protocol' }
+Object >> shallowCopy [
+	"Same class, same fields, new identity.  The primitive declines a
+	 SmallInteger, which is its own copy and has no fields to walk."
+	<primitive: 148>
+	^self
+]
+
+{ #category : '*Kernel-Protocol' }
 Object >> isString [
 	^false
 ]

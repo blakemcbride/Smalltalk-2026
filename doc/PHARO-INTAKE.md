@@ -61,8 +61,55 @@ Pharo prints shortest-round-trip, and `2 raisedTo: 1/12` is off by 2·10⁻⁷ b
 `ln` and `exp` fall back to the 1983 image's Taylor series — primitives 58 and 59 are
 on the list below.
 
-And `st80 -primitives` on Kernel: **93 distinct primitives, 48 implemented here,
-45 to implement.** That is the finite checklist Phase F5 existed to produce.
+And `st80 -primitives` on Kernel: **115 distinct primitives, 66 implemented here,
+49 to implement** — the finite checklist Phase F5 existed to produce, worked down
+from 48/45. (The total grew because more of Pharo's Kernel now compiles, so more of
+what it asks for is visible.)
+
+### What was implemented, and what was refused
+
+Eighteen went in: **58 `ln`** and **59 `exp`**, **132 `instVarsInclude:`**,
+**135** the millisecond clock and **240** the UTC microsecond clock, **148 `clone`**,
+**159 `hashMultiply`**, **168 `copyFrom:`**, **169 `~~`**, **170/171** Character to
+and from its code point, **173/174** (`instVarAt:` renumbered), **230**
+`relinquishProcessorForMicroseconds:`, and **163/164/183/184** — read-only and
+pinned objects, which Spur keeps in the object header and this memory does not have.
+Those four answer the truth here rather than what the caller hopes: nothing is
+read-only and nothing is pinned, so asking answers false and *setting* either to
+false succeeds. Setting one to **true fails**, which runs the image's own fallback —
+where a decision about what to do instead actually belongs.
+
+A primitive only helps once a method **declares** it, so `lib/` now declares the ones
+worth reaching from a Blue Book image: `Float>>ln`, `Float>>exp`, `Object>>~~`,
+`Object>>shallowCopy`, `Integer>>hashMultiply`. `ln` and `exp` are not cosmetic — the
+1983 Taylor series stops at `MathApproximationEpsilon` and was wrong in float32's last
+digit, and `(2 raisedTo: 1/12) = 1.0594630943592953` went from false to **true**.
+
+**A collision worth naming.** Pharo uses primitive **249** for
+`Array>>elementsForwardIdentityTo:copyHash:`, a bulk `become:`. This system had taken
+249 for `ContextPart>>restartAndJump`. Loading that one Array method would have called
+ours — a context restart where a `become:` was meant. Ours moved to 251. Pharo also
+uses 240, 242 and 254 in the range `doc/PLAN-PHARO.md` reserved for parallel
+primitives, so that reservation needs revisiting before Phase H spends it.
+
+**Refused, and why:**
+
+| | |
+|---|---|
+| **20–33, and the twelve `LargeIntegers` plugin primitives** | **optimisations of code that already works.** `100 factorial`, `2 raisedTo: 100`, and 20-digit multiplication all answer correctly today through the 1983 Smalltalk implementations of `digitAdd:` and friends. A C bignum library would make them faster and would not make them more correct — worth doing, and worth doing as its own piece of work rather than smuggled in under a bug fix |
+| **541–559 (`SmallFloat64`)** | Spur's immediate floats. Every Float here is boxed, so the class has no instances and the primitives have no receiver |
+| **38/39 (`Float basicAt:`)** | Squeak means the two 32-bit halves of a **64-bit** float. This system's Float is the Blue Book's — **two words, single precision** — so the index means something else, and answering anything would be answering the wrong question |
+| **100 (`perform:withArguments:inSuperclass:`)** | needs a class-directed send this VM has no entry point for. It is also a **number the two dialects disagree about**: 1983 uses 100 for `signal:atMilliseconds:` |
+| **118, 188** (`tryPrimitive:`, `withArgs:executeMethod:`) | both build an activation from C for a method chosen at run time |
+| **136, 242** (signal a semaphore at a time) | need the VM timer thread that `doc/PLAN-PHARO.md`'s Phase L already calls for under `Delay` |
+| **167 (`yield`)** | belongs with Phase H, which rewrites the scheduler it would have to reach into |
+
+**`Float` is single precision here**, and that is worth stating plainly because it is
+not a bug: the Blue Book's Float is two 16-bit words, and `make_float` is faithful to
+it. Pharo's is `BoxedFloat64`. Every float answer in this system is therefore correct
+to about seven digits, not sixteen, and the printString shows six. Making Float
+double-precision is a real and separable piece of work with consequences for the trace
+oracle.
 
 Kernel went from 1,639 to **all of it** by fixing what the report named.
 

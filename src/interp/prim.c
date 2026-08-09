@@ -963,7 +963,7 @@ primitive_find_next_unwind_up_to(void)
 }
 
 /*
- *  249: ContextPart>>restartAndJump.  Run this activation again from the
+ *  251: ContextPart>>restartAndJump.  Run this activation again from the
  *  top, with the arguments it already has.
  *
  *  Not spelled "restart": MethodContext>>restart is a 1983 method that
@@ -1604,6 +1604,271 @@ primitive_class(void)
     return 1;
 }
 
+/*
+ *  ----------  What Pharo's Kernel asks for  ----------
+ *
+ *  Every one of these was named by "st80 -primitives" over Pharo's Kernel.
+ *  That is what the report is for: it turned an unbounded question into a
+ *  list, and a list can be worked down.
+ *
+ *  What is NOT here is as deliberate, and is in doc/PHARO-INTAKE.md by
+ *  number: primitives this memory cannot honour, and primitives that are
+ *  optimisations of Smalltalk that already works.
+ */
+
+/*
+ *  58 and 59: ln and exp.
+ *
+ *  Not decoration.  Without them the image falls back to the Taylor series
+ *  in the 1983 Float>>ln and Float>>exp, which stop at
+ *  MathApproximationEpsilon and carry their own error on top of the
+ *  representation's.  Pharo's doctest for "2 raisedTo: 1/12" is what
+ *  noticed.
+ */
+static int
+primitive_float_ln(void)
+{
+    double  value;
+
+    if (!float_value(ST_stack_value(0), &value))
+        return 0;
+    if (!(value > 0.0))
+        return 0;               /*  the image's own code raises for these  */
+    return answer_float(log(value), 1);
+}
+
+static int
+primitive_float_exp(void)
+{
+    double  value;
+
+    if (!float_value(ST_stack_value(0), &value))
+        return 0;
+    return answer_float(exp(value), 1);
+}
+
+/*  132: does this object hold that one in one of its fields?  */
+static int
+primitive_inst_vars_include(void)
+{
+    st_oop      receiver = ST_stack_value(1);
+    st_oop      wanted = ST_stack_value(0);
+    uint32_t    n;
+    uint32_t    i;
+
+    if (!OM_is_object(receiver) || !OM_pointer_bit(receiver))
+        return answer_boolean(0, 2);
+    n = OM_fetch_word_length(receiver);
+    for (i = 0; i < n; ++i) {
+        if (OM_fetch_pointer(i, receiver) == wanted)
+            return answer_boolean(1, 2);
+    }
+    return answer_boolean(0, 2);
+}
+
+/*  148: a shallow copy -- same class, same fields, new identity.  */
+static int
+primitive_shallow_copy(void)
+{
+    st_oop      receiver = ST_stack_value(0);
+    st_oop      copy;
+    uint32_t    i;
+
+    if (!OM_is_object(receiver))
+        return 0;               /*  a SmallInteger is already its own copy */
+    if (OM_pointer_bit(receiver)) {
+        uint32_t    n = OM_fetch_word_length(receiver);
+
+        copy = OM_instantiate_pointers(OM_fetch_class(receiver), n);
+        if (!OM_is_object(copy))
+            return 0;
+        for (i = 0; i < n; ++i)
+            OM_store_pointer(i, copy, OM_fetch_pointer(i, receiver));
+    }  else  {
+        uint32_t    n = OM_fetch_byte_length(receiver);
+
+        copy = OM_instantiate_bytes(OM_fetch_class(receiver), n);
+        if (!OM_is_object(copy))
+            return 0;
+        for (i = 0; i < n; ++i)
+            OM_store_byte(i, copy, OM_fetch_byte(i, receiver));
+    }
+    ST_pop_n(1);
+    ST_push(copy);
+    return 1;
+}
+
+/*
+ *  159: hashMultiply, the scrambling step the Smalltalk hashes are built
+ *  on.  Squeak's exact arithmetic -- 28 bits, times 1664525 -- because
+ *  ported code compares hashes against values computed elsewhere.
+ */
+static int
+primitive_hash_multiply(void)
+{
+    st_oop      receiver = ST_stack_value(0);
+    uint32_t    value;
+
+    if (!OM_is_int(receiver))
+        return 0;
+    value = (uint32_t) (OM_int_value(receiver) & 0x0FFFFFFF);
+    value = (value * 1664525u) & 0x0FFFFFFFu;
+    return answer_positive(value, 1);
+}
+
+/*
+ *  163, 164, 183, 184: read-only objects, and pinned ones.
+ *
+ *  Spur keeps both in the object header.  This memory has neither, and the
+ *  honest answer is the one that is TRUE here rather than the one that
+ *  makes the caller happy: nothing is read-only and nothing is pinned.  So
+ *  asking answers false, and SETTING either to false succeeds, because it
+ *  is already so.  Setting one to true fails -- and a primitive that fails
+ *  runs the image's own fallback, which is exactly where the decision about
+ *  what to do instead belongs.
+ */
+static int
+primitive_answer_false_of_receiver(void)
+{
+    return answer_boolean(0, 1);
+}
+
+static int
+primitive_set_flag_false_only(void)
+{
+    if (ST_stack_value(0) != ST_FALSE)
+        return 0;
+    /*  Answers the old value, which was false as well.  */
+    ST_pop_n(2);
+    ST_push(ST_FALSE);
+    return 1;
+}
+
+/*  168: a copy keeping only the first n indexed fields.  */
+static int
+primitive_copy_from(void)
+{
+    st_oop      receiver = ST_stack_value(1);
+    st_oop      count = ST_stack_value(0);
+    om_shape    shape;
+    st_oop      copy;
+    uint32_t    want;
+    uint32_t    i;
+
+    if (!OM_is_object(receiver) || !OM_is_int(count) || OM_int_value(count) < 0)
+        return 0;
+    want  = (uint32_t) OM_int_value(count);
+    shape = shape_of_class(OM_fetch_class(receiver));
+    if (OM_pointer_bit(receiver)) {
+        if (want + shape.fixed > OM_fetch_word_length(receiver))
+            return 0;
+        copy = OM_instantiate_pointers(OM_fetch_class(receiver),
+                                       shape.fixed + want);
+        if (!OM_is_object(copy))
+            return 0;
+        for (i = 0; i < shape.fixed + want; ++i)
+            OM_store_pointer(i, copy, OM_fetch_pointer(i, receiver));
+    }  else  {
+        if (want > OM_fetch_byte_length(receiver))
+            return 0;
+        copy = OM_instantiate_bytes(OM_fetch_class(receiver), want);
+        if (!OM_is_object(copy))
+            return 0;
+        for (i = 0; i < want; ++i)
+            OM_store_byte(i, copy, OM_fetch_byte(i, receiver));
+    }
+    ST_pop_n(2);
+    ST_push(copy);
+    return 1;
+}
+
+/*  169: not the same object.  */
+static int
+primitive_not_equivalent(void)
+{
+    return answer_boolean(ST_stack_value(1) != ST_stack_value(0), 2);
+}
+
+/*
+ *  170 and 171: a Character from its code point, and back.
+ *
+ *  Every Character in this memory is a unique entry in CharacterTable,
+ *  which is what makes "$a == $a" true -- so 170 is a table lookup and not
+ *  an allocation, and that IS the contract rather than an optimisation of
+ *  it.  A code point with no entry fails, and the image raises.
+ */
+static int
+primitive_character_value(void)
+{
+    st_oop  code = ST_stack_value(0);
+    st_int  value;
+
+    if (!OM_is_int(code))
+        return 0;
+    value = OM_int_value(code);
+    if (value < 0 || value > 255)
+        return 0;
+    ST_pop_n(2);                /*  the class and the code point  */
+    ST_push(OM_fetch_pointer((uint32_t) value, ST_CHARACTER_TABLE));
+    return 1;
+}
+
+static int
+primitive_character_as_integer(void)
+{
+    st_oop  receiver = ST_stack_value(0);
+    st_oop  value;
+
+    if (!OM_is_object(receiver)
+     || OM_fetch_class(receiver) != ST_CLASS_CHARACTER)
+        return 0;
+    value = OM_fetch_pointer(0, receiver);
+    if (!OM_is_int(value))
+        return 0;
+    return answer_integer(OM_int_value(value), 1);
+}
+
+/*
+ *  230: hand the processor back for a while.
+ *
+ *  Pharo's idle loop calls it with a microsecond count.  Sleeping is the
+ *  whole point: the alternative is a worker spinning a core to no purpose,
+ *  which on this system means spinning one core out of however many.
+ */
+static int
+primitive_relinquish_processor(void)
+{
+    st_oop  micros = ST_stack_value(0);
+
+    if (!OM_is_int(micros))
+        return 0;
+    if (OM_int_value(micros) > 0)
+        ST_sleep_ns((int64_t) OM_int_value(micros) * 1000);
+    ST_pop_n(1);                /*  answers the receiver  */
+    return 1;
+}
+
+/*
+ *  135 and 240: the clocks Delay is built on.
+ *
+ *  240 is the UTC microsecond clock, which Pharo's DelayMicrosecondTicker
+ *  and Time class>>primUTCMicrosecondsClock both name.  Both count from
+ *  the Smalltalk epoch, 1 January 1901, because that is what the image's
+ *  own date arithmetic expects.
+ */
+static int
+primitive_millisecond_clock(void)
+{
+    return answer_positive((uint64_t) ST_time_smalltalk_ms()
+                           & 0x3FFFFFFFu, 1);
+}
+
+static int
+primitive_utc_microsecond_clock(void)
+{
+    return answer_positive((uint64_t) ST_time_smalltalk_ms() * 1000u, 1);
+}
+
 /*  ----------  Dispatch  ----------  */
 
 int
@@ -1692,7 +1957,7 @@ ST_primitive_dispatch(unsigned index)
     case 197: return primitive_find_next_handler();
     case 246: return primitive_context_return();
     case 248: return primitive_report_on_standard_error();
-    case 249: return primitive_context_restart();
+    case 251: return primitive_context_restart();
     case 250: return primitive_full_collect();
     case 247: return primitive_context_resume();
 
@@ -1715,6 +1980,30 @@ ST_primitive_dispatch(unsigned index)
     case 206: return primitive_value_with_arguments(1);
     case 221: return primitive_closure_value(0);
     case 222: return primitive_closure_value(1);
+
+    /*
+     *  What Pharo's Kernel names.  See doc/PHARO-INTAKE.md for the ones
+     *  deliberately absent and why.
+     */
+    case  58: return primitive_float_ln();
+    case  59: return primitive_float_exp();
+    case 132: return primitive_inst_vars_include();
+    case 135: return primitive_millisecond_clock();
+    case 148: return primitive_shallow_copy();
+    case 159: return primitive_hash_multiply();
+    case 163: return primitive_answer_false_of_receiver();  /*  isReadOnly  */
+    case 164: return primitive_set_flag_false_only();
+    case 168: return primitive_copy_from();
+    case 169: return primitive_not_equivalent();
+    case 170: return primitive_character_value();
+    case 171: return primitive_character_as_integer();
+    /*  173 and 174 are 73 and 74 by another number in Squeak.  */
+    case 173: return primitive_inst_var_at();
+    case 174: return primitive_inst_var_at_put();
+    case 183: return primitive_answer_false_of_receiver();  /*  isPinned  */
+    case 184: return primitive_set_flag_false_only();
+    case 230: return primitive_relinquish_processor();
+    case 240: return primitive_utc_microsecond_clock();
 
     case 110: return primitive_equivalent();
     case 111: return primitive_class();
@@ -1821,6 +2110,22 @@ static const primitive_entry primitive_table[] = {
     { 115, ST_PRIM_PRESENT,  "SystemDictionary oopsLeft"        },
     { 116, ST_PRIM_ACCEPTED, "signal:atOopsLeft:wordsLeft: -- no low-space "
                              "warning yet"                      },
+    {  58, ST_PRIM_PRESENT,  "Float ln"                         },
+    {  59, ST_PRIM_PRESENT,  "Float exp"                        },
+    { 132, ST_PRIM_PRESENT,  "Object instVarsInclude:"          },
+    { 135, ST_PRIM_PRESENT,  "millisecond clock"                },
+    { 148, ST_PRIM_PRESENT,  "Object shallowCopy / clone"       },
+    { 159, ST_PRIM_PRESENT,  "Integer hashMultiply"             },
+    { 163, ST_PRIM_PRESENT,  "Object isReadOnly -- always false here" },
+    { 164, ST_PRIM_PRESENT,  "Object setIsReadOnly: -- false only"    },
+    { 168, ST_PRIM_PRESENT,  "Object copyFrom:"                 },
+    { 169, ST_PRIM_PRESENT,  "Object ~~"                        },
+    { 170, ST_PRIM_PRESENT,  "Character class value:"           },
+    { 171, ST_PRIM_PRESENT,  "Character asInteger"              },
+    { 173, ST_PRIM_PRESENT,  "Object instVarAt: -- 73 renumbered" },
+    { 174, ST_PRIM_PRESENT,  "Object instVarAt:put: -- 74 renumbered" },
+    { 183, ST_PRIM_PRESENT,  "Object isPinnedInMemory -- always false here" },
+    { 184, ST_PRIM_PRESENT,  "Object setPinnedInMemory: -- false only" },
     { 195, ST_PRIM_PRESENT,  "ContextPart findNextUnwindContextUpTo:" },
     { 197, ST_PRIM_PRESENT,  "ContextPart findNextHandlerContext"     },
     { 198, ST_PRIM_TAG,      "unwind mark -- ensure:/ifCurtailed:, read by "
@@ -1835,11 +2140,14 @@ static const primitive_entry primitive_table[] = {
     { 206, ST_PRIM_PRESENT,  "BlockClosure valueWithArguments:" },
     { 221, ST_PRIM_PRESENT,  "BlockClosure valueNoContextSwitch" },
     { 222, ST_PRIM_PRESENT,  "BlockClosure valueNoContextSwitch:" },
+    { 230, ST_PRIM_PRESENT,  "ProcessorScheduler class "
+                             "relinquishProcessorForMicroseconds:" },
+    { 240, ST_PRIM_PRESENT,  "UTC microsecond clock"            },
     { 246, ST_PRIM_PRESENT,  "ContextPart return: -- this system's own"  },
     { 247, ST_PRIM_PRESENT,  "ContextPart resume: -- this system's own"  },
     { 248, ST_PRIM_PRESENT,  "Object reportOnStandardError -- this "
                              "system's own"                     },
-    { 249, ST_PRIM_PRESENT,  "ContextPart restartAndJump -- this system's "
+    { 251, ST_PRIM_PRESENT,  "ContextPart restartAndJump -- this system's "
                              "own"                              },
     { 250, ST_PRIM_PRESENT,  "SystemDictionary garbageCollect -- this "
                              "system's own"                     }

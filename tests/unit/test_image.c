@@ -44,7 +44,7 @@
 #define BLUEBOOK_CATEGORIES     41
 #define LIB_CLASSES             23       /*  BlockClosure, the exceptions,
                                             SUnit, and the fixtures        */
-#define LIB_METHODS             313
+#define LIB_METHODS             318
 /*
  *  Three, not five: the extension packages define no CLASSES, and a
  *  category is a property of a class definition.  Kernel-Methods-Fixes and
@@ -117,6 +117,7 @@ load_manifest(void)
             "lib/Kernel-Protocol/String.extension.st",
             "lib/Kernel-Protocol/Symbol.extension.st",
             "lib/Kernel-Protocol/Character.extension.st",
+            "lib/Kernel-Protocol/Float.extension.st",
             "lib/Kernel-Protocol/Number.extension.st",
             "lib/Kernel-Protocol/Integer.extension.st",
             "lib/Kernel-Protocol/Collection.extension.st",
@@ -1625,6 +1626,22 @@ test_modern_protocol(void)
     check_string("'hello' sorted", "ehllo");
     check_string("'hello' sorted: [:a :b | a >= b]", "ollhe");
     /*
+     *  Primitives named by Pharo's Kernel, reachable because lib/ declares
+     *  them.  ln and exp are the ones that matter: the 1983 Taylor series
+     *  stops at MathApproximationEpsilon and was wrong in float32's last
+     *  digit, which Pharo's own doctest for this expression caught.
+     */
+    check_boolean("(2 raisedTo: (1/12)) = 1.0594630943592953", 1);
+    check_string("2.0 ln printString", "0.693147");
+    check_boolean("3 ~~ 4", 1);
+    check_boolean("3 ~~ 3", 0);
+    check_integer("1000 hashMultiply", 53912264);
+    check_string("#(1 2) shallowCopy printString", "(1 2 )");
+    check_boolean("#(1 2) shallowCopy == #(1 2)", 0);
+    /*  A SmallInteger is its own copy; the primitive declines and says so. */
+    check_integer("3 shallowCopy", 3);
+
+    /*
      *  A minus written against a number inside #( ) is that number's sign.
      *  It is ambiguous in code -- "3-4" is a send -- and not ambiguous in
      *  a literal array, where there are no sends.  "#(1 5 10 -4)" was FIVE
@@ -1840,7 +1857,7 @@ test_browsing(void)
      *  zero -- which a CompiledMethod reads as "no source at all".  See
      *  test_every_method_can_find_its_source.
      */
-    check_integer("(SourceFiles at: 1) contents size", 1246998);
+    check_integer("(SourceFiles at: 1) contents size", 1247888);
 }
 
 /*
