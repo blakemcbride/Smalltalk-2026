@@ -651,7 +651,41 @@ vendored**; it remains the right oracle and the extractor is a small job the day
 What stands in for it now is the C suite, which grew from 439 checks to 516 over this phase,
 most of them one modern expression each.
 
-### H — M:N scheduling and atomic semaphores
+### H — M:N scheduling and atomic semaphores *(H1 done: the semaphore race)*
+
+**The race is closed.** It had been in `st_sched.c` since the file was written, and it is
+Chapter 29's own algorithm — correct on one thread and wrong on several, in the quietest
+possible way:
+
+> `wait` reads `excessSignals`, sees zero, and **then** queues the process.
+> `signal` finds the list empty, and so spends the signal as an excess.
+
+A signal landing between the read and the queueing finds the list still empty, increments
+`excessSignals`, and goes; the waiter then queues behind a signal already spent, and waits
+for ever — holding whatever it was waiting to be handed. Two threads signalling likewise
+lose increments to each other, because a read-modify-write is not one step. Nothing
+crashes. A count is simply lower than it should be.
+
+The test and the act are now **one critical section**, under a lock chosen by the
+semaphore's identity hash — sixty-four stripes, so unrelated semaphores almost never
+contend, no object gets wider and no header changes. The hash is already stable across a
+collection and across a snapshot, which is what makes it usable as a key at all.
+
+**The rule, written down once rather than rediscovered at each lock: never poll a safepoint
+while holding a stripe lock.** A worker parked at a safepoint holding one would stop the
+collector dead — the collector waits for the worker, the worker waits for the collector.
+Same hazard `om_mt.c` already solved by dropping `table_lock` before it collects. So
+everything under a stripe lock is field reads and writes on objects that already exist: no
+allocation, no send, no poll. Waking a process and suspending one both happen *outside* the
+lock, and the debug build counts held stripes so the rule can be asserted.
+
+`tests/unit/test_parallel_processes.c` checks it by arithmetic rather than by hoping a
+sanitizer noticed: 31 threads × 20,000 operations, and the totals have exactly one right
+answer. **With the lock removed it fails 16 of 35 checks; with it, none** — which is the
+only evidence a concurrency test is worth anything.
+
+Still to do in this phase:
+
 Per-worker state in `struct st_worker` (`worker.h:57-75`): `active_process`, ready
 `LinkedList`s per priority — the **existing Blue Book objects**, so the root walk and
 `Processor` reflection work for free and `SCHED_add_last_link`/`remove_first_link`'s

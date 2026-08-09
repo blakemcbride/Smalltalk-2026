@@ -8,6 +8,7 @@
 #include "st_sched.h"
 #include "interp.h"
 #include "prim.h"
+#include "st_port.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -28,9 +29,96 @@ static st_oop   input_semaphore = ST_NIL;
 static int      new_process_waiting;
 static st_oop   new_process;
 
+/*
+ *  ----------  Semaphore stripe locks  ----------
+ *
+ *  The bug being closed, which has been in this file since the day it was
+ *  written and is Chapter 29's own algorithm:
+ *
+ *      wait    reads excessSignals, sees zero, and THEN queues the process
+ *      signal  finds the list empty, and so spends the signal as an excess
+ *
+ *  Run those on two threads and a signal can land between the read and the
+ *  queueing.  It finds the list still empty, increments excessSignals, and
+ *  goes; the waiter then queues itself behind a signal that has already
+ *  been spent, and waits for ever.  Single-threaded the sequence cannot
+ *  interleave, which is why 1983 could write it this way.
+ *
+ *  The fix is that the test and the act are ONE critical section, and the
+ *  lock is chosen by the semaphore's identity hash: sixty-four stripes, so
+ *  two unrelated semaphores almost never contend, and no object gets wider
+ *  and no header changes.  The hash is already stable across a collection
+ *  and across a snapshot, which is what makes it usable as a key at all.
+ *
+ *  THE RULE, written down once here rather than rediscovered at each lock:
+ *
+ *      never poll a safepoint while holding a stripe lock.
+ *
+ *  A worker parked at a safepoint holding one would stop the collector
+ *  dead: the collector waits for the worker, the worker waits for the
+ *  collector to let it go.  Same hazard om_mt.c already solved by dropping
+ *  table_lock before it collects.  Everything under a stripe lock here is
+ *  field reads and writes on objects that already exist -- no allocation,
+ *  no send, no poll -- and the debug build asserts it.
+ */
+
+#define SEMAPHORE_STRIPES   64
+
+static st_mutex     semaphore_stripe[SEMAPHORE_STRIPES];
+static int          semaphore_stripes_ready;
+
+#ifndef NDEBUG
+static _Thread_local int    stripes_held;
+
+int
+SCHED_holding_stripe_lock(void)
+{
+    return stripes_held > 0;
+}
+#endif
+
+static void
+semaphore_stripes_init(void)
+{
+    unsigned    i;
+
+    if (semaphore_stripes_ready)
+        return;
+    for (i = 0; i < SEMAPHORE_STRIPES; ++i)
+        ST_mutex_init(&semaphore_stripe[i]);
+    semaphore_stripes_ready = 1;
+}
+
+static st_mutex *
+stripe_for(st_oop semaphore)
+{
+    semaphore_stripes_init();
+    return &semaphore_stripe[OM_identity_hash(semaphore)
+                             % SEMAPHORE_STRIPES];
+}
+
+static void
+stripe_lock(st_mutex *m)
+{
+    ST_mutex_lock(m);
+#ifndef NDEBUG
+    ++stripes_held;
+#endif
+}
+
+static void
+stripe_unlock(st_mutex *m)
+{
+#ifndef NDEBUG
+    --stripes_held;
+#endif
+    ST_mutex_unlock(m);
+}
+
 void
 SCHED_reset(void)
 {
+    semaphore_stripes_init();
     async_count         = 0;
     input_semaphore     = ST_NIL;
     new_process_waiting = 0;
@@ -375,13 +463,41 @@ SCHED_check_process_switch(void)
 int
 SCHED_primitive_signal(void)
 {
-    st_oop  semaphore = ST_stack_top();
+    st_oop      semaphore = ST_stack_top();
+    st_mutex   *lock;
+    st_oop      woken;
 
     if (!OM_is_object(semaphore))
         return 0;
     if (OM_fetch_class(semaphore) != ST_CLASS_SEMAPHORE)
         return 0;
-    SCHED_synchronous_signal(semaphore);
+
+    /*
+     *  Under the stripe: deciding whether anyone is waiting and acting on
+     *  the answer are one step.  Waking the process is NOT under it --
+     *  SCHED_resume can transfer, which polls -- so the lock decides and
+     *  releases, and the wake happens after.
+     */
+    lock = stripe_for(semaphore);
+    stripe_lock(lock);
+    if (SCHED_is_empty_list(semaphore)) {
+        st_oop  excess = OM_fetch_pointer(ST_SEMAPHORE_EXCESS_SIGNALS,
+                                          semaphore);
+
+        if (OM_is_int(excess))
+            OM_store_pointer(ST_SEMAPHORE_EXCESS_SIGNALS, semaphore,
+                             OM_int_oop(OM_int_value(excess) + 1));
+        stripe_unlock(lock);
+        return 1;
+    }
+    woken = SCHED_remove_first_link(semaphore);
+    stripe_unlock(lock);
+
+    if (OM_is_present(woken)) {
+        SCHED_resume(woken);
+        /*  A list or the nomination holds it; release the removal's loan. */
+        OM_decrease_ref(woken);
+    }
     return 1;               /*  answers the receiver, already on the stack  */
 }
 
@@ -395,15 +511,37 @@ SCHED_primitive_wait(void)
         return 0;
     if (OM_fetch_class(semaphore) != ST_CLASS_SEMAPHORE)
         return 0;
-    excess = OM_fetch_pointer(ST_SEMAPHORE_EXCESS_SIGNALS, semaphore);
-    if (!OM_is_int(excess))
-        return 0;
-    if (OM_int_value(excess) > 0) {
-        OM_store_pointer(ST_SEMAPHORE_EXCESS_SIGNALS, semaphore,
-                         OM_int_oop(OM_int_value(excess) - 1));
-        return 1;
+    /*
+     *  The whole of the fix.  Reading excessSignals and either spending it
+     *  or queueing behind it is one critical section, so a signal cannot
+     *  land in the middle and be spent on a list that is about to stop
+     *  being empty.
+     *
+     *  Suspending is outside it, because suspending transfers to another
+     *  process and that polls.  By then the process is already on the
+     *  semaphore's list, so a signal arriving in the gap finds it and
+     *  resumes it -- which is the ordinary case, not a race.
+     */
+    {
+        st_mutex   *lock = stripe_for(semaphore);
+        int         must_wait;
+
+        stripe_lock(lock);
+        excess = OM_fetch_pointer(ST_SEMAPHORE_EXCESS_SIGNALS, semaphore);
+        if (!OM_is_int(excess)) {
+            stripe_unlock(lock);
+            return 0;
+        }
+        must_wait = OM_int_value(excess) <= 0;
+        if (must_wait)
+            SCHED_add_last_link(SCHED_active_process(), semaphore);
+        else
+            OM_store_pointer(ST_SEMAPHORE_EXCESS_SIGNALS, semaphore,
+                             OM_int_oop(OM_int_value(excess) - 1));
+        stripe_unlock(lock);
+        if (!must_wait)
+            return 1;
     }
-    SCHED_add_last_link(SCHED_active_process(), semaphore);
     SCHED_suspend_active();
     return 1;
 }
