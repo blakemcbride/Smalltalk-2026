@@ -21,6 +21,12 @@ struct st_lexer {
     int         has_peek;
     st_token    peeked;
     st_token_kind last_kind;    /*  what came before, for the minus rule  */
+    /*
+     *  Which dialect is being read.  Two things depend on it, and both are
+     *  places where post-1983 Smalltalk took a character 1983 had already
+     *  spent: see the underscore and the binary-selector length below.
+     */
+    int         dialect;
     char        error[160];
 };
 
@@ -29,6 +35,12 @@ static int
 is_binary_char(int c)
 {
     return strchr("+-*/~<>=&|@%,?!\\", c) != NULL;
+}
+
+void
+LEX_set_dialect(st_lexer *lx, int dialect)
+{
+    lx->dialect = dialect;
 }
 
 st_lexer *
@@ -228,6 +240,38 @@ scan_number(st_lexer *lx, st_token *out, int negative)
     out->real = negative ? -real : real;
 }
 
+/*
+ *  Whether a character can continue an identifier.
+ *
+ *  The underscore is the whole question.  In 1983 it IS the assignment
+ *  arrow -- "a _ b" is what every line of sources/ says -- so it cannot
+ *  also be a letter there.  Post-1983 Smalltalk spells assignment ":="
+ *  exclusively and spends the underscore on names, which is why Pharo has
+ *  DelayBasicScheduler>>simulate_vmMilliseconds: and this compiler read it
+ *  as "simulate := vmMilliseconds:".
+ */
+static int
+is_word_char(const st_lexer *lx, int c)
+{
+    if (isalnum(c))
+        return 1;
+    return c == '_' && lx->dialect == ST_DIALECT_CLOSURES;
+}
+
+/*
+ *  And whether one can BEGIN an identifier, which is a different question:
+ *  a digit continues a name and does not start one.  Conflating the two
+ *  sends "62" down the identifier branch, which sits above the number
+ *  branch -- so every numeric literal in the system becomes a name.
+ */
+static int
+is_word_start(const st_lexer *lx, int c)
+{
+    if (isalpha(c))
+        return 1;
+    return c == '_' && lx->dialect == ST_DIALECT_CLOSURES;
+}
+
 static void
 scan_word(st_lexer *lx, char *buf, size_t buflen)
 {
@@ -236,7 +280,7 @@ scan_word(st_lexer *lx, char *buf, size_t buflen)
     while (!at_end(lx)) {
         char    c = lx->source[lx->pos];
 
-        if (!isalnum((unsigned char) c))
+        if (!is_word_char(lx, (unsigned char) c))
             break;
         if (n + 1 < buflen)
             buf[n++] = c;
@@ -264,14 +308,19 @@ lex_token(st_lexer *lx, st_token *out)
     }
     c = lx->source[lx->pos];
 
-    /*  Identifiers and keywords.  */
-    if (isalpha((unsigned char) c)) {
+    /*
+     *  Identifiers and keywords.
+     *
+     *  A leading underscore starts one only in the closure dialect; in the
+     *  Blue Book it is the assignment arrow, handled in the switch below.
+     */
+    if (is_word_start(lx, (unsigned char) c)) {
         size_t  n = 0;
 
         while (!at_end(lx)) {
             char    d = lx->source[lx->pos];
 
-            if (!isalnum((unsigned char) d))
+            if (!is_word_char(lx, (unsigned char) d))
                 break;
             if (n + 1 < sizeof out->text)
                 out->text[n++] = d;
@@ -463,8 +512,11 @@ lex_token(st_lexer *lx, st_token *out)
 
     case '_':
         /*
-         *  The 1983 assignment arrow.  A leading underscore in an
-         *  identifier was not legal Smalltalk-80, so this is unambiguous.
+         *  The 1983 assignment arrow -- and, in the closure dialect, an
+         *  ordinary letter -- which is why the closure dialect never gets
+         *  here at all: the identifier scanner above has already taken it.
+         *  A leading underscore in an identifier was not legal
+         *  Smalltalk-80, so in that dialect this is unambiguous.
          */
         ++lx->pos;
         out->kind = ST_TOK_ASSIGN;
@@ -559,8 +611,15 @@ lex_token(st_lexer *lx, st_token *out)
             if (n + 1 < sizeof out->text)
                 out->text[n++] = lx->source[lx->pos];
             ++lx->pos;
-            /*  Selectors are at most two characters in Smalltalk-80.  */
-            if (n == 2)
+            /*
+             *  Two characters at most in Smalltalk-80.  Post-1983 source
+             *  writes longer ones -- Boolean>>==> is in Pharo's Kernel --
+             *  and the run can be taken whole there, because the rule just
+             *  above already stops a minus that begins a number from being
+             *  swallowed, which was the only thing the two-character limit
+             *  was protecting.
+             */
+            if (n == 2 && lx->dialect != ST_DIALECT_CLOSURES)
                 break;
         }
         out->text[n] = '\0';

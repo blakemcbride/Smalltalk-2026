@@ -818,6 +818,118 @@ test_block_temporaries(void)
                125, 124);
 }
 
+/*
+ *  Compile in a named dialect and say whether it worked.
+ */
+static int
+compiles_as(const char *source, int dialect)
+{
+    st_compile_context  ctx = context();
+    st_compiled_code    code;
+
+    ctx.dialect = dialect;
+    symbol_count = 0;
+    return COMPILE_to_bytecodes(source, &ctx, &code) == 0;
+}
+
+static unsigned
+primitive_as(const char *source, int dialect, int *encodable)
+{
+    st_compile_context  ctx = context();
+    st_compiled_code    code;
+
+    ctx.dialect = dialect;
+    symbol_count = 0;
+    if (COMPILE_to_bytecodes(source, &ctx, &code) != 0) {
+        printf("  compile failed: %s\n", code.error);
+        CHECK(0);
+        return (unsigned) -1;
+    }
+    if (encodable)
+        *encodable = code.primitive_encodable;
+    return code.primitive;
+}
+
+/*
+ *  Two characters that changed meaning after 1983, and one pragma form.
+ *
+ *  Each of these was found by pointing st80 -syntax at Pharo's own source
+ *  rather than by reading a grammar, which is why they are exactly the
+ *  three that occur in practice and not a survey of everything that could
+ *  differ.
+ */
+static void
+test_the_two_dialects(void)
+{
+    /*
+     *  The underscore.  In 1983 it IS the assignment arrow -- every line of
+     *  sources/ says "a _ b" -- so it cannot also be a letter there.  Later
+     *  Smalltalk spells assignment ":=" exclusively and spends the
+     *  underscore on names: Pharo has simulate_vmMilliseconds:.
+     */
+    CHECK(compiles_as("foo | a b | a _ b. ^a", ST_DIALECT_BLUE_BOOK));
+    CHECK(compiles_as("foo | my_name | my_name := 1. ^my_name",
+                      ST_DIALECT_CLOSURES));
+    /*  And each is wrong in the other dialect, which is the point.  */
+    CHECK(!compiles_as("foo | my_name | my_name := 1. ^my_name",
+                       ST_DIALECT_BLUE_BOOK));
+
+    /*
+     *  A digit continues a name and does not begin one.  Conflating the
+     *  two sends every numeric literal down the identifier branch, which
+     *  sits above the number branch -- so "<primitive: 62>" stopped
+     *  parsing and the whole 1983 library stopped compiling.
+     */
+    CHECK_EQ_INT((int) primitive_of("foo <primitive: 62> ^self", "62 is a "
+                                    "number, not a name"), 62);
+    CHECK(compiles_as("foo | a1 | a1 := 62. ^a1", ST_DIALECT_CLOSURES));
+
+    /*
+     *  Binary selectors: two characters at most in Smalltalk-80, any
+     *  length after it.  Pharo's Kernel has Boolean>>==>.
+     */
+    CHECK(compiles_as("foo ^self ==> 1", ST_DIALECT_CLOSURES));
+    CHECK(!compiles_as("foo ^self ==> 1", ST_DIALECT_BLUE_BOOK));
+    /*  The rule that stops "-2@-2" reading as "-2 @- 2" still holds.  */
+    CHECK_CODE("foo ^3 - 4", "a minus between operands is a send",
+               32, 33, 177, 124);
+
+    /*
+     *  <primitive: N error: ec> -- Pharo's error-code form.  The second
+     *  argument is not a value: it names a temporary the VM fills in with
+     *  why the primitive failed.  Nine methods of Pharo's Kernel use it.
+     */
+    {
+        int encodable = -1;
+
+        CHECK_EQ_INT((int) primitive_as("foo <primitive: 148 error: ec> ^ec",
+                                        ST_DIALECT_CLOSURES, &encodable), 148);
+        CHECK_EQ_INT(encodable, 1);
+        /*  The named temporary is in scope in the fallback body.  */
+        CHECK(compiles_as("foo <primitive: 148 error: ec> ^ec == nil",
+                          ST_DIALECT_CLOSURES));
+    }
+
+    /*
+     *  A primitive number the header cannot hold.  Eight bits in the Blue
+     *  Book header extension, so 255 is the ceiling of the FORMAT; Spur
+     *  uses a different one and Pharo's SmallFloat64 declares 541 to 559.
+     *  The number is recorded, not written, and the Smalltalk body is
+     *  kept -- which is the same thing as a primitive that always fails,
+     *  because that is what an unimplemented primitive does.
+     */
+    {
+        int encodable = -1;
+
+        CHECK_EQ_INT((int) primitive_as("foo <primitive: 541> ^1",
+                                        ST_DIALECT_CLOSURES, &encodable), 541);
+        CHECK_EQ_INT(encodable, 0);
+        /*  Still out of range when it cannot be a primitive at all.  */
+        CHECK(!compiles_as("foo <primitive: 99999> ^1", ST_DIALECT_CLOSURES));
+        CHECK(!compiles_as("foo <primitive: 0> ^1", ST_DIALECT_CLOSURES));
+    }
+}
+
 static void
 test_pragmas(void)
 {
@@ -901,6 +1013,7 @@ main(void)
     test_byte_arrays();
     test_block_temporaries();
     test_pragmas();
+    test_the_two_dialects();
 
     return ST_TEST_END();
 }

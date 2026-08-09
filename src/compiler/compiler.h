@@ -20,6 +20,7 @@
 #define ST_COMPILER_H
 
 #include "om.h"
+#include "lexer.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -31,14 +32,14 @@ extern "C" {
  *  and a way to look up globals.
  */
 /*
- *  Which language to compile.
+ *  Which language to compile.  The two constants live in lexer.h, because
+ *  the choice has to be made before the first token: the underscore and
+ *  the length of a binary selector both changed meaning after 1983.
  *
  *  Blue Book is the default and is what the 1983 library, the self-hosting
  *  check and the trace oracle all use; the closure machinery is reached
  *  only when a caller asks for it, so none of them can be affected by it.
  */
-#define ST_DIALECT_BLUE_BOOK    0
-#define ST_DIALECT_CLOSURES     1
 
 typedef struct {
     int                 dialect;
@@ -139,6 +140,19 @@ typedef struct {
     unsigned    argument_count;
     unsigned    temporary_count;
     unsigned    primitive;
+    /*
+     *  Whether this method header can actually hold that number.
+     *
+     *  The Blue Book header extension gives the primitive index eight bits,
+     *  so 255 is the ceiling of the format -- not of this implementation.
+     *  Spur uses a different header and Pharo's SmallFloat64 declares 541
+     *  through 559.  A number that cannot be encoded is compiled away and
+     *  the method's Smalltalk body is kept, which is not a compromise: an
+     *  unimplemented primitive fails and runs the body, and a primitive
+     *  that cannot be written down is indistinguishable from one that
+     *  always fails.
+     */
+    int         primitive_encodable;
     /*
      *  For a named primitive -- <primitive: 'fn' module: 'Mod'> -- the two
      *  strings, which primitive 117 alone does not tell you.  A report on

@@ -89,6 +89,14 @@ typedef struct {
     int             after_space;
 } st_token;
 
+/*
+ *  The dialects, shared with the compiler.  Defined here rather than in
+ *  compiler.h because the LEXER needs them: two characters changed meaning
+ *  after 1983 and the choice has to be made before the first token.
+ */
+#define ST_DIALECT_BLUE_BOOK    0
+#define ST_DIALECT_CLOSURES     1
+
 typedef struct st_lexer st_lexer;
 
 /*
@@ -112,6 +120,14 @@ void        LEX_save(st_lexer *lx, st_lexer_state *out);
 void        LEX_restore(st_lexer *lx, const st_lexer_state *state);
 
 st_lexer   *LEX_open(const char *source);
+
+/*
+ *  Which dialect to read.  Two characters changed meaning after 1983 and
+ *  the lexer cannot guess which is meant: the underscore, which was the
+ *  assignment arrow and is now a letter, and the length of a binary
+ *  selector, which was two and is now unbounded.  Defaults to Blue Book.
+ */
+void        LEX_set_dialect(st_lexer *lx, int dialect);
 void        LEX_close(st_lexer *lx);
 
 /*  Advance to the next token.  Returns 0 at end of input.  */

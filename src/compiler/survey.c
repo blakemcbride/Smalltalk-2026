@@ -47,19 +47,33 @@ SURVEY_init(st_survey *s)
  *  Failures are grouped by message with the quoted part folded away, so a
  *  hundred methods tripping over one construct read as a line rather than a
  *  hundred lines.
+ *
+ *  A MATCHED pair of quotes, and the tail is kept.  Folding from the first
+ *  quote to the end of the message instead turned "a shared name's vector
+ *  is not in scope" into "a shared name'...'" -- and, worse, made two
+ *  different errors that happen to open with a quote read as one line
+ *  saying nothing at all.  A report that hides the message it is reporting
+ *  is not a small problem: it cost an hour here.
  */
 static void
 record(st_survey *s, const char *message, const char *selector,
        const char *class_name)
 {
     char        key[256];
-    char       *quote;
+    char       *open_quote;
+    char       *close_quote;
     unsigned    i;
 
     snprintf(key, sizeof key, "%s", message);
-    quote = strchr(key, '\'');
-    if (quote)
-        snprintf(quote, sizeof key - (size_t) (quote - key), "'...'");
+    open_quote = strchr(key, '\'');
+    close_quote = open_quote ? strchr(open_quote + 1, '\'') : NULL;
+    if (close_quote) {
+        char    tail[256];
+
+        snprintf(tail, sizeof tail, "%s", close_quote + 1);
+        snprintf(open_quote, sizeof key - (size_t) (open_quote - key),
+                 "'...'%s", tail);
+    }
 
     for (i = 0; i < s->kind_count; ++i) {
         if (strcmp(s->kinds[i].text, key) == 0) {
@@ -157,7 +171,6 @@ survey_method(const char *class_name, int class_side, const char *category,
 
     (void) class_side;
     (void) category;
-    (void) file;
     (void) line;
 
     memset(&ctx, 0, sizeof ctx);
@@ -171,6 +184,16 @@ survey_method(const char *class_name, int class_side, const char *category,
     ctx.make_character     = syn_character;
     ctx.lookup_global      = syn_global;
     ctx.method_class_association = 5000;
+    /*
+     *  A package-format file is post-1983 source and is read as such; a
+     *  chunk file is 1983 source and is read as that.  The dialect decides
+     *  what an underscore means and how long a binary selector may be, and
+     *  the file's own format is the best evidence available -- better than
+     *  a flag the caller has to remember, and right for every file either
+     *  reader has ever been handed.
+     */
+    ctx.dialect = strcmp(SRC_format_of(file), "tonel") == 0
+                    ? ST_DIALECT_CLOSURES : ST_DIALECT_BLUE_BOOK;
 
     ++s->methods;
     if (COMPILE_to_bytecodes(source, &ctx, &code) != 0) {

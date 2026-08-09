@@ -1232,6 +1232,11 @@ typedef struct {
     int         is_integer;
     int64_t     integer;
     int         is_string;
+    /*
+     *  A bare identifier, which only <primitive: N error: ec> uses: the
+     *  name is not a value, it is a temporary the pragma DECLARES.
+     */
+    int         is_identifier;
     char        text[256];
 } pragma_arg;
 
@@ -1305,12 +1310,49 @@ apply_pragma(st_compiler *c, const char *selector,
 {
     if (strcmp(selector, "primitive:") == 0 && argc == 1
      && args[0].is_integer) {
-        if (args[0].integer < 1 || args[0].integer > 255) {
+        if (args[0].integer < 1 || args[0].integer > 65535) {
             fail(c, "primitive number %lld is out of range",
                  (long long) args[0].integer);
             return;
         }
         c->out->primitive = (unsigned) args[0].integer;
+        /*
+         *  Eight bits in the header extension.  A larger number is recorded
+         *  and not written: see primitive_encodable in compiler.h for why
+         *  that is the same thing as a primitive this VM does not have.
+         */
+        c->out->primitive_encodable = args[0].integer <= 255;
+        return;
+    }
+    /*
+     *  <primitive: N error: ec> -- Pharo's error-code form.
+     *
+     *  The second argument is not a value: it names a TEMPORARY that the
+     *  VM fills in with why the primitive failed, so the fallback body can
+     *  tell "insufficient object memory" from "bad argument".  This VM
+     *  sets no error codes, so the temporary stays nil -- which is exactly
+     *  right, because every one of those bodies tests the code against a
+     *  specific symbol and takes the general path when it does not match.
+     *  The method behaves as it would on a VM that failed for a reason it
+     *  declined to name.
+     */
+    if (strcmp(selector, "primitive:error:") == 0 && argc == 2
+     && args[0].is_integer && args[1].is_identifier) {
+        if (args[0].integer < 1 || args[0].integer > 65535) {
+            fail(c, "primitive number %lld is out of range",
+                 (long long) args[0].integer);
+            return;
+        }
+        c->out->primitive = (unsigned) args[0].integer;
+        c->out->primitive_encodable = args[0].integer <= 255;
+        if (c->name_count < MAX_TEMPS) {
+            snprintf(c->names[c->name_count], 64, "%.63s", args[1].text);
+            ++c->name_count;
+            if (c->name_count > c->max_names)
+                c->max_names = c->name_count;
+        }
+        if (c->dialect == ST_DIALECT_CLOSURES)
+            declare(c, args[1].text, 0);
         return;
     }
     if (strcmp(selector, "primitive:module:") == 0 && argc == 2
@@ -1348,6 +1390,7 @@ apply_pragma(st_compiler *c, const char *selector,
             return;
         }
         c->out->primitive = 117;
+        c->out->primitive_encodable = 1;
         snprintf(c->out->primitive_name, sizeof c->out->primitive_name,
                  "%.63s", args[0].text);
         snprintf(c->out->primitive_module, sizeof c->out->primitive_module,
@@ -1406,8 +1449,24 @@ parse_pragma(st_compiler *c)
                 selector[n++] = *part++;
             selector[n] = '\0';
             advance(c);
-            if (argc >= 8 || !pragma_literal(c, &args[argc]))
+            if (argc >= 8)
                 return 0;
+            /*
+             *  An identifier where a literal was expected is the
+             *  error-code form: <primitive: 148 error: ec>.  Nothing else
+             *  in either dialect writes a bare name in a pragma, so taking
+             *  one here costs nothing and is what lets Pharo's Kernel --
+             *  where nine methods use it -- compile at all.
+             */
+            if (at(c, ST_TOK_IDENTIFIER)) {
+                memset(&args[argc], 0, sizeof args[argc]);
+                args[argc].is_identifier = 1;
+                snprintf(args[argc].text, sizeof args[argc].text, "%s",
+                         c->token.text);
+                advance(c);
+            }  else if (!pragma_literal(c, &args[argc])) {
+                return 0;
+            }
             ++argc;
         }
     } else {
@@ -1961,6 +2020,7 @@ rewind_to(st_compiler *c, const compiler_mark *m)
     c->block_seen          = m->block_seen;
     c->decl_count          = m->decl_count;
     c->decl_visible        = m->decl_visible;
+
 }
 
 /*
@@ -2841,6 +2901,7 @@ COMPILE_selector_of(const char *source, char *out, size_t out_len)
     c.lx      = LEX_open(source);
     if (!c.lx)
         return -1;
+    LEX_set_dialect(c.lx, c.dialect);
     advance(&c);
     compile_pattern(&c);
     LEX_close(c.lx);
@@ -2900,6 +2961,8 @@ COMPILE_to_bytecodes(const char *source, const st_compile_context *ctx,
         }
 
         c.lx = LEX_open(source);
+        if (c.lx)
+            LEX_set_dialect(c.lx, c.dialect);
         if (!c.lx) {
             snprintf(out->error, sizeof out->error, "out of memory");
             return -1;
@@ -3091,6 +3154,8 @@ COMPILE_method(const char *source, const st_compile_context *ctx,
     out->primitive       = code.primitive;
 
     literals = code.literal_count;
+    if (!code.primitive_encodable)
+        code.primitive = 0;             /*  kept in out->primitive below  */
     if (code.primitive != 0 || code.argument_count > 4) {
         flag = 7;
         ++literals;                     /*  room for the header extension  */
