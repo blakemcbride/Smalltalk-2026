@@ -15,7 +15,7 @@ Taken with `st80 -syntax`, which compiles every method and throws the result awa
 
 | | files | methods | compiled | failed |
 |---|---|---|---|---|
-| **All of Pharo** | 9,443 | 91,210 | **91,057** | 153 (0.17%) |
+| **All of Pharo** | 9,443 | 91,210 | **91,199** | 11 (0.012%) |
 | **Kernel** | 94 | 1,670 | **1,670** | **0** |
 | Collections-Abstract | 6 | 132 | 132 | 0 |
 | Collections-Sequenceable | 20 | 641 | 641 | 0 |
@@ -28,44 +28,57 @@ And `st80 -primitives` on Kernel: **93 distinct primitives, 48 implemented here,
 
 Kernel went from 1,639 to **all of it** by fixing what the report named.
 
-## What the 153 are
+## What is left: eleven methods, and three of them are correct refusals
 
-Ranked, because the order is the work order:
-
-| count | what | note |
+| count | what | verdict |
 |---|---|---|
-| 79 | `#( double sx; double shx; )` | a semicolon inside a literal array. Pharo takes it as a symbol; we stop |
-| 21 | `whileTrue:` / `ifTrue:ifFalse:` given a non-literal block | real Smalltalk falls back to a message send; we insist on a literal |
-| 14 | non-ASCII characters in source (`$¶`) | the lexer is byte-oriented |
-| 10 | `[ :index || segment | … ]` | `||` — the argument bar and the temporaries bar with no space between |
-| 29 | assorted | not yet grouped |
+| 5 | `{ 1 . ^2 }` — a return *statement* inside a dynamic array | not supported. It appears only in tests that inspect the AST, and the semantics are odd enough (build the array, then return out of the middle of it) that guessing at them is worse than saying no |
+| 2 | `##smallUpdate` — Pharo's compile-time-value literal | not supported. `##x` means *the value bound to x when this was compiled*, and a bootstrap compiles before the bindings have values |
+| 1 | `#x::` — a symbol ending in two colons | not supported; it appears in one test that expects it to raise |
+| 2 | `$€`, `$→` | **correct refusal.** This memory's Character is the Blue Book's — a unique entry in a 256-entry `CharacterTable`, which is what makes `$a == $a` true. U+20AC has nowhere to go, and the message says so by code point |
+| 1 | a method with more than 63 literals | **correct refusal.** Six bits in the Blue Book method header. Spur uses a different header; this is a ceiling of the format, like primitives above 255 |
 
-**The closure-analysis failures are gone** — 50 methods wearing three different
-messages, all one cause. See below.
+Three of the eleven are this system correctly declining to pretend, and they are
+reported by name and number rather than as a parse error.
 
-## What was fixed to get here
+## What it took to get from 201 to 11
 
-Three of these are dialect differences — places where post-1983 Smalltalk spent a
-character 1983 had already used — and the compiler now switches on the dialect it
-was already being told:
+Beyond the closure fix below, all of it found by reading the ranked list rather
+than the grammar:
 
-- **The underscore.** In 1983 it *is* the assignment arrow; `a _ b` is what every
-  line of `sources/` says. Pharo spells assignment `:=` exclusively and spends the
-  underscore on names. Getting this wrong read `simulate_vmMilliseconds:` as an
-  assignment.
-- **Binary selector length.** Two characters in Smalltalk-80, unbounded after.
-  `Boolean>>==>` is in Pharo's Kernel. The rule that keeps `-2@-2` from reading as
-  `-2 @- 2` is what the two-character limit was really protecting, and it is
-  separate and still in force.
-- **`<primitive: N error: ec>`.** The second argument is not a value: it names a
-  *temporary* the VM fills in with why the primitive failed. This VM sets no error
-  codes, so it stays nil — which is right, because every one of those bodies tests
-  the code against a specific symbol and takes the general path otherwise.
-- **Primitive numbers above 255.** Eight bits in the Blue Book header extension, so
-  255 is the ceiling of the *format*, not of this implementation; Spur uses a
-  different header and `SmallFloat64` declares 541–559. The number is recorded and
-  not written, and the Smalltalk body is kept — the same thing as a primitive that
-  always fails, which is what an unimplemented primitive already does.
+- **Everything inside `#( )` that is not a literal is a Symbol** — including the
+  punctuation the grammar uses elsewhere. Pharo's graphics code writes
+  `#( double sx; double shx; )` as a field descriptor and means six symbols, two
+  of which are `#;`. Seventy-nine methods did that; brackets get in the same way,
+  from source that meant to close the array earlier.
+- **A radix number may have a fraction and an exponent.** `2r1.1` is 1.5 and
+  `2r1.0e-10` is two to the minus tenth — the digits of both parts are in the
+  radix, the exponent is decimal, and the power is of the radix. The Blue Book
+  grammar always said so. Reading only the integer part left `2r1.1` as `2r1`
+  followed by a **statement separator**, which is a wrong answer rather than an
+  error anywhere a period could legally follow.
+- **A character literal is one UTF-8 sequence, not one byte.** Reading the lead
+  byte alone leaves the continuation bytes in the stream, where they are neither a
+  token nor a legal anything. A byte above ASCII is also a *letter*, so `#яблоко`
+  is a Symbol.
+- **`[ :index || segment | … ]`** — the bar closing the arguments written hard
+  against the bar opening the temporaries. The lexer, which cannot see the grammar,
+  hands the pair over as one binary selector; only the parser knows the arguments
+  have just ended, so that is where the two are split.
+- **A conditional or a loop is inlined only when every arm is a literal block.**
+  `ifTrue: [a] ifFalse: aBlock` is an ordinary message send. Refusing it was this
+  compiler mistaking its own optimisation for a rule of the language — and the
+  decision has to be made *before* anything is emitted, or finding out halfway
+  leaves a jump and an arm with nowhere to put them.
+- **A block argument shadowing a temporary hoisted out of an inlined block.** Pass
+  zero jumps its visibility cursor to an absolute declaration index; pass one was
+  advancing by one. After an inlined block put its temporaries back out of scope
+  the two passes disagreed, and `[:dict | …]` resolved to a hoisted `dict` instead
+  of its own argument. Silent, and a wrong variable rather than an error.
+- **The byte-array buffer moved to the heap.** Pharo embeds whole fonts as
+  byte-array literals — one method, one literal, over a quarter of a megabyte. The
+  limit had to rise, and half a megabyte of automatic storage inside a
+  recursive-descent parser is a stack overflow waiting for a deeply nested method.
 
 ### The closure analysis: decided by looking, not by trying
 

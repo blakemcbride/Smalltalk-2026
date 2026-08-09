@@ -8,6 +8,7 @@
 #include "lexer.h"
 
 #include <ctype.h>
+#include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -163,6 +164,21 @@ skip_blanks(st_lexer *lx)
  *  Numbers: an optional radix, digits, an optional fraction and exponent.
  *  16rFF is 255; 2r1010 is 10.  Digits above 9 are written as letters.
  */
+/*  A digit's value in a given radix, or -1 if it is not one.  */
+static int
+radix_digit_value(int c, int radix)
+{
+    int value;
+
+    if (isdigit(c))
+        value = c - '0';
+    else if (c >= 'A' && c <= 'Z')
+        value = c - 'A' + 10;
+    else
+        return -1;
+    return value < radix ? value : -1;
+}
+
 static void
 scan_number(st_lexer *lx, st_token *out, int negative)
 {
@@ -194,6 +210,72 @@ scan_number(st_lexer *lx, st_token *out, int negative)
                 break;
             value = value * radix + digit;
             ++lx->pos;
+        }
+        /*
+         *  A radix number may have a fraction and an exponent, and the
+         *  digits of both are in that radix while the EXPONENT is decimal
+         *  and the power is of the radix: 2r1.1 is 1.5, and 2r1.0e-10 is
+         *  2 raised to -10.  The Blue Book grammar has always said so;
+         *  reading only the integer part left "2r1.1" as "2r1" followed by
+         *  a statement separator, which is a wrong answer rather than an
+         *  error wherever a period could legally follow.
+         */
+        {
+            double      whole = (double) value;
+            double      fraction = 0.0;
+            double      scale = 1.0;
+            int         radix_float = 0;
+
+            if (!at_end(lx) && lx->source[lx->pos] == '.'
+             && radix_digit_value(peek_char(lx, 1), radix) >= 0) {
+                radix_float = 1;
+                ++lx->pos;
+                for (;;) {
+                    int digit = radix_digit_value(
+                                    at_end(lx) ? '\0' : lx->source[lx->pos],
+                                    radix);
+
+                    if (digit < 0)
+                        break;
+                    scale /= radix;
+                    fraction += digit * scale;
+                    ++lx->pos;
+                }
+            }
+            if (!at_end(lx) && lx->source[lx->pos] == 'e') {
+                size_t  save = lx->pos;
+                int     exponent = 0;
+                int     exp_negative = 0;
+
+                ++lx->pos;
+                if (!at_end(lx)
+                 && (lx->source[lx->pos] == '-' || lx->source[lx->pos] == '+')) {
+                    exp_negative = lx->source[lx->pos] == '-';
+                    ++lx->pos;
+                }
+                if (!at_end(lx) && isdigit((unsigned char) lx->source[lx->pos])) {
+                    while (!at_end(lx)
+                        && isdigit((unsigned char) lx->source[lx->pos])) {
+                        exponent = exponent * 10
+                                 + (lx->source[lx->pos] - '0');
+                        ++lx->pos;
+                    }
+                    if (exp_negative)
+                        exponent = -exponent;
+                    out->real = (whole + fraction) * pow((double) radix,
+                                                         (double) exponent);
+                    out->kind = ST_TOK_FLOAT;
+                    if (negative)
+                        out->real = -out->real;
+                    return;
+                }
+                lx->pos = save;
+            }
+            if (radix_float) {
+                out->kind = ST_TOK_FLOAT;
+                out->real = negative ? -(whole + fraction) : whole + fraction;
+                return;
+            }
         }
         out->kind    = ST_TOK_INTEGER;
         out->integer = negative ? -value : value;
@@ -255,7 +337,16 @@ is_word_char(const st_lexer *lx, int c)
 {
     if (isalnum(c))
         return 1;
-    return c == '_' && lx->dialect == ST_DIALECT_CLOSURES;
+    if (lx->dialect != ST_DIALECT_CLOSURES)
+        return 0;
+    /*
+     *  A byte above ASCII is a letter.  Source files are UTF-8 and Pharo
+     *  writes #яблоко; a high byte cannot appear anywhere else outside a
+     *  string, a comment or a character literal, all of which are scanned
+     *  on their own, so taking the whole run is unambiguous -- and it
+     *  keeps the bytes together, which is what a Symbol needs.
+     */
+    return c == '_' || c >= 0x80;
 }
 
 /*
@@ -269,7 +360,9 @@ is_word_start(const st_lexer *lx, int c)
 {
     if (isalpha(c))
         return 1;
-    return c == '_' && lx->dialect == ST_DIALECT_CLOSURES;
+    if (lx->dialect != ST_DIALECT_CLOSURES)
+        return 0;
+    return c == '_' || c >= 0x80;
 }
 
 static void
@@ -356,11 +449,46 @@ lex_token(st_lexer *lx, st_token *out)
             lex_fail(lx, out, "line %u: $ at end of input", lx->line);
             return 1;
         }
-        out->kind    = ST_TOK_CHARACTER;
-        out->integer = (unsigned char) lx->source[lx->pos];
-        out->text[0] = lx->source[lx->pos];
-        out->text[1] = '\0';
-        ++lx->pos;
+        out->kind = ST_TOK_CHARACTER;
+        /*
+         *  A UTF-8 sequence is one character, not two or three.
+         *
+         *  Source files are UTF-8 and Pharo's tests are full of $\u00b6 and
+         *  the like; reading the lead byte alone leaves the continuation
+         *  bytes in the stream, where they are neither a token nor a
+         *  legal anything.  This memory's Character is the Blue Book's --
+         *  a unique entry in CharacterTable, 0 to 255 -- so a code point
+         *  that fits in Latin-1 is taken and anything above it is refused
+         *  by number rather than mis-read.
+         */
+        {
+            unsigned char   b0 = (unsigned char) lx->source[lx->pos];
+            unsigned long   code = b0;
+            unsigned        extra = 0;
+            unsigned        k;
+
+            if (b0 >= 0xF0)      { extra = 3; code = b0 & 0x07u; }
+            else if (b0 >= 0xE0) { extra = 2; code = b0 & 0x0Fu; }
+            else if (b0 >= 0xC0) { extra = 1; code = b0 & 0x1Fu; }
+            ++lx->pos;
+            for (k = 0; k < extra && !at_end(lx); ++k) {
+                unsigned char   cont = (unsigned char) lx->source[lx->pos];
+
+                if ((cont & 0xC0u) != 0x80u)
+                    break;
+                code = (code << 6) | (cont & 0x3Fu);
+                ++lx->pos;
+            }
+            if (code > 255) {
+                lex_fail(lx, out, "line %u: character U+%04lX is beyond this "
+                                  "memory's 256-character table",
+                         out->line, code);
+                return 1;
+            }
+            out->integer = (long) code;
+            out->text[0] = (char) (unsigned char) code;
+            out->text[1] = '\0';
+        }
         return 1;
 
     case '\'': {

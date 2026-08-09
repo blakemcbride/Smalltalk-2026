@@ -22,7 +22,20 @@
 #define MAX_TEMPS       64
 #define MAX_ARGS        16
 #define MAX_BLOCK_DEPTH 16
-#define MAX_BYTE_ARRAY  1024
+/*
+ *  A byte-array literal's size.
+ *
+ *  Raised from 1024 because Pharo embeds whole fonts as byte-array
+ *  literals -- SourceSansProRegular>>fontContentsData is one method and one
+ *  literal, and it is over a quarter of a megabyte.  Nothing about the
+ *  format cares; this was only ever a scratch buffer.
+ *
+ *  Which is why it is on the HEAP.  Half a megabyte of automatic storage
+ *  inside a recursive-descent parser is a stack overflow waiting for a
+ *  deeply nested method, and it would arrive as a crash with nothing to
+ *  read.
+ */
+#define MAX_BYTE_ARRAY  (1024 * 1024)
 #define MAX_PRAGMAS     16
 #define MAX_PRAGMA_ARGS 8
 
@@ -44,6 +57,7 @@ typedef struct {
     unsigned        block_seen;
     unsigned        decl_count;
     unsigned        decl_visible;
+    unsigned        decl_seen;
 } compiler_mark;
 
 /*
@@ -77,7 +91,13 @@ typedef struct {
  *  shared between that block's own activations.
  */
 
-#define MAX_SCOPES      32
+/*
+ *  Blocks per method.  Thirty-two was generous for 1983 source and is not
+ *  for a Metacello baseline, which is one method holding a spec for every
+ *  package in a project -- four of Pharo's exceed it.  The bytecode limit
+ *  that matters is elsewhere and unchanged: numCopied is four bits.
+ */
+#define MAX_SCOPES      256
 #define MAX_COPIED      15      /*  numCopied is four bits in bytecode 143  */
 #define MAX_NEEDS       512
 
@@ -132,6 +152,18 @@ typedef struct {
      *  find_decl for why this is not simply decl_count.
      */
     unsigned    decl_visible;
+    /*
+     *  How many declarations the parser has MADE, as against how many are
+     *  in scope.  The two differ after an inlined block, which puts its
+     *  temporaries back out of scope without unmaking them.
+     *
+     *  Pass zero can use decl_count for this and pass one cannot -- the
+     *  array is already built, so pass one only walks along it -- and
+     *  advancing pass one's cursor by one where pass zero jumps to an
+     *  absolute index is exactly the off-by-N that made a block argument
+     *  resolve to a hoisted temporary of the same name.
+     */
+    unsigned    decl_seen;
     scope_info  scopes[MAX_SCOPES];
     unsigned    scope_count;
     unsigned    current_scope;
@@ -277,6 +309,30 @@ accept(st_compiler *c, st_token_kind kind)
         return 0;
     advance(c);
     return 1;
+}
+
+/*
+ *  Accept the bar that closes a block's argument list.
+ *
+ *  "[ :index || segment | ... ]" writes that bar hard against the bar that
+ *  opens the temporaries, and the lexer -- which cannot see the grammar --
+ *  hands the pair over as one two-character binary selector.  Only the
+ *  parser knows that a block's arguments have just ended and that what
+ *  follows can only be bars, so the splitting belongs here: take the first
+ *  and leave a bar token standing for the second.
+ */
+static int
+accept_argument_bar(st_compiler *c)
+{
+    if (accept(c, ST_TOK_BAR))
+        return 1;
+    if (at(c, ST_TOK_BINARY) && strcmp(c->token.text, "||") == 0) {
+        c->token.kind    = ST_TOK_BAR;
+        c->token.text[0] = '|';
+        c->token.text[1] = '\0';
+        return 1;
+    }
+    return 0;
 }
 
 /*  ----------  Emission  ----------  */
@@ -663,8 +719,9 @@ declare(st_compiler *c, const char *name, int is_argument)
     var_decl   *d;
 
     if (c->pass != 0) {
-        if (c->decl_visible < c->decl_count)
-            ++c->decl_visible;
+        if (c->decl_seen < c->decl_count)
+            ++c->decl_seen;
+        c->decl_visible = c->decl_seen;
         return;
     }
     if (c->decl_count >= MAX_DECLS) {
@@ -678,6 +735,7 @@ declare(st_compiler *c, const char *name, int is_argument)
     d->is_argument = is_argument;
     if (is_argument)
         ++c->scopes[c->current_scope].argc;
+    c->decl_seen    = c->decl_count;
     c->decl_visible = c->decl_count;
 }
 
@@ -1151,6 +1209,40 @@ parse_literal_array(st_compiler *c)
             element = c->ctx->intern_symbol(c->token.text, c->ctx->user);
             advance(c);
             break;
+        /*
+         *  Inside #( ) everything that is not a literal is a SYMBOL, and
+         *  that includes the punctuation the grammar uses elsewhere.
+         *
+         *  Pharo writes #( double sx; double shx; ) as a field descriptor
+         *  and means six symbols, two of which are #; -- seventy-nine
+         *  methods of its graphics code do.  Brackets get in by accident
+         *  rather than design, from source that meant to close the array
+         *  earlier, and Pharo reads them as symbols too rather than
+         *  refusing the file.
+         *
+         *  ( and ) keep their meanings: a nested array, and the end.
+         */
+        case ST_TOK_SEMICOLON:
+        case ST_TOK_BAR:
+        case ST_TOK_LBRACKET:
+        case ST_TOK_RBRACKET:
+        case ST_TOK_LBRACE:
+        case ST_TOK_RBRACE:
+        case ST_TOK_COLON:
+        case ST_TOK_PERIOD:
+        case ST_TOK_RETURN: {
+            static const char *const punctuation[] = {
+                NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+                NULL, NULL, NULL, ";", ".", "|", ":", NULL, NULL, "[", "]",
+                "{", "}", NULL
+            };
+            const char *text = c->token.kind == ST_TOK_RETURN
+                                ? "^" : punctuation[c->token.kind];
+
+            element = c->ctx->intern_symbol(text ? text : "?", c->ctx->user);
+            advance(c);
+            break;
+        }
         case ST_TOK_LPAREN:
         case ST_TOK_ARRAY_OPEN:
             advance(c);
@@ -1182,35 +1274,43 @@ parse_literal_array(st_compiler *c)
 static st_oop
 parse_byte_array(st_compiler *c)
 {
-    uint8_t     bytes[MAX_BYTE_ARRAY];
+    uint8_t    *bytes = (uint8_t *) malloc(MAX_BYTE_ARRAY);
     unsigned    count = 0;
+    st_oop      result;
 
+    if (!bytes) {
+        fail(c, "out of memory for a byte array literal");
+        return ST_NIL;
+    }
     advance(c);
+    result = ST_NIL;
     while (!c->failed && !at(c, ST_TOK_RBRACKET) && !at(c, ST_TOK_END)) {
         if (!at(c, ST_TOK_INTEGER)) {
             fail(c, "a byte array holds whole numbers 0 to 255");
-            return ST_NIL;
+            goto done;
         }
         if (c->token.integer < 0 || c->token.integer > 255) {
             fail(c, "%lld does not fit in a byte",
                  (long long) c->token.integer);
-            return ST_NIL;
+            goto done;
         }
         if (count >= MAX_BYTE_ARRAY) {
             fail(c, "a byte array literal holds at most %u bytes",
                  (unsigned) MAX_BYTE_ARRAY);
-            return ST_NIL;
+            goto done;
         }
         bytes[count++] = (uint8_t) c->token.integer;
         advance(c);
     }
     if (!accept(c, ST_TOK_RBRACKET)) {
         fail(c, "a byte array must end with ]");
-        return ST_NIL;
+        goto done;
     }
-    if (!c->ctx->make_byte_array)
-        return ST_NIL;
-    return c->ctx->make_byte_array(bytes, count, c->ctx->user);
+    if (c->ctx->make_byte_array)
+        result = c->ctx->make_byte_array(bytes, count, c->ctx->user);
+done:
+    free(bytes);
+    return result;
 }
 
 /*
@@ -1556,7 +1656,7 @@ compile_closure(st_compiler *c)
         ++argc;
         advance(c);
     }
-    if (argc > 0 && !at(c, ST_TOK_RBRACKET) && !accept(c, ST_TOK_BAR)) {
+    if (argc > 0 && !at(c, ST_TOK_RBRACKET) && !accept_argument_bar(c)) {
         fail(c, "expected | after block arguments");
         c->current_scope = outer_scope;
         return;
@@ -1867,7 +1967,7 @@ compile_primary(st_compiler *c, var_ref *out_var)
          *  more argument-only blocks, and the class library will not load
          *  without them.  Such a block takes its argument and answers nil.
          */
-        if (argc > 0 && !at(c, ST_TOK_RBRACKET) && !accept(c, ST_TOK_BAR)) {
+        if (argc > 0 && !at(c, ST_TOK_RBRACKET) && !accept_argument_bar(c)) {
             fail(c, "expected | after block arguments");
             return;
         }
@@ -2005,6 +2105,7 @@ mark(st_compiler *c, compiler_mark *m)
     m->block_seen    = c->block_seen;
     m->decl_count    = c->decl_count;
     m->decl_visible  = c->decl_visible;
+    m->decl_seen     = c->decl_seen;
 
 }
 
@@ -2023,6 +2124,7 @@ rewind_to(st_compiler *c, const compiler_mark *m)
     c->block_seen          = m->block_seen;
     c->decl_count          = m->decl_count;
     c->decl_visible        = m->decl_visible;
+    c->decl_seen           = m->decl_seen;
     /*
      *  Only in pass zero: pass one reads the analysis rather than building
      *  it, and giving any of it back there would delete conclusions.
@@ -2058,14 +2160,17 @@ rewind_to(st_compiler *c, const compiler_mark *m)
  *  the compiler is touched, so there is nothing to give back.
  */
 static void
-selector_after_block(st_compiler *c, char *out, size_t out_len)
+selector_after_block(st_compiler *c, char *out, size_t out_len,
+                     int *argument_is_block)
 {
     st_lexer_state  saved;
     st_token        saved_token = c->token;
     st_token        tok;
-    int             depth = 0;
+    int             depth;
 
     out[0] = '\0';
+    if (argument_is_block)
+        *argument_is_block = 0;
     LEX_save(c->lx, &saved);
     /*  c->token is the opening bracket; the lexer sits just past it.  */
     depth = 1;
@@ -2079,8 +2184,17 @@ selector_after_block(st_compiler *c, char *out, size_t out_len)
             if (--depth == 0) {
                 if (LEX_next(c->lx, &tok)
                  && (tok.kind == ST_TOK_KEYWORD
-                  || tok.kind == ST_TOK_IDENTIFIER))
+                  || tok.kind == ST_TOK_IDENTIFIER)) {
                     snprintf(out, out_len, "%s", tok.text);
+                    /*
+                     *  And whether ITS argument is a literal block too,
+                     *  which is what decides whether the whole form can be
+                     *  inlined -- "cond ifTrue: [a] ifFalse: aBlock" is an
+                     *  ordinary send, not a malformed conditional.
+                     */
+                    if (argument_is_block && LEX_next(c->lx, &tok))
+                        *argument_is_block = tok.kind == ST_TOK_LBRACKET;
+                }
                 break;
             }
         }
@@ -2189,6 +2303,24 @@ compile_inline_conditional(st_compiler *c, const char *first)
     if (!at_inlinable_block(c))
         return 0;
 
+    /*
+     *  Whether the form can be inlined is settled BEFORE anything is
+     *  emitted, by looking past the first arm.  A second arm that is not a
+     *  literal block -- "ifTrue: [a] ifFalse: aBlock" -- makes the whole
+     *  thing an ordinary send, and finding that out halfway through leaves
+     *  a jump and an arm already emitted with nowhere to put them.
+     */
+    {
+        char    next[64] = "";
+        int     second_is_block = 0;
+
+        selector_after_block(c, next, sizeof next, &second_is_block);
+        if (((jump_on_false && strcmp(next, "ifFalse:") == 0)
+          || (!jump_on_false && strcmp(next, "ifTrue:") == 0))
+         && !second_is_block)
+            return 0;
+    }
+
     branch = emit_jump_placeholder(c,
                     jump_on_false ? JUMP_IF_FALSE : JUMP_IF_TRUE);
     compile_inline_block(c);
@@ -2199,11 +2331,6 @@ compile_inline_conditional(st_compiler *c, const char *first)
         if ((jump_on_false && strcmp(second, "ifFalse:") == 0)
          || (!jump_on_false && strcmp(second, "ifTrue:") == 0)) {
             advance(c);
-            if (!at_inlinable_block(c)) {
-                fail(c, "the second arm of %s%s must be a literal block",
-                     first, second);
-                return 1;
-            }
             has_else = 1;
         }
     }
@@ -2287,10 +2414,8 @@ compile_inline_while(st_compiler *c)
                         while_true ? JUMP_IF_FALSE : JUMP_IF_TRUE);
 
     if (selector[strlen(selector) - 1] == ':') {
-        if (!at_inlinable_block(c)) {
-            fail(c, "the body of %s must be a literal block", selector);
-            return 1;
-        }
+        if (!at_inlinable_block(c))
+            return 0;                   /*  an ordinary send after all  */
         compile_inline_block(c);
         emit(c, 135);                   /*  discard the body's value  */
     }
@@ -2536,10 +2661,25 @@ compile_expression(st_compiler *c)
         mark(c, &before_receiver);
         if (at_inlinable_block(c)) {
             char    next[256];
+            int     body_is_block = 0;
 
-            selector_after_block(c, next, sizeof next);
-            if (strncmp(next, "whileTrue", 9) == 0
-             || strncmp(next, "whileFalse", 10) == 0) {
+            selector_after_block(c, next, sizeof next, &body_is_block);
+            /*
+             *  A loop is inlined only when its body is a literal block as
+             *  well.  "[cond] whileTrue: aBlock" is a perfectly ordinary
+             *  message send -- BlockClosure implements it -- and refusing
+             *  it was this compiler mistaking its own optimisation for a
+             *  rule of the language.
+             */
+            if ((strncmp(next, "whileTrue", 9) == 0
+              || strncmp(next, "whileFalse", 10) == 0)
+             /*
+              *  A body block is required only by the keyword forms.
+              *  "[...] whileTrue" takes no argument at all, so asking
+              *  whether ITS argument is a literal block asks about the
+              *  token after the loop and answers about someone else.
+              */
+             && (body_is_block || next[strlen(next) - 1] != ':')) {
                 if (compile_inline_while(c))
                     return;
                 /*
@@ -3017,6 +3157,7 @@ COMPILE_to_bytecodes(const char *source, const st_compile_context *ctx,
         out->literal_count = 0;
         out->error[0]      = '\0';
         c.decl_visible = 0;
+        c.decl_seen    = 0;
         if (pass == 0) {
             c.decl_count  = 0;
             c.need_count  = 0;

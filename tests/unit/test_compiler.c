@@ -988,6 +988,98 @@ test_inlined_or_real_is_decided_by_lookahead(void)
                       ST_DIALECT_BLUE_BOOK));
 }
 
+/*
+ *  The rest of what reading Pharo's 91,210 methods turned up.
+ *
+ *  Every one of these was found by pointing st80 -syntax at the real thing
+ *  and reading the ranked list, which is why they are the constructs that
+ *  actually occur rather than a survey of the grammar.
+ */
+static void
+test_what_reading_pharo_found(void)
+{
+    /*
+     *  Inside #( ) everything that is not a literal is a SYMBOL, including
+     *  the punctuation the grammar uses elsewhere.  Pharo's graphics code
+     *  writes #( double sx; double shx; ) as a field descriptor and means
+     *  six symbols, two of which are #; -- seventy-nine methods did.
+     */
+    CHECK(compiles_as("foo ^#( double sx; double shx; )", ST_DIALECT_CLOSURES));
+    CHECK(compiles_as("foo ^#( a; b | c [ d ] e: f. g ^h )",
+                      ST_DIALECT_CLOSURES));
+    /*  ( and ) keep their meanings: a nested array, and the end.  */
+    CHECK(compiles_as("foo ^#( a (b c) d )", ST_DIALECT_CLOSURES));
+
+    /*
+     *  A radix number may have a fraction and an exponent.  The digits of
+     *  both are in the radix; the exponent is decimal and the power is of
+     *  the radix.  Reading only the integer part left "2r1.1" as "2r1"
+     *  followed by a statement separator -- a wrong answer, not an error,
+     *  anywhere a period could legally follow.
+     */
+    CHECK(compiles_as("foo ^2r1.1", ST_DIALECT_CLOSURES));
+    CHECK(compiles_as("foo ^2r1.0e-10", ST_DIALECT_CLOSURES));
+    CHECK(compiles_as("foo ^16rFF.8", ST_DIALECT_CLOSURES));
+    /*  And the Blue Book radix integer is unchanged.  */
+    CHECK_CODE("foo ^16r1F", "16r1F is 31", 32, 124);
+
+    /*
+     *  A character literal is one UTF-8 sequence, not one byte.  Reading
+     *  the lead byte alone leaves the continuation bytes in the stream,
+     *  where they are neither a token nor a legal anything.
+     */
+    CHECK(compiles_as("foo ^$\xc3\xa9", ST_DIALECT_CLOSURES));
+    /*  Beyond Latin-1 there is nowhere to put it, and it says so.  */
+    CHECK(!compiles_as("foo ^$\xe2\x82\xac", ST_DIALECT_CLOSURES));
+
+    /*  A byte above ASCII is a letter, so a Symbol may be written in one. */
+    CHECK(compiles_as("foo ^#\xd1\x8f\xd0\xb1", ST_DIALECT_CLOSURES));
+    CHECK(compiles_as("foo | \xd1\x8f | \xd1\x8f := 1. ^\xd1\x8f",
+                      ST_DIALECT_CLOSURES));
+
+    /*
+     *  "[ :index || segment | ... ]" writes the bar that closes the
+     *  arguments hard against the bar that opens the temporaries, and the
+     *  lexer hands the pair over as one binary selector.  Only the parser
+     *  knows the arguments have just ended.
+     */
+    CHECK(compiles_as("foo ^[ :index || segment | segment := index. segment ]"
+                      " value: 1", ST_DIALECT_CLOSURES));
+
+    /*
+     *  A conditional or a loop is inlined only when every arm is a literal
+     *  block.  "ifTrue: [a] ifFalse: aBlock" is an ordinary message send,
+     *  and refusing it was this compiler mistaking its own optimisation
+     *  for a rule of the language.
+     */
+    CHECK(compiles_as("foo | b | b := [2]. ^true ifTrue: [1] ifFalse: b",
+                      ST_DIALECT_CLOSURES));
+    CHECK(compiles_as("foo | b | b := [2]. ^false ifFalse: [1] ifTrue: b",
+                      ST_DIALECT_CLOSURES));
+    CHECK(compiles_as("foo | b c | b := [false]. c := [1]. ^b whileTrue: c",
+                      ST_DIALECT_CLOSURES));
+    /*  The inlined forms still are inlined: no send, just a jump.  */
+    /*  113 push true, 172 jump-if-false, 164 jump, and no send at all.  */
+    CHECK_CODE("foo ^true ifTrue: [1] ifFalse: [2]",
+               "a literal conditional is still inlined",
+               113, 172, 3, 118, 164, 1, 119, 124);
+
+    /*
+     *  A block argument shadowing a temporary hoisted out of an inlined
+     *  block.  Pass zero jumps its cursor to an absolute declaration
+     *  index and pass one was advancing by one, so after an inlined block
+     *  put its temporaries back out of scope the two passes disagreed and
+     *  the argument resolved to the hoisted name instead.
+     */
+    CHECK(compiles_as(
+        "shadow | index stack |"
+        " index := 1."
+        " [ index <= stack size ] whileTrue: ["
+        "   | dict | dict := stack at: index. index := index + 1 ]."
+        " ^stack collect: [:dict | dict size ]",
+        ST_DIALECT_CLOSURES));
+}
+
 static void
 test_pragmas(void)
 {
@@ -1073,6 +1165,7 @@ main(void)
     test_pragmas();
     test_the_two_dialects();
     test_inlined_or_real_is_decided_by_lookahead();
+    test_what_reading_pharo_found();
 
     return ST_TEST_END();
 }
