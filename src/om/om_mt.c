@@ -152,8 +152,18 @@ instantiate(st_oop class_pointer, uint32_t size, uint32_t format,
 
     head = (om_header *) calloc(1, sizeof *head + bytes);
     if (!head) {
-        if (OM_collect() == 0)
-            return ST_OOP_INVALID;
+        /*
+         *  Collect and TRY AGAIN, whatever the collection answered.
+         *
+         *  OM_collect answers how many objects it freed, and treating zero
+         *  as "cannot allocate" is wrong the moment there is more than one
+         *  worker: two threads both find themselves short, the first
+         *  collects and frees plenty, the second then collects and frees
+         *  NOTHING because the first already did -- and gives up, with the
+         *  memory it needed sitting there free.  What the collection
+         *  freed is not the question; whether the retry succeeds is.
+         */
+        (void) OM_collect();
         head = (om_header *) calloc(1, sizeof *head + bytes);
         if (!head)
             return ST_OOP_INVALID;
@@ -192,10 +202,16 @@ instantiate(st_oop class_pointer, uint32_t size, uint32_t format,
          *  its safepoint by way of an allocation.
          */
         ST_mutex_unlock(&table_lock);
-        if (OM_collect() == 0) {
-            free(head);
-            return ST_OOP_INVALID;
-        }
+        /*
+         *  Again: collect, then retry regardless of what it freed.  This
+         *  is the one that was actually failing -- "out of memory
+         *  activating a method: 1914321 words and 4177478 object table
+         *  entries free", once in a dozen runs of the scaling benchmark
+         *  with thirty-one workers, which is exactly the shape of two
+         *  collections racing.  One worker's entire share of the work
+         *  vanished and the answer came out short.
+         */
+        (void) OM_collect();
         ST_mutex_lock(&table_lock);
         index = table_alloc_locked();
         if (index == 0) {

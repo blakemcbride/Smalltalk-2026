@@ -202,13 +202,18 @@ compile_expression(const char *expression)
     return res.method;
 }
 
+static st_atomic_int    no_context;
+static st_atomic_int    out_of_budget;
+
 static st_oop
 run_method(st_oop method)
 {
     st_oop  context = OM_instantiate_pointers(ST_CLASS_METHOD_CONTEXT, 64);
 
-    if (!OM_is_present(context))
+    if (!OM_is_present(context)) {
+        ST_fetch_add_relaxed(&no_context, 1);
         return ST_OOP_INVALID;
+    }
     OM_store_pointer(ST_CTX_SENDER, context, ST_NIL);
     OM_store_pointer(ST_CTX_METHOD, context, method);
     OM_store_pointer(ST_CTX_RECEIVER, context, ST_NIL);
@@ -223,8 +228,10 @@ run_method(st_oop method)
     st_vm.running      = 1;
     st_vm.return_value = ST_NIL;
     ST_interp_run(UINT64_C(4000000000));
-    if (st_vm.running)
+    if (st_vm.running) {
+        ST_fetch_add_relaxed(&out_of_budget, 1);
         return ST_OOP_INVALID;
+    }
     return st_vm.return_value;
 }
 
@@ -271,6 +278,8 @@ run_on(kernel *k, unsigned count, int *correct)
     running = k;
     ST_store_seq(&partial_total, 0);
     ST_store_seq(&wrong_answers, 0);
+    ST_store_seq(&no_context, 0);
+    ST_store_seq(&out_of_budget, 0);
     WORKER_reset_safepoint_statistics();
 
     began = ST_time_monotonic_ns();
@@ -345,6 +354,53 @@ main(void)
         kernels[k].answer = OM_int_value(value);
     }
 
+    /*
+     *  ST_BENCH_STRESS=n runs one kernel n times at full width instead of
+     *  sweeping.  A wrong answer under concurrent allocation appeared once
+     *  in several runs, and a sweep that takes ninety seconds is no way to
+     *  chase something intermittent: this repeats the case that failed,
+     *  and counts.
+     */
+    {
+        const char *stress = getenv("ST_BENCH_STRESS");
+
+        if (stress) {
+            unsigned    rounds = (unsigned) atoi(stress);
+            const char *which = getenv("ST_BENCH_KERNEL");
+            unsigned    failures = 0;
+            unsigned    r;
+
+            for (k = 0; k < KERNEL_COUNT; ++k)
+                if (!which || strcmp(kernels[k].name, which) == 0)
+                    break;
+            if (k == KERNEL_COUNT)
+                k = KERNEL_COUNT - 1;
+            printf("  stressing %s on %d CPUs, %u rounds\n",
+                   kernels[k].name, ST_cpu_count(), rounds);
+            for (r = 0; r < rounds; ++r) {
+                int     correct = 0;
+                double  ms = run_on(&kernels[k], 0, &correct);
+
+                if (!correct) {
+                    ++failures;
+                    printf("  round %u: WRONG -- got %d, want %lld; %d "
+                           "answered nothing (%d could not get a context, "
+                           "%d ran out of budget) (%.0f ms)\n",
+                           r, ST_load_seq(&partial_total),
+                           (long long) kernels[k].answer,
+                           ST_load_seq(&wrong_answers),
+                           ST_load_seq(&no_context),
+                           ST_load_seq(&out_of_budget), ms);
+                }
+            }
+            printf("  %u of %u rounds wrong\n", failures, rounds);
+            CHECK_EQ_INT((int) failures, 0);
+            ST_interp_unregister();
+            OM_shutdown();
+            return ST_TEST_END();
+        }
+    }
+
     printf("  %u CPUs; total work fixed, divided among the workers\n", cpus);
     printf("  %-12s %8s %10s %8s %10s %8s\n",
            "kernel", "workers", "ms", "speedup", "stopped ms", "answer");
@@ -366,6 +422,12 @@ main(void)
                    ms > 0.0 ? kernels[k].one_worker_ms / ms : 0.0,
                    (double) WORKER_safepoint_pause_ns() / 1000000.0,
                    correct ? "ok" : "WRONG");
+            if (!correct)
+                printf("      got %d, want %lld, %d worker(s) answered "
+                       "no integer at all\n",
+                       ST_load_seq(&partial_total),
+                       (long long) kernels[k].answer,
+                       ST_load_seq(&wrong_answers));
             /*
              *  The answer is checked at every width.  This is the check
              *  that makes the timings mean anything: work that came out

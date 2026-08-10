@@ -4,7 +4,9 @@
 a scaling measurement takes minutes and wants a quiet machine, which is the
 opposite of what a test suite wants.
 
-**It currently fails, and the failure is the most important line in it.**
+It found two bugs on its first complete runs, and both are fixed. The scaling
+numbers below are still poor and the gate is still not met — that part is
+unfinished, and the file says what is known about why.
 
 ## What it measures, and why that way
 
@@ -29,59 +31,80 @@ will happily report a beautiful speedup for work that came out wrong.
 
 ```
 kernel        workers         ms  speedup stopped ms   answer
-mandelbrot          1     1033.3    1.00x        0.0       ok
-mandelbrot          2      822.9    1.26x        0.0       ok
-mandelbrot          4      762.9    1.35x        0.0       ok
-mandelbrot          8     1123.4    0.92x      937.2       ok
-mandelbrot         16      906.4    1.14x        0.0       ok
-mandelbrot         31      936.6    1.10x        0.0       ok
-intervals           1      414.3    1.00x      106.3       ok
-intervals           2      418.0    0.99x        0.0       ok
-intervals           4      437.0    0.95x        0.0       ok
-intervals           8      488.9    0.85x        0.0       ok
-intervals          16      576.4    0.72x        0.0       ok
-intervals          31      848.6    0.49x      532.9       ok
-collections         1      811.7    1.00x        0.0       ok
-collections         2      546.9    1.48x        0.0       ok
-collections         4      453.7    1.79x        0.0       ok
-collections         8      457.8    1.77x        0.0       ok
-collections        16      522.5    1.55x        0.0       ok
-collections        31     1006.7    0.81x     1718.2    WRONG
+mandelbrot          1     1029.7    1.00x        0.0       ok
+mandelbrot          2      877.6    1.17x        0.0       ok
+mandelbrot          4      816.9    1.26x        0.0       ok
+mandelbrot          8     1456.6    0.71x     2894.8       ok
+mandelbrot         16      975.2    1.06x        0.0       ok
+mandelbrot         31      987.7    1.04x        0.0       ok
+intervals           1      419.0    1.00x      105.9       ok
+intervals           2      402.2    1.04x        0.0       ok
+intervals           4      492.8    0.85x        0.0       ok
+intervals           8      553.6    0.76x        0.0       ok
+intervals          16      618.9    0.68x        0.0       ok
+intervals          31      851.1    0.49x      503.6       ok
+collections         1      810.6    1.00x        0.0       ok
+collections         2      559.2    1.45x        0.0       ok
+collections         4      477.4    1.70x        0.0       ok
+collections         8      499.4    1.62x        0.0       ok
+collections        16      553.6    1.46x        0.0       ok
+collections         31     819.2    0.99x      516.2       ok
 ```
 
 **The gate is not met and is not close.** `doc/PLAN-PHARO.md` asks for mandelbrot
-≥ 4.0× at 8 workers and intervals ≥ 3.0×. The measured figures are 0.92× and 0.85×.
+≥ 4.0× at 8 workers and intervals ≥ 3.0×. The measured figures are 0.71× and 0.76×.
 `intervals` gets steadily *slower* with more workers.
 
-## The two findings
+## The three bugs it found
 
-### 1. `collections` at 31 workers computes the wrong answer
+### 1. An allocator that gave up with four million entries free — FIXED
 
-This is a correctness failure under concurrent allocation and collection, and it is
-the reason the benchmark exits non-zero. It is not a timing artefact: the kernels
-sum to a value one thread produced, and at 31 workers the sum is different.
+`collections` at 31 workers computed the **wrong answer**, about once in a dozen
+runs. The total was short by exactly one worker's share, and that worker had
+printed:
 
-It appears only at the widest setting and only in the kernel that allocates hardest,
-which is where a lost object, a torn field or a miscounted reference would first
-show. **Nothing should be built on top of the parallel runtime until this is
-understood.** It is the next thing to work on, ahead of any optimisation.
+```
+st80: out of memory activating a method: 1914321 words and 4177478 object
+      table entries free
+```
 
-### 2. The safepoint protocol deadlocked, and now does not
+Not exhaustion. `OM_collect` answers *how many objects it freed*, and the allocator
+treated zero as "cannot allocate". With one mutator that is the same thing. With
+several it is not: two workers both find the table full, the first collects and frees
+plenty, the second then collects and frees **nothing** — because the first already
+did — and gives up, with the memory it needed sitting there free.
 
-Found by this benchmark on its first complete run. Two workers could request a
-stop-the-world at the same moment and wait for each other for ever: each counted the
-other as a thread that still had to park, and neither could park, because both were
-inside `WORKER_request_safepoint` rather than at a poll. Nothing timed out and
-nothing crashed — the process simply stopped, with every worker still marked
-running.
+What a collection freed is not the question. Whether the retry succeeds is. Both
+retry sites now collect and try again regardless of the answer. **Zero failures in
+100 stress rounds of the case that was failing three times in forty.**
 
-It went unseen because the only existing test that collected under load collected
-from **worker zero and nowhere else**. This benchmark has every worker allocating,
-which is the ordinary case, and two collections were wanted at once within seconds.
+A wrong arithmetic answer was the only symptom that reached the surface. The message
+went to stderr in the middle of a benchmark and would have been read as
+"the machine ran out of memory".
 
-A request is now exclusive. A worker that loses the race does **not** queue behind
-the winner — that is the same deadlock wearing a mutex — it parks for the winner's
+### 2. The safepoint protocol deadlocked — FIXED
+
+Two workers could request a stop-the-world at the same moment and wait for each other
+for ever: each counted the other as a thread that still had to park, and neither could
+park, because both were inside `WORKER_request_safepoint` rather than at a poll.
+Nothing timed out and nothing crashed — the process simply stopped, with every worker
+still marked running.
+
+It went unseen because the only existing test that collected under load collected from
+**worker zero and nowhere else**. This benchmark has every worker allocating, which is
+the ordinary case, and two collections were wanted at once within seconds.
+
+A request is exclusive now. A worker that loses the race does **not** queue behind the
+winner — that is the same deadlock wearing a mutex — it parks for the winner's
 safepoint like any other worker and asks again afterwards.
+
+### 3. Two benchmarks that measured the wrong thing — FIXED
+
+The first sizing ran for 36 ms and measured mostly the cost of starting thirty-one
+threads; `intervals` came out slower on more workers, which was true of the
+measurement and said nothing about the interpreter. The second overcorrected into
+something whose **single-threaded reference run** had not finished after twenty
+minutes. Both are recorded in the source so the next person does not repeat them.
 
 ## Why the speedups are poor, as far as is known
 
