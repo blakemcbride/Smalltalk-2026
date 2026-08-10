@@ -95,6 +95,18 @@ st_worker  *WORKER_self(void);
  *  WORKER_poll once per bytecode; it is a single relaxed atomic load in
  *  the common case and parks only when asked.
  */
+/*
+ *  How long the world has been stopped in total, and how many times.
+ *
+ *  Without it a scaling failure cannot be attributed and you will guess:
+ *  eight workers going half as fast as four could be contending on a lock,
+ *  thrashing a cache line, or simply parked while one of them collects, and
+ *  those want three different fixes.
+ */
+int64_t     WORKER_safepoint_pause_ns(void);
+int         WORKER_safepoint_count(void);
+void        WORKER_reset_safepoint_statistics(void);
+
 extern st_atomic_int    st_safepoint_requested;
 
 static inline int

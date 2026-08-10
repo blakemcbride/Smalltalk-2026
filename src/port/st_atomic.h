@@ -37,6 +37,8 @@ typedef atomic_uint         st_atomic_uint;
 typedef atomic_bool         st_atomic_bool;
 typedef atomic_uintptr_t    st_atomic_ptr;
 typedef atomic_size_t       st_atomic_size;
+/*  Wide enough for a nanosecond total that runs for years.  */
+typedef _Atomic int64_t     st_atomic_i64;
 
 /*  Loads  */
 

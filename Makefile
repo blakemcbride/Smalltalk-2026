@@ -150,6 +150,26 @@ $(TEST_DIR)/%: tests/unit/%.c $(LIB_AR)
 	@mkdir -p $(dir $@)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(LIB_AR) -o $@ $(LDFLAGS) $(LIBS)
 
+# Benchmarks ----------------------------------------------------------------
+#
+# Built but not run by `make test`: a scaling measurement takes minutes and
+# wants a quiet machine, which is the opposite of what a test suite wants.
+# `make bench` runs it.
+
+BENCH_SRC := $(wildcard tests/bench/bench_*.c)
+BENCH_BIN := $(patsubst tests/bench/%.c,$(TEST_DIR)/%,$(BENCH_SRC))
+
+$(TEST_DIR)/bench_%: tests/bench/bench_%.c $(LIB_AR)
+	@mkdir -p $(dir $@)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(LIB_AR) -o $@ $(LDFLAGS) $(LIBS)
+
+.PHONY: bench
+bench: $(BENCH_BIN)
+	@for b in $(BENCH_BIN); do \
+	    echo "==> $$b"; \
+	    "$$b" || exit 1; \
+	done
+
 test: unit-test
 
 unit-test: $(UNIT_BIN)

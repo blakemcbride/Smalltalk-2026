@@ -123,15 +123,81 @@ WORKER_unparked_count(void)
     return n;
 }
 
+/*
+ *  How long the world has been stopped, in total, and how often.
+ *
+ *  Without this a scaling failure cannot be attributed and you will guess.
+ *  Eight workers that go half as fast as four could be contending on a
+ *  lock, or thrashing a cache line, or simply spending their time parked
+ *  while one of them collects -- and those want three different fixes.
+ *  The number is free to keep and decisive to have.
+ */
+static st_atomic_i64    safepoint_pause_ns;
+static st_atomic_int    safepoint_count;
+static _Thread_local int64_t    safepoint_began;
+
+int64_t
+WORKER_safepoint_pause_ns(void)
+{
+    return ST_load_seq(&safepoint_pause_ns);
+}
+
+int
+WORKER_safepoint_count(void)
+{
+    return ST_load_seq(&safepoint_count);
+}
+
+void
+WORKER_reset_safepoint_statistics(void)
+{
+    ST_store_seq(&safepoint_pause_ns, 0);
+    ST_store_seq(&safepoint_count, 0);
+}
+
+/*
+ *  Whether a stop-the-world is already being arranged, and by whom.
+ *
+ *  Without this two workers could request one at the same moment, and
+ *  then wait for each other for ever: each counts the other as a thread
+ *  that still has to park, and neither can park, because both are inside
+ *  this function rather than at a poll.  Nothing times out and nothing
+ *  crashes -- the process simply stops, with every worker "running".
+ *
+ *  It went unseen because the only test that collected under load
+ *  collected from worker zero and nowhere else.  The scaling benchmark
+ *  has every worker allocating, which is the ordinary case and the one
+ *  that finds it: two collections wanted at once.
+ *
+ *  A worker that loses the race does NOT queue behind the winner -- that
+ *  is the same deadlock wearing a mutex.  It parks for the winner's
+ *  safepoint like any other worker, and asks again afterwards.
+ */
+static st_atomic_int    safepoint_in_progress;
+
 void
 WORKER_request_safepoint(void)
 {
     const st_worker    *requester = current_worker;
 
+    safepoint_began = ST_time_monotonic_ns();
     if (!lock_ready)
         return;                 /*  single-threaded: nothing to stop  */
 
-    ST_mutex_lock(&safepoint_lock);
+    for (;;) {
+        int expected = 0;
+
+        ST_mutex_lock(&safepoint_lock);
+        if (ST_cas_strong(&safepoint_in_progress, &expected, 1))
+            break;
+        ST_mutex_unlock(&safepoint_lock);
+        /*
+         *  Somebody else is stopping the world.  Be stopped: park exactly
+         *  as the poll would, so the winner's count can be reached, and
+         *  come back when it lets go.
+         */
+        WORKER_poll_slow();
+    }
     ST_store_seq(&st_safepoint_requested, 1);
     while ((unsigned) ST_load_relaxed(&parked_count)
             < threads_to_park(requester)) {
@@ -157,10 +223,17 @@ WORKER_request_safepoint(void)
 void
 WORKER_release_safepoint(void)
 {
+    if (safepoint_began) {
+        ST_fetch_add_relaxed(&safepoint_pause_ns,
+                                 ST_time_monotonic_ns() - safepoint_began);
+        ST_fetch_add_relaxed(&safepoint_count, 1);
+        safepoint_began = 0;
+    }
     if (!lock_ready)
         return;
     ST_mutex_lock(&safepoint_lock);
     ST_store_seq(&st_safepoint_requested, 0);
+    ST_store_seq(&safepoint_in_progress, 0);
     ST_cond_broadcast(&safepoint_released);
     ST_mutex_unlock(&safepoint_lock);
 }
