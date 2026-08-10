@@ -152,32 +152,57 @@ single-worker `arithmetic` kernel went from 172 ms to 141 ms, 18% faster**, and 
 eight-worker time was 65.8 ms before and 64.7 ms after, so it does not touch the
 ceiling below.
 
-### The ceiling itself is still unexplained
+### The ceiling: measured hard, five hypotheses refuted, cause not found
 
 On **eight distinct physical P-cores** — verified through
-`topology/thread_siblings_list`, not assumed — the speedup plateaus at about 2.6×,
-and `perf stat` says something specific about why:
+`topology/thread_siblings_list`, not assumed — the speedup plateaus at about 2.2×.
+`perf` says a great deal about what it is *not*.
+
+**Same work, twice the cycles.** For an identical instruction count the cores spend
+twice as long, and the top-down breakdown says all of it is backend stalls:
 
 | | 1 worker | 8 workers |
 |---|---|---|
 | instructions | 1.0742 × 10¹² | 1.0743 × 10¹² |
 | cycles | 341 × 10⁹ | 716 × 10⁹ |
 | IPC | 3.15 | **1.50** |
+| retiring slots | 715 × 10⁹ | 707 × 10⁹ |
+| **backend-bound slots** | 339 × 10⁹ (25%) | **1614 × 10⁹ (63%)** |
+| frontend-bound slots | 297 × 10⁹ | 253 × 10⁹ |
+
+**And every counted microarchitectural event is unchanged.**
+
+| | 1 worker | 8 workers |
+|---|---|---|
 | cache-misses | 1.614 × 10⁹ | 1.608 × 10⁹ |
 | LLC-load-misses | 382 × 10⁶ | 380 × 10⁶ |
+| dTLB-load-misses | 153.9 × 10⁶ | 154.0 × 10⁶ |
+| branch-misses | 140.4 × 10⁶ | 140.2 × 10⁶ |
+| machine_clears.memory_ordering | 3.91 × 10⁶ | 2.74 × 10⁶ |
 
-**Identical instructions. Identical cache misses. Half the IPC.** The work is
-exactly the same and the memory traffic is exactly the same; the cores are simply
-stalling twice as much. That rules out coherence traffic and cache pressure along
-with the reference-counting theory, and it is as far as the evidence goes today.
+**It is in the process, not the machine.** Eight *independent processes*, one pinned
+per P-core, sharing no address space, no heap and no locks, run the same kernel at
+**2.80 IPC**. Eight threads inside one process run it at **1.50 IPC**. So the machine
+having eight cores busy costs about 14% (3.26 → 2.80 IPC), and something shared
+inside the process costs another **1.87×** on top.
 
-What remains shared in that loop is short — the method's bytecodes and the object
-table, both read-only for this kernel, and the safepoint poll's one relaxed load per
-bytecode. Annotating the stalls to an instruction is the next step, and it is a
-measurement rather than an argument.
+Five hypotheses have been tested and refuted, each with a measurement:
+
+1. **Reference-count contention on shared objects** — refuted by the `arithmetic`
+   control kernel, which touches no reference count at all and stalls the same way.
+2. **Cache or coherence traffic** — refuted: miss counts identical.
+3. **Address translation** — refuted: dTLB misses identical.
+4. **Branch prediction** — refuted: mispredictions identical.
+5. **False sharing of object-table entries** — refuted directly: spreading each
+   worker's context sixteen table slots apart changed cycles by 1%, which is noise.
+
+What is left is a backend stall that costs half the IPC, in a shared address space,
+with no counter here showing where. Attributing it wants a precise-event profile
+(`cycles:pp` with `perf annotate`), which is the next step and a measurement rather
+than another guess.
 
 **What is honest to say today:** the parallel runtime is **correct** — the answers
-check at every width, including a hundred stress rounds of the case that used to fail
-— it is 18% faster in serial than it was, and it still does not go faster on eight
-cores than on four. The gate is not met. Two causes are found and named; the third
-is narrowed and open.
+check at every width, including a hundred stress rounds of the case that used to
+fail. It is 18% faster in serial than it was. The gate is not met: it does not go
+faster on eight cores than on four. Two contributing causes are found and named, five
+candidate explanations are eliminated, and the principal cause is not yet identified.
