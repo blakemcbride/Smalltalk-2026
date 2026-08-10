@@ -387,6 +387,8 @@ main(void)
 
         if (stress) {
             unsigned    rounds = (unsigned) atoi(stress);
+            const char *widthv = getenv("ST_BENCH_WIDTH");
+            unsigned    width = widthv ? (unsigned) atoi(widthv) : 0;
             const char *which = getenv("ST_BENCH_KERNEL");
             unsigned    failures = 0;
             unsigned    r;
@@ -400,7 +402,7 @@ main(void)
                    kernels[k].name, ST_cpu_count(), rounds);
             for (r = 0; r < rounds; ++r) {
                 int     correct = 0;
-                double  ms = run_on(&kernels[k], 0, &correct);
+                double  ms = run_on(&kernels[k], width, &correct);
 
                 if (!correct) {
                     ++failures;

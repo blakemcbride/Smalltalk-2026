@@ -395,7 +395,7 @@ OM_swap_identities(st_oop a, st_oop b)
 /*  ----------  Reference counting  ----------  */
 
 void
-OM_increase_ref(st_oop p)
+OM_increase_ref_object(st_oop p)
 {
     if (!OM_is_object(p))
         return;
@@ -407,7 +407,7 @@ OM_increase_ref(st_oop p)
 }
 
 void
-OM_decrease_ref(st_oop p)
+OM_decrease_ref_object(st_oop p)
 {
     om_header  *head;
     unsigned    before;

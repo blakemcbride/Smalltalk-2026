@@ -354,8 +354,39 @@ OM_word_base(st_oop p)
 
 /*  ----------  Reference counting and lifetime  ----------  */
 
-void    OM_increase_ref(st_oop p);
-void    OM_decrease_ref(st_oop p);
+/*
+ *  The slow halves, for something that really is an object.
+ */
+void    OM_increase_ref_object(st_oop p);
+void    OM_decrease_ref_object(st_oop p);
+
+/*
+ *  Reference counting, with the tag test INLINE.
+ *
+ *  These two are the hottest pair of calls in the system: every push, pop
+ *  and field store goes through them, and for a SmallInteger -- which is
+ *  most of what an interpreter moves around -- the whole job is to notice
+ *  the tag bit and return.  Out of line that costs a call and a return per
+ *  stack operation, and a profile of a loop doing nothing but SmallInteger
+ *  arithmetic put OM_increase_ref at six times the cost of the entire
+ *  interpreter loop it was called from.
+ *
+ *  The odd bit is the tag, so the test is one instruction and needs no
+ *  memory at all.  Only a real object reaches the call.
+ */
+static inline void
+OM_increase_ref(st_oop p)
+{
+    if (p != ST_OOP_INVALID && (p & 1) == 0)
+        OM_increase_ref_object(p);
+}
+
+static inline void
+OM_decrease_ref(st_oop p)
+{
+    if (p != ST_OOP_INVALID && (p & 1) == 0)
+        OM_decrease_ref_object(p);
+}
 void    OM_store_pointer(uint32_t field, st_oop p, st_oop value);
 void    OM_deallocate(st_oop p);
 

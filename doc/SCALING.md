@@ -107,47 +107,77 @@ measurement and said nothing about the interpreter. The second overcorrected int
 something whose **single-threaded reference run** had not finished after twenty
 minutes. Both are recorded in the source so the next person does not repeat them.
 
-## Why the speedups are poor: one guess refuted, cause still open
+## Why the speedups are poor: two causes found, one still open
 
-The first write-up of this file named a prime suspect: reference counting on the
-**shared** objects every worker touches — `nil`, `true`, `false`, the small
-literals, the class objects — whose counts live on cache lines all thirty-two cores
-would then fight over. It was a plausible mechanism and it is **wrong**.
+The first version of this file named a prime suspect — reference counting on the
+**shared** objects every worker touches, whose counts would sit on cache lines all
+thirty-two cores fight over. Plausible, and **wrong**. What actually turned up was
+three separate things, and only one of them is a bug in this system.
 
-The `arithmetic` kernel was added to test it, and it is the control this benchmark
-was missing. It is a `whileTrue:` loop of SmallInteger arithmetic: the loop is
-inlined so **no block is activated and no context is allocated**, and every value
-stored is a tagged integer so **no reference count is touched at all**. If
-reference counting were the bottleneck, this kernel would scale and the others
-would not.
+### The machine is not 32 equal cores
+
+An **Intel i9-14900KF: 8 P-cores (16 threads) and 16 E-cores.** The benchmark
+divides the work **evenly**, so on unequal cores the slowest worker sets the wall
+time — and past eight workers, some of the work lands on an E-core. That is a
+static-partitioning artefact, not a VM limit.
+
+Pinning to one thread per P-core removes it completely:
 
 ```
-arithmetic          1      180.7    1.00x
-arithmetic          2      109.0    1.66x
-arithmetic          4       67.8    2.67x
-arithmetic          8       85.2    2.12x
-arithmetic         16       94.4    1.91x
-arithmetic         31      113.9    1.59x
+                    all 32 CPUs        8 P-cores only
+arithmetic   1      1.00x              1.00x
+arithmetic   2      1.66x              1.61x
+arithmetic   4      2.67x              2.57x
+arithmetic   8      2.12x              2.62x
+arithmetic  16      1.91x              2.58x
+arithmetic  31      1.59x              2.59x
 ```
 
-It does not scale either. It reaches 2.67× on four workers — already only 67%
-efficient — and then gets **worse** as workers are added, in the same shape as
-everything else. Whatever is limiting this system limits a loop that allocates
-nothing and counts nothing.
+The *degradation* is gone. A benchmark that reports throughput on a hybrid machine
+has to hand work out dynamically rather than slice it evenly; that is a fix to the
+measurement, and it is not made yet.
 
-So the object memory is ruled out as the primary cause, and with it the fix that
-was about to be attempted. What is left inside the interpreter's loop that all
-workers share is short: the method's bytecodes (read-only), the object table
-(read-only for this kernel), and **the safepoint poll, one shared atomic load per
-bytecode**. `stopped ms` is zero throughout, so no safepoint is actually being
-taken — but a shared line that is merely *read* by thirty-two cores is only free
-while nothing writes it, and what shares that line has not been checked.
+### Reference counting was in the way, just not the way that was guessed
 
-That is the next thing to measure, and it wants a profiler. `perf` is not installed
-on this machine and sampling with gdb kept missing the compute phase; getting a real
-profile is the first step, not more reasoning from the outside.
+`OM_increase_ref` and `OM_decrease_ref` are the hottest pair of calls in the system:
+every push, pop and field store goes through them, and for a **SmallInteger** — most
+of what an interpreter moves — the entire job is to notice the tag bit and return.
+They were out of line, so that cost a call and a return every time. A profile of a
+loop doing nothing but SmallInteger arithmetic put `OM_increase_ref` at **six times
+the cost of the whole interpreter loop calling it**.
 
-**What is honest to say today:** the parallel runtime is correct — the answers check
-out at every width, including under a hundred stress rounds of the case that used to
-fail — and it does not yet go faster on more cores than it does on four. The gate is
-not met. The cause is narrowed and not found.
+The tag test is now inline and only a real object reaches the call. **The
+single-worker `arithmetic` kernel went from 172 ms to 141 ms, 18% faster**, and the
+1983 library still compiles byte-for-byte identically. It is a serial win: the
+eight-worker time was 65.8 ms before and 64.7 ms after, so it does not touch the
+ceiling below.
+
+### The ceiling itself is still unexplained
+
+On **eight distinct physical P-cores** — verified through
+`topology/thread_siblings_list`, not assumed — the speedup plateaus at about 2.6×,
+and `perf stat` says something specific about why:
+
+| | 1 worker | 8 workers |
+|---|---|---|
+| instructions | 1.0742 × 10¹² | 1.0743 × 10¹² |
+| cycles | 341 × 10⁹ | 716 × 10⁹ |
+| IPC | 3.15 | **1.50** |
+| cache-misses | 1.614 × 10⁹ | 1.608 × 10⁹ |
+| LLC-load-misses | 382 × 10⁶ | 380 × 10⁶ |
+
+**Identical instructions. Identical cache misses. Half the IPC.** The work is
+exactly the same and the memory traffic is exactly the same; the cores are simply
+stalling twice as much. That rules out coherence traffic and cache pressure along
+with the reference-counting theory, and it is as far as the evidence goes today.
+
+What remains shared in that loop is short — the method's bytecodes and the object
+table, both read-only for this kernel, and the safepoint poll's one relaxed load per
+bytecode. Annotating the stalls to an instruction is the next step, and it is a
+measurement rather than an argument.
+
+**What is honest to say today:** the parallel runtime is **correct** — the answers
+check at every width, including a hundred stress rounds of the case that used to fail
+— it is 18% faster in serial than it was, and it still does not go faster on eight
+cores than on four. The gate is not met. Two causes are found and named; the third
+is narrowed and open.
