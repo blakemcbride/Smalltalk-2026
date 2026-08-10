@@ -155,6 +155,25 @@ static const char *const collections_source =
     "   total := total + c size]."
     " ^total";
 
+/*
+ *  The control.
+ *
+ *  Nothing but SmallInteger arithmetic in an inlined loop: no block is
+ *  activated, so no context is allocated, and every value stored is a
+ *  tagged integer, so no reference count is touched.  If THIS does not
+ *  scale, the problem is in the interpreter's own loop and not in the
+ *  object memory -- which is the first fork in the road and cannot be
+ *  reasoned to from the other three kernels.
+ */
+static const char *const arithmetic_source =
+    "| sum i first last |"
+    " first := Processor activeWorkerIndex * 2000000 // Processor workerCount."
+    " last := (Processor activeWorkerIndex + 1) * 2000000"
+    "           // Processor workerCount."
+    " sum := 0. i := first."
+    " [i < last] whileTrue: [sum := sum + (i \\\\ 7). i := i + 1]."
+    " ^sum";
+
 typedef struct {
     const char *name;
     const char *source;
@@ -164,6 +183,7 @@ typedef struct {
 } kernel;
 
 static kernel kernels[] = {
+    { "arithmetic",  NULL, 0, 0, 0.0 },
     { "mandelbrot",  NULL, 0, 0, 0.0 },
     { "intervals",   NULL, 0, 0, 0.0 },
     { "collections", NULL, 0, 0, 0.0 }
@@ -327,9 +347,10 @@ main(void)
     CHECK(BOOT_install_display(640, 480));
     BOOT_run_initializers(&init);
 
-    kernels[0].source = mandelbrot_source;
-    kernels[1].source = intervals_source;
-    kernels[2].source = collections_source;
+    kernels[0].source = arithmetic_source;
+    kernels[1].source = mandelbrot_source;
+    kernels[2].source = intervals_source;
+    kernels[3].source = collections_source;
 
     ST_interp_install_roots(provide_bench_roots);
     ST_interp_register();

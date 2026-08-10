@@ -14,6 +14,7 @@ Three kernels, because they measure different things:
 
 | | |
 |---|---|
+| **arithmetic** | the control — an inlined `whileTrue:` of SmallInteger arithmetic. No block activated, so no context allocated; every value stored is a tagged integer, so no reference count touched. It exists to tell "the interpreter's loop" apart from "the object memory", which cannot be reasoned to from the other three |
 | **mandelbrot** | heavy arithmetic, almost no allocation — the ceiling. Fixed point rather than `Float` on purpose: a `Float` here is a boxed object, so a floating-point Mandelbrot would be an allocation benchmark wearing a disguise |
 | **intervals** | pure interpretation — sends, blocks, one context per activation. What the interpreter costs when the arithmetic is trivial |
 | **collections** | heavy allocation and collection. The case a shared heap makes hardest |
@@ -106,19 +107,47 @@ measurement and said nothing about the interpreter. The second overcorrected int
 something whose **single-threaded reference run** had not finished after twenty
 minutes. Both are recorded in the source so the next person does not repeat them.
 
-## Why the speedups are poor, as far as is known
+## Why the speedups are poor: one guess refuted, cause still open
 
-The `stopped ms` column exists so this cannot be guessed at, and it already rules
-things out: at most widths it is **zero**, so the world is not being stopped and the
-collector is not the bottleneck. Whatever is serialising these kernels is doing it
-while every worker is nominally running.
+The first write-up of this file named a prime suspect: reference counting on the
+**shared** objects every worker touches — `nil`, `true`, `false`, the small
+literals, the class objects — whose counts live on cache lines all thirty-two cores
+would then fight over. It was a plausible mechanism and it is **wrong**.
 
-The prime suspect is reference counting on **shared** objects. Every field store
-adjusts a count, and the counts of the objects every worker touches — `nil`, `true`,
-`false`, the small literals, the class objects — live on cache lines that all 32
-cores then fight over. That would produce exactly this shape: no safepoints, no
-lock contention visible, and a per-worker slowdown that grows with the worker count.
+The `arithmetic` kernel was added to test it, and it is the control this benchmark
+was missing. It is a `whileTrue:` loop of SmallInteger arithmetic: the loop is
+inlined so **no block is activated and no context is allocated**, and every value
+stored is a tagged integer so **no reference count is touched at all**. If
+reference counting were the bottleneck, this kernel would scale and the others
+would not.
 
-It is a suspicion and not a measurement. Confirming it wants a profile, and the fix
-— if it is right — is the *reorganize* that `doc/PLAN-PHARO.md`'s Phase L already
-anticipates for reference counts under threads.
+```
+arithmetic          1      180.7    1.00x
+arithmetic          2      109.0    1.66x
+arithmetic          4       67.8    2.67x
+arithmetic          8       85.2    2.12x
+arithmetic         16       94.4    1.91x
+arithmetic         31      113.9    1.59x
+```
+
+It does not scale either. It reaches 2.67× on four workers — already only 67%
+efficient — and then gets **worse** as workers are added, in the same shape as
+everything else. Whatever is limiting this system limits a loop that allocates
+nothing and counts nothing.
+
+So the object memory is ruled out as the primary cause, and with it the fix that
+was about to be attempted. What is left inside the interpreter's loop that all
+workers share is short: the method's bytecodes (read-only), the object table
+(read-only for this kernel), and **the safepoint poll, one shared atomic load per
+bytecode**. `stopped ms` is zero throughout, so no safepoint is actually being
+taken — but a shared line that is merely *read* by thirty-two cores is only free
+while nothing writes it, and what shares that line has not been checked.
+
+That is the next thing to measure, and it wants a profiler. `perf` is not installed
+on this machine and sampling with gdb kept missing the compute phase; getting a real
+profile is the first step, not more reasoning from the outside.
+
+**What is honest to say today:** the parallel runtime is correct — the answers check
+out at every width, including under a hundred stress rounds of the case that used to
+fail — and it does not yet go faster on more cores than it does on four. The gate is
+not met. The cause is narrowed and not found.
