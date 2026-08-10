@@ -651,7 +651,7 @@ vendored**; it remains the right oracle and the extractor is a small job the day
 What stands in for it now is the C suite, which grew from 439 checks to 516 over this phase,
 most of them one modern expression each.
 
-### H — M:N scheduling and atomic semaphores *(H1 the race, H2 per-worker state — done)*
+### H — M:N scheduling and atomic semaphores *(H1 the race, H2 per-worker state, H3 the ready lists — done)*
 
 **The race is closed.** It had been in `st_sched.c` since the file was written, and it is
 Chapter 29's own algorithm — correct on one thread and wrong on several, in the quietest
@@ -725,6 +725,33 @@ know about it, and a collection landing there frees a live object. It exists in 
 memories, trivially in the Blue Book one, so Smalltalk written against it loads in both
 builds.
 
+**H3: the ready lists are serialized, not split — and the plan was wrong about this.**
+
+The plan called for per-worker ready `LinkedList`s per priority. Reading the 1983 source
+talked me out of it: `quiescentProcessLists` is **not the VM's private data**.
+`ProcessorScheduler>>remove:ifAbsent:` and `>>suspendFirstAt:ifNone:` walk it from
+*Smalltalk*. Split the lists per worker and those two methods look in an array that no
+longer holds the processes, and answer "not waiting" for a process that is — silently,
+and only when more than one worker is running.
+
+So the lists stay where the image can see them, and the VM's operations on them are
+serialized under one lock. **The plan's own argument says the cost is affordable**: a green
+process switch happens at a semaphore wait or a yield, not per bytecode, so this lock is
+taken thousands of times a second rather than millions. Finding the highest non-empty list
+and taking from it is now one step — two workers that both look, both see the same process
+at the head, and both take it would run one process on two native threads through one
+context.
+
+The test drains 800 ready processes from 31 workers. **Unlocked it drains 286 to 412 of
+them** — links lost between the look and the take — and never the same one twice, which is
+worth knowing: the failure mode here is *losing* processes, not duplicating them, and a
+process lost off a ready list is one that never runs again.
+
+Per-worker queues remain the right optimisation the day a benchmark asks for one, and they
+will want those two Smalltalk methods reimplemented over a primitive first. Recording that
+as a measured decision rather than a plan followed is the point: **the plan said split, the
+source said don't.**
+
 Still to do in this phase:
 
 Per-worker state in `struct st_worker` (`worker.h:57-75`): `active_process`, ready
@@ -742,8 +769,9 @@ with the instance variable kept as the fallback a snapshot carries. Reserve prim
 `CONCURRENCY.md`: 240 `activeProcess`, 241 `activeWorkerIndex`, 242 `workerCount`,
 243 `forkParallel:`, 244 `pinToWorker:`, 245 `compareAndSwapSlot:from:to:`.
 
-Work stealing: own queue first, then a random victim's *tail* under its lock, then park on a
-pool-wide idle condvar — spinning 31 cores on an idle desktop is unacceptable. Green
+Work stealing — **which now waits on the per-worker queues above, and on the two Smalltalk
+methods that read the ready lists directly**: own queue first, then a random victim's *tail*
+under its lock, then park on a pool-wide idle condvar — spinning 31 cores on an idle desktop is unacceptable. Green
 processes here are coarse, so a per-worker mutex is not the bottleneck; record Chase-Lev
 deques as a later optimization to be justified by measurement, not adopted on reputation.
 

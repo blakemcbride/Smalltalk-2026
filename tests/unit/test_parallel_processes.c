@@ -61,6 +61,34 @@
 static st_oop           semaphores[SEMAPHORE_COUNT];
 static st_atomic_int    signals_sent;
 
+/*
+ *  A frame to push onto.
+ *
+ *  The primitives take their receiver from the interpreter's stack, which
+ *  is the active context -- that is the interface, and calling them any
+ *  other way would be testing a copy of the code rather than the code.  So
+ *  each worker stands up a context of its own, exactly as an activation
+ *  would, and never runs a bytecode in it.
+ */
+static void
+give_this_worker_a_frame(void)
+{
+    st_oop  context = OM_instantiate_pointers(ST_CLASS_METHOD_CONTEXT, 16);
+
+    OM_increase_ref(context);
+    OM_store_pointer(ST_CTX_SENDER, context, ST_NIL);
+    OM_store_pointer(ST_CTX_METHOD, context, ST_NIL);
+    OM_store_pointer(ST_CTX_RECEIVER, context, ST_NIL);
+    st_vm.active_context = ST_NIL;
+    ST_set_active_context(context);
+    st_vm.stack_pointer = ST_CTX_TEMP_FRAME_START;
+}
+
+/*
+ *  Enough objects that the guaranteed pointers exist, since the object
+ *  table hands them out in order and ST_SCHEDULER_ASSOCIATION is one of
+ *  them.
+ */
 static void
 build_fixed_objects(void)
 {
@@ -72,6 +100,82 @@ build_fixed_objects(void)
         OM_increase_ref(p);
         (void) p;
     }
+}
+
+#define PRIORITY_COUNT      4
+#define PROCESSES_PER_LIST  200
+
+static st_oop           scheduler;
+static st_atomic_int    processes_taken;
+static st_atomic_int    taken_twice;
+
+/*
+ *  A ProcessorScheduler, by hand: an Array of LinkedLists, one per
+ *  priority, reachable where SCHED_scheduler() looks for it.
+ */
+static void
+build_scheduler(void)
+{
+    st_oop      lists = OM_instantiate_pointers(ST_NIL, PRIORITY_COUNT);
+    unsigned    i;
+
+    OM_increase_ref(lists);
+    for (i = 0; i < PRIORITY_COUNT; ++i) {
+        st_oop  list = OM_instantiate_pointers(ST_NIL, 2);
+
+        OM_store_pointer(ST_LIST_FIRST_LINK, list, ST_NIL);
+        OM_store_pointer(ST_LIST_LAST_LINK, list, ST_NIL);
+        OM_store_pointer(i, lists, list);
+    }
+    scheduler = OM_instantiate_pointers(ST_NIL, 2);
+    OM_increase_ref(scheduler);
+    OM_store_pointer(ST_SCHEDULER_PROCESS_LISTS, scheduler, lists);
+    OM_store_pointer(ST_ASSOCIATION_VALUE, ST_SCHEDULER_ASSOCIATION,
+                     scheduler);
+}
+
+static st_oop
+make_process(st_int priority)
+{
+    st_oop  p = OM_instantiate_pointers(ST_NIL, 4);
+
+    OM_increase_ref(p);
+    OM_store_pointer(ST_LINK_NEXT, p, ST_NIL);
+    OM_store_pointer(ST_PROCESS_PRIORITY, p, OM_int_oop(priority));
+    OM_store_pointer(ST_PROCESS_MY_LIST, p, ST_NIL);
+    return p;
+}
+
+/*
+ *  Take processes off the ready lists until they are empty, and count.
+ *
+ *  Finding the highest non-empty list and taking from it has to be ONE
+ *  step.  Two workers that both look, both see the same process at the
+ *  head, and both take it end up running one process on two native
+ *  threads, through one context -- and the count here is one higher than
+ *  the number of processes that ever existed.
+ */
+static void
+draining_worker(st_worker *self, void *user)
+{
+    (void) user;
+    (void) self;
+    ST_interp_register();
+    give_this_worker_a_frame();
+    for (;;) {
+        st_oop  taken = SCHED_wake_highest_priority();
+
+        if (!OM_is_present(taken))
+            break;
+        /*
+         *  myList is nilled by the removal, so a process taken twice is
+         *  visible: the second taker finds it already detached.
+         */
+        if (OM_is_present(OM_fetch_pointer(ST_PROCESS_MY_LIST, taken)))
+            ST_fetch_add_relaxed(&taken_twice, 1);
+        ST_fetch_add_relaxed(&processes_taken, 1);
+    }
+    ST_interp_unregister();
 }
 
 /*
@@ -101,29 +205,6 @@ excess_of(st_oop semaphore)
     return OM_is_int(excess) ? OM_int_value(excess) : -1;
 }
 
-/*
- *  A frame to push onto.
- *
- *  The primitives take their receiver from the interpreter's stack, which
- *  is the active context -- that is the interface, and calling them any
- *  other way would be testing a copy of the code rather than the code.  So
- *  each worker stands up a context of its own, exactly as an activation
- *  would, and never runs a bytecode in it.
- */
-static void
-give_this_worker_a_frame(void)
-{
-    st_oop  context = OM_instantiate_pointers(ST_CLASS_METHOD_CONTEXT, 16);
-
-    OM_increase_ref(context);
-    OM_store_pointer(ST_CTX_SENDER, context, ST_NIL);
-    OM_store_pointer(ST_CTX_METHOD, context, ST_NIL);
-    OM_store_pointer(ST_CTX_RECEIVER, context, ST_NIL);
-    st_vm.active_context = ST_NIL;
-    ST_set_active_context(context);
-    st_vm.stack_pointer = ST_CTX_TEMP_FRAME_START;
-}
-
 static void
 provide_test_roots(om_visit_fn visit)
 {
@@ -131,6 +212,7 @@ provide_test_roots(om_visit_fn visit)
 
     for (i = 0; i < SEMAPHORE_COUNT; ++i)
         visit(semaphores[i]);
+    visit(scheduler);
 }
 
 /*
@@ -325,6 +407,34 @@ main(void)
     }
     printf("  %u threads each saw an active process of their own\n",
            workers < 64 ? workers : 64);
+
+    /*  ----------  No process may be taken off a ready list twice  ---------- */
+
+    build_scheduler();
+    {
+        unsigned    priority;
+        unsigned    n;
+
+        for (priority = 1; priority <= PRIORITY_COUNT; ++priority)
+            for (n = 0; n < PROCESSES_PER_LIST; ++n)
+                SCHED_sleep(make_process((st_int) priority));
+    }
+    ST_store_seq(&processes_taken, 0);
+    ST_store_seq(&taken_twice, 0);
+    CHECK_EQ_INT(WORKER_start(0, draining_worker, NULL), 0);
+    workers = WORKER_count();
+    WORKER_stop();
+
+    /*
+     *  Exactly what was put in, and no more: one too many means a process
+     *  was handed to two workers, one too few means one was lost between
+     *  the look and the take.
+     */
+    CHECK_EQ_INT(ST_load_seq(&processes_taken),
+                 (int) (PRIORITY_COUNT * PROCESSES_PER_LIST));
+    CHECK_EQ_INT(ST_load_seq(&taken_twice), 0);
+    printf("  %u threads drained %d ready processes, none twice\n",
+           workers, ST_load_seq(&processes_taken));
 
     ST_interp_unregister();
     OM_shutdown();

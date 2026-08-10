@@ -59,6 +59,14 @@ st_oop      SCHED_pending_process(void);
 void        SCHED_add_last_link(st_oop link, st_oop list);
 
 /*  Process state changes.  */
+/*
+ *  Take the first process off the highest-priority non-empty ready list,
+ *  or nil.  Finding and taking are one step, under the ready lock -- two
+ *  workers that both look and both take would run one process on two
+ *  native threads.
+ */
+st_oop      SCHED_wake_highest_priority(void);
+
 void        SCHED_sleep(st_oop process);
 void        SCHED_resume(st_oop process);
 void        SCHED_suspend_active(void);

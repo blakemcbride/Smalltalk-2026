@@ -95,6 +95,44 @@ static st_oop   input_semaphore = ST_NIL;
  *  no send, no poll -- and the debug build asserts it.
  */
 
+/*
+ *  ----------  The ready lists  ----------
+ *
+ *  One lock over Processor's quiescentProcessLists, and NOT one queue per
+ *  worker -- which is what doc/PLAN-PHARO.md called for, and what reading
+ *  the 1983 source talked me out of.
+ *
+ *  The plan's reasoning was that per-worker queues avoid contention.  What
+ *  it did not account for is that the ready lists are not the VM's private
+ *  data: ProcessorScheduler>>remove:ifAbsent: and >>suspendFirstAt:ifNone:
+ *  walk quiescentProcessLists from SMALLTALK.  Split the lists per worker
+ *  and those two methods look in an array that no longer holds the
+ *  processes, and answer "not waiting" for a process that is -- silently,
+ *  and only when more than one worker is running.
+ *
+ *  So the lists stay where the image can see them, and the VM's operations
+ *  on them are serialized.  The plan's own argument says the cost is
+ *  affordable: a green process switch happens at a semaphore wait or a
+ *  yield, not per bytecode, so this lock is taken thousands of times a
+ *  second rather than millions.  Per-worker queues remain the right
+ *  optimisation the day a benchmark says so, and they will want those two
+ *  Smalltalk methods reimplemented over a primitive first.
+ *
+ *  Same rule as the stripes below, for the same reason: nothing under this
+ *  lock allocates, sends, or polls a safepoint.
+ */
+static st_mutex     ready_lock;
+static int          ready_lock_ready;
+
+static void
+ready_lock_init(void)
+{
+    if (ready_lock_ready)
+        return;
+    ST_mutex_init(&ready_lock);
+    ready_lock_ready = 1;
+}
+
 #define SEMAPHORE_STRIPES   64
 
 static st_mutex     semaphore_stripe[SEMAPHORE_STRIPES];
@@ -153,6 +191,7 @@ SCHED_reset(void)
 {
     semaphore_stripes_init();
     async_lock_init();
+    ready_lock_init();
     async_count            = 0;
     input_semaphore        = ST_NIL;
     new_process_waiting    = 0;
@@ -323,7 +362,15 @@ SCHED_sleep(st_oop process)
      || (uint32_t) OM_int_value(priority) > OM_fetch_word_length(lists))
         return;
     list = OM_fetch_pointer((uint32_t) OM_int_value(priority) - 1, lists);
+    /*
+     *  Under the same lock the take is under, so that a process being
+     *  queued and a process being taken cannot interleave halfway through
+     *  the four field writes that put a link on a list.
+     */
+    ready_lock_init();
+    ST_mutex_lock(&ready_lock);
     SCHED_add_last_link(process, list);
+    ST_mutex_unlock(&ready_lock);
 }
 
 /*
@@ -355,30 +402,42 @@ SCHED_pending_process(void)
  *  Find the highest-priority runnable process.  Scanning from the top is
  *  what makes priorities preemptive between levels.
  */
-static st_oop
-wake_highest_priority(void)
+st_oop
+SCHED_wake_highest_priority(void)
 {
     st_oop      lists = OM_fetch_pointer(ST_SCHEDULER_PROCESS_LISTS,
                                          SCHED_scheduler());
+    st_oop      found = ST_NIL;
     uint32_t    count;
     uint32_t    i;
 
     if (!OM_is_present(lists))
         return ST_NIL;
+    /*
+     *  Finding the highest non-empty list and taking from it is ONE step.
+     *  Two workers that both look, both see the same process at the head,
+     *  and both take it end up running it twice -- on two native threads,
+     *  through one context.
+     */
+    ready_lock_init();
+    ST_mutex_lock(&ready_lock);
     count = OM_fetch_word_length(lists);
     for (i = count; i > 0; --i) {
         st_oop  list = OM_fetch_pointer(i - 1, lists);
 
-        if (OM_is_object(list) && !SCHED_is_empty_list(list))
-            return SCHED_remove_first_link(list);
+        if (OM_is_object(list) && !SCHED_is_empty_list(list)) {
+            found = SCHED_remove_first_link(list);
+            break;
+        }
     }
-    return ST_NIL;
+    ST_mutex_unlock(&ready_lock);
+    return found;
 }
 
 void
 SCHED_suspend_active(void)
 {
-    st_oop  next = wake_highest_priority();
+    st_oop  next = SCHED_wake_highest_priority();
 
     if (next == ST_NIL) {
         fprintf(stderr, "st80: every process is blocked; nothing can run\n");
