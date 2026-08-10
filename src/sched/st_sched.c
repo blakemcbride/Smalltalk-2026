@@ -589,6 +589,126 @@ SCHED_check_process_switch(void)
     new_process = ST_NIL;
 }
 
+/*
+ *  ----------  What Smalltalk used to do to the ready lists itself  --------
+ *
+ *  ProcessorScheduler>>remove:ifAbsent: and >>suspendFirstAt:ifNone: walked
+ *  quiescentProcessLists from Smalltalk, field by field, with no lock and
+ *  no idea that another worker might be walking the same chain.  These two
+ *  do the same jobs inside the VM, under the ready lock that every other
+ *  list operation takes.
+ *
+ *  That closes a hole, and it also unblocks something: while those methods
+ *  read the array directly, the ready lists cannot be split per worker,
+ *  because a split array is not the array they are reading.  Asking the VM
+ *  instead means the VM can keep the processes wherever it likes.
+ */
+
+/*
+ *  Unlink a process from the middle of a list.
+ *
+ *  Chapter 29 has no such operation -- 1983 only ever took from the head --
+ *  so the walk is here.  Answers 1 if it was found and removed.
+ */
+static int
+remove_link_from_list(st_oop link, st_oop list)
+{
+    st_oop  previous = ST_NIL;
+    st_oop  current;
+
+    if (!OM_is_present(link) || !OM_is_present(list))
+        return 0;
+    current = OM_fetch_pointer(ST_LIST_FIRST_LINK, list);
+    while (OM_is_present(current) && current != link) {
+        previous = current;
+        current  = OM_fetch_pointer(ST_LINK_NEXT, current);
+    }
+    if (current != link)
+        return 0;
+    {
+        st_oop  next = OM_fetch_pointer(ST_LINK_NEXT, link);
+        st_oop  last = OM_fetch_pointer(ST_LIST_LAST_LINK, list);
+
+        /*
+         *  The link is counted up first and released by the caller, and
+         *  its own pointers are cleared before the list lets go -- the
+         *  same discipline removeFirstLink follows, and for the same
+         *  reason: the list may hold the only reference, and a store into
+         *  a body that has just been released lands in freed memory.
+         */
+        OM_increase_ref(link);
+        OM_store_pointer(ST_LINK_NEXT, link, ST_NIL);
+        OM_store_pointer(ST_PROCESS_MY_LIST, link, ST_NIL);
+        if (OM_is_present(previous))
+            OM_store_pointer(ST_LINK_NEXT, previous, next);
+        else
+            OM_store_pointer(ST_LIST_FIRST_LINK, list, next);
+        if (link == last)
+            OM_store_pointer(ST_LIST_LAST_LINK, list,
+                             OM_is_present(previous) ? previous : ST_NIL);
+        OM_decrease_ref(link);
+    }
+    return 1;
+}
+
+/*  The ready list a process of this priority waits on, or nil.  */
+static st_oop
+ready_list_at(st_int priority)
+{
+    st_oop  lists = OM_fetch_pointer(ST_SCHEDULER_PROCESS_LISTS,
+                                     SCHED_scheduler());
+
+    if (!OM_is_present(lists) || priority < 1
+     || (uint32_t) priority > OM_fetch_word_length(lists))
+        return ST_NIL;
+    return OM_fetch_pointer((uint32_t) priority - 1, lists);
+}
+
+int
+SCHED_remove_ready_process(st_oop process)
+{
+    st_oop  priority;
+    st_oop  list;
+    int     removed;
+
+    if (!OM_is_present(process) || !OM_pointer_bit(process)
+     || OM_fetch_word_length(process) <= ST_PROCESS_MY_LIST)
+        return 0;
+    priority = OM_fetch_pointer(ST_PROCESS_PRIORITY, process);
+    if (!OM_is_int(priority))
+        return 0;
+
+    ready_lock_init();
+    ST_mutex_lock(&ready_lock);
+    list = ready_list_at(OM_int_value(priority));
+    /*
+     *  Only the ready list at its own priority, which is what the 1983
+     *  method did: a process waiting on a SEMAPHORE is not "waiting for
+     *  the processor", and quietly taking it off the semaphore's list
+     *  would lose the signal it is waiting for.
+     */
+    removed = OM_is_present(list)
+           && OM_fetch_pointer(ST_PROCESS_MY_LIST, process) == list
+           && remove_link_from_list(process, list);
+    ST_mutex_unlock(&ready_lock);
+    return removed;
+}
+
+st_oop
+SCHED_first_ready_process_at(st_int priority)
+{
+    st_oop  list;
+    st_oop  first = ST_NIL;
+
+    ready_lock_init();
+    ST_mutex_lock(&ready_lock);
+    list = ready_list_at(priority);
+    if (OM_is_present(list))
+        first = OM_fetch_pointer(ST_LIST_FIRST_LINK, list);
+    ST_mutex_unlock(&ready_lock);
+    return first;
+}
+
 /*  ----------  Primitives 85 to 88  ----------  */
 
 int

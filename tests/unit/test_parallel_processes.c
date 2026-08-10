@@ -408,9 +408,41 @@ main(void)
     printf("  %u threads each saw an active process of their own\n",
            workers < 64 ? workers : 64);
 
-    /*  ----------  No process may be taken off a ready list twice  ---------- */
+    /*  ----------  The two walks Smalltalk used to do itself  ---------- */
 
     build_scheduler();
+    {
+        st_oop  a = make_process(2);
+        st_oop  b = make_process(2);
+
+        /*  Nothing waiting yet.  */
+        CHECK(!OM_is_present(SCHED_first_ready_process_at(2)));
+        CHECK_EQ_INT(SCHED_remove_ready_process(a), 0);
+
+        SCHED_sleep(a);
+        SCHED_sleep(b);
+        CHECK_EQ_INT((int) (SCHED_first_ready_process_at(2) == a), 1);
+
+        /*
+         *  Removing from the MIDDLE, which 1983 never had to do -- it only
+         *  ever took from the head -- and which is why the walk is in the
+         *  VM now rather than in Smalltalk.
+         */
+        CHECK_EQ_INT(SCHED_remove_ready_process(b), 1);
+        CHECK_EQ_INT(SCHED_remove_ready_process(b), 0);   /*  not twice  */
+        CHECK_EQ_INT((int) (SCHED_first_ready_process_at(2) == a), 1);
+
+        /*  And the head, leaving the list empty and consistent.  */
+        CHECK_EQ_INT(SCHED_remove_ready_process(a), 1);
+        CHECK(!OM_is_present(SCHED_first_ready_process_at(2)));
+        /*  Both are off every list, so either may be queued again.  */
+        SCHED_sleep(a);
+        CHECK_EQ_INT((int) (SCHED_first_ready_process_at(2) == a), 1);
+        CHECK_EQ_INT(SCHED_remove_ready_process(a), 1);
+    }
+
+    /*  ----------  No process may be taken off a ready list twice  ---------- */
+
     {
         unsigned    priority;
         unsigned    n;

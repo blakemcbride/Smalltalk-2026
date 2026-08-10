@@ -44,7 +44,7 @@
 #define BLUEBOOK_CATEGORIES     41
 #define LIB_CLASSES             23       /*  BlockClosure, the exceptions,
                                             SUnit, and the fixtures        */
-#define LIB_METHODS             322
+#define LIB_METHODS             326
 /*
  *  Three, not five: the extension packages define no CLASSES, and a
  *  category is a property of a class definition.  Kernel-Methods-Fixes and
@@ -1633,6 +1633,18 @@ test_modern_protocol(void)
      *  point: they answer honestly rather than failing when there is no
      *  pool, so code written against them runs either way.
      */
+    /*
+     *  The two ready-list walks now live in the VM.  Nothing is waiting
+     *  for the processor in a freshly built image, so these answer the
+     *  empty answers -- and answering rather than failing is the point:
+     *  ProcessorScheduler>>remove:ifAbsent: has to evaluate its block.
+     */
+    check_oop("Processor primFirstReadyProcessAt: 4", ST_NIL, "nil");
+    check_boolean("Processor primRemoveReadyProcess: Processor activeProcess",
+                  0);
+    check_string("Processor remove: Processor activeProcess"
+                 " ifAbsent: ['absent']", "absent");
+
     check_integer("Processor activeWorkerIndex", 0);
     check_integer("Processor workerCount", 1);
     check_string("Processor activeProcess class name", "Process");
@@ -1882,7 +1894,7 @@ test_browsing(void)
      *  zero -- which a CompiledMethod reads as "no source at all".  See
      *  test_every_method_can_find_its_source.
      */
-    check_integer("(SourceFiles at: 1) contents size", 1248924);
+    check_integer("(SourceFiles at: 1) contents size", 1250163);
 }
 
 /*

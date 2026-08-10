@@ -33,3 +33,43 @@ ProcessorScheduler >> workerCount [
 	<primitive: 244>
 	^1
 ]
+
+{ #category : '*Concurrency' }
+ProcessorScheduler >> primRemoveReadyProcess: aProcess [
+	"Take aProcess off the ready list it is waiting on, and answer whether
+	 it was there.  Fails, and answers false, if there is no VM support."
+	<primitive: 252>
+	^false
+]
+
+{ #category : '*Concurrency' }
+ProcessorScheduler >> primFirstReadyProcessAt: aPriority [
+	"The first process waiting for the processor at that priority, or nil."
+	<primitive: 253>
+	^nil
+]
+
+{ #category : '*Concurrency' }
+ProcessorScheduler >> remove: aProcess ifAbsent: aBlock [
+	"Remove aProcess from the list on which it is waiting for the
+	 processor.  If it is not waiting, evaluate aBlock.
+
+	 The 1983 version walked quiescentProcessLists from here, field by
+	 field, with no lock and no idea that another worker might be walking
+	 the same chain.  Asking the VM does the same job under the same lock
+	 every other list operation takes -- and it is what lets the VM keep
+	 the ready processes somewhere other than that one array, which is the
+	 prerequisite for ever splitting them per worker."
+	(self primRemoveReadyProcess: aProcess) ifFalse: [^aBlock value].
+	^aProcess
+]
+
+{ #category : '*Concurrency' }
+ProcessorScheduler >> suspendFirstAt: aPriority ifNone: noneBlock [
+	"Suspend the first Process waiting to run at aPriority.  If none is
+	 waiting, evaluate noneBlock."
+	| first |
+	first := self primFirstReadyProcessAt: aPriority.
+	first isNil ifTrue: [^noneBlock value].
+	^first suspend
+]

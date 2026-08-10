@@ -747,10 +747,29 @@ them** — links lost between the look and the take — and never the same one t
 worth knowing: the failure mode here is *losing* processes, not duplicating them, and a
 process lost off a ready list is one that never runs again.
 
-Per-worker queues remain the right optimisation the day a benchmark asks for one, and they
-will want those two Smalltalk methods reimplemented over a primitive first. Recording that
-as a measured decision rather than a plan followed is the point: **the plan said split, the
-source said don't.**
+Recording that as a measured decision rather than a plan followed is the point: **the plan
+said split, the source said don't.**
+
+**H4: and then the prerequisite was built.** Those two methods now ask the VM —
+primitives 252 and 253, under the same ready lock every other list operation takes. That
+closes the hole (Smalltalk was walking the chain field by field with no lock while another
+worker walked the same chain) *and* it removes the obstacle: while `remove:ifAbsent:` read
+`quiescentProcessLists` directly, the ready processes had to be in that one array. They no
+longer do.
+
+Removing from the **middle** of a list is new — 1983 only ever took from the head, which is
+why `removeFirstLink` was all there was — and it follows the same reference-counting
+discipline for the same reason: the link is counted up and its own pointers cleared before
+the list lets go, because the list may hold the only reference and a store into a body that
+has just been released lands in freed memory.
+
+`remove:ifAbsent:` still considers only the ready list at the process's own priority, as the
+1983 method did. A process waiting on a **semaphore** is not waiting for the processor, and
+quietly taking it off that list would lose the signal it is waiting for.
+
+So per-worker queues and work stealing are now unblocked rather than merely wanted. What
+remains is to do them, and to justify them with a benchmark first — which is Phase K's job,
+not something to assume here.
 
 Still to do in this phase:
 

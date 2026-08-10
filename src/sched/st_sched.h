@@ -67,6 +67,20 @@ void        SCHED_add_last_link(st_oop link, st_oop list);
  */
 st_oop      SCHED_wake_highest_priority(void);
 
+/*
+ *  The two things ProcessorScheduler used to do to the ready lists from
+ *  Smalltalk, done inside the VM under the ready lock instead.  While those
+ *  methods walked the array themselves the lists could not be split per
+ *  worker; asking the VM means the VM can keep the processes where it likes.
+ *
+ *  remove answers whether the process was waiting for the processor at all.
+ *  Only its own priority's ready list is considered: a process waiting on a
+ *  semaphore is not waiting for the processor, and taking it off that list
+ *  would lose the signal it is waiting for.
+ */
+int         SCHED_remove_ready_process(st_oop process);
+st_oop      SCHED_first_ready_process_at(st_int priority);
+
 void        SCHED_sleep(st_oop process);
 void        SCHED_resume(st_oop process);
 void        SCHED_suspend_active(void);

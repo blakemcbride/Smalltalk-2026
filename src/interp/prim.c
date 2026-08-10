@@ -1953,6 +1953,35 @@ primitive_compare_and_swap_slot(void)
                                                       wanted), 4);
 }
 
+/*
+ *  252 and 253: the two ready-list walks ProcessorScheduler used to do in
+ *  Smalltalk, field by field, with no lock and no idea that another worker
+ *  might be walking the same chain.
+ */
+static int
+primitive_remove_ready_process(void)
+{
+    st_oop  process = ST_stack_value(0);
+
+    if (!OM_is_object(process))
+        return 0;
+    return answer_boolean(SCHED_remove_ready_process(process), 2);
+}
+
+static int
+primitive_first_ready_process_at(void)
+{
+    st_oop  priority = ST_stack_value(0);
+    st_oop  first;
+
+    if (!OM_is_int(priority))
+        return 0;
+    first = SCHED_first_ready_process_at(OM_int_value(priority));
+    ST_pop_n(2);
+    ST_push(OM_is_present(first) ? first : ST_NIL);
+    return 1;
+}
+
 /*  ----------  Dispatch  ----------  */
 
 int
@@ -2046,6 +2075,8 @@ ST_primitive_dispatch(unsigned index)
     case 244: return primitive_worker_count();
     case 245: return primitive_compare_and_swap_slot();
     case 251: return primitive_context_restart();
+    case 252: return primitive_remove_ready_process();
+    case 253: return primitive_first_ready_process_at();
     case 250: return primitive_full_collect();
     case 247: return primitive_context_resume();
 
@@ -2241,6 +2272,8 @@ static const primitive_entry primitive_table[] = {
                              "system's own"                     },
     { 251, ST_PRIM_PRESENT,  "ContextPart restartAndJump -- this system's "
                              "own"                              },
+    { 252, ST_PRIM_PRESENT,  "Processor primRemoveReadyProcess: -- ours" },
+    { 253, ST_PRIM_PRESENT,  "Processor primFirstReadyProcessAt: -- ours" },
     { 250, ST_PRIM_PRESENT,  "SystemDictionary garbageCollect -- this "
                              "system's own"                     }
 };
