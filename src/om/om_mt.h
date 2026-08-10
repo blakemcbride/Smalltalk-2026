@@ -361,6 +361,25 @@ void    OM_increase_ref_object(st_oop p);
 void    OM_decrease_ref_object(st_oop p);
 
 /*
+ *  The guaranteed pointers, which are created once at bootstrap and never
+ *  freed: nil, true, false, the fixed classes and the fixed selectors.
+ *
+ *  Nothing may reference-count them, and that is not an optimisation --
+ *  it is the difference between this system scaling and not.  A comparison
+ *  answers a BOOLEAN, so "a < b" pushes true or false; every iteration of
+ *  every loop in the image therefore does one atomic increment and one
+ *  atomic decrement on one of two objects.  With eight workers that is one
+ *  cache line carrying a locked read-modify-write from eight cores at once,
+ *  and perf c2c put 99.81% of all cross-core stalls on exactly that line.
+ *
+ *  Skipping them is safe because it is SYMMETRIC -- neither the increment
+ *  nor the decrement happens -- so a count that is never raised can never
+ *  be lowered to zero and freed.  The collector recounts from the roots
+ *  anyway, and these are roots.
+ */
+#define ST_LAST_IMMORTAL_OOP    ST_SELECTOR_CANNOT_INTERPRET
+
+/*
  *  Reference counting, with the tag test INLINE.
  *
  *  These two are the hottest pair of calls in the system: every push, pop
@@ -377,14 +396,14 @@ void    OM_decrease_ref_object(st_oop p);
 static inline void
 OM_increase_ref(st_oop p)
 {
-    if (p != ST_OOP_INVALID && (p & 1) == 0)
+    if (p > ST_LAST_IMMORTAL_OOP && p != ST_OOP_INVALID && (p & 1) == 0)
         OM_increase_ref_object(p);
 }
 
 static inline void
 OM_decrease_ref(st_oop p)
 {
-    if (p != ST_OOP_INVALID && (p & 1) == 0)
+    if (p > ST_LAST_IMMORTAL_OOP && p != ST_OOP_INVALID && (p & 1) == 0)
         OM_decrease_ref_object(p);
 }
 void    OM_store_pointer(uint32_t field, st_oop p, st_oop value);

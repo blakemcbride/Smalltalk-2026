@@ -299,6 +299,9 @@ OM_deallocate(st_oop p)
 
     if (!OM_is_object(p))
         return;
+    /*  A guaranteed pointer is not freed, whatever its count says.  */
+    if (p <= ST_LAST_IMMORTAL_OOP)
+        return;
     index = (uint32_t) (p >> 1);
     head  = OM_table_get(index);
 
@@ -666,6 +669,16 @@ collect_at_safepoint(void *unused)
     for (index = 1; index < (uint32_t) ST_load_relaxed(&st_om_table_limit); ++index) {
         st_oop  p = (st_oop) index << 1;
 
+        /*
+         *  The guaranteed pointers are never swept.
+         *
+         *  Nothing reference-counts them -- see ST_LAST_IMMORTAL_OOP in
+         *  om_mt.h for why that is worth an order of magnitude -- so their
+         *  counts say nothing about whether anything refers to them, and a
+         *  sweep that believed a zero here would free nil.
+         */
+        if (p <= ST_LAST_IMMORTAL_OOP)
+            continue;
         if (!OM_table_get(index))
             continue;
         if (OM_table_get(index)->flags & ST_FMT_FREE)

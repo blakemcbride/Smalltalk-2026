@@ -4,9 +4,9 @@
 a scaling measurement takes minutes and wants a quiet machine, which is the
 opposite of what a test suite wants.
 
-It found two bugs on its first complete runs, and both are fixed. The scaling
-numbers below are still poor and the gate is still not met — that part is
-unfinished, and the file says what is known about why.
+It found four bugs, and all four are fixed. The interpreter now scales **7.55× on
+eight cores**; what limits the other kernels is collection pauses, which is a
+different problem and is named below.
 
 ## What it measures, and why that way
 
@@ -28,181 +28,112 @@ And **every worker computes something only it can check**: the parts are summed 
 compared against what one thread computed alone. A benchmark that is only timed
 will happily report a beautiful speedup for work that came out wrong.
 
-## The numbers, 32 CPUs
+## The numbers, on 8 P-cores
 
 ```
 kernel        workers         ms  speedup stopped ms   answer
-mandelbrot          1     1029.7    1.00x        0.0       ok
-mandelbrot          2      877.6    1.17x        0.0       ok
-mandelbrot          4      816.9    1.26x        0.0       ok
-mandelbrot          8     1456.6    0.71x     2894.8       ok
-mandelbrot         16      975.2    1.06x        0.0       ok
-mandelbrot         31      987.7    1.04x        0.0       ok
-intervals           1      419.0    1.00x      105.9       ok
-intervals           2      402.2    1.04x        0.0       ok
-intervals           4      492.8    0.85x        0.0       ok
-intervals           8      553.6    0.76x        0.0       ok
-intervals          16      618.9    0.68x        0.0       ok
-intervals          31      851.1    0.49x      503.6       ok
-collections         1      810.6    1.00x        0.0       ok
-collections         2      559.2    1.45x        0.0       ok
-collections         4      477.4    1.70x        0.0       ok
-collections         8      499.4    1.62x        0.0       ok
-collections        16      553.6    1.46x        0.0       ok
-collections         31     819.2    0.99x      516.2       ok
+arithmetic          1      140.5    1.00x        0.0       ok
+arithmetic          2       71.8    1.96x        0.0       ok
+arithmetic          4       36.3    3.86x        0.0       ok
+arithmetic          8       18.6    7.55x        0.0       ok
+mandelbrot          1      754.5    1.00x        0.0       ok
+mandelbrot          2      593.0    1.27x        0.0       ok
+mandelbrot          4      354.0    2.13x        0.0       ok
+mandelbrot          8      986.9    0.76x     1708.8       ok
+intervals           1      255.2    1.00x      101.7       ok
+intervals           4      259.7    0.98x        0.0       ok
+collections         1      652.9    1.00x        0.0       ok
+collections         4      285.6    2.29x        0.0       ok
+collections         8      259.1    2.52x        0.0       ok
 ```
 
-**The gate is not met and is not close.** `doc/PLAN-PHARO.md` asks for mandelbrot
-≥ 4.0× at 8 workers and intervals ≥ 3.0×. The measured figures are 0.71× and 0.76×.
-`intervals` gets steadily *slower* with more workers.
+**`arithmetic` scales 7.55× on eight cores — 94% efficiency**, up from 2.17×. That is
+the interpreter running Smalltalk bytecodes on eight cores at very nearly eight times
+the rate of one, over a shared mutable heap.
 
-## The three bugs it found
+The other three do not, and the reason is now visible in the `stopped ms` column
+rather than hidden behind it: **collection pauses**. `mandelbrot` at eight workers
+spends 1.7 seconds stopped inside a 987 ms run. That is the next problem, it is a
+different problem, and it was invisible while everything was equally slow.
 
-### 1. An allocator that gave up with four million entries free — FIXED
+## What was actually wrong: reference counting on `true` and `false`
 
-`collections` at 31 workers computed the **wrong answer**, about once in a dozen
-runs. The total was short by exactly one worker's share, and that worker had
-printed:
+The first version of this file named reference counting on shared objects as the
+prime suspect. The second declared that **refuted** on the strength of a control
+kernel. The second was wrong, and the way it was wrong is the useful part.
 
-```
-st80: out of memory activating a method: 1914321 words and 4177478 object
-      table entries free
-```
+The control was `arithmetic`: an inlined `whileTrue:` of SmallInteger arithmetic,
+written to touch no reference count at all. It does not scale either, so reference
+counting was eliminated.
 
-Not exhaustion. `OM_collect` answers *how many objects it freed*, and the allocator
-treated zero as "cannot allocate". With one mutator that is the same thing. With
-several it is not: two workers both find the table full, the first collects and frees
-plenty, the second then collects and frees **nothing** — because the first already
-did — and gives up, with the memory it needed sitting there free.
+**But a comparison answers a boolean, and `true` and `false` are objects.** Every
+iteration of `[i < last] whileTrue:` pushes one and pops it — an atomic increment and
+an atomic decrement, on one of two objects, from every core at once. The control
+kernel exercised the suspected mechanism as hard as anything could. It disproved
+nothing.
 
-What a collection freed is not the question. Whether the retry succeeds is. Both
-retry sites now collect and try again regardless of the answer. **Zero failures in
-100 stress rounds of the case that was failing three times in forty.**
+`perf c2c` settled it in one run: **99.81% of all cross-core stalls on a single cache
+line**, at `OM_increase_ref_object` and `OM_decrease_ref_object`, offset `0x10` — the
+`refcount` field of one object header.
 
-A wrong arithmetic answer was the only symptom that reached the surface. The message
-went to stderr in the middle of a benchmark and would have been read as
-"the machine ran out of memory".
+### The fix
 
-### 2. The safepoint protocol deadlocked — FIXED
+The guaranteed pointers — `nil`, `true`, `false`, the fixed classes and selectors —
+are created once at bootstrap and never freed. **Nothing reference-counts them any
+more.** The check is one comparison in the already-inlined fast path and touches no
+memory.
 
-Two workers could request a stop-the-world at the same moment and wait for each other
-for ever: each counted the other as a thread that still had to park, and neither could
-park, because both were inside `WORKER_request_safepoint` rather than at a poll.
-Nothing timed out and nothing crashed — the process simply stopped, with every worker
-still marked running.
+It is safe because it is *symmetric*: neither the increment nor the decrement
+happens, so a count that is never raised can never be lowered to zero and freed. The
+sweep and `OM_deallocate` refuse to free anything in that range regardless of what
+its count says, because for these objects the count no longer means anything — and a
+sweep that believed a zero there would free `nil`.
 
-It went unseen because the only existing test that collected under load collected from
-**worker zero and nowhere else**. This benchmark has every worker allocating, which is
-the ordinary case, and two collections were wanted at once within seconds.
-
-A request is exclusive now. A worker that loses the race does **not** queue behind the
-winner — that is the same deadlock wearing a mutex — it parks for the winner's
-safepoint like any other worker and asks again afterwards.
-
-### 3. Two benchmarks that measured the wrong thing — FIXED
-
-The first sizing ran for 36 ms and measured mostly the cost of starting thirty-one
-threads; `intervals` came out slower on more workers, which was true of the
-measurement and said nothing about the interpreter. The second overcorrected into
-something whose **single-threaded reference run** had not finished after twenty
-minutes. Both are recorded in the source so the next person does not repeat them.
-
-## Why the speedups are poor: two causes found, one still open
-
-The first version of this file named a prime suspect — reference counting on the
-**shared** objects every worker touches, whose counts would sit on cache lines all
-thirty-two cores fight over. Plausible, and **wrong**. What actually turned up was
-three separate things, and only one of them is a bug in this system.
-
-### The machine is not 32 equal cores
-
-An **Intel i9-14900KF: 8 P-cores (16 threads) and 16 E-cores.** The benchmark
-divides the work **evenly**, so on unequal cores the slowest worker sets the wall
-time — and past eight workers, some of the work lands on an E-core. That is a
-static-partitioning artefact, not a VM limit.
-
-Pinning to one thread per P-core removes it completely:
-
-```
-                    all 32 CPUs        8 P-cores only
-arithmetic   1      1.00x              1.00x
-arithmetic   2      1.66x              1.61x
-arithmetic   4      2.67x              2.57x
-arithmetic   8      2.12x              2.62x
-arithmetic  16      1.91x              2.58x
-arithmetic  31      1.59x              2.59x
-```
-
-The *degradation* is gone. A benchmark that reports throughput on a hybrid machine
-has to hand work out dynamically rather than slice it evenly; that is a fix to the
-measurement, and it is not made yet.
-
-### Reference counting was in the way, just not the way that was guessed
-
-`OM_increase_ref` and `OM_decrease_ref` are the hottest pair of calls in the system:
-every push, pop and field store goes through them, and for a **SmallInteger** — most
-of what an interpreter moves — the entire job is to notice the tag bit and return.
-They were out of line, so that cost a call and a return every time. A profile of a
-loop doing nothing but SmallInteger arithmetic put `OM_increase_ref` at **six times
-the cost of the whole interpreter loop calling it**.
-
-The tag test is now inline and only a real object reaches the call. **The
-single-worker `arithmetic` kernel went from 172 ms to 141 ms, 18% faster**, and the
-1983 library still compiles byte-for-byte identically. It is a serial win: the
-eight-worker time was 65.8 ms before and 64.7 ms after, so it does not touch the
-ceiling below.
-
-### The ceiling: measured hard, five hypotheses refuted, cause not found
-
-On **eight distinct physical P-cores** — verified through
-`topology/thread_siblings_list`, not assumed — the speedup plateaus at about 2.2×.
-`perf` says a great deal about what it is *not*.
-
-**Same work, twice the cycles.** For an identical instruction count the cores spend
-twice as long, and the top-down breakdown says all of it is backend stalls:
-
-| | 1 worker | 8 workers |
+| | before | after |
 |---|---|---|
-| instructions | 1.0742 × 10¹² | 1.0743 × 10¹² |
-| cycles | 341 × 10⁹ | 716 × 10⁹ |
-| IPC | 3.15 | **1.50** |
-| retiring slots | 715 × 10⁹ | 707 × 10⁹ |
-| **backend-bound slots** | 339 × 10⁹ (25%) | **1614 × 10⁹ (63%)** |
-| frontend-bound slots | 297 × 10⁹ | 253 × 10⁹ |
+| cross-core HITM loads, 8 workers | 89,825,447 | 106,474 |
+| cycles for the same work, 1 → 8 workers | 341e9 → 716e9 | 158.6e9 → 159.0e9 |
+| `arithmetic` speedup at 8 | 2.17× | **7.55×** |
 
-**And every counted microarchitectural event is unchanged.**
+The cycle row is the one that matters: the same instructions now take the same cycles
+at eight workers as at one. The per-core stall is gone rather than reduced.
 
-| | 1 worker | 8 workers |
-|---|---|---|
-| cache-misses | 1.614 × 10⁹ | 1.608 × 10⁹ |
-| LLC-load-misses | 382 × 10⁶ | 380 × 10⁶ |
-| dTLB-load-misses | 153.9 × 10⁶ | 154.0 × 10⁶ |
-| branch-misses | 140.4 × 10⁶ | 140.2 × 10⁶ |
-| machine_clears.memory_ordering | 3.91 × 10⁶ | 2.74 × 10⁶ |
+## How it was found, and the two wrong turns
 
-**It is in the process, not the machine.** Eight *independent processes*, one pinned
-per P-core, sharing no address space, no heap and no locks, run the same kernel at
-**2.80 IPC**. Eight threads inside one process run it at **1.50 IPC**. So the machine
-having eight cores busy costs about 14% (3.26 → 2.80 IPC), and something shared
-inside the process costs another **1.87×** on top.
+Worth recording, because the wrong turns cost more than the fix.
 
-Five hypotheses have been tested and refuted, each with a measurement:
+1. **Guessed** reference counting. Right, but unproven, and written down as a
+   suspicion.
+2. **Built a control kernel to test it** — and the control was wrong in exactly the
+   way that made it look like a refutation. Recorded the refutation confidently.
+3. Ruled out cache traffic, address translation, branch prediction, machine clears
+   and object-table false sharing — all correctly, all irrelevant.
+4. Established it was **in the process, not the machine**: eight independent
+   processes got 2.80 IPC where eight threads got 1.50.
+5. `perf c2c` named the line and the symbol in one run.
 
-1. **Reference-count contention on shared objects** — refuted by the `arithmetic`
-   control kernel, which touches no reference count at all and stalls the same way.
-2. **Cache or coherence traffic** — refuted: miss counts identical.
-3. **Address translation** — refuted: dTLB misses identical.
-4. **Branch prediction** — refuted: mispredictions identical.
-5. **False sharing of object-table entries** — refuted directly: spreading each
-   worker's context sixteen table slots apart changed cycles by 1%, which is noise.
+The lesson is not "guess better". It is that **a control kernel is a test of the
+hypothesis only if you can say what it does not do** — and "touches no reference
+count" was an assumption about generated code, not a fact that had been checked.
 
-What is left is a backend stall that costs half the IPC, in a shared address space,
-with no counter here showing where. Attributing it wants a precise-event profile
-(`cycles:pp` with `perf annotate`), which is the next step and a measurement rather
-than another guess.
+## Also fixed along the way
 
-**What is honest to say today:** the parallel runtime is **correct** — the answers
-check at every width, including a hundred stress rounds of the case that used to
-fail. It is 18% faster in serial than it was. The gate is not met: it does not go
-faster on eight cores than on four. Two contributing causes are found and named, five
-candidate explanations are eliminated, and the principal cause is not yet identified.
+- An **allocator that gave up with four million table entries free**: `OM_collect`
+  answers how many objects it freed, and both retry sites treated zero as "cannot
+  allocate". Two workers collecting at once meant the second freed nothing and gave
+  up. It produced a *wrong answer*, about once in a dozen runs.
+- A **safepoint deadlock**: two workers requesting a stop-the-world at the same
+  moment each counted the other as a thread that had to park. Unseen because the only
+  test that collected under load collected from worker zero.
+- The **object-table indirection** in the bytecode fetch, and the out-of-line tag
+  test in the reference-count fast path: inlining the latter was worth 18% in serial.
+
+## What is left
+
+**Collection pauses.** Now the dominant cost in three of the four kernels, and
+plainly visible in `stopped ms`. The collector stops every worker and walks the whole
+table; at 31 workers `intervals` spends 27 seconds stopped. That is the next piece of
+work and it is a different problem from this one.
+
+**The benchmark still divides work evenly**, which is wrong on a hybrid CPU — the
+E-cores set the wall time. Handing work out dynamically would fix the measurement.
