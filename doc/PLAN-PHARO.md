@@ -651,7 +651,7 @@ vendored**; it remains the right oracle and the extractor is a small job the day
 What stands in for it now is the C suite, which grew from 439 checks to 516 over this phase,
 most of them one modern expression each.
 
-### H — M:N scheduling and atomic semaphores *(H1 done: the semaphore race)*
+### H — M:N scheduling and atomic semaphores *(H1 the race, H2 per-worker state — done)*
 
 **The race is closed.** It had been in `st_sched.c` since the file was written, and it is
 Chapter 29's own algorithm — correct on one thread and wrong on several, in the quietest
@@ -683,6 +683,47 @@ lock, and the debug build counts held stripes so the rule can be asserted.
 sanitizer noticed: 31 threads × 20,000 operations, and the totals have exactly one right
 answer. **With the lock removed it fails 16 of 35 checks; with it, none** — which is the
 only evidence a concurrency test is worth anything.
+
+**H2: the scheduler's state, split three ways.** The plan called for exactly this and
+the split held up:
+
+- `new_process` and `new_process_waiting` **replicate** — one nomination per worker.
+- `async_queue` **reorganizes** into a mutex-guarded queue drained into a local copy,
+  so signalling happens outside the lock. Thread 0, which pumps the window system,
+  holds it only for a memcpy of at most 64 words and no other lock.
+- `input_semaphore` **stays global**, as one keyboard is one keyboard.
+
+They live in `st_interp`, the per-thread interpreter struct, rather than in
+`st_worker` — because that struct is already registered in a table the collector
+walks, so a process held only by a nomination cannot be freed. That comes for free
+rather than by remembering to add another root, and remembering is what fails.
+
+`SCHED_active_process()` answers **this worker's** process, falling back to
+`Processor`'s instance variable. The variable stays because a snapshot carries it and
+a freshly loaded image has nothing else to say; it is no longer the authority, because
+one field cannot answer a question with a different answer per thread.
+
+**The primitive block had to be chosen twice.** The plan reserved 240–245. Pharo turns
+out to use **240** and **242** for its clocks, **249** for a bulk `become:` and **254**
+for VM parameters — so ported source names four of them and this system may not. The
+header gives the primitive index eight bits, so there is nowhere else to go: every
+number this VM will ever have is below 256. What is left is 241, 243, 244, 245, 252,
+253, 255, and the four now in use are:
+
+| | |
+|---|---|
+| **241** | `Processor activeProcess` — this worker's |
+| **243** | `Processor activeWorkerIndex` |
+| **244** | `Processor workerCount` |
+| **245** | `Object compareAndSwapSlot:from:to:` |
+
+`compareAndSwapSlot:from:to:` answers **whether the swap happened**, not the old value:
+that is what every caller tests, and it leaves no room to forget the comparison. It
+counts the new value up *before* the attempt and releases it again on failure — the
+other order leaves a window in which the slot refers to an object whose count does not
+know about it, and a collection landing there frees a live object. It exists in both
+memories, trivially in the Blue Book one, so Smalltalk written against it loads in both
+builds.
 
 Still to do in this phase:
 

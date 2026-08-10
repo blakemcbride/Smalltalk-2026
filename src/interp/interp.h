@@ -178,6 +178,29 @@ typedef struct {
      *  back.
      */
     st_oop      return_value;
+
+    /*
+     *  ----------  The scheduler, per worker  ----------
+     *
+     *  A green process belongs to the worker running it, so the three
+     *  things that used to be file statics in st_sched.c live here: this
+     *  thread's active process, and the process it has nominated to run
+     *  next.  They are in the INTERPRETER's per-thread struct rather than
+     *  in st_worker because this struct is already registered in a table
+     *  the collector walks -- so a process that only a nomination holds
+     *  cannot be freed, and that comes for free rather than by remembering
+     *  to add another root.
+     *
+     *  active_process is nil until this worker first switches, and then
+     *  SCHED_active_process answers it in preference to the image's
+     *  Processor>>activeProcess.  That instance variable stays the
+     *  fallback, so a snapshot and the image's own reflection still see a
+     *  sensible answer, and the single-threaded path behaves exactly as it
+     *  did.
+     */
+    st_oop      active_process;
+    st_oop      new_process;
+    int         new_process_waiting;
 } st_interp;
 
 /*

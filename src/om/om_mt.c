@@ -444,6 +444,30 @@ OM_store_pointer(uint32_t field, st_oop p, st_oop value)
     OM_decrease_ref(old);
 }
 
+int
+OM_compare_and_swap_pointer(uint32_t field, st_oop p, st_oop expected,
+                            st_oop value)
+{
+    _Atomic st_oop *slot = (_Atomic st_oop *) &((st_oop *) OM_body(p))[field];
+    st_oop          seen = expected;
+
+    /*
+     *  The new value is counted BEFORE the attempt and released again if
+     *  the attempt fails.  The other order -- swap, then count -- leaves a
+     *  window in which the slot refers to an object whose count does not
+     *  know about it, and a collection landing there frees a live object.
+     *  Counting first can only ever be conservative, which is the side to
+     *  be wrong on.
+     */
+    OM_increase_ref(value);
+    if (!ST_cas_strong(slot, &seen, value)) {
+        OM_decrease_ref(value);
+        return 0;
+    }
+    OM_decrease_ref(expected);
+    return 1;
+}
+
 /*  ----------  Enumeration  ----------  */
 
 st_oop

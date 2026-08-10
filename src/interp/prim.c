@@ -9,6 +9,7 @@
 #include "prim.h"
 #include "gfx.h"
 #include "st_sched.h"
+#include "worker.h"
 #include "st_port.h"
 
 #include <stdio.h>
@@ -1869,6 +1870,89 @@ primitive_utc_microsecond_clock(void)
     return answer_positive((uint64_t) ST_time_smalltalk_ms() * 1000u, 1);
 }
 
+/*
+ *  ----------  This system's own: parallel operations  ----------
+ *
+ *  Numbers matter here, and the range had to be chosen twice.  The plan
+ *  reserved 240-245; Pharo turned out to use 240 and 242 for its clocks,
+ *  249 for a bulk become: and 254 for VM parameters, so ported source
+ *  names four of them and this system may not.  What is left in the top
+ *  block, after Pharo and after 246-248 and 250-251 which are already
+ *  ours, is 241, 243, 244, 245, 252, 253 and 255.
+ *
+ *  The header gives the primitive index eight bits, so there is nowhere
+ *  else to go: every number this VM will ever have is below 256, and the
+ *  ones ported source uses are spoken for.  That is the whole reason the
+ *  block is documented rather than assumed.
+ */
+
+/*
+ *  241: the process THIS worker is running.
+ *
+ *  Processor>>activeProcess reads one instance variable, and one variable
+ *  cannot answer a question that now has a different answer per thread.
+ *  The variable stays -- a snapshot carries it, and a freshly loaded image
+ *  has nothing else -- but the primitive asks the caller.
+ */
+static int
+primitive_active_process(void)
+{
+    st_oop  process = SCHED_active_process();
+
+    if (!OM_is_present(process))
+        return 0;
+    ST_pop_n(1);
+    ST_push(process);
+    return 1;
+}
+
+/*  243: which worker is asking, zero-based, for confining work to one.  */
+static int
+primitive_active_worker_index(void)
+{
+    st_worker  *self = WORKER_self();
+
+    return answer_integer(self ? (st_int) self->index : 0, 1);
+}
+
+/*  244: how many workers there are.  */
+static int
+primitive_worker_count(void)
+{
+    unsigned    count = WORKER_count();
+
+    return answer_integer((st_int) (count ? count : 1), 1);
+}
+
+/*
+ *  245: compareAndSwapSlot:from:to: -- the one operation a lock-free
+ *  algorithm cannot be written without.
+ *
+ *  It answers whether the swap happened, rather than the old value,
+ *  because that is what every caller tests and it leaves no room to forget
+ *  the comparison.  The slot is a field index, one-relative as Smalltalk
+ *  counts, and out-of-range fails rather than writing somewhere else.
+ */
+static int
+primitive_compare_and_swap_slot(void)
+{
+    st_oop      receiver = ST_stack_value(3);
+    st_oop      slot = ST_stack_value(2);
+    st_oop      expected = ST_stack_value(1);
+    st_oop      wanted = ST_stack_value(0);
+    st_int      index;
+
+    if (!OM_is_object(receiver) || !OM_pointer_bit(receiver)
+     || !OM_is_int(slot))
+        return 0;
+    index = OM_int_value(slot);
+    if (index < 1 || (uint32_t) index > OM_fetch_word_length(receiver))
+        return 0;
+    return answer_boolean(OM_compare_and_swap_pointer((uint32_t) (index - 1),
+                                                      receiver, expected,
+                                                      wanted), 4);
+}
+
 /*  ----------  Dispatch  ----------  */
 
 int
@@ -1957,6 +2041,10 @@ ST_primitive_dispatch(unsigned index)
     case 197: return primitive_find_next_handler();
     case 246: return primitive_context_return();
     case 248: return primitive_report_on_standard_error();
+    case 241: return primitive_active_process();
+    case 243: return primitive_active_worker_index();
+    case 244: return primitive_worker_count();
+    case 245: return primitive_compare_and_swap_slot();
     case 251: return primitive_context_restart();
     case 250: return primitive_full_collect();
     case 247: return primitive_context_resume();
@@ -2143,6 +2231,10 @@ static const primitive_entry primitive_table[] = {
     { 230, ST_PRIM_PRESENT,  "ProcessorScheduler class "
                              "relinquishProcessorForMicroseconds:" },
     { 240, ST_PRIM_PRESENT,  "UTC microsecond clock"            },
+    { 241, ST_PRIM_PRESENT,  "Processor activeProcess -- this worker's" },
+    { 243, ST_PRIM_PRESENT,  "Processor activeWorkerIndex -- our own"    },
+    { 244, ST_PRIM_PRESENT,  "Processor workerCount -- our own"          },
+    { 245, ST_PRIM_PRESENT,  "Object compareAndSwapSlot:from:to: -- ours" },
     { 246, ST_PRIM_PRESENT,  "ContextPart return: -- this system's own"  },
     { 247, ST_PRIM_PRESENT,  "ContextPart resume: -- this system's own"  },
     { 248, ST_PRIM_PRESENT,  "Object reportOnStandardError -- this "

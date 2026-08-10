@@ -19,15 +19,48 @@
  *  An event can land while the interpreter is midway through a bytecode, and
  *  switching processes at that moment would leave the stack inconsistent, so
  *  the queue is drained at the next process-switch check.
+ *
+ *  Many producers, one consumer at a time, and a mutex rather than a lock-
+ *  free ring.  The producers are interrupt-ish -- a keystroke, a timer --
+ *  so the queue is touched a few thousand times a second at most, and the
+ *  contention that would justify anything cleverer does not exist.  What
+ *  DOES matter is that thread 0, which pumps the window system, never
+ *  blocks for long: the critical section is a memcpy of at most 64 words
+ *  and holds no other lock.
  */
 #define ASYNC_QUEUE_MAX     64
 
 static st_oop   async_queue[ASYNC_QUEUE_MAX];
 static int      async_count;
+static st_mutex async_lock;
+static int      async_lock_ready;
+
+/*
+ *  Lazily, like the stripes, and for a reason found the hard way: making
+ *  it SCHED_reset's job meant a signal arriving before the first reset was
+ *  silently dropped, and the input events the Sensor tests post arrive
+ *  exactly there.  An initialiser a caller can forget to run is an
+ *  initialiser that will be forgotten.
+ */
+static void
+async_lock_init(void)
+{
+    if (async_lock_ready)
+        return;
+    ST_mutex_init(&async_lock);
+    async_lock_ready = 1;
+}
 
 static st_oop   input_semaphore = ST_NIL;
-static int      new_process_waiting;
-static st_oop   new_process;
+
+/*
+ *  new_process, new_process_waiting and the active process used to be file
+ *  statics, and are now fields of the per-thread interpreter state -- see
+ *  st_interp in interp.h for why there rather than in st_worker.  These
+ *  spellings keep the code below reading as it did.
+ */
+#define new_process             (st_vm.new_process)
+#define new_process_waiting     (st_vm.new_process_waiting)
 
 /*
  *  ----------  Semaphore stripe locks  ----------
@@ -119,10 +152,12 @@ void
 SCHED_reset(void)
 {
     semaphore_stripes_init();
-    async_count         = 0;
-    input_semaphore     = ST_NIL;
-    new_process_waiting = 0;
-    new_process         = ST_NIL;
+    async_lock_init();
+    async_count            = 0;
+    input_semaphore        = ST_NIL;
+    new_process_waiting    = 0;
+    new_process            = ST_NIL;
+    st_vm.active_process   = ST_NIL;
 }
 
 st_oop
@@ -134,6 +169,18 @@ SCHED_scheduler(void)
 st_oop
 SCHED_active_process(void)
 {
+    /*
+     *  This worker's, if it has one.
+     *
+     *  Two workers running green processes at once cannot share one
+     *  answer, and the image's Processor>>activeProcess is one field.  So
+     *  the field becomes the fallback -- what a freshly loaded image says
+     *  before any worker has switched, and what a snapshot carries -- and
+     *  the authoritative answer is per-thread.  The single-threaded path
+     *  reaches the same value by the same route it always did.
+     */
+    if (OM_is_present(st_vm.active_process))
+        return st_vm.active_process;
     return OM_fetch_pointer(ST_SCHEDULER_ACTIVE_PROCESS, SCHED_scheduler());
 }
 
@@ -420,22 +467,38 @@ SCHED_asynchronous_signal(st_oop semaphore)
 {
     if (!OM_is_present(semaphore))
         return;
-    if (async_count >= ASYNC_QUEUE_MAX)
-        return;                 /*  drop rather than corrupt  */
-    async_queue[async_count++] = semaphore;
+    async_lock_init();
+    ST_mutex_lock(&async_lock);
+    if (async_count < ASYNC_QUEUE_MAX)
+        async_queue[async_count++] = semaphore;
+    /*  else drop rather than corrupt, as before  */
+    ST_mutex_unlock(&async_lock);
 }
 
 void
 SCHED_check_process_switch(void)
 {
-    while (async_count > 0) {
-        st_oop  semaphore = async_queue[0];
-        int     i;
+    /*
+     *  Drain into a local copy and signal outside the lock.  Signalling
+     *  can resume a process, which can transfer, which polls a safepoint --
+     *  and holding a lock across a safepoint poll is the deadlock the
+     *  stripe-lock rule above exists to forbid.  The same reasoning
+     *  applies here and to every lock this system will ever add.
+     */
+    if (async_count > 0) {
+        st_oop      pending[ASYNC_QUEUE_MAX];
+        int         count;
+        int         i;
 
-        for (i = 1; i < async_count; ++i)
-            async_queue[i - 1] = async_queue[i];
-        --async_count;
-        SCHED_synchronous_signal(semaphore);
+        ST_mutex_lock(&async_lock);
+        count = async_count;
+        for (i = 0; i < count; ++i)
+            pending[i] = async_queue[i];
+        async_count = 0;
+        ST_mutex_unlock(&async_lock);
+
+        for (i = 0; i < count; ++i)
+            SCHED_synchronous_signal(pending[i]);
     }
     if (!new_process_waiting)
         return;
@@ -449,6 +512,15 @@ SCHED_check_process_switch(void)
     ST_store_active_context();
     OM_store_pointer(ST_PROCESS_SUSPENDED_CONTEXT, SCHED_active_process(),
                      st_vm.active_context);
+    /*
+     *  The image's field as well as this worker's, because a snapshot
+     *  carries the field and the image's own reflection reads it.  With
+     *  several workers running processes it holds whichever switched last,
+     *  which is the honest answer to a question that no longer has one --
+     *  and is why Processor>>activeProcess becomes a primitive that asks
+     *  the calling worker instead.
+     */
+    st_vm.active_process = new_process;
     OM_store_pointer(ST_SCHEDULER_ACTIVE_PROCESS, SCHED_scheduler(),
                      new_process);
     ST_set_active_context(

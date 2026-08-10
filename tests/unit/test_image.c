@@ -44,7 +44,7 @@
 #define BLUEBOOK_CATEGORIES     41
 #define LIB_CLASSES             23       /*  BlockClosure, the exceptions,
                                             SUnit, and the fixtures        */
-#define LIB_METHODS             318
+#define LIB_METHODS             322
 /*
  *  Three, not five: the extension packages define no CLASSES, and a
  *  category is a property of a class definition.  Kernel-Methods-Fixes and
@@ -93,6 +93,8 @@ load_manifest(void)
             "lib/Kernel/BlockClosure.class.st",
             "lib/Kernel/WeakArray.class.st",
             "lib/System/SystemDictionary.extension.st",
+            "lib/Concurrency/ProcessorScheduler.extension.st",
+            "lib/Concurrency/Object.extension.st",
             "lib/Kernel-Pragmas/AdditionalMethodState.class.st",
             "lib/Kernel-Pragmas/Pragma.class.st",
             "lib/Kernel-Pragmas/CompiledMethod.extension.st",
@@ -1626,6 +1628,29 @@ test_modern_protocol(void)
     check_string("'hello' sorted", "ehllo");
     check_string("'hello' sorted: [:a :b | a >= b]", "ollhe");
     /*
+     *  The parallel primitives.  Single-threaded here, so the answers are
+     *  the single-threaded ones -- worker zero of one -- and that is the
+     *  point: they answer honestly rather than failing when there is no
+     *  pool, so code written against them runs either way.
+     */
+    check_integer("Processor activeWorkerIndex", 0);
+    check_integer("Processor workerCount", 1);
+    check_string("Processor activeProcess class name", "Process");
+    /*
+     *  compareAndSwapSlot:from:to: answers whether the swap HAPPENED,
+     *  rather than the old value -- that is what every caller tests, and
+     *  it leaves no room to forget the comparison.
+     */
+    check_boolean("(Array with: 1 with: 2) compareAndSwapSlot: 1 from: 1 to: 9",
+                  1);
+    check_boolean("(Array with: 1 with: 2) compareAndSwapSlot: 1 from: 7 to: 9",
+                  0);
+    check_integer("| a | a := Array with: 1 with: 2."
+                  " a compareAndSwapSlot: 2 from: 2 to: 42. ^a at: 2", 42);
+    check_integer("| a | a := Array with: 1 with: 2."
+                  " a compareAndSwapSlot: 2 from: 99 to: 42. ^a at: 2", 2);
+
+    /*
      *  Primitives named by Pharo's Kernel, reachable because lib/ declares
      *  them.  ln and exp are the ones that matter: the 1983 Taylor series
      *  stops at MathApproximationEpsilon and was wrong in float32's last
@@ -1857,7 +1882,7 @@ test_browsing(void)
      *  zero -- which a CompiledMethod reads as "no source at all".  See
      *  test_every_method_can_find_its_source.
      */
-    check_integer("(SourceFiles at: 1) contents size", 1247888);
+    check_integer("(SourceFiles at: 1) contents size", 1248924);
 }
 
 /*

@@ -145,6 +145,23 @@ OM_store_pointer(uint32_t field, st_oop p, st_oop value)
     OM_decrease_ref(old);
 }
 
+/*
+ *  The same as the threaded memory's, and trivially so: this memory has one
+ *  mutator, so "compare and swap" is compare and then swap with nothing
+ *  able to intervene.  It exists here so that a primitive does not have to
+ *  ask which memory it is running on, and so that Smalltalk written against
+ *  it loads in both builds.
+ */
+int
+OM_compare_and_swap_pointer(uint32_t field, st_oop p, st_oop expected,
+                            st_oop value)
+{
+    if (OM_fetch_pointer(field, p) != expected)
+        return 0;
+    OM_store_pointer(field, p, value);
+    return 1;
+}
+
 /*  ----------  Free storage  ----------  */
 
 /*

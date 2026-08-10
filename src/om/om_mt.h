@@ -369,6 +369,21 @@ st_oop  OM_instantiate_bytes(st_oop class_pointer, uint32_t size);
 /*  Two-way identity exchange: one swap of table entries.  */
 void    OM_swap_identities(st_oop a, st_oop b);
 
+/*
+ *  Store `value` in a field only if it currently holds `expected`, and say
+ *  whether it did.  The one operation a lock-free algorithm cannot be
+ *  written without.
+ *
+ *  The reference counting is the hard part, and it is why this is here
+ *  rather than an atomic_compare_exchange at the call site: the counts may
+ *  only move if the swap HAPPENED, and they must move while nobody else
+ *  can observe the slot half-updated.  A count taken before a failed swap
+ *  is a leak; a count released before a successful one is a use-after-free
+ *  under a concurrent collector.
+ */
+int     OM_compare_and_swap_pointer(uint32_t field, st_oop p,
+                                    st_oop expected, st_oop value);
+
 /*  ----------  Enumeration  ----------  */
 
 st_oop  OM_first_object(void);

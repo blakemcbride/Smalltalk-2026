@@ -306,8 +306,12 @@ provide_roots(om_visit_fn visit)
     for (i = 0; i < MAX_INTERPRETERS; ++i) {
         st_interp  *vm = (st_interp *) ST_load_acquire(&interpreters[i]);
 
-        if (vm)
+        if (vm) {
             visit(vm->active_context);
+            /*  And the processes only this worker's scheduler holds.  */
+            visit(vm->active_process);
+            visit(vm->new_process);
+        }
     }
     /*
      *  And this thread's, registered or not.

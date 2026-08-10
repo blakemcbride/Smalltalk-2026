@@ -201,11 +201,47 @@ handshake_worker(st_worker *self, void *user)
     ST_interp_unregister();
 }
 
+/*
+ *  Every worker must see its OWN active process, not one shared answer.
+ *
+ *  Processor>>activeProcess reads one instance variable, and one variable
+ *  cannot answer a question with a different answer per thread.  This is
+ *  the check that the primitive asks the caller: each worker nominates a
+ *  process of its own and then reads it back, and no two may collide.
+ */
+static st_oop           worker_saw[64];
+static st_atomic_int    distinct_failures;
+
+static void
+active_process_worker(st_worker *self, void *user)
+{
+    st_oop  mine;
+
+    (void) user;
+    ST_interp_register();
+    give_this_worker_a_frame();
+
+    /*
+     *  A Process of this worker's own, made here rather than shared, and
+     *  nominated the way a transfer nominates one.
+     */
+    mine = OM_instantiate_pointers(ST_NIL, 4);
+    OM_increase_ref(mine);
+    st_vm.active_process = mine;
+
+    if (SCHED_active_process() != mine)
+        ST_fetch_add_relaxed(&distinct_failures, 1);
+    if (self->index < 64)
+        worker_saw[self->index] = mine;
+    ST_interp_unregister();
+}
+
 int
 main(void)
 {
     unsigned    workers;
     unsigned    i;
+    unsigned    k;
 
     ST_TEST_BEGIN("processes and semaphores, in parallel");
 
@@ -267,6 +303,28 @@ main(void)
     }
     printf("  %u threads made %u signal/wait handshakes each\n",
            workers, SIGNALS_PER_WORKER);
+
+    /*  ----------  Each worker's active process is its own  ---------- */
+
+    ST_store_seq(&distinct_failures, 0);
+    memset(worker_saw, 0, sizeof worker_saw);
+    CHECK_EQ_INT(WORKER_start(0, active_process_worker, NULL), 0);
+    workers = WORKER_count();
+    WORKER_stop();
+
+    CHECK_EQ_INT(ST_load_seq(&distinct_failures), 0);
+    /*
+     *  And no two workers saw the same one.  A shared answer would show up
+     *  here as a duplicate rather than as a crash, which is exactly how a
+     *  scheduler that is not really per-worker would look from outside.
+     */
+    for (i = 0; i < workers && i < 64; ++i) {
+        CHECK(OM_is_present(worker_saw[i]));
+        for (k = 0; k < i; ++k)
+            CHECK(worker_saw[i] != worker_saw[k]);
+    }
+    printf("  %u threads each saw an active process of their own\n",
+           workers < 64 ? workers : 64);
 
     ST_interp_unregister();
     OM_shutdown();

@@ -436,6 +436,15 @@ void    OM_decrease_ref(st_oop p);
 /*  Store with the correct count adjustments; the interpreter uses this.  */
 void    OM_store_pointer(uint32_t field, st_oop p, st_oop value);
 
+/*
+ *  Store `value` in a field only if it currently holds `expected`, and say
+ *  whether it did.  One mutator here, so it cannot fail for the reason it
+ *  exists to handle -- but the primitive above it is the same primitive in
+ *  both memories, and Smalltalk written against it loads in both.
+ */
+int     OM_compare_and_swap_pointer(uint32_t field, st_oop p,
+                                    st_oop expected, st_oop value);
+
 /*  ----------  Enumeration  ----------  */
 
 /*
