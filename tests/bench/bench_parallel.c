@@ -28,6 +28,25 @@
  *                   here is a boxed object, so a floating-point Mandelbrot
  *                   would be an allocation benchmark wearing a disguise.
  *
+ *                   It was one anyway, for a different reason, and for
+ *                   long enough to be written up as a VM limitation.  The
+ *                   loop condition read [done not and: [n < limit]].  `not'
+ *                   is not one of the Blue Book's special selectors, so it
+ *                   is a real send to Boolean>>not, and a real send builds
+ *                   a MethodContext -- one per inner iteration, thirty-two
+ *                   million of them, every one through the object table's
+ *                   single global lock.  It measured 1.03x on eight cores.
+ *
+ *                   The flag is an integer now and the test is `done < 1',
+ *                   which the compiler inlines, so the inner loop allocates
+ *                   NOTHING.  Same picture, verified against the same
+ *                   single-threaded answer: 7.5x on eight cores, and 1.5x
+ *                   faster on one.
+ *
+ *                   Keeping this note because the bug is invisible in the
+ *                   source -- `done not' is the idiomatic way to write it,
+ *                   and nothing about it looks like an allocation.
+ *
  *      intervals    pure interpretation: sends, blocks, one context per
  *                   activation.  Measures what the interpreter costs when
  *                   the arithmetic is trivial.
@@ -96,12 +115,12 @@ static const char *const mandelbrot_source =
     "   px := index \\\\ width. py := index // width."
     "   cr := (px * 3 * scale // width) - (2 * scale)."
     "   ci := (py * 2 * scale // height) - scale."
-    "   zr := 0. zi := 0. n := 0. done := false."
-    "   [done not and: [n < limit]] whileTrue: ["
+    "   zr := 0. zi := 0. n := 0. done := 0."
+    "   [done < 1 and: [n < limit]] whileTrue: ["
     "     | zr2 zi2 |"
     "     zr2 := zr * zr // scale. zi2 := zi * zi // scale."
     "     (zr2 + zi2) > (4 * scale)"
-    "        ifTrue: [done := true]"
+    "        ifTrue: [done := 1]"
     "        ifFalse: ["
     "           zi := (2 * zr * zi // scale) + ci."
     "           zr := zr2 - zi2 + cr."

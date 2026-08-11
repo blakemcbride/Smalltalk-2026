@@ -44,9 +44,9 @@ static uint32_t     free_head;          /*  index chain through class_oop  */
  *  to allocation, and each individual pause to the live set.
  */
 /*
- *  The floor was measured, not guessed.  Mandelbrot at 31 workers, which
- *  allocates a boxed Float per arithmetic operation and is the worst case
- *  the benchmark has:
+ *  The floor was measured, not guessed, on the benchmark's worst case at
+ *  31 workers -- at the time, a mandelbrot kernel that was allocating a
+ *  context per inner-loop iteration:
  *
  *       64k entries    458 ms stopped,  56 pauses, worst 23.6 ms
  *      128k entries    410 ms stopped, 135 pauses, worst 12.6 ms
