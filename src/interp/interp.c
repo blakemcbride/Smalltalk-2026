@@ -610,6 +610,73 @@ ST_is_block_closure(st_oop p)
  *  BlockContext as its own home, so the temporary bytecodes address this
  *  frame rather than an enclosing one.
  */
+/*
+ *  Build a closure's activation context WITHOUT entering it.
+ *
+ *  Forking needs this and nothing else does.  Process>>forContext: wants a
+ *  context it can resume, and in 1983 that was easy because a BlockContext
+ *  IS one -- `[...] newProcess' handed the block straight over.  A
+ *  BlockClosure is not a context: it has three fields where a context has
+ *  six, so passing one where 1983 passed a block reads off the end of the
+ *  object.  ASAN caught it inside fetch_context_registers the first time
+ *  anything forked.
+ *
+ *  So the closure is activated here the way ST_activate_closure activates
+ *  it, with two differences: the sender is nil, because this frame is the
+ *  bottom of a new process rather than a call from the current one, and
+ *  the result is answered rather than entered.  Zero arguments, because a
+ *  process starts a block that takes none.
+ */
+st_oop
+ST_closure_as_context(st_oop closure)
+{
+    st_oop      outer;
+    st_oop      method;
+    st_oop      receiver;
+    st_oop      ctx;
+    uint32_t    copied;
+    uint32_t    slots;
+    uint32_t    i;
+
+    if (!OM_is_object(closure))
+        return ST_OOP_INVALID;
+    outer = OM_fetch_pointer(ST_CLOSURE_OUTER_CONTEXT, closure);
+    if (!OM_is_present(outer))
+        return ST_OOP_INVALID;
+    method   = OM_fetch_pointer(ST_CTX_METHOD, outer);
+    receiver = OM_fetch_pointer(ST_CTX_RECEIVER, outer);
+    if (!OM_is_object(method))
+        return ST_OOP_INVALID;
+
+    copied = OM_fetch_word_length(closure);
+    if (copied < ST_CLOSURE_FIRST_COPIED)
+        return ST_OOP_INVALID;
+    copied -= ST_CLOSURE_FIRST_COPIED;
+
+    slots = ST_header_large_context(method_header(method))
+                ? ST_LARGE_CONTEXT_SLOTS : ST_SMALL_CONTEXT_SLOTS;
+    if (copied + ST_CTX_TEMP_FRAME_START > slots)
+        return ST_OOP_INVALID;
+
+    ctx = OM_instantiate_pointers(ST_CLASS_METHOD_CONTEXT, slots);
+    if (!OM_is_object(ctx))
+        return ST_OOP_INVALID;
+
+    for (i = 0; i < copied; ++i)
+        OM_store_pointer(ST_CTX_TEMP_FRAME_START + i, ctx,
+                         OM_fetch_pointer(ST_CLOSURE_FIRST_COPIED + i,
+                                          closure));
+
+    OM_store_pointer(ST_CTX_SENDER,   ctx, ST_NIL);
+    OM_store_pointer(ST_CTX_IP,       ctx,
+                     OM_fetch_pointer(ST_CLOSURE_STARTPC, closure));
+    OM_store_pointer(ST_CTX_SP,       ctx, OM_int_oop((st_int) copied));
+    OM_store_pointer(ST_CTX_METHOD,   ctx, method);
+    OM_store_pointer(ST_CTX_CLOSURE,  ctx, closure);
+    OM_store_pointer(ST_CTX_RECEIVER, ctx, receiver);
+    return ctx;
+}
+
 int
 ST_activate_closure(st_oop closure, uint32_t argc)
 {

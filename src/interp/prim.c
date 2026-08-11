@@ -2097,6 +2097,20 @@ ST_primitive_dispatch(unsigned index)
     case 204: return primitive_closure_value(3);
     case 205: return primitive_closure_value(4);
     case 206: return primitive_value_with_arguments(1);
+    case 207: {
+        /*
+         *  BlockClosure>>asContext.  The one thing forking needs that
+         *  cannot be said in Smalltalk: a context for this closure, with a
+         *  nil sender, that Process>>forContext: can resume.
+         */
+        st_oop  ctx = ST_closure_as_context(ST_stack_top());
+
+        if (!OM_is_object(ctx))
+            return 0;
+        ST_pop_n(1);
+        ST_push(ctx);
+        return 1;
+    }
     case 221: return primitive_closure_value(0);
     case 222: return primitive_closure_value(1);
 

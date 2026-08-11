@@ -73,3 +73,34 @@ ProcessorScheduler >> suspendFirstAt: aPriority ifNone: noneBlock [
 	first isNil ifTrue: [^noneBlock value].
 	^first suspend
 ]
+
+{ #category : '*Concurrency' }
+ProcessorScheduler >> forkParallel: aBlock [
+	"Run aBlock as its own Process and answer a Promise for its value.
+
+	 fork answers nothing and swallows what the block raises, which is
+	 tolerable when a green process is a background chore and not when it
+	 is a share of a computation somebody is waiting on.  This answers a
+	 Promise instead, so the value comes back and so does the failure --
+	 in the process that asks for it, which is the one able to act.
+
+	 Where it RUNS is the scheduler's business.  This says the work may
+	 proceed independently, not which native thread takes it."
+	| promise |
+	promise := Promise new.
+	[[promise fulfill: aBlock value]
+		on: Error
+		do: [:e | promise signalError: e]] fork.
+	^promise
+]
+
+{ #category : '*Concurrency' }
+ProcessorScheduler >> parallelCollect: aCollection do: aBlock [
+	"Evaluate aBlock for each element, possibly at the same time, and
+	 answer the results in order.  Every promise is asked for, so a
+	 failure anywhere arrives here rather than being lost."
+	| promises |
+	promises := aCollection collect: [:each |
+		self forkParallel: [aBlock value: each]].
+	^promises collect: [:each | each value]
+]

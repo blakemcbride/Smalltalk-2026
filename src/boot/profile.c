@@ -25,6 +25,22 @@ typedef struct {
     int        *dialects;           /*  one per file  */
     unsigned    dialect_capacity;
     st_names    exclude;
+    /*
+     *  How much of `exclude' applies to the packages being added right now.
+     *
+     *  A profile excludes a class in order to REPLACE it -- that is what
+     *  the substitution ratchet is -- so its own packages must not be
+     *  filtered by its own exclusions, or it removes the replacement along
+     *  with the thing replaced.  Excluding SharedQueue to supersede the
+     *  1983 one with lib/Concurrency's deleted both and left the image
+     *  without the class at all.
+     *
+     *  So: exclusions apply to everything a profile INHERITS -- the
+     *  profiles it requires, the manifests it names -- and not to what it
+     *  provides itself.  This holds the count as it stood before this
+     *  profile added its own.
+     */
+    unsigned    exclude_own;
     st_names    loaded;             /*  profiles already expanded  */
     char       *error;
     size_t      error_len;
@@ -98,6 +114,19 @@ class_name_of(const char *path, char *out, size_t out_len)
         n = out_len - 1;
     memcpy(out, name, n);
     out[n] = '\0';
+}
+
+static int
+names_contain_upto(const st_names *l, const char *text, unsigned limit)
+{
+    unsigned    i;
+
+    if (limit > l->count)
+        limit = (unsigned) l->count;
+    for (i = 0; i < limit; ++i)
+        if (strcmp(l->items[i], text) == 0)
+            return 1;
+    return 0;
 }
 
 static int
@@ -200,7 +229,7 @@ add_directory(expansion *e, const char *dir, int dialect)
             break;
         }
         class_name_of(path, name, sizeof name);
-        if (names_contain(&e->exclude, name))
+        if (names_contain_upto(&e->exclude, name, e->exclude_own))
             continue;
         ok = add_file(e, path, dialect);
     }
@@ -242,6 +271,8 @@ add_manifest(expansion *e, const char *path, int dialect)
 static int
 expand_one(expansion *e, const char *path, unsigned depth)
 {
+    unsigned    inherited;
+
     char           *text;
     size_t          length;
     st_cursor       cursor;
@@ -303,9 +334,15 @@ expand_one(expansion *e, const char *path, unsigned depth)
         }
     }
 
+    inherited = e->exclude_own;
     list = SRC_ston_list(pairs, count, "exclude");
     for (i = 0; list && i < list->count; ++i)
         SRC_names_add(&e->exclude, list->items[i]);
+    /*
+     *  Requires and manifests see this profile's exclusions; its own
+     *  packages, below, see only what it inherited.
+     */
+    e->exclude_own = (unsigned) e->exclude.count;
 
     list = SRC_ston_list(pairs, count, "requires");
     for (i = 0; list && i < list->count && ok; ++i) {
@@ -343,7 +380,13 @@ expand_one(expansion *e, const char *path, unsigned depth)
             ok = 0;
             break;
         }
-        ok = add_directory(e, dir, dialect);
+        {
+            unsigned    saved = e->exclude_own;
+
+            e->exclude_own = inherited;
+            ok = add_directory(e, dir, dialect);
+            e->exclude_own = saved;
+        }
     }
 
     list = SRC_ston_list(pairs, count, "files");

@@ -44,7 +44,14 @@
 #define BLUEBOOK_CATEGORIES     41
 #define LIB_CLASSES             23       /*  BlockClosure, the exceptions,
                                             SUnit, and the fixtures        */
-#define LIB_METHODS             327
+/*
+ *  329 rather than 327: lib/Concurrency gained Mutex, Monitor, SharedQueue
+ *  and Promise, and BlockClosure gained the scheduling protocol
+ *  BlockContext has had since 1983.  The total moves by only two because
+ *  the 1983 SharedQueue is now EXCLUDED -- ours supersedes it, which is
+ *  the substitution ratchet, and its methods leave as ours arrive.
+ */
+#define LIB_METHODS             329
 /*
  *  Three, not five: the extension packages define no CLASSES, and a
  *  category is a property of a class definition.  Kernel-Methods-Fixes and
@@ -1902,7 +1909,12 @@ test_browsing(void)
      *  zero -- which a CompiledMethod reads as "no source at all".  See
      *  test_every_method_can_find_its_source.
      */
-    check_integer("(SourceFiles at: 1) contents size", 1250605);
+    /*
+     *  Moves whenever lib/ does: the source file is every method's text.
+     *  lib/Concurrency's four classes went in and the 1983 SharedQueue
+     *  came out.
+     */
+    check_integer("(SourceFiles at: 1) contents size", 1251681);
 }
 
 /*

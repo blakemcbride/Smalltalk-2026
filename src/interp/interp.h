@@ -283,6 +283,12 @@ unsigned    ST_method_primitive_index(st_oop method);
 /*  The primitive a frame's method declares, or 0.  Safe on a BlockContext. */
 unsigned    ST_context_primitive(st_oop ctx);
 int         ST_activate_closure(st_oop closure, uint32_t argc);
+
+/*
+ *  A closure's activation context, with a nil sender and not entered.
+ *  Forking needs it; see the note in interp.c.
+ */
+st_oop  ST_closure_as_context(st_oop closure);
 /*  Complete the send that made `ctx`, with `value`.  Primitive 246.  */
 void        ST_return_to(st_oop value, st_oop ctx);
 /*  Make `ctx` current again, `value` being what it was waiting for.  247.  */
