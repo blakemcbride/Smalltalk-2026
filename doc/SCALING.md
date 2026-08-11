@@ -4,9 +4,10 @@
 a scaling measurement takes minutes and wants a quiet machine, which is the
 opposite of what a test suite wants.
 
-It found four bugs, and all four are fixed. The interpreter now scales **7.55× on
-eight cores**; what limits the other kernels is collection pauses, which is a
-different problem and is named below.
+It found six bugs, and all six are fixed. The interpreter now scales **7.5× on eight
+cores**. Collection pauses, which limited everything else, are down from 128 ms to
+16 ms and are no longer the binding constraint; what is now is named at the end —
+every `Float` is boxed, so every arithmetic operation takes one global lock.
 
 ## What it measures, and why that way
 
@@ -31,30 +32,39 @@ will happily report a beautiful speedup for work that came out wrong.
 ## The numbers, on 8 P-cores
 
 ```
-kernel        workers         ms  speedup stopped ms   answer
-arithmetic          1      140.5    1.00x        0.0       ok
-arithmetic          2       71.8    1.96x        0.0       ok
-arithmetic          4       36.3    3.86x        0.0       ok
-arithmetic          8       18.6    7.55x        0.0       ok
-mandelbrot          1      754.5    1.00x        0.0       ok
-mandelbrot          2      593.0    1.27x        0.0       ok
-mandelbrot          4      354.0    2.13x        0.0       ok
-mandelbrot          8      986.9    0.76x     1708.8       ok
-intervals           1      255.2    1.00x      101.7       ok
-intervals           4      259.7    0.98x        0.0       ok
-collections         1      652.9    1.00x        0.0       ok
-collections         4      285.6    2.29x        0.0       ok
-collections         8      259.1    2.52x        0.0       ok
+kernel        workers         ms  speedup stopped ms  pauses  worst ms   answer
+arithmetic          1      140.3    1.00x        0.0       0      0.00       ok
+arithmetic          2       72.8    1.93x        0.0       0      0.00       ok
+arithmetic          4       36.6    3.83x        0.0       0      0.00       ok
+arithmetic          8       18.6    7.54x        0.0       0      0.00       ok
+mandelbrot          1      538.5    1.00x       46.1       5     10.65       ok
+mandelbrot          2      481.1    1.12x       63.3      10     12.46       ok
+mandelbrot          4      485.5    1.11x       65.9      19     11.66       ok
+mandelbrot          8      522.7    1.03x      119.1      23     16.17       ok
+intervals           1      190.0    1.00x       18.7       2     12.43       ok
+intervals           2      197.9    0.96x        0.0       0      0.00       ok
+intervals           8      241.4    0.79x        0.0       0      0.00       ok
+collections         1      678.6    1.00x        0.0       0      0.00       ok
+collections         2      416.1    1.63x        0.0       0      0.00       ok
+collections         4      257.7    2.63x        0.0       0      0.00       ok
+collections         8      191.9    3.54x        0.0       0      0.00       ok
 ```
 
-**`arithmetic` scales 7.55× on eight cores — 94% efficiency**, up from 2.17×. That is
+**`arithmetic` scales 7.54× on eight cores — 94% efficiency**, up from 2.17×. That is
 the interpreter running Smalltalk bytecodes on eight cores at very nearly eight times
 the rate of one, over a shared mutable heap.
 
-The other three do not, and the reason is now visible in the `stopped ms` column
-rather than hidden behind it: **collection pauses**. `mandelbrot` at eight workers
-spends 1.7 seconds stopped inside a 987 ms run. That is the next problem, it is a
-different problem, and it was invisible while everything was equally slow.
+**`collections` — the kernel expected to scale worst — now reaches 3.54×**, up from
+2.52×, and does it with no pauses at all: its allocations come back from the free list,
+and reusing a free entry never triggers a collection.
+
+`mandelbrot` and `intervals` still do not scale, and the `stopped ms` column no longer
+explains why. Pauses are now a fifth of what they were and worst-case a tenth, yet
+`mandelbrot` sits at 1.03×. The reason is in the last section, and it is not the
+collector.
+
+Phase K's gate — mandelbrot ≥ 4.0× and intervals ≥ 3.0× at eight workers — is **not
+met**.
 
 ## What was actually wrong: reference counting on `true` and `false`
 
