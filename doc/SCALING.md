@@ -4,11 +4,11 @@
 a scaling measurement takes minutes and wants a quiet machine, which is the
 opposite of what a test suite wants.
 
-It found seven bugs, and all seven are fixed. The interpreter now scales **7.5× on
-eight cores**, and so does `mandelbrot`. Collection pauses, which limited everything
-else, are down from 128 ms to 16 ms. One kernel is left that does not scale, and it
-is the one built to measure the thing that is now the bottleneck: **a real send
-allocates a context, and every allocation takes one global lock.**
+It found eight bugs, and all eight are fixed. **Every kernel now scales, and Phase K's
+gate is met**: mandelbrot 7.60× against a required 4.0×, intervals 3.18× against 3.0×.
+Collection pauses, which limited everything else, are gone from these runs entirely —
+not reduced, absent, because a worker no longer needs the world stopped to free
+anything.
 
 ## What it measures, and why that way
 
@@ -34,38 +34,42 @@ will happily report a beautiful speedup for work that came out wrong.
 
 ```
 kernel        workers         ms  speedup stopped ms  pauses  worst ms   answer
-arithmetic          1      149.8    1.00x        0.0       0      0.00       ok
-arithmetic          2       76.2    1.97x        0.0       0      0.00       ok
-arithmetic          4       38.7    3.87x        0.0       0      0.00       ok
-arithmetic          8       20.0    7.48x        0.0       0      0.00       ok
-mandelbrot          1      352.8    1.00x        0.0       0      0.00       ok
-mandelbrot          2      180.6    1.95x        0.0       0      0.00       ok
-mandelbrot          4       92.4    3.82x        0.0       0      0.00       ok
-mandelbrot          8       46.9    7.53x        0.0       0      0.00       ok
-intervals           1      205.8    1.00x       25.4       2     16.25       ok
-intervals           2      248.3    0.83x        0.0       0      0.00       ok
-intervals           4      353.3    0.58x       81.3       4     26.99       ok
-intervals           8      234.4    0.88x        0.0       0      0.00       ok
-collections         1      688.3    1.00x        0.0       0      0.00       ok
-collections         2      402.9    1.71x        0.0       0      0.00       ok
-collections         4      388.6    1.77x      132.2       2     73.41       ok
-collections         8      256.6    2.68x        0.0       0      0.00       ok
+arithmetic          1      143.9    1.00x        0.0       0      0.00       ok
+arithmetic          2       75.9    1.90x        0.0       0      0.00       ok
+arithmetic          4       37.9    3.80x        0.0       0      0.00       ok
+arithmetic          8       19.1    7.52x        0.0       0      0.00       ok
+mandelbrot          1      339.0    1.00x        0.0       0      0.00       ok
+mandelbrot          2      173.9    1.95x        0.0       0      0.00       ok
+mandelbrot          4       87.5    3.87x        0.0       0      0.00       ok
+mandelbrot          8       44.6    7.60x        0.0       0      0.00       ok
+intervals           1      148.7    1.00x        0.0       0      0.00       ok
+intervals           2       88.5    1.68x        0.0       0      0.00       ok
+intervals           4       55.8    2.66x        0.0       0      0.00       ok
+intervals           8       46.7    3.18x        0.0       0      0.00       ok
+collections         1      668.1    1.00x        0.0       0      0.00       ok
+collections         2      349.0    1.91x        0.0       0      0.00       ok
+collections         4      179.7    3.72x        0.0       0      0.00       ok
+collections         8       95.3    7.01x        0.0       0      0.00       ok
 ```
 
-**`arithmetic` scales 7.48× on eight cores — 94% efficiency**, up from 2.17×. That is
-the interpreter running Smalltalk bytecodes on eight cores at very nearly eight times
-the rate of one, over a shared mutable heap.
+**Phase K's gate — mandelbrot ≥ 4.0× and intervals ≥ 3.0× at eight workers — is met**,
+at 7.60× and 3.18×, with every answer checked against what one thread computed alone.
+It was the exit criterion `doc/PLAN.md` set for Phase 7 and never reached.
 
-**`mandelbrot` scales 7.53×**, up from 1.03×, and allocates nothing at all. The last
-section is about how one send of `not` was costing it a factor of seven.
+`collections` deserves a note. It was named in the plan as "the one that will not scale
+at first, and its number is the honest headline rather than the one to bury". It is
+**7.01×** — the best of the four after arithmetic, on the kernel designed to be worst.
 
-`collections` reaches 2.68×, and `intervals` — sends, blocks, **one context per
-activation** — is the one that does not scale at 0.88×. That is not a coincidence: it
-is the kernel written to measure context allocation, and context allocation is now the
-bottleneck.
+The `stopped ms` column is zero everywhere. That is not a tuned pause; it is the
+consequence of a worker no longer needing the world stopped to reclaim anything.
 
-Phase K's gate is **mandelbrot ≥ 4.0× and intervals ≥ 3.0× at eight workers**.
-Mandelbrot's half is **met at 7.53×**; intervals' is **not**.
+### A note on measuring this at all
+
+The machine these were taken on is not quiet, and one run in three is contaminated.
+`arithmetic` is the canary: it allocates nothing and touches no shared line, so it
+should read ~7.5× at eight workers. A run where it reads 5× is a run where something
+else had the cores — discard it rather than believe it. This was very nearly recorded
+as a regression once.
 
 ## What was actually wrong: reference counting on `true` and `false`
 
@@ -276,16 +280,70 @@ The bug is worth staring at, because it is invisible. `done not` is the idiomati
 write it. Nothing about it looks like an allocation, and the kernel's own comment boasts
 of avoiding exactly this trap by choosing fixed point over `Float`.
 
-## What is left: `intervals`, and it is the honest one
+## What was actually left: nothing could be freed without stopping the world
 
-This relocates the VM problem rather than retiring it. **Any non-special send in a hot
-loop still costs a heap-allocated context through one global mutex**, and real Pharo code
-is full of such sends — `not`, `isNil`, `ifEmpty:`, every user-defined method.
+The magazine took the global lock off allocation and bought `intervals` 0.88× → 1.2×.
+It should have bought more. Adding body recycling on top — keep a released entry's
+allocation and reuse it, so malloc is never called — bought nothing at all, and
+counting the hits said why:
 
-`intervals` still sits at **0.88×**, and its stated purpose is one context per
-activation. So the bottleneck is now measured by the kernel built to measure it, which is
-where it belongs. The fix is per-worker allocation: contexts are short-lived, each worker
-frees its own, and the common case should never touch a shared lock.
+```
+reuse 0, too-small 2,693,309, empty 2,107,123
+```
+
+It never fired once. The reason was four lines at the end of `OM_decrease_ref_object`:
+
+```c
+if (WORKER_count() == 0)
+    OM_deallocate(p);
+```
+
+**With a worker pool running, reference counting reclaimed nothing.** Every object a
+worker dropped waited for a stop-the-world sweep, so the collector was not *a*
+reclamation mechanism, it was the *only* one — and `intervals` retires 800,056 contexts
+per run, two per element.
+
+The deferral was there for a real reason: a thread can hold an object pointer it never
+counted, freshly loaded from a field and not yet pushed, and be about to dereference it.
+Freeing on a zero count pulls the body out from under it.
+
+### The observation
+
+That argument does not need a stopped world. It needs a **moment when the holder cannot
+still be holding**, and there is one between every pair of bytecodes — which is exactly
+the property the safepoint collector already depends on, since it frees everything
+unreachable from precise roots at a poll point.
+
+So the safety condition is *identical to one already load-bearing*. If a worker could
+hold a raw pointer across a bytecode boundary and resurrect it, the existing sweep would
+already be wrong. Epoch reclamation adds no hazard that was not there.
+
+A zero count now **retires** the object. Each worker publishes the epoch it last saw at
+a bytecode boundary, every 1024 bytecodes from the poll site the safepoint already uses.
+The epoch advances when every worker has published the current one, and on reaching
+epoch *g* the bucket retired at *g − 2* is nobody's to hold: its objects go into the
+retiring worker's own magazine, without a lock and without stopping anyone. Three
+buckets, the classic arrangement; a worker can never fall more than one epoch behind,
+because advancing requires its publication.
+
+| | before | after |
+|---|---|---|
+| intervals, 8 workers | 1.28× | **3.18×** |
+| collections, 8 workers | 3.28× | **7.01×** |
+| intervals, 1 worker | 211.2 ms | **148.7 ms** |
+| collection pauses | 13.9% of profile | **none in these runs** |
+
+Buckets are bounded at 4096 and overflow is not an error: the object stays unreachable
+with a zero count and the next sweep takes it, which is precisely the old behaviour.
+Degrading into what already worked is the right failure mode for this part of a memory
+manager. The buckets are dropped at every collection too, which is what stops a sweep
+and a bucket from both freeing the same entry.
+
+## What is left
+
+Nothing on this benchmark. The remaining scaling work is to find out whether these four
+kernels were the right four — they are small, synthetic, and chosen before any of the
+above was understood. Pharo's kernel, when it loads, is the real test.
 
 ## And the benchmark still divides work evenly
 
