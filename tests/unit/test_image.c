@@ -44,7 +44,7 @@
 #define BLUEBOOK_CATEGORIES     41
 #define LIB_CLASSES             23       /*  BlockClosure, the exceptions,
                                             SUnit, and the fixtures        */
-#define LIB_METHODS             326
+#define LIB_METHODS             327
 /*
  *  Three, not five: the extension packages define no CLASSES, and a
  *  category is a property of a class definition.  Kernel-Methods-Fixes and
@@ -1671,6 +1671,14 @@ test_modern_protocol(void)
     check_boolean("(2 raisedTo: (1/12)) = 1.0594630943592953", 1);
     check_string("2.0 ln printString", "0.693147");
     check_boolean("3 ~~ 4", 1);
+    /*
+     *  identityHash: the hash of the OBJECT, not of its value.  1983 has
+     *  the primitive and never gave it this name, because where hash IS
+     *  identity the distinction has nowhere to show.  Pharo's identity
+     *  collections send it.
+     */
+    check_boolean("'ab' identityHash = 'ab' copy identityHash", 0);
+    check_boolean("| s | s := 'ab'. ^s identityHash = s identityHash", 1);
     check_boolean("3 ~~ 3", 0);
     check_integer("1000 hashMultiply", 53912264);
     check_string("#(1 2) shallowCopy printString", "(1 2 )");
@@ -1894,7 +1902,7 @@ test_browsing(void)
      *  zero -- which a CompiledMethod reads as "no source at all".  See
      *  test_every_method_can_find_its_source.
      */
-    check_integer("(SourceFiles at: 1) contents size", 1250163);
+    check_integer("(SourceFiles at: 1) contents size", 1250605);
 }
 
 /*

@@ -388,7 +388,7 @@ accepted in either order and any number of times**. The Blue Book puts temporari
 and has one pragma; Pharo writes the pragma first at least as often, and a reader that
 insists on one order rejects ordinary source for a reason that is about nothing.
 
-### F — The Pharo object model *(F1–F5 done; second gate blocked on a provenance decision)*
+### F — The Pharo object model *(done; the gate met in part, and what it found)*
 This is what "load Pharo's kernel" costs, and it is the phase most likely to be revised
 in contact.
 
@@ -522,30 +522,51 @@ claimed, because no Pharo source is vendored under `pharo/` yet.** Every mechani
 is now in place and tested against hand-written equivalents in `lib/Probe/`; what is missing
 is a provenance decision, not code. See *Before F can be closed* below.
 
-#### Before F can be closed: a decision that is not a coding decision
+#### F's second gate: what happened when real Pharo source was loaded
 
-Every mechanism F was about now exists and is tested — weak references, pragmas as objects,
-slots, immediates, traits, and the primitive report. All of it is exercised against
-hand-written Tonel in `lib/`, which proves the mechanisms work but proves nothing about
-Pharo, because **no Pharo source is vendored under `pharo/` yet.**
+`pharo/Collections-Weak` and `pharo/Collections-Weak-Tests` are vendored — **byte-for-byte
+as upstream, no local edits** — from `pharo-project/pharo` at `490f37c591f6`, MIT with
+parts under Apache-2.0, with `PROVENANCE.md` per package and `doc/LICENSING.md` for the
+repository. `profiles/pharo-weak.profile` builds an image with them in it.
 
-That is deliberate, and it is not something to do unilaterally. Importing Pharo means:
+**It loads.** 262 classes, 4,937 methods, and every Phase F mechanism is exercised by real
+Pharo code rather than by a fixture written to suit it:
 
-- **Licensing.** Pharo is MIT with parts under Apache-2.0. Every imported file keeps its
-  notice, and each package needs a `PROVENANCE.md` recording the upstream repository, the
-  commit SHA, the license, and every local edit — otherwise "how far have we drifted"
-  stops having a mechanical answer, which is the property the whole `sources/`-is-frozen
-  discipline exists to protect.
-- **Scope.** Which packages, at which Pharo version. The ratchet's Tier 1 is the natural
-  first import (SUnit first, since it turns "did the port work" from a judgement into a
-  green bar), but that is a choice about what this project is, not a technical detail.
-- **Size.** Pharo's kernel is a large body of source to take into the repository, and it is
-  the point at which this stops being a Smalltalk-80 with extensions.
+- `WeakArray`, `WeakSet`, `WeakIdentitySet`, `WeakValueDictionary` and the rest **build as
+  weak classes**.
+- `WeakKeyAssociation` is an **ephemeron** and is refused **by name** — F1 said ephemerons
+  are a different collector, and here is the first real class that wanted one.
+- `WeakSetTest` declares `#traits : 'TIterateTest'`, and the trait is reported by name as
+  missing rather than silently dropped.
+- **Pharo's own SUnit tests run.** 20 of them.
 
-Until that decision is made, F's second gate stays unclaimed and the phase is honestly
-described as *mechanisms done, corpus absent*. Running `st80 -primitives -profile <p>` over
-a vendored Pharo package is the first thing to do the day it lands: it turns the port into
-a number on day one.
+**None of the 20 pass**, and the reason is worth more than a pass would have been.
+Eighteen fail with `division by 0` and two with `Message not understood: seconds:`. The
+first eighteen are one cause: **Pharo's `WeakSet` inherits from Pharo's `Set`, which keeps
+its elements in an `array` instance variable, and the 1983 `Set` keeps them in indexed
+fields with only `tally`.** The class loads onto a superclass of a different shape.
+
+So the plan's own tier table is **wrong about this package**. `Collections-Weak` is not
+Tier 1 — it does not stand on the VM plus a protocol, it stands on Pharo's collection
+hierarchy, which is Tier 2 because its field layout is the contract. Discovering that is
+what the gate was for, and it could not have been discovered by reading.
+
+**One defect of ours, found by the first real package.** A class whose *shape* was refused
+still had its methods read in the next pass, and those failed fatally with "methods for
+unknown class" — so "reject loudly and keep going" rejected loudly and then did not keep
+going. Refused classes are remembered by name now and their methods are skipped quietly,
+the refusal already having been reported once.
+
+**And one gap it named:** `Object>>identityHash`. 1983 has the primitive — 75, which
+`Object>>hash` declares — and never gave it that name, because in a system where hash *is*
+identity the distinction has nowhere to show. Pharo's identity collections send it, and
+they are right to.
+
+### The ratchet from here
+
+The next turn is `Collections-Unordered`: Pharo's `HashedCollection`, `Set` and `Dictionary`.
+That is a Tier 2 substitution — it replaces classes the whole 1983 library stands on — and
+it is where the two systems start to fork in earnest rather than coexist.
 
 ### G — Kernel protocol and the first ratchet turns *(done, less the Pharo corpus)*
 

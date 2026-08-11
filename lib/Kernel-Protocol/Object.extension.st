@@ -101,6 +101,20 @@ Object >> -> anObject [
 ]
 
 { #category : '*Kernel-Protocol' }
+Object >> identityHash [
+	"The hash of the OBJECT rather than of its value, which is what an
+	 identity collection needs: two equal Strings have one hash and two
+	 identityHashes.
+
+	 1983 has the primitive -- 75, and Object>>hash declares it -- but
+	 never gave it this name, because in a system where hash IS identity
+	 the distinction has nowhere to show.  Pharo's identity collections
+	 send it, and they are right to."
+	<primitive: 75>
+	^self hash
+]
+
+{ #category : '*Kernel-Protocol' }
 Object >> ~~ anObject [
 	"Not the same object.  The primitive is the whole of it; the fallback
 	 says the same thing one send more slowly."

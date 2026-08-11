@@ -1,52 +1,41 @@
-# Licensing and Provenance
+# Licensing
 
-## Our code
+Three bodies of source live in this repository and they are not under the same
+terms. Which directory a file is in tells you which apply.
 
-Everything under `src/`, `tests/` and `doc/` is original work,
-Copyright (c) 2026 Blake McBride, BSD 2-Clause.
+| directory | origin | licence |
+|---|---|---|
+| `src/`, `tests/`, `lib/`, `bench/`, `doc/` | written for this project | BSD-2-Clause, © 2026 Blake McBride |
+| `sources/` | Smalltalk-80 v2 sources, Mark Bush's transcription | MIT |
+| `pharo/` | imported from the Pharo project | **MIT, with parts under Apache-2.0** |
 
-## The `oracle/` directory — never redistribute
+## `sources/` is frozen
 
-`oracle/` holds the Xerox Smalltalk-80 version 2 virtual image, its sources
-file, and the Xerox reference execution traces, unpacked from Mario Wolczko's
-Manchester distribution.
+Nothing in it is ever edited. Every divergence from 1983 is a new file in `lib/`.
+That is a licensing convenience — the transcription stays verbatim and attributable —
+and, more importantly, it is what makes "how far have we drifted" a question with a
+mechanical answer.
 
-**No host of these files asserts any license grant.** Not Wolczko's site, not
-the archive.org mirror (`licenseurl = None`, `rights = None`), not dbanay's
-repository (whose MIT license covers only his C++ code). Xerox released
-Smalltalk-80 v2 in 1983 under a restrictive license and licensed it
-royalty-free to Apple, HP, Tektronix and DEC. It has been treated as
-abandonware for roughly two decades with no known enforcement, but there is no
-affirmative permission anywhere.
+## `pharo/` — imported, attributed, and recorded
 
-Accordingly:
+Pharo is distributed under the MIT License **with parts under the Apache License**;
+its own `LICENSE` says so in its first line. Every imported file keeps whatever notice
+it arrived with, and every package directory carries a `PROVENANCE.md` recording:
 
-- `oracle/` is in `.gitignore` and must stay there.
-- These files are used as a **private development oracle only** — to validate
-  our interpreter against `trace2`/`trace3` and to inspect object layouts.
-- No part of the image or its sources is copied into our code or into the
-  shipping image.
+- the upstream repository and the exact commit,
+- the licence as the upstream states it,
+- the files taken, and any file deliberately **not** taken,
+- **every local edit**, line by line.
 
-## The shipping image
+The last of those is the one that matters. A package that has been quietly patched is
+a package nobody can update, and the whole point of importing rather than rewriting is
+that upstream keeps improving. If a change is needed, it goes in the provenance file
+before it goes in the source.
 
-The bootstrapped image is built from
-[`markbush/Smalltalk-80-Sources`](https://github.com/markbush/Smalltalk-80-Sources),
-which is **MIT licensed** — the complete 1983 class library, exploded to one
-file per method. This is what gives the product clean provenance.
+## Copyright notices in imported files
 
-Vendor it into `sources/`, retaining its LICENSE file.
-
-## Reference material
-
-| Work | Status |
-|---|---|
-| Blue Book (*Smalltalk-80: The Language and Its Implementation*) | Author-permitted free distribution via the INRIA RMoD and Ducasse mirrors. Not public domain, no CC grant |
-| Blue Book Ch. 26–30 HTML (Dwight Hughes / mirandabanda.org) | Explicit permission from Goldberg and Robson recorded on the page; copyright retained by Adele Goldberg |
-| Green Book (*Bits of History, Words of Advice*) | Same INRIA mirror, same status |
-| Orange Book (*The Interactive Programming Environment*) | Same |
-| ANSI Smalltalk draft rev 1.9 | Freely hosted on the Squeak wiki; the published INCITS 319-1998 standard is a paid document |
-
-Reference implementations we read but do not copy from: `dbanay/Smalltalk`
-(MIT, C++), `devhawala/ST80` (BSD-3, Java), `avwohl/smalltalk80-2026` (MIT,
-C++). `rochus-keller/Smalltalk` is GPL — **read it for understanding only, and
-do not copy code from it**, since we ship BSD.
+Pharo's Tonel files do not carry per-file copyright headers; the notice lives in the
+repository's `LICENSE`. Copying that convention is what "keeps its notice" means here,
+so `pharo/LICENSE.pharo` holds the upstream text verbatim and each `PROVENANCE.md`
+points at it. Adding a per-file header would be *changing* the notice, not preserving
+it.

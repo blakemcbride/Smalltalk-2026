@@ -151,6 +151,31 @@ static unsigned     trait_count;
 static unsigned     trait_capacity;
 
 /*
+ *  Classes whose SHAPE this system cannot build, remembered by name.
+ *
+ *  Refusing the definition was only half of it.  The methods arrive in the
+ *  next pass and asked for a class that was never made, which came out as
+ *  "methods for unknown class" and stopped the build -- so "reject loudly
+ *  and keep going" rejected loudly and then did not keep going.  The first
+ *  real Pharo package found it on its first load: WeakKeyAssociation is an
+ *  ephemeron, which is refused by name, and its four methods then killed
+ *  the bootstrap.
+ */
+static st_names     refused_classes;
+
+static int
+class_was_refused(const char *name)
+{
+    unsigned    i;
+
+    for (i = 0; i < refused_classes.count; ++i) {
+        if (strcmp(refused_classes.items[i], name) == 0)
+            return 1;
+    }
+    return 0;
+}
+
+/*
  *  The class table, grown on demand rather than reserved.  There is no
  *  MAX_CLASSES any more; the ceiling is memory.
  */
@@ -1729,6 +1754,7 @@ sink_class_def(const st_source_class_def *def, void *user)
     if (def->unsupported_shape) {
         boot_note("%s: %s is not supported here", def->name,
                   def->unsupported_shape);
+        SRC_names_add(&refused_classes, def->name);
         ++state->rejected;
         if (result)
             ++result->classes_rejected;
@@ -1863,6 +1889,13 @@ sink_method(const char *class_name, int class_side, const char *category,
         return 1;
     }
     if (state->definitions)
+        return 1;
+    /*
+     *  A class this system refused is a class with no methods, quietly --
+     *  the refusal was already reported by name, once, and repeating it
+     *  per method would bury it.
+     */
+    if (class_was_refused(class_name))
         return 1;
     c = find_class(class_name);
     if (!c) {
@@ -2182,6 +2215,7 @@ reset_bootstrap_state(void)
 
     method_protocol_count = 0;
     free_traits();
+    SRC_names_free(&refused_classes);
 
     /*
      *  The source files, which nothing used to reset -- so a second build
