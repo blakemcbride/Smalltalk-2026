@@ -128,12 +128,37 @@ count" was an assumption about generated code, not a fact that had been checked.
 - The **object-table indirection** in the bytecode fetch, and the out-of-line tag
   test in the reference-count fast path: inlining the latter was worth 18% in serial.
 
-## What is left
+## What is left: the pause is not the collection
 
-**Collection pauses.** Now the dominant cost in three of the four kernels, and
-plainly visible in `stopped ms`. The collector stops every worker and walks the whole
-table; at 31 workers `intervals` spends 27 seconds stopped. That is the next piece of
-work and it is a different problem from this one.
+Collection pauses are the dominant remaining cost, and the first thing measuring them
+did was overturn the obvious assumption about what they are.
 
-**The benchmark still divides work evenly**, which is wrong on a hybrid CPU — the
-E-cores set the wall time. Handing work out dynamically would fix the measurement.
+`ST_COLLECT_LOG=1` times the phases of a collection. On the mandelbrot kernel at eight
+workers:
+
+```
+st80: collect 15134 entries, 14260 live: zero 0.0 ms, mark 0.4 ms, sweep 0.0 ms, freed 871
+```
+
+**The collector's own work is 0.4 ms.** The table is fifteen thousand entries, not the
+four million the sweep is sized for, and marking it is trivial. Meanwhile the measured
+pause is **74 ms** — about 180 times the work.
+
+So the cost is not collecting. It is **getting every worker to a safepoint**, and that
+is a different problem with different fixes: a worker that is not polling — inside a
+long primitive, blocked on the allocator's lock, or between finishing its body and
+clearing its `running` flag — holds up everyone.
+
+The instrumentation had to be fixed first, and the way it was wrong is worth keeping.
+The pause clock started on *entry* to `WORKER_request_safepoint`, before the CAS that
+decides who actually stops the world. A worker that loses that race parks for the
+winner's safepoint — so eight workers wanting one collection reported eight pauses,
+seven of them measuring how long they had waited for the eighth. It said 322 ms where
+the truth was 74 ms and the collector's share of that was 0.4 ms. **The clock starts
+after the CAS now.**
+
+## And the benchmark still divides work evenly
+
+Which is wrong on a hybrid CPU — the E-cores set the wall time. Handing work out
+dynamically would fix the measurement.
+

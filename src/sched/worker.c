@@ -180,16 +180,29 @@ WORKER_request_safepoint(void)
 {
     const st_worker    *requester = current_worker;
 
-    safepoint_began = ST_time_monotonic_ns();
-    if (!lock_ready)
+    if (!lock_ready) {
+        safepoint_began = ST_time_monotonic_ns();
         return;                 /*  single-threaded: nothing to stop  */
+    }
 
     for (;;) {
         int expected = 0;
 
         ST_mutex_lock(&safepoint_lock);
-        if (ST_cas_strong(&safepoint_in_progress, &expected, 1))
+        if (ST_cas_strong(&safepoint_in_progress, &expected, 1)) {
+            /*
+             *  The clock starts HERE, not on entry.
+             *
+             *  A worker that loses this race parks for the winner's
+             *  safepoint, and timing from entry counted that wait as its
+             *  own pause -- so eight workers wanting one collection
+             *  reported eight pauses, seven of them measuring how long
+             *  they had waited for the eighth.  It said 322 ms of
+             *  stop-the-world where the collector's own work was 0.4 ms.
+             */
+            safepoint_began = ST_time_monotonic_ns();
             break;
+        }
         ST_mutex_unlock(&safepoint_lock);
         /*
          *  Somebody else is stopping the world.  Be stopped: park exactly

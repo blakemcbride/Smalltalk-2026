@@ -425,8 +425,9 @@ main(void)
     }
 
     printf("  %u CPUs; total work fixed, divided among the workers\n", cpus);
-    printf("  %-12s %8s %10s %8s %10s %8s\n",
-           "kernel", "workers", "ms", "speedup", "stopped ms", "answer");
+    printf("  %-12s %8s %10s %8s %10s %7s %9s %8s\n",
+           "kernel", "workers", "ms", "speedup", "stopped ms", "pauses",
+           "mean ms", "answer");
 
     for (k = 0; k < KERNEL_COUNT; ++k) {
         for (s = 0; s < sizeof sweep / sizeof sweep[0]; ++s) {
@@ -440,11 +441,18 @@ main(void)
             ms = run_on(&kernels[k], want, &correct);
             if (kernels[k].one_worker_ms == 0.0)
                 kernels[k].one_worker_ms = ms;
-            printf("  %-12s %8u %10.1f %7.2fx %10.1f %8s\n",
-                   kernels[k].name, want ? want : WORKER_count(), ms,
-                   ms > 0.0 ? kernels[k].one_worker_ms / ms : 0.0,
-                   (double) WORKER_safepoint_pause_ns() / 1000000.0,
-                   correct ? "ok" : "WRONG");
+            {
+                int     pauses = WORKER_safepoint_count();
+                double  stopped = (double) WORKER_safepoint_pause_ns()
+                                    / 1000000.0;
+
+                printf("  %-12s %8u %10.1f %7.2fx %10.1f %7d %9.2f %8s\n",
+                       kernels[k].name, want ? want : WORKER_count(), ms,
+                       ms > 0.0 ? kernels[k].one_worker_ms / ms : 0.0,
+                       stopped, pauses,
+                       pauses ? stopped / pauses : 0.0,
+                       correct ? "ok" : "WRONG");
+            }
             if (!correct)
                 printf("      got %d, want %lld, %d worker(s) answered "
                        "no integer at all\n",

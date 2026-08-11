@@ -561,8 +561,13 @@ collect_at_safepoint(void *unused)
     uint32_t    index;
     uint32_t    reclaimed = 0;
 
+    int64_t     t0 = 0, t1 = 0, t2 = 0, t3 = 0;
+    int         report = getenv("ST_COLLECT_LOG") != NULL;
+
     (void) unused;
     ++st_om_collections;
+    if (report)
+        t0 = ST_time_monotonic_ns();
     mark_capacity = (uint32_t) ST_load_relaxed(&st_om_table_limit) + 1;
     mark_stack = (st_oop *) malloc((size_t) mark_capacity * sizeof *mark_stack);
     if (!mark_stack)
@@ -574,6 +579,8 @@ collect_at_safepoint(void *unused)
             ST_store_relaxed(&OM_table_get(index)->refcount, 0);
     }
 
+    if (report)
+        t1 = ST_time_monotonic_ns();
     for (index = 2; index <= ST_SELECTOR_CANNOT_INTERPRET; index += 2)
         mark_visit((st_oop) index);
     if (root_provider)
@@ -666,6 +673,8 @@ collect_at_safepoint(void *unused)
         }
     }
 
+    if (report)
+        t2 = ST_time_monotonic_ns();
     for (index = 1; index < (uint32_t) ST_load_relaxed(&st_om_table_limit); ++index) {
         st_oop  p = (st_oop) index << 1;
 
@@ -718,6 +727,16 @@ collect_at_safepoint(void *unused)
     if (getenv("ST_GC_LOG"))
         fprintf(stderr, "  gc #%u reclaimed %u; %u live objects\n",
                 st_om_collections, reclaimed, live_objects);
+    if (report) {
+        t3 = ST_time_monotonic_ns();
+        fprintf(stderr, "st80: collect %u entries, %llu live: "
+                        "zero %.1f ms, mark %.1f ms, sweep %.1f ms, "
+                        "freed %u\n",
+                (unsigned) ST_load_relaxed(&st_om_table_limit),
+                (unsigned long long) live_objects,
+                (double) (t1 - t0) / 1e6, (double) (t2 - t1) / 1e6,
+                (double) (t3 - t2) / 1e6, reclaimed);
+    }
     return reclaimed;
 }
 
