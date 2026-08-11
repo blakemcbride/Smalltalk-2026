@@ -105,6 +105,9 @@ st_worker  *WORKER_self(void);
  */
 int64_t     WORKER_safepoint_pause_ns(void);
 int         WORKER_safepoint_count(void);
+/*  The worst and best single stop, because a mean hides the shape.  */
+int64_t     WORKER_safepoint_worst_ns(void);
+int64_t     WORKER_safepoint_best_ns(void);
 void        WORKER_reset_safepoint_statistics(void);
 
 extern st_atomic_int    st_safepoint_requested;

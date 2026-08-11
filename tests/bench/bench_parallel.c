@@ -427,7 +427,7 @@ main(void)
     printf("  %u CPUs; total work fixed, divided among the workers\n", cpus);
     printf("  %-12s %8s %10s %8s %10s %7s %9s %8s\n",
            "kernel", "workers", "ms", "speedup", "stopped ms", "pauses",
-           "mean ms", "answer");
+           "worst ms", "answer");
 
     for (k = 0; k < KERNEL_COUNT; ++k) {
         for (s = 0; s < sizeof sweep / sizeof sweep[0]; ++s) {
@@ -450,8 +450,13 @@ main(void)
                        kernels[k].name, want ? want : WORKER_count(), ms,
                        ms > 0.0 ? kernels[k].one_worker_ms / ms : 0.0,
                        stopped, pauses,
-                       pauses ? stopped / pauses : 0.0,
+                       (double) WORKER_safepoint_worst_ns() / 1000000.0,
                        correct ? "ok" : "WRONG");
+                if (pauses > 1)
+                    printf("      best %.2f ms, mean %.2f ms, worst %.2f ms\n",
+                           (double) WORKER_safepoint_best_ns() / 1000000.0,
+                           stopped / pauses,
+                           (double) WORKER_safepoint_worst_ns() / 1000000.0);
             }
             if (!correct)
                 printf("      got %d, want %lld, %d worker(s) answered "

@@ -24,6 +24,47 @@ uint32_t     st_om_weak_cleared;
 static uint32_t     free_head;          /*  index chain through class_oop  */
 
 /*
+ *  When to collect.
+ *
+ *  Collection used to happen only when the table was completely full, so a
+ *  program that allocates steadily ran the table to its four million entry
+ *  ceiling before collecting once -- and then paid a pause proportional to
+ *  four million, three times over, to find perhaps fifteen thousand live
+ *  objects.  That is the whole of the hundred-millisecond safepoint.
+ *
+ *  Instead, collect when the table has to GROW past a bound set from the
+ *  last collection's result.  Reusing a free entry never triggers one: the
+ *  bound gates only fresh indices, so a program in a steady state, however
+ *  much it allocates and drops, never collects at all.
+ *
+ *  The bound is raised at the end of every collection to twice what
+ *  survived, which is what keeps this from thrashing -- if the live set
+ *  genuinely is large, the threshold moves up to meet it and the retry in
+ *  instantiate() always succeeds.  Total collection work stays proportional
+ *  to allocation, and each individual pause to the live set.
+ */
+/*
+ *  The floor was measured, not guessed.  Mandelbrot at 31 workers, which
+ *  allocates a boxed Float per arithmetic operation and is the worst case
+ *  the benchmark has:
+ *
+ *       64k entries    458 ms stopped,  56 pauses, worst 23.6 ms
+ *      128k entries    410 ms stopped, 135 pauses, worst 12.6 ms
+ *        1M entries   1310 ms stopped,  27 pauses, worst 84.3 ms
+ *
+ *  Collecting less often loses on BOTH counts, which is worth knowing: the
+ *  total is not the threshold-invariant O(allocations) the arithmetic
+ *  predicts, because a table that fits in cache is swept several times
+ *  faster per entry than one that does not.  A million entries is eight
+ *  megabytes of table walked three times; a hundred and twenty-eight
+ *  thousand is one megabyte, and stays resident.
+ */
+#define GC_THRESHOLD_FLOOR  (1u << 17)      /*  ~8x the booted image  */
+#define GC_THRESHOLD_GROWTH 2u
+
+static uint32_t     gc_threshold = GC_THRESHOLD_FLOOR;
+
+/*
  *  Guards the table's own bookkeeping -- the free chain, the used limit, and
  *  growth.  It is deliberately narrow: it is never held while an object's
  *  fields are released, because that release recurses back into
@@ -65,6 +106,7 @@ OM_init(void)
     }
     ST_store_seq(&st_om_table_limit, 1);
     free_head         = FREE_END;
+    gc_threshold      = GC_THRESHOLD_FLOOR;
     live_objects      = 0;
     live_bytes        = 0;
     ST_store_seq(&next_hash, 1);
@@ -137,7 +179,12 @@ table_alloc_locked(void)
     {
         uint32_t    next = (uint32_t) ST_load_relaxed(&st_om_table_limit);
 
-        if (next >= st_om_table_size)
+        /*
+         *  Answering 0 here means "collect and try again" -- instantiate()
+         *  drops the table lock, collects, and retries once.  Crossing the
+         *  threshold borrows that path rather than adding a second one.
+         */
+        if (next >= gc_threshold || next >= st_om_table_size)
             return 0;
         return next;
     }
@@ -560,6 +607,7 @@ collect_at_safepoint(void *unused)
 {
     uint32_t    index;
     uint32_t    reclaimed = 0;
+    uint32_t    walked;
 
     int64_t     t0 = 0, t1 = 0, t2 = 0, t3 = 0;
     int         report = getenv("ST_COLLECT_LOG") != NULL;
@@ -721,6 +769,61 @@ collect_at_safepoint(void *unused)
         }
         (void) p;
     }
+    /*
+     *  Give the top of the table back.
+     *
+     *  st_om_table_limit was a high-water mark that never came down, and
+     *  every one of the three passes above is O(limit).  A run that once
+     *  had three million objects alive keeps paying for three million
+     *  slots for ever: this collection walked 2,989,815 entries to find
+     *  14,638 live ones, three times, and that is the whole of the 59 ms
+     *  pause -- 20 ms to zero, 20 to mark, 19 to sweep.
+     *
+     *  Trailing free entries are handed back and the free list is rebuilt
+     *  below the new limit, because an index above it must never be handed
+     *  out again.  Both walks are bounded by what is actually there rather
+     *  than by what once was.
+     */
+    {
+        uint32_t    limit = (uint32_t) ST_load_relaxed(&st_om_table_limit);
+        uint32_t    i;
+
+        walked = limit;
+
+        while (limit > 1) {
+            om_header  *head = OM_table_get(limit - 1);
+
+            if (head && !(head->flags & ST_FMT_FREE))
+                break;
+            free(head);
+            OM_table_set(limit - 1, NULL);
+            --limit;
+        }
+        if (limit != (uint32_t) ST_load_relaxed(&st_om_table_limit)) {
+            ST_store_release(&st_om_table_limit, limit);
+            /*
+             *  The old chain may thread through indices that no longer
+             *  exist, so it is rebuilt rather than trimmed.  Descending,
+             *  so the head ends up lowest and allocation stays compact.
+             */
+            free_head = FREE_END;
+            for (i = limit; i-- > 1; ) {
+                om_header  *head = OM_table_get(i);
+
+                if (head && (head->flags & ST_FMT_FREE)) {
+                    head->class_oop = free_head;
+                    free_head = i;
+                }
+            }
+        }
+
+        gc_threshold = (limit > st_om_table_size / GC_THRESHOLD_GROWTH)
+                        ? st_om_table_size
+                        : limit * GC_THRESHOLD_GROWTH;
+        if (gc_threshold < GC_THRESHOLD_FLOOR)
+            gc_threshold = GC_THRESHOLD_FLOOR;
+    }
+
     free(mark_stack);
     mark_stack = NULL;
     st_om_reclaimed += reclaimed;
@@ -729,9 +832,10 @@ collect_at_safepoint(void *unused)
                 st_om_collections, reclaimed, live_objects);
     if (report) {
         t3 = ST_time_monotonic_ns();
-        fprintf(stderr, "st80: collect %u entries, %llu live: "
+        fprintf(stderr, "st80: collect %u entries (now %u), %llu live: "
                         "zero %.1f ms, mark %.1f ms, sweep %.1f ms, "
                         "freed %u\n",
+                (unsigned) walked,
                 (unsigned) ST_load_relaxed(&st_om_table_limit),
                 (unsigned long long) live_objects,
                 (double) (t1 - t0) / 1e6, (double) (t2 - t1) / 1e6,

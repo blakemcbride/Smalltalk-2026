@@ -134,6 +134,15 @@ WORKER_unparked_count(void)
  */
 static st_atomic_i64    safepoint_pause_ns;
 static st_atomic_int    safepoint_count;
+/*
+ *  The worst single stop, and the best.
+ *
+ *  A mean is the wrong statistic for a pause: seven stops averaging 74 ms
+ *  could be seven stops of 74 ms, or six of half a millisecond and one of
+ *  half a second, and those are different bugs with different fixes.
+ */
+static st_atomic_i64    safepoint_worst_ns;
+static st_atomic_i64    safepoint_best_ns;
 static _Thread_local int64_t    safepoint_began;
 
 int64_t
@@ -148,11 +157,27 @@ WORKER_safepoint_count(void)
     return ST_load_seq(&safepoint_count);
 }
 
+int64_t
+WORKER_safepoint_worst_ns(void)
+{
+    return ST_load_seq(&safepoint_worst_ns);
+}
+
+int64_t
+WORKER_safepoint_best_ns(void)
+{
+    int64_t best = ST_load_seq(&safepoint_best_ns);
+
+    return best == INT64_MAX ? 0 : best;
+}
+
 void
 WORKER_reset_safepoint_statistics(void)
 {
     ST_store_seq(&safepoint_pause_ns, 0);
     ST_store_seq(&safepoint_count, 0);
+    ST_store_seq(&safepoint_worst_ns, 0);
+    ST_store_seq(&safepoint_best_ns, INT64_MAX);
 }
 
 /*
@@ -237,9 +262,17 @@ void
 WORKER_release_safepoint(void)
 {
     if (safepoint_began) {
-        ST_fetch_add_relaxed(&safepoint_pause_ns,
-                                 ST_time_monotonic_ns() - safepoint_began);
+        int64_t took = ST_time_monotonic_ns() - safepoint_began;
+        int64_t seen;
+
+        ST_fetch_add_relaxed(&safepoint_pause_ns, took);
         ST_fetch_add_relaxed(&safepoint_count, 1);
+        seen = ST_load_relaxed(&safepoint_worst_ns);
+        while (took > seen && !ST_cas_weak(&safepoint_worst_ns, &seen, took))
+            ;
+        seen = ST_load_relaxed(&safepoint_best_ns);
+        while (took < seen && !ST_cas_weak(&safepoint_best_ns, &seen, took))
+            ;
         safepoint_began = 0;
     }
     if (!lock_ready)
@@ -255,9 +288,23 @@ uint32_t
 WORKER_at_safepoint(uint32_t (*fn)(void *user), void *user)
 {
     uint32_t    result;
+    int64_t     asked;
+    int64_t     got;
+    int64_t     done;
 
+    asked = ST_time_monotonic_ns();
     WORKER_request_safepoint();
+    got = ST_time_monotonic_ns();
     result = fn(user);
+    done = ST_time_monotonic_ns();
+    if (getenv("ST_SAFEPOINT_LOG")
+     && (done - asked) > INT64_C(2000000))
+        fprintf(stderr, "st80: safepoint %.2f ms = %.2f waiting for %u "
+                        "worker(s) + %.2f doing the work\n",
+                (double) (done - asked) / 1e6,
+                (double) (got - asked) / 1e6,
+                worker_count,
+                (double) (done - got) / 1e6);
     WORKER_release_safepoint();
     return result;
 }
