@@ -6,8 +6,8 @@ opposite of what a test suite wants.
 
 It found six bugs, and all six are fixed. The interpreter now scales **7.5× on eight
 cores**. Collection pauses, which limited everything else, are down from 128 ms to
-16 ms and are no longer the binding constraint; what is now is named at the end —
-every `Float` is boxed, so every arithmetic operation takes one global lock.
+16 ms and are no longer the binding constraint. What is, is not yet known: the
+last section says why that sentence is deliberately empty.
 
 ## What it measures, and why that way
 
@@ -215,16 +215,32 @@ every image ever written carried the garbage. Images are now **a tenth of the si
 same refcount sum — the 25 MB that went away were thousands of duplicate copies of
 strings like `accessing untypeable characters`.
 
-## What is left: `table_lock` on every Float
+## What is left: not yet known, and that is the point
 
-Mandelbrot still does not scale, and it is no longer the collector's fault. `arithmetic`,
-whose values are immediate SmallIntegers, reaches **7.5× on eight cores**. Mandelbrot
-does the same shape of work in `Float`, and **every Float is boxed** — so every
-arithmetic operation allocates, and every allocation takes one global `table_lock`.
+`mandelbrot` sits at 1.03× on eight cores with only 119 ms of its 523 ms spent stopped.
+So roughly 400 ms is non-scaling work that is **not** the collector, and this document
+should not guess at what it is.
 
-That is the next bottleneck, and it is the one the plan anticipated when it declined to
-gate on the `collections` kernel "until TLABs land": per-worker allocation, so the
-common case never touches a shared lock.
+It is worth being explicit about why. An earlier draft of this very section asserted the
+cause was boxed `Float`s taking `table_lock` on every arithmetic operation. The kernel
+does not use `Float` at all — it is fixed point in SmallIntegers, chosen precisely so
+that it would not be an allocation benchmark in disguise, as the table above this one
+says. The claim was an inference that contradicted a fact already written down twelve
+lines earlier.
+
+That is the third time on this benchmark that a bottleneck named by reasoning turned out
+to be wrong, and the second time the contradicting evidence was already in hand:
+
+1. reference counting, declared refuted by a control kernel that exercised it;
+2. the safepoint, blamed on slow-to-park workers, refuted by a one-worker pause;
+3. boxed Floats in a kernel that has no Floats.
+
+Each time, `perf` settled it in a single run. **The next step on this file is a
+measurement, not a hypothesis.**
+
+What is known: `mandelbrot` still allocates something — five collections at one worker,
+twenty-three at eight — even though every loop in it is inlined and every value is an
+immediate SmallInteger. What that something is, is the first question to answer.
 
 ## And the benchmark still divides work evenly
 
