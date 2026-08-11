@@ -199,14 +199,41 @@ typedef struct {
     st_oop      method;
     st_int      answer;         /*  what one worker computed  */
     double      one_worker_ms;
+    double      eight;          /*  speedup at eight workers  */
+    /*
+     *  gate     Phase K's exit criterion; 0 means "reported, not gated".
+     *  baseline what it actually reached once the criterion was met, so a
+     *           later change that gives it back fails here instead of
+     *           quietly becoming the new normal.
+     */
+    double      gate;
+    double      baseline;
 } kernel;
 
 static kernel kernels[] = {
-    { "arithmetic",  NULL, 0, 0, 0.0 },
-    { "mandelbrot",  NULL, 0, 0, 0.0 },
-    { "intervals",   NULL, 0, 0, 0.0 },
-    { "collections", NULL, 0, 0, 0.0 }
+    { "arithmetic",  NULL, 0, 0, 0.0, 0.0, 0.0, 7.5 },
+    { "mandelbrot",  NULL, 0, 0, 0.0, 0.0, 4.0, 7.6 },
+    { "intervals",   NULL, 0, 0, 0.0, 0.0, 3.0, 3.1 },
+    { "collections", NULL, 0, 0, 0.0, 0.0, 0.0, 7.0 }
 };
+
+/*
+ *  How far below its baseline a kernel may drift before this fails.
+ */
+#define REGRESSION_ALLOWED  0.85
+
+/*
+ *  The canary.
+ *
+ *  A scaling measurement wants a quiet machine and does not always get one.
+ *  `arithmetic' allocates nothing and touches no shared line, so on eight
+ *  free cores it reads about 7.5x and there is no legitimate way for it to
+ *  read much less.  When it does, something else had the cores and every
+ *  other number in the run is worth nothing -- so the run is declared
+ *  inconclusive rather than failed.  Without this the gate is flaky, and a
+ *  flaky gate gets switched off, which is worse than not having one.
+ */
+#define CANARY_FLOOR        6.5
 #define KERNEL_COUNT (sizeof kernels / sizeof kernels[0])
 
 static st_atomic_int    partial_total;
@@ -460,6 +487,8 @@ main(void)
             ms = run_on(&kernels[k], want, &correct);
             if (kernels[k].one_worker_ms == 0.0)
                 kernels[k].one_worker_ms = ms;
+            if (want == 8 && ms > 0.0)
+                kernels[k].eight = kernels[k].one_worker_ms / ms;
             {
                 int     pauses = WORKER_safepoint_count();
                 double  stopped = (double) WORKER_safepoint_pause_ns()
@@ -489,6 +518,35 @@ main(void)
              *  wrong can be made arbitrarily fast.
              */
             CHECK(correct);
+        }
+    }
+
+    /*
+     *  The ratchet.  Phase K's gate, plus a floor under everything it
+     *  reached, so the result cannot be given back by accident.
+     */
+    if (cpus >= 8) {
+        double  canary = kernels[0].eight;
+
+        printf("\n  ---- gate, at 8 workers ----\n");
+        if (canary < CANARY_FLOOR) {
+            printf("  INCONCLUSIVE: arithmetic reached only %.2fx, so the "
+                   "machine was busy.\n"
+                   "  Nothing here is measured; run it again on a quiet "
+                   "machine.\n", canary);
+        }  else {
+            for (k = 0; k < KERNEL_COUNT; ++k) {
+                double  got   = kernels[k].eight;
+                double  floor = kernels[k].baseline * REGRESSION_ALLOWED;
+                int     ok    = got >= kernels[k].gate && got >= floor;
+
+                printf("  %-12s %6.2fx   gate %.1fx   baseline %.1fx "
+                       "(floor %.2fx)  %s\n",
+                       kernels[k].name, got, kernels[k].gate,
+                       kernels[k].baseline, floor, ok ? "ok" : "REGRESSED");
+                CHECK(got >= kernels[k].gate);
+                CHECK(got >= floor);
+            }
         }
     }
 
