@@ -4,10 +4,11 @@
 a scaling measurement takes minutes and wants a quiet machine, which is the
 opposite of what a test suite wants.
 
-It found six bugs, and all six are fixed. The interpreter now scales **7.5× on eight
-cores**. Collection pauses, which limited everything else, are down from 128 ms to
-16 ms and are no longer the binding constraint. What is, is not yet known: the
-last section says why that sentence is deliberately empty.
+It found seven bugs, and all seven are fixed. The interpreter now scales **7.5× on
+eight cores**, and so does `mandelbrot`. Collection pauses, which limited everything
+else, are down from 128 ms to 16 ms. One kernel is left that does not scale, and it
+is the one built to measure the thing that is now the bottleneck: **a real send
+allocates a context, and every allocation takes one global lock.**
 
 ## What it measures, and why that way
 
@@ -16,7 +17,7 @@ Three kernels, because they measure different things:
 | | |
 |---|---|
 | **arithmetic** | the control — an inlined `whileTrue:` of SmallInteger arithmetic. No block activated, so no context allocated; every value stored is a tagged integer, so no reference count touched. It exists to tell "the interpreter's loop" apart from "the object memory", which cannot be reasoned to from the other three |
-| **mandelbrot** | heavy arithmetic, almost no allocation — the ceiling. Fixed point rather than `Float` on purpose: a `Float` here is a boxed object, so a floating-point Mandelbrot would be an allocation benchmark wearing a disguise |
+| **mandelbrot** | heavy arithmetic, almost no allocation — the ceiling. Fixed point rather than `Float` on purpose: a `Float` here is a boxed object, so a floating-point Mandelbrot would be an allocation benchmark wearing a disguise. It was one anyway, via a single send of `not` — see below |
 | **intervals** | pure interpretation — sends, blocks, one context per activation. What the interpreter costs when the arithmetic is trivial |
 | **collections** | heavy allocation and collection. The case a shared heap makes hardest |
 
@@ -33,38 +34,38 @@ will happily report a beautiful speedup for work that came out wrong.
 
 ```
 kernel        workers         ms  speedup stopped ms  pauses  worst ms   answer
-arithmetic          1      140.3    1.00x        0.0       0      0.00       ok
-arithmetic          2       72.8    1.93x        0.0       0      0.00       ok
-arithmetic          4       36.6    3.83x        0.0       0      0.00       ok
-arithmetic          8       18.6    7.54x        0.0       0      0.00       ok
-mandelbrot          1      538.5    1.00x       46.1       5     10.65       ok
-mandelbrot          2      481.1    1.12x       63.3      10     12.46       ok
-mandelbrot          4      485.5    1.11x       65.9      19     11.66       ok
-mandelbrot          8      522.7    1.03x      119.1      23     16.17       ok
-intervals           1      190.0    1.00x       18.7       2     12.43       ok
-intervals           2      197.9    0.96x        0.0       0      0.00       ok
-intervals           8      241.4    0.79x        0.0       0      0.00       ok
-collections         1      678.6    1.00x        0.0       0      0.00       ok
-collections         2      416.1    1.63x        0.0       0      0.00       ok
-collections         4      257.7    2.63x        0.0       0      0.00       ok
-collections         8      191.9    3.54x        0.0       0      0.00       ok
+arithmetic          1      149.8    1.00x        0.0       0      0.00       ok
+arithmetic          2       76.2    1.97x        0.0       0      0.00       ok
+arithmetic          4       38.7    3.87x        0.0       0      0.00       ok
+arithmetic          8       20.0    7.48x        0.0       0      0.00       ok
+mandelbrot          1      352.8    1.00x        0.0       0      0.00       ok
+mandelbrot          2      180.6    1.95x        0.0       0      0.00       ok
+mandelbrot          4       92.4    3.82x        0.0       0      0.00       ok
+mandelbrot          8       46.9    7.53x        0.0       0      0.00       ok
+intervals           1      205.8    1.00x       25.4       2     16.25       ok
+intervals           2      248.3    0.83x        0.0       0      0.00       ok
+intervals           4      353.3    0.58x       81.3       4     26.99       ok
+intervals           8      234.4    0.88x        0.0       0      0.00       ok
+collections         1      688.3    1.00x        0.0       0      0.00       ok
+collections         2      402.9    1.71x        0.0       0      0.00       ok
+collections         4      388.6    1.77x      132.2       2     73.41       ok
+collections         8      256.6    2.68x        0.0       0      0.00       ok
 ```
 
-**`arithmetic` scales 7.54× on eight cores — 94% efficiency**, up from 2.17×. That is
+**`arithmetic` scales 7.48× on eight cores — 94% efficiency**, up from 2.17×. That is
 the interpreter running Smalltalk bytecodes on eight cores at very nearly eight times
 the rate of one, over a shared mutable heap.
 
-**`collections` — the kernel expected to scale worst — now reaches 3.54×**, up from
-2.52×, and does it with no pauses at all: its allocations come back from the free list,
-and reusing a free entry never triggers a collection.
+**`mandelbrot` scales 7.53×**, up from 1.03×, and allocates nothing at all. The last
+section is about how one send of `not` was costing it a factor of seven.
 
-`mandelbrot` and `intervals` still do not scale, and the `stopped ms` column no longer
-explains why. Pauses are now a fifth of what they were and worst-case a tenth, yet
-`mandelbrot` sits at 1.03×. The reason is in the last section, and it is not the
-collector.
+`collections` reaches 2.68×, and `intervals` — sends, blocks, **one context per
+activation** — is the one that does not scale at 0.88×. That is not a coincidence: it
+is the kernel written to measure context allocation, and context allocation is now the
+bottleneck.
 
-Phase K's gate — mandelbrot ≥ 4.0× and intervals ≥ 3.0× at eight workers — is **not
-met**.
+Phase K's gate is **mandelbrot ≥ 4.0× and intervals ≥ 3.0× at eight workers**.
+Mandelbrot's half is **met at 7.53×**; intervals' is **not**.
 
 ## What was actually wrong: reference counting on `true` and `false`
 
@@ -215,32 +216,76 @@ every image ever written carried the garbage. Images are now **a tenth of the si
 same refcount sum — the 25 MB that went away were thousands of duplicate copies of
 strings like `accessing untypeable characters`.
 
-## What is left: not yet known, and that is the point
+## What perf said, and the send that cost 7x
 
-`mandelbrot` sits at 1.03× on eight cores with only 119 ms of its 523 ms spent stopped.
-So roughly 400 ms is non-scaling work that is **not** the collector, and this document
-should not guess at what it is.
+`mandelbrot` sat at 1.03x on eight cores with the collector no longer to blame. Rather
+than name a fourth bottleneck by reasoning, `perf` was pointed at it — with one
+correction that mattered: a benchmark run is about 60% bootstrap, so both the profile and
+the counters have to be restricted to the kernel phase. `perf record -D` skips the
+bootstrap; differencing two `ST_BENCH_STRESS` levels isolates it in `perf stat`.
 
-It is worth being explicit about why. An earlier draft of this very section asserted the
-cause was boxed `Float`s taking `table_lock` on every arithmetic operation. The kernel
-does not use `Float` at all — it is fixed point in SmallIntegers, chosen precisely so
-that it would not be an allocation benchmark in disguise, as the table above this one
-says. The claim was an inference that contradicted a fact already written down twelve
-lines earlier.
+Twenty kernel runs, differenced:
 
-That is the third time on this benchmark that a bottleneck named by reasoning turned out
-to be wrong, and the second time the contradicting evidence was already in hand:
+| | 1 worker | 8 workers |
+|---|---|---|
+| wall | 10.75 s | 11.35 s |
+| cycles | 62.4e9 | **290.9e9** |
+| instructions | 210.5e9 | 304.3e9 |
+| IPC | 3.37 | **1.05** |
+| context switches | 158 | **8,708,986** |
 
-1. reference counting, declared refuted by a control kernel that exercised it;
-2. the safepoint, blamed on slow-to-park workers, refuted by a one-worker pause;
-3. boxed Floats in a kernel that has no Floats.
+Eight cores burning 4.7x the cycles for 1.45x the instructions, at a third of the IPC,
+switching context 767,000 times a second. The kernel-phase profile named it:
 
-Each time, `perf` settled it in a single run. **The next step on this file is a
-measurement, not a hypothesis.**
+```
+19.20%  native_queued_spin_lock_slowpath   [kernel]
+ 3.67%  futex_hash                         [kernel]
+ 3.01%  __GI___lll_lock_wait
+ 2.32%  __pthread_mutex_unlock_usercnt
+ 2.28%  futex_wait_setup                   [kernel]
+ 2.15%  pthread_mutex_lock
+```
 
-What is known: `mandelbrot` still allocates something — five collections at one worker,
-twenty-three at eight — even though every loop in it is inlined and every value is an
-immediate SmallInteger. What that something is, is the first question to answer.
+**A third of all cycles in mutex and futex machinery**, with `table_alloc_locked` in the
+same profile — so the contended lock was the object table's, taken by every allocation.
+
+Which left one question: what was a kernel documented as "almost no allocation"
+allocating? Tallying by class answered it — **32 million MethodContexts, 94% of
+everything**. Tallying activations by selector, and differencing *that* across stress
+levels to separate bootstrap from kernel, named the send:
+
+```smalltalk
+[done not and: [n < limit]] whileTrue: [ ... ]
+```
+
+`not` is not one of the Blue Book's special selectors. It is a real send to
+`Boolean>>not`, and **a real send builds a MethodContext** — one per inner iteration,
+every one of them through a single global lock. An integer flag and `done < 1`, which
+the compiler inlines, leaves the loop allocating nothing:
+
+| workers | before | after |
+|---|---|---|
+| 1 | 538.5 ms | **352.8 ms** |
+| 2 | 1.12× | **1.95×** |
+| 4 | 1.11× | **3.82×** |
+| 8 | 1.03× | **7.53×** |
+
+**Phase K's mandelbrot gate — 4.0× at eight workers — is met at 7.53×.**
+
+The bug is worth staring at, because it is invisible. `done not` is the idiomatic way to
+write it. Nothing about it looks like an allocation, and the kernel's own comment boasts
+of avoiding exactly this trap by choosing fixed point over `Float`.
+
+## What is left: `intervals`, and it is the honest one
+
+This relocates the VM problem rather than retiring it. **Any non-special send in a hot
+loop still costs a heap-allocated context through one global mutex**, and real Pharo code
+is full of such sends — `not`, `isNil`, `ifEmpty:`, every user-defined method.
+
+`intervals` still sits at **0.88×**, and its stated purpose is one context per
+activation. So the bottleneck is now measured by the kernel built to measure it, which is
+where it belongs. The fix is per-worker allocation: contexts are short-lived, each worker
+frees its own, and the common case should never touch a shared lock.
 
 ## And the benchmark still divides work evenly
 
