@@ -112,6 +112,16 @@ static st_atomic_uint   next_hash;
  *  table is left to the locked path, so the "is this index below the
  *  published limit" question never arises here.
  *
+ *  A caveat that cost a measurement to find, and that will matter the
+ *  moment it stops being true: with a worker pool running, nothing reaches
+ *  OM_deallocate at all.  OM_decrease_ref_object defers reclamation to the
+ *  collector once WORKER_count() is non-zero, because a thread can hold an
+ *  object pointer it has not counted and be about to dereference it.  So
+ *  the release half of this -- and the body recycling below -- is live only
+ *  on the single-threaded path today, and every context a worker drops is
+ *  reclaimed by a stop-the-world sweep instead.  That, not this lock, is
+ *  what keeps `intervals' from scaling.
+ *
  *  Threads that are not workers -- the bootstrap, tests driving the VM
  *  directly -- take the global path.  They are single-threaded where it
  *  matters, so an uncontended mutex costs them nothing, and a magazine
@@ -314,6 +324,45 @@ instantiate(st_oop class_pointer, uint32_t size, uint32_t format,
 {
     uint32_t    index;
     om_header  *head;
+
+    /*
+     *  Before anything else: a recycled entry whose body is already big
+     *  enough needs no allocator call at all.
+     *
+     *  A free entry's `size' is meaningless -- nothing reads it, the census
+     *  walk skips free entries entirely -- so it carries the body's
+     *  capacity in bytes while the entry sits in a magazine.  Contexts come
+     *  in two sizes and are 94% of everything allocated, so the capacity
+     *  nearly always fits and malloc is never called.
+     *
+     *  This is worth as much as the lock was.  With one calloc and one free
+     *  per allocation, glibc's own arena locks replaced ours: a header
+     *  malloc'd by one worker and freed by another crosses arenas, and
+     *  _int_malloc, _int_free_chunk and __libc_calloc2 together were 11% of
+     *  the profile with the mutex traffic still on top of that.
+     */
+    {
+        om_magazine  *mag = magazine_of();
+
+        if (mag && mag->n) {
+            om_header  *reuse = OM_table_get(mag->idx[mag->n - 1]);
+
+            if (reuse && reuse->size >= bytes) {
+                index = mag->idx[--mag->n];
+                memset(reuse + 1, 0, bytes);
+                reuse->class_oop = class_pointer;
+                reuse->size      = size;
+                reuse->flags     = format;
+                ST_store_relaxed(&reuse->refcount, 0);
+                reuse->hash      = (uint32_t)
+                                    ST_fetch_add_relaxed(&next_hash, 1);
+                mag->live_delta  += 1;
+                mag->bytes_delta += (int64_t) bytes;
+                OM_increase_ref(class_pointer);
+                return (st_oop) index << 1;
+            }
+        }
+    }
 
     head = (om_header *) calloc(1, sizeof *head + bytes);
     if (!head) {
@@ -525,6 +574,7 @@ OM_deallocate(st_oop p)
      */
     {
         om_magazine  *mag = magazine_of();
+        uint64_t      freed_bytes;
 
         if (mag) {
             if (mag->n >= MAGAZINE_MAX) {
@@ -542,19 +592,22 @@ OM_deallocate(st_oop p)
                         (mag->n - MAGAZINE_REFILL) * sizeof mag->idx[0]);
                 mag->n -= MAGAZINE_REFILL;
             }
-            mag->bytes_delta -= (int64_t)
-                        ((head->flags & ST_FMT_POINTERS)
+            freed_bytes = (head->flags & ST_FMT_POINTERS)
                             ? (uint64_t) head->size * sizeof(st_oop)
                             : ((head->flags & ST_FMT_WORDS)
                                 ? (uint64_t) head->size * sizeof(uint16_t)
-                                : head->size));
+                                : head->size);
+            mag->bytes_delta -= (int64_t) freed_bytes;
             mag->live_delta -= 1;
 
-            head = (om_header *) realloc(head, sizeof *head);
-            if (!head)
-                head = OM_table_get(index);
+            /*
+             *  Keep the body rather than realloc'ing it away, and record
+             *  its capacity in `size' so the next allocation of this class
+             *  can take it as it stands.  Releasing to a magazine is the
+             *  half of recycling that makes the other half possible.
+             */
             head->flags     = ST_FMT_FREE;
-            head->size      = 0;
+            head->size      = (uint32_t) freed_bytes;
             ST_store_relaxed(&head->refcount, 0);
             head->class_oop = 0;        /*  not on the global chain  */
             OM_table_set(index, head);
