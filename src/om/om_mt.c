@@ -79,6 +79,122 @@ static st_atomic_uint   next_hash;
 #define TABLE_INITIAL   4096
 #define FREE_END        0
 
+/*
+ *  ----------  Per-worker magazines  ----------
+ *
+ *  Every allocation and every release used to take one global mutex, and
+ *  perf said what that costs once eight workers are sending: a third of all
+ *  cycles in futex and spinlock machinery, IPC down from 3.37 to 1.05, and
+ *  8.7 million context switches where one worker had 158.  The object being
+ *  allocated was nearly always the same one -- 94% of everything was a
+ *  MethodContext, because in Smalltalk a send IS an allocation.
+ *
+ *  So each worker keeps a small private stash of free table indices.
+ *  Allocation pops from it and release pushes onto it, neither touching a
+ *  lock; only refill and flush do, once per MAGAZINE_REFILL operations
+ *  rather than once per operation.
+ *
+ *  Three things make this simpler than it looks:
+ *
+ *  An index in a magazine is an ordinary FREE table entry -- its header is
+ *  still there, still flagged, merely unlinked from the global chain.  So
+ *  nothing else in the system has to know magazines exist: OM_is_object
+ *  still answers no, the sweep still skips it, and a stale pointer still
+ *  finds the free flag rather than released memory.
+ *
+ *  Correctness does not depend on an index returning to the worker that
+ *  handed it out.  A context can outlive its activation -- captured by
+ *  thisContext, held as a closure's outerContext, unwound through by an
+ *  exception -- and be released by another worker entirely.  It lands in
+ *  whichever magazine is current.  These are caches, not ownership.
+ *
+ *  And a magazine only ever holds indices that were live once.  Growing the
+ *  table is left to the locked path, so the "is this index below the
+ *  published limit" question never arises here.
+ *
+ *  Threads that are not workers -- the bootstrap, tests driving the VM
+ *  directly -- take the global path.  They are single-threaded where it
+ *  matters, so an uncontended mutex costs them nothing, and a magazine
+ *  shared between them is the one place two threads could race on one.
+ */
+#define MAGAZINE_MAX        512
+#define MAGAZINE_REFILL     256
+
+typedef struct {
+    uint32_t    n;
+    /*
+     *  live_objects and live_bytes are global and were kept exact under the
+     *  lock.  Making them atomic would put an increment on one shared line
+     *  in the hottest path in the system, which is the bug this file
+     *  already fixed once for true and false.  Each worker keeps its own
+     *  delta instead, and the collector folds them in at a safepoint.
+     */
+    int64_t     live_delta;
+    int64_t     bytes_delta;
+    uint32_t    idx[MAGAZINE_MAX];
+} om_magazine;
+
+static om_magazine  magazines[ST_MAX_WORKERS];
+
+static om_magazine *
+magazine_of(void)
+{
+    st_worker  *w = WORKER_self();
+
+    if (!w || w->index >= ST_MAX_WORKERS)
+        return NULL;
+    return &magazines[w->index];
+}
+
+/*
+ *  Fold the per-worker deltas into the global counts and hand every
+ *  magazine back.  Called by the collector, which runs with every worker
+ *  parked, so reaching into their magazines is safe here and nowhere else.
+ *
+ *  The handing back has to happen, not merely help.  The sweep rebuilds the
+ *  free chain by scanning the table for FREE entries, and an index sitting
+ *  in a magazine is FREE.  Left there it would be handed out twice: once
+ *  from the rebuilt chain and once from the magazine.  Zeroing the counts
+ *  is all it takes, because the entries are already FREE in the table and
+ *  the rebuild is about to find them.
+ */
+static void
+magazines_drain(void)
+{
+    unsigned    i;
+
+    for (i = 0; i < ST_MAX_WORKERS; ++i) {
+        live_objects = (uint32_t) ((int64_t) live_objects
+                                    + magazines[i].live_delta);
+        live_bytes   = (uint64_t) ((int64_t) live_bytes
+                                    + magazines[i].bytes_delta);
+        magazines[i].live_delta  = 0;
+        magazines[i].bytes_delta = 0;
+        magazines[i].n           = 0;
+    }
+}
+
+/*
+ *  Take one index off the global free chain, leaving its header in place.
+ *
+ *  Deliberately NOT table_alloc_locked: that one also grows the table, and
+ *  a magazine must never hold an index whose limit has not been published.
+ *  When the chain is dry the caller falls back to the locked path, which
+ *  knows how to grow and when to collect.
+ */
+static uint32_t
+table_take_free_locked(void)
+{
+    uint32_t    index;
+
+    if (free_head == FREE_END)
+        return 0;
+    index = free_head;
+    free_head = (uint32_t) OM_table_get(index)->class_oop;
+    return index;
+}
+
+
 /*  ----------  Lifecycle  ----------  */
 
 int
@@ -107,6 +223,7 @@ OM_init(void)
     ST_store_seq(&st_om_table_limit, 1);
     free_head         = FREE_END;
     gc_threshold      = GC_THRESHOLD_FLOOR;
+    memset(magazines, 0, sizeof magazines);
     live_objects      = 0;
     live_bytes        = 0;
     ST_store_seq(&next_hash, 1);
@@ -129,6 +246,7 @@ OM_shutdown(void)
     st_om_table_size  = 0;
     ST_store_seq(&st_om_table_limit, 0);
     free_head         = FREE_END;
+    memset(magazines, 0, sizeof magazines);
     live_objects      = 0;
     live_bytes        = 0;
 }
@@ -220,6 +338,40 @@ instantiate(st_oop class_pointer, uint32_t size, uint32_t format,
     head->flags     = format;
     ST_store_relaxed(&head->refcount, 0);
     head->hash      = (uint32_t) ST_fetch_add_relaxed(&next_hash, 1);
+
+    /*
+     *  The common case: an index this worker already has, no lock at all.
+     */
+    {
+        om_magazine  *mag = magazine_of();
+
+        if (mag) {
+            if (!mag->n) {
+                uint32_t    got = 0;
+
+                ST_mutex_lock(&table_lock);
+                while (got < MAGAZINE_REFILL) {
+                    uint32_t    i = table_take_free_locked();
+
+                    if (!i)
+                        break;
+                    mag->idx[got++] = i;
+                }
+                ST_mutex_unlock(&table_lock);
+                mag->n = got;
+            }
+            if (mag->n) {
+                index = mag->idx[--mag->n];
+                free(OM_table_get(index));
+                OM_table_set(index, head);
+                mag->live_delta  += 1;
+                mag->bytes_delta += (int64_t) bytes;
+                OM_increase_ref(class_pointer);
+                return (st_oop) index << 1;
+            }
+            /*  Chain dry.  Fall through: the locked path grows or collects. */
+        }
+    }
 
     /*
      *  Claim an index, store the entry, and only then publish the limit.
@@ -364,6 +516,53 @@ OM_deallocate(st_oop p)
      *  Fields are released above without the lock, because that recurses.
      *  Only the bookkeeping below is guarded.
      */
+    /*
+     *  The common case again: shrink the header, flag it free, and drop the
+     *  index in this worker's magazine.  No lock.  A full magazine hands a
+     *  batch back rather than reverting to the lock for every release,
+     *  which would undo the whole point for a worker that frees more than
+     *  it allocates.
+     */
+    {
+        om_magazine  *mag = magazine_of();
+
+        if (mag) {
+            if (mag->n >= MAGAZINE_MAX) {
+                uint32_t    i;
+
+                ST_mutex_lock(&table_lock);
+                for (i = 0; i < MAGAZINE_REFILL; ++i) {
+                    om_header  *f = OM_table_get(mag->idx[i]);
+
+                    f->class_oop = free_head;
+                    free_head    = mag->idx[i];
+                }
+                ST_mutex_unlock(&table_lock);
+                memmove(mag->idx, mag->idx + MAGAZINE_REFILL,
+                        (mag->n - MAGAZINE_REFILL) * sizeof mag->idx[0]);
+                mag->n -= MAGAZINE_REFILL;
+            }
+            mag->bytes_delta -= (int64_t)
+                        ((head->flags & ST_FMT_POINTERS)
+                            ? (uint64_t) head->size * sizeof(st_oop)
+                            : ((head->flags & ST_FMT_WORDS)
+                                ? (uint64_t) head->size * sizeof(uint16_t)
+                                : head->size));
+            mag->live_delta -= 1;
+
+            head = (om_header *) realloc(head, sizeof *head);
+            if (!head)
+                head = OM_table_get(index);
+            head->flags     = ST_FMT_FREE;
+            head->size      = 0;
+            ST_store_relaxed(&head->refcount, 0);
+            head->class_oop = 0;        /*  not on the global chain  */
+            OM_table_set(index, head);
+            mag->idx[mag->n++] = index;
+            return;
+        }
+    }
+
     ST_mutex_lock(&table_lock);
     live_bytes -= (head->flags & ST_FMT_POINTERS)
                     ? (uint64_t) head->size * sizeof(st_oop)
@@ -614,6 +813,14 @@ collect_at_safepoint(void *unused)
 
     (void) unused;
     ++st_om_collections;
+    /*
+     *  First, before anything reads the table or the counts: fold in every
+     *  worker's deltas and hand back every magazine.  Every worker is
+     *  parked, which is the only moment this is safe -- and the only moment
+     *  it is correct, because the rebuild at the end of this function
+     *  relinks every FREE entry, including the ones the magazines hold.
+     */
+    magazines_drain();
     if (report)
         t0 = ST_time_monotonic_ns();
     mark_capacity = (uint32_t) ST_load_relaxed(&st_om_table_limit) + 1;
