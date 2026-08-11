@@ -62,10 +62,36 @@ its length is the running measure of how expensive the next re-import will be.
 frozen and never edited. Pharo is MIT *with parts under Apache-2.0*; every imported file
 retains its notice.
 
-**The load-bearing constraint:** the `OM=bb` build loads the real 1983 Xerox image and
-reproduces `trace2` byte-for-byte. That is the project's only external correctness oracle
-and it must stay green through every phase below. Everything here is designed so the
-Blue Book path is untouched code, not carefully-preserved code.
+**The load-bearing constraint, and its retirement.** The `OM=bb` build loads the real
+1983 Xerox image and reproduces `trace2` byte-for-byte. It was written here as
+never-negotiable. It is not, any more: **the original Smalltalk-80 system is no longer a
+goal of this project** (Blake). What follows is how that is spent without spending it
+twice.
+
+*Stop treating it as a constraint now.* No design decision below is to be shaped by
+keeping the Blue Book path green. The rule is a policy rather than a date: **the moment a
+change would require a dialect branch for no reason but `trace2`, take the change and
+retire the branch** — do not accumulate compatibility scaffolding for a target that no
+longer matters.
+
+*Do not delete it yet, and be clear-eyed about why.* `trace2` is the only check on this
+interpreter that somebody else wrote. Everything else — 12 suites, ~2,500 checks — tests
+what we believed was correct, which is exactly the class of test that agreed with every
+wrong diagnosis recorded in `doc/SCALING.md`. Its replacement is Pharo's own SUnit
+suites, which are external in the same sense; so the honest moment to delete `OM=bb`,
+`oracle/` and the trace tests is **when the ratchet has turned far enough that Pharo's
+suites run**, not before. Until then it is nearly free: it is a separate object memory
+behind a macro, and it costs nothing but the seconds it takes to run.
+
+*What this does not unlock.* The object table is not a Blue Book artifact — see
+`om_mt.h`: it is retained for threading (`become:` as one atomic swap, free pinning,
+compaction, a natural home for per-object metadata), at the price of one indirection.
+Dropping Smalltalk-80 is not an argument for dropping the table.
+
+*What cannot be retired at all yet.* `sources/` is not a museum exhibit here, it is the
+**current library** — 226 classes and 4,521 methods, the substrate every test and the
+benchmark runs on. It goes when Pharo's kernel replaces it, which is Phase M, which is
+the unbounded one.
 
 ---
 
@@ -966,7 +992,11 @@ make clean && make OM=mt TSAN=1 test
 
 Specific oracles, in decreasing order of how much they are worth:
 
-1. **`trace2` byte-for-byte** — 611 lines. Xerox's own execution trace. Never negotiable.
+1. **`trace2` byte-for-byte** — 611 lines. Xerox's own execution trace, and the only
+   oracle here that somebody else wrote. No longer *never negotiable* — Smalltalk-80 is
+   not a goal — but it is retired **when Pharo's SUnit suites replace it**, so that the
+   project is never without an external check, rather than on the day it becomes
+   inconvenient.
 2. **`bluebook.profile` byte-identical image** — proves the loader refactor changed nothing.
 3. **Tonel vs chunk produce identical method dictionaries** — `census.c` gives this free.
 4. **`test_self_hosting`** — compares the C compiler against the image's own 1983 compiler.
