@@ -20,6 +20,13 @@ The owner is recorded here, so that case is DETECTED and raises an error
 naming it.  It is not made to work: a recursive mutex is a different
 promise, and one that hides the design mistake rather than reporting it.
 
+The nil check in acquire is not defensive noise.  Processor activeProcess
+answers nil wherever no Process has been nominated -- during the bootstrap,
+and in any worker running a method that was not entered through the
+scheduler -- and `owner == me' with both of them nil reads as re-entry.  A
+free Mutex then refuses its very FIRST acquire, reporting a deadlock that
+cannot exist.  The gate found it on the first native-thread run.
+
 A non-blocking tryCritical: belongs here and is deliberately absent.  It
 needs a wait that can fail, and there is no primitive for one; writing it
 in Smalltalk means testing excessSignals and then decrementing it, which is
@@ -71,7 +78,7 @@ Mutex >> acquire [
 	 guarantee -- prefer it."
 	| me |
 	me := Processor activeProcess.
-	owner == me ifTrue: [
+	(me notNil and: [owner == me]) ifTrue: [
 		^Error new signal: 'Mutex is already held by this process'].
 	semaphore wait.
 	owner := me

@@ -141,6 +141,10 @@ static const char *const mutex_source =
     "    n := n + 1]."
     " ^n";
 
+/*  Diagnostic: what does a worker think its active process is?  */
+static const char *const probe_source =
+    " ^Processor activeProcess isNil ifTrue: [7] ifFalse: [3]";
+
 /*
  *  Every worker puts PER_WORKER items in and takes PER_WORKER out.  The
  *  puts come first so nothing can block: whatever a worker takes may be
@@ -154,6 +158,7 @@ static const char *const queue_source =
     " ^sum";
 
 static st_oop           setup_method;
+static st_oop           probe_method;
 static st_oop           mutex_method;
 static st_oop           queue_method;
 static st_oop           running_method;
@@ -171,6 +176,8 @@ provide_lib_roots(om_visit_fn visit)
      */
     if (OM_is_object(setup_method))
         visit(setup_method);
+    if (OM_is_object(probe_method))
+        visit(probe_method);
     if (OM_is_object(mutex_method))
         visit(mutex_method);
     if (OM_is_object(queue_method))
@@ -193,6 +200,23 @@ lib_worker(st_worker *self, void *user)
 
     (void) user;
     ST_interp_register();
+    /*
+     *  Nominate a Process for this worker before running anything.
+     *
+     *  Without one, Processor activeProcess answers nil -- and any library
+     *  that asks who is calling gets the same nil from every worker, which
+     *  is indistinguishable from "all of you are the same process".  A
+     *  worker running library code needs an identity as much as it needs a
+     *  stack.
+     */
+    if (!OM_is_object(st_vm.active_process)) {
+        st_oop  mine = OM_instantiate_pointers(ST_NIL, 4);
+
+        if (OM_is_object(mine)) {
+            OM_increase_ref(mine);
+            st_vm.active_process = mine;
+        }
+    }
     value = run_method(running_method);
     if (OM_is_int(value))
         ST_fetch_add_relaxed(&reported, (int) OM_int_value(value));
@@ -247,6 +271,17 @@ main(void)
 
     ST_interp_install_roots(provide_lib_roots);
     ST_interp_register();
+
+    probe_method = compile_expression(probe_source);
+    ST_store_seq(&reported, 0);
+    ST_store_seq(&wrong_answers, 0);
+    running_method = probe_method;
+    WORKER_start(1, lib_worker, NULL);
+    WORKER_stop();
+    ST_interp_register();
+    printf("  PROBE: activeProcess isNil -> %d (7 = nil, 3 = a process), "
+           "wrong %d\n",
+           ST_load_seq(&reported), ST_load_seq(&wrong_answers));
 
     mutex_method = compile_expression(mutex_source);
     queue_method = compile_expression(queue_source);
