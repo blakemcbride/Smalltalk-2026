@@ -85,6 +85,12 @@ void        WORKER_stop(void);
 
 unsigned    WORKER_count(void);
 st_worker  *WORKER_self(void);
+/*
+ *  Worker `i', or NULL past the end of the pool.  The object memory walks
+ *  the pool to decide when a retired object is safe to reclaim, which needs
+ *  every worker's state and not just its own.
+ */
+st_worker  *WORKER_at(unsigned index);
 
 /*
  *  ----------  The safepoint protocol  ----------

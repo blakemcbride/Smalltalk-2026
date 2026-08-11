@@ -1261,6 +1261,15 @@ ST_interp_run(uint64_t limit)
          *  thread's registers are consistent and its roots are known.
          */
         WORKER_poll();
+#ifdef ST_OM_MT
+        /*
+         *  The other half of the poll: tell the object memory this thread
+         *  has reached a bytecode boundary, so that what it retired a
+         *  couple of epochs ago can be reclaimed without stopping anyone.
+         */
+        if ((st_vm.cycle & 1023u) == 0)
+            OM_epoch_step();
+#endif
         SCHED_check_process_switch();
         if (!st_vm.running)
             break;

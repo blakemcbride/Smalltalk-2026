@@ -130,8 +130,63 @@ static st_atomic_uint   next_hash;
 #define MAGAZINE_MAX        512
 #define MAGAZINE_REFILL     256
 
+/*
+ *  ----------  Epoch-based reclamation  ----------
+ *
+ *  Reference counting could not reclaim anything once a worker pool was
+ *  running.  OM_decrease_ref_object ended with
+ *
+ *      if (WORKER_count() == 0)
+ *          OM_deallocate(p);
+ *
+ *  and the reason was sound: a thread can hold an object pointer it never
+ *  counted -- freshly loaded from a field, not yet pushed -- and be about
+ *  to dereference it.  Freeing on a zero count pulls the body out from
+ *  under it.  So every object a worker dropped waited for a stop-the-world
+ *  sweep, which made the collector the ONLY reclamation mechanism and cost
+ *  `intervals' its scaling: 800,056 contexts per run, two per element, all
+ *  of them reclaimed with the world stopped.
+ *
+ *  What that argument actually needs is not a stopped world but a moment
+ *  when the holder cannot still be holding.  Between two bytecodes a worker
+ *  holds no uncounted pointer it will use later -- that is exactly the
+ *  property the safepoint collector already depends on, since it frees
+ *  everything unreachable from precise roots at a poll point.  So:
+ *
+ *      an object whose count reaches zero is RETIRED, not freed;
+ *      each worker publishes the epoch it last saw at a bytecode boundary;
+ *      the epoch advances when every worker has published the current one;
+ *      a bucket retired two epochs ago is then nobody's to hold, and its
+ *      objects are released into the retiring worker's own magazine.
+ *
+ *  The safety condition is therefore identical to the one the existing
+ *  collector already relies on, which is the whole reason this is not a new
+ *  hazard: if a worker could hold a raw pointer across a bytecode boundary
+ *  and resurrect it, the stop-the-world sweep would already be wrong.
+ *
+ *  Three buckets, the classic arrangement.  Retire into epoch % 3; on
+ *  reaching epoch g, bucket (g + 1) % 3 holds what was retired at g - 2,
+ *  and every worker has been quiescent since.  A worker can never be more
+ *  than one epoch behind, because advancing needs its publication.
+ *
+ *  Buckets are bounded.  Overflow is not an error: the object simply stays
+ *  unreachable with a zero count and the next collection sweeps it, which
+ *  is precisely the old behaviour.  Degrading into what we already had is
+ *  the right failure mode for the delicate part of a memory manager.
+ */
+#define EPOCH_BUCKETS       3
+#define PENDING_MAX         4096
+#define EPOCH_TICKS         1024u   /*  bytecodes between publications  */
+#define ADVANCE_SCAN_MIN    32      /*  do not scan the pool for nothing  */
+
+static st_atomic_uint   st_om_epoch;
+static st_atomic_uint   worker_epoch[ST_MAX_WORKERS];
+
 typedef struct {
     uint32_t    n;
+    uint32_t    pending_n[EPOCH_BUCKETS];
+    uint32_t    pending[EPOCH_BUCKETS][PENDING_MAX];
+    uint32_t    overflowed;
     /*
      *  live_objects and live_bytes are global and were kept exact under the
      *  lock.  Making them atomic would put an increment on one shared line
@@ -181,6 +236,121 @@ magazines_drain(void)
         magazines[i].live_delta  = 0;
         magazines[i].bytes_delta = 0;
         magazines[i].n           = 0;
+        /*
+         *  Retired-but-not-yet-released objects are simply unreachable
+         *  with a zero count, which is exactly what the sweep about to run
+         *  looks for.  Forgetting them here is what stops the sweep and a
+         *  bucket from both freeing the same entry.
+         */
+        magazines[i].pending_n[0] = 0;
+        magazines[i].pending_n[1] = 0;
+        magazines[i].pending_n[2] = 0;
+    }
+}
+
+/*
+ *  Release everything in one bucket.  Called only by the worker that owns
+ *  it, and only once the epoch says nobody can be looking.
+ *
+ *  OM_deallocate is what does the work: it drops the object's own
+ *  references, which may retire its children in turn.  Those land in the
+ *  bucket now being filled, never the one being emptied, so this does not
+ *  re-enter itself.
+ */
+static void
+bucket_release(om_magazine *mag, unsigned bucket)
+{
+    uint32_t    i;
+    uint32_t    n = mag->pending_n[bucket];
+
+    mag->pending_n[bucket] = 0;
+    for (i = 0; i < n; ++i) {
+        st_oop      p = (st_oop) mag->pending[bucket][i] << 1;
+        om_header  *head = OM_table_get(mag->pending[bucket][i]);
+
+        /*
+         *  A collection between the retirement and now will have swept it
+         *  already and left the entry FREE -- the buckets are dropped at a
+         *  safepoint for exactly that reason, but a retirement can also
+         *  race in just before one.  Either way, an entry that is already
+         *  free is already reclaimed.
+         */
+        if (!head || (head->flags & ST_FMT_FREE))
+            continue;
+        if (ST_load_relaxed(&head->refcount) != 0)
+            continue;       /*  resurrected; leave it to the collector  */
+        OM_deallocate(p);
+    }
+}
+
+/*
+ *  A zero count under threads: retire rather than free.
+ */
+static void
+retire(st_oop p)
+{
+    om_magazine  *mag = magazine_of();
+    unsigned      bucket;
+
+    if (!mag) {
+        /*  Not a worker: leave it for the collector, as before.  */
+        return;
+    }
+    bucket = (unsigned) ST_load_relaxed(&st_om_epoch) % EPOCH_BUCKETS;
+    if (mag->pending_n[bucket] >= PENDING_MAX) {
+        mag->overflowed = 1;
+        return;             /*  the sweep will get it  */
+    }
+    mag->pending[bucket][mag->pending_n[bucket]++] = (uint32_t) (p >> 1);
+}
+
+/*
+ *  Publish where this worker is, reclaim what that makes safe, and advance
+ *  the epoch if everyone else has caught up.  Called from the interpreter
+ *  every EPOCH_TICKS bytecodes -- often enough that buckets stay small,
+ *  rarely enough that walking the pool costs nothing measurable.
+ */
+void
+OM_epoch_step(void)
+{
+    om_magazine  *mag = magazine_of();
+    st_worker    *self = WORKER_self();
+    unsigned      g;
+    unsigned      i;
+    unsigned      count;
+
+    if (!mag || !self)
+        return;
+    g = (unsigned) ST_load_acquire(&st_om_epoch);
+    if ((unsigned) ST_load_relaxed(&worker_epoch[self->index]) != g) {
+        /*
+         *  Entering epoch g.  Bucket (g + 1) % 3 was retired at g - 2 and
+         *  every worker has published since; it is ours to release.
+         */
+        bucket_release(mag, (g + 1) % EPOCH_BUCKETS);
+        ST_store_release(&worker_epoch[self->index], g);
+    }
+
+    /*
+     *  Try to move the world on.  Cheap to skip when this worker has
+     *  retired almost nothing, which is the case that would otherwise walk
+     *  the pool on every tick for no benefit.
+     */
+    if (mag->pending_n[g % EPOCH_BUCKETS] < ADVANCE_SCAN_MIN)
+        return;
+    count = WORKER_count();
+    for (i = 0; i < count; ++i) {
+        st_worker  *w = WORKER_at(i);
+
+        if (!w || ST_load_relaxed(&w->exited))
+            continue;       /*  gone, and not coming back to hold anything */
+        if ((unsigned) ST_load_acquire(&worker_epoch[i]) != g)
+            return;         /*  someone has not been quiescent yet  */
+    }
+    {
+        unsigned    expected = g;
+
+        (void) ST_cas_strong(&st_om_epoch, &expected, g + 1);
     }
 }
 
@@ -234,6 +404,8 @@ OM_init(void)
     free_head         = FREE_END;
     gc_threshold      = GC_THRESHOLD_FLOOR;
     memset(magazines, 0, sizeof magazines);
+    memset((void *) worker_epoch, 0, sizeof worker_epoch);
+    ST_store_seq(&st_om_epoch, 0);
     live_objects      = 0;
     live_bytes        = 0;
     ST_store_seq(&next_hash, 1);
@@ -748,8 +920,11 @@ OM_decrease_ref_object(st_oop p)
      *  a hint about when collecting is worthwhile rather than the mechanism
      *  that reclaims.
      */
-    if (WORKER_count() == 0)
+    if (WORKER_count() == 0) {
         OM_deallocate(p);
+        return;
+    }
+    retire(p);
 }
 
 void

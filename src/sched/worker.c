@@ -40,6 +40,14 @@ WORKER_count(void)
 }
 
 st_worker *
+WORKER_at(unsigned index)
+{
+    if (index >= WORKER_count())
+        return NULL;
+    return &workers[index];
+}
+
+st_worker *
 WORKER_self(void)
 {
     return current_worker;

@@ -454,6 +454,13 @@ void        OM_set_root_provider(om_root_provider provider);
 uint32_t    OM_collect(void);
 
 /*
+ *  Publish this worker's epoch, release what that makes safe, and advance
+ *  the world if everyone has caught up.  The interpreter calls it every
+ *  1024 bytecodes; see the reclamation note in om_mt.c.
+ */
+void        OM_epoch_step(void);
+
+/*
  *  The next live instance of a class after `after`, or ST_OOP_INVALID.
  *
  *  Pass ST_OOP_INVALID to start.  The order is the object table's, which is
