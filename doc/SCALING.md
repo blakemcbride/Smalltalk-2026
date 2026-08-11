@@ -128,34 +128,93 @@ count" was an assumption about generated code, not a fact that had been checked.
 - The **object-table indirection** in the bytecode fetch, and the out-of-line tag
   test in the reference-count fast path: inlining the latter was worth 18% in serial.
 
-## What is left: the pause is not the collection
+## The pause was the collection after all, and the first measurement said otherwise
 
-Collection pauses are the dominant remaining cost, and the first thing measuring them
-did was overturn the obvious assumption about what they are.
+Collection pauses were the dominant remaining cost. Measuring them produced a confident
+wrong answer first, and the way it was wrong is the most useful thing in this section.
 
-`ST_COLLECT_LOG=1` times the phases of a collection. On the mandelbrot kernel at eight
-workers:
+`ST_COLLECT_LOG=1` times the phases of a collection. It said:
 
 ```
 st80: collect 15134 entries, 14260 live: zero 0.0 ms, mark 0.4 ms, sweep 0.0 ms, freed 871
 ```
 
-**The collector's own work is 0.4 ms.** The table is fifteen thousand entries, not the
-four million the sweep is sized for, and marking it is trivial. Meanwhile the measured
-pause is **74 ms** — about 180 times the work.
+0.4 ms of work against a 74 ms pause — 180 times the work — so the cost had to be
+**getting every worker to a safepoint**, and the next move was obviously to chase
+workers that were slow to poll.
 
-So the cost is not collecting. It is **getting every worker to a safepoint**, and that
-is a different problem with different fixes: a worker that is not polling — inside a
-long primitive, blocked on the allocator's lock, or between finishing its body and
-clearing its `running` flag — holds up everyone.
+That was wrong, and one number gave it away: **`intervals` at ONE worker paused for
+102 ms.** There is nobody to wait for. Splitting the pause into time-spent-waiting and
+time-spent-in-the-collector settled it:
 
-The instrumentation had to be fixed first, and the way it was wrong is worth keeping.
-The pause clock started on *entry* to `WORKER_request_safepoint`, before the CAS that
-decides who actually stops the world. A worker that loses that race parks for the
-winner's safepoint — so eight workers wanting one collection reported eight pauses,
-seven of them measuring how long they had waited for the eighth. It said 322 ms where
-the truth was 74 ms and the collector's share of that was 0.4 ms. **The clock starts
-after the CAS now.**
+```
+st80: safepoint 87.39 ms = 0.00 waiting for 0 worker(s) + 87.39 doing the work
+```
+
+Zero waiting. All of it inside the collector. The 15,134-entry log line was real, but it
+came from the **bootstrap**, before the benchmark had allocated anything. The collections
+that mattered happened mid-run and looked like this:
+
+```
+st80: collect 2989815 entries, 14638 live: zero 20.0 ms, mark 19.4 ms, sweep 18.9 ms
+```
+
+**Three million slots walked three times to find fourteen thousand objects.** The lesson
+worth keeping is not about collectors: a log line sampled from the wrong phase of the run
+refuted the right hypothesis, and the single-worker case — where the competing explanation
+is *impossible*, not merely unlikely — is what broke the tie.
+
+Two faults were hiding behind each other:
+
+- `st_om_table_limit` was a **high-water mark that never came down**. The free list was
+  working, so the peak was genuine; but every later collection walked to it anyway,
+  for ever. The sweep now hands back trailing free entries and lowers the limit,
+  rebuilding the free list beneath it.
+- A collection happened only when the table was **completely full**, so the limit ran to
+  its four-million ceiling before the collector ran once — which is where the three
+  million came from. It now collects when the table must *grow* past twice what survived
+  the previous collection. Reusing a free entry never triggers one, so a program in a
+  steady state still never collects.
+
+| | before | after |
+|---|---|---|
+| repeat collection | 59 ms (2,989,815 entries) | **0.4 ms** (15,132 entries) |
+| mandelbrot, 1 worker | 754 ms | **538 ms** |
+| intervals, 1 worker | 301 ms | **190 ms** |
+| worst pause | 128 ms | **16 ms** |
+| collections, 8 workers | 2.39× | **3.54×** |
+
+The threshold's floor was measured, not guessed, and the result is counter-intuitive
+enough to record. Collecting *less* often loses on both total pause and worst pause:
+
+| floor | total stopped | pauses | worst |
+|---|---|---|---|
+| 64k entries | 458 ms | 56 | 23.6 ms |
+| **128k entries** | **410 ms** | 135 | **12.6 ms** |
+| 1M entries | 1310 ms | 27 | 84.3 ms |
+
+Total collection time is supposed to be threshold-invariant — each collection costs
+O(threshold) and happens every O(threshold) allocations. It is not, because **a table
+that fits in cache is swept several times faster per entry than one that does not**. A
+million entries is eight megabytes walked three times; 128k is one megabyte, and stays
+resident.
+
+A side effect worth knowing: because nothing had ever collected during the bootstrap,
+every image ever written carried the garbage. Images are now **a tenth of the size**
+(28.6 MB → 2.9 MB) with the same 4,521 methods, the same 15,599 live objects and the
+same refcount sum — the 25 MB that went away were thousands of duplicate copies of
+strings like `accessing untypeable characters`.
+
+## What is left: `table_lock` on every Float
+
+Mandelbrot still does not scale, and it is no longer the collector's fault. `arithmetic`,
+whose values are immediate SmallIntegers, reaches **7.5× on eight cores**. Mandelbrot
+does the same shape of work in `Float`, and **every Float is boxed** — so every
+arithmetic operation allocates, and every allocation takes one global `table_lock`.
+
+That is the next bottleneck, and it is the one the plan anticipated when it declined to
+gate on the `collections` kernel "until TLABs land": per-worker allocation, so the
+common case never touches a shared lock.
 
 ## And the benchmark still divides work evenly
 
