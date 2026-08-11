@@ -22,6 +22,40 @@ systems fork at that point, deliberately.
 | Closures | **Commit to full closures now** — Squeak V3PlusClosures |
 | UI | **Keep MVC**, confine it to one worker, add modern tools on top over time |
 | Sequencing | **Library before the parallel runtime**, except where forced otherwise |
+| **Compatibility direction** | **Neither binary nor source compatibility with Pharo is a goal.** Pharo's source is an *input*: take it, change it as multi-threading requires, and build a **superset** of Pharo's functionality |
+
+### What the compatibility decision dissolves
+
+Pharo's source being an input rather than a contract removes constraints this plan was
+written around. Recorded explicitly, because several phases were shaped by them:
+
+- **Primitive numbers need not match Pharo's.** Tier 2 below says they must; they do not.
+  The 240/242/249/254 collision with our parallel primitives stops being a problem, and
+  the remaining Kernel primitives become a *functionality* question rather than a
+  compatibility obligation.
+- **Field layouts need not match**, for the same reason.
+- **The method header's 8-bit primitive index, and the 32-entry special-selector table
+  bound to bytecodes 176–207, are ours to extend** — in the `OM=mt` dialect.
+
+**What it does not dissolve, and the distinction matters:** none of those constraints
+came from Pharo in the first place. They come from `OM=bb` loading the real Xerox image
+and reproducing `trace2` byte-for-byte. That oracle is independent of Pharo and stays
+exactly as it is. The compiler already carries a dialect flag for precisely this split;
+anything widened here is widened on the `mt` side only.
+
+### The discipline that replaces compatibility
+
+Being *allowed* to edit imported source does not make it cheap. Pharo moves, and every
+local edit is a merge burden that recurs at every re-import, for ever — whereas a VM-side
+accommodation is paid once. So the rule is not "edit freely" but:
+
+> **Prefer a VM or load-time accommodation to an edit of imported source.**
+
+A primitive-number alias applied by the loader costs one table and leaves the imported
+file byte-for-byte upstream's. Editing two hundred methods to renumber their pragmas
+costs those two hundred edits again on the next import. Same outcome, very different
+carrying cost. `PROVENANCE.md` records every edit per package for exactly this reason —
+its length is the running measure of how expensive the next re-import will be.
 
 **Standing constraints:** never create a git branch without explicit permission — commit on
 `master`. `oracle/` is never committed or redistributed. `sources/` (markbush, MIT) is
@@ -116,7 +150,7 @@ Order the ratchet by VM entanglement, not by package:
 | Tier | Classes | When |
 |---|---|---|
 | **1 — free** | Exceptions, Chronology, Announcements, most Collections and Streams, SUnit, STON | As soon as the protocol they need exists. No VM contract |
-| **2 — contract** | `Object`, `Boolean`, `Character`, `SmallInteger`, `Float`, `Fraction`, `Array`, `String`, `Symbol`, `Association`, `Point`, `Semaphore`, `Process`, `ProcessorScheduler` | Requires the VM's field layout and primitive numbers to match Pharo's |
+| **2 — contract** | `Object`, `Boolean`, `Character`, `SmallInteger`, `Float`, `Fraction`, `Array`, `String`, `Symbol`, `Association`, `Point`, `Semaphore`, `Process`, `ProcessorScheduler` | Needs the VM's field layout and primitive numbers to *agree* with the imported source — no longer "match Pharo's", since either side may move. Prefer moving the VM or aliasing at load time; see the discipline above |
 | **3 — metamodel** | `Behavior`, `ClassDescription`, `Class`, `Metaclass`, `CompiledMethod`, `Context`, `BlockClosure`, `Slot`, `Pragma`, `Trait` | Last. These *define* the contract the VM must satisfy |
 
 **Never portable, and the plan does not try:** Morphic / Bloc / Spec / Athens (Cairo vector
