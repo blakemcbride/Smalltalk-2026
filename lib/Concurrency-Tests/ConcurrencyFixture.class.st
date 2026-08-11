@@ -43,4 +43,4 @@ ConcurrencyFixture class >> queue [ ^TestQueue ]
 ConcurrencyFixture class >> count [ ^TestCounter at: 1 ]
 
 { #category : 'accessing' }
-ConcurrencyFixture class >> bump [ TestCounter at: 1 put: (TestCounter at: 1) + 1 ]
+ConcurrencyFixture class >> bump [ ^TestCounter at: 1 put: (TestCounter at: 1) + 1 ]

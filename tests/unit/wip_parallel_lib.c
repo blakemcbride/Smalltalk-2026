@@ -177,6 +177,15 @@ provide_lib_roots(om_visit_fn visit)
         visit(queue_method);
 }
 
+/*  ST_LIB_WORKERS lets one worker be told apart from many.  */
+static unsigned
+want_workers(void)
+{
+    const char *text = getenv("ST_LIB_WORKERS");
+
+    return text ? (unsigned) atoi(text) : 0;
+}
+
 static void
 lib_worker(st_worker *self, void *user)
 {
@@ -251,7 +260,7 @@ main(void)
     ST_store_seq(&reported, 0);
     ST_store_seq(&wrong_answers, 0);
     running_method = mutex_method;
-    CHECK_EQ_INT(WORKER_start(0, lib_worker, NULL), 0);
+    CHECK_EQ_INT(WORKER_start(want_workers(), lib_worker, NULL), 0);
     workers = WORKER_count();
     WORKER_stop();
     ST_interp_register();
@@ -276,7 +285,7 @@ main(void)
     ST_store_seq(&reported, 0);
     ST_store_seq(&wrong_answers, 0);
     running_method = queue_method;
-    CHECK_EQ_INT(WORKER_start(0, lib_worker, NULL), 0);
+    CHECK_EQ_INT(WORKER_start(want_workers(), lib_worker, NULL), 0);
     workers = WORKER_count();
     WORKER_stop();
     ST_interp_register();
