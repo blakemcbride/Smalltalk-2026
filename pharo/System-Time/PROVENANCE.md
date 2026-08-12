@@ -55,18 +55,39 @@ Four gaps had to be closed to get that far, none by editing these files:
                         Integer, Number, String and BlockClosure, which is
                         where `3 seconds` comes from.
 
-STILL BROKEN, and classified rather than chased:
+### All of it was one bug, and it was in the loader
 
-    generality          `3 seconds printString` fails here.  Number
-                        coercion: Duration is a Magnitude, and something in
-                        the arithmetic path asks it for a generality it does
-                        not answer.
-    findKeyOrNil:       raised repeatedly during class initialization.
-    value: / 'only integers should be used as indices'
-                        follow it, and are probably the same failure seen
-                        downstream rather than three separate ones — but
-                        that has NOT been checked, and saying so is cheaper
-                        than assuming it.
+The three failures below turned out to be one, which the note deliberately
+declined to assume and then checked:
+
+A Pharo pool is a CLASS.  1983 pools are Dictionary globals -- TextConstants
+is one -- and the bootstrap was built for those, so it resolved
+`#pools : ['ChronologyConstants']' names to fresh globals and left every one
+of them nil.  The pool class's own initializer then assigned to its class
+VARIABLES, which nothing was reading.  `DateAndTime now' therefore reached
+`nil * 1000' and reported "Message not understood: generality" -- two layers
+from the cause, and in a class that has nothing to do with pools.
+
+Pool names now resolve to the pool class's class variables:
+
+    DateAndTime now class name   ->  DateAndTime
+    3 seconds printString        ->  0:00:00:03
+    Time now class name          ->  Time
+    Date today class name        ->  Date
+
+### Still broken (the superseding gap, as predicted)
+
+Superseding Date and Time with Pharo's means the 1983 image's sends have to
+still work, and three do not:
+
+    Time millisecondsToRun: [...]     nil
+    Date newDay: 1 month: 1 year: n   nil
+    (Date today) printString          nil   -- though `Date today' itself works
+
+These are protocol 1983 has and Pharo does not, on classes we replaced.  They
+belong in lib/ as extensions to Pharo's classes.  Nothing in the suite covers
+them, which is exactly why they were tested deliberately: a superseded class
+that silently loses protocol is worse than a missing one.
 
 This package is a much larger bite than Announcements-Core: 28 classes, and
 the first import whose gaps include VM services rather than only missing

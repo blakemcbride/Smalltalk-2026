@@ -1016,6 +1016,39 @@ BOOT_lookup_global(const char *name, void *user)
         if (!(name[0] >= 'A' && name[0] <= 'Z'))
             ++undeclared_lowercase;
     }
+    /*
+     *  A Pharo pool is a CLASS, not a Dictionary.
+     *
+     *  1983 pools are Dictionary globals -- TextConstants is one -- and the
+     *  machinery below was built for those.  Pharo declares
+     *  `#pools : ['ChronologyConstants']' where ChronologyConstants is a
+     *  SharedPool subclass whose CLASS VARIABLES are the pool, so its names
+     *  have to resolve to that class's class variables and not to fresh
+     *  globals.
+     *
+     *  Resolving them as globals left every one of them nil: Epoch,
+     *  SecondsInDay and the rest.  The pool class's own initializer then
+     *  assigned to its class variables, which nothing was reading, and
+     *  `DateAndTime now' arrived at `nil * 1000' -- reported as
+     *  "Message not understood: generality", two layers from the cause.
+     */
+    {
+        boot_class *pooled = (boot_class *) user;
+        unsigned    p;
+
+        if (pooled) {
+            for (p = 0; p < pooled->pools.count; ++p) {
+                boot_class *pool = find_class(pooled->pools.items[p]);
+                st_oop      assoc;
+
+                if (!pool)
+                    continue;
+                assoc = class_variable_association(pool, name, 0);
+                if (assoc != ST_OOP_INVALID)
+                    return assoc;
+            }
+        }
+    }
     {
         st_oop      assoc = define_global(name, ST_NIL);
         boot_class *c = (boot_class *) user;
