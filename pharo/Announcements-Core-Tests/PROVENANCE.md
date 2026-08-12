@@ -110,3 +110,17 @@ the caught selector instead of comparing it named them one per run:
 So this test is no longer unexplained: it is blocked by on:fork: like the
 twelve others, and its remaining failure is the same single decision
 rather than a separate defect.
+
+
+## Green, 2026-08-12
+
+    AnnouncerTest          29 passed, 0 failed, 0 errors
+    AnnouncementSetTest     2 passed, 0 failed, 0 errors
+    WeakAnnouncerTest       0 passed, 0 failed, 5 errors
+
+31 of 36.  The five that do not run fail on `Message not understood:
+seconds' -- Chronology's Duration protocol, which we do not have.  NOT weak
+references, which is what the class name suggests and what a guess would
+have recorded; the tests use a delay to let a weak subscription be
+collected, and never reach the weak part.  Chronology is Tier 1 and is a
+ratchet turn of its own.
