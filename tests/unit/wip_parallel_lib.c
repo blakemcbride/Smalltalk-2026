@@ -38,6 +38,7 @@
 #include "compiler.h"
 #include "bootstrap.h"
 #include "worker.h"
+#include "st_sched.h"
 #include "profile.h"
 #include "st_port.h"
 #include "st_atomic.h"
@@ -237,9 +238,24 @@ lib_worker(st_worker *self, void *user)
                             : ST_OOP_INVALID;
 
         if (OM_is_object(cls)) {
-            st_oop  mine = OM_instantiate_pointers(cls, 3);
+            /*
+             *  FOUR fields, not three.  Process is a Link subclass:
+             *  nextLink, suspendedContext, priority, myList.  Allocating
+             *  three left myList off the end and priority nil -- and a
+             *  process with no priority cannot be filed onto a ready list,
+             *  which is indexed by it.  So a worker that blocked was never
+             *  woken again: eight workers printed "every process is
+             *  blocked" fourteen times, and waiting three seconds instead
+             *  of a tenth changed nothing, because it was never a matter
+             *  of time.
+             */
+            st_oop  mine = OM_instantiate_pointers(cls, 4);
 
             if (OM_is_object(mine)) {
+                OM_store_pointer(ST_LINK_NEXT, mine, ST_NIL);
+                OM_store_pointer(ST_PROCESS_SUSPENDED_CONTEXT, mine, ST_NIL);
+                OM_store_pointer(ST_PROCESS_PRIORITY, mine, OM_int_oop(4));
+                OM_store_pointer(ST_PROCESS_MY_LIST, mine, ST_NIL);
                 OM_increase_ref(mine);
                 st_vm.active_process = mine;
             }

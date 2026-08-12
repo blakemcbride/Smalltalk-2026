@@ -9,6 +9,7 @@
 #include "interp.h"
 #include "prim.h"
 #include "st_port.h"
+#include "worker.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -434,10 +435,51 @@ SCHED_wake_highest_priority(void)
     return found;
 }
 
+/*
+ *  How long a worker with nothing to run waits before calling it a
+ *  deadlock, and how finely it looks while it waits.
+ *
+ *  A tenth of a second is far longer than any critical section this system
+ *  has, and far shorter than a human notices at the end of a genuinely
+ *  wedged run.
+ */
+#define IDLE_WAIT_SLICE_NS  INT64_C(100000)     /*  0.1 ms  */
+#define IDLE_WAIT_SLICES    10000               /*  1 s total  */
+
 void
 SCHED_suspend_active(void)
 {
     st_oop  next = SCHED_wake_highest_priority();
+
+    /*
+     *  Nothing ready HERE is not the same as nothing ready ANYWHERE.
+     *
+     *  With one thread it was: no runnable process meant the system was
+     *  wedged, and saying so was right.  With a worker pool it is wrong,
+     *  and wrong in the way that looks like a library bug.  A worker whose
+     *  green process blocks on a Mutex held by another worker finds its own
+     *  ready list empty, declares deadlock, and stops -- while the worker
+     *  holding the lock is a microsecond from releasing it.  Eight workers
+     *  contending for one Mutex printed this fourteen times in a run that
+     *  should have printed it never, and seven of the eight returned no
+     *  answer at all.
+     *
+     *  So while any other worker is still running, wait and look again.
+     *  The safepoint is polled each time round: a collection must be able
+     *  to happen while this worker idles, or the collector waits for a
+     *  worker that is waiting for the collector.
+     */
+    if (next == ST_NIL && WORKER_count() > 1) {
+        unsigned    slice;
+
+        for (slice = 0; slice < IDLE_WAIT_SLICES; ++slice) {
+            WORKER_poll();
+            ST_sleep_ns(IDLE_WAIT_SLICE_NS);
+            next = SCHED_wake_highest_priority();
+            if (next != ST_NIL)
+                break;
+        }
+    }
 
     if (next == ST_NIL) {
         fprintf(stderr, "st80: every process is blocked; nothing can run\n");
