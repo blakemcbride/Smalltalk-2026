@@ -444,12 +444,86 @@ SCHED_wake_highest_priority(void)
  *  wedged run.
  */
 #define IDLE_WAIT_SLICE_NS  INT64_C(100000)     /*  0.1 ms  */
-#define IDLE_WAIT_SLICES    10000               /*  1 s total  */
+/*
+ *  A backstop, not the criterion.  Five minutes is longer than any real
+ *  wait and short enough that a wedged run still ends.
+ */
+#define IDLE_WAIT_SLICES    3000000
+/*
+ *  How many consecutive looks must agree that every worker is idle.  A
+ *  hundred of them is ten milliseconds of a genuinely still system.
+ */
+#define ALL_IDLE_CONFIRMATIONS  100
+
+/*
+ *  How many workers are sitting in the wait below with nothing to run.
+ *
+ *  This is the honest test for deadlock, and a timeout is not.  A worker
+ *  cannot know whether the lock it wants will be released in a microsecond
+ *  or never, so any deadline it picks is wrong in one direction or the
+ *  other -- one second was long enough on bare metal and far too short
+ *  under the thread sanitizer, where thirty-one workers ran ten times
+ *  slower and thirty of them gave up on a queue that was about to be
+ *  filled.
+ *
+ *  But if EVERY worker is in here at once, no worker is running Smalltalk,
+ *  so nothing can ever make anything ready again.  That is a deadlock by
+ *  construction rather than by guess, and it is true at any speed.
+ */
+static st_atomic_int    idle_workers;
+
+/*
+ *  Set between parking a process and switching away from it.
+ *
+ *  Distinguishes "this worker deliberately gave its process up" from "this
+ *  worker never had one".  They look identical through
+ *  SCHED_active_process, which falls back to the scheduler's shared field
+ *  -- and the difference matters exactly once: the switch below must park
+ *  the context of a process this worker still owns, and must NOT park over
+ *  one it has handed to somebody else.
+ */
+static _Thread_local int    disowned;
 
 void
 SCHED_suspend_active(void)
 {
-    st_oop  next = SCHED_wake_highest_priority();
+    st_oop  next;
+
+    /*
+     *  Park this process BEFORE looking for another, and then disown it.
+     *
+     *  By the time anything calls this, the process is already on the list
+     *  it is waiting on -- SCHED_primitive_wait puts it there first, and
+     *  says in its own comment that a signal arriving in the gap "finds it
+     *  and resumes it, which is the ordinary case, not a race".  It is a
+     *  race, and this is where it lives: the process is reachable and
+     *  resumable while its suspendedContext still points at wherever it
+     *  was LAST parked, and this thread is still executing the real
+     *  registers.  Another worker that resumes it in that window runs a
+     *  stale context, and two native threads end up inside one context.
+     *  ASAN finds it as a corrupt temp frame under pushRemoteTemp.
+     *
+     *  The window used to be the width of one list operation, so it almost
+     *  never happened.  Waiting here for work made it a second wide and
+     *  therefore certain, which is how it was finally seen.
+     *
+     *  Parking first closes it.  Disowning matters just as much: once the
+     *  process is resumable it belongs to whoever takes it, and the switch
+     *  below must not write this thread's stale context over the progress
+     *  that thread has since made.
+     */
+    {
+        st_oop  self = SCHED_active_process();
+
+        if (OM_is_object(self)) {
+            ST_store_active_context();
+            OM_store_pointer(ST_PROCESS_SUSPENDED_CONTEXT, self,
+                             st_vm.active_context);
+            disowned = 1;
+        }
+    }
+
+    next = SCHED_wake_highest_priority();
 
     /*
      *  Nothing ready HERE is not the same as nothing ready ANYWHERE.
@@ -472,13 +546,35 @@ SCHED_suspend_active(void)
     if (next == ST_NIL && WORKER_count() > 1) {
         unsigned    slice;
 
+        unsigned    all_idle = 0;
+
+        ST_fetch_add_relaxed(&idle_workers, 1);
         for (slice = 0; slice < IDLE_WAIT_SLICES; ++slice) {
+            /*
+             *  Every worker idle at once means nobody is left to make
+             *  anything ready.  Checked before sleeping, so the last
+             *  worker to arrive is the one that notices.
+             */
+            /*
+             *  Every worker idle at once means nobody is left to make
+             *  anything ready.  But it has to STAY true: a worker that has
+             *  just been signalled and has not yet been picked up leaves
+             *  everyone briefly idle with work already in flight, and
+             *  believing that instant costs exactly one process.
+             */
+            if (ST_load_seq(&idle_workers) >= (int) WORKER_count()) {
+                if (++all_idle >= ALL_IDLE_CONFIRMATIONS)
+                    break;
+            }  else {
+                all_idle = 0;
+            }
             WORKER_poll();
             ST_sleep_ns(IDLE_WAIT_SLICE_NS);
             next = SCHED_wake_highest_priority();
             if (next != ST_NIL)
                 break;
         }
+        ST_fetch_sub_relaxed(&idle_workers, 1);
     }
 
     if (next == ST_NIL) {
@@ -611,8 +707,15 @@ SCHED_check_process_switch(void)
      *  to resume is in that one pointer.
      */
     ST_store_active_context();
-    OM_store_pointer(ST_PROCESS_SUSPENDED_CONTEXT, SCHED_active_process(),
-                     st_vm.active_context);
+    /*
+     *  Unless this worker has already parked and handed the process on.
+     *  Parking again would write this thread's stale context over whatever
+     *  progress the worker that took it has since made.
+     */
+    if (!disowned)
+        OM_store_pointer(ST_PROCESS_SUSPENDED_CONTEXT, SCHED_active_process(),
+                         st_vm.active_context);
+    disowned = 0;
     /*
      *  The image's field as well as this worker's, because a snapshot
      *  carries the field and the image's own reflection reads it.  With
