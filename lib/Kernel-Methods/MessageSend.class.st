@@ -112,3 +112,4 @@ MessageSend >> printOn: aStream [
 	selector printOn: aStream.
 	aStream nextPut: $)
 ]
+

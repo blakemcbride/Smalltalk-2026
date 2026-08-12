@@ -64,3 +64,32 @@ BlockClosure >> asContext [
 	<primitive: 207>
 	^self error: 'cannot make a context from this block'
 ]
+
+{ #category : '*Concurrency' }
+BlockClosure >> on: anExceptionClass fork: handlerBlock [
+	"Evaluate the receiver.  If anExceptionClass is signalled, fork a green
+	 process to run handlerBlock and answer nil at once, without waiting
+	 for it.
+
+	 This is our version, not Pharo's, and the difference is worth stating.
+	 Pharo builds this out of runUntilErrorOrReturnFrom: and context
+	 surgery: it detaches the SIGNALLING context and hands that to the new
+	 process, so a handler can still send ex return: or ex resume: and have
+	 it mean something to the computation that raised.  doc/PLAN-PHARO.md's
+	 Phase E declined that machinery on purpose, in favour of ANSI and
+	 early-Squeak semantics.
+
+	 So here the protected block is unwound as an ordinary on:do: would
+	 unwind it, and only the handler is forked.  What that buys is what
+	 nearly every use of on:fork: actually wants -- the raising process
+	 does not block on the handler -- and what it costs is ex return: and
+	 ex resume: meaning anything afterwards.  A handler that needs to
+	 resume the signalling process wants on:do:, and should say so.
+
+	 Written on fork and newProcess, which exist now, and on nothing else."
+	^self on: anExceptionClass do: [:ex |
+		[handlerBlock numArgs = 0
+			ifTrue: [handlerBlock value]
+			ifFalse: [handlerBlock value: ex]] fork.
+		nil]
+]
