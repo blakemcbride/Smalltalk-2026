@@ -69,7 +69,16 @@ MessageSend >> arguments: anArray [ arguments := anArray ]
 
 { #category : 'accessing' }
 MessageSend >> numArgs [
-	^arguments isNil ifTrue: [0] ifFalse: [arguments size]
+	"How many arguments the SELECTOR takes -- not how many are stored.
+
+	 Those are different numbers and the difference is the whole point.
+	 `when: #FOO send: #bar to: nil' stores no arguments at all, and the
+	 announcement is supplied later by cull:.  Answering the stored count
+	 made cull: send #value to a one-argument selector and the VM said so:
+	 '0 arguments sent to a method expecting 1'.  Which killed the whole
+	 evaluation, so a suite answered nil while every test in it passed
+	 when run alone."
+	^selector isNil ifTrue: [0] ifFalse: [selector numArgs]
 ]
 
 { #category : 'evaluating' }
@@ -114,3 +123,15 @@ MessageSend >> printOn: aStream [
 ]
 
 
+
+{ #category : 'evaluating' }
+MessageSend >> cull: anArgument [
+	^self numArgs = 0 ifTrue: [self value] ifFalse: [self value: anArgument]
+]
+
+{ #category : 'evaluating' }
+MessageSend >> cull: firstArgument cull: secondArgument [
+	self numArgs = 0 ifTrue: [^self value].
+	self numArgs = 1 ifTrue: [^self value: firstArgument].
+	^self value: firstArgument value: secondArgument
+]
