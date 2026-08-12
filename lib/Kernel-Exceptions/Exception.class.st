@@ -103,10 +103,25 @@ Exception >> findHandlerFrom: aContext [
 	 which handler HANDLES this exception stays a Smalltalk question,
 	 because it is one -- it sends #handles: -- and so does whether the
 	 handler is currently running and therefore disabled."
-	| ctx |
+	| ctx guard |
 	ctx := aContext findNextHandlerContext.
 	[ctx isNil] whileFalse: [
-		(ctx handlerIsActive and: [(ctx tempAt: 1) handles: self])
+		guard := ctx tempAt: 1.
+		"A nil guard cannot handle anything, and asking it whether it does
+		 is how the system HANGS.
+
+		 `on: NotFound do: [...]' where NotFound is undeclared leaves nil
+		 as the guard.  Sending #handles: to nil is a doesNotUnderstand,
+		 which signals, which searches for a handler, which finds this same
+		 frame and sends #handles: to nil again -- forever, and as a loop
+		 rather than a stack overflow, because the search walks the sender
+		 chain fresh each time.  Nothing reports and nothing stops.
+
+		 Found by Pharo's own AnnouncerTest, which signals NotFound: a class
+		 we have not imported, so the global is nil, so this.  Every
+		 unimported exception class in the port will arrive the same way."
+		(guard notNil
+			and: [ctx handlerIsActive and: [guard handles: self]])
 			ifTrue: [^ctx].
 		ctx := ctx findNextHandlerContext].
 	^nil

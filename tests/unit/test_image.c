@@ -1928,7 +1928,7 @@ test_browsing(void)
      *  lib/Concurrency's four classes went in and the 1983 SharedQueue
      *  came out.
      */
-    check_integer("(SourceFiles at: 1) contents size", 1253267);
+    check_integer("(SourceFiles at: 1) contents size", 1254018);
 }
 
 /*

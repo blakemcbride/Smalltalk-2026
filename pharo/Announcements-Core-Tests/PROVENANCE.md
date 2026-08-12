@@ -48,3 +48,15 @@ Announcer does not define here; the subscription convenience API lives in
 a package not yet imported.  An ordinary dependency.
 
 Neither is a reason to edit these files.
+
+## After fixing the hang, same day
+
+The hang was ours and is fixed (Exception>>findHandlerFrom: was sending
+#handles: to a nil guard).  All 29 of AnnouncerTest's tests now RUN:
+
+    6 passed, 1 failed, 22 errors
+
+That is the ratchet's real number for this package, and it is meant to
+climb.  Most of the 22 errors are expected to be the same missing
+subscription API -- when:do:for: and friends -- rather than 22 separate
+problems; the next turn should classify them before fixing anything.
