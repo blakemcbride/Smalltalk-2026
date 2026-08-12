@@ -174,3 +174,22 @@ Object >> isBlock [
 Object >> isBehavior [
 	^false
 ]
+
+{ #category : '*Kernel-Protocol' }
+Object >> initialize [
+	"Do nothing, and answer the receiver.
+
+	 Pharo's Object defines this, and a great deal of Pharo depends on it
+	 without ever saying so: every class whose own initialize begins
+	 `super initialize' -- which is the convention, not the exception --
+	 needs a method here to stop at.  Announcer and SubscriptionRegistry
+	 both do, and both failed with 'Message not understood: initialize'
+	 the first time a Pharo package was loaded.
+
+	 1983 had no such convention: a class that wanted initialization wrote
+	 `^super new initialize' on the class side and defined initialize
+	 itself, so nothing ever sent it to an Object that had not asked for
+	 it.  This is the one method that makes the two conventions meet, and
+	 it belongs here rather than as an edit to imported source."
+	^self
+]

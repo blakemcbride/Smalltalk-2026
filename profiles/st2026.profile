@@ -15,7 +15,7 @@ Profile {
 	#name     : 'st2026',
 	#requires : [ 'bluebook' ],
 	#dialect  : 'closures',
-	#exclude  : [ 'SharedQueue' ],
+	#supersede : [ 'SharedQueue' ],
 	#packages : [ '../lib/Kernel', '../lib/Kernel-Exceptions', '../lib/Kernel-Protocol', '../lib/Kernel-Methods', '../lib/Kernel-Pragmas', '../lib/Collections-Protocol', '../lib/Streams-Protocol',
 	              '../lib/Strings-Protocol', '../lib/System', '../lib/Concurrency', '../lib/Concurrency-Tests', '../lib/SUnit', '../lib/SUnit-Tests',
 	              '../lib/Probe' ]

@@ -25,6 +25,7 @@ typedef struct {
     int        *dialects;           /*  one per file  */
     unsigned    dialect_capacity;
     st_names    exclude;
+    st_names    supersede;
     /*
      *  How much of `exclude' applies to the packages being added right now.
      *
@@ -40,7 +41,7 @@ typedef struct {
      *  provides itself.  This holds the count as it stood before this
      *  profile added its own.
      */
-    unsigned    exclude_own;
+    unsigned    supersede_own;
     st_names    loaded;             /*  profiles already expanded  */
     char       *error;
     size_t      error_len;
@@ -229,7 +230,21 @@ add_directory(expansion *e, const char *dir, int dialect)
             break;
         }
         class_name_of(path, name, sizeof name);
-        if (names_contain_upto(&e->exclude, name, e->exclude_own))
+        /*
+         *  Two lists, answering different questions.
+         *
+         *  #exclude drops a class wherever it comes from -- Pharo's
+         *  package manifests, say: lint metadata for a browser we do not
+         *  have, carrying a superclass we will never implement.
+         *
+         *  #supersede says "this profile provides that class instead", so
+         *  it drops only what is INHERITED and leaves this profile's own
+         *  copy alone.  Using one mechanism for both removed both
+         *  providers and left the image without the class at all, which is
+         *  how the distinction was learnt.
+         */
+        if (names_contain(&e->exclude, name)
+         || names_contain_upto(&e->supersede, name, e->supersede_own))
             continue;
         ok = add_file(e, path, dialect);
     }
@@ -258,7 +273,14 @@ add_manifest(expansion *e, const char *path, int dialect)
         if (!n)
             continue;
         class_name_of(line, name, sizeof name);
-        if (names_contain(&e->exclude, name))
+        /*
+         *  Manifests are inherited content, so both lists apply in
+         *  full -- the 1983 SharedQueue arrives through sources/MANIFEST
+         *  rather than through a package directory, and a #supersede
+         *  that did not look here left it in place beside ours.
+         */
+        if (names_contain(&e->exclude, name)
+         || names_contain(&e->supersede, name))
             continue;
         add_file(e, line, dialect);
     }
@@ -334,15 +356,18 @@ expand_one(expansion *e, const char *path, unsigned depth)
         }
     }
 
-    inherited = e->exclude_own;
+    inherited = e->supersede_own;
     list = SRC_ston_list(pairs, count, "exclude");
     for (i = 0; list && i < list->count; ++i)
         SRC_names_add(&e->exclude, list->items[i]);
+    list = SRC_ston_list(pairs, count, "supersede");
+    for (i = 0; list && i < list->count; ++i)
+        SRC_names_add(&e->supersede, list->items[i]);
     /*
      *  Requires and manifests see this profile's exclusions; its own
      *  packages, below, see only what it inherited.
      */
-    e->exclude_own = (unsigned) e->exclude.count;
+    e->supersede_own = (unsigned) e->supersede.count;
 
     list = SRC_ston_list(pairs, count, "requires");
     for (i = 0; list && i < list->count && ok; ++i) {
@@ -381,11 +406,11 @@ expand_one(expansion *e, const char *path, unsigned depth)
             break;
         }
         {
-            unsigned    saved = e->exclude_own;
+            unsigned    saved = e->supersede_own;
 
-            e->exclude_own = inherited;
+            e->supersede_own = inherited;
             ok = add_directory(e, dir, dialect);
-            e->exclude_own = saved;
+            e->supersede_own = saved;
         }
     }
 
@@ -425,6 +450,7 @@ PROFILE_expand(const char *path, st_names *out, int **dialects, char *error,
 
     ok = expand_one(&e, path, 0);
     SRC_names_free(&e.exclude);
+    SRC_names_free(&e.supersede);
     SRC_names_free(&e.loaded);
     if (!ok) {
         SRC_names_free(&e.files);

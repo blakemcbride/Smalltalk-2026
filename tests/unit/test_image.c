@@ -51,7 +51,7 @@
  *  the 1983 SharedQueue is now EXCLUDED -- ours supersedes it, which is
  *  the substitution ratchet, and its methods leave as ours arrive.
  */
-#define LIB_METHODS             329
+#define LIB_METHODS             338
 /*
  *  Three, not five: the extension packages define no CLASSES, and a
  *  category is a property of a class definition.  Kernel-Methods-Fixes and
@@ -212,7 +212,21 @@ build_once(void)
      *  TestSuite new has to answer a suite with an empty collection in it,
      *  and nothing in SUnit says so.
      */
-    CHECK_EQ_INT(res.news_synthesized, 3);
+    /*
+     *  Eleven, not three, and the jump is deliberate.
+     *
+     *  Object>>initialize now exists -- Pharo's convention, needed because
+     *  every Pharo class whose initialize begins `super initialize' has to
+     *  have something to stop at.  A consequence is that `initialize' is
+     *  reachable from EVERY class, so the loader synthesizes
+     *  `new ^super new initialize' for every lib/ and pharo/ class rather
+     *  than only for the few that defined one themselves.
+     *
+     *  That is Pharo's object model arriving, not an accident: in Pharo,
+     *  `Foo new' initializes.  The 1983 classes are untouched, because the
+     *  synthesis only ever applied to ours.
+     */
+    CHECK_EQ_INT(res.news_synthesized, 11);
     built = 1;
     return 1;
 }
@@ -1914,7 +1928,7 @@ test_browsing(void)
      *  lib/Concurrency's four classes went in and the 1983 SharedQueue
      *  came out.
      */
-    check_integer("(SourceFiles at: 1) contents size", 1251681);
+    check_integer("(SourceFiles at: 1) contents size", 1253267);
 }
 
 /*
