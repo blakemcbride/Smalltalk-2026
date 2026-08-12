@@ -69,8 +69,46 @@ So the fix is one of:
 
 (3) is the one that makes the problem go away rather than reporting it.
 
-### Not yet run
+### The whole suite, run
 
-`BlockClosureValueWithinDurationTest` and `BlockClosureValueWithinTest`
-hang: `valueWithin:onTimeout:` needs `Delay`, and the run deadlocks with
-"every process is blocked". Set aside rather than counted.
+One crashing class must not stop the others, so each is run in its own
+process. Every one of the 21 test classes now has a result:
+
+```
+DateAndTimeDosEpochTest              40 passed,  2 failed, 21 errors
+DateAndTimeEpochTest                 42 passed,  2 failed, 20 errors
+DateAndTimeLeapTest                  CRASHED  (the frame overflow above)
+DateAndTimeTest                      13 passed,  0 failed, 41 errors
+DateAndTimeUnixEpochTest             41 passed,  2 failed, 20 errors
+DateParsingTest                       0 passed,  0 failed, 20 errors
+DateTest                              0 passed,  0 failed, 53 errors
+DosTimestampTest                      0 passed,  0 failed,  3 errors
+DurationTest                         48 passed,  4 failed, 15 errors
+MonthTest                            10 passed,  0 failed,  7 errors
+ScheduleTest                          1 passed,  0 failed,  9 errors
+StopwatchTest                        no answer
+TimespanDoSpanAYearTest               0 passed,  0 failed,  4 errors
+TimespanDoTest                        0 passed,  0 failed,  8 errors
+TimespanTest                         24 passed,  3 failed, 31 errors
+TimeTest                              0 passed,  0 failed, 51 errors
+WeekTest                              0 passed,  0 failed,  9 errors
+YearMonthWeekTest                     6 passed,  1 failed,  1 error
+YearTest                              5 passed,  0 failed,  2 errors
+BlockClosureValueWithinDurationTest  no answer
+BlockClosureValueWithinTest          no answer
+
+                                    230 passed, 14 failed, 315 errors
+```
+
+**230 of Pharo's own Chronology tests pass on this VM.** That is the
+ratchet's number for this package and it is meant to climb.
+
+The three that answer nothing all involve waiting: `valueWithin:onTimeout:`
+and `Stopwatch` need `Delay`, and the run deadlocks with "every process is
+blocked". They are a `Delay` gap, not a Chronology one.
+
+Several classes score zero — `DateTest`, `TimeTest`, `DateParsingTest`,
+`WeekTest` — which usually means one missing method in `setUp` rather than
+53 separate problems, exactly as `AnnouncerTest` had eleven errors from one
+missing `includesBehavior:`. Classify before fixing: group the errors by
+message first.
