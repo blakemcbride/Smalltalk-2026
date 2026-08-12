@@ -18,6 +18,8 @@ Profile {
 	#name     : 'pharo-announcements',
 	#requires : [ 'st2026' ],
 	#dialect  : 'closures',
-	#exclude  : [ 'ManifestAnnouncementsCore' ],
-	#packages : [ '../pharo/Announcements-Core' ]
+	#exclude  : [ 'ManifestAnnouncementsCore',
+	              'ManifestAnnouncementsCoreTests' ],
+	#packages : [ '../pharo/Announcements-Core',
+	              '../pharo/Announcements-Core-Tests' ]
 }
