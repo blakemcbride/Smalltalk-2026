@@ -214,3 +214,44 @@ input process can only queue it, never transfer to it.
 The contract is settled; the implementation lands in Phase 7. Phases 0 through 6
 build a correct single-threaded system whose object memory, safepoint polling
 and allocator are already shaped for it.
+
+## Phase H4 was measured, and deferred
+
+`doc/PLAN-PHARO.md` asks that work-stealing deques be "justified by
+measurement, not adopted on reputation". They were measured, and they are not
+justified yet.
+
+Profiled on the most lock-heavy workload this system has —
+`test_parallel_lib` at eight workers, 62,000 `Mutex` acquisitions and 62,000
+items through one `SharedQueue`, sampled after the bootstrap:
+
+| | |
+|---|---|
+| `SCHED_wake_highest_priority` — the ready-list walk under `ready_lock` | 1.42% |
+| `pthread_mutex_lock` + unlock | 0.93% |
+| futex | 0.28% |
+| `SCHED_check_process_switch` + `SCHED_suspend_active` | 0.81% |
+
+Under 4% between them, on the workload built to contend. Splitting the ready
+lists per worker and stealing from a victim's tail would be a real amount of
+delicate code to buy a fraction of that.
+
+**Where the time actually goes**, in the same profile:
+
+| | |
+|---|---|
+| `OM_method_dict_key` | 18–33% |
+| `OM_is_object` | 17–22% |
+| `lookup_method` | 7–13% |
+| reference counting | ~15% |
+
+**Method lookup is 40–60% of the run, and there is no method cache** —
+primitive 89, `flushCache:`, is a no-op because there is nothing to flush.
+That is the next scaling work, and it is worth an order of magnitude more
+than per-worker ready queues.
+
+The design is already written down in `doc/PLAN-PHARO.md`'s audit table:
+per-worker cache, a global epoch bumped on publish, and method dictionaries
+that become immutable once published so a stale entry is impossible rather
+than unlikely. Designing it now costs nothing; retrofitting it later costs a
+week of confusing bugs.
