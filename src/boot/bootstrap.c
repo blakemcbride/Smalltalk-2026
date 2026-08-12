@@ -2620,8 +2620,30 @@ synthesize_initializing_new(void)
                 continue;
             if (!chain_defines(c, 0, "initialize"))
                 continue;
-            if (chain_defines(c, 1, "new"))
-                continue;
+            /*
+             *  Only a `new' this class defines ITSELF, not one anywhere up
+             *  the chain.
+             *
+             *  Asking the whole chain declines for every Pharo class that
+             *  subclasses a 1983 collection, because HashedCollection
+             *  class>>new exists -- and 1983's route is new -> new: ->
+             *  init:, which never sends #initialize.  So
+             *  AnnouncementSetWithExclusions, whose initialize builds its
+             *  exclusions collection, got a new that did not call it and
+             *  every method touching exclusions failed on nil.
+             *
+             *  Overriding an inherited `new' with `^super new initialize'
+             *  is exactly what the class wanted; declining because an
+             *  ancestor had one is what left it half-built.
+             */
+            {
+                st_oop  meta = c->metaclass_oop;
+
+                if (OM_is_present(meta)
+                 && OM_is_present(method_in_dictionary(
+                        OM_fetch_pointer(CLASS_METHOD_DICT, meta), "new")))
+                    continue;
+            }
             if (!compile_into(c, 1, source, "<the loader>", 0,
                               "instance creation"))
                 return 0;
