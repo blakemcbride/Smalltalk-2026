@@ -11,6 +11,8 @@
 #include "st_port.h"
 #include "om.h"
 #include "census.h"
+
+#include <sys/stat.h>
 #include "interp.h"
 #include "gfx.h"
 #include "st_sched.h"
@@ -848,6 +850,16 @@ write_screenshot(void)
 }
 
 static int
+bootstrap_is_directory(const char *path)
+{
+    struct stat st;
+
+    if (stat(path, &st) != 0)
+        return 0;
+    return (st.st_mode & S_IFMT) == S_IFDIR;
+}
+
+static int
 do_bootstrap(const char *const *sources, const int *dialects, unsigned count,
              const char *out_path, const char *expression, const char *startup,
              int run_tests, const st_names *doctest_paths)
@@ -1462,6 +1474,37 @@ main(int argc, char **argv)
                     }
                     SRC_names_free(&expanded);
                     free(expanded_dialects);
+                }  else if (bootstrap_is_directory(argv[j])) {
+                    /*
+                     *  A bare directory means every source under it, which
+                     *  is what Phase 5's exit criterion asks for:
+                     *  `st80 -bootstrap sources/ -o st80.image'.  Before
+                     *  this the path was handed to the reader as a file and
+                     *  failed with "short read on sources/".
+                     */
+                    st_names    tree;
+                    char        err[512];
+                    unsigned    k;
+
+                    memset(&tree, 0, sizeof tree);
+                    if (!PROFILE_expand_tree(argv[j], &tree, err, sizeof err)) {
+                        fprintf(stderr, "st80: %s\n", err);
+                        SRC_names_free(&tree);
+                        path_list_free(&sources);
+                        return 1;
+                    }
+                    for (k = 0; k < tree.count; ++k) {
+                        if (!path_list_add(&sources, tree.items[k])
+                         || !dialect_list_add(&dialects,
+                                use_closures ? ST_DIALECT_CLOSURES
+                                             : ST_DIALECT_BLUE_BOOK)) {
+                            fprintf(stderr, "st80: out of memory\n");
+                            SRC_names_free(&tree);
+                            path_list_free(&sources);
+                            return 1;
+                        }
+                    }
+                    SRC_names_free(&tree);
                 }  else if (!path_list_add(&sources, argv[j])
                          || !dialect_list_add(&dialects,
                                 use_closures ? ST_DIALECT_CLOSURES

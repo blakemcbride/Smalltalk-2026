@@ -342,6 +342,39 @@ worth reading.
 the self-hosting check passes — the image's own `Compiler` classes, running inside
 the VM, emit the same bytecodes as the C compiler.
 
+**Status: complete.** The compiler and bootstrap had been working for a long
+time, but the criterion above was written with a bare directory and only
+`-manifest sources/MANIFEST` worked: `-bootstrap sources/` handed the directory
+to the reader as if it were a file and failed with *"short read on sources/"*.
+A directory argument now expands to every source beneath it, recursively and
+sorted, so the phase is met as written rather than as approximated.
+
+| | |
+|---|---|
+| the command in the criterion | `st80 -bootstrap sources/ -o st80.image` writes an image |
+| equivalence | `st80 -bootstrap sources/ kernel/Bootstrap.st` produces a **method dictionary identical** to the manifest route's |
+| self-hosting | `test_self_hosting` compiles methods with the C compiler and with the image's own 1983 `Compiler`, and compares bytecodes |
+| the whole suite | `OM=mt` 13 suites, `OM=bb` 8 suites, `trace2` 611 lines and `trace3` 482 byte-for-byte |
+
+Two details worth keeping, because both look like bugs and are not.
+
+**A directory is not the whole manifest.** `sources/MANIFEST` also names
+`kernel/Bootstrap.st`, which lives outside the tree, so `-bootstrap sources/`
+alone produces an image three methods short — `PositionableStream>>readOnly`,
+`readWrite` and `readWriteShorten`. Bare arguments accumulate, so naming both
+gives exactly the manifest's image; sorting at every level keeps the result
+independent of `readdir` order, which would otherwise differ between machines.
+
+**Self-hosting is checked where the two compilers can agree.** They diverge in
+two places, and `test_self_hosting` says so rather than skipping quietly: the
+1983 compiler has a one-byte form for short jumps and ours always emits the
+two-byte form, so an inlined `ifTrue:ifFalse:` comes out two bytes longer with
+the same instructions in the same order; and the two number the literal frame
+differently, ours at emit time and 1983's during parsing, so pushes that name a
+literal disagree on the index while naming the same literal. Same instructions,
+different numbering — the check covers everything else, including sends to
+`super`, cascades and backward jumps.
+
 ### Phase 6 — macOS and Windows
 `Makefile.msvc` (or clang-cl, which gives full GCC/Clang atomics). Honor SDL3's
 main-thread rules on macOS. Reuse the platform branches already working in

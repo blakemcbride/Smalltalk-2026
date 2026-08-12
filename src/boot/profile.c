@@ -7,6 +7,8 @@
 
 #include "profile.h"
 
+#include <sys/stat.h>
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -466,4 +468,94 @@ PROFILE_expand(const char *path, st_names *out, int **dialects, char *error,
     else
         free(e.dialects);
     return 1;
+}
+
+/*  Is this path a directory?  */
+static int
+is_directory(const char *path)
+{
+    struct stat st;
+
+    if (stat(path, &st) != 0)
+        return 0;
+    return (st.st_mode & S_IFMT) == S_IFDIR;
+}
+
+/*
+ *  ----------  A directory of sources, walked  ----------
+ *
+ *  Phase 5's exit criterion is spelled `st80 -bootstrap sources/ -o
+ *  st80.image', and until now only `-manifest sources/MANIFEST' worked --
+ *  a bare directory was handed to the reader as if it were a file, which
+ *  failed with "short read on sources/".
+ *
+ *  Walking it recursively is faithful rather than approximate: the 1983
+ *  tree holds 226 .stClass files and MANIFEST names all of them, and the
+ *  bootstrap reads definitions in a pass of its own before compiling
+ *  anything, so the order a manifest fixes is not load-bearing.  Sorted at
+ *  every level regardless, because a bootstrap that depends on readdir
+ *  order is a bootstrap that differs between machines.
+ */
+int
+PROFILE_expand_tree(const char *dir, st_names *out, char *error,
+                    size_t error_len)
+{
+    st_names    here;
+    unsigned    i;
+    int         ok = 1;
+
+    memset(&here, 0, sizeof here);
+#ifdef _WIN32
+    {
+        WIN32_FIND_DATAA    data;
+        HANDLE              h;
+        char                pattern[1024];
+
+        snprintf(pattern, sizeof pattern, "%s\\*", dir);
+        h = FindFirstFileA(pattern, &data);
+        if (h == INVALID_HANDLE_VALUE) {
+            snprintf(error, error_len, "cannot read directory %s", dir);
+            return 0;
+        }
+        do {
+            if (data.cFileName[0] != '.')
+                SRC_names_add(&here, data.cFileName);
+        } while (FindNextFileA(h, &data));
+        FindClose(h);
+    }
+#else
+    {
+        DIR            *d = opendir(dir);
+        struct dirent  *entry;
+
+        if (!d) {
+            snprintf(error, error_len, "cannot read directory %s", dir);
+            return 0;
+        }
+        while ((entry = readdir(d)) != NULL)
+            if (entry->d_name[0] != '.')
+                SRC_names_add(&here, entry->d_name);
+        closedir(d);
+    }
+#endif
+    if (here.count > 1)
+        qsort(here.items, here.count, sizeof here.items[0], compare_names);
+
+    for (i = 0; i < here.count && ok; ++i) {
+        char    path[1024];
+
+        if (snprintf(path, sizeof path, "%s/%s", dir, here.items[i])
+                >= (int) sizeof path) {
+            snprintf(error, error_len, "%s: path too long", dir);
+            ok = 0;
+            break;
+        }
+        if (is_directory(path)) {
+            ok = PROFILE_expand_tree(path, out, error, error_len);
+        }  else if (is_source_file(here.items[i])) {
+            ok = SRC_names_add(out, path);
+        }
+    }
+    SRC_names_free(&here);
+    return ok;
 }
