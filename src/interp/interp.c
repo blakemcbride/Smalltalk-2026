@@ -378,11 +378,43 @@ lookup_method(st_oop selector, st_oop start_class, st_oop *found_class)
         uint32_t    capacity = OM_method_dict_capacity(dict);
         uint32_t    slot;
 
-        for (slot = 0; slot < capacity; ++slot) {
-            if (OM_method_dict_key(dict, slot) == selector) {
-                if (found_class)
-                    *found_class = cls;
-                return OM_method_dict_value(dict, slot);
+        /*
+         *  Probe from the selector's hash, the way the dictionary was
+         *  filled, and stop at the first empty slot.
+         *
+         *  This used to scan every slot of every dictionary in the chain,
+         *  which is correct and is why it was never noticed: it finds the
+         *  method wherever it is.  It also made OM_method_dict_key alone
+         *  18-33% of every profile taken of this system, because a send
+         *  costs one comparison per SLOT per class rather than one per
+         *  class.
+         *
+         *  Stopping at nil is safe because method_dictionary_at_put keeps
+         *  the load factor under three quarters precisely so that a
+         *  dictionary always has a nil on any probe path -- its comment
+         *  says so, having been written when the image's own
+         *  includesSelector: was finding three selectors in five.  This is
+         *  now the same algorithm the image uses, which is the point:
+         *  interpreter and image agree by construction rather than by both
+         *  happening to find the same answer.
+         */
+        if (capacity) {
+            uint32_t    start = (uint32_t)
+                            (OM_identity_hash(selector) % capacity);
+            uint32_t    probe;
+
+            for (probe = 0; probe < capacity; ++probe) {
+                st_oop  key;
+
+                slot = (start + probe) % capacity;
+                key  = OM_method_dict_key(dict, slot);
+                if (key == selector) {
+                    if (found_class)
+                        *found_class = cls;
+                    return OM_method_dict_value(dict, slot);
+                }
+                if (key == ST_NIL)
+                    break;      /*  a nil ends the probe: not in here  */
             }
         }
         cls = OM_fetch_pointer(ST_CLASS_SUPERCLASS, cls);
