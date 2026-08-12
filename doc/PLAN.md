@@ -293,6 +293,37 @@ snapshot format.
 **Exit:** `make OM=mt` runs the same interpreter, passing the same unit tests,
 against a hand-built minimal image.
 
+**Status: complete.** Verified rather than asserted:
+
+| | |
+|---|---|
+| `make OM=mt` | builds; 13 unit suites, 0 failures |
+| a hand-built image | `-bootstrap -manifest sources/MANIFEST` writes one; 65,536 table entries, 15,599 live objects, 4,521 methods reachable |
+| the same interpreter | `OM=bb` still reproduces Xerox's `trace2` (611 lines) and `trace3` (482) byte-for-byte |
+| under sanitizers | ASAN 13 suites, TSAN 13 suites, no races |
+
+Two things this section describes were **not** built, and both were superseded
+deliberately rather than forgotten. They are recorded here because a reader who
+finds the prose and not the code will otherwise assume an omission.
+
+**No lock word in the object header.** The header carries `class_oop`, `size`,
+`flags`, `refcount` and `hash`, and nothing else. Phase 7 needed per-object
+mutual exclusion and got it from **64 stripe locks keyed on the identity hash**
+instead — no object grows by a word, no header format changes, and the hash was
+already stable across collection and snapshot. A lock word would have cost eight
+bytes on every object in the image to serve the few that are ever contended.
+
+**The collector is not generational.** It is mark-and-recount at a safepoint,
+plus epoch-based reclamation so that a zero refcount can be freed without
+stopping the world. That combination was reached by measurement, not by plan:
+`doc/SCALING.md` records the collection pause falling from 128 ms to 16 ms, and
+`intervals` from 0.88× to 3.18×, on those two changes. Generational collection
+remains available as a later optimisation and should be justified by a
+measurement, not by its reputation.
+
+The exit criterion is what gates the phase; both divergences are improvements on
+what the prose above imagined, made later with evidence the prose did not have.
+
 ### Phase 5 — Compiler in C, and bootstrap
 `compiler/` — Blue Book grammar: scanner (note `_` is assignment and `^` is
 return in 1983 sources), backtracking parser, bytecode emitter, literal frame and
