@@ -159,6 +159,8 @@ static const char *const queue_source =
 
 static st_oop           setup_method;
 static st_oop           probe_method;
+static st_oop           read_count_method;
+static st_oop           read_size_method;
 static st_oop           mutex_method;
 static st_oop           queue_method;
 static st_oop           running_method;
@@ -178,6 +180,10 @@ provide_lib_roots(om_visit_fn visit)
         visit(setup_method);
     if (OM_is_object(probe_method))
         visit(probe_method);
+    if (OM_is_object(read_count_method))
+        visit(read_count_method);
+    if (OM_is_object(read_size_method))
+        visit(read_size_method);
     if (OM_is_object(mutex_method))
         visit(mutex_method);
     if (OM_is_object(queue_method))
@@ -245,6 +251,7 @@ int
 main(void)
 {
     st_bootstrap_result  boot;
+    st_boot_init_report  init;
     char            profile_error[256];
     unsigned        workers;
 
@@ -275,6 +282,14 @@ main(void)
      *  into the debugger rather than running.
      */
     CHECK(BOOT_install_display(640, 480));
+    /*
+     *  Run the class initializers.  bench_parallel does this and this did
+     *  not, which is the whole of the bug: without it every class variable
+     *  in the image is nil -- including the fixture's Mutex, which is why
+     *  `nil critical:' was the first symptom -- and the image runs
+     *  half-built.
+     */
+    BOOT_run_initializers(&init);
     ST_interp_install_roots(provide_lib_roots);
     ST_interp_register();
 
@@ -289,8 +304,16 @@ main(void)
            "wrong %d\n",
            ST_load_seq(&reported), ST_load_seq(&wrong_answers));
 
+    /*
+     *  The two readbacks run on a worker rather than on this thread.
+     *  Evaluating on the main thread after WORKER_stop does not work here
+     *  and is not what the test is about; a worker is the environment
+     *  under test anyway.
+     */
     mutex_method = compile_expression(mutex_source);
     queue_method = compile_expression(queue_source);
+    read_count_method = compile_expression(" ^ConcurrencyFixture count");
+    read_size_method  = compile_expression(" ^ConcurrencyFixture queue size");
     CHECK(mutex_method != ST_OOP_INVALID);
     CHECK(queue_method != ST_OOP_INVALID);
     if (mutex_method == ST_OOP_INVALID || queue_method == ST_OOP_INVALID)
@@ -310,16 +333,17 @@ main(void)
            workers, (unsigned) PER_WORKER);
     CHECK_EQ_INT(ST_load_seq(&wrong_answers), 0);
     CHECK_EQ_INT(ST_load_seq(&reported), (int) (workers * PER_WORKER));
-    {
-        st_oop  n = evaluate("ConcurrencyFixture count");
-
-        /*
-         *  The whole test in one line: every increment happened, and no
-         *  two of them overlapped.
-         */
-        CHECK(OM_is_int(n));
-        CHECK_EQ_INT((int) OM_int_value(n), (int) (workers * PER_WORKER));
-    }
+    /*
+     *  The whole test in one line: every increment happened, and no two of
+     *  them overlapped.
+     */
+    ST_store_seq(&reported, 0);
+    ST_store_seq(&wrong_answers, 0);
+    running_method = read_count_method;
+    CHECK_EQ_INT(WORKER_start(1, lib_worker, NULL), 0);
+    WORKER_stop();
+    CHECK_EQ_INT(ST_load_seq(&wrong_answers), 0);
+    CHECK_EQ_INT(ST_load_seq(&reported), (int) (workers * PER_WORKER));
 
     /*  ----------  A SharedQueue that loses nothing  ---------- */
 
@@ -340,12 +364,14 @@ main(void)
      *  means the queue lost one, higher means it handed one out twice.
      */
     CHECK_EQ_INT(ST_load_seq(&reported), (int) (workers * PER_WORKER));
-    {
-        st_oop  left = evaluate("ConcurrencyFixture queue size");
-
-        CHECK(OM_is_int(left));
-        CHECK_EQ_INT((int) OM_int_value(left), 0);
-    }
+    ST_store_seq(&reported, 0);
+    ST_store_seq(&wrong_answers, 0);
+    running_method = read_size_method;
+    CHECK_EQ_INT(WORKER_start(1, lib_worker, NULL), 0);
+    WORKER_stop();
+    CHECK_EQ_INT(ST_load_seq(&wrong_answers), 0);
+    /*  Everything put in was taken out again.  */
+    CHECK_EQ_INT(ST_load_seq(&reported), 0);
 
     ST_interp_unregister();
     OM_shutdown();
