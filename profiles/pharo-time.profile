@@ -24,7 +24,9 @@ Profile {
 	#name     : 'pharo-time',
 	#requires : [ 'st2026' ],
 	#dialect  : 'closures',
-	#exclude   : [ 'ManifestSystemTime', 'VirtualMachine' ],
+	#exclude   : [ 'ManifestSystemTime', 'ManifestSystemTimeTests',
+	               'VirtualMachine', 'ExceptionTest', 'ExceptionTester' ],
 	#supersede : [ 'Date', 'Time' ],
-	#packages : [ '../pharo/System-Time' ]
+	#packages : [ '../pharo/System-Time', '../lib/Chronology-Compat',
+	              '../pharo/System-Time-Tests' ]
 }

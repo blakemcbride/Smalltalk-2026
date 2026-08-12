@@ -201,3 +201,25 @@ String >> asInteger [
 String >> lines [
 	^self splitOn: Character nl
 ]
+
+{ #category : '*Strings-Protocol' }
+String >> beginsWith: aPrefix caseSensitive: aBoolean [
+	"Whether the receiver starts with aPrefix, optionally ignoring case.
+
+	 Pharo's Date class>>indexOfMonth: asks this of a month name, so
+	 anything that parses a date reaches it.  An empty prefix matches
+	 everything, which is Pharo's documented answer and the one the callers
+	 rely on."
+	| n |
+	n := aPrefix size.
+	n = 0 ifTrue: [^true].
+	n > self size ifTrue: [^false].
+	1 to: n do: [:i |
+		| a b |
+		a := self at: i.
+		b := aPrefix at: i.
+		aBoolean
+			ifTrue: [a = b ifFalse: [^false]]
+			ifFalse: [a asUppercase = b asUppercase ifFalse: [^false]]].
+	^true
+]

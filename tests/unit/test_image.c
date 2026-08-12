@@ -51,7 +51,7 @@
  *  the 1983 SharedQueue is now EXCLUDED -- ours supersedes it, which is
  *  the substitution ratchet, and its methods leave as ours arrive.
  */
-#define LIB_METHODS             351
+#define LIB_METHODS             352
 /*
  *  Three, not five: the extension packages define no CLASSES, and a
  *  category is a property of a class definition.  Kernel-Methods-Fixes and
@@ -1934,7 +1934,7 @@ test_browsing(void)
      *  lib/Concurrency's four classes went in and the 1983 SharedQueue
      *  came out.
      */
-    check_integer("(SourceFiles at: 1) contents size", 1255576);
+    check_integer("(SourceFiles at: 1) contents size", 1256184);
 }
 
 /*
