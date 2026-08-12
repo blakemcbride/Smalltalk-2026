@@ -207,22 +207,30 @@ lib_worker(st_worker *self, void *user)
     (void) user;
     ST_interp_register();
     /*
-     *  Nominate a Process for this worker before running anything.
+     *  Give this worker a Process of its own.
      *
-     *  Without one, Processor activeProcess answers nil -- and any library
-     *  that asks who is calling gets the same nil from every worker, which
-     *  is indistinguishable from "all of you are the same process".  A
-     *  worker running library code needs an identity as much as it needs a
-     *  stack.
+     *  Processor activeProcess falls back to ProcessorScheduler's instance
+     *  variable when the VM has nothing per-worker to answer -- so every
+     *  worker sees the SAME process, and Mutex>>acquire, which asks who is
+     *  calling, concludes that the lock is already held by the caller.
+     *  Seven workers out of eight then failed with 'Mutex is already held
+     *  by this process' while the eighth ran normally.  Identity has to be
+     *  per worker or mutual exclusion cannot tell workers apart.
+     *
+     *  It must be a real Process.  An earlier version used
+     *  OM_instantiate_pointers(ST_NIL, 4), whose class is nil: it
+     *  understands nothing, and Mutex died on `me notNil' with "does not
+     *  understand #notNil, and does not understand doesNotUnderstand:
+     *  either".
+     *
+     *  An earlier version created one -- OM_instantiate_pointers(ST_NIL, 4)
+     *  -- so that Processor activeProcess would answer something.  It
+     *  answered an object whose CLASS is nil, which understands nothing at
+     *  all, and Mutex>>acquire died on `me notNil' with "does not
+     *  understand #notNil, and does not understand doesNotUnderstand:
+     *  either".  A nil activeProcess is handled correctly by every caller;
+     *  a classless one is handled by none of them.
      */
-    if (!OM_is_object(st_vm.active_process)) {
-        st_oop  mine = OM_instantiate_pointers(ST_NIL, 4);
-
-        if (OM_is_object(mine)) {
-            OM_increase_ref(mine);
-            st_vm.active_process = mine;
-        }
-    }
     value = run_method(running_method);
     if (OM_is_int(value))
         ST_fetch_add_relaxed(&reported, (int) OM_int_value(value));
