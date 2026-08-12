@@ -607,6 +607,44 @@ evaluate(const char *expression, char *errbuf, size_t errlen)
     ST_interp_register();
     memset(&st_vm, 0, sizeof st_vm);
     st_vm.active_context = ST_NIL;
+    /*
+     *  Give the expression a green Process to be, before it runs.
+     *
+     *  Without one it is a bare context that the scheduler has never heard
+     *  of, and that is fine right up until the expression FORKS.  When a
+     *  forked process finishes it suspends, the scheduler looks for
+     *  something else to run, finds nothing -- the expression that forked
+     *  it is not on any ready list because it is not a process at all --
+     *  and declares the image deadlocked, stopping the whole evaluation
+     *  with whatever return value happened to be lying about.
+     *
+     *  This is a correctness fix on its own -- an expression that forks
+     *  should be something the scheduler can return to -- and it is NOT a
+     *  cure for the symptom that prompted it.  With MessageSend>>cull:
+     *  added, every AnnouncerTest still passes singly while the expression
+     *  that runs them all still answers nil, exactly as before.  So the
+     *  driver not being a process was real and was not the cause; see
+     *  task #59.
+     */
+    {
+        st_oop  assoc = BOOT_lookup_global("Process", NULL);
+        st_oop  cls   = OM_is_object(assoc)
+                            ? OM_fetch_pointer(ST_ASSOCIATION_VALUE, assoc)
+                            : ST_OOP_INVALID;
+
+        if (OM_is_object(cls)) {
+            st_oop  proc = OM_instantiate_pointers(cls, 4);
+
+            if (OM_is_object(proc)) {
+                OM_store_pointer(ST_LINK_NEXT, proc, ST_NIL);
+                OM_store_pointer(ST_PROCESS_SUSPENDED_CONTEXT, proc, context);
+                OM_store_pointer(ST_PROCESS_PRIORITY, proc, OM_int_oop(4));
+                OM_store_pointer(ST_PROCESS_MY_LIST, proc, ST_NIL);
+                OM_increase_ref(proc);
+                st_vm.active_process = proc;
+            }
+        }
+    }
     ST_set_active_context(context);
     st_vm.running      = 1;
     st_vm.return_value = ST_NIL;
