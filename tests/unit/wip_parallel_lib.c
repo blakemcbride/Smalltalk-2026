@@ -217,20 +217,34 @@ lib_worker(st_worker *self, void *user)
      *  by this process' while the eighth ran normally.  Identity has to be
      *  per worker or mutual exclusion cannot tell workers apart.
      *
-     *  It must be a real Process.  An earlier version used
-     *  OM_instantiate_pointers(ST_NIL, 4), whose class is nil: it
-     *  understands nothing, and Mutex died on `me notNil' with "does not
-     *  understand #notNil, and does not understand doesNotUnderstand:
-     *  either".
+     *  It must be a REAL Process.  One attempt used
+     *  OM_instantiate_pointers(ST_NIL, 4), whose class is nil: such an
+     *  object understands nothing, and Mutex died on `me notNil' with
+     *  "does not understand #notNil, and does not understand
+     *  doesNotUnderstand: either" -- the VM saying the lookup had nowhere
+     *  to go.  A nil activeProcess every caller handles correctly; a
+     *  classless one none of them do.
      *
-     *  An earlier version created one -- OM_instantiate_pointers(ST_NIL, 4)
-     *  -- so that Processor activeProcess would answer something.  It
-     *  answered an object whose CLASS is nil, which understands nothing at
-     *  all, and Mutex>>acquire died on `me notNil' with "does not
-     *  understand #notNil, and does not understand doesNotUnderstand:
-     *  either".  A nil activeProcess is handled correctly by every caller;
-     *  a classless one is handled by none of them.
+     *  And BOOT_lookup_global answers the ASSOCIATION rather than the
+     *  class, so the value has to be taken out of it.  Building an
+     *  instance of an Association is how a second attempt achieved
+     *  nothing quietly.
      */
+    {
+        st_oop  assoc = BOOT_lookup_global("Process", NULL);
+        st_oop  cls   = OM_is_object(assoc)
+                            ? OM_fetch_pointer(ST_ASSOCIATION_VALUE, assoc)
+                            : ST_OOP_INVALID;
+
+        if (OM_is_object(cls)) {
+            st_oop  mine = OM_instantiate_pointers(cls, 3);
+
+            if (OM_is_object(mine)) {
+                OM_increase_ref(mine);
+                st_vm.active_process = mine;
+            }
+        }
+    }
     value = run_method(running_method);
     if (OM_is_int(value))
         ST_fetch_add_relaxed(&reported, (int) OM_int_value(value));
