@@ -106,6 +106,41 @@ run_method(st_oop method)
                      OM_int_oop((st_int) ST_header_temporary_count(
                                     OM_fetch_pointer(0, method))));
 
+    /*
+     *  Wrap the context in a green Process before running it.
+     *
+     *  A Process whose suspendedContext is nil is a loaded gun: the moment
+     *  the scheduler transfers to it -- which it will, as soon as anything
+     *  blocks and this one is picked off a ready list -- it calls
+     *  ST_set_active_context(nil) and fetch_context_registers reads off the
+     *  end of nil.  That was the segfault, named by ASAN at
+     *  st_sched.c:627.
+     *
+     *  So the process and the context it owns are made together and are
+     *  consistent from birth.  SCHED_transfer_to keeps suspendedContext up
+     *  to date from here on; it only had nothing to work with because this
+     *  process had never owned a context in the first place.
+     */
+    {
+        st_oop  assoc = BOOT_lookup_global("Process", NULL);
+        st_oop  cls   = OM_is_object(assoc)
+                            ? OM_fetch_pointer(ST_ASSOCIATION_VALUE, assoc)
+                            : ST_OOP_INVALID;
+
+        if (OM_is_object(cls)) {
+            st_oop  proc = OM_instantiate_pointers(cls, 4);
+
+            if (OM_is_object(proc)) {
+                OM_store_pointer(ST_LINK_NEXT, proc, ST_NIL);
+                OM_store_pointer(ST_PROCESS_SUSPENDED_CONTEXT, proc, context);
+                OM_store_pointer(ST_PROCESS_PRIORITY, proc, OM_int_oop(4));
+                OM_store_pointer(ST_PROCESS_MY_LIST, proc, ST_NIL);
+                OM_increase_ref(proc);
+                st_vm.active_process = proc;
+            }
+        }
+    }
+
     st_vm.active_context = ST_NIL;
     ST_set_active_context(context);
     st_vm.running      = 1;
@@ -208,59 +243,10 @@ lib_worker(st_worker *self, void *user)
     (void) user;
     ST_interp_register();
     /*
-     *  Give this worker a Process of its own.
-     *
-     *  Processor activeProcess falls back to ProcessorScheduler's instance
-     *  variable when the VM has nothing per-worker to answer -- so every
-     *  worker sees the SAME process, and Mutex>>acquire, which asks who is
-     *  calling, concludes that the lock is already held by the caller.
-     *  Seven workers out of eight then failed with 'Mutex is already held
-     *  by this process' while the eighth ran normally.  Identity has to be
-     *  per worker or mutual exclusion cannot tell workers apart.
-     *
-     *  It must be a REAL Process.  One attempt used
-     *  OM_instantiate_pointers(ST_NIL, 4), whose class is nil: such an
-     *  object understands nothing, and Mutex died on `me notNil' with
-     *  "does not understand #notNil, and does not understand
-     *  doesNotUnderstand: either" -- the VM saying the lookup had nowhere
-     *  to go.  A nil activeProcess every caller handles correctly; a
-     *  classless one none of them do.
-     *
-     *  And BOOT_lookup_global answers the ASSOCIATION rather than the
-     *  class, so the value has to be taken out of it.  Building an
-     *  instance of an Association is how a second attempt achieved
-     *  nothing quietly.
+     *  The Process is made inside run_method, around the context it will
+     *  run, so that the two are consistent.  Nominating a bare identity
+     *  here -- a Process with a nil suspendedContext -- is what crashed.
      */
-    {
-        st_oop  assoc = BOOT_lookup_global("Process", NULL);
-        st_oop  cls   = OM_is_object(assoc)
-                            ? OM_fetch_pointer(ST_ASSOCIATION_VALUE, assoc)
-                            : ST_OOP_INVALID;
-
-        if (OM_is_object(cls)) {
-            /*
-             *  FOUR fields, not three.  Process is a Link subclass:
-             *  nextLink, suspendedContext, priority, myList.  Allocating
-             *  three left myList off the end and priority nil -- and a
-             *  process with no priority cannot be filed onto a ready list,
-             *  which is indexed by it.  So a worker that blocked was never
-             *  woken again: eight workers printed "every process is
-             *  blocked" fourteen times, and waiting three seconds instead
-             *  of a tenth changed nothing, because it was never a matter
-             *  of time.
-             */
-            st_oop  mine = OM_instantiate_pointers(cls, 4);
-
-            if (OM_is_object(mine)) {
-                OM_store_pointer(ST_LINK_NEXT, mine, ST_NIL);
-                OM_store_pointer(ST_PROCESS_SUSPENDED_CONTEXT, mine, ST_NIL);
-                OM_store_pointer(ST_PROCESS_PRIORITY, mine, OM_int_oop(4));
-                OM_store_pointer(ST_PROCESS_MY_LIST, mine, ST_NIL);
-                OM_increase_ref(mine);
-                st_vm.active_process = mine;
-            }
-        }
-    }
     value = run_method(running_method);
     if (OM_is_int(value))
         ST_fetch_add_relaxed(&reported, (int) OM_int_value(value));
