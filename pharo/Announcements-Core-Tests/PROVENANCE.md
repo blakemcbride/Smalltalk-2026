@@ -92,5 +92,21 @@ thing to add.
 
     1  FAIL assertion failed
 
-Still unexamined, and still the most interesting single line here: an
-error is a missing method, a failure is a WRONG ANSWER.
+Examined, and it was worth doing first: it led to MessageSend, which was
+also the cause of four of the errors.
+
+testSymbolIdentifier wraps its body in `on: MessageNotUnderstood do:' and
+asks whether the selector not understood was #bar.  So every missing
+method along the delivery path arrives here as a WRONG ANSWER rather than
+as an error, and each one has to be read out rather than guessed.  Printing
+the caught selector instead of comparing it named them one per run:
+
+    receiver:selector:      MessageSend, added
+    handlesAnnouncement:    Symbol, added (Pharo has it in
+                            Collections-Strings, which we will not import)
+    prepareForDelivery      Symbol, added
+    on:fork:                the boundary below
+
+So this test is no longer unexplained: it is blocked by on:fork: like the
+twelve others, and its remaining failure is the same single decision
+rather than a separate defect.
