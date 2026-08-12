@@ -60,3 +60,37 @@ That is the ratchet's real number for this package, and it is meant to
 climb.  Most of the 22 errors are expected to be the same missing
 subscription API -- when:do:for: and friends -- rather than 22 separate
 problems; the next turn should classify them before fixing anything.
+
+## Classified, and two methods later
+
+Grouping the errors by message first was worth doing: the guess above was
+wrong.  They were not one missing API but several small protocol gaps.
+
+    11  includesBehavior:      Behavior, one line
+     4  receiver:selector:     MessageSend, a class we do not have
+     4  add:
+     2  isNotNil               Object, one line
+     1  signal                 the nil NotFound above
+     1  FAIL assertion failed
+
+Adding the two one-line methods took the package from 6 passed to 10.
+
+What is left is more interesting than what was fixed:
+
+    9  on:fork:               Pharo's exception-forking handler
+
+on:fork: is implemented in Pharo over runUntilErrorOrReturnFrom: and its
+context surgery -- exactly the process machinery doc/PLAN-PHARO.md's Phase
+E declined on purpose, in favour of ANSI/early-Squeak semantics.  Nine of
+these tests want it.  That is a real boundary of the port rather than a
+gap to be closed casually, and it should be decided deliberately.
+
+    4  MessageSend receiver:selector:
+
+A small Kernel class we do not have; bounded work, and the obvious next
+thing to add.
+
+    1  FAIL assertion failed
+
+Still unexamined, and still the most interesting single line here: an
+error is a missing method, a failure is a WRONG ANSWER.

@@ -193,3 +193,9 @@ Object >> initialize [
 	 it belongs here rather than as an edit to imported source."
 	^self
 ]
+
+{ #category : '*Kernel-Protocol' }
+Object >> isNotNil [
+	"Pharo's spelling of notNil.  Both exist there and both are used."
+	^self notNil
+]
