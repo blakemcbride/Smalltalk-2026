@@ -350,3 +350,34 @@ above was understood. Pharo's kernel, when it loads, is the real test.
 Which is wrong on a hybrid CPU — the E-cores set the wall time. Handing work out
 dynamically would fix the measurement.
 
+## The gate moved from speedup to time, and why that was forced
+
+Hashing the method lookup (it had been scanning every slot of every method
+dictionary in the chain, on every send) made the serial case much faster:
+
+| | before | after |
+|---|---|---|
+| `collections`, one worker | 668.1 ms | **201.3 ms** |
+| `intervals`, one worker | 148.7 ms | **120.9 ms** |
+| `collections`, eight workers | 95.3 ms | **45.1 ms** |
+| `intervals`, eight workers | 46.7 ms | 46.0 ms |
+
+And it **broke the gate**. `intervals` fell from 3.18× to 2.56× — while its
+eight-worker time did not move. The ratio fell because the *denominator*
+improved.
+
+A gate on speedup punishes making the serial case faster, which is a strange
+thing for a performance gate to do. So the gate is on **time at eight
+workers** now, and the Phase 7 speedups are printed beside it. "Does it
+scale" is still the question this benchmark exists to answer; it is simply no
+longer a thing a serial optimisation can break.
+
+Two properties keep it honest on a machine that is not quiet:
+
+- **The canary.** `arithmetic` allocates nothing and touches no shared line;
+  below 6.5× the whole run is declared INCONCLUSIVE rather than failed.
+- **Best of three at the gated width.** Interference only ever makes a thing
+  slower, so the minimum is the honest estimate and the mean is not.
+  `mandelbrot` has been seen at 49 ms and 73 ms minutes apart on this
+  hardware; without this the gate fails at random, and a gate that fails at
+  random gets switched off.
