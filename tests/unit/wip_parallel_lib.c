@@ -269,6 +269,12 @@ main(void)
     printf("  image: %u classes, %u methods\n",
            boot.classes_created, boot.methods_compiled);
 
+    /*
+     *  A display, for the same reason bench_parallel needs one: a third of
+     *  the class initializers want a text style, and without one they fail
+     *  into the debugger rather than running.
+     */
+    CHECK(BOOT_install_display(640, 480));
     ST_interp_install_roots(provide_lib_roots);
     ST_interp_register();
 
