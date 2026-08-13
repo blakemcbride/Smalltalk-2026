@@ -219,6 +219,7 @@ typedef struct {
     st_oop      receiver;
     uint32_t    instruction_pointer;    /*  byte index into the method  */
     uint32_t    stack_pointer;          /*  field index within context  */
+    uint32_t    stack_limit;            /*  one past the last usable slot  */
 
     st_oop      message_selector;
     uint32_t    argument_count;

@@ -106,7 +106,43 @@ ST_stack_top(void)
 void
 ST_push(st_oop value)
 {
-    ++st_vm.stack_pointer;
+    /*
+     *  Never outside the context, whatever the compiler estimated.
+     *
+     *  The frame size is computed from `temporaries + max_stack_depth', and
+     *  max_stack_depth is not always an upper bound: Pharo's
+     *  DateAndTimeLeapTest overflows a context sized exactly to it.  Sizing
+     *  contexts to that estimate is still right and fixed the common case,
+     *  but the interpreter cannot be the thing that trusts it.  A push past
+     *  the end writes into the next object's header and glibc reports
+     *  `corrupted size vs. prev_size' thousands of bytecodes later, in
+     *  whatever unrelated code next touches the heap -- a fault with no
+     *  path back to its cause.
+     *
+     *  One comparison, to turn that into a report.  It has to be against a
+     *  CACHED length: reading it from the context per push is an
+     *  object-table dereference in the hottest path in the system and cost
+     *  8-12% on every kernel --
+     *
+     *      arithmetic 20.0 -> 23.2 ms, mandelbrot 50.0 -> 54.9,
+     *      intervals 47.0 -> 49.6, collections 46.0 -> 51.2
+     *
+     *  -- while against st_vm.stack_limit, loaded once per context switch,
+     *  it is 18.8, 44.9, 45.1 and 48.7.  Which is to say: free, and the
+     *  first version was not.
+     */
+    uint32_t    next = st_vm.stack_pointer + 1;
+
+    if (next >= st_vm.stack_limit) {
+        fprintf(stderr, "st80: a method overflowed its frame at %u slots "
+                        "(the context holds %u); its declared frame is too "
+                        "small\n",
+                next, (unsigned) st_vm.stack_limit);
+        ST_report_backtrace();
+        st_vm.running = 0;
+        return;
+    }
+    st_vm.stack_pointer = next;
     OM_store_pointer(st_vm.stack_pointer, st_vm.active_context, value);
 }
 
@@ -240,6 +276,14 @@ fetch_context_registers(void)
     st_vm.stack_pointer =
         (uint32_t) OM_int_value(fetch_integer(ST_CTX_SP, ctx))
         + ST_CTX_TEMP_FRAME_START - 1;
+    /*
+     *  The last slot this context has, cached here rather than read from
+     *  the object on every push.  Fetching it per push cost 8-12% across
+     *  every benchmark kernel -- it is an object-table dereference in the
+     *  hottest path in the system.  Loaded once per context switch it is
+     *  a comparison against a field already in cache.
+     */
+    st_vm.stack_limit = OM_fetch_word_length(ctx);
 }
 
 static void
