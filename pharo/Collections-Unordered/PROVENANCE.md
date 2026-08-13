@@ -16,16 +16,19 @@ All 21 `.st` files, byte for byte.
 
 None.
 
-## Status: imported and loading, NOT yet a working substitution
+## Status: a working substitution
 
-This is the first **Tier 2** turn of the ratchet, and it does not yet produce
-an image that runs. It is checked in because the import and the measurement
-are the work; what remains is named below rather than guessed at.
+`profiles/pharo-collections.profile` builds an image whose `Set`, `Dictionary`,
+`IdentityDictionary`, `IdentitySet`, `Bag` and `MethodDictionary` are Pharo's —
+272 classes, 5263 methods, 43 initializers run, 0 unfinished, no
+doesNotUnderstand at all — and the `st2026` suites pass on it, 12 of 12. That
+number is the point: it is the same score the unsubstituted profile gets, so
+the substitution is invisible to everything that was already working.
 
-`profiles/pharo-collections.profile` loads it — 272 classes, 5230 methods —
-and the resulting image is broken: nine class initializers do not finish,
-and the interpreter reports `nil is not a boolean` and a
-`does not understand #=` during them.
+The package's **own** tests are not loaded. They root on `CollectionRootTest`
+in `Collections-Abstract-Tests`, which is the next package. So what is proved
+here is that the 1983 library runs on Pharo's collections, not yet that Pharo's
+collections pass their own suites.
 
 ## Why it is harder than Announcements or Chronology
 
@@ -53,67 +56,68 @@ one array of selectors and one of methods rather than thousands of
 Associations. The one class the interpreter cannot afford to have change is
 the one that does not.
 
-## What blocks it, measured rather than predicted
+## The root cause, once it was found
 
-I predicted the blockers before measuring them and was wrong about both, which
-is recorded here because the prediction was plausible and cost an hour.
+Every symptom — 179715 `nil generality`, 6024 `nil at:ifAbsent:`, eleven
+unfinished initializers, `Smalltalk at: #Object` **dumping core** — was one
+fault with a very long reach.
+
+`HashTableSizes class>>initialize` searches for primes with good hashing
+properties (Valloud's criteria: not close to dividing the hashMultiply
+constant, not dividing 256**k ± a). Under this interpreter that search does not
+finish in two hundred million bytecodes. So `sizes` stayed nil, `sizeFor:`
+answered nil, and **every collection created through `new:` was built with a
+nil capacity** — including the `SystemDictionary` holding every global in the
+image. A half-made dictionary is what dumped core, and the nil storm was that
+same nil arriving somewhere far away and being sent something.
+
+`lib/Collections-Compat` writes the table down as a literal instead. A constant
+that takes forty seconds to recompute on every image build is a constant, not a
+computation, and the class initializer is now on the loader's skip list with
+that reason.
+
+Three smaller faults were real and are fixed:
+
+- `Object>>asCollectionElement` and `Object>>enclosedElement` are **one
+  mechanism** — Pharo's `Set` wraps on the way in and unwraps on the way out —
+  and adding either without the other is worse than adding neither, because a
+  Set whose elements can be stored and not read answers nil for all of them. I
+  added the first alone and made things quietly worse for a round.
+- `SystemDictionary>>at:put:` is the one 1983 method that reaches inside a
+  Dictionary, and is rewritten in `lib/` against Pharo's protocol. It must keep
+  *reusing* an existing Association rather than replacing it: a compiled method
+  holds the Association, not the dictionary, which is what makes reading a
+  global lock-free.
+- `Integer>>isPrime` and `SequenceableCollection>>at:ifAbsent:`, both simply
+  absent.
+
+## Two predictions, both wrong
+
+Recorded because the predictions were plausible and cost real time.
 
 **Predicted:** the C bootstrap builds `Dictionary` instances at four sites, and
-1983's Dictionary keeps Associations in the indexed part where Pharo's keeps
-them in `array` — so those sites would build malformed objects. **Measured:**
-all four go through the image's own `new:` and `add:` and are layout-agnostic
-by construction. Nothing to fix.
+the two dialects keep their Associations in different places, so those sites
+would build malformed objects. **Measured:** all four go through the image's own
+`new:` and `add:` and are layout-agnostic by construction.
 
-**Predicted:** `MethodDictionary` would block it, needing Pharo's from
-`Kernel-CodeModel`. **Measured:** importing that changed the method count and
-nothing else — the errors were identical before and after. It is imported here
-because it is the right long-term answer and it loads cleanly, but it was not
-what was wrong.
+**Predicted:** `MethodDictionary` would block it. **Measured:** importing
+Pharo's changed the method count and nothing else; the errors were identical
+before and after. It is kept because it has exactly the shape the VM requires
+and is the right long-term answer, but it was not what was wrong.
 
-**What is actually wrong is missing protocol**, the same shape as the
-Chronology round and not an architectural problem at all. Counted from a load:
+## What actually found it
 
-```
-179715  generality          1983's numeric coercion, reached with a
-                            non-Number operand -- one root cause, looping
-  6346  at:ifAbsent:
-  6345  activeController
-   206  enclosedElement     Pharo's Set unwraps elements through this
-```
+Making the VM say more, rather than reasoning harder. The loader now names
+*every* unfinished initializer instead of only the first, and
+`MessageNotUnderstood` now names the receiver's class as well as the selector.
+`Message not understood: at:ifAbsent:` became `(sent to a UndefinedObject)`,
+and that one word turned a wall of DNUs into a single question — *what is
+answering nil?* Both improvements are in `lib/` and `src/` and apply to
+everything, not just this turn.
 
-Three are now fixed in `lib/` and are gone from the count: `Integer>>isPrime`,
-which `HashedCollection class>>sizeFor:` reaches through `HashTableSizes`;
-`Object>>asCollectionElement`, which Pharo's `Set` asks of every element on the
-way in; and `SequenceableCollection>>at:ifAbsent:`, which 1983 answers on
-Dictionary and not on indexed collections.
+## Excluded
 
-The last of those is worth a note, because it did **not** move the count. The
-method is present and works — `#(1 2 3) at: 9 ifAbsent: ['none']` answers
-`'none'` in the loaded image — and the bootstrap still reports 6346
-`at:ifAbsent:` failures, byte-identically to the run before. So that receiver
-is not a `SequenceableCollection`, and identifying it is the next concrete
-step rather than adding more protocol on a guess.
-
-The eleven unfinished initializers are now all named rather than just the
-first (`BitEditor FormEditor ChangeListController NotifierController
-ProjectController ScreenController StandardSystemController ParagraphEditor
-StringHolderController VariableNode HashTableSizes`). Nine are MVC
-controllers and probably share one cause; `HashTableSizes` is Pharo's own and
-is in the critical path, since `sizeFor:` consults it on every collection
-created.
-
-The `generality` count is identical across runs, which says one bounded loop
-rather than many scattered failures — that is where the next session should
-start, and `<16r3A> does not understand #=` in the same run is probably the
-same object.
-
-## Where this leaves the turn
-
-Groundwork, honestly labelled. The package is imported and loads, two protocol
-gaps are closed, the blocker list is measured rather than guessed, and nothing
-else regressed — `st2026`, `pharo-announcements`, `pharo-time` and
-`pharo-weak` are all still at their recorded scores.
-
-`pharo-collections` is deliberately **not** in `tests/profiles.expected`: it
-does not produce a working image, and recording a score for it would be
-recording a fiction.
+`ManifestCollectionsUnordered` is lint metadata for a browser we do not have.
+`OrderedDictionary`, `OrderedIdentityDictionary` and `KeyedTree` extensions name
+classes this system does not have; the classes themselves live in other
+packages.

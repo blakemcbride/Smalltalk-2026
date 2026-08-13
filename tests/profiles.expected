@@ -24,6 +24,13 @@
 #                                 the object memory does not implement yet;
 #                                 this is Phase F work.
 #
+# pharo-collections runs the st2026 suites against Pharo's Set, Dictionary,
+# IdentityDictionary, Bag and MethodDictionary.  Twelve is the same number
+# st2026 scores, and that is the point of it: the substitution is invisible
+# to everything that was already passing.  The package's OWN tests are not
+# here -- they root on CollectionRootTest in Collections-Abstract-Tests,
+# which is the next package.
+#
 # A profile with no SUnit at all (bluebook) is not listed: it has no
 # TestCase, so there is nothing to ask it.
 #
@@ -32,3 +39,4 @@ st2026                  12   12
 pharo-announcements     48   43
 pharo-time              633  633
 pharo-weak              32   12
+pharo-collections       12   12

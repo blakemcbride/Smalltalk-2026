@@ -903,36 +903,49 @@ references and finalization, which is Phase F).
 Skipped under `OM=bb`, where the bootstrap refuses before reaching a test — the same way
 `test_trace` skips under `mt`.
 
-### Collections-Unordered: the first Tier 2 turn, begun and not finished
+### Collections-Unordered: the first Tier 2 turn *(done)*
 
-Pharo's `Collections-Unordered` is imported at commit `490f37c5` with provenance, and
-`profiles/pharo-collections.profile` loads it — 272 classes, 5258 methods. **It does not yet
-produce a working image**, and the value of the turn so far is that what blocks it is now
-measured instead of guessed.
+`profiles/pharo-collections.profile` builds an image whose `Set`, `Dictionary`,
+`IdentityDictionary`, `IdentitySet`, `Bag` and `MethodDictionary` are **Pharo's** — 272
+classes, 5263 methods, 43 initializers run, none unfinished, not one `doesNotUnderstand` —
+and the `st2026` suites pass on it, 12 of 12. That is the same score the unsubstituted
+profile gets, which is the whole point: the substitution is invisible to everything that
+was already working. It is in `tests/profiles.expected` and `make test` holds it there.
 
-Two predictions, both plausible, both wrong, both recorded in the package's `PROVENANCE.md`
-because being wrong in a documented way is the point of doing it this way round:
+Every symptom — 179715 `nil generality`, eleven unfinished initializers, `Smalltalk at:
+#Object` **dumping core** — was one fault with a very long reach.
+`HashTableSizes class>>initialize` searches for primes with good hashing properties, and
+under this interpreter that search does not finish in two hundred million bytecodes. So
+`sizes` stayed nil, `sizeFor:` answered nil, and *every collection made through `new:` was
+built with a nil capacity* — including the `SystemDictionary` holding every global. A
+half-made dictionary is what dumped core; the nil storm was that same nil arriving somewhere
+far away and being sent something. `lib/Collections-Compat` writes the table down as a
+literal, because a constant that takes forty seconds to recompute per image build is a
+constant and not a computation.
 
-- The C bootstrap builds `Dictionary` instances at four sites, and the two dialects keep
-  their Associations in different places — so those sites should have built malformed
-  objects. They do not: all four go through the image's own `new:` and `add:`, and are
-  layout-agnostic by construction.
-- `MethodDictionary` should have blocked it. Importing Pharo's changed the method count and
-  nothing else; the errors were identical before and after.
+Three smaller faults were real: `SystemDictionary>>at:put:`, the one 1983 method that reaches
+inside a Dictionary, rewritten against Pharo's protocol and still reusing an existing
+Association rather than replacing it (a compiled method holds the Association, not the
+dictionary); and `Integer>>isPrime` and `SequenceableCollection>>at:ifAbsent:`, simply absent.
+And one that was mine: `asCollectionElement` and `enclosedElement` are **one mechanism**, and
+I added the first without the second, so a Set could store elements and not read them back.
+Adding either alone is worse than adding neither.
 
-What actually blocks it is **missing protocol**, the same shape as the Chronology round and
-not architectural at all — `generality` (179715 of them, an identical count across runs,
-so one bounded loop rather than scattered failures), `at:ifAbsent:`, `activeController`,
-`enclosedElement`. Two more are already closed: `Integer>>isPrime`, which
-`HashedCollection class>>sizeFor:` reaches through `HashTableSizes`, and
-`Object>>asCollectionElement`, which Pharo's `Set` asks of every element on the way in.
+**What found it was making the VM say more, not reasoning harder.** Two predictions —
+the C bootstrap's four `Dictionary` sites, and `MethodDictionary` — were plausible and both
+wrong, and are recorded as wrong in the package's `PROVENANCE.md`. What worked was two small
+diagnostics, both of which now apply everywhere: the loader names *every* unfinished
+initializer rather than only the first, and `MessageNotUnderstood` names the receiver's class
+as well as the selector. `Message not understood: at:ifAbsent:` became
+`(sent to a UndefinedObject)`, and that one word turned a wall of failures into a single
+question — *what is answering nil?*
 
-The supersession guard earned its keep here: 19 selectors lost across 7 files, 8 promoted as
-still named. That is the report the whole mechanism was built to produce, and this is the
-first turn big enough to need it.
+The supersession guard earned its keep here too: 19 selectors lost across 7 files, 8 promoted
+as still named. This is the first turn big enough to need it.
 
-`pharo-collections` is deliberately **not** in `tests/profiles.expected`. It does not work,
-and recording a score for it would be recording a fiction.
+Not yet done: the package's **own** tests. They root on `CollectionRootTest` in
+`Collections-Abstract-Tests`, which is the next package. So the 1983 library provably runs on
+Pharo's collections; Pharo's collections have not yet been asked to pass their own suites.
 
 ### The ratchet from here
 

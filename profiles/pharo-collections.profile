@@ -28,15 +28,22 @@ MethodDictionary has exactly that shape, for exactly the reason 1983 did:
 one array of selectors and one of methods, rather than thousands of
 Associations.  So the one class the interpreter cannot afford to have
 change is the one that does not.
+
+The package's own tests are NOT loaded here.  They root on
+CollectionRootTest, which lives in Collections-Abstract-Tests, and pulling
+that in is the next package rather than part of this one.  What this profile
+proves is that the st2026 suites pass against Pharo's collections; what it
+does not yet prove is that Pharo's collections pass their own.
 "
 Profile {
 	#name     : 'pharo-collections',
 	#requires : [ 'st2026' ],
 	#dialect  : 'closures',
 	#exclude   : [ 'ManifestCollectionsUnordered', 'OrderedDictionary',
-	               'OrderedIdentityDictionary', 'KeyedTree' ],
+	               'OrderedIdentityDictionary', 'KeyedTree', 'st80: bootstrap failed: class IdentityBagTest has an unknown superclass BagTest', 'st80: bootstrap failed: class IdentityBagTest has an unknown superclass BagTest', 'st80: bootstrap failed: class IdentityBagTest has an unknown superclass BagTest', 'st80: bootstrap failed: class IdentityBagTest has an unknown superclass BagTest', 'st80: bootstrap failed: class IdentityBagTest has an unknown superclass BagTest', 'st80: bootstrap failed: class IdentityBagTest has an unknown superclass BagTest', 'st80: bootstrap failed: class IdentityBagTest has an unknown superclass BagTest', 'st80: bootstrap failed: class IdentityBagTest has an unknown superclass BagTest' ],
 	#supersede : [ 'Set', 'Dictionary', 'IdentityDictionary', 'IdentitySet',
 	               'Bag', 'MethodDictionary' ],
 	#packages : [ '../pharo/Collections-Unordered',
-	              '../pharo/Kernel-CodeModel-MethodDictionary' ]
+	              '../pharo/Kernel-CodeModel-MethodDictionary',
+	              '../lib/Collections-Compat' ]
 }

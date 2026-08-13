@@ -4677,6 +4677,18 @@ never_initialize[] = {
      */
     { "Symbol", "the symbol table is seeded in C; see seed_symbol_table" },
     /*
+     *  Searches for primes with good hashing properties, and does not
+     *  finish: two hundred million bytecodes is not enough to get through
+     *  the search under this interpreter, so `sizes' stayed nil, sizeFor:
+     *  answered nil, and every collection made through new: was built with
+     *  a nil capacity.  lib/Collections-Compat writes the table down
+     *  instead -- a constant that takes forty seconds to recompute on every
+     *  image build is a constant, not a computation -- so nothing consults
+     *  this class and running it would only cost the forty seconds again.
+     */
+    { "HashTableSizes", "the size table is a literal in "
+                        "lib/Collections-Compat; see sizeFor:" },
+    /*
      *  Reads its button images from Xerox .form files with Form class>>
      *  readFrom:.  There is no file system here and those files are not
      *  ours to ship, so the read cannot succeed.  The class works; its

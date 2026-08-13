@@ -229,6 +229,26 @@ Object >> asCollectionElement [
 
 	 Answering self here means a Set in this system cannot hold nil.  That
 	 is the same limitation 1983's Set has, so nothing regresses; adding
-	 CollectionElement is what would lift it."
+	 CollectionElement is what would lift it.
+
+	 See enclosedElement below: these two are one mechanism and adding
+	 either without the other is worse than adding neither."
+	^self
+]
+
+{ #category : '*Kernel-Protocol' }
+Object >> enclosedElement [
+	"Me, unwrapped, on the way back OUT of a Set.
+
+	 The other half of asCollectionElement, and the half I forgot.  Pharo's
+	 Set wraps on the way in and unwraps on the way out, so a Set whose
+	 elements can be stored and not read answers nil for every one of them
+	 -- and nil then flows into whatever asked, which sends it something,
+	 which fails somewhere else entirely.  One bootstrap produced 110170
+	 `nil generality', 6024 `nil at:ifAbsent:' and 6008 `nil
+	 activeController' from this single omission, and not one of those
+	 messages names a Set.
+
+	 Only a wrapper answers anything but itself."
 	^self
 ]

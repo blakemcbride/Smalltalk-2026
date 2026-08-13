@@ -39,7 +39,24 @@ MessageNotUnderstood >> isResumable [
 
 { #category : 'accessing' }
 MessageNotUnderstood >> description [
-	^message isNil
-		ifTrue: ['Message not understood']
-		ifFalse: ['Message not understood: ', message selector]
+	"Name the RECEIVER's class as well as the selector.
+
+	 A bare `Message not understood: at:ifAbsent:' says which method is
+	 missing and not which class should have had it, and those are different
+	 questions -- the second is the one that leads anywhere.  Finding the
+	 receiver of a doesNotUnderstand: without this means adding a handler,
+	 rebuilding, and running again, and I have done that twice: once chasing
+	 `second' through the Chronology suites and once chasing this very
+	 selector through Collections-Unordered.
+
+	 Guarded, because this runs on the error path and must not raise a
+	 second error while reporting the first: a receiver whose class chain is
+	 broken is exactly the kind of object that gets here."
+	| where |
+	message isNil ifTrue: [^'Message not understood'].
+	where := [receiver class name] on: Error do: [:e | e return: nil].
+	^where isNil
+		ifTrue: ['Message not understood: ', message selector]
+		ifFalse: ['Message not understood: ', message selector,
+			' (sent to a ', where, ')']
 ]
