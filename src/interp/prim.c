@@ -1254,7 +1254,7 @@ static int
 primitive_tick_words_into(void)
 {
     st_oop      target = ST_stack_value(0);
-    uint32_t    ticks = (uint32_t) (ST_time_monotonic_ns() / 1000000);
+    uint32_t    ticks = ST_time_ms_clock();
 
     if (!store_32_into(target, ticks))
         return 0;
@@ -1853,15 +1853,72 @@ primitive_relinquish_processor(void)
  *  135 and 240: the clocks Delay is built on.
  *
  *  240 is the UTC microsecond clock, which Pharo's DelayMicrosecondTicker
- *  and Time class>>primUTCMicrosecondsClock both name.  Both count from
- *  the Smalltalk epoch, 1 January 1901, because that is what the image's
- *  own date arithmetic expects.
+ *  and Time class>>primUTCMicrosecondsClock both name.  It counts from the
+ *  Smalltalk epoch, 1 January 1901, because that is what the image's own
+ *  date arithmetic expects.
+ *
+ *  135 does NOT.  It is the same free-running counter primitive 99 answers
+ *  -- see ST_time_ms_clock for why the two had to be made one, and what
+ *  eight hours of disagreement between them did to every Delay.
  */
 static int
 primitive_millisecond_clock(void)
 {
-    return answer_positive((uint64_t) ST_time_smalltalk_ms()
-                           & 0x3FFFFFFFu, 1);
+    return answer_positive(ST_time_ms_clock(), 1);
+}
+
+/*
+ *  100 and 136: signal that semaphore when the millisecond clock reaches
+ *  that value.  One request outstanding, re-armed by each call and cancelled by
+ *  a nil semaphore -- the image keeps the queue of waiting Delays itself
+ *  and asks the VM only about the nearest one.
+ *
+ *  Answering the receiver rather than failing on a nil semaphore is what
+ *  Delay class>>startTimerEventLoop wants: it disarms with
+ *  `Processor signal: nil atTime: 0' before installing its own loop, and a
+ *  primitive failure there sends the fallback code down a path that
+ *  assumes a live timer.
+ */
+static int
+primitive_signal_at_time(void)
+{
+    st_oop  when      = ST_stack_value(0);
+    st_oop  semaphore = ST_stack_value(1);
+
+    if (!OM_is_int(when))
+        return 0;
+    SCHED_signal_at_ms(semaphore, (uint32_t) OM_int_value(when));
+    ST_pop_n(2);                /*  answers the receiver  */
+    return 1;
+}
+
+/*
+ *  100 is the same operation with the 1983 calling convention, and it is
+ *  the one that matters here: ProcessorScheduler>>signal:atMilliseconds:
+ *  is what sources/ actually sends, having taken the number apart into a
+ *  four-byte indexable object, low order first.  136 is Squeak's later
+ *  spelling with a plain SmallInteger.  Both are answered because both
+ *  arrive -- the 1983 Delay through 100, anything ported through 136 --
+ *  and the difference is entirely in how the argument is spelled.
+ *
+ *  Looking for 136 alone is why the first version of this changed nothing:
+ *  the timer was implemented, correct, and never once armed.
+ */
+static int
+primitive_signal_at_milliseconds(void)
+{
+    st_oop      bytes     = ST_stack_value(0);
+    st_oop      semaphore = ST_stack_value(1);
+    uint32_t    when      = 0;
+    uint32_t    i;
+
+    if (!OM_is_object(bytes) || OM_fetch_byte_length(bytes) < 4)
+        return 0;
+    for (i = 0; i < 4; ++i)
+        when |= (uint32_t) OM_fetch_byte(i, bytes) << (8 * i);
+    SCHED_signal_at_ms(semaphore, when);
+    ST_pop_n(2);                /*  answers the receiver  */
+    return 1;
 }
 
 static int
@@ -2121,7 +2178,9 @@ ST_primitive_dispatch(unsigned index)
     case  58: return primitive_float_ln();
     case  59: return primitive_float_exp();
     case 132: return primitive_inst_vars_include();
+    case 100: return primitive_signal_at_milliseconds();
     case 135: return primitive_millisecond_clock();
+    case 136: return primitive_signal_at_time();
     case 148: return primitive_shallow_copy();
     case 159: return primitive_hash_multiply();
     case 163: return primitive_answer_false_of_receiver();  /*  isReadOnly  */
@@ -2246,7 +2305,9 @@ static const primitive_entry primitive_table[] = {
     {  58, ST_PRIM_PRESENT,  "Float ln"                         },
     {  59, ST_PRIM_PRESENT,  "Float exp"                        },
     { 132, ST_PRIM_PRESENT,  "Object instVarsInclude:"          },
+    { 100, ST_PRIM_PRESENT,  "signal a semaphore at a time"     },
     { 135, ST_PRIM_PRESENT,  "millisecond clock"                },
+    { 136, ST_PRIM_PRESENT,  "signal a semaphore at a time"     },
     { 148, ST_PRIM_PRESENT,  "Object shallowCopy / clone"       },
     { 159, ST_PRIM_PRESENT,  "Integer hashMultiply"             },
     { 163, ST_PRIM_PRESENT,  "Object isReadOnly -- always false here" },

@@ -109,6 +109,15 @@ int         SCHED_primitive_resume(void);
 int         SCHED_primitive_suspend(void);
 
 /*  Set by primitive 93; signalled when input arrives.  */
+/*
+ *  The delay timer -- primitive 136.  See the block in st_sched.c for why
+ *  it has to be a thread of its own rather than a poll in the idle loop.
+ */
+void        SCHED_signal_at_ms(st_oop semaphore, uint32_t target_ms);
+int         SCHED_timer_pending(void);
+st_oop      SCHED_timer_semaphore(void);
+void        SCHED_timer_stop(void);
+
 void        SCHED_set_input_semaphore(st_oop semaphore);
 st_oop      SCHED_input_semaphore(void);
 

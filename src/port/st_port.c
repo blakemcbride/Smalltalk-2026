@@ -561,3 +561,10 @@ ST_sleep_ns(int64_t ns)
 }
 
 #endif
+
+/*  Platform-independent: one clock for every caller.  See st_port.h.  */
+uint32_t
+ST_time_ms_clock(void)
+{
+    return (uint32_t) ((ST_time_monotonic_ns() / 1000000) & 0x3FFFFFFF);
+}

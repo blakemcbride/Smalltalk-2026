@@ -2940,15 +2940,30 @@ append_method_class_literal(st_compiler *c)
  *  instead of being spread over every emit site.  Jumps are ignored: the
  *  compiler only ever generates branches whose arms leave the stack at the
  *  same depth, so a straight walk gives the true maximum.
+ *
+ *  Block bodies are walked too, and that is not obvious enough to leave
+ *  unsaid.  A closure's body is emitted inside its home method's bytecodes
+ *  and jumped over at run time, so it looks like somebody else's problem --
+ *  and this walk used to skip it, on the stated grounds that a block's
+ *  depth belongs to the block's own frame.  It does not: ST_closure_as_context
+ *  sizes a block activation from the HOME METHOD'S header, because that
+ *  header is the only frame size there is.  One number covers both, so it
+ *  has to be the larger.
+ *
+ *  DateAndTime>>translateTo: is the method that proved it: a body of two
+ *  sends around a block that sends year:month:day:hour:minute:second:
+ *  nanoSecond:offset: with six of the nine arguments computed inline.  The
+ *  method needed a frame of 3 and the block needed 19, the header said 3,
+ *  and the block activation overflowed the context it was given.
  */
 static unsigned
-max_stack_depth(const st_compiled_code *code)
+max_stack_depth_range(const st_compiled_code *code, unsigned from, unsigned to)
 {
     int         depth = 0;
     int         highest = 0;
     unsigned    i;
 
-    for (i = 0; i < code->length; ++i) {
+    for (i = from; i < to; ++i) {
         uint8_t     b = code->bytecodes[i];
         int         effect = 0;
 
@@ -3010,10 +3025,23 @@ max_stack_depth(const st_compiled_code *code)
              *  because its depth belongs to its own frame and not to this
              *  one.
              */
-            uint8_t counts = code->bytecodes[i + 1];
-            unsigned block_size = (unsigned) code->bytecodes[i + 2] * 256
-                                + code->bytecodes[i + 3];
+            uint8_t     counts     = code->bytecodes[i + 1];
+            unsigned    block_size = (unsigned) code->bytecodes[i + 2] * 256
+                                   + code->bytecodes[i + 3];
+            unsigned    body       = i + 4;
+            unsigned    end        = body + block_size;
+            /*
+             *  The block's frame holds its arguments, its copied values and
+             *  its own working stack, and shares the home method's size.
+             */
+            int         need;
 
+            if (end > code->length)
+                end = code->length;
+            need = (int) (counts & 15) + (int) (counts >> 4)
+                 + (int) max_stack_depth_range(code, body, end);
+            if (need > highest)
+                highest = need;
             effect = 1 - (int) (counts >> 4);
             i += 3 + block_size;
         }  else if (b >= 96 && b <= 111) {
@@ -3042,6 +3070,12 @@ max_stack_depth(const st_compiled_code *code)
             depth = 0;
     }
     return (unsigned) highest;
+}
+
+static unsigned
+max_stack_depth(const st_compiled_code *code)
+{
+    return max_stack_depth_range(code, 0, code->length);
 }
 
 /*  ----------  The method pattern  ----------  */

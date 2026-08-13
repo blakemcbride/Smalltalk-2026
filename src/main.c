@@ -169,6 +169,7 @@ do_census(const char *path)
         if (c.refcount_histogram[i])
             printf("%6u %u\n", c.refcount_histogram[i], i);
     }
+    SCHED_timer_stop();
     OM_shutdown();
     return 0;
 }
@@ -190,6 +191,7 @@ do_classes(const char *path)
         ++n;
     }
     fprintf(stderr, "%d classes\n", n);
+    SCHED_timer_stop();
     OM_shutdown();
     return 0;
 }
@@ -216,6 +218,7 @@ do_methods(const char *path)
         return 1;
     n = OM_walk_methods(emit_method, NULL);
     fprintf(stderr, "%u methods\n", n);
+    SCHED_timer_stop();
     OM_shutdown();
     return 0;
 }
@@ -239,6 +242,7 @@ do_trace(const char *path, st_trace_mode mode, uint64_t limit)
     ST_trace_set(mode, stdout);
     ST_interp_run(limit);
     ST_trace_set(ST_TRACE_OFF, NULL);
+    SCHED_timer_stop();
     OM_shutdown();
     return 0;
 }
@@ -526,6 +530,7 @@ do_run(const char *path, uint64_t max_cycles)
     }
     if (GFX_is_open())
         GFX_close();
+    SCHED_timer_stop();
     OM_shutdown();
     return 0;
 }
@@ -1045,14 +1050,28 @@ do_bootstrap(const char *const *sources, const int *dialects, unsigned count,
     }
 
     if (run_tests) {
-        st_oop  passed;
+        /*
+         *  One run, asked two questions.
+         *
+         *  This used to evaluate `TestCase allTests run' twice -- once to
+         *  print the report and again to ask whether it passed -- which ran
+         *  every test in the image twice and could answer on a different run
+         *  than the one it printed.
+         *
+         *  One expression rather than a global between two, because each
+         *  -eval is compiled on its own against the globals the image was
+         *  BUILT with: a name put into Smalltalk at run time is not one the
+         *  next expression's compiler can see, so it reads as nil and the
+         *  question goes to nobody.
+         */
+        st_oop  passed = evaluate(
+            "| r | r := TestCase allTests run. r report. ^r hasPassed",
+            err, sizeof err);
 
-        if (evaluate("TestCase allTests run report", err, sizeof err)
-                == ST_OOP_INVALID) {
+        if (passed == ST_OOP_INVALID) {
             fprintf(stderr, "st80: %s\n", err);
             return 1;
         }
-        passed = evaluate("TestCase allTests run hasPassed", err, sizeof err);
         if (passed != ST_TRUE)
             return 1;
     }
@@ -1106,6 +1125,7 @@ do_bootstrap(const char *const *sources, const int *dialects, unsigned count,
         return 1;
 #endif
     }
+    SCHED_timer_stop();
     OM_shutdown();
     return 0;
 }
@@ -1129,12 +1149,14 @@ do_inspect(const char *path, const char *oop_text)
     if (OM_is_int(p)) {
         printf("kind           : SmallInteger %lld\n",
                (long long) OM_int_value(p));
-        OM_shutdown();
+        SCHED_timer_stop();
+    OM_shutdown();
         return 0;
     }
     if (!OM_is_object(p)) {
         printf("kind           : not a live object\n");
-        OM_shutdown();
+        SCHED_timer_stop();
+    OM_shutdown();
         return 0;
     }
     printf("reference count: %u\n", OM_count_bits(p));
@@ -1190,7 +1212,8 @@ do_inspect(const char *path, const char *oop_text)
         for (i = start; i < n; ++i)
             printf(" %u", OM_fetch_byte(i, p));
         printf("\n");
-        OM_shutdown();
+        SCHED_timer_stop();
+    OM_shutdown();
         return 0;
     }
     if (!OM_pointer_bit(p)) {
@@ -1217,6 +1240,7 @@ do_inspect(const char *path, const char *oop_text)
             printf("\n");
         }
     }
+    SCHED_timer_stop();
     OM_shutdown();
     return 0;
 }

@@ -622,6 +622,62 @@ the refusal already having been reported once.
 identity the distinction has nowhere to show. Pharo's identity collections send it, and
 they are right to.
 
+### Delay, and the four faults between a suite and its number *(done)*
+
+`TestCase allTests run` on the Chronology profile reported nothing at all: four test classes
+waited on a `Delay`, deadlocked the image, and took 559 passing tests down with them. The
+package was declared done on the strength of per-class runs, which is exactly the kind of
+judgement the ratchet count exists to replace.
+
+Four faults, each hiding the next, and each worth keeping because each is a *shape* of
+mistake rather than a typo:
+
+1. **The primitive that was implemented was not the one being sent.** Squeak's `Delay` uses
+   primitive 136; 1983's sends `ProcessorScheduler>>signal:atMilliseconds:`, **primitive
+   100**, with a four-byte little-endian `ByteArray`. Implementing 136 alone changed
+   nothing — the timer was correct, complete, and never once armed. Both are implemented now.
+2. **Two clocks with one name.** Primitive 99 answered monotonic milliseconds since boot;
+   primitive 135 answered milliseconds since 1901. Both called themselves the millisecond
+   clock, and they were eight hours apart. The image computed a delay's resumption time on
+   one and the VM compared it against the other, so every delay was already in the past and
+   fired instantly — which looks exactly like a delay that works, right up until something
+   measures it. My own isolated probe passed for that reason before the timing was checked.
+   `ST_time_ms_clock` is now the single source: monotonic, thirty bits, used by 99, 135 and
+   the timer alike.
+3. **"Pending" ended before delivery began.** The timer cleared `timer_armed` and *then*
+   posted its signal. A waiter asking "is a timer still pending?" got `false` in the
+   microseconds between, and gave up a moment before the thing it waited for arrived.
+   `timer_delivering` closes it: a timer that has fired but not yet delivered is still
+   pending, because to everyone waiting it has not happened.
+4. **An empty ready list is not a deadlock.** `SCHED_resume` does not queue a process that
+   outranks the running one — it *nominates* it, leaving the ready lists deliberately empty
+   so the switch happens at the top of the interpreter's loop. `Delay`'s timing process runs
+   at priority 8 and every delay is awaited from below it, so **every** delay took that path:
+   the semaphore was signalled, the right process was chosen, and `SCHED_suspend_active`
+   looked at the empty lists and announced the image was wedged.
+
+The timer thread is Phase L's design as written: dedicated, over `ST_monotonic_ns`. It cannot
+be a poll in the idle loop, because a delay expiring while nothing runs is the whole point —
+with every process waiting on one, there is no worker left to notice.
+
+The fourth fault also unblocked `max_stack_depth`, which skipped block bodies on the stated
+grounds that "a block's depth belongs to its own frame". It does not: `ST_closure_as_context`
+sizes a block activation from the **home method's** header, because that header is the only
+frame size there is. `DateAndTime>>translateTo:` needed 3 slots for its body and 19 for its
+block, and the header said 3.
+
+A fifth thing, found only because the fix came with a test that waits: TSAN
+reported two races in the async signal queue, both older than the timer and both
+invisible until it existed — an unlocked read of `async_count`, and a lazy
+`pthread_mutex_init` that a foreign producer could run while a worker held the
+lock. Fixed, and recorded in `CONCURRENCY.md`. The general point is worth more
+than the two fixes: **a sanitiser only sees code that runs**, and for the whole
+life of this system no test had ever waited on a delay.
+
+**Result: 0 tests executed → 633 run, 275 passed, 16 failed, 354 errors.** The errors are now
+missing protocol rather than deadlocks, and `readStream` and `second` alone are 308 of them.
+That number is the ratchet Phase M is measured by, and it exists for the first time.
+
 ### The supersession guard *(done)*
 
 A `#supersede` is the only thing the loader does that removes behaviour without anything

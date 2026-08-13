@@ -32,7 +32,16 @@
 #define ASYNC_QUEUE_MAX     64
 
 static st_oop   async_queue[ASYNC_QUEUE_MAX];
-static int      async_count;
+/*
+ *  Atomic because drain_async_signals reads it WITHOUT the lock, to skip an
+ *  empty queue without paying for one -- and that read is on the hot path
+ *  of every send.  The unlocked read was always there and was always a
+ *  race; it went unreported because until the delay timer there was no
+ *  producer running concurrently with a worker that could be interpreting.
+ *  A relaxed load keeps the shortcut and gives it a defined meaning: a
+ *  stale zero costs one more pass round the caller's loop and nothing else.
+ */
+static st_atomic_int    async_count;
 static st_mutex async_lock;
 static int      async_lock_ready;
 
@@ -50,6 +59,233 @@ async_lock_init(void)
         return;
     ST_mutex_init(&async_lock);
     async_lock_ready = 1;
+}
+
+/*  ----------  The delay timer  ----------
+ *
+ *  Primitive 136, `Processor signal: aSemaphore atTime: ms'.  One pending
+ *  request, re-armed on every call and cancelled by a nil semaphore, which
+ *  is the whole of the Blue Book contract: the image keeps the queue of
+ *  waiting Delays in Smalltalk and asks the VM only for the next one.
+ *
+ *  It is a thread of its own, and that is forced rather than chosen.  A
+ *  delay expires while nothing is running -- that is what a delay IS -- so
+ *  whoever notices cannot be a worker interpreting bytecodes.  Nor can it
+ *  be the idle loop below: with every process waiting on a Delay, every
+ *  worker is in that loop, and a loop that only polls what is ready would
+ *  spin until the heat death of the machine.  Something outside the
+ *  scheduler has to hold the clock.
+ *
+ *  Without it the four Chronology test classes that wait on a Delay --
+ *  BlockClosureValueWithinTest and its Duration twin, StopwatchTest,
+ *  DateAndTimeLeapTest -- parked on a semaphore nothing would ever signal
+ *  and took the whole run down with them, so 559 passing tests in the same
+ *  image reported nothing at all.
+ */
+
+static st_mutex     timer_lock;
+static st_cond      timer_cond;
+static int          timer_ready;            /*  lock and cond initialised  */
+static st_oop       timer_semaphore = ST_NIL;
+static int64_t      timer_deadline_ns;
+static int          timer_armed;
+/*
+ *  True from the instant the timer stops being armed until its signal is
+ *  actually in the async queue.
+ *
+ *  Those are not the same moment, and the gap between them is microseconds
+ *  wide and perfectly reliable: the waiter's loop asks "is a timer still
+ *  pending?", the answer turns false as the timer fires, and the waiter
+ *  gives up a moment before the signal it was waiting for arrives.  Every
+ *  Delay in the system deadlocked on that window.  A timer that has fired
+ *  but not yet delivered is still pending, because to everyone waiting it
+ *  has not happened yet.
+ */
+static int          timer_delivering;
+static int          timer_stopping;
+static st_thread    timer_thread;
+static int          timer_started;
+
+/*
+ *  The millisecond clock primitive 135 answers wraps at 2^30, so a target
+ *  time does too, and "is this in the past" cannot be a plain comparison.
+ *  The difference is taken in the modulus and read as signed: more than
+ *  half a wrap away in front means it is really behind, which is what the
+ *  Blue Book's own delay arithmetic assumes.
+ */
+#define MS_CLOCK_MODULUS    (1u << 30)
+
+static int64_t
+milliseconds_until(uint32_t target_ms)
+{
+    uint32_t    now   = ST_time_ms_clock();
+    uint32_t    delta = (target_ms - now) & (MS_CLOCK_MODULUS - 1);
+
+    if (delta >= MS_CLOCK_MODULUS / 2)
+        return 0;                       /*  already past  */
+    return (int64_t) delta;
+}
+
+static void drain_async_signals(void);
+
+static void
+timer_init(void)
+{
+    if (timer_ready)
+        return;
+    ST_mutex_init(&timer_lock);
+    ST_cond_init(&timer_cond);
+    timer_ready = 1;
+}
+
+/*
+ *  True while a delay is outstanding.
+ *
+ *  The idle loop asks, because "every worker is idle" and "nothing can ever
+ *  run again" are the same sentence only when no clock is counting.  A
+ *  delay of a second in an otherwise quiet image is every worker idle for
+ *  a second, and calling that a deadlock would have made Delay unusable in
+ *  exactly the case it exists for.
+ */
+int
+SCHED_timer_pending(void)
+{
+    int result;
+
+    if (!timer_ready)
+        return 0;
+    ST_mutex_lock(&timer_lock);
+    result = timer_armed || timer_delivering;
+    ST_mutex_unlock(&timer_lock);
+    return result;
+}
+
+/*
+ *  The semaphore a pending delay will signal, as a root.
+ *
+ *  Held in C and reachable from nowhere in the image once the Delay has
+ *  handed it over, so provide_roots visits it.  Deliberately NOT a slot in
+ *  st_om_vm_state: that array is written into every snapshot, so adding to
+ *  it changes the image format, and a delay armed before a snapshot should
+ *  not fire in the image that resumes it hours later anyway.
+ */
+st_oop
+SCHED_timer_semaphore(void)
+{
+    return timer_semaphore;
+}
+
+static void
+timer_main(void *arg)
+{
+    (void) arg;
+    ST_mutex_lock(&timer_lock);
+    for (;;) {
+        if (timer_stopping)
+            break;
+        if (!timer_armed) {
+            ST_cond_wait(&timer_cond, &timer_lock);
+            continue;
+        }
+        {
+            int64_t remaining = timer_deadline_ns - ST_time_monotonic_ns();
+
+            if (remaining > 0) {
+                /*
+                 *  Timed, not indefinite: re-arming while this waits must
+                 *  be able to shorten the deadline, and a spurious wake
+                 *  costs one trip round the loop.
+                 */
+                ST_cond_timedwait(&timer_cond, &timer_lock, remaining);
+                continue;
+            }
+        }
+        {
+            st_oop  semaphore = timer_semaphore;
+
+            timer_armed      = 0;
+            timer_semaphore  = ST_NIL;
+            timer_delivering = 1;
+            /*
+             *  Signalled with the lock dropped.  SCHED_asynchronous_signal
+             *  takes the async lock, and holding two of this system's locks
+             *  at once is how a lock order gets invented by accident.
+             */
+            ST_mutex_unlock(&timer_lock);
+            SCHED_asynchronous_signal(semaphore);
+            OM_decrease_ref(semaphore);
+            ST_mutex_lock(&timer_lock);
+            /*
+             *  Cleared here and not before.  A re-arm during the delivery
+             *  above sets timer_armed again, so this must not touch it.
+             */
+            timer_delivering = 0;
+        }
+    }
+    ST_mutex_unlock(&timer_lock);
+}
+
+/*
+ *  Arm, re-arm or cancel.  A nil semaphore cancels, which is how the image
+ *  says `Processor signal: nil atTime: 0'.
+ */
+void
+SCHED_signal_at_ms(st_oop semaphore, uint32_t target_ms)
+{
+    timer_init();
+    /*
+     *  The async queue's lock is made HERE, on the thread arming the timer,
+     *  and not left to the timer thread that will use it.
+     *
+     *  async_lock_init is lazy on purpose (see its own note), and lazy is
+     *  fine while every caller is a worker.  The timer is not a worker: it
+     *  is created below, and if it were the first to post a signal it would
+     *  run pthread_mutex_init on a mutex a worker was already locking.  TSAN
+     *  reported exactly that.  Arming always precedes the thread that
+     *  delivers, so doing it here makes the initialisation strictly
+     *  happen-before every use.
+     */
+    async_lock_init();
+    ST_mutex_lock(&timer_lock);
+    if (OM_is_present(timer_semaphore))
+        OM_decrease_ref(timer_semaphore);
+    timer_semaphore = ST_NIL;
+    timer_armed     = 0;
+    if (OM_is_present(semaphore)) {
+        OM_increase_ref(semaphore);
+        timer_semaphore   = semaphore;
+        timer_deadline_ns = ST_time_monotonic_ns()
+                          + milliseconds_until(target_ms) * 1000000;
+        timer_armed       = 1;
+    }
+    ST_cond_broadcast(&timer_cond);
+    ST_mutex_unlock(&timer_lock);
+
+    if (!timer_started) {
+        timer_started = 1;
+        if (ST_thread_create(&timer_thread, timer_main, NULL) != 0) {
+            fprintf(stderr, "st80: cannot start the delay timer\n");
+            timer_started = 0;
+        }
+    }
+}
+
+void
+SCHED_timer_stop(void)
+{
+    if (!timer_started)
+        return;
+    ST_mutex_lock(&timer_lock);
+    timer_stopping = 1;
+    ST_cond_broadcast(&timer_cond);
+    ST_mutex_unlock(&timer_lock);
+    ST_thread_join(timer_thread);
+    timer_started  = 0;
+    timer_stopping = 0;
+    if (OM_is_present(timer_semaphore))
+        OM_decrease_ref(timer_semaphore);
+    timer_semaphore = ST_NIL;
+    timer_armed     = 0;
 }
 
 static st_oop   input_semaphore = ST_NIL;
@@ -562,7 +798,8 @@ SCHED_suspend_active(void)
              *  everyone briefly idle with work already in flight, and
              *  believing that instant costs exactly one process.
              */
-            if (ST_load_seq(&idle_workers) >= (int) WORKER_count()) {
+            if (ST_load_seq(&idle_workers) >= (int) WORKER_count()
+             && !SCHED_timer_pending()) {
                 if (++all_idle >= ALL_IDLE_CONFIRMATIONS)
                     break;
             }  else {
@@ -570,12 +807,51 @@ SCHED_suspend_active(void)
             }
             WORKER_poll();
             ST_sleep_ns(IDLE_WAIT_SLICE_NS);
+            drain_async_signals();
             next = SCHED_wake_highest_priority();
             if (next != ST_NIL)
                 break;
         }
         ST_fetch_sub_relaxed(&idle_workers, 1);
     }
+
+    /*
+     *  A delay outstanding is not a deadlock, it is a wait -- and with one
+     *  worker the loop above does not run at all, so this is the only place
+     *  that notices.  Sleep in slices rather than on the timer's condvar:
+     *  this thread must keep polling safepoints, and a thread asleep on
+     *  another subsystem's condvar is a thread the collector waits for.
+     */
+    while (next == ST_NIL && !new_process_waiting && SCHED_timer_pending()) {
+        WORKER_poll();
+        ST_sleep_ns(IDLE_WAIT_SLICE_NS);
+        drain_async_signals();
+        next = SCHED_wake_highest_priority();
+    }
+    if (next == ST_NIL && !new_process_waiting) {
+        /*  One last look: the timer may have fired as the loop gave up.  */
+        drain_async_signals();
+        next = SCHED_wake_highest_priority();
+    }
+
+    /*
+     *  A nomination is not an empty run queue, and reading it as one is how
+     *  a woken process was lost.
+     *
+     *  Signalling a semaphore resumes whoever waited on it, and SCHED_resume
+     *  does not queue a process that outranks the running one -- it NOMINATES
+     *  it, leaving the ready lists empty on purpose so the switch happens at
+     *  the top of the interpreter's loop.  Delay's timing process runs at
+     *  priority 8 and every delay is awaited from a lower one, so every
+     *  single delay took this path: the semaphore was signalled, the right
+     *  process was chosen to run next, and this function looked at the empty
+     *  ready lists and announced that the image was deadlocked.
+     *
+     *  Nothing more is needed here -- the nomination IS the answer, and
+     *  returning lets check_process_switch act on it.
+     */
+    if (new_process_waiting)
+        return;
 
     if (next == ST_NIL) {
         fprintf(stderr, "st80: every process is blocked; nothing can run\n");
@@ -666,10 +942,46 @@ SCHED_asynchronous_signal(st_oop semaphore)
         return;
     async_lock_init();
     ST_mutex_lock(&async_lock);
-    if (async_count < ASYNC_QUEUE_MAX)
-        async_queue[async_count++] = semaphore;
-    /*  else drop rather than corrupt, as before  */
+    {
+        int n = ST_load_relaxed(&async_count);
+
+        if (n < ASYNC_QUEUE_MAX) {
+            async_queue[n] = semaphore;
+            ST_store_release(&async_count, n + 1);
+        }
+        /*  else drop rather than corrupt, as before  */
+    }
     ST_mutex_unlock(&async_lock);
+}
+
+/*
+ *  Turn signals posted by other threads into ready processes.
+ *
+ *  Called from the interpreter's loop and again from the scheduler's idle
+ *  wait, because those are two different moments: the loop runs when a
+ *  process is running, and the wait runs when none is.  A delay expiring
+ *  is precisely the second case, so draining only in the first left the
+ *  timer's signal sitting in the queue while the scheduler concluded that
+ *  nothing could ever run.
+ */
+static void
+drain_async_signals(void)
+{
+    if (ST_load_acquire(&async_count) > 0) {
+        st_oop      pending[ASYNC_QUEUE_MAX];
+        int         count;
+        int         i;
+
+        ST_mutex_lock(&async_lock);
+        count = ST_load_relaxed(&async_count);
+        for (i = 0; i < count; ++i)
+            pending[i] = async_queue[i];
+        ST_store_relaxed(&async_count, 0);
+        ST_mutex_unlock(&async_lock);
+
+        for (i = 0; i < count; ++i)
+            SCHED_synchronous_signal(pending[i]);
+    }
 }
 
 void
@@ -682,21 +994,7 @@ SCHED_check_process_switch(void)
      *  stripe-lock rule above exists to forbid.  The same reasoning
      *  applies here and to every lock this system will ever add.
      */
-    if (async_count > 0) {
-        st_oop      pending[ASYNC_QUEUE_MAX];
-        int         count;
-        int         i;
-
-        ST_mutex_lock(&async_lock);
-        count = async_count;
-        for (i = 0; i < count; ++i)
-            pending[i] = async_queue[i];
-        async_count = 0;
-        ST_mutex_unlock(&async_lock);
-
-        for (i = 0; i < count; ++i)
-            SCHED_synchronous_signal(pending[i]);
-    }
+    drain_async_signals();
     if (!new_process_waiting)
         return;
     new_process_waiting = 0;

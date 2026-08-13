@@ -1458,7 +1458,35 @@ test_process_scheduler(void)
      *  says anything about whether the processes were forked at all.
      */
     check_oop("^((Processor instVarAt: 1) at: 8) isEmpty", ST_FALSE, "false");
+
     check_oop("^((Processor instVarAt: 1) at: 6) isEmpty", ST_FALSE, "false");
+
+    /*
+     *  And that the timing process, once running, actually does its job.
+     *
+     *  Everything above says a Delay's machinery was BUILT.  None of it says
+     *  a delay ever returns, and for the whole life of this system none did:
+     *  primitive 100 was missing, then it compared against a different clock
+     *  than the image had used, then the scheduler read the woken process's
+     *  nomination as an empty run queue and called the image deadlocked.
+     *  Four faults in the one path, and every test in the tree passed
+     *  throughout, because no test ever waited.
+     *
+     *  After both queue assertions above, and that is not arbitrary: this
+     *  check WAITS, and a wait runs whatever is ready -- which takes those
+     *  two system processes off the queues those checks are about.  Putting
+     *  it earlier failed the priority-6 assertion, exactly as the note above
+     *  says it would.
+     *
+     *  Both halves are asserted, and the second is the one that matters:
+     *  a delay that returns immediately looks exactly like a delay that
+     *  works.  That is not hypothetical -- it is how the clock mismatch hid,
+     *  and it passed a hand-written probe of mine before the elapsed time
+     *  was checked.
+     */
+    check_oop("| t | t := Time millisecondClockValue. "
+              "(Delay forMilliseconds: 60) wait. "
+              "^(Time millisecondClockValue - t) >= 50", ST_TRUE, "true");
 
     /*
      *  Yielding, which is the smallest thing that needs two processes.

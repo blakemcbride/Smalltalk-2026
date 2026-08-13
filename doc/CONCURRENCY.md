@@ -93,6 +93,11 @@ Thread 0        Dedicated SDL pump. Owns the window, renderer and texture.
 
 Threads 1..N    Smalltalk workers, N ~ CPU count. Run bytecodes, allocate from
                 thread-local buffers, poll safepoints. Never call SDL video.
+
+Delay timer     One request outstanding, armed by primitive 100 or 136. Sleeps
+                on a condvar until the deadline, then posts to the async signal
+                queue. Never executes Smalltalk bytecodes, never touches the
+                object memory beyond one refcount on the semaphore it holds.
 ```
 
 Thread 0 is not a worker by design. If it were, it could be parked in a GC
@@ -104,6 +109,36 @@ compositor. SDL3's own rules also force this: `SDL_PumpEvents`, `SDL_WaitEvent`,
 Smalltalk `Process` objects remain green and cheap, multiplexed M:N over the
 worker pool with per-worker ready queues and work stealing. `Processor
 activeProcess` is per-worker state.
+
+The timer has to be a thread and not a poll in the idle loop, and the reason is
+the whole nature of a delay: it expires while nothing is running. With every
+process waiting on one, every worker is in the idle loop, and a loop that only
+looks at what is already ready will look forever. Something outside the
+scheduler has to hold the clock.
+
+Two rules came out of building it, both learned by getting them wrong:
+
+- **A timer that has fired but not yet delivered is still pending.** Clearing
+  the armed flag before posting the signal leaves a window — microseconds wide,
+  perfectly reliable — in which a waiter asks "is anything still coming?", hears
+  no, and gives up just before it arrives. Every `Delay` in the system
+  deadlocked there.
+- **A new producer turns latent races into real ones.** TSAN found two the
+  moment the timer existed, both in the async signal queue and both older than
+  the timer: `drain_async_signals` read `async_count` unlocked to skip an empty
+  queue, and `async_lock_init` was lazy, so whichever thread posted first ran
+  `pthread_mutex_init` on a mutex another thread might already be locking. Until
+  the timer, every producer was a worker and neither could be caught. The count
+  is now atomic — the unlocked shortcut stays, with a defined meaning: a stale
+  zero costs one more pass and nothing else — and the lock is made on the thread
+  that arms the timer, which always runs before the thread that delivers.
+  **TSAN reports only races that actually executed**, and the code that executes
+  is the code some test exercises; no test had ever waited on a delay.
+- **There is one millisecond clock.** Primitive 99 read the monotonic counter
+  and primitive 135 read milliseconds since 1901; both called themselves the
+  millisecond clock and were eight hours apart. The image computed a deadline on
+  one and the VM compared it against the other. `ST_time_ms_clock` is now the
+  only source, and primitive 240 stays the wall clock that dates are read from.
 
 ## The safepoint's contract, and one way it was broken
 

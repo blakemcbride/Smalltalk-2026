@@ -123,6 +123,26 @@ int     ST_tls_set(st_tls_key k, void *value);
 /*  Monotonic nanoseconds; suitable for intervals, not wall clock.  */
 int64_t ST_time_monotonic_ns(void);
 
+/*
+ *  The Smalltalk millisecond clock: free-running, monotonic, thirty bits.
+ *
+ *  One function because there is one clock.  Primitive 99
+ *  (Time>>millisecondClockInto:) read the monotonic counter and primitive
+ *  135 (Squeak's millisecondClockValue) read milliseconds since 1901, and
+ *  both called themselves the millisecond clock -- so the image computed a
+ *  Delay's resumption time on one and the VM's timer compared it against
+ *  the other, eight hours apart.  Every delay was already in the past and
+ *  fired at once, which looks exactly like a delay that works until
+ *  something measures it.
+ *
+ *  Thirty bits because the Blue Book's is a SmallInteger and must roll
+ *  over where the image expects; monotonic because every caller is timing
+ *  an interval -- millisecondsToRun:, millisecondsSince:, uptime -- and
+ *  none wants a wall clock that an operator can wind backwards.  Dates
+ *  come from ST_time_smalltalk_ms and primitive 240 instead.
+ */
+uint32_t ST_time_ms_clock(void);
+
 /*  Milliseconds since the Smalltalk-80 epoch (1 January 1901).  */
 int64_t ST_time_smalltalk_ms(void);
 

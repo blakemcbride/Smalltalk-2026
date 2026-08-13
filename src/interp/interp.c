@@ -376,6 +376,7 @@ provide_roots(om_visit_fn visit)
     visit(st_vm.active_context);
     visit(GFX_display_form());
     visit(SCHED_input_semaphore());
+    visit(SCHED_timer_semaphore());
     visit(SCHED_pending_process());
     visit(st_om_vm_state[ST_VM_INPUT_SEMAPHORE]);
     visit(st_om_vm_state[ST_VM_DISPLAY]);
