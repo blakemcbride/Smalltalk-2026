@@ -132,6 +132,65 @@ ST_header_large_context(st_oop header)
     return (header >> 7) & 1;
 }
 
+/*
+ *  The frame this method actually needs, or zero if it does not say.
+ *
+ *  The Blue Book header is sixteen bits and every one of them is spoken
+ *  for, which is why the frame size was one BIT: small (12 slots) or large
+ *  (32).  A method needing more than 32 overflowed its context at run time
+ *  -- ST_push writing past the end of the object and into the next one's
+ *  header, reported by glibc as "corrupted size vs. prev_size" thousands of
+ *  bytecodes later in unrelated code.  Pharo's DateAndTimeLeapTest is the
+ *  first method this system was asked to compile that is genuinely that
+ *  big.
+ *
+ *  Our oops are 63-bit SmallIntegers, so bits 16 and up are free and the
+ *  OM=mt image format is ours.  The compiler now writes the exact frame
+ *  size there.  A Blue Book image leaves those bits zero, which reads as
+ *  "not stated" and falls back to the small/large bit -- so the Xerox image
+ *  and trace2 are untouched.
+ *
+ *  Eight bits, so 255 slots.  The compiler refuses anything larger, which
+ *  is the error doc/PLAN.md asked for and can now be raised at a ceiling
+ *  no real method reaches rather than at one that 47 methods of the 1983
+ *  library already exceed.
+ */
+#define ST_HEADER_FRAME_SHIFT   16
+#define ST_HEADER_FRAME_MAX     255
+
+static inline unsigned
+ST_header_frame_size(st_oop header)
+{
+    return (unsigned) ((header >> ST_HEADER_FRAME_SHIFT) & 0xFF);
+}
+
+/*
+ *  How many slots a context for this method must have.
+ */
+static inline uint32_t
+ST_context_slots_for(st_oop header)
+{
+    unsigned    stated = ST_header_frame_size(header);
+
+    /*
+     *  Never SMALLER than a small context, only ever larger.
+     *
+     *  Allocating exactly what the compiler computed shrank the frame for
+     *  ordinary methods and corrupted the heap immediately -- so something
+     *  pushes past `temporaries + max_stack_depth', and the twelve-slot
+     *  floor has been quietly covering for it.  Finding out what is worth
+     *  doing; guessing at it while removing the floor is not.  The floor
+     *  stays and this only lifts the ceiling, which is the bug at hand.
+     */
+    if (stated) {
+        uint32_t    want = (uint32_t) (ST_CTX_TEMP_FRAME_START + stated);
+
+        return want > ST_SMALL_CONTEXT_SLOTS ? want : ST_SMALL_CONTEXT_SLOTS;
+    }
+    return ST_header_large_context(header)
+            ? ST_LARGE_CONTEXT_SLOTS : ST_SMALL_CONTEXT_SLOTS;
+}
+
 static inline unsigned
 ST_header_literal_count(st_oop header)
 {

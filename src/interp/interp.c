@@ -540,8 +540,7 @@ static void
 activate_new_method(void)
 {
     st_oop      header = method_header(st_vm.new_method);
-    uint32_t    slots  = ST_header_large_context(header)
-                            ? ST_LARGE_CONTEXT_SLOTS : ST_SMALL_CONTEXT_SLOTS;
+    uint32_t    slots  = ST_context_slots_for(header);
     st_oop      ctx;
     uint32_t    temps  = method_temporary_count(st_vm.new_method);
     uint32_t    i;
@@ -685,8 +684,7 @@ ST_closure_as_context(st_oop closure)
         return ST_OOP_INVALID;
     copied -= ST_CLOSURE_FIRST_COPIED;
 
-    slots = ST_header_large_context(method_header(method))
-                ? ST_LARGE_CONTEXT_SLOTS : ST_SMALL_CONTEXT_SLOTS;
+    slots = ST_context_slots_for(method_header(method));
     if (copied + ST_CTX_TEMP_FRAME_START > slots)
         return ST_OOP_INVALID;
 
@@ -740,8 +738,7 @@ ST_activate_closure(st_oop closure, uint32_t argc)
         return 0;
     copied -= ST_CLOSURE_FIRST_COPIED;
 
-    slots = ST_header_large_context(method_header(method))
-                ? ST_LARGE_CONTEXT_SLOTS : ST_SMALL_CONTEXT_SLOTS;
+    slots = ST_context_slots_for(method_header(method));
     if (argc + copied + ST_CTX_TEMP_FRAME_START > slots)
         return 0;                   /*  the frame cannot hold them  */
 

@@ -2059,8 +2059,19 @@ check_same_bytecodes(const char *selector, const char *source)
     }
     ours = res.method;
 
-    /*  Same header means same argument, temporary and literal counts.  */
-    CHECK_EQ_INT(OM_fetch_pointer(0, ours), OM_fetch_pointer(0, theirs));
+    /*
+     *  Same header means same argument, temporary and literal counts --
+     *  comparing only the sixteen bits the Blue Book defines.
+     *
+     *  Ours carries more above them: the exact frame the method needs, so a
+     *  context can be made to fit instead of overflowing a 32-slot one and
+     *  writing into the next object's header.  The 1983 compiler has
+     *  nothing to say there and leaves the bits zero, so masking is what
+     *  keeps this check about the thing it is for.  A divergence in any
+     *  Blue Book field still fails it.
+     */
+    CHECK_EQ_INT((int) (OM_fetch_pointer(0, ours) & 0xFFFF),
+                 (int) (OM_fetch_pointer(0, theirs) & 0xFFFF));
 
     start_ours   = BOOT_method_initial_ip(ours);
     start_theirs = BOOT_method_initial_ip(theirs);

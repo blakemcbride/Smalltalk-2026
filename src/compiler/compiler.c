@@ -3326,6 +3326,24 @@ COMPILE_to_bytecodes(const char *source, const st_compile_context *ctx,
      */
     out->needs_large_context =
         (out->temporary_count + max_stack_depth(out) > 12);
+    /*
+     *  And the exact size, so the context can be made to fit.
+     *
+     *  max_stack_depth is an upper bound rather than the depth actually
+     *  reached -- 47 methods of the 1983 library exceed 32 by it and have
+     *  always run -- so this over-allocates a little for those.  Slots are
+     *  cheap; writing past the end of the object is not.
+     */
+    {
+        unsigned    need = out->temporary_count + max_stack_depth(out);
+
+        if (need > ST_HEADER_FRAME_MAX) {
+            fail(&c, "method needs %u frame slots and the format holds %u",
+                 need, (unsigned) ST_HEADER_FRAME_MAX);
+            need = ST_HEADER_FRAME_MAX;
+        }
+        out->frame_slots = need;
+    }
 
     return c.failed ? -1 : 0;
 }
@@ -3347,10 +3365,18 @@ COMPILE_to_bytecodes(const char *source, const st_compile_context *ctx,
  *  primitive needs it; so does a method of more than four arguments.
  */
 static st_oop
-build_header(unsigned flag, unsigned temps, unsigned large, unsigned literals)
+build_header(unsigned flag, unsigned temps, unsigned large, unsigned literals,
+             unsigned frame)
 {
     uint64_t    bits = 0;
 
+    /*
+     *  The exact frame, in bits the Blue Book never used.  See
+     *  ST_header_frame_size in interp.h for why this exists; in short, the
+     *  small/large bit could only say 12 or 32, and a method needing more
+     *  than 32 silently corrupted the heap.
+     */
+    bits |= (uint64_t) (frame & 0xFF) << 16;
     bits |= (uint64_t) (flag & 7) << 13;
     bits |= (uint64_t) (temps & 31) << 8;
     bits |= (uint64_t) (large & 1) << 7;
@@ -3418,7 +3444,8 @@ COMPILE_method(const char *source, const st_compile_context *ctx,
     }
     OM_store_pointer(0, method,
                      build_header(flag, code.temporary_count,
-                                  code.needs_large_context, literals));
+                                  code.needs_large_context, literals,
+                                  code.frame_slots));
     if (flag == 7) {
         /*
          *  The frame is [ ...the method's own literals, extension, class ].

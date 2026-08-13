@@ -162,6 +162,12 @@ typedef struct {
     char        primitive_name[64];
     char        primitive_module[64];
     int         needs_large_context;
+    /*
+     *  The exact frame this method needs, temporaries plus stack.  Written
+     *  into the method header's high bits so a context can be made to fit;
+     *  see ST_header_frame_size in interp.h.
+     */
+    unsigned    frame_slots;
     char        selector[256];
     char        error[256];
     unsigned    error_line;
