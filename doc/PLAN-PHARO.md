@@ -696,6 +696,7 @@ again, and let each round tell you what the next one is. Six rounds:
 | 4 | 561 | 34 | `printOn:base:length:padded:`, `new:streamContents:`, `Delay>>delaySemaphore`, `TimedOut`, `Process>>signalException:`, `repeat` |
 | 5 | 574 | 15 | `flag:`, `printStringPadded:`, `numberOfDigits`, `printWithCommasOn:`, `from:to:do:`, `padLeftTo:with:`, SUnit's `assertEmpty:` and `defaultTestError` |
 | 6 | 582 | 6 | `<<`, `>>`, `&`, `|`, `**`, `==>`, `className`, `asPluralBasedOn:` |
+| 7 | **588** | **0** | the last six, each a different fault — see below |
 
 Two of those are not one-liners and are worth naming. `Process>>signalException:` is how a
 watchdog reports a timeout into the process it is watching: an exception only searches the
@@ -709,7 +710,35 @@ Adding that accessor made things briefly WORSE, which is worth recording: it let
 a working interrupt it spun forever and took the whole run down. A fix that removes the error
 a test hits first can expose the one it was hiding.
 
-**Where it stands: 633 run, 582 passed, 45 failed, 6 errors.** The 45 failures are assertions,
+The last six were not missing protocol and each had its own cause, which is why they were
+left for last and why guessing from the selector name would have got every one of them wrong:
+
+- **`'+7' asInteger` answered nil.** Our reader took a leading minus and not a leading plus,
+  so every signed Duration in ANSI's `+0:01:02:55` form was unparseable while the negative
+  form worked.
+- **`(t1 = t2) & (t2 = t3) ==> (t1 = t3)`** passes a *Boolean*, not a block. `==>` now takes
+  either. Adding `Boolean>>value` would have been tidier and puts a method on every true and
+  false in the image to serve a caller that already has its answer.
+- **`'3' readStream next: 5` failed inside `at:put:`.** 1983 builds the answer at full size
+  and fills it with `self next`, which is nil past the end — so a short read on a String
+  stream dies with "Strings only store Characters", an error that names nothing about the
+  cause. It now answers short, which is what makes the shortfall *detectable*: `DateParser`
+  reads a fixed-width field and compares the size it got against the size it asked for, a
+  test that cannot be written against a reader that raises.
+- **`Collection>>contents`**, answering a copy.
+- **`SubscriptOutOfBounds`.** 1983 reports a bad index with `self error:`, which raises a
+  plain `Error` carrying a sentence — fine for a person reading a debugger, useless to a
+  handler, which must then either catch every `Error` or match on the text. Every indexed
+  access funnels through `Object>>errorSubscriptBounds:`, so overriding that one method gives
+  the whole system a catchable index error without touching the frozen sources.
+
+That last one is also the round's lesson. The first version carried the index in a slot and
+built its text in a `messageText` override, and **the bootstrap hung** — an exception raised
+out of the method every indexed access funnels through must not do anything that could land
+back in that method. The version that works is deliberately the same shape as `Object>>error:`
+directly above it, differing only in the class raised.
+
+**Where it stands: 633 run, 588 passed, 45 failed, 0 errors.** The 45 failures are assertions,
 not missing methods — the code runs and answers wrongly — and they are the next ratchet turn.
 
 ### The supersession guard *(done)*

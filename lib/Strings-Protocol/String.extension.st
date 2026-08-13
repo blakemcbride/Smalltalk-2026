@@ -188,6 +188,11 @@ String >> asInteger [
 	negative := false.
 	stream atEnd ifTrue: [^nil].
 	(stream peek = $-) ifTrue: [negative := true. stream next].
+	"An explicit plus is a sign too, and skipping it is not cosmetic:
+	 Duration's ANSI format writes '+0:01:02:55', and a reader that answers
+	 nil for the plus form makes every signed duration unparseable while
+	 the negative one works."
+	(stream peek = $+) ifTrue: [stream next].
 	digits := 0.
 	value := 0.
 	[stream atEnd not and: [stream peek isDigit]] whileTrue: [

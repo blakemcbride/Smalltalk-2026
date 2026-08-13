@@ -191,3 +191,16 @@ Collection >> copyWithout: anObject [
 Collection >> isCollection [
 	^true
 ]
+
+{ #category : '*Collections-Protocol' }
+Collection >> contents [
+	"My elements, as a collection of my own kind.
+
+	 A copy rather than the receiver: contents is what a caller asks for
+	 when it wants the values without holding on to the thing that owns
+	 them, and answering self makes that caller's later mutation somebody
+	 else's surprise.  Streams answer contents too, meaning the same thing
+	 -- what has been accumulated -- which is why the name is worth having
+	 on both."
+	^self copy
+]

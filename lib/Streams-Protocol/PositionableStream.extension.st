@@ -26,3 +26,24 @@ PositionableStream >> nextMatchAll: aCollection [
 			^false]].
 	^true
 ]
+
+{ #category : '*Streams-Protocol' }
+PositionableStream >> next: anInteger [
+	"The next anInteger elements, or as many as are left.
+
+	 1983 builds the answer at full size and fills it with self next, and
+	 past the end self next is nil -- so asking a String stream for more
+	 than it has does not answer a short String, it fails inside at:put:
+	 with 'Strings only store Characters'.  The error names the symptom and
+	 not one thing about the cause.
+
+	 Answering short is what every caller actually wants, and what makes the
+	 shortfall detectable: DateParser reads a fixed-width field and then
+	 compares the size it got against the size it asked for, which is a test
+	 that cannot be written against a reader that raises instead."
+	| result |
+	result := WriteStream on: (self contents species new: anInteger).
+	anInteger timesRepeat: [
+		self atEnd ifFalse: [result nextPut: self next]].
+	^result contents
+]

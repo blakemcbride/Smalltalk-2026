@@ -41,3 +41,23 @@ Object >> doesNotUnderstand: aMessage [
 		receiver: self;
 		signal
 ]
+
+
+{ #category : '*Kernel-Exceptions' }
+Object >> errorSubscriptBounds: index [
+	"Raise the index error as its own class.
+
+	 Every indexed access in the image funnels through this one method, so
+	 overriding it here gives the whole system a catchable index error
+	 without touching the frozen sources or any of the places that detect
+	 the condition.
+
+	 Deliberately the same shape as Object>>error: just above, differing
+	 only in the class raised.  A first version carried the index in a slot
+	 and built its text in a messageText override, and the bootstrap hung:
+	 an exception raised out of this method must not do anything that could
+	 itself land back in this method, and the plainest possible signal: is
+	 the only version that cannot."
+	^SubscriptOutOfBounds new signal:
+		'subscript is out of bounds: ', index printString
+]
