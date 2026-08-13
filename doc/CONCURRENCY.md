@@ -255,3 +255,45 @@ per-worker cache, a global epoch bumped on publish, and method dictionaries
 that become immutable once published so a stale entry is impossible rather
 than unlikely. Designing it now costs nothing; retrofitting it later costs a
 week of confusing bugs.
+
+## The method cache was re-justified, and declined
+
+It was filed as the next scaling work when `OM_method_dict_key` was 18–33% of
+every profile. That was because `lookup_method` scanned every slot of every
+method dictionary in the chain instead of probing from the selector's hash.
+Once it probed, the justification had to be re-taken from scratch — a task
+filed on a measurement that has stopped being true is worse than no task.
+
+**What a perfect cache would save**, measured as the *inclusive* cost of
+`lookup_method` — the honest ceiling, since a cache that never missed would
+remove exactly that subtree:
+
+| workload | `lookup_method` inclusive |
+|---|---|
+| steady-state kernel (`intervals`, sends and blocks) | **0.10%** |
+| bootstrap + both Pharo packages, 6,202 methods compiled and initialised | **8.40%** |
+
+The second is the friendly case: an image build is the most polymorphic,
+most send-heavy thing this system does, and it is what every `-eval`, every
+test run and every ratchet turn pays. Even there a *perfect* cache — no
+misses, no invalidation cost, free lookups — buys 8.4%.
+
+For that we would take on a per-worker cache, a global epoch bumped on
+publish, and method dictionaries made immutable-once-published. That is
+delicate, concurrency-sensitive machinery whose failure mode is a stale
+method silently answering an old body.
+
+**Declined.** For comparison, in the same steady-state profile:
+
+| | |
+|---|---|
+| `OM_decrease_ref_object` + `OM_increase_ref_object` | **25.6%** |
+| `OM_store_pointer` | 9.3% |
+| allocation (`instantiate` + `OM_instantiate_pointers`) | ~10% |
+| `lookup_method` | 0.1% |
+
+Reference counting is three times the *ceiling* of a method cache and has had
+no work since the immortal-object fix. That is where the next measurement
+should go — and it should be a measurement, because `doc/SCALING.md` records
+that refcounting was once 99.81% of cross-core stalls and was fixed by not
+counting at all rather than by counting faster.
