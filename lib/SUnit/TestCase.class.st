@@ -133,8 +133,19 @@ TestCase >> deny: aBooleanOrBlock description: aString [
 { #category : 'asserting' }
 TestCase >> assert: actual equals: expected [
 	"Reports both values, which is the only reason to prefer it over
-	 assert: actual = expected -- that one can only say 'false'."
-	actual = expected ifFalse: [
+	 assert: actual = expected -- that one can only say 'false'.
+
+	 The EXPECTED value is the receiver of the comparison, and that is not
+	 arbitrary tidiness: = is not symmetric across Symbol and String.  Our
+	 String>>= answers true for a Symbol spelling the same characters, and
+	 Symbol>>= is identity and answers false -- so `#Tuesday = 'Tuesday''
+	 and `'Tuesday' = #Tuesday' disagree.  Pharo's Chronology answers
+	 Symbols from its name tables (DayNames is a literal array of them) and
+	 its tests compare against String literals, which works there and did
+	 not here, in nine tests, purely on which side the comparison started
+	 from.  Putting the expected value first is what Pharo's own SUnit does
+	 and is the thing that makes a ported suite mean what it says."
+	expected = actual ifFalse: [
 		^self signalFailure:
 			'expected ', expected printString,
 			' but got ', actual printString]
@@ -142,7 +153,8 @@ TestCase >> assert: actual equals: expected [
 
 { #category : 'asserting' }
 TestCase >> deny: actual equals: expected [
-	actual = expected ifTrue: [
+	"Expected first, for the reason given in assert:equals:."
+	expected = actual ifTrue: [
 		^self signalFailure:
 			'expected anything but ', expected printString]
 ]
@@ -236,4 +248,31 @@ TestCase >> defaultTestError [
 	 defaultTestError' is asking whether the code refuses bad input at all,
 	 not which particular refusal it chose."
 	^Error
+]
+
+{ #category : 'asserting' }
+TestCase >> assert: actual closeTo: expected [
+	"For values that arithmetic cannot be expected to reproduce exactly.
+
+	 Not a weaker assert:equals: to reach for when one fails -- reaching for
+	 it there hides the bug it is complaining about.  It is for quantities
+	 that genuinely have no exact representation, which in Chronology means
+	 a duration expressed in days: 1.08546296296 is a repeating fraction and
+	 no float will ever be equal to it."
+	self assert: (actual closeTo: expected)
+		description: 'expected something close to ', expected printString,
+			' but got ', actual printString
+]
+
+{ #category : 'asserting' }
+TestCase >> assert: actual closeTo: expected precision: aPrecision [
+	self assert: (actual closeTo: expected precision: aPrecision)
+		description: 'expected something within ', aPrecision printString,
+			' of ', expected printString, ' but got ', actual printString
+]
+
+{ #category : 'asserting' }
+TestCase >> deny: actual closeTo: expected [
+	self deny: (actual closeTo: expected)
+		description: 'expected something not close to ', expected printString
 ]

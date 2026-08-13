@@ -110,14 +110,24 @@ SequenceableCollection >> readStream [
 
 { #category : '*Collections-Protocol' }
 SequenceableCollection >> writeStream [
-	"A stream writing into a copy of my species, starting empty."
-	^WriteStream on: (self species new: 0)
+	"A stream writing INTO me, from the start.
+
+	 Into me, not into a fresh empty collection of my species -- that was
+	 the first version and it is subtly, expensively wrong.  The idiom it
+	 breaks is everywhere in ported code: take a buffer, write over it, then
+	 read the BUFFER back.  DateAndTime class>>fuzzyReadFrom: does exactly
+	 that four times over, once per field, and with a writeStream that
+	 wrote somewhere else every read came back as the untouched template --
+	 so every fractional second and every timezone offset in the suite
+	 silently parsed as zero.  Ten tests, and not one of them failed in a
+	 way that pointed here."
+	^WriteStream on: self
 ]
 
 { #category : '*Collections-Protocol' }
 SequenceableCollection >> readWriteStream [
-	"A stream that can do both, positioned at the start."
-	^ReadWriteStream on: (self species new: 0)
+	"A stream over me that can do both, positioned at the start."
+	^ReadWriteStream on: self
 ]
 
 { #category : '*Collections-Protocol' }

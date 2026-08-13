@@ -11,6 +11,20 @@ These were found by enumerating every `Time <selector>' and
 `Date <selector>' in sources/ and trying all fourteen against the loaded
 image, rather than by waiting for something to break.  Five did not answer;
 three of them are here and two on Date.
+
+A method that was here and is not: Time class>>readFrom:.
+
+It was added because the 1983 sources send it and it looked missing, on a
+comment written here that said Pharo `does not answer this selector'.  Pharo
+answers it perfectly well -- Time.class.st line 233 -- and does so with
+nanosecond and am/pm support this version never had.  Because this package
+loads AFTER System-Time, the shim did not fill a gap, it SHADOWED the real
+one, and every fractional second in the suite parsed as zero.
+
+The lesson is about compatibility shims generally, not about Time: one added
+to fill a gap that is not really there is worse than nothing, because it
+silently replaces something better.  Check that the selector is actually
+unanswered in the built image before writing one.
 "
 Extension { #name : 'Time' }
 
@@ -33,22 +47,3 @@ Time class >> dateAndTimeNow [
 	^Array with: Date today with: Time now
 ]
 
-{ #category : '*Chronology-Compat' }
-Time class >> readFrom: aStream [
-	"Hours, minutes and optional seconds, colon separated -- 1983's format.
-	 Pharo parses a richer syntax through DateAndTime and does not answer
-	 this selector."
-	| hour minute second |
-	hour := Integer readFrom: aStream.
-	minute := 0.
-	second := 0.
-	(aStream atEnd not and: [aStream peek = $:])
-		ifTrue: [
-			aStream next.
-			minute := Integer readFrom: aStream.
-			(aStream atEnd not and: [aStream peek = $:])
-				ifTrue: [
-					aStream next.
-					second := Integer readFrom: aStream]].
-	^self seconds: hour * 3600 + (minute * 60) + second
-]

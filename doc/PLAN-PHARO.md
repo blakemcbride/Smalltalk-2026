@@ -738,8 +738,51 @@ out of the method every indexed access funnels through must not do anything that
 back in that method. The version that works is deliberately the same shape as `Object>>error:`
 directly above it, differing only in the class raised.
 
-**Where it stands: 633 run, 588 passed, 45 failed, 0 errors.** The 45 failures are assertions,
-not missing methods — the code runs and answers wrongly — and they are the next ratchet turn.
+### And then the failures: 633 of 633 *(done)*
+
+The 45 that remained were assertions — the code ran and answered wrongly — so each was a real
+disagreement between this kernel and Pharo's, not absent protocol. Seven of them, and the two
+that were worth the most were both *my own earlier work*:
+
+- **`Symbol>>=` was identity-only**, as Chapter 30 has it. Our `String>>=` already answered
+  true for a Symbol with the same characters, so `=` was asymmetric: `'Friday' = #Friday` and
+  `#Friday = 'Friday'` disagreed, and which you got depended on which side you wrote first.
+  `Week indexOfDay: 'Friday'` searches a table of Symbols and answered 0.
+- **Floats were IEEE single precision** — two 16-bit words, faithful to Chapter 30 and not
+  nearly enough for date arithmetic. `(Duration weeks: 1) asDays` came out 6.99999952, which
+  *prints* as 7.0 and compares unequal to 7. The Blue Book memory still makes singles, because
+  it loads Xerox's image and answers trace2 byte for byte; the 64-bit memory makes doubles.
+  The reader already handled both widths, which is what made it a small change.
+- **`SequenceableCollection>>writeStream` streamed into a fresh collection** instead of into
+  the receiver. That was mine, added a round earlier, and it broke the idiom ported code uses
+  constantly: write over a buffer, then read *the buffer*. `fuzzyReadFrom:` does it once per
+  field, so every fractional second and every timezone offset in the suite parsed as zero —
+  ten tests, and not one failed in a way that pointed at the stream.
+- **`lib/Chronology-Compat` defined `Time class>>readFrom:`**, on a comment I had written
+  saying Pharo "does not answer this selector". Pharo answers it at `Time.class.st:233`, with
+  nanosecond and am/pm support mine never had — and because the compat package loads *after*
+  `System-Time`, the shim did not fill a gap, it **shadowed** the better implementation. A
+  compatibility shim for a gap that is not really there is worse than none.
+- **1983's `WriteStream` grows in place.** `pastEndPut:` sends `collection grow`, and
+  `Object>>grow` mutates the receiver — one atomic swap, which the object table makes cheap.
+  Every dialect since grows by replacement, and ported code depends on that silently: reading
+  picoseconds is *supposed* to leave nine digits in the buffer and let the extra three fall
+  into a copy nobody reads.
+- **`Set` had Object's identity `=`**, so two Sets built the same way were never equal and the
+  failure read `expected Set (1 7 ) but got Set (1 7 )`.
+- **`Object>>size` answers 0 for anything not indexable**, so `'January' beginsWith: 1` took
+  the empty-prefix shortcut and answered *true* — which made `indexOfMonth:` accept the
+  integer 1 as a month name instead of refusing it.
+
+The last four failures needed `Process>>signalException:` to do more than splice a frame: a
+process waiting on a Semaphore executes nothing until that semaphore is signalled, so the
+exception sat on its stack until the very wait being cut short finished on its own. It now
+also takes the process off whatever list it is parked on and resumes it — the same
+remove-then-resume `Process>>terminate` has used since 1983, whose own comment says it should
+be a primitive and races with a process that might run at any moment. That is still true and
+is not made truer here.
+
+**633 run, 633 passed, 0 failed, 0 errors.** `LIB_METHODS` 352 → 396 across the two rounds.
 
 ### The supersession guard *(done)*
 

@@ -27,5 +27,26 @@ Process >> signalException: anException [
 	"Field one of any context is its sender; splicing it in is what makes
 	 the signal appear to happen inside this process rather than beside it."
 	frame instVarAt: 1 put: suspendedContext.
-	suspendedContext := frame
+	suspendedContext := frame.
+	"
+	 And if it is parked on something, take it off and let it run.
+
+	 Splicing the frame alone is not enough, and the difference is the whole
+	 point of a timeout: a process waiting on a Semaphore will not execute
+	 anything until that semaphore is signalled, so the exception sits on
+	 its stack until the very wait we are trying to cut short finishes on
+	 its own.  `[(Delay forMilliseconds: 500) wait] valueWithinMilliseconds:
+	 100' has to come back in 100, not 500.
+
+	 The remove-then-resume is the idiom Process>>terminate already uses in
+	 the 1983 sources, whose own comment says it should be a primitive and
+	 races with a process that might run at any moment.  That is still true
+	 and is not made truer here; interrupting a waiting process safely under
+	 threads wants VM support, and this is the same exposure the image has
+	 always had.
+	"
+	myList notNil ifTrue: [
+		myList remove: self ifAbsent: [].
+		myList := nil.
+		self resume]
 ]

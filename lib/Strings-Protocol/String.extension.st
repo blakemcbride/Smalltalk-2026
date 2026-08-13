@@ -214,8 +214,19 @@ String >> beginsWith: aPrefix caseSensitive: aBoolean [
 	 Pharo's Date class>>indexOfMonth: asks this of a month name, so
 	 anything that parses a date reaches it.  An empty prefix matches
 	 everything, which is Pharo's documented answer and the one the callers
-	 rely on."
+	 rely on.
+
+	 The type is checked before that, and the order matters.  Object>>size
+	 answers 0 for anything not indexable, so `'January' beginsWith: 1'
+	 reached the empty-prefix shortcut and answered TRUE -- which made
+	 Month class>>indexOfMonth: answer 1 for the integer 1 instead of
+	 refusing it, and the test that asks it to refuse saw nothing raised.
+	 An argument of the wrong type is a fault to report, not an empty
+	 sequence to agree with."
 	| n |
+	(aPrefix isKindOf: String)
+		ifFalse: [^self error: 'a prefix must be a String, not a ',
+			aPrefix class name].
 	n := aPrefix size.
 	n = 0 ifTrue: [^true].
 	n > self size ifTrue: [^false].

@@ -49,14 +49,14 @@
  *  divergence from the frozen 1983 sources lives, so it grows whenever a
  *  ported package turns out to need protocol 1983 never had.
  *
- *  352 -> 390 is the Chronology suites being made to pass.  Almost all of
- *  it is Collections, Streams and Integer protocol that Pharo assumes and
- *  1983 does not have a name for -- readStream, second, printOn:base:-
- *  length:padded:, the bitwise << and & -- plus TimedOut and
- *  Process>>signalException:, which is what a timeout needs to interrupt
- *  the process it is watching.  The suites went from 275 passing to 582.
+ *  352 -> 396 is the Chronology suites being made to pass, and they now do:
+ *  633 of 633, from 275.  Almost all of it is Collections, Streams and
+ *  Integer protocol that Pharo assumes and 1983 does not have a name for --
+ *  readStream, second, printOn:base:length:padded:, the bitwise << and & --
+ *  plus TimedOut and Process>>signalException:, which is what a timeout
+ *  needs to interrupt the process it is watching.
  */
-#define LIB_METHODS             390
+#define LIB_METHODS             396
 /*
  *  Three, not five: the extension packages define no CLASSES, and a
  *  category is a property of a class definition.  Kernel-Methods-Fixes and
@@ -1973,7 +1973,7 @@ test_browsing(void)
      *  the source pointer is 22 bits and silently truncated once, and a
      *  size that stops growing is how that would show.
      */
-    check_integer("(SourceFiles at: 1) contents size", 1267184);
+    check_integer("(SourceFiles at: 1) contents size", 1271320);
 }
 
 /*

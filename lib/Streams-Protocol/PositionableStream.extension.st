@@ -47,3 +47,12 @@ PositionableStream >> next: anInteger [
 		self atEnd ifFalse: [result nextPut: self next]].
 	^result contents
 ]
+
+{ #category : '*Streams-Protocol' }
+PositionableStream >> upToEnd [
+	"Everything from here to the end, leaving me at the end."
+	| result |
+	result := WriteStream on: (self contents species new: 0).
+	[self atEnd] whileFalse: [result nextPut: self next].
+	^result contents
+]

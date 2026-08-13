@@ -24,3 +24,20 @@ Number >> ** anExponent [
 	"Raised to that power.  Pharo's spelling of raisedTo:."
 	^self raisedTo: anExponent
 ]
+
+{ #category : '*Kernel-Protocol' }
+Number >> closeTo: aNumber [
+	"Within a small absolute distance of that number.
+
+	 The default precision is Pharo's: 0.0001, absolute rather than
+	 relative.  Absolute is the wrong choice for very large or very small
+	 magnitudes and it is what ported tests were written against, so it is
+	 what they get; closeTo:precision: is there for anything that needs to
+	 say otherwise."
+	^self closeTo: aNumber precision: 0.0001
+]
+
+{ #category : '*Kernel-Protocol' }
+Number >> closeTo: aNumber precision: aPrecision [
+	^(self - aNumber) abs < aPrecision
+]

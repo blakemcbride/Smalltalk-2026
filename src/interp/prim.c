@@ -1300,17 +1300,56 @@ float_value(st_oop p, double *out)
     return 0;
 }
 
+/*
+ *  How wide a Float this build makes.
+ *
+ *  Chapter 30's Float is IEEE single precision, two 16-bit words, and the
+ *  Blue Book memory must keep making those: it loads Xerox's own image,
+ *  whose Floats are that shape, and answers trace2 byte for byte.
+ *
+ *  The 64-bit memory builds its own image and is under no such obligation,
+ *  and single precision was costing it real answers.  Duration>>asDays is
+ *  a chain of divisions, so (Duration weeks: 1) asDays came out as
+ *  6.99999952 -- which prints as 7.0, compares unequal to 7, and had eight
+ *  Chronology tests reporting "expected 7 but got 7.0".  Twenty-four bits
+ *  of mantissa is simply not enough for date arithmetic, and every dialect
+ *  since has used doubles.
+ *
+ *  The reader was already written for both widths (see float_value above),
+ *  which is what makes this a two-line change rather than a format
+ *  migration.
+ */
+#ifdef ST_OM_MT
+#define FLOAT_WORDS     4
+#else
+#define FLOAT_WORDS     2
+#endif
+
 static st_oop
 make_float(double value)
 {
-    union { float f; uint32_t u; } bits;
-    st_oop      p = OM_instantiate_words(ST_CLASS_FLOAT, 2);
+    st_oop      p = OM_instantiate_words(ST_CLASS_FLOAT, FLOAT_WORDS);
+    int         i;
 
     if (!OM_is_present(p))
         return ST_OOP_INVALID;
-    bits.f = (float) value;
-    OM_store_word(0, p, (uint16_t) (bits.u >> 16));
-    OM_store_word(1, p, (uint16_t) (bits.u & 0xFFFF));
+    if (FLOAT_WORDS == 2) {
+        union { float f; uint32_t u; } bits;
+
+        bits.f = (float) value;
+        OM_store_word(0, p, (uint16_t) (bits.u >> 16));
+        OM_store_word(1, p, (uint16_t) (bits.u & 0xFFFF));
+        return p;
+    }
+    {
+        union { double d; uint64_t u; } bits;
+
+        bits.d = value;
+        /*  Most significant word first, which is how float_value reads.  */
+        for (i = 0; i < 4; ++i)
+            OM_store_word((uint32_t) i, p,
+                          (uint16_t) ((bits.u >> (16 * (3 - i))) & 0xFFFF));
+    }
     return p;
 }
 

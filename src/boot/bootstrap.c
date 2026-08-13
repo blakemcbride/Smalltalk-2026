@@ -558,27 +558,32 @@ st_oop
 BOOT_make_float(double value, void *user)
 {
     /*
-     *  A Smalltalk-80 Float is IEEE 754 SINGLE precision: two 16-bit words,
-     *  most significant first.  That is what Chapter 30 specifies, what the
-     *  1983 image contains, and what the interpreter's own make_float emits
-     *  for every computed result.
-     *
-     *  This used to store the host's double in native word order, which was
-     *  wrong twice over.  The size disagreed, so a literal and a computed
-     *  value of the same number were different shapes; and the order
-     *  disagreed with the reader, which takes the words most significant
-     *  first.  The visible effect was that 3.5 exponent answered -1060: the
-     *  bits were being read as a completely different number.
+     *  A literal Float must be the same shape the interpreter computes, and
+     *  in this memory that is IEEE 754 DOUBLE precision: four 16-bit words,
+     *  most significant first.  Chapter 30 specifies single, and the Blue
+     *  Book build still makes single for that reason -- it loads Xerox's own
+     *  image and answers trace2 byte for byte.  This bootstrap builds its own
+     *  image and is under no such obligation; see make_float in prim.c for
+     *  what twenty-four bits of mantissa was costing the date arithmetic.
+
+     *  What has NOT changed is that the two must agree.  This used to store
+     *  the host's double in native word order, which was wrong twice over:
+     *  the size disagreed, so a literal and a computed value of the same
+     *  number were different shapes; and the order disagreed with the
+     *  reader, which takes the words most significant first.  The visible
+     *  effect was that 3.5 exponent answered -1060.
      */
-    union { float f; uint32_t u; } bits;
-    st_oop  p = OM_instantiate_words(BOOT_global("Float"), 2);
+    union { double d; uint64_t u; } bits;
+    st_oop  p = OM_instantiate_words(BOOT_global("Float"), 4);
+    int     i;
 
     (void) user;
     if (!OM_is_object(p))
         return ST_NIL;
-    bits.f = (float) value;
-    OM_store_word(0, p, (uint16_t) (bits.u >> 16));
-    OM_store_word(1, p, (uint16_t) (bits.u & 0xFFFF));
+    bits.d = value;
+    for (i = 0; i < 4; ++i)
+        OM_store_word((uint32_t) i, p,
+                      (uint16_t) ((bits.u >> (16 * (3 - i))) & 0xFFFF));
     return p;
 }
 

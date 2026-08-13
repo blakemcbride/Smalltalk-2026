@@ -204,3 +204,23 @@ Collection >> contents [
 	 on both."
 	^self copy
 ]
+
+{ #category : '*Collections-Protocol' }
+Set >> = aCollection [
+	"Same class, same size, same elements.
+
+	 1983 leaves Set with Object's identity =, so two Sets built the same
+	 way are never equal and `assert: x equals: y' on them can only fail --
+	 which it did, reporting `expected Set (1 7 ) but got Set (1 7 )', a
+	 message that reads like a bug in the printer.
+
+	 Defined on Set and not on HashedCollection, which is where Pharo puts
+	 it, because Dictionary is a HashedCollection here too and equality for
+	 a Dictionary has to consider keys as well as values.  Getting that
+	 wrong quietly is worse than not answering it."
+	self == aCollection ifTrue: [^true].
+	self class == aCollection class ifFalse: [^false].
+	self size = aCollection size ifFalse: [^false].
+	self do: [:each | (aCollection includes: each) ifFalse: [^false]].
+	^true
+]
