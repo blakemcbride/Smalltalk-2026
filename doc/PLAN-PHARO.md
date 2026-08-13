@@ -674,9 +674,43 @@ lock. Fixed, and recorded in `CONCURRENCY.md`. The general point is worth more
 than the two fixes: **a sanitiser only sees code that runs**, and for the whole
 life of this system no test had ever waited on a delay.
 
-**Result: 0 tests executed → 633 run, 275 passed, 16 failed, 354 errors.** The errors are now
-missing protocol rather than deadlocks, and `readStream` and `second` alone are 308 of them.
-That number is the ratchet Phase M is measured by, and it exists for the first time.
+**Result: 0 tests executed → 633 run, 275 passed, 16 failed, 354 errors.** The errors were then
+missing protocol rather than deadlocks, and the next pass took them out — see below.
+
+### The errors were protocol 1983 has no name for *(done)*
+
+354 errors → **6**, and 275 passing → **582** of 633, by adding what Pharo assumes and the
+1983 library never grew a name for. Almost none of it is Chronology; it is Collections,
+Streams and Integer protocol, which is why one package's suites were the thing that found it.
+
+The distribution mattered more than the total. Two selectors were 308 of the 354, and the
+rest arrived in a long tail of ones and twos — so the work was: measure, fix the head, measure
+again, and let each round tell you what the next one is. Six rounds:
+
+| after | passing | errors | what it took |
+|---|---|---|---|
+| — | 275 | 354 | |
+| 1 | 318 | 309 | `readStream`, `writeStream`, `readWriteStream` |
+| 2 | 434 | 192 | `second`, `third`, `fourth` |
+| 3 | 537 | 85 | `nextMatchAll:`, `readFrom:ifFail:`, `sign:`, `environment` |
+| 4 | 561 | 34 | `printOn:base:length:padded:`, `new:streamContents:`, `Delay>>delaySemaphore`, `TimedOut`, `Process>>signalException:`, `repeat` |
+| 5 | 574 | 15 | `flag:`, `printStringPadded:`, `numberOfDigits`, `printWithCommasOn:`, `from:to:do:`, `padLeftTo:with:`, SUnit's `assertEmpty:` and `defaultTestError` |
+| 6 | 582 | 6 | `<<`, `>>`, `&`, `|`, `**`, `==>`, `className`, `asPluralBasedOn:` |
+
+Two of those are not one-liners and are worth naming. `Process>>signalException:` is how a
+watchdog reports a timeout into the process it is watching: an exception only searches the
+stack it was raised on, so the signal has to happen over there. It splices a frame built from
+`[...] newProcess suspendedContext` onto the sleeping process's stack, which is the only way
+this system makes a runnable context from Smalltalk. And `Delay>>delaySemaphore` — an
+accessor 1983 never needed, because in 1983 nothing released a Delay early except `disable`.
+
+Adding that accessor made things briefly WORSE, which is worth recording: it let
+`valueWithin:onTimeout:` get past a `doesNotUnderstand` and into `[[] repeat]`, where without
+a working interrupt it spun forever and took the whole run down. A fix that removes the error
+a test hits first can expose the one it was hiding.
+
+**Where it stands: 633 run, 582 passed, 45 failed, 6 errors.** The 45 failures are assertions,
+not missing methods — the code runs and answers wrongly — and they are the next ratchet turn.
 
 ### The supersession guard *(done)*
 

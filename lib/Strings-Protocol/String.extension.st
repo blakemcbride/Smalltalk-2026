@@ -223,3 +223,42 @@ String >> beginsWith: aPrefix caseSensitive: aBoolean [
 			ifFalse: [a asUppercase = b asUppercase ifFalse: [^false]]].
 	^true
 ]
+
+{ #category : '*Strings-Protocol' }
+String >> padLeftTo: width with: aCharacter [
+	"Me, widened on the left with that character until I am at least that
+	 wide.  Already wide enough answers a copy of me, never a truncation --
+	 a pad that could shorten its argument would silently corrupt the very
+	 fields it is used to line up."
+	| pad |
+	pad := width - self size.
+	pad <= 0 ifTrue: [^self copy].
+	^(String new: pad withAll: aCharacter), self
+]
+
+{ #category : '*Strings-Protocol' }
+String >> padLeftTo: width [
+	^self padLeftTo: width with: $ 
+]
+
+{ #category : '*Strings-Protocol' }
+String >> padRightTo: width with: aCharacter [
+	| pad |
+	pad := width - self size.
+	pad <= 0 ifTrue: [^self copy].
+	^self, (String new: pad withAll: aCharacter)
+]
+
+{ #category : '*Strings-Protocol' }
+String >> padRightTo: width [
+	^self padRightTo: width with: $ 
+]
+
+{ #category : '*Strings-Protocol' }
+String >> asPluralBasedOn: aNumber [
+	"Me, with an s if that count is not one.
+
+	 Duration>>humanReadablePrintString builds '2 hours 1 minute' from
+	 singular nouns, so the noun must not know the count in advance."
+	^aNumber = 1 ifTrue: [self copy] ifFalse: [self, 's']
+]

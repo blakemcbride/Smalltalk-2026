@@ -93,3 +93,76 @@ SequenceableCollection >> sorted: aBlock [
 SequenceableCollection >> sorted [
 	^self sorted: [:a :b | a <= b]
 ]
+
+{ #category : '*Collections-Protocol' }
+SequenceableCollection >> readStream [
+	"A stream reading me from the beginning.
+
+	 1983 has ReadStream, WriteStream and ReadWriteStream and every one of
+	 their `on:' constructors; what it never grew is the habit of asking the
+	 COLLECTION for one.  Ported source asks constantly -- `aString
+	 readStream' is how Pharo spells the start of nearly every parse -- so
+	 the gap shows up not as one missing method but as a hundred failures
+	 in whatever was being parsed.  It was 166 of the 354 errors in the
+	 Chronology suites."
+	^ReadStream on: self
+]
+
+{ #category : '*Collections-Protocol' }
+SequenceableCollection >> writeStream [
+	"A stream writing into a copy of my species, starting empty."
+	^WriteStream on: (self species new: 0)
+]
+
+{ #category : '*Collections-Protocol' }
+SequenceableCollection >> readWriteStream [
+	"A stream that can do both, positioned at the start."
+	^ReadWriteStream on: (self species new: 0)
+]
+
+{ #category : '*Collections-Protocol' }
+SequenceableCollection >> second [
+	"The second element.  1983 names only first and last; ported source
+	 counts further along, and reads much better for it than at: 2 does."
+	^self at: 2
+]
+
+{ #category : '*Collections-Protocol' }
+SequenceableCollection >> third [
+	^self at: 3
+]
+
+{ #category : '*Collections-Protocol' }
+SequenceableCollection >> fourth [
+	^self at: 4
+]
+
+{ #category : '*Collections-Protocol' }
+SequenceableCollection class >> new: sizeHint streamContents: aBlock [
+	"Answer what aBlock writes into a stream on a new instance of me.
+
+	 The size is a hint and nothing more -- a WriteStream grows -- so it is
+	 not an error to write more or less than it says.  Ported code passes
+	 its best guess to save the growing, and passing a wrong guess must
+	 still produce the right answer."
+	| stream |
+	stream := WriteStream on: (self new: sizeHint).
+	aBlock value: stream.
+	^stream contents
+]
+
+{ #category : '*Collections-Protocol' }
+SequenceableCollection class >> streamContents: aBlock [
+	^self new: 16 streamContents: aBlock
+]
+
+{ #category : '*Collections-Protocol' }
+SequenceableCollection >> from: start to: stop do: aBlock [
+	"Evaluate aBlock with each of my elements between those indices."
+	start to: stop do: [:i | aBlock value: (self at: i)]
+]
+
+{ #category : '*Collections-Protocol' }
+SequenceableCollection >> from: start to: stop doWithIndex: aBlock [
+	start to: stop do: [:i | aBlock value: (self at: i) value: i]
+]

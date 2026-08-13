@@ -45,13 +45,18 @@
 #define LIB_CLASSES             23       /*  BlockClosure, the exceptions,
                                             SUnit, and the fixtures        */
 /*
- *  329 rather than 327: lib/Concurrency gained Mutex, Monitor, SharedQueue
- *  and Promise, and BlockClosure gained the scheduling protocol
- *  BlockContext has had since 1983.  The total moves by only two because
- *  the 1983 SharedQueue is now EXCLUDED -- ours supersedes it, which is
- *  the substitution ratchet, and its methods leave as ours arrive.
+ *  This number is a ratchet and is meant to move: lib/ is where every
+ *  divergence from the frozen 1983 sources lives, so it grows whenever a
+ *  ported package turns out to need protocol 1983 never had.
+ *
+ *  352 -> 388 is the Chronology suites being made to pass.  Almost all of
+ *  it is Collections, Streams and Integer protocol that Pharo assumes and
+ *  1983 does not have a name for -- readStream, second, printOn:base:-
+ *  length:padded:, the bitwise << and & -- plus TimedOut and
+ *  Process>>signalException:, which is what a timeout needs to interrupt
+ *  the process it is watching.  The suites went from 275 passing to 582.
  */
-#define LIB_METHODS             352
+#define LIB_METHODS             388
 /*
  *  Three, not five: the extension packages define no CLASSES, and a
  *  category is a property of a class definition.  Kernel-Methods-Fixes and
@@ -1962,7 +1967,13 @@ test_browsing(void)
      *  lib/Concurrency's four classes went in and the 1983 SharedQueue
      *  came out.
      */
-    check_integer("(SourceFiles at: 1) contents size", 1256184);
+    /*
+     *  Grows with lib/: every method's source is written to the file, so
+     *  this moves whenever LIB_METHODS does.  It is checked at all because
+     *  the source pointer is 22 bits and silently truncated once, and a
+     *  size that stops growing is how that would show.
+     */
+    check_integer("(SourceFiles at: 1) contents size", 1265088);
 }
 
 /*

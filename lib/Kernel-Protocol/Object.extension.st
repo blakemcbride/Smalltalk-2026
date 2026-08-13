@@ -199,3 +199,20 @@ Object >> isNotNil [
 	"Pharo's spelling of notNil.  Both exist there and both are used."
 	^self notNil
 ]
+
+{ #category : '*Kernel-Protocol' }
+Object >> flag: aSymbolOrString [
+	"A note to a future reader, and nothing at run time.
+
+	 Pharo's sources are full of these -- they are how a maintainer leaves a
+	 doubt where the code is rather than in an issue tracker -- and a system
+	 that does not answer it turns every such note into a failure in code
+	 that was working."
+	^self
+]
+
+{ #category : '*Kernel-Protocol' }
+Object >> className [
+	"My class's name as a String."
+	^self class name
+]

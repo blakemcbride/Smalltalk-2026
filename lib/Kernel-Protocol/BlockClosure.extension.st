@@ -19,3 +19,13 @@ BlockClosure >> cull: first cull: second [
 BlockClosure >> isBlock [
 	^true
 ]
+
+{ #category : '*Kernel-Protocol' }
+BlockClosure >> repeat [
+	"Evaluate me forever.
+
+	 The only ways out are a non-local return, an exception, or the process
+	 being interrupted -- which is exactly why it is the shape every timeout
+	 test uses to build something that will not stop on its own."
+	[self value. true] whileTrue
+]

@@ -10,3 +10,13 @@ Extension { #name : 'Boolean' }
 Boolean >> cull: anObject [
 	^self
 ]
+
+{ #category : '*Kernel-Protocol' }
+Boolean >> ==> aBlockOrBoolean [
+	"Material implication: false unless I am true and it is not.
+
+	 The argument is evaluated only when the receiver is true, which is what
+	 makes this usable to say 'if this holds then that must too' about a
+	 term that would fail to evaluate otherwise."
+	^self not or: [aBlockOrBoolean value]
+]

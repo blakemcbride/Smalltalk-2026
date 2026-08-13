@@ -202,3 +202,38 @@ TestCase class >> allTests [
 			do: [:each | suite addTestCase: each].
 	^suite
 ]
+
+{ #category : 'asserting' }
+TestCase >> assertEmpty: aCollection [
+	self assert: aCollection isEmpty
+		description: 'expected an empty collection'
+]
+
+{ #category : 'asserting' }
+TestCase >> denyEmpty: aCollection [
+	self deny: aCollection isEmpty
+		description: 'expected a collection with something in it'
+]
+
+{ #category : 'asserting' }
+TestCase >> deny: actual identicalTo: expected [
+	self deny: actual == expected
+		description: 'expected two different objects'
+]
+
+{ #category : 'asserting' }
+TestCase >> assert: actual identicalTo: expected [
+	self assert: actual == expected
+		description: 'expected the very same object'
+]
+
+{ #category : 'accessing' }
+TestCase >> defaultTestError [
+	"The exception class a test means when it says only 'this should fail'.
+
+	 Pharo answers its own TestFailure hierarchy's root for this; here it is
+	 Error, because a test written as `should: [...] raise: self
+	 defaultTestError' is asking whether the code refuses bad input at all,
+	 not which particular refusal it chose."
+	^Error
+]
