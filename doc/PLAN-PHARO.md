@@ -873,6 +873,36 @@ helpers. `Date class>>dateAndTimeNow` is the documented false positive: the name
 because `Time dateAndTimeNow` has senders, and the filter cannot tell the two receivers
 apart. It errs toward showing too much, which is the only direction a guard may err in.
 
+### The ratchet is a number `make test` holds *(done)*
+
+Phase M's stated progress metric is the ratchet count, and until now it was a number somebody
+had to run a profile by hand to see. `make test` now runs every profile's own SUnit suites and
+holds each to `tests/profiles.expected`:
+
+```
+st2026                  12   12
+pharo-announcements     48   43
+pharo-time              633  633
+pharo-weak              32   12
+```
+
+The comparison matters more than the run, and three failure modes are checked rather than one:
+
+- **Fewer passing** — the obvious regression.
+- **Fewer RUN** — tests that stopped being *found*. This looks like success and is worse, and
+  it is not hypothetical: the Chronology suites reported nothing at all for weeks because four
+  classes deadlocked the runner, while every per-class run looked fine.
+- **More of either** — an unrecorded improvement, which nothing is protecting; the next
+  regression silently spends it. Update the file in the commit that earns it.
+
+Two profiles are recorded below 100% rather than excluded, because a number that is wrong and
+visible is worth more than a suite nobody runs: `pharo-announcements` at 43/48 (task #68, five
+`Number>>seconds` errors from a package it does not load) and `pharo-weak` at 12/32 (weak
+references and finalization, which is Phase F).
+
+Skipped under `OM=bb`, where the bootstrap refuses before reaching a test — the same way
+`test_trace` skips under `mt`.
+
 ### The ratchet from here
 
 The next turn is `Collections-Unordered`: Pharo's `HashedCollection`, `Set` and `Dictionary`.

@@ -1,0 +1,34 @@
+# What each profile's own SUnit suites score, as of the last time somebody
+# looked.  Read by tests/run_profiles.sh, which `make test` runs.
+#
+# This is a RATCHET, not a target.  The rule is that neither number may fall:
+# a suite that ran 633 tests must still run 633, and a suite that passed 633
+# must still pass 633.  Both directions matter, and the first one matters
+# more than it looks -- a package whose tests stop being FOUND reports a
+# perfect score, and that is exactly the shape of the failure this file
+# exists to catch.  The Chronology suites spent a while reporting nothing at
+# all because four classes deadlocked the runner, and nothing noticed.
+#
+# Improving a number fails too, with a message saying so.  That is
+# deliberate: an unrecorded improvement is an improvement nothing is
+# protecting, and the next regression silently spends it.  Edit the line in
+# the same commit that earns it.
+#
+# Two of these are not at 100%, and are recorded honestly rather than
+# excluded:
+#
+#   pharo-announcements  43/48 -- five WeakAnnouncerTest errors, all
+#                                 Number>>seconds, which lives in a package
+#                                 this profile does not load.  Task #68.
+#   pharo-weak           12/32 -- weak references and finalization, which
+#                                 the object memory does not implement yet;
+#                                 this is Phase F work.
+#
+# A profile with no SUnit at all (bluebook) is not listed: it has no
+# TestCase, so there is nothing to ask it.
+#
+# profile               run  passed
+st2026                  12   12
+pharo-announcements     48   43
+pharo-time              633  633
+pharo-weak              32   12

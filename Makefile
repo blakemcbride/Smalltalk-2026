@@ -170,7 +170,29 @@ bench: $(BENCH_BIN)
 	    "$$b" || exit 1; \
 	done
 
-test: unit-test
+test: unit-test suite-test
+
+# The imported packages' own suites -------------------------------------------
+#
+# The unit tests check this system against itself.  Only a package's own tests
+# can say whether the package still works, and those live in the image -- so
+# this builds each profile and asks it, holding the score to
+# tests/profiles.expected.  See tests/run_profiles.sh for why the comparison
+# matters more than the run.
+#
+# Only under OM=mt: the bootstrap writes the 64-bit format, and under the Blue
+# Book memory it refuses before it reaches a single test.  Skipped rather than
+# failed there, the same way test_trace skips under mt.
+
+.PHONY: suite-test
+suite-test: $(VARIANT_BIN)
+ifeq ($(OM),mt)
+	@echo "==> imported package suites"
+	@sh tests/run_profiles.sh $(VARIANT_BIN) tests/profiles.expected
+else
+	@echo "==> imported package suites"
+	@echo "skipped: the bootstrap targets the 64-bit object memory"
+endif
 
 unit-test: $(UNIT_BIN)
 	@status=0; \
@@ -186,7 +208,9 @@ clean:
 help:
 	@echo "Targets:"
 	@echo "  all          (default) build the st80 binary"
-	@echo "  test         build and run the unit tests"
+	@echo "  test         build and run the unit tests and the package suites"
+	@echo "  unit-test    just the unit tests"
+	@echo "  suite-test   just the imported packages' own SUnit suites"
 	@echo "  clean        remove build artifacts"
 	@echo
 	@echo "Variables:"
