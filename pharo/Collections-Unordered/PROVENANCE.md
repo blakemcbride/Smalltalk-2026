@@ -81,10 +81,26 @@ Chronology round and not an architectural problem at all. Counted from a load:
    206  enclosedElement     Pharo's Set unwraps elements through this
 ```
 
-Two more were in that list and are now fixed in `lib/`: `Integer>>isPrime`,
-which `HashedCollection class>>sizeFor:` needs through `HashTableSizes`, and
-`Object>>asCollectionElement`, which Pharo's Set asks of every element on the
-way in.
+Three are now fixed in `lib/` and are gone from the count: `Integer>>isPrime`,
+which `HashedCollection class>>sizeFor:` reaches through `HashTableSizes`;
+`Object>>asCollectionElement`, which Pharo's `Set` asks of every element on the
+way in; and `SequenceableCollection>>at:ifAbsent:`, which 1983 answers on
+Dictionary and not on indexed collections.
+
+The last of those is worth a note, because it did **not** move the count. The
+method is present and works — `#(1 2 3) at: 9 ifAbsent: ['none']` answers
+`'none'` in the loaded image — and the bootstrap still reports 6346
+`at:ifAbsent:` failures, byte-identically to the run before. So that receiver
+is not a `SequenceableCollection`, and identifying it is the next concrete
+step rather than adding more protocol on a guess.
+
+The eleven unfinished initializers are now all named rather than just the
+first (`BitEditor FormEditor ChangeListController NotifierController
+ProjectController ScreenController StandardSystemController ParagraphEditor
+StringHolderController VariableNode HashTableSizes`). Nine are MVC
+controllers and probably share one cause; `HashTableSizes` is Pharo's own and
+is in the critical path, since `sizeFor:` consults it on every collection
+created.
 
 The `generality` count is identical across runs, which says one bounded loop
 rather than many scattered failures — that is where the next session should

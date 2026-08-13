@@ -176,3 +176,18 @@ SequenceableCollection >> from: start to: stop do: aBlock [
 SequenceableCollection >> from: start to: stop doWithIndex: aBlock [
 	start to: stop do: [:i | aBlock value: (self at: i) value: i]
 ]
+
+{ #category : '*Collections-Protocol' }
+SequenceableCollection >> at: index ifAbsent: exceptionBlock [
+	"The element at that index, or the block's value if there is no such
+	 index.
+
+	 1983 answers this on Dictionary and not on indexed collections, where
+	 an out-of-range subscript is always an error.  Ported code uses it as
+	 the bounds-checked read -- Pharo's HashTableSizes looks up a cached
+	 size this way, and reached it 6346 times in one bootstrap -- so the
+	 index is checked here rather than trapped."
+	(index isInteger and: [index >= 1 and: [index <= self size]])
+		ifFalse: [^exceptionBlock value].
+	^self at: index
+]

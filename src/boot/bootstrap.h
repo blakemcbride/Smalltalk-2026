@@ -143,7 +143,17 @@ typedef struct {
     unsigned    ran;            /*  ... that finished                     */
     unsigned    unfinished;     /*  ... that exceeded the bytecode budget */
     unsigned    skipped;        /*  ... deliberately not run; see the table */
+    /*
+     *  Every initializer that ran out of budget, not just the first.
+     *
+     *  One name was enough while the answer was almost always zero or one.
+     *  It stopped being enough the moment a substitution broke ten at once:
+     *  "first: BitEditor" says nothing about whether the other nine are the
+     *  same fault or nine different ones, and that is the only question
+     *  worth asking at that point.
+     */
     char        first_unfinished[64];
+    char        unfinished_names[512];
     unsigned    symbols_seeded;     /*  entries placed in the library table */
     unsigned    symbols_total;
 } st_boot_init_report;

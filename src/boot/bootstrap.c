@@ -4707,6 +4707,7 @@ run_class_initializers(st_boot_init_report *out)
     out->defined = 0;
     out->ran = 0;
     out->unfinished = 0;
+    out->unfinished_names[0] = '\0';
     out->skipped = 0;
     for (i = 0; i < class_count; ++i) {
         boot_class *c = &classes[i];
@@ -4735,6 +4736,14 @@ run_class_initializers(st_boot_init_report *out)
             if (!out->first_unfinished[0])
                 snprintf(out->first_unfinished,
                          sizeof out->first_unfinished, "%.63s", c->name);
+            {
+                size_t  used = strlen(out->unfinished_names);
+
+                if (used + strlen(c->name) + 2 < sizeof out->unfinished_names)
+                    snprintf(out->unfinished_names + used,
+                             sizeof out->unfinished_names - used, "%s%s",
+                             used ? " " : "", c->name);
+            }
             ++out->unfinished;
         }
         /*

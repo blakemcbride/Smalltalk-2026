@@ -935,7 +935,8 @@ do_bootstrap(const char *const *sources, const int *dialects, unsigned count,
                         " %u unfinished",
                 init.defined, init.ran, init.skipped, init.unfinished);
         if (init.unfinished)
-            fprintf(stderr, " (first: %s)", init.first_unfinished);
+            fprintf(stderr, " (%s)", init.unfinished_names[0]
+                            ? init.unfinished_names : init.first_unfinished);
         fprintf(stderr, "; %u of %u symbols in the library table\n",
                 init.symbols_seeded, init.symbols_total);
     }
