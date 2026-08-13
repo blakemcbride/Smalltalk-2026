@@ -299,6 +299,24 @@ main(void)
     }
     printf("  image: %u classes, %u methods\n",
            boot.classes_created, boot.methods_compiled);
+    /*
+     *  What superseding 1983's SharedQueue with ours actually cost.
+     *
+     *  This profile supersedes exactly one class, and the loader's guard
+     *  finds two selectors gone: `init:', which was that class's own
+     *  constructor helper, and `makeRoomAtEnd', which compacted the array
+     *  ours does not have.  Both are deliberate; neither has a sender
+     *  outside the file that defined them.
+     *
+     *  Ratcheted rather than merely printed because the number going UP is
+     *  the failure this whole mechanism exists to catch, and a number that
+     *  is only printed is a number nobody reads.  `peek' was the third
+     *  entry here until the guard found it and InputState>>keyboardPeek
+     *  turned out to send it.  If a later change to lib/Concurrency or to
+     *  the profile drops more protocol, this is where it says so.
+     */
+    printf("  supersession gaps: %u\n", boot.supersession_gaps);
+    CHECK(boot.supersession_gaps == 2);
 
     /*
      *  A display, for the same reason bench_parallel needs one: a third of

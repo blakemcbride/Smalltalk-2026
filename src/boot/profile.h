@@ -57,6 +57,21 @@ extern "C" {
 int PROFILE_expand_tree(const char *dir, st_names *out, char *error,
                         size_t error_len);
 
+/*
+ *  The files the last PROFILE_expand superseded, in profile order.
+ *
+ *  A supersession is the one load-time act that can lose behaviour without
+ *  anything failing: the class is still there and still answers most of what
+ *  it used to, so the gap shows up much later as a doesNotUnderstand in code
+ *  nobody was looking at.  BOOT_check_supersessions reads this and asks, of
+ *  each file that was dropped, whether the class that replaced it still
+ *  answers everything the dropped file defined.
+ *
+ *  Valid until the next PROFILE_expand.  Never NULL; empty when nothing was
+ *  superseded.
+ */
+const st_names *PROFILE_superseded_files(void);
+
 int PROFILE_expand(const char *path, st_names *out, int **dialects,
                    char *error, size_t error_len);
 

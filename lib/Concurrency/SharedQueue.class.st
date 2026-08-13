@@ -64,6 +64,24 @@ SharedQueue >> nextOrNil [
 		items isEmpty ifTrue: [nil] ifFalse: [items removeFirst]]
 ]
 
+{ #category : 'accessing' }
+SharedQueue >> peek [
+	"Answer the next item without removing it, or nil if there is none.
+
+	 The 1983 class this supersedes says in its own comment that peek
+	 suspends until an object arrives, and then its code answers nil --
+	 and nil is what its one sender wants.  InputState>>keyboardPeek asks
+	 whether a key is waiting; a peek that blocked would stop the display
+	 on an idle keyboard.  The code is followed and the comment is not.
+
+	 What is answered was true when the lock was held and need not be true
+	 now: another process may take that very item before this one looks at
+	 it.  That is inherent in asking, not a fault of this implementation --
+	 use next or nextOrNil to peek and take as one act."
+	^monitor critical: [
+		items isEmpty ifTrue: [nil] ifFalse: [items first]]
+]
+
 { #category : 'testing' }
 SharedQueue >> isEmpty [
 	"True if empty at the moment of asking, which is all that can be

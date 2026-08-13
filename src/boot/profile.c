@@ -29,6 +29,13 @@ typedef struct {
     st_names    exclude;
     st_names    supersede;
     /*
+     *  The files a #supersede dropped.  Kept because dropping them is the
+     *  moment protocol can be lost silently: the replacement is a different
+     *  class by a different author, and nothing else in the system will
+     *  notice that it answers less than the thing it replaced.
+     */
+    st_names    superseded_paths;
+    /*
      *  How much of `exclude' applies to the packages being added right now.
      *
      *  A profile excludes a class in order to REPLACE it -- that is what
@@ -245,9 +252,17 @@ add_directory(expansion *e, const char *dir, int dialect)
          *  providers and left the image without the class at all, which is
          *  how the distinction was learnt.
          */
-        if (names_contain(&e->exclude, name)
-         || names_contain_upto(&e->supersede, name, e->supersede_own))
+        if (names_contain(&e->exclude, name))
             continue;
+        if (names_contain_upto(&e->supersede, name, e->supersede_own)) {
+            /*
+             *  Superseded, not merely dropped.  Remember the file so the
+             *  guard can ask afterwards whether the class that replaced it
+             *  still answers what it defined -- see PROFILE_superseded_files.
+             */
+            SRC_names_add(&e->superseded_paths, path);
+            continue;
+        }
         ok = add_file(e, path, dialect);
     }
     SRC_names_free(&found);
@@ -281,9 +296,12 @@ add_manifest(expansion *e, const char *path, int dialect)
          *  rather than through a package directory, and a #supersede
          *  that did not look here left it in place beside ours.
          */
-        if (names_contain(&e->exclude, name)
-         || names_contain(&e->supersede, name))
+        if (names_contain(&e->exclude, name))
             continue;
+        if (names_contain(&e->supersede, name)) {
+            SRC_names_add(&e->superseded_paths, line);
+            continue;
+        }
         add_file(e, line, dialect);
     }
     fclose(f);
@@ -437,6 +455,22 @@ expand_one(expansion *e, const char *path, unsigned depth)
     return ok;
 }
 
+/*
+ *  The files the last expansion superseded.
+ *
+ *  A single global rather than an out-parameter because PROFILE_expand is
+ *  called once per run and threading a fifth argument through every caller
+ *  buys nothing.  Read it with PROFILE_superseded_files immediately after
+ *  expanding.
+ */
+static st_names     last_superseded;
+
+const st_names *
+PROFILE_superseded_files(void)
+{
+    return &last_superseded;
+}
+
 int
 PROFILE_expand(const char *path, st_names *out, int **dialects, char *error,
                size_t error_len)
@@ -454,6 +488,8 @@ PROFILE_expand(const char *path, st_names *out, int **dialects, char *error,
     SRC_names_free(&e.exclude);
     SRC_names_free(&e.supersede);
     SRC_names_free(&e.loaded);
+    SRC_names_free(&last_superseded);
+    last_superseded = e.superseded_paths;
     if (!ok) {
         SRC_names_free(&e.files);
         free(e.dialects);
@@ -504,6 +540,12 @@ PROFILE_expand_tree(const char *dir, st_names *out, char *error,
     unsigned    i;
     int         ok = 1;
 
+    /*
+     *  A bare directory has no profile and so supersedes nothing.  Cleared
+     *  rather than left alone so that the guard cannot read a list from an
+     *  expansion this one replaced.
+     */
+    SRC_names_free(&last_superseded);
     memset(&here, 0, sizeof here);
 #ifdef _WIN32
     {

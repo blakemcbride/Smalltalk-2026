@@ -622,6 +622,54 @@ the refusal already having been reported once.
 identity the distinction has nowhere to show. Pharo's identity collections send it, and
 they are right to.
 
+### The supersession guard *(done)*
+
+A `#supersede` is the only thing the loader does that removes behaviour without anything
+going wrong at the time. An `#exclude` leaves a hole the first sender falls into; a
+supersession leaves a class that is still there, still answers most of what it used to, and
+answers nothing at all to the handful of selectors its replacement never had.
+
+This was not hypothetical. Superseding 1983's `Date` and `Time` with Pharo's Chronology lost
+`Time millisecondsToRun:`, `Time dateAndTimeNow`, `Time readFrom:`, `Date leapYear:` and
+`Date readFrom:`. They were found by predicting them and grepping — which is not a method,
+and every future turn of the ratchet has the same hazard.
+
+So the loader now asks the question mechanically. `PROFILE_expand` records each file a
+`#supersede` dropped; after the image is built, `check_supersessions` re-reads those files
+and asks, of every method they defined, whether the class that replaced it still answers
+that selector. Re-reading the dropped file is the whole trick: it is the only surviving
+record of what the class used to be, and it costs one pass over a few files.
+
+Gaps are split by whether the image still spells the name anywhere, which is free — a
+dropped file was never compiled, so its selectors reached the symbol table only if something
+that *was* loaded names them. Most of what a supersession drops is the old implementation's
+own scaffolding (`makeRoomAtEnd` served an array the new class does not have) and belongs in
+the quiet half.
+
+Two rules the first version got wrong, both worth keeping:
+
+- **Ask the symbol table before looking the selector up.** `method_in_dictionary` interns,
+  so the lookup that tests a gap creates the symbol that decides whether it is live. The
+  first version therefore reported every gap as live, each having been made so by the check
+  before it — and grew the image by one symbol per gap. Asking in the right order makes the
+  guard read-only and its answer true at once.
+- **`COMPILE_selector_of` answers 0 on success.** Reading it as a predicate makes the guard
+  skip every method it parses correctly and report nothing, ever, in a way that looks exactly
+  like a clean bill of health.
+
+It reports and does not fail the build: a replacement is allowed to drop protocol nobody
+wants, and the loader cannot know which. What it can do is make the list short enough to read
+and name each entry, so that a gap is a decision somebody took rather than one that took
+itself.
+
+On the two live supersessions it finds 13, of which the filter promotes 5. Two were real and
+neither had been predicted: `Time class>>timeWords`, which `AltoFile` sends, and
+`SharedQueue>>peek`, which `InputState>>keyboardPeek` sends on the desktop's keyboard path —
+`peek` has been added to `lib/Concurrency/SharedQueue`. The rest are 1983's own private
+helpers. `Date class>>dateAndTimeNow` is the documented false positive: the name is live
+because `Time dateAndTimeNow` has senders, and the filter cannot tell the two receivers
+apart. It errs toward showing too much, which is the only direction a guard may err in.
+
 ### The ratchet from here
 
 The next turn is `Collections-Unordered`: Pharo's `HashedCollection`, `Set` and `Dictionary`.

@@ -8,6 +8,7 @@
 #include "bootstrap.h"
 #include "chunk.h"
 #include "source.h"
+#include "profile.h"
 #include "compiler.h"
 #include "interp.h"
 #include "census.h"
@@ -2698,6 +2699,183 @@ synthesize_initializing_new(void)
     return 1;
 }
 
+/*  ----------  The supersession guard  ----------
+ *
+ *  A profile's #supersede says "my version of that class, not the one you
+ *  inherited".  It is the only thing the loader does that can remove
+ *  behaviour without anything going wrong at the time.  An #exclude leaves
+ *  a hole a sender falls into immediately; a supersession leaves a class
+ *  that is still there, still answers most of what it used to, and answers
+ *  nothing at all to the handful of selectors its replacement never had.
+ *  Those show up much later, in whatever happened to send one.
+ *
+ *  This is not hypothetical.  Superseding 1983's Date and Time with Pharo's
+ *  Chronology lost `Time millisecondsToRun:', `Time dateAndTimeNow',
+ *  `Time readFrom:', `Date leapYear:' and `Date readFrom:' -- five methods
+ *  the remaining 1983 sources still send.  They were found by predicting
+ *  them and grepping.  Nothing would have caught them, and every future
+ *  turn of the ratchet has the same hazard.
+ *
+ *  So ask the question mechanically: re-read each file the profile dropped,
+ *  and for every method it defined, ask the built image whether the class
+ *  that replaced it still answers that selector.  Reading the dropped file
+ *  a second time is the whole trick -- it is the only remaining record of
+ *  what the class used to be, and it costs one pass over a few files.
+ *
+ *  A gap is reported, not fatal.  Some are deliberate: a replacement is
+ *  allowed to drop protocol nobody wants any more, and the loader is not
+ *  in a position to know which.  What it can do is make the list short,
+ *  visible and countable, so that a gap is a decision somebody took rather
+ *  than one that took itself.
+ */
+
+/*  One selector a supersession dropped, and who might miss it.  */
+typedef struct {
+    char        class_name[128];
+    char        selector[128];
+    int         class_side;
+    int         known;                  /*  the name exists in the image  */
+} supersede_gap;
+
+typedef struct {
+    supersede_gap   gaps[256];
+    unsigned        count;              /*  gaps recorded, capped         */
+    unsigned        found;              /*  gaps seen, uncapped           */
+} supersede_scan;
+
+static int
+supersede_saw_method(const char *class_name, int class_side,
+                     const char *category, const char *source,
+                     const char *file, unsigned line, void *user)
+{
+    supersede_scan *scan = user;
+    boot_class     *c;
+    supersede_gap  *gap;
+    char            selector[128];
+    int             known;
+
+    (void) category;
+    (void) file;
+    (void) line;
+
+    if (COMPILE_selector_of(source, selector, sizeof selector) != 0)
+        return 1;                       /*  no pattern: not our question  */
+    c = find_class(class_name);
+    if (!c || !OM_is_present(c->class_oop))
+        return 1;                       /*  the class went away entirely   */
+
+    /*
+     *  The symbol table is asked FIRST, and it decides both questions.
+     *
+     *  If nothing in the image spells this name, no method dictionary can
+     *  be keyed by it, so the selector is certainly not answered -- and
+     *  chain_defines must not be called, because looking a selector up
+     *  interns it, which would add the symbol to the image the guard is
+     *  supposed to be reading.  That is not a stylistic point: the first
+     *  version grew the symbol table by one per gap, so the report claimed
+     *  every gap was live, each having been made live by the check before
+     *  it.  Asking in this order makes the guard read-only and the answer
+     *  true at the same time.
+     */
+    known = symbol_find(selector, strlen(selector)) >= 0;
+    if (known && chain_defines(c, class_side, selector))
+        return 1;
+
+    ++scan->found;
+    if (result)
+        ++result->supersession_gaps;
+    if (scan->count == sizeof scan->gaps / sizeof scan->gaps[0])
+        return 1;
+    gap = &scan->gaps[scan->count++];
+    snprintf(gap->class_name, sizeof gap->class_name, "%s", class_name);
+    snprintf(gap->selector, sizeof gap->selector, "%s", selector);
+    gap->class_side = class_side;
+    /*
+     *  Most of what a supersession drops is the old implementation's own
+     *  scaffolding: `makeRoomAtEnd' existed to serve an array the new class
+     *  does not have, and losing it costs nothing.  A name no other loaded
+     *  file spells is exactly that case, and separating it is what keeps
+     *  the list short enough to read.
+     *
+     *  This is a filter and not a proof.  A name can be interned because
+     *  some unrelated class defines it -- Stream answers `peek', so
+     *  SharedQueue>>peek reads as live whether or not anything sends it to
+     *  a SharedQueue.  It errs toward showing too much, which is the only
+     *  direction a guard may err in.
+     */
+    gap->known = known;
+    return 1;
+}
+
+static void
+report_gaps(const supersede_scan *scan, int known, const char *heading)
+{
+    unsigned    shown = 0;
+    unsigned    i;
+
+    for (i = 0; i < scan->count; ++i) {
+        const supersede_gap *g = &scan->gaps[i];
+
+        if (g->known != known)
+            continue;
+        if (shown++ == 0)
+            fprintf(stderr, "st80: %s\n", heading);
+        /*
+         *  Named one per line rather than tallied.  A count answers "how
+         *  bad", which is what one asks after already knowing which -- and
+         *  not knowing which is the entire failure this guards against.
+         */
+        if (shown <= 30)
+            fprintf(stderr, "  %s%s>>%s\n", g->class_name,
+                    g->class_side ? " class" : "", g->selector);
+        else if (shown == 31)
+            fprintf(stderr, "  ... and more\n");
+    }
+}
+
+static int
+check_supersessions(void)
+{
+    static const st_source_sink sink = { NULL, NULL, NULL,
+                                         supersede_saw_method, NULL };
+    const st_names *dropped = PROFILE_superseded_files();
+    supersede_scan *scan;
+    unsigned        i;
+
+    if (dropped->count == 0)
+        return 1;
+    scan = (supersede_scan *) calloc(1, sizeof *scan);
+    if (!scan) {
+        boot_fail("out of memory checking supersessions");
+        return 0;
+    }
+    for (i = 0; i < dropped->count; ++i) {
+        char    error[256];
+
+        /*
+         *  A file that cannot be re-read is not a load failure -- it was
+         *  deliberately not loaded.  It means only that this file's
+         *  protocol went unchecked, which is worth one line and no more.
+         */
+        if (!SRC_read(dropped->items[i], &sink, scan, error, sizeof error))
+            fprintf(stderr, "st80: cannot re-read superseded %s: %s\n",
+                    dropped->items[i], error);
+    }
+    report_gaps(scan, 1,
+                "superseded protocol that is gone, and whose name the image "
+                "still uses:");
+    report_gaps(scan, 0,
+                "superseded protocol that is gone, and that nothing else "
+                "names (the old implementation's own):");
+    if (scan->found)
+        fprintf(stderr,
+                "st80: %u selector%s lost to supersession across %u file%s\n",
+                scan->found, scan->found == 1 ? "" : "s",
+                dropped->count, dropped->count == 1 ? "" : "s");
+    free(scan);
+    return 1;
+}
+
 static int
 boot_build_locked(const char *const *paths, const int *dialects,
                   unsigned path_count, st_bootstrap_result *out)
@@ -2795,6 +2973,13 @@ boot_build_locked(const char *const *paths, const int *dialects,
      *  new itself" cannot be answered before its methods are in.
      */
     if (!synthesize_initializing_new())
+        return -1;
+    /*
+     *  Last, because the question is about the finished image: a selector
+     *  can arrive from a trait, from an extension file loaded later, or
+     *  from the synthesized `new' just above.
+     */
+    if (!check_supersessions())
         return -1;
 
     install_closure_support();

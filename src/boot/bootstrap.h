@@ -62,6 +62,14 @@ typedef struct {
      *  define initialize and nothing in their chain defines new.
      */
     unsigned    news_synthesized;
+
+    /*
+     *  Selectors a superseded file defined that the class replacing it does
+     *  not answer.  See check_supersessions: this is the one load-time act
+     *  that loses behaviour with nothing failing, so the loss is counted
+     *  and named rather than discovered months later by a sender.
+     */
+    unsigned    supersession_gaps;
     unsigned    symbols_interned;
     /*
      *  Classes a source file described and this system could not build --
