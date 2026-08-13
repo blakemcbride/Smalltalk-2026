@@ -132,3 +132,20 @@ Integer >> | anInteger [
 	"Bitwise or, the counterpart of &."
 	^self bitOr: anInteger
 ]
+
+{ #category : '*Kernel-Protocol' }
+Integer >> isPrime [
+	"Trial division up to my square root, which is all HashTableSizes needs
+	 of it -- the table it builds is a fixed list of hash-table capacities,
+	 computed once at class-initialization time."
+	| limit d |
+	self < 2 ifTrue: [^false].
+	self = 2 ifTrue: [^true].
+	self even ifTrue: [^false].
+	limit := self sqrt truncated.
+	d := 3.
+	[d <= limit] whileTrue: [
+		self \\ d = 0 ifTrue: [^false].
+		d := d + 2].
+	^true
+]

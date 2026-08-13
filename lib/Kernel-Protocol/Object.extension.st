@@ -216,3 +216,19 @@ Object >> className [
 	"My class's name as a String."
 	^self class name
 ]
+
+{ #category : '*Kernel-Protocol' }
+Object >> asCollectionElement [
+	"Me, as something a Set can hold.
+
+	 Pharo's Set stores its elements in an Array and uses nil to mean an
+	 empty slot, so nil itself cannot be stored directly -- it wraps nil in
+	 a CollectionElement instead, and asks every element for its wrapper on
+	 the way in.  For everything that is not nil the answer is the object
+	 itself, which is why Pharo's own version has no explicit return.
+
+	 Answering self here means a Set in this system cannot hold nil.  That
+	 is the same limitation 1983's Set has, so nothing regresses; adding
+	 CollectionElement is what would lift it."
+	^self
+]

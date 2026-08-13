@@ -903,9 +903,40 @@ references and finalization, which is Phase F).
 Skipped under `OM=bb`, where the bootstrap refuses before reaching a test — the same way
 `test_trace` skips under `mt`.
 
+### Collections-Unordered: the first Tier 2 turn, begun and not finished
+
+Pharo's `Collections-Unordered` is imported at commit `490f37c5` with provenance, and
+`profiles/pharo-collections.profile` loads it — 272 classes, 5258 methods. **It does not yet
+produce a working image**, and the value of the turn so far is that what blocks it is now
+measured instead of guessed.
+
+Two predictions, both plausible, both wrong, both recorded in the package's `PROVENANCE.md`
+because being wrong in a documented way is the point of doing it this way round:
+
+- The C bootstrap builds `Dictionary` instances at four sites, and the two dialects keep
+  their Associations in different places — so those sites should have built malformed
+  objects. They do not: all four go through the image's own `new:` and `add:`, and are
+  layout-agnostic by construction.
+- `MethodDictionary` should have blocked it. Importing Pharo's changed the method count and
+  nothing else; the errors were identical before and after.
+
+What actually blocks it is **missing protocol**, the same shape as the Chronology round and
+not architectural at all — `generality` (179715 of them, an identical count across runs,
+so one bounded loop rather than scattered failures), `at:ifAbsent:`, `activeController`,
+`enclosedElement`. Two more are already closed: `Integer>>isPrime`, which
+`HashedCollection class>>sizeFor:` reaches through `HashTableSizes`, and
+`Object>>asCollectionElement`, which Pharo's `Set` asks of every element on the way in.
+
+The supersession guard earned its keep here: 19 selectors lost across 7 files, 8 promoted as
+still named. That is the report the whole mechanism was built to produce, and this is the
+first turn big enough to need it.
+
+`pharo-collections` is deliberately **not** in `tests/profiles.expected`. It does not work,
+and recording a score for it would be recording a fiction.
+
 ### The ratchet from here
 
-The next turn is `Collections-Unordered`: Pharo's `HashedCollection`, `Set` and `Dictionary`.
+The turn in progress is `Collections-Unordered`: Pharo's `HashedCollection`, `Set` and `Dictionary`.
 That is a Tier 2 substitution — it replaces classes the whole 1983 library stands on — and
 it is where the two systems start to fork in earnest rather than coexist.
 
