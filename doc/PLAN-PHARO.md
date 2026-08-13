@@ -784,6 +784,47 @@ is not made truer here.
 
 **633 run, 633 passed, 0 failed, 0 errors.** `LIB_METHODS` 352 → 396 across the two rounds.
 
+### `=` and `hash` have to arrive together *(done)*
+
+Making `Symbol>>=` symmetric above left a contract broken: `#foo = 'foo'` answered true and
+`#foo hash = 'foo' hash` answered false, so a `Set` containing `#foo` answered *false* to
+`includes: 'foo'`, and a `Dictionary at: #foo put: 1` could not be read with `'foo'`. That is
+the collection working exactly as designed on a contract its elements were breaking.
+
+Half of it predates the Chronology work — `String>>=` has always accepted a Symbol — so the
+invariant was already broken in one direction and became reachable from both. `Symbol>>hash`
+now answers what a String with the same characters answers.
+
+The reason this was worth doing *before* the next ratchet turn: that turn is
+`Collections-Unordered`, Pharo's `HashedCollection`, `Set` and `Dictionary`. Landing a new
+hashed-collection implementation on top of an equality contract that does not hold means
+debugging both at once, and the symptom — a key that is present and not found — looks exactly
+like a bug in the new collections.
+
+The same pairing was owed one level up, and asking the question found it: `Set` had been
+given value equality in the round before and left with the inherited identity hash, so two
+equal Sets hashed differently and a Set of Sets could not find one by another. `Set>>hash`
+now folds its elements with `bitXor:`, which is commutative because a Set has no order.
+**Defining `=` without `hash` does not leave things as they were — it breaks them in a new
+place, one indirection further away.**
+
+Three things it could have disturbed, each checked rather than assumed:
+
+- **Interning.** The image's Symbol table is keyed by `aString stringhash`, and
+  `Symbol>>stringhash` is `^super hash` — the same text hash under another name. Primitive 75
+  was never involved.
+- **Method dictionaries.** They are `IdentityDictionary`s, and `findKeyOrNil:` probes by
+  `key asOop`, not by hash — which is also what the VM's own `lookup_method` uses, so the C
+  and Smalltalk sides still agree about where a selector lives.
+- **Globals.** The C bootstrap finds them by a linear scan over the association array,
+  comparing text, so it has no opinion about this at all.
+
+It also exposed something worse than the bug. `test_image` builds its image from a
+hand-written file list whose comment claims it is what `st2026.profile` names; it is not, and
+`Symbol.extension.st` was among the 22 missing. So `test_image` asserted `#foo = 'foo'` is
+**false** and went on passing for a whole round after `lib/` had made it true. Four files are
+added here and the invariant is asserted directly; the remaining drift is task #70.
+
 ### The supersession guard *(done)*
 
 A `#supersede` is the only thing the loader does that removes behaviour without anything

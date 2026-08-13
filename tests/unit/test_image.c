@@ -42,7 +42,7 @@
 #define BLUEBOOK_CLASSES        226
 #define BLUEBOOK_METHODS        4521
 #define BLUEBOOK_CATEGORIES     41
-#define LIB_CLASSES             23       /*  BlockClosure, the exceptions,
+#define LIB_CLASSES             24       /*  BlockClosure, the exceptions,
                                             SUnit, and the fixtures        */
 /*
  *  This number is a ratchet and is meant to move: lib/ is where every
@@ -56,7 +56,7 @@
  *  plus TimedOut and Process>>signalException:, which is what a timeout
  *  needs to interrupt the process it is watching.
  */
-#define LIB_METHODS             396
+#define LIB_METHODS             406
 /*
  *  Three, not five: the extension packages define no CLASSES, and a
  *  category is a property of a class definition.  Kernel-Methods-Fixes and
@@ -141,6 +141,16 @@ load_manifest(void)
             "lib/Collections-Protocol/SequenceableCollection.extension.st",
             "lib/Collections-Protocol/ArrayedCollection.extension.st",
             "lib/Collections-Protocol/Dictionary.extension.st",
+            /*
+             *  Symbol's = and hash, which have to arrive together: = answers
+             *  true for a String with the same characters and hash answers
+             *  what that String answers, and a hashed collection holding one
+             *  kind and asked for the other depends on both.
+             */
+            "lib/Collections-Protocol/Symbol.extension.st",
+            "lib/Streams-Protocol/PositionableStream.extension.st",
+            "lib/Streams-Protocol/WriteStream.extension.st",
+            "lib/Kernel-Exceptions/SubscriptOutOfBounds.class.st",
             "lib/Streams-Protocol/Stream.extension.st",
             "lib/Streams-Protocol/SequenceableCollection.extension.st",
             "lib/Streams-Protocol/Object.extension.st",
@@ -237,7 +247,7 @@ build_once(void)
      *  every Pharo class subclassing a 1983 collection half-built: 1983
      *  goes new -> new: -> init: and never sends #initialize.
      */
-    CHECK_EQ_INT(res.news_synthesized, 22);
+    CHECK_EQ_INT(res.news_synthesized, 23);
     built = 1;
     return 1;
 }
@@ -1032,7 +1042,35 @@ test_symbols(void)
 {
     check_integer("#foo size", 3);
     check_integer("'hello' asSymbol size", 5);
-    check_oop("#foo = 'foo'", ST_FALSE, "false");   /*  Symbol>>= is identity */
+    /*
+     *  A Symbol equals a String spelling the same characters, and hashes
+     *  the same as one.  1983 answers identity for both -- Symbol>>= is
+     *  `^self == anObject' and Symbol>>hash is primitive 75, half the
+     *  object pointer -- and lib/ overrides both, together.
+     *
+     *  Together is the point, and is what these four lines are here to
+     *  hold.  Equality without the hash gives a collection an object it
+     *  cannot find: a Set containing #foo answered false to
+     *  (includes: 'foo') while #foo = 'foo' answered true, which is the
+     *  collection working correctly on a contract its elements broke.
+     */
+    check_oop("#foo = 'foo'", ST_TRUE, "true");
+    check_oop("'foo' = #foo", ST_TRUE, "true");
+    check_oop("#foo hash = 'foo' hash", ST_TRUE, "true");
+    check_oop("((Set new add: #foo; yourself) includes: 'foo')",
+              ST_TRUE, "true");
+    /*
+     *  The same pairing one level up.  lib/ gives Set value equality, so
+     *  Set must hash by its elements too -- defining = and leaving the
+     *  inherited identity hash does not leave things as they were, it
+     *  breaks them one indirection further away, where a Set of Sets is
+     *  the thing that stops working.
+     */
+    check_oop("| a b | a := Set new. a add: 1; add: 7. "
+              "b := Set new. b add: 7; add: 1. ^a = b", ST_TRUE, "true");
+    check_oop("| a b | a := Set new. a add: 1; add: 7. "
+              "b := Set new. b add: 7; add: 1. ^a hash = b hash",
+              ST_TRUE, "true");
     check_oop("'foo' = #foo", ST_TRUE,  "true");    /*  String>>= is by value */
 
     /*
@@ -1973,7 +2011,7 @@ test_browsing(void)
      *  the source pointer is 22 bits and silently truncated once, and a
      *  size that stops growing is how that would show.
      */
-    check_integer("(SourceFiles at: 1) contents size", 1271320);
+    check_integer("(SourceFiles at: 1) contents size", 1277291);
 }
 
 /*

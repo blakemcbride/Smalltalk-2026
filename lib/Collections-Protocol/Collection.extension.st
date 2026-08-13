@@ -224,3 +224,24 @@ Set >> = aCollection [
 	self do: [:each | (aCollection includes: each) ifFalse: [^false]].
 	^true
 ]
+
+{ #category : '*Collections-Protocol' }
+Set >> hash [
+	"Derived from my elements, so that it agrees with the = above.
+
+	 Added in the same breath as Set>>= and for the same reason that
+	 Symbol>>hash had to follow Symbol>>=: giving a class value equality and
+	 leaving it Object's identity hash produces objects that are equal and
+	 hash differently, which is precisely the pair a hashed collection
+	 cannot hold.  Defining = without hash does not leave things as they
+	 were -- it breaks them in a new place, one indirection further away.
+
+	 Combined with bitXor:, which is commutative, because a Set has no
+	 order and two Sets that are equal must hash the same however they were
+	 built up.  The size is folded in so that sets whose elements happen to
+	 cancel are still told apart."
+	| h |
+	h := self size hash.
+	self do: [:each | h := h bitXor: each hash].
+	^h
+]

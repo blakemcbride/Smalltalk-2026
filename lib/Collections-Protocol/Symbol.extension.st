@@ -55,3 +55,35 @@ Symbol >> = anObject [
 	anObject isSymbol ifTrue: [^false].
 	^(anObject isKindOf: String) and: [anObject = self]
 ]
+
+{ #category : '*Collections-Protocol' }
+Symbol >> hash [
+	"The same hash a String with my characters answers.
+
+	 = and hash have to agree: a hashed collection puts an object in the
+	 bucket its hash names and then compares with =, so two objects that are
+	 equal and hash differently are two objects one of which cannot be
+	 found.  Since Symbol>>= answers true for a String spelling the same
+	 characters, this must answer what that String answers, and 1983's
+	 primitive 75 -- half the object pointer -- does not.
+
+	 The symptom was a Set that contained #foo answering false to
+	 (includes: 'foo'), and a Dictionary at: #foo put: 1 that could not be
+	 read with 'foo'.  Both are the collection working exactly as designed
+	 on a contract the elements were breaking.
+
+	 What this does NOT disturb, each checked rather than assumed:
+
+	 The image's Symbol table is keyed by `aString stringhash', which is
+	 this same text hash under another name -- Symbol>>stringhash is
+	 `^super hash' -- so interning was never using primitive 75.
+
+	 Method dictionaries are IdentityDictionaries, and
+	 IdentityDictionary>>findKeyOrNil: probes by `key asOop', not by hash.
+	 That is also what the VM's own lookup_method uses, so the C and
+	 Smalltalk sides still agree about where a selector lives.
+
+	 The C bootstrap finds globals by a linear scan over the association
+	 array, comparing text, so it has no opinion about this at all."
+	^super hash
+]
