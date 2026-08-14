@@ -514,7 +514,8 @@ chunk_class_definition(const char *text, const st_source_sink *sink,
     if (quoted_after(text, "poolDictionaries:", buffer, sizeof buffer))
         split_words(buffer, &pools, 4);
     if (quoted_after(text, "category:", buffer, sizeof buffer))
-        snprintf(category, sizeof category, "%.63s", buffer);
+        /*  sizeof, not %.63s: the buffer is 256 and categories approach it.  */
+        snprintf(category, sizeof category, "%s", buffer);
 
     memset(&def, 0, sizeof def);
     def.name        = name;
