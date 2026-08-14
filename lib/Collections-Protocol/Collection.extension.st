@@ -278,3 +278,25 @@ Collection class >> withAll: aCollection [
 	"A new collection of my kind holding all of those elements."
 	^self new addAll: aCollection; yourself
 ]
+
+{ #category : '*Collections-Protocol' }
+Collection >> identityIncludes: anObject [
+	"Whether anObject is one of my elements, by identity rather than by =.
+	 Two equal Strings are one element to includes: and two to this."
+	self do: [:each | anObject == each ifTrue: [^true]].
+	^false
+]
+
+{ #category : '*Collections-Protocol' }
+Collection >> flatCollect: aBlock as: aClass [
+	"Collect, then flatten one level, into a collection of that class."
+	| all |
+	all := OrderedCollection new.
+	self do: [:each | all addAll: (aBlock value: each)].
+	^aClass withAll: all
+]
+
+{ #category : '*Collections-Protocol' }
+Collection >> flatCollect: aBlock [
+	^self flatCollect: aBlock as: self species
+]

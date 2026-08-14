@@ -252,3 +252,14 @@ Object >> enclosedElement [
 	 Only a wrapper answers anything but itself."
 	^self
 ]
+
+{ #category : '*Kernel-Protocol' }
+Object >> split: aSequenceableCollection [
+	"Cut that collection wherever I match.
+
+	 On Object because I am the SPLITTER, not the thing being split, and a
+	 splitter may be an element, a subsequence or a block -- Pharo puts the
+	 protocol here for exactly that reason.  The work is in
+	 SequenceableCollection>>splitOn:; this is the other spelling of it."
+	^aSequenceableCollection splitOn: self
+]

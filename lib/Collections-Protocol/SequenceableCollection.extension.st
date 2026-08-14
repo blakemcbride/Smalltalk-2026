@@ -191,3 +191,133 @@ SequenceableCollection >> at: index ifAbsent: exceptionBlock [
 		ifFalse: [^exceptionBlock value].
 	^self at: index
 ]
+
+{ #category : '*Collections-Protocol' }
+SequenceableCollection >> reduceLeft: aBlock [
+	"Fold left, with no initial value: the first element is the seed.
+
+	 aBlock may take more than two arguments, which is not a curiosity --
+	 it is how `#(1 + 3 - 5) reduceLeft: [:a :op :b | a perform: op with: b]'
+	 evaluates an infix expression, and Pharo's own tests use exactly that."
+	| count taken |
+	self isEmpty ifTrue: [^self errorEmptyCollection].
+	count := aBlock numArgs - 1.
+	taken := self first.
+	2 to: self size by: count do: [:i |
+		| arguments |
+		arguments := (i to: (i + count - 1 min: self size))
+			inject: OrderedCollection new
+			into: [:acc :k | acc add: (self at: k); yourself].
+		arguments addFirst: taken.
+		taken := aBlock valueWithArguments: arguments asArray].
+	^taken
+]
+
+{ #category : '*Collections-Protocol' }
+SequenceableCollection >> reduceRight: aBlock [
+	"Fold right: the LAST element is the seed and the walk runs backwards,
+	 so `#(1 2 3) reduceRight: [:a :b | a - b]' is 1 - (2 - 3) and not
+	 ((1 - 2) - 3)."
+	| taken |
+	self isEmpty ifTrue: [^self errorEmptyCollection].
+	taken := self last.
+	self size - 1 to: 1 by: -1 do: [:i |
+		taken := aBlock value: (self at: i) value: taken].
+	^taken
+]
+
+{ #category : '*Collections-Protocol' }
+SequenceableCollection >> splitOn: splitter [
+	"Me, cut into pieces wherever splitter matches, as an OrderedCollection.
+
+	 The splitter is an element, a subsequence, or a block that tests one
+	 element.  Pharo dispatches this through a `split:' protocol on the
+	 splitter itself; done here directly, because the three cases are the
+	 whole of it and a protocol on Object to reach them is more machinery
+	 than the answer is worth.
+
+	 Empty pieces are KEPT -- two adjacent separators produce an empty
+	 piece between them, and the tests say so: `#(2 2 3 3 4 1 2 3 3 5)
+	 splitOn: [:e | e > 3]' answers three pieces, the last of them empty."
+	| pieces current width matches |
+	pieces := OrderedCollection new.
+	current := OrderedCollection new.
+	width := (splitter isKindOf: SequenceableCollection)
+		ifTrue: [splitter size]
+		ifFalse: [1].
+	matches := [:index |
+		(splitter isKindOf: BlockClosure)
+			ifTrue: [splitter value: (self at: index)]
+			ifFalse: [(splitter isKindOf: SequenceableCollection)
+				ifTrue: [(index + width - 1 <= self size)
+					and: [(self copyFrom: index to: index + width - 1) = splitter]]
+				ifFalse: [(self at: index) = splitter]]].
+	self doSplit: matches width: width into: pieces current: current.
+	^pieces
+]
+
+{ #category : '*Collections-Protocol' }
+SequenceableCollection >> doSplit: matches width: width into: pieces current: current [
+	"The walk behind splitOn:, kept separate so the dispatch above reads."
+	| index |
+	index := 1.
+	[index <= self size] whileTrue: [
+		(matches value: index)
+			ifTrue: [
+				pieces add: current asArray.
+				current := OrderedCollection new.
+				index := index + width]
+			ifFalse: [
+				current add: (self at: index).
+				index := index + 1]].
+	pieces add: current asArray
+]
+
+{ #category : '*Collections-Protocol' }
+SequenceableCollection >> joinUsing: joiner [
+	"My elements run together with joiner between them.
+
+	 The pieces are themselves collections and are spliced in; a joiner
+	 that is a single element is treated as a collection of one."
+	| result separator |
+	separator := (joiner isKindOf: SequenceableCollection)
+		ifTrue: [joiner]
+		ifFalse: [Array with: joiner].
+	result := OrderedCollection new.
+	self doWithIndex: [:each :i |
+		i > 1 ifTrue: [result addAll: separator].
+		(each isKindOf: SequenceableCollection)
+			ifTrue: [result addAll: each]
+			ifFalse: [result add: each]].
+	^(joiner isKindOf: SequenceableCollection)
+		ifTrue: [joiner species withAll: result]
+		ifFalse: [Array withAll: result]
+]
+
+{ #category : '*Collections-Protocol' }
+SequenceableCollection >> sort: aBlock [
+	"Sort me IN PLACE by that block, and answer me.
+
+	 In place, where sorted: answers a copy -- the two exist side by side in
+	 Pharo and the difference is the whole reason both are there."
+	| ordered |
+	ordered := (self asSortedCollection: aBlock) asArray.
+	1 to: ordered size do: [:i | self at: i put: (ordered at: i)].
+	^self
+]
+
+{ #category : '*Collections-Protocol' }
+SequenceableCollection >> sort [
+	^self sort: [:a :b | a <= b]
+]
+
+{ #category : '*Collections-Protocol' }
+SequenceableCollection >> associationsDo: aBlock [
+	"Evaluate aBlock with each of my elements, which are Associations.
+
+	 A Dictionary answers this from its own storage; a plain sequence of
+	 Associations -- which is what `aDictionary associations' hands back --
+	 has to answer it too, or code that walks either one breaks on the
+	 second."
+	self do: aBlock
+]
