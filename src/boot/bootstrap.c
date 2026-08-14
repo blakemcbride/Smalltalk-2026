@@ -1829,7 +1829,15 @@ sink_class_def(const st_source_class_def *def, void *user)
             return 0;
         }
         snprintf(t->name, sizeof t->name, "%.63s", def->name);
-        snprintf(t->composition, sizeof t->composition, "%.255s",
+        /*
+         *  No %.255s here.  The buffer is 1024 because compositions are
+         *  long, and a precision left over from when it was 256 truncated
+         *  them anyway -- silently, and in the middle of a trait name:
+         *  BagTest's composition became "... + (TCreat", and the loader
+         *  reported "unknown trait TCreat", which points at trait
+         *  resolution rather than at a string length.
+         */
+        snprintf(t->composition, sizeof t->composition, "%s",
                  def->traits ? def->traits : "");
         if (result)
             ++result->traits_created;
@@ -1853,7 +1861,8 @@ sink_class_def(const st_source_class_def *def, void *user)
     snprintf(c->name, sizeof c->name, "%.63s", def->name);
     snprintf(c->superclass, sizeof c->superclass, "%.63s", def->superclass);
     snprintf(c->category, sizeof c->category, "%.63s", def->category);
-    snprintf(c->traits, sizeof c->traits, "%.255s",
+    /*  Likewise: the buffer is the limit, not a precision.  */
+    snprintf(c->traits, sizeof c->traits, "%s",
              def->traits ? def->traits : "");
     c->from_package = state->package_format;
     c->indexable = def->indexable;
