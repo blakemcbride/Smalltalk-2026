@@ -29,6 +29,11 @@ one array of selectors and one of methods, rather than thousands of
 Associations.  So the one class the interpreter cannot afford to have
 change is the one that does not.
 
+HashTableSizesTest is excluded because lib/Collections-Compat replaces the
+table it tests with a literal -- the search that builds it does not finish
+under this interpreter.  KeyedTreeTest is excluded because KeyedTree is,
+and a test whose subject is absent reports ten failures that say nothing.
+
 The package's own tests are NOT loaded here.  They root on
 CollectionRootTest, which lives in Collections-Abstract-Tests, and pulling
 that in is the next package rather than part of this one.  What this profile
@@ -39,8 +44,9 @@ Profile {
 	#name     : 'pharo-collections',
 	#requires : [ 'st2026' ],
 	#dialect  : 'closures',
-	#exclude   : [ 'ManifestCollectionsUnordered', 'HashTableSizesTest', 'OrderedDictionary',
-	               'OrderedIdentityDictionary', 'KeyedTree', 'st80: bootstrap failed: class IdentityBagTest has an unknown superclass BagTest', 'st80: bootstrap failed: class IdentityBagTest has an unknown superclass BagTest', 'st80: bootstrap failed: class IdentityBagTest has an unknown superclass BagTest', 'st80: bootstrap failed: class IdentityBagTest has an unknown superclass BagTest', 'st80: bootstrap failed: class IdentityBagTest has an unknown superclass BagTest', 'st80: bootstrap failed: class IdentityBagTest has an unknown superclass BagTest', 'st80: bootstrap failed: class IdentityBagTest has an unknown superclass BagTest', 'st80: bootstrap failed: class IdentityBagTest has an unknown superclass BagTest' ],
+	#exclude   : [ 'ManifestCollectionsUnordered', 'HashTableSizesTest',
+	               'OrderedDictionary', 'OrderedIdentityDictionary',
+	               'KeyedTree', 'KeyedTreeTest' ],
 	#supersede : [ 'Set', 'Dictionary', 'IdentityDictionary', 'IdentitySet',
 	               'Bag', 'MethodDictionary' ],
 	#packages : [ '../pharo/Collections-Unordered',
