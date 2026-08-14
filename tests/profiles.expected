@@ -26,7 +26,12 @@
 #                                 this is Phase F work.
 #
 # pharo-collections runs Pharo's Set, Dictionary, IdentityDictionary, Bag and
-# MethodDictionary against the package's OWN tests, 288 of them, and 151 pass.
+# MethodDictionary against the package's OWN tests, 232 of them, and 176 pass.
+# It was 288 until abstract test classes stopped being run: CollectionRootTest
+# defines the tests every collection must pass and leaves `collection' a
+# subclassResponsibility, so running the parent itself asked a question nobody
+# was meant to answer -- 52 errors, each a test doing exactly what it was
+# written to do.
 # The substitution itself is sound -- the st2026 suites pass on this image
 # unchanged -- and what the remaining 182 measure is Collection and Stream
 # protocol Pharo assumes and 1983 has no name for, the same grind that took
@@ -40,4 +45,4 @@ st2026                  12   12
 pharo-announcements     43   43
 pharo-time              633  633
 pharo-weak              32   12
-pharo-collections       288  151
+pharo-collections       232  176

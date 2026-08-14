@@ -272,3 +272,37 @@ Object >> join: aCollection [
 	 joiner may be a single element or a sequence."
 	^aCollection joinUsing: self
 ]
+
+{ #category : '*Kernel-Protocol' }
+Object >> basicIdentityHash [
+	"My identity hash, taken from the object pointer and not from my value.
+
+	 Primitive 75 directly rather than `^self hash', and the difference
+	 matters here more than it used to: lib/ gives Symbol a value-based
+	 hash so that it agrees with a value-based =, so for a Symbol the two
+	 answers are now different numbers.  Anything asking for the IDENTITY
+	 hash has to get the identity one."
+	<primitive: 75>
+	^0
+]
+
+{ #category : '*Kernel-Protocol' }
+Object >> identityHash [
+	^self basicIdentityHash
+]
+
+{ #category : '*Kernel-Protocol' }
+Object >> flushCache [
+	"Discard whatever the VM cached about me.  Nothing, here.
+
+	 Pharo's MethodDictionary sends this on every change, because a real
+	 method lookup cache has to be told when a dictionary it has read from
+	 is edited.  This VM has no such cache -- primitive 89 is a no-op and
+	 doc/CONCURRENCY.md records why a future one would be per-worker with a
+	 global epoch -- so there is nothing to discard and answering the
+	 receiver is the truthful implementation rather than a stub.
+
+	 If a cache is ever added, this method is one of the places that has to
+	 stop being empty."
+	^self
+]

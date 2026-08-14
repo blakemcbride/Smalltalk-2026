@@ -195,8 +195,28 @@ TestCase class >> shouldRunInAllTests [
 	 Almost always yes.  It is no for a class whose tests are MEANT to go
 	 wrong -- SUnit needs a few of those to check that it reports failures
 	 as failures, and a whole-image run that reported them would be crying
-	 wolf at every build."
-	^true
+	 wolf at every build.
+
+	 And no for an ABSTRACT test class.  Pharo builds a suite once and
+	 shares it down a hierarchy -- CollectionRootTest defines the tests
+	 every collection must pass and leaves `collection' as a
+	 subclassResponsibility for each concrete subclass to answer -- so
+	 running the parent itself asks a question nobody was meant to answer.
+	 It produced 52 of `My subclass should have overridden one of my
+	 messages' in one run, every one of them a test doing exactly what it
+	 was written to do."
+	^self isAbstract not
+]
+
+{ #category : 'testing' }
+TestCase class >> isAbstract [
+	"Whether I only define tests for my subclasses to run.
+
+	 False here, and overridden by the classes that mean it -- which is
+	 Pharo's arrangement, and the reason the override reads
+	 `^self name = #CollectionRootTest': a class is abstract, its
+	 subclasses are not, and inheriting the answer would silence them too."
+	^false
 ]
 
 { #category : 'instance creation' }

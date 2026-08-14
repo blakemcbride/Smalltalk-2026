@@ -27,3 +27,26 @@ Behavior >> environment [
 	 ported code asks for a class that may not have been loaded."
 	^Smalltalk
 ]
+
+{ #category : '*Kernel-Protocol' }
+Behavior >> >> aSelector [
+	"The compiled method I hold for that selector.
+
+	 `Dictionary >> #at:put:' is how Pharo names a method as a value, and
+	 its tests use it constantly -- MethodDictionaryTest sent it 36 times in
+	 one run.  Two characters, and it reads the way the literature writes
+	 it."
+	^self compiledMethodAt: aSelector
+]
+
+{ #category : '*Kernel-Protocol' }
+Behavior >> methodDict [
+	"The dictionary mapping my selectors to their compiled methods.
+
+	 1983 keeps it in an instance variable and reaches it directly from
+	 within Behavior, so it never needed a reader.  Anything OUTSIDE the
+	 class does -- MethodDictionaryTest exists precisely to poke at one --
+	 and answering the real dictionary rather than a copy is deliberate:
+	 the tests edit it."
+	^methodDict
+]
