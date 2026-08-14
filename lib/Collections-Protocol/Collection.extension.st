@@ -498,3 +498,58 @@ Collection >> addIfNotPresent: anObject [
 	(self includes: anObject) ifFalse: [self add: anObject].
 	^anObject
 ]
+
+{ #category : '*Collections-Protocol' }
+Collection >> asByteArray [
+	"My elements as a ByteArray.  Every element must be an integer 0..255,
+	 which is the point of asking: it fails loudly on anything else rather
+	 than truncating."
+	| bytes index |
+	bytes := ByteArray new: self size.
+	index := 0.
+	self do: [:each | bytes at: (index := index + 1) put: each].
+	^bytes
+]
+
+{ #category : '*Collections-Protocol' }
+Collection >> collect: aBlock as: aClass [
+	"Collect into a collection of that class rather than of my species.
+
+	 `#(1 2 3) collect: [:e | e * 2] as: Set' -- the point being to choose
+	 the answer's class at the call site instead of accepting whatever the
+	 receiver's species happens to be."
+	| result |
+	result := OrderedCollection new.
+	self do: [:each | result add: (aBlock value: each)].
+	^aClass newFrom: result
+]
+
+{ #category : '*Collections-Protocol' }
+Collection >> removeAllSuchThat: aBlock [
+	"Remove every element the block accepts, and answer me.
+
+	 Gathered first and removed afterwards, because removing from a
+	 collection while enumerating it is undefined for a Set -- the scan
+	 relocates on every removal."
+	| doomed |
+	doomed := OrderedCollection new.
+	self do: [:each | (aBlock value: each) ifTrue: [doomed add: each]].
+	doomed do: [:each | self remove: each ifAbsent: [nil]].
+	^self
+]
+
+{ #category : '*Collections-Protocol' }
+Collection >> removeAllFoundIn: aCollection [
+	"Remove whichever of that collection's elements I have, ignoring the
+	 ones I do not -- which is the whole difference from removeAll:."
+	aCollection do: [:each | self remove: each ifAbsent: [nil]].
+	^aCollection
+]
+
+{ #category : '*Collections-Protocol' }
+Collection >> printNameOn: aStream [
+	"How I name myself before my elements.  Split out from printOn: so a
+	 subclass can change the name and keep the listing, which is the mirror
+	 of printElementsOn:."
+	aStream nextPutAll: self class name article, self class name
+]

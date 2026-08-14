@@ -296,3 +296,29 @@ TestCase >> deny: actual closeTo: expected [
 	self deny: (actual closeTo: expected)
 		description: 'expected something not close to ', expected printString
 ]
+
+{ #category : 'asserting' }
+TestCase >> assertCollection: actual equals: expected [
+	"Compare two collections, reporting both when they differ.
+
+	 Separate from assert:equals: because a collection's printString is
+	 often long and the difference is what matters; Pharo's version also
+	 refuses to compare collections of different classes, which catches the
+	 case where a conversion silently produced a Bag instead of a Set."
+	self assert: actual class == expected class
+		description: 'expected a ', expected class name,
+			' but got a ', actual class name.
+	self assert: expected equals: actual
+]
+
+{ #category : 'asserting' }
+TestCase >> assertCollection: actual hasSameElements: expected [
+	"Same elements in any order and without regard to class.
+
+	 The complement of assertCollection:equals: -- used where the order is
+	 genuinely not part of the promise, which for a Set or a Bag is always."
+	self assert: actual size equals: expected size.
+	expected do: [:each |
+		self assert: (actual includes: each)
+			description: 'missing ', each printString]
+]

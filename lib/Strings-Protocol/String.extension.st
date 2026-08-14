@@ -278,3 +278,33 @@ String >> asPluralBasedOn: aNumber [
 	 singular nouns, so the noun must not know the count in advance."
 	^aNumber = 1 ifTrue: [self copy] ifFalse: [self, 's']
 ]
+
+{ #category : '*Strings-Protocol' }
+String >> trimBoth: aBlock [
+	"Me without leading or trailing characters the block accepts."
+	| first last |
+	first := 1.
+	last := self size.
+	[first <= last and: [aBlock value: (self at: first)]]
+		whileTrue: [first := first + 1].
+	[last >= first and: [aBlock value: (self at: last)]]
+		whileTrue: [last := last - 1].
+	^self copyFrom: first to: last
+]
+
+{ #category : '*Strings-Protocol' }
+String >> findBetweenSubstrings: delimiters [
+	"My substrings, split on any of those delimiter characters, empty
+	 pieces dropped -- which is what distinguishes it from splitOn:."
+	| pieces current |
+	pieces := OrderedCollection new.
+	current := WriteStream on: (String new: 16).
+	self do: [:c |
+		(delimiters includes: c)
+			ifTrue: [
+				current contents isEmpty ifFalse: [pieces add: current contents].
+				current := WriteStream on: (String new: 16)]
+			ifFalse: [current nextPut: c]].
+	current contents isEmpty ifFalse: [pieces add: current contents].
+	^pieces
+]

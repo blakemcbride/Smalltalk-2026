@@ -26,7 +26,7 @@
 #                                 this is Phase F work.
 #
 # pharo-collections runs Pharo's Set, Dictionary, IdentityDictionary, Bag and
-# MethodDictionary against the package's OWN tests, 469 of them, and 396 pass.
+# MethodDictionary against the package's OWN tests, 469 of them, and 410 pass.
 # It was 288 until abstract test classes stopped being run: CollectionRootTest
 # defines the tests every collection must pass and leaves `collection' a
 # subclassResponsibility, so running the parent itself asked a question nobody
@@ -45,4 +45,4 @@ st2026                  12   12
 pharo-announcements     43   43
 pharo-time              633  633
 pharo-weak              32   12
-pharo-collections       469  396
+pharo-collections       469  410

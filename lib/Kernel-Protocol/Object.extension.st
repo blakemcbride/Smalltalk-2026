@@ -340,3 +340,30 @@ Object >> value [
 	 asked to evaluate itself, and Pharo has decided that answers itself."
 	^self
 ]
+
+{ #category : '*Kernel-Protocol' }
+Object >> copyFrom: anotherObject [
+	"Take anotherObject's state into myself, in place.
+
+	 One argument, and that is the whole distinction from
+	 SequenceableCollection>>copyFrom:to:, which answers a new collection.
+	 This one MUTATES the receiver, which is why it exists: Pharo's
+	 MethodDictionary grows by building a bigger dictionary, filling it, and
+	 then pouring it back into the original -- so that every class already
+	 pointing at that dictionary keeps pointing at it.  Answering a copy
+	 would leave them all attached to the old one.
+
+	 Named instance variables first, then the indexed part, each limited to
+	 what both objects have.  Nothing is assumed about the two being the
+	 same class: the shorter one decides, which is what makes it safe to use
+	 while a class is being reshaped."
+	| count |
+	count := self class instSize min: anotherObject class instSize.
+	1 to: count do: [:i |
+		self instVarAt: i put: (anotherObject instVarAt: i)].
+	(self class isVariable and: [anotherObject class isVariable]) ifTrue: [
+		count := self basicSize min: anotherObject basicSize.
+		1 to: count do: [:i |
+			self basicAt: i put: (anotherObject basicAt: i)]].
+	^self
+]
