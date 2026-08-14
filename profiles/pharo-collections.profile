@@ -39,11 +39,13 @@ Profile {
 	#name     : 'pharo-collections',
 	#requires : [ 'st2026' ],
 	#dialect  : 'closures',
-	#exclude   : [ 'ManifestCollectionsUnordered', 'OrderedDictionary',
+	#exclude   : [ 'ManifestCollectionsUnordered', 'HashTableSizesTest', 'OrderedDictionary',
 	               'OrderedIdentityDictionary', 'KeyedTree', 'st80: bootstrap failed: class IdentityBagTest has an unknown superclass BagTest', 'st80: bootstrap failed: class IdentityBagTest has an unknown superclass BagTest', 'st80: bootstrap failed: class IdentityBagTest has an unknown superclass BagTest', 'st80: bootstrap failed: class IdentityBagTest has an unknown superclass BagTest', 'st80: bootstrap failed: class IdentityBagTest has an unknown superclass BagTest', 'st80: bootstrap failed: class IdentityBagTest has an unknown superclass BagTest', 'st80: bootstrap failed: class IdentityBagTest has an unknown superclass BagTest', 'st80: bootstrap failed: class IdentityBagTest has an unknown superclass BagTest' ],
 	#supersede : [ 'Set', 'Dictionary', 'IdentityDictionary', 'IdentitySet',
 	               'Bag', 'MethodDictionary' ],
 	#packages : [ '../pharo/Collections-Unordered',
 	              '../pharo/Kernel-CodeModel-MethodDictionary',
-	              '../lib/Collections-Compat' ]
+	              '../lib/Collections-Compat',
+	              '../pharo/Collections-Abstract-Tests',
+	              '../pharo/Collections-Unordered-Tests' ]
 }

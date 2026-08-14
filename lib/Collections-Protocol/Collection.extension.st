@@ -245,3 +245,36 @@ Set >> hash [
 	self do: [:each | h := h bitXor: each hash].
 	^h
 ]
+
+{ #category : '*Collections-Protocol' }
+Collection class >> with: a with: b with: c with: d with: e [
+	"1983 stops at four.  Pharo's collection tests build five-element
+	 literals constantly -- it is the smallest size at which an ordering
+	 bug shows -- so the fifth is worth having."
+	^(self with: a with: b with: c with: d) add: e; yourself
+]
+
+{ #category : '*Collections-Protocol' }
+Collection class >> with: a with: b with: c with: d with: e with: f [
+	^(self with: a with: b with: c with: d with: e) add: f; yourself
+]
+
+{ #category : '*Collections-Protocol' }
+Collection >> copyEmpty [
+	"An empty collection of my kind.  Pharo asks this of a receiver rather
+	 than of its class, so that a collection carrying extra state -- a
+	 sort block, an equality block -- can hand that state on."
+	^self species new
+]
+
+{ #category : '*Collections-Protocol' }
+Collection >> as: aClass [
+	"Me, converted to that class."
+	^aClass withAll: self
+]
+
+{ #category : '*Collections-Protocol' }
+Collection class >> withAll: aCollection [
+	"A new collection of my kind holding all of those elements."
+	^self new addAll: aCollection; yourself
+]

@@ -288,7 +288,15 @@ SRC_ston_object(st_cursor *c, st_ston_pair *pairs, unsigned *count,
             if (p)
                 p->is_list = 1;
         }  else  {
-            char    value[256];
+            /*
+             *  Sized to match st_ston_pair's own field, and both are 1024
+             *  because a trait composition is a scalar and can be long:
+             *  Pharo's BagTest writes 471 characters of #classTraits.
+             *  Widening the destination and leaving this staging buffer at
+             *  256 changed nothing, which is exactly how it looked -- the
+             *  value was already cut before it got here.
+             */
+            char    value[1024];
             int     value_nil;
 
             if (!ston_scalar(c, value, sizeof value, &value_nil)) {

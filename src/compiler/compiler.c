@@ -3086,6 +3086,13 @@ compile_pattern(st_compiler *c)
     if (at(c, ST_TOK_IDENTIFIER)) {
         snprintf(c->out->selector, sizeof c->out->selector, "%s",
                  c->token.text);
+        /*
+         *  Said before the advance, because the advance is what reads the
+         *  first token of the body -- and `-1000' there is a negative
+         *  literal, not a binary send to the selector just parsed.  See
+         *  LEX_begin_statement.
+         */
+        LEX_begin_statement(c->lx);
         advance(c);
         return;
     }
@@ -3106,6 +3113,7 @@ compile_pattern(st_compiler *c)
         if (c->dialect == ST_DIALECT_CLOSURES)
             declare(c, c->token.text, 1);
         ++c->argument_count;
+        LEX_begin_statement(c->lx);
         advance(c);
         return;
     }
@@ -3132,6 +3140,12 @@ compile_pattern(st_compiler *c)
             if (c->dialect == ST_DIALECT_CLOSURES)
                 declare(c, c->token.text, 1);
             ++c->argument_count;
+            /*
+             *  Harmless when another keyword follows -- that token is a
+             *  keyword whatever the minus rule thinks -- and necessary when
+             *  the body does.
+             */
+            LEX_begin_statement(c->lx);
             advance(c);
         }
         return;

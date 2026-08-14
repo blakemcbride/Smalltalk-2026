@@ -124,7 +124,14 @@ typedef struct {
 
 typedef struct {
     char        key[64];
-    char        value[256];         /*  a scalar  */
+    /*
+     *  1024, not 256.  A trait composition is a scalar and can be long:
+     *  Pharo's BagTest writes 329 characters of #traits and 471 of
+     *  #classTraits.  Truncating one produced a reader that could parse
+     *  every file it was given and quietly disagreed about what two of the
+     *  fields said.
+     */
+    char        value[1024];        /*  a scalar  */
     st_names    list;               /*  a [ ... ] */
     int         is_list;
     int         is_nil;

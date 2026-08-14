@@ -128,6 +128,18 @@ st_lexer   *LEX_open(const char *source);
  *  selector, which was two and is now unbounded.  Defaults to Blue Book.
  */
 void        LEX_set_dialect(st_lexer *lx, int dialect);
+
+/*
+ *  Tell the lexer a statement is about to begin.
+ *
+ *  The minus rule decides `-1000' from what came before, and after a method
+ *  pattern what came before is an identifier -- indistinguishable, to the
+ *  lexer, from `foo - 1000'.  So the parser, which does know, says so.
+ *  `testAtLeast\n\t-1000 to: 1000 do: [...]' is the shape that needs it, and
+ *  it is a shape only a method with no temporaries can have: after `| a b |'
+ *  the predecessor is a bar, which the rule already accepts.
+ */
+void        LEX_begin_statement(st_lexer *lx);
 void        LEX_close(st_lexer *lx);
 
 /*  Advance to the next token.  Returns 0 at end of input.  */

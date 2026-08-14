@@ -102,7 +102,14 @@ typedef struct {
      *  Empty when it declared none.  Kept as written so a report can quote
      *  it, and applied only after every method has been compiled.
      */
-    char        traits[256];
+    /*
+     *  1024, not 256.  Pharo's collection tests compose a dozen traits at a
+     *  time -- BagTest's #traits is 329 characters and its #classTraits is
+     *  471 -- and a composition that is silently truncated does not fail
+     *  loudly, it fails as "a #classTraits of its own is not supported",
+     *  which sends you looking at the wrong thing entirely.
+     */
+    char        traits[1024];
 
     /*  Instance variables including every inherited one, in frame order.  */
     name_list   all_ivars;
@@ -141,7 +148,7 @@ typedef struct {
 
 typedef struct {
     char            name[64];
-    char            composition[256];   /*  traits this trait itself uses  */
+    char            composition[1024];  /*  traits this trait itself uses  */
     trait_method   *methods;
     unsigned        method_count;
     unsigned        method_capacity;
@@ -2337,46 +2344,126 @@ flat_add(flat_list *l, const flat_method *item)
 /*
  *  Split "TA + TB" into its terms.
  *
- *  Answers 0 and reports when the expression uses an operator this system
- *  does not implement.  Exclusion and aliasing change WHICH methods a class
- *  gets; honouring the "+" and ignoring the rest would produce a class that
- *  loaded cleanly and had the wrong methods in it, which is the one outcome
- *  worth refusing outright.
+ *  Two of the three trait operators are understood.
+ *
+ *  "+" composes.  "-" excludes: `(TCreationWithTest - {#testOfSize})' takes
+ *  everything that trait provides except those selectors, and Pharo's
+ *  collection tests are full of it -- a suite shared by twelve collection
+ *  classes, minus the two assertions that do not hold for this one.  Without
+ *  it BagTest cannot load, and without BagTest neither can IdentityBagTest,
+ *  so a single unimplemented operator costs a whole package.
+ *
+ *  "@" aliases, and is still refused.  Exclusion narrows what a class gets
+ *  and can be honoured exactly; aliasing INVENTS a selector, and a class
+ *  that loaded cleanly with a method under the wrong name is worse than one
+ *  that refused to load.
+ *
+ *  Each term's exclusions are written into `excludes' at the same index as
+ *  the term itself, space separated, empty when there are none -- parallel
+ *  arrays rather than a struct because st_names is what every caller here
+ *  already speaks.
  */
 static int
 split_composition(const char *composition, const char *who,
-                  st_names *terms)
+                  st_names *terms, st_names *excludes)
 {
     const char *p = composition;
 
     while (*p) {
         char        term[128];
+        char        drop[512];
         size_t      n = 0;
+        size_t      d = 0;
+        int         parenthesised = 0;
 
+        drop[0] = '\0';
         while (*p && isspace((unsigned char) *p))
             ++p;
-        if (*p == '-' || *p == '@') {
-            boot_note("%s: trait composition '%s' uses '%c', which this "
-                      "system does not implement", who, composition, *p);
-            return 0;
+        if (*p == '(') {
+            parenthesised = 1;
+            ++p;
+            while (*p && isspace((unsigned char) *p))
+                ++p;
         }
-        while (*p && *p != '+' && !isspace((unsigned char) *p)) {
-            if (*p == '-' || *p == '@') {
-                boot_note("%s: trait composition '%s' uses '%c', which this "
-                          "system does not implement", who, composition, *p);
-                return 0;
-            }
+        while (*p && *p != '+' && *p != '-' && *p != '@' && *p != ')'
+            && !isspace((unsigned char) *p)) {
             if (n + 1 < sizeof term)
                 term[n++] = *p;
             ++p;
         }
         term[n] = '\0';
-        if (n)
+        while (*p && isspace((unsigned char) *p))
+            ++p;
+
+        if (*p == '@') {
+            boot_note("%s: trait composition '%s' uses '@', which this "
+                      "system does not implement", who, composition);
+            return 0;
+        }
+        if (*p == '-') {
+            ++p;
+            while (*p && isspace((unsigned char) *p))
+                ++p;
+            if (*p != '{') {
+                boot_note("%s: trait composition '%s': expected { after -",
+                          who, composition);
+                return 0;
+            }
+            ++p;
+            while (*p && *p != '}') {
+                char    sel[128];
+                size_t  m = 0;
+
+                while (*p && (isspace((unsigned char) *p) || *p == '.'
+                           || *p == '#'))
+                    ++p;
+                while (*p && *p != '}' && *p != '.'
+                    && !isspace((unsigned char) *p)) {
+                    if (m + 1 < sizeof sel)
+                        sel[m++] = *p;
+                    ++p;
+                }
+                sel[m] = '\0';
+                if (m && d + m + 2 < sizeof drop)
+                    d += (size_t) snprintf(drop + d, sizeof drop - d, "%s%s",
+                                           d ? " " : "", sel);
+            }
+            if (*p == '}')
+                ++p;
+        }
+        while (*p && isspace((unsigned char) *p))
+            ++p;
+        if (parenthesised && *p == ')')
+            ++p;
+
+        if (n) {
             SRC_names_add(terms, term);
+            SRC_names_add(excludes, drop);
+        }
         while (*p && (isspace((unsigned char) *p) || *p == '+'))
             ++p;
     }
     return 1;
+}
+
+/*  Is `selector' one of the space-separated names in `list'?  */
+static int
+composition_excludes(const char *list, const char *selector)
+{
+    const char *p = list;
+    size_t      n = strlen(selector);
+
+    if (!list || !list[0])
+        return 0;
+    while (*p) {
+        while (*p == ' ')
+            ++p;
+        if (strncmp(p, selector, n) == 0 && (p[n] == ' ' || p[n] == '\0'))
+            return 1;
+        while (*p && *p != ' ')
+            ++p;
+    }
+    return 0;
 }
 
 /*
@@ -2391,11 +2478,12 @@ split_composition(const char *composition, const char *who,
  */
 static int
 gather_trait(const char *name, const char *who, flat_list *out,
-             st_names *visiting)
+             st_names *visiting, const char *excluding)
 {
     boot_trait *t = find_trait(name);
     unsigned    i;
     st_names    terms;
+    st_names    drops;
     int         ok = 1;
 
     if (!t) {
@@ -2409,13 +2497,17 @@ gather_trait(const char *name, const char *who, flat_list *out,
     SRC_names_add(visiting, name);
 
     memset(&terms, 0, sizeof terms);
-    if (!split_composition(t->composition, t->name, &terms)) {
+    memset(&drops, 0, sizeof drops);
+    if (!split_composition(t->composition, t->name, &terms, &drops)) {
         SRC_names_free(&terms);
+        SRC_names_free(&drops);
         return 0;
     }
     for (i = 0; ok && i < terms.count; ++i)
-        ok = gather_trait(terms.items[i], who, out, visiting);
+        ok = gather_trait(terms.items[i], who, out, visiting,
+                          i < drops.count ? drops.items[i] : NULL);
     SRC_names_free(&terms);
+    SRC_names_free(&drops);
     if (!ok)
         return 0;
 
@@ -2433,6 +2525,14 @@ gather_trait(const char *name, const char *who, flat_list *out,
                       t->methods[i].file, t->methods[i].line, t->name);
             return 0;
         }
+        /*
+         *  An excluded selector is dropped HERE, after the composition this
+         *  trait made of others has been gathered -- so `(T - {#x})' removes
+         *  T's own #x and leaves whatever T composed from elsewhere, which
+         *  is what the operator means.
+         */
+        if (composition_excludes(excluding, item.selector))
+            continue;
         existing = flat_find(out, item.selector, t->methods[i].class_side);
         if (existing)
             *existing = item;       /*  the composing trait wins  */
@@ -2487,6 +2587,7 @@ flatten_traits(void)
     for (ci = 0; ci < class_count; ++ci) {
         boot_class *c = &classes[ci];
         st_names    terms;
+        st_names    drops;
         flat_list   all;
         unsigned    i;
         int         ok = 1;
@@ -2495,9 +2596,11 @@ flatten_traits(void)
             continue;
 
         memset(&terms, 0, sizeof terms);
+        memset(&drops, 0, sizeof drops);
         memset(&all, 0, sizeof all);
-        if (!split_composition(c->traits, c->name, &terms)) {
+        if (!split_composition(c->traits, c->name, &terms, &drops)) {
             SRC_names_free(&terms);
+            SRC_names_free(&drops);
             if (result)
                 ++result->traits_rejected;
             continue;
@@ -2508,13 +2611,15 @@ flatten_traits(void)
 
             memset(&one, 0, sizeof one);
             memset(&visiting, 0, sizeof visiting);
-            ok = gather_trait(terms.items[i], c->name, &one, &visiting);
+            ok = gather_trait(terms.items[i], c->name, &one, &visiting,
+                              i < drops.count ? drops.items[i] : NULL);
             SRC_names_free(&visiting);
             if (ok)
                 ok = merge_sibling(&all, &one, c->name);
             flat_free(&one);
         }
         SRC_names_free(&terms);
+        SRC_names_free(&drops);
         if (!ok) {
             flat_free(&all);
             if (result)

@@ -44,6 +44,13 @@ LEX_set_dialect(st_lexer *lx, int dialect)
     lx->dialect = dialect;
 }
 
+void
+LEX_begin_statement(st_lexer *lx)
+{
+    if (lx)
+        lx->last_kind = ST_TOK_END;
+}
+
 st_lexer *
 LEX_open(const char *source)
 {

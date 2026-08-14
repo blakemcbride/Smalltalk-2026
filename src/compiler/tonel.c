@@ -379,11 +379,51 @@ same_words(const char *a, const char *b)
     }
 }
 
+/*
+ *  A composition with its instance-side exclusions taken back out.
+ *
+ *  `(TCreationWithTest - {#testOfSize})' and `TCreationWithTest classTrait'
+ *  ARE the mechanical pair: an exclusion narrows what the instance side
+ *  takes and says nothing about the class side, so Pharo writes it on one
+ *  and not the other.  Comparing the two literally makes every class that
+ *  excludes anything look like it has a class trait of its own, and refuses
+ *  it -- which is what happened to BagTest, and through BagTest to
+ *  IdentityBagTest, and through those two to the whole test package.
+ */
+static void
+strip_exclusions(const char *in, char *out, size_t out_len)
+{
+    size_t  n = 0;
+
+    while (*in && n + 1 < out_len) {
+        if (*in == '(' || *in == ')') {
+            ++in;
+            continue;
+        }
+        if (*in == '-') {
+            /*  Skip "- { ... }" whole.  */
+            ++in;
+            while (*in && *in != '{')
+                ++in;
+            if (*in == '{') {
+                while (*in && *in != '}')
+                    ++in;
+                if (*in == '}')
+                    ++in;
+            }
+            continue;
+        }
+        out[n++] = *in++;
+    }
+    out[n] = '\0';
+}
+
 static int
 class_traits_are_mechanical(const char *class_traits, const char *traits)
 {
     static const char   suffix[] = "classTrait";
-    char                stripped[256];
+    char                stripped[1024];
+    char                wanted[1024];
     size_t              n = 0;
     const char         *p = class_traits;
 
@@ -395,7 +435,8 @@ class_traits_are_mechanical(const char *class_traits, const char *traits)
         stripped[n++] = *p++;
     }
     stripped[n] = '\0';
-    return same_words(stripped, traits ? traits : "");
+    strip_exclusions(traits ? traits : "", wanted, sizeof wanted);
+    return same_words(stripped, wanted);
 }
 
 int

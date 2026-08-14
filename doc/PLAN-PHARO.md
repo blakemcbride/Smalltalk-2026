@@ -943,9 +943,23 @@ question — *what is answering nil?*
 The supersession guard earned its keep here too: 19 selectors lost across 7 files, 8 promoted
 as still named. This is the first turn big enough to need it.
 
-Not yet done: the package's **own** tests. They root on `CollectionRootTest` in
-`Collections-Abstract-Tests`, which is the next package. So the 1983 library provably runs on
-Pharo's collections; Pharo's collections have not yet been asked to pass their own suites.
+**The package's own tests now run: 297 of them, 115 passing**, held by `make test`. Loading
+them needed nothing about collections and three things about the loader:
+
+- **Trait exclusion.** `BagTest` composes `(TCreationWithTest - {#testOfSize})`. The loader
+  implemented `+` and refused `-` and `@`. `-` is now implemented — it narrows what a class
+  takes and can be honoured exactly. `@` is still refused: aliasing *invents* a selector, and
+  a class that loads with a method under the wrong name is worse than one that refuses. One
+  operator was costing the whole package, since `IdentityBagTest` needs `BagTest`.
+- **Three buffers, all 256**, on the path a trait composition travels — `BagTest` writes 329
+  characters of `#traits` and 471 of `#classTraits`. Widening two of the three changed
+  nothing, which is exactly how it looked from outside.
+- **A negative literal opening a method body.** `testAtLeast` begins `-1000 to: 1000 do:`,
+  and the lexer decides `-` from the preceding token, which here is the pattern's own
+  identifier. The parser knows it is at a statement start, so it now says so.
+
+The 182 that do not pass are Collection and Stream protocol Pharo assumes and 1983 has no
+name for — the same grind that took Chronology from 275 to 633.
 
 ### The ratchet from here
 
