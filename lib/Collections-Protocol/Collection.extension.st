@@ -269,8 +269,20 @@ Collection >> copyEmpty [
 
 { #category : '*Collections-Protocol' }
 Collection >> as: aClass [
-	"Me, converted to that class."
-	^aClass withAll: self
+	"Me, converted to that class.
+
+	 Through newFrom: and not withAll:, and the difference is not stylistic.
+	 withAll: adds my elements one at a time, which is right for a Set and
+	 wrong for a Dictionary: `{2 -> 10. 100 -> 5} as: Dictionary' has to
+	 UNWRAP each Association into a key and a value, and adding them as
+	 elements produced a Dictionary whose values were Associations.  It did
+	 not fail -- `at: 2' answered `100->5', a wrong value of a wrong type,
+	 and the tests then sent it #+.
+
+	 newFrom: is where a class says how to be built from a collection, and
+	 Dictionary answers it properly.  Collection class>>newFrom: below
+	 falls back to withAll: for everything that does not care."
+	^aClass newFrom: self
 ]
 
 { #category : '*Collections-Protocol' }
@@ -358,4 +370,14 @@ Collection >> includesAny: aCollection [
 Collection >> includesAll: aCollection [
 	aCollection do: [:each | (self includes: each) ifFalse: [^false]].
 	^true
+]
+
+{ #category : '*Collections-Protocol' }
+Collection class >> newFrom: aCollection [
+	"Build one of me from that collection.
+
+	 The default is to add the elements one at a time, which is what most
+	 classes want.  Dictionary overrides it, because an Association is a
+	 pair to be unwrapped and not an element to be added."
+	^self withAll: aCollection
 ]
