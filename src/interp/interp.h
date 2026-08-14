@@ -61,6 +61,20 @@ extern "C" {
 #define ST_CTX_TEMP_FRAME_START     6
 
 /*
+ *  The collector reads these two itself -- a context's stack above its
+ *  stack pointer is dead and must not be marked -- and om_mt.h has to name
+ *  them without including this file.  These say the two spellings agree, so
+ *  moving a field here is a compile error there rather than a collector that
+ *  quietly marks the wrong slots.
+ */
+#ifdef ST_OM_MT
+_Static_assert(OM_CTX_SP_FIELD == ST_CTX_SP,
+               "om_mt.h's OM_CTX_SP_FIELD must be ST_CTX_SP");
+_Static_assert(OM_CTX_TEMP_FRAME_START == ST_CTX_TEMP_FRAME_START,
+               "om_mt.h's OM_CTX_TEMP_FRAME_START must match");
+#endif
+
+/*
  *  ----------  BlockClosure  ----------
  *
  *  Three named fields and then one indexed slot per captured value.  The

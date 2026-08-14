@@ -151,6 +151,35 @@ file_defines_its_class(const char *path)
     return strstr(name, ".extension.") == NULL;
 }
 
+/*
+ *  Forget an earlier file that defines this class, so a later package of the
+ *  same profile can provide it instead.  Answers nothing: a class named in
+ *  #supersede that nothing earlier defined is the ordinary case, not an
+ *  error.
+ */
+static void
+drop_earlier_definition(expansion *e, const char *want)
+{
+    unsigned    i;
+
+    for (i = 0; i < e->files.count; ++i) {
+        char    name[256];
+
+        class_name_of(e->files.items[i], name, sizeof name);
+        if (strcmp(name, want) != 0 || !file_defines_its_class(e->files.items[i]))
+            continue;
+        SRC_names_add(&e->superseded_paths, e->files.items[i]);
+        free(e->files.items[i]);
+        memmove(&e->files.items[i], &e->files.items[i + 1],
+                (e->files.count - i - 1) * sizeof *e->files.items);
+        memmove(&e->dialects[i], &e->dialects[i + 1],
+                (e->files.count - i - 1) * sizeof *e->dialects);
+        --e->files.count;
+        return;
+    }
+}
+
+
 static int
 names_contain_upto(const st_names *l, const char *text, unsigned limit)
 {
@@ -289,6 +318,24 @@ add_directory(expansion *e, const char *dir, int dialect)
             SRC_names_add(&e->superseded_paths, path);
             continue;
         }
+        /*
+         *  A superseded class may also be replaced from WITHIN this
+         *  profile, by a later package than the one that first defined it.
+         *  The rule is the same one as above read the other way round --
+         *  the last provider wins -- and it is needed whenever a package is
+         *  imported whole and one of its classes has to be corrected here:
+         *  WeakOrderedCollection is Pharo's, and Pharo's gets its weakness
+         *  from a storage array that this system's OrderedCollection does
+         *  not have.
+         *
+         *  Excluding it instead removes both providers, which is the
+         *  distinction #supersede exists to make; superseding it from an
+         *  inherited package cannot work either, because the thing being
+         *  replaced is not inherited.  So the drop happens here, after the
+         *  fact, and the replaced file is recorded for the same guard.
+         */
+        if (names_contain(&e->supersede, name) && file_defines_its_class(path))
+            drop_earlier_definition(e, name);
         ok = add_file(e, path, dialect);
     }
     SRC_names_free(&found);

@@ -6,6 +6,7 @@
  */
 
 #include "worker.h"
+#include "interp.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -63,6 +64,16 @@ WORKER_poll_slow(void)
     if (!self)
         return;
 
+    /*
+     *  Write this worker's registers back into its context before parking.
+     *
+     *  The collector marks a context only as far as its stack pointer, and
+     *  that pointer lives in the context while the interpreter keeps its own
+     *  copy in a register.  Parking without storing it back leaves the
+     *  collector reading the value from the last context switch -- too small
+     *  and the live stack is not marked, too large and dead slots are.
+     */
+    ST_store_active_context();
     ST_mutex_lock(&safepoint_lock);
     ST_store_relaxed(&self->at_safepoint, 1);
     ST_fetch_add_acq_rel(&parked_count, 1);
@@ -300,6 +311,13 @@ WORKER_at_safepoint(uint32_t (*fn)(void *user), void *user)
     int64_t     got;
     int64_t     done;
 
+    /*
+     *  The requester parks nobody, so it writes its own registers back here
+     *  -- same reason as WORKER_poll_slow, and the requester is the thread
+     *  most likely to be in the middle of something, since a collection is
+     *  usually asked for by whoever ran out of room.
+     */
+    ST_store_active_context();
     asked = ST_time_monotonic_ns();
     WORKER_request_safepoint();
     got = ST_time_monotonic_ns();

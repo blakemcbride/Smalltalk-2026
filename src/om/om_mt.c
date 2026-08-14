@@ -1260,6 +1260,51 @@ drain_mark_stack(void)
                 mark_visit(ST_oop_load(&((st_oop *) (head + 1))[i]));
             continue;
         }
+        /*
+         *  A context is marked only as far as its stack pointer.
+         *
+         *  Everything above it is a slot some earlier send used and no
+         *  longer owns, and marking those kept whatever they happened to
+         *  hold alive -- which defeats a weak reference made in the very
+         *  frame that dropped its last strong one, and is exactly what
+         *  Pharo's WeakSet tests do.  Every worker writes its registers
+         *  back into its context on the way into the safepoint, so the
+         *  stack pointer read here is current and not the one from the last
+         *  context switch.
+         *
+         *  The dead slots are then NILLED rather than left alone, and that
+         *  is not tidiness.  OM_deallocate releases every field of an
+         *  object; a stale slot pointing at something this collection is
+         *  about to free would, when the context itself died later,
+         *  decrement a count belonging to whatever had since been given
+         *  that table entry.  Marking precisely and releasing imprecisely
+         *  is the combination that corrupts.
+         */
+        if (head->class_oop == ST_CLASS_METHOD_CONTEXT
+         || head->class_oop == ST_CLASS_BLOCK_CONTEXT) {
+            st_oop     *slots = (st_oop *) (head + 1);
+            uint32_t    live  = head->size;
+
+            if (head->size > OM_CTX_SP_FIELD) {
+                st_oop  sp = ST_oop_load(&slots[OM_CTX_SP_FIELD]);
+
+                if (OM_is_int(sp)) {
+                    st_int      n = OM_int_value(sp);
+                    uint32_t    want;
+
+                    if (n < 0)
+                        n = 0;
+                    want = (uint32_t) n + OM_CTX_TEMP_FRAME_START;
+                    if (want < live)
+                        live = want;
+                }
+            }
+            for (i = 0; i < live; ++i)
+                mark_visit(ST_oop_load(&slots[i]));
+            for (; i < head->size; ++i)
+                ST_oop_store(&slots[i], ST_NIL);
+            continue;
+        }
         for (i = 0; i < head->size; ++i)
             mark_visit(ST_oop_load(&((st_oop *) (head + 1))[i]));
     }

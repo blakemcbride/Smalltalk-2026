@@ -74,6 +74,15 @@ typedef int64_t     st_int;
 #define ST_CLASS_ARRAY                  16
 #define ST_SMALLTALK                    18
 #define ST_CLASS_FLOAT                  20
+/*
+ *  Two context fields the COLLECTOR has to know, because a context's stack
+ *  above its stack pointer is dead and marking it keeps garbage alive.
+ *  interp.h names the same two as ST_CTX_SP and ST_CTX_TEMP_FRAME_START and
+ *  is the authority; a _Static_assert there fails if these ever drift.
+ */
+#define OM_CTX_SP_FIELD                 2
+#define OM_CTX_TEMP_FRAME_START         6
+
 #define ST_CLASS_METHOD_CONTEXT         22
 #define ST_CLASS_BLOCK_CONTEXT          24
 #define ST_CLASS_POINT                  26

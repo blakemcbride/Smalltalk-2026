@@ -504,11 +504,18 @@ in contact.
   freed memory. `provide_roots` now visits the running thread unconditionally, which is the
   half a future caller cannot forget.
 
-  **Known limitation:** the marker walks every slot of a context, not only those below its
-  stack pointer, so a stale slot in a *running* frame keeps its object alive and defeats a
-  weak reference made in that same frame. Making it precise needs every parked worker to
-  write its registers back at the safepoint first — worth doing, and a separate change with
-  its own risk.
+  **Contexts are marked precisely — done, and it was the limitation recorded here.** The
+  marker used to walk every slot of a context rather than only those below its stack
+  pointer, so a stale slot in a *running* frame kept its object alive and defeated a weak
+  reference made in that same frame. Every worker now writes its registers back into its
+  context on the way into the safepoint, so the stack pointer the collector reads is
+  current rather than the one from the last context switch, and the slots above it are
+  **nilled** as well as unmarked: `OM_deallocate` releases every field, so marking
+  precisely while releasing imprecisely is the combination that would decrement a count
+  belonging to whatever had since been given that table entry.
+
+  Two of Pharo's `WeakSet` tests measure exactly this and now pass — an object dropped by
+  the frame that made the weak reference is collected.
 - **Slots — done.** `#slots : [ 'a', 'b' ]` is Tonel v3's spelling of `#instVars`, and for a
   plain slot the two say exactly the same thing, so a plain-slot class loads and behaves like
   any other. A slot with a *kind* — `#a => WeakSlot` — is refused **by the name of the kind**,

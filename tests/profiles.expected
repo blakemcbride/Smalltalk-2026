@@ -14,17 +14,15 @@
 # protecting, and the next regression silently spends it.  Edit the line in
 # the same commit that earns it.
 #
-# One of these is not at 100%, and is recorded honestly rather than excluded:
+# Every profile is at 100%.  Two of them get there with something excluded and
+# each says so in its own text: pharo-announcements excludes WeakAnnouncerTest,
+# and pharo-weak excludes the four Dictionary tests whose superclass lives in a
+# package it does not load.
 #
-#   pharo-weak           12/32 -- finalization, which the object memory does
-#                                 not implement yet; this is Phase F work.
-#                                 The twenty errors are all one fault --
-#                                 `division by 0' out of WeakSet -- and are
-#                                 the next thing to look at rather than a
-#                                 standing exemption.
-#
-# pharo-announcements is at 43/43 with WeakAnnouncerTest excluded: it tests
-# WEAK announcements, and the profile says so.
+# pharo-weak was 12/32 until the profile was given the classes its subjects are
+# written against -- Pharo's WeakSet is a Pharo Set subclass and this profile
+# was running it on 1983's -- and until the collector stopped marking a
+# context's stack above its stack pointer.
 #
 # pharo-collections runs Pharo's Set, Dictionary, IdentityDictionary, Bag and
 # MethodDictionary against the package's OWN tests, 469 of them, and all 469
@@ -42,5 +40,5 @@
 st2026                  12   12
 pharo-announcements     43   43
 pharo-time              633  633
-pharo-weak              32   12
+pharo-weak              32   32
 pharo-collections       469  469
