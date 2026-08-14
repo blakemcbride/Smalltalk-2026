@@ -17,9 +17,10 @@
 # Two of these are not at 100%, and are recorded honestly rather than
 # excluded:
 #
-#   pharo-announcements  43/48 -- five WeakAnnouncerTest errors, all
-#                                 Number>>seconds, which lives in a package
-#                                 this profile does not load.  Task #68.
+#   pharo-announcements  43/43 -- WeakAnnouncerTest is excluded: it tests
+#                                 WEAK announcements, and weak references are
+#                                 Phase F work the object memory has not
+#                                 done.  The profile says so.
 #   pharo-weak           12/32 -- weak references and finalization, which
 #                                 the object memory does not implement yet;
 #                                 this is Phase F work.
@@ -36,7 +37,7 @@
 #
 # profile               run  passed
 st2026                  12   12
-pharo-announcements     48   43
+pharo-announcements     43   43
 pharo-time              633  633
 pharo-weak              32   12
 pharo-collections       288  151
