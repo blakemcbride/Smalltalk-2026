@@ -1960,6 +1960,76 @@ primitive_signal_at_milliseconds(void)
     return 1;
 }
 
+/*
+ *  255: the shortest decimal that reads back as this Float.
+ *
+ *  Printing a double is not a thing the image can do for itself here, and
+ *  that was measured rather than assumed.  1983's absPrintOn:digits: builds
+ *  its digits with Float arithmetic -- `10.0 raisedTo: exp', a fuzz term,
+ *  repeated division -- which was accurate enough for the twenty-four bit
+ *  mantissa it was written for and is not for fifty-three.  Asked for
+ *  seventeen digits of 3.0/13.0 it answers 0.23076923076923074, and neither
+ *  this system's compiler nor its own Number>>readFrom: reads that back as
+ *  the number that produced it.  Seven of forty test values failed that way.
+ *
+ *  So the formatting is done where the exact answer is available.  The C
+ *  library's %.*g is correctly rounded and strtod is its exact inverse, so
+ *  trying fifteen, sixteen and seventeen digits and keeping the first that
+ *  survives strtod gives the shortest decimal that round-trips -- which is
+ *  the rule every modern dialect uses, and the reason 0.1 prints as 0.1
+ *  rather than 0.10000000000000001.
+ *
+ *  Answering a String rather than writing to a stream keeps the primitive
+ *  ignorant of how the image wants to print; Float>>printOn: puts it
+ *  wherever it is going.
+ */
+static int
+primitive_float_print_string(void)
+{
+    st_oop      receiver = ST_stack_top();
+    double      value;
+    char        text[64];
+    int         digits;
+    st_oop      result;
+    uint32_t    i;
+    uint32_t    n;
+
+    if (!float_value(receiver, &value))
+        return 0;
+    for (digits = 15; digits <= 17; ++digits) {
+        snprintf(text, sizeof text, "%.*g", digits, value);
+        if (strtod(text, NULL) == value)
+            break;
+    }
+    /*
+     *  A NaN or an infinity never compares equal, not even to itself, so the
+     *  loop above always runs out for them.  Seventeen digits is what it
+     *  leaves behind, and printing "nan" or "inf" is better than failing the
+     *  primitive and falling back on arithmetic that cannot represent them
+     *  either.
+     */
+    /*
+     *  %g drops a trailing ".0", so 1.0 formats as "1" -- which reads back
+     *  as an Integer, not as the Float that printed it.  A Float's printed
+     *  form has to say it is one.
+     */
+    if (!strpbrk(text, ".eEnN")) {
+        size_t  used = strlen(text);
+
+        if (used + 3 < sizeof text)
+            snprintf(text + used, sizeof text - used, ".0");
+    }
+    n = (uint32_t) strlen(text);
+    result = OM_instantiate_bytes(ST_CLASS_STRING, n);
+    if (!OM_is_present(result))
+        return 0;
+    for (i = 0; i < n; ++i)
+        OM_store_byte(i, result, (uint8_t) text[i]);
+    ST_pop_n(1);
+    ST_push(result);
+    return 1;
+}
+
 static int
 primitive_utc_microsecond_clock(void)
 {
@@ -1974,7 +2044,11 @@ primitive_utc_microsecond_clock(void)
  *  249 for a bulk become: and 254 for VM parameters, so ported source
  *  names four of them and this system may not.  What is left in the top
  *  block, after Pharo and after 246-248 and 250-251 which are already
- *  ours, is 241, 243, 244, 245, 252, 253 and 255.
+ *  ours, was written down once as 241, 243, 244, 245, 252, 253 and 255 and
+ *  has drifted since: 241 and 243-248 and 250-253 are all in use now, and
+ *  255 goes to Float>>printString below.  That leaves 249 and 254, which
+ *  Pharo names, and nothing else.  A list of free numbers in a comment is a
+ *  list that goes stale; the switch below is the only authority.
  *
  *  The header gives the primitive index eight bits, so there is nowhere
  *  else to go: every number this VM will ever have is below 256, and the
@@ -2219,6 +2293,7 @@ ST_primitive_dispatch(unsigned index)
     case 132: return primitive_inst_vars_include();
     case 100: return primitive_signal_at_milliseconds();
     case 135: return primitive_millisecond_clock();
+    case 255: return primitive_float_print_string();
     case 136: return primitive_signal_at_time();
     case 148: return primitive_shallow_copy();
     case 159: return primitive_hash_multiply();
@@ -2346,6 +2421,7 @@ static const primitive_entry primitive_table[] = {
     { 132, ST_PRIM_PRESENT,  "Object instVarsInclude:"          },
     { 100, ST_PRIM_PRESENT,  "signal a semaphore at a time"     },
     { 135, ST_PRIM_PRESENT,  "millisecond clock"                },
+    { 255, ST_PRIM_PRESENT,  "Float>>printString"               },
     { 136, ST_PRIM_PRESENT,  "signal a semaphore at a time"     },
     { 148, ST_PRIM_PRESENT,  "Object shallowCopy / clone"       },
     { 159, ST_PRIM_PRESENT,  "Integer hashMultiply"             },

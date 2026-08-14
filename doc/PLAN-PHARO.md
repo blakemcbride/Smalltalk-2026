@@ -961,6 +961,44 @@ them needed nothing about collections and three things about the loader:
 The 182 that do not pass are Collection and Stream protocol Pharo assumes and 1983 has no
 name for — the same grind that took Chronology from 275 to 633.
 
+### A Float can survive its own printed form *(done)*
+
+Widening Floats to double precision for the Chronology work left the printer at 1983's six
+significant digits — right for a twenty-four bit mantissa, and throwing away most of a
+fifty-three bit one. `(1.0 / 3.0) printString` answered `'0.333333'`, and
+`x printString asNumber = x` answered **false**. That is worse than untidy: printing is not
+only for looking at, and a literal written into a method's source and read back was a
+different number with nothing to say so.
+
+The obvious fix is to ask `absPrintOn:digits:` for sixteen instead of six. It was tried and
+**measured, and it does not work**: that method builds its digits with Float arithmetic, which
+was accurate enough for the mantissa it was written for and is not for this one. Asked for
+seventeen digits of `3.0/13.0` it answers `0.23076923076923074`, which neither this system's
+compiler nor its own `Number>>readFrom:` reads back as the number that produced it — seven of
+forty test values failed that way.
+
+So the digits come from the VM. Primitive 255 formats with the C library, whose `%.*g` is
+correctly rounded and whose `strtod` is its exact inverse, and tries fifteen digits before
+sixteen before seventeen — the shortest that round-trips, which is why `0.1` prints as `0.1`
+and not `0.10000000000000001`. The output now matches a reference implementation exactly.
+
+Two things learned the hard way, both in the code:
+
+- **A primitive reads its receiver from the top of the stack**, so attaching this to
+  `printOn: aStream` put the *stream* there. The primitive failed quietly, `printOn:` fell
+  through to its 1983 fallback, and every Float printed six digits exactly as before — a fix
+  that changed nothing and said nothing. It lives on a unary method now.
+- **`%g` drops a trailing `.0`**, so `1.0` formatted as `1`, which reads back as an Integer.
+  A Float's printed form has to say it is one.
+
+The Blue Book build never reaches any of this: it loads `sources/` alone and never `lib/`, so
+its Floats stay single precision and print the way Chapter 30 says and trace2 expects.
+
+What this did *not* fix, and is now visible because the printer is correct: `Number>>readFrom:`
+builds a float as `value asFloat + (fraction asFloat / 10 raisedTo: n)`, which rounds twice
+and is not correctly rounded. Six of forty values still fail `x printString asNumber = x`,
+entirely on the reader's side — the same strings survive the compiler's lexer. Task #74.
+
 ### The ratchet from here
 
 The turn in progress is `Collections-Unordered`: Pharo's `HashedCollection`, `Set` and `Dictionary`.
