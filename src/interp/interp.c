@@ -1289,10 +1289,23 @@ execute_new_method(st_oop receiver, st_oop selector, st_oop lookup_class,
      */
     if (ST_header_flag_value(header) == 7
      && method_argument_count(method) != st_vm.argument_count) {
-        fprintf(stderr, "st80: %u arguments sent to a method expecting %u "
+        /*
+         *  Name the selector and show the stack.  The count alone says a
+         *  frame would have been misaligned and nothing about where -- and
+         *  the answer to "where" is the only thing anybody wants next.  I
+         *  have hit this message twice while porting Pharo protocol, both
+         *  times spent a run adding a print to find out which method it
+         *  meant, and both times the answer was one send.
+         */
+        char    selector[128];
+
+        OM_string_of(st_vm.message_selector, selector, sizeof selector);
+        fprintf(stderr, "st80: %u arguments sent to #%s, which expects %u, "
                         "at cycle %llu\n",
-                st_vm.argument_count, method_argument_count(method),
+                st_vm.argument_count, selector,
+                method_argument_count(method),
                 (unsigned long long) st_vm.cycle);
+        ST_report_backtrace();
         st_vm.running = 0;
         return;
     }

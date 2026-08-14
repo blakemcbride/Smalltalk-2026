@@ -199,9 +199,21 @@ SequenceableCollection >> reduceLeft: aBlock [
 	 aBlock may take more than two arguments, which is not a curiosity --
 	 it is how `#(1 + 3 - 5) reduceLeft: [:a :op :b | a perform: op with: b]'
 	 evaluates an infix expression, and Pharo's own tests use exactly that."
-	| count taken |
+	| count taken arity |
 	self isEmpty ifTrue: [^self errorEmptyCollection].
-	count := aBlock numArgs - 1.
+	"
+	 A Symbol counts its arguments differently from a block, and the
+	 difference is exactly one.  `#+ numArgs' is 1 -- the arity of the
+	 SELECTOR -- while the equivalent block [:a :b | a + b] answers 2,
+	 because a Symbol used as a block supplies the receiver as well.
+	 Reading them the same way made this take zero elements per step, build
+	 a one-element argument array, and send #+ with no arguments at all:
+	 `0 arguments sent to #+, which expects 1'.
+	"
+	arity := (aBlock isKindOf: Symbol)
+		ifTrue: [aBlock numArgs + 1]
+		ifFalse: [aBlock numArgs].
+	count := arity - 1.
 	taken := self first.
 	2 to: self size by: count do: [:i |
 		| arguments |
