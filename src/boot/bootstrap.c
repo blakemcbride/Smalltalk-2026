@@ -65,6 +65,7 @@ typedef struct {
     int         bytes;              /*  byte-indexable rather than pointer  */
     int         words;
     int         weak;               /*  indexed fields are weak  */
+    int         ephemeron;          /*  first field is a weakly held key  */
 
     st_oop      class_oop;
     st_oop      metaclass_oop;
@@ -1188,7 +1189,8 @@ free_traits(void)
  *  tag and every field sits one place higher than its nominal position.
  */
 static st_oop
-make_format(unsigned fixed, int pointers, int indexable, int bytes, int weak)
+make_format(unsigned fixed, int pointers, int indexable, int bytes, int weak,
+            int ephemeron)
 {
     uint64_t    bits = 1;               /*  SmallInteger tag  */
 
@@ -1205,6 +1207,13 @@ make_format(unsigned fixed, int pointers, int indexable, int bytes, int weak)
      */
     if (weak)
         bits |= (uint64_t) 1 << 12;
+    /*
+     *  Bit 16 is above the whole Blue Book layout, which is where an
+     *  ephemeron has to go: 13, 14 and 15 are taken and 12 is weak's.  A
+     *  1983 format word never sets it, so an old class reads as ordinary.
+     */
+    if (ephemeron)
+        bits |= (uint64_t) 1 << 16;
     bits |= (uint64_t) (fixed & 0x7FF) << 1;
     return (st_oop) bits;
 }
@@ -1558,7 +1567,8 @@ link_class_objects(void)
                          super ? super->class_oop : ST_NIL);
         OM_store_pointer(CLASS_FORMAT, c->class_oop,
                          make_format(c->all_ivars.count, !c->bytes && !c->words,
-                                     c->indexable, c->bytes, c->weak));
+                                     c->indexable, c->bytes, c->weak,
+                                     c->ephemeron));
         OM_store_pointer(CLASS_NAME, c->class_oop,
                          BOOT_intern_symbol(c->name, NULL));
         OM_set_class_of_object(c->class_oop, c->metaclass_oop);
@@ -1580,7 +1590,7 @@ link_class_objects(void)
                          super ? super->metaclass_oop
                                : BOOT_global("Class"));
         OM_store_pointer(CLASS_FORMAT, c->metaclass_oop,
-                         make_format(class_object_size(c), 1, 0, 0, 0));
+                         make_format(class_object_size(c), 1, 0, 0, 0, 0));
         OM_store_pointer(METACLASS_THIS_CLASS, c->metaclass_oop, c->class_oop);
         OM_set_class_of_object(c->metaclass_oop, metaclass_class);
 
@@ -1869,6 +1879,7 @@ sink_class_def(const st_source_class_def *def, void *user)
     c->bytes     = def->bytes;
     c->words     = def->words;
     c->weak      = def->weak;
+    c->ephemeron = def->ephemeron;
 
     for (i = 0; def->ivars && i < def->ivars->count; ++i)
         name_list_add(&c->ivars, def->ivars->items[i]);

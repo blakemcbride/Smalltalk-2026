@@ -69,6 +69,13 @@ typedef struct {
     int         bytes;              /*  byte-indexable rather than pointer  */
     int         words;
     int         weak;               /*  the indexed fields are weak  */
+    /*
+     *  An ephemeron: the first named field is a KEY held weakly, and every
+     *  field including the key is strong exactly as long as the key is
+     *  reachable some other way.  Not an indexed shape at all -- Pharo's
+     *  WeakKeyAssociation has three named fields and no indexed part.
+     */
+    int         ephemeron;
 
     /*
      *  A Trait rather than a Class.  It defines no instances and gets no
@@ -84,7 +91,7 @@ typedef struct {
      *  the expression that made it do so.  NULL when absent.
      */
     const char *traits;
-    const char *unsupported_shape;  /*  "immediate", "weak", "ephemeron" ... */
+    const char *unsupported_shape;  /*  "immediate", "compiledMethod" ... */
 } st_source_class_def;
 
 /*

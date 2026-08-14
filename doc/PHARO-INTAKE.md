@@ -85,10 +85,13 @@ worth reaching from a Blue Book image: `Float>>ln`, `Float>>exp`, `Object>>~~`,
 1983 Taylor series stops at `MathApproximationEpsilon` and was wrong in float32's last
 digit, and `(2 raisedTo: 1/12) = 1.0594630943592953` went from false to **true**.
 
-**A collision worth naming.** Pharo uses primitive **249** for
-`Array>>elementsForwardIdentityTo:copyHash:`, a bulk `become:`. This system had taken
-249 for `ContextPart>>restartAndJump`. Loading that one Array method would have called
-ours — a context restart where a `become:` was meant. Ours moved to 251. Pharo also
+**A collision worth naming, and since resolved by implementing it.** Pharo uses
+primitive **249** for `Array>>elementsForwardIdentityTo:copyHash:`, a bulk `become:`.
+This system had taken 249 for `ContextPart>>restartAndJump`. Loading that one Array
+method would have called ours — a context restart where a `become:` was meant. Ours
+moved to 251, and 249 now *is* one-way become here: `elementsForwardIdentityTo:` with
+`Object>>becomeForward:` on top of it. Taking Pharo's number for Pharo's operation is
+what lets ported source say it and mean it. Pharo also
 uses 240, 242 and 254 in the range `doc/PLAN-PHARO.md` reserved for parallel
 primitives, so that reservation needs revisiting before Phase H spends it.
 

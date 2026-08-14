@@ -652,6 +652,12 @@ OM_set_root_forwarder(om_root_forwarder forwarder, om_root_pin_fn pinned)
     (void) pinned;
 }
 
+st_oop
+OM_instantiate_ephemeron(st_oop class_pointer, uint32_t size)
+{
+    return OM_instantiate_pointers(class_pointer, size);
+}
+
 int
 OM_can_forward_identity(st_oop from, st_oop to)
 {

@@ -459,10 +459,41 @@ in contact.
   every count is exact and nothing has been freed yet — a slot pointing at a zero-count
   object is nilled. `WeakArray` is in `lib/Kernel/`.
 
-  **Ephemerons are still refused, by name.** An ephemeron is not a weak object with another
-  name: its key is weak while its value stays strong *for as long as the key lives*, and
-  deciding that needs the marker to run to a fixed point rather than once. That is a
-  different collector, not a different flag.
+  **Ephemerons — done, and the reason they were refused was the reason they work.** An
+  ephemeron is not a weak object with another name: its first field is a *key*, and every
+  field including the key is strong exactly as long as that key is reachable some other
+  way. Deciding it needs the marker to reach a fixed point rather than run once, which was
+  read here for a long time as needing a different collector. It needs a **loop around the
+  same one**: mark, then repeatedly open any set-aside ephemeron whose key has since been
+  counted and mark again, until a round opens nothing. Whatever is left has a key nothing
+  else holds, and neither the key nor what only that ephemeron reaches is alive. Bit 16 of
+  the format word — above the whole Blue Book layout, because 13, 14 and 15 are taken and
+  12 is weak's — and `ST_FMT_EPHEMERON` in the header.
+
+  The chain case is what makes the loop load bearing rather than tidy, and
+  `test_om_mt.c` tests it directly: one ephemeron's value is the *key* of another, so a
+  single pass would call the second one dead. Both must survive.
+
+  **What is not done is finalization.** Pharo would queue each ephemeron whose key died and
+  send it `mourn`, which is how a `WeakKeyAssociation` takes itself out of its dictionary.
+  Here the key is nilled and the association stays until something asks the dictionary to
+  tidy up. The reachability half is the half that decides whether memory is *correct*, and
+  that half is in.
+
+- **One-way become — done.** `Object>>becomeForward:`, over primitive **249**, which is the
+  number Pharo names for the bulk form. It cannot be a table swap the way `become:` is: a
+  swap moves two bodies between two identities and both stay usable, while forwarding has to
+  leave `from` meaning what `to` means, and with an object table that is either two entries
+  pointing at one body — which each try to free it — or finding and rewriting the
+  references. It rewrites them: a sweep of the whole table at a safepoint, then a collection
+  to rebuild the counts. Expensive on purpose; `MethodDictionary>>grow` is the caller that
+  matters, and without it a method dictionary could not grow at all.
+
+  The references *not* in the heap are the interesting half. An object a worker is executing
+  in — its context, its home context, its method — is **refused**, because the interpreter
+  caches an instruction pointer into that method's bytecodes and a stack limit from that
+  context's length. The refusal fails the primitive, which is what a primitive failure is
+  for.
 
   Two things had to be built before weakness could even be observed, and both were bugs.
   The 1983 library has **no `garbageCollect` anywhere in it** — the image cannot ask for a

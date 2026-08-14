@@ -314,6 +314,20 @@ apply_type(const char *type, st_source_class_def *def)
          */
         def->indexable = 1;
         def->weak      = 1;
+    }  else if (strcmp(type, "ephemeron") == 0) {
+        /*
+         *  An ephemeron.  Its first named field is a key held weakly, and
+         *  the whole object -- key included -- is strong exactly as long as
+         *  that key is reachable some other way.
+         *
+         *  This was refused for a long time on the ground that a single
+         *  marking pass cannot decide it, which was true and was the wrong
+         *  conclusion: the answer is a fixed point, and a fixed point is a
+         *  loop around the pass rather than a different collector.  The
+         *  loop is in om_mt.c.  Nothing indexed is implied; Pharo's
+         *  WeakKeyAssociation has three named fields and no indexed part.
+         */
+        def->ephemeron = 1;
     }  else if (strcmp(type, "immediate") == 0) {
         /*
          *  An immediate has no object header: the value IS the pointer.

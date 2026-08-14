@@ -34,17 +34,28 @@ table it tests with a literal -- the search that builds it does not finish
 under this interpreter.  KeyedTreeTest is excluded because KeyedTree is,
 and a test whose subject is absent reports ten failures that say nothing.
 
-468 of the 469 tests pass.  The one that does not is
-DictionaryTest>>testOtherDictionaryEquality, and it is recorded rather than
-excluded because what blocks it is named and dated: it compares Dictionary
-against every other dictionary class in the image, and three of the eight it
-names are WeakValueDictionary, WeakKeyDictionary and
-WeakIdentityKeyDictionary.  Loading pharo/Collections-Weak here was tried and
-does not lift it -- WeakKeyAssociation is declared `#type : ''ephemeron''',
-the loader refuses ephemerons by design rather than building them strong and
-lying about it, and so the class the weak dictionaries need is absent either
-way.  Ephemerons are Phase F.  The test will pass when they exist and not
-before.
+Collections-Weak and one file of Collections-Support are loaded here, and
+they are the reason the last test passes.
+DictionaryTest>>testOtherDictionaryEquality compares Dictionary against every
+other dictionary class in the image and names eight of them, three weak.  Its
+chain of dependencies was three deep and each link was a real absence rather
+than a test to excuse:
+
+  WeakKeyDictionary needs WeakKeyAssociation, which is declared
+  `#type : 'ephemeron'' and which the loader refused -- on the ground that a
+  single marking pass cannot decide an ephemeron, which was true and was the
+  wrong conclusion.  The answer is a fixed point, and a fixed point is a loop
+  around the pass rather than a different collector.  It is in om_mt.c now.
+
+  WeakValueDictionary needs WeakValueAssociation, which lives in Pharo's
+  Collections-Support and so was missing from our Collections-Weak import.
+  One file of that package is imported; see its PROVENANCE.
+
+  WeakArray is excluded from lib/ here for the same reason pharo-weak
+  excludes it: this profile is running PHARO's, and two definitions of one
+  class is an error rather than a merge.
+
+469 of 469 pass.
 
 The package's own tests are NOT loaded here.  They root on
 CollectionRootTest, which lives in Collections-Abstract-Tests, and pulling
@@ -58,10 +69,12 @@ Profile {
 	#dialect  : 'closures',
 	#exclude   : [ 'ManifestCollectionsUnordered', 'HashTableSizesTest',
 	               'OrderedDictionary', 'OrderedIdentityDictionary',
-	               'KeyedTree', 'KeyedTreeTest' ],
+	               'KeyedTree', 'KeyedTreeTest', 'WeakArray' ],
 	#supersede : [ 'Set', 'Dictionary', 'IdentityDictionary', 'IdentitySet',
 	               'Bag', 'MethodDictionary' ],
 	#packages : [ '../pharo/Collections-Unordered',
+	              '../pharo/Collections-Weak',
+	              '../pharo/Collections-Support',
 	              '../pharo/Kernel-CodeModel-MethodDictionary',
 	              '../lib/Collections-Compat',
 	              '../pharo/Collections-Abstract-Tests',

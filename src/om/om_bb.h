@@ -407,6 +407,14 @@ typedef int  (*om_root_pin_fn)(st_oop p);
 
 void        OM_set_root_forwarder(om_root_forwarder forwarder,
                                   om_root_pin_fn pinned);
+/*
+ *  Ephemerons, which this memory does not have either.  No 1983 class is
+ *  one -- the concept postdates the Blue Book -- so this answers an
+ *  ordinary pointer object and the flag has nowhere to be stored.  It
+ *  exists so that the shared primitive file links.
+ */
+st_oop      OM_instantiate_ephemeron(st_oop class_pointer, uint32_t size);
+
 int         OM_can_forward_identity(st_oop from, st_oop to);
 int         OM_forward_identity(st_oop from, st_oop to);
 

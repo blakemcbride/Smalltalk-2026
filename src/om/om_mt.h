@@ -107,6 +107,13 @@ typedef int64_t     st_int;
  *  a WeakArray's own instance variables are not the point of it.
  */
 #define ST_FMT_WEAK         0x0400
+/*
+ *  An ephemeron: field 0 is the KEY, and every field is strong exactly when
+ *  the key is reachable some other way.  Not a weak object with a different
+ *  name -- a weak slot is decided by one pass and this one needs a fixed
+ *  point, which is why the collector walks ephemerons separately.
+ */
+#define ST_FMT_EPHEMERON    0x0800
 
 typedef struct {
     st_oop          class_oop;
@@ -413,6 +420,8 @@ st_oop  OM_instantiate_pointers(st_oop class_pointer, uint32_t size);
 /*  As above, but the indexed fields past `fixed` are weak.  */
 st_oop  OM_instantiate_weak(st_oop class_pointer, uint32_t size,
                             uint32_t fixed);
+/*  As above, but the object is an ephemeron keyed on its first field.  */
+st_oop  OM_instantiate_ephemeron(st_oop class_pointer, uint32_t size);
 st_oop  OM_instantiate_words(st_oop class_pointer, uint32_t size);
 st_oop  OM_instantiate_bytes(st_oop class_pointer, uint32_t size);
 
@@ -519,6 +528,8 @@ extern uint32_t st_om_collections;
 extern uint32_t st_om_reclaimed;
 /*  How many weak references have been nilled, over the run.  */
 extern uint32_t st_om_weak_cleared;
+/*  Ephemerons whose key died and was nilled.  */
+extern uint32_t st_om_ephemerons_mourned;
 
 /*  Set once the fixed objects are in place, so the collector can start.  */
 int     OM_image_load(const char *path, char *errbuf, size_t errlen);

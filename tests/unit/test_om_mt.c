@@ -197,6 +197,99 @@ test_collects_cycles(void)
 }
 
 /*
+ *  Ephemerons.
+ *
+ *  The rule is one sentence and every part of it has to be tested: an
+ *  ephemeron's fields -- including its key, which is field 0 -- are strong
+ *  exactly when the key is reachable some other way.  So there are three
+ *  cases, and the third is the one that says why the collector loops.
+ */
+static void
+test_ephemerons(void)
+{
+    st_oop      eph;
+    st_oop      key;
+    st_oop      value;
+    st_oop      second;
+    st_oop      second_key;
+
+    root_object = OM_instantiate_pointers(ST_CLASS_ARRAY, 3);
+    OM_increase_ref(root_object);
+    OM_set_root_provider(provide_root);
+
+    /*
+     *  One: the key is held only by the ephemeron.  Nothing survives -- not
+     *  the key, and not the value that only the ephemeron names.  This is
+     *  the whole difference from an ordinary object, which would keep both.
+     */
+    eph   = OM_instantiate_ephemeron(ST_CLASS_ARRAY, 2);
+    key   = OM_instantiate_pointers(ST_CLASS_ARRAY, 1);
+    value = OM_instantiate_pointers(ST_CLASS_ARRAY, 1);
+    OM_store_pointer(0, eph, key);
+    OM_store_pointer(1, eph, value);
+    OM_store_pointer(0, root_object, eph);
+    OM_collect();
+    CHECK(OM_is_object(eph));           /*  the ephemeron itself is rooted  */
+    CHECK(!OM_is_object(key));
+    CHECK(!OM_is_object(value));
+    /*  And the dead key was nilled rather than left dangling.  */
+    CHECK_EQ_INT((int) (OM_fetch_pointer(0, eph) == ST_NIL), 1);
+
+    /*
+     *  Two: the key is held elsewhere.  Now the whole ephemeron is strong,
+     *  and the value it names survives with it.
+     */
+    eph   = OM_instantiate_ephemeron(ST_CLASS_ARRAY, 2);
+    key   = OM_instantiate_pointers(ST_CLASS_ARRAY, 1);
+    value = OM_instantiate_pointers(ST_CLASS_ARRAY, 1);
+    OM_store_pointer(0, eph, key);
+    OM_store_pointer(1, eph, value);
+    OM_store_pointer(0, root_object, eph);
+    OM_store_pointer(1, root_object, key);
+    OM_collect();
+    CHECK(OM_is_object(key));
+    CHECK(OM_is_object(value));
+    CHECK_EQ_INT((int) (OM_fetch_pointer(1, eph) == value), 1);
+
+    /*
+     *  Three: a chain.  The second ephemeron's key is reachable ONLY through
+     *  the first ephemeron's value, so a single pass would decide the second
+     *  one was dead -- the first has not been walked yet when the second is
+     *  looked at.  Both must survive, and only a walk that runs again after
+     *  each ephemeron is opened can say so.  This is the case that makes the
+     *  loop in ephemerons_reached load bearing rather than tidy.
+     */
+    OM_store_pointer(0, root_object, ST_NIL);
+    OM_store_pointer(1, root_object, ST_NIL);
+    OM_store_pointer(2, root_object, ST_NIL);
+    OM_collect();
+
+    second_key = OM_instantiate_pointers(ST_CLASS_ARRAY, 1);
+    second     = OM_instantiate_ephemeron(ST_CLASS_ARRAY, 2);
+    value      = OM_instantiate_pointers(ST_CLASS_ARRAY, 1);
+    OM_store_pointer(0, second, second_key);
+    OM_store_pointer(1, second, value);
+
+    key = OM_instantiate_pointers(ST_CLASS_ARRAY, 1);
+    eph = OM_instantiate_ephemeron(ST_CLASS_ARRAY, 2);
+    OM_store_pointer(0, eph, key);
+    OM_store_pointer(1, eph, second_key);   /*  reaches the other's key  */
+
+    OM_store_pointer(0, root_object, eph);
+    OM_store_pointer(1, root_object, key);      /*  the first key is held  */
+    OM_store_pointer(2, root_object, second);   /*  the second is rooted   */
+    OM_collect();
+    CHECK(OM_is_object(second_key));
+    CHECK(OM_is_object(value));
+    CHECK_EQ_INT((int) (OM_fetch_pointer(0, second) == second_key), 1);
+
+    OM_store_pointer(0, root_object, ST_NIL);
+    OM_store_pointer(1, root_object, ST_NIL);
+    OM_store_pointer(2, root_object, ST_NIL);
+    OM_set_root_provider(NULL);
+}
+
+/*
  *  become: swaps two identities. With an object table nothing in the heap
  *  moves and no reference is rewritten, which is what makes it a candidate
  *  for a single atomic operation once threads arrive.
@@ -365,6 +458,7 @@ main(void)
     test_formats();
     test_reference_counting();
     test_collects_cycles();
+    test_ephemerons();
     test_become();
     test_image_round_trip();
     test_vm_state_round_trip();

@@ -14,28 +14,26 @@
 # protecting, and the next regression silently spends it.  Edit the line in
 # the same commit that earns it.
 #
-# Two of these are not at 100%, and are recorded honestly rather than
-# excluded:
+# One of these is not at 100%, and is recorded honestly rather than excluded:
 #
-#   pharo-announcements  43/43 -- WeakAnnouncerTest is excluded: it tests
-#                                 WEAK announcements, and weak references are
-#                                 Phase F work the object memory has not
-#                                 done.  The profile says so.
-#   pharo-weak           12/32 -- weak references and finalization, which
-#                                 the object memory does not implement yet;
-#                                 this is Phase F work.
+#   pharo-weak           12/32 -- finalization, which the object memory does
+#                                 not implement yet; this is Phase F work.
+#                                 The twenty errors are all one fault --
+#                                 `division by 0' out of WeakSet -- and are
+#                                 the next thing to look at rather than a
+#                                 standing exemption.
+#
+# pharo-announcements is at 43/43 with WeakAnnouncerTest excluded: it tests
+# WEAK announcements, and the profile says so.
 #
 # pharo-collections runs Pharo's Set, Dictionary, IdentityDictionary, Bag and
-# MethodDictionary against the package's OWN tests, 469 of them, and 430 pass.
-# It was 288 until abstract test classes stopped being run: CollectionRootTest
-# defines the tests every collection must pass and leaves `collection' a
-# subclassResponsibility, so running the parent itself asked a question nobody
-# was meant to answer -- 52 errors, each a test doing exactly what it was
-# written to do.
-# The substitution itself is sound -- the st2026 suites pass on this image
-# unchanged -- and what the remaining 182 measure is Collection and Stream
-# protocol Pharo assumes and 1983 has no name for, the same grind that took
-# Chronology from 275 to 633.
+# MethodDictionary against the package's OWN tests, 469 of them, and all 469
+# pass.  It was 115 when they were first wired in, and the grind from there
+# found faults in this system rather than in the tests: a block with a
+# trailing period answered nil, Object>>copy did not send postCopy so every
+# copy of a Pharo collection shared its storage, becomeForward: did not
+# exist, and the collector refused ephemerons.  Two of those four were
+# compiler and object-memory bugs that had nothing to do with collections.
 #
 # A profile with no SUnit at all (bluebook) is not listed: it has no
 # TestCase, so there is nothing to ask it.
@@ -45,4 +43,4 @@ st2026                  12   12
 pharo-announcements     43   43
 pharo-time              633  633
 pharo-weak              32   12
-pharo-collections       469  468
+pharo-collections       469  469

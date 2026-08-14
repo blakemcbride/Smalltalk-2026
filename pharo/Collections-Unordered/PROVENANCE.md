@@ -25,10 +25,20 @@ doesNotUnderstand at all — and the `st2026` suites pass on it, 12 of 12. That
 number is the point: it is the same score the unsubstituted profile gets, so
 the substitution is invisible to everything that was already working.
 
-The package's **own** tests are not loaded. They root on `CollectionRootTest`
-in `Collections-Abstract-Tests`, which is the next package. So what is proved
-here is that the 1983 library runs on Pharo's collections, not yet that Pharo's
-collections pass their own suites.
+The package's **own** tests are loaded now, from `Collections-Abstract-Tests`
+and `Collections-Unordered-Tests`, and **469 of 469 pass**. They were at 115
+when they were first wired in, and the grind from there found four faults, two
+of them nowhere near a collection:
+
+- a block with a trailing period — `[:x | x. ]` — answered **nil** rather than
+  x, in the compiler;
+- `Object>>copy` answered a bare `shallowCopy` and never sent `postCopy`, so
+  every copy of a Pharo collection **shared its storage** with the original;
+- `becomeForward:` did not exist, so `MethodDictionary>>grow` could not grow;
+- the loader refused ephemerons, so `WeakKeyAssociation` could not be built.
+
+So what is proved here is both halves: the 1983 library runs on Pharo's
+collections, and Pharo's collections pass their own suites.
 
 ## Why it is harder than Announcements or Chronology
 

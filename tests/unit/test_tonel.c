@@ -46,7 +46,7 @@ typedef struct {
     char        ivars[512];
     char        class_ivars[512];
     char        cvars[512];
-    int         indexable, bytes, words, weak, is_trait;
+    int         indexable, bytes, words, weak, ephemeron, is_trait;
     char        unsupported[64];
     char        traits[128];
 } rec_class;
@@ -96,6 +96,7 @@ rec_class_def(const st_source_class_def *def, void *user)
     c->bytes     = def->bytes;
     c->words     = def->words;
     c->weak      = def->weak;
+    c->ephemeron = def->ephemeron;
     snprintf(c->unsupported, sizeof c->unsupported, "%s",
              def->unsupported_shape ? def->unsupported_shape : "");
     snprintf(c->traits, sizeof c->traits, "%s",
@@ -436,17 +437,26 @@ test_shapes_we_cannot_build_are_reported(void)
     }
 
     /*
-     *  An ephemeron still is not.  It is not a weak object with another
-     *  name: its key is weak while its value stays strong for as long as
-     *  the key lives, and deciding that needs the marker to run to a fixed
-     *  point rather than once -- a different collector, not a different
-     *  flag.
+     *  An ephemeron is built now too, and is not a weak object with another
+     *  name: its first field is a key, and the whole object -- key included
+     *  -- is strong exactly as long as that key is reachable some other
+     *  way.  Deciding that needs the marker to reach a fixed point rather
+     *  than run once, which was read for a long time as needing a different
+     *  collector and is in fact a loop around the same one.
+     *
+     *  Nothing indexed is implied, which is what separates it from weak
+     *  above: Pharo's WeakKeyAssociation has three named fields and no
+     *  indexed part at all.
      */
     CHECK(read_text("eph.class.st",
         "Class { #name : 'E', #superclass : 'Object', #type : 'ephemeron' }\n",
         &r, error, sizeof error));
-    if (r.class_count)
-        CHECK_EQ_STR(r.classes[0].unsupported, "ephemeron");
+    if (r.class_count) {
+        CHECK_EQ_STR(r.classes[0].unsupported, "");
+        CHECK_EQ_INT(r.classes[0].ephemeron, 1);
+        CHECK_EQ_INT(r.classes[0].indexable, 0);
+        CHECK_EQ_INT(r.classes[0].weak, 0);
+    }
 
     /*  The shapes we CAN build map onto the Blue Book subclass forms.  */
     CHECK(read_text("var.class.st",

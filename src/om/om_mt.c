@@ -20,6 +20,7 @@ st_atomic_uint   st_om_table_limit;
 uint32_t     st_om_collections;
 uint32_t     st_om_reclaimed;
 uint32_t     st_om_weak_cleared;
+uint32_t     st_om_ephemerons_mourned;
 
 static uint32_t     free_head;          /*  index chain through class_oop  */
 
@@ -691,6 +692,19 @@ OM_instantiate_weak(st_oop class_pointer, uint32_t size, uint32_t fixed)
     return p;
 }
 
+st_oop
+OM_instantiate_ephemeron(st_oop class_pointer, uint32_t size)
+{
+    st_oop      p = OM_instantiate_pointers(class_pointer, size);
+    om_header  *head;
+
+    if (p == ST_OOP_INVALID)
+        return p;
+    head = OM_head(p);
+    head->flags |= ST_FMT_EPHEMERON;
+    return p;
+}
+
 /*  How many fields at the front of a weak object are still strong.  */
 static uint32_t
 weak_fixed_fields(const om_header *head)
@@ -1152,6 +1166,13 @@ static st_oop          *mark_stack;
 static uint32_t         mark_top;
 static uint32_t         mark_capacity;
 
+/*
+ *  Ephemerons met during the walk and not yet decided.  Sized with the mark
+ *  stack because it cannot hold more entries than there are objects.
+ */
+static st_oop          *pending;
+static uint32_t         pending_top;
+
 void
 OM_set_root_provider(om_root_provider provider)
 {
@@ -1171,46 +1192,16 @@ mark_visit(st_oop p)
         mark_stack[mark_top++] = p;
 }
 
-static uint32_t
-collect_at_safepoint(void *unused)
+/*
+ *  Walk everything the mark stack names, counting as it goes.
+ *
+ *  A function rather than a loop in line because it is entered more than
+ *  once: an ephemeron whose key turns out to be reachable adds work after
+ *  the first walk has run dry, and that work has to be walked the same way.
+ */
+static void
+drain_mark_stack(void)
 {
-    uint32_t    index;
-    uint32_t    reclaimed = 0;
-    uint32_t    walked;
-
-    int64_t     t0 = 0, t1 = 0, t2 = 0, t3 = 0;
-    int         report = getenv("ST_COLLECT_LOG") != NULL;
-
-    (void) unused;
-    ++st_om_collections;
-    /*
-     *  First, before anything reads the table or the counts: fold in every
-     *  worker's deltas and hand back every magazine.  Every worker is
-     *  parked, which is the only moment this is safe -- and the only moment
-     *  it is correct, because the rebuild at the end of this function
-     *  relinks every FREE entry, including the ones the magazines hold.
-     */
-    magazines_drain();
-    if (report)
-        t0 = ST_time_monotonic_ns();
-    mark_capacity = (uint32_t) ST_load_relaxed(&st_om_table_limit) + 1;
-    mark_stack = (st_oop *) malloc((size_t) mark_capacity * sizeof *mark_stack);
-    if (!mark_stack)
-        return 0;
-    mark_top = 0;
-
-    for (index = 1; index < (uint32_t) ST_load_relaxed(&st_om_table_limit); ++index) {
-        if (OM_table_get(index))
-            ST_store_relaxed(&OM_table_get(index)->refcount, 0);
-    }
-
-    if (report)
-        t1 = ST_time_monotonic_ns();
-    for (index = 2; index <= ST_SELECTOR_CANNOT_INTERPRET; index += 2)
-        mark_visit((st_oop) index);
-    if (root_provider)
-        root_provider(mark_visit);
-
     while (mark_top > 0) {
         st_oop      p = mark_stack[--mark_top];
         om_header  *head = OM_head(p);
@@ -1243,6 +1234,19 @@ collect_at_safepoint(void *unused)
         }
         if (!(head->flags & ST_FMT_POINTERS))
             continue;
+        /*
+         *  An ephemeron is set aside rather than walked.  Its first field is
+         *  its KEY, and every field of it -- the key included -- is strong
+         *  if and only if the key is reachable some other way.  That is not
+         *  a question one pass can answer, because the other way may itself
+         *  run through an ephemeron, so the answer is a fixed point and it
+         *  is computed below in ephemerons_reached.
+         */
+        if (head->flags & ST_FMT_EPHEMERON) {
+            if (pending_top < mark_capacity)
+                pending[pending_top++] = p;
+            continue;
+        }
         if (head->flags & ST_FMT_WEAK) {
             /*
              *  A weak object's indexed fields are deliberately not visited.
@@ -1259,6 +1263,103 @@ collect_at_safepoint(void *unused)
         for (i = 0; i < head->size; ++i)
             mark_visit(ST_oop_load(&((st_oop *) (head + 1))[i]));
     }
+}
+
+/*
+ *  Ephemerons whose key survived, to a fixed point.
+ *
+ *  Each round looks for a set-aside ephemeron whose key is now counted --
+ *  reachable by something that is not an ephemeron slot -- and walks it,
+ *  which may make another ephemeron's key reachable, which is why this
+ *  repeats until a round finds nothing.  Whatever is left has a key nothing
+ *  else holds, and neither the key nor anything reachable only through that
+ *  ephemeron is alive.
+ */
+static void
+ephemerons_reached(void)
+{
+    uint32_t    i;
+    int         progress = 1;
+
+    while (progress) {
+        progress = 0;
+        for (i = 0; i < pending_top; ++i) {
+            st_oop      p = pending[i];
+            om_header  *head;
+            st_oop      key;
+            uint32_t    j;
+
+            if (p == ST_OOP_INVALID)
+                continue;
+            head = OM_head(p);
+            key  = head->size > 0
+                 ? ST_oop_load(&((st_oop *) (head + 1))[0])
+                 : ST_NIL;
+            /*
+             *  A key that is not an object -- nil, a SmallInteger -- cannot
+             *  die, so the ephemeron is simply strong.
+             */
+            if (OM_is_object(key)
+             && ST_load_relaxed(&OM_head(key)->refcount) == 0)
+                continue;
+            pending[i] = ST_OOP_INVALID;
+            progress   = 1;
+            for (j = 0; j < head->size; ++j)
+                mark_visit(ST_oop_load(&((st_oop *) (head + 1))[j]));
+            drain_mark_stack();
+        }
+    }
+}
+
+static uint32_t
+collect_at_safepoint(void *unused)
+{
+    uint32_t    index;
+    uint32_t    reclaimed = 0;
+    uint32_t    walked;
+
+    int64_t     t0 = 0, t1 = 0, t2 = 0, t3 = 0;
+    int         report = getenv("ST_COLLECT_LOG") != NULL;
+
+    (void) unused;
+    ++st_om_collections;
+    /*
+     *  First, before anything reads the table or the counts: fold in every
+     *  worker's deltas and hand back every magazine.  Every worker is
+     *  parked, which is the only moment this is safe -- and the only moment
+     *  it is correct, because the rebuild at the end of this function
+     *  relinks every FREE entry, including the ones the magazines hold.
+     */
+    magazines_drain();
+    if (report)
+        t0 = ST_time_monotonic_ns();
+    mark_capacity = (uint32_t) ST_load_relaxed(&st_om_table_limit) + 1;
+    mark_stack = (st_oop *) malloc((size_t) mark_capacity * sizeof *mark_stack);
+    pending    = (st_oop *) malloc((size_t) mark_capacity * sizeof *pending);
+    if (!mark_stack || !pending) {
+        free(mark_stack);
+        free(pending);
+        mark_stack = NULL;
+        pending    = NULL;
+        return 0;
+    }
+    mark_top    = 0;
+    pending_top = 0;
+
+    for (index = 1; index < (uint32_t) ST_load_relaxed(&st_om_table_limit); ++index) {
+        if (OM_table_get(index))
+            ST_store_relaxed(&OM_table_get(index)->refcount, 0);
+    }
+
+    if (report)
+        t1 = ST_time_monotonic_ns();
+    for (index = 2; index <= ST_SELECTOR_CANNOT_INTERPRET; index += 2)
+        mark_visit((st_oop) index);
+    if (root_provider)
+        root_provider(mark_visit);
+
+    drain_mark_stack();
+    ephemerons_reached();
 
     /*
      *  Nil the weak references to things that did not survive.
@@ -1296,6 +1397,37 @@ collect_at_safepoint(void *unused)
             OM_increase_ref(ST_NIL);
             ++st_om_weak_cleared;
         }
+    }
+
+    /*
+     *  And the ephemerons whose key did not survive: nil the key.
+     *
+     *  Same moment and same reason as the weak pass above -- every count is
+     *  exact and nothing has been freed.  What is NOT done here is
+     *  finalization: Pharo would queue each of these and send it #mourn, so
+     *  a WeakKeyAssociation could take itself out of its dictionary.  This
+     *  system has no finalization process yet, so the association stays in
+     *  its dictionary with a nil key until something asks the dictionary to
+     *  tidy up.  The reachability half -- what an ephemeron keeps alive and
+     *  what it does not -- is the half that decides whether memory is
+     *  correct, and that half is here.
+     */
+    for (index = 0; index < pending_top; ++index) {
+        st_oop      p = pending[index];
+        om_header  *head;
+
+        if (p == ST_OOP_INVALID)
+            continue;
+        head = OM_head(p);
+        if (ST_load_relaxed(&head->refcount) == 0)
+            continue;               /*  the ephemeron is itself dying  */
+        if (head->size == 0)
+            continue;
+        if (!OM_is_object(ST_oop_load(&((st_oop *) (head + 1))[0])))
+            continue;
+        ST_oop_store(&((st_oop *) (head + 1))[0], ST_NIL);
+        OM_increase_ref(ST_NIL);
+        ++st_om_ephemerons_mourned;
     }
 
     if (report)
@@ -1402,7 +1534,9 @@ collect_at_safepoint(void *unused)
     }
 
     free(mark_stack);
+    free(pending);
     mark_stack = NULL;
+    pending    = NULL;
     st_om_reclaimed += reclaimed;
     if (getenv("ST_GC_LOG"))
         fprintf(stderr, "  gc #%u reclaimed %u; %u live objects\n",

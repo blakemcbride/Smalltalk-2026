@@ -366,6 +366,7 @@ typedef struct {
     int         words;          /*  word-indexable, as opposed to bytes  */
     int         indexable;
     int         weak;
+    int         ephemeron;
     uint32_t    fixed;
 } om_shape;
 
@@ -386,6 +387,14 @@ shape_of_class(st_oop cls)
     shape.indexable = (format >> 13) & 1;
     /*  Bit 12: the collector does not follow this class's indexed fields. */
     shape.weak      = (format >> 12) & 1;
+    /*
+     *  Bit 16: an ephemeron.  Above the Blue Book's fields rather than
+     *  beside them, because 1983 uses bits 13, 14 and 15 and leaves only
+     *  bit 12 between them and the instance size -- and weak has that one.
+     *  Nothing in a 1983 image sets bit 16, so an old format word reads as
+     *  ordinary, which is the requirement.
+     */
+    shape.ephemeron = (format >> 16) & 1;
     shape.fixed     = (uint32_t) ((format >> 1) & 0x7FF);
     return shape;
 }
@@ -596,7 +605,9 @@ primitive_new_with_arg(void)
     shape = shape_of_class(cls);
     if (!shape.indexable)
         return 0;
-    if (shape.pointers && shape.weak)
+    if (shape.pointers && shape.ephemeron)
+        instance = OM_instantiate_ephemeron(cls, shape.fixed + count);
+    else if (shape.pointers && shape.weak)
         instance = OM_instantiate_weak(cls, shape.fixed + count, shape.fixed);
     else if (shape.pointers)
         instance = OM_instantiate_pointers(cls, shape.fixed + count);
