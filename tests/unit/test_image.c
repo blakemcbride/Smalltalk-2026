@@ -24,6 +24,7 @@
 #include "interp.h"
 #include "compiler.h"
 #include "bootstrap.h"
+#include "profile.h"
 #include "census.h"
 #include "gfx.h"
 #include "st_sched.h"
@@ -31,7 +32,6 @@
 #include <stdio.h>
 #include <string.h>
 
-#define MANIFEST    "sources/MANIFEST"
 
 /*
  *  The image these tests build is the 1983 library plus the one package
@@ -42,8 +42,15 @@
 #define BLUEBOOK_CLASSES        226
 #define BLUEBOOK_METHODS        4521
 #define BLUEBOOK_CATEGORIES     41
-#define LIB_CLASSES             24       /*  BlockClosure, the exceptions,
-                                            SUnit, and the fixtures        */
+/*
+ *  These moved when this test started building from the profile instead of
+ *  from a list of its own: 24 -> 37 classes, 420 -> 519 methods, 6 -> 9
+ *  categories.  Nothing was added to lib/ to cause it.  The difference IS
+ *  the drift -- the twenty-two files the profile had been loading and this
+ *  test had not, among them the whole of lib/Concurrency, ClassTestCase,
+ *  MessageSend, SharedPool and the exception classes added this session.
+ */
+#define LIB_CLASSES             37
 /*
  *  This number is a ratchet and is meant to move: lib/ is where every
  *  divergence from the frozen 1983 sources lives, so it grows whenever a
@@ -56,153 +63,60 @@
  *  plus TimedOut and Process>>signalException:, which is what a timeout
  *  needs to interrupt the process it is watching.
  */
-#define LIB_METHODS             420
+#define LIB_METHODS             521
 /*
  *  Three, not five: the extension packages define no CLASSES, and a
  *  category is a property of a class definition.  Kernel-Methods-Fixes and
  *  System-Runtime only add methods to classes that already exist.
  */
-#define LIB_CATEGORIES          6       /*  Kernel-Closures, -Exceptions,
-                                            -Pragmas, Probe-Core, SUnit,
-                                            SUnit-Tests                    */
-#define MAX_SOURCES 512
+#define LIB_CATEGORIES          9
+/*
+ *  The image this test measures is the one profiles/st2026.profile builds,
+ *  and it is built BY that profile rather than by a list kept alongside it.
+ *
+ *  It used to be a list: sources/MANIFEST read directly, then thirty-odd
+ *  lib/ paths written out by hand, with a comment saying they were what the
+ *  profile named.  They were not, and the gap grew every time lib/ did --
+ *  the profile loaded 82 files and the list had 60.  What that cost is worth
+ *  stating plainly, because it is the whole argument for this change: when
+ *  lib/ gave Symbol a value-based #=, this test went on asserting that
+ *  `#foo = 'foo'` is FALSE, and went on PASSING, for a full round of work
+ *  after the system it claims to measure had changed.  A test that builds
+ *  its own subject can agree with itself forever.
+ *
+ *  PROFILE_expand answers the files and their dialects together, which is
+ *  the other half: the 1983 chunk files compile as Blue Book and everything
+ *  in lib/ as closures, and that split used to be a hand-maintained index
+ *  into a hand-maintained array.
+ */
+#define PROFILE     "profiles/st2026.profile"
 
-static char     paths[MAX_SOURCES][256];
-static unsigned path_count;
-/*  Where the Blue Book files stop and ours begin.  */
-static unsigned first_of_ours;
-static int      built;
+static st_names     sources;
+static int         *source_dialects;
+static int          built;
 
 static int
-load_manifest(void)
+load_sources(void)
 {
-    FILE   *f = fopen(MANIFEST, "r");
-    char    line[256];
+    char    error[256];
 
-    if (!f)
+    if (!PROFILE_expand(PROFILE, &sources, &source_dialects,
+                        error, sizeof error)) {
+        printf("skipped: %s\n", error);
         return 0;
-    while (path_count < MAX_SOURCES && fgets(line, sizeof line, f)) {
-        size_t  n = strlen(line);
-
-        while (n && (line[n - 1] == '\n' || line[n - 1] == '\r'))
-            line[--n] = '\0';
-        if (n)
-            snprintf(paths[path_count++], sizeof paths[0], "%s", line);
     }
-    fclose(f);
-    /*
-     *  And ours, which live in lib/ because sources/ is frozen.  Without
-     *  BlockClosure the closure bytecodes have nothing to make and every
-     *  closure expression stops the interpreter, which is exactly the
-     *  arrangement that keeps the 1983 image from ever meeting one.
-     *
-     *  These are the files profiles/st2026.profile names, listed again
-     *  because this test builds its image directly rather than through a
-     *  profile.  They compile as CLOSURES; everything above is Blue Book.
-     */
-    {
-        static const char *const ours[] = {
-            "lib/Kernel/BlockClosure.class.st",
-            "lib/Kernel/WeakArray.class.st",
-            "lib/System/SystemDictionary.extension.st",
-            "lib/Concurrency/ProcessorScheduler.extension.st",
-            "lib/Concurrency/Object.extension.st",
-            "lib/Kernel-Pragmas/AdditionalMethodState.class.st",
-            "lib/Kernel-Pragmas/Pragma.class.st",
-            "lib/Kernel-Pragmas/CompiledMethod.extension.st",
-            "lib/Kernel-Exceptions/Exception.class.st",
-            "lib/Kernel-Exceptions/Error.class.st",
-            "lib/Kernel-Exceptions/Warning.class.st",
-            "lib/Kernel-Exceptions/ZeroDivide.class.st",
-            "lib/Kernel-Exceptions/MessageNotUnderstood.class.st",
-            "lib/Kernel-Exceptions/BlockClosure.extension.st",
-            "lib/Kernel-Exceptions/BlockContext.extension.st",
-            "lib/Kernel-Exceptions/ContextPart.extension.st",
-            "lib/Kernel-Exceptions/Object.extension.st",
-            "lib/Kernel-Exceptions/SmallInteger.extension.st",
-            "lib/Kernel-Exceptions/AssertionFailure.class.st",
-            "lib/Kernel-Methods/MethodContext.extension.st",
-            "lib/Kernel-Methods/CompiledMethod.extension.st",
-            "lib/Kernel-Protocol/Object.extension.st",
-            "lib/Kernel-Protocol/UndefinedObject.extension.st",
-            "lib/Kernel-Protocol/BlockContext.extension.st",
-            "lib/Kernel-Protocol/BlockClosure.extension.st",
-            "lib/Kernel-Protocol/Boolean.extension.st",
-            "lib/Kernel-Protocol/String.extension.st",
-            "lib/Kernel-Protocol/Symbol.extension.st",
-            "lib/Kernel-Protocol/Character.extension.st",
-            "lib/Kernel-Protocol/Float.extension.st",
-            "lib/Kernel-Protocol/Number.extension.st",
-            "lib/Kernel-Protocol/Integer.extension.st",
-            "lib/Kernel-Protocol/Collection.extension.st",
-            "lib/Kernel-Protocol/Array.extension.st",
-            "lib/Kernel-Protocol/Behavior.extension.st",
-            "lib/Collections-Protocol/Collection.extension.st",
-            "lib/Collections-Protocol/SequenceableCollection.extension.st",
-            "lib/Collections-Protocol/ArrayedCollection.extension.st",
-            "lib/Collections-Protocol/Dictionary.extension.st",
-            /*
-             *  Symbol's = and hash, which have to arrive together: = answers
-             *  true for a String with the same characters and hash answers
-             *  what that String answers, and a hashed collection holding one
-             *  kind and asked for the other depends on both.
-             */
-            "lib/Collections-Protocol/Symbol.extension.st",
-            "lib/Streams-Protocol/PositionableStream.extension.st",
-            "lib/Streams-Protocol/WriteStream.extension.st",
-            "lib/Kernel-Exceptions/SubscriptOutOfBounds.class.st",
-            "lib/Streams-Protocol/Stream.extension.st",
-            "lib/Streams-Protocol/SequenceableCollection.extension.st",
-            "lib/Streams-Protocol/Object.extension.st",
-            "lib/Streams-Protocol/String.extension.st",
-            "lib/Streams-Protocol/Symbol.extension.st",
-            "lib/Streams-Protocol/Character.extension.st",
-            "lib/Strings-Protocol/String.extension.st",
-            "lib/SUnit/TestFailure.class.st",
-            "lib/SUnit/TestResult.class.st",
-            "lib/SUnit/TestCase.class.st",
-            "lib/SUnit/TestSuite.class.st",
-            "lib/SUnit-Tests/SUnitTest.class.st",
-            "lib/SUnit-Tests/SUnitBrokenTest.class.st",
-            "lib/SUnit-Tests/SUnitReportingTest.class.st",
-            "lib/Probe/Greeter.class.st",
-            "lib/Probe/Initialized.class.st",
-            "lib/Probe/SelfMade.class.st",
-            "lib/Probe/Subinitialized.class.st",
-            "lib/Probe/Slotted.class.st",
-            "lib/Probe/TGreeting.trait.st",
-            "lib/Probe/Unwind.class.st"
-        };
-        unsigned    k;
-
-        first_of_ours = path_count;
-        for (k = 0; k < sizeof ours / sizeof ours[0]
-                 && path_count < MAX_SOURCES; ++k)
-            snprintf(paths[path_count++], sizeof paths[0], "%s", ours[k]);
-    }
-    return path_count > 0;
+    return sources.count > 0;
 }
 
 static int
 build_once(void)
 {
-    const char         *list[MAX_SOURCES];
     st_bootstrap_result res;
-    unsigned            i;
 
-    for (i = 0; i < path_count; ++i)
-        list[i] = paths[i];
-    {
-        static int  dialects[MAX_SOURCES];
-        unsigned    k;
-
-        for (k = 0; k < path_count; ++k)
-            dialects[k] = (k >= first_of_ours) ? ST_DIALECT_CLOSURES
-                                               : ST_DIALECT_BLUE_BOOK;
-        if (BOOT_build_dialects(list, dialects, path_count, &res) != 0) {
-            printf("  bootstrap failed: %s\n", res.error);
-            return 0;
-        }
+    if (BOOT_build_dialects((const char *const *) sources.items,
+                            source_dialects, sources.count, &res) != 0) {
+        printf("  bootstrap failed: %s\n", res.error);
+        return 0;
     }
     printf("  %u classes, %u methods, %u symbols\n", res.classes_created,
            res.methods_compiled, res.symbols_interned);
@@ -247,7 +161,12 @@ build_once(void)
      *  every Pharo class subclassing a 1983 collection half-built: 1983
      *  goes new -> new: -> init: and never sends #initialize.
      */
-    CHECK_EQ_INT(res.news_synthesized, 23);
+    /*
+     *  37, not 23, for the same reason the class count moved: lib/Concurrency
+     *  alone brings Mutex, Monitor, Promise, SharedQueue and the fixtures,
+     *  and every one of them defines initialize and no class-side new.
+     */
+    CHECK_EQ_INT(res.news_synthesized, 37);
     built = 1;
     return 1;
 }
@@ -1925,7 +1844,8 @@ test_sunit(void)
     check_boolean("Object class subclasses includes: Collection class", 1);
     check_string("(TestCase allSubclasses collect: [:c | c name])"
                  " asSortedCollection asArray printString",
-                 "(SUnitBrokenTest SUnitReportingTest SUnitTest )");
+                 "(ClassTestCase SUnitBrokenTest SUnitReportingTest "
+                 "SUnitTest )");
     /*
      *  allTests leaves out the fixture whose tests are meant to go wrong.
      *  A whole-image run that reported those would cry wolf every build.
@@ -2019,7 +1939,7 @@ test_browsing(void)
      *  the source pointer is 22 bits and silently truncated once, and a
      *  size that stops growing is how that would show.
      */
-    check_integer("(SourceFiles at: 1) contents size", 1284476);
+    check_integer("(SourceFiles at: 1) contents size", 1299171);
 }
 
 /*
@@ -2796,11 +2716,8 @@ main(void)
 {
     ST_TEST_BEGIN("1983 image");
 
-    if (!load_manifest()) {
-        printf("skipped: %s not found (run from the top of the tree)\n",
-               MANIFEST);
+    if (!load_sources())
         return ST_TEST_END();
-    }
     if (!build_once())
         return ST_TEST_END();
 

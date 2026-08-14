@@ -999,6 +999,30 @@ builds a float as `value asFloat + (fraction asFloat / 10 raisedTo: n)`, which r
 and is not correctly rounded. Six of forty values still fail `x printString asNumber = x`,
 entirely on the reader's side — the same strings survive the compiler's lexer. Task #74.
 
+### A test that builds its own subject can agree with itself forever *(done)*
+
+`test_image` — 550 checks, the broadest thing in the tree — built its image from
+`sources/MANIFEST` plus a list of `lib/` paths written out by hand, under a comment saying
+they were what `profiles/st2026.profile` names. They were not. The profile loaded 82 files;
+the list had 60, and the gap grew every time `lib/` did.
+
+What that cost is the whole argument for fixing it. When `lib/` gave `Symbol` a value-based
+`=`, this test went on asserting that `#foo = 'foo'` is **false** — and went on **passing** —
+for a full round of work after the system it claims to measure had changed. It was not
+wrong about the image it built. It built the wrong image.
+
+It now calls `PROFILE_expand` on `st2026.profile`, which answers the files and their dialects
+together, so the Blue Book / closures split is no longer a hand-maintained index into a
+hand-maintained array either. **Zero hand-written `lib/` paths remain**, and the test and
+`st80 -bootstrap -profile profiles/st2026.profile` now report the same 263 classes, 5042
+methods and 3789 symbols. Parity is structural rather than remembered; the drift cannot
+recur, because there is no second list to drift from.
+
+Seven assertions moved, and not one of them because anything was added to `lib/`. They are
+the drift, made visible: 24 → 37 classes, 420 → 521 methods, 6 → 9 categories, 23 → 37
+synthesized `new`s, and `ClassTestCase` appearing among `TestCase`'s subclasses for the first
+time. The twenty-two missing files included the whole of `lib/Concurrency`.
+
 ### The ratchet from here
 
 The turn in progress is `Collections-Unordered`: Pharo's `HashedCollection`, `Set` and `Dictionary`.
