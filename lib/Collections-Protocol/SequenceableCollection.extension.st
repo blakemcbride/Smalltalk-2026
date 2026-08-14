@@ -333,3 +333,21 @@ SequenceableCollection >> associationsDo: aBlock [
 	 second."
 	self do: aBlock
 ]
+
+{ #category : '*Collections-Protocol' }
+SequenceableCollection >> isSorted [
+	^self isSortedBy: [:a :b | a <= b]
+]
+
+{ #category : '*Collections-Protocol' }
+SequenceableCollection >> isSortedBy: aBlock [
+	"Whether my elements are already in that order.
+
+	 Answered by walking adjacent pairs, so an empty collection and a
+	 one-element one are sorted -- which is the convention, and the answer
+	 that makes a sort check idempotent."
+	2 to: self size do: [:i |
+		(aBlock value: (self at: i - 1) value: (self at: i))
+			ifFalse: [^false]].
+	^true
+]

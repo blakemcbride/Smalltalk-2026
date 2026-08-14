@@ -381,3 +381,69 @@ Collection class >> newFrom: aCollection [
 	 pair to be unwrapped and not an element to be added."
 	^self withAll: aCollection
 ]
+
+{ #category : '*Collections-Protocol' }
+Collection >> copyWith: anObject [
+	"A copy of me with that added.
+
+	 On Collection, not only on SequenceableCollection where 1983 puts it: a
+	 Set and a Bag answer copyWith: too, and for them `added' means whatever
+	 add: means -- absorbed for a Set, counted again for a Bag."
+	| copy |
+	copy := self copy.
+	copy add: anObject.
+	^copy
+]
+
+{ #category : '*Collections-Protocol' }
+Collection >> copyWithout: anObject [
+	"A copy of me with every occurrence of that removed."
+	| copy |
+	copy := self species new.
+	self do: [:each | each = anObject ifFalse: [copy add: each]].
+	^copy
+]
+
+{ #category : '*Collections-Protocol' }
+Collection >> , aCollection [
+	"My elements followed by that collection's.
+
+	 For an unordered receiver `followed by' has no meaning beyond union
+	 with repetition, which is what adding them one after another gives --
+	 and is what a Bag's tests expect."
+	| joined |
+	joined := self copy.
+	aCollection do: [:each | joined add: each].
+	^joined
+]
+
+{ #category : '*Collections-Protocol' }
+Collection >> intersection: aCollection [
+	"The elements I share with that collection, as a collection of my kind."
+	| result |
+	result := self species new.
+	self do: [:each |
+		((aCollection includes: each) and: [(result includes: each) not])
+			ifTrue: [result add: each]].
+	^result
+]
+
+{ #category : '*Collections-Protocol' }
+Collection >> union: aCollection [
+	"Everything in either of us, without repetition."
+	| result |
+	result := Set new.
+	self do: [:each | result add: each].
+	aCollection do: [:each | result add: each].
+	^self species withAll: result
+]
+
+{ #category : '*Collections-Protocol' }
+Collection >> difference: aCollection [
+	"What I have that it does not."
+	| result |
+	result := self species new.
+	self do: [:each |
+		(aCollection includes: each) ifFalse: [result add: each]].
+	^result
+]
