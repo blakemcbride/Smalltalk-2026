@@ -347,16 +347,13 @@ Collection >> reduce: aBlock [
 	 Collection, not SequenceableCollection: a Set has no order, and reduce:
 	 is defined for it anyway because the block is meant to be associative.
 	 Answering the elements in whatever order do: gives them is the honest
-	 reading of that."
-	| taken first |
-	self isEmpty ifTrue: [^self errorEmptyCollection].
-	first := true.
-	taken := nil.
-	self do: [:each |
-		first
-			ifTrue: [taken := each. first := false]
-			ifFalse: [taken := aBlock value: taken value: each]].
-	^taken
+	 reading of that.
+
+	 Answered through reduceLeft: rather than a do: loop of value:value:,
+	 because the block need not take two arguments -- `reduce: [:a :b :c |
+	 a + b + c]' folds three at a time, and a do: loop can only ever send
+	 one selector."
+	^self asOrderedCollection reduceLeft: aBlock
 ]
 
 { #category : '*Collections-Protocol' }
@@ -555,13 +552,48 @@ Collection >> printNameOn: aStream [
 
 { #category : '*Collections-Protocol' }
 Collection class >> newFromArray: anArray [
-	"One of me holding that array's elements.
+	"One of me built from that array, and the receiver decides what its
+	 elements mean.
 
-	 Distinct from newFrom: because an Array of Associations means one thing
-	 to a Dictionary and another to a Set, and this one always means `these
-	 elements' -- so `Dictionary newFromArray:' is not a way to build a
-	 dictionary from pairs."
-	^self withAll: anArray
+	 Through newFrom: and not withAll:, for the same reason as Collection>>as:
+	 above: an Array of Associations means one thing to a Set and another to
+	 a Dictionary, and only the class being built knows which.  Sent
+	 withAll:, a Dictionary answered its addAll:, which reads an Array as a
+	 KEYED collection -- index 1, index 2 -- and built `1 -> (#a->1)'.  The
+	 result printed almost right and answered nil to `at: #a'."
+	^self newFrom: anArray
+]
+
+{ #category : '*Collections-Protocol' }
+Collection >> printOn: aStream [
+	"My name, then my elements.
+
+	 Split in two where 1983 has one method, because Pharo's collections
+	 override the halves separately: Dictionary and SmallDictionary each
+	 define printElementsOn: and neither defines printOn:, so with 1983's
+	 single method their printing was simply never reached.  The name half
+	 also carries the article -- `a Set(1 2 3 )', not `Set (1 2 3 )' -- which
+	 is what the printing tests split on."
+	self printNameOn: aStream.
+	self printElementsOn: aStream
+]
+
+{ #category : '*Collections-Protocol' }
+Collection >> printElementsOn: aStream [
+	"My elements, parenthesised and space separated.
+
+	 The maxPrint ceiling is 1983's and is kept: printing an unbounded
+	 collection into a debugger transcript is how a slow inspector becomes a
+	 hung one."
+	| tooMany |
+	tooMany := aStream position + self maxPrint.
+	aStream nextPut: $(.
+	self do: [:element |
+		aStream position > tooMany
+			ifTrue: [aStream nextPutAll: '...etc...)'. ^self].
+		element printOn: aStream.
+		aStream space].
+	aStream nextPut: $)
 ]
 
 { #category : '*Collections-Protocol' }

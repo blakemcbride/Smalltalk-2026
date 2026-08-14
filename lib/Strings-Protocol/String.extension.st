@@ -90,25 +90,6 @@ String >> substrings: separators [
 ]
 
 { #category : '*Strings-Protocol' }
-String >> splitOn: aCharacter [
-	"Split on every occurrence, keeping empty pieces -- the other half of
-	 what substrings: deliberately does not do.  'a,,b' splitOn: $, is
-	 three pieces, and a caller reading a comma-separated record needs
-	 that: the empty field is a field."
-	| pieces current |
-	pieces := OrderedCollection new.
-	current := WriteStream on: (String new: 16).
-	self do: [:ch |
-		ch = aCharacter
-			ifTrue: [
-				pieces add: current contents.
-				current := WriteStream on: (String new: 16)]
-			ifFalse: [current nextPut: ch]].
-	pieces add: current contents.
-	^pieces
-]
-
-{ #category : '*Strings-Protocol' }
 String >> join: aCollection [
 	"The receiver is the separator: ', ' join: #('a' 'b') is 'a, b'."
 	^String streamContents: [:stream |

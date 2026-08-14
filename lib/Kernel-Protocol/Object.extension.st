@@ -227,13 +227,22 @@ Object >> asCollectionElement [
 	 the way in.  For everything that is not nil the answer is the object
 	 itself, which is why Pharo's own version has no explicit return.
 
-	 Answering self here means a Set in this system cannot hold nil.  That
-	 is the same limitation 1983's Set has, so nothing regresses; adding
-	 CollectionElement is what would lift it.
-
-	 See enclosedElement below: these two are one mechanism and adding
-	 either without the other is worse than adding neither."
+	 See enclosedElement below, and UndefinedObject>>asCollectionElement
+	 after it: the three are one mechanism, and adding any of them without
+	 the others is worse than adding none."
 	^self
+]
+
+{ #category : '*Kernel-Protocol' }
+UndefinedObject >> asCollectionElement [
+	"nil, boxed, because a Set cannot store me as myself.
+
+	 A Set reads a nil slot as empty, so storing nil there does not add an
+	 element -- it removes the evidence that a slot was ever used.  Boxing is
+	 what lets `aSet add: nil' mean what it says, and the box comes straight
+	 back off in enclosedElement, so nothing outside the Set's own array ever
+	 sees one."
+	^CollectionElement with: nil
 ]
 
 { #category : '*Kernel-Protocol' }
@@ -271,6 +280,31 @@ Object >> join: aCollection [
 	 On Object because I am the JOINER, the mirror of split: above -- and a
 	 joiner may be a single element or a sequence."
 	^aCollection joinUsing: self
+]
+
+{ #category : '*Kernel-Protocol' }
+Object >> copy [
+	"Another instance just like me, its parts fixed up afterwards.
+
+	 1983 answers a bare shallowCopy and leaves every class that needs more
+	 to override copy itself.  Pharo splits it: copy is shallowCopy followed
+	 by postCopy, and a class says what a copy needs by implementing
+	 postCopy alone.  Both conventions are defensible and only one can be in
+	 force, because a class written to the second one is SILENT under the
+	 first -- Set, Bag, Dictionary, SmallDictionary and MethodDictionary all
+	 define postCopy to copy their internal array and nothing was calling
+	 it, so every copy of a Pharo collection shared its storage with the
+	 original.  `aSet union: anotherSet' answered the right set and left the
+	 receiver holding the union too."
+	^self shallowCopy postCopy
+]
+
+{ #category : '*Kernel-Protocol' }
+Object >> postCopy [
+	"Fix up a fresh shallowCopy of me.  Nothing to do by default; a class
+	 with internal storage copies it here.  This also gives the `super
+	 postCopy' those classes all start with something to reach."
+	^self
 ]
 
 { #category : '*Kernel-Protocol' }
@@ -376,9 +410,19 @@ Association >> storeOn: aStream [
 	 `Association basicNew instVarAt: 1 put: ...; instVarAt: 2 put: ...',
 	 which is correct, unreadable, and depends on the field order never
 	 changing."
+	| stored |
 	aStream nextPut: $(.
 	key storeOn: aStream.
 	aStream nextPutAll: '->'.
-	value storeOn: aStream.
+	stored := String streamContents: [:each | value storeOn: each].
+	"
+	 A space before a negative value, because `->-1' does not read back as
+	 what it printed: the scanner takes `->-' as one binary selector and
+	 then finds a 1 with nothing to send it to.  Pharo's own store tests
+	 say `(#d-> -2)', and this is why.
+	"
+	(stored isEmpty not and: [stored first = $-])
+		ifTrue: [aStream nextPut: $ ].
+	aStream nextPutAll: stored.
 	aStream nextPut: $)
 ]

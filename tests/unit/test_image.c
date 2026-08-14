@@ -50,7 +50,7 @@
  *  test had not, among them the whole of lib/Concurrency, ClassTestCase,
  *  MessageSend, SharedPool and the exception classes added this session.
  */
-#define LIB_CLASSES             37
+#define LIB_CLASSES             38
 /*
  *  This number is a ratchet and is meant to move: lib/ is where every
  *  divergence from the frozen 1983 sources lives, so it grows whenever a
@@ -63,13 +63,14 @@
  *  plus TimedOut and Process>>signalException:, which is what a timeout
  *  needs to interrupt the process it is watching.
  */
-#define LIB_METHODS             589
+#define LIB_METHODS             597
 /*
- *  Three, not five: the extension packages define no CLASSES, and a
- *  category is a property of a class definition.  Kernel-Methods-Fixes and
- *  System-Runtime only add methods to classes that already exist.
+ *  The extension packages define no CLASSES, and a category is a property
+ *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
+ *  none.  Collections-Protocol was in that group until CollectionElement,
+ *  the box a Set stores nil in, gave it a class of its own.
  */
-#define LIB_CATEGORIES          9
+#define LIB_CATEGORIES          10
 /*
  *  The image this test measures is the one profiles/st2026.profile builds,
  *  and it is built BY that profile rather than by a list kept alongside it.
@@ -162,11 +163,11 @@ build_once(void)
      *  goes new -> new: -> init: and never sends #initialize.
      */
     /*
-     *  37, not 23, for the same reason the class count moved: lib/Concurrency
+     *  38, not 23, for the same reason the class count moved: lib/Concurrency
      *  alone brings Mutex, Monitor, Promise, SharedQueue and the fixtures,
      *  and every one of them defines initialize and no class-side new.
      */
-    CHECK_EQ_INT(res.news_synthesized, 37);
+    CHECK_EQ_INT(res.news_synthesized, 38);
     built = 1;
     return 1;
 }
@@ -926,7 +927,7 @@ test_collections(void)
     check_class("Dictionary new", "Dictionary");
     /*  printString on the structured collections, which needs Stream,
      *  Symbol and Character all working together.  */
-    check_integer("(Set new add: 3; yourself) printString size", 8);
+    check_integer("(Set new add: 3; yourself) printString size", 9);
     check_integer("Object new printString size", 9);
     check_integer("(Dictionary new at: 1 put: 2; yourself) printString size",
                   18);
@@ -1939,7 +1940,7 @@ test_browsing(void)
      *  the source pointer is 22 bits and silently truncated once, and a
      *  size that stops growing is how that would show.
      */
-    check_integer("(SourceFiles at: 1) contents size", 1329758);
+    check_integer("(SourceFiles at: 1) contents size", 1335569);
 }
 
 /*
@@ -2700,10 +2701,10 @@ test_printing_deep(void)
               ST_TRUE, "true");
     check_oop("(9090909090909091/100000000000000000) asFloat = (1.0/11.0)",
               ST_TRUE, "true");
-    check_integer("OrderedCollection new printString size", 20);
-    check_integer("(1 to: 5) asOrderedCollection printString size", 30);
+    check_integer("OrderedCollection new printString size", 22);
+    check_integer("(1 to: 5) asOrderedCollection printString size", 32);
     check_integer("(OrderedCollection new add: 1; yourself) printString size",
-                  22);
+                  24);
     check_integer("OrderedCollection name size", 17);
 }
 

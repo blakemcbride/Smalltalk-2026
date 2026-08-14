@@ -2806,9 +2806,16 @@ compile_statements(st_compiler *c, int inside_block)
         emitted = 1;
         if (accept(c, ST_TOK_PERIOD)) {
             if (at(c, ST_TOK_END) || at(c, ST_TOK_RBRACKET)) {
-                /*  A trailing period leaves nothing on the stack.  */
-                discard_statement_value(c);
-                emitted = 0;
+                /*
+                 *  A trailing period is a separator with nothing after it,
+                 *  not an empty statement.  `[:x | x. ]' answers x, exactly
+                 *  as `[:x | x]' does; discarding the value here made the
+                 *  first of those answer nil, and the two forms are written
+                 *  interchangeably -- Pharo's own tests have
+                 *  `[:value | values add: value. ]' and expect the added
+                 *  value back.  A method still drops it below, because a
+                 *  method answers self.
+                 */
                 break;
             }
             discard_statement_value(c); /*  discard the statement's value  */

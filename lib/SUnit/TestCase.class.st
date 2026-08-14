@@ -313,12 +313,22 @@ TestCase >> assertCollection: actual equals: expected [
 
 { #category : 'asserting' }
 TestCase >> assertCollection: actual hasSameElements: expected [
-	"Same elements in any order and without regard to class.
+	"Same elements in any order, without regard to class, and without
+	 regard to how many times each appears.
 
 	 The complement of assertCollection:equals: -- used where the order is
-	 genuinely not part of the promise, which for a Set or a Bag is always."
-	self assert: actual size equals: expected size.
+	 genuinely not part of the promise, which for a Set or a Bag is always.
+
+	 Repetition is not part of the promise either, and that is not a
+	 weakening for convenience: the selector says ELEMENTS, and Pharo's tests
+	 are written to it.  BagTest>>testRemoveKey compares a Bag of nine
+	 characters against `#($b $c $d) asSet' and is right to pass -- the two
+	 have the same elements.  A size check made that a failure about
+	 multiplicity in a test whose subject is removeKey:."
 	expected do: [:each |
 		self assert: (actual includes: each)
-			description: 'missing ', each printString]
+			description: 'missing ', each printString].
+	actual do: [:each |
+		self assert: (expected includes: each)
+			description: 'unexpected ', each printString]
 ]

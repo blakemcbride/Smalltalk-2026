@@ -214,10 +214,23 @@ SequenceableCollection >> reduceLeft: aBlock [
 		ifTrue: [aBlock numArgs + 1]
 		ifFalse: [aBlock numArgs].
 	count := arity - 1.
+	"
+	 A fold with an n-argument block eats n-1 elements a step after the seed,
+	 so a collection fits only when its size is 1 + k(n-1).  When it does not,
+	 that is an ERROR and not a short final group: a block called with fewer
+	 arguments than it declares fails inside the VM, where no handler can
+	 reach it, and `#(1 2) reduce: [:a :b :c | ...]' is exactly the case
+	 Pharo's tests require to raise Error.  Clamping the last group to what
+	 was left is what produced the uncatchable failure."
+	count < 1 ifTrue: [^self error: 'reduce needs a block of two arguments or more'].
+	(self size - 1 \\ count) = 0 ifFalse: [
+		^self error: 'a block of ', arity printString,
+			' arguments folds 1 plus a multiple of ', count printString,
+			' elements, and there are ', self size printString].
 	taken := self first.
 	2 to: self size by: count do: [:i |
 		| arguments |
-		arguments := (i to: (i + count - 1 min: self size))
+		arguments := (i to: i + count - 1)
 			inject: OrderedCollection new
 			into: [:acc :k | acc add: (self at: k); yourself].
 		arguments addFirst: taken.
@@ -240,6 +253,19 @@ SequenceableCollection >> reduceRight: aBlock [
 		ifTrue: [aBlock numArgs + 1]
 		ifFalse: [aBlock numArgs].
 	count := arity - 1.
+	"
+	 A fold with an n-argument block eats n-1 elements a step after the seed,
+	 so a collection fits only when its size is 1 + k(n-1).  When it does not,
+	 that is an ERROR and not a short final group: a block called with fewer
+	 arguments than it declares fails inside the VM, where no handler can
+	 reach it, and `#(1 2) reduce: [:a :b :c | ...]' is exactly the case
+	 Pharo's tests require to raise Error.  Clamping the last group to what
+	 was left is what produced the uncatchable failure."
+	count < 1 ifTrue: [^self error: 'reduce needs a block of two arguments or more'].
+	(self size - 1 \\ count) = 0 ifFalse: [
+		^self error: 'a block of ', arity printString,
+			' arguments folds 1 plus a multiple of ', count printString,
+			' elements, and there are ', self size printString].
 	taken := self last.
 	index := self size - count.
 	[index >= 1] whileTrue: [
@@ -262,9 +288,16 @@ SequenceableCollection >> splitOn: splitter [
 	 whole of it and a protocol on Object to reach them is more machinery
 	 than the answer is worth.
 
+	 Each piece is of MY species, not an Array: splitting an
+	 OrderedCollection gives OrderedCollections, splitting a String gives
+	 Strings, and a caller that goes on to send `,' or `asUppercase' to a
+	 piece needs that.  An Interval's species is Array, which is the right
+	 answer for the one receiver that cannot hold arbitrary elements.
+
 	 Empty pieces are KEPT -- two adjacent separators produce an empty
-	 piece between them, and the tests say so: `#(2 2 3 3 4 1 2 3 3 5)
-	 splitOn: [:e | e > 3]' answers three pieces, the last of them empty."
+	 piece between them, and the tests say so: `'the banana man' splitOn:
+	 'an'' answers `'the b' '' 'a m'', the empty one being what sits
+	 between the two `an's of `banana'."
 	| pieces current width matches |
 	pieces := OrderedCollection new.
 	current := OrderedCollection new.
@@ -275,8 +308,12 @@ SequenceableCollection >> splitOn: splitter [
 		(splitter isKindOf: BlockClosure)
 			ifTrue: [splitter value: (self at: index)]
 			ifFalse: [(splitter isKindOf: SequenceableCollection)
-				ifTrue: [(index + width - 1 <= self size)
-					and: [(self copyFrom: index to: index + width - 1) = splitter]]
+				ifTrue: ["An empty splitter matches nowhere.  It cannot match
+					  everywhere: a zero-width match advances the walk by
+					  zero, and `'' split: 'abc'' would not terminate."
+					 width > 0
+						and: [(index + width - 1 <= self size)
+						and: [(self copyFrom: index to: index + width - 1) = splitter]]]
 				ifFalse: [(self at: index) = splitter]]].
 	self doSplit: matches width: width into: pieces current: current.
 	^pieces
@@ -285,18 +322,19 @@ SequenceableCollection >> splitOn: splitter [
 { #category : '*Collections-Protocol' }
 SequenceableCollection >> doSplit: matches width: width into: pieces current: current [
 	"The walk behind splitOn:, kept separate so the dispatch above reads."
-	| index |
+	| index piece |
 	index := 1.
+	piece := current.
 	[index <= self size] whileTrue: [
 		(matches value: index)
 			ifTrue: [
-				pieces add: current asArray.
-				current := OrderedCollection new.
+				pieces add: (self species withAll: piece).
+				piece := OrderedCollection new.
 				index := index + width]
 			ifFalse: [
-				current add: (self at: index).
+				piece add: (self at: index).
 				index := index + 1]].
-	pieces add: current asArray
+	pieces add: (self species withAll: piece)
 ]
 
 { #category : '*Collections-Protocol' }
@@ -315,7 +353,7 @@ SequenceableCollection >> joinUsing: joiner [
 		(each isKindOf: SequenceableCollection)
 			ifTrue: [result addAll: each]
 			ifFalse: [result add: each]].
-	^(joiner isKindOf: String)
+	^((joiner isKindOf: String) or: [joiner isKindOf: Character])
 		ifTrue: [
 			"
 			 Into a String, so every piece has to BE characters.  An
@@ -333,7 +371,17 @@ SequenceableCollection >> joinUsing: joiner [
 			text contents]
 		ifFalse: [
 			(joiner isKindOf: SequenceableCollection)
-				ifTrue: [joiner species withAll: result]
+				ifTrue: [
+					"
+					 A SortedCollection joiner answers an OrderedCollection: the
+					 whole point of a join is the order the pieces were in, and a
+					 SortedCollection would throw it away -- `(1 to: 4) joinUsing:
+					 #(8 9) asSortedCollection' is 1 8 9 2 8 9 3 8 9 4, and not
+					 1 2 3 4 8 8 8 9 9 9.
+					"
+					(joiner isKindOf: SortedCollection)
+						ifTrue: [OrderedCollection withAll: result]
+						ifFalse: [joiner species withAll: result]]
 				ifFalse: [Array withAll: result]]
 ]
 

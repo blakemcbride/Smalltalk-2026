@@ -4,7 +4,9 @@ Extension { #name : 'ArrayedCollection' }
 ArrayedCollection class >> withAll: aCollection [
 	"One of the few pieces of class-side collection protocol that ported
 	 code assumes.  Array withAll: aSet is how a Set becomes an Array
-	 without going through asOrderedCollection first."
+	 without going through asOrderedCollection first.  Fixed size, so the
+	 size is taken first and the elements placed -- addAll: has nowhere
+	 to put them."
 	| result index |
 	result := self new: aCollection size.
 	index := 0.
@@ -32,16 +34,5 @@ ArrayedCollection class >> with: a with: b with: c with: d with: e with: f [
 	made := self new: 6.
 	made at: 1 put: a; at: 2 put: b; at: 3 put: c; at: 4 put: d;
 	     at: 5 put: e; at: 6 put: f.
-	^made
-]
-
-{ #category : '*Collections-Protocol' }
-ArrayedCollection class >> withAll: aCollection [
-	"Fixed size, so the size is taken first and the elements placed --
-	 addAll: has nowhere to put them."
-	| made index |
-	made := self new: aCollection size.
-	index := 0.
-	aCollection do: [:each | made at: (index := index + 1) put: each].
 	^made
 ]
