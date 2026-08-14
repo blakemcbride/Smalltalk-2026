@@ -294,13 +294,24 @@ String >> trimBoth: aBlock [
 
 { #category : '*Strings-Protocol' }
 String >> findBetweenSubstrings: delimiters [
-	"My substrings, split on any of those delimiter characters, empty
-	 pieces dropped -- which is what distinguishes it from splitOn:."
-	| pieces current |
+	"My substrings, split on any of those delimiters, empty pieces dropped
+	 -- which is what distinguishes it from splitOn:.
+
+	 A delimiter may be a Character or a String, and the callers mix them:
+	 Pharo's collection printing test splits on `{ ' '. '('. ')' }', three
+	 one-character STRINGS.  Testing `delimiters includes: aCharacter'
+	 against those never matches, so the whole input came back as a single
+	 piece -- which is what `expected 6 but got 1' was."
+	| pieces current marks |
+	marks := Set new.
+	delimiters do: [:each |
+		(each isKindOf: Character)
+			ifTrue: [marks add: each]
+			ifFalse: [each do: [:c | marks add: c]]].
 	pieces := OrderedCollection new.
 	current := WriteStream on: (String new: 16).
 	self do: [:c |
-		(delimiters includes: c)
+		(marks includes: c)
 			ifTrue: [
 				current contents isEmpty ifFalse: [pieces add: current contents].
 				current := WriteStream on: (String new: 16)]

@@ -367,3 +367,18 @@ Object >> copyFrom: anotherObject [
 			self basicAt: i put: (anotherObject basicAt: i)]].
 	^self
 ]
+
+{ #category : '*Kernel-Protocol' }
+Association >> storeOn: aStream [
+	"An expression that rebuilds me: (key->value).
+
+	 Without this an Association stores as the generic
+	 `Association basicNew instVarAt: 1 put: ...; instVarAt: 2 put: ...',
+	 which is correct, unreadable, and depends on the field order never
+	 changing."
+	aStream nextPut: $(.
+	key storeOn: aStream.
+	aStream nextPutAll: '->'.
+	value storeOn: aStream.
+	aStream nextPut: $)
+]

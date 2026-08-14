@@ -548,7 +548,9 @@ Collection >> printNameOn: aStream [
 	"How I name myself before my elements.  Split out from printOn: so a
 	 subclass can change the name and keep the listing, which is the mirror
 	 of printElementsOn:."
-	aStream nextPutAll: self class name article, self class name
+	aStream nextPutAll: self class name article;
+		nextPut: $ ;
+		nextPutAll: self class name
 ]
 
 { #category : '*Collections-Protocol' }
