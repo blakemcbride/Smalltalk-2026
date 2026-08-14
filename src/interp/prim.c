@@ -631,6 +631,64 @@ primitive_become(void)
     return 1;
 }
 
+/*  ----------  Primitive 249: elementsForwardIdentityTo:  ----------
+ *
+ *  One-way become, in bulk: element i of the receiver is forwarded to
+ *  element i of the argument, so every reference to the first becomes a
+ *  reference to the second and references to the second are untouched.
+ *
+ *  249 because that is the number Pharo names for it, and this block of the
+ *  primitive table is otherwise this system's own -- taking Pharo's number
+ *  for Pharo's operation is what lets ported source say
+ *  `<primitive: 249>' and mean it.  Object>>becomeForward: in lib/ is the
+ *  one-element case, and MethodDictionary>>grow is why any of this exists:
+ *  a method dictionary doubles by building a new one and forwarding.
+ *
+ *  Fails, changing nothing, if the two are not Arrays of equal size or if
+ *  any element cannot be forwarded -- see OM_forward_identity.  A failure
+ *  here means the Smalltalk fallback runs, which is what a primitive
+ *  failure is for.
+ */
+static int
+primitive_elements_forward_identity(void)
+{
+    st_oop      from_array = ST_stack_value(1);
+    st_oop      to_array   = ST_stack_value(0);
+    uint32_t    size;
+    uint32_t    i;
+
+    if (!OM_is_object(from_array) || !OM_is_object(to_array))
+        return 0;
+    if (OM_fetch_class(from_array) != OM_fetch_class(to_array))
+        return 0;
+    size = OM_fetch_word_length(from_array);
+    if (size != OM_fetch_word_length(to_array))
+        return 0;
+    /*
+     *  Every pair is checked before any pair moves.  A bulk become that
+     *  forwarded three of five and then failed would leave the image in a
+     *  state no caller asked for and none can undo.
+     */
+    for (i = 0; i < size; ++i) {
+        if (!OM_can_forward_identity(OM_fetch_pointer(i, from_array),
+                                     OM_fetch_pointer(i, to_array)))
+            return 0;
+    }
+    /*
+     *  One sweep of the object table per pair.  The bulk form exists
+     *  because Pharo's does; the caller that matters passes one pair, and
+     *  folding n pairs into a single sweep would be an optimisation for a
+     *  case nothing in this system has yet.
+     */
+    for (i = 0; i < size; ++i) {
+        if (!OM_forward_identity(OM_fetch_pointer(i, from_array),
+                                 OM_fetch_pointer(i, to_array)))
+            return 0;
+    }
+    ST_pop_n(1);
+    return 1;
+}
+
 /*  ----------  Instance variable access, primitives 73 and 74  ----------  */
 
 static int
@@ -2170,6 +2228,7 @@ ST_primitive_dispatch(unsigned index)
     case 70:  return primitive_new();
     case 71:  return primitive_new_with_arg();
     case 72:  return primitive_become();
+    case 249: return primitive_elements_forward_identity();
     case 73:  return primitive_inst_var_at();
     case 74:  return primitive_inst_var_at_put();
     case 75:  return primitive_object_hash();
@@ -2381,6 +2440,7 @@ static const primitive_entry primitive_table[] = {
     {  70, ST_PRIM_PRESENT,  "Behavior new"                     },
     {  71, ST_PRIM_PRESENT,  "Behavior new:"                    },
     {  72, ST_PRIM_PRESENT,  "Object become:"                   },
+    { 249, ST_PRIM_PRESENT,  "Array elementsForwardIdentityTo:" },
     {  73, ST_PRIM_PRESENT,  "Object instVarAt:"                },
     {  74, ST_PRIM_PRESENT,  "Object instVarAt:put:"            },
     {  75, ST_PRIM_PRESENT,  "Object identityHash"              },

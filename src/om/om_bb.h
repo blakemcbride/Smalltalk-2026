@@ -392,6 +392,24 @@ typedef void (*om_root_provider)(om_visit_fn visit);
 
 void        OM_set_root_provider(om_root_provider provider);
 
+/*
+ *  One-way identity forwarding, which this memory does not do.
+ *
+ *  The 16-bit Blue Book memory exists to load Xerox's own image and
+ *  reproduce its trace byte for byte, and no 1983 method sends
+ *  becomeForward: -- the selector did not exist.  Answering 0 makes the
+ *  primitive fail, which is the honest report and leaves the one build
+ *  whose correctness is externally checked with no new code in it at all.
+ *  The threaded memory implements it; see om_mt.h.
+ */
+typedef void (*om_root_forwarder)(st_oop from, st_oop to);
+typedef int  (*om_root_pin_fn)(st_oop p);
+
+void        OM_set_root_forwarder(om_root_forwarder forwarder,
+                                  om_root_pin_fn pinned);
+int         OM_can_forward_identity(st_oop from, st_oop to);
+int         OM_forward_identity(st_oop from, st_oop to);
+
 /*  Returns the number of objects reclaimed.  */
 uint32_t    OM_collect(void);
 

@@ -420,6 +420,40 @@ st_oop  OM_instantiate_bytes(st_oop class_pointer, uint32_t size);
 void    OM_swap_identities(st_oop a, st_oop b);
 
 /*
+ *  One-way identity forwarding: every reference to `from' becomes a
+ *  reference to `to', and references to `to' are left alone.
+ *
+ *  This one cannot be a table swap, and the asymmetry is the reason.  A
+ *  swap moves two bodies between two identities and both identities remain
+ *  usable; forwarding has to leave `from' meaning what `to' means, and with
+ *  an object table the only ways to do that are to point two table entries
+ *  at one body -- which gives two identities that are == to neither each
+ *  other nor themselves consistently, and one body two entries will each
+ *  try to free -- or to find and rewrite the references.  This finds and
+ *  rewrites them.
+ *
+ *  So it is a full sweep of the object table at a safepoint, followed by a
+ *  collection to rebuild the counts.  That is expensive and it is meant to
+ *  be: MethodDictionary>>grow is the caller that matters and it runs when a
+ *  class doubles its method table.
+ *
+ *  Answers 0 without changing anything if the forward cannot be done: an
+ *  immortal oop, or a `from' that some part of C holds in a place this
+ *  cannot rewrite -- a running context, the method being executed, the
+ *  display form.  A primitive failure is the right answer there, because
+ *  the alternative is a dangling pointer in the interpreter's own
+ *  registers.
+ */
+/*
+ *  Whether that forward would be accepted, asked without doing it.  A bulk
+ *  become checks every pair with this before moving any of them: forwarding
+ *  three of five and then refusing leaves an image in a state no caller
+ *  asked for and none can undo.
+ */
+int     OM_can_forward_identity(st_oop from, st_oop to);
+int     OM_forward_identity(st_oop from, st_oop to);
+
+/*
  *  Store `value` in a field only if it currently holds `expected`, and say
  *  whether it did.  The one operation a lock-free algorithm cannot be
  *  written without.
@@ -451,6 +485,18 @@ typedef void (*om_visit_fn)(st_oop object);
 typedef void (*om_root_provider)(om_visit_fn visit);
 
 void        OM_set_root_provider(om_root_provider provider);
+
+/*
+ *  The other side of OM_forward_identity: whoever holds references in C
+ *  says here how to rewrite the ones it can, and which oops it holds
+ *  somewhere it cannot.  Both are asked at a safepoint with every worker
+ *  parked.
+ */
+typedef void (*om_root_forwarder)(st_oop from, st_oop to);
+typedef int  (*om_root_pin_fn)(st_oop p);
+
+void        OM_set_root_forwarder(om_root_forwarder forwarder,
+                                  om_root_pin_fn pinned);
 uint32_t    OM_collect(void);
 
 /*

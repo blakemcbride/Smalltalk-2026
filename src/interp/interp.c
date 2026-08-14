@@ -386,11 +386,128 @@ provide_roots(om_visit_fn visit)
         extra_roots(visit);
 }
 
+/*
+ *  ----------  The other side of a one-way become  ----------
+ *
+ *  OM_forward_identity rewrites every reference in the heap.  These two
+ *  answer for the references that are NOT in the heap: the interpreter's
+ *  registers, and the handful of objects C holds in variables of its own.
+ *
+ *  They are split into `can this be forwarded at all' and `forward it',
+ *  asked in that order, because a refusal has to be a refusal -- the
+ *  primitive fails and nothing has moved.  Doing it the other way would
+ *  mean discovering half way through the sweep that the answer was no.
+ */
+static st_oop   probe_for;
+static int      probe_found;
+
+static void
+probe_visit(st_oop p)
+{
+    if (p == probe_for)
+        probe_found = 1;
+}
+
+int
+ST_interp_forward_forbidden(st_oop p)
+{
+    unsigned    i;
+
+    if (!OM_is_object(p))
+        return 1;
+    /*
+     *  A context or a method that some worker is executing IN.  The
+     *  interpreter caches an instruction pointer into the method's
+     *  bytecodes and a stack limit from the context's length, and both stop
+     *  meaning anything the moment the object underneath them changes.
+     *  Nothing sensible forwards either; refusing says so rather than
+     *  leaving a worker reading freed memory.
+     */
+    for (i = 0; i < MAX_INTERPRETERS; ++i) {
+        st_interp  *vm = (st_interp *) ST_load_acquire(&interpreters[i]);
+
+        if (vm && (p == vm->active_context || p == vm->home_context
+                || p == vm->method))
+            return 1;
+    }
+    if (p == st_vm.active_context || p == st_vm.home_context
+     || p == st_vm.method)
+        return 1;
+    /*
+     *  Held by C in variables with no setter this can reach.  Each one has
+     *  a single owner elsewhere in the system, and a forward would leave
+     *  that owner holding a freed object.
+     */
+    if (p == GFX_display_form() || p == SCHED_input_semaphore()
+     || p == SCHED_timer_semaphore() || p == SCHED_pending_process())
+        return 1;
+    /*
+     *  And whatever the bootstrap holds -- its symbol table and its class
+     *  table, which are C arrays of oops.  Asked through the visitor it
+     *  already provides, so this stays right when that set changes.
+     */
+    if (extra_roots) {
+        probe_for   = p;
+        probe_found = 0;
+        extra_roots(probe_visit);
+        probe_for = ST_OOP_INVALID;
+        if (probe_found)
+            return 1;
+    }
+    return 0;
+}
+
+static void
+forward_register(st_oop *reg, st_oop from, st_oop to)
+{
+    if (*reg == from)
+        *reg = to;
+}
+
+void
+ST_interp_forward_roots(st_oop from, st_oop to)
+{
+    unsigned    i;
+
+    /*
+     *  Every worker's registers, not just this one's -- they are all parked
+     *  at a safepoint, which is the only moment another thread's register
+     *  file may be written.
+     *
+     *  active_context, home_context and method are not here: they are the
+     *  set ST_interp_forward_forbidden refuses, so by the time this runs
+     *  none of them can be `from'.
+     */
+    for (i = 0; i < MAX_INTERPRETERS; ++i) {
+        st_interp  *vm = (st_interp *) ST_load_acquire(&interpreters[i]);
+
+        if (!vm)
+            continue;
+        forward_register(&vm->receiver, from, to);
+        forward_register(&vm->message_selector, from, to);
+        forward_register(&vm->new_method, from, to);
+        forward_register(&vm->return_value, from, to);
+        forward_register(&vm->active_process, from, to);
+        forward_register(&vm->new_process, from, to);
+    }
+    /*
+     *  And this thread's, registered or not: the -eval path never registers
+     *  and is exactly where a doIt sends becomeForward:.
+     */
+    forward_register(&st_vm.receiver, from, to);
+    forward_register(&st_vm.message_selector, from, to);
+    forward_register(&st_vm.new_method, from, to);
+    forward_register(&st_vm.return_value, from, to);
+    forward_register(&st_vm.active_process, from, to);
+    forward_register(&st_vm.new_process, from, to);
+}
+
 void
 ST_interp_install_roots(om_root_provider extra)
 {
     extra_roots = extra;
     OM_set_root_provider(provide_roots);
+    OM_set_root_forwarder(ST_interp_forward_roots, ST_interp_forward_forbidden);
 }
 
 void

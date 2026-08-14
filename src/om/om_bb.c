@@ -646,6 +646,29 @@ OM_swap_identities(st_oop a, st_oop b)
 }
 
 void
+OM_set_root_forwarder(om_root_forwarder forwarder, om_root_pin_fn pinned)
+{
+    (void) forwarder;
+    (void) pinned;
+}
+
+int
+OM_can_forward_identity(st_oop from, st_oop to)
+{
+    (void) from;
+    (void) to;
+    return 0;
+}
+
+int
+OM_forward_identity(st_oop from, st_oop to)
+{
+    (void) from;
+    (void) to;
+    return 0;
+}
+
+void
 OM_deallocate(st_oop p)
 {
     unsigned    segment;

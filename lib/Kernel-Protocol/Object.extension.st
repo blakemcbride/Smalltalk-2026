@@ -283,6 +283,26 @@ Object >> join: aCollection [
 ]
 
 { #category : '*Kernel-Protocol' }
+Object >> becomeForward: anObject [
+	"Every reference to me becomes a reference to anObject.
+
+	 One way, where become: is two: references to anObject are left alone,
+	 and I am gone.  This is how a collection replaces itself with a bigger
+	 one without every holder having to be told -- MethodDictionary>>grow
+	 builds a new dictionary, copies itself into it, and forwards.
+
+	 Written as the one-element case of the bulk primitive because that is
+	 what it is, and because the bulk one is where the VM work lives: with
+	 an object table there is no way to forward without finding and
+	 rewriting the references, so this sweeps the whole object table at a
+	 safepoint.  It is expensive on purpose.  See primitive 249.
+
+	 Answers me, which after this call is a reference to anObject."
+	(Array with: self) elementsForwardIdentityTo: (Array with: anObject).
+	^self
+]
+
+{ #category : '*Kernel-Protocol' }
 Object >> copy [
 	"Another instance just like me, its parts fixed up afterwards.
 

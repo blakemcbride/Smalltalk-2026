@@ -866,6 +866,148 @@ OM_swap_identities(st_oop a, st_oop b)
     }
 }
 
+
+/*  ----------  One-way become  ----------  */
+
+static om_root_forwarder    root_forwarder;
+static om_root_pin_fn       root_pinned;
+
+void
+OM_set_root_forwarder(om_root_forwarder forwarder, om_root_pin_fn pinned)
+{
+    root_forwarder = forwarder;
+    root_pinned    = pinned;
+}
+
+static st_oop   forward_from;
+static st_oop   forward_to;
+
+static void
+forward_slot(st_oop *slot)
+{
+    if (ST_oop_load(slot) == forward_from)
+        ST_oop_store(slot, forward_to);
+}
+
+/*
+ *  The sweep.  Every live object, every slot that can hold a pointer, and
+ *  the class field, which is a reference like any other -- an object whose
+ *  CLASS is being forwarded has to follow, or it is an instance of a class
+ *  nothing else can name.
+ *
+ *  Counts are not adjusted here.  They are all rebuilt by the collection
+ *  that follows, which is exact where per-slot arithmetic across a sweep of
+ *  this shape would be a long list of chances to be one out.
+ */
+static uint32_t
+forward_at_safepoint(void *unused)
+{
+    uint32_t    index;
+    uint32_t    limit;
+
+    (void) unused;
+    /*
+     *  Fold in every worker's deferred count deltas first, for the same
+     *  reason the collector does: every worker is parked, and the table is
+     *  about to be read as though it were the whole truth.
+     */
+    magazines_drain();
+    limit = (uint32_t) ST_load_relaxed(&st_om_table_limit);
+    for (index = 1; index < limit; ++index) {
+        om_header  *head = OM_table_get(index);
+        uint32_t    i;
+
+        if (!head || (head->flags & ST_FMT_FREE))
+            continue;
+        if (head->class_oop == forward_from)
+            head->class_oop = forward_to;
+        /*
+         *  A CompiledMethod is a byte object whose leading words are the
+         *  header and the literal frame, and those ARE pointers.  Same
+         *  special case the collector makes, and for the same reason:
+         *  missing them would leave a method sending a selector that no
+         *  longer exists.
+         */
+        if (head->class_oop == ST_CLASS_COMPILED_METHOD) {
+            uint32_t    slots = head->size / (uint32_t) sizeof(st_oop);
+            uint32_t    literals;
+
+            if (slots == 0)
+                continue;
+            literals = (uint32_t)
+                ((ST_oop_load(&((st_oop *) (head + 1))[0]) >> 1) & 63);
+            for (i = 1; i <= literals && i < slots; ++i)
+                forward_slot(&((st_oop *) (head + 1))[i]);
+            continue;
+        }
+        if (!(head->flags & ST_FMT_POINTERS))
+            continue;
+        /*
+         *  Weak slots are rewritten along with the rest.  The collector
+         *  skips them, because a weak reference must not keep its target
+         *  alive; forwarding is the opposite question -- a weak reference
+         *  that still names the old object after the forward would answer a
+         *  dead object rather than nil.
+         */
+        for (i = 0; i < head->size; ++i)
+            forward_slot(&((st_oop *) (head + 1))[i]);
+    }
+    for (index = 0; index < ST_VM_STATE_SLOTS; ++index)
+        forward_slot(&st_om_vm_state[index]);
+    if (root_forwarder)
+        root_forwarder(forward_from, forward_to);
+    return 1;
+}
+
+int
+OM_can_forward_identity(st_oop from, st_oop to)
+{
+    if (!OM_is_object(from) || !OM_is_object(to))
+        return 0;
+    if (from == to)
+        return 1;
+    /*  A guaranteed pointer names itself for the whole image's life.  */
+    if (from <= ST_LAST_IMMORTAL_OOP)
+        return 0;
+    /*
+     *  What C holds in a place with no setter -- the context a worker is
+     *  executing in, the method it is executing, the display form -- cannot
+     *  be rewritten from here, and forwarding out from under it would leave
+     *  the interpreter reading freed memory.
+     */
+    if (root_pinned && root_pinned(from))
+        return 0;
+    return 1;
+}
+
+int
+OM_forward_identity(st_oop from, st_oop to)
+{
+    /*
+     *  Asked again here, and asked BEFORE anything moves, so a refusal is a
+     *  refusal and not a half-done forward.  A bulk caller asks the same
+     *  question of every pair first; this is what makes a single one safe
+     *  on its own as well.
+     */
+    if (!OM_can_forward_identity(from, to))
+        return 0;
+    if (from == to)
+        return 1;
+    forward_from = from;
+    forward_to   = to;
+    if (!WORKER_at_safepoint(forward_at_safepoint, NULL))
+        return 0;
+    forward_from = ST_OOP_INVALID;
+    forward_to   = ST_OOP_INVALID;
+    /*
+     *  Every count in the image is now wrong by however many references
+     *  moved, so rebuild them all.  This is also what frees the forwarded
+     *  object: after the sweep nothing points at it.
+     */
+    OM_collect();
+    return 1;
+}
+
 /*  ----------  Reference counting  ----------  */
 
 void

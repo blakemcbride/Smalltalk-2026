@@ -36,3 +36,20 @@ ArrayedCollection class >> with: a with: b with: c with: d with: e with: f [
 	     at: 5 put: e; at: 6 put: f.
 	^made
 ]
+
+{ #category : '*Collections-Protocol' }
+ArrayedCollection >> elementsForwardIdentityTo: otherArray [
+	"Forward each of my elements to the element at the same index of that
+	 array: every reference to the first becomes a reference to the second.
+
+	 The primitive fails, and this reports why, when the two are not the
+	 same size or when an element cannot be forwarded.  An object cannot be
+	 forwarded if it is a guaranteed pointer, or if the VM holds it in a
+	 register with no setter -- a context or method a worker is executing
+	 in, the display form.  Those are refusals rather than crashes on
+	 purpose: the alternative is a dangling pointer inside the interpreter."
+	<primitive: 249>
+	self size = otherArray size
+		ifFalse: [^self error: 'elementsForwardIdentityTo: needs two collections of the same size'].
+	^self error: 'elementsForwardIdentityTo: cannot forward one of these objects'
+]

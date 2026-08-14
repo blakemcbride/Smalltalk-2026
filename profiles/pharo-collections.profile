@@ -34,6 +34,18 @@ table it tests with a literal -- the search that builds it does not finish
 under this interpreter.  KeyedTreeTest is excluded because KeyedTree is,
 and a test whose subject is absent reports ten failures that say nothing.
 
+468 of the 469 tests pass.  The one that does not is
+DictionaryTest>>testOtherDictionaryEquality, and it is recorded rather than
+excluded because what blocks it is named and dated: it compares Dictionary
+against every other dictionary class in the image, and three of the eight it
+names are WeakValueDictionary, WeakKeyDictionary and
+WeakIdentityKeyDictionary.  Loading pharo/Collections-Weak here was tried and
+does not lift it -- WeakKeyAssociation is declared `#type : ''ephemeron''',
+the loader refuses ephemerons by design rather than building them strong and
+lying about it, and so the class the weak dictionaries need is absent either
+way.  Ephemerons are Phase F.  The test will pass when they exist and not
+before.
+
 The package's own tests are NOT loaded here.  They root on
 CollectionRootTest, which lives in Collections-Abstract-Tests, and pulling
 that in is the next package rather than part of this one.  What this profile

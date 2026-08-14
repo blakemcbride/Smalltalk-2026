@@ -292,6 +292,15 @@ void        ST_interp_unregister(void);
  */
 void        ST_interp_install_roots(om_root_provider extra);
 
+/*
+ *  The two halves of a one-way become that live outside the object memory:
+ *  whether an object may be forwarded at all, and the rewrite of every
+ *  reference C holds in a register rather than in the heap.  Installed
+ *  together with the root provider above; see OM_forward_identity.
+ */
+int         ST_interp_forward_forbidden(st_oop p);
+void        ST_interp_forward_roots(st_oop from, st_oop to);
+
 /*  ----------  API  ----------  */
 
 /*
