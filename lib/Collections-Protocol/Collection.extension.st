@@ -574,3 +574,9 @@ Collection class >> <- anArray [
 Collection class >> empty [
 	^self new
 ]
+
+{ #category : '*Collections-Protocol' }
+Collection >> do: aBlock without: anObject [
+	"Every element except that one."
+	self do: [:each | each = anObject ifFalse: [aBlock value: each]]
+]

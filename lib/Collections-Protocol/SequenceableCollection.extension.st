@@ -229,12 +229,26 @@ SequenceableCollection >> reduceLeft: aBlock [
 SequenceableCollection >> reduceRight: aBlock [
 	"Fold right: the LAST element is the seed and the walk runs backwards,
 	 so `#(1 2 3) reduceRight: [:a :b | a - b]' is 1 - (2 - 3) and not
-	 ((1 - 2) - 3)."
-	| taken |
+	 ((1 - 2) - 3).
+
+	 Blocks of more than two arguments are taken in groups, the same way
+	 reduceLeft: takes them and for the same reason -- an infix expression
+	 folded from the right."
+	| taken count arity index |
 	self isEmpty ifTrue: [^self errorEmptyCollection].
+	arity := (aBlock isKindOf: Symbol)
+		ifTrue: [aBlock numArgs + 1]
+		ifFalse: [aBlock numArgs].
+	count := arity - 1.
 	taken := self last.
-	self size - 1 to: 1 by: -1 do: [:i |
-		taken := aBlock value: (self at: i) value: taken].
+	index := self size - count.
+	[index >= 1] whileTrue: [
+		| arguments |
+		arguments := OrderedCollection new.
+		index to: index + count - 1 do: [:k | arguments add: (self at: k)].
+		arguments add: taken.
+		taken := aBlock valueWithArguments: arguments asArray.
+		index := index - count].
 	^taken
 ]
 
@@ -301,9 +315,26 @@ SequenceableCollection >> joinUsing: joiner [
 		(each isKindOf: SequenceableCollection)
 			ifTrue: [result addAll: each]
 			ifFalse: [result add: each]].
-	^(joiner isKindOf: SequenceableCollection)
-		ifTrue: [joiner species withAll: result]
-		ifFalse: [Array withAll: result]
+	^(joiner isKindOf: String)
+		ifTrue: [
+			"
+			 Into a String, so every piece has to BE characters.  An
+			 element that is not a String contributes its printString --
+			 `#(1 2) joinUsing: ', '' is '1, 2' and not an error about
+			 Strings storing only Characters, which is what building the
+			 answer out of the raw elements produced.
+			"
+			| text |
+			text := WriteStream on: (String new: 32).
+			result do: [:each |
+				(each isKindOf: Character)
+					ifTrue: [text nextPut: each]
+					ifFalse: [text nextPutAll: each printString]].
+			text contents]
+		ifFalse: [
+			(joiner isKindOf: SequenceableCollection)
+				ifTrue: [joiner species withAll: result]
+				ifFalse: [Array withAll: result]]
 ]
 
 { #category : '*Collections-Protocol' }
@@ -363,4 +394,20 @@ SequenceableCollection >> joinUsing: joiner last: last [
 	^(pieces joinUsing: joiner), last, (self last isString
 		ifTrue: [self last]
 		ifFalse: [self last printString])
+]
+
+{ #category : '*Collections-Protocol' }
+SequenceableCollection >> identityIndexOf: anObject [
+	^self identityIndexOf: anObject ifAbsent: [0]
+]
+
+{ #category : '*Collections-Protocol' }
+SequenceableCollection >> identityIndexOf: anObject ifAbsent: aBlock [
+	"Where that object sits, by identity rather than by =.
+
+	 The distinction is the whole point for a SmallIdentityDictionary: two
+	 equal Associations are one element to indexOf: and two to this."
+	1 to: self size do: [:i |
+		(self at: i) == anObject ifTrue: [^i]].
+	^aBlock value
 ]

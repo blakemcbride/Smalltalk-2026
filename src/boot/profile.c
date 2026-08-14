@@ -126,6 +126,31 @@ class_name_of(const char *path, char *out, size_t out_len)
     out[n] = '\0';
 }
 
+/*
+ *  Does this file DEFINE its class, rather than extend one?
+ *
+ *  It decides what #supersede drops, and the distinction is not pedantic.
+ *  Superseding says "my version of that class instead of the one I
+ *  inherited", which is a statement about the class DEFINITION.  It is not
+ *  a statement about everyone else's extensions to it -- and dropping those
+ *  too is silently destructive, because an extension is usually the only
+ *  reason the class answers something.
+ *
+ *  Found by superseding Dictionary with Pharo's: lib/Collections-Protocol/
+ *  Dictionary.extension.st went with it, so at:ifAbsentPut: and the rest
+ *  vanished from that image, and the method I had just added to fix three
+ *  tests was never installed.  Nothing reported it; the class was there and
+ *  simply answered less.
+ */
+static int
+file_defines_its_class(const char *path)
+{
+    const char *slash = strrchr(path, '/');
+    const char *name = slash ? slash + 1 : path;
+
+    return strstr(name, ".extension.") == NULL;
+}
+
 static int
 names_contain_upto(const st_names *l, const char *text, unsigned limit)
 {
@@ -254,7 +279,8 @@ add_directory(expansion *e, const char *dir, int dialect)
          */
         if (names_contain(&e->exclude, name))
             continue;
-        if (names_contain_upto(&e->supersede, name, e->supersede_own)) {
+        if (names_contain_upto(&e->supersede, name, e->supersede_own)
+         && file_defines_its_class(path)) {
             /*
              *  Superseded, not merely dropped.  Remember the file so the
              *  guard can ask afterwards whether the class that replaced it
@@ -298,7 +324,8 @@ add_manifest(expansion *e, const char *path, int dialect)
          */
         if (names_contain(&e->exclude, name))
             continue;
-        if (names_contain(&e->supersede, name)) {
+        if (names_contain(&e->supersede, name)
+         && file_defines_its_class(line)) {
             SRC_names_add(&e->superseded_paths, line);
             continue;
         }
