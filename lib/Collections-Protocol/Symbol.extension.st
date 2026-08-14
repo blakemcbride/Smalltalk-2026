@@ -87,3 +87,38 @@ Symbol >> hash [
 	 array, comparing text, so it has no opinion about this at all."
 	^super hash
 ]
+
+{ #category : '*Collections-Protocol' }
+Symbol >> value: anObject [
+	"Me, sent to that object."
+	^anObject perform: self
+]
+
+{ #category : '*Collections-Protocol' }
+Symbol >> value: a value: b [
+	^a perform: self with: b
+]
+
+"
+	Symbol >> valueWithArguments: is DELIBERATELY absent, and this note is
+	here so the next person does not add it again.
+
+	The two above are safe -- measured one at a time, no change to the
+	suite either way.  Adding valueWithArguments: as well makes the image
+	bootstrap cleanly and then die during the test run with
+
+	    st80: 0 arguments sent to a method expecting 1
+
+	which is a VM-level arity check, not a doesNotUnderstand: something is
+	being INVOKED with the wrong number of arguments.  The implementation
+	tried was Pharo's convention, `^anArray first perform: self
+	withArguments: (anArray copyFrom: 2 to: anArray size)', so a caller
+	using the other convention -- every element an argument, the receiver
+	from somewhere else -- gets a perform: whose count does not match the
+	selector's arity, and that is exactly what the VM is reporting.
+
+	Finding which caller is the open half; see task #75.  What is settled
+	is that this one method is the whole of it, established by adding the
+	three one at a time rather than as a batch, which is what the previous
+	attempt got wrong.
+"
