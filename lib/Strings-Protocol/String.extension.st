@@ -308,3 +308,15 @@ String >> findBetweenSubstrings: delimiters [
 	current contents isEmpty ifFalse: [pieces add: current contents].
 	^pieces
 ]
+
+{ #category : '*Strings-Protocol' }
+String >> article [
+	"`a' or `an', by whether I begin with a vowel.
+
+	 Wrong for `an hour' and `a unicorn', and right often enough that every
+	 Smalltalk prints `an OrderedCollection' this way."
+	| first |
+	self isEmpty ifTrue: [^'a'].
+	first := (self at: 1) asUppercase.
+	^('AEIOU' includes: first) ifTrue: ['an'] ifFalse: ['a']
+]

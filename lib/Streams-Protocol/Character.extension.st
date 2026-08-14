@@ -16,3 +16,10 @@ Character class >> lf [
 Character class >> nl [
 	^Character value: 10
 ]
+
+{ #category : '*Streams-Protocol' }
+Character >> isPunctuation [
+	"Whether I am one of the marks that separate words rather than spell
+	 them.  The set is Pharo's."
+	^'.,;:!?''"`(){}[]<>-_/\|@#$%^&*+=~' includes: self
+]

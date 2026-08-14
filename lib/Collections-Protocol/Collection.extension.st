@@ -397,11 +397,15 @@ Collection >> copyWith: anObject [
 
 { #category : '*Collections-Protocol' }
 Collection >> copyWithout: anObject [
-	"A copy of me with every occurrence of that removed."
-	| copy |
-	copy := self species new.
-	self do: [:each | each = anObject ifFalse: [copy add: each]].
-	^copy
+	"A copy of me with every occurrence of that removed.
+
+	 Through reject: rather than by adding to `self species new', and the
+	 difference is a Dictionary.  Its do: yields VALUES, so rebuilding it by
+	 adding what do: gives adds values where associations belong -- the
+	 dictionary then sends #key to a SmallInteger and the failure surfaces
+	 nowhere near here.  reject: is the operation each class already
+	 implements correctly for its own shape."
+	^self reject: [:each | each = anObject]
 ]
 
 { #category : '*Collections-Protocol' }
@@ -441,11 +445,7 @@ Collection >> union: aCollection [
 { #category : '*Collections-Protocol' }
 Collection >> difference: aCollection [
 	"What I have that it does not."
-	| result |
-	result := self species new.
-	self do: [:each |
-		(aCollection includes: each) ifFalse: [result add: each]].
-	^result
+	^self reject: [:each | aCollection includes: each]
 ]
 
 { #category : '*Collections-Protocol' }
@@ -462,12 +462,9 @@ Collection >> associationsDo: aBlock [
 
 { #category : '*Collections-Protocol' }
 Collection >> copyWithoutAll: aCollection [
-	"A copy of me with every element of that collection removed."
-	| copy |
-	copy := self species new.
-	self do: [:each |
-		(aCollection includes: each) ifFalse: [copy add: each]].
-	^copy
+	"A copy of me with every element of that collection removed.
+	 Through reject:, for the reason given at copyWithout: above."
+	^self reject: [:each | aCollection includes: each]
 ]
 
 { #category : '*Collections-Protocol' }
@@ -552,4 +549,28 @@ Collection >> printNameOn: aStream [
 	 subclass can change the name and keep the listing, which is the mirror
 	 of printElementsOn:."
 	aStream nextPutAll: self class name article, self class name
+]
+
+{ #category : '*Collections-Protocol' }
+Collection class >> newFromArray: anArray [
+	"One of me holding that array's elements.
+
+	 Distinct from newFrom: because an Array of Associations means one thing
+	 to a Dictionary and another to a Set, and this one always means `these
+	 elements' -- so `Dictionary newFromArray:' is not a way to build a
+	 dictionary from pairs."
+	^self withAll: anArray
+]
+
+{ #category : '*Collections-Protocol' }
+Collection class >> <- anArray [
+	"Literal-ish construction: `Set <- #(1 2 3)'.  Pharo's shorthand, and
+	 the reason the lexer had to accept binary selectors longer than the two
+	 characters Chapter 30 allows."
+	^self newFromArray: anArray
+]
+
+{ #category : '*Collections-Protocol' }
+Collection class >> empty [
+	^self new
 ]
