@@ -447,3 +447,54 @@ Collection >> difference: aCollection [
 		(aCollection includes: each) ifFalse: [result add: each]].
 	^result
 ]
+
+{ #category : '*Collections-Protocol' }
+Collection >> associationsDo: aBlock [
+	"Evaluate aBlock with each of my elements, which are Associations.
+
+	 A Dictionary answers this from its own storage.  A plain COLLECTION of
+	 Associations has to answer it too, and the reason is not hypothetical:
+	 Dictionary>>intersection: is `self species newFrom: (self associations
+	 asSet intersection: ...)', so the intermediate is a Set of Associations
+	 and newFrom: walks it with exactly this message."
+	self do: aBlock
+]
+
+{ #category : '*Collections-Protocol' }
+Collection >> copyWithoutAll: aCollection [
+	"A copy of me with every element of that collection removed."
+	| copy |
+	copy := self species new.
+	self do: [:each |
+		(aCollection includes: each) ifFalse: [copy add: each]].
+	^copy
+]
+
+{ #category : '*Collections-Protocol' }
+Collection >> isCollection [
+	^true
+]
+
+{ #category : '*Collections-Protocol' }
+Collection >> printElementsOn: aStream [
+	"My elements between parentheses, separated by spaces.
+
+	 Factored out of printOn: in Pharo so that a subclass can keep the
+	 element listing and change what surrounds it -- which is why the tests
+	 send it directly rather than reading printString."
+	aStream nextPut: $(.
+	self do: [:element | aStream print: element]
+		separatedBy: [aStream space].
+	aStream nextPut: $)
+]
+
+{ #category : '*Collections-Protocol' }
+Collection >> addIfNotPresent: anObject [
+	"Add it unless I already have it, and answer it either way.
+
+	 Meaningless for a Set, which absorbs duplicates anyway, and not for a
+	 Bag or an OrderedCollection -- which is why it is worth having on
+	 Collection rather than being written off as a Set synonym."
+	(self includes: anObject) ifFalse: [self add: anObject].
+	^anObject
+]

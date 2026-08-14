@@ -351,3 +351,16 @@ SequenceableCollection >> isSortedBy: aBlock [
 			ifFalse: [^false]].
 	^true
 ]
+
+{ #category : '*Collections-Protocol' }
+SequenceableCollection >> joinUsing: joiner last: last [
+	"My elements run together, with joiner between them and `last' before
+	 the final one -- `#(1 2 3 4) joinUsing: ', ' last: ' and '' is
+	 '1, 2, 3 and 4'.  The shape English wants and comma-joining does not."
+	| pieces |
+	self size < 2 ifTrue: [^self joinUsing: joiner].
+	pieces := self copyFrom: 1 to: self size - 1.
+	^(pieces joinUsing: joiner), last, (self last isString
+		ifTrue: [self last]
+		ifFalse: [self last printString])
+]

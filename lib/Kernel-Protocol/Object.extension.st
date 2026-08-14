@@ -306,3 +306,37 @@ Object >> flushCache [
 	 stop being empty."
 	^self
 ]
+
+{ #category : '*Kernel-Protocol' }
+Object >> isDictionary [
+	"Am I a Dictionary?  No, unless I say otherwise -- Pharo's Dictionary
+	 does, in the imported package."
+	^false
+]
+
+{ #category : '*Kernel-Protocol' }
+Object >> isCollection [
+	^false
+]
+
+{ #category : '*Kernel-Protocol' }
+Object >> value [
+	"Myself.
+
+	 Pharo defines this on Object, and the collection tests depend on it in
+	 a way that is worth spelling out.  TSetArithmetic is one suite shared
+	 by every collection, and it says
+
+	     self assert: (inter includes: self anotherElementOrAssociationIn value)
+
+	 because for a Dictionary that method answers an ASSOCIATION and for a
+	 Bag or a Set it answers a plain element.  Sending #value to both is how
+	 one test serves both, and it only works if every object answers it.
+
+	 The cost is real and worth naming: a #value sent to something that was
+	 never meant to receive it now answers the object instead of reporting a
+	 doesNotUnderstand.  Association, BlockClosure and the exception classes
+	 all override it, so what is left is the case where a plain object is
+	 asked to evaluate itself, and Pharo has decided that answers itself."
+	^self
+]
