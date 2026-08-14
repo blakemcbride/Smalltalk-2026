@@ -63,7 +63,7 @@
  *  plus TimedOut and Process>>signalException:, which is what a timeout
  *  needs to interrupt the process it is watching.
  */
-#define LIB_METHODS             558
+#define LIB_METHODS             559
 /*
  *  Three, not five: the extension packages define no CLASSES, and a
  *  category is a property of a class definition.  Kernel-Methods-Fixes and
@@ -1939,7 +1939,7 @@ test_browsing(void)
      *  the source pointer is 22 bits and silently truncated once, and a
      *  size that stops growing is how that would show.
      */
-    check_integer("(SourceFiles at: 1) contents size", 1314913);
+    check_integer("(SourceFiles at: 1) contents size", 1316945);
 }
 
 /*
@@ -2685,6 +2685,21 @@ test_printing_deep(void)
     check_integer("3.5 printString size", 3);
     /*  18, for the reason given at "2.0 ln printString" above.  */
     check_integer("2.0 sqrt printString size", 18);
+    /*
+     *  A Float survives its own printed form -- the whole point of printing
+     *  enough digits, and it took three fixes to hold: the printer (too few
+     *  digits), the reader (rounded twice), and Fraction>>asFloat (converted
+     *  numerator and denominator before dividing, so anything above 2^53 was
+     *  already wrong).  Any one of them alone leaves this false.
+     *
+     *  1/11 rather than something tidier because its shortest decimal needs
+     *  seventeen digits and a numerator past 2^53, which is exactly where
+     *  each of the three used to fail.
+     */
+    check_oop("| x | x := 1.0 / 11.0. ^x printString asNumber = x",
+              ST_TRUE, "true");
+    check_oop("(9090909090909091/100000000000000000) asFloat = (1.0/11.0)",
+              ST_TRUE, "true");
     check_integer("OrderedCollection new printString size", 20);
     check_integer("(1 to: 5) asOrderedCollection printString size", 30);
     check_integer("(OrderedCollection new add: 1; yourself) printString size",
