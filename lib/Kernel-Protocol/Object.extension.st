@@ -263,3 +263,12 @@ Object >> split: aSequenceableCollection [
 	 SequenceableCollection>>splitOn:; this is the other spelling of it."
 	^aSequenceableCollection splitOn: self
 ]
+
+{ #category : '*Kernel-Protocol' }
+Object >> join: aCollection [
+	"Run that collection's elements together with me between them.
+
+	 On Object because I am the JOINER, the mirror of split: above -- and a
+	 joiner may be a single element or a sequence."
+	^aCollection joinUsing: self
+]

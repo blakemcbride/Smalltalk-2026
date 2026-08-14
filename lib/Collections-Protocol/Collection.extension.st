@@ -300,3 +300,62 @@ Collection >> flatCollect: aBlock as: aClass [
 Collection >> flatCollect: aBlock [
 	^self flatCollect: aBlock as: self species
 ]
+
+{ #category : '*Collections-Protocol' }
+Collection >> select: selectBlock thenCollect: collectBlock [
+	"Filter then map, in one pass.
+
+	 Not the same as `(self select: a) collect: b' for every receiver: a
+	 Dictionary's select: answers a Dictionary and its collect: a Bag, so
+	 chaining them changes the species twice.  Doing both in one pass keeps
+	 the answer the species collect: would give."
+	| result |
+	result := OrderedCollection new.
+	self do: [:each |
+		(selectBlock value: each)
+			ifTrue: [result add: (collectBlock value: each)]].
+	^self species withAll: result
+]
+
+{ #category : '*Collections-Protocol' }
+Collection >> collect: collectBlock thenSelect: selectBlock [
+	| result |
+	result := OrderedCollection new.
+	self do: [:each |
+		| mapped |
+		mapped := collectBlock value: each.
+		(selectBlock value: mapped) ifTrue: [result add: mapped]].
+	^self species withAll: result
+]
+
+{ #category : '*Collections-Protocol' }
+Collection >> reduce: aBlock [
+	"Fold with no initial value, the first element being the seed.
+
+	 Collection, not SequenceableCollection: a Set has no order, and reduce:
+	 is defined for it anyway because the block is meant to be associative.
+	 Answering the elements in whatever order do: gives them is the honest
+	 reading of that."
+	| taken first |
+	self isEmpty ifTrue: [^self errorEmptyCollection].
+	first := true.
+	taken := nil.
+	self do: [:each |
+		first
+			ifTrue: [taken := each. first := false]
+			ifFalse: [taken := aBlock value: taken value: each]].
+	^taken
+]
+
+{ #category : '*Collections-Protocol' }
+Collection >> includesAny: aCollection [
+	"True if any element of that collection is one of mine."
+	aCollection do: [:each | (self includes: each) ifTrue: [^true]].
+	^false
+]
+
+{ #category : '*Collections-Protocol' }
+Collection >> includesAll: aCollection [
+	aCollection do: [:each | (self includes: each) ifFalse: [^false]].
+	^true
+]
