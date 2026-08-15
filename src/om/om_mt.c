@@ -197,10 +197,39 @@ typedef struct {
      */
     int64_t     live_delta;
     int64_t     bytes_delta;
+    /*
+     *  Identity hashes, handed out in blocks.
+     *
+     *  Every allocation used to take one from a single global counter, so
+     *  eight workers fought over one cache line thirty-two million times in
+     *  a run whose whole point is that they do not fight.  A hash only has
+     *  to be unique, never dense and never ordered, so a worker claims a
+     *  block and spends it privately.
+     */
+    uint32_t    hash_next;
+    uint32_t    hash_end;
     uint32_t    idx[MAGAZINE_MAX];
 } om_magazine;
 
+#define HASH_BLOCK  4096
+
 static om_magazine  magazines[ST_MAX_WORKERS];
+
+/*
+ *  The next identity hash for this worker, from its own block.
+ */
+static uint32_t
+next_identity_hash(om_magazine *mag)
+{
+    if (!mag)
+        return (uint32_t) ST_fetch_add_relaxed(&next_hash, 1);
+    if (mag->hash_next == mag->hash_end) {
+        mag->hash_next = (uint32_t)
+            ST_fetch_add_relaxed(&next_hash, HASH_BLOCK);
+        mag->hash_end  = mag->hash_next + HASH_BLOCK;
+    }
+    return mag->hash_next++;
+}
 
 static om_magazine *
 magazine_of(void)
@@ -527,8 +556,7 @@ instantiate(st_oop class_pointer, uint32_t size, uint32_t format,
                 reuse->size      = size;
                 reuse->flags     = format;
                 ST_store_relaxed(&reuse->refcount, 0);
-                reuse->hash      = (uint32_t)
-                                    ST_fetch_add_relaxed(&next_hash, 1);
+                reuse->hash      = next_identity_hash(mag);
                 mag->live_delta  += 1;
                 mag->bytes_delta += (int64_t) bytes;
                 OM_increase_ref(class_pointer);
@@ -559,7 +587,7 @@ instantiate(st_oop class_pointer, uint32_t size, uint32_t format,
     head->size      = size;
     head->flags     = format;
     ST_store_relaxed(&head->refcount, 0);
-    head->hash      = (uint32_t) ST_fetch_add_relaxed(&next_hash, 1);
+    head->hash      = next_identity_hash(magazine_of());
 
     /*
      *  The common case: an index this worker already has, no lock at all.
