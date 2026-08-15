@@ -2864,7 +2864,24 @@ typedef struct {
     char        class_name[128];
     char        selector[128];
     int         class_side;
-    int         known;                  /*  the name exists in the image  */
+    /*
+     *  2  something sends it and NOTHING in the image implements it -- a
+     *     hole, and the only list worth acting on.
+     *  1  something sends it and another class implements it: the name is
+     *     shared, and the send almost certainly means the other one.
+     *  0  nothing sends it at all -- the old implementation's own.
+     */
+    int         known;
+    /*
+     *  The methods that send it, named.  This is the whole value of the
+     *  report: a bare list of dropped selectors says how bad and not which,
+     *  and every one of them then has to be grepped for by hand.  With the
+     *  senders in front of you, `Dictionary>>declare:from:, sent by
+     *  Class>>declare:' is obviously real and `Set>>swap:with:, no sender'
+     *  is obviously not.
+     */
+    char        senders[192];
+    char        elsewhere[128];         /*  who else implements the name  */
 } supersede_gap;
 
 typedef struct {
@@ -2872,6 +2889,115 @@ typedef struct {
     unsigned        count;              /*  gaps recorded, capped         */
     unsigned        found;              /*  gaps seen, uncapped           */
 } supersede_scan;
+
+/*
+ *  Whether that method sends that selector.
+ *
+ *  A send names its selector in the method's literal frame, and the frame is
+ *  the leading `literal count' words of the method after the header -- the
+ *  same decoding the collector does when it walks a CompiledMethod.  The
+ *  thirty-two special selectors are encoded in bytecodes instead and are not
+ *  in the frame, which costs nothing here: none of them can be superseded,
+ *  because they are the Blue Book's own and every one is implemented by a
+ *  class this system cannot replace.
+ */
+static int
+method_sends(st_oop method, st_oop selector_oop)
+{
+    uint32_t    slots;
+    uint32_t    literals;
+    uint32_t    i;
+
+    if (!OM_is_present(method) || !OM_is_present(selector_oop))
+        return 0;
+    slots = OM_fetch_byte_length(method) / (uint32_t) sizeof(st_oop);
+    if (slots == 0)
+        return 0;
+    literals = (uint32_t) ((OM_fetch_pointer(0, method) >> 1) & 63);
+    for (i = 1; i <= literals && i < slots; ++i) {
+        if (OM_fetch_pointer(i, method) == selector_oop)
+            return 1;
+    }
+    return 0;
+}
+
+/*
+ *  Every loaded method that sends that selector, and every class other than
+ *  this one that implements it.
+ *
+ *  Both questions, because they are the two ways a dropped name can still be
+ *  spelled in the image and only one of them is a problem.  A name with
+ *  senders is protocol something will ask for; a name with no senders and an
+ *  implementor elsewhere is a collision -- `init:' is Parser's and
+ *  `swap:with:' is SequenceableCollection's, and neither has anything to do
+ *  with the class that lost its own.
+ *
+ *  Read-only: the selector arrives as an oop that was already interned, so
+ *  nothing here can add to the symbol table the guard is reading.
+ */
+static unsigned
+senders_of(st_oop selector_oop, const boot_class *skip, int skip_side,
+           char *out, size_t out_len, char *elsewhere, size_t elsewhere_len)
+{
+    unsigned    found = 0;
+    unsigned    named = 0;
+    unsigned    ci;
+
+    out[0] = '\0';
+    elsewhere[0] = '\0';
+    for (ci = 0; ci < class_count; ++ci) {
+        int     side;
+
+        for (side = 0; side < 2; ++side) {
+            st_oop      target = side ? classes[ci].metaclass_oop
+                                      : classes[ci].class_oop;
+            st_oop      dict;
+            uint32_t    capacity;
+            uint32_t    slot;
+
+            if (!OM_is_present(target))
+                continue;
+            dict = OM_fetch_pointer(CLASS_METHOD_DICT, target);
+            if (!OM_is_present(dict))
+                continue;
+            capacity = OM_method_dict_capacity(dict);
+            for (slot = 0; slot < capacity; ++slot) {
+                st_oop  key    = OM_method_dict_key(dict, slot);
+                st_oop  method = OM_method_dict_value(dict, slot);
+                char    name[300];
+
+                if (!OM_is_present(method))
+                    continue;
+                if (key == selector_oop
+                 && !(&classes[ci] == skip && side == skip_side)
+                 && elsewhere[0] == '\0')
+                    snprintf(elsewhere, elsewhere_len, "%s%s",
+                             classes[ci].name, side ? " class" : "");
+                if (!method_sends(method, selector_oop))
+                    continue;
+                ++found;
+                if (named >= 3)
+                    continue;
+                {
+                    char    selector[128];
+
+                    OM_string_of(key, selector, sizeof selector);
+                    snprintf(name, sizeof name, "%s%s%s>>%s",
+                             named ? ", " : "", classes[ci].name,
+                             side ? " class" : "", selector);
+                }
+                if (strlen(out) + strlen(name) + 1 < out_len) {
+                    strcat(out, name);
+                    ++named;
+                }
+            }
+        }
+    }
+    if (found > named && strlen(out) + 16 < out_len)
+        snprintf(out + strlen(out), out_len - strlen(out), " and %u more",
+                 found - named);
+    return found;
+}
 
 static int
 supersede_saw_method(const char *class_name, int class_side,
@@ -2882,7 +3008,7 @@ supersede_saw_method(const char *class_name, int class_side,
     boot_class     *c;
     supersede_gap  *gap;
     char            selector[128];
-    int             known;
+    long            position;
 
     (void) category;
     (void) file;
@@ -2907,8 +3033,8 @@ supersede_saw_method(const char *class_name, int class_side,
      *  it.  Asking in this order makes the guard read-only and the answer
      *  true at the same time.
      */
-    known = symbol_find(selector, strlen(selector)) >= 0;
-    if (known && chain_defines(c, class_side, selector))
+    position = symbol_find(selector, strlen(selector));
+    if (position >= 0 && chain_defines(c, class_side, selector))
         return 1;
 
     ++scan->found;
@@ -2923,17 +3049,33 @@ supersede_saw_method(const char *class_name, int class_side,
     /*
      *  Most of what a supersession drops is the old implementation's own
      *  scaffolding: `makeRoomAtEnd' existed to serve an array the new class
-     *  does not have, and losing it costs nothing.  A name no other loaded
-     *  file spells is exactly that case, and separating it is what keeps
-     *  the list short enough to read.
+     *  does not have, and losing it costs nothing.  Separating that from
+     *  protocol something still wants is what keeps the list short enough
+     *  to read.
      *
-     *  This is a filter and not a proof.  A name can be interned because
-     *  some unrelated class defines it -- Stream answers `peek', so
-     *  SharedQueue>>peek reads as live whether or not anything sends it to
-     *  a SharedQueue.  It errs toward showing too much, which is the only
-     *  direction a guard may err in.
+     *  The name EXISTING is not that question, and asking it that way put
+     *  `init:' and `swap:with:' at the top of the list -- Parser implements
+     *  the first and SequenceableCollection the second, and neither has
+     *  anything to do with the class that lost its own.  Twelve of the
+     *  fourteen names reported that way were collisions.  The question is
+     *  whether a loaded method SENDS it, and the answer comes with the
+     *  senders named, because that is what turns the report into work
+     *  somebody can do.
+     *
+     *  Still a filter and not a proof: a send is untyped, so
+     *  `SortedCollection>>sort:' sending `swap:with:' to itself would count
+     *  for Set>>swap:with: too if anything sent it at all.  It errs toward
+     *  showing too much, which is the only direction a guard may err in.
      */
-    gap->known = known;
+    gap->senders[0]   = '\0';
+    gap->elsewhere[0] = '\0';
+    if (position >= 0
+     && senders_of(symbols[position], c, class_side,
+                   gap->senders, sizeof gap->senders,
+                   gap->elsewhere, sizeof gap->elsewhere) > 0)
+        gap->known = gap->elsewhere[0] ? 1 : 2;
+    else
+        gap->known = 0;
     return 1;
 }
 
@@ -2955,11 +3097,24 @@ report_gaps(const supersede_scan *scan, int known, const char *heading)
          *  bad", which is what one asks after already knowing which -- and
          *  not knowing which is the entire failure this guards against.
          */
-        if (shown <= 30)
-            fprintf(stderr, "  %s%s>>%s\n", g->class_name,
-                    g->class_side ? " class" : "", g->selector);
-        else if (shown == 31)
+        if (shown <= 30) {
+            char    what[512];
+
+            snprintf(what, sizeof what, "%s%s>>%s", g->class_name,
+                     g->class_side ? " class" : "", g->selector);
+            if (g->senders[0] && g->elsewhere[0])
+                fprintf(stderr, "  %-40s sent by %s -- answered by %s\n",
+                        what, g->senders, g->elsewhere);
+            else if (g->senders[0])
+                fprintf(stderr, "  %-40s sent by %s\n", what, g->senders);
+            else if (g->elsewhere[0])
+                fprintf(stderr, "  %-40s the name is %s's\n",
+                        what, g->elsewhere);
+            else
+                fprintf(stderr, "  %s\n", what);
+        }  else if (shown == 31) {
             fprintf(stderr, "  ... and more\n");
+        }
     }
 }
 
@@ -2991,12 +3146,15 @@ check_supersessions(void)
             fprintf(stderr, "st80: cannot re-read superseded %s: %s\n",
                     dropped->items[i], error);
     }
+    report_gaps(scan, 2,
+                "superseded protocol that is GONE, still sent, and answered "
+                "by nothing -- these are holes:");
     report_gaps(scan, 1,
-                "superseded protocol that is gone, and whose name the image "
-                "still uses:");
+                "superseded protocol whose name another class answers "
+                "(so the senders below probably mean that one):");
     report_gaps(scan, 0,
-                "superseded protocol that is gone, and that nothing else "
-                "names (the old implementation's own):");
+                "superseded protocol that nothing sends at all "
+                "(the old implementation's own scaffolding):");
     if (scan->found)
         fprintf(stderr,
                 "st80: %u selector%s lost to supersession across %u file%s\n",

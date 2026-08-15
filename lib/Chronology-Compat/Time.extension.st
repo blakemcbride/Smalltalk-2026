@@ -47,3 +47,26 @@ Time class >> dateAndTimeNow [
 	^Array with: Date today with: Time now
 ]
 
+{ #category : '*Chronology-Compat' }
+Time class >> timeWords [
+	"The seconds in GMT since 1 January 1901 as a four-byte ByteArray, most
+	 significant byte FIRST.
+
+	 That byte order is backwards from every other time message here and
+	 from the primitives, and 1983 says so in its own comment: it is the
+	 order the Alto file system wants, and AltoFile>>updateLeader: is the
+	 one sender.  Kept because it is a live send and answering it is three
+	 lines; the Alto disk it writes to is not something this system has, so
+	 what this really buys is that the method fails for the honest reason
+	 -- no disk -- rather than for a missing selector.
+
+	 1983 builds it by asking secondClockInto: for four little-endian bytes
+	 and reversing them.  Taken from Time class>>totalSeconds and shifted
+	 into place instead, which says the same thing without a second array."
+	| seconds bytes |
+	seconds := self totalSeconds.
+	bytes := ByteArray new: 4.
+	1 to: 4 do: [:i |
+		bytes at: i put: ((seconds bitShift: (i - 4) * 8) bitAnd: 255)].
+	^bytes
+]

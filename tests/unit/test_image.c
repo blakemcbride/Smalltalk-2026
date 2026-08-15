@@ -63,7 +63,7 @@
  *  plus TimedOut and Process>>signalException:, which is what a timeout
  *  needs to interrupt the process it is watching.
  */
-#define LIB_METHODS             599
+#define LIB_METHODS             600
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -1940,7 +1940,7 @@ test_browsing(void)
      *  the source pointer is 22 bits and silently truncated once, and a
      *  size that stops growing is how that would show.
      */
-    check_integer("(SourceFiles at: 1) contents size", 1337251);
+    check_integer("(SourceFiles at: 1) contents size", 1338398);
 }
 
 /*

@@ -23,6 +23,13 @@
 #                    and is worse
 #    more of either  an unrecorded improvement, which nothing is protecting
 #
+#  And one thing that is not a score at all: a profile that substitutes a
+#  class may drop protocol something still sends.  The loader reports those
+#  and separates the ones nothing else answers -- the holes -- from the far
+#  larger number of names that merely collide with another class's.  A hole
+#  fails here, with no expected count, because the only correct number is
+#  zero.
+#
 #  Usage: run_profiles.sh <path-to-st80> [expectations-file]
 #
 set -u
@@ -62,6 +69,23 @@ while read -r name want_run want_passed rest; do
     #  deliberately ignored and the summary line is parsed instead.
     out=$("$ST80" -bootstrap -profile "$profile" -tests 2>&1)
     line=$(printf '%s\n' "$out" | grep -E '^[0-9]+ run, ' | tail -1)
+
+    #  A HOLE is protocol a supersession dropped that something still sends
+    #  and nothing at all answers -- a doesNotUnderstand waiting for the
+    #  first caller to take that path.  The loader finds them; this is what
+    #  makes finding them matter.  There is no expected count and no
+    #  ratchet line: the number is zero, because any other number is a
+    #  method that is going to fail.
+    #
+    #  Names a supersession dropped that ANOTHER class answers, and names
+    #  nothing sends at all, are reported by the loader and not checked
+    #  here.  Both are ordinary and neither is a fault.
+    if printf '%s\n' "$out" | grep -q 'these are holes'; then
+        echo "  FAIL $name: superseded protocol that something sends and nothing answers"
+        printf '%s\n' "$out" | sed -n '/these are holes/,/^st80: superseded protocol whose\|^st80: superseded protocol that nothing\|^st80: [0-9]* selector/p' \
+            | grep -v '^st80:' | sed 's/^/      /'
+        status=1
+    fi
 
     if [ -z "$line" ]; then
         #  No summary at all: the run died before reporting.  This is the
