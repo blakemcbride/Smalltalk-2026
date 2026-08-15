@@ -515,6 +515,12 @@ typedef int  (*om_root_pin_fn)(st_oop p);
 
 void        OM_set_root_forwarder(om_root_forwarder forwarder,
                                   om_root_pin_fn pinned);
+
+/*
+ *  Publish this worker's deferred reference-count decrements.  Called when
+ *  a worker leaves the pool; the collector does it for a running one.
+ */
+void        OM_worker_flush(void);
 uint32_t    OM_collect(void);
 
 /*

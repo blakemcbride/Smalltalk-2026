@@ -352,6 +352,14 @@ worker_main(void *arg)
         self->body(self, self->user);
 
     /*
+     *  Publish whatever this worker was holding back before it stops being
+     *  a worker: after this thread goes, nothing else can find its
+     *  magazine until the next collection, and a pool that never runs
+     *  again would leave those counts too high for ever.
+     */
+    OM_worker_flush();
+
+    /*
      *  Leaving the pool has to be visible to a requester that may already be
      *  counting, and it has to wake one that is waiting -- otherwise a
      *  safepoint requested just as this worker exits would wait for a thread
