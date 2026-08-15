@@ -237,8 +237,32 @@ ST_thread_set_name(const char *name)
 int
 ST_cpu_count(void)
 {
-    long    n = sysconf(_SC_NPROCESSORS_ONLN);
+    long    n;
 
+#if defined(__linux__)
+    /*
+     *  What this process is ALLOWED to run on, not what the machine has.
+     *
+     *  The two differ whenever anybody says taskset, or a container sets a
+     *  cpuset, or a benchmark pins itself to one thread per physical core.
+     *  Sizing the worker pool from _SC_NPROCESSORS_ONLN there starts a
+     *  thread per CPU the machine owns and then crowds them all onto the
+     *  handful the process may use, which reads as a scaling failure and
+     *  is a counting one.
+     */
+    {
+        cpu_set_t   allowed;
+
+        CPU_ZERO(&allowed);
+        if (sched_getaffinity(0, sizeof allowed, &allowed) == 0) {
+            int     count = CPU_COUNT(&allowed);
+
+            if (count > 0)
+                return count;
+        }
+    }
+#endif
+    n = sysconf(_SC_NPROCESSORS_ONLN);
     if (n < 1)
         return 1;
     return (int) n;

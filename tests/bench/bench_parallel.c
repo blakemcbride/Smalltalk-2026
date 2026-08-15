@@ -74,6 +74,129 @@
 #include <string.h>
 
 /*
+ *  ----------  One thread per CORE  ----------
+ *
+ *  Without this the gate is off, and it took a while to see why.
+ *
+ *  The measurement asks for eight workers and the answer it wants is
+ *  "eight cores' worth".  What Linux gives is eight logical CPUs, and on a
+ *  machine with hyperthreading the first eight logical CPUs are four
+ *  physical cores with two threads each.  Two threads on one core do not
+ *  run twice as fast, so `arithmetic' -- a kernel that allocates nothing
+ *  and shares nothing, and whose only honest answer is near-linear --
+ *  reads 5.2x instead of 7.9x, the canary declares the run inconclusive,
+ *  and every number below it is thrown away.  On this machine that
+ *  happened on every run: the gate had been silently off.
+ *
+ *  So the process pins itself to the first sibling of each physical core
+ *  before it measures anything.  That is the population the speedups are
+ *  claims about.  It is a request rather than a demand -- if the operator
+ *  has already confined this process, that choice is left alone, because
+ *  somebody who said taskset meant it.
+ *
+ *  Linux only.  Elsewhere the canary still guards, which is the difference
+ *  between an unmeasurable run and an unnoticed one.
+ */
+#if defined(__linux__)
+#include <sched.h>
+#include <unistd.h>
+
+static long
+read_long(const char *fmt, unsigned cpu)
+{
+    char    path[160];
+    FILE   *f;
+    long    value = -1;
+
+    snprintf(path, sizeof path, fmt, cpu);
+    f = fopen(path, "r");
+    if (!f)
+        return -1;
+    if (fscanf(f, "%ld", &value) != 1)
+        value = -1;
+    fclose(f);
+    return value;
+}
+
+static int
+is_first_sibling(unsigned cpu)
+{
+    return read_long(
+        "/sys/devices/system/cpu/cpu%u/topology/thread_siblings_list", cpu)
+        == (long) cpu;
+}
+
+static long
+max_frequency_of(unsigned cpu)
+{
+    return read_long("/sys/devices/system/cpu/cpu%u/cpufreq/cpuinfo_max_freq",
+                     cpu);
+}
+
+static void
+pin_to_physical_cores(void)
+{
+    cpu_set_t   allowed;
+    cpu_set_t   wanted;
+    unsigned    cpu;
+    long        online = sysconf(_SC_NPROCESSORS_ONLN);
+    long        fastest = 0;
+
+    CPU_ZERO(&allowed);
+    if (sched_getaffinity(0, sizeof allowed, &allowed) != 0)
+        return;
+    if (online < 1 || CPU_COUNT(&allowed) < (int) online) {
+        printf("  running inside an affinity mask of %d CPU(s), left as "
+               "given\n", CPU_COUNT(&allowed));
+        return;
+    }
+    /*
+     *  The fastest core on the machine, which is the kind the ONE-worker
+     *  run will land on.
+     */
+    for (cpu = 0; cpu < (unsigned) online && cpu < CPU_SETSIZE; ++cpu) {
+        long    mhz = max_frequency_of(cpu);
+
+        if (mhz > fastest)
+            fastest = mhz;
+    }
+    CPU_ZERO(&wanted);
+    for (cpu = 0; cpu < (unsigned) online && cpu < CPU_SETSIZE; ++cpu) {
+        long    mhz;
+
+        if (!is_first_sibling(cpu))
+            continue;
+        /*
+         *  And only cores of that same kind.
+         *
+         *  This machine is an Intel hybrid: eight performance cores at
+         *  5.7-6.0 GHz and sixteen efficiency cores at 4.4.  A speedup is a
+         *  ratio against one worker, and one worker runs on a performance
+         *  core -- so eight workers spread over a mixture measure the
+         *  MACHINE's asymmetry and not the interpreter's scaling.  Pinning
+         *  to one kind is what makes the numerator and the denominator
+         *  comparable.  On a machine whose cores are all alike this keeps
+         *  every one of them and the test below is free.
+         */
+        mhz = max_frequency_of(cpu);
+        if (fastest > 0 && mhz > 0 && mhz * 10 < fastest * 9)
+            continue;
+        CPU_SET(cpu, &wanted);
+    }
+    if (CPU_COUNT(&wanted) < 1 || CPU_COUNT(&wanted) == (int) online)
+        return;                     /*  nothing to step around  */
+    if (sched_setaffinity(0, sizeof wanted, &wanted) != 0)
+        return;
+    printf("  pinned to %d core(s) of %ld logical CPUs: one thread per "
+           "physical core, fastest kind only\n",
+           CPU_COUNT(&wanted), online);
+}
+
+#else
+static void pin_to_physical_cores(void) { }
+#endif
+
+/*
  *  From the profile rather than the 1983 manifest, because the kernels ask
  *  the VM which worker they are -- and Processor>>activeWorkerIndex lives
  *  in lib/Concurrency, which only the profile brings.
@@ -231,6 +354,31 @@ static kernel kernels[] = {
 #define REGRESSION_ALLOWED  0.85
 
 /*
+ *  A measured negative result, kept so it is not tried twice.
+ *
+ *  At eight workers 45% of the intervals kernel's allocations miss the
+ *  per-worker magazine and take the global table lock, and the reasons
+ *  split two ways: 686,694 because the magazine's top entry was too small
+ *  for the request -- the check looks at one entry and a too-small one
+ *  blocks the path until something else moves it -- and 394,441 because the
+ *  magazine was empty.  Both look like the whole answer.
+ *
+ *  Neither is.  Scanning four entries deep and swapping the fitting one to
+ *  the top cut the too-small misses by a third.  Then growing the top entry
+ *  with realloc instead of going to the lock removed them entirely -- 1.08
+ *  million lock-path allocations became 383 thousand, a 65% cut -- and
+ *  intervals went from 51 ms to 108 ms and collections from 51 to 126.  The
+ *  lock was not what those allocations cost; the allocator was, and moving
+ *  and copying a body is dearer than taking a mutex nobody else wants at
+ *  that instant.
+ *
+ *  So the magazine's single-entry check stays.  What is left to try is the
+ *  empty half -- retired objects come back only when the epoch advances,
+ *  which needs every worker to have published -- and that is a different
+ *  change from this one.
+ */
+
+/*
  *  The canary.
  *
  *  A scaling measurement wants a quiet machine and does not always get one.
@@ -376,11 +524,18 @@ main(void)
     st_boot_init_report init;
     char                profile_error[512] = "";
     static const unsigned sweep[] = { 1, 2, 4, 8, 16, 0 };
-    unsigned            cpus = (unsigned) ST_cpu_count();
+    unsigned            cpus;
     unsigned            s;
     unsigned            k;
 
     ST_TEST_BEGIN("parallel scaling");
+
+    /*
+     *  Before ST_cpu_count is asked anything, because it answers what this
+     *  process is allowed to run on and that is about to change.
+     */
+    pin_to_physical_cores();
+    cpus = (unsigned) ST_cpu_count();
 
     if (!PROFILE_expand(PROFILE, &sources, &dialects,
                         profile_error, sizeof profile_error)) {
