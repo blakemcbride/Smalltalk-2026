@@ -415,9 +415,6 @@ void        OM_set_root_forwarder(om_root_forwarder forwarder,
  */
 st_oop      OM_instantiate_ephemeron(st_oop class_pointer, uint32_t size);
 
-/*  No deferred counting in this memory; nothing to publish.  */
-void        OM_worker_flush(void);
-
 int         OM_can_forward_identity(st_oop from, st_oop to);
 int         OM_forward_identity(st_oop from, st_oop to);
 

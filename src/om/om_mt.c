@@ -183,13 +183,6 @@ static st_atomic_uint   next_hash;
 static st_atomic_uint   st_om_epoch;
 static st_atomic_uint   worker_epoch[ST_MAX_WORKERS];
 
-/*
- *  Distinct objects one worker may owe decrements for at once.  The hot
- *  case is one or two -- a context's method and its closure -- and a linear
- *  scan of eight is cheaper than any hash of them.
- */
-#define DEFER_SLOTS 8
-
 typedef struct {
     uint32_t    n;
     uint32_t    pending_n[EPOCH_BUCKETS];
@@ -215,43 +208,10 @@ typedef struct {
      */
     uint32_t    hash_next;
     uint32_t    hash_end;
-    /*
-     *  Reference-count decrements this worker owes but has not published.
-     *
-     *  One cache line carried 75% of every HITM in the intervals benchmark,
-     *  and it was an object header's refcount: eight workers counting the
-     *  same shared object up and down, once each per block activation,
-     *  because a context stores its method and its closure and releases
-     *  them again when it dies.  The count never moves -- it only
-     *  oscillates -- and every oscillation is a line handed between cores.
-     *
-     *  So a decrement is remembered here instead, and the NEXT increment of
-     *  the same object cancels it without an atomic at all.  Steady state
-     *  is one real increment for the first activation and nothing
-     *  afterwards.
-     *
-     *  Decrements and not increments, and the asymmetry is the whole
-     *  correctness argument: what is published is then always GREATER than
-     *  or equal to the true count, so a count that reaches zero really is
-     *  zero and nothing can be freed early.  Deferring increments instead
-     *  would publish counts that are too LOW, and an object still in use
-     *  would be reclaimed under a worker that had not yet said it held it.
-     *
-     *  The cost of being conservative is that an object whose last
-     *  reference went away may wait for the next flush.  Flushing happens
-     *  at every collection, before the counts are rebuilt, so nothing waits
-     *  longer than that -- and the collector was going to be the thing that
-     *  reclaimed it anyway.
-     */
-    struct {
-        st_oop      object;
-        uint32_t    owed;
-    }           deferred[DEFER_SLOTS];
     uint32_t    idx[MAGAZINE_MAX];
 } om_magazine;
 
 #define HASH_BLOCK  4096
-
 
 static om_magazine  magazines[ST_MAX_WORKERS];
 
@@ -270,8 +230,6 @@ next_identity_hash(om_magazine *mag)
     }
     return mag->hash_next++;
 }
-
-static void deferred_forget(om_magazine *mag);
 
 static om_magazine *
 magazine_of(void)
@@ -301,21 +259,6 @@ magazines_drain(void)
     unsigned    i;
 
     for (i = 0; i < ST_MAX_WORKERS; ++i) {
-        /*
-         *  Owed decrements are FORGOTTEN, not published, for exactly the
-         *  reason the pending buckets below are: the sweep about to run
-         *  rebuilds every count from the mark walk, so a count nobody
-         *  published is a count the sweep is about to compute correctly
-         *  anyway.
-         *
-         *  Publishing them here is what a first version did, and it was
-         *  wrong in a way that took ThreadSanitizer to find: publishing
-         *  goes through the ordinary decrement, which RETIRES an object
-         *  whose count reaches zero -- into the collecting thread's pending
-         *  bucket, which this loop may already have cleared.  The sweep
-         *  then frees the entry and the surviving bucket frees it again.
-         */
-        deferred_forget(&magazines[i]);
         live_objects = (uint32_t) ((int64_t) live_objects
                                     + magazines[i].live_delta);
         live_bytes   = (uint64_t) ((int64_t) live_bytes
@@ -1109,148 +1052,10 @@ OM_forward_identity(st_oop from, st_oop to)
 
 /*  ----------  Reference counting  ----------  */
 
-/*
- *  Cancel one owed decrement of that object, if this worker owes any.
- *
- *  Answers whether it did, which is whether the caller's increment has
- *  already been paid for by a decrement that never went out.
- */
-static int
-deferred_cancel(om_magazine *mag, st_oop p)
-{
-    unsigned    slot = (unsigned) ((p >> 1) & (DEFER_SLOTS - 1));
-
-    if (mag->deferred[slot].object == p && mag->deferred[slot].owed) {
-        --mag->deferred[slot].owed;
-        if (mag->deferred[slot].owed == 0)
-            mag->deferred[slot].object = ST_OOP_INVALID;
-        return 1;
-    }
-    return 0;
-}
-
-static void decrease_ref_now(st_oop p);
-
-/*
- *  Remember a decrement instead of publishing it.  Answers whether it was
- *  remembered; a full table publishes one entry to make room, which is what
- *  keeps this bounded rather than merely deferred.
- */
-static int
-deferred_owe(om_magazine *mag, st_oop p)
-{
-    unsigned    slot = (unsigned) ((p >> 1) & (DEFER_SLOTS - 1));
-    st_oop      object = mag->deferred[slot].object;
-    uint32_t    owed;
-
-    if (object == p) {
-        ++mag->deferred[slot].owed;
-        return 1;
-    }
-    /*
-     *  Direct-mapped, and deliberately: a scan finds a home for more
-     *  objects and costs every operation that does not need one.  The
-     *  collections kernel allocates a great many DISTINCT objects, and
-     *  searching eight slots for each of them made its one-worker time 37%
-     *  worse -- a real cost paid for a saving only the contended case ever
-     *  collects.  One slot and one compare.
-     */
-    if (!OM_is_object(object)) {
-        mag->deferred[slot].object = p;
-        mag->deferred[slot].owed   = 1;
-        return 1;
-    }
-    /*
-     *  The slot belongs to somebody else, so this decrement goes out now.
-     *
-     *  It does NOT evict, and that is the correctness argument rather than
-     *  a simplification.  Everything this table does must only ever DELAY a
-     *  decrement: a delayed decrement can keep an object alive longer than
-     *  it needed to be, which the next collection tidies, while a decrement
-     *  brought forward -- which is what evicting one object's owed count to
-     *  make room for another does -- can drive a count to zero at a moment
-     *  the original schedule never would have, and retire something a
-     *  worker is still holding.  ThreadSanitizer found exactly that: a
-     *  worker reading a header while another freed it, out of a
-     *  bucket_release two epochs after an eviction had published the
-     *  decrement early.
-     */
-    (void) owed;
-    return 0;
-}
-
-/*
- *  Publish everything a worker owes, one decrement at a time and through
- *  the ordinary path, so that a count reaching zero retires its object as
- *  it always would.
- *
- *  For a worker that is LEAVING.  The collector uses deferred_forget
- *  instead; see magazines_drain for why the difference matters.
- */
-static void
-deferred_flush(om_magazine *mag)
-{
-    unsigned    i;
-
-    for (i = 0; i < DEFER_SLOTS; ++i) {
-        st_oop      object = mag->deferred[i].object;
-        uint32_t    owed   = mag->deferred[i].owed;
-
-        mag->deferred[i].object = ST_OOP_INVALID;
-        mag->deferred[i].owed   = 0;
-        if (!OM_is_object(object))
-            continue;
-        while (owed--)
-            decrease_ref_now(object);
-    }
-}
-
-/*  Drop what a worker owes without publishing it.  */
-static void
-deferred_forget(om_magazine *mag)
-{
-    unsigned    i;
-
-    for (i = 0; i < DEFER_SLOTS; ++i) {
-        mag->deferred[i].object = ST_OOP_INVALID;
-        mag->deferred[i].owed   = 0;
-    }
-}
-
-/*
- *  Publish what this worker owes, because it is about to stop being one.
- *
- *  A worker's deferred decrements are otherwise published by the collector,
- *  and a pool that shuts down without collecting again would never publish
- *  them at all -- the counts would stay one-per-worker too high for ever.
- *  test_parallel measures exactly that: thirty-two workers moving one
- *  count up and down five thousand times each must leave it where they
- *  found it.
- */
-void
-OM_worker_flush(void)
-{
-    om_magazine    *mag = magazine_of();
-
-    if (mag)
-        deferred_flush(mag);
-}
-
 void
 OM_increase_ref_object(st_oop p)
 {
-    om_magazine    *mag;
-
     if (!OM_is_object(p))
-        return;
-    /*
-     *  A decrement this worker never published cancels this increment, and
-     *  the shared line is never touched at all.  That is the whole point:
-     *  a context stores its method, dies, and the next one stores the same
-     *  method, and none of it needs to leave this core.
-     */
-    mag = magazine_of();
-    if (mag && deferred_cancel(mag, p))
         return;
     /*
      *  Relaxed: two threads counting the same object must not lose an
@@ -1261,19 +1066,6 @@ OM_increase_ref_object(st_oop p)
 
 void
 OM_decrease_ref_object(st_oop p)
-{
-    om_magazine    *mag;
-
-    if (!OM_is_object(p))
-        return;
-    mag = magazine_of();
-    if (mag && deferred_owe(mag, p))
-        return;
-    decrease_ref_now(p);
-}
-
-static void
-decrease_ref_now(st_oop p)
 {
     om_header  *head;
     unsigned    before;

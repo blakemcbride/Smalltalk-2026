@@ -344,7 +344,7 @@ typedef struct {
 static kernel kernels[] = {
     { "arithmetic",  NULL, 0, 0, 0.0, 0.0, 0.0, 0.0,  20.0 },
     { "mandelbrot",  NULL, 0, 0, 0.0, 0.0, 0.0, 4.0,  50.0 },
-    { "intervals",   NULL, 0, 0, 0.0, 0.0, 0.0, 3.0,  35.0 },
+    { "intervals",   NULL, 0, 0, 0.0, 0.0, 0.0, 3.0,  41.0 },
     { "collections", NULL, 0, 0, 0.0, 0.0, 0.0, 0.0,  41.5 }
 };
 
@@ -376,6 +376,31 @@ static kernel kernels[] = {
  *  empty half -- retired objects come back only when the epoch advances,
  *  which needs every worker to have published -- and that is a different
  *  change from this one.
+ *
+ *  A second measured negative result, and a more surprising one.
+ *
+ *  perf c2c names the most contended line in this kernel exactly: one cache
+ *  line carries 75% of every HITM, and it is an object header's REFCOUNT --
+ *  eight workers counting one shared object up and down once each per block
+ *  activation, because a context stores its method and its closure and
+ *  releases them again when it dies.  The count never moves.  It only
+ *  oscillates, and every oscillation hands a line between cores.
+ *
+ *  Deferring the decrements into a small per-worker table, so that the next
+ *  increment of the same object cancels one with no atomic at all, removes
+ *  most of it: the line falls from 75% of HITM to 21%.  The speedup rises
+ *  from 2.9x to 3.3x.  And the eight-worker TIME does not move -- because
+ *  the ONE-worker time went up 20%, and that is the whole of the apparent
+ *  gain.  Reference counting is a quarter of this kernel, so any
+ *  bookkeeping added per operation is added to a quarter of the work, and
+ *  ten instructions and a dirtied line cost more than the contention they
+ *  remove.
+ *
+ *  Which is the useful part: 75% of HITM sounds like the whole answer and
+ *  is fifty-five samples.  The contention is real, visible, and nearly
+ *  free.  A speedup that improves because the serial case got slower is the
+ *  trap this gate was moved off speedups to avoid, and it catches its
+ *  author as readily as anyone.
  */
 
 /*
