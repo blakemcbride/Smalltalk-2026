@@ -107,7 +107,8 @@ usage(const char *argv0)
     printf("                        build an image from source\n");
     printf("  -run <image> [n]      run the image, opening a window\n");
     printf("  -screenshot <f.pbm>   with -run or -bootstrap, write the display\n");
-    printf("  -inject <script>      post input: m X Y, d CODE, u CODE, k CODE\n");
+    printf("  -inject <script>      post input: m X Y, d CODE, u CODE,\n");
+    printf("                        k CODE, w SLICES (wait)\n");
     printf("  -wiggle               move the pointer continuously, no clicks\n");
     printf("  -census <image>       load an image and summarize it\n");
     printf("  -classes <image>      list every class, in class.oops format\n");
@@ -130,6 +131,13 @@ usage(const char *argv0)
     printf("\n");
     printf("  ST_EVAL_TRACE=1       trace the bytecodes an -eval runs\n");
     printf("  ST_BOTTOM_LOG=1       report a return off the bottom of a stack\n");
+    printf("\n");
+    printf("  ST_DISPLAY_THEME      paper (default), classic, dark\n");
+    printf("  ST_DISPLAY_SCALE      screen pixels per display pixel\n");
+    printf("  ST_DISPLAY_WINDOW     WxH: open the window at this size\n");
+    printf("  ST_DISPLAY_FIT=off    keep the image's own screen size instead\n"
+           "                        of growing it to fill the window\n");
+    printf("  ST_DISPLAY_PRESENTATION  integer, letterbox, stretch\n");
 }
 
 static void
@@ -295,11 +303,28 @@ static const char *shot_path;
 static const char *inject_script;
 static int         wiggle;
 
+/*
+ *  How many slices to wait before reading the next command.
+ *
+ *  The script used to be posted in one burst, which cannot drive a menu: a
+ *  Smalltalk-80 menu tracks the pointer in a loop while the button is held,
+ *  so down, move and up arriving in the same instant are seen by that loop
+ *  as a button already released.  `w <slices>' gives the image time to run
+ *  between events, which is what makes a scripted menu selection -- and so
+ *  a scripted browser, and Phase J's thirty minutes of scripted input --
+ *  possible at all.
+ */
+static int inject_wait;
+
 static void
 run_inject_script(void)
 {
     const char *p = inject_script;
 
+    if (inject_wait > 0) {
+        --inject_wait;
+        return;
+    }
     while (p && *p) {
         char    what = *p++;
         long    a = 0;
@@ -320,10 +345,17 @@ run_inject_script(void)
         }  else if (what == 'k') {
             GFX_inject_key((unsigned) a, 1);
             GFX_inject_key((unsigned) a, 0);
+        }  else if (what == 'w') {
+            while (*p == ' ' || *p == ';')
+                ++p;
+            inject_script = p;
+            inject_wait = (int) a;
+            return;                 /*  resume here after the wait  */
         }
         while (*p == ' ' || *p == ';')
             ++p;
     }
+    inject_script = NULL;
 }
 
 static void write_screenshot(void);
@@ -360,10 +392,8 @@ do_run(const char *path, uint64_t max_cycles)
          *  before that would fill the queue and signal a semaphore nobody is
          *  waiting on yet.
          */
-        if (inject_script && total >= SLICE_BYTECODES) {
+        if (inject_script && total >= SLICE_BYTECODES)
             run_inject_script();
-            inject_script = NULL;
-        }
         /*
          *  Move the pointer, and nothing else.
          *
@@ -405,10 +435,12 @@ do_run(const char *path, uint64_t max_cycles)
                 {
                     int ww = 0, wh = 0;
 
+                    /*  Opening may have resized the screen to the window.  */
+                    GFX_form_from_oop(GFX_display_form(), &form);
                     GFX_window_size(&ww, &wh);
-                    fprintf(stderr, "st80: display %dx%d in a %dx%d window, "
-                                    "%s\n",
-                            form.width, form.height, ww, wh,
+                    fprintf(stderr, "st80: display %dx%d at %dx in a %dx%d "
+                                    "window, %s\n",
+                            form.width, form.height, GFX_scale(), ww, wh,
                             GFX_presentation());
                 }
             }

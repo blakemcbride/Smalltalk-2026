@@ -257,6 +257,8 @@ GFX_is_open(void)
  *  colour one cannot.
  */
 static int      open_scale  = 1;
+static int      base_scale  = 1;
+static int      scale_forced;
 static uint32_t pixel_ink   = 0xFF1B1815u;      /*  near-black, faintly warm */
 static uint32_t pixel_paper = 0xFFF6F2E9u;      /*  paper rather than snow   */
 
@@ -306,6 +308,7 @@ choose_scale(int width, int height)
     if (forced && forced[0]) {
         int n = atoi(forced);
 
+        scale_forced = 1;
         return n > 0 ? n : 1;
     }
     id = SDL_GetPrimaryDisplay();
@@ -381,7 +384,155 @@ choose_presentation(int width, int height)
         presentation_note = "letterbox (the window is not a whole multiple)";
         return SDL_LOGICAL_PRESENTATION_LETTERBOX;
     }
+    presentation_note = "integer";
     return SDL_LOGICAL_PRESENTATION_INTEGER_SCALE;
+}
+
+/*
+ *  ----------  The screen is the window  ----------
+ *
+ *  Scaling and letterboxing both answer "how do I show a 640x480 screen in a
+ *  window that is not 640x480", and on a tiling window manager neither
+ *  answers it well: i3 hands back a 956x1557 tile, 4:3 does not fit a 0.61
+ *  aspect at any scale, and better than half the tile stays border however
+ *  the fitting is done.  The border is not the problem; the fixed screen is.
+ *
+ *  So resize the screen.  A Smalltalk display is a Form, a Form is three
+ *  fields and a word array, and nothing in the image caches its extent -- the
+ *  1983 code asks `Display extent' every time it wants to know.  Give the
+ *  Form a bigger bitmap and the desktop simply becomes bigger, which is what
+ *  every Smalltalk since has done and what the user asked for.
+ *
+ *  The Form's IDENTITY is kept.  `Display' is reachable from ScheduledControllers,
+ *  from every controller and view, from Cursor, and from the VM state word a
+ *  snapshot carries; replacing the object would strand all of them.  Only the
+ *  three fields change.
+ *
+ *  The old pixels are copied in and the new area filled with the desktop
+ *  halftone, so the screen is correct the instant it changes -- the image is
+ *  never asked to redraw, and never learns that anything happened.  Windows
+ *  stay where they were, and the new space is desktop.
+ *
+ *  Never SMALLER than the image already is in either axis: shrinking would
+ *  put scheduled windows off the screen where no mouse can reach them.
+ *  ST_DISPLAY_FIT=off keeps the old fixed-screen behaviour.
+ */
+static int
+resize_display(int width, int height)
+{
+    gfx_form    form;
+    st_oop      new_bits;
+    st_oop      old_bits;
+    uint32_t    raster = (uint32_t) ((width + 15) / 16);
+    int         y;
+
+    if (width <= 0 || height <= 0 || !GFX_form_from_oop(display_form, &form))
+        return 0;
+    if (form.width == width && form.height == height)
+        return 1;
+#ifdef ST_OM_BB
+    /*
+     *  A Blue Book object is addressed by a 16-bit length field, so a bitmap
+     *  bigger than that cannot exist.  Say so and keep the screen we have.
+     */
+    if ((uint64_t) raster * (uint64_t) height > 65000u)
+        return 0;
+#endif
+    old_bits = OM_fetch_pointer(ST_FORM_BITS, display_form);
+    new_bits = OM_instantiate_words(OM_fetch_class(old_bits),
+                                    raster * (uint32_t) height);
+    if (!OM_is_present(new_bits))
+        return 0;
+    /*
+     *  Re-read the form: allocating may have collected, and gfx_form holds a
+     *  raw pointer into the old bitmap rather than an oop.
+     */
+    if (!GFX_form_from_oop(display_form, &form))
+        return 0;
+    {
+        uint16_t   *dst  = OM_word_base(new_bits);
+        uint32_t    keep = raster < (uint32_t) form.raster
+                         ? raster : (uint32_t) form.raster;
+
+        for (y = 0; y < height; ++y) {
+            uint16_t   *row = dst + (size_t) y * raster;
+            uint32_t    x;
+
+            /*  Form gray: alternate words, which is 50% at every scale.  */
+            for (x = 0; x < raster; ++x)
+                row[x] = (y & 1) ? 0x5555u : 0xAAAAu;
+            if (y < form.height)
+                memcpy(row, form.bits + (size_t) y * form.raster,
+                       (size_t) keep * sizeof *row);
+        }
+    }
+    OM_store_pointer(ST_FORM_BITS,   display_form, new_bits);
+    OM_store_pointer(ST_FORM_WIDTH,  display_form, OM_int_oop((st_int) width));
+    OM_store_pointer(ST_FORM_HEIGHT, display_form, OM_int_oop((st_int) height));
+
+    if (texture)
+        SDL_DestroyTexture(texture);
+    texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888,
+                                SDL_TEXTUREACCESS_STREAMING, width, height);
+    if (!texture) {
+        texture_w = texture_h = 0;
+        return 0;
+    }
+    SDL_SetTextureScaleMode(texture, SDL_SCALEMODE_NEAREST);
+    texture_w = width;
+    texture_h = height;
+    SDL_SetRenderLogicalPresentation(renderer, width, height,
+                                     choose_presentation(width, height));
+    GFX_damage_all();
+    return 1;
+}
+
+/*
+ *  Choose the screen the window can hold, at the largest scale that still
+ *  leaves the image at least the size it already is.  A 956x1557 tile at 2x
+ *  would be a 478-pixel-wide desktop -- narrower than the image's own 640 --
+ *  so the scale drops to 1 and the desktop becomes the whole tile.
+ */
+static void
+fit_display_to_window(void)
+{
+    const char *how = getenv("ST_DISPLAY_FIT");
+    gfx_form    form;
+    int         ww = 0, wh = 0;
+    int         scale;
+
+    if (how && (strcmp(how, "off") == 0 || strcmp(how, "0") == 0))
+        return;
+    if (!window || !renderer || !GFX_form_from_oop(display_form, &form))
+        return;
+    SDL_GetWindowSize(window, &ww, &wh);
+    if (ww <= 0 || wh <= 0)
+        return;
+    /*
+     *  An automatic scale gives way to the screen: 2x on a 956-wide tile
+     *  would be a 478-pixel desktop, narrower than the image's own 640, so it
+     *  drops to 1x and the desktop becomes the whole tile.  A scale the user
+     *  asked for is kept -- they said what they wanted, and readable text in
+     *  a smaller desktop is a legitimate thing to want.
+     */
+    if (!scale_forced)
+        for (scale = base_scale; scale > 1; --scale) {
+            if (ww / scale >= form.width && wh / scale >= form.height)
+                break;
+        }
+    else
+        scale = base_scale;
+    open_scale = scale;
+    {
+        int lw = ww / scale;
+        int lh = wh / scale;
+
+        if (lw < form.width)
+            lw = form.width;
+        if (lh < form.height)
+            lh = form.height;
+        resize_display(lw, lh);
+    }
 }
 
 int
@@ -396,8 +547,22 @@ GFX_open(const char *title, int width, int height, char *errbuf, size_t errlen)
     }
     choose_theme();
     scale = choose_scale(width, height);
-    window = SDL_CreateWindow(title, width * scale, height * scale,
-                              SDL_WINDOW_RESIZABLE);
+    {
+        /*
+         *  ST_DISPLAY_WINDOW=WxH opens at an explicit size.  A tiling window
+         *  manager ignores what we ask for and hands back its tile, so this
+         *  is how that case is reproduced anywhere else -- and how anyone who
+         *  wants a particular desktop size can just say so.
+         */
+        const char *want = getenv("ST_DISPLAY_WINDOW");
+        int         ww = 0, wh = 0;
+
+        if (want && sscanf(want, "%dx%d", &ww, &wh) == 2 && ww > 0 && wh > 0)
+            window = SDL_CreateWindow(title, ww, wh, SDL_WINDOW_RESIZABLE);
+        else
+            window = SDL_CreateWindow(title, width * scale, height * scale,
+                                      SDL_WINDOW_RESIZABLE);
+    }
     if (!window) {
         if (errbuf)
             snprintf(errbuf, errlen, "SDL_CreateWindow: %s", SDL_GetError());
@@ -428,6 +593,12 @@ GFX_open(const char *title, int width, int height, char *errbuf, size_t errlen)
     texture_w = width;
     texture_h = height;
     open_scale = scale;
+    base_scale = scale;
+    /*
+     *  The window manager has now told us what we actually got, which is the
+     *  first moment the right screen size is knowable.
+     */
+    fit_display_to_window();
     GFX_damage_all();
     return 0;
 }
@@ -629,6 +800,16 @@ GFX_pump(void)
         case SDL_EVENT_QUIT:
         case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
             return 0;
+
+        /*
+         *  Safe here and nowhere else: GFX_pump runs on the same thread as
+         *  the interpreter and only between bytecode slices, so no Smalltalk
+         *  code is part-way through reading the Form we are about to change.
+         */
+        case SDL_EVENT_WINDOW_RESIZED:
+        case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
+            fit_display_to_window();
+            break;
 
         case SDL_EVENT_MOUSE_MOTION:
             handle_mouse_motion(event.motion.x, event.motion.y);
