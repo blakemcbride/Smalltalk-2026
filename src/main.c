@@ -138,6 +138,7 @@ usage(const char *argv0)
     printf("  ST_DISPLAY_FIT=off    keep the image's own screen size instead\n"
            "                        of growing it to fill the window\n");
     printf("  ST_DISPLAY_PRESENTATION  integer, letterbox, stretch\n");
+    printf("  ST_DISPLAY_TRACE=1    report why a resize was refused\n");
 }
 
 static void
@@ -304,6 +305,211 @@ static const char *inject_script;
 static int         wiggle;
 
 /*
+ *  ----------  Telling the image its screen changed size  ----------
+ *
+ *  Growing the display Form is not enough, and the way it fails is worth
+ *  writing down because nothing about it looks like a display fault.
+ *
+ *  ControlManager>>searchForActiveController offers control only to a
+ *  controller whose view contains the cursor, and the one that answers for
+ *  the desktop is screenController, whose view was windowed to
+ *  `Display boundingBox' when the snapshot was taken.  Grow the screen and
+ *  that rectangle is stale: with the cursor in the new area NO controller
+ *  wants control, the search loop spins for ever, and the buttons are never
+ *  read.  The desktop looks right and the mouse does nothing at all.
+ *
+ *  ControlManager>>restore is the message that fixes it, and sending a
+ *  message from C between bytecodes cannot be done safely -- the reply would
+ *  land on the stack of whatever frame we interrupted, one slot above where
+ *  its own bytecodes expect to find things.  So do what `View>>setWindow:'
+ *  does instead, which is a state change and not a computation: set the
+ *  window, drop the viewport, and unlock the cached transformation and inset
+ *  box so the image recomputes them the next time it asks.
+ *
+ *  Every field is found BY NAME, through the class's own instanceVariables.
+ *  Reaching in by index would be a second copy of a layout the image already
+ *  publishes, and would rot silently the first time an image differed.  If
+ *  any name is missing the answer is 0 and the screen is not resized at all
+ *  -- letterboxing a 640x480 desktop is a much smaller disappointment than a
+ *  desktop whose mouse does nothing.
+ */
+
+/*  Behavior: superclass methodDict format subclasses; then ClassDescription's
+ *  own instanceVariables, which is the Array of names we want.  */
+#define CLASS_INSTANCE_VARIABLES    4
+
+static st_oop
+image_global(const char *name)
+{
+    uint32_t    n = OM_is_present(ST_SMALLTALK)
+                        ? OM_fetch_word_length(ST_SMALLTALK) : 0;
+    uint32_t    k;
+
+    for (k = 0; k < n; ++k) {
+        st_oop  entry = OM_fetch_pointer(k, ST_SMALLTALK);
+        char    text[128];
+
+        if (!OM_is_present(entry) || !OM_pointer_bit(entry)
+         || OM_fetch_word_length(entry) < 2)
+            continue;
+        OM_string_of(OM_fetch_pointer(0, entry), text, sizeof text);
+        if (strcmp(text, name) == 0)
+            return OM_fetch_pointer(1, entry);
+    }
+    return ST_NIL;
+}
+
+static int
+instvar_index(st_oop class_oop, const char *name)
+{
+    st_oop  chain[64];
+    int     depth = 0;
+    int     base  = 0;
+    int     i;
+
+    while (OM_is_present(class_oop) && depth < 64) {
+        chain[depth++] = class_oop;
+        class_oop = OM_fetch_pointer(ST_CLASS_SUPERCLASS, class_oop);
+    }
+    /*  The root's variables come first, so count downwards.  */
+    for (i = depth - 1; i >= 0; --i) {
+        st_oop      names = OM_fetch_pointer(CLASS_INSTANCE_VARIABLES,
+                                             chain[i]);
+        uint32_t    n = (OM_is_present(names) && OM_pointer_bit(names))
+                            ? OM_fetch_word_length(names) : 0;
+        uint32_t    k;
+
+        for (k = 0; k < n; ++k) {
+            char    text[64];
+
+            OM_string_of(OM_fetch_pointer(k, names), text, sizeof text);
+            if (strcmp(text, name) == 0)
+                return base + (int) k;
+        }
+        base += (int) n;
+    }
+    return -1;
+}
+
+/*  nil is an object; it is not one of these.  */
+static int
+is_instance(st_oop p)
+{
+    return p != ST_NIL && OM_is_present(p) && OM_is_object(p);
+}
+
+static int
+fetch_named(st_oop object, const char *name, st_oop *out)
+{
+    int i;
+
+    if (!is_instance(object))
+        return 0;
+    i = instvar_index(OM_fetch_class(object), name);
+    if (i < 0)
+        return 0;
+    *out = OM_fetch_pointer((uint32_t) i, object);
+    return 1;
+}
+
+static int
+store_named(st_oop object, const char *name, st_oop value)
+{
+    int i;
+
+    if (!is_instance(object))
+        return 0;
+    i = instvar_index(OM_fetch_class(object), name);
+    if (i < 0)
+        return 0;
+    OM_store_pointer((uint32_t) i, object, value);
+    return 1;
+}
+
+static st_oop
+make_point(int x, int y)
+{
+    st_oop  p = OM_instantiate_pointers(ST_CLASS_POINT, 2);
+
+    if (!OM_is_present(p))
+        return ST_NIL;
+    OM_store_pointer(0, p, OM_int_oop((st_int) x));
+    OM_store_pointer(1, p, OM_int_oop((st_int) y));
+    return p;
+}
+
+/*  View>>unlock, which recurses so a composite view recomputes throughout. */
+static void
+unlock_view(st_oop view, int depth)
+{
+    st_oop      subs;
+    uint32_t    n;
+    uint32_t    k;
+
+    if (!is_instance(view) || depth > 32)
+        return;
+    store_named(view, "displayTransformation", ST_NIL);
+    store_named(view, "insetDisplayBox", ST_NIL);
+    if (!fetch_named(view, "subViews", &subs) || !is_instance(subs)
+     || !OM_pointer_bit(subs))
+        return;
+    n = OM_fetch_word_length(subs);
+    for (k = 0; k < n; ++k)
+        unlock_view(OM_fetch_pointer(k, subs), depth + 1);
+}
+
+/*
+ *  Refusing is a legitimate answer, and a silent one is impossible to act on:
+ *  what the user sees is a screen that would not grow, with no way to tell a
+ *  deliberate refusal from a fault.  ST_DISPLAY_TRACE=1 names the step.
+ */
+static int
+screen_refused(const char *why)
+{
+    if (getenv("ST_DISPLAY_TRACE"))
+        fprintf(stderr, "st80: the screen was not resized: %s\n", why);
+    return 0;
+}
+
+static int
+screen_follows_display(int width, int height)
+{
+    st_oop  manager = image_global("ScheduledControllers");
+    st_oop  rect_class = image_global("Rectangle");
+    st_oop  screen;
+    st_oop  view;
+    st_oop  rect;
+    st_oop  origin;
+    st_oop  corner;
+
+    if (!is_instance(manager))
+        return screen_refused("the image has no ScheduledControllers");
+    if (!is_instance(rect_class))
+        return screen_refused("the image has no Rectangle");
+    if (!fetch_named(manager, "screenController", &screen))
+        return screen_refused("ControlManager has no screenController field");
+    if (!fetch_named(screen, "view", &view) || !is_instance(view))
+        return screen_refused("the screen controller has no view");
+
+    origin = make_point(0, 0);
+    corner = make_point(width, height);
+    rect   = OM_instantiate_pointers(rect_class, 2);
+    if (!OM_is_present(origin) || !OM_is_present(corner)
+     || !OM_is_present(rect))
+        return screen_refused("no room for the new window rectangle");
+    if (!store_named(rect, "origin", origin)
+     || !store_named(rect, "corner", corner))
+        return screen_refused("Rectangle has no origin and corner fields");
+
+    /*  View>>setWindow: -- window, then the two caches it invalidates.  */
+    if (!store_named(view, "window", rect))
+        return screen_refused("View has no window field");
+    store_named(view, "viewport", ST_NIL);
+    unlock_view(view, 0);
+    return 1;
+}
+
+/*
  *  How many slices to wait before reading the next command.
  *
  *  The script used to be posted in one burst, which cannot drive a menu: a
@@ -379,6 +585,7 @@ do_run(const char *path, uint64_t max_cycles)
 
     if (load(path) != 0)
         return 1;
+    GFX_set_screen_hook(screen_follows_display);
     SCHED_reset();
     if (ST_interp_init(err, sizeof err) != 0) {
         fprintf(stderr, "st80: %s\n", err);

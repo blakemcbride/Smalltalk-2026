@@ -103,6 +103,13 @@ void    GFX_inject_button(unsigned code, int down);
 void    GFX_inject_key(unsigned code, int down);
 
 void    GFX_set_display(st_oop form);
+
+/*
+ *  Consulted before the screen is grown to fill the window.  It must bring
+ *  the image's own idea of the screen size up to date and answer non-zero;
+ *  answering 0 -- or registering nothing -- leaves the screen as it is.
+ */
+void    GFX_set_screen_hook(int (*fn)(int width, int height));
 st_oop  GFX_display_form(void);
 void    GFX_damage(int x, int y, int w, int h);
 void    GFX_damage_all(void);

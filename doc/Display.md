@@ -27,6 +27,32 @@ is no border at all.
 The screen only ever **grows**. Shrinking it would put scheduled windows off the screen,
 where MVC gives you no way to reach them.
 
+### The image has to be told, or the mouse dies
+
+Growing the Form is only half of it, and the other half fails in a way that looks nothing
+like a display fault. `ControlManager>>searchForActiveController` offers control only to a
+controller whose view contains the cursor, and the one that answers for the desktop is
+`screenController`, whose view was windowed to `Display boundingBox` **when the snapshot was
+taken**. Grow the screen and that rectangle is stale: with the cursor in the new area no
+controller wants control at all, the search loop spins for ever, and the buttons are never
+read. The desktop looks perfect and no mouse button does anything.
+
+`ControlManager>>restore` is the message that fixes it, and a message cannot be sent from C
+between bytecodes — the reply would land on the stack of whatever frame was interrupted, one
+slot above where its own bytecodes expect to find things. So the VM does what
+`View>>setWindow:` does, which is a state change rather than a computation: set the window,
+drop the viewport, and unlock the cached transformation and inset box so the image
+recomputes them next time it asks.
+
+Every field is located **by name**, through the class's own `instanceVariables`. If any name
+is missing the screen is not resized at all — a letterboxed 640x480 desktop is a much
+smaller disappointment than a desktop whose mouse does nothing. `ST_DISPLAY_TRACE=1` names
+the step that refused.
+
+This is why the Xerox `VirtualImage` is never resized: its `Smalltalk` is not laid out the
+way this lookup walks (`-disasm` has never found a class in it either), so the refusal is
+reported and the old letterboxing applies. Any image this system bootstraps is resized.
+
 | | |
 |---|---|
 | `ST_DISPLAY_SCALE` | screen pixels per display pixel. Dropped automatically if the chosen scale would leave the desktop smaller than the image's own screen |
@@ -34,6 +60,7 @@ where MVC gives you no way to reach them.
 | `ST_DISPLAY_FIT=off` | keep the image's screen size and letterbox it, as before |
 | `ST_DISPLAY_THEME` | `paper` (default), `classic` (pure black on pure white), `dark` |
 | `ST_DISPLAY_PRESENTATION` | `integer`, `letterbox`, `stretch` — only reachable when fitting is off, or the window is smaller than the screen |
+| `ST_DISPLAY_TRACE` | report why a resize was refused |
 
 ## The menus are press-and-hold
 

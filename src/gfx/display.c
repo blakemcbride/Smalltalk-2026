@@ -33,6 +33,17 @@
 /*  ----------  Display form and damage tracking  ----------  */
 
 static st_oop   display_form = ST_NIL;
+/*
+ *  Asked before the screen changes size, and refuses on the image's behalf.
+ *
+ *  Growing the Form is only half of a resize: the image keeps its own idea of
+ *  how big the screen is, in the window of the view the desktop belongs to,
+ *  and a stale one leaves the mouse dead in the new area.  Whoever knows how
+ *  to bring that up to date registers it here, and a 0 answer means the
+ *  screen stays the size it is.  Nothing registered -- a test, a headless run
+ *  -- means the same.
+ */
+static int    (*screen_hook)(int width, int height);
 static int      damage_valid;
 static int      damage_x1;
 static int      damage_y1;
@@ -55,6 +66,12 @@ st_oop
 GFX_display_form(void)
 {
     return display_form;
+}
+
+void
+GFX_set_screen_hook(int (*fn)(int width, int height))
+{
+    screen_hook = fn;
 }
 
 /*
@@ -438,6 +455,13 @@ resize_display(int width, int height)
     if ((uint64_t) raster * (uint64_t) height > 65000u)
         return 0;
 #endif
+    /*
+     *  The image first: if it cannot be told, do not change the screen.  A
+     *  letterboxed 640x480 desktop is a much smaller disappointment than a
+     *  desktop whose mouse does nothing.
+     */
+    if (!screen_hook || !screen_hook(width, height))
+        return 0;
     old_bits = OM_fetch_pointer(ST_FORM_BITS, display_form);
     new_bits = OM_instantiate_words(OM_fetch_class(old_bits),
                                     raster * (uint32_t) height);
