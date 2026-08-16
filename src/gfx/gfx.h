@@ -149,4 +149,10 @@ int     GFX_button_state(void);
 }
 #endif
 
+/*
+ *  Screen pixels per display pixel, as chosen when the window opened.
+ *  Answers 1 before there is a window.
+ */
+int         GFX_scale(void);
+
 #endif  /*  ST_GFX_H  */

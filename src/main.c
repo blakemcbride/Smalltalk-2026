@@ -402,8 +402,9 @@ do_run(const char *path, uint64_t max_cycles)
                     fprintf(stderr, "st80: %s\n", err);
                     return 1;
                 }
-                fprintf(stderr, "st80: display is %dx%d\n",
-                        form.width, form.height);
+                fprintf(stderr, "st80: display is %dx%d at %dx "
+                                "(ST_DISPLAY_SCALE, ST_DISPLAY_THEME)\n",
+                        form.width, form.height, GFX_scale());
             }
         }
         if (GFX_is_open() && !GFX_pump()) {

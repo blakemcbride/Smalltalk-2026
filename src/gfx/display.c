@@ -245,16 +245,94 @@ GFX_is_open(void)
 {
     return window != NULL;
 }
+/*
+ *  Smalltalk-80 is one bit per pixel and a set bit is ink, so the whole of
+ *  the palette is two colours.  1983 had no choice about which two; we do.
+ *
+ *  Pure #000 on pure #FFF is what the Dorado showed, and on a modern panel
+ *  at three times the size it is a glaring white slab -- the same image is
+ *  markedly easier to look at against warm paper, for the cost of two
+ *  constants.  `classic' is there for anyone who wants the original, and
+ *  `dark' inverts the pair, which a one-bit display can do exactly and a
+ *  colour one cannot.
+ */
+static int      open_scale  = 1;
+static uint32_t pixel_ink   = 0xFF1B1815u;      /*  near-black, faintly warm */
+static uint32_t pixel_paper = 0xFFF6F2E9u;      /*  paper rather than snow   */
+
+static void
+choose_theme(void)
+{
+    const char *name = getenv("ST_DISPLAY_THEME");
+
+    if (!name || !name[0] || strcmp(name, "paper") == 0)
+        return;                                 /*  the default, set above  */
+    if (strcmp(name, "classic") == 0) {
+        pixel_ink   = 0xFF000000u;
+        pixel_paper = 0xFFFFFFFFu;
+    }  else if (strcmp(name, "dark") == 0) {
+        pixel_ink   = 0xFFD7D3C8u;
+        pixel_paper = 0xFF1B1D22u;
+    }  else {
+        fprintf(stderr, "st80: unknown ST_DISPLAY_THEME '%s'; "
+                        "known are paper, classic, dark\n", name);
+    }
+}
+
+/*
+ *  How many screen pixels to a display pixel.
+ *
+ *  The window used to open at the image's own size, which on the machines
+ *  anybody now owns is a postage stamp: a 640x480 Smalltalk screen is under
+ *  a tenth of a 4K panel, and the 1983 fonts are unreadable at that size.
+ *  Resizing it did not help, because LETTERBOX presentation scales by
+ *  whatever fraction the window happens to be -- at 1.7x a nearest-neighbour
+ *  filter makes some pixels two wide and some three, which is the shimmer
+ *  that makes the screen look broken rather than old.
+ *
+ *  So: an integer scale, chosen to fill about four fifths of the usable
+ *  desktop, and INTEGER_SCALE presentation so it stays exact when resized.
+ *  Every display pixel is then the same size as every other, which is what
+ *  a one-bit screen needs to look deliberate.
+ */
+static int
+choose_scale(int width, int height)
+{
+    const char     *forced = getenv("ST_DISPLAY_SCALE");
+    SDL_DisplayID   id;
+    SDL_Rect        usable;
+    int             scale = 1;
+
+    if (forced && forced[0]) {
+        int n = atoi(forced);
+
+        return n > 0 ? n : 1;
+    }
+    id = SDL_GetPrimaryDisplay();
+    if (id != 0 && SDL_GetDisplayUsableBounds(id, &usable)) {
+        while (scale < 4
+            && (scale + 1) * width  <= usable.w * 4 / 5
+            && (scale + 1) * height <= usable.h * 4 / 5)
+            ++scale;
+    }
+    return scale;
+}
+
 
 int
 GFX_open(const char *title, int width, int height, char *errbuf, size_t errlen)
 {
+    int scale;
+
     if (!SDL_Init(SDL_INIT_VIDEO)) {
         if (errbuf)
             snprintf(errbuf, errlen, "SDL_Init: %s", SDL_GetError());
         return -1;
     }
-    window = SDL_CreateWindow(title, width, height, SDL_WINDOW_RESIZABLE);
+    choose_theme();
+    scale = choose_scale(width, height);
+    window = SDL_CreateWindow(title, width * scale, height * scale,
+                              SDL_WINDOW_RESIZABLE);
     if (!window) {
         if (errbuf)
             snprintf(errbuf, errlen, "SDL_CreateWindow: %s", SDL_GetError());
@@ -267,12 +345,14 @@ GFX_open(const char *title, int width, int height, char *errbuf, size_t errlen)
         return -1;
     }
     /*
-     *  Letterboxed logical presentation keeps the 1983 display's aspect
-     *  ratio when the window is resized, so a 640x480 screen stays square on
-     *  a modern panel instead of stretching.
+     *  Integer logical presentation keeps the 1983 display's aspect ratio
+     *  when the window is resized AND keeps every display pixel the same
+     *  size as every other.  Letterbox kept only the first of those, and
+     *  the uneven pixels it produced at a fractional scale were most of
+     *  what made the screen look wrong.
      */
     SDL_SetRenderLogicalPresentation(renderer, width, height,
-                                     SDL_LOGICAL_PRESENTATION_LETTERBOX);
+                                     SDL_LOGICAL_PRESENTATION_INTEGER_SCALE);
 
     /*
      *  Streaming access is the documented fast path for pixels that change
@@ -289,6 +369,7 @@ GFX_open(const char *title, int width, int height, char *errbuf, size_t errlen)
     SDL_SetTextureScaleMode(texture, SDL_SCALEMODE_NEAREST);
     texture_w = width;
     texture_h = height;
+    open_scale = scale;
     GFX_damage_all();
     return 0;
 }
@@ -308,12 +389,11 @@ GFX_close(void)
     SDL_Quit();
 }
 
-/*
- *  Smalltalk-80 is one bit per pixel and a set bit is ink.  The display is
- *  therefore black on white, which is what the 1983 screen looked like.
- */
-#define PIXEL_BLACK     0xFF000000u
-#define PIXEL_WHITE     0xFFFFFFFFu
+int
+GFX_scale(void)
+{
+    return open_scale;
+}
 
 static void
 present(void)
@@ -370,8 +450,8 @@ present(void)
             int         bit  = rect.x + x;
             uint16_t    word = row[bit >> 4];
 
-            out[x] = ((word >> (15 - (bit & 15))) & 1) ? PIXEL_BLACK
-                                                       : PIXEL_WHITE;
+            out[x] = ((word >> (15 - (bit & 15))) & 1) ? pixel_ink
+                                                       : pixel_paper;
         }
     }
     SDL_UnlockTexture(texture);
