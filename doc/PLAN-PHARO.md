@@ -20,7 +20,7 @@ systems fork at that point, deliberately.
 |---|---|
 | Compatibility scope | **Load Pharo's kernel**, not merely Pharo-flavoured application code |
 | Closures | **Commit to full closures now** — Squeak V3PlusClosures |
-| UI | **Keep MVC**, confine it to one worker, add modern tools on top over time |
+| UI | **Keep MVC**, confine it to one worker, add modern tools on top over time — *revised: see `PLAN-TO-PHARO.md`, which schedules the tools rather than leaving them "over time"* |
 | Sequencing | **Library before the parallel runtime**, except where forced otherwise |
 | **Compatibility direction** | **Neither binary nor source compatibility with Pharo is a goal.** Pharo's source is an *input*: take it, change it as multi-threading requires, and build a **superset** of Pharo's functionality |
 
