@@ -891,6 +891,18 @@ primitive_report_on_standard_error(void)
         for (i = 0; i < n; ++i)
             fputc(OM_fetch_byte(i, text), stderr);
         fputc('\n', stderr);
+        /*
+         *  And where it came from, when asked.
+         *
+         *  The message alone is nearly useless for anything the library
+         *  raises from a shared place: `unable to grow this collection'
+         *  names neither the collection nor the sender, and the same line
+         *  can come from a dozen callers.  Off by default because an
+         *  expected failure -- the first pass of the class initializers is
+         *  full of them -- should not print a page each.
+         */
+        if (getenv("ST_ERROR_BACKTRACE"))
+            ST_report_backtrace();
         fflush(stderr);
     }
     ST_pop_n(1);                    /*  answers the receiver  */

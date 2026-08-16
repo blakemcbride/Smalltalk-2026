@@ -614,3 +614,29 @@ Collection >> do: aBlock without: anObject [
 	"Every element except that one."
 	self do: [:each | each = anObject ifFalse: [aBlock value: each]]
 ]
+
+{ #category : '*Collections-Protocol' }
+Collection >> maxSize [
+	"The largest basicSize a collection of my kind may have.
+
+	 1983 answers 65486 and says why in its own comment: `for VM3
+	 interpreter DoradoST80Aug19'.  It is a sixteen-bit machine's limit,
+	 written down in 1983 for a machine that no longer exists, and it is
+	 wrong here by four orders of magnitude -- this object memory keeps an
+	 object's size in a 32-bit field and its real ceiling is how much the
+	 allocator will give.
+
+	 It is not a dormant number.  A SharedQueue is an OrderedCollection
+	 underneath, and OrderedCollection grows by doubling, so a queue that
+	 reaches 32768 items asks for 65536 and is refused -- `unable to grow
+	 this collection', raised inside Mutex>>critical:, inside ensure:,
+	 while holding the lock.  Every other worker then blocks on a mutex
+	 nobody will release.  test_parallel_lib queues workers x 2000 items,
+	 so it passed at 32 workers and deadlocked at 40, and passed at 31 on
+	 an idle machine while failing there under load -- which reads exactly
+	 like a race and is a constant.
+
+	 A billion rather than the 32-bit maximum: the point is to stop being
+	 the binding limit, not to promise an allocation nothing could satisfy."
+	^1073741823
+]
