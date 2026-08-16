@@ -414,14 +414,25 @@ static kernel kernels[] = {
  *  count, which is a quarter of this kernel.  A single wall-clock reading on
  *  a machine with other tenants is worth what it cost.
  *
- *  So all three attempts fail the same way and the conclusion is the same
- *  each time: 75% of HITM sounds like the whole answer and is fifty-five
- *  samples.  The contention on that line is real, visible, and CHEAP, and
- *  anything added per reference-count operation costs more than removing it
- *  saves.  Whatever the remaining gap is -- IPC falls from 3.52 at one
- *  worker to 1.40 at eight, with the same instruction count and no
- *  measurable rise in cache misses -- it is not that line, and the next
- *  person should measure before assuming otherwise.
+ *  Three attempts, all failing the same way, and the common mistake in all
+ *  three was to treat the ATOMIC as the cost.  It is not.  The cost is that
+ *  the count sits in the same cache line as fields every worker READS: a
+ *  CompiledMethod's literal frame is read on every activation while its
+ *  count is written on every activation, so counting invalidates the line
+ *  the interpreter is reading, and the reading is what stalls.  Anything
+ *  added per operation to fix the writing pays for a problem the writing
+ *  did not have.
+ *
+ *  What worked was moving the counts out of the objects entirely -- see
+ *  st_om_refcounts in om_mt.h.  Measured by CYCLES, which a machine with
+ *  other tenants cannot flatter: 167 G becomes 134 G at eight workers, a
+ *  fifth, and 73.7 G becomes 69.5 G at one.  Both directions improve, which
+ *  is what says it is a real saving rather than a ratio.
+ *
+ *  The measurement that pointed at it was padding the header until the body
+ *  started on a fresh cache line: 7% at eight workers and NOTHING at one.
+ *  A change that helps only when there are several workers is sharing, and
+ *  that is the question worth asking of any of these.
  */
 
 /*

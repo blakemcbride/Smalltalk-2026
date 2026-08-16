@@ -135,9 +135,37 @@ typedef struct {
      *  decrement that reaches zero must synchronise with the other threads'
      *  releases before the object is torn down, so it is acquire-release.
      */
-    st_atomic_uint  refcount;
     uint32_t        hash;           /*  identity hash, stable across moves  */
 } om_header;
+
+/*
+ *  Reference counts live BESIDE the objects, not inside them.
+ *
+ *  A count is the one field of an object that every worker writes, and the
+ *  rest of the header and the first words of the body are read by every
+ *  worker on the hot path -- a CompiledMethod's literal frame is read on
+ *  every activation while its count is driven up and down on every
+ *  activation.  In one allocation those share a cache line, so counting
+ *  invalidates the line the interpreter is reading, and the reading is what
+ *  costs.  perf c2c put 75% of all contention in the intervals kernel on
+ *  exactly that line.
+ *
+ *  Measured: padding the header until the body starts on a fresh line is
+ *  worth 7% of the eight-worker cycles and NOTHING at one worker, which is
+ *  what says the effect is sharing rather than alignment.  This is the same
+ *  separation at four bytes an object instead of forty.
+ *
+ *  Indexed by table index, so a count is one load from a dense array rather
+ *  than a chase through the table -- and the counts of unrelated objects
+ *  share lines, which is the traffic that was there before and no more.
+ */
+extern st_atomic_uint  *st_om_refcounts;
+
+static inline st_atomic_uint *
+OM_refcount_of(st_oop p)
+{
+    return &st_om_refcounts[p >> 1];
+}
 
 /*
  *  A table entry is the header immediately followed by the body, in one
@@ -269,7 +297,7 @@ OM_free_bit(st_oop p)
 static inline unsigned
 OM_count_bits(st_oop p)
 {
-    return (unsigned) ST_load_relaxed(&OM_head(p)->refcount);
+    return (unsigned) ST_load_relaxed(OM_refcount_of(p));
 }
 
 static inline uint32_t

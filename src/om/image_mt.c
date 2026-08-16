@@ -299,7 +299,8 @@ OM_image_load(const char *path, char *errbuf, size_t errlen)
         head->size      = size;
         head->flags     = flags & ~ST_FMT_FREE;
         head->hash      = hash;
-        head->refcount  = 0;
+        /*  Counts live beside the table now; see om_mt.h.  */
+        ST_store_relaxed(&st_om_refcounts[index], 0);
         if (flags & ST_FMT_POINTERS) {
             uint32_t    i;
 

@@ -14,6 +14,7 @@
 #include <string.h>
 
 st_atomic_ptr  *st_om_table;
+st_atomic_uint *st_om_refcounts;
 uint32_t         st_om_table_size;
 st_atomic_uint   st_om_table_limit;
 
@@ -307,7 +308,7 @@ bucket_release(om_magazine *mag, unsigned bucket)
          */
         if (!head || (head->flags & ST_FMT_FREE))
             continue;
-        if (ST_load_relaxed(&head->refcount) != 0)
+        if (ST_load_relaxed(OM_refcount_of(p)) != 0)
             continue;       /*  resurrected; leave it to the collector  */
         OM_deallocate(p);
     }
@@ -420,6 +421,18 @@ OM_init(void)
                                           sizeof *st_om_table);
     if (!st_om_table)
         return -1;
+    /*
+     *  The counts, beside the table rather than inside the objects.  Same
+     *  lazy mapping, and four bytes an object against the forty that
+     *  padding the header to a cache line would have cost.
+     */
+    st_om_refcounts = (st_atomic_uint *) calloc(ST_OM_MAX_OBJECTS,
+                                               sizeof *st_om_refcounts);
+    if (!st_om_refcounts) {
+        free(st_om_table);
+        st_om_table = NULL;
+        return -1;
+    }
     st_om_table_size  = ST_OM_MAX_OBJECTS;
     /*
      *  Index 0 is never handed out: object pointer 0 means "invalid", and
@@ -454,6 +467,8 @@ OM_shutdown(void)
             free(OM_table_get(i));
         free(st_om_table);
     }
+    free(st_om_refcounts);
+    st_om_refcounts = NULL;
     st_om_table       = NULL;
     st_om_table_size  = 0;
     ST_store_seq(&st_om_table_limit, 0);
@@ -555,7 +570,7 @@ instantiate(st_oop class_pointer, uint32_t size, uint32_t format,
                 reuse->class_oop = class_pointer;
                 reuse->size      = size;
                 reuse->flags     = format;
-                ST_store_relaxed(&reuse->refcount, 0);
+                ST_store_relaxed(&st_om_refcounts[index], 0);
                 reuse->hash      = next_identity_hash(mag);
                 mag->live_delta  += 1;
                 mag->bytes_delta += (int64_t) bytes;
@@ -586,7 +601,6 @@ instantiate(st_oop class_pointer, uint32_t size, uint32_t format,
     head->class_oop = class_pointer;
     head->size      = size;
     head->flags     = format;
-    ST_store_relaxed(&head->refcount, 0);
     head->hash      = next_identity_hash(magazine_of());
 
     /*
@@ -614,6 +628,7 @@ instantiate(st_oop class_pointer, uint32_t size, uint32_t format,
                 index = mag->idx[--mag->n];
                 free(OM_table_get(index));
                 OM_table_set(index, head);
+                ST_store_relaxed(&st_om_refcounts[index], 0);
                 mag->live_delta  += 1;
                 mag->bytes_delta += (int64_t) bytes;
                 OM_increase_ref(class_pointer);
@@ -670,6 +685,7 @@ instantiate(st_oop class_pointer, uint32_t size, uint32_t format,
         }
     }
     OM_table_set(index, head);
+    ST_store_relaxed(&st_om_refcounts[index], 0);
     if (index >= (uint32_t) ST_load_relaxed(&st_om_table_limit))
         ST_store_release(&st_om_table_limit, index + 1);
     live_bytes += bytes;
@@ -822,7 +838,7 @@ OM_deallocate(st_oop p)
              */
             head->flags     = ST_FMT_FREE;
             head->size      = (uint32_t) freed_bytes;
-            ST_store_relaxed(&head->refcount, 0);
+            ST_store_relaxed(&st_om_refcounts[index], 0);
             head->class_oop = 0;        /*  not on the global chain  */
             OM_table_set(index, head);
             mag->idx[mag->n++] = index;
@@ -849,7 +865,7 @@ OM_deallocate(st_oop p)
     }
     head->flags     = ST_FMT_FREE;
     head->size      = 0;
-    ST_store_relaxed(&head->refcount, 0);
+    ST_store_relaxed(&st_om_refcounts[index], 0);
     head->class_oop = free_head;
     OM_table_set(index, head);
     free_head = index;
@@ -897,14 +913,14 @@ OM_swap_identities(st_oop a, st_oop b)
     {
         om_header  *ha = OM_table_get(ia);
         om_header  *hb = OM_table_get(ib);
-        unsigned    ca = (unsigned) ST_load_relaxed(&ha->refcount);
-        unsigned    cb = (unsigned) ST_load_relaxed(&hb->refcount);
-
         t = ha;
         OM_table_set(ia, hb);
         OM_table_set(ib, t);
-        ST_store_relaxed(&hb->refcount, ca);
-        ST_store_relaxed(&ha->refcount, cb);
+        /*
+         *  The counts do not move: they are indexed by identity and the
+         *  identities are what stayed still.  Putting them back after the
+         *  swap was necessary only while a count lived in the body.
+         */
     }
 }
 
@@ -1061,27 +1077,25 @@ OM_increase_ref_object(st_oop p)
      *  Relaxed: two threads counting the same object must not lose an
      *  update, but nothing else is ordered by this.
      */
-    ST_fetch_add_relaxed(&OM_head(p)->refcount, 1);
+    ST_fetch_add_relaxed(OM_refcount_of(p), 1);
 }
 
 void
 OM_decrease_ref_object(st_oop p)
 {
-    om_header  *head;
     unsigned    before;
 
     if (!OM_is_object(p))
         return;
-    head   = OM_head(p);
     /*
      *  Acquire-release, because the thread that drops the last reference is
      *  about to read and free the object, and must see every write another
      *  thread made before releasing its own reference.
      */
-    before = (unsigned) ST_fetch_sub_acq_rel(&head->refcount, 1);
+    before = (unsigned) ST_fetch_sub_acq_rel(OM_refcount_of(p), 1);
     if (before == 0) {
         /*  Already zero; put it back rather than wrap to four billion.  */
-        ST_fetch_add_relaxed(&head->refcount, 1);
+        ST_fetch_add_relaxed(OM_refcount_of(p), 1);
         return;
     }
     if (before != 1)
@@ -1210,12 +1224,9 @@ OM_set_root_provider(om_root_provider provider)
 static void
 mark_visit(st_oop p)
 {
-    om_header  *head;
-
     if (!OM_is_object(p))
         return;
-    head = OM_head(p);
-    if (ST_fetch_add_relaxed(&head->refcount, 1) == 0
+    if (ST_fetch_add_relaxed(OM_refcount_of(p), 1) == 0
      && mark_top < mark_capacity)
         mark_stack[mark_top++] = p;
 }
@@ -1373,7 +1384,7 @@ ephemerons_reached(void)
              *  die, so the ephemeron is simply strong.
              */
             if (OM_is_object(key)
-             && ST_load_relaxed(&OM_head(key)->refcount) == 0)
+             && ST_load_relaxed(OM_refcount_of(key)) == 0)
                 continue;
             pending[i] = ST_OOP_INVALID;
             progress   = 1;
@@ -1421,7 +1432,7 @@ collect_at_safepoint(void *unused)
 
     for (index = 1; index < (uint32_t) ST_load_relaxed(&st_om_table_limit); ++index) {
         if (OM_table_get(index))
-            ST_store_relaxed(&OM_table_get(index)->refcount, 0);
+            ST_store_relaxed(&st_om_refcounts[index], 0);
     }
 
     if (report)
@@ -1452,7 +1463,7 @@ collect_at_safepoint(void *unused)
         if (!head || (head->flags & ST_FMT_FREE)
          || !(head->flags & ST_FMT_WEAK))
             continue;
-        if (ST_load_relaxed(&head->refcount) == 0)
+        if (ST_load_relaxed(&st_om_refcounts[index]) == 0)
             continue;               /*  the weak object is itself dying  */
         slots = (st_oop *) (head + 1);
         fixed = weak_fixed_fields(head);
@@ -1464,7 +1475,7 @@ collect_at_safepoint(void *unused)
                 continue;
             th = OM_head(target);
             if (!th || (th->flags & ST_FMT_FREE)
-             || ST_load_relaxed(&th->refcount) != 0)
+             || ST_load_relaxed(OM_refcount_of(target)) != 0)
                 continue;
             ST_oop_store(&slots[i], ST_NIL);
             OM_increase_ref(ST_NIL);
@@ -1492,7 +1503,7 @@ collect_at_safepoint(void *unused)
         if (p == ST_OOP_INVALID)
             continue;
         head = OM_head(p);
-        if (ST_load_relaxed(&head->refcount) == 0)
+        if (ST_load_relaxed(OM_refcount_of(p)) == 0)
             continue;               /*  the ephemeron is itself dying  */
         if (head->size == 0)
             continue;
@@ -1522,7 +1533,7 @@ collect_at_safepoint(void *unused)
             continue;
         if (OM_table_get(index)->flags & ST_FMT_FREE)
             continue;
-        if (ST_load_relaxed(&OM_table_get(index)->refcount) != 0)
+        if (ST_load_relaxed(&st_om_refcounts[index]) != 0)
             continue;
         /*
          *  Unreachable.  Release it directly rather than through
@@ -1543,7 +1554,7 @@ collect_at_safepoint(void *unused)
                 head = OM_table_get(index);
             head->flags     = ST_FMT_FREE;
             head->size      = 0;
-            ST_store_relaxed(&head->refcount, 0);
+            ST_store_relaxed(&st_om_refcounts[index], 0);
             head->class_oop = free_head;
             OM_table_set(index, head);
             free_head = index;
