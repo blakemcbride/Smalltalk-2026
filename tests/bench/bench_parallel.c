@@ -343,9 +343,9 @@ typedef struct {
 
 static kernel kernels[] = {
     { "arithmetic",  NULL, 0, 0, 0.0, 0.0, 0.0, 0.0,  20.0 },
-    { "mandelbrot",  NULL, 0, 0, 0.0, 0.0, 0.0, 4.0,  50.0 },
-    { "intervals",   NULL, 0, 0, 0.0, 0.0, 0.0, 3.0,  41.0 },
-    { "collections", NULL, 0, 0, 0.0, 0.0, 0.0, 0.0,  41.5 }
+    { "mandelbrot",  NULL, 0, 0, 0.0, 0.0, 0.0, 4.0,  47.0 },
+    { "intervals",   NULL, 0, 0, 0.0, 0.0, 0.0, 3.0,  26.5 },
+    { "collections", NULL, 0, 0, 0.0, 0.0, 0.0, 0.0,  29.6 }
 };
 
 /*

@@ -1355,7 +1355,63 @@ not discovered:
 computation visibly runs while the UI stays responsive; 30 minutes of scripted input under
 TSAN, clean.
 
-### K — The scaling benchmark
+### K — The scaling benchmark *(gate met; what it took, and what it cost to find out)*
+
+**Met, with margin.** On eight physical performance cores:
+
+| kernel | 8 workers | speedup | asked |
+|---|---|---|---|
+| `arithmetic` | 19.5 ms | 7.8× | the canary |
+| `mandelbrot` | 46.8 ms | 7.7× | 4.0× |
+| `intervals` | 27.7 ms | 4.2× | 3.0× |
+| `collections` | 32.3 ms | 6.1× | reported, not gated |
+
+All clean under `make OM=mt TSAN=1`, baselines checked in, and a run regressing more than
+15% fails the build. `intervals` was 40.6 ms and 2.91× — under the line — until reference
+counts moved out of the object headers.
+
+Three things had to be true before any of that meant anything, and only one of them was
+anticipated here.
+
+**The gate had been silently off.** `make bench` declared every run on this machine
+inconclusive and the canary was right to: eight workers means eight *cores*, and the first
+eight logical CPUs of a hyperthreaded machine are **four** physical cores. `arithmetic` —
+which allocates nothing and shares nothing — read 5.2× instead of 7.9×, so every number
+under it was discarded. The benchmark now pins itself to one thread per physical core, and
+only cores of the fastest kind: this is a hybrid part with eight P-cores at 5.7–6.0 GHz and
+sixteen E-cores at 4.4, and a speedup is a ratio against one worker, which runs on a P-core.
+`ST_cpu_count` also answers what the process is *allowed* to run on rather than what the
+machine has, which is what `taskset`, a container cpuset and this benchmark all need.
+
+**A speedup gate punishes a faster serial case**, so the ratchet is on *time* at eight
+workers and the Phase 7 speedups are reported beside it. That was learnt the first time
+hashing the method lookup improved the serial case and the ratio fell.
+
+**Contention is not where it looks.** `perf c2c` names the hottest shared line exactly, and
+in `intervals` it is one object header's reference count carrying 75% of all HITM. Four
+attempts to act on that:
+
+| | |
+|---|---|
+| Grow magazine entries to dodge the object table's lock | 51 → 108 ms. Moving a body costs more than an uncontended mutex |
+| Defer decrements into per-worker tables | contention 75% → 21%, time unchanged: the gain was a 20% slower serial case |
+| Skip counting CompiledMethods entirely | one wall-clock run said 7.1×; four cycle counts said 8–12% *slower* |
+| **Move every count out of the object into an array beside the table** | **a fifth of the cycles at eight workers, 6% at one** |
+
+The first three treated the *atomic* as the cost. It is not: the count shares a cache line
+with fields every worker reads — a method's literal frame is read on every activation while
+its count is written on every activation — so counting invalidates the line the interpreter
+is reading, and the reading is what stalls. The measurement that showed it was padding the
+header until the body started on a fresh line: 7% at eight workers and **nothing** at one.
+A change that helps only when there are several workers is sharing, and that is the question
+to ask of any of these.
+
+Measure by **cycles**, not seconds, when the machine has other tenants, and alternate the two
+binaries rather than trusting one reading. A single wall-clock run sent me to commit a change
+that four controlled cycle counts then reversed.
+
+*Original plan below.*
+
 `doc/PLAN.md:335`'s Phase 7 exit criterion, never met. `bench/parallel/` driven by
 `tests/bench/bench_parallel.c`, inheriting `test_parallel_mvc.c`'s discipline: every worker
 computes something only it can check, so a fault arrives as a wrong answer rather than a
