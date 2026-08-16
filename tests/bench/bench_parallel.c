@@ -396,11 +396,32 @@ static kernel kernels[] = {
  *  ten instructions and a dirtied line cost more than the contention they
  *  remove.
  *
- *  Which is the useful part: 75% of HITM sounds like the whole answer and
- *  is fifty-five samples.  The contention is real, visible, and nearly
- *  free.  A speedup that improves because the serial case got slower is the
- *  trap this gate was moved off speedups to avoid, and it catches its
- *  author as readily as anyone.
+ *  A third attempt, from the other side.  The contended object turned out
+ *  to be the CompiledMethod: every worker stores the method into every
+ *  context it makes and takes it out again when the frame dies, so one
+ *  shared count oscillates once per activation on every core.  Methods do
+ *  not need counting -- the marking collector rebuilds every count from the
+ *  roots and reaches a method through its dictionary or through the context
+ *  executing it, and a count that is never raised is never lowered, so the
+ *  eager reclaim path simply never applies -- and skipping it removes work
+ *  rather than adding it.
+ *
+ *  One wall-clock run said 40.6 ms and 2.91x became 17.3 ms and 7.1x.  It
+ *  was not reproducible.  Built both ways and run alternately under
+ *  identical load, counting CYCLES rather than seconds, it is consistently
+ *  8-12% SLOWER: 162-169 G cycles becomes 182-186 G over four rounds, with
+ *  2% more instructions -- the load and compare added to every reference
+ *  count, which is a quarter of this kernel.  A single wall-clock reading on
+ *  a machine with other tenants is worth what it cost.
+ *
+ *  So all three attempts fail the same way and the conclusion is the same
+ *  each time: 75% of HITM sounds like the whole answer and is fifty-five
+ *  samples.  The contention on that line is real, visible, and CHEAP, and
+ *  anything added per reference-count operation costs more than removing it
+ *  saves.  Whatever the remaining gap is -- IPC falls from 3.52 at one
+ *  worker to 1.40 at eight, with the same instruction count and no
+ *  measurable rise in cache misses -- it is not that line, and the next
+ *  person should measure before assuming otherwise.
  */
 
 /*
