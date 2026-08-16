@@ -155,4 +155,10 @@ int     GFX_button_state(void);
  */
 int         GFX_scale(void);
 
+/*  The window's current size in screen pixels; zeroes if none.  */
+void        GFX_window_size(int *width, int *height);
+
+/*  How the display is fitted into the window, and why.  */
+const char *GFX_presentation(void);
+
 #endif  /*  ST_GFX_H  */

@@ -402,9 +402,15 @@ do_run(const char *path, uint64_t max_cycles)
                     fprintf(stderr, "st80: %s\n", err);
                     return 1;
                 }
-                fprintf(stderr, "st80: display is %dx%d at %dx "
-                                "(ST_DISPLAY_SCALE, ST_DISPLAY_THEME)\n",
-                        form.width, form.height, GFX_scale());
+                {
+                    int ww = 0, wh = 0;
+
+                    GFX_window_size(&ww, &wh);
+                    fprintf(stderr, "st80: display %dx%d in a %dx%d window, "
+                                    "%s\n",
+                            form.width, form.height, ww, wh,
+                            GFX_presentation());
+                }
             }
         }
         if (GFX_is_open() && !GFX_pump()) {

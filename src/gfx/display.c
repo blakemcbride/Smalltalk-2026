@@ -319,6 +319,71 @@ choose_scale(int width, int height)
 }
 
 
+/*
+ *  Integer scaling is the right default and it is not always available.
+ *
+ *  Integer presentation keeps every display pixel the same size as every
+ *  other, which is what a one-bit screen needs to look deliberate rather
+ *  than damaged -- a fractional scale with a nearest-neighbour filter makes
+ *  some pixels two screen pixels wide and some three, and that shimmer is
+ *  most of what reads as "awful".
+ *
+ *  But it can only use whole multiples, so it depends on getting a window
+ *  of roughly the size asked for, and a TILING window manager does not give
+ *  one.  Under i3 the request for 1280x960 came back as 956x1557: 640 does
+ *  not go into 956 twice, so the scale collapses to 1 and a 640x480 screen
+ *  sits in the middle of a tall tile with a border around three quarters of
+ *  the area.  That is the right answer to the wrong question.
+ *
+ *  So the choice is made after seeing the window we actually got.  If whole
+ *  multiples would leave most of it empty, fill the tile instead and accept
+ *  the uneven pixels -- a screen that fills its window beats a crisp one
+ *  adrift in a frame.  ST_DISPLAY_PRESENTATION=integer|letterbox|stretch
+ *  overrides, for anyone who would rather have the other trade.
+ */
+static const char *presentation_note = "integer";
+
+static SDL_RendererLogicalPresentation
+choose_presentation(int width, int height)
+{
+    const char *forced = getenv("ST_DISPLAY_PRESENTATION");
+    int         ww = 0, wh = 0;
+    int         k;
+
+    if (forced && forced[0]) {
+        if (strcmp(forced, "letterbox") == 0) {
+            presentation_note = "letterbox (forced)";
+            return SDL_LOGICAL_PRESENTATION_LETTERBOX;
+        }
+        if (strcmp(forced, "stretch") == 0) {
+            presentation_note = "stretch (forced)";
+            return SDL_LOGICAL_PRESENTATION_STRETCH;
+        }
+        if (strcmp(forced, "integer") != 0)
+            fprintf(stderr, "st80: unknown ST_DISPLAY_PRESENTATION '%s'; "
+                            "known are integer, letterbox, stretch\n", forced);
+        presentation_note = "integer (forced)";
+        return SDL_LOGICAL_PRESENTATION_INTEGER_SCALE;
+    }
+    SDL_GetWindowSize(window, &ww, &wh);
+    if (ww <= 0 || wh <= 0)
+        return SDL_LOGICAL_PRESENTATION_INTEGER_SCALE;
+    k = ww / width;
+    if (wh / height < k)
+        k = wh / height;
+    if (k < 1)
+        k = 1;
+    /*
+     *  Half the window is the line.  Below it the border dominates what you
+     *  see, and filling matters more than the pixel grid.
+     */
+    if ((double) (k * width) * (k * height) < 0.5 * (double) ww * wh) {
+        presentation_note = "letterbox (the window is not a whole multiple)";
+        return SDL_LOGICAL_PRESENTATION_LETTERBOX;
+    }
+    return SDL_LOGICAL_PRESENTATION_INTEGER_SCALE;
+}
+
 int
 GFX_open(const char *title, int width, int height, char *errbuf, size_t errlen)
 {
@@ -344,15 +409,8 @@ GFX_open(const char *title, int width, int height, char *errbuf, size_t errlen)
             snprintf(errbuf, errlen, "SDL_CreateRenderer: %s", SDL_GetError());
         return -1;
     }
-    /*
-     *  Integer logical presentation keeps the 1983 display's aspect ratio
-     *  when the window is resized AND keeps every display pixel the same
-     *  size as every other.  Letterbox kept only the first of those, and
-     *  the uneven pixels it produced at a fractional scale were most of
-     *  what made the screen look wrong.
-     */
     SDL_SetRenderLogicalPresentation(renderer, width, height,
-                                     SDL_LOGICAL_PRESENTATION_INTEGER_SCALE);
+                                     choose_presentation(width, height));
 
     /*
      *  Streaming access is the documented fast path for pixels that change
@@ -393,6 +451,25 @@ int
 GFX_scale(void)
 {
     return open_scale;
+}
+
+const char *
+GFX_presentation(void)
+{
+    return presentation_note;
+}
+
+void
+GFX_window_size(int *width, int *height)
+{
+    int w = 0, h = 0;
+
+    if (window)
+        SDL_GetWindowSize(window, &w, &h);
+    if (width)
+        *width = w;
+    if (height)
+        *height = h;
 }
 
 static void
@@ -457,6 +534,21 @@ present(void)
     SDL_UnlockTexture(texture);
     damage_valid = 0;
 
+    /*
+     *  The bars are PAPER, not black.
+     *
+     *  Integer scaling means the display fills the window only when the
+     *  window is an exact multiple of it, and a window manager will hand
+     *  back whatever size it likes -- so there is usually a border.  Cleared
+     *  to the renderer's default black it reads as a heavy frame around a
+     *  small screen, which is the first thing anyone notices and dislikes.
+     *  In the paper colour the border is simply where the paper runs out.
+     */
+    SDL_SetRenderDrawColor(renderer,
+                           (Uint8) ((pixel_paper >> 16) & 0xFF),
+                           (Uint8) ((pixel_paper >> 8) & 0xFF),
+                           (Uint8) (pixel_paper & 0xFF),
+                           0xFF);
     SDL_RenderClear(renderer);
     SDL_RenderTexture(renderer, texture, NULL, NULL);
     SDL_RenderPresent(renderer);
