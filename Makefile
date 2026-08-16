@@ -137,9 +137,22 @@ $(VARIANT_BIN): $(MAIN_OBJ) $(LIB_AR)
 #  then fails in a way that has nothing to do with the change being made.
 #  A copy costs nothing; guessing wrong costs an afternoon.
 #
+#
+#  A SANITIZER build is not copied, and that is not tidiness.  A TSAN binary
+#  interprets 50 times slower than a plain one -- 5 million bytecodes in 33
+#  seconds against 0.56 -- and nothing about the file at the top level says
+#  which it is, so `make OM=mt TSAN=1' followed by `./st80 -run' looks
+#  exactly like a system that has become desperately slow.  The test targets
+#  run $(VARIANT_BIN) out of the build directory and never wanted the copy;
+#  only a person typing ./st80 does.
+#
 .PHONY: $(BIN)
 $(BIN): $(VARIANT_BIN)
+ifeq ($(strip $(TSAN)$(ASAN)),)
 	@cp -f $< $@
+else
+	@echo "  $(BUILD_VARIANT) build left in $(VARIANT_BIN); ./st80 untouched"
+endif
 
 # Unit tests ----------------------------------------------------------------
 

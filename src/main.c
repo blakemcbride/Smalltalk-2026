@@ -72,6 +72,26 @@ static uint64_t evaluate_budget = EVAL_BYTECODE_BUDGET;
 #define ST_OM_NAME      "none configured"
 #endif
 
+/*
+ *  Sanitizer builds say so.
+ *
+ *  A TSAN binary interprets some fifty times slower than a plain one, and
+ *  the difference between "this system is slow" and "this binary is
+ *  instrumented" is otherwise invisible: same name, same size to the eye,
+ *  same version line.
+ */
+#if defined(__SANITIZE_THREAD__)
+#define ST_SANITIZER    "thread sanitizer -- MUCH slower than a plain build"
+#elif defined(__SANITIZE_ADDRESS__)
+#define ST_SANITIZER    "address sanitizer -- much slower than a plain build"
+#elif defined(__has_feature)
+#if __has_feature(thread_sanitizer)
+#define ST_SANITIZER    "thread sanitizer -- MUCH slower than a plain build"
+#elif __has_feature(address_sanitizer)
+#define ST_SANITIZER    "address sanitizer -- much slower than a plain build"
+#endif
+#endif
+
 static int  do_disasm(const char *path, const char *class_name,
                       const char *selector);
 
@@ -117,6 +137,9 @@ print_version(void)
 {
     printf("Smalltalk-2026 %s\n", ST_VERSION);
     printf("  object memory : %s\n", ST_OM_NAME);
+#ifdef ST_SANITIZER
+    printf("  instrumented  : %s\n", ST_SANITIZER);
+#endif
     printf("  CPUs          : %d\n", ST_cpu_count());
 #if defined(ST_WINDOWS)
     printf("  platform      : Windows\n");
