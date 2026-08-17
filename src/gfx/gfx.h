@@ -126,8 +126,16 @@ void    GFX_set_cursor(st_oop form);
  */
 void    GFX_warp_pointer(int x, int y);
 
+/*
+ *  Called before a blit lands.  A reversing blit that exactly repeats the one
+ *  before it is 1983's flash idiom -- the two cancel -- so the frame worth
+ *  showing is the one BEFORE the undo.  See the comment in display.c.
+ */
+void    GFX_present_if_undoing(const gfx_blit *b);
+
 /*  Input events the ring had no room for.  Never allowed to be silent.  */
 unsigned GFX_events_dropped(void);
+void    GFX_draw_counts(unsigned long *damages, unsigned long *presents);
 st_oop  GFX_display_form(void);
 void    GFX_damage(int x, int y, int w, int h);
 void    GFX_damage_all(void);

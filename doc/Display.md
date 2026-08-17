@@ -85,6 +85,34 @@ the mouse into the menu. Red was never affected, because red does not raise a me
 `StandardSystemController>>move`, `StandardSystemView>>getFrame` and `Rectangle>>fromUser`
 warp too, and now work for the same reason.
 
+## The rubber band is a flash, not a drawing
+
+Dragging out a new window's size runs this, once per turn of the tracking loop:
+
+```smalltalk
+Display fill: frame rule: Form reverse mask: Form gray.
+Display fill: frame rule: Form reverse mask: Form gray.
+```
+
+Twice, same rectangle, same reversing rule — so the two cancel and the rectangle is **never
+left on the Form**. It is not a drawing, it is a flash. On the Alto that was enough: the CRT
+scanned display memory continuously, so whatever was there between the two fills was on the
+glass.
+
+Here the Form is the truth and the window is a copy taken between bytecode slices. Measured
+over one drag: **3474 draws to the display, 67 of them presented** — two per cent, and the
+state worth seeing lasts a handful of bytecodes out of thousands. So the rectangle appeared
+at random instead of tracking the pointer, which is what "the window blinks a lot" is.
+
+The fix presents at the right moment rather than more often. A reversing blit that exactly
+repeats the one before it is, by construction, an undo, so the frame worth showing is the
+one before it lands. Two clocks keep it honest: the flash presents at most at the refresh
+rate, and while a drag is running the pump's own present stays out of the way — it would
+land on the undone state and take the rectangle straight back off, which is the blinking
+again by another route.
+
+`ST_DISPLAY_TRACE=1` reports the draw and present counts at exit.
+
 ## Opening a browser is two gestures, not one
 
 **The system is not slow. It is waiting for you.**

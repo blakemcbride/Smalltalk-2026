@@ -46,6 +46,8 @@ static st_oop   display_form = ST_NIL;
  */
 static int    (*screen_hook)(int width, int height);
 static int      damage_valid;
+static unsigned long damage_calls;
+static unsigned long present_calls;
 static int      damage_x1;
 static int      damage_y1;
 static int      damage_x2;
@@ -85,6 +87,7 @@ GFX_damage(int x, int y, int w, int h)
 {
     if (w <= 0 || h <= 0)
         return;
+    ++damage_calls;
     if (!damage_valid) {
         damage_x1 = x;
         damage_y1 = y;
@@ -204,6 +207,13 @@ unsigned
 GFX_events_dropped(void)
 {
     return events_dropped;
+}
+
+void
+GFX_draw_counts(unsigned long *damages, unsigned long *presents)
+{
+    *damages  = damage_calls;
+    *presents = present_calls;
 }
 
 int
@@ -344,6 +354,7 @@ int     GFX_pump(void)      { return 1; }
 int     GFX_is_open(void)   { return 0; }
 void    GFX_set_cursor(st_oop form) { (void) form; }
 void    GFX_warp_pointer(int x, int y) { warp_locally(x, y); }
+void    GFX_present_if_undoing(const gfx_blit *b) { (void) b; }
 
 #else   /*  ST_HAVE_SDL3  */
 
@@ -877,6 +888,7 @@ present(void)
 
     if (!damage_valid || !texture)
         return;
+    ++present_calls;
     if (!GFX_form_from_oop(display_form, &form))
         return;
 
@@ -946,6 +958,130 @@ present(void)
     SDL_RenderClear(renderer);
     SDL_RenderTexture(renderer, texture, NULL, NULL);
     SDL_RenderPresent(renderer);
+}
+
+/*
+ *  ----------  The 1983 flash  ----------
+ *
+ *  StandardSystemView>>getFrame draws the rubber band you drag a new window
+ *  out with, and it does this, once per turn round its tracking loop:
+ *
+ *      Display fill: frame rule: Form reverse mask: Form gray.
+ *      Display fill: frame rule: Form reverse mask: Form gray.
+ *
+ *  Twice, with the same rectangle and the same reversing rule -- so the two
+ *  cancel and the rectangle is NEVER left on the Form.  It is not a drawing,
+ *  it is a flash, and on the Alto that was enough: the CRT scanned the
+ *  display memory continuously, so whatever was there during the gap between
+ *  the two fills was on the glass.
+ *
+ *  Here the Form is the truth and the window is a copy of it taken between
+ *  bytecode slices.  Measured over one framing drag: 3474 draws to the
+ *  display, 67 of them presented.  Two per cent -- and the state worth
+ *  seeing lasts a handful of bytecodes out of thousands, so what reaches the
+ *  screen is the rectangle appearing at random and not while it tracks the
+ *  pointer.  That is the blinking.
+ *
+ *  So present at the right moment rather than more often: a reversing blit
+ *  that exactly repeats the one before it, on the display, is by
+ *  construction an undo, and the frame worth showing is the one before it
+ *  lands.  Recognising that idiom is not a trick played on the image -- it
+ *  is what a continuously scanned display did for free, done on a display
+ *  that has to be told.  It costs one present per flash, which is bounded by
+ *  the drag loop and far below presenting everything.
+ */
+#define RULE_REVERSE    6       /*  Form reverse: source XOR dest  */
+
+/*
+ *  Keyed on what the image ASKED for, not on what was touched: the clipped
+ *  rectangle is computed inside GFX_copy_bits, and this has to decide before
+ *  the copy runs.  The request is the better key anyway -- it is the thing
+ *  the image repeats verbatim.
+ */
+static struct {
+    st_oop  dest;
+    st_oop  source;
+    st_oop  halftone;
+    int     valid;
+    int     x, y, w, h;
+    int     cx, cy, cw, ch;
+} last_blit;
+
+/*
+ *  Two clocks, because the flash and the pump want the screen at once.
+ *
+ *  Unbounded, a flash present fires as fast as the drag loop turns -- 1351
+ *  of them in one drag here -- and each one converts its damaged rectangle a
+ *  pixel at a time, which on a full-screen frame is milliseconds.  So it is
+ *  held to the refresh rate.
+ *
+ *  And while a drag is running the pump's own present must stay out of the
+ *  way: it would land on the UNDONE state and take the rectangle straight
+ *  back off the screen, which is the blinking again by another route.  A
+ *  recent flash therefore owns the display, and the pump resumes as soon as
+ *  the flashing stops.
+ */
+#define PRESENT_INTERVAL_NS     INT64_C(16000000)    /*  ~60 Hz  */
+#define FLASH_OWNS_SCREEN_NS    INT64_C(50000000)    /*  50 ms   */
+
+static int64_t  last_flash_ns;
+
+static int
+flash_owns_screen(void)
+{
+    return last_flash_ns != 0
+        && ST_time_monotonic_ns() - last_flash_ns < FLASH_OWNS_SCREEN_NS;
+}
+
+void
+GFX_present_if_undoing(const gfx_blit *b)
+{
+    int same;
+
+    /*
+     *  The window check comes FIRST and writes nothing.  copyBits runs on
+     *  every worker, and a headless run -- which is every test -- must not
+     *  touch this state at all; with a window there is one thread, the same
+     *  one that pumps SDL.  Guarding the writes behind "a window is open" is
+     *  what keeps that true, and is the same rule GFX_set_cursor follows.
+     */
+    if (!window)
+        return;
+    if (b->dest.oop != display_form || b->rule != RULE_REVERSE) {
+        last_blit.valid = 0;
+        return;
+    }
+    same = last_blit.valid
+        && last_blit.dest     == b->dest.oop
+        && last_blit.source   == (b->has_source ? b->source.oop : ST_NIL)
+        && last_blit.halftone == (b->has_halftone ? b->halftone.oop : ST_NIL)
+        && last_blit.x  == b->dest_x && last_blit.y  == b->dest_y
+        && last_blit.w  == b->width  && last_blit.h  == b->height
+        && last_blit.cx == b->clip_x && last_blit.cy == b->clip_y
+        && last_blit.cw == b->clip_w && last_blit.ch == b->clip_h;
+
+    if (same) {
+        int64_t now = ST_time_monotonic_ns();
+
+        if (now - last_flash_ns >= PRESENT_INTERVAL_NS) {
+            present();
+            last_flash_ns = now;
+        }
+        last_blit.valid = 0;    /*  a pair is two, not a run  */
+        return;
+    }
+    last_blit.dest     = b->dest.oop;
+    last_blit.source   = b->has_source ? b->source.oop : ST_NIL;
+    last_blit.halftone = b->has_halftone ? b->halftone.oop : ST_NIL;
+    last_blit.x  = b->dest_x;
+    last_blit.y  = b->dest_y;
+    last_blit.w  = b->width;
+    last_blit.h  = b->height;
+    last_blit.cx = b->clip_x;
+    last_blit.cy = b->clip_y;
+    last_blit.cw = b->clip_w;
+    last_blit.ch = b->clip_h;
+    last_blit.valid = 1;
 }
 
 /*
@@ -1092,7 +1228,8 @@ GFX_pump(void)
             break;
         }
     }
-    present();
+    if (!flash_owns_screen())
+        present();
     return 1;
 }
 

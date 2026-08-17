@@ -1237,6 +1237,8 @@ primitive_copy_bits(void)
 
     if (!GFX_blit_from_oop(bitblt, &blit))
         return 0;
+    /*  Before it lands: the flash it may be about to undo.  */
+    GFX_present_if_undoing(&blit);
     GFX_copy_bits(&blit);
     /*
      *  If that drew on the screen, remember the region so the window is

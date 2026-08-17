@@ -663,6 +663,14 @@ do_run(const char *path, uint64_t max_cycles)
      *  it drew anything at all.
      */
     write_screenshot();
+    {
+        unsigned long   damages = 0, presents = 0;
+
+        GFX_draw_counts(&damages, &presents);
+        if (getenv("ST_DISPLAY_TRACE"))
+            fprintf(stderr, "st80: %lu draws to the display, %lu presented\n",
+                    damages, presents);
+    }
     if (GFX_events_dropped())
         fprintf(stderr, "st80: %u input events were dropped -- the image "
                         "rebuilds its button state from this stream, so it "
