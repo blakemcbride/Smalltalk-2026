@@ -4088,6 +4088,68 @@ install_user_interface(void)
             }
         }
     }
+
+    /*
+     *  The top project, made AFTER the things it is supposed to hold.
+     *
+     *  Project class>>initialize runs with the other class initializers, and
+     *  the method it calls captures
+     *
+     *      projectWindows _ ScheduledControllers
+     *
+     *  -- which at that point is nil, because ScheduledControllers is made a
+     *  few lines above here and not before.  Project>>initialProject also
+     *  never assigns projectTranscript at all: 1983 left the top project's
+     *  transcript nil, there being no way to have entered it from anywhere.
+     *
+     *  Both bite the instant somebody chooses `exit project' from the
+     *  desktop menu.  Project>>exit is `projectHolder enter', the top
+     *  project holds ITSELF, and Project>>enter does
+     *
+     *      TextCollector newTranscript: projectTranscript.
+     *      ControlManager newScheduler: projectWindows.
+     *
+     *  So exiting installs nil as the Transcript and nil as
+     *  ScheduledControllers, and every process that then asks
+     *  `ScheduledControllers activeController' or `Transcript cr' answers
+     *  doesNotUnderstand -- for ever, several hundred times a second, with
+     *  no way back.  The session is over, from one menu item.
+     *
+     *  So run the initializer again now that both exist, and fill in the
+     *  transcript the 1983 method leaves out.  Exiting the top project then
+     *  re-enters it, which is exactly what `projectHolder _ self' says it
+     *  should do.
+     */
+    {
+        boot_class *project = find_class("Project");
+        st_oop      cls = BOOT_global("Project");
+
+        if (project && OM_is_present(cls)) {
+            st_oop  init = lookup_in_chain(OM_fetch_class(cls), "initialize");
+            st_oop  current;
+
+            if (OM_is_present(init))
+                run_method_on(init, cls, 4000000);
+            current = lookup_in_chain(OM_fetch_class(cls), "current");
+            if (OM_is_present(current)
+             && run_method_on(current, cls, 2000000)
+             && OM_is_present(st_vm.return_value)
+             && st_vm.return_value != ST_NIL) {
+                st_oop      top = st_vm.return_value;
+                st_oop      transcript = BOOT_global("Transcript");
+                unsigned    i;
+
+                for (i = 0; i < project->all_ivars.count; ++i) {
+                    if (strcmp(project->all_ivars.items[i],
+                               "projectTranscript") != 0)
+                        continue;
+                    if (OM_is_present(transcript))
+                        OM_store_pointer(i, top, transcript);
+                    break;
+                }
+            }
+        }
+    }
     return 1;
 }
 
