@@ -1267,6 +1267,50 @@ primitive_mouse_point(void)
     return 1;
 }
 
+/*
+ *  The image moves the pointer -- primitive 91, InputState>>primCursorLocPut:.
+ *
+ *  This used to answer "the host owns the pointer" and do nothing, which is
+ *  true of the pointer's SHAPE and false of its position.  1983 warps it
+ *  constantly, and each warp is load-bearing:
+ *
+ *      PopUpMenu>>startUp:            Sensor cursorPoint: marker center
+ *      StandardSystemController>>move Sensor cursorPoint: labelDisplayBox origin
+ *      StandardSystemView>>getFrame   Sensor cursorPoint: minimumCorner
+ *      Rectangle>>fromUser            Sensor cursorPoint: minCorner
+ *
+ *  The first is the one people notice.  A menu is displayed centred on the
+ *  cursor and then puts the cursor ON its current marker, so that tracking
+ *  starts from a selected item.  Ignore the warp and the pointer stays
+ *  wherever it was -- frequently outside the menu's frame entirely, because
+ *  the frame was just translated to fit on the screen -- so manageMarker
+ *  tracks from outside, the selection is nothing, and releasing the button
+ *  chooses nothing.  From the chair that is "my click did not register",
+ *  and it comes right the moment you move the mouse into the menu, which is
+ *  exactly the shape of the report.
+ *
+ *  Answering 0 for a non-integer Point is not a failure to handle: the
+ *  image's own fallback is `^self primCursorLocPutAgain: aPoint rounded'.
+ */
+static int
+primitive_cursor_loc_put(void)
+{
+    st_oop  point = ST_stack_value(0);
+    st_oop  x;
+    st_oop  y;
+
+    if (!OM_is_object(point) || !OM_pointer_bit(point)
+     || OM_fetch_word_length(point) < 2)
+        return 0;
+    x = OM_fetch_pointer(ST_POINT_X, point);
+    y = OM_fetch_pointer(ST_POINT_Y, point);
+    if (!OM_is_int(x) || !OM_is_int(y))
+        return 0;               /*  let the image round it and come back  */
+    GFX_warp_pointer((int) OM_int_value(x), (int) OM_int_value(y));
+    ST_pop_n(1);
+    return 1;                   /*  receiver remains as the result  */
+}
+
 static int
 primitive_input_semaphore(void)
 {
@@ -1294,10 +1338,29 @@ primitive_be_display(void)
     return 1;
 }
 
+/*
+ *  The pointer becomes the Form the image asked for.
+ *
+ *  This used to answer "the host draws its own pointer" and throw the Form
+ *  away, which is defensible right up until you notice what the cursor is
+ *  FOR in this interface.  StandardSystemView>>getFrame is the whole of the
+ *  case:
+ *
+ *      Sensor waitNoButton.
+ *      Cursor origin showWhile:
+ *          [[Sensor redButtonPressed] whileFalse: [Processor yield]].
+ *
+ *  Choose `browser' from the desktop menu and that is what runs.  It draws
+ *  nothing, it prints nothing, and it waits for you -- for ever, if you let
+ *  it.  The single signal that the system wants a rectangle framed is the
+ *  cursor turning into a top-left corner.  Discard it and there is no signal
+ *  at all: the screen is frozen, the menu is gone, and the only honest
+ *  reading is that the thing has hung.  It cost two bug reports.
+ */
 static int
 primitive_be_cursor(void)
 {
-    /*  The host draws its own pointer; the image's cursor Form is ignored. */
+    GFX_set_cursor(ST_stack_top());
     return 1;
 }
 
@@ -2274,7 +2337,7 @@ ST_primitive_dispatch(unsigned index)
     case 88:  return SCHED_primitive_suspend();
     case 89:  return 1;         /*  flushCache: we keep no method cache yet  */
     case 90:  return primitive_mouse_point();
-    case 91:  return 1;         /*  cursorLocPut: the host owns the pointer  */
+    case 91:  return primitive_cursor_loc_put();
     case 92:  return 1;         /*  cursorLink:                              */
     case 93:  return primitive_input_semaphore();
     case 94:  return 1;         /*  sampleInterval:                          */

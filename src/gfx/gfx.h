@@ -110,6 +110,24 @@ void    GFX_set_display(st_oop form);
  *  answering 0 -- or registering nothing -- leaves the screen as it is.
  */
 void    GFX_set_screen_hook(int (*fn)(int width, int height));
+
+/*
+ *  Make the pointer look like this Form -- primitive 101, Cursor>>beCursor.
+ *  Ignored when there is no window, which is what keeps it off every worker
+ *  thread in a headless run.
+ */
+void    GFX_set_cursor(st_oop form);
+
+/*
+ *  Move the pointer -- primitive 91.  Coordinates are the display Form's, not
+ *  the window's.  A headless run keeps the VM's own idea of the position in
+ *  step and does nothing else, so scripted input warps exactly as a window
+ *  would.
+ */
+void    GFX_warp_pointer(int x, int y);
+
+/*  Input events the ring had no room for.  Never allowed to be silent.  */
+unsigned GFX_events_dropped(void);
 st_oop  GFX_display_form(void);
 void    GFX_damage(int x, int y, int w, int h);
 void    GFX_damage_all(void);

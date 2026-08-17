@@ -72,6 +72,19 @@ it straight back down, which looks like nothing happened.
 Blue is the window menu, yellow the view's own menu, red selects. On a three-button mouse
 that is left = red, middle = yellow, right = blue.
 
+**The pointer jumps onto the menu, and it is supposed to.** A menu is displayed centred on
+the cursor, translated if that would put it off the screen, and then it puts the cursor back
+on its own current item — `Sensor cursorPoint: marker center`, the second line of
+`PopUpMenu>>startUp:`. That warp is primitive 91, and it used to do nothing here, on the
+grounds that the host owns the pointer. The host owns the pointer's *shape*; 1983 owns its
+*position*. Near an edge the menu moves and the pointer did not follow, so `manageMarker`
+found the cursor outside the frame, `markerOff` set the selection to nothing, and releasing
+the button chose nothing — a click that did not register, coming right the moment you moved
+the mouse into the menu. Red was never affected, because red does not raise a menu.
+
+`StandardSystemController>>move`, `StandardSystemView>>getFrame` and `Rectangle>>fromUser`
+warp too, and now work for the same reason.
+
 ## Opening a browser is two gestures, not one
 
 **The system is not slow. It is waiting for you.**
@@ -79,6 +92,21 @@ that is left = red, middle = yellow, right = blue.
 Choosing `browser` from the yellow-button menu does not open a window. It arms one. The
 next thing Smalltalk-80 wants is for you to say *where*: press the **red** (left) button,
 drag out a rectangle, release. The window appears when you let go.
+
+**The pointer is what tells you so.** `StandardSystemView>>getFrame` is the whole of it:
+
+```smalltalk
+Sensor waitNoButton.
+Cursor origin showWhile:
+    [[Sensor redButtonPressed] whileFalse: [Processor yield]].
+```
+
+It draws nothing and prints nothing. The single signal that a rectangle is wanted is the
+cursor turning into a top-left corner, then a bottom-right corner while you drag, then back
+to the arrow when the window appears. Primitive 101 used to discard the Form and let the
+host draw its own arrow, so there was no signal at all — a frozen screen and a vanished
+menu, which reads exactly like a hang. It now hands the image's 16x16 Form to the window
+system, hot spot and all. `ST_DISPLAY_TRACE=1` reports each change.
 
 Measured end to end — load a 31 MB image, open the menu, choose `browser`, frame it, and
 draw the whole System Browser — **1.1 seconds**. The browser's model builds in 0 ms.

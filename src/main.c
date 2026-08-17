@@ -663,6 +663,11 @@ do_run(const char *path, uint64_t max_cycles)
      *  it drew anything at all.
      */
     write_screenshot();
+    if (GFX_events_dropped())
+        fprintf(stderr, "st80: %u input events were dropped -- the image "
+                        "rebuilds its button state from this stream, so it "
+                        "may have been left wrong\n",
+                GFX_events_dropped());
     if (ST_quit_requested)
         why = "the image quit";
     fprintf(stderr, "st80: %s\n", why);

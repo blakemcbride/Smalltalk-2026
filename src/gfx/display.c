@@ -25,6 +25,7 @@
 #include "gfx.h"
 #include "st_sched.h"
 #include "interp.h"
+#include "st_port.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -128,12 +129,52 @@ static unsigned event_tail;
 static int      mouse_x;
 static int      mouse_y;
 static int      button_state;
+static unsigned events_dropped;
+
+/*
+ *  ST_INPUT_TRACE=1 prints both ends of this queue.
+ *
+ *  Input faults divide cleanly in two and look identical from a chair: the
+ *  event never arrived, or it arrived and the image did not act on it.  One
+ *  is this file's fault and the other is the image's, and no amount of
+ *  staring at the screen tells you which.  Queued-and-drained, with the
+ *  clock beside each, does.
+ */
+static int
+input_traced(void)
+{
+    static int  answer = -1;
+
+    if (answer < 0)
+        answer = getenv("ST_INPUT_TRACE") != NULL;
+    return answer;
+}
+
+static const char *
+event_type_name(unsigned type)
+{
+    switch (type) {
+    case ST_EVENT_XLOCATION:    return "x";
+    case ST_EVENT_YLOCATION:    return "y";
+    case ST_EVENT_BISTATE_ON:   return "down";
+    case ST_EVENT_BISTATE_OFF:  return "up";
+    default:                    return "?";
+    }
+}
 
 static void
 queue_event(unsigned type, unsigned value)
 {
     unsigned    next = (event_tail + 1) % EVENT_QUEUE_SIZE;
 
+    if (next == event_head)
+        ++events_dropped;
+    if (input_traced()
+     && (next == event_head
+      || (type != ST_EVENT_XLOCATION && type != ST_EVENT_YLOCATION)))
+        fprintf(stderr, "st80: %8.3f queued %s %u%s\n",
+                (double) ST_time_monotonic_ns() / 1e9, event_type_name(type),
+                value, next == event_head ? " -- DROPPED, queue full" : "");
     if (next == event_head)
         return;                 /*  full: drop, never overwrite  */
     event_queue[event_tail] =
@@ -146,6 +187,23 @@ queue_event(unsigned type, unsigned value)
      *  than switching underneath a half-executed bytecode.
      */
     SCHED_asynchronous_signal(SCHED_input_semaphore());
+}
+
+/*
+ *  How many events the ring had no room for.
+ *
+ *  A dropped event is not a dropped frame: the image rebuilds its whole idea
+ *  of which buttons are down from this stream -- InputState>>bitState, which
+ *  InputSensor>>primMouseButtons reads and every controller polls -- so a
+ *  lost bistate leaves it believing a button is still held, or was never
+ *  pressed, until another one happens to correct it.  Nothing else in the
+ *  system carries that state: GFX_button_state() exists and no primitive
+ *  reads it.  So this number is never allowed to be silent.
+ */
+unsigned
+GFX_events_dropped(void)
+{
+    return events_dropped;
 }
 
 int
@@ -161,6 +219,14 @@ GFX_next_event_word(uint16_t *word)
         return 0;
     *word = event_queue[event_head];
     event_head = (event_head + 1) % EVENT_QUEUE_SIZE;
+    if (input_traced()) {
+        unsigned    type = (unsigned) (*word >> ST_EVENT_TYPE_SHIFT);
+
+        if (type != ST_EVENT_XLOCATION && type != ST_EVENT_YLOCATION)
+            fprintf(stderr, "st80: %8.3f drained %s %u\n",
+                    (double) ST_time_monotonic_ns() / 1e9, event_type_name(type),
+                    (unsigned) (*word & ST_EVENT_VALUE_MASK));
+    }
     return 1;
 }
 
@@ -189,6 +255,36 @@ GFX_button_state(void)
  *  exercise is the real path and not a parallel one built for the occasion.
  *  They work in a headless build too, which is where the tests run.
  */
+/*
+ *  Put the VM's idea of the pointer at x,y and tell the image, without
+ *  waiting for the window system to say so.  The image warps the pointer and
+ *  then immediately reads it back -- PopUpMenu>>startUp: does both in
+ *  consecutive statements -- so a warp that only takes effect when SDL gets
+ *  round to reporting it is a warp that has not happened yet.
+ */
+static void
+warp_locally(int x, int y)
+{
+    gfx_form    form;
+
+    if (GFX_form_from_oop(display_form, &form)) {
+        if (x < 0)              x = 0;
+        if (y < 0)              y = 0;
+        if (x >= form.width)    x = form.width - 1;
+        if (y >= form.height)   y = form.height - 1;
+    }
+    if (input_traced())
+        fprintf(stderr, "st80: %8.3f warped to %d,%d%s\n",
+                (double) ST_time_monotonic_ns() / 1e9, x, y,
+                (x == mouse_x && y == mouse_y) ? " (already there)" : "");
+    if (x == mouse_x && y == mouse_y)
+        return;
+    mouse_x = x;
+    mouse_y = y;
+    queue_event(ST_EVENT_XLOCATION, (unsigned) x);
+    queue_event(ST_EVENT_YLOCATION, (unsigned) y);
+}
+
 void
 GFX_inject_mouse(int x, int y)
 {
@@ -246,6 +342,8 @@ GFX_open(const char *title, int width, int height, char *errbuf, size_t errlen)
 void    GFX_close(void)     { }
 int     GFX_pump(void)      { return 1; }
 int     GFX_is_open(void)   { return 0; }
+void    GFX_set_cursor(st_oop form) { (void) form; }
+void    GFX_warp_pointer(int x, int y) { warp_locally(x, y); }
 
 #else   /*  ST_HAVE_SDL3  */
 
@@ -256,6 +354,12 @@ static SDL_Renderer    *renderer;
 static SDL_Texture     *texture;
 static int              texture_w;
 static int              texture_h;
+
+/*  The pointer's current shape, kept so an unchanged one is not rebuilt.  */
+static SDL_Cursor      *sdl_cursor;
+static uint16_t         cursor_bits[16];
+static int              cursor_hot_x = -1;
+static int              cursor_hot_y = -1;
 
 int
 GFX_is_open(void)
@@ -630,6 +734,9 @@ GFX_open(const char *title, int width, int height, char *errbuf, size_t errlen)
 void
 GFX_close(void)
 {
+    if (sdl_cursor)
+        SDL_DestroyCursor(sdl_cursor);
+    sdl_cursor = NULL;
     if (texture)
         SDL_DestroyTexture(texture);
     if (renderer)
@@ -665,6 +772,98 @@ GFX_window_size(int *width, int *height)
         *width = w;
     if (height)
         *height = h;
+}
+
+/*
+ *  ----------  The pointer  ----------
+ *
+ *  A Smalltalk Cursor is a 16 by 16 Form whose `offset' is the hot spot,
+ *  negated -- Cursor origin offsets by 0@0 and points at its own top left,
+ *  Cursor corner offsets by -15@-15 and points at its bottom right.  SDL
+ *  wants two MSB-first bit planes, so the Form's words go across unchanged
+ *  and the mask is the shape itself: ink where a bit is set, transparent
+ *  everywhere else, which is exactly what a one-plane cursor meant in 1983.
+ *
+ *  Only ever called with a window open, so it is only ever called from the
+ *  thread that pumps SDL.  A headless run -- which is every test -- reaches
+ *  the stub above and touches nothing.
+ */
+/*
+ *  The window system's pointer follows the image's, so the two never
+ *  disagree about where it is.  SDL reports the warp back as a motion event;
+ *  warp_locally has already recorded the same position, so handle_mouse_motion
+ *  sees no change and queues nothing twice.
+ */
+void
+GFX_warp_pointer(int x, int y)
+{
+    warp_locally(x, y);
+    if (window && renderer) {
+        float   wx = 0.0f, wy = 0.0f;
+
+        SDL_RenderCoordinatesToWindow(renderer, (float) x, (float) y,
+                                      &wx, &wy);
+        SDL_WarpMouseInWindow(window, wx, wy);
+    }
+}
+
+void
+GFX_set_cursor(st_oop form)
+{
+    gfx_form    shape;
+    Uint8       plane[32];
+    SDL_Cursor *made;
+    st_oop      offset;
+    int         hot_x = 0, hot_y = 0;
+    int         y;
+
+    if (!window || !GFX_form_from_oop(form, &shape))
+        return;
+    if (shape.width != 16 || shape.height != 16 || shape.raster != 1)
+        return;                         /*  not a cursor we can hand over  */
+
+    offset = OM_fetch_pointer(ST_FORM_OFFSET, form);
+    if (OM_is_present(offset) && OM_pointer_bit(offset)
+     && OM_fetch_word_length(offset) >= 2) {
+        st_oop  x = OM_fetch_pointer(0, offset);
+        st_oop  y_oop = OM_fetch_pointer(1, offset);
+
+        if (OM_is_int(x))
+            hot_x = -(int) OM_int_value(x);
+        if (OM_is_int(y_oop))
+            hot_y = -(int) OM_int_value(y_oop);
+    }
+    if (hot_x < 0)  hot_x = 0;
+    if (hot_y < 0)  hot_y = 0;
+    if (hot_x > 15) hot_x = 15;
+    if (hot_y > 15) hot_y = 15;
+
+    /*  The same shape twice running is the common case: Cursor normal show
+     *  goes past here after every menu.  Rebuilding it would be a syscall
+     *  and a flicker for nothing.  */
+    if (hot_x == cursor_hot_x && hot_y == cursor_hot_y
+     && memcmp(cursor_bits, shape.bits, sizeof cursor_bits) == 0)
+        return;
+
+    for (y = 0; y < 16; ++y) {
+        uint16_t    row = shape.bits[y];
+
+        plane[y * 2]     = (Uint8) (row >> 8);
+        plane[y * 2 + 1] = (Uint8) (row & 0xFF);
+    }
+    made = SDL_CreateCursor(plane, plane, 16, 16, hot_x, hot_y);
+    if (!made)
+        return;
+    SDL_SetCursor(made);
+    if (sdl_cursor)
+        SDL_DestroyCursor(sdl_cursor);
+    sdl_cursor = made;
+    if (getenv("ST_DISPLAY_TRACE"))
+        fprintf(stderr, "st80: cursor shape changed, hot spot %d,%d\n",
+                hot_x, hot_y);
+    memcpy(cursor_bits, shape.bits, sizeof cursor_bits);
+    cursor_hot_x = hot_x;
+    cursor_hot_y = hot_y;
 }
 
 static void
