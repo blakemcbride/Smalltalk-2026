@@ -15,14 +15,32 @@
 #  what is checked in -- so a build needs no font installed, and the licence
 #  obligation is on a derivative whose origin is written down.
 #
-#  Usage: tools/make_font.py <font.ttf> <pixel size> <lead> <output dir>
-#  Writes font_face.h (the numbers) and font_face.c (the tables) there.
+#  NEEDS Python 3 and Pillow, and a font file.  Nothing that BUILDS this
+#  system needs any of the three: the generated .c and .h are checked in, and
+#  a build compiles them like any other source.  You need this only to change
+#  the face, its size, or its leading.
+#
+#      $ python3 -m pip install --user Pillow      # or the distribution's
+#      $ make font                                 # see the Makefile
+#      $ tools/make_font.py <font.ttf> <size> <lead> src/gfx
+#
+#  Then rebuild, and rebuild any image too -- the face is compiled into an
+#  image at bootstrap and an image cannot be shown a different one.
+#
+#  The generated files record the source font's path, its name, the size, the
+#  lead, and the SHA-256 of the file itself.  The hash is the part that
+#  matters for reproducing them: "Inter" is not one font, and two versions of
+#  it rasterise differently at the same size.  If the hash in the generated
+#  header does not match the font on your machine, expect different tables --
+#  which is fine, but it should not be a surprise.
+import hashlib
 import sys
 from PIL import Image, ImageDraw, ImageFont
 
 path, size, lead, outdir = (sys.argv[1], int(sys.argv[2]), int(sys.argv[3]),
                             sys.argv[4])
 face = ImageFont.truetype(path, size)
+digest = hashlib.sha256(open(path, "rb").read()).hexdigest()
 #
 #  The LEAD is blank rows added below the descenders, and it is the only way
 #  this system has of separating lines.  TextList class>>initialize fixes a
@@ -89,16 +107,24 @@ banner = """/*
  *  A rasterisation of
  *
  *      %s
- *      %s, %d pixels
+ *      %s, %d pixels, %d rows of lead
+ *      sha256 %s
  *
- *  The face is under the SIL Open Font License
- *  1.1; see src/gfx/LICENSE.font, copied from the system package.  These
- *  tables are a derivative work of it: the glyph shapes are the face's,
- *  sampled onto this system's pixel grid.  Nothing here is a font file and
+ *  The hash is of the SOURCE FONT, not of this file.  Reproducing these
+ *  tables needs that exact font: "Inter" is not one font, and two versions
+ *  of a family rasterise differently at the same size.  Regenerate with
+ *  `make font\' or tools/make_font.py, then rebuild -- and rebuild any image
+ *  as well, because the face is compiled into an image at bootstrap and an
+ *  image cannot be shown a different one.
+ *
+ *  The face is under the SIL Open Font License 1.1; see
+ *  src/gfx/LICENSE.font, and doc/LICENSING.md for what that obliges.  These
+ *  tables are a derivative work of it: the glyph shapes are the face\'s,
+ *  sampled onto this system\'s pixel grid.  Nothing here is a font file and
  *  nothing here can be installed as one -- it is ninety-five pictures of
  *  letters at one size.
  */
-""" % (path, face.getname()[0], size)
+""" % (path, face.getname()[0], size, lead, digest)
 
 h = open(outdir + "/font_face.h", "w")
 h.write(banner)
@@ -121,6 +147,7 @@ h.write("#define ST_FONT_CODES          %d\n" % (LAST - FIRST + 1))
 h.write("#define ST_FONT_HEIGHT         %d\n" % HEIGHT)
 h.write("#define ST_FONT_ASCENT         %d\n" % ascent)
 h.write("#define ST_FONT_DESCENT        %d\n" % descent)
+h.write("#define ST_FONT_LEAD           %d\n" % lead)
 h.write("#define ST_FONT_MAX_WIDTH      %d\n" % max(adv))
 h.write("#define ST_FONT_STRIKE_WIDTH   %d\n" % width)
 h.write("#define ST_FONT_STRIKE_BYTES   (ST_FONT_STRIKE_WIDTH / 8)\n")

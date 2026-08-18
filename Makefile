@@ -188,6 +188,27 @@ $(TEST_DIR)/bench_%: tests/bench/bench_%.c $(LIB_AR)
 	@mkdir -p $(dir $@)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(LIB_AR) -o $@ $(LDFLAGS) $(LIBS)
 
+#
+#  Regenerate the built-in face.  NOT part of any build: src/gfx/font_face.c
+#  and .h are checked in, so building needs no font and no Python.  This is
+#  here only to change the face, its size, or its leading -- and it needs
+#  Pillow and the font itself installed.
+#
+#      make font                                   # Inter 18, lead 3
+#      make font FONT=/path/to/X.ttf SIZE=15 LEAD=2
+#
+#  Rebuild afterwards, and rebuild any image too: the face is compiled into
+#  an image at bootstrap and an image cannot be shown a different one.
+#
+FONT ?= /usr/share/fonts/rsms-inter-fonts/Inter-Regular.ttf
+SIZE ?= 18
+LEAD ?= 3
+
+.PHONY: font
+font:
+	python3 tools/make_font.py "$(FONT)" $(SIZE) $(LEAD) src/gfx
+	@echo "regenerated src/gfx/font_face.[ch] -- now: make && rebuild your image"
+
 .PHONY: bench
 bench: $(BENCH_BIN)
 	@for b in $(BENCH_BIN); do \
@@ -236,7 +257,9 @@ help:
 	@echo "  test         build and run the unit tests and the package suites"
 	@echo "  unit-test    just the unit tests"
 	@echo "  suite-test   just the imported packages' own SUnit suites"
+	@echo "  bench        the parallel scaling benchmark"
 	@echo "  clean        remove build artifacts"
+	@echo "  font         regenerate the built-in face (needs Pillow and a font)"
 	@echo
 	@echo "Variables:"
 	@echo "  OM=bb        16-bit Blue Book object memory (default)"
@@ -244,6 +267,7 @@ help:
 	@echo "  TSAN=1       build with the thread sanitizer"
 	@echo "  ASAN=1       build with address/UB sanitizers"
 	@echo "  OPT=-O0      override optimization flags"
+	@echo "  FONT=, SIZE=, LEAD=   inputs to the font target"
 	@echo
 	@echo "SDL3: $(if $(SDL3_LIBS),found -- graphics enabled,not found -- headless build)"
 

@@ -110,13 +110,29 @@ that disagrees with the first.
 ## The face
 
 `tools/make_font.py` rasterises an outline font into the two tables in `src/gfx/font_face.c`
-— the one-bit strike the image measures from, and the coverage map the screen shows. The
-font is not vendored: the tool runs against one already on the machine and records which,
-and the *output* is what is checked in, so a build needs no font installed.
+— the one-bit strike the image measures from, and the coverage map the screen shows.
+
+**Building this system needs no font, and no Python.** Those tables are ordinary checked-in
+C. The generator exists only to change the face, its size or its leading, and *it* needs
+Pillow and the font installed:
+
+```sh
+make font                                    # Inter at 18, lead 3
+make font FONT=/path/to/Face.ttf SIZE=15 LEAD=2
+make && ./st80 -bootstrap -manifest sources/MANIFEST -o st80.image
+```
+
+The image must be rebuilt afterwards, for the reason below.
+
+The generated header records the source font's path, name, size, lead and **SHA-256**. The
+hash is the part that matters: "Inter" is not one font, and two versions of a family
+rasterise differently at the same size, so without it "regenerated from Inter" would not be
+a reproducible statement. `make font` against the recorded hash reproduces the checked-in
+tables byte for byte.
 
 It is currently **Inter at 18 pixels with 3 rows of lead**, under the SIL Open Font License
-1.1; see `src/gfx/LICENSE.font`. The generated file says which font, at what size, and that
-it is a derivative.
+1.1. What that obliges, and what to do if you regenerate from a different font, is in
+[`LICENSING.md`](LICENSING.md).
 
 Two things the generator has to get right, both found the hard way:
 
