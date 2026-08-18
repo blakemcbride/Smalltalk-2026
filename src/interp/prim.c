@@ -1244,8 +1244,10 @@ primitive_copy_bits(void)
      *  If that drew on the screen, remember the region so the window is
      *  refreshed.  The clipped rectangle is the one actually touched.
      */
-    if (blit.dest.oop == GFX_display_form())
+    if (blit.dest.oop == GFX_display_form()) {
+        GFX_note_blit(&blit);
         GFX_damage(blit.damage_x, blit.damage_y, blit.damage_w, blit.damage_h);
+    }
     return 1;                   /*  answers the receiver  */
 }
 

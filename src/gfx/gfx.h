@@ -133,6 +133,19 @@ void    GFX_warp_pointer(int x, int y);
  */
 void    GFX_present_if_undoing(const gfx_blit *b);
 
+/*
+ *  Told about every blit that lands on the display, after it lands.
+ *
+ *  It keeps the antialiased shadow of the screen: a blit out of the font
+ *  strike stamps ink coverage, and anything else drops the coverage it drew
+ *  over.  See the comment in display.c -- this is the whole of how a one-bit
+ *  system gets smooth text without BitBlt or the image knowing.
+ */
+void    GFX_note_blit(const gfx_blit *b);
+
+/*  Dump the coverage plane beside a screenshot, for looking at.  */
+void    GFX_write_coverage(const char *shot_path);
+
 /*  Input events the ring had no room for.  Never allowed to be silent.  */
 unsigned GFX_events_dropped(void);
 void    GFX_draw_counts(unsigned long *damages, unsigned long *presents);

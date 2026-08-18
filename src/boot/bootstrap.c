@@ -4756,8 +4756,8 @@ BOOT_install_scheduler(const char *startup_source)
  *  Slots are reserved for all 128 codes rather than only the printable ones,
  *  so an ascii out of range indexes a blank rather than off the end.
  */
-#define FONT_CODES      128
-#define FONT_STRIKE_W   (FONT_CODES * ST_FONT_WIDTH)
+#define FONT_CODES      ST_FONT_CODES
+#define FONT_STRIKE_W   ST_FONT_STRIKE_WIDTH
 
 static st_oop
 build_strike_font(void)
@@ -4772,7 +4772,6 @@ build_strike_font(void)
     st_oop      font;
     st_oop      origin;
     uint32_t    raster = FONT_STRIKE_W / 16;
-    unsigned    code;
     unsigned    row;
     unsigned    i;
 
@@ -4784,20 +4783,16 @@ build_strike_font(void)
     if (!OM_is_present(bits))
         return ST_OOP_INVALID;
 
-    /*  Paint each glyph into its slot, eight pixels wide.  */
-    for (code = ST_FONT_FIRST; code <= ST_FONT_LAST; ++code) {
-        unsigned    x = code * ST_FONT_WIDTH;
-
-        for (row = 0; row < ST_FONT_HEIGHT; ++row) {
-            uint8_t     glyph = ST_FONT_GLYPHS[code - ST_FONT_FIRST][row];
-            uint32_t    index = row * raster + x / 16;
-            uint16_t    word  = OM_fetch_word(index, bits);
-            unsigned    shift = (x % 16 == 0) ? 8 : 0;
-
-            word = (uint16_t) (word | ((uint16_t) glyph << shift));
-            OM_store_word(index, bits, word);
-        }
-    }
+    /*
+     *  The strike goes across as it is: two bytes to a word, the first of
+     *  them the high half, because bit 15 of a word is its leftmost pixel
+     *  and so is bit 7 of the byte the generator wrote.
+     */
+    for (row = 0; row < ST_FONT_HEIGHT; ++row)
+        for (i = 0; i < raster; ++i)
+            OM_store_word(row * raster + i, bits,
+                          (uint16_t) ((ST_FONT_STRIKE[row][i * 2] << 8)
+                                      | ST_FONT_STRIKE[row][i * 2 + 1]));
 
     origin = OM_instantiate_pointers(ST_CLASS_POINT, 2);
     if (!OM_is_present(origin))
@@ -4813,17 +4808,25 @@ build_strike_font(void)
     OM_store_pointer(ST_FORM_HEIGHT, glyphs, OM_int_oop(ST_FONT_HEIGHT));
     OM_store_pointer(ST_FORM_OFFSET, glyphs, origin);
 
-    /*  One entry per code, plus one past the end for the last width.  */
-    xtable = OM_instantiate_pointers(array_class, FONT_CODES + 2);
+    /*
+     *  One entry per code and one past the end, which is what a proportional
+     *  strike needs -- StrikeFont>>widthOf: answers
+     *
+     *      (xTable at: ascii + 2) - (xTable at: ascii + 1)
+     *
+     *  -- and then ONE more, because that method first does
+     *  `ascii min: maxAscii + 1', so a character past the end asks for entry
+     *  maxAscii + 3.  The generator's table stops at the honest end; the
+     *  extra entry repeats it, which makes that character zero wide rather
+     *  than a read off the end of the array.
+     */
+    xtable = OM_instantiate_pointers(array_class, ST_FONT_CODES + 2);
     if (!OM_is_present(xtable))
         return ST_OOP_INVALID;
-    for (i = 0; i < FONT_CODES + 2; ++i) {
-        unsigned    x = i * ST_FONT_WIDTH;
-
+    for (i = 0; i < ST_FONT_CODES + 2; ++i)
         OM_store_pointer(i, xtable,
-                         OM_int_oop((st_int) (x > FONT_STRIKE_W
-                                              ? FONT_STRIKE_W : x)));
-    }
+                         OM_int_oop((st_int) ST_FONT_XTABLE[
+                             i <= ST_FONT_CODES ? i : ST_FONT_CODES]));
 
     font = OM_instantiate_pointers(font_class, 16);
     if (!OM_is_present(font))
@@ -4851,7 +4854,7 @@ build_strike_font(void)
     OM_store_pointer(4,  font, OM_int_oop(0));  /*  type                      */
     OM_store_pointer(5,  font, OM_int_oop(0));  /*  minAscii                  */
     OM_store_pointer(6,  font, OM_int_oop(FONT_CODES - 1));
-    OM_store_pointer(7,  font, OM_int_oop(ST_FONT_WIDTH));
+    OM_store_pointer(7,  font, OM_int_oop(ST_FONT_MAX_WIDTH));
     OM_store_pointer(8,  font, OM_int_oop(FONT_STRIKE_W));
     /*
      *  The face's own metrics, and the whole of the system's text layout:

@@ -502,8 +502,7 @@ screen_refused(const char *why)
  *  So say so instead.  The rebuild is one command and it is correct by
  *  construction, and an image that is left alone is at least self-consistent.
  */
-#define STRIKE_CODES    128
-#define STRIKE_WIDTH    (STRIKE_CODES * ST_FONT_WIDTH)
+
 
 static void
 report_font_age(const char *path)
@@ -522,18 +521,18 @@ report_font_age(const char *path)
         return;
     if (!GFX_form_from_oop(glyphs, &strike))
         return;
-    if (strike.height == ST_FONT_HEIGHT && strike.width == STRIKE_WIDTH)
+    if (strike.height == ST_FONT_HEIGHT
+     && strike.width == ST_FONT_STRIKE_WIDTH)
         return;                         /*  this VM's face  */
 
     fprintf(stderr,
-            "st80: this image draws with a %dx%d font; this VM's is %dx%d.\n"
+            "st80: this image's font is %d rows tall; this VM's is %d.\n"
             "st80: the face is built into the image, and the line grids of "
             "its lists and menus\n"
             "st80: were computed from it, so it cannot be swapped from here."
             "  Rebuild to use the new one:\n"
             "st80:     st80 -bootstrap -manifest sources/MANIFEST -o %s\n",
-            ST_FONT_WIDTH, strike.height, ST_FONT_WIDTH, ST_FONT_HEIGHT,
-            path);
+            strike.height, ST_FONT_HEIGHT, path);
 }
 
 static int
@@ -729,6 +728,7 @@ do_run(const char *path, uint64_t max_cycles)
      *  it drew anything at all.
      */
     write_screenshot();
+    GFX_write_coverage(shot_path);
     {
         unsigned long   damages = 0, presents = 0;
 
@@ -1454,6 +1454,7 @@ do_bootstrap(const char *const *sources, const int *dialects, unsigned count,
         }
     }
     write_screenshot();
+    GFX_write_coverage(shot_path);
     if (out_path) {
 #ifdef ST_OM_MT
         if (OM_image_save(out_path, err, sizeof err) != 0) {

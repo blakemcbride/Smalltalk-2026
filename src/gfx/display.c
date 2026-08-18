@@ -26,6 +26,7 @@
 #include "st_sched.h"
 #include "interp.h"
 #include "st_port.h"
+#include "font.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -353,6 +354,8 @@ void    GFX_close(void)     { }
 int     GFX_pump(void)      { return 1; }
 int     GFX_is_open(void)   { return 0; }
 void    GFX_set_cursor(st_oop form) { (void) form; }
+void    GFX_note_blit(const gfx_blit *b) { (void) b; }
+void    GFX_write_coverage(const char *p) { (void) p; }
 void    GFX_warp_pointer(int x, int y) { warp_locally(x, y); }
 void    GFX_present_if_undoing(const gfx_blit *b) { (void) b; }
 
@@ -365,6 +368,21 @@ static SDL_Renderer    *renderer;
 static SDL_Texture     *texture;
 static int              texture_w;
 static int              texture_h;
+
+static uint8_t *coverage;
+static int      coverage_w;
+static int      coverage_h;
+
+static void
+coverage_resize(int width, int height)
+{
+    if (width == coverage_w && height == coverage_h)
+        return;
+    free(coverage);
+    coverage   = (uint8_t *) calloc((size_t) width * (size_t) height, 1);
+    coverage_w = coverage ? width : 0;
+    coverage_h = coverage ? height : 0;
+}
 
 /*  The pointer's current shape, kept so an unchanged one is not rebuilt.  */
 static SDL_Cursor      *sdl_cursor;
@@ -622,6 +640,7 @@ resize_display(int width, int height)
     texture_h = height;
     SDL_SetRenderLogicalPresentation(renderer, width, height,
                                      choose_presentation(width, height));
+    coverage_resize(width, height);
     GFX_damage_all();
     return 1;
 }
@@ -733,6 +752,12 @@ GFX_open(const char *title, int width, int height, char *errbuf, size_t errlen)
     texture_h = height;
     open_scale = scale;
     base_scale = scale;
+    {
+        gfx_form    form;
+
+        if (GFX_form_from_oop(display_form, &form))
+            coverage_resize(form.width, form.height);
+    }
     /*
      *  The window manager has now told us what we actually got, which is the
      *  first moment the right screen size is knowable.
@@ -745,6 +770,9 @@ GFX_open(const char *title, int width, int height, char *errbuf, size_t errlen)
 void
 GFX_close(void)
 {
+    free(coverage);
+    coverage = NULL;
+    coverage_w = coverage_h = 0;
     if (sdl_cursor)
         SDL_DestroyCursor(sdl_cursor);
     sdl_cursor = NULL;
@@ -877,6 +905,123 @@ GFX_set_cursor(st_oop form)
     cursor_hot_y = hot_y;
 }
 
+/*
+ *  ----------  The antialiased shadow  ----------
+ *
+ *  The Smalltalk display is one bit a pixel and must stay that way: BitBlt
+ *  is the Blue Book's, byte for byte against the Xerox traces, and every
+ *  rule the image draws with -- over, under, reverse, the gray halftones --
+ *  is defined on single bits.  Giving Form a depth would be a different
+ *  system.  So the smooth text is not IN the image and the image cannot see
+ *  it: this is a second plane, ink coverage from 0 to 255, that the window
+ *  is painted from where it has anything to say.
+ *
+ *  It is filled by recognising text.  A blit whose source is exactly the
+ *  strike -- ST_FONT_STRIKE_WIDTH by ST_FONT_HEIGHT, which nothing else in
+ *  the system is -- is a character being drawn, and the source x says which
+ *  one, because that is precisely what the xTable means.  So the same glyph
+ *  is stamped from ST_FONT_COVERAGE at the same advance, and the two agree
+ *  by construction: the image lays out from the one-bit strike, and the
+ *  screen shows the eight-bit one.
+ *
+ *  Anything else that lands on the display DROPS the coverage under it.
+ *  That is the conservative half and it is what keeps this honest -- scroll
+ *  a pane, clear a window, invert a selection, and the shadow gives up and
+ *  the one-bit pixels show through.  Text comes back smooth the moment it is
+ *  drawn again.  The alternative, trying to model what every rule does to
+ *  coverage, is how you end up with a second graphics system that disagrees
+ *  with the first.
+ */
+/*
+ *  The coverage plane beside a screenshot, so what the window would have
+ *  shown can be looked at without a window.  Same discipline as the .pbm.
+ */
+void
+GFX_write_coverage(const char *shot_path)
+{
+    char    path[512];
+    FILE   *f;
+    size_t  n;
+
+    if (!shot_path || !coverage)
+        return;
+    snprintf(path, sizeof path, "%s", shot_path);
+    n = strlen(path);
+    if (n > 4 && strcmp(path + n - 4, ".pbm") == 0)
+        snprintf(path + n - 4, 5, ".cov");
+    f = fopen(path, "wb");
+    if (!f)
+        return;
+    fwrite(coverage, 1, (size_t) coverage_w * (size_t) coverage_h, f);
+    fclose(f);
+}
+
+void
+GFX_note_blit(const gfx_blit *b)
+{
+    int x, y;
+
+    if (!coverage || b->damage_w <= 0 || b->damage_h <= 0)
+        return;
+    if (b->damage_x < 0 || b->damage_y < 0
+     || b->damage_x + b->damage_w > coverage_w
+     || b->damage_y + b->damage_h > coverage_h)
+        return;
+
+    if (b->has_source
+     && b->source.width == ST_FONT_STRIKE_WIDTH
+     && b->source.height == ST_FONT_HEIGHT) {
+        /*
+         *  A character.  The clipped rectangle may be a part of it, so the
+         *  source corner is taken from how far the destination moved rather
+         *  than from the blit's own source fields, which the copy advanced.
+         */
+        int sx = b->source_x + (b->damage_x - b->dest_x);
+        int sy = b->source_y + (b->damage_y - b->dest_y);
+
+        for (y = 0; y < b->damage_h; ++y) {
+            int         gy = sy + y;
+            uint8_t    *row = coverage + (size_t) (b->damage_y + y)
+                                       * coverage_w + b->damage_x;
+
+            if (gy < 0 || gy >= ST_FONT_HEIGHT) {
+                memset(row, 0, (size_t) b->damage_w);
+                continue;
+            }
+            for (x = 0; x < b->damage_w; ++x) {
+                int gx = sx + x;
+
+                row[x] = (gx >= 0 && gx < ST_FONT_STRIKE_WIDTH)
+                             ? ST_FONT_COVERAGE[gy][gx] : 0;
+            }
+        }
+        return;
+    }
+    for (y = 0; y < b->damage_h; ++y)
+        memset(coverage + (size_t) (b->damage_y + y) * coverage_w
+                        + b->damage_x, 0, (size_t) b->damage_w);
+}
+
+/*
+ *  Ink over paper at the given coverage, per channel.  The palette is the
+ *  theme's, so this stays right in dark mode, where "more coverage" is a
+ *  lighter pixel and the arithmetic must not assume otherwise.
+ */
+static uint32_t
+blend_ink(unsigned c)
+{
+    uint32_t    out = 0xFF000000u;
+    int         shift;
+
+    for (shift = 16; shift >= 0; shift -= 8) {
+        unsigned    ink   = (pixel_ink   >> shift) & 0xFF;
+        unsigned    paper = (pixel_paper >> shift) & 0xFF;
+
+        out |= (uint32_t) ((ink * c + paper * (255 - c)) / 255) << shift;
+    }
+    return out;
+}
+
 static void
 present(void)
 {
@@ -929,12 +1074,27 @@ present(void)
          *  Bit 15 of a word is its leftmost pixel, so the shift counts down
          *  from the top of each word.
          */
+        const uint8_t *cov = coverage
+                           ? coverage + (size_t) (rect.y + y) * coverage_w
+                           : NULL;
+
         for (x = 0; x < rect.w; ++x) {
             int         bit  = rect.x + x;
             uint16_t    word = row[bit >> 4];
+            unsigned    c    = cov ? cov[bit] : 0;
 
-            out[x] = ((word >> (15 - (bit & 15))) & 1) ? pixel_ink
-                                                       : pixel_paper;
+            /*
+             *  Coverage speaks where it has something to say; elsewhere the
+             *  one bit does.  A pixel a glyph did not touch is 0 either way,
+             *  so the two never argue about the space between letters.
+             */
+            if (c == 0)
+                out[x] = ((word >> (15 - (bit & 15))) & 1) ? pixel_ink
+                                                           : pixel_paper;
+            else if (c == 255)
+                out[x] = pixel_ink;
+            else
+                out[x] = blend_ink(c);
         }
     }
     SDL_UnlockTexture(texture);

@@ -85,6 +85,48 @@ the mouse into the menu. Red was never affected, because red does not raise a me
 `StandardSystemController>>move`, `StandardSystemView>>getFrame` and `Rectangle>>fromUser`
 warp too, and now work for the same reason.
 
+## The text is antialiased, and the image cannot see it
+
+The display is one bit a pixel and has to stay that way. BitBlt is the Blue Book's, byte for
+byte against the Xerox traces, and every rule the image draws with — over, under, reverse,
+the grey halftones — is defined on single bits. Giving `Form` a depth would be a different
+system.
+
+So the smooth text is not *in* the image. There is a second plane, ink coverage from 0 to
+255, and the window is painted from it wherever it has anything to say. It is filled by
+**recognising text**: a blit whose source is exactly the strike — 992 by 20, which nothing
+else in the system is — is a character being drawn, and the source x says *which* character,
+because that is precisely what the xTable means. The same glyph is stamped from an eight-bit
+coverage table at the same advance, so the two agree by construction: the image lays out
+from the one-bit strike, and the screen shows the eight-bit one.
+
+Anything else that lands on the display **drops** the coverage under it. That is the
+conservative half and it is what keeps this honest — scroll a pane, clear a window, invert a
+selection, and the shadow gives up and the one-bit pixels show through. Text comes back
+smooth the moment it is drawn again. A selected line is one-bit for exactly this reason.
+Modelling what every rule does to coverage is how you end up with a second graphics system
+that disagrees with the first.
+
+## The face
+
+`tools/make_font.py` rasterises an outline font into the two tables in `src/gfx/font_face.c`
+— the one-bit strike the image measures from, and the coverage map the screen shows. The
+font is not vendored: the tool runs against one already on the machine and records which,
+and the *output* is what is checked in, so a build needs no font installed.
+
+It is currently Adwaita Sans at 16 pixels — a fork of Inter, under the SIL Open Font License
+1.1, whose licence names the Inter Project Authors; see `src/gfx/LICENSE.font`. The
+generated file says it is a derivative and at what size.
+
+The face is **proportional**, which is most of what stopped the interface reading as a
+terminal from 1980: `widthOf: $A` is 11 and `widthOf: $i` is 4, where every character used
+to be 8.
+
+Changing the face means rebuilding the image — `TextList` fixes its line grid from
+`font height` at class-initialisation time and `PopUpMenu` composes its labels into a Form
+once, so an image built with one face cannot be shown another. The VM says so at startup
+when they disagree.
+
 ## The rubber band is a flash, not a drawing
 
 Dragging out a new window's size runs this, once per turn of the tracking loop:
