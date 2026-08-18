@@ -4853,8 +4853,14 @@ build_strike_font(void)
     OM_store_pointer(6,  font, OM_int_oop(FONT_CODES - 1));
     OM_store_pointer(7,  font, OM_int_oop(ST_FONT_WIDTH));
     OM_store_pointer(8,  font, OM_int_oop(FONT_STRIKE_W));
-    OM_store_pointer(9,  font, OM_int_oop(ST_FONT_HEIGHT - 1));  /*  ascent   */
-    OM_store_pointer(10, font, OM_int_oop(1));                   /*  descent  */
+    /*
+     *  The face's own metrics, and the whole of the system's text layout:
+     *  TextStyle>>gridForFont:withLead: answers `font height + lead' for the
+     *  line grid and `font ascent' for the baseline, and Font>>height is
+     *  ascent + descent.  Guessing them here is how text ends up squashed.
+     */
+    OM_store_pointer(9,  font, OM_int_oop(ST_FONT_ASCENT));
+    OM_store_pointer(10, font, OM_int_oop(ST_FONT_DESCENT));
     OM_store_pointer(11, font, OM_int_oop(0));                   /*  xOffset  */
     OM_store_pointer(12, font, OM_int_oop((st_int) raster));
     OM_store_pointer(13, font, OM_int_oop(0));

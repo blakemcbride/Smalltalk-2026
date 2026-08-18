@@ -1226,18 +1226,19 @@ test_display(void)
 static void
 test_text(void)
 {
-    check_integer("DefaultFont ascent", 7);
+    check_integer("DefaultFont ascent", 9);
     check_integer("DefaultFont glyphs width", 128 * 8);
-    check_integer("DefaultFont glyphs height", 8);
+    check_integer("DefaultFont descent", 3);
+    check_integer("DefaultFont glyphs height", 12);
     check_integer("DefaultFont widthOf: $A", 8);
     check_integer("DefaultFont widthOf: $i", 8);
     check_integer("(DefaultFont characterForm: $A) width", 8);
 
-    /*  The glyph really is the letter A: these are its eight rows.  */
+    /*  The glyph really is the letter A: these are its seven inked rows.  */
     check_integer("(DefaultFont characterForm: $A) bits"
                   " inject: 0 into: [:a :b | a + b]",
-                  0x1800 + 0x3C00 + 0x6600 + 0xC300 + 0xFF00 + 0xC300
-                  + 0xC300);
+                  0x3000 + 0x4800 + 0x4800 + 0x8400 + 0xFC00 + 0x8400
+                  + 0x8400);
 
     /*  An 8x8 black square lands whole wherever it is put, aligned or not. */
     check_ink("| f | Display white. f := Form extent: 8@8."
@@ -1255,7 +1256,7 @@ test_text(void)
     check_ink("Display white."
               " DefaultFont characters: (1 to: 12) in: 'Smalltalk-80'"
               " displayAt: 20@20 clippedBy: Display boundingBox rule: 3"
-              " mask: Form black. ^1", 291);
+              " mask: Form black. ^1", 200);
     check_ink("Display white. ^1", 0);
 }
 
@@ -1278,7 +1279,11 @@ test_paragraph(void)
 
     /*  And it draws: 'Hi' is two glyphs of known ink.  */
     check_ink("Display white. 'Hi' asParagraph displayOn: Display at: 20@20."
-              " ^1", 50);   /*  the ink of H and i in this face  */
+              /*
+               *  18 and 15: H is two stems of seven rows crossed by a
+               *  six-wide bar, i is a dot, a serif, a stem and a foot.
+               */
+              " ^1", 33);
 }
 
 /*
@@ -1304,7 +1309,7 @@ test_view(void)
      */
     check_ink("| v | Display white. v := StandardSystemView new."
               " v label: 'Hello World'. v window: (60@40 corner: 360@200)."
-              " v display. ^1", 12512);
+              " v display. ^1", 12432);
 }
 
 /*
@@ -1350,7 +1355,7 @@ test_scheduler(void)
               " b window: (200@120 corner: 560@340)."
               " ScheduledControllers schedulePassive: a controller."
               " ScheduledControllers schedulePassive: b controller."
-              " ScheduledControllers restore. ^1", 124794);
+              " ScheduledControllers restore. ^1", 124650);
     check_integer("ScheduledControllers scheduledControllers size", 3);
 }
 
@@ -1573,7 +1578,7 @@ test_browser(void)
                *  category list filled, and an empty text pane because no
                *  method is selected yet.  Less ink, and all of it wanted.
                */
-              15035);
+              11765);
 }
 
 /*
@@ -2562,14 +2567,15 @@ test_menus_compose_as_lines(void)
                   " occurrencesOf: (Character value: 10)", 0);
 
     /*
-     *  And the menu composed to ten lines rather than one.  Eight pixels a
-     *  line in this font, so eighty tall and narrow enough to fit -- not
-     *  872 by 8, which is what one line of all ten items measures.
+     *  And the menu composed to ten lines rather than one.  Twelve pixels a
+     *  line in this font, so a hundred and twenty tall and narrow enough to
+     *  fit -- not 872 by 12, which is what one line of all ten items
+     *  measures.
      */
     check_integer("PopUpMenu compile: 'shForm ^form'"
                   " classified: 'line ending check' notifying: nil."
                   " ^((ScreenController class classPool"
-                  " at: #ScreenYellowButtonMenu) shForm) height", 80);
+                  " at: #ScreenYellowButtonMenu) shForm) height", 120);
     check_oop("^(((ScreenController class classPool"
               " at: #ScreenYellowButtonMenu) shForm) width < 300)",
               ST_TRUE, "true");
