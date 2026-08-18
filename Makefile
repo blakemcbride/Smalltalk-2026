@@ -120,8 +120,20 @@ $(OBJ_DIR)/%.o: %.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -MMD -MP -c $< -o $@
 
+#  Built from scratch, never updated in place.
+#
+#  `ar r' ADDS and REPLACES and never removes, so an archive outlives the
+#  sources it was made from: delete a .c and its .o stays a member for ever.
+#  That is not a stale build in the usual harmless sense.  When the deleted
+#  file defined a symbol the new one also defines -- font8x8.c and
+#  font8x12.c both define ST_FONT_GLYPHS -- the link resolves to whichever
+#  member it reaches first, and picking the old one meant reading a table of
+#  eight rows per glyph as though it had twelve.  Every character came out
+#  of the following characters' rows.  It looked exactly like a font bug and
+#  was not one.
 $(LIB_AR): $(LIB_OBJ)
 	@mkdir -p $(dir $@)
+	@rm -f $@
 	ar rcs $@ $^
 
 $(VARIANT_BIN): $(MAIN_OBJ) $(LIB_AR)

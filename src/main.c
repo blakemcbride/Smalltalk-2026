@@ -15,6 +15,7 @@
 #include <sys/stat.h>
 #include "interp.h"
 #include "gfx.h"
+#include "font.h"
 #include "st_sched.h"
 #include "bootstrap.h"
 #include "profile.h"
@@ -471,6 +472,120 @@ screen_refused(const char *why)
     return 0;
 }
 
+/*
+ *  ----------  Bringing an old image's font up to date  ----------
+ *
+ *  The face is the VM's, not the image's.  The 1983 sources are code and
+ *  carry no font data, so the bootstrap paints one into a StrikeFont and
+ *  leaves it in the image as DefaultFont -- which means an image built last
+ *  month still draws with last month's face, and improving the face here
+ *  does nothing at all for the image somebody already has.  That is a poor
+ *  bargain for a resource the image never owned: it would mean rebuilding
+ *  an image to fix its typography, and no snapshot of any work would ever
+ *  get the fix.
+ *
+ *  So refresh it on load.  The glyph strike, the extent, and the metrics all
+ *  come from font.h, and the metrics matter most: TextStyle>>
+ *  gridForFont:withLead: answers `font height + lead' for the line grid and
+ *  `font ascent' for the baseline, so a stale ascent is stale line spacing
+ *  everywhere.  The style's own copies are set too, for the paths that read
+ *  them rather than recomputing.
+ *
+ *  Only when the height actually differs, and only through fields found by
+ *  name.  An image with no DefaultFont -- the Xerox VirtualImage, which has
+ *  its own real fonts and must keep them -- is left alone, which is also
+ *  what happens when any name is missing.
+ */
+#define STRIKE_CODES    128
+#define STRIKE_WIDTH    (STRIKE_CODES * ST_FONT_WIDTH)
+
+static void
+font_follows_vm(void)
+{
+    st_oop      style = image_global("DefaultTextStyle");
+    st_oop      fonts;
+    st_oop      glyphs;
+    st_oop      old_bits;
+    st_oop      new_bits;
+    gfx_form    strike;
+    uint32_t    raster = STRIKE_WIDTH / 16;
+    uint32_t    count;
+    uint32_t    k;
+    unsigned    code;
+    unsigned    row;
+
+    /*
+     *  Reached through the style rather than through DefaultFont.  That is
+     *  the global the bootstrap defines, and it is not what an image
+     *  carries -- it is gone by the time one is written -- while the style
+     *  holds the same four faces and is what every piece of text asks.
+     *  Going through the thing that is used rather than the thing that was
+     *  defined is why this finds anything at all.
+     */
+    if (!is_instance(style) || !fetch_named(style, "fontArray", &fonts))
+        return;
+    if (!is_instance(fonts) || !OM_pointer_bit(fonts))
+        return;
+    count = OM_fetch_word_length(fonts);
+    if (count == 0)
+        return;
+    if (!fetch_named(OM_fetch_pointer(0, fonts), "glyphs", &glyphs))
+        return;
+    if (!GFX_form_from_oop(glyphs, &strike))
+        return;
+    if (strike.height == ST_FONT_HEIGHT && strike.width == STRIKE_WIDTH)
+        return;                         /*  already this face  */
+
+    old_bits = OM_fetch_pointer(ST_FORM_BITS, glyphs);
+    new_bits = OM_instantiate_words(OM_fetch_class(old_bits),
+                                    raster * ST_FONT_HEIGHT);
+    if (!OM_is_present(new_bits))
+        return;
+    {
+        uint16_t   *dst = OM_word_base(new_bits);
+        size_t      n = (size_t) raster * ST_FONT_HEIGHT;
+        size_t      i;
+
+        for (i = 0; i < n; ++i)
+            dst[i] = 0;
+        for (code = ST_FONT_FIRST; code <= ST_FONT_LAST; ++code) {
+            unsigned    x = code * ST_FONT_WIDTH;
+
+            for (row = 0; row < ST_FONT_HEIGHT; ++row) {
+                uint8_t     glyph = ST_FONT_GLYPHS[code - ST_FONT_FIRST][row];
+                uint32_t    index = row * raster + x / 16;
+                unsigned    shift = (x % 16 == 0) ? 8 : 0;
+
+                dst[index] = (uint16_t) (dst[index]
+                                         | ((uint16_t) glyph << shift));
+            }
+        }
+    }
+    OM_store_pointer(ST_FORM_BITS,   glyphs, new_bits);
+    OM_store_pointer(ST_FORM_WIDTH,  glyphs, OM_int_oop(STRIKE_WIDTH));
+    OM_store_pointer(ST_FORM_HEIGHT, glyphs, OM_int_oop(ST_FONT_HEIGHT));
+
+    /*
+     *  The four faces share this one strike -- the bootstrap makes bold,
+     *  italic and bold italic by copying every field -- so the glyphs are
+     *  done for all of them.  ascent and descent are SmallIntegers and were
+     *  copied, so each face carries its own and each has to be told.
+     */
+    for (k = 0; k < count; ++k) {
+        st_oop  face = OM_fetch_pointer(k, fonts);
+
+        store_named(face, "ascent",  OM_int_oop(ST_FONT_ASCENT));
+        store_named(face, "descent", OM_int_oop(ST_FONT_DESCENT));
+    }
+    store_named(style, "lineGrid", OM_int_oop(ST_FONT_HEIGHT));
+    store_named(style, "baseline", OM_int_oop(ST_FONT_ASCENT));
+
+    fprintf(stderr, "st80: the image's font was %dx%d; it is now %dx%d, "
+                    "ascent %d descent %d\n",
+            ST_FONT_WIDTH, strike.height, ST_FONT_WIDTH, ST_FONT_HEIGHT,
+            ST_FONT_ASCENT, ST_FONT_DESCENT);
+}
+
 static int
 screen_follows_display(int width, int height)
 {
@@ -586,6 +701,7 @@ do_run(const char *path, uint64_t max_cycles)
     if (load(path) != 0)
         return 1;
     GFX_set_screen_hook(screen_follows_display);
+    font_follows_vm();
     SCHED_reset();
     if (ST_interp_init(err, sizeof err) != 0) {
         fprintf(stderr, "st80: %s\n", err);
