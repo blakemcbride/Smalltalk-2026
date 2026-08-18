@@ -39,7 +39,7 @@ stub, so the suite runs anywhere.
 
 | Platform | Command |
 |---|---|
-| Linux, macOS | `make` |
+| Linux, macOS | `make` (the 64-bit memory; `make OM=bb` for the trace harness) |
 | Windows | `nmake /f Makefile.msvc` |
 
 Windows needs Visual Studio 2022 **17.8** or later — C11 atomics arrived in

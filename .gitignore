@@ -20,6 +20,10 @@ oracle/
 smalltalk-desktop.*
 screen*.pbm
 
+# -screenshot writes the antialiasing coverage plane beside the .pbm, so the
+# window's own output can be checked without a window.  Same reasoning.
+screen*.cov
+
 # Rendered copies of documents whose source is already tracked.  The Markdown
 # under doc/ is the original; a PDF of it is a second copy to keep in step
 # and no reader of this repository needs one.

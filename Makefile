@@ -18,7 +18,15 @@ CSTD      := -std=c11
 WARN      := -Wall -Wextra -Wpedantic -Werror=implicit-function-declaration
 OPT       ?= -O2 -g
 
-OM        ?= bb
+#
+#  The 64-bit threaded memory is the system; the Blue Book one is the harness
+#  that proves the interpreter right against Xerox's traces.  So `make' with
+#  no arguments gives you the system.  It used to give you the harness, and
+#  the harness cannot bootstrap an image -- which meant the first thing a new
+#  reader did after `make clean; make' was hit a failure two layers below the
+#  mistake.  Say `make OM=bb' for the oracle; `make OM=bb test' still runs it.
+#
+OM        ?= mt
 
 UNAME_S   := $(shell uname -s)
 
@@ -248,8 +256,25 @@ unit-test: $(UNIT_BIN)
 	done; \
 	exit $$status
 
+#
+#  Everything a build, a test run or a bootstrap leaves behind.
+#
+#  .gitignore is the list, because it already had to decide what is generated
+#  and what is source -- "The bootstrapped image is a build product" is its
+#  words.  clean used to remove two of the things on it and leave the rest,
+#  so `make clean' left an image and a pile of screenshots behind and the
+#  tree was not clean.
+#
+#  Two things on that list are deliberately NOT removed.  oracle/ is ignored
+#  because it may never be committed, not because it is generated: it is the
+#  Xerox tape and nothing here can make another.  And *.pdf is a rendering of
+#  a document whose source is tracked -- no rule here produces one, so no
+#  rule here should delete one.
+#
 clean:
 	rm -rf build $(BIN)
+	rm -f *.image *.changes
+	rm -f screen*.pbm screen*.cov
 
 help:
 	@echo "Targets:"
@@ -262,8 +287,8 @@ help:
 	@echo "  font         regenerate the built-in face (needs Pillow and a font)"
 	@echo
 	@echo "Variables:"
-	@echo "  OM=bb        16-bit Blue Book object memory (default)"
-	@echo "  OM=mt        64-bit threaded object memory"
+	@echo "  OM=mt        64-bit threaded object memory (default) -- the system"
+	@echo "  OM=bb        16-bit Blue Book memory -- the Xerox trace harness"
 	@echo "  TSAN=1       build with the thread sanitizer"
 	@echo "  ASAN=1       build with address/UB sanitizers"
 	@echo "  OPT=-O0      override optimization flags"

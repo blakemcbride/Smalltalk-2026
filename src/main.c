@@ -1782,6 +1782,27 @@ main(int argc, char **argv)
             return do_methods(argv[i + 1]);
         if (!strcmp(argv[i], "-bootstrap")) {
             path_list   sources;
+#ifdef ST_OM_BB
+            /*
+             *  Refused here rather than deep inside the build.
+             *
+             *  The bootstrap lays its first objects down on the guaranteed
+             *  pointers the interpreter is compiled against, and the Blue
+             *  Book memory's are not the 64-bit one's, so building an image
+             *  in this memory fails on the first object with "fixed object 0
+             *  landed on pointer 0, expected 2".  That is a true sentence
+             *  and it is no use to anybody: it describes the symptom two
+             *  layers below the mistake, which is that this binary is the
+             *  validation harness and cannot build images at all.
+             */
+            fprintf(stderr,
+                "st80: this binary was built with the 16-bit Blue Book object"
+                " memory, which\n"
+                "st80: loads the 1983 Xerox image and cannot bootstrap a new"
+                " one.  Rebuild:\n"
+                "st80:     make OM=mt\n");
+            return 1;
+#endif
             const char *out_path = NULL;
             const char *expression = NULL;
             int         run_tests  = 0;

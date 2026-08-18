@@ -4,6 +4,8 @@ A Smalltalk-80 written in C that runs Smalltalk bytecodes on **every core of the
 machine at once**, and is checked byte-for-byte against Xerox's own 1983
 execution traces.
 
+**<https://github.com/blakemcbride/Smalltalk-2026>**
+
 ![The System Browser](doc/desktop.png)
 
 Every production Smalltalk — Squeak, Pharo, Cuis, VisualWorks, GNU Smalltalk —
@@ -23,7 +25,7 @@ the interface.
 ## It runs on every core
 
 Measured on 8 physical cores, one worker per core, total work fixed and divided
-between them. `make OM=mt bench`:
+between them. `make bench`:
 
 | kernel | 1 worker | 8 workers | speedup | what it measures |
 |---|---|---|---|---|
@@ -41,7 +43,8 @@ and where it costs — see [`doc/SCALING.md`](doc/SCALING.md).
 
 ## It is checked against 1983
 
-The Xerox tape carried reference dumps and execution traces beside the image.
+`make OM=bb test` runs these. The Xerox tape carried reference dumps and
+execution traces beside the image.
 Checking against those is far sharper than any test we could write, because
 they were produced by the machine this is pretending to be:
 
@@ -69,8 +72,8 @@ That is the central trick of the project.
 ## Quick start
 
 ```sh
-make OM=mt              # build ./st80
-make OM=mt test         # unit suites, then every profile's own SUnit suites
+make                    # build ./st80
+make test               # unit suites, then every profile's own SUnit suites
 make help               # targets and variables
 ```
 
@@ -90,13 +93,25 @@ $ ./st80 -bootstrap -manifest sources/MANIFEST -eval '(1 to: 10) inject: 0 into:
 
 | Variable | Meaning |
 |---|---|
-| `OM=mt` | 64-bit threaded object memory — the real system |
-| `OM=bb` | 16-bit Blue Book memory (the default) — the validation harness |
+| `OM=mt` | 64-bit threaded object memory — the real system, and the default |
+| `OM=bb` | 16-bit Blue Book memory — the validation harness. It loads the 1983 Xerox image and reproduces its traces; it cannot bootstrap an image, and says so if asked to |
 | `TSAN=1` | ThreadSanitizer build |
 | `ASAN=1` | Address + UB sanitizer build |
+| `FONT=`, `SIZE=`, `LEAD=` | inputs to `make font` |
 
 Sanitizer builds go to their own directory, so an instrumented binary can never
 be linked against stale uninstrumented objects.
+
+**You do not need `oracle/`.** It is the Xerox tape, it is gitignored, and a
+clone does not have it — so `make`, `make test` and bootstrapping an image all
+work without it, verified with it moved aside. The Xerox trace suite reports
+
+```
+SKIP: oracle/VirtualImage missing -- see doc/LICENSING.md
+```
+
+and the run still passes. Everything else — the 1,189 tests, the whole
+library, the desktop — is built from sources in this repository.
 
 The interface has two habits worth knowing before you decide it is broken —
 menus are press-and-hold, and a new window is placed by dragging out its
@@ -208,4 +223,6 @@ The tree is not all one licence, and the distinction matters:
   `src/gfx/LICENSE.font` is the licence it derives under.
 - **`oracle/`** — the Xerox image and traces. **Never committed, never
   redistributed.** They carry no licence grant from any host and are used only
-  as a private development oracle. Nothing is copied from them.
+  as a private development oracle. Nothing is copied from them, and nothing
+  here needs them: without `oracle/` the trace suite skips and everything else
+  builds and passes.
