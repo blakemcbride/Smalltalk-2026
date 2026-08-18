@@ -1226,18 +1226,18 @@ test_display(void)
 static void
 test_text(void)
 {
-    check_integer("DefaultFont ascent", 16);
-    check_integer("DefaultFont glyphs width", 992);
-    check_integer("DefaultFont descent", 4);
-    check_integer("DefaultFont glyphs height", 20);
+    check_integer("DefaultFont ascent", 18);
+    check_integer("DefaultFont glyphs width", 1136);
+    check_integer("DefaultFont descent", 8);
+    check_integer("DefaultFont glyphs height", 26);
     /*
      *  And they DIFFER, which is the whole of the change: the face is
      *  proportional, so the image reads a real advance per character out of
      *  the xTable rather than the same number for every one.
      */
-    check_integer("DefaultFont widthOf: $A", 11);
+    check_integer("DefaultFont widthOf: $A", 12);
     check_integer("DefaultFont widthOf: $i", 4);
-    check_integer("(DefaultFont characterForm: $A) width", 11);
+    check_integer("(DefaultFont characterForm: $A) width", 12);
 
     /*
      *  The glyph really is the letter A.  The rows are no longer worth
@@ -1245,7 +1245,7 @@ test_text(void)
      *  so this is their sum, and tools/make_font.py is where it comes from.
      */
     check_integer("(DefaultFont characterForm: $A) bits"
-                  " inject: 0 into: [:a :b | a + b]", 108672);
+                  " inject: 0 into: [:a :b | a + b]", 158544);
 
     /*  An 8x8 black square lands whole wherever it is put, aligned or not. */
     check_ink("| f | Display white. f := Form extent: 8@8."
@@ -1263,7 +1263,7 @@ test_text(void)
     check_ink("Display white."
               " DefaultFont characters: (1 to: 12) in: 'Smalltalk-80'"
               " displayAt: 20@20 clippedBy: Display boundingBox rule: 3"
-              " mask: Form black. ^1", 298);
+              " mask: Form black. ^1", 460);
     check_ink("Display white. ^1", 0);
 }
 
@@ -1279,19 +1279,21 @@ static void
 test_paragraph(void)
 {
     check_integer("(Paragraph withText: 'hello' asText) numberOfLines", 1);
-    check_integer("(Paragraph withText: 'hello' asText) width", 36);
-    check_integer("('hello world' asParagraph) width", 83);
+    check_integer("(Paragraph withText: 'hello' asText) width", 40);
+    check_integer("('hello world' asParagraph) width", 93);
     /*  Empty text composes to no lines at all, not to one empty one.  */
     check_integer("('' asParagraph) numberOfLines", 0);
 
     /*  And it draws: 'Hi' is two glyphs of known ink.  */
     check_ink("Display white. 'Hi' asParagraph displayOn: Display at: 20@20."
               /*
-               *  H at 11 wide and i at 4, inked and summed from the
-               *  strike; tools/make_font.py can be asked for the same
-               *  number, which is how this one was checked.
+               *  H at 13 wide and i at 4, inked and summed from the
+               *  strike -- 46 and 24.  This number disagreeing with that
+               *  sum is what found the default style clipping the face:
+               *  it was 63 here, and the seven missing were the dot off
+               *  the i and a row off the H.
                */
-              " ^1", 44);
+              " ^1", 70);
 }
 
 /*
@@ -1317,7 +1319,7 @@ test_view(void)
      */
     check_ink("| v | Display white. v := StandardSystemView new."
               " v label: 'Hello World'. v window: (60@40 corner: 360@200)."
-              " v display. ^1", 12514);
+              " v display. ^1", 12506);
 }
 
 /*
@@ -1363,7 +1365,7 @@ test_scheduler(void)
               " b window: (200@120 corner: 560@340)."
               " ScheduledControllers schedulePassive: a controller."
               " ScheduledControllers schedulePassive: b controller."
-              " ScheduledControllers restore. ^1", 124839);
+              " ScheduledControllers restore. ^1", 124606);
     check_integer("ScheduledControllers scheduledControllers size", 3);
 }
 
@@ -1586,7 +1588,7 @@ test_browser(void)
                *  category list filled, and an empty text pane because no
                *  method is selected yet.  Less ink, and all of it wanted.
                */
-              11411);
+              11418);
 }
 
 /*
@@ -2575,14 +2577,14 @@ test_menus_compose_as_lines(void)
                   " occurrencesOf: (Character value: 10)", 0);
 
     /*
-     *  And the menu composed to ten lines rather than one.  Twenty pixels a
-     *  line in this face, so two hundred tall and narrow enough to fit --
+     *  And the menu composed to ten lines rather than one.  Twenty-six
+     *  pixels a line in this face, so 260 tall and narrow enough to fit --
      *  not one line of all ten items laid end to end.
      */
     check_integer("PopUpMenu compile: 'shForm ^form'"
                   " classified: 'line ending check' notifying: nil."
                   " ^((ScreenController class classPool"
-                  " at: #ScreenYellowButtonMenu) shForm) height", 200);
+                  " at: #ScreenYellowButtonMenu) shForm) height", 260);
     check_oop("^(((ScreenController class classPool"
               " at: #ScreenYellowButtonMenu) shForm) width < 300)",
               ST_TRUE, "true");

@@ -114,13 +114,35 @@ that disagrees with the first.
 font is not vendored: the tool runs against one already on the machine and records which,
 and the *output* is what is checked in, so a build needs no font installed.
 
-It is currently Adwaita Sans at 16 pixels — a fork of Inter, under the SIL Open Font License
-1.1, whose licence names the Inter Project Authors; see `src/gfx/LICENSE.font`. The
-generated file says it is a derivative and at what size.
+It is currently **Inter at 18 pixels with 3 rows of lead**, under the SIL Open Font License
+1.1; see `src/gfx/LICENSE.font`. The generated file says which font, at what size, and that
+it is a derivative.
+
+Two things the generator has to get right, both found the hard way:
+
+**Each glyph is rendered into its own cell**, not as one long string. A strike font is
+columns — the image copies exactly `advance` of them — and several faces have ink left of
+the origin. Inter's `j` hooks back under the letter before it, so drawing the row in one go
+let it write into the `i` cell, and every `i` in the system then carried a fragment of a `j`
+below it.
+
+**The lead is blank rows below the descenders**, and it is the only way this system has of
+separating lines. `TextList class>>initialize` fixes a list's grid with
+`ListStyle gridForFont: 1 withLead: 0`, and `gridForFont:withLead:` answers
+`font height + lead` — so with the lead of zero the 1983 sources ask for, lines sit exactly
+one cell apart and a descender nearly touches the next line's ascenders. Padding the cell is
+the same thing done where we do have a say.
 
 The face is **proportional**, which is most of what stopped the interface reading as a
 terminal from 1980: `widthOf: $A` is 11 and `widthOf: $i` is 4, where every character used
 to be 8.
+
+And one thing the *bootstrap* has to get right: `TextStyle>>newFontArray:` takes its line
+grid and baseline from `TextConstants` — `DefaultLineGrid` 16 and `DefaultBaseline` 12,
+which are 1983's numbers for 1983's font. Any face taller than sixteen rows is clipped by
+the default style, with the baseline six rows above where the glyphs were drawn. Lists
+escape it because `TextList` calls `gridForFont:withLead:` for itself; nothing else does, so
+the bootstrap sends it to the default style too.
 
 Changing the face means rebuilding the image — `TextList` fixes its line grid from
 `font height` at class-initialisation time and `PopUpMenu` composes its labels into a Form

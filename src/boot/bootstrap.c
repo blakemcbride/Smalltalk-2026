@@ -4934,6 +4934,34 @@ install_text_style(void)
         return 1;
     OM_increase_ref(style);
     define_global("DefaultTextStyle", style);
+
+    /*
+     *  And make the style fit the face.
+     *
+     *  TextStyle>>newFontArray: takes its line grid and baseline from
+     *  TextConstants -- DefaultLineGrid 16 and DefaultBaseline 12, which
+     *  Text class>>initialize sets and which are 1983's numbers for 1983's
+     *  font.  Any face taller than sixteen rows is then CLIPPED by the
+     *  default style, and the baseline lands six rows above where the glyphs
+     *  were drawn: a bare `Hi' asParagraph lost the dot off its i and a row
+     *  off its H, silently, because the strike is fine and only the frame
+     *  around it is wrong.
+     *
+     *  Lists escaped it because TextList class>>initialize does this for
+     *  itself.  So do it here, for the style everything else copies, with
+     *  the image's own method rather than by assigning the two fields --
+     *  gridForFont:withLead: is what a list does and what the numbers mean.
+     */
+    {
+        st_oop  grid = lookup_in_chain(OM_fetch_class(style),
+                                       "gridForFont:withLead:");
+        st_oop  args[2];
+
+        args[0] = OM_int_oop(1);
+        args[1] = OM_int_oop(0);
+        if (OM_is_present(grid))
+            run_method_with(grid, style, args, 2, 2000000);
+    }
     return 1;
 }
 

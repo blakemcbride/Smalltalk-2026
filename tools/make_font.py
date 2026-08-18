@@ -15,14 +15,28 @@
 #  what is checked in -- so a build needs no font installed, and the licence
 #  obligation is on a derivative whose origin is written down.
 #
-#  Usage: tools/make_font.py <font.ttf> <pixel size> <output dir>
+#  Usage: tools/make_font.py <font.ttf> <pixel size> <lead> <output dir>
 #  Writes font_face.h (the numbers) and font_face.c (the tables) there.
 import sys
 from PIL import Image, ImageDraw, ImageFont
 
-path, size, outdir = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+path, size, lead, outdir = (sys.argv[1], int(sys.argv[2]), int(sys.argv[3]),
+                            sys.argv[4])
 face = ImageFont.truetype(path, size)
+#
+#  The LEAD is blank rows added below the descenders, and it is the only way
+#  this system has of separating lines.  TextList class>>initialize fixes a
+#  list's line grid with
+#
+#      ListStyle gridForFont: 1 withLead: 0
+#
+#  and TextStyle>>gridForFont:withLead: answers `font height + lead' -- so
+#  with a lead of zero, which is what the 1983 sources ask for and cannot be
+#  argued with from here, lines sit exactly one cell apart.  A descender then
+#  ends a row or two above the next line's ascenders and the two nearly
+#  touch.  Padding the cell is the same thing done where we do have a say.
 ascent, descent = face.getmetrics()
+descent += lead
 HEIGHT = ascent + descent
 FIRST, LAST = 0, 127
 
@@ -41,11 +55,25 @@ if width % 16:                      # the strike is a WordArray; pad to a word
     width += 16 - (width % 16)
 
 def render(mode, aa):
+    #
+    #  Glyph by glyph into its own cell, not as one long string.
+    #
+    #  A strike font is columns: the image copies exactly `advance' of them
+    #  and nothing knows that a glyph might want more.  Several faces have
+    #  ink left of the origin -- Inter's `j' hooks back under the letter
+    #  before it -- so drawing the row in one go lets a glyph write into its
+    #  neighbour's cell, and the neighbour then carries a fragment of it
+    #  wherever it is drawn.  It showed up as a full stop under every `i',
+    #  which is `j' reaching backwards.  Clipping each glyph to its own
+    #  advance is what the format means.
+    #
     im = Image.new(mode, (width, HEIGHT), 0)
-    d = ImageDraw.Draw(im)
     for code in range(32, 127):
-        d.text((xtab[code - FIRST], ascent), chr(code), font=face,
-               fill=255 if aa else 1, anchor="ls")
+        w = adv[code - FIRST]
+        cell = Image.new(mode, (w, HEIGHT), 0)
+        ImageDraw.Draw(cell).text((0, ascent), chr(code), font=face,
+                                  fill=255 if aa else 1, anchor="ls")
+        im.paste(cell, (xtab[code - FIRST], 0))
     return im
 
 bits = render("1", False)
@@ -63,7 +91,7 @@ banner = """/*
  *      %s
  *      %s, %d pixels
  *
- *  Adwaita Sans is a fork of Inter and is under the SIL Open Font License
+ *  The face is under the SIL Open Font License
  *  1.1; see src/gfx/LICENSE.font, copied from the system package.  These
  *  tables are a derivative work of it: the glyph shapes are the face's,
  *  sampled onto this system's pixel grid.  Nothing here is a font file and

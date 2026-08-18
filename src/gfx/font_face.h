@@ -6,10 +6,10 @@
  *
  *  A rasterisation of
  *
- *      /usr/share/fonts/adwaita-sans-fonts/AdwaitaSans-Regular.ttf
- *      Adwaita Sans, 16 pixels
+ *      /usr/share/fonts/rsms-inter-fonts/Inter-Regular.ttf
+ *      Inter, 18 pixels
  *
- *  Adwaita Sans is a fork of Inter and is under the SIL Open Font License
+ *  The face is under the SIL Open Font License
  *  1.1; see src/gfx/LICENSE.font, copied from the system package.  These
  *  tables are a derivative work of it: the glyph shapes are the face's,
  *  sampled onto this system's pixel grid.  Nothing here is a font file and
@@ -31,11 +31,11 @@
  *  on advances to the pixel or the two disagree about where a letter is.
  */
 #define ST_FONT_CODES          128
-#define ST_FONT_HEIGHT         20
-#define ST_FONT_ASCENT         16
-#define ST_FONT_DESCENT        4
-#define ST_FONT_MAX_WIDTH      16
-#define ST_FONT_STRIKE_WIDTH   992
+#define ST_FONT_HEIGHT         26
+#define ST_FONT_ASCENT         18
+#define ST_FONT_DESCENT        8
+#define ST_FONT_MAX_WIDTH      18
+#define ST_FONT_STRIKE_WIDTH   1136
 #define ST_FONT_STRIKE_BYTES   (ST_FONT_STRIKE_WIDTH / 8)
 
 #endif  /*  ST_FONT_FACE_H  */
