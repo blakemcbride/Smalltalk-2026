@@ -59,6 +59,14 @@ typedef struct {
     st_oop            (*make_string)(const char *text, void *user);
     st_oop            (*make_float)(double value, void *user);
     st_oop            (*make_large_integer)(int64_t value, void *user);
+    /*
+     *  For a literal too wide for int64_t.  `digits' is the literal's own
+     *  text in `radix'.  A context that does not supply this cannot compile
+     *  such a literal, and the compiler says so rather than wrapping it.
+     */
+    st_oop            (*make_large_integer_digits)(const char *digits,
+                                                   unsigned radix,
+                                                   int negative, void *user);
     st_oop            (*make_array)(st_oop *elements, unsigned count,
                                     void *user);
     /*

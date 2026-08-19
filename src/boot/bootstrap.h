@@ -211,6 +211,8 @@ int BOOT_install_display(unsigned width, unsigned height);
  *  method is compiled from `startup_source`.  Answers 0 on failure.
  */
 int BOOT_install_scheduler(const char *startup_source);
+st_oop  BOOT_make_large_integer_digits(const char *digits, unsigned radix,
+                                       int negative, void *user);
 st_oop  BOOT_lookup_global(const char *name, void *user);
 
 /*  Byte offset of a method's first bytecode, past the header and literals. */

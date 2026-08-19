@@ -615,11 +615,78 @@ BOOT_make_large_integer(int64_t value, void *user)
     }
     if (bytes == 0)
         bytes = 1;
-    big = OM_instantiate_bytes(BOOT_global("LargePositiveInteger"), bytes);
+    /*
+     *  The sign is the CLASS, not a bit in the magnitude: 1983 keeps the
+     *  bytes unsigned and says which of the two classes it is.  Building a
+     *  LargePositiveInteger whatever the sign made `-4611686018427387905'
+     *  evaluate to its own negation -- a literal that means the opposite of
+     *  what it says, with nothing to see anywhere.  Only literals were
+     *  affected, since 0 - n goes through the arithmetic and gets it right.
+     */
+    big = OM_instantiate_bytes(BOOT_global(value < 0 ? "LargeNegativeInteger"
+                                                     : "LargePositiveInteger"),
+                               bytes);
     if (!OM_is_object(big))
         return ST_NIL;
     for (i = 0; i < bytes; ++i)
         OM_store_byte(i, big, (uint8_t) ((magnitude >> (i * 8)) & 0xFF));
+    return big;
+}
+
+/*
+ *  A LargeInteger from the literal's own digits.
+ *
+ *  Multiply-accumulate in base 256, which is how 1983 stores them: the bytes
+ *  are the unsigned magnitude, little end first, and the sign is the class.
+ *  This exists because int64_t is not wide enough to carry a literal, and
+ *  silently wrapping one is how `18446744073709551616' came to answer 0.
+ */
+st_oop
+BOOT_make_large_integer_digits(const char *digits, unsigned radix,
+                               int negative, void *user)
+{
+    uint8_t     bytes[512];
+    unsigned    used = 1;
+    unsigned    i;
+    st_oop      big;
+
+    (void) user;
+    if (radix < 2 || radix > 36)
+        return ST_NIL;
+    bytes[0] = 0;
+    for (; *digits; ++digits) {
+        unsigned    carry;
+        int         d;
+
+        if (*digits >= '0' && *digits <= '9')       d = *digits - '0';
+        else if (*digits >= 'A' && *digits <= 'Z')  d = *digits - 'A' + 10;
+        else if (*digits >= 'a' && *digits <= 'z')  d = *digits - 'a' + 10;
+        else                                        break;
+        if ((unsigned) d >= radix)
+            break;
+        carry = (unsigned) d;
+        for (i = 0; i < used; ++i) {
+            unsigned    v = (unsigned) bytes[i] * radix + carry;
+
+            bytes[i] = (uint8_t) (v & 0xFF);
+            carry    = v >> 8;
+        }
+        while (carry) {
+            if (used >= sizeof bytes)
+                return ST_NIL;          /*  refuse rather than truncate  */
+            bytes[used++] = (uint8_t) (carry & 0xFF);
+            carry >>= 8;
+        }
+    }
+    while (used > 1 && bytes[used - 1] == 0)
+        --used;
+    big = OM_instantiate_bytes(BOOT_global(negative ? "LargeNegativeInteger"
+                                                    : "LargePositiveInteger"),
+                               used);
+    if (!OM_is_object(big))
+        return ST_NIL;
+    for (i = 0; i < used; ++i)
+        OM_store_byte(i, big, bytes[i]);
     return big;
 }
 
@@ -1674,6 +1741,7 @@ compile_into(boot_class *c, int class_side, const char *source,
     ctx.make_string        = BOOT_make_string;
     ctx.make_float         = BOOT_make_float;
     ctx.make_large_integer = BOOT_make_large_integer;
+    ctx.make_large_integer_digits = BOOT_make_large_integer_digits;
     ctx.make_array         = BOOT_make_array;
     ctx.make_byte_array    = BOOT_make_byte_array;
     ctx.make_method_state  = BOOT_make_method_state;
@@ -4806,6 +4874,7 @@ BOOT_install_scheduler(const char *startup_source)
     ctx.make_string        = BOOT_make_string;
     ctx.make_float         = BOOT_make_float;
     ctx.make_large_integer = BOOT_make_large_integer;
+    ctx.make_large_integer_digits = BOOT_make_large_integer_digits;
     ctx.make_array         = BOOT_make_array;
     ctx.make_byte_array    = BOOT_make_byte_array;
     ctx.make_method_state  = BOOT_make_method_state;

@@ -22,6 +22,8 @@ static st_oop syn_symbol(const char *t, void *u) { (void) t; (void) u; return 10
 static st_oop syn_string(const char *t, void *u) { (void) t; (void) u; return 2000; }
 static st_oop syn_float(double v, void *u)       { (void) v; (void) u; return 2002; }
 static st_oop syn_large(int64_t v, void *u)      { (void) v; (void) u; return 2004; }
+static st_oop syn_large_digits(const char *d, unsigned r, int n, void *u)
+{ (void) d; (void) r; (void) n; (void) u; return 2004; }
 static st_oop syn_array(st_oop *e, unsigned n, void *u)
 { (void) e; (void) n; (void) u; return 2006; }
 static st_oop syn_byte_array(const uint8_t *b, unsigned n, void *u)
@@ -178,6 +180,7 @@ survey_method(const char *class_name, int class_side, const char *category,
     ctx.make_string        = syn_string;
     ctx.make_float         = syn_float;
     ctx.make_large_integer = syn_large;
+    ctx.make_large_integer_digits = syn_large_digits;
     ctx.make_array         = syn_array;
     ctx.make_byte_array    = syn_byte_array;
     ctx.make_method_state  = syn_method_state;

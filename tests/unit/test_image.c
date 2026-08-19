@@ -50,7 +50,7 @@
  *  test had not, among them the whole of lib/Concurrency, ClassTestCase,
  *  MessageSend, SharedPool and the exception classes added this session.
  */
-#define LIB_CLASSES             38
+#define LIB_CLASSES             41
 /*
  *  This number is a ratchet and is meant to move: lib/ is where every
  *  divergence from the frozen 1983 sources lives, so it grows whenever a
@@ -68,14 +68,14 @@
  *  1983's one line, kept -- and repairCaretOffset, which turns the caret's
  *  offset into the hot spot it was always meant to be.
  */
-#define LIB_METHODS             604
+#define LIB_METHODS             652
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
  *  none.  Collections-Protocol was in that group until CollectionElement,
  *  the box a Set stores nil in, gave it a class of its own.
  */
-#define LIB_CATEGORIES          10
+#define LIB_CATEGORIES          11
 /*
  *  The image this test measures is the one profiles/st2026.profile builds,
  *  and it is built BY that profile rather than by a list kept alongside it.
@@ -172,7 +172,7 @@ build_once(void)
      *  alone brings Mutex, Monitor, Promise, SharedQueue and the fixtures,
      *  and every one of them defines initialize and no class-side new.
      */
-    CHECK_EQ_INT(res.news_synthesized, 38);
+    CHECK_EQ_INT(res.news_synthesized, 41);
     built = 1;
     return 1;
 }
@@ -197,6 +197,7 @@ evaluate(const char *expression)
     ctx.make_string        = BOOT_make_string;
     ctx.make_float         = BOOT_make_float;
     ctx.make_large_integer = BOOT_make_large_integer;
+    ctx.make_large_integer_digits = BOOT_make_large_integer_digits;
     ctx.make_array         = BOOT_make_array;
     ctx.make_byte_array    = BOOT_make_byte_array;
     ctx.make_method_state  = BOOT_make_method_state;
@@ -1865,13 +1866,14 @@ test_sunit(void)
     check_boolean("Object class subclasses includes: Collection class", 1);
     check_string("(TestCase allSubclasses collect: [:c | c name])"
                  " asSortedCollection asArray printString",
-                 "(ClassTestCase SUnitBrokenTest SUnitReportingTest "
+                 "(ClassTestCase St80CollectionTest St80NumberTest "
+                 "St80TextTest SUnitBrokenTest SUnitReportingTest "
                  "SUnitTest )");
     /*
      *  allTests leaves out the fixture whose tests are meant to go wrong.
      *  A whole-image run that reported those would cry wolf every build.
      */
-    check_integer("TestCase allTests tests size", 12);
+    check_integer("TestCase allTests tests size", 57);
 
     /*
      *  And the three buckets, from the outside as well as from within
@@ -1960,7 +1962,7 @@ test_browsing(void)
      *  the source pointer is 22 bits and silently truncated once, and a
      *  size that stops growing is how that would show.
      */
-    check_integer("(SourceFiles at: 1) contents size", 1342024);
+    check_integer("(SourceFiles at: 1) contents size", 1354605);
 }
 
 /*
@@ -2070,6 +2072,7 @@ check_same_bytecodes(const char *selector, const char *source)
     ctx.make_string        = BOOT_make_string;
     ctx.make_float         = BOOT_make_float;
     ctx.make_large_integer = BOOT_make_large_integer;
+    ctx.make_large_integer_digits = BOOT_make_large_integer_digits;
     ctx.make_array         = BOOT_make_array;
     ctx.make_byte_array    = BOOT_make_byte_array;
     ctx.make_method_state  = BOOT_make_method_state;

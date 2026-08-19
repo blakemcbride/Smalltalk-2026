@@ -7,6 +7,8 @@
 
 #include "lexer.h"
 
+#include <stdint.h>
+
 #include <ctype.h>
 #include <math.h>
 #include <stdarg.h>
@@ -186,23 +188,54 @@ radix_digit_value(int c, int radix)
     return value < radix ? value : -1;
 }
 
+/*
+ *  Hand the digits on when the value did not fit.  Nothing here builds the
+ *  number: the lexer has no object memory, and a wrapped int64 is exactly
+ *  the wrong answer that made `18446744073709551616' evaluate to zero.
+ */
+static void
+note_big_integer(st_token *out, st_lexer *lx, size_t from, unsigned radix,
+                 int too_big)
+{
+    size_t  n = lx->pos - from;
+
+    out->integer_big   = 0;
+    out->integer_radix = radix;
+    if (!too_big)
+        return;
+    if (n >= sizeof out->text)
+        n = sizeof out->text - 1;
+    memcpy(out->text, lx->source + from, n);
+    out->text[n]     = '\0';
+    out->integer_big = 1;
+}
+
 static void
 scan_number(st_lexer *lx, st_token *out, int negative)
 {
     size_t      start = lx->pos;
+    size_t      digits_start = lx->pos;
     int64_t     value = 0;
     int         radix = 10;
     int         is_float = 0;
+    int         too_big = 0;
     double      real;
 
     while (!at_end(lx) && isdigit((unsigned char) lx->source[lx->pos])) {
-        value = value * 10 + (lx->source[lx->pos] - '0');
+        int d = lx->source[lx->pos] - '0';
+
+        if (value > (INT64_MAX - d) / 10)
+            too_big = 1;
+        else
+            value = value * 10 + d;
         ++lx->pos;
     }
     if (!at_end(lx) && lx->source[lx->pos] == 'r' && value >= 2 && value <= 36) {
         radix = (int) value;
         value = 0;
+        too_big = 0;
         ++lx->pos;
+        digits_start = lx->pos;
         while (!at_end(lx)) {
             char    c = lx->source[lx->pos];
             int     digit;
@@ -215,7 +248,10 @@ scan_number(st_lexer *lx, st_token *out, int negative)
                 break;
             if (digit >= radix)
                 break;
-            value = value * radix + digit;
+            if (value > (INT64_MAX - digit) / radix)
+                too_big = 1;
+            else
+                value = value * radix + digit;
             ++lx->pos;
         }
         /*
@@ -286,6 +322,7 @@ scan_number(st_lexer *lx, st_token *out, int negative)
         }
         out->kind    = ST_TOK_INTEGER;
         out->integer = negative ? -value : value;
+        note_big_integer(out, lx, digits_start, (unsigned) radix, too_big);
         return;
     }
     /*  A period only belongs to the number if a digit follows it.  */
@@ -313,6 +350,7 @@ scan_number(st_lexer *lx, st_token *out, int negative)
     if (!is_float) {
         out->kind    = ST_TOK_INTEGER;
         out->integer = negative ? -value : value;
+        note_big_integer(out, lx, digits_start, (unsigned) radix, too_big);
         return;
     }
     {

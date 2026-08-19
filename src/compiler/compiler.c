@@ -1139,6 +1139,34 @@ static st_oop parse_byte_array(st_compiler *c);
  *  A literal array.  Bare words inside are symbols rather than variables,
  *  and nested parentheses are nested arrays.
  */
+/*
+ *  One integer literal.
+ *
+ *  Three cases and they are not interchangeable: it fits a SmallInteger; it
+ *  fits int64_t and becomes a LargeInteger from that; or it fits neither and
+ *  only its digits will do.  The third used to be the second with the top
+ *  bits thrown away, so `18446744073709551616' answered 0 and
+ *  `12345678901234567890' answered its own negation modulo 2^64 -- wrong
+ *  answers with nothing to see.
+ */
+static st_oop
+integer_literal(st_compiler *c)
+{
+    if (c->token.integer_big) {
+        if (!c->ctx->make_large_integer_digits) {
+            fail(c, "integer literal too large for this compile context");
+            return ST_NIL;
+        }
+        return c->ctx->make_large_integer_digits(c->token.text,
+                                                 c->token.integer_radix,
+                                                 c->token.integer < 0,
+                                                 c->ctx->user);
+    }
+    if (OM_int_fits((st_int) c->token.integer))
+        return OM_int_oop((st_int) c->token.integer);
+    return c->ctx->make_large_integer(c->token.integer, c->ctx->user);
+}
+
 static st_oop
 parse_literal_array(st_compiler *c)
 {
@@ -1175,10 +1203,7 @@ parse_literal_array(st_compiler *c)
 
         switch (c->token.kind) {
         case ST_TOK_INTEGER:
-            element = OM_int_fits((st_int) c->token.integer)
-                        ? OM_int_oop((st_int) c->token.integer)
-                        : c->ctx->make_large_integer(c->token.integer,
-                                                     c->ctx->user);
+            element = integer_literal(c);
             advance(c);
             break;
         case ST_TOK_FLOAT:
@@ -1385,10 +1410,7 @@ pragma_literal(st_compiler *c, pragma_arg *out)
     case ST_TOK_INTEGER:
         out->is_integer = 1;
         out->integer    = c->token.integer;
-        out->value      = OM_int_fits((st_int) c->token.integer)
-                            ? OM_int_oop((st_int) c->token.integer)
-                            : c->ctx->make_large_integer(c->token.integer,
-                                                         c->ctx->user);
+        out->value      = integer_literal(c);
         break;
     case ST_TOK_FLOAT:
         out->value = c->ctx->make_float(c->token.real, c->ctx->user);
@@ -1802,6 +1824,7 @@ compile_closure(st_compiler *c)
 }
 
 /*  A primary: a literal, a variable, a parenthesised expression, a block.  */
+
 static void
 compile_primary(st_compiler *c, var_ref *out_var)
 {
@@ -1812,7 +1835,15 @@ compile_primary(st_compiler *c, var_ref *out_var)
 
     switch (c->token.kind) {
     case ST_TOK_INTEGER:
-        emit_push_integer(c, c->token.integer);
+        /*
+         *  A literal too wide for int64_t has to go through its digits;
+         *  emit_push_integer only carries a machine word, and carrying one
+         *  is how `18446744073709551616' came to answer 0.
+         */
+        if (c->token.integer_big)
+            emit_push_literal_constant(c, integer_literal(c));
+        else
+            emit_push_integer(c, c->token.integer);
         advance(c);
         return;
     case ST_TOK_FLOAT:
@@ -3347,6 +3378,23 @@ COMPILE_to_bytecodes(const char *source, const st_compile_context *ctx,
         }
 
         compile_statements(&c, 0);
+
+        /*
+         *  And nothing may be left over.
+         *
+         *  compile_statements stops at anything it cannot continue with,
+         *  and a method body is the whole text -- so a token still standing
+         *  there is a mistake in the source, not the end of a method.  It
+         *  used to be discarded in silence: `self foo: (1/2) max: 0.25)
+         *  equals: (1/2)' compiled, as `self foo:max:', with the stray
+         *  parenthesis and everything after it dropped.  A typo that
+         *  compiles into a DIFFERENT message is the worst shape this can
+         *  take, and the chunk reader already refused it -- only the Tonel
+         *  and doit paths did not.
+         */
+        if (!c.failed && !at(&c, ST_TOK_END))
+            fail(&c, "unexpected %s after the end of the method",
+                 c.token.text[0] ? c.token.text : "token");
 
         /*
          *  A method with no explicit return answers the receiver, which the

@@ -36,9 +36,16 @@
 # A profile with no SUnit at all (bluebook) is not listed: it has no
 # TestCase, so there is nothing to ask it.
 #
+# lib/Library-Tests adds 45 tests of the 1983 library itself -- the numeric
+# tower, the collections, strings and streams -- so every profile that
+# requires st2026 gains them too.  They found three bugs on their first run:
+# a negative large-integer LITERAL lost its sign, a literal wider than 64
+# bits wrapped, and the parser dropped whatever followed a complete method
+# body instead of refusing it.
+#
 # profile               run  passed
-st2026                  12   12
-pharo-announcements     43   43
-pharo-time              633  633
-pharo-weak              32   32
-pharo-collections       469  469
+st2026                  57   57
+pharo-announcements     88   88
+pharo-time              678  678
+pharo-weak              77   77
+pharo-collections       514  514

@@ -907,6 +907,7 @@ evaluate(const char *expression, char *errbuf, size_t errlen)
     ctx.make_string        = BOOT_make_string;
     ctx.make_float         = BOOT_make_float;
     ctx.make_large_integer = BOOT_make_large_integer;
+    ctx.make_large_integer_digits = BOOT_make_large_integer_digits;
     ctx.make_array         = BOOT_make_array;
     ctx.make_byte_array    = BOOT_make_byte_array;
     ctx.make_method_state  = BOOT_make_method_state;

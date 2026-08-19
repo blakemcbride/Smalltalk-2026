@@ -75,6 +75,15 @@ typedef struct {
     st_token_kind   kind;
     char            text[256];
     int64_t         integer;
+    /*
+     *  Set when the literal does not fit in `integer'.  The digits are then
+     *  in `text' and the radix in `integer_radix', and it is the caller's
+     *  business to build the number -- the lexer will not silently hand
+     *  back a wrapped one, which is what it used to do: 2 raisedTo: 64
+     *  written out as a literal answered 0.
+     */
+    int             integer_big;
+    unsigned        integer_radix;
     double          real;
     unsigned        line;
     /*

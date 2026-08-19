@@ -49,6 +49,8 @@ static st_oop stub_float(double v, void *user)
 { (void) v; (void) user; return 2002; }
 static st_oop stub_large(int64_t v, void *user)
 { (void) v; (void) user; return 2004; }
+static st_oop stub_large_digits(const char *d, unsigned r, int n, void *user)
+{ (void) d; (void) r; (void) n; (void) user; return 2005; }
 static st_oop stub_array(st_oop *e, unsigned n, void *user)
 { (void) e; (void) n; (void) user; return 2006; }
 static st_oop stub_byte_array(const uint8_t *b, unsigned n, void *user)
@@ -80,6 +82,7 @@ context(void)
     ctx.make_string        = stub_string;
     ctx.make_float         = stub_float;
     ctx.make_large_integer = stub_large;
+    ctx.make_large_integer_digits = stub_large_digits;
     ctx.make_array         = stub_array;
     ctx.make_byte_array    = stub_byte_array;
     ctx.make_method_state  = stub_method_state;
