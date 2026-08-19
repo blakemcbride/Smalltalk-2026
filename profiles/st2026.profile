@@ -18,6 +18,6 @@ Profile {
 	#supersede : [ 'SharedQueue' ],
 	#packages : [ '../lib/Kernel', '../lib/Kernel-Exceptions', '../lib/Kernel-Protocol', '../lib/Kernel-Methods', '../lib/Kernel-Pragmas', '../lib/Collections-Protocol', '../lib/Streams-Protocol',
 	              '../lib/Strings-Protocol', '../lib/System', '../lib/Concurrency', '../lib/Concurrency-Tests', '../lib/SUnit', '../lib/SUnit-Tests',
-	              '../lib/Graphics-Fixes', '../lib/Library-Tests',
+	              '../lib/Graphics-Fixes', '../lib/Scope-Fixes', '../lib/Library-Tests',
 	              '../lib/Probe' ]
 }

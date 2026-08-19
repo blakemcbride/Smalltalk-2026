@@ -44,8 +44,8 @@
 # body instead of refusing it.
 #
 # profile               run  passed
-st2026                  57   57
-pharo-announcements     88   88
-pharo-time              678  678
-pharo-weak              77   77
-pharo-collections       514  514
+st2026                  61   61
+pharo-announcements     92   92
+pharo-time              682  682
+pharo-weak              81   81
+pharo-collections       518  518

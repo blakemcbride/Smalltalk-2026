@@ -50,7 +50,7 @@
  *  test had not, among them the whole of lib/Concurrency, ClassTestCase,
  *  MessageSend, SharedPool and the exception classes added this session.
  */
-#define LIB_CLASSES             41
+#define LIB_CLASSES             42
 /*
  *  This number is a ratchet and is meant to move: lib/ is where every
  *  divergence from the frozen 1983 sources lives, so it grows whenever a
@@ -68,7 +68,7 @@
  *  1983's one line, kept -- and repairCaretOffset, which turns the caret's
  *  offset into the hot spot it was always meant to be.
  */
-#define LIB_METHODS             652
+#define LIB_METHODS             666
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -172,7 +172,7 @@ build_once(void)
      *  alone brings Mutex, Monitor, Promise, SharedQueue and the fixtures,
      *  and every one of them defines initialize and no class-side new.
      */
-    CHECK_EQ_INT(res.news_synthesized, 41);
+    CHECK_EQ_INT(res.news_synthesized, 42);
     built = 1;
     return 1;
 }
@@ -1867,13 +1867,14 @@ test_sunit(void)
     check_string("(TestCase allSubclasses collect: [:c | c name])"
                  " asSortedCollection asArray printString",
                  "(ClassTestCase St80CollectionTest St80NumberTest "
-                 "St80TextTest SUnitBrokenTest SUnitReportingTest "
+                 "St80ReflectionTest St80TextTest SUnitBrokenTest "
+                 "SUnitReportingTest "
                  "SUnitTest )");
     /*
      *  allTests leaves out the fixture whose tests are meant to go wrong.
      *  A whole-image run that reported those would cry wolf every build.
      */
-    check_integer("TestCase allTests tests size", 57);
+    check_integer("TestCase allTests tests size", 61);
 
     /*
      *  And the three buckets, from the outside as well as from within
@@ -1962,7 +1963,7 @@ test_browsing(void)
      *  the source pointer is 22 bits and silently truncated once, and a
      *  size that stops growing is how that would show.
      */
-    check_integer("(SourceFiles at: 1) contents size", 1354605);
+    check_integer("(SourceFiles at: 1) contents size", 1361564);
 }
 
 /*
