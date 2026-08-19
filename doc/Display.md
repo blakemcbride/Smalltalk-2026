@@ -144,7 +144,7 @@ Pillow and the font installed:
 ```sh
 make font                                    # Inter at 18, lead 3
 make font FONT=/path/to/Face.ttf SIZE=15 LEAD=2
-make && ./st80 -bootstrap -manifest sources/MANIFEST -o st80.image
+make && ./st80 -bootstrap -profile profiles/st2026.profile -o st80.image
 ```
 
 The image must be rebuilt afterwards, for the reason below.

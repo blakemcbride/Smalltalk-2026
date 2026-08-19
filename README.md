@@ -83,16 +83,30 @@ make help               # targets and variables
 Bootstrap an image from source and run its desktop:
 
 ```sh
-./st80 -bootstrap -manifest sources/MANIFEST -o st80.image
+./st80 -bootstrap -profile profiles/st2026.profile -o st80.image
 ./st80 -run st80.image
 ```
 
 Or evaluate something without a window:
 
 ```sh
-$ ./st80 -bootstrap -manifest sources/MANIFEST -eval '(1 to: 10) inject: 0 into: [:a :b | a + b]'
+$ ./st80 -bootstrap -profile profiles/st2026.profile -eval '(1 to: 10) inject: 0 into: [:a :b | a + b]'
 55
 ```
+
+**Use a profile, not `-manifest sources/MANIFEST`.** The manifest is the 226
+classes of `sources/` and nothing else, so an image built from it has no
+closures, no exceptions, no `Mutex` — and none of the corrections in `lib/`,
+including the one that puts the text caret where the next character will
+appear. That build is the museum piece, and it is what `profiles/bluebook.profile`
+is for:
+
+```sh
+./st80 -bootstrap -profile profiles/bluebook.profile -o bluebook.image   # 1983, exactly
+```
+
+`profiles/` says what each one composes, and `#requires` chains them:
+`st2026` builds on `bluebook`, and the `pharo-*` profiles build on `st2026`.
 
 | Variable | Meaning |
 |---|---|

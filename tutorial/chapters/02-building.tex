@@ -165,11 +165,11 @@ The first command writes a bootable image---about 11\,MB---and an empty
 \ct{st80.image.changes} beside it. The second opens a window on it.
 
 \begin{stwarn}[Which profile?]
-The \ct{README} shows \ct{-manifest sources/MANIFEST}, which builds the pure
-1983 system: no exceptions, no closures, no \ct{Mutex}. Use
-\ct{-profile profiles/st2026.profile} instead unless you specifically want the
-museum piece. Everything in Parts II, V and VI of this book needs the
-\ct{st2026} profile.
+\ct{-manifest sources/MANIFEST} builds the pure 1983 system: no exceptions,
+no closures, no \ct{Mutex}, and none of the corrections in \ct{lib/}. It is
+the museum piece, and \ct{profiles/bluebook.profile} is the supported way to
+ask for it. Everything in Parts II, V and VI of this book needs the
+\ct{st2026} profile, so build with a profile and not with the manifest.
 \end{stwarn}
 
 The window opens on a grey halftone desktop with nothing on it. That is
