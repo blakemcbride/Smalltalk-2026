@@ -107,9 +107,15 @@ receiver could not handle.
 
 \begin{stwarn}
 \ct{description} is the \emph{class's} sentence, not the text you signalled
-with. \ct{([Error signal: 'a'] on: Error do: [:e | e description])} answers
-\ct{'An error has occurred'}. You almost always want \ct{messageText}, which
-falls back to \ct{description} when there is no text.
+with:
+
+\begin{st}
+[Error signal: 'a'] on: Error do: [:e | e description]   "'An error has occurred'"
+[Error signal: 'a'] on: Error do: [:e | e messageText]   "'a'"
+\end{st}
+
+You almost always want \ct{messageText}, which falls back to \ct{description}
+when there is no text.
 \end{stwarn}
 
 \section{Cleanup}

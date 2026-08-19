@@ -17,9 +17,14 @@ Object subclass: #Account
     category: 'MyStuff-Banking'
 \end{st}
 
-That is not a declaration. It is a message---\ct|subclass:instanceVariable\-Names: classVariableNames:poolDictionaries:category:|---sent to the class \ct{Object},
-which is an object, and which responds by building a new class and installing
-it in \ct{Smalltalk}. Evaluating the same expression in a workspace does the
+That is not a declaration. It is a message:
+
+\begin{center}
+\ct|subclass:instanceVariableNames:classVariableNames:poolDictionaries:category:|
+\end{center}
+
+\noindent sent to the class \ct{Object}, which is an object, and which responds
+by building a new class and installing it in \ct{Smalltalk}. Evaluating the same expression in a workspace does the
 same thing. There is nothing else going on.
 
 \begin{description}

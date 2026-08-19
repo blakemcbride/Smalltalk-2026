@@ -94,8 +94,13 @@ The pieces:
 \end{tabular}
 \end{center}
 
-A method is a category pragma, then \ct|Class >> selector [ ... ]|, or
-\ct|Class class >> selector [ ... ]| for the class side.
+A method is a category pragma and then the method itself:
+
+\begin{center}
+\ct|Class >> selector [ ... ]| \qquad \ct|Class class >> selector [ ... ]|
+\end{center}
+
+\noindent the second form being the class side.
 
 \begin{stnote}[Load order does not matter]
 Definitions are read in a pass of their own, before any method is compiled. A

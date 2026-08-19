@@ -168,8 +168,8 @@ The last two are what keep the audit finite.
 \item[Release locks in an \ct{ensure:}.] A critical section that exits by
   exception or non-local return must still release. \ct{Mutex} does this for
   you, which is why it could not be written before exceptions existed.
-\item[Never hold a lock across a safepoint poll.] Sends and backward jumps
-  poll. A lock held across one can deadlock the collector.
+\item[Never hold a lock across a safepoint poll.] Message sends and backward
+  jumps both poll, and a lock held across one can deadlock the collector.
 \end{description}
 
 \section{One worker or many}
