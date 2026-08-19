@@ -46,6 +46,9 @@ static st_oop   display_form = ST_NIL;
  *  -- means the same.
  */
 static int    (*screen_hook)(int width, int height);
+
+/*  Defined by whichever half of this file is compiled; see GFX_set_display. */
+static void     adopt_display_extent(void);
 static int      damage_valid;
 static unsigned long damage_calls;
 static unsigned long present_calls;
@@ -63,6 +66,27 @@ GFX_set_display(st_oop form)
     display_form = form;
     /*  Published so a snapshot carries it -- see om.h.  */
     st_om_vm_state[ST_VM_DISPLAY] = form;
+    /*
+     *  The IMAGE can change the screen too, and does.
+     *
+     *  SystemDictionary>>snapshotAs: shrinks the display to a hundred rows
+     *  so the snapshot is small, writes it, and puts the height back:
+     *
+     *      height _ Display height.
+     *      DisplayScreen displayHeight: (height min: 100).
+     *      ... snapshotPrimitive ...
+     *      DisplayScreen displayHeight: height.
+     *
+     *  Each of those installs a different Form through beDisplay and lands
+     *  here.  Left alone, the texture keeps the size it was made for and
+     *  present() declines to upload anything, and the screen controller's
+     *  window is the stale rectangle that makes every button do nothing --
+     *  the same fault as growing the screen without telling the image, from
+     *  the other direction.  So adopt the new extent the same way a resize
+     *  does: the window follows the image here, rather than the other way
+     *  round.
+     */
+    adopt_display_extent();
     GFX_damage_all();
 }
 
@@ -537,6 +561,40 @@ choose_presentation(int width, int height)
     }
     presentation_note = "integer";
     return SDL_LOGICAL_PRESENTATION_INTEGER_SCALE;
+}
+
+/*
+ *  Make the window and the image's own idea of the screen agree with the
+ *  display Form as it now is.  Called when the Form is replaced or resized,
+ *  from whichever side did it.
+ */
+static void
+adopt_display_extent(void)
+{
+    gfx_form    form;
+
+    if (!window || !renderer || !GFX_form_from_oop(display_form, &form))
+        return;
+    if (form.width == texture_w && form.height == texture_h)
+        return;                         /*  already what we are showing  */
+    if (texture)
+        SDL_DestroyTexture(texture);
+    texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888,
+                                SDL_TEXTUREACCESS_STREAMING,
+                                form.width, form.height);
+    if (!texture) {
+        texture_w = texture_h = 0;
+        return;
+    }
+    SDL_SetTextureScaleMode(texture, SDL_SCALEMODE_NEAREST);
+    texture_w = form.width;
+    texture_h = form.height;
+    SDL_SetRenderLogicalPresentation(renderer, form.width, form.height,
+                                     choose_presentation(form.width,
+                                                         form.height));
+    coverage_resize(form.width, form.height);
+    if (screen_hook)
+        screen_hook(form.width, form.height);
 }
 
 /*

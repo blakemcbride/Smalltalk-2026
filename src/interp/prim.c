@@ -1291,6 +1291,25 @@ primitive_copy_bits(void)
 
 static int  posix_errno;
 
+/*
+ *  Which descriptors are OURS, in THIS process.
+ *
+ *  A File keeps its descriptor in an instance variable, as a SmallInteger,
+ *  and an instance variable is part of the object memory -- so a snapshot
+ *  writes it out and -run reads it back into a process where that number
+ *  means something else entirely.  The changes file came back holding fd 3
+ *  and writing to it answered `Illegal seek', which is what you get for
+ *  seeking on whatever fd 3 happens to be next time.
+ *
+ *  So a descriptor is only believed if this process opened it.  A fresh
+ *  process has none marked, every descriptor an image carries is therefore
+ *  stale, and the file is reopened by name the first time it is used.  This
+ *  is the VM's half of what 1983 called external references: the image
+ *  cannot be expected to know its file handles died.
+ */
+#define POSIX_MAX_FD    4096
+static unsigned char    fd_is_ours[POSIX_MAX_FD];
+
 /*  A Smalltalk String from C, and the reverse.  */
 static st_oop
 string_from_c(const char *text, size_t n)
@@ -1336,7 +1355,37 @@ posix_fd_of(st_oop file)
      || OM_fetch_word_length(file) <= POSIX_FD_FIELD)
         return -1;
     fd = OM_fetch_pointer(POSIX_FD_FIELD, file);
-    return OM_is_int(fd) ? (int) OM_int_value(fd) : -1;
+    if (!OM_is_int(fd))
+        return -1;
+    {
+        long    n = (long) OM_int_value(fd);
+
+        if (n < 0 || n >= POSIX_MAX_FD || !fd_is_ours[n])
+            return -1;                  /*  not ours: from another life  */
+        return (int) n;
+    }
+}
+
+/*  Remember, or forget, a descriptor of our own.  */
+static int
+posix_own(int fd)
+{
+    if (fd < 0)
+        return fd;
+    if (fd >= POSIX_MAX_FD) {           /*  further than we can vouch for  */
+        close(fd);
+        posix_errno = EMFILE;
+        return -1;
+    }
+    fd_is_ours[fd] = 1;
+    return fd;
+}
+
+static void
+posix_disown(int fd)
+{
+    if (fd >= 0 && fd < POSIX_MAX_FD)
+        fd_is_ours[fd] = 0;
 }
 
 /*
@@ -1375,6 +1424,8 @@ posix_fd_for(st_oop file, int for_writing)
         posix_errno = errno;
         return -1;
     }
+    if (posix_own(fd) < 0)
+        return -1;
     OM_store_pointer(POSIX_FD_FIELD, file, OM_int_oop((st_int) fd));
     return fd;
 }
@@ -1423,8 +1474,11 @@ primitive_file_command(void)
         fd = open(path, O_RDWR | O_CREAT, 0666);
         if (fd < 0)
             fd = open(path, O_RDONLY);          /*  readable is enough  */
-        if (fd < 0) {
-            posix_errno = errno;
+        if (fd < 0 || posix_own(fd) < 0) {
+            if (fd >= 0)
+                answer = ST_FALSE;
+            else
+                posix_errno = errno;
             answer = ST_FALSE;
             break;
         }
@@ -1435,6 +1489,7 @@ primitive_file_command(void)
     case 5:                                     /*  close  */
         if (fd >= 0) {
             close(fd);
+            posix_disown(fd);
             OM_store_pointer(POSIX_FD_FIELD, file, ST_NIL);
         }
         answer = ST_TRUE;

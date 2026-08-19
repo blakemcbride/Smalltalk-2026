@@ -4356,10 +4356,35 @@ install_class_organization(void)
  *  CompiledMethod>>getSource reads a chunk from "SourceFiles at: n" at the
  *  position in its trailer, and RemoteString asks that stream only to
  *  position: and nextChunk.  A ReadWriteStream on a String answers both, so
- *  the sources need not be a file -- which is just as well, since this image
- *  has no file system yet.  Index 2 is the changes stream, empty and
- *  writable, which is where the image will put anything it compiles itself.
+ *  the sources need not be a file.
+ *
+ *  Index 2 is the changes stream, and it is different: it has to be a real
+ *  FILE, because SystemDictionary>>copyChangesTo: asks it its `name' and an
+ *  in-memory stream has none.  Saving an image goes straight through there
+ *  --
+ *
+ *      saveAs: prefix thenQuit: q
+ *          Disk == nil ifFalse: [(prefix sameAs: 'snapshot')
+ *              ifFalse: [self copyChangesTo: prefix, '.changes']].
+ *          ^self snapshotAs: prefix thenQuit: q
+ *
+ *  -- so `save' answered doesNotUnderstand inside the reporting machinery
+ *  and hung, for every name but the literal `snapshot'.  1983's changes log
+ *  is a file beside the image and is named after it, which is also what the
+ *  message it prints while copying assumes.
+ *
+ *  Only when an image is actually being written.  A bootstrap that just
+ *  evaluates something has nothing to name a changes file after, and should
+ *  not leave one lying about.
  */
+static char changes_path[1024];
+
+void
+BOOT_set_changes_file(const char *path)
+{
+    snprintf(changes_path, sizeof changes_path, "%s", path ? path : "");
+}
+
 static int
 install_sources(void)
 {
@@ -4447,6 +4472,27 @@ install_sources(void)
                  && OM_is_present(st_vm.return_value))
                     OM_store_pointer(k, files, st_vm.return_value);
             }
+        }
+    }
+    /*
+     *  And give the changes stream a file to be, if there is one to name.
+     *  Made by the image's own FileStream so it is an ordinary open file
+     *  with an ordinary name, which is all copyChangesTo: wants of it.
+     */
+    if (changes_path[0]) {
+        st_oop  fs_class = BOOT_global("FileStream");
+        st_oop  named = fs_class != ST_OOP_INVALID
+                      ? lookup_in_chain(OM_fetch_class(fs_class), "fileNamed:")
+                      : ST_OOP_INVALID;
+
+        if (OM_is_present(fs_class) && OM_is_present(named)) {
+            st_oop  arg = BOOT_make_string(changes_path, NULL);
+
+            if (OM_is_present(arg)
+             && run_method_with(named, fs_class, &arg, 1, 8000000)
+             && OM_is_present(st_vm.return_value)
+             && st_vm.return_value != ST_NIL)
+                OM_store_pointer(1, files, st_vm.return_value);
         }
     }
     define_global("SourceFiles", files);

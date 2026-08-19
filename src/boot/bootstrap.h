@@ -40,6 +40,13 @@
 extern "C" {
 #endif
 
+/*
+ *  Name the changes file the image's SourceFiles index 2 will be a stream
+ *  on.  Set before building; empty or unset leaves it an in-memory stream,
+ *  which reads back but has no name and so cannot be copied.
+ */
+void    BOOT_set_changes_file(const char *path);
+
 typedef struct {
     char        error[512];
     unsigned    error_line;

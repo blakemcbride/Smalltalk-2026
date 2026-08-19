@@ -1280,6 +1280,12 @@ do_bootstrap(const char *const *sources, const int *dialects, unsigned count,
     {
         st_boot_init_report init;
 
+        if (out_path) {
+            char    changes[1024];
+
+            snprintf(changes, sizeof changes, "%s.changes", out_path);
+            BOOT_set_changes_file(changes);
+        }
         BOOT_run_initializers(&init);
         fprintf(stderr, "st80: %u class initializers, %u ran, %u skipped,"
                         " %u unfinished",
