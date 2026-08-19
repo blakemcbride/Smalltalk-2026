@@ -1754,6 +1754,24 @@ primitive_snapshot(void)
 
     if (snapshot_path[0] == '\0')
         return 0;                       /*  nobody said where  */
+    /*
+     *  Two things before a byte is written, and the image is unusable
+     *  without either.
+     *
+     *  THE REGISTERS ARE IN THE INTERPRETER, NOT IN THE CONTEXT.  st_vm
+     *  holds the instruction and stack pointers while a process runs, and
+     *  the context's own copies are whatever they were when the scheduler
+     *  last parked it.  Snapshotting without writing them back saves a
+     *  context that says the wrong place, and -run resumes there: it
+     *  executes the middle of a bytecode, or the literal frame, and dies in
+     *  lookup_method on a selector oop of two hundred million.  Every other
+     *  caller that stops a process does this first -- worker.c and
+     *  st_sched.c both do -- and this one is a process stopping itself.
+     *
+     *  The collection that goes with it is in OM_image_save, so that every
+     *  caller gets it and not only this one.
+     */
+    ST_store_active_context();
     if (OM_image_save(snapshot_path, err, sizeof err) != 0) {
         fprintf(stderr, "st80: snapshot to %s failed: %s\n",
                 snapshot_path, err);

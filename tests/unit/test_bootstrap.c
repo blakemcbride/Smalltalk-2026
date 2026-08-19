@@ -288,6 +288,49 @@ test_snapshot_round_trip(void)
     before = evaluate("3 + 4");
     CHECK(OM_is_int(before));
 
+    /*
+     *  A snapshot carries the reachable image and not the garbage beside it.
+     *
+     *  The writer takes every table entry that is not marked free, and the
+     *  collector runs only at a safepoint, so between two of them the table
+     *  holds every context ever activated.  Blake's desktop, a few minutes
+     *  old, snapshotted to 423 MB: 3,032,732 objects written, 2,348,775 of
+     *  them contexts, and 1,957,320 of THOSE with a non-integer instruction
+     *  pointer or a method field pointing nowhere -- dead frames, written
+     *  out in full.  OM_image_load collects on the way in and says in its
+     *  own comment that it is reclaiming what the writer left, which is how
+     *  this went unseen from inside.
+     *
+     *  So: allocate a great deal of garbage, snapshot, and require the file
+     *  not to have grown by it.  Twenty thousand throwaway arrays is far
+     *  more than the few hundred a bootstrap leaves lying about, and if the
+     *  snapshot carries them the size moves by megabytes rather than by the
+     *  odd word.
+     */
+    {
+        long        lean, fat;
+        FILE       *fp;
+        int         i;
+
+        CHECK_EQ_INT(OM_image_save(path, err, sizeof err), 0);
+        fp = fopen(path, "rb");
+        fseek(fp, 0, SEEK_END); lean = ftell(fp); fclose(fp);
+
+        for (i = 0; i < 20000; ++i)
+            (void) OM_instantiate_pointers(BOOT_global("Array"), 4);
+
+        CHECK_EQ_INT(OM_image_save(path, err, sizeof err), 0);
+        fp = fopen(path, "rb");
+        fseek(fp, 0, SEEK_END); fat = ftell(fp); fclose(fp);
+
+        ++st_test_checks;
+        if (fat > lean + lean / 20) {
+            ++st_test_failures;
+            printf("  FAIL 20000 dead arrays grew the snapshot from %ld to "
+                   "%ld bytes; it is writing the garbage\n", lean, fat);
+        }
+    }
+
     CHECK_EQ_INT(OM_image_save(path, err, sizeof err), 0);
     if (err[0])
         printf("  save: %s\n", err);

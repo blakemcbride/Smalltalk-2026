@@ -106,6 +106,25 @@ OM_image_save(const char *path, char *errbuf, size_t errlen)
 
     if (errbuf && errlen)
         errbuf[0] = '\0';
+    /*
+     *  Collect first, always.
+     *
+     *  The writer takes every table entry not marked free, and the collector
+     *  runs only at a safepoint -- so between two of them the table holds
+     *  every context ever activated, and all of it would go to disk.  Blake's
+     *  desktop, a few minutes old, snapshotted to 423 MB: 3,032,732 objects
+     *  written, 2,348,775 of them contexts, and 1,957,320 of THOSE with a
+     *  non-integer instruction pointer or a method field pointing nowhere.
+     *  Dead frames, written out in full, for a reachable image of ten
+     *  megabytes.
+     *
+     *  It belongs here rather than in primitive 97 because it is the
+     *  writer's own invariant: a snapshot is the reachable image.  The
+     *  loader has always collected on the way in -- see the comment at the
+     *  end of OM_image_load, which says it is reclaiming what the writer
+     *  left -- and that is exactly the asymmetry this removes.
+     */
+    OM_collect();
     f = fopen(path, "wb");
     if (!f) {
         fail(errbuf, errlen, "cannot write %s", path);
