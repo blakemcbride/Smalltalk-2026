@@ -359,8 +359,15 @@ literal_index(st_compiler *c, st_oop value)
         if (c->out->literals[i] == value)
             return i;
     }
-    if (c->out->literal_count >= 256) {
-        fail(c, "too many literals");
+    /*
+     *  The header holds the count in six bits, so 63 is the ceiling and
+     *  exceeding it is not a thing to mask away -- see ST_HEADER_LITERAL_MAX
+     *  in interp.h.  The 1983 Encoder refuses here too, with the same
+     *  advice.
+     */
+    if (c->out->literal_count >= ST_HEADER_LITERAL_MAX) {
+        fail(c, "more than %u literals referenced; split this method",
+             (unsigned) ST_HEADER_LITERAL_MAX);
         return 0;
     }
     c->out->literals[c->out->literal_count] = value;
@@ -2922,8 +2929,9 @@ append_method_class_literal(st_compiler *c)
                 "context does not supply");
         return;
     }
-    if (c->out->literal_count >= 256) {
-        fail(c, "too many literals");
+    if (c->out->literal_count >= ST_HEADER_LITERAL_MAX) {
+        fail(c, "more than %u literals referenced; split this method",
+             (unsigned) ST_HEADER_LITERAL_MAX);
         return;
     }
     c->out->literals[c->out->literal_count++] =
@@ -3472,6 +3480,24 @@ COMPILE_method(const char *source, const st_compile_context *ctx,
         ++literals;                     /*  room for the header extension  */
     }  else  {
         flag = code.argument_count;
+    }
+    /*
+     *  The backstop for that ++.
+     *
+     *  literal_index refuses past ST_HEADER_LITERAL_MAX, so the body cannot
+     *  overrun the field on its own; the header extension is added here,
+     *  after compilation, and can take a method that was exactly at the
+     *  ceiling one past it.  Masking it away is what made this class of bug
+     *  silent, so it is an error instead.
+     */
+    if (literals > ST_HEADER_LITERAL_MAX) {
+        snprintf(out->error, sizeof out->error,
+                 "more than %u literals referenced: %u, and the header "
+                 "extension this method needs is one of them; split it",
+                 (unsigned) ST_HEADER_LITERAL_MAX, literals);
+        out->error_line = 0;
+        out->method     = ST_OOP_INVALID;
+        return -1;
     }
 
     /*

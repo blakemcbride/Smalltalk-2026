@@ -172,6 +172,29 @@ ST_header_large_context(st_oop header)
 #define ST_HEADER_FRAME_SHIFT   16
 #define ST_HEADER_FRAME_MAX     255
 
+/*
+ *  How many literals a method may have.
+ *
+ *  Six bits, and it is not ours to widen: the field is the Blue Book's, at
+ *  bits 9..14 of the header, and ST_header_literal_count below reads it as
+ *  `(header >> 1) & 63'.  The interpreter finds the first bytecode by
+ *  counting past that many words, so a method that claims the wrong number
+ *  of literals executes its own literal frame as instructions.
+ *
+ *  The compiler used to allow 256 and let build_header mask the count down,
+ *  which is exactly that failure and was silent: 65 literals became 1, the
+ *  method started 64 words early, and the resulting garbage surfaced as a
+ *  jump on a non-boolean, an unused bytecode, a frame overflow, or a
+ *  segfault -- never as anything that named the method.  The 1983 compiler
+ *  refuses instead, in Encoder>>litIndex:, and so do we.
+ *
+ *  Its bound is one out, which is worth recording rather than copying: it
+ *  tests `position = 64' BEFORE writing, so it permits a sixty-fourth
+ *  literal that the six-bit field cannot state.  Nothing ever reached it,
+ *  and 63 is the number the format actually holds.
+ */
+#define ST_HEADER_LITERAL_MAX   63
+
 static inline unsigned
 ST_header_frame_size(st_oop header)
 {

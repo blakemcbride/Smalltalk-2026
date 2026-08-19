@@ -304,6 +304,86 @@ test_snapshot_round_trip(void)
     remove(path);
 }
 
+/*
+ *  ----------  The literal ceiling, end to end  ----------
+ *
+ *  test_compiler checks that the compiler refuses a 64th literal.  This
+ *  checks the thing that refusal is FOR: that the count the header states
+ *  is the count the method has.  The field is six bits, and when the
+ *  compiler let a bigger number through, build_header masked it -- 65
+ *  became 1, the interpreter looked for the first bytecode 64 words early,
+ *  and ran the literal frame as instructions.
+ *
+ *  It needs a real method rather than the stub context, because the failure
+ *  was in the object the compiler builds and not in the bytecodes it emits.
+ */
+static void
+test_literal_ceiling_in_a_real_method(void)
+{
+    st_compile_context  ctx;
+    st_compile_result   res;
+    char                source[8192];
+    unsigned            i;
+    int                 n;
+
+    printf("---- the literal ceiling ----\n");
+
+    memset(&ctx, 0, sizeof ctx);
+    ctx.intern_symbol      = BOOT_intern_symbol;
+    ctx.make_string        = BOOT_make_string;
+    ctx.make_float         = BOOT_make_float;
+    ctx.make_large_integer = BOOT_make_large_integer;
+    ctx.make_array         = BOOT_make_array;
+    ctx.make_byte_array    = BOOT_make_byte_array;
+    ctx.make_method_state  = BOOT_make_method_state;
+    ctx.make_character     = BOOT_make_character;
+    ctx.lookup_global      = BOOT_lookup_global;
+    ctx.method_class_association = BOOT_lookup_global("Object", NULL);
+
+    /*
+     *  Sixty-two distinct string literals plus the #printString: symbol is
+     *  63, exactly what the header can state.
+     */
+    n = snprintf(source, sizeof source, "doIt");
+    for (i = 0; i < 62; ++i)
+        n += snprintf(source + n, sizeof source - (size_t) n,
+                      " self printString: 'l%u'.", i);
+    snprintf(source + n, sizeof source - (size_t) n, " ^self");
+
+    if (COMPILE_method(source, &ctx, &res) != 0) {
+        printf("  62 literals should compile: %s\n", res.error);
+        CHECK(0);
+    }  else  {
+        st_compiled_code    code;
+        st_oop              header = OM_fetch_pointer(0, res.method);
+        unsigned            stated = ST_header_literal_count(header);
+
+        /*
+         *  What the header says has to be what the compiler counted.  This
+         *  is the whole check: a masked count reads as a small number, and
+         *  the interpreter then starts reading bytecodes from the middle of
+         *  the literal frame.
+         */
+        CHECK(stated <= 63);
+        if (COMPILE_to_bytecodes(source, &ctx, &code) == 0)
+            CHECK_EQ_INT((int) stated, (int) code.literal_count);
+        else
+            CHECK(0);
+        /*  And the first bytecode sits exactly past that many words.  */
+        CHECK_EQ_INT((int) BOOT_method_initial_ip(res.method),
+                     (int) ((stated + 1) * sizeof(st_oop)));
+    }
+
+    /*  One literal past it is refused, not wrapped.  */
+    n = snprintf(source, sizeof source, "doIt");
+    for (i = 0; i < 70; ++i)
+        n += snprintf(source + n, sizeof source - (size_t) n,
+                      " self printString: 'l%u'.", i);
+    snprintf(source + n, sizeof source - (size_t) n, " ^self");
+    CHECK(COMPILE_method(source, &ctx, &res) != 0);
+    CHECK(strstr(res.error, "literals") != NULL);
+}
+
 int
 main(void)
 {
@@ -318,6 +398,7 @@ main(void)
     test_booleans();
     test_objects();
     test_snapshot_round_trip();
+    test_literal_ceiling_in_a_real_method();
 
     OM_shutdown();
     return ST_TEST_END();

@@ -1140,6 +1140,82 @@ test_pragmas(void)
                "a pragma and then a less-than", 0, 32, 178, 124);
 }
 
+/*
+ *  ----------  The literal ceiling  ----------
+ *
+ *  A method's header carries its literal count in six bits, so 63 is the
+ *  most it can state, and the interpreter finds the first bytecode by
+ *  counting past that many words.  A method that claims the wrong number
+ *  starts executing in the middle of its own literal frame.
+ *
+ *  The compiler used to allow 256 and let build_header mask the count down
+ *  to fit.  65 literals became 1, the method began 64 words early, and the
+ *  garbage that ran surfaced as a jump on a non-boolean, an unused
+ *  bytecode, a frame overflow or a segfault -- never as anything naming the
+ *  method that caused it.  Sixty of `s nextPutAll: ''same''.'' was enough,
+ *  because two occurrences of a string literal are two objects and each one
+ *  takes a slot.
+ *
+ *  So the interesting number is not "does a big method work" but "is the
+ *  count the header states the count the method has".  Both are checked.
+ */
+static void
+test_literal_ceiling(void)
+{
+    st_compile_context  ctx = context();
+    st_compiled_code    code;
+    char                source[8192];
+    unsigned            i;
+    int                 n;
+
+    /*  Distinct unary selectors, because each interns its own Symbol.  */
+    symbol_count = 0;
+    n = snprintf(source, sizeof source, "foo");
+    for (i = 0; i < 63; ++i)
+        n += snprintf(source + n, sizeof source - (size_t) n, " self s%u.", i);
+    snprintf(source + n, sizeof source - (size_t) n, " ^self");
+
+    if (COMPILE_to_bytecodes(source, &ctx, &code) != 0) {
+        printf("  63 literals should compile, and did not: %s\n", code.error);
+        CHECK(0);
+    }  else  {
+        CHECK_EQ_INT((int) code.literal_count, 63);
+        /*
+         *  The invariant that broke: what the header can say has to be what
+         *  the method has.  Six bits, so this is the mask build_header
+         *  applies, and it must change nothing.
+         */
+        CHECK_EQ_INT((int) (code.literal_count & 63), (int) code.literal_count);
+    }
+
+    /*  And one more is refused rather than wrapped.  */
+    symbol_count = 0;
+    n = snprintf(source, sizeof source, "foo");
+    for (i = 0; i < 64; ++i)
+        n += snprintf(source + n, sizeof source - (size_t) n, " self s%u.", i);
+    snprintf(source + n, sizeof source - (size_t) n, " ^self");
+
+    ctx = context();
+    CHECK(COMPILE_to_bytecodes(source, &ctx, &code) != 0);
+    CHECK(strstr(code.error, "63 literals") != NULL);
+
+    /*
+     *  The shape that found it: a run of sends each carrying its own string.
+     *  The stub interns every string to one oop, so this cannot reach the
+     *  ceiling here the way the bootstrap does -- what it checks is that a
+     *  long straight-line method is otherwise ordinary.
+     */
+    symbol_count = 0;
+    n = snprintf(source, sizeof source, "foo | s |");
+    for (i = 0; i < 60; ++i)
+        n += snprintf(source + n, sizeof source - (size_t) n,
+                      " s nextPutAll: 'same'.");
+    snprintf(source + n, sizeof source - (size_t) n, " ^s");
+    ctx = context();
+    CHECK_EQ_INT(COMPILE_to_bytecodes(source, &ctx, &code), 0);
+    CHECK(code.literal_count <= 63);
+}
+
 int
 main(void)
 {
@@ -1166,6 +1242,7 @@ main(void)
     test_the_two_dialects();
     test_inlined_or_real_is_decided_by_lookahead();
     test_what_reading_pharo_found();
+    test_literal_ceiling();
 
     return ST_TEST_END();
 }
