@@ -17,13 +17,16 @@ listening.
 
 \section{The three buttons, again}
 
+The colours the library calls them by are in Section~\ref{sec:buttons}; this
+is what they do.
+
 \begin{center}
 \small
-\begin{tabular}{@{}llp{0.46\textwidth}@{}}
+\begin{tabular}{@{}lp{0.62\textwidth}@{}}
 \toprule
-red & left & select\\
-yellow & middle & the view's menu --- what you can do to the contents\\
-blue & right & the window's menu --- what you can do to the window\\
+left & select\\
+middle & the view's menu --- what you can do to the contents\\
+right & the window's menu --- what you can do to the window\\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -33,7 +36,7 @@ it; release outside to choose nothing.
 
 \section{The desktop menu}
 
-Yellow on the background:
+The middle button on the background:
 
 \begin{center}
 \small
@@ -55,12 +58,13 @@ Yellow on the background:
 \end{tabular}
 \end{center}
 
-Every one of these that opens a window then asks you to frame it: press red,
+Every one of these that opens a window then asks you to frame it: press the
+left button,
 drag out a rectangle, release.
 
 \section{The window menu}
 
-Blue, anywhere over a window:
+The right button, anywhere over a window:
 
 \begin{center}
 \small
@@ -82,7 +86,7 @@ interrupt and ask whether you meant it.
 \section{The text editor}
 
 Every text pane in the system is the same editor, and it has the same
-yellow-button menu:
+middle-button menu:
 
 \begin{center}
 \small
@@ -108,7 +112,7 @@ the selected token is).
 
 \subsection{Selecting}
 
-Press red and drag. Two shortcuts worth having:
+Press the left button and drag. Two shortcuts worth having:
 
 \begin{itemize}
 \item Double-clicking inside a pair of delimiters---quotes, brackets,
@@ -172,7 +176,7 @@ than typed:
 \end{sh}
 
 \ct{m X Y} moves the pointer, \ct{d} and \ct{u} press and release a button
-(128 blue, 129 yellow, 130 red), \ct{k} types a key, \ct{w N} waits N bytecode
+(128 right, 129 middle, 130 left), \ct{k} types a key, \ct{w N} waits N bytecode
 slices so the image has time to respond, and \ct{x} posts a window-exposed
 event. That script opens the desktop menu, chooses \ct{browser}, frames a
 window, and screenshots the result.

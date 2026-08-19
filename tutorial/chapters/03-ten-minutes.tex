@@ -18,8 +18,8 @@ it straight back down, and looks exactly like nothing happened.
 \subsection{You place a window yourself}
 
 Choosing \ct{browser} from a menu does not open a window. It \emph{arms} one.
-The next thing the system wants is for you to say where it goes: press the red
-button, drag out a rectangle, release. The window appears when you let go.
+The next thing the system wants is for you to say where it goes: press the
+left button, drag out a rectangle, release. The window appears when you let go.
 
 Nothing tells you this in words. The only signal is the cursor, which turns
 into a top-left corner, then a bottom-right corner while you drag, then back
@@ -32,25 +32,32 @@ System Browser takes 1.1 seconds. It is waiting for you.
 \end{stwarn}
 
 \section{The three buttons}
+\label{sec:buttons}
 
 Smalltalk-80 names mouse buttons by colour, after the Alto's, and the library
 still does. On an ordinary three-button mouse:
 
 \begin{center}
 \small
-\begin{tabular}{@{}lll@{}}
+\begin{tabular}{@{}llp{0.52\textwidth}@{}}
 \toprule
-colour & button & what it does\\
+button & 1983 called it & what it does\\
 \midrule
-red    & left   & select: text, list items, everything\\
-yellow & middle & the \emph{view's} own menu---what you can do to the contents\\
-blue   & right  & the \emph{window's} menu---move it, close it\\
+left   & red    & select: text, list items, everything\\
+middle & yellow & the \emph{view's} own menu---what you can do to the contents\\
+right  & blue   & the \emph{window's} menu---move it, close it\\
 \bottomrule
 \end{tabular}
 \end{center}
 
 If you have a two-button mouse or a trackpad, you will need whatever your
-system offers for a middle click. Yellow is the button you use most.
+system offers for a middle click, because the middle button is the one you
+use most.
+
+The middle column is there because the library still speaks in colours: the
+Alto's buttons were painted red, yellow and blue, and the source you will
+read says \ct{yellowButtonMenu} and \ct{redButtonPressed} throughout. This
+book says left, middle and right everywhere else.
 
 \section{Opening your first window}
 
@@ -63,7 +70,7 @@ Start the desktop:
 You get a grey halftone desktop with nothing on it. Now:
 
 \begin{enumerate}
-\item Press and \emph{hold} the \textbf{yellow} (middle) button anywhere on
+\item Press and \emph{hold} the \textbf{middle} button anywhere on
   the desktop. The system menu appears:
 \begin{plain}
 restore display
@@ -80,7 +87,7 @@ save
 quit
 \end{plain}
 \item Still holding, drag down to \ct{workspace} and release.
-\item The cursor becomes a corner. Press the \textbf{red} (left) button
+\item The cursor becomes a corner. Press the \textbf{left} button
   somewhere in the upper left, drag down and right to sketch a rectangle, and
   release.
 \end{enumerate}
@@ -91,7 +98,7 @@ scratch pad: text you can type in and evaluate, saved nowhere.
 \begin{figure}[htbp]
 \centering
 \includegraphics[width=0.78\textwidth]{figures/desktop-menu.png}
-\caption{The desktop menu, held open with the yellow button. The grey
+\caption{The desktop menu, held open with the middle button. The grey
 halftone behind it is the bare desktop. \ct{restore display} is highlighted
 because the pointer was warped onto the menu's current item when it
 opened---that jump is deliberate, and Section~3.7 says why.}
@@ -105,8 +112,9 @@ Click in the workspace and type:
 3 + 4
 \end{st}
 
-Now select it---press red at the start, drag to the end, release---and with
-the text still selected press and hold the \textbf{yellow} button. This menu
+Now select it---press the left button at the start, drag to the end,
+release---and with the text still selected press and hold the \textbf{middle}
+button. This menu
 is the text editor's:
 
 \begin{plain}
@@ -137,7 +145,7 @@ shows it. Those two are the whole of how you talk to a running Smalltalk.
 \begin{stnote}[There are no keyboard shortcuts for this]
 If you have used Pharo or Squeak you will reach for \ct{Ctrl-D} and
 \ct{Ctrl-P}. They are not here. In 1983 \ct{do it} and \ct{print it} live in
-the yellow-button menu and nowhere else, and this system is that system.
+the middle-button menu and nowhere else, and this system is that system.
 \end{stnote}
 
 Try a few more. Select each line and \ct{print it}:
@@ -154,7 +162,7 @@ Smalltalk classNames size
 
 \section{Moving and closing a window}
 
-There is no title bar to drag and no close box. Hold the \textbf{blue} (right)
+There is no title bar to drag and no close box. Hold the \textbf{right}
 button anywhere over a window:
 
 \begin{plain}
@@ -189,7 +197,8 @@ to stay on screen and the pointer follows it.
 
 \section{Opening a Browser}
 
-Same gesture: yellow on the desktop, drag to \ct{browser}, release, then frame
+Same gesture: middle button on the desktop, drag to \ct{browser}, release,
+then frame
 a rectangle---make this one large, most of the screen.
 
 \begin{figure}[htbp]
@@ -201,10 +210,10 @@ The \ct{instance} and \ct{class} buttons under the class list switch which
 side you are looking at.}
 \end{figure}
 
-Click along the top panes with the red button: pick a category on the left,
+Click along the top panes with the left button: pick a category on the left,
 then a class, then a message category, then a message. The bottom pane fills
 with the source of the method you chose. It is editable, and \ct{accept} in
-the yellow-button menu compiles it back into the running system.
+the middle-button menu compiles it back into the running system.
 
 That is the whole idea of Smalltalk, and it is worth pausing on. The Browser
 you are using is written in the language you are browsing, its source is in
@@ -213,7 +222,8 @@ window you changed it from.
 
 \section{Leaving}
 
-Yellow on the desktop, then \ct{quit}, which offers three choices: save and
+Middle button on the desktop, then \ct{quit}, which offers three choices:
+save and
 quit, quit without saving, or continue. Closing the operating-system window
 also works and saves nothing.
 
