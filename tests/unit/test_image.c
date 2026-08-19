@@ -2800,6 +2800,176 @@ test_mixed_arithmetic(void)
     check_integer("3.5 ceiling", 4);
 }
 
+/*
+ *  ----------  Where the ink lands  ----------
+ *
+ *  check_ink counts pixels and never asks WHERE they are, and that blind
+ *  spot has a shape: it cannot see anything drawn in the wrong PLACE, only
+ *  something drawn in the wrong AMOUNT.  The caret spent this system's whole
+ *  life fifteen pixels right of the insertion point -- `off by 1.5
+ *  characters', as it was reported -- with an ink count identical to the
+ *  correct one, so every suite here was green throughout.
+ *
+ *  What was missing is not more pixels checked but a different KIND of
+ *  check: drawn output held against the model that produced it.  The image
+ *  computes where the next character goes -- characterBlockForIndex: -- and
+ *  then something draws a caret; the test is that those two agree.  Nothing
+ *  here hard-codes a coordinate, so a new face or a new size moves both
+ *  sides together and the assertion still means what it says.
+ */
+static void
+ink_bounds(int top, int bottom, int *left, int *right)
+{
+    gfx_form    form;
+    int         x, y;
+
+    *left  = -1;
+    *right = -1;
+    if (!GFX_form_from_oop(GFX_display_form(), &form))
+        return;
+    if (bottom > form.height)
+        bottom = form.height;
+    for (y = top; y < bottom; ++y) {
+        for (x = 0; x < form.width; ++x) {
+            uint16_t    word = form.bits[(size_t) y * form.raster + (x >> 4)];
+
+            if ((word >> (15 - (x & 15))) & 1) {
+                if (*left < 0 || x < *left)  *left = x;
+                if (x > *right)              *right = x;
+            }
+        }
+    }
+}
+
+/*
+ *  Draw a paragraph at a known place, show the caret for one index, and
+ *  answer where the image SAYS that index is.  The caret is the only ink
+ *  below the text, so its extent can be read off without disturbing
+ *  anything.
+ */
+static void
+check_caret_agrees(const char *text, int index, int origin_y)
+{
+    char    source[512];
+    st_oop  answer;
+    int     model_x, left, right, centre;
+
+    snprintf(source, sizeof source,
+             "| p b | Display white. p := '%s' asParagraph."
+             " p displayOn: Display at: 100@%d."
+             " b := p characterBlockForIndex: %d."
+             " p displayCaretForBlock: b. ^b topLeft x",
+             text, origin_y, index);
+    answer = evaluate(source);
+    ++st_test_checks;
+    if (!OM_is_int(answer)) {
+        ++st_test_failures;
+        printf("  FAIL caret '%s' index %d: no answer\n", text, index);
+        return;
+    }
+    model_x = (int) OM_int_value(answer);
+
+    /*
+     *  Below the baseline is the caret and nothing else: the glyphs stop at
+     *  the baseline and the caret form's ink is in its top rows, drawn from
+     *  there down.
+     */
+    ink_bounds(origin_y + 19, origin_y + 26, &left, &right);
+    ++st_test_checks;
+    if (left < 0) {
+        ++st_test_failures;
+        printf("  FAIL caret '%s' index %d: no caret drawn\n", text, index);
+        return;
+    }
+    /*
+     *  The caret is a small symmetric arrow, so its ink straddles the point
+     *  it marks.  One pixel of slack, because an even-width tip cannot sit
+     *  exactly on a coordinate.
+     */
+    centre = (left + right + 1) / 2;
+    ++st_test_checks;
+    if (centre < model_x - 1 || centre > model_x + 1) {
+        ++st_test_failures;
+        printf("  FAIL caret '%s' index %d: ink %d..%d (centre %d), but the "
+               "image puts that character at x=%d\n",
+               text, index, left, right, centre, model_x);
+    }
+}
+
+static void
+test_where_the_ink_lands(void)
+{
+    printf("---- drawn output against the model that produced it ----\n");
+
+    /*
+     *  The caret, at the three places it can be: before everything, between
+     *  two characters, and after the last one -- which is where it lives
+     *  while you type and where the fault was reported.
+     */
+    check_caret_agrees("HELLO", 1, 100);
+    check_caret_agrees("HELLO", 3, 140);
+    check_caret_agrees("HELLO", 6, 180);
+    check_caret_agrees("WIlL", 5, 220);      /*  widths 21, 5, 5, 11  */
+
+    /*
+     *  And the other direction: a point inside a character has to name that
+     *  character.  Drawing and hit-testing walk the same widths, so this is
+     *  what catches them walking them differently -- a click landing on the
+     *  wrong letter, which is the same fault as the caret wearing different
+     *  clothes.
+     */
+    check_integer("| p | p := 'HELLO' asParagraph."
+                  " ^(p characterBlockAtPoint:"
+                  "    ((p characterBlockForIndex: 3) topLeft + (2@2))) stringIndex", 3);
+    check_integer("| p | p := 'HELLO' asParagraph."
+                  " ^(p characterBlockAtPoint:"
+                  "    ((p characterBlockForIndex: 5) topLeft + (2@2))) stringIndex", 5);
+
+    /*
+     *  A window is drawn where it was framed.  Three rounds of this session
+     *  went looking for a framing fault that was not there, and nothing in
+     *  the suite could have said so: check_ink counts a border without
+     *  caring where it is.  This does.
+     */
+    {
+        int left, right;
+
+        evaluate("| v | Display white. v := StandardSystemView new."
+                 " v label: 'W'. v window: (200@300 corner: 320@360)."
+                 " v display. ^1");
+        ink_bounds(300, 361, &left, &right);
+        ++st_test_checks;
+        /*
+         *  The left edge is exact and the right is within the border's own
+         *  width, which is the view's business and not this test's.  What
+         *  is being asserted is that the window is drawn WHERE it was put.
+         */
+        if (left != 200 || right < 317 || right > 320) {
+            ++st_test_failures;
+            printf("  FAIL a view windowed to 200..320 drew from %d to %d\n",
+                   left, right);
+        }
+    }
+
+    /*
+     *  A paragraph drawn at a point starts there.  The first glyph's ink may
+     *  sit a pixel or two in -- that is its left side bearing -- but not a
+     *  character and a half, which is what a bad offset looks like.
+     */
+    {
+        int left, right;
+
+        evaluate("Display white."
+                 " 'HELLO' asParagraph displayOn: Display at: 100@100. ^1");
+        ink_bounds(100, 120, &left, &right);
+        ++st_test_checks;
+        if (left < 100 || left > 104) {
+            ++st_test_failures;
+            printf("  FAIL text drawn at 100 starts its ink at %d\n", left);
+        }
+    }
+}
+
 int
 main(void)
 {
@@ -2875,6 +3045,7 @@ main(void)
     test_menus_compose_as_lines();
     test_quit();
     test_input();
+    test_where_the_ink_lands();
     test_printing_deep();
     test_mixed_arithmetic();
     test_integers_larger_than_a_smallinteger();
