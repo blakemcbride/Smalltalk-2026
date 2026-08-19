@@ -1,0 +1,169 @@
+\chapter{Streams}
+\label{ch:streams}
+
+\standfirst{A stream is a position in a collection. Reading and writing become
+the same two verbs regardless of what is underneath, which is why building a
+string, parsing input and talking to a file all look alike.}
+
+\section{Why streams}
+
+Building a string by repeated concatenation copies everything each time:
+
+\begin{st}
+"quadratic, and allocates a new String on every iteration"
+| s |
+s := ''.
+#('a' 'b' 'c') do: [:each | s := s , each].
+\end{st}
+
+A stream keeps a position and grows its target as needed:
+
+\begin{st}
+| s |
+s := WriteStream on: (String new: 0).
+#('a' 'b' 'c') do: [:each | s nextPutAll: each].
+s contents                        "'abc'"
+\end{st}
+
+That is the idiom you will write hundreds of times. \ct{printOn:} methods,
+report generation, and every bit of serialisation in the library are this
+shape.
+
+\section{The three kinds}
+
+\begin{center}
+\small
+\begin{tabular}{@{}lp{0.60\textwidth}@{}}
+\toprule
+\ctp{ReadStream} & reads from an existing collection\\
+\ctp{WriteStream} & writes into a collection, growing it\\
+\ctp{ReadWriteStream} & both, with one position\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{st}
+ReadStream on: #(1 2 3)
+ReadStream on: 'hello'
+WriteStream on: (String new: 0)
+WriteStream on: (Array new: 0)
+WriteStream with: 'existing'       "positioned at the end, appends"
+ReadWriteStream on: (String new: 0)
+\end{st}
+
+\begin{stwarn}
+\ct{WriteStream on: aCollection} discards what is already there and writes
+from position zero. \ct{WriteStream with: aCollection} keeps it and appends.
+The names give no hint which is which, and choosing wrong silently loses your
+data.
+\end{stwarn}
+
+\section{Reading}
+
+\begin{st}
+| s |
+s := ReadStream on: #(1 2 3 4).
+s next                     "1"
+s peek                     "2 -- look without consuming"
+s skip: 1
+s next                     "3"
+s atEnd                    "false"
+s upToEnd                  "(4 )"
+s reset                    "back to the beginning"
+s next: 2                  "(1 2 ) -- the next two"
+s upTo: 3                  "everything before the first 3, consuming it"
+s do: [:each | ... ]       "the rest, one at a time"
+\end{st}
+
+\ct{next} past the end answers \ct{nil} rather than raising, so
+\ct{[s atEnd] whileFalse: [...]} is the loop to write.
+
+\section{Writing}
+
+\begin{st}
+| s |
+s := WriteStream on: (String new: 0).
+s nextPut: $a.                 "one element"
+s nextPutAll: 'bcd'.           "many"
+s print: 42.                   "the printString of anything"
+s nextPutAll: 42 printString.  "the same thing, written out"
+s space; tab; cr.              "convenience, on character streams"
+s contents                     "everything written so far"
+\end{st}
+
+\ct{print:} is the one that saves the most typing, and it works for any object
+because it goes through \ct{printOn:}. If you have given your class a
+\ct{printOn:}, it prints properly inside collections, inside other objects'
+\ct{printOn:} methods, and here.
+
+\section{Streams and \texttt{printOn:}}
+
+This is the connection worth seeing clearly. \ct{printString} is defined
+roughly as:
+
+\begin{st}
+printString
+    | s |
+    s := WriteStream on: (String new: 0).
+    self printOn: s.
+    ^s contents
+\end{st}
+
+So writing \ct{printOn:} for your class gets you \ct{printString},
+\ct{displayString}, correct printing inside collections, and useful output in
+the Inspector and Debugger---all from one method that never builds a string.
+
+\begin{st}
+printOn: aStream
+    aStream nextPutAll: 'an Account of '; print: balance
+\end{st}
+
+\section{What is not here}
+
+\ct{Stream>>collect:} and the other collection-protocol methods are not
+implemented on streams---\ct!(ReadStream on: #(1 2 3)) collect: [:x | x]! is
+a doesNotUnderstand. Read into a collection first, or use \ct{do:}.
+
+\section{Files}
+
+Files are streams too. \ct{Disk} is the global for the file system, and
+\ct{FileStream} is what you get:
+
+\begin{st}
+| f |
+f := FileStream fileNamed: 'notes.txt'.
+f nextPutAll: 'hello'; close.
+
+(FileStream fileNamed: 'notes.txt') contentsOfEntireFile
+\end{st}
+
+The File List window---\ct{file list} on the desktop menu---is a browser for
+the same thing, and Chapter~\ref{ch:tools} covers it.
+
+Underneath, this is a small set of POSIX primitives the VM supplies: open,
+close, read, write, truncate, size, remove, rename and list. A file's
+descriptor lives in an instance variable, which means it is part of the object
+memory and gets written into a snapshot; the VM only believes a descriptor
+that the current process opened, so a resumed image reopens by name rather
+than writing to whatever that number now means.
+
+\section{The \texttt{Transcript}}
+
+\ct{Transcript} is a stream you can write to from anywhere, and it appears in
+the System Transcript window if one is open.
+
+\begin{st}
+Transcript show: 'hello'; cr.
+Transcript show: 42 printString; cr.
+Transcript display: 42; cr.
+\end{st}
+
+\ct{show:} wants a String. \ct{display:} takes anything and uses its
+\ct{displayString}, which is usually what you meant.
+
+\begin{stwarn}
+Output from concurrent processes may interleave. If you want a line to arrive
+whole, hold the Transcript's monitor across the entry, or build the line in a
+\ct{WriteStream} and \ct{show:} it in one send. See
+Chapter~\ref{ch:contract}.
+\end{stwarn}

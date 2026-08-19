@@ -1,0 +1,204 @@
+\chapter{Numbers}
+\label{ch:numbers}
+
+\standfirst{Integers are exact and unbounded, fractions are exact, floats are
+IEEE doubles, and they all coerce to each other by a mechanism you can extend.}
+
+\section{The hierarchy}
+
+\begin{plain}
+Object
+  Magnitude
+    Character
+    Date
+    Time
+    Number
+      Float
+      Fraction
+      Integer
+        SmallInteger
+        LargePositiveInteger
+        LargeNegativeInteger
+\end{plain}
+
+\ct{Magnitude} is the abstract class of things that can be compared. It
+defines \ct{<}, \ct{>}, \ct{<=}, \ct{>=}, \ct{between:and:}, \ct{max:} and
+\ct{min:} in terms of a single \ct{<} that subclasses supply---so making your
+own comparable class is a matter of implementing \ct{<} and \ct{=}.
+
+\section{Integers are exact, always}
+
+\ct{SmallInteger} is the one that fits in a machine word with a tag. When a
+result does not fit, the system promotes to \ct{LargePositiveInteger} or
+\ct{LargeNegativeInteger} automatically, and nothing in your code has to
+notice.
+
+\begin{st}
+100 factorial               "158 digits, exactly right"
+2 raisedTo: 100             "1267650600228229401496703205376"
+(2 raisedTo: 100) class     "LargePositiveInteger"
+1000000 * 1000000           "1000000000000"
+\end{st}
+
+There is no overflow and no wraparound anywhere in Smalltalk arithmetic.
+
+\section{Division: four operators, and they differ}
+
+This is where most bugs live, so it is worth memorising.
+
+\begin{st}
+7 / 2            "(7/2)   -- an exact Fraction, not 3 and not 3.5"
+7 // 2           "3       -- floor division"
+7 \\ 2           "1       -- modulo, follows //"
+7 rem: 2         "1       -- remainder, truncates toward zero"
+7 quo: 2         "3       -- truncated division"
+\end{st}
+
+The difference shows up with negatives, and \ct{//} and \ct|\\| are the pair
+that stay consistent:
+
+\begin{st}
+-7 // 2          "-4      -- floor"
+-7 \\ 2          "1       -- always has the sign of the divisor"
+-7 quo: 2        "-3      -- truncated toward zero"
+-7 rem: 2        "-1"
+\end{st}
+
+\begin{stwarn}
+\ct{/} answers a \ct{Fraction} when the division is not exact. \ct{10 / 4} is
+\ct{(5/2)}, not \ct{2.5}. If you want a float, ask: \ct{(10 / 4) asFloat}. If
+you want an integer, use \ct{//}. Getting a Fraction where you expected a
+Float is not an error and will propagate silently, which is usually fine---the
+answer is more accurate than the one you asked for---but it surprises people
+whose \ct{printString} suddenly has a slash in it.
+\end{stwarn}
+
+\section{Fractions}
+
+Exact rational arithmetic, reduced automatically:
+
+\begin{st}
+(1/3) + (1/6)               "(1/2)"
+(1/4) numerator             "1"
+(1/4) denominator           "4"
+(3/4) asFloat               "0.75"
+(1/10) + (2/10) = (3/10)    "true  -- exact"
+0.1 + 0.2 = 0.3             "false -- IEEE doubles, as everywhere"
+\end{st}
+
+That last pair is the argument for fractions in one line. When exactness
+matters---money, in particular---use \ct{Fraction}. There is no
+\ct{ScaledDecimal} in this system.
+
+\section{Floats}
+
+IEEE 754 doubles, printed with enough digits to read back exactly.
+
+\begin{st}
+3.14159
+1.5e2                       "150.0"
+1.5e-2                      "0.015"
+(1/3) asFloat               "0.3333333333333333"
+9 sqrt                      "3.0"
+100 ln                      "4.605170185988092"
+10 log: 10                  "1.0"
+Float pi
+Float e
+Float infinity
+\end{st}
+
+Rounding and truncation, which are four different questions:
+
+\begin{st}
+3.7 rounded                 "4"
+3.7 truncated               "3"
+3.7 floor                   "3"
+3.7 ceiling                 "4"
+-3.7 floor                  "-4"
+-3.7 truncated              "-3"
+3.7 roundTo: 0.5            "3.5"
+\end{st}
+
+\section{Everyday protocol}
+
+\begin{center}
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+\ctp{abs} \ctp{negated} \ctp{sign} & $|x|$, $-x$, and $-1$/$0$/$1$\\
+\ctp{squared} \ctp{sqrt} \ctp{raisedTo:} \ctp{**} & powers\\
+\ctp{min:} \ctp{max:} \ctp{between:and:} & comparison\\
+\ctp{even} \ctp{odd} \ctp{isPrime} & testing\\
+\ctp{gcd:} \ctp{lcm:} \ctp{factorial} & integers\\
+\ctp{ln} \ctp{log:} \ctp{exp} \ctp{sin} \ctp{cos} \ctp{tan} \ctp{arcTan} & transcendental\\
+\ctp{asFloat} \ctp{asInteger} \ctp{asString} \ctp{printString} & conversion\\
+\ctp{isNumber} \ctp{isInteger} \ctp{isZero} & testing\\
+\ctp{@} & make a Point: \ctp{3 @ 4}\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{stnote}[Two that are not here]
+\ct{printString: aBase} and \ct{radix:} are Pharo's and this library does not
+have them---\ct{255 printString: 16} is a doesNotUnderstand. What is here is
+\ct{printOn:base:length:padded:} and \ct{printStringPadded:}, from the
+protocol shims in \ct{lib/Kernel-Protocol}. Radix \emph{literals} (\ct{16rFF})
+work fine; it is only printing in a base that is missing.
+\end{stnote}
+
+\section{Numbers as loop control}
+
+\begin{st}
+1 to: 5 do: [:i | ... ]
+1 to: 10 by: 2 do: [:i | ... ]
+10 to: 1 by: -1 do: [:i | ... ]
+5 timesRepeat: [ ... ]
+\end{st}
+
+\ct{to:do:} and \ct{to:by:do:} are compiled to jumps, so they cost no more
+than a \ct{for} loop would. \ct{timesRepeat:} is a real send, which almost
+never matters.
+
+\ct{(1 to: 5)} without \ct{do:} is an \ct{Interval}---a real collection you can
+\ct{collect:} over, ask the size of, and keep:
+
+\begin{st}
+(1 to: 5) asArray                    "#(1 2 3 4 5)"
+(1 to: 10 by: 3) asArray             "#(1 4 7 10)"
+(1 to: 3) collect: [:i | i * i]      "(1 4 9 )"
+(1 to: 10) inject: 0 into: [:a :b | a + b]   "55"
+\end{st}
+
+\section{Coercion, and how to join in}
+
+Mixed arithmetic works because of \emph{generality}: each number class knows a
+number saying how general it is, and when \ct{+} meets an argument it does not
+understand, it sends \ct{retryRelationalOp:coercing:} or friends, which
+converts the less general to the more general and tries again.
+
+\begin{st}
+1 + 2.5             "3.5   -- integer coerced to float"
+(1/2) + 0.5         "1.0   -- fraction to float"
+1 + (1/2)           "(3/2) -- integer to fraction"
+\end{st}
+
+To make your own number type join in, implement \ct{generality},
+\ct{coerce:} and the arithmetic selectors. This is rarely necessary and is
+worth knowing about because it explains why there are no coercion rules
+written down anywhere: they are methods.
+
+\section{Points}
+
+Not numbers, but they belong here because \ct{@} makes them and they do
+arithmetic:
+
+\begin{st}
+3 @ 4                       "3@4"
+(3 @ 4) + (1 @ 1)           "4@5"
+(3 @ 4) x                   "3"
+(3 @ 4) * 2                 "6@8"
+\end{st}
+
+Points are used everywhere in the graphics classes---see
+Chapter~\ref{ch:graphics}---and a surprising amount of interface code reads
+naturally because \ct{aPoint + anotherPoint} means what you want.

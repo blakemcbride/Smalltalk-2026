@@ -1,0 +1,197 @@
+\chapter{Tests and Doctests}
+\label{ch:tests}
+
+\standfirst{Two oracles, both runnable from the command line without a window,
+and a ratchet that will not let a score fall or quietly rise.}
+
+\section{SUnit}
+
+The original of every xUnit, and it is here. Subclass \ct{TestCase}, write
+methods whose names begin with \ct{test}, and assert:
+
+\begin{st}
+TestCase subclass: #AccountTest
+    instanceVariableNames: 'account'
+    classVariableNames: ''
+    poolDictionaries: ''
+    category: 'MyStuff-Tests'
+
+AccountTest >> setUp
+    account := Account new
+
+AccountTest >> testStartsEmpty
+    self assert: account balance equals: 0
+
+AccountTest >> testDeposit
+    account deposit: 100.
+    self assert: account balance equals: 100
+
+AccountTest >> testOverdraftIsRefused
+    self should: [account withdraw: 1] raise: Error
+\end{st}
+
+\subsection{The assertions}
+
+\begin{center}
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+\ctp{assert:} \ctp{deny:} & a boolean, or a block answering one\\
+\ctp{assert:description:} \ctp{deny:description:} & with a message\\
+\ctp{assert:equals:} \ctp{deny:equals:} & reports both values on failure\\
+\ctp{assert:identicalTo:} & \ctp{==}\\
+\ctp{assert:closeTo:} \ctp{assert:closeTo:precision:} & floats\\
+\ctp{assertEmpty:} \ctp{denyEmpty:} & \\
+\ctp{assertCollection:equals:} & \\
+\ctp{assertCollection:hasSameElements:} & order-independent\\
+\ctp{should:raise:} \ctp{shouldnt:raise:} & exceptions\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Prefer \ct{assert:equals:} over \ct{assert:} with an \ct{=} inside it: when it
+fails, the first tells you what the value actually was.
+
+\subsection{setUp and tearDown}
+
+\ct{setUp} runs before each test method and \ct{tearDown} after, so every test
+starts from the same state. A fresh instance of the test class is made for
+each test method, so instance variables cannot leak between tests.
+
+\subsection{Running them}
+
+From the command line, over a whole profile:
+
+\begin{sh}
+./st80 -bootstrap -profile profiles/mystuff.profile -tests
+\end{sh}
+
+\begin{plain}
+12 run, 12 passed, 0 failed, 0 errors
+\end{plain}
+
+It exits non-zero if anything did not pass, so it drops straight into a
+build script. In the image:
+
+\begin{st}
+AccountTest run
+AccountTest suite run
+(AccountTest selector: #testDeposit) run
+\end{st}
+
+\subsection{Failures and errors are different}
+
+A \emph{failure} is an assertion that did not hold---the code did what it does
+and you expected something else. An \emph{error} is an exception nobody
+expected. \ct{TestResult} counts them separately, and the distinction is worth
+keeping: a wall of errors usually means one thing is broken, and a wall of
+failures usually means the code changed.
+
+\begin{stnote}
+\ct{TestFailure} \emph{is} an \ct{Error}, so the two handlers in
+\ct{TestResult} are nested rather than side by side---the more specific one
+has to be nearer up the sender chain, or every failure would be counted as an
+error and the distinction would quietly stop working. That is a general lesson
+about \ct{on:do:} and not just about SUnit.
+\end{stnote}
+
+\section{Doctests}
+
+Pharo documents a method by putting examples in its comment, in a form meant
+to be machine-readable:
+
+\begin{st}
+asBag
+	"{1. 2} asBag = {2. 1} asBag >>> true"
+	"#() asBag = Bag new >>> true"
+	^Bag withAll: self
+\end{st}
+
+There are about 1,500 of them in the imported sources. They were written by
+the people who wrote the methods, they cannot drift from the code they sit in,
+and running them answers the question a port actually cares about---not "does
+this source parse here" but "does it \emph{mean} here what it means there".
+
+\begin{sh}
+./st80 -bootstrap -profile profiles/st2026.profile -doctests lib/MyStuff/Account.class.st
+\end{sh}
+
+\begin{plain}
+st80: 10 doctests in 3 methods of 1 files: 10 passed, 0 wrong,
+      0 need something not here
+\end{plain}
+
+A doctest is checked by evaluating \ct{(expression) = (expected)}. Three
+outcomes are told apart, because they are three different pieces of news:
+
+\begin{center}
+\small
+\begin{tabular}{@{}lp{0.58\textwidth}@{}}
+\toprule
+passed & the expression answered the expected value\\
+wrong & the method exists here and does something else. \textbf{This is a
+  bug}\\
+need something not here & it could not run: a class or selector this image has
+  not got\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{stnote}
+The file being scanned need not be part of the image. \ct{-doctests} reads
+examples out of any source file and runs them against whatever the profile
+built---which makes it a general-purpose way to check a list of expressions.
+This book's own examples are one such file; see below.
+\end{stnote}
+
+Doctests run under a much smaller bytecode budget than \ct{-eval}, on the
+principle that an example written to show what a method does is not a
+computation. One that does not answer quickly has hit something that does not
+terminate.
+
+\section{The ratchet}
+
+\ct{make test} runs the unit suites and then every profile's own SUnit suites,
+and holds the scores against \ct{tests/profiles.expected}:
+
+\begin{plain}
+# profile               run  passed
+st2026                  12   12
+pharo-announcements     43   43
+pharo-time              633  633
+pharo-weak              32   32
+pharo-collections       469  469
+\end{plain}
+
+Both directions fail:
+
+\begin{center}
+\small
+\begin{tabular}{@{}lp{0.60\textwidth}@{}}
+\toprule
+fewer passing & a regression --- the obvious one\\
+fewer \emph{run} & tests that stopped being found. This looks like success and
+  is worse\\
+more of either & an unrecorded improvement, which nothing is protecting ---
+  edit the file in the same commit that earns it\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The second row is the one that file exists for. A package whose tests stop
+being found reports a perfect score, and the Chronology suites spent weeks
+reporting nothing at all because four classes deadlocked the runner and the
+number nobody printed was the number nobody read.
+
+\section{Checking the book itself}
+
+Everything in this tutorial that shows an answer is also a doctest, checked in
+as \ct{tutorial/examples/TutorialExamples.class.st}:
+
+\begin{sh}
+cd tutorial && make verify
+\end{sh}
+
+If the book and the system ever disagree, that command is the referee. It is
+the same mechanism the imported packages are held to, pointed at prose instead
+of at source.

@@ -1,0 +1,231 @@
+\chapter{Beyond the Blue Book}
+\label{ch:beyond}
+
+\standfirst{Everything this language has that Smalltalk-80 did not, what it
+deliberately does not have, and how to turn it on. If you already know
+Smalltalk, this is the chapter to read first.}
+
+\section{The dialect switch}
+
+The compiler has two dialects. \ct{bluebook} is the 1983 grammar and the 1983
+block semantics; \ct{closures} is everything in this chapter. Every profile in
+\ct{profiles/} except \ct{bluebook} itself selects \ct{closures}, with one line:
+
+\begin{st}
+#dialect : 'closures',
+\end{st}
+
+Building with \ct{-manifest sources/MANIFEST} and no profile gives you the
+museum piece: no closures, no exceptions, no \ct{Mutex}.
+
+\begin{stwarn}[A doit is not compiled in the profile's dialect]
+\ct|#dialect| governs the \emph{packages} a profile loads. The expression
+you hand to \ct{-eval}, and each example \ct{-doctests} runs, is compiled
+separately and defaults to the Blue Book dialect however the profile was
+written. The visible symptom is that \ct{[:x | x] class} answers
+\ct{BlockContext} rather than \ct{BlockClosure}. Pass \ct{-closures} on the
+command line to compile doits the same way:
+
+\begin{sh}
+./st80 -bootstrap -profile profiles/st2026.profile -closures -eval '[:x | x] class'
+\end{sh}
+\end{stwarn}
+
+\section{Full closures}
+
+The largest of the differences, and the one everything else rests on. Blocks
+capture their enclosing variables, survive the method that made them, and may
+be entered more than once at the same time---which matters here, because two
+workers may evaluate the same block object concurrently.
+
+\begin{st}
+makeCounter
+    | n |
+    n := 0.
+    ^[n := n + 1]           "still works after makeCounter has returned"
+\end{st}
+
+Non-local return (\ct|^| inside a block), \ct{ensure:} and
+\ct{ifCurtailed:} come with them, and so does the exception system built on
+top---see Chapters~\ref{ch:blocks} and~\ref{ch:exceptions}.
+
+The bytecodes are Squeak's V3PlusClosures set, not Pharo's SistaV1. That is a
+free choice here because this system compiles Pharo's source itself rather
+than loading Pharo's compiled methods; the only code that could tell the
+difference is code that inspects bytecodes.
+
+\section{Dynamic arrays}
+
+\begin{st}
+{ 1. 2 + 3. Date today }
+\end{st}
+
+Braces, expressions separated by periods, evaluated at run time. Compiled as
+\ct{Array new:} filled by \ct{at:put:}, so it needed no new bytecode.
+
+The contrast with \ct|#(1 2 3)| is the point: a literal array holds
+compile-time constants and is one shared object; a dynamic array is built
+fresh each time from whatever the expressions answer. It is also the only way
+to get \ct{true}, \ct{false} and \ct{nil} into an array in this
+system---inside \ct|#(...)| they are bare words and bare words become
+symbols.
+
+\section{Byte arrays}
+
+\begin{st}
+#[1 2 255]
+#(#[1 2] #[3 4])        "nested inside a literal array; also fine"
+\end{st}
+
+Elements 0 to 255, a real \ct{ByteArray}.
+
+\section{Block-local temporaries}
+
+\begin{st}
+[:x | | doubled | doubled := x * 2. doubled + 1] value: 3      "7"
+[ | t | t := 10. t squared ] value                             "100"
+\end{st}
+
+Each temporary gets its own frame slot and is set to \ct{nil} at every
+activation, so a block called twice does not see the last call's values.
+
+\section{Pragmas}
+
+\ct{<primitive: 60>} was the Blue Book's one annotation. It is now general:
+any keyword message with literal arguments, several per method.
+
+\begin{st}
+annotated
+    <test>
+    <deprecated: 'use #normal'>
+    <shared: #serialize>
+    ^#annotated
+\end{st}
+
+Pragmas are attached to the compiled method and readable back:
+
+\begin{st}
+(Unwind class >> #annotated) pragmas size                        "3"
+(Unwind class >> #annotated) hasPragma: #shared:                 "true"
+((Unwind class >> #annotated) pragmaAt: #deprecated:) arguments first
+                                                     "'use #normal'"
+\end{st}
+
+The two primitive forms still mean something to the compiler; every other
+pragma is stored and otherwise ignored, which is exactly what you want---the
+meaning belongs to whatever framework reads them.
+
+\begin{stnote}[One real limit]
+Binary selectors are scanned greedily up to two characters, so a closing
+\ct{>} immediately followed by another binary character arrives as one token
+and the pragma is not recognised. In practice pragmas end lines and this never
+comes up, but the limit is real.
+\end{stnote}
+
+\subsection{Named primitives}
+
+\begin{st}
+<primitive: 'primitiveName' module: 'ModuleName'>
+\end{st}
+
+Parsed and compiled as Squeak's primitive 117 with the descriptor as literal
+zero. The VM does not yet dispatch it, so the Smalltalk body always runs. It
+is here so that Pharo source containing them can be loaded.
+
+\section{Traits}
+
+A trait is a named bag of methods with no instances and no place in the
+superclass chain. This system applies them by \emph{flattening at load
+time}---the trait's source is compiled into each class that uses it, which is
+why an instance-variable reference inside a trait method means the same thing
+in every class that takes it.
+
+\begin{st}
+Trait {
+	#name : 'TGreeting',
+	#category : 'Probe-Core'
+}
+
+{ #category : 'greeting' }
+TGreeting >> greeting [
+	^'hello from ', self subject
+]
+\end{st}
+
+\begin{st}
+Class {
+	#name : 'Greeter',
+	#superclass : 'Object',
+	#traits : 'TGreeting',
+	#classTraits : 'TGreeting classTrait',
+	#category : 'Probe-Core'
+}
+
+{ #category : 'greeting' }
+Greeter >> subject [
+	^'a class'
+]
+\end{st}
+
+\ct{Greeter new greeting} answers \ct{'hello from a class'}: the trait supplied
+\ct{greeting}, the class supplied \ct{subject}, and the class's own method
+always wins over the trait's.
+
+Composition supports \ct{+} only. Trait subtraction (\ct{-}) and aliasing
+(\ct{@}) are rejected with a report rather than silently mis-loaded, and there
+is no trait reflection or update propagation: flattening is a load-time
+operation, and changing a trait afterwards does not change the classes that
+took it.
+
+\section{\texttt{new} calling \texttt{initialize}}
+
+Pharo classes assume \ct{new} sends \ct{initialize}; the 1983
+\ct{Behavior>>new} is a primitive and nothing else. Rather than change
+\ct{Behavior>>new}---which would double-initialise the thirty-four 1983
+classes that already write \ct|^super new initialize| by hand---the loader
+synthesises the 1983 idiom for any loaded class that has \ct{initialize}
+reachable and no class-side \ct{new} of its own, and reports every class it
+did that to.
+
+Classes you type into a Browser get no such help. Write the constructor.
+
+\section{What is deliberately missing}
+
+\subsection{Scaled decimals}
+
+\ct{1.23s2} is not implemented and will not be, and the reason is worth
+knowing. The other five extensions were clean \emph{syntax errors} before, so
+adding them could not take meaning away from anything. \ct{1.23s2} already
+parses: a unary selector needs no space before it, so \ct{3factorial} is
+\ct{3 factorial} and \ct{1.23s2} is \ct{1.23 s2} by the same rule. It is the
+only one of the six with an existing meaning to take away, there is no
+\ct{ScaledDecimal} class for it to answer, and \ct{Float} does not implement
+\ct{s2}, so you get a doesNotUnderstand and \ct{nil}.
+
+\subsection{The tool ecosystem}
+
+No Morphic, Bloc, Spec or Athens; no Iceberg, Metacello or Monticello; no
+Fuel; no Opal or RB-AST. The first group is single-threaded by construction.
+The second is replaced by directories of Tonel files and a profile. The last
+assumes SistaV1 bytecodes and Spur literals.
+
+\section{Summary, for people arriving from Pharo}
+
+\begin{center}
+\small
+\begin{tabular}{@{}lp{0.52\textwidth}@{}}
+\toprule
+closures, \ctp{ensure:}, exceptions & yes, in the \ctp{closures} dialect\\
+\ct|{ }|, \ct|#[ ]|, block temps, pragmas & yes\\
+traits & yes, flattened at load, \ctp{+} only\\
+\ctp{new} $\rightarrow$ \ctp{initialize} & for loaded packages, synthesised
+  and reported; not automatic for classes you type in\\
+\ctp{1.23s2} & no, and it silently answers \ctp{nil}\\
+\ct|#(true)| & a Symbol, not \ctp{true}\\
+\ct|#foo printString| & \ct|'foo'|, not \ct|'#foo'|\\
+\ctp{Ctrl-D}, \ctp{Ctrl-P} & no; \ctp{do it} and \ctp{print it} are in the
+  yellow-button menu\\
+same-priority atomicity & \textbf{gone}; see Chapter~\ref{ch:contract}\\
+\bottomrule
+\end{tabular}
+\end{center}

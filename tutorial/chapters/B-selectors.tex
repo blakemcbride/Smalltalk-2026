@@ -1,0 +1,193 @@
+\chapter{Selector Quick Reference}
+\label{app:selectors}
+
+\standfirst{The messages you will reach for most, grouped by what you are
+trying to do. Everything here is in the \ct{st2026} profile.}
+
+\section{Any object}
+
+\begin{center}
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+\ctp{class} \ctp{isKindOf:} \ctp{isMemberOf:} \ctp{respondsTo:} & identity\\
+\ctp{=} \ctp{==} \ctp{~=} \ctp{~~} \ctp{hash} \ctp{identityHash} & comparison\\
+\ctp{isNil} \ctp{notNil} \ctp{ifNil:} \ctp{ifNotNil:} & nil\\
+\ctp{printString} \ctp{displayString} \ctp{printOn:} & printing\\
+\ctp{printNl} \ctp{displayNl} & print to the Transcript\\
+\ctp{copy} \ctp{shallowCopy} \ctp{deepCopy} \ctp{postCopy} & copying\\
+\ctp{inspect} & open an Inspector\\
+\ctp{yourself} & answer the receiver --- for cascades\\
+\ctp{->} & make an Association\\
+\ctp{error:} \ctp{halt} \ctp{assert:} & failure\\
+\ctp{doesNotUnderstand:} & override to intercept unknown messages\\
+\ctp{become:} \ctp{becomeForward:} & swap identity\\
+\ctp{isString} \ctp{isSymbol} \ctp{isNumber} \ctp{isCollection} \ctp{isBlock} & testing\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{Booleans and blocks}
+
+\begin{center}
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+\ctp{ifTrue:} \ctp{ifFalse:} \ctp{ifTrue:ifFalse:} \ctp{ifFalse:ifTrue:} & \\
+\ctp{and:} \ctp{or:} \ctp{\&} \ctp{|} \ctp{not} \ctp{xor:} & \\
+\midrule
+\ctp{value} \ctp{value:} \ctp{value:value:} \ctp{valueWithArguments:} & \\
+\ctp{numArgs} \ctp{cull:} & \\
+\ctp{whileTrue:} \ctp{whileFalse:} \ctp{repeat} & \\
+\ctp{on:do:} \ctp{ensure:} \ctp{ifCurtailed:} & \\
+\ctp{fork} \ctp{forkAt:} \ctp{newProcess} & \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{Numbers}
+
+\begin{center}
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+\ctp{+ - * /} \ctp{//} \ctp{\textbackslash\textbackslash} \ctp{rem:} \ctp{quo:} & \\
+\ctp{abs} \ctp{negated} \ctp{sign} \ctp{squared} \ctp{sqrt} & \\
+\ctp{raisedTo:} \ctp{**} \ctp{factorial} \ctp{gcd:} \ctp{lcm:} & \\
+\ctp{ln} \ctp{log:} \ctp{exp} \ctp{sin} \ctp{cos} \ctp{tan} \ctp{arcTan} & \\
+\ctp{rounded} \ctp{truncated} \ctp{floor} \ctp{ceiling} \ctp{roundTo:} & \\
+\ctp{min:} \ctp{max:} \ctp{between:and:} & \\
+\ctp{even} \ctp{odd} \ctp{isPrime} \ctp{isZero} & \\
+\ctp{asFloat} \ctp{asInteger} \ctp{asString} \ctp{printStringPadded:} & \\
+\ctp{to:do:} \ctp{to:by:do:} \ctp{timesRepeat:} \ctp{to:} \ctp{to:by:} & \\
+\ctp{@} & make a Point\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{Collections}
+
+\begin{center}
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+\ctp{do:} \ctp{do:separatedBy:} \ctp{reverseDo:} \ctp{doWithIndex:} & iterate\\
+\ctp{collect:} \ctp{select:} \ctp{reject:} \ctp{detect:} \ctp{detect:ifNone:} & \\
+\ctp{inject:into:} \ctp{flatCollect:} \ctp{with:collect:} & \\
+\ctp{size} \ctp{isEmpty} \ctp{notEmpty} \ctp{includes:} \ctp{occurrencesOf:} & \\
+\ctp{anySatisfy:} \ctp{allSatisfy:} \ctp{noneSatisfy:} \ctp{count:} & \\
+\ctp{sum} \ctp{sum:} \ctp{max} \ctp{min} \ctp{average} & \\
+\ctp{add:} \ctp{addAll:} \ctp{remove:} \ctp{remove:ifAbsent:} & \\
+\ctp{addFirst:} \ctp{addLast:} \ctp{removeFirst} \ctp{removeLast} & ordered\\
+\ctp{first} \ctp{last} \ctp{first:} \ctp{allButFirst} \ctp{allButLast} & \\
+\ctp{at:} \ctp{at:put:} \ctp{at:ifAbsent:} \ctp{indexOf:} & \\
+\ctp{copyFrom:to:} \ctp{copyWith:} \ctp{copyWithout:} \ctp{,} & \\
+\ctp{reverse} \ctp{reversed} \ctp{sorted} \ctp{sorted:} & \\
+\ctp{ifEmpty:} \ctp{ifNotEmpty:} \ctp{anyOne} & \\
+\ctp{asArray} \ctp{asOrderedCollection} \ctp{asSet} \ctp{asBag} & \\
+\ctp{asSortedCollection} \ctp{asSortedCollection:} & \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Dictionaries}
+
+\begin{center}
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+\ctp{at:put:} \ctp{at:} \ctp{at:ifAbsent:} \ctp{at:ifAbsentPut:} & \\
+\ctp{removeKey:} \ctp{includesKey:} \ctp{keyAtValue:} & \\
+\ctp{keys} \ctp{values} \ctp{associations} & \\
+\ctp{keysDo:} \ctp{valuesDo:} \ctp{keysAndValuesDo:} \ctp{associationsDo:} & \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{Strings and symbols}
+
+\begin{center}
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+\ctp{asUppercase} \ctp{asLowercase} \ctp{asSymbol} \ctp{asString} & \\
+\ctp{asNumber} \ctp{asInteger} \ctp{asArray} & \\
+\ctp{copyReplaceAll:with:} \ctp{indexOfSubCollection:startingAt:} & \\
+\ctp{findString:startingAt:} \ctp{includesSubstring:} \ctp{startsWith:} & \\
+\ctp{trimBoth} \ctp{withCRs} \ctp{sorted} \ctp{reversed} & \\
+\midrule
+\ctp{asciiValue} \ctp{asInteger} \ctp{asUppercase} \ctp{digitValue} & Character\\
+\ctp{isVowel} \ctp{isLetter} \ctp{isDigit} \ctp{isSeparator} & \\
+\ctp{Character value:} \ctp{Character cr} \ctp{Character tab} & \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{Streams}
+
+\begin{center}
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+\ctp{ReadStream on:} \ctp{WriteStream on:} \ctp{WriteStream with:} & \\
+\ctp{next} \ctp{next:} \ctp{peek} \ctp{skip:} \ctp{upTo:} \ctp{upToEnd} & \\
+\ctp{atEnd} \ctp{reset} \ctp{position} \ctp{position:} \ctp{setToEnd} & \\
+\ctp{nextPut:} \ctp{nextPutAll:} \ctp{print:} \ctp{contents} & \\
+\ctp{cr} \ctp{tab} \ctp{space} & \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{Classes and reflection}
+
+\begin{center}
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+\ctp{new} \ctp{new:} \ctp{basicNew} & instances\\
+\ctp{superclass} \ctp{subclasses} \ctp{allSubclasses} \ctp{allSuperclasses} & \\
+\ctp{selectors} \ctp{includesSelector:} \ctp{>>} & methods\\
+\ctp{name} \ctp{category} \ctp{comment} \ctp{instanceCount} & \\
+\ctp{instVarNames} \ctp{allInstVarNames} \ctp{classVarNames} & \\
+\ctp{inheritsFrom:} \ctp{includesBehavior:} & \\
+\ctp{Smalltalk at:} \ctp{Smalltalk at:put:} \ctp{Smalltalk includesKey:} & \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{Concurrency}
+
+\begin{center}
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+\ctp{Processor forkParallel:} \ctp{Processor parallelCollect:do:} & \\
+\ctp{Processor activeProcess} \ctp{activePriority} \ctp{yield} & \\
+\ctp{Processor activeWorkerIndex} \ctp{workerCount} & \\
+\ctp{Mutex new} \ctp{critical:} \ctp{isHeld} \ctp{owner} & \\
+\ctp{Monitor new} \ctp{critical:} \ctp{waitUntil:} \ctp{signalAll} & \\
+\ctp{SharedQueue new} \ctp{nextPut:} \ctp{next} \ctp{nextOrNil} & \\
+\ctp{Promise} \ctp{value} \ctp{valueOrNil} \ctp{isSettled} \ctp{isBroken} & \\
+\ctp{Semaphore new} \ctp{forMutualExclusion} \ctp{signal} \ctp{wait}
+  \ctp{critical:} & \\
+\ctp{Delay forSeconds:} \ctp{forMilliseconds:} \ctp{wait} & \\
+\ctp{Time millisecondsToRun:} & \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{Testing}
+
+\begin{center}
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+\ctp{assert:} \ctp{deny:} \ctp{assert:equals:} \ctp{assert:description:} & \\
+\ctp{assert:identicalTo:} \ctp{assert:closeTo:} & \\
+\ctp{assertEmpty:} \ctp{assertCollection:equals:} & \\
+\ctp{assertCollection:hasSameElements:} & \\
+\ctp{should:raise:} \ctp{shouldnt:raise:} & \\
+\ctp{setUp} \ctp{tearDown} \ctp{run} \ctp{suite} & \\
+\bottomrule
+\end{tabular}
+\end{center}

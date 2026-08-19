@@ -1,0 +1,168 @@
+\chapter{Processes and Synchronisation}
+\label{ch:processes}
+
+\standfirst{The 1983 machinery---\ct{Process}, \ct{Semaphore}, \ct{Delay},
+priorities---all still here, all still working, and now genuinely
+concurrent.}
+
+\section{Forking}
+
+A block becomes a process by being sent \ct{fork}:
+
+\begin{st}
+[ self doSomethingSlow ] fork.
+[ self doSomethingSlow ] forkAt: Processor userBackgroundPriority.
+\end{st}
+
+\ct{fork} answers nothing useful and \emph{swallows anything the block
+raises}, which is tolerable for a background chore and wrong for a share of a
+computation somebody is waiting on. For that, use \ct{forkParallel:}
+(Chapter~\ref{ch:parallel}), which answers a \ct{Promise}.
+
+To make a process without starting it:
+
+\begin{st}
+| p |
+p := [ self work ] newProcess.
+p priority: Processor userSchedulingPriority.
+p resume.
+\end{st}
+
+\section{Priorities}
+
+Eight of them. Seven have an accessor on \ct{Processor}:
+
+\begin{center}
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+8 & \ctp{timingPriority} --- the delay timer\\
+7 & \ctp{highIOPriority}\\
+6 & \ctp{lowIOPriority} --- the input process\\
+5 & \ctp{userInterruptPriority}\\
+4 & \ctp{userSchedulingPriority} --- the default, what your code runs at\\
+3 & \ctp{userBackgroundPriority}\\
+2 & \ctp{systemBackgroundPriority}\\
+1 & the idle process. \ctp{SystemRockBottomPriority} is a class variable
+  with no accessor, so unlike the seven above it there is no message
+  that answers it\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+A higher-priority process is \emph{preferred} when a worker picks work.
+It is not exclusive, and it never was a lock here.
+
+\begin{st}
+Processor activePriority             "4, normally"
+Processor activeProcess              "the running Process object"
+Processor yield                      "let something else have a turn"
+Processor activeWorkerIndex          "which native worker you are on"
+Processor workerCount                "how many there are"
+\end{st}
+
+The last two are this system's, not 1983's. They are useful for partitioning
+work and for making a test prove that it really ran in parallel.
+
+\section{Process protocol}
+
+\begin{center}
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+\ctp{resume} & make it runnable\\
+\ctp{suspend} & take it off the run queue\\
+\ctp{terminate} & stop it for good\\
+\ctp{priority} \ctp{priority:} & \\
+\ctp{signalException:} & raise an exception inside it\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{Semaphores}
+
+The Blue Book's primitive, and now genuinely atomic across native threads.
+
+\begin{st}
+| done |
+done := Semaphore new.
+[ self longJob. done signal ] fork.
+done wait.                    "blocks until the signal arrives"
+\end{st}
+
+A semaphore counts. \ct{signal} increments, \ct{wait} decrements and blocks if
+the count is zero. \ct{Semaphore forMutualExclusion} starts at one, so the
+first \ct{wait} succeeds and the second blocks:
+
+\begin{st}
+| lock |
+lock := Semaphore forMutualExclusion.
+lock critical: [ "one process at a time in here" ]
+\end{st}
+
+\begin{stnote}[The bug that atomicity fixed]
+The 1983 \ct{wait} tested \ct{excessSignals} and \emph{then} added itself to
+the waiting list. A \ct{signal} landing between the two spent itself on an
+empty list, and the waiter queued forever. On one thread that window does not
+exist; on eight it is microseconds wide and perfectly reliable. Test-then-add
+is now one critical section.
+\end{stnote}
+
+\ct{Semaphore} is the right tool for one-shot signalling and for counting a
+resource. For mutual exclusion, prefer \ct{Mutex}: it releases in an
+\ct{ensure:} and it detects re-entry instead of deadlocking silently.
+
+\section{Delays}
+
+\begin{st}
+(Delay forSeconds: 2) wait.
+(Delay forMilliseconds: 250) wait.
+\end{st}
+
+A delay expires while nothing is running, so it cannot be implemented by
+polling in the idle loop---with every process waiting on one, every worker is
+idle and a loop that only looks at what is already ready would look forever.
+There is a dedicated VM timer thread holding the clock, and it posts to the
+async signal queue when a deadline passes.
+
+\begin{stnote}
+Two bugs were found building that, both worth knowing as shapes. A timer that
+has fired but not yet delivered is \emph{still pending}: clearing the armed
+flag before posting the signal leaves a window in which a waiter asks "is
+anything still coming?", hears no, and gives up just before it arrives. And a
+new producer turns latent races into real ones---the moment the timer existed,
+ThreadSanitizer found two races in the async queue that were older than the
+timer and had never been executed by any test before.
+\end{stnote}
+
+\section{Timing things}
+
+\begin{st}
+Time millisecondsToRun: [ self theWork ]
+Time millisecondClockValue
+Time now
+Date today
+\end{st}
+
+\begin{stwarn}
+\ct{Time now} and \ct{Date today} are 1983's in the \ct{st2026} profile. The
+\ct{pharo-time} profile supersedes them with Pharo's Chronology package,
+which is richer---\ct{3 seconds}, \ct{1 day}, \ct{DateAndTime now}---and
+passes its own 633 tests. Which you have depends on the profile you built.
+\end{stwarn}
+
+\section{What a process actually is}
+
+A \ct{Process} holds a chain of \ct{MethodContext} objects---stack frames, as
+ordinary heap objects with a class and instance variables. Suspending one is
+storing a pointer; there is no machine stack to unwind and no size to choose
+in advance.
+
+That is why processes here are cheap enough to make thousands of, and it is
+also why the debugger can show you the stack, let you edit a method in the
+middle of it, and restart a frame: the stack is data.
+
+The scheduler multiplexes those green processes M:N over the native worker
+pool. Deciding \emph{where} a process runs is the scheduler's business;
+\ct{forkParallel:} says that work may proceed independently, not which thread
+takes it.

@@ -1,0 +1,251 @@
+\chapter{Building and Running}
+\label{ch:building}
+
+\standfirst{Ten minutes, one dependency, and no network. If \ct{make} does not
+work on your machine the reason is in this chapter.}
+
+\section{What you need}
+
+A C11 compiler and \ct{make}. That is the whole hard requirement. SDL3 is
+optional---without it the graphics layer builds as a headless stub and
+everything except the window still works, which is exactly what the test
+suites use.
+
+\begin{sh}
+git clone https://github.com/blakemcbride/Smalltalk-2026
+cd Smalltalk-2026
+make
+\end{sh}
+
+The last line of a successful build tells you whether you got a window:
+
+\begin{plain}
+SDL3: found -- graphics enabled
+\end{plain}
+
+If it says \ct{not found -- headless build} and you wanted a window, install
+SDL3's development package and build again. On Fedora that is
+\ct{sudo dnf install SDL3-devel}; on Debian and Ubuntu, \ct{libsdl3-dev}.
+
+You do \emph{not} need a font, and you do not need Python. The typeface is
+rasterised into a checked-in C file; the generator that produced it is only
+needed if you want to change the face.
+
+\section{Checking that it works}
+
+\begin{sh}
+make test
+\end{sh}
+
+This runs two different things and you should know which is which. The
+\emph{unit suites} check the system against itself and against the Xerox
+traces. The \emph{profile suites} build a real image for each profile and run
+that profile's own SUnit tests inside it, holding the score against a
+checked-in file. Both must pass.
+
+A clean run ends with every profile at the score
+\ct{tests/profiles.expected} records. Note that an \emph{improvement} fails
+too, deliberately: a number that got better without being recorded is an
+improvement nothing is protecting.
+
+\section{The two object memories}
+
+There is one interpreter and two object memories, chosen at build time. You
+will nearly always want the default.
+
+\begin{center}
+\small
+\begin{tabular}{@{}lp{0.66\textwidth}@{}}
+\toprule
+\ctp{OM=mt} & 64-bit object table, tagged small integers, per-worker
+  allocation, a marking collector, weak references and ephemerons. This is the
+  system, and it is the default.\\[3pt]
+\ctp{OM=bb} & 16-bit Blue Book memory: object table, reference counting,
+  Chapter 30 of the Blue Book verbatim. It exists so the \emph{same
+  interpreter} can load the real 1983 Xerox image and reproduce Xerox's
+  traces. It cannot bootstrap an image, and says so if you ask it to.\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{stnote}
+Passing \ct{trace2} under \ct{OM=bb} validates the same interpreter, compiler
+and BitBlt that the parallel system runs. That is the central trick of the
+project, and it is why \ct{OM=bb} is worth keeping around even though nothing
+ships it.
+\end{stnote}
+
+Other build variables:
+
+\begin{center}
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+\ctp{TSAN=1} & ThreadSanitizer build\\
+\ctp{ASAN=1} & Address and undefined-behaviour sanitizers\\
+\ctp{OPT=-O0} & override the optimisation flags\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Sanitizer builds go to their own directory, so an instrumented binary can
+never be linked against stale uninstrumented objects.
+
+\section{Evaluating one expression}
+
+The fastest way to ask the system a question is to build an image in memory,
+evaluate something, and exit:
+
+\begin{sh}
+./st80 -bootstrap -profile profiles/st2026.profile -eval '3 + 4'
+\end{sh}
+
+\begin{plain}
+7
+\end{plain}
+
+It prints a page of diagnostics on standard error first---how many classes and
+methods were loaded, which globals were left undeclared, how many class
+initialisers ran. The answer goes to standard output, so \ct{2>/dev/null}
+gives you just the answer.
+
+This takes about nine seconds, nearly all of it building the image. There is
+no way to keep one warm between invocations, so when you have several
+questions, ask them in one program:
+
+Write the program in a file:
+
+\begin{st}
+| out |
+out := WriteStream on: (String new: 0).
+out nextPutAll: (3 + 4) printString.
+out nextPutAll: ' and '.
+out nextPutAll: 10 factorial printString.
+^out contents
+\end{st}
+
+\ldots{} and hand it over whole, which sidesteps the shell's opinions about
+single quotes:
+
+\begin{sh}
+./st80 -bootstrap -profile profiles/st2026.profile -eval "$(cat program.st)"
+\end{sh}
+
+\begin{plain}
+7 and 3628800
+\end{plain}
+
+\begin{stnote}[Sixty-three literals, and no more]
+An \ct{-eval} program is compiled as one method, and a method may reference
+at most 63 literals---the header holds the count in six bits. Every distinct
+string, symbol, large number and literal array in the method is one of them,
+and repeated strings are \emph{not} shared, because two occurrences of
+\ct{'x'} are two mutable objects. A program that lists fifty things with a
+string beside each will hit it and be told so:
+
+\begin{plain}
+st80: more than 63 literals referenced; split this method
+\end{plain}
+
+Loop over a collection of cases rather than writing them out.
+\end{stnote}
+
+An expression containing a caret is treated as a whole method body, temporary
+declarations and all. Anything else is a single expression whose value is
+wanted, and the system supplies the \ct|^| for you.
+
+\section{Building an image and running the desktop}
+
+\begin{sh}
+./st80 -bootstrap -profile profiles/st2026.profile -o st80.image
+./st80 -run st80.image
+\end{sh}
+
+The first command writes a bootable image---about 11\,MB---and an empty
+\ct{st80.image.changes} beside it. The second opens a window on it.
+
+\begin{stwarn}[Which profile?]
+The \ct{README} shows \ct{-manifest sources/MANIFEST}, which builds the pure
+1983 system: no exceptions, no closures, no \ct{Mutex}. Use
+\ct{-profile profiles/st2026.profile} instead unless you specifically want the
+museum piece. Everything in Parts II, V and VI of this book needs the
+\ct{st2026} profile.
+\end{stwarn}
+
+The window opens on a grey halftone desktop with nothing on it. That is
+correct, and Chapter~\ref{ch:tenminutes} is about what to do next.
+
+\begin{sh}
+./st80 -run st80.image 2000000
+\end{sh}
+
+The optional number is a \emph{bytecode limit}: run this many and stop. It is
+for scripted runs and screenshots, not for everyday use.
+
+\begin{stwarn}[The desktop is not on the worker pool yet]
+This is the one place where the system's headline claim and what
+\ct{-run} does today are not the same thing. Parallel execution is real,
+measured and gated---the test suites run at up to 31 native threads under
+ThreadSanitizer, and \ct{make bench} sweeps four kernels from one worker to
+eight. But the pool is started by those harnesses, not by \ct{-run}: the
+windowed desktop runs the interpreter on one thread. Putting the desktop on
+the pool is a designed and not-yet-built phase of the project, and
+Chapter~\ref{ch:contract} flags what still applies to you today and what is
+about the design.
+\end{stwarn}
+
+\section{Environment variables for the window}
+
+\begin{center}
+\small
+\begin{tabular}{@{}lp{0.62\textwidth}@{}}
+\toprule
+\ctp{ST\_DISPLAY\_THEME} & \ctp{paper} (default), \ctp{classic} (pure black on
+  pure white), \ctp{dark}\\
+\ctp{ST\_DISPLAY\_SCALE} & screen pixels per display pixel\\
+\ctp{ST\_DISPLAY\_WINDOW} & \ctp{WxH}: open the window at exactly this size\\
+\ctp{ST\_DISPLAY\_FIT=off} & keep the image's own screen size and letterbox
+  it, instead of growing the display to fill the window\\
+\ctp{ST\_DISPLAY\_PRESENTATION} & \ctp{integer}, \ctp{letterbox},
+  \ctp{stretch}\\
+\ctp{ST\_DISPLAY\_TRACE=1} & report why a resize was refused, and print draw
+  and present counts at exit\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{Everything \texttt{st80} can do}
+
+\ct{./st80 -help} prints the full list; Appendix~\ref{app:cli} explains each
+one. The ones worth knowing on day one:
+
+\begin{center}
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+\ctp{-bootstrap ... -eval expr} & build an image and evaluate\\
+\ctp{-bootstrap ... -o image} & build an image and write it\\
+\ctp{-run image [n]} & run an image with \ctp{n} workers\\
+\ctp{-syntax f.st...} & compile every method in a file and report failures\\
+\ctp{-census image} & summarise an image's object memory\\
+\ctp{-classes}, \ctp{-methods} & list what is in an image\\
+\ctp{-disasm image Class selector} & dump a method's bytecodes\\
+\ctp{-tests} & run every SUnit test and exit non-zero if any failed\\
+\ctp{-doctests f.st} & run the \ctp{expr >>> value} examples in a file\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{If the build fails}
+
+\begin{description}
+\item[\ctp{fixed object 0 landed on pointer 0}] You asked \ct{OM=bb} to
+  bootstrap an image. It cannot. Build with the default \ct{OM=mt}.
+\item[Garbled glyphs on screen] A stale object file in the archive. \ct{make clean && make}.
+\item[The font and the image disagree] You regenerated the face with
+  \ct{make font} and did not rebuild the image. Some classes fix their line
+  grid at class-initialisation time, so an image built against one face cannot
+  be shown another. Rebuild the image.
+\end{description}
+
+Appendix~\ref{app:trouble} has the longer list.

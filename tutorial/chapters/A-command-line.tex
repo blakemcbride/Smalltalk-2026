@@ -1,0 +1,111 @@
+\chapter{Command-Line Reference}
+\label{app:cli}
+
+\section{Building}
+
+\begin{center}
+\small
+\begin{tabular}{@{}lp{0.60\textwidth}@{}}
+\toprule
+\ctp{make} & build \ctp{./st80}\\
+\ctp{make test} & unit suites, then every profile's own SUnit suites\\
+\ctp{make unit-test} & just the unit suites\\
+\ctp{make suite-test} & just the imported packages' suites\\
+\ctp{make bench} & the parallel scaling benchmark\\
+\ctp{make font} & regenerate the built-in face (needs Pillow and a font)\\
+\ctp{make clean} & remove build artifacts\\
+\ctp{make help} & targets and variables\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{center}
+\small
+\begin{tabular}{@{}lp{0.60\textwidth}@{}}
+\toprule
+\ctp{OM=mt} & 64-bit threaded object memory --- the system, and the default\\
+\ctp{OM=bb} & 16-bit Blue Book memory --- the Xerox trace harness. Cannot
+  bootstrap an image\\
+\ctp{TSAN=1} & ThreadSanitizer build\\
+\ctp{ASAN=1} & Address and undefined-behaviour sanitizers\\
+\ctp{OPT=-O0} & override optimisation flags\\
+\ctp{FONT=} \ctp{SIZE=} \ctp{LEAD=} & inputs to \ctp{make font}\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{\texttt{st80}}
+
+\begin{center}
+\small
+\begin{tabular}{@{}lp{0.56\textwidth}@{}}
+\toprule
+\ctp{-version} & version and build configuration\\
+\ctp{-help} & the option list\\
+\midrule
+\ctp{-bootstrap <a.st...>} & build an image from source\\
+\ctp{\ \ -profile p} & use a profile\\
+\ctp{\ \ -manifest f} & use a 1983-style manifest\\
+\ctp{\ \ -o image} & write the image (needs \ctp{OM=mt})\\
+\ctp{\ \ -eval expr} & evaluate and print\\
+\ctp{\ \ -startup expr} & what a saved image evaluates when it resumes\\
+\ctp{\ \ -closures} & compile in the closures dialect\\
+\ctp{\ \ -tests} & run every SUnit test; exit non-zero if any failed\\
+\ctp{\ \ -doctests f.st} & run the \ctp{expr >>> value} examples in a file\\
+\midrule
+\ctp{-run <image> [n]} & run the image, opening a window. \ctp{n} is a bytecode limit, not a worker count\\
+\ctp{-screenshot f.pbm} & with \ctp{-run} or \ctp{-bootstrap}, write the
+  display\\
+\ctp{-inject <script>} & post input events\\
+\ctp{-wiggle} & move the pointer continuously, no clicks\\
+\midrule
+\ctp{-syntax <f.st...>} & compile every method and report failures\\
+\ctp{-primitives <f.st...>} & every primitive that source asks the VM for\\
+\ctp{-census <image>} & load an image and summarise it\\
+\ctp{-classes <image>} & every class, in \ctp{class.oops} format\\
+\ctp{-methods <image>} & every method, in \ctp{method.oops} format\\
+\ctp{-inspect <image> <oop>} & describe one object (oop in hex)\\
+\ctp{-disasm <image> <Class> <sel>} & dump a method's bytecodes\\
+\ctp{-trace2 <image> [n]} & bytecode trace, Xerox \ctp{trace2} format\\
+\ctp{-trace3 <image> [n]} & send trace, Xerox \ctp{trace3} format\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{Input scripts}
+
+For \ct{-inject}, semicolon-separated:
+
+\begin{center}
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+\ctp{m X Y} & move the pointer to X, Y\\
+\ctp{d CODE} & press a button: 128 blue, 129 yellow, 130 red\\
+\ctp{u CODE} & release it\\
+\ctp{k CODE} & type a key\\
+\ctp{w N} & wait N bytecode slices\\
+\ctp{x} & post a window-exposed event\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{Environment}
+
+\begin{center}
+\small
+\begin{tabular}{@{}lp{0.56\textwidth}@{}}
+\toprule
+\ctp{ST\_DISPLAY\_THEME} & \ctp{paper} (default), \ctp{classic}, \ctp{dark}\\
+\ctp{ST\_DISPLAY\_SCALE} & screen pixels per display pixel\\
+\ctp{ST\_DISPLAY\_WINDOW} & \ctp{WxH}: open the window at this size\\
+\ctp{ST\_DISPLAY\_FIT=off} & keep the image's own screen size\\
+\ctp{ST\_DISPLAY\_PRESENTATION} & \ctp{integer}, \ctp{letterbox},
+  \ctp{stretch}\\
+\ctp{ST\_DISPLAY\_TRACE=1} & report why a resize was refused; draw and present
+  counts at exit\\
+\ctp{ST\_EVAL\_TRACE=1} & trace the bytecodes an \ctp{-eval} runs\\
+\ctp{ST\_BOTTOM\_LOG=1} & report a return off the bottom of a stack\\
+\bottomrule
+\end{tabular}
+\end{center}

@@ -1,0 +1,69 @@
+%%
+%%  Smalltalk-2026: A Tutorial
+%%
+%%  Build with:  make        (needs pdflatex; no network, no exotic packages)
+%%
+\documentclass[11pt,openright,twoside]{book}
+\input{preamble}
+
+\title{Smalltalk-2026}
+\author{A Tutorial}
+\date{}
+
+\begin{document}
+
+\frontmatter
+\input{chapters/00-title}
+\tableofcontents
+
+\mainmatter
+
+\part{Getting Started}
+\input{chapters/01-what-this-is}
+\input{chapters/02-building}
+\input{chapters/03-ten-minutes}
+
+\part{The Language}
+\input{chapters/04-syntax}
+\input{chapters/05-objects-and-messages}
+\input{chapters/06-blocks}
+\input{chapters/07-control-flow}
+\input{chapters/08-classes}
+\input{chapters/09-class-side}
+\input{chapters/10-exceptions}
+\input{chapters/11-beyond-the-blue-book}
+
+\part{The Library}
+\input{chapters/12-numbers}
+\input{chapters/13-collections}
+\input{chapters/14-streams}
+\input{chapters/15-text}
+\input{chapters/16-graphics}
+
+\part{Living in the Image}
+\input{chapters/17-desktop}
+\input{chapters/18-tools}
+\input{chapters/19-keeping-your-work}
+
+\part{Concurrency}
+\input{chapters/20-the-contract}
+\input{chapters/21-processes}
+\input{chapters/22-parallel-smalltalk}
+
+\part{Working on Disk}
+\input{chapters/23-packages}
+\input{chapters/24-tests}
+\input{chapters/25-toolbox}
+
+\part{Under the Hood}
+\input{chapters/26-the-vm}
+
+\appendix
+\part{Reference}
+\input{chapters/A-command-line}
+\input{chapters/B-selectors}
+\input{chapters/C-differences}
+\input{chapters/D-troubleshooting}
+\input{chapters/E-further-reading}
+
+\end{document}

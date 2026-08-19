@@ -194,6 +194,7 @@ tools/          make_font.py — rasterises an outline face into the strike
 | [`doc/Display.md`](doc/Display.md) | the window, the face, antialiasing, and what the interface expects of you |
 | [`doc/LanguageExtensions.md`](doc/LanguageExtensions.md) | every post-1983 syntax, and where each stands |
 | [`doc/PLAN-TO-PHARO.md`](doc/PLAN-TO-PHARO.md) | where this is going, sized honestly |
+| [`tutorial/`](tutorial/) | **a book-length tutorial** on the system and the language — `cd tutorial && make` |
 | [`doc/LICENSING.md`](doc/LICENSING.md) | what may be redistributed, and what may not |
 
 ## Provenance

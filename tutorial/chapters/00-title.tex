@@ -1,0 +1,48 @@
+\thispagestyle{empty}
+\begin{center}
+\vspace*{1.1in}
+{\sffamily\fontsize{40}{44}\selectfont\bfseries\color{stblue} Smalltalk-2026}
+
+\vspace{10pt}
+{\color{strule}\rule{0.62\textwidth}{1pt}}
+
+\vspace{14pt}
+{\sffamily\Large\color{stink} A Tutorial}
+
+\vspace{6pt}
+{\sffamily\normalsize\color{stgrey} the language, the library, the image, and the cores}
+
+\vfill
+
+{\small\color{stgrey}
+\url{https://github.com/blakemcbride/Smalltalk-2026}
+}
+
+\vspace{18pt}
+\end{center}
+
+\clearpage
+\thispagestyle{empty}
+\vspace*{\fill}
+\noindent
+\begin{minipage}{\textwidth}
+\small\color{stgrey}
+\noindent
+Copyright \copyright{} 2026 Blake McBride. This document is distributed under
+the BSD 2-Clause licence, as is the rest of \ct{doc/}.
+
+\vspace{8pt}\noindent
+Smalltalk-2026 is not all one licence, and the distinction matters. The 1983
+class library in \ct{sources/} is MIT, from \emph{markbush/Smalltalk-80-Sources},
+and is vendored unedited. The packages under \ct{pharo/} are MIT with parts
+under Apache-2.0, each carrying its own notice and a \ct{PROVENANCE.md}. The
+rasterised face in \ct{src/gfx/font_face.c} derives from Inter, under the SIL
+Open Font License 1.1. See \ct{doc/LICENSING.md}.
+
+\vspace{8pt}\noindent
+Every Smalltalk expression in this book whose answer is shown was run against
+a live image built from this source tree. The examples are checked in as
+\ct{tutorial/examples/TutorialExamples.class.st} and \ct{make verify} runs
+them. If the book and the system ever disagree, that command is the referee.
+\end{minipage}
+\vspace*{\fill}

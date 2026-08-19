@@ -1,0 +1,189 @@
+\chapter{Control Flow}
+\label{ch:control}
+
+\standfirst{There are no control structures. There are messages that happen to
+be sent to booleans, blocks and collections, and the effect is
+indistinguishable---except that you can add your own.}
+
+\section{Conditionals}
+
+\ct{ifTrue:} is a message to a Boolean. \ct{True} implements it by evaluating
+its argument; \ct{False} implements it by answering \ct{nil}. That is the
+entire mechanism.
+
+\begin{st}
+x > 0
+    ifTrue: ['positive']
+    ifFalse: ['not positive']
+
+x isNil ifTrue: [^self error: 'no x'].
+
+result := x > 0 ifTrue: ['yes'].     "nil when x <= 0"
+\end{st}
+
+The four forms are \ct{ifTrue:}, \ct{ifFalse:}, \ct{ifTrue:ifFalse:} and
+\ct{ifFalse:ifTrue:}. All of them answer the value of whichever block ran, and
+\ct{nil} when none did.
+
+\subsection{And, or, and short-circuiting}
+
+\begin{st}
+a and: [b]           "short-circuit: b is only evaluated if a is true"
+a or: [b]            "short-circuit"
+a & b                "both always evaluated"
+a | b                "both always evaluated"
+a not
+\end{st}
+
+The block brackets in \ct{and:} and \ct{or:} are what make them
+short-circuiting: the argument is a block precisely so it need not be run. Get
+into the habit of writing them, because \ct{a and: b} is legal, evaluates
+\ct{b} unconditionally, and will eventually bite you.
+
+\section{Loops}
+
+\subsection{While}
+
+The receiver is a block too, because it has to be re-evaluated each time
+round:
+
+\begin{st}
+| n |
+n := 0.
+[n < 5] whileTrue: [n := n + 1].
+n                                    "5"
+\end{st}
+
+\ct{whileFalse:} is the mirror image. \ct{whileTrue} and \ct{whileFalse}
+without arguments loop on the receiver alone. \ct{repeat} loops forever, and
+you leave it with a non-local return.
+
+\subsection{Counted}
+
+\begin{st}
+1 to: 5 do: [:i | ... ]              "i = 1, 2, 3, 4, 5"
+1 to: 10 by: 3 do: [:i | ... ]       "1, 4, 7, 10"
+10 to: 1 by: -1 do: [:i | ... ]      "counts down"
+5 timesRepeat: [ ... ]               "when you do not need the index"
+\end{st}
+
+\subsection{Over a collection}
+
+Almost always what you actually want:
+
+\begin{st}
+aCollection do: [:each | ... ]
+aCollection do: [:each | ... ] separatedBy: [ ... ]
+aCollection reverseDo: [:each | ... ]
+aCollection doWithIndex: [:each :i | ... ]
+aDictionary keysAndValuesDo: [:k :v | ... ]
+\end{st}
+
+Chapter~\ref{ch:collections} has the full set, including the ones that answer
+something useful---\ct{collect:}, \ct{select:}, \ct{detect:},
+\ct{inject:into:}---which you should reach for before \ct{do:} with an
+accumulator.
+
+\section{Why this works, and what it costs}
+
+Sending a message to evaluate a block for every iteration of a loop sounds
+expensive. It is not, because the compiler recognises a fixed set of these
+patterns and compiles them to jumps, creating no block and sending no message:
+
+\begin{center}
+\small
+\begin{tabular}{@{}l@{}}
+\toprule
+\ctp{ifTrue:} \ctp{ifFalse:} \ctp{ifTrue:ifFalse:} \ctp{ifFalse:ifTrue:}\\
+\ctp{and:} \ctp{or:}\\
+\ctp{whileTrue:} \ctp{whileFalse:} \ctp{whileTrue} \ctp{whileFalse}\\
+\ctp{to:do:} \ctp{to:by:do:}\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Everything else---\ct{do:}, \ct{timesRepeat:}, \ct{detect:}, all of
+it---is a genuine message send with a genuine block. That is usually fine, and
+where it is not, the fix is a better algorithm rather than a special form.
+
+\begin{stnote}
+Inlining is why the receiver of an \ct{ifTrue:} must really be a Boolean. The
+jump bytecode tests for \ct{true} and \ct{false} and complains if it finds
+anything else, so a nil receiver reports \ct{must be a boolean} rather than
+\ct|doesNotUnderstand: #ifTrue:|. When you see that message, the usual cause
+is an uninitialised instance variable.
+\end{stnote}
+
+\section{Early exit}
+
+There is no \ct{break} and no \ct{continue}. To leave a loop early, return
+from the method with \ct|^|:
+
+\begin{st}
+indexOf: anObject
+    1 to: self size do: [:i |
+        (self at: i) = anObject ifTrue: [^i]].
+    ^0
+\end{st}
+
+To skip an iteration, put the rest of the body inside an \ct{ifTrue:}. If that
+makes the block ugly, that is the language suggesting the body wants to be its
+own method.
+
+When you need to leave a loop without leaving the method, wrap the loop in a
+block and call it:
+
+\begin{st}
+result := [:exit |
+    aCollection do: [:each |
+        each isBad ifTrue: [exit value: nil]].
+    #allGood] valueWithExit
+\end{st}
+
+\ldots or, more simply, use \ct{detect:ifNone:}, which is that pattern with a
+name.
+
+\section{Case statements}
+
+There are none, and the omission is deliberate. The three replacements, in
+order of preference:
+
+\begin{enumerate}
+\item \textbf{Polymorphism.} Give each case its own class and its own method.
+\item \textbf{A Dictionary of blocks.} When the cases are data rather than
+  behaviour:
+\begin{st}
+| handlers |
+handlers := Dictionary new.
+handlers at: #add put: [:a :b | a + b].
+(handlers at: op) value: x value: y
+\end{st}
+\item \textbf{A chain of \ct{ifTrue:}s.} Honest, readable, and fine for three
+  cases.
+\end{enumerate}
+
+\section{Writing your own}
+
+Because control flow is messages and blocks, adding to it needs no compiler
+change. Here is a complete new control structure:
+
+\begin{st}
+Number >> upToBy: stop by: step do: aBlock
+    | i |
+    i := self.
+    [i <= stop] whileTrue: [
+        aBlock value: i.
+        i := i + step]
+\end{st}
+
+And here is one you might actually want---running a block with a guaranteed
+teardown, on a receiver that supplies it:
+
+\begin{st}
+Object >> withLock: aBlock
+    self lock acquire.
+    ^aBlock ensure: [self lock release]
+\end{st}
+
+That is the whole of what a language designer would have had to add as
+syntax. This is the reason Smalltalk's grammar has not needed to grow.

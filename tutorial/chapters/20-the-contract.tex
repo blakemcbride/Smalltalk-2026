@@ -1,0 +1,188 @@
+\chapter{The Concurrency Contract}
+\label{ch:contract}
+
+\standfirst{This chapter is normative. It states the one guarantee this system
+takes away from Smalltalk-80, what replaces it, and what is still promised.
+Read it before writing any Smalltalk that runs on more than one worker.}
+
+\section{The short version}
+
+\begin{stwarn}[The break]
+\textbf{Smalltalk-80 guarantees that a process is never preempted by another
+process of the same priority. Smalltalk-2026 does not.} Two processes at the
+same priority may execute simultaneously on different CPUs. That is the entire
+point of the system.
+\end{stwarn}
+
+\section{Why it matters more than it sounds}
+
+The Blue Book scheduler contract reads: \emph{the scheduler is cooperative
+between processes of the same priority, and preemptive between processes of
+different priorities.}
+
+In a green-threaded Smalltalk that is not merely a scheduling policy. It is an
+\textbf{implicit mutual-exclusion primitive}, and forty years of Smalltalk code
+leans on it everywhere. Every unsynchronised read-modify-write of an instance
+variable, a class variable or a shared collection is correct \emph{only}
+because no other process at the same priority can run between two bytecodes.
+
+\begin{st}
+"correct in every other Smalltalk; a lost update here"
+count := count + 1
+\end{st}
+
+Code that raises its priority to get an atomic section is using the same trick
+deliberately. Under true parallelism that trick stops working silently:
+raising your priority no longer stops anybody, because they are on another
+core.
+
+This is why the class library has to be audited rather than inherited.
+
+\section{What is guaranteed}
+
+\begin{enumerate}
+\item \textbf{Bytecode-level memory safety.} The object memory never tears. A
+  field read yields some value previously written to that field, never a
+  mixture. Object headers, the object table and the class of an object are
+  always consistent.
+\item \textbf{\ct{become:} is atomic.} Identity mutation is a single atomic
+  swap of two object-table entries. No thread ever observes a half-completed
+  \ct{become:}. This is the payoff for keeping an object table.
+\item \textbf{\ct{Semaphore>>signal} and \ct{wait} are atomic} with respect to
+  each other and to process suspension and resumption.
+\item \textbf{Garbage collection is invisible.} Collection happens at
+  safepoints, which the interpreter polls at message sends and backward jumps.
+  No Smalltalk code observes a partially collected heap.
+\item \textbf{Method lookup is coherent.} A class recompiled on one worker
+  becomes visible to all workers; sends in flight complete against a
+  consistent method dictionary.
+\end{enumerate}
+
+\section{What is not guaranteed}
+
+\begin{enumerate}
+\item \textbf{Same-priority atomicity.} Gone.
+\item \textbf{Priority as mutual exclusion.} Priorities are scheduling hints.
+  A higher-priority process is \emph{preferred}, not exclusive.
+\item \textbf{Thread safety of the base collections.}
+  \ct{OrderedCollection}, \ct{Dictionary}, \ct{Set} and \ct{Bag} are
+  \textbf{not} synchronised. This follows Java's post-\ct{Vector} lesson:
+  paying for a lock on every access to serve the rare shared case is the wrong
+  default. Use the shared variants, or guard them yourself.
+\item \textbf{\ct{Transcript} interleaving.} Output from concurrent processes
+  may interleave unless you hold the Transcript's monitor across an entry.
+\end{enumerate}
+
+\section{What replaces it}
+
+\begin{center}
+\small
+\begin{tabular}{@{}lp{0.60\textwidth}@{}}
+\toprule
+\ctp{Mutex} & non-reentrant mutual exclusion. \ctp{aMutex critical: [ ... ]}\\
+\ctp{Monitor} & reentrant lock with condition variables:
+  \ctp{waitUntil:}, \ctp{signalAll}\\
+\ctp{SharedQueue} & multi-producer, multi-consumer, blocking\\
+\ctp{Promise} & a value another process will supply. \ctp{aPromise value}\\
+\ctp{Processor>>forkParallel:} & fork onto the worker pool and get a Promise\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\ct{Semaphore} remains, with Blue Book semantics, now genuinely atomic.
+
+\section{The thread map}
+
+\begin{plain}
+Thread 0        Dedicated SDL pump.  Owns the window, renderer and texture.
+                Never executes Smalltalk bytecodes.
+
+Threads 1..N    Smalltalk workers, N ~ CPU count.  Run bytecodes, allocate
+                from thread-local buffers, poll safepoints.  Never call SDL.
+
+Delay timer     One request outstanding.  Sleeps on a condvar until the
+                deadline, then posts to the async signal queue.  Never
+                executes Smalltalk.
+\end{plain}
+
+Thread 0 is not a worker by design: if it were, it could be parked in a GC
+safepoint at the moment the window server needs a response, deadlocking the
+compositor. SDL3's own rules force the same shape---\ct|SDL_PumpEvents| and
+friends are main-thread-only, and on macOS "main thread" means the thread that
+entered \ct{main()}.
+
+Smalltalk \ct{Process} objects remain green and cheap, multiplexed M:N over
+the worker pool. \ct{Processor activeProcess} is per-worker state.
+
+\begin{stnote}[What runs on the pool today]
+That map is the design, and it is what the parallel test suites and
+\ct{make bench} actually run---up to 31 native threads, ThreadSanitizer-clean,
+as a gate rather than a report. It is \emph{not} yet what
+\ct{./st80 -run image} does: the windowed desktop runs the interpreter on one
+thread, so \ct{Processor workerCount} answers 1 there and in a
+\ct{-bootstrap -eval} run.
+
+That does not make this chapter advisory. The library your code will run
+against is being audited to this contract now, and code written to it today
+keeps working when the desktop moves onto the pool. Code written against
+same-priority atomicity does not.
+\end{stnote}
+
+\section{The taxonomy to think in}
+
+From Pallas and Ungar's \emph{Multiprocessor Smalltalk} (PLDI~'88), and this
+system adopts it. For each piece of shared state, choose one:
+
+\begin{center}
+\small
+\begin{tabular}{@{}lp{0.62\textwidth}@{}}
+\toprule
+\textbf{serialize} & lock it. Correct, and the answer of last resort---if
+  everything lands here the system will not scale\\
+\textbf{replicate} & give each worker its own. The \ctp{Transcript} buffer is
+  this\\
+\textbf{reorganize} & remove the sharing. Method dictionaries becoming
+  immutable once published is this\\
+\midrule
+\textbf{immutable} & written once at build, never after\\
+\textbf{thread-confined} & only ever touched by one worker.
+  \ctp{ScheduledControllers} is this\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The last two are what keep the audit finite.
+
+\section{Rules that follow}
+
+\begin{description}
+\item[Never lazily initialise a class variable.]
+  \ct|^Default ifNil: [Default := Foo new]| is check-then-act: two workers
+  each build one and one of them is thrown away, or worse, both are used.
+  Initialise eagerly in a class-side \ct{initialize}, which the loader runs at
+  build time.
+\item[Do not use priority as a lock.] Raising your priority stops nobody on
+  another core.
+\item[Guard every shared collection, or do not share it.] Prefer not sharing:
+  give each worker its own and merge at the end.
+\item[Release locks in an \ct{ensure:}.] A critical section that exits by
+  exception or non-local return must still release. \ct{Mutex} does this for
+  you, which is why it could not be written before exceptions existed.
+\item[Never hold a lock across a safepoint poll.] Sends and backward jumps
+  poll. A lock held across one can deadlock the collector.
+\end{description}
+
+\section{One worker or many}
+
+The suites and the benchmark take a worker count; \ct{make bench} sweeps 1, 2,
+4, 8 and up. Running the same work at one worker and at many is the sharpest
+debugging step there is: if a fault goes away at one worker, it is a race, and
+this chapter is the list of places to look.
+
+\begin{stnote}
+A \ct{-bootstrap -eval} run has one worker. Concurrency code written against
+this contract still works there---it is the same scheduler---but nothing will
+actually run in parallel, so a race will not show up. Test with \ct{-run} and
+several workers, or with the unit suites, which run at up to 31 threads under
+ThreadSanitizer.
+\end{stnote}

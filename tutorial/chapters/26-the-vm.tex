@@ -1,0 +1,180 @@
+\chapter{How the Virtual Machine Works}
+\label{ch:vm}
+
+\standfirst{Enough of the implementation to explain why the system behaves as
+it does. You do not need this to write Smalltalk; you need it the first time
+something surprises you.}
+
+\section{The shape}
+
+\begin{plain}
+src/port/       threads, mutexes, condition variables, TLS, time, atomics
+src/om/         object memory (bb and mt), image readers, collector
+src/interp/     bytecode interpreter, contexts, method lookup, primitives
+src/gfx/        BitBlt, display, SDL3 pump, the rasterised face
+src/sched/      Process, Semaphore, the scheduler
+src/compiler/   Smalltalk compiler in C, chunk and Tonel readers
+src/boot/       image bootstrap
+\end{plain}
+
+About 40,000 lines of C11 with no dependency but SDL3, and that only for the
+window.
+
+\section{Objects}
+
+Every object is a header plus fields, and every reference to one goes through
+an \textbf{object table}: an oop is an index, not an address.
+
+Small integers are the exception---they are tagged directly in the oop, so
+arithmetic on them allocates nothing.
+
+\subsection{Why keep an object table?}
+
+Spur and every other modern VM dropped it, and under threading the trade
+inverts:
+
+\begin{itemize}
+\item \ct{become:}---swapping two objects' identities---is one atomic swap of
+  two table entries, instead of a stop-the-world scan of the heap for every
+  reference.
+\item Pinning an object for SDL or a foreign call is free: the body does not
+  move because nothing points at it directly.
+\item Compaction touches one entry per object rather than every reference to
+  it.
+\end{itemize}
+
+The cost is one indirection per access. The purchase is atomic identity
+mutation, which is what a parallel Smalltalk needs.
+
+\subsection{Two object memories}
+
+\ct{src/om/om.h} defines the object-memory operations as macros, and exactly
+one implementation is compiled in, so the hot path inlines either way.
+
+\ct|om_bb.c| is Blue Book Chapter 30 verbatim: 16-bit oops, reference
+counting. It exists so the \emph{same interpreter} can load the real 1983
+image and reproduce Xerox's traces. \ct|om_mt.c| is the real one: 64-bit
+table, tagged integers, per-worker allocation, a marking collector at a
+safepoint, weak references and ephemerons.
+
+Passing \ct{trace2} therefore validates the same code the parallel system
+runs. That is the central trick of the project.
+
+\section{Contexts are objects}
+
+A stack frame is a \ct{MethodContext}: an ordinary heap object with a sender,
+an instruction pointer, a stack pointer, a method, a receiver and slots. There
+is no machine stack.
+
+That single decision is why so much is possible: processes are cheap because a
+process is a pointer to a context chain; the debugger can show you the stack
+because the stack is data; you can edit a method in the middle of a running
+call and restart the frame; and \ct{ensure:} can find its own marker by
+walking senders.
+
+\section{Bytecodes}
+
+Squeak's V3PlusClosures set. About 250 opcodes, most of them one byte,
+covering push, store, pop, jump, send, and return.
+
+Two things worth knowing as a user:
+
+\textbf{Special selectors.} \ct{+}, \ct{-}, \ct{<}, \ct{=}, \ct{at:},
+\ct{at:put:}, \ct{do:} and about two dozen others have a bytecode of their own.
+They are still real sends---the fast path checks the receiver's class and
+falls through to a full lookup if it is not what it expected---so overriding
+\ct{+} in your class works.
+
+\textbf{Inlined control flow.} \ct{ifTrue:}, \ct{and:}, \ct{whileTrue:} and
+\ct{to:do:} with literal blocks compile to jumps. No block is created and no
+message is sent, which is why they cost nothing and why a non-Boolean receiver
+reports \ct{must be a boolean} from a jump rather than a doesNotUnderstand.
+
+\section{Primitives}
+
+A method may declare \ct{<primitive: N>}. The VM tries N; if it succeeds the
+Smalltalk body never runs, and if it fails the body runs as a fallback. That
+fallback is why \ct{SmallInteger>>+} can hand off to \ct{LargePositiveInteger}
+arithmetic without the VM knowing anything about large integers.
+
+Two primitives in this system are not operations at all but \emph{labels}: 198
+and 199 mark unwind and handler frames, and nothing implements them, so they
+always fail and the Smalltalk body runs. Signalling finds them by walking the
+sender chain. That is how exceptions are written in Smalltalk.
+
+Primitives 240--255 are reserved for this system's parallel operations.
+
+\section{Method lookup}
+
+Receiver's class, then its method dictionary, then up the superclass chain to
+\ct{Object}, whose superclass is \ct{nil}. If nothing implements the selector,
+\ct{doesNotUnderstand:} is sent instead.
+
+\begin{stnote}[There is no method cache]
+Primitive 89, \ct{flushCache:}, is a no-op because there is nothing to flush.
+That is a measured decision rather than an omission: \ct|lookup_method| probes
+from the selector's hash, and its inclusive cost is 0.1\% of a steady-state
+profile and 8.4\% of a whole image build---the most send-heavy thing the system
+does. A \emph{perfect} cache would buy 8.4\% there and nothing elsewhere, at
+the price of a per-worker cache, a global epoch, and method dictionaries made
+immutable-once-published, whose failure mode is a stale method silently
+answering an old body. Reference counting is 25\% of the same profile. That is
+where the next measurement goes.
+\end{stnote}
+
+\section{The collector}
+
+Marking, at a safepoint. The interpreter polls for safepoints at message sends
+and backward jumps; when one is requested, every worker parks, one thread
+collects, and everybody resumes. No Smalltalk code observes a partially
+collected heap.
+
+Reference counts are rebuilt from the root walk, which has a consequence that
+bit the bootstrap for months: \textbf{a reference held only in C protects
+nothing}. Anything the VM holds must be visited by the root walk, or the
+collector will reclaim it and hand its table slot to the next allocation.
+
+The shape of that bug is worth recognising. A message sent to an object of a
+class that has no business being there---\ct|aMethodContext does not understand #priority|---is rarely a wrong send. It is almost always a freed
+object whose table slot has been handed to something else.
+
+\section{The bootstrap}
+
+There is no chicken-and-egg problem, because the compiler is in C. Building an
+image is: read every class definition, create the classes, compile every
+method, run the class initialisers, construct the handful of objects that
+exist only in a live image---\ct{Sensor}, \ct{ScheduledControllers},
+\ct{Transcript}, \ct{Smalltalk}, the top \ct{Project}, \ct{Disk}---and write
+the object memory out.
+
+That last group is the interesting part, and it is why a bootstrapped image is
+not merely a compiled library: those objects exist in the 1983 image because
+somebody made them interactively in 1979 and never stopped saving, and a
+bootstrap has to construct each one deliberately.
+
+\section{The window}
+
+Thread 0 pumps SDL and never executes Smalltalk. Workers execute Smalltalk and
+never call SDL video. SDL3's main-thread-only rules and macOS's Cocoa run loop
+force that shape, and it also avoids a real deadlock: a thread parked in a GC
+safepoint at the moment the window server wants a response would hang the
+compositor.
+
+The display Form is the authoritative pixel store; the window is a view of it.
+Thread 0 copies damaged regions out and presents them, and never writes back.
+
+\section{Where to read next}
+
+\begin{center}
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+\ctp{doc/CONCURRENCY.md} & the contract, the primitive table, the locking rules\\
+\ctp{doc/SCALING.md} & the benchmark and what each kernel measures\\
+\ctp{doc/Display.md} & the window, the face, antialiasing\\
+\ctp{doc/LanguageExtensions.md} & every post-1983 syntax and where it stands\\
+\ctp{doc/PLAN-TO-PHARO.md} & where the project is going\\
+\ctp{doc/LICENSING.md} & what may be redistributed\\
+\bottomrule
+\end{tabular}
+\end{center}

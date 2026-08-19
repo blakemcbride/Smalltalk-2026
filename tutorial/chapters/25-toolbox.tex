@@ -1,0 +1,161 @@
+\chapter{The Command-Line Toolbox}
+\label{ch:toolbox}
+
+\standfirst{Nine things \ct{st80} can tell you about an image or a source tree
+without opening a window. Most of them exist because a question came up during
+development and grepping was not good enough.}
+
+\section{\texttt{-syntax}: does it compile?}
+
+\begin{sh}
+./st80 -syntax lib/MyStuff/*.st
+./st80 -syntax -profile profiles/mystuff.profile
+\end{sh}
+
+Compiles every method in the named files and reports failures, without
+building an image or running anything. The fastest check there is, and the
+right thing to put in an editor's save hook.
+
+It is a \emph{grammar} check and deliberately nothing more: every identifier
+resolves, and its stand-in literals are shared rather than allocated, so it
+sees neither an undefined global nor a method that overruns the 63-literal
+frame. Those are the bootstrap's business, and \ct{-tests} is the next step
+in the workflow below for exactly that reason.
+
+\section{\texttt{-primitives}: what does this source ask of the VM?}
+
+\begin{sh}
+./st80 -primitives pharo/Collections-Unordered/*.st
+\end{sh}
+
+Lists every primitive number the source declares. This turns "will this port
+run?" from an unbounded question into a finite checklist: the primitives it
+names either exist here or they do not.
+
+\section{\texttt{-census}: what is in this image?}
+
+\begin{sh}
+./st80 -census st80.image
+\end{sh}
+
+\begin{plain}
+live objects     : 15607
+pointer objects  : 5267
+non-pointer      : 10340
+words in objects : 1028771
+sum of refcounts : 49585
+
+reference count histogram (count: objects)
+ 10632 1
+   800 2
+   ...
+\end{plain}
+
+A summary of the object memory. Useful for noticing that something is
+retaining far more than it should.
+
+\section{\texttt{-classes} and \texttt{-methods}}
+
+\begin{sh}
+./st80 -classes st80.image | grep -i collection
+./st80 -methods st80.image | grep 'inject:into:'
+\end{sh}
+
+Every class and every method, in the format of the Xerox reference dumps.
+These exist because those dumps are an oracle: \ct{class.oops} lists 446
+classes and \ct{method.oops} lists 4,494 methods, and this system reproduces
+both exactly. As a day-to-day tool it is grep over the whole system.
+
+\section{\texttt{-disasm}: what did the compiler emit?}
+
+\begin{sh}
+./st80 -disasm st80.image OrderedCollection add:
+\end{sh}
+
+\begin{plain}
+OrderedCollection>>add:
+  header      : ... (flag 0, 1 temporaries, 3 literals)
+  literal 0   : ...
+  bytecodes   :
+      ...: 112          Push Receiver
+      ...:  16          Push Temporary 0
+      ...
+\end{plain}
+
+For when you want to know whether \ct{ifTrue:} really was inlined, or whether
+a send is going through the special-selector fast path.
+
+\section{\texttt{-inspect}: one object, by pointer}
+
+\begin{sh}
+./st80 -inspect st80.image 1a4c
+\end{sh}
+
+Describes one object, given its oop in hex. Mostly useful with \ct{-census}
+and \ct{-trace2} output, which name objects that way.
+
+\section{\texttt{-trace2} and \texttt{-trace3}: the oracle}
+
+\begin{sh}
+make OM=bb
+./st80 -trace2 oracle/VirtualImage 611
+\end{sh}
+
+The Xerox execution traces, byte for byte. These need the 1983 image, which
+carries no licence grant from anyone and so is not distributed---the suite
+skips without it and everything else still passes.
+
+If you change the interpreter, this is the test that matters.
+
+\section{\texttt{-inject} and \texttt{-screenshot}: driving the interface}
+
+\begin{sh}
+./st80 -inject "m 320 240; w 20; d 129; w 40; u 129; w 60" \
+       -screenshot /tmp/shot.pbm -run st80.image
+\end{sh}
+
+\begin{center}
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+\ctp{m X Y} & move the pointer\\
+\ctp{d CODE} \ctp{u CODE} & press and release (128 blue, 129 yellow, 130 red)\\
+\ctp{k CODE} & type a key\\
+\ctp{w N} & wait N bytecode slices\\
+\ctp{x} & post a window-exposed event\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The injected events go through the same queue SDL's own do, which is the
+point: a test that drove a private queue would prove nothing about the one the
+image reads.
+
+\section{\texttt{-eval}, \texttt{-tests}, \texttt{-doctests}}
+
+Covered in Chapters~\ref{ch:building} and~\ref{ch:tests}. The three you will
+use daily.
+
+\section{A workflow}
+
+\begin{sh}
+# fast: does it compile?
+./st80 -syntax lib/MyStuff/*.st
+
+# does it work?
+./st80 -bootstrap -profile profiles/mystuff.profile -tests
+
+# do the documented examples still hold?
+./st80 -bootstrap -profile profiles/mystuff.profile \
+       -doctests lib/MyStuff/Account.class.st
+
+# does the whole system still work?
+make test
+
+# and before anything touching threads
+make clean && make TSAN=1 test
+\end{sh}
+
+The first takes under a second, the second about ten, and \ct{make test} a few
+minutes. Run them in that order and you will rarely wait for the slow one to
+tell you something the fast one could have.

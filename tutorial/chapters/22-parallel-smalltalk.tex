@@ -1,0 +1,255 @@
+\chapter{Writing Parallel Smalltalk}
+\label{ch:parallel}
+
+\standfirst{The classes 1983 has no equivalent of, the patterns that work, and
+the mistakes that are specific to this system.}
+
+\section{\texttt{forkParallel:} and \texttt{Promise}}
+
+The one to reach for first. It forks a block and answers a \ct{Promise} for
+its value:
+
+\begin{st}
+| p |
+p := Processor forkParallel: [ (1 to: 1000000) inject: 0 into: [:a :b | a + b] ].
+"...do something else..."
+p value                          "waits if it is not ready yet"
+\end{st}
+
+The value comes back, and so does the failure: if the block raises, the
+exception is re-signalled in whoever asks for the value---the process able to
+do something about it.
+
+\begin{center}
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+\ctp{value} & the value, waiting if necessary; raises if it was broken\\
+\ctp{valueOrNil} & the value, or nil if broken\\
+\ctp{isSettled} \ctp{isBroken} & without waiting\\
+\ctp{fulfill:} \ctp{signalError:} & from the producing side\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+A promise settles once. A second fulfil or break is refused rather than
+silently believed, because a value that changes after being read is not a
+promise.
+
+\subsection{Fan out over a collection}
+
+\begin{st}
+Processor parallelCollect: (1 to: 8) do: [:each | self expensiveWork: each]
+\end{st}
+
+Answers the results in order. Every promise is asked for, so a failure
+anywhere arrives here rather than being lost. This is the whole of
+map-parallel, and for a coarse-grained job it is all you need.
+
+\section{\texttt{Mutex}}
+
+\begin{st}
+| lock |
+lock := Mutex new.
+lock critical: [ sharedThing add: x ]
+\end{st}
+
+Two things it does that a bare \ct{Semaphore} does not:
+
+\begin{description}
+\item[The release cannot be skipped.] It is in an \ct{ensure:}, so a non-local
+  return or an exception through the critical block still unlocks. A bare
+  semaphore leaves the lock held forever and every other worker waiting on
+  nothing.
+\item[Re-entry is detected.] A semaphore has no idea who holds it, so a
+  process that takes the same one twice waits for itself, forever, with no
+  diagnostic---the single most common way to deadlock a Smalltalk image. The
+  owner is recorded, so that case raises an error naming it. It is not made to
+  work: a recursive mutex is a different promise, and one that hides the design
+  mistake rather than reporting it.
+\end{description}
+
+\begin{stnote}
+There is deliberately no non-blocking \ct{tryCritical:}. It needs a wait that
+can fail, and there is no primitive for one; writing it in Smalltalk means
+testing \ct{excessSignals} and then decrementing---the exact test-then-act race
+that was removed from \ct{Semaphore>>wait}.
+\end{stnote}
+
+\section{\texttt{Monitor}}
+
+A reentrant lock with condition variables, for when "wait until something is
+true" is the shape of the problem:
+
+\begin{st}
+| m |
+m := Monitor new.
+m critical: [ ... ].
+m critical: [ m waitUntil: [ queue notEmpty ]. queue removeFirst ].
+m critical: [ queue add: x. m signalAll ].
+\end{st}
+
+\begin{center}
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+\ctp{critical:} & hold the monitor for the block; reentrant\\
+\ctp{waitUntil:} & release, wait for a signal, re-acquire, re-test\\
+\ctp{waitForChange} & release and wait for one signal\\
+\ctp{signal} \ctp{signalAll} & wake one, or all\\
+\ctp{hasWaiters} & \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\ct{waitUntil:} re-tests its condition after every wake, which is the correct
+discipline and saves you from writing the loop wrong.
+
+\section{\texttt{SharedQueue}}
+
+Multi-producer, multi-consumer, blocking. This replaces the 1983
+\ct{SharedQueue}, which guards an \ct{OrderedCollection} with two semaphores
+--- correct when "concurrent" means green processes interleaved by one
+interpreter, and wrong when eight native threads are inside it at once.
+
+\begin{st}
+| q |
+q := SharedQueue new.
+4 timesRepeat: [ [ [ q nextPut: self produce ] repeat ] fork ].
+[ q next ]                        "blocks until something arrives"
+\end{st}
+
+\begin{center}
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+\ctp{nextPut:} & add\\
+\ctp{next} & remove, blocking\\
+\ctp{nextOrNil} & remove, or nil if empty\\
+\ctp{peek} \ctp{isEmpty} \ctp{size} & \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+A queue is usually a better answer than a lock: it turns shared mutable state
+into a handoff, which is \emph{reorganize} rather than \emph{serialize}.
+
+\section{Patterns that work}
+
+\subsection{Partition, compute, merge}
+
+The one that scales. Give each worker its own data, and touch nothing shared
+until the end:
+
+\begin{st}
+| parts results |
+parts := self splitWorkInto: Processor workerCount.
+results := Processor parallelCollect: parts do: [:part |
+    part inject: 0 into: [:a :b | a + (self scoreOf: b)]].
+^results inject: 0 into: [:a :b | a + b]
+\end{st}
+
+No lock anywhere, because nothing is shared. Each sub-block allocates from its
+own worker's buffer.
+
+\subsection{Producer--consumer}
+
+A \ct{SharedQueue} between stages. Producers never see consumers' state and
+the queue is the only shared object.
+
+\subsection{Fork and join with failures}
+
+\begin{st}
+| promises |
+promises := jobs collect: [:j | Processor forkParallel: [ self run: j ] ].
+^promises collect: [:p | p value ]     "any failure arrives here"
+\end{st}
+
+\section{Mistakes specific to this system}
+
+\begin{stwarn}[Lost update]
+\begin{st}
+count := count + 1.        "on a shared object: wrong"
+Total := Total + 1.        "on a class variable: wrong"
+\end{st}
+Correct in every green-threaded Smalltalk, and a lost update here. Guard it,
+or give each worker its own counter and sum at the end.
+\end{stwarn}
+
+\begin{stwarn}[Lazy initialisation]
+\begin{st}
+^Default ifNil: [Default := Foo new]     "two workers build two"
+\end{st}
+Forbidden. Initialise eagerly in a class-side \ct{initialize}.
+\end{stwarn}
+
+\begin{stwarn}[Sharing a collection]
+\begin{st}
+"two workers, one OrderedCollection"
+results add: x                            "corrupts it"
+\end{st}
+The base collections are not synchronised. Use a \ct{SharedQueue}, or a
+\ct{Mutex}, or one collection per worker.
+\end{stwarn}
+
+\begin{stwarn}[Raising priority for atomicity]
+It stops nobody on another core. It never worked here and it never will.
+\end{stwarn}
+
+\section{Proving it actually ran in parallel}
+
+A test that merely does not crash proves very little. The discipline used
+throughout this system's own suites is: \textbf{every worker computes something
+only it can check}, so a fault arrives as a wrong answer rather than as a hope
+that a sanitizer noticed.
+
+\begin{st}
+| results |
+results := Processor parallelCollect: (1 to: 8) do: [:i |
+    (1 to: 100000) inject: 0 into: [:a :b | a + (b * i)]].
+"each element is a different, checkable number"
+\end{st}
+
+And to check that more than one worker was involved:
+
+\begin{st}
+(Processor parallelCollect: (1 to: 100) do: [:i | Processor activeWorkerIndex])
+    asSet size                            "> 1 if it really spread"
+\end{st}
+
+\begin{stwarn}
+That answers 1 under \ct{-run} and under \ct{-bootstrap -eval}, because
+neither starts the worker pool---see Chapter~\ref{ch:contract}. It is the
+parallel test suites and \ct{make bench} that run on many native threads
+today. Write to the contract regardless: the code is the same either way, and
+only the timing changes.
+\end{stwarn}
+
+\section{Measuring}
+
+\ct{make bench} runs the scaling benchmark: four kernels, swept from one
+worker to many, with the total work fixed.
+
+\begin{center}
+\small
+\begin{tabular}{@{}lp{0.60\textwidth}@{}}
+\toprule
+arithmetic & the interpreter's loop, nothing allocated\\
+mandelbrot & heavy arithmetic, almost no allocation --- the ceiling\\
+intervals & pure interpretation: sends, blocks, a context per activation\\
+collections & heavy allocation and collection --- the case a shared heap makes
+  hardest\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+If your own code does not scale, the question to ask is which of those four it
+most resembles. Allocation-heavy code contends on the object table;
+arithmetic-heavy code does not. \ct{doc/SCALING.md} has the analysis.
+
+\begin{stnote}
+Build with \ct{TSAN=1} and run your tests. ThreadSanitizer reports only races
+that \emph{actually executed}, so it is necessary and not sufficient---but a
+race it does report is real, and it will find them long before a customer
+does.
+\end{stnote}

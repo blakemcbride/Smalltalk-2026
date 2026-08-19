@@ -1,0 +1,149 @@
+\chapter{Strings, Symbols and Text}
+\label{ch:text}
+
+\standfirst{Three classes that look alike and are not interchangeable, and one
+of them carries formatting.}
+
+\section{The three}
+
+\begin{center}
+\small
+\begin{tabular}{@{}lp{0.62\textwidth}@{}}
+\toprule
+\ctp{String} & a mutable, byte-indexed collection of Characters\\
+\ctp{Symbol} & an interned, immutable String. Two symbols spelled alike are
+  the \emph{same object}\\
+\ctp{Text} & a String plus runs of emphasis---bold, italic, underline. What
+  the Browser and the editors actually manipulate\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\ct{Symbol} is a subclass of \ct{String}, so every String message works on a
+symbol; the reverse is not true, because a symbol may not be modified.
+
+\subsection{When to use which}
+
+Use a \ct{Symbol} for anything that names something---a selector, a key in a
+dictionary, a state in a state machine, a tag. Comparison is pointer
+comparison and hashing is free. Use a \ct{String} for data: something a user
+typed, something read from a file, something you built.
+
+\begin{st}
+#hello == #hello             "true  -- one object"
+'hello' == 'hello'           "false -- two objects"
+'hello' = 'hello'            "true"
+'hello' asSymbol             "#hello"
+#hello asString              "'hello'"
+\end{st}
+
+\section{String protocol}
+
+A String is a collection, so everything in Chapter~\ref{ch:collections}
+applies: \ct{do:}, \ct{select:}, \ct{collect:}, \ct{detect:}, \ct{size},
+\ct{includes:}, \ct{,}, \ct{copyFrom:to:}, \ct{indexOf:}, \ct{reverse}.
+
+On top of that:
+
+\begin{center}
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+\ctp{asUppercase} \ctp{asLowercase} & case\\
+\ctp{asSymbol} \ctp{asNumber} \ctp{asInteger} & conversion\\
+\ctp{asArray} \ctp{asBag} \ctp{asSet} & conversion\\
+\ctp{reversed} \ctp{sorted} & \ctp{'hello' sorted} is \ctp{'ehllo'}\\
+\ctp{copyReplaceAll:with:} & substitution\\
+\ctp{indexOfSubCollection:startingAt:} & find a substring\\
+\ctp{findString:startingAt:} & the same thing, String's own\\
+\ctp{includesSubstring:} & \\
+\ctp{trimBoth} & strip surrounding whitespace\\
+\ctp{isEmpty} \ctp{notEmpty} & \\
+\ctp{displayString} \ctp{printString} & the second adds quotes\\
+\ctp{withCRs} & turn backslashes into carriage returns\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{st}
+'hello' asUppercase                        "'HELLO'"
+'hello' reversed                           "'olleh'"
+'hello' indexOf: $l                        "3"
+'hello' copyFrom: 2 to: 4                  "'ell'"
+'abcabc' copyReplaceAll: 'b' with: 'X'     "'aXcaXc'"
+'hello' , ' ' , 'world'                    "'hello world'"
+\end{st}
+
+\begin{stnote}[Line endings]
+Smalltalk-80 uses carriage return, \ct{Character cr}, as its line separator,
+not line feed. \ct{withCRs} turns \ct{\textbackslash} into a carriage return,
+which is how the 1983 sources write multi-line menu labels on one line.
+\end{stnote}
+
+\section{Characters}
+
+\begin{st}
+$a                          "a Character literal"
+$a asciiValue               "97"
+$a asInteger                "97"
+Character value: 97         "$a"
+$a asUppercase              "$A"
+$a isVowel                  "true"
+$a isLetter                 "true"
+$5 digitValue               "5"
+Character cr
+Character tab
+Character space
+\end{st}
+
+\begin{stwarn}
+\ct|$a value| answers \ct|$a|, not 97: \ct{Character} implements
+\ct{asciiValue}, and \ct{Object>>value}---added for Pharo
+compatibility---answers the receiver. Use \ct{asciiValue} or \ct{asInteger}.
+\end{stwarn}
+
+\section{Building strings}
+
+Concatenation with \ct{,} is fine for two or three pieces. For a loop, use a
+stream (Chapter~\ref{ch:streams}):
+
+\begin{st}
+| s |
+s := WriteStream on: (String new: 0).
+1 to: 5 do: [:i | s print: i; nextPut: $ ].
+s contents                        "'1 2 3 4 5 '"
+\end{st}
+
+\section{Text and emphasis}
+
+\ct{Text} pairs a String with runs of \ct{TextAttribute}. The editors,
+the Browser's code pane and \ct{Transcript} all deal in Text rather than
+String, which is why some methods answer \ct{aText} where you expected a
+string.
+
+\begin{st}
+'hello' asText
+aText asString                   "back to plain characters"
+\end{st}
+
+You will meet \ct{Text} mostly by accident---as the thing a view hands you.
+\ct{asString} is the usual response.
+
+\section{Fonts, and why they matter here}
+
+Text is drawn from a \ct{StrikeFont}: one wide one-bit bitmap of every glyph
+side by side, plus an \ct{xTable} of where each one starts. The width of a
+character is the difference between two adjacent entries, which is what makes
+the face proportional.
+
+The built-in face is Inter at 18 pixels with three rows of lead, rasterised
+into a checked-in C file. The screen shows an antialiased version of it, but
+the \emph{image} only ever sees one bit per pixel---Chapter~\ref{ch:graphics}
+explains how both can be true.
+
+\begin{stwarn}
+Changing the face means rebuilding the image. \ct{TextList} fixes its line
+grid from the font's height at class-initialisation time, and \ct{PopUpMenu}
+composes its labels into a Form once, so an image built against one face
+cannot be shown another. The VM says so at startup if they disagree.
+\end{stwarn}

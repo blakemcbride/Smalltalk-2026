@@ -1,0 +1,134 @@
+\chapter{The Class Side}
+\label{ch:classside}
+
+\standfirst{Classes are objects, so they have a class of their own, and that
+class is where \ct{new} lives. This chapter is the part of Smalltalk that looks
+strange for about an hour and then never troubles you again.}
+
+\section{Why there is a class side at all}
+
+If classes are objects---and they are, you can put one in a collection and
+send it messages---then a class must be an instance of something, and messages
+sent to a class must be looked up somewhere.
+
+They are looked up in the class's \emph{metaclass}. Every class has exactly
+one, created with it, and its sole instance is that class.
+
+\begin{st}
+3 class                  "SmallInteger        -- the class of 3"
+SmallInteger class       "SmallInteger class  -- its metaclass"
+SmallInteger class class "Metaclass"
+Metaclass class class    "Metaclass -- the regress stops here"
+\end{st}
+
+That is the whole of it. \emph{Instance-side} methods are found when you send
+to an instance; \emph{class-side} methods are found when you send to the
+class.
+
+\section{Using it}
+
+In the Browser, the \ct{instance} and \ct{class} buttons under the class list
+switch which side you are editing. Everything else is the same.
+
+The two things class-side methods are actually for:
+
+\subsection{Making instances}
+
+\begin{st}
+Account class >> new
+    ^super new initialize
+
+Account class >> newWithBalance: anAmount
+    ^self new deposit: anAmount; yourself
+
+Point class >> x: anX y: aY
+    ^self new setX: anX y: aY
+\end{st}
+
+A well-named class-side constructor is better than making callers send
+\ct{new} and then a sequence of setters, because it can enforce that the
+object is never seen half-built.
+
+\begin{stnote}
+\ct{super new} in a class method means "start the lookup of \ct{new} above my
+metaclass"---which reaches \ct{Behavior>>new}, the primitive that allocates.
+\ct{self new} inside \ct{Account class>>new} would call itself forever.
+\end{stnote}
+
+\subsection{Class-side state and initialisation}
+
+A class-side method can read and write class variables, and a class may define
+\ct{initialize} on the class side to set them up:
+
+\begin{st}
+Account class >> initialize
+    InterestRate := 5 / 100
+\end{st}
+
+This does not run by itself when you accept it. Send \ct{Account initialize}
+once. When a class is loaded from a package, the loader runs class-side
+\ct{initialize} for you after everything is in place, which is how the 1983
+library's forty-six class initialisers get run at bootstrap.
+
+\begin{stwarn}
+Class-side \ct{initialize} runs at build time, and that is deliberate rather
+than incidental: initialising eagerly at build is what makes lazy
+initialisation---and its check-then-act race across workers---unnecessary. See
+Chapter~\ref{ch:contract}.
+\end{stwarn}
+
+\section{Class instance variables}
+
+There is a third kind of variable, rarer and occasionally exactly right. A
+metaclass can have instance variables of its own; since its sole instance is
+the class, each class in a hierarchy gets its own copy.
+
+\begin{center}
+\small
+\begin{tabular}{@{}lp{0.58\textwidth}@{}}
+\toprule
+instance variable & one per instance\\
+class variable & \emph{one}, shared by the class, its subclasses and all their
+  instances\\
+class instance variable & one per class, and subclasses get their \emph{own},
+  not the same one\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Use a class instance variable when each subclass should have its own default;
+use a class variable when there must be exactly one for the whole hierarchy.
+
+\section{The picture}
+
+\begin{plain}
+      Object  ------ instance-of ----->  Object class
+        ^                                     ^
+     superclass                           superclass
+        |                                     |
+      Account ------ instance-of ----->  Account class
+        ^                                     ^
+     superclass                           superclass
+        |                                     |
+  SavingsAccount -- instance-of --> SavingsAccount class
+
+  and every metaclass is an instance of Metaclass.
+\end{plain}
+
+The metaclass hierarchy runs exactly parallel to the class hierarchy. That is
+why \ct{super new} in \ct{SavingsAccount class>>new} finds
+\ct{Account class>>new}: the metaclasses inherit in the same order the classes
+do.
+
+\ct{Object class} inherits from \ct{Class}, which inherits from
+\ct{ClassDescription}, then \ct{Behavior}, then \ct{Object}. That is where
+\ct{new}, \ct{selectors}, \ct{compile:} and the rest of the reflective
+protocol come from, and it is why every class understands them without anybody
+writing them down twice.
+
+\section{When you do not need any of this}
+
+Most days. Write instance methods, write a class-side \ct{new} if your class
+needs initialising, and let the rest sit there working. The metaclass
+machinery is worth understanding because it explains why the system has no
+special cases, not because you have to think about it to get work done.

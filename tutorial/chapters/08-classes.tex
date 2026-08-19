@@ -1,0 +1,223 @@
+\chapter{Classes and Inheritance}
+\label{ch:classes}
+
+\standfirst{How to make a class, in the image and on disk, and what the pieces
+mean.}
+
+\section{Defining a class in the image}
+
+Select a class category in the Browser's leftmost pane and the code pane fills
+with a template. Edit it and \ct{accept} it from the yellow-button menu:
+
+\begin{st}
+Object subclass: #Account
+    instanceVariableNames: 'balance history'
+    classVariableNames: 'InterestRate'
+    poolDictionaries: ''
+    category: 'MyStuff-Banking'
+\end{st}
+
+That is not a declaration. It is a message---\ct|subclass:instanceVariable\-Names: classVariableNames:poolDictionaries:category:|---sent to the class \ct{Object},
+which is an object, and which responds by building a new class and installing
+it in \ct{Smalltalk}. Evaluating the same expression in a workspace does the
+same thing. There is nothing else going on.
+
+\begin{description}
+\item[instanceVariableNames] one space-separated string. Each instance gets
+  its own copy of each, initially \ct{nil}.
+\item[classVariableNames] shared by the class, its metaclass, and every
+  instance and subclass. Capitalised by convention because they are, from
+  inside a method, name-scoped like globals.
+\item[poolDictionaries] a shared namespace, mostly of historical interest.
+  Leave it empty.
+\item[category] which pane of the Browser it appears in. Purely
+  organisational.
+\end{description}
+
+Variants of the message make the other shapes:
+
+\begin{center}
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+\ctp{subclass:} & ordinary, fixed instance variables\\
+\ctp{variableSubclass:} & plus an indexed part of object pointers\\
+\ctp{variableByteSubclass:} & plus an indexed part of bytes\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\ct{Array} is a \ct{variableSubclass:}, \ct{String} is a
+\ct{variableByteSubclass:}. If your class holds a fixed number of named
+things---which is nearly always---use the plain one.
+
+\section{Adding methods}
+
+Select the class, select or type a message category, and type a method into
+the code pane:
+
+\begin{st}
+balance
+    "Answer how much is in the account."
+    ^balance
+\end{st}
+
+\ct{accept} compiles it into the running system immediately. There is no build
+step and nothing to restart. If your object is already on the screen in an
+Inspector, the next time you send it that message you get the new version.
+
+A first cut at the whole class:
+
+\begin{st}
+initialize
+    balance := 0.
+    history := OrderedCollection new
+
+balance
+    ^balance
+
+deposit: anAmount
+    anAmount <= 0 ifTrue: [^self error: 'deposits must be positive'].
+    balance := balance + anAmount.
+    history add: #deposit -> anAmount
+
+withdraw: anAmount
+    anAmount > balance ifTrue: [^Error new signal: 'insufficient funds'].
+    balance := balance - anAmount.
+    history add: #withdraw -> anAmount
+
+printOn: aStream
+    aStream nextPutAll: 'an Account of '; print: balance
+\end{st}
+
+\section{Creating instances}
+
+\ct{new} is a message to the class. Inherited from \ct{Behavior}, it allocates
+an instance with every named variable set to \ct{nil} --- and, in the 1983
+library, does \emph{not} call \ct{initialize}.
+
+\begin{stwarn}[\ctp{new} and \ctp{initialize}]
+Pharo's \ct{Object class>>new} sends \ct{initialize}. The 1983
+\ct{Behavior>>new} is a primitive and nothing else. Loading a class from
+\ct{lib/} or \ct{pharo/} that defines \ct{initialize} and no class-side
+\ct{new}, the loader writes \ct|^super new initialize| for you and reports
+that it did. A class you type into the Browser gets no such help: write it
+yourself.
+\end{stwarn}
+
+\begin{st}
+Account class >> new
+    ^super new initialize
+\end{st}
+
+Chapter~\ref{ch:classside} explains what \ct{Account class} means and why that
+method goes somewhere different from the others.
+
+\section{Inheritance}
+
+\begin{st}
+Account subclass: #SavingsAccount
+    instanceVariableNames: 'rate'
+    classVariableNames: ''
+    poolDictionaries: ''
+    category: 'MyStuff-Banking'
+\end{st}
+
+A subclass gets every instance variable and every method of its superclass.
+Override by defining a method with the same selector; call the inherited one
+with \ct{super}.
+
+\begin{st}
+SavingsAccount >> printOn: aStream
+    super printOn: aStream.
+    aStream nextPutAll: ' at '; print: rate
+\end{st}
+
+There is single inheritance only. For sharing behaviour across unrelated
+classes there are traits, which this system flattens at load time---see
+Chapter~\ref{ch:beyond}.
+
+\subsection{Abstract classes}
+
+Nothing marks a class abstract. The convention is a method that refuses:
+
+\begin{st}
+Shape >> area
+    ^self subclassResponsibility
+\end{st}
+
+which raises an error naming the class that failed to implement it.
+
+\section{Instance variables, class variables, and the difference}
+
+\begin{st}
+Object subclass: #Counter
+    instanceVariableNames: 'count'        "one per instance"
+    classVariableNames: 'Total'           "one, shared by everything"
+    poolDictionaries: ''
+    category: 'MyStuff'
+\end{st}
+
+\ct{count} is private to each \ct{Counter}. \ct{Total} is one variable shared
+by the class, its metaclass, all its instances and all its subclasses.
+
+\begin{stwarn}[Class variables and threads]
+A class variable is shared mutable state, and in this system "shared" means
+across native threads. \ct{Total := Total + 1} from two workers loses counts.
+Chapter~\ref{ch:contract} is the rules; the short version is that lazy
+initialisation of a class variable---\ct|^Default ifNil: [Default := ...]|
+---is forbidden here, because two workers each build one.
+\end{stwarn}
+
+\section{The same class, on disk}
+
+The Browser is the fastest way to explore, but code you want to keep belongs
+in a file. The same class in Tonel format, as \ct{lib/MyStuff/Account.class.st}:
+
+\begin{st}
+"
+An account.  The class comment goes here, at the top of the file, and the
+Browser shows it under the class's `comment' button.
+"
+Class {
+	#name : 'Account',
+	#superclass : 'Object',
+	#instVars : [ 'balance', 'history' ],
+	#classVars : [ 'InterestRate' ],
+	#category : 'MyStuff-Banking'
+}
+
+{ #category : 'initialization' }
+Account >> initialize [
+	balance := 0.
+	history := OrderedCollection new
+]
+
+{ #category : 'accessing' }
+Account >> balance [
+	^balance
+]
+\end{st}
+
+Chapter~\ref{ch:packages} covers packages, profiles and how a directory of
+these becomes an image. The important property, which the 1983 chunk format
+did not have, is that \textbf{load order does not matter}: definitions are
+read in a pass of their own before any method is compiled.
+
+\section{Finding your way around}
+
+The Browser is the tool, and Chapter~\ref{ch:tools} is about it. From code,
+the reflective protocol is all ordinary messages:
+
+\begin{st}
+Account superclass                   "Object"
+Account selectors                    "a Set of the selectors it defines"
+Account allInstVarNames              "including inherited"
+Account subclasses
+Account allSubclasses
+Account category
+Account comment
+Account >> #balance                  "the CompiledMethod itself"
+Smalltalk at: #Account               "the class, by name"
+Object allSubclasses size            "how big the system is"
+\end{st}

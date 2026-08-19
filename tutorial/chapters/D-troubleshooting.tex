@@ -1,0 +1,114 @@
+\chapter{Troubleshooting}
+\label{app:trouble}
+
+\section{Building}
+
+\begin{description}
+\item[\ctp{fixed object 0 landed on pointer 0, expected 2}] You asked
+  \ct{OM=bb} to bootstrap an image. It cannot---it exists to load the 1983
+  Xerox image. Build with the default \ct{OM=mt}.
+\item[\ctp{SDL3: not found -- headless build}] No SDL3 development package.
+  Everything works except the window. Install \ct{SDL3-devel} or
+  \ct{libsdl3-dev} and rebuild.
+\item[Garbled glyphs on screen] A stale object file in the archive.
+  \ct|make clean && make|.
+\item[The VM says the font and the image disagree] You ran \ct{make font} and
+  did not rebuild the image. Some classes fix their line grid at
+  class-initialisation time, so an image built against one face cannot be shown
+  another. Rebuild the image.
+\end{description}
+
+\section{The window}
+
+\begin{description}
+\item[Nothing happens when I choose \ctp{browser}] It is waiting for you to
+  frame the window. Press the red button, drag out a rectangle, release. See
+  Chapter~\ref{ch:tenminutes}.
+\item[The menu flashes and disappears] You clicked. Press and \emph{hold}.
+\item[No mouse button does anything] The display was resized without the image
+  being told, so no controller believes the cursor is inside it. Run with
+  \ct|ST_DISPLAY_TRACE=1| to see which step refused. As a workaround,
+  \ct|ST_DISPLAY_FIT=off| keeps the image's own screen size.
+\item[The screen does not update when I switch back to it] Fixed; if you see
+  it, the window-exposed event is not arriving. \ct{restore display} on the
+  desktop menu redraws everything.
+\item[The rubber band blinks while I drag] Fixed. The 1983 idiom draws the
+  rectangle as a flash between two cancelling blits, and the window is now
+  presented at the right moment rather than at random.
+\item[The window is tiny / has huge borders] \ct|ST_DISPLAY_WINDOW=WxH| sets
+  the window size, \ct|ST_DISPLAY_SCALE| the pixel scale.
+\end{description}
+
+\section{Writing code}
+
+\begin{description}
+\item[\ctp{must be a boolean}] The receiver of an inlined \ct{ifTrue:},
+  \ct{and:} or \ct{whileTrue:} was not \ct{true} or \ct{false}---almost always
+  an uninitialised instance variable holding \ct{nil}.
+\item[\ctp{doesNotUnderstand: \#ifTrue:}] The same thing where the send was
+  not inlined.
+\item[A global is \ctp{nil} that should not be] Look in \ct{Undeclared}. A
+  reference to a name nothing defines compiles quietly, holding \ct{nil}. A
+  typo in a class name does exactly this.
+\item[My \ctp{Set} lost an object I put in it] Either you overrode \ct{=}
+  without \ct{hash}, or you mutated an object while it was an element.
+\item[\ctp{3 + 4 * 2} answered 14] Binary selectors have no precedence among
+  themselves. Parenthesise.
+\item[A cascade went to the wrong receiver] A cascade sends to the receiver of
+  the \emph{last message before the first semicolon}. Add \ct{yourself} if you
+  want the receiver back.
+\item[\ctp{10 / 4} answered \ctp{(5/2)}] \ct{/} answers an exact
+  \ct{Fraction}. Use \ct{//} for integer division or \ct{asFloat}.
+\item[\ctp{more than 63 literals referenced}] A method may reference at most
+  63 literals; the header holds the count in six bits. Every distinct string,
+  symbol, large integer and literal array counts, and repeated strings are not
+  shared---two occurrences of \ct|'x'| are two mutable objects. Split the
+  method, or move the data into a collection built once.
+\item[\ctp{a method overflowed its frame}] The context was sized from the
+  compiler's estimate of the working stack and the method pushed past it.
+  Rare, and worth reporting along with the method that did it.
+\end{description}
+
+\section{Concurrency}
+
+\begin{description}
+\item[It works at one worker and fails at eight] It is a race. Read
+  Chapter~\ref{ch:contract}, then look for an unsynchronised
+  read-modify-write, a shared collection, or a lazily-initialised class
+  variable.
+\item[A process is waiting forever] If it is on a \ct{Semaphore} you are using
+  for mutual exclusion, you may have taken it twice. Use \ct{Mutex}, which
+  detects that and raises rather than deadlocking.
+\item[The Transcript output is interleaved] Expected. Build the line in a
+  \ct{WriteStream} and \ct{show:} it in one send, or hold the monitor.
+\item[\ctp{Processor workerCount} answers 1] Expected: neither
+  \ct{-bootstrap -eval} nor \ct{-run} starts the worker pool today. The
+  parallel test suites and \ct{make bench} do.
+\end{description}
+
+\section{Saving}
+
+\begin{description}
+\item[The Browser shows no source for my methods] The image has been moved
+  away from its \ct{.changes} file. Source is stored as a pointer into that
+  file, not in the image.
+\item[The display came back 992 wide instead of 1000] The image's own
+  arithmetic: \ct{DisplayScreen} rounds a Form's width down to a sixteen-bit
+  word boundary when saving shrinks and restores the display. Harmless.
+\end{description}
+
+\section{Getting more information}
+
+\begin{center}
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+\ctp{ST\_DISPLAY\_TRACE=1} & why a resize was refused; draw and present counts\\
+\ctp{ST\_EVAL\_TRACE=1} & every bytecode an \ctp{-eval} runs\\
+\ctp{ST\_BOTTOM\_LOG=1} & a return off the bottom of a stack\\
+\ctp{./st80 -disasm} & what the compiler actually emitted\\
+\ctp{make ASAN=1 test} & memory errors\\
+\ctp{make TSAN=1 test} & data races\\
+\bottomrule
+\end{tabular}
+\end{center}

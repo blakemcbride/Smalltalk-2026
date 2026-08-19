@@ -28,3 +28,12 @@ screen*.cov
 # under doc/ is the original; a PDF of it is a second copy to keep in step
 # and no reader of this repository needs one.
 *.pdf
+
+# LaTeX intermediates from tutorial/.  The .tex is the source and the PDF is
+# already excluded above; these are neither.
+tutorial/*.aux
+tutorial/*.log
+tutorial/*.out
+tutorial/*.toc
+tutorial/chapters/*.aux
+tutorial/__pycache__/

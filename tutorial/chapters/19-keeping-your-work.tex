@@ -1,0 +1,145 @@
+\chapter{Keeping Your Work}
+\label{ch:keeping}
+
+\standfirst{A running Smalltalk is a heap of live objects. Three different
+things persist it, they persist different things, and knowing which is which
+is the difference between losing an afternoon and not.}
+
+\section{The three}
+
+\begin{center}
+\small
+\begin{tabular}{@{}lp{0.60\textwidth}@{}}
+\toprule
+\textbf{the image} & the whole world: every object, every window's position,
+  your workspace text, the state of everything running. Binary\\[3pt]
+\textbf{the changes file} & a text log of every method you accept and every
+  expression you \ctp{do it}, appended as you work\\[3pt]
+\textbf{file-outs} & source for one class or category, in chunk format, which
+  you can read, keep in version control, and file into another image\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The image is the one that keeps everything and the one you cannot diff.
+File-outs are the one you can. Packages on disk---Chapter~\ref{ch:packages}
+---are the modern answer and the one to prefer for anything you want to
+keep.
+
+\section{Saving the image}
+
+\ct{save} on the desktop menu prompts for a name (defaulting to
+\ct{snapshot}), writes \ct{name.image} and \ct{name.changes}, and keeps
+running. \ct{quit} offers to do the same and then exit.
+
+From code:
+
+\begin{st}
+Smalltalk saveAs: 'myimage' thenQuit: false
+\end{st}
+
+Resume it later with:
+
+\begin{sh}
+./st80 -run myimage.image
+\end{sh}
+
+Everything comes back: windows where you left them, text you had not accepted,
+processes that were running.
+
+\begin{stnote}[One arithmetic quirk after a save]
+Saving shrinks the display to a hundred rows so the snapshot is small, then
+puts the height back. \ct{DisplayScreen} rounds a Form's width down to a
+sixteen-bit word boundary on the way, so a 1000-pixel-wide screen comes back
+992 wide and the window letterboxes the difference. Harmless, and it is the
+image's own arithmetic rather than the VM's.
+\end{stnote}
+
+\section{The changes file}
+
+Every method you accept, every class you define and every expression you
+\ct{do it} is appended, as text, to \ct{<image>.changes} before it takes
+effect. That has two consequences worth knowing.
+
+\textbf{It is your undo of last resort.} If the image is lost, the changes
+file still has the source of everything you did, in order, in a format you can
+read in any editor and file back in.
+
+\textbf{It is where method source comes from.} The Browser does not store
+source in the image---it stores a pointer into a source file, and reads the
+text back when you select a method. That is why the changes file must travel
+with the image, and why it is created beside it automatically.
+
+\begin{stwarn}
+Move an image without its changes file and the Browser will show you nothing
+for every method you wrote. The methods still run; their \emph{source} was in
+the file you left behind.
+\end{stwarn}
+
+\section{Filing out}
+
+\ct{file out} appears on the category, class and message menus in the Browser.
+It writes a \ct{.st} file in chunk format:
+
+\begin{center}
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+category menu & \ctp{Category-Name.st}, every class in it\\
+class menu & \ctp{ClassName.st}, that class, both sides\\
+message menu & the one method\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Read one back with \ct{file in} in the File List, or from code:
+
+\begin{st}
+(FileStream fileNamed: 'Account.st') fileIn
+\end{st}
+
+Chunk format is 1983's interchange format: expressions separated by
+exclamation marks, with method bodies in bang-terminated chunks. It is what
+everything in \ct{sources/} is written in. It works, and it is worth knowing
+because it is how you rescue code from an image.
+
+\section{What to do instead}
+
+For anything you intend to keep, write it as a package on disk---a directory
+of Tonel files with a \ct{package.st}---and name it in a profile. Then your
+code is:
+
+\begin{itemize}
+\item plain text, one file per class, that \ct{git diff} can show you;
+\item loadable in any order, because definitions are read in a pass of their
+  own;
+\item testable from the command line without a window;
+\item reproducible, because the profile says exactly what composes the image.
+\end{itemize}
+
+The workflow that follows from this is: explore in the image, and when
+something works, move it to a file. The Browser is the fastest place to try an
+idea and the worst place to leave one.
+
+Chapter~\ref{ch:packages} is how.
+
+\section{A note on \texttt{Undeclared}}
+
+When you accept a method that references a name nothing defines yet, the
+system does not refuse---it creates the binding, holding \ct{nil}, and
+remembers it in \ct{Undeclared}. Later definition of that name fills the
+binding in and everything works.
+
+That is what makes mutually-referencing classes possible to type in any order.
+It also means a typo in a global name compiles quietly and fails at run time
+with \ct{nil doesNotUnderstand}. When a method behaves as though a global is
+missing, look in \ct{Undeclared}:
+
+\begin{st}
+Undeclared
+Undeclared keys
+\end{st}
+
+The bootstrap reports the same thing at build time---\ct|80 undeclared globals| is a line you will see on every build, and the lower-case ones in
+that list are flagged separately because a lower-case undeclared global is
+almost always a source bug.

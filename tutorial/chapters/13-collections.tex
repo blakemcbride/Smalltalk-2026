@@ -1,0 +1,248 @@
+\chapter{Collections}
+\label{ch:collections}
+
+\standfirst{One protocol, many implementations. Learn \ct{do:},
+\ct{collect:}, \ct{select:}, \ct{detect:} and \ct{inject:into:} and you can
+use every collection in the system, including ones nobody has written yet.}
+
+\section{The hierarchy}
+
+\begin{plain}
+Collection
+  Bag
+  Set
+    Dictionary
+      IdentityDictionary
+        MethodDictionary
+  SequenceableCollection
+    ArrayedCollection
+      Array
+      String
+        Symbol
+      Text
+      ByteArray
+      Interval
+    LinkedList
+    OrderedCollection
+      SortedCollection
+\end{plain}
+
+The important lines are the abstract ones. \ct{Collection} defines nearly all
+the protocol in terms of \ct{do:}, so a class that implements \ct{do:} and
+\ct{add:} inherits about eighty working methods.
+\ct{SequenceableCollection} adds everything that depends on order and
+integer indices.
+
+\begin{stnote}
+The hierarchy above is 1983's, where \ct{Dictionary} is a subclass of
+\ct{Set}. The \ct{pharo-collections} profile substitutes Pharo's versions, in
+which \ct{HashedCollection} sits under \ct{Collection} with \ct{Set} and
+\ct{Dictionary} as siblings. Both pass their own tests. Which you get depends
+on the profile you built with.
+\end{stnote}
+
+\section{Choosing one}
+
+\begin{center}
+\small
+\begin{tabular}{@{}lp{0.60\textwidth}@{}}
+\toprule
+\ctp{Array} & fixed size, integer-indexed, fastest. \ctp{Array new: 10}\\
+\ctp{OrderedCollection} & grows and shrinks at either end. The default choice\\
+\ctp{Set} & no duplicates, no order, membership by \ctp{=} and \ctp{hash}\\
+\ctp{IdentitySet} & membership by \ctp{==}\\
+\ctp{Dictionary} & key to value, keys compared by \ctp{=}\\
+\ctp{IdentityDictionary} & keys compared by \ctp{==}\\
+\ctp{Bag} & a Set that counts duplicates\\
+\ctp{SortedCollection} & keeps itself sorted by a block\\
+\ctp{Interval} & an arithmetic sequence; what \ctp{1 to: 10} answers\\
+\ctp{String} & a byte-indexed collection of Characters\\
+\ctp{Symbol} & an interned, immutable String\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{Making them}
+
+\begin{st}
+Array new: 5                      "5 nils"
+Array with: 1 with: 2             "up to six with:s"
+#(1 2 3)                          "literal; shared, do not mutate"
+{ 1. 2 + 3 }                      "built fresh at run time"
+
+OrderedCollection new
+OrderedCollection withAll: #(1 2 3)
+(1 to: 5) asOrderedCollection
+
+Set new
+Set withAll: #(1 1 2)             "2 elements"
+
+Dictionary new
+(Dictionary new) at: #a put: 1; yourself
+
+SortedCollection sortBlock: [:a :b | a > b]
+\end{st}
+
+Every collection also answers \ct{asArray}, \ct{asOrderedCollection},
+\ct{asBag}, \ct{asSet} and \ct{asSortedCollection}, so converting is one
+message.
+
+\begin{stwarn}
+A literal array \ct|#(1 2 3)| is compiled once and lives in the method. If you
+modify it, you have modified the method's constant, and every later evaluation
+sees the change. Use \ct|{ }| or \ct{copy} when you intend to mutate.
+\end{stwarn}
+
+\section{The five you will use constantly}
+
+\subsection{\texttt{do:}}
+
+\begin{st}
+#(1 2 3) do: [:each | Transcript show: each printString].
+#(1 2 3) do: [:each | ... ] separatedBy: [ ... ].
+#(1 2 3) reverseDo: [:each | ... ].
+#(1 2 3) doWithIndex: [:each :i | ... ].
+aDictionary keysAndValuesDo: [:k :v | ... ].
+aDictionary associationsDo: [:assoc | ... ].
+\end{st}
+
+\subsection{\texttt{collect:} --- transform}
+
+\begin{st}
+#(1 2 3) collect: [:x | x * 10]        "(10 20 30 )"
+\end{st}
+
+Answers a collection of the same kind---collecting over an
+\ct{OrderedCollection} gives an \ct{OrderedCollection}. The exceptions are the
+ones where the same kind makes no sense: over an \ct{Interval} you get an
+\ct{Array}, because an interval of squares is not an interval.
+
+\subsection{\texttt{select:} and \texttt{reject:} --- filter}
+
+\begin{st}
+#(1 2 3 4) select: [:x | x even]        "(2 4 )"
+#(1 2 3 4) reject: [:x | x even]        "(1 3 )"
+\end{st}
+
+\subsection{\texttt{detect:} --- find the first}
+
+\begin{st}
+#(1 2 3) detect: [:x | x > 1]                "2"
+#(1 2 3) detect: [:x | x > 9] ifNone: [0]    "0"
+\end{st}
+
+\ct{detect:} without \ct{ifNone:} raises an error when nothing matches. Prefer
+the two-keyword form; the block is the whole point of the design.
+
+\subsection{\texttt{inject:into:} --- fold}
+
+\begin{st}
+(1 to: 10) inject: 0 into: [:sum :each | sum + each]      "55"
+#('a' 'b') inject: '' into: [:acc :each | acc , each]     "'ab'"
+\end{st}
+
+The first argument is the starting value; the block gets the accumulator and
+the next element and answers the new accumulator.
+
+\section{The rest of the protocol}
+
+\begin{center}
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+\multicolumn{2}{@{}l}{\textit{asking}}\\
+\ctp{size} \ctp{isEmpty} \ctp{notEmpty} & \\
+\ctp{includes:} \ctp{occurrencesOf:} & \\
+\ctp{anySatisfy:} \ctp{allSatisfy:} \ctp{noneSatisfy:} & \\
+\ctp{count:} & how many satisfy a block\\
+\ctp{isCollection} & \\
+\midrule
+\multicolumn{2}{@{}l}{\textit{arithmetic}}\\
+\ctp{sum} \ctp{sum:} \ctp{max} \ctp{min} \ctp{average} & \\
+\midrule
+\multicolumn{2}{@{}l}{\textit{changing}}\\
+\ctp{add:} \ctp{addAll:} \ctp{remove:} \ctp{remove:ifAbsent:} & \\
+\ctp{addFirst:} \ctp{addLast:} \ctp{removeFirst} \ctp{removeLast} & ordered only\\
+\midrule
+\multicolumn{2}{@{}l}{\textit{sequenceable}}\\
+\ctp{first} \ctp{last} \ctp{first:} \ctp{last:} \ctp{allButFirst} \ctp{allButLast} & \\
+\ctp{at:} \ctp{at:put:} \ctp{at:ifAbsent:} & \\
+\ctp{indexOf:} \ctp{copyFrom:to:} \ctp{reverse} \ctp{reversed} & \\
+\ctp{,} & concatenate\\
+\ctp{with:collect:} & zip two collections\\
+\midrule
+\multicolumn{2}{@{}l}{\textit{sorting and shaping}}\\
+\ctp{sorted} \ctp{sorted:} \ctp{asSortedCollection:} & \\
+\ctp{flatCollect:} & collect and flatten one level\\
+\ctp{copyWithout:} \ctp{copyWith:} & \\
+\ctp{ifEmpty:} \ctp{ifNotEmpty:} \ctp{anyOne} & \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{stnote}[One design decision worth knowing]
+The forty-years-of-protocol methods this system adds---\ct{sorted:},
+\ct{flatCollect:}, \ct{count:} and the rest---answer an \ct{Array} where Pharo
+would answer \ct{self species}, except for \ct{sorted} and \ct{sorted:} on a
+sequenceable collection, where order is the point and the species is obvious.
+A sorted Set is not a Set and a flattened Bag is not a Bag, so \ct{species} is
+already the wrong answer for two of the three interesting receivers. The
+methods that \emph{preserve} shape---\ct{select:}, \ct{reject:},
+\ct{collect:}, \ct{copyWithout:}---go on using \ct{species}, because there the
+1983 answer was already right.
+\end{stnote}
+
+\section{Dictionaries}
+
+\begin{st}
+| d |
+d := Dictionary new.
+d at: #one put: 1.
+d at: #two put: 2.
+d at: #one                       "1"
+d at: #three ifAbsent: [0]       "0"
+d at: #three ifAbsentPut: [3]    "3, and now it is in there"
+d removeKey: #one                "answers the ASSOCIATION #one->1"
+d includesKey: #two              "true"
+d keys                           "a Set of the keys"
+d values                         "an Array of the values"
+d associations                   "key -> value pairs"
+d keysAndValuesDo: [:k :v | ... ]
+d keysDo: [:k | ... ]
+d associationsDo: [:a | ... ]
+\end{st}
+
+\ct{do:} on a Dictionary iterates the \emph{values}, not the keys and not the
+associations. That trips everyone once.
+
+An \ct{Association} is an ordinary object made with \ct{->}:
+
+\begin{st}
+#a -> 1                      "a->1"
+(#a -> 1) key                "#a"
+(#a -> 1) value              "1"
+\end{st}
+
+\section{Two rules about \texttt{=} and \texttt{hash}}
+
+\begin{enumerate}
+\item If you override \ct{=}, override \ct{hash}, and make \ct{a = b} imply
+  \ct{a hash = b hash}. A \ct{Set} that disagrees with you will hold two
+  objects you consider equal, and \ct{includes:} will answer \ct{false} for
+  something that is in there.
+\item Do not mutate an object while it is a key in a \ct{Dictionary} or an
+  element of a \ct{Set}. It is filed under its old hash and will not be found
+  again.
+\end{enumerate}
+
+\section{And one rule about threads}
+
+\begin{stwarn}
+\textbf{The base collections are not synchronised.} \ct{OrderedCollection},
+\ct{Dictionary}, \ct{Set} and \ct{Bag} may be read by many workers at once and
+written by exactly one, or you must guard them yourself. This is deliberate:
+paying for a lock on every access to serve the rare shared case is the wrong
+default, which is the lesson Java learned from \ct{Vector}. Use \ct{Mutex},
+\ct{Monitor} or \ct{SharedQueue} when a collection really is shared---see
+Chapter~\ref{ch:parallel}.
+\end{stwarn}

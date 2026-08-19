@@ -1,0 +1,191 @@
+\chapter{Exceptions}
+\label{ch:exceptions}
+
+\standfirst{Smalltalk-80 has no exceptions. This system has them, they are
+written in Smalltalk, and the mechanism underneath is worth one paragraph
+because it explains the shape of everything else.}
+
+\section{What 1983 had instead}
+
+\ct{Object>>error:}, which opens a debugger, and the convention of passing a
+block for the failure case---\ct{remove:ifAbsent:},
+\ct{detect:ifNone:}, \ct{at:ifAbsent:}. Neither can be caught by a caller. The
+second is still good design and still all over the library; the first is what
+exceptions replace.
+
+\section{Catching}
+
+\begin{st}
+[1/0] on: ZeroDivide do: [:e | 'caught']            "'caught'"
+
+[riskyThing]
+    on: Error
+    do: [:e | Transcript show: e messageText; cr. nil]
+\end{st}
+
+\ct{on:do:} is sent to a block, takes an exception \emph{class} and a handler
+block, and answers either the protected block's value or the handler's. The
+handler block may take one argument, the exception object, or none.
+
+The class you name catches itself and all its subclasses, so \ct{on: Error}
+catches \ct{ZeroDivide}, \ct{MessageNotUnderstood} and anything you define
+under \ct{Error}.
+
+\section{Signalling}
+
+\begin{st}
+Error signal                              "the class-side shortcut"
+Error signal: 'something went wrong'
+Error new signal: 'the same thing'
+self error: 'the 1983 spelling, now an Error'
+\end{st}
+
+\ct{Object>>error:} has been rewritten to signal an \ct{Error}, so every one of
+the hundreds of 1983 library methods that calls it now raises something you
+can catch, and an unhandled one still opens the same debugger it always did.
+
+\section{What the handler can do}
+
+The exception object arrives with a set of decisions on it. Which one you use
+is the interesting part of exception handling; catching is the easy part.
+
+\begin{center}
+\small
+\begin{tabular}{@{}lp{0.60\textwidth}@{}}
+\toprule
+\ctp{e return: x} & abandon the protected block; \ctp{on:do:} answers
+  \ctp{x}\\
+\ctp{e return} & the same, answering \ctp{nil}\\
+\ctp{e retry} & run the protected block again, from the beginning\\
+\ctp{e retryUsing: aBlock} & run a different block instead\\
+\ctp{e resume: x} & carry on from where \ctp{signal} was sent, which answers
+  \ctp{x}. Only for resumable exceptions\\
+\ctp{e pass} & decline: look for an outer handler\\
+\ctp{e signal} & re-signal this exception\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Falling off the end of the handler block is the same as \ct{return:} with the
+block's value, which is why the simple case reads so plainly.
+
+\begin{st}
+"retry with a fallback"
+| attempts |
+attempts := 0.
+^[attempts := attempts + 1. self fetchFromNetwork]
+    on: Error
+    do: [:e | attempts < 3 ifTrue: [e retry] ifFalse: [e return: #cached]]
+\end{st}
+
+\subsection{Resumable and not}
+
+\ct{Warning} is resumable: \ct{e resume: 9} makes the \ct{Warning signal:}
+expression answer 9 and execution continues from there. \ct{Error} is not:
+asking to resume one is itself an error. \ct{MessageNotUnderstood} \emph{is}
+resumable, which is what lets a handler supply a value for a message the
+receiver could not handle.
+
+\section{Reading the exception}
+
+\begin{center}
+\small
+\begin{tabular}{@{}lp{0.58\textwidth}@{}}
+\toprule
+\ctp{e messageText} & what was passed to \ctp{signal:}, or the class's
+  \ctp{description} when nothing was\\
+\ctp{e description} & a fixed sentence for the class ---
+  \ctp{'An error has occurred'} for \ctp{Error}. It does \emph{not} answer the
+  message text\\
+\ctp{e class} & the exception's class\\
+\ctp{e signalContext} & the frame that signalled\\
+\ctp{e message} & on \ctp{MessageNotUnderstood}, the message that failed\\
+\ctp{e receiver} & on \ctp{MessageNotUnderstood}, who it was sent to\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{stwarn}
+\ct{description} is the \emph{class's} sentence, not the text you signalled
+with. \ct{([Error signal: 'a'] on: Error do: [:e | e description])} answers
+\ct{'An error has occurred'}. You almost always want \ct{messageText}, which
+falls back to \ct{description} when there is no text.
+\end{stwarn}
+
+\section{Cleanup}
+
+\begin{st}
+[ self doTheWork ] ensure: [ self tidyUp ]
+[ self doTheWork ] ifCurtailed: [ self undoTheDamage ]
+\end{st}
+
+\ct{ensure:} runs its block on every exit: normal, non-local return, or an
+exception unwinding past. \ct{ifCurtailed:} runs only on the abnormal ones.
+These are the reason the concurrency classes in Part V can promise that a lock
+is released.
+
+\section{Defining your own}
+
+Subclass \ct{Error} (or \ct{Exception}, or \ct{Warning} if it should be
+resumable), and give it whatever state the handler will need:
+
+\begin{st}
+Error subclass: #InsufficientFunds
+    instanceVariableNames: 'requested available'
+    classVariableNames: ''
+    poolDictionaries: ''
+    category: 'MyStuff-Banking'
+
+InsufficientFunds >> description
+    ^'not enough money'
+
+InsufficientFunds >> shortfall
+    ^requested - available
+\end{st}
+
+\ldots and signal it with the state filled in:
+
+\begin{st}
+withdraw: anAmount
+    anAmount > balance ifTrue: [
+        ^(InsufficientFunds new)
+            requested: anAmount available: balance;
+            signal].
+    balance := balance - anAmount
+\end{st}
+
+The handler can then act on the specifics rather than parsing a string, which
+is the entire argument for exception \emph{classes} over error codes.
+
+\section{What is in the box}
+
+\begin{plain}
+Exception
+    Error
+        ZeroDivide
+        MessageNotUnderstood
+        AssertionFailure
+        NotFound
+        SubscriptOutOfBounds
+        TestFailure          (SUnit)
+    Warning
+    TimedOut
+\end{plain}
+
+\section{How it works, in one paragraph}
+
+Because it explains the constraints. \ct{BlockClosure>>on:do:} declares
+\ct{<primitive: 199>}, and nothing implements primitive 199---an unimplemented
+primitive fails, the Smalltalk body runs, and the number is left behind as a
+\emph{label} on that stack frame. Signalling walks out along the sender chain
+looking for a frame whose method says 199 and whose exception class matches,
+runs the handler there, and answers its value from that frame. \ct{ensure:}
+uses 198 the same way. Everything except the last step---returning a value
+from a frame further out---is ordinary Smalltalk you can read in
+\ct{lib/Kernel-Exceptions/}.
+
+\begin{stnote}
+This is Squeak's design, and it was checked against the 1983 image before
+being adopted: the highest primitive that image uses is 135, so 198 and 199
+were free to become labels.
+\end{stnote}

@@ -1,0 +1,118 @@
+\chapter{Differences}
+\label{app:differences}
+
+\standfirst{What is different here from Pharo and Squeak, and what is
+different from the 1983 system this is built on. Both lists matter, because
+you will arrive from one of the two.}
+
+\section{If you are arriving from Pharo or Squeak}
+
+\subsection{The language}
+
+\begin{center}
+\small
+\begin{tabular}{@{}lp{0.55\textwidth}@{}}
+\toprule
+closures, \ctp{ensure:}, exceptions & present, in the \ctp{closures} dialect\\
+\ct|{ }| \ct|#[ ]| block temps, pragmas & present\\
+traits & present; flattened at load time, \ctp{+} composition only\\
+\ctp{1.23s2} & \textbf{not implemented.} It parses as \ctp{1.23 s2}, a unary
+  send, and answers \ctp{nil}\\
+\ct|#(true false nil)| & three \emph{Symbols}, not the objects. Use
+  \ct|{true. false. nil}|\\
+\ctp{new} $\rightarrow$ \ctp{initialize} & synthesised for loaded packages and
+  reported; \emph{not} automatic for a class you type into a Browser\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{The library}
+
+\begin{center}
+\small
+\begin{tabular}{@{}lp{0.55\textwidth}@{}}
+\toprule
+\ct|#foo printString| & \ct|'foo'|, not \ct|'#foo'|\\
+\ct|#(1 2) printString| & \ctp{'(1 2 )'}\\
+\ctp{(3/4) printString} & \ctp{'(3/4)'}\\
+\ct|$a value| & \ct|$a|. Use \ctp{asciiValue} or \ctp{asInteger}\\
+\ctp{e description} & the class's fixed sentence, \emph{not} the message text.
+  Use \ctp{messageText}\\
+\ctp{255 printString: 16} & not implemented; nor is \ctp{radix:}\\
+\ctp{aStream collect:} & not implemented on streams\\
+\ctp{sorted:} \ctp{flatCollect:} \ctp{count:} & answer an \ctp{Array} rather
+  than \ctp{self species}, except \ctp{sorted}/\ctp{sorted:} on a sequenceable
+  collection\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{The environment}
+
+\begin{center}
+\small
+\begin{tabular}{@{}lp{0.55\textwidth}@{}}
+\toprule
+Morphic, Bloc, Spec, Athens & none, and none planned\\
+Iceberg, Metacello, Monticello & none. Packages are directories of Tonel files
+  named in a profile\\
+Fuel, Opal, RB-AST & none\\
+\ctp{Ctrl-D} \ctp{Ctrl-P} \ctp{Ctrl-S} & none. \ctp{do it}, \ctp{print it} and
+  \ctp{accept} are in the yellow-button menu\\
+click-to-open menus & no: press and \emph{hold}\\
+window decorations & none: no title bar, no close box. The blue button is the
+  window menu\\
+opening a window & choose from a menu, \emph{then} drag out a rectangle\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{The one that matters}
+
+\begin{stwarn}
+\textbf{Same-priority atomicity is gone.} Two processes at the same priority
+may run simultaneously on different CPUs. Every unsynchronised
+read-modify-write that was correct in Pharo is a race here.
+Chapter~\ref{ch:contract} is required reading.
+\end{stwarn}
+
+\section{If you are arriving from the Blue Book}
+
+\begin{center}
+\small
+\begin{tabular}{@{}lp{0.55\textwidth}@{}}
+\toprule
+blocks & full closures. They capture variables, outlive their method, and may
+  be entered concurrently\\
+\ctp{\^{}} in a block & non-local return, with \ctp{cannotReturn:} when the
+  home has already returned\\
+\ctp{ensure:} \ctp{ifCurtailed:} & new\\
+exceptions & new: \ctp{signal}, \ctp{on:do:}, \ctp{retry}, \ctp{resume:},
+  \ctp{pass}. \ctp{Object>>error:} now signals a catchable \ctp{Error}\\
+\ct|{ }| \ct|#[ ]| & new literal forms\\
+pragmas & generalised from \ctp{<primitive: N>}\\
+traits & new\\
+\ctp{:=} & preferred over \ctp{\_}; both are accepted\\
+\ctp{Mutex} \ctp{Monitor} \ctp{SharedQueue} \ctp{Promise} & new\\
+\ctp{SharedQueue} & \emph{replaced}: the 1983 one is not safe across native
+  threads\\
+scheduler & M:N over native workers; same-priority processes really do run at
+  once\\
+the screen & grows to fill the window rather than being letterboxed\\
+text & Inter, proportional and antialiased, on a one-bit display\\
+files & POSIX, through \ctp{Disk} and \ctp{FileStream}\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{What is unchanged, and deliberately}
+
+The 1983 class library, entire and unedited. The Browser, Compiler, Inspector
+and Debugger are the library's own. BitBlt is the Blue Book's, byte for byte
+against the Xerox traces. The bytecode semantics, the context layout, the
+primitive numbering below 136, the MVC framework, the menus, the fonts
+machinery, the printString formats---all 1983's.
+
+That is not conservatism. It is what makes \ct{trace2} a usable oracle, and
+\ct{trace2} is the only external check this project has on whether it is still
+a Smalltalk-80.

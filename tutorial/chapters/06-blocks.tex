@@ -1,0 +1,215 @@
+\chapter{Blocks and Closures}
+\label{ch:blocks}
+
+\standfirst{A block is a piece of code you can pass around and run later. It
+is also the only reason a language with no control structures can express
+one.}
+
+\section{The basics}
+
+Square brackets make an object out of a piece of code. The code does not run
+until you ask.
+
+\begin{st}
+[3 + 4]                  "a BlockClosure; nothing has been added"
+[3 + 4] value            "7"
+\end{st}
+
+Arguments are named after a colon at the start, followed by a vertical bar:
+
+\begin{st}
+[:x | x * x] value: 9                    "81"
+[:a :b | a + b] value: 1 value: 2        "3"
+[:a :b :c | a + b + c] value: 1 value: 2 value: 3
+\end{st}
+
+There are \ct{value}, \ct{value:}, \ct{value:value:},
+\ct{value:value:value:} and \ct{value:value:value:value:}. Past four, or when
+the count is not known until run time:
+
+\begin{st}
+[:x :y | x + y] valueWithArguments: #(3 4)      "7"
+\end{st}
+
+A block knows how many arguments it wants, and evaluating it with the wrong
+number is an error:
+
+\begin{st}
+[:x | x] numArgs          "1"
+\end{st}
+
+\section{Block-local temporaries}
+
+A block may declare its own temporaries, after the arguments. They are fresh
+at every activation---nilled each time the block is entered, not shared
+between calls.
+
+\begin{st}
+[:x |
+    | doubled |
+    doubled := x * 2.
+    doubled + 1] value: 3                "7"
+\end{st}
+
+This is a post-Blue-Book extension and it works here. A block with no
+arguments but with temporaries starts straight in with the bar:
+
+\begin{st}
+[ | t | t := 10. t squared ] value       "100"
+\end{st}
+
+\section{What a closure closes over}
+
+A block captures the variables of the place it was written, not their values.
+It sees later changes, and it can make changes the enclosing method sees.
+
+\begin{st}
+| count increment |
+count := 0.
+increment := [count := count + 1].
+increment value.
+increment value.
+count                                     "2"
+\end{st}
+
+The captured variable outlives the method that declared it. This is what makes
+them \emph{closures} rather than merely nested code, and it is the single
+biggest semantic difference between this system and the Blue Book, where a
+block that escaped its method was undefined behaviour.
+
+\begin{st}
+"a counter factory: each call answers an independent counter"
+makeCounter
+    | n |
+    n := 0.
+    ^[n := n + 1]
+\end{st}
+
+Each call to \ct{makeCounter} makes a fresh \ct{n}, so two counters do not
+interfere.
+
+\begin{stnote}[Turning closures on]
+Full closures are compiled only in the \ct{closures} dialect, which every
+profile in \ct{profiles/} except \ct{bluebook} selects. On the command line,
+\ct{-closures} does the same for \ct{-eval}. If you build with
+\ct{-manifest sources/MANIFEST} you get the 1983 dialect, where blocks are
+\ct{BlockContext} objects with the 1983 restrictions.
+\end{stnote}
+
+\section{Non-local return}
+
+A \ct|^| inside a block returns from the \emph{method the block was written
+in}---not from the block. This is how \ct{detect:ifNone:} and every early exit
+in the library is written:
+
+\begin{st}
+firstNegativeIn: aCollection
+    aCollection do: [:each |
+        each < 0 ifTrue: [^each]].       "returns from firstNegativeIn:"
+    ^nil
+\end{st}
+
+The block is being run inside \ct{do:}, several frames down, and the
+\ct|^each| unwinds all of that and returns from
+\ct{firstNegativeIn:}. Blocks that merely \emph{fall off the end} answer their
+last statement, which is why \ct{[3 + 4] value} is 7 with no caret anywhere.
+
+If the method a block belongs to has already returned, a non-local return from
+that block has nowhere to go and raises an error---\ct{cannotReturn:}. This is
+a real thing that happens when you store a block with a \ct|^| in it and
+run it later.
+
+\section{\texttt{ensure:} and \texttt{ifCurtailed:}}
+
+Cleanup that must happen whether or not the protected code finishes:
+
+\begin{st}
+[ file writeEverything ] ensure: [ file close ]
+\end{st}
+
+\ct{ensure:} runs its argument on the way out no matter how the receiver
+leaves: normally, by a non-local return, or by an exception unwinding past it.
+\ct{ifCurtailed:} runs its argument \emph{only} on the abnormal exits.
+
+\begin{st}
+[3] ensure: [4]                  "3 -- the value is the receiver's"
+\end{st}
+
+These two are what make resource handling correct, and they are why
+\ct{Mutex} can exist at all: a critical section whose release is in an
+\ct{ensure:} cannot be skipped by an exception.
+
+\section{Blocks are objects}
+
+Nothing about a block is special to the compiler once it exists. You can put
+one in a collection, store it in an instance variable, pass it to another
+process, or send it messages:
+
+\begin{st}
+| operations |
+operations := Dictionary new.
+operations at: #double put: [:x | x * 2].
+operations at: #square put: [:x | x * x].
+(operations at: #square) value: 7        "49"
+\end{st}
+
+Useful protocol beyond \ct{value}:
+
+\begin{center}
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+\ctp{numArgs} & how many arguments it wants\\
+\ctp{whileTrue:}, \ctp{whileFalse:} & loop while the receiver answers so\\
+\ctp{repeat} & loop forever; exit with a non-local return\\
+\ctp{on:do:} & run under an exception handler\\
+\ctp{ensure:}, \ctp{ifCurtailed:} & cleanup\\
+\ctp{fork}, \ctp{forkAt:} & run as a separate Smalltalk process\\
+\ctp{cull:} & value it, ignoring the argument if it takes none\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\ct{cull:} deserves a mention because it makes APIs forgiving: a method that
+wants to hand your block an argument can use \ct{cull:} and accept both
+\ct{[:e | ...]} and \ct{[...]}.
+
+\section{Two things the compiler does behind your back}
+
+Some blocks never become objects at all. When the compiler can see that a
+block is used immediately and cannot escape---the arguments of \ct{ifTrue:},
+\ct{and:}, \ct{whileTrue:} and friends---it \emph{inlines} the code and emits
+a jump. No block is created and no message is sent.
+
+This is why \ct{ifTrue:} costs nothing, and it is also why a rare error
+message reads strangely: if the receiver of an inlined \ct{ifTrue:} is not a
+Boolean, the failure surfaces as \ct{must be a boolean} from the jump
+bytecode rather than as a doesNotUnderstand.
+
+\begin{stwarn}
+Because they are inlined, \ct{ifTrue:} and friends require \emph{literal}
+blocks to get the fast path. \ct{aBoolean ifTrue: aBlockVariable} still works
+--- \ct{True} and \ct{False} really do implement \ct{ifTrue:} --- but it
+compiles to a real send.
+\end{stwarn}
+
+\section{A frame is only so big}
+
+A method and its blocks share a frame, and the frame has a fixed ceiling:
+arguments plus copied values plus temporaries plus working stack must fit. In
+practice you meet this only in machine-generated code or a method that has
+grown far past the point where it should have been split.
+
+There is a second, firmer ceiling beside it: a method may reference at most
+\textbf{63 literals}, because the header holds that count in six bits. Every
+distinct string, symbol, large integer and literal array counts, and two
+occurrences of \ct{'x'} count twice---they are two mutable objects, and
+sharing them would make writing into one change the other. Past 63 the
+compiler refuses, naming the method:
+
+\begin{plain}
+more than 63 literals referenced; split this method
+\end{plain}
+
+The 1983 compiler refuses at the same place, in \ct{Encoder>>litIndex:}, with
+the same advice.

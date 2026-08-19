@@ -1,0 +1,195 @@
+\chapter{Graphics}
+\label{ch:graphics}
+
+\standfirst{One bit per pixel, one operation, and a display that is an
+ordinary object you can draw on from a workspace.}
+
+\section{The pieces}
+
+\begin{center}
+\small
+\begin{tabular}{@{}lp{0.60\textwidth}@{}}
+\toprule
+\ctp{Point} & \ctp{x @ y}. Arithmetic works: \ctp{(3@4) + (1@1)}\\
+\ctp{Rectangle} & \ctp{origin corner:}, \ctp{origin extent:}\\
+\ctp{Form} & a bitmap: \ctp{bits width height offset}\\
+\ctp{DisplayScreen} & the screen, a Form. The global is \ctp{Display}\\
+\ctp{BitBlt} & the one operation that moves rectangles of bits\\
+\ctp{Pen} & turtle graphics over a Form\\
+\ctp{Cursor} & a 16$\times$16 Form with a hot spot\\
+\ctp{StrikeFont} & glyphs, as one wide Form plus an \ctp{xTable}\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{Points and rectangles}
+
+\begin{st}
+3 @ 4                              "a Point"
+(3 @ 4) + (10 @ 10)                "13@14"
+(3 @ 4) x                          "3"
+
+100 @ 100 corner: 300 @ 200        "a Rectangle by two corners"
+100 @ 100 extent: 200 @ 100        "the same one, by size"
+aRectangle width
+aRectangle center
+aRectangle containsPoint: 150 @ 150
+(aRectangle intersect: anotherRectangle)
+\end{st}
+
+\section{Forms}
+
+A \ct{Form} is a width, a height, an offset, and a word array of bits. One bit
+per pixel: 1 is black, 0 is white.
+
+\begin{st}
+| f |
+f := Form extent: 64 @ 64.
+f fillBlack.
+f displayAt: 100 @ 100.            "draw it on the Display"
+\end{st}
+
+\ct{Form} inherits from \ct{DisplayMedium}, which is where the drawing
+convenience lives:
+
+\begin{st}
+aForm fillBlack.
+aForm fillWhite.
+aForm fill: aRectangle mask: Form gray.
+aForm reverse.                     "invert everything"
+aForm border: aRectangle width: 2.
+\end{st}
+
+The standard halftone masks are class-side on \ct{Form}: \ct{Form black},
+\ct{Form white}, \ct{Form gray}, \ct{Form lightGray}, \ct{Form darkGray},
+\ct{Form veryLightGray}.
+
+\section{BitBlt: the one operation}
+
+Everything drawn in Smalltalk-80---every character, every window, every menu,
+the rubber band you drag out a window with---is one operation: copy a
+rectangle of bits from a source Form to a destination Form, through a halftone
+mask, combining with a rule.
+
+\begin{st}
+(BitBlt
+    destForm: Display
+    sourceForm: aForm
+    halftoneForm: nil
+    combinationRule: Form over
+    destOrigin: 100 @ 100
+    sourceOrigin: 0 @ 0
+    extent: aForm extent
+    clipRect: Display boundingBox) copyBits
+\end{st}
+
+The combination rules are the sixteen boolean functions of two bits. The ones
+with names:
+
+\begin{center}
+\small
+\begin{tabular}{@{}lll@{}}
+\toprule
+name & number & effect\\
+\midrule
+\ctp{Form over} & 3 & source replaces destination\\
+\ctp{Form under} & 7 & source ORed in --- black wins\\
+\ctp{Form reverse} & 6 & XOR --- doing it twice undoes it\\
+\ctp{Form erase} & 4 & clear where the source is black\\
+\ctp{Form and} & 1 & AND\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\ct{Form reverse} is worth remembering because of what it makes possible:
+drawing the same rectangle twice with rule 6 leaves the screen exactly as it
+was. That is how 1983 draws a rubber band---as a flash between two frames,
+never as a mark on the Form.
+
+\section{Pen}
+
+Turtle graphics, and the friendliest way to put something on the screen:
+
+\begin{st}
+| p |
+p := Pen new.
+p defaultNib: 2.
+p home.
+4 timesRepeat: [p go: 100; turn: 90].
+\end{st}
+
+\begin{center}
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+\ctp{home} \ctp{place:} \ctp{goto:} & position\\
+\ctp{go:} \ctp{turn:} \ctp{north} \ctp{direction:} & move\\
+\ctp{up} \ctp{down} & lift and lower the nib\\
+\ctp{defaultNib:} \ctp{black} \ctp{white} & the nib\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{The Display}
+
+\ct{Display} is a \ct{DisplayScreen}, which is a \ct{Form}, which means the
+screen is an ordinary object and you can draw on it from a workspace:
+
+\begin{st}
+Display fillWhite.
+Display fillBlack: (100 @ 100 extent: 50 @ 50).
+Display border: (10 @ 10 corner: 200 @ 100) width: 3.
+Display extent.
+ScheduledControllers restore.      "put the windows back"
+\end{st}
+
+That last line is how you clean up: the window system redraws everything it
+knows about.
+
+\begin{stnote}[The screen is the window]
+The image asks \ct{Display extent} every time it wants to know how big the
+screen is, and nothing caches it---so rather than letterbox a fixed 640$\times$480
+screen into your window, this system \emph{grows the Form to fill the window}.
+The Form's identity is kept, because \ct{Display} is reachable from every
+controller and view; only the three fields change. That is why the desktop
+fills a tiling window manager's tile with no border.
+\end{stnote}
+
+\section{How antialiased text is possible}
+
+The display is one bit per pixel and has to stay that way: BitBlt is checked
+byte-for-byte against the Xerox traces, and every rule is defined on single
+bits. Giving \ct{Form} a depth would be a different system.
+
+So the smooth text is not in the image at all. There is a second plane---ink
+coverage from 0 to 255---maintained by \emph{recognising text}: a blit whose
+source is exactly the font strike is a character being drawn, and the source
+$x$ says which character, because that is precisely what the \ct{xTable}
+means. The same glyph is stamped from an eight-bit coverage table at the same
+advance, so the two agree by construction.
+
+Anything else that lands on the display \emph{drops} the coverage under it.
+Scroll a pane, clear a window, invert a selection, and the shadow gives up and
+the one-bit pixels show through; text comes back smooth the moment it is drawn
+again. That conservatism is what keeps it honest---modelling what every rule
+does to coverage is how you end up with a second graphics system that
+disagrees with the first.
+
+Nothing in the image can observe any of this. \ct{Display} is one bit deep to
+every Smalltalk method that asks.
+
+\section{Views, if you want to build one}
+
+The windowed interface is Model--View--Controller, and it is the 1983 version:
+a \ct{Model} holds state and broadcasts \ct{changed:}; a \ct{View} draws it; a
+\ct{Controller} handles input. Views nest, each with its own transformation
+and clipping rectangle.
+
+Building a new tool means subclassing \ct{View} and \ct{Controller}, or more
+usually \ct{StringHolderView} and \ct{StringHolderController}, which already
+do text. \ct{StandardSystemView} is what makes something a window with a label
+tab and the blue-button menu.
+
+This is a large subject and the 1983 sources are the documentation.
+\ct{Interface-Framework} and \ct{Interface-Support} in the Browser are where
+to read.

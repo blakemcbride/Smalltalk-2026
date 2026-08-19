@@ -1,0 +1,299 @@
+\chapter{Syntax}
+\label{ch:syntax}
+
+\standfirst{Smalltalk's grammar fits on a postcard. This chapter is that
+postcard, expanded---and it is worth reading even if you know Smalltalk,
+because three of the things here are 1983's rather than Pharo's.}
+
+\section{The postcard}
+
+Here is essentially all of it:
+
+\begin{st}
+| sum |                          "declare temporaries"
+sum := 0.                        "assignment"
+#(1 2 3) do: [:each |            "a block, passed as an argument"
+    sum := sum + each].
+Transcript show: sum printString; cr.   "a cascade"
+^sum                             "return"
+\end{st}
+
+Six kinds of thing: literals, variables, message sends, blocks, assignment,
+return. There are no keywords, no operators with special status, no
+statements. \ct{ifTrue:}, \ct{do:} and \ct{whileTrue:} are messages, not
+syntax, and Chapter~\ref{ch:control} shows how that can possibly work.
+
+\section{Comments}
+
+Double quotes, and they nest nowhere---the comment ends at the next quote. A
+doubled quote inside a comment is a literal quote.
+
+\begin{st}
+"a comment"
+"a comment with a "" quote in it"
+\end{st}
+
+\section{Literals}
+
+\subsection{Numbers}
+
+\begin{st}
+42                  "SmallInteger"
+-17                 "negative, the minus binds to the literal"
+1000000000000       "LargePositiveInteger, automatically"
+3.14                "Float"
+1.5e2               "150.0"
+1.5e-2              "0.015"
+16rFF               "255 -- radix r digits"
+2r1011              "11"
+16r1F               "31"
+\end{st}
+
+Integers are arbitrary precision and promote themselves. \ct{100 factorial} is
+158 digits long and correct.
+
+\begin{stnote}[There are no scaled decimals]
+Pharo's \ct{1.23s2} is not implemented, deliberately. It already parses here
+as \ct{1.23 s2}---a unary message send to a Float---by exactly the same rule
+that makes \ct{3 factorial} work without a space. Since \ct{Float} does not
+implement \ct{s2}, you get a doesNotUnderstand and \ct{nil}, not a syntax
+error. If you need exact decimals, use \ct{Fraction}.
+\end{stnote}
+
+\subsection{Characters}
+
+A dollar sign and one character. The character after the dollar is taken
+literally, including a space.
+
+\begin{st}
+$a          "the letter a"
+$          "a space -- $ followed by one space"
+$$          "a dollar sign"
+\end{st}
+
+Ask a character for its code with \ct{asciiValue} or \ct{asInteger}, and go
+back with \ct{Character value:}.
+
+\begin{stwarn}
+\ct|$a value| does \emph{not} answer 97 here. \ct{Character} in the 1983
+library implements \ct{asciiValue}, not \ct{value}; and \ct{Object>>value},
+which this system adds for Pharo compatibility, answers the receiver. So
+\ct|$a value| is \ct|$a|. Use \ct{asciiValue} or \ct{asInteger}.
+\end{stwarn}
+
+\subsection{Strings}
+
+Single quotes. A doubled quote is one quote. Strings are mutable and are
+arrays of characters.
+
+\begin{st}
+'hello'
+'it''s'             "5 characters?  No -- 4: i t ' s"
+'' size             "0"
+\end{st}
+
+\subsection{Symbols}
+
+A hash and an identifier, a keyword sequence, or a binary selector. Symbols
+are unique: two symbols spelled the same are the same object, which makes
+identity comparison meaningful and hashing cheap.
+
+\begin{st}
+#foo
+#at:put:            "numArgs is 2"
+#+                  "numArgs is 1"
+#'an odd one'       "quoted, when it is not an identifier"
+\end{st}
+
+\subsection{Literal arrays}
+
+\ct|#(| \ldots \ct{)} builds an \ct{Array} at compile time. Everything inside
+is a literal, and bare words inside become \emph{symbols}.
+
+\begin{st}
+#(1 2 3)
+#(1 $a 'str' #sym (2 3))     "5 elements; the last is a nested Array"
+#(foo bar)                   "two Symbols"
+\end{st}
+
+\begin{stwarn}[\ctp{\#(true false nil)} is three symbols]
+In the 1983 grammar---which is this one---\ct{true}, \ct{false} and \ct{nil}
+inside a literal array are ordinary bare words, and bare words become symbols.
+Pharo special-cases them into the objects. Here, \ct|#(true) first class|
+answers \ct{Symbol}. If you want the objects, use a dynamic array:
+\ct|{true. false. nil}|.
+\end{stwarn}
+
+\subsection{Byte arrays}
+
+\ct|#[| \ldots \ct{]}, elements 0 to 255. These are a post-Blue-Book
+extension and work here, including nested inside a literal array.
+
+\begin{st}
+#[1 2 255]          "a ByteArray of 3 bytes"
+\end{st}
+
+\subsection{Dynamic arrays}
+
+Braces build an \ct{Array} at \emph{run} time from arbitrary expressions,
+separated by periods. This is the other post-Blue-Book literal form.
+
+\begin{st}
+{ 1. 2 + 3. Date today }
+\end{st}
+
+The difference from \ct|#(...)| is the whole point: a literal array holds
+compile-time constants, a dynamic array holds whatever the expressions
+evaluate to.
+
+\subsection{The three pseudo-variables}
+
+\ct{nil}, \ct{true} and \ct{false} are not literals but reserved names bound
+to the sole instances of \ct{UndefinedObject}, \ct{True} and \ct{False}. You
+cannot assign to them.
+
+\section{Variables}
+
+Names beginning with a lower-case letter are variables; names beginning with a
+capital are globals, which in practice means classes and a handful of
+system-wide objects like \ct{Transcript} and \ct{Smalltalk}.
+
+Temporaries are declared between vertical bars, at the top of a method or at
+the top of a block:
+
+\begin{st}
+| a b c |
+\end{st}
+
+Assignment is \ct{:=}, and it is an expression---it answers the value
+assigned, so \ct{a := b := 0} works.
+
+\begin{stnote}[Underscore assignment]
+1983 source, including everything in \ct{sources/}, writes assignment as an
+underscore: \ct|sum _ 0|. That was the ASCII rendering of a left-arrow glyph.
+The Browser will show it to you that way. \ct{:=} is what you should type, and
+both are accepted.
+\end{stnote}
+
+\section{Message sends}
+
+There are exactly three kinds, and their precedence is fixed and simple.
+
+\subsection{Unary}
+
+One identifier, no arguments, binds tightest, and associates left to right.
+
+\begin{st}
+100 factorial
+'hello' asUppercase reversed asSymbol
+\end{st}
+
+\subsection{Binary}
+
+One or two non-alphabetic characters, one argument. All binary selectors have
+\emph{equal} precedence and associate left to right.
+
+\begin{st}
+3 + 4 * 2           "14, not 11 -- there is no precedence among binaries"
+3 + (4 * 2)         "11"
+\end{st}
+
+This is the single most common surprise in Smalltalk and it never stops being
+worth stating: \textbf{arithmetic has no precedence}. Parenthesise.
+
+Common binary selectors: \ct|+ - * / // \\ < > <= >= = ~= == ~~ , @ ->|.
+
+\subsection{Keyword}
+
+One or more \ct{keyword:} parts, each taking an argument. Binds loosest. A
+keyword message with several parts is \emph{one} message whose selector is the
+concatenation:
+
+\begin{st}
+anArray copyFrom: 2 to: 4         "one message, #copyFrom:to:"
+2 raisedTo: 3 + 1                 "16 -- the binary + goes first"
+5 between: 1 and: 10              "true"
+\end{st}
+
+\subsection{Precedence, in one line}
+
+\begin{center}
+unary $>$ binary $>$ keyword, and parentheses beat all three.
+\end{center}
+
+\begin{st}
+x max: y factorial + 1 * 2
+"reads as:   x max: (((y factorial) + 1) * 2)"
+\end{st}
+
+\section{Cascades}
+
+A semicolon sends the next message to the \emph{same receiver} as the last
+message before it. The value of a cascade is the value of the last message.
+
+\begin{st}
+Transcript show: 'a'; show: 'b'; cr
+\end{st}
+
+The receiver is whatever received \ct{show: 'a'}---that is, \ct{Transcript}.
+Watch out when the first message is a keyword message with a complex
+receiver:
+
+\begin{st}
+OrderedCollection new add: 1; add: 2; yourself
+\end{st}
+
+\ct{add: 1} is sent to \ct{OrderedCollection new}, so the cascade continues to
+that new collection, and \ct{yourself} answers it. Without the trailing
+\ct{yourself} the expression would answer \ct{2}, because that is what
+\ct{add:} answers. \ct{yourself} exists for exactly this.
+
+\section{Statements and returns}
+
+Statements are separated by periods. A trailing period is allowed. \ct|^|
+returns from the enclosing \emph{method}---see Chapter~\ref{ch:blocks} for
+what that means inside a block.
+
+A method with no explicit return answers \ct{self}.
+
+\section{Method syntax}
+
+A method is a pattern, optional pragmas, optional temporaries, and statements:
+
+\begin{st}
+copyFrom: start to: stop
+    "Answer a copy of my elements from start to stop."
+    <somePragma: 42>
+    | result |
+    result := self species new: stop - start + 1.
+    ...
+    ^result
+\end{st}
+
+The first line is the message pattern, and it is one of the three kinds:
+\ct{size} (unary), \ct{+ aNumber} (binary), \ct{at: k put: v} (keyword).
+
+By convention the first thing in the body is a comment saying what the method
+answers. The Browser shows it, the debugger shows it, and the class comment
+plus the method comments are the documentation.
+
+\section{The whole grammar}
+
+\begin{plain}
+method     := pattern pragma* temporaries? pragma* statements
+pattern    := unarySel | binarySel arg | (keyword arg)+
+temporaries:= '|' identifier* '|'
+statements := (statement '.')* (statement '.'?)? ('^' expression '.'?)?
+expression := (identifier ':=')* cascade
+cascade    := keywordMsg (';' message)*
+keywordMsg := binaryMsg (keyword binaryMsg)*
+binaryMsg  := unaryMsg (binarySel unaryMsg)*
+unaryMsg   := primary identifier*
+primary    := identifier | literal | block | '(' expression ')'
+            | '{' (expression '.')* expression? '}'
+block      := '[' (':' identifier)* ('|' temporaries?)? statements ']'
+literal    := number | 'char | 'string' | #symbol | #(array)
+            | #[bytes] | true | false | nil
+\end{plain}
+
+That is the language. Everything else in this book is library.

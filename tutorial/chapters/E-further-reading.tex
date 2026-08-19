@@ -1,0 +1,87 @@
+\chapter{Further Reading}
+\label{app:reading}
+
+\section{The primary sources}
+
+\begin{description}
+\item[\emph{Smalltalk-80: The Language and its Implementation},] Goldberg and
+  Robson, 1983. The Blue Book. Part One is still the best introduction to the
+  language, and Part Four is the specification this virtual machine is checked
+  against. Chapter 30 is \ct|om_bb.c|.
+\item[\emph{Smalltalk-80: The Interactive Programming Environment},] Goldberg,
+  1984. The Orange Book, and the manual for the interface in
+  Part~IV of this tutorial. If the Browser or the Debugger puzzles you, this is
+  where the answer is.
+\item[\emph{Multiprocessor Smalltalk},] Pallas and Ungar, PLDI 1988. Where the
+  \emph{serialize / replicate / reorganize} taxonomy comes from, and still the
+  best account of what goes wrong when a Smalltalk library meets real
+  parallelism.
+\end{description}
+
+\section{This project's own documentation}
+
+\begin{center}
+\small
+\begin{tabular}{@{}lp{0.58\textwidth}@{}}
+\toprule
+\ctp{doc/CONCURRENCY.md} & the contract, normative. The source for
+  Chapter~\ref{ch:contract}\\
+\ctp{doc/SCALING.md} & the benchmark, and what each kernel is actually
+  measuring\\
+\ctp{doc/Display.md} & the window, the face, antialiasing, and what the
+  interface expects of you\\
+\ctp{doc/LanguageExtensions.md} & every post-1983 syntax and where it stands\\
+\ctp{doc/MultiThreading.md} & the threading implementation\\
+\ctp{doc/PLAN-TO-PHARO.md} & where the project is going, sized honestly\\
+\ctp{doc/LICENSING.md} & what may be redistributed, and what may not\\
+\ctp{doc/PORTABILITY.md} & the platform layer\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{The best documentation is the image}
+
+This is not a platitude. The 1983 library is 226 classes of small, readable,
+commented Smalltalk written by people who were inventing the ideas as they
+went, and the Browser is built to read it.
+
+Three habits worth forming:
+
+\begin{description}
+\item[\ctp{implementors}] on any selector you do not understand. Reading three
+  implementations of \ct{do:} teaches more about the collection hierarchy than
+  any diagram.
+\item[\ctp{senders}] on any method you are about to change. It is the whole of
+  impact analysis, and it is instant.
+\item[Read a class comment before its methods.] The 1983 comments say why the
+  class exists, which is the part that is hard to reconstruct.
+\end{description}
+
+Start with \ct{Collection}, \ct{SequenceableCollection} and \ct{Stream}. Then
+\ct{Object}, which is smaller than you expect. Then, when you want to see how
+the interface fits together, \ct{Controller} and \ct{View} in
+\ct{Interface-Framework}.
+
+\section{The source tree}
+
+\begin{center}
+\small
+\begin{tabular}{@{}lp{0.58\textwidth}@{}}
+\toprule
+\ctp{lib/Kernel-Exceptions/} & the exception system, in readable Smalltalk\\
+\ctp{lib/Concurrency/} & \ctp{Mutex}, \ctp{Monitor}, \ctp{SharedQueue},
+  \ctp{Promise}. The class comments explain the design decisions\\
+\ctp{lib/Probe/} & small classes that exist to exercise one feature each ---
+  traits, pragmas, unwinding, initialisation\\
+\ctp{profiles/} & each profile's comment explains what it composes and why
+  anything is excluded. They are worth reading as a set\\
+\ctp{tests/unit/} & what the system checks about itself\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{Where to ask}
+
+\begin{center}
+\url{https://github.com/blakemcbride/Smalltalk-2026}
+\end{center}

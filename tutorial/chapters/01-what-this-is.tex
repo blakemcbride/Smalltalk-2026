@@ -1,0 +1,155 @@
+\chapter{What This Is}
+
+\standfirst{A Smalltalk-80 written in C that runs bytecodes on every core of
+the machine at once, and is checked byte-for-byte against Xerox's own 1983
+execution traces. This chapter says what that sentence buys you, and what it
+costs you.}
+
+\section{The shortest possible description}
+
+Smalltalk-2026 is a complete Smalltalk system: a language, a class library, a
+compiler, a virtual machine, and a windowed programming environment in which
+the tools are themselves written in the language. If you have used Pharo or
+Squeak, almost everything you know transfers. If you have used none of them,
+this book assumes nothing.
+
+Two things make it unlike every other Smalltalk you can install.
+
+\subsection{It uses the whole machine}
+
+Every production Smalltalk---Squeak, Pharo, Cuis, VisualWorks, GNU
+Smalltalk---schedules its processes \emph{green}, on one operating-system
+thread. \ct{Process}, \ct{ProcessorScheduler} and \ct{Semaphore} are all real
+and all work, and they buy you concurrency: many logical threads of control,
+interleaved. What they cannot buy you is parallelism. Eight cores sit idle
+while one runs your image.
+
+Here the object memory and the scheduler are replaced with ones that use all
+of them. Smalltalk processes are still green and still cheap, but they are
+multiplexed over a pool of native worker threads, and two of them can be
+executing bytecodes on two cores in the same nanosecond. Measured on eight
+physical cores, with the work fixed and divided:
+
+\begin{center}
+\small
+\begin{tabular}{@{}lrrr@{}}
+\toprule
+kernel & 1 worker & 8 workers & speedup\\
+\midrule
+arithmetic  & 155.1\,ms & 19.9\,ms & 7.79$\times$\\
+mandelbrot  & 380.4\,ms & 48.1\,ms & 7.91$\times$\\
+intervals   & 124.9\,ms & 27.3\,ms & 4.58$\times$\\
+collections & 191.7\,ms & 29.7\,ms & 6.45$\times$\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+You can reproduce that with \ct{make bench}. Part V of this book is about how
+to write code that earns those numbers, and---more importantly---about the one
+guarantee you lose in exchange for them.
+
+One qualification, stated here rather than left to be discovered: the worker
+pool is started by \ct{make bench} and by the parallel test suites, which run
+at up to 31 native threads under ThreadSanitizer. It is not yet started by
+\ct{./st80 -run image}, so the windowed desktop runs the interpreter on one
+thread today. The contract in Chapter~\ref{ch:contract} applies to what you
+write regardless, and Chapter~\ref{ch:building} says where the line is.
+
+\subsection{It is checked against 1983}
+
+The Xerox distribution tape carried reference dumps and execution traces
+alongside the image itself. This system reproduces them:
+
+\begin{center}
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+oracle & result\\
+\midrule
+\ctp{trace2} & 611 of 611 lines, byte for byte\\
+\ctp{trace3} & 482-line prefix exact, one documented divergence\\
+\ctp{class.oops} & 446 of 446 classes\\
+\ctp{method.oops} & 4{,}494 of 4{,}494 methods\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+That matters to you, the person writing Smalltalk on it, for one practical
+reason: when this system does something surprising, the surprise is far more
+likely to be Smalltalk-80's than a bug. The semantics were not reconstructed
+from memory. They were checked against a recording of the real machine.
+
+\section{What you get}
+
+\begin{description}
+\item[The 1983 class library, entire.] All 4{,}500-odd methods of the 226
+  classes in \ct{sources/} compile and bootstrap into a live image. The
+  Browser, Compiler, Inspector and Debugger you use are the library's own.
+\item[A language past the Blue Book.] Full closures with non-local return,
+  \ct{ensure:} and \ct{ifCurtailed:}, an exception system with \ct{signal},
+  \ct{on:do:}, \ct{retry}, \ct{resume:} and \ct{pass}, general pragmas,
+  dynamic arrays \ct|{ }|, byte arrays \ct|#[ ]|, block-local temporaries, and
+  traits.
+\item[Pharo's own code, on Pharo's own tests.] Packages are imported in Tonel
+  format and held to their upstream suites: 1{,}177 Pharo tests run unmodified
+  against this system and pass.
+\item[Concurrency classes 1983 has no equivalent of.] \ct{Mutex},
+  \ct{Monitor}, \ct{SharedQueue}, \ct{Promise}, and
+  \ct{Processor>>forkParallel:}.
+\item[A screen that is not from 1983.] The display grows to fill the window,
+  and the text is Inter---proportional and antialiased---on a system whose
+  BitBlt is still one bit per pixel.
+\end{description}
+
+\section{What you do not get}
+
+Being straight about this early will save you an afternoon.
+
+\begin{description}
+\item[Morphic, Bloc, Spec, Athens.] None of them, and none of them are
+  planned. They are single-threaded by construction. The user interface is
+  1983's MVC, and Part IV is a guide to using it, because it will not be
+  obvious.
+\item[Iceberg, Metacello, Monticello.] There is no package manager. Code
+  lives in directories of Tonel files, and which ones compose an image is
+  stated in a profile. Chapter~\ref{ch:packages} is that story, and it is
+  simpler than the one it replaces.
+\item[A REPL you can leave running.] There is no \ct{st80} shell that keeps
+  an image warm between expressions. You either evaluate one program with
+  \ct{-eval}, or you run the windowed image and work inside it.
+\item[Same-priority atomicity.] Smalltalk-80 guarantees that a process is
+  never preempted by another of the same priority, and forty years of
+  Smalltalk code quietly relies on it as a mutual-exclusion primitive. That
+  guarantee is deliberately broken here. This is the single most important
+  thing in this book, and Chapter~\ref{ch:contract} is about nothing else.
+\end{description}
+
+\section{Who this book is for}
+
+It assumes you can use a terminal and have written programs in some language.
+It does not assume you have written Smalltalk. Parts II and III teach the
+language and library from the beginning; if you already know Smalltalk, read
+Chapter~\ref{ch:beyond} for what is different, then skip to Part IV.
+
+\section{How to read it}
+
+\begin{description}
+\item[Part I] gets the system built and gets you inside it.
+\item[Part II] is the language: syntax, objects, blocks, classes, exceptions.
+\item[Part III] is the library: numbers, collections, streams, text, graphics.
+\item[Part IV] is the windowed environment, which is where Smalltalk stops
+  being a language and starts being a system.
+\item[Part V] is concurrency, and is the reason this system exists.
+\item[Part VI] is developing on disk: packages, profiles, tests, tools.
+\item[Part VII] is one chapter on how the virtual machine works, for when you
+  want to know why something is the way it is.
+\end{description}
+
+\begin{stnote}[About the examples]
+Every expression in this book whose answer is shown was run against an image
+built from this source tree, and the answers were copied out rather than typed
+in. They are checked in as \ct{tutorial/examples/TutorialExamples.class.st},
+and \ct{make verify} in the \ct{tutorial} directory re-runs them all. Where
+this system answers something other than what Pharo would, the book says so
+rather than quietly showing Pharo's answer.
+\end{stnote}

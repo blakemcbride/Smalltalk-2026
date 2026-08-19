@@ -1,0 +1,208 @@
+\chapter{Objects and Messages}
+\label{ch:objects}
+
+\standfirst{Everything is an object and the only thing you can do to one is
+send it a message. That sentence is not a slogan; it is a complete
+specification of the computational model, and this chapter takes it
+literally.}
+
+\section{Everything}
+
+There is no primitive type, no built-in operator, no value that is not an
+object. \ct{3} is an instance of \ct{SmallInteger}. \ct{true} is the sole
+instance of \ct{True}. \ct{nil} is the sole instance of \ct{UndefinedObject}.
+Classes are objects; so are the methods inside them, the blocks you write, and
+the stack frames the system is running on.
+
+\begin{st}
+3 class                  "SmallInteger"
+3 class class            "SmallInteger class"
+true class               "True"
+nil class                "UndefinedObject"
+[:x | x] class           "BlockClosure"
+Object class class       "Metaclass"
+\end{st}
+
+\section{And the only verb is \texttt{send}}
+
+Every computation is one object asking another to do something:
+
+\begin{st}
+3 + 4                    "send #+ to 3, with 4 as the argument"
+anArray at: 1 put: 'x'   "send #at:put: to anArray"
+Object subclass: #Point  "send #subclass: to a class -- classes are objects"
+\end{st}
+
+Even arithmetic. \ct{3 + 4} looks up \ct|#+| in \ct{SmallInteger} and runs
+what it finds. The interpreter has fast paths for the common cases, but that
+is an optimisation of a real message send, not a special case in the language:
+you can override \ct|#+| in your own class and it works.
+
+\subsection{What happens on a send}
+
+\begin{enumerate}
+\item The receiver's class is found.
+\item Its method dictionary is searched for the selector.
+\item If it is not there, the search continues in the superclass, and so on up
+  to \ct{Object}, whose superclass is \ct{nil}.
+\item If nothing implements it, \ct{doesNotUnderstand:} is sent instead, with
+  the whole message reified as an object.
+\end{enumerate}
+
+That last step is worth dwelling on, because it is a language feature rather
+than an error path. Chapter~\ref{ch:classes} uses it.
+
+\section{\texttt{self} and \texttt{super}}
+
+\ct{self} is the receiver. It is dynamically bound: in a method inherited from
+\ct{Object}, \ct{self} is whatever the actual receiver is, not an
+\ct{Object}.
+
+\ct{super} is the \emph{same object}, but tells the lookup to start above the
+class the currently-executing method was found in. It is not "my superclass's
+instance"---there is only ever one object.
+
+\begin{st}
+printOn: aStream
+    super printOn: aStream.          "let Object do its half"
+    aStream nextPutAll: ' with '; print: self size
+\end{st}
+
+\begin{stwarn}
+\ct{super} starts the search above the \emph{defining} class, not above the
+receiver's class. Getting this wrong produces infinite recursion in exactly
+one situation: writing \ct{self foo} in \ct{Foo>>foo} when you meant
+\ct{super foo}.
+\end{stwarn}
+
+\section{Identity and equality}
+
+Two different questions, two different selectors, and the difference matters
+more in Smalltalk than in most languages because you can change what \ct{=}
+means.
+
+\begin{center}
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+\ctp{==} & the same object. Never overridden.\\
+\ctp{=}  & equal in value. Defined by the class, and often overridden.\\
+\ctp{\~{}\~{}} & not the same object\\
+\ctp{\~{}=} & not equal\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{st}
+'abc' = 'abc'            "true  -- same characters"
+'abc' == 'abc'           "false -- two String objects"
+#abc == #abc             "true  -- symbols are unique"
+3 = 3.0                  "true"
+3 == 3                   "true  -- SmallIntegers are their own identity"
+\end{st}
+
+The rule when you override \ct{=}: \textbf{override \ct{hash} too}, and make
+sure that \ct{a = b} implies \ct{a hash = b hash}. A \ct{Set} or
+\ct{Dictionary} that disagrees with you about hashing will lose your objects
+in a way that is very hard to debug.
+
+\section{\texttt{nil}}
+
+\ct{nil} answers \ct{true} to \ct{isNil} and is what an uninitialised
+instance variable holds. This system provides the modern conditionals:
+
+\begin{st}
+x ifNil: [0]                     "0 if x is nil, else x"
+x ifNotNil: [:v | v printString]
+x ifNil: ['none'] ifNotNil: [:v | v printString]
+x isNil ifTrue: [...]            "the 1983 spelling; still fine"
+\end{st}
+
+\section{Printing and displaying}
+
+Two protocols, and confusing them is a rite of passage.
+
+\begin{center}
+\small
+\begin{tabular}{@{}lp{0.62\textwidth}@{}}
+\toprule
+\ctp{printString} & for a programmer: a form you could paste back into code.
+  \ct{'abc' printString} is seven characters, including the quotes.\\[3pt]
+\ctp{displayString} & for a user: the thing itself.
+  \ct{'abc' displayString} is three characters.\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+You customise both by overriding one method, \ct{printOn:}:
+
+\begin{st}
+printOn: aStream
+    aStream nextPutAll: 'a Point ('; print: x; nextPutAll: ', '; print: y; nextPut: $)
+\end{st}
+
+\ct{printString} is defined in terms of \ct{printOn:}, so overriding the
+stream version gets you the string version, and gets you correct behaviour
+when your object is printed inside a collection.
+
+\begin{stnote}[Some printStrings here are 1983's, not Pharo's]
+\ct|#foo printString| answers \ct{'foo'}, not \ct|'#foo'|. \ct|#(1 2) printString| answers \ct{'(1 2 )'}, with a trailing space and no \ct|#|.
+\ct{(3/4) printString} answers \ct{'(3/4)'} with parentheses. These are the
+1983 library's own, and they are what the Browser and Inspector show you.
+\end{stnote}
+
+\section{Asking objects about themselves}
+
+\begin{st}
+3 class                          "SmallInteger"
+3 isKindOf: Number               "true  -- this class or any superclass"
+3 isMemberOf: SmallInteger       "true  -- exactly this class"
+3 respondsTo: #printString       "true"
+3 isNumber                       "true"
+Object selectors size            "how many methods Object defines"
+Integer includesSelector: #factorial
+\end{st}
+
+\ct{isKindOf:} is the one you usually want. Reaching for it often, though, is
+a sign that you are writing a case statement where you should be writing
+polymorphism.
+
+\section{Polymorphism instead of conditionals}
+
+This is the design lesson the language keeps trying to teach. Rather than
+asking an object what it is and branching:
+
+\begin{st}
+"don't"
+(shape isKindOf: Circle)
+    ifTrue: [area := shape radius squared * Float pi]
+    ifFalse: [(shape isKindOf: Square)
+        ifTrue: [area := shape side squared]]
+\end{st}
+
+\ldots ask it to do the thing, and let each class answer for itself:
+
+\begin{st}
+"do"
+area := shape area
+\end{st}
+
+with \ct{area} implemented in \ct{Circle} and in \ct{Square}. The whole
+library is built this way, which is why \ct{do:} works on an \ct{Array}, an
+\ct{OrderedCollection}, a \ct{Set}, an \ct{Interval} and a \ct{Stream}
+without any of them knowing about the others.
+
+\section{\texttt{doesNotUnderstand:}}
+
+When lookup fails, the system sends \ct{doesNotUnderstand:} with a
+\ct{Message} object holding the selector and arguments. The default
+implementation raises \ct{MessageNotUnderstood}, which you can catch:
+
+\begin{st}
+[nil foo] on: MessageNotUnderstood do: [:e | e message selector]    "#foo"
+\end{st}
+
+Overriding it in your own class gives you proxies, loggers, and
+domain-specific dispatch, and it is a supported technique rather than a hack.
+Do it with restraint---a class that understands everything is a class no
+Browser can help you with.

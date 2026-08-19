@@ -1,0 +1,178 @@
+\chapter{The Desktop}
+\label{ch:desktop}
+
+\standfirst{The window system, in full. It is small, it is consistent, and
+none of it works the way anything built after 1990 does.}
+
+\section{What is on the screen}
+
+A grey halftone background, and windows. Each window has a label tab in its
+top-left corner and no other decoration: no title bar, no close box, no resize
+grip, no scroll bar you have not asked for.
+
+Windows are \emph{scheduled}: \ct{ScheduledControllers} holds the list, and
+control passes to whichever window's rectangle contains the cursor. There is
+no focus to click into. Move the pointer over a window and that window is
+listening.
+
+\section{The three buttons, again}
+
+\begin{center}
+\small
+\begin{tabular}{@{}llp{0.46\textwidth}@{}}
+\toprule
+red & left & select\\
+yellow & middle & the view's menu --- what you can do to the contents\\
+blue & right & the window's menu --- what you can do to the window\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{Press and hold} for both menus. Drag onto an item; release to choose
+it; release outside to choose nothing.
+
+\section{The desktop menu}
+
+Yellow on the background:
+
+\begin{center}
+\small
+\begin{tabular}{@{}lp{0.62\textwidth}@{}}
+\toprule
+\ctp{restore display} & redraw everything. The cure for a corrupted screen\\
+\ctp{exit project} & leave the current project\\
+\midrule
+\ctp{project} & open a Project: a separate desktop with its own windows\\
+\ctp{file list} & a file browser\\
+\ctp{browser} & the System Browser\\
+\ctp{workspace} & a scratch pad\\
+\ctp{system transcript} & where \ctp{Transcript show:} goes\\
+\ctp{system workspace} & a workspace pre-filled with useful expressions\\
+\midrule
+\ctp{save} & write the image, keep running\\
+\ctp{quit} & save and quit, quit without saving, or continue\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Every one of these that opens a window then asks you to frame it: press red,
+drag out a rectangle, release.
+
+\section{The window menu}
+
+Blue, anywhere over a window:
+
+\begin{center}
+\small
+\begin{tabular}{@{}lp{0.62\textwidth}@{}}
+\toprule
+\ctp{under} & send this window behind the ones it overlaps\\
+\ctp{move} & pick it up. It then follows the pointer \emph{with no button
+  held}, and you click to drop it\\
+\ctp{frame} & give it a new rectangle, the way opening did\\
+\ctp{collapse} & shrink it to its label tab, which still has this menu\\
+\ctp{close} & close it\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\ct{close} asks the model first, so a Browser with unaccepted edits will
+interrupt and ask whether you meant it.
+
+\section{The text editor}
+
+Every text pane in the system is the same editor, and it has the same
+yellow-button menu:
+
+\begin{center}
+\small
+\begin{tabular}{@{}lp{0.60\textwidth}@{}}
+\toprule
+\ctp{again} & repeat the last replacement, at the next occurrence\\
+\ctp{undo} & undo the last change. One level\\
+\midrule
+\ctp{copy} \ctp{cut} \ctp{paste} & one system-wide clipboard\\
+\midrule
+\ctp{do it} & evaluate the selection, discard the answer\\
+\ctp{print it} & evaluate the selection and insert the answer after it\\
+\midrule
+\ctp{accept} & commit --- compile the method, save the text\\
+\ctp{cancel} & throw the edits away and reload\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+In a Browser's code pane there are three more: \ct{format} (pretty-print),
+\ct{spawn} (open a new browser on just this method) and \ct{explain} (say what
+the selected token is).
+
+\subsection{Selecting}
+
+Press red and drag. Two shortcuts worth having:
+
+\begin{itemize}
+\item Double-clicking inside a pair of delimiters---quotes, brackets,
+  parentheses---selects everything between them. This is how you select a
+  whole block or a whole string quickly.
+\item Clicking just inside the leading delimiter and dragging selects to the
+  matching one.
+\end{itemize}
+
+\subsection{No keyboard shortcuts}
+
+There is no \ct{Ctrl-D}, no \ct{Ctrl-S}, no \ct{Ctrl-Z}. \ct{do it},
+\ct{accept} and \ct{undo} are menu items. The only control keys bound are a
+few editing and emphasis ones: \ct{Ctrl-W} deletes the previous word,
+\ct{Ctrl-B} bolds, \ct{Ctrl-I} italicises, \ct{Ctrl-X} clears emphasis.
+
+\begin{stnote}
+Backspace deletes; the arrow keys move the insertion point; \ct{Return}
+inserts a carriage return. Typing with a selection active replaces the
+selection.
+\end{stnote}
+
+\section{Accept means compile}
+
+In a Browser's code pane, \ct{accept} compiles the text as a method of the
+selected class and installs it \emph{immediately}. There is no build step,
+nothing to restart, and no way to have a stale version running.
+
+If it does not compile you get a \ct{SyntaxError} window with the error marked
+in the text. Fix it there and \ct{accept} again, or \ct{cancel}.
+
+\begin{stwarn}
+A window whose text you have edited but not accepted is holding your only copy
+of that text. Closing it asks first, but \ct{cancel} does not. Accept early.
+\end{stwarn}
+
+\section{Projects}
+
+\ct{project} on the desktop menu opens a \ct{Project}: a separate desktop with
+its own window list and its own changes. Enter one and the screen is empty
+again; \ct{exit project} comes back. It is a virtual desktop, from 1983, and
+it is useful when you want a clean screen for one task without closing what
+you had.
+
+\section{When the screen goes wrong}
+
+\ct{restore display} on the desktop menu redraws everything from
+\ct{ScheduledControllers}. Because the display is an ordinary Form that
+anything can draw on---including your own code from a workspace---this is a
+normal thing to need, not a sign of a fault.
+
+\section{Scripting the interface}
+
+For tests and screenshots, input can be injected from the command line rather
+than typed:
+
+\begin{sh}
+./st80 -inject "m 320 240; w 20; d 129; w 40; m 320 271; w 40; u 129; w 60;
+                m 60 60; w 20; d 130; w 20; m 900 1400; w 20; u 130; w 200" \
+       -screenshot /tmp/browser.pbm -run st80.image
+\end{sh}
+
+\ct{m X Y} moves the pointer, \ct{d} and \ct{u} press and release a button
+(128 blue, 129 yellow, 130 red), \ct{k} types a key, \ct{w N} waits N bytecode
+slices so the image has time to respond, and \ct{x} posts a window-exposed
+event. That script opens the desktop menu, chooses \ct{browser}, frames a
+window, and screenshots the result.

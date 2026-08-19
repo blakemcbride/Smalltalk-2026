@@ -1,0 +1,236 @@
+%%
+%%  Smalltalk-2026: A Tutorial -- shared preamble.
+%%
+%%  Copyright (c) 2026 Blake McBride.  BSD 2-Clause, as the rest of doc/.
+%%
+%%  Built with pdflatex, deliberately: this file is checked in beside a
+%%  system whose whole claim is that it builds from source with nothing
+%%  exotic installed, and a manual that needed a font off the network
+%%  would be a poor advertisement for it.
+%%
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{XCharter}
+\usepackage[scaled=0.96]{FiraSans}
+\usepackage[varqu,scaled=0.94]{zi4}   % Inconsolata, with a straight quote
+\usepackage[charter,vvarbb,scaled=1.02]{newtxmath}
+\usepackage{microtype}
+
+\usepackage[
+    paperwidth=7.5in, paperheight=9.25in,
+    inner=0.95in, outer=0.75in, top=0.85in, bottom=0.95in,
+    marginparwidth=0pt, headsep=18pt, footskip=28pt
+]{geometry}
+
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{longtable}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage[most]{tcolorbox}
+\usepackage{titlesec}
+\usepackage{fancyhdr}
+\usepackage{needspace}
+\usepackage[hidelinks,bookmarksnumbered,bookmarksopen,
+            bookmarksopenlevel=1,pdfusetitle]{hyperref}
+
+%% ---------------------------------------------------------------- colours
+
+\definecolor{stink}{HTML}{1A1A1A}      % body text
+\definecolor{strule}{HTML}{C9C4BA}     % hairlines
+\definecolor{stblue}{HTML}{1F4E79}     % headings, links
+\definecolor{stred}{HTML}{9C2A21}      % warnings
+\definecolor{stgreen}{HTML}{2F6B3C}    % output, "it works"
+\definecolor{stgrey}{HTML}{5C5C5C}     % comments, de-emphasis
+\definecolor{stwash}{HTML}{F5F3EF}     % code background
+\definecolor{stwashwarn}{HTML}{FBF0EE}
+\definecolor{stwashnote}{HTML}{EFF3F7}
+
+\hypersetup{
+    linkcolor=stblue, citecolor=stblue, urlcolor=stblue,
+    colorlinks=false
+}
+
+%% ---------------------------------------------------------------- headings
+
+\titleformat{\chapter}[display]
+  {\normalfont\sffamily}
+  {\filright\footnotesize\bfseries\color{stgrey}\MakeUppercase{\chaptertitlename\ \thechapter}}
+  {6pt}
+  {\Huge\bfseries\color{stblue}\filright}
+  [\vspace{4pt}{\color{strule}\rule{\textwidth}{0.6pt}}]
+\titlespacing*{\chapter}{0pt}{6pt}{28pt}
+
+\titleformat{\section}{\normalfont\sffamily\Large\bfseries\color{stblue}}{\thesection}{0.7em}{}
+\titleformat{\subsection}{\normalfont\sffamily\large\bfseries\color{stink}}{\thesubsection}{0.6em}{}
+\titleformat{\subsubsection}{\normalfont\sffamily\normalsize\bfseries\color{stink}}{}{0pt}{}
+\titlespacing*{\section}{0pt}{18pt plus 3pt minus 2pt}{7pt}
+\titlespacing*{\subsection}{0pt}{14pt plus 2pt minus 2pt}{5pt}
+\titlespacing*{\subsubsection}{0pt}{12pt plus 2pt minus 2pt}{3pt}
+
+\setcounter{secnumdepth}{2}
+\setcounter{tocdepth}{1}
+
+\pagestyle{fancy}
+\fancyhf{}
+\renewcommand{\headrulewidth}{0pt}
+\fancyhead[LE]{\sffamily\footnotesize\color{stgrey}\thepage\quad\leftmark}
+\fancyhead[RO]{\sffamily\footnotesize\color{stgrey}\rightmark\quad\thepage}
+\renewcommand{\chaptermark}[1]{\markboth{\MakeUppercase{#1}}{}}
+\renewcommand{\sectionmark}[1]{\markright{\MakeUppercase{#1}}}
+\fancypagestyle{plain}{\fancyhf{}\renewcommand{\headrulewidth}{0pt}%
+  \fancyfoot[C]{\sffamily\footnotesize\color{stgrey}\thepage}}
+
+\setlength{\parskip}{0pt}
+\setlength{\parindent}{1.2em}
+\setlist{itemsep=1pt, parsep=1pt, topsep=4pt}
+\setlist[description]{font=\normalfont\bfseries}
+
+%% ------------------------------------------------------- Smalltalk listing
+
+\lstdefinelanguage{Smalltalk2026}{
+  morekeywords={self,super,true,false,nil,thisContext,Smalltalk,Transcript,
+                Processor,Display,Sensor,Object,Class,Array,OrderedCollection,
+                Dictionary,Set,Bag,SortedCollection,Interval,String,Symbol,
+                Character,Integer,SmallInteger,Float,Fraction,Number,Boolean,
+                ReadStream,WriteStream,ReadWriteStream,Error,Warning,Exception,
+                ZeroDivide,MessageNotUnderstood,Mutex,Monitor,SharedQueue,
+                Promise,Semaphore,Delay,Process,Point,Rectangle,Form,BitBlt,
+                Behavior,Metaclass,CompiledMethod,BlockClosure,Date,Time,
+                TestCase,TestResult,ByteArray,Association,WeakArray,Pragma},
+  sensitive=true,
+  morecomment=[s]{"}{"},
+  morestring=[b]',
+  literate=
+    {^}{{\textcolor{stblue}{$\uparrow$}}}1
+    {:=}{{\textcolor{stblue}{:=}}}2,
+}
+
+\lstdefinestyle{stcode}{
+  language=Smalltalk2026,
+  basicstyle=\ttfamily\small\color{stink},
+  keywordstyle=\color{stblue}\bfseries,
+  commentstyle=\color{stgrey}\itshape,
+  stringstyle=\color{stgreen},
+  showstringspaces=false,
+  columns=fullflexible,
+  keepspaces=true,
+  breaklines=true,
+  breakatwhitespace=true,
+  breakindent=1.5em,
+  postbreak=\mbox{\textcolor{stgrey}{$\hookrightarrow$}\space},
+  tabsize=4,
+  xleftmargin=8pt,
+  frame=leftline,
+  framerule=1.4pt,
+  rulecolor=\color{strule},
+  framesep=7pt,
+  aboveskip=9pt,
+  belowskip=9pt,
+}
+
+\lstdefinestyle{shcode}{
+  language=bash,
+  basicstyle=\ttfamily\small\color{stink},
+  keywordstyle=\color{stink},
+  commentstyle=\color{stgrey}\itshape,
+  stringstyle=\color{stink},
+  showstringspaces=false,
+  columns=fullflexible,
+  keepspaces=true,
+  breaklines=true,
+  breakatwhitespace=true,
+  breakindent=1.5em,
+  postbreak=\mbox{\textcolor{stgrey}{$\hookrightarrow$}\space},
+  tabsize=8,
+  xleftmargin=8pt,
+  frame=leftline,
+  framerule=1.4pt,
+  rulecolor=\color{strule},
+  framesep=7pt,
+  aboveskip=9pt,
+  belowskip=9pt,
+}
+
+\lstdefinestyle{plaincode}{
+  basicstyle=\ttfamily\small\color{stink},
+  showstringspaces=false,
+  columns=fullflexible,
+  keepspaces=true,
+  breaklines=true,
+  tabsize=4,
+  xleftmargin=8pt,
+  frame=leftline,
+  framerule=1.4pt,
+  rulecolor=\color{strule},
+  framesep=7pt,
+  aboveskip=9pt,
+  belowskip=9pt,
+}
+
+\lstnewenvironment{st}[1][]{\lstset{style=stcode,#1}}{}
+\lstnewenvironment{sh}[1][]{\lstset{style=shcode,#1}}{}
+\lstnewenvironment{plain}[1][]{\lstset{style=plaincode,#1}}{}
+
+%%  Inline code.  \ct is short enough to use constantly, which is the point.
+%%  It is \lstinline, so ^ # & % _ $ inside it need no escaping -- which
+%%  matters in a book about a language whose return statement is a caret.
+%%  It cannot appear in a section title or any other moving argument; \ctp
+%%  is the plain-text fallback for those, and there you escape by hand.
+\lstdefinestyle{stinline}{
+  language=Smalltalk2026,
+  basicstyle=\ttfamily\small\color{stink},
+  keywordstyle=\color{stink},
+  commentstyle=\color{stgrey}\itshape,
+  stringstyle=\color{stink},
+  showstringspaces=false,
+  columns=fullflexible,
+  keepspaces=true,
+  breaklines=false,
+}
+\newcommand{\ct}{\lstinline[style=stinline]}
+\newcommand{\ctp}[1]{\texorpdfstring{\mbox{\ttfamily\small #1}}{#1}}
+
+%% ------------------------------------------------------------- callout boxes
+
+\newtcolorbox{stnote}[1][Note]{
+  enhanced, breakable,
+  colback=stwashnote, colframe=stblue,
+  boxrule=0pt, leftrule=2pt, arc=0pt, outer arc=0pt,
+  left=8pt, right=8pt, top=6pt, bottom=6pt,
+  fonttitle=\sffamily\bfseries\small,
+  coltitle=stblue, title={#1},
+  attach boxed title to top left={xshift=8pt, yshift=-2pt},
+  boxed title style={colback=stwashnote, boxrule=0pt, arc=0pt},
+  top=14pt
+}
+
+\newtcolorbox{stwarn}[1][Careful]{
+  enhanced, breakable,
+  colback=stwashwarn, colframe=stred,
+  boxrule=0pt, leftrule=2pt, arc=0pt, outer arc=0pt,
+  left=8pt, right=8pt, top=14pt, bottom=6pt,
+  fonttitle=\sffamily\bfseries\small,
+  coltitle=stred, title={#1},
+  attach boxed title to top left={xshift=8pt, yshift=-2pt},
+  boxed title style={colback=stwashwarn, boxrule=0pt, arc=0pt}
+}
+
+\newtcolorbox{sttry}[1][Try it]{
+  enhanced, breakable,
+  colback=white, colframe=strule,
+  boxrule=0.6pt, arc=0pt, outer arc=0pt,
+  left=8pt, right=8pt, top=14pt, bottom=6pt,
+  fonttitle=\sffamily\bfseries\small,
+  coltitle=stgreen, title={#1},
+  attach boxed title to top left={xshift=8pt, yshift=-2pt},
+  boxed title style={colback=white, boxrule=0pt, arc=0pt}
+}
+
+%%  Chapter-opening epigraph-ish standfirst.
+\newcommand{\standfirst}[1]{%
+  \begingroup\small\itshape\color{stgrey}\noindent #1\par\endgroup
+  \vspace{10pt}}

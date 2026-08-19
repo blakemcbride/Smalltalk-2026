@@ -1,0 +1,235 @@
+\chapter{Packages and Profiles}
+\label{ch:packages}
+
+\standfirst{Code you intend to keep lives in files, and which files compose an
+image is one line in a profile. There is no package manager, and this chapter
+is why you do not need one.}
+
+\section{The layout}
+
+\begin{plain}
+sources/     the 1983 class library, MIT, vendored.  NEVER EDITED.
+lib/         ours: exceptions, concurrency, SUnit, protocol shims
+pharo/       imported Pharo packages, each with a PROVENANCE.md
+profiles/    which packages compose an image
+\end{plain}
+
+The rule that makes this work: \textbf{\ct{sources/} is never edited}. Every
+divergence from 1983 is a new file in \ct{lib/} or \ct{pharo/}. That buys
+four things---the Blue Book path stays untouched code rather than
+carefully-preserved code, so the trace oracle keeps working; "how far have we
+drifted" has a mechanical answer; class extensions are the only tool needed;
+and the eventual fork is a directory boundary rather than an archaeology
+problem.
+
+Your own code goes in a new directory beside them.
+
+\section{A package}
+
+A package is a directory of Tonel files plus a \ct{package.st}:
+
+\begin{plain}
+lib/MyStuff/
+    package.st
+    Account.class.st
+    SavingsAccount.class.st
+    Object.extension.st
+\end{plain}
+
+\ct{package.st} is one line:
+
+\begin{st}
+Package { #name : 'MyStuff' }
+\end{st}
+
+\section{A class file}
+
+\ct{Account.class.st}, in full:
+
+\begin{st}
+"
+The class comment goes at the top of the file, in a Smalltalk comment.
+The Browser shows it under the class's `comment' button, so write it for
+somebody who has just found this class and does not know why it exists.
+"
+Class {
+	#name : 'Account',
+	#superclass : 'Object',
+	#instVars : [ 'balance', 'history' ],
+	#classVars : [ 'InterestRate' ],
+	#category : 'MyStuff-Banking'
+}
+
+{ #category : 'initialization' }
+Account >> initialize [
+	balance := 0.
+	history := OrderedCollection new
+]
+
+{ #category : 'accessing' }
+Account >> balance [
+	"How much is in the account."
+	^balance
+]
+
+{ #category : 'class initialization' }
+Account class >> initialize [
+	InterestRate := 5 / 100
+]
+\end{st}
+
+The pieces:
+
+\begin{center}
+\small
+\begin{tabular}{@{}lp{0.58\textwidth}@{}}
+\toprule
+\ctp{\#name} \ctp{\#superclass} & required\\
+\ctp{\#instVars} \ctp{\#classVars} \ctp{\#classInstVars} & lists of strings\\
+\ctp{\#category} & where it shows up in the Browser\\
+\ctp{\#traits} \ctp{\#classTraits} & trait composition\\
+\ctp{\#type} & \ctp{variable}, \ctp{bytes}, \ctp{words}, \ctp{weak},
+  \ctp{ephemeron}. Omit for an ordinary class\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+A method is a category pragma, then \ct|Class >> selector [ ... ]|, or
+\ct|Class class >> selector [ ... ]| for the class side.
+
+\begin{stnote}[Load order does not matter]
+Definitions are read in a pass of their own, before any method is compiled. A
+class may reference one defined in a later file, or in a later package, and it
+loads. This is the one thing the 1983 chunk format could not do, and it is why
+there is no dependency declaration anywhere in a package.
+\end{stnote}
+
+\section{An extension file}
+
+To add methods to a class you do not own---including 1983's, which you may not
+edit---write an extension:
+
+\ct{Object.extension.st}:
+
+\begin{st}
+Extension { #name : 'Object' }
+
+{ #category : '*MyStuff' }
+Object >> myUsefulThing [
+	^42
+]
+\end{st}
+
+The leading \ct{*} on the category is the convention that marks a method as
+belonging to another package. Keep it.
+
+\section{A profile}
+
+A profile says which packages make an image. \ct{profiles/mystuff.profile}:
+
+\begin{st}
+"
+Free text at the top of the file.  Say why this profile exists and why
+anything is excluded -- the profiles in this tree are worth reading as
+examples of that.
+"
+Profile {
+	#name     : 'mystuff',
+	#requires : [ 'st2026' ],
+	#dialect  : 'closures',
+	#packages : [ '../lib/MyStuff' ]
+}
+\end{st}
+
+\begin{center}
+\small
+\begin{tabular}{@{}lp{0.58\textwidth}@{}}
+\toprule
+\ctp{\#name} & the profile's name\\
+\ctp{\#requires} & other profiles to load first. \ctp{st2026} is the usual
+  base; it requires \ctp{bluebook}\\
+\ctp{\#dialect} & \ctp{closures} or the Blue Book default\\
+\ctp{\#packages} & directories, relative to the profile file\\
+\ctp{\#manifests} & a 1983-style manifest, for chunk sources\\
+\ctp{\#files} & individual source files\\
+\ctp{\#exclude} & class names to drop \emph{wherever} they come from\\
+\ctp{\#supersede} & class names this profile provides \emph{instead of} an
+  earlier one\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Build and run it:
+
+\begin{sh}
+./st80 -bootstrap -profile profiles/mystuff.profile -eval 'Account new balance'
+./st80 -bootstrap -profile profiles/mystuff.profile -o mystuff.image
+./st80 -run mystuff.image
+\end{sh}
+
+\section{\texttt{\#exclude} versus \texttt{\#supersede}}
+
+The distinction is not pedantic and getting it wrong produces a confusing
+image.
+
+\begin{description}
+\item[\ctp{\#exclude}] drops a class \emph{wherever} it comes from. The class
+  is simply absent. Use it for tooling metadata you do not want, or for a test
+  whose subject does not exist here.
+\item[\ctp{\#supersede}] says "this profile provides that class instead". The
+  earlier definition is dropped and yours is used. Use it when you are
+  replacing an implementation.
+\end{description}
+
+Excluding something you meant to supersede leaves a hole: every reference to
+that class finds \ct{nil}. The \ct{pharo-weak} profile spent a long time at
+12 of 32 tests for exactly that reason---\ct{WeakArray} was excluded rather
+than superseded, so both providers went and every \ct{WeakSet} had a nil where
+its storage should be.
+
+The loader helps: when a supersession drops protocol something still sends, it
+reports it, and separates the names nothing else answers---the real holes
+---from the far larger number that merely collide with another class's method
+of the same name.
+
+\section{Reading the build output}
+
+Every bootstrap prints a report. It is worth understanding rather than
+scrolling past.
+
+\begin{plain}
+st80: 38 classes were given "new ^super new initialize": ...
+st80: 264 classes, 5123 methods, 3840 symbols
+st80: 80 undeclared globals, 4 lower-case (probable source bugs): ...
+st80: 6 undeclared names resolved from a pool dictionary
+st80: 46 class initializers, 43 ran, 3 skipped, 0 unfinished
+\end{plain}
+
+\begin{description}
+\item[given \ct{new}] classes with an \ct{initialize} and no class-side
+  \ct{new}, for which the loader wrote the 1983 idiom. Auditable by design.
+\item[undeclared globals] names referenced but never defined. Some are
+  expected---the 1983 library has a standing set. A \emph{lower-case} one is
+  almost always a typo in source.
+\item[class initializers] class-side \ct{initialize} methods. "Unfinished"
+  is the one to worry about: an initialiser that started and did not return
+  usually means something deadlocked.
+\end{description}
+
+\section{Vendoring somebody else's code}
+
+Every imported package carries a \ct{PROVENANCE.md} recording the upstream
+repository, the commit, the licence and \emph{every local edit}. That is not
+bureaucracy---it is what makes "we import Pharo's collections" a checkable
+statement rather than a claim, and it is what lets the next person tell an
+upstream bug from one of ours.
+
+If you import something, write one.
+
+\begin{stnote}[Licensing]
+The tree is not all one licence. \ct{src/}, \ct{lib/}, \ct{tests/},
+\ct{tools/} and \ct{doc/} are BSD 2-Clause. \ct{sources/} is MIT.
+\ct{pharo/} is MIT with parts under Apache-2.0, and every file keeps its
+notice. The rasterised face derives from Inter under the SIL Open Font
+License. \ct{doc/LICENSING.md} is the authority on what may be redistributed.
+\end{stnote}
