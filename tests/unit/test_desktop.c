@@ -445,6 +445,52 @@ test_the_desktop_comes_up(void)
     }
 }
 
+static int open_workspace(int x0, int y0, int x1, int y1);
+
+/*
+ *  A window that is opened and closed leaves the screen exactly as it was.
+ *
+ *  Exactly: not "about right".  The desktop background and Form gray are two
+ *  different pieces of code painting the same 50% halftone, and they used to
+ *  disagree about its PHASE -- the VM put 0xAAAA on row 0 and
+ *  Form class>>initializeMasks puts 0x5555 there.  Both are grey, both have
+ *  the same ink count, and the rectangle a window had occupied came back in
+ *  the opposite phase and sat there as a patch of visibly different texture.
+ *  A count-based check cannot see it; a bit-for-bit one cannot miss it.
+ */
+static void
+test_closing_a_window_restores_the_desktop(void)
+{
+    const uint16_t *bare;
+    region          left_behind;
+
+    printf("---- a closed window leaves no trace ----\n");
+
+    settle(40);
+    bare = photograph();
+    if (!bare)
+        return;
+    if (!open_workspace(150, 180, 520, 380))
+        return;
+    settle(60);
+    if (!choose(BLUE, 300, 250, 4)) {           /*  under move frame collapse close  */
+        ++st_test_checks; ++st_test_failures;
+        printf("  FAIL the window menu did not open\n");
+        return;
+    }
+    settle(120);
+
+    left_behind = changed_since(bare);
+    ++st_test_checks;
+    if (left_behind.ink != 0) {
+        ++st_test_failures;
+        printf("  FAIL %ld pixels differ from the bare desktop, x %d..%d "
+               "y %d..%d\n", left_behind.ink, left_behind.left,
+               left_behind.right, left_behind.top, left_behind.bottom);
+        dump_screen("erase");
+    }
+}
+
 static void
 test_the_menu_opens_and_holds(void)
 {
@@ -705,6 +751,7 @@ main(void)
     test_typing_reaches_the_window();
     test_a_browser_opens();
     test_the_window_menu_closes_a_window();
+    test_closing_a_window_restores_the_desktop();
     test_no_button_is_left_held();
 
     return ST_TEST_END();

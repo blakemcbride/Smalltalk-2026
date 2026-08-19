@@ -739,9 +739,23 @@ resize_display(int width, int height)
             uint16_t   *row = dst + (size_t) y * raster;
             uint32_t    x;
 
-            /*  Form gray: alternate words, which is 50% at every scale.  */
+            /*
+             *  Form gray, in ITS phase.
+             *
+             *  Form class>>initializeMasks fills the odd rows of a 16x16
+             *  mask with 21845 and the even ones with 43690, so row 0 is
+             *  0x5555; and BitBlt indexes a halftone by the DESTINATION
+             *  row, so Display row 0 takes halftone row 0.  Painting this
+             *  the other way round is 50% grey either way and looks right
+             *  on its own -- but every window erase fills with Form gray,
+             *  so the rectangle a window used to occupy came back in the
+             *  opposite phase and stood out as a patch of different
+             *  texture.  Half the pixels differed and the ink COUNT was
+             *  identical, which is why it read as debris rather than as a
+             *  seam.
+             */
             for (x = 0; x < raster; ++x)
-                row[x] = (y & 1) ? 0x5555u : 0xAAAAu;
+                row[x] = (y & 1) ? 0xAAAAu : 0x5555u;
             if (y < form.height)
                 memcpy(row, form.bits + (size_t) y * form.raster,
                        (size_t) keep * sizeof *row);

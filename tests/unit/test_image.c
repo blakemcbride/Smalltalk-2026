@@ -2929,6 +2929,39 @@ test_where_the_ink_lands(void)
                   "    ((p characterBlockForIndex: 5) topLeft + (2@2))) stringIndex", 5);
 
     /*
+     *  Form gray's phase, which the VM has to match.
+     *
+     *  Form class>>initializeMasks fills the odd rows of the 16x16 mask with
+     *  21845 and the even ones with 43690, so row 0 is 0x5555 -- and BitBlt
+     *  indexes a halftone by the destination row, so Display row 0 takes
+     *  halftone row 0.  display.c paints the desktop background itself when
+     *  it grows the screen to fill the window, and had the phase inverted:
+     *  both are 50% grey with the same ink count, so the rectangle a window
+     *  had occupied came back in the opposite phase and sat there as a patch
+     *  of different texture.
+     *
+     *  This pins the image's half.  The VM's half cannot be reached from
+     *  here -- that fill only runs when a real window grows the display --
+     *  so display.c carries the reason beside the constant.
+     */
+    {
+        gfx_form    form;
+
+        evaluate("Display white."
+                 " Display fill: (0@0 corner: 64@64) mask: Form gray. ^1");
+        ++st_test_checks;
+        if (!GFX_form_from_oop(GFX_display_form(), &form)) {
+            ++st_test_failures;
+            printf("  FAIL no display form\n");
+        }  else if (form.bits[0] != 0x5555 || form.bits[form.raster] != 0xAAAA) {
+            ++st_test_failures;
+            printf("  FAIL Form gray row 0 is %04x and row 1 is %04x; "
+                   "display.c paints 0x5555 then 0xAAAA\n",
+                   form.bits[0], form.bits[form.raster]);
+        }
+    }
+
+    /*
      *  A window is drawn where it was framed.  Three rounds of this session
      *  went looking for a framing fault that was not there, and nothing in
      *  the suite could have said so: check_ink counts a border without
