@@ -2687,6 +2687,59 @@ test_input(void)
     check_oop("| v | v := StandardSystemView new."
               " v window: (0@0 corner: 200@200)."
               " ^v controller isControlWanted", ST_FALSE, "false");
+
+    /*
+     *  A drag at full rate must not cost a button release.
+     *
+     *  The image rebuilds its idea of which buttons are down from this
+     *  stream and from nothing else, so a dropped BISTATE_OFF leaves it
+     *  believing a button is held for ever: Sensor noButtonPressed never
+     *  answers true again, no controller takes control, no menu opens, and
+     *  the window stays on the screen looking perfectly fine.  That is a
+     *  frozen system with no diagnostic, and it is what framing a window
+     *  used to do -- the one gesture that drags at full rate with a button
+     *  held while the image is busy drawing a rubber band.  Measured before
+     *  the fix: 379 events dropped in a single drag of 700 moves, into a
+     *  ring of 1024 words that each move fills two of.
+     *
+     *  Positions now coalesce and transitions never do, so what is checked
+     *  here is both halves of that: nothing was dropped, and the two edges
+     *  came out of the far end.
+     */
+    {
+        unsigned    before = GFX_events_dropped();
+        unsigned    ons = 0, offs = 0, locations = 0;
+        uint16_t    word;
+        int         i;
+
+        while (GFX_next_event_word(&word))
+            ;                           /*  start from a drained ring  */
+        GFX_inject_button(130, 1);
+        for (i = 0; i < 2000; ++i)
+            GFX_inject_mouse(200 + (i % 400), 300 + (i % 200));
+        GFX_inject_button(130, 0);
+
+        CHECK_EQ_INT((int) (GFX_events_dropped() - before), 0);
+        while (GFX_next_event_word(&word)) {
+            unsigned    type  = (unsigned) (word >> ST_EVENT_TYPE_SHIFT);
+            unsigned    value = (unsigned) (word & ST_EVENT_VALUE_MASK);
+
+            if (type == ST_EVENT_BISTATE_ON && value == 130)
+                ++ons;
+            else if (type == ST_EVENT_BISTATE_OFF && value == 130)
+                ++offs;
+            else if (type == ST_EVENT_XLOCATION || type == ST_EVENT_YLOCATION)
+                ++locations;
+        }
+        CHECK_EQ_INT((int) ons, 1);
+        CHECK_EQ_INT((int) offs, 1);
+        /*
+         *  And the two thousand moves cost a bounded number of words rather
+         *  than four thousand: one pair held at a time, plus the pair the
+         *  closing transition flushed in front of itself.
+         */
+        CHECK(locations <= 8);
+    }
 }
 
 /*

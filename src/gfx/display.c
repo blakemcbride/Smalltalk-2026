@@ -190,8 +190,36 @@ event_type_name(unsigned type)
     }
 }
 
+/*
+ *  ----------  Positions coalesce; transitions never do  ----------
+ *
+ *  A pointer position is idempotent.  The image reads `Sensor cursorPoint',
+ *  not a path, so the only sample that matters is the newest one and every
+ *  earlier one may be thrown away without changing any answer.
+ *
+ *  A bistate is an EDGE, and that asymmetry is the whole of this code.  The
+ *  image rebuilds its idea of which buttons are down from the stream --
+ *  InputState>>bitState, which every controller polls -- so a lost
+ *  BISTATE_OFF leaves it believing a button is still held FOR EVER.  Nothing
+ *  corrects it: `Sensor noButtonPressed' never answers true again, no menu
+ *  opens, no controller takes control, and the window stays on the screen
+ *  looking perfectly fine.  Framing a window is where this bit: it is the
+ *  one gesture that drags at full rate with a button held while the image is
+ *  busy drawing a rubber band, and 700 moves is 1400 words into a ring of
+ *  1024.  Measured, before this: 379 events dropped in one drag.
+ *
+ *  So motion is held in one slot and appended only when something else has
+ *  to go in front of it or when the image comes to read.  Pending motion is
+ *  therefore bounded at a single pair, the ring can only be filled by real
+ *  transitions -- which arrive at the speed of a hand -- and the events that
+ *  cannot be reconstructed are the ones that can no longer be lost.
+ */
+static int      pending_motion;
+static int      pending_x;
+static int      pending_y;
+
 static void
-queue_event(unsigned type, unsigned value)
+queue_word(unsigned type, unsigned value)
 {
     unsigned    next = (event_tail + 1) % EVENT_QUEUE_SIZE;
 
@@ -215,6 +243,45 @@ queue_event(unsigned type, unsigned value)
      *  than switching underneath a half-executed bytecode.
      */
     SCHED_asynchronous_signal(SCHED_input_semaphore());
+}
+
+/*  Put the held position into the stream, if there is one.  */
+static void
+flush_motion(void)
+{
+    if (!pending_motion)
+        return;
+    pending_motion = 0;
+    queue_word(ST_EVENT_XLOCATION, (unsigned) pending_x);
+    queue_word(ST_EVENT_YLOCATION, (unsigned) pending_y);
+}
+
+/*
+ *  Hold a position.  mouse_x and mouse_y move at once, because primitive 90
+ *  reads them directly and must never lag the pointer; only the two words
+ *  are deferred.
+ */
+static void
+queue_motion(int x, int y)
+{
+    if (x == mouse_x && y == mouse_y)
+        return;
+    mouse_x        = x;
+    mouse_y        = y;
+    pending_x      = x;
+    pending_y      = y;
+    pending_motion = 1;
+}
+
+/*
+ *  Anything that is not a position.  The held motion goes first, so a click
+ *  is still preceded by the place it happened.
+ */
+static void
+queue_transition(unsigned type, unsigned value)
+{
+    flush_motion();
+    queue_word(type, value);
 }
 
 /*
@@ -244,12 +311,20 @@ GFX_draw_counts(unsigned long *damages, unsigned long *presents)
 int
 GFX_event_pending(void)
 {
+    /*
+     *  The consumer flushes.  A held position has to be in the stream before
+     *  the image is told whether the stream is empty, and doing it here
+     *  covers the headless case too -- there is no pump to do it when no
+     *  window was opened, and the test suites drive input that way.
+     */
+    flush_motion();
     return event_head != event_tail;
 }
 
 int
 GFX_next_event_word(uint16_t *word)
 {
+    flush_motion();
     if (event_head == event_tail)
         return 0;
     *word = event_queue[event_head];
@@ -312,12 +387,7 @@ warp_locally(int x, int y)
         fprintf(stderr, "st80: %8.3f warped to %d,%d%s\n",
                 (double) ST_time_monotonic_ns() / 1e9, x, y,
                 (x == mouse_x && y == mouse_y) ? " (already there)" : "");
-    if (x == mouse_x && y == mouse_y)
-        return;
-    mouse_x = x;
-    mouse_y = y;
-    queue_event(ST_EVENT_XLOCATION, (unsigned) x);
-    queue_event(ST_EVENT_YLOCATION, (unsigned) y);
+    queue_motion(x, y);
 }
 
 void
@@ -335,12 +405,7 @@ GFX_inject_mouse(int x, int y)
         if (y >= form.height)
             y = form.height - 1;
     }
-    if (x == mouse_x && y == mouse_y)
-        return;
-    mouse_x = x;
-    mouse_y = y;
-    queue_event(ST_EVENT_XLOCATION, (unsigned) x);
-    queue_event(ST_EVENT_YLOCATION, (unsigned) y);
+    queue_motion(x, y);
 }
 
 void
@@ -350,13 +415,13 @@ GFX_inject_button(unsigned code, int down)
         button_state |= 1 << (int) (code - 128);
     else
         button_state &= ~(1 << (int) (code - 128));
-    queue_event(down ? ST_EVENT_BISTATE_ON : ST_EVENT_BISTATE_OFF, code);
+    queue_transition(down ? ST_EVENT_BISTATE_ON : ST_EVENT_BISTATE_OFF, code);
 }
 
 void
 GFX_inject_key(unsigned code, int down)
 {
-    queue_event(down ? ST_EVENT_BISTATE_ON : ST_EVENT_BISTATE_OFF, code);
+    queue_transition(down ? ST_EVENT_BISTATE_ON : ST_EVENT_BISTATE_OFF, code);
 }
 
 #ifndef ST_HAVE_SDL3
@@ -1353,12 +1418,7 @@ handle_mouse_motion(float x, float y)
         nx = form.width - 1;
     if (ny >= form.height)
         ny = form.height - 1;
-    if (nx == mouse_x && ny == mouse_y)
-        return;
-    mouse_x = nx;
-    mouse_y = ny;
-    queue_event(ST_EVENT_XLOCATION, (unsigned) nx);
-    queue_event(ST_EVENT_YLOCATION, (unsigned) ny);
+    queue_motion(nx, ny);
 }
 
 int
@@ -1440,7 +1500,7 @@ GFX_pump(void)
                 button_state |= 1 << (int) (code - BUTTON_BLUE);
             else
                 button_state &= ~(1 << (int) (code - BUTTON_BLUE));
-            queue_event(down ? ST_EVENT_BISTATE_ON : ST_EVENT_BISTATE_OFF,
+            queue_transition(down ? ST_EVENT_BISTATE_ON : ST_EVENT_BISTATE_OFF,
                         code);
             break;
         }
@@ -1475,7 +1535,7 @@ GFX_pump(void)
                 code = (unsigned) key;
             else
                 break;
-            queue_event(down ? ST_EVENT_BISTATE_ON : ST_EVENT_BISTATE_OFF,
+            queue_transition(down ? ST_EVENT_BISTATE_ON : ST_EVENT_BISTATE_OFF,
                         code);
             break;
         }

@@ -32,6 +32,21 @@
 \item[The screen does not update when I switch back to it] Fixed; if you see
   it, the window-exposed event is not arriving. \ct{restore display} on the
   desktop menu redraws everything.
+\item[A window is drawn but ignores every click and keystroke] The image
+  rebuilds its idea of which buttons are down from the event stream and from
+  nothing else, so a lost button-release leaves it believing a button is
+  still held: \ct{Sensor noButtonPressed} never answers true again, no
+  controller takes control, and the window sits there looking perfectly
+  fine. Framing a window used to do this---the one gesture that drags at
+  full rate with a button held while the image is busy drawing a rubber
+  band. Positions now coalesce in the event ring and transitions never do,
+  so the events that cannot be reconstructed can no longer be lost. If you
+  ever see
+\begin{plain}
+st80: N input events were dropped
+\end{plain}
+  at exit, the image's button state may have been left wrong, and that
+  message is worth reporting.
 \item[The rubber band blinks while I drag] Fixed. The 1983 idiom draws the
   rectangle as a flash between two cancelling blits, and the window is now
   presented at the right moment rather than at random.
