@@ -354,6 +354,7 @@ void    GFX_close(void)     { }
 int     GFX_pump(void)      { return 1; }
 int     GFX_is_open(void)   { return 0; }
 void    GFX_set_cursor(st_oop form) { (void) form; }
+void    GFX_inject_expose(void) { }
 void    GFX_note_blit(const gfx_blit *b) { (void) b; }
 void    GFX_write_coverage(const char *p) { (void) p; }
 void    GFX_warp_pointer(int x, int y) { warp_locally(x, y); }
@@ -833,6 +834,19 @@ GFX_window_size(int *width, int *height)
  *  warp_locally has already recorded the same position, so handle_mouse_motion
  *  sees no change and queues nothing twice.
  */
+void
+GFX_inject_expose(void)
+{
+    SDL_Event   e;
+
+    if (!window)
+        return;
+    SDL_zero(e);
+    e.type = SDL_EVENT_WINDOW_EXPOSED;
+    e.window.windowID = SDL_GetWindowID(window);
+    SDL_PushEvent(&e);
+}
+
 void
 GFX_warp_pointer(int x, int y)
 {
@@ -1328,6 +1342,30 @@ GFX_pump(void)
         case SDL_EVENT_WINDOW_RESIZED:
         case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
             fit_display_to_window();
+            break;
+
+        /*
+         *  The window came back and has to be told to repaint itself.
+         *
+         *  present() uploads the DAMAGED region and then clears the damage,
+         *  which is right while somebody is looking.  Switch to another
+         *  desktop and the image goes on drawing, so every frame is
+         *  presented into a window nobody can see and the damage is dropped
+         *  with it.  Come back and there is nothing outstanding to present,
+         *  so the window keeps whatever the compositor kept -- until the
+         *  image happens to draw again, which is why moving the mouse inside
+         *  it fixes the symptom.  Any damage at all repaints the whole
+         *  window, because present() renders the entire texture.
+         *
+         *  So say the whole screen is damaged whenever the window is shown,
+         *  restored or exposed.  It costs one full upload, and only when the
+         *  window manager says the window has reappeared.
+         */
+        case SDL_EVENT_WINDOW_EXPOSED:
+        case SDL_EVENT_WINDOW_SHOWN:
+        case SDL_EVENT_WINDOW_RESTORED:
+        case SDL_EVENT_WINDOW_MAXIMIZED:
+            GFX_damage_all();
             break;
 
         case SDL_EVENT_MOUSE_MOTION:

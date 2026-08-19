@@ -102,6 +102,14 @@ void    GFX_inject_mouse(int x, int y);
 void    GFX_inject_button(unsigned code, int down);
 void    GFX_inject_key(unsigned code, int down);
 
+/*
+ *  Post the window-exposed event a window manager posts when the window
+ *  comes back into view.  It goes through SDL_PushEvent, so the pump reads
+ *  it exactly as it reads the real one -- which is the point: the repaint
+ *  path is otherwise reachable only by a person switching desktops.
+ */
+void    GFX_inject_expose(void);
+
 void    GFX_set_display(st_oop form);
 
 /*

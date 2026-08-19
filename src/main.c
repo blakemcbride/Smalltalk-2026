@@ -109,7 +109,7 @@ usage(const char *argv0)
     printf("  -run <image> [n]      run the image, opening a window\n");
     printf("  -screenshot <f.pbm>   with -run or -bootstrap, write the display\n");
     printf("  -inject <script>      post input: m X Y, d CODE, u CODE,\n");
-    printf("                        k CODE, w SLICES (wait)\n");
+    printf("                        k CODE, w SLICES (wait), x (expose)\n");
     printf("  -wiggle               move the pointer continuously, no clicks\n");
     printf("  -census <image>       load an image and summarize it\n");
     printf("  -classes <image>      list every class, in class.oops format\n");
@@ -615,6 +615,8 @@ run_inject_script(void)
         }  else if (what == 'k') {
             GFX_inject_key((unsigned) a, 1);
             GFX_inject_key((unsigned) a, 0);
+        }  else if (what == 'x') {
+            GFX_inject_expose();
         }  else if (what == 'w') {
             while (*p == ' ' || *p == ';')
                 ++p;
