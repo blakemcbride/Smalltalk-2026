@@ -3988,7 +3988,18 @@ install_user_interface(void)
          */
         { "Dictionary",     "new",  "Undeclared" },
         /*  And where it records what it has changed.  */
-        { "ChangeSet",      "new",  "SystemChanges" }
+        { "ChangeSet",      "new",  "SystemChanges" },
+        /*
+         *  The directory every file operation goes through.
+         *
+         *  FileDirectory class>>directoryFromName:setFileName: is the door
+         *  into the file system for FileList, FileModel, FileStream and the
+         *  FormEditor, and its entire body is `directory _ Disk'.  With Disk
+         *  nil the File List opens, draws its three panes and can never list
+         *  anything -- the pattern reaches filesMatching:, which asks nil.
+         *  Another of the globals 1983 made once and carried in the image.
+         */
+        { "PosixFileDirectory", "new", "Disk" }
     };
     unsigned    i;
 
@@ -5055,6 +5066,89 @@ install_text_style(void)
  *  rather than by hand in C means the hashing is the library's, so the
  *  pool's own at: finds what we put there.
  */
+/*
+ *  ----------  Pool variables that were compiled before they existed  ----------
+ *
+ *  A pool dictionary is filled by a class initializer at RUN time, and every
+ *  method that names one of its variables was compiled long before that.  In
+ *  1983 the order was the other way round -- the image grew a piece at a
+ *  time, so File class>>initialize had put Read, Write and Shorten into
+ *  FilePool before anything that used them was typed in.  Here the whole
+ *  library is compiled and only then initialised, so the compiler meets
+ *  `Write' with FilePool empty, records it undeclared, and binds it to a
+ *  global that stays nil for ever.
+ *
+ *  What that costs is not obvious until you meet it.  FileStream>>writing is
+ *
+ *      rwmode == nil ifTrue: [self readWriteShorten. ^true].
+ *      ^(rwmode bitAnd: Write) = Write
+ *
+ *  and readWriteShorten is `self setMode: Read + Write + Shorten' -- three
+ *  nils added together.  So asking a file stream its size did not answer
+ *  wrongly, it raised doesNotUnderstand inside the machinery that reports
+ *  doesNotUnderstand, and two hundred million bytecodes later there was
+ *  still no answer.  The File List could list files and never open one.
+ *
+ *  So after the initializers have run, look each undeclared name up in every
+ *  pool and give the global its value.  This is the reconciliation a growing
+ *  image never needs and a bootstrap always does.
+ */
+static st_oop
+pool_lookup(st_oop pool, const char *name)
+{
+    uint32_t    n;
+    uint32_t    i;
+
+    if (!OM_is_present(pool) || !OM_pointer_bit(pool))
+        return ST_OOP_INVALID;
+    n = OM_fetch_word_length(pool);
+    for (i = 0; i < n; ++i) {
+        st_oop  entry = OM_fetch_pointer(i, pool);
+        char    text[64];
+
+        if (!OM_is_present(entry) || entry == ST_NIL || !OM_pointer_bit(entry)
+         || OM_fetch_word_length(entry) < 2)
+            continue;
+        OM_string_of(OM_fetch_pointer(0, entry), text, sizeof text);
+        if (strcmp(text, name) == 0)
+            return OM_fetch_pointer(1, entry);
+    }
+    return ST_OOP_INVALID;
+}
+
+static void
+resolve_undeclared_from_pools(void)
+{
+    unsigned    i;
+    unsigned    fixed = 0;
+
+    for (i = 0; i < undeclared_count; ++i) {
+        const char *name = undeclared_names[i];
+        unsigned    j;
+
+        for (j = 0; j < pool_binding_count; ++j) {
+            st_oop  pool = BOOT_global(pool_bindings[j].pool);
+            st_oop  value = pool_lookup(pool, name);
+            st_oop  binding;
+
+            if (value == ST_OOP_INVALID)
+                continue;
+            /*  The global the compiler bound the name to, still nil.  */
+            binding = global_association(name);
+            if (binding == ST_OOP_INVALID)
+                break;
+            if (OM_fetch_pointer(ST_ASSOCIATION_VALUE, binding) != ST_NIL)
+                break;                  /*  something already gave it one  */
+            OM_store_pointer(ST_ASSOCIATION_VALUE, binding, value);
+            ++fixed;
+            break;
+        }
+    }
+    if (fixed)
+        boot_note("%u undeclared name%s resolved from a pool dictionary",
+                  fixed, fixed == 1 ? "" : "s");
+}
+
 static int
 install_pools(void)
 {
@@ -5274,6 +5368,7 @@ BOOT_run_initializers(st_boot_init_report *out)
     install_text_style();
     ST_set_error_reporting(1);
     run_class_initializers(out);
+    resolve_undeclared_from_pools();
 
     install_user_interface();
     install_subclass_graph();

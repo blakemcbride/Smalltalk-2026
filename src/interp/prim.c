@@ -15,6 +15,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <dirent.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/stat.h>
 #include <math.h>
 
 /*  ----------  Argument helpers  ----------  */
@@ -1251,6 +1256,497 @@ primitive_copy_bits(void)
     return 1;                   /*  answers the receiver  */
 }
 
+/*  ----------  Files, primitives 128 and 130 to 133  ----------
+ *
+ *  sources/Files-Posix declares five primitive numbers and this VM
+ *  implemented none of them, so every file operation in the system failed.
+ *  The File List showed it best: it opened, drew its three panes, and could
+ *  never list anything, because FileDirectory class>>
+ *  directoryFromName:setFileName: is one line -- `directory _ Disk' -- and
+ *  Disk was nil.  Setting Disk without these made it worse, not better:
+ *  fileNames invoked a primitive that did not exist, the method body is
+ *  empty so the failure answered self, and PosixFileDirectory>>do: then
+ *  recursed into itself.  A notifier became a hang.
+ *
+ *  Pages are 512 bytes -- FilePage>>dataSize, with no header or trailer --
+ *  and numbered from ONE, so page n is the bytes at (n-1)*512.  A page
+ *  carries its own byte count, and a short page is how the file says where
+ *  it ends.
+ *
+ *  Field numbers are the instance variables of File and FilePage, which are
+ *  frozen sources and so are as good as a struct:
+ *
+ *      File        fileDirectory fileName pageCache serialNumber
+ *                  lastPageNumber binary readWrite error
+ *      PosixFile   ... then fd cachedPageSize
+ *      FilePage    file page binary
+ *      PosixFilePage ... then pageNumber bytesInPage
+ */
+#define FILE_NAME_FIELD         1
+#define POSIX_FD_FIELD          8
+#define PAGE_BUFFER_FIELD       1
+#define PAGE_NUMBER_FIELD       3
+#define PAGE_BYTES_FIELD        4
+#define POSIX_PAGE_SIZE         512
+
+static int  posix_errno;
+
+/*  A Smalltalk String from C, and the reverse.  */
+static st_oop
+string_from_c(const char *text, size_t n)
+{
+    st_oop      s = OM_instantiate_bytes(ST_CLASS_STRING, (uint32_t) n);
+    size_t      i;
+
+    if (!OM_is_present(s))
+        return ST_OOP_INVALID;
+    for (i = 0; i < n; ++i)
+        OM_store_byte((uint32_t) i, s, (uint8_t) text[i]);
+    return s;
+}
+
+static int
+c_from_string(st_oop s, char *out, size_t max)
+{
+    uint32_t    n;
+    uint32_t    i;
+
+    if (!OM_is_object(s) || OM_pointer_bit(s))
+        return 0;
+    n = OM_fetch_byte_length(s);
+    if (n >= max)
+        return 0;
+    for (i = 0; i < n; ++i)
+        out[i] = (char) OM_fetch_byte(i, s);
+    out[n] = '\0';
+    return 1;
+}
+
+/*
+ *  The file's descriptor, kept as a SmallInteger in the fd field.  A file
+ *  that was never opened has nil there, which is not an error: close sends
+ *  here with fd nil and expects to be told so.
+ */
+static int
+posix_fd_of(st_oop file)
+{
+    st_oop  fd;
+
+    if (!OM_is_object(file) || !OM_pointer_bit(file)
+     || OM_fetch_word_length(file) <= POSIX_FD_FIELD)
+        return -1;
+    fd = OM_fetch_pointer(POSIX_FD_FIELD, file);
+    return OM_is_int(fd) ? (int) OM_int_value(fd) : -1;
+}
+
+/*
+ *  A descriptor for this file, opening it if nobody has yet.
+ *
+ *  1983 does not open before it asks.  Disk findKey: answers a File that has
+ *  never been opened, and File>>size then goes straight to
+ *  findLastPageNumber, which asks sizeOnDisk and does arithmetic on the
+ *  answer.  Answering false there -- "no descriptor" -- means `false + 511',
+ *  a doesNotUnderstand whose reporting is far more expensive than the
+ *  question, which is why a one-page file took more than two hundred million
+ *  bytecodes to fail to measure.
+ *
+ *  A file's size and contents are properties of its NAME, so the name is
+ *  enough to answer with.  Opening on demand and caching the descriptor
+ *  keeps every path working whether or not the image opened first.
+ */
+static int
+posix_fd_for(st_oop file, int for_writing)
+{
+    int     fd = posix_fd_of(file);
+    char    path[1024];
+
+    if (fd >= 0)
+        return fd;
+    if (!OM_is_object(file) || !OM_pointer_bit(file)
+     || OM_fetch_word_length(file) <= POSIX_FD_FIELD)
+        return -1;
+    if (!c_from_string(OM_fetch_pointer(FILE_NAME_FIELD, file),
+                       path, sizeof path))
+        return -1;
+    fd = open(path, for_writing ? (O_RDWR | O_CREAT) : O_RDWR, 0666);
+    if (fd < 0 && !for_writing)
+        fd = open(path, O_RDONLY);      /*  readable is enough  */
+    if (fd < 0) {
+        posix_errno = errno;
+        return -1;
+    }
+    OM_store_pointer(POSIX_FD_FIELD, file, OM_int_oop((st_int) fd));
+    return fd;
+}
+
+/*
+ *  primitive 130 -- PosixFile>>doPrimCommand:name:page:
+ *
+ *  The commands are the ones PosixFile sends: 0 read, 1 write, 2 truncate,
+ *  3 size, 4 open, 5 close.  Answering false is how a command reports
+ *  failure -- doCommand:name:page:error: tests for it and only then raises
+ *  an error -- so a read past the end answers false and read: answers nil,
+ *  which is exactly how a stream finds the end of a file.
+ */
+static int
+primitive_file_command(void)
+{
+    st_oop      page = ST_stack_value(0);
+    st_oop      name = ST_stack_value(1);
+    st_oop      cmd  = ST_stack_value(2);
+    st_oop      file = ST_stack_value(3);
+    long        command;
+    int         fd;
+    st_oop      answer = ST_FALSE;
+
+    if (!OM_is_int(cmd))
+        return 0;
+    command = (long) OM_int_value(cmd);
+    fd = (command == 1 || command == 2) ? posix_fd_for(file, 1)
+       : (command == 0 || command == 3) ? posix_fd_for(file, 0)
+       : posix_fd_of(file);
+
+    switch (command) {
+    case 4: {                                   /*  open  */
+        char    path[1024];
+
+        if (!c_from_string(name, path, sizeof path))
+            return 0;
+        /*
+         *  CREATING, because by the time the image opens a file it has
+         *  already decided the file should exist: FileStream newFileNamed:
+         *  and the snapshot writer both reach here through findOrAddKey:,
+         *  and a reader has asked includesKey: first.  Refusing to create
+         *  meant `snapshot.im open: No such file or directory' -- the file
+         *  being made could never be made.
+         */
+        fd = open(path, O_RDWR | O_CREAT, 0666);
+        if (fd < 0)
+            fd = open(path, O_RDONLY);          /*  readable is enough  */
+        if (fd < 0) {
+            posix_errno = errno;
+            answer = ST_FALSE;
+            break;
+        }
+        OM_store_pointer(POSIX_FD_FIELD, file, OM_int_oop((st_int) fd));
+        answer = ST_TRUE;
+        break;
+    }
+    case 5:                                     /*  close  */
+        if (fd >= 0) {
+            close(fd);
+            OM_store_pointer(POSIX_FD_FIELD, file, ST_NIL);
+        }
+        answer = ST_TRUE;
+        break;
+
+    case 3: {                                   /*  size on disk  */
+        struct stat st;
+
+        if (fd < 0 || fstat(fd, &st) != 0) {
+            posix_errno = errno;
+            answer = ST_FALSE;
+            break;
+        }
+        ST_pop_n(4);
+        ST_push(OM_int_oop((st_int) st.st_size));
+        return 1;
+    }
+    case 0: {                                   /*  read a page  */
+        st_oop      buffer;
+        st_oop      number;
+        long        n;
+        ssize_t     got;
+        uint32_t    room;
+        uint32_t    i;
+        char        bytes[POSIX_PAGE_SIZE];
+
+        if (fd < 0 || !OM_is_object(page) || !OM_pointer_bit(page)
+         || OM_fetch_word_length(page) <= PAGE_BYTES_FIELD)
+            return 0;
+        number = OM_fetch_pointer(PAGE_NUMBER_FIELD, page);
+        buffer = OM_fetch_pointer(PAGE_BUFFER_FIELD, page);
+        if (!OM_is_int(number) || !OM_is_object(buffer)
+         || OM_pointer_bit(buffer))
+            return 0;
+        n = (long) OM_int_value(number);
+        if (n < 1)
+            n = 1;
+        got = pread(fd, bytes, sizeof bytes,
+                    (off_t) ((n - 1) * POSIX_PAGE_SIZE));
+        if (got < 0) {
+            posix_errno = errno;
+            answer = ST_FALSE;
+            break;
+        }
+        /*
+         *  Page one always exists, even in an empty file.
+         *
+         *  findLastPageNumber answers `... max: 1', so 1983 believes every
+         *  file has at least one page, and File>>readOrAdd: reads page one
+         *  rather than making it.  Answering false there -- "no such page"
+         *  -- gave FileStream>>on: a nil page, and a newly created file
+         *  could not be opened to be written to.  Past the last page is a
+         *  real end and still answers false.
+         */
+        if (got == 0 && n > 1) {
+            answer = ST_FALSE;                  /*  the end of the file  */
+            break;
+        }
+        room = OM_fetch_byte_length(buffer);
+        if ((uint32_t) got < room)
+            room = (uint32_t) got;
+        for (i = 0; i < room; ++i)
+            OM_store_byte(i, buffer, (uint8_t) bytes[i]);
+        OM_store_pointer(PAGE_BYTES_FIELD, page, OM_int_oop((st_int) room));
+        answer = ST_TRUE;
+        break;
+    }
+    case 1: {                                   /*  write a page  */
+        st_oop      buffer;
+        st_oop      number;
+        st_oop      count;
+        long        n;
+        uint32_t    len;
+        uint32_t    i;
+        char        bytes[POSIX_PAGE_SIZE];
+
+        if (fd < 0 || !OM_is_object(page) || !OM_pointer_bit(page)
+         || OM_fetch_word_length(page) <= PAGE_BYTES_FIELD)
+            return 0;
+        number = OM_fetch_pointer(PAGE_NUMBER_FIELD, page);
+        buffer = OM_fetch_pointer(PAGE_BUFFER_FIELD, page);
+        count  = OM_fetch_pointer(PAGE_BYTES_FIELD, page);
+        if (!OM_is_int(number) || !OM_is_object(buffer)
+         || OM_pointer_bit(buffer))
+            return 0;
+        n   = (long) OM_int_value(number);
+        len = OM_is_int(count) ? (uint32_t) OM_int_value(count)
+                               : OM_fetch_byte_length(buffer);
+        if (len > sizeof bytes)
+            len = sizeof bytes;
+        for (i = 0; i < len; ++i)
+            bytes[i] = (char) OM_fetch_byte(i, buffer);
+        if (n < 1)
+            n = 1;
+        if (pwrite(fd, bytes, len, (off_t) ((n - 1) * POSIX_PAGE_SIZE))
+            != (ssize_t) len) {
+            posix_errno = errno;
+            answer = ST_FALSE;
+            break;
+        }
+        answer = ST_TRUE;
+        break;
+    }
+    case 2: {                                   /*  truncate after a page  */
+        st_oop  number = OM_is_object(page) && OM_pointer_bit(page)
+                       ? OM_fetch_pointer(PAGE_NUMBER_FIELD, page) : ST_NIL;
+        off_t   end = 0;
+
+        if (fd < 0)
+            return 0;
+        if (OM_is_int(number))
+            end = (off_t) (OM_int_value(number) * POSIX_PAGE_SIZE);
+        if (ftruncate(fd, end) != 0) {
+            posix_errno = errno;
+            answer = ST_FALSE;
+            break;
+        }
+        answer = ST_TRUE;
+        break;
+    }
+    default:
+        return 0;
+    }
+    ST_pop_n(4);
+    ST_push(answer);
+    return 1;
+}
+
+/*
+ *  primitive 131 -- PosixFileDirectory>>doPrimitive:arg1:arg2:
+ *
+ *  1 removes a file, 2 renames one, 3 answers the names in the directory.
+ *  The directory is the one the system was started in: PosixFileDirectory
+ *  new sets its directoryName to the empty string, and the empty string is
+ *  where a relative name resolves.
+ */
+static int
+primitive_directory_command(void)
+{
+    st_oop      arg2 = ST_stack_value(0);
+    st_oop      arg1 = ST_stack_value(1);
+    st_oop      code = ST_stack_value(2);
+    long        what;
+    st_oop      answer = ST_FALSE;
+    char        a[1024];
+    char        b[1024];
+
+    if (!OM_is_int(code))
+        return 0;
+    what = (long) OM_int_value(code);
+
+    switch (what) {
+    case 1:                                     /*  remove  */
+        if (!c_from_string(arg1, a, sizeof a))
+            return 0;
+        answer = remove(a) == 0 ? ST_TRUE : ST_FALSE;
+        if (answer == ST_FALSE)
+            posix_errno = errno;
+        break;
+
+    case 2:                                     /*  rename arg2 to arg1  */
+        if (!c_from_string(arg1, b, sizeof b)
+         || !OM_is_object(arg2) || !OM_pointer_bit(arg2)
+         || OM_fetch_word_length(arg2) <= FILE_NAME_FIELD
+         || !c_from_string(OM_fetch_pointer(FILE_NAME_FIELD, arg2),
+                           a, sizeof a))
+            return 0;
+        answer = rename(a, b) == 0 ? ST_TRUE : ST_FALSE;
+        if (answer == ST_FALSE)
+            posix_errno = errno;
+        break;
+
+    case 3: {                                   /*  the names  */
+        DIR            *dir = opendir(".");
+        struct dirent  *entry;
+        st_oop          names[4096];
+        uint32_t        count = 0;
+        uint32_t        i;
+        st_oop          array;
+
+        if (!dir) {
+            posix_errno = errno;
+            return 0;
+        }
+        while ((entry = readdir(dir)) != NULL && count < 4096) {
+            st_oop  one;
+
+            if (entry->d_name[0] == '.')        /*  no dot files, no . or ..  */
+                continue;
+            one = string_from_c(entry->d_name, strlen(entry->d_name));
+            if (!OM_is_present(one))
+                break;
+            names[count++] = one;
+        }
+        closedir(dir);
+        array = OM_instantiate_pointers(ST_CLASS_ARRAY, count);
+        if (!OM_is_present(array))
+            return 0;
+        for (i = 0; i < count; ++i)
+            OM_store_pointer(i, array, names[i]);
+        ST_pop_n(3);
+        ST_push(array);
+        return 1;
+    }
+    default:
+        return 0;
+    }
+    ST_pop_n(3);
+    ST_push(answer);
+    return 1;
+}
+
+/*
+ *  primitives 128 and 97 -- beSnapshotFile, and the snapshot itself
+ *
+ *  SystemDictionary>>snapshotAs: marks a file with beSnapshotFile and then
+ *  calls snapshotPrimitive, which is 97, and the primitive is expected to
+ *  write the whole object memory into the marked file.  So 128 is not the
+ *  no-op it looks like: it is how 97 learns where to write, and the two are
+ *  one mechanism split across two sends.
+ *
+ *  The writer is the same OM_image_save the -o option uses, so an image
+ *  saved from inside the running system is the same file a bootstrap would
+ *  have written, and -run reads it back.
+ *
+ *  Answering nil is the success report snapshotAs: wants: it tests
+ *  `self snapshotPrimitive isNil' to tell "I have just been written" from "I
+ *  have just been resumed".  Failing the primitive outright is worse than
+ *  useless here -- the fallback is `self primitiveFailed', and reporting
+ *  that costs more than the snapshot would have.
+ */
+static char     snapshot_path[1024];
+
+static int
+primitive_be_snapshot_file(void)
+{
+    st_oop  file = ST_stack_top();
+    st_oop  name;
+
+    if (!OM_is_object(file) || !OM_pointer_bit(file)
+     || OM_fetch_word_length(file) <= FILE_NAME_FIELD)
+        return 0;
+    name = OM_fetch_pointer(FILE_NAME_FIELD, file);
+    if (!c_from_string(name, snapshot_path, sizeof snapshot_path))
+        return 0;
+    return 1;                           /*  the receiver is the answer  */
+}
+
+static int
+primitive_snapshot(void)
+{
+#ifndef ST_OM_MT
+    /*
+     *  The Blue Book memory has no image writer -- OM_image_save is the
+     *  64-bit one's -- and it never needs one: it exists to LOAD the 1983
+     *  Xerox image and reproduce its traces.  Failing the primitive is the
+     *  honest answer, and snapshotPrimitive's own fallback reports it.
+     */
+    return 0;
+#else
+    char    err[256];
+
+    if (snapshot_path[0] == '\0')
+        return 0;                       /*  nobody said where  */
+    if (OM_image_save(snapshot_path, err, sizeof err) != 0) {
+        fprintf(stderr, "st80: snapshot to %s failed: %s\n",
+                snapshot_path, err);
+        return 0;
+    }
+    fprintf(stderr, "st80: wrote %s\n", snapshot_path);
+    ST_pop_n(1);
+    ST_push(ST_NIL);                    /*  "just written", not "resumed"  */
+    return 1;
+#endif
+}
+
+/*
+ *  primitives 132 and 133 -- PosixFile>>lastError and >>errorString:
+ *
+ *  132 is also this VM's instVarsInclude:, which is not a clash that can be
+ *  renumbered: sources/ is frozen and the Xerox image already uses 132 for
+ *  the other one.  They are told apart by ARITY -- lastError takes no
+ *  argument and instVarsInclude: takes one -- which is exact rather than a
+ *  guess about the receiver.
+ */
+static int
+primitive_last_error(void)
+{
+    ST_pop_n(0);
+    ST_pop_n(1);
+    ST_push(OM_int_oop((st_int) posix_errno));
+    return 1;
+}
+
+static int
+primitive_error_string(void)
+{
+    st_oop      code = ST_stack_value(0);
+    const char *text;
+    st_oop      s;
+
+    if (!OM_is_int(code))
+        return 0;
+    text = strerror((int) OM_int_value(code));
+    s = string_from_c(text, strlen(text));
+    if (!OM_is_present(s))
+        return 0;
+    ST_pop_n(2);
+    ST_push(s);
+    return 1;
+}
+
 /*  ----------  Input and display, primitives 90 to 95, 101, 102  ----------  */
 
 static int
@@ -2439,7 +2935,15 @@ ST_primitive_dispatch(unsigned index)
      */
     case  58: return primitive_float_ln();
     case  59: return primitive_float_exp();
-    case 132: return primitive_inst_vars_include();
+    /*  Told apart by arity; see primitive_last_error.  */
+    case 132: return st_vm.argument_count == 0
+                     ? primitive_last_error()
+                     : primitive_inst_vars_include();
+    case 97:  return primitive_snapshot();
+    case 128: return primitive_be_snapshot_file();
+    case 130: return primitive_file_command();
+    case 131: return primitive_directory_command();
+    case 133: return primitive_error_string();
     case 100: return primitive_signal_at_milliseconds();
     case 135: return primitive_millisecond_clock();
     case 255: return primitive_float_print_string();
