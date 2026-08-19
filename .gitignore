@@ -15,6 +15,12 @@ oracle/
 *.image
 *.changes
 
+# And so is a snapshot taken from inside the desktop.  SystemDictionary>>
+# snapshotAs: writes prefix , '.im', and the prefix is whatever was typed at
+# the save prompt -- so the glob, not snapshot.im, which is only the default
+# the prompt offers.
+*.im
+
 # Screenshots of the Xerox image reproduce its content, which carries the
 # same absent license grant as the image itself.  See doc/LICENSING.md.
 smalltalk-desktop.*
