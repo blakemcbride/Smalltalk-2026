@@ -63,7 +63,12 @@
  *  plus TimedOut and Process>>signalException:, which is what a timeout
  *  needs to interrupt the process it is watching.
  */
-#define LIB_METHODS             602
+/*
+ *  604 with Graphics-Fixes, whose two are Paragraph class>>initialize --
+ *  1983's one line, kept -- and repairCaretOffset, which turns the caret's
+ *  offset into the hot spot it was always meant to be.
+ */
+#define LIB_METHODS             604
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -1955,7 +1960,7 @@ test_browsing(void)
      *  the source pointer is 22 bits and silently truncated once, and a
      *  size that stops growing is how that would show.
      */
-    check_integer("(SourceFiles at: 1) contents size", 1341490);
+    check_integer("(SourceFiles at: 1) contents size", 1342024);
 }
 
 /*
