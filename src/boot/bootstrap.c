@@ -4009,33 +4009,34 @@ install_user_interface(void)
      *  Everything that wants to say something says it here -- the compiler
      *  reports its errors to Transcript, so with none there a compile error
      *  becomes "nil does not understand #show" and the real message is lost.
-     *  A TextCollector is normally made with a view; this one writes into a
-     *  WriteStream on a String, which is what an image with no window on the
-     *  Transcript yet can offer, and it means the text can be read back.
+     *
+     *  Made by SENDING new, not by allocating three fields and filling one.
+     *  The hand-built one had an entryStream and nothing else, so its
+     *  inherited `contents' and `isLocked' stayed nil -- which is invisible
+     *  until something asks, and the thing that asks is the Transcript
+     *  WINDOW: StringHolderView>>model: does `self editString: self
+     *  getContents', getContents is `^model contents', and nil does not
+     *  understand #asText.  Choosing `system transcript' from the desktop
+     *  menu was a notifier every time.
+     *
+     *  TextCollector>>initialize does super initialize -- isLocked false,
+     *  contents the empty string -- and then beginEntry, which makes its own
+     *  WriteStream on a String.  That is all three fields, set the way the
+     *  image expects them, by the image's own code.
      */
     {
         st_oop  collector_class = BOOT_global("TextCollector");
-        st_oop  stream_class = BOOT_global("WriteStream");
-        st_oop  string_class = BOOT_global("String");
 
-        if (OM_is_present(collector_class) && OM_is_present(stream_class)
-         && OM_is_present(string_class)) {
-            st_oop  on = lookup_in_chain(OM_fetch_class(stream_class), "on:");
-            st_oop  buffer = OM_instantiate_bytes(string_class, 0);
-            st_oop  collector;
+        if (OM_is_present(collector_class)) {
+            st_oop  make = lookup_in_chain(OM_fetch_class(collector_class),
+                                           "new");
 
-            if (OM_is_present(on) && OM_is_present(buffer)
-             && run_method_with(on, stream_class, &buffer, 1, 2000000)
-             && OM_is_present(st_vm.return_value)) {
-                st_oop  stream = st_vm.return_value;
-
-                collector = OM_instantiate_pointers(collector_class, 3);
-                if (OM_is_present(collector)) {
-                    /*  contents, isLocked, then entryStream.  */
-                    OM_store_pointer(2, collector, stream);
-                    OM_increase_ref(collector);
-                    define_global("Transcript", collector);
-                }
+            if (OM_is_present(make)
+             && run_method_on(make, collector_class, 4000000)
+             && OM_is_present(st_vm.return_value)
+             && st_vm.return_value != ST_NIL) {
+                OM_increase_ref(st_vm.return_value);
+                define_global("Transcript", st_vm.return_value);
             }
         }
     }
@@ -4085,6 +4086,85 @@ install_user_interface(void)
                 if (binding != ST_OOP_INVALID)
                     OM_store_pointer(ST_ASSOCIATION_VALUE, binding,
                                      st_vm.return_value);
+            }
+        }
+    }
+
+    /*
+     *  The System Workspace, which nothing in the sources ever creates.
+     *
+     *  StringHolder class>>workspace answers the class variable Workspace,
+     *  and StringHolder class>>initialize -- the only method that mentions
+     *  it -- is ENTIRELY a comment:
+     *
+     *      "The class variables were initialized once, and subsequently
+     *      filled with information.  Re-executing this method is therefore
+     *      dangerous.
+     *
+     *      workSpace  _ StringHolder new."
+     *
+     *  So it was filled by hand in 1983 and carried by every snapshot after,
+     *  and an image built from these sources has it nil.  Choosing `system
+     *  workspace' from the desktop menu then hands nil to StringHolderView
+     *  and the notifier says "Message not understood: contents", which names
+     *  the symptom and not one word of the cause.  Same family as Sensor,
+     *  ScheduledControllers, Transcript and the top Project.
+     *
+     *  The text is OURS.  1983's System Workspace is a page of Xerox's prose
+     *  and example expressions, and that is exactly the thing in this project
+     *  that carries no licence -- so this one says what is true of THIS
+     *  system instead, which is more use anyway.
+     */
+    {
+        boot_class *holder = find_class("StringHolder");
+        st_oop      cls = BOOT_global("StringHolder");
+        st_oop      binding = holder ? class_variable_association(holder,
+                                           "Workspace", 0) : ST_OOP_INVALID;
+        st_oop      make;
+
+        if (OM_is_present(cls) && binding != ST_OOP_INVALID) {
+            make = lookup_in_chain(OM_fetch_class(cls), "new");
+            if (OM_is_present(make) && run_method_on(make, cls, 4000000)
+             && OM_is_present(st_vm.return_value)) {
+                st_oop  workspace = st_vm.return_value;
+                st_oop  text = BOOT_make_string(
+        /*
+         *  Carriage returns, not newlines.  A Smalltalk-80 line ends with
+         *  Character cr, which is 13, and the composition scanner breaks on
+         *  that and on nothing else -- a 10 is just another character with no
+         *  glyph, so the whole thing composes as one long paragraph.
+         */
+        "Smalltalk-2026.\r"
+        "\r"
+        "Select an expression and choose `do it' or `print it' from the\r"
+        "yellow button menu.\r"
+        "\r"
+        "3 + 4 factorial\r"
+        "(1 to: 10) inject: 0 into: [:a :b | a + b]\r"
+        "Smalltalk at: #Transcript\r"
+        "\r"
+        "Display extent\r"
+        "Display fill: (40@40 corner: 200@120) rule: 3 mask: Form black\r"
+        "ScheduledControllers restore\r"
+        "\r"
+        "BrowserView openOn: SystemOrganization\r"
+        "StringHolderView open\r"
+        "\r"
+        "This system runs bytecodes on every core.  Read doc/CONCURRENCY.md\r"
+        "before writing anything that forks:\r"
+        "\r"
+        "Processor activeProcess\r"
+        "[Transcript show: 'from a process'; cr] fork\r", NULL);
+
+                if (OM_is_present(text)) {
+                    st_oop  setter = lookup_in_chain(OM_fetch_class(workspace),
+                                                     "contents:");
+
+                    if (OM_is_present(setter))
+                        run_method_with(setter, workspace, &text, 1, 2000000);
+                }
+                OM_increase_ref(workspace);
+                OM_store_pointer(ST_ASSOCIATION_VALUE, binding, workspace);
             }
         }
     }

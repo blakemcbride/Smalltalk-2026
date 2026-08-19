@@ -70,7 +70,32 @@ release there. A click — press and release in the same instant — puts the me
 it straight back down, which looks like nothing happened.
 
 Blue is the window menu, yellow the view's own menu, red selects. On a three-button mouse
-that is left = red, middle = yellow, right = blue.
+that is **left = red, middle = yellow, right = blue**.
+
+### Moving and closing a window
+
+There is no title bar to drag and no close box. **Hold the right button** anywhere over a
+window and you get its menu:
+
+```
+under  move  frame  collapse  close
+```
+
+Drag onto the one you want and release. `close` closes it, `frame` asks for a new rectangle
+the way opening did, and `collapse` shrinks the window to just its label tab, which is still
+there and still has this menu.
+
+`move` has a second step that surprises everyone: when you release on `move`, **the window
+follows the pointer with no button held down**, and you *click* to drop it. That is
+`StandardSystemController>>move` —
+
+```smalltalk
+form follow: [Sensor cursorPoint] while: [Sensor noButtonPressed]
+```
+
+— it tracks *while no button is pressed*, which is the opposite of every drag written since.
+All five items were checked end to end: `close` returns the screen to bare desktop, `move`
+relocated a window from rows 40–400 to 502–799, `collapse` leaves the tab.
 
 **The pointer jumps onto the menu, and it is supposed to.** A menu is displayed centred on
 the cursor, translated if that would put it off the screen, and then it puts the cursor back

@@ -43,8 +43,7 @@ and where it costs — see [`doc/SCALING.md`](doc/SCALING.md).
 
 ## It is checked against 1983
 
-`make OM=bb test` runs these. The Xerox tape carried reference dumps and
-execution traces beside the image.
+The Xerox tape carried reference dumps and execution traces beside the image.
 Checking against those is far sharper than any test we could write, because
 they were produced by the machine this is pretending to be:
 
@@ -55,6 +54,10 @@ they were produced by the machine this is pretending to be:
 | `class.oops` | 446 / 446 classes — pointer, octal, hex and name |
 | `method.oops` | 4,494 / 4,494 methods — pointer, class and selector |
 | `ref-count-distribution` | 18,391 objects, all 124 histogram buckets |
+
+These run against the Xerox tape, which carries no licence grant from anyone
+and so is not distributed with this repository; the suite skips without it and
+everything else still passes. See [`doc/LICENSING.md`](doc/LICENSING.md).
 
 **One interpreter, two object memories.** `src/om/om.h` defines the
 object-memory operations as macros and exactly one implementation is compiled
@@ -101,17 +104,6 @@ $ ./st80 -bootstrap -manifest sources/MANIFEST -eval '(1 to: 10) inject: 0 into:
 
 Sanitizer builds go to their own directory, so an instrumented binary can never
 be linked against stale uninstrumented objects.
-
-**You do not need `oracle/`.** It is the Xerox tape, it is gitignored, and a
-clone does not have it — so `make`, `make test` and bootstrapping an image all
-work without it, verified with it moved aside. The Xerox trace suite reports
-
-```
-SKIP: oracle/VirtualImage missing -- see doc/LICENSING.md
-```
-
-and the run still passes. Everything else — the 1,189 tests, the whole
-library, the desktop — is built from sources in this repository.
 
 The interface has two habits worth knowing before you decide it is broken —
 menus are press-and-hold, and a new window is placed by dragging out its
@@ -191,7 +183,6 @@ lib/            ours: exceptions, concurrency, SUnit, protocol shims
 pharo/          imported Pharo packages, each with a PROVENANCE.md
 profiles/       which packages compose an image
 tools/          make_font.py — rasterises an outline face into the strike
-oracle/         PRIVATE, gitignored — see doc/LICENSING.md
 ```
 
 ## Documentation
@@ -221,8 +212,3 @@ The tree is not all one licence, and the distinction matters:
   1.1). The font itself is not vendored: `tools/make_font.py` runs against one
   installed on the machine and the *output* is what is checked in.
   `src/gfx/LICENSE.font` is the licence it derives under.
-- **`oracle/`** — the Xerox image and traces. **Never committed, never
-  redistributed.** They carry no licence grant from any host and are used only
-  as a private development oracle. Nothing is copied from them, and nothing
-  here needs them: without `oracle/` the trace suite skips and everything else
-  builds and passes.
