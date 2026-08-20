@@ -20,7 +20,7 @@ traits & present; flattened at load time, \ctp{+} composition only\\
   send, and answers \ctp{nil}\\
 \ct|#(true false nil)| & three \emph{Symbols}, not the objects. Use
   \ct|{true. false. nil}|\\
-\ctp{new} $\rightarrow$ \ctp{initialize} & synthesised for loaded packages and
+\ctp{new} sends \ctp{initialize} & synthesised for loaded packages and
   reported; \emph{not} automatic for a class you type into a Browser\\
 \bottomrule
 \end{tabular}
@@ -33,8 +33,8 @@ traits & present; flattened at load time, \ctp{+} composition only\\
 \begin{tabular}{@{}lp{0.55\textwidth}@{}}
 \toprule
 \ct|#foo printString| & \ct|'foo'|, not \ct|'#foo'|\\
-\ct|#(1 2) printString| & \ctp{'(1 2 )'}\\
-\ctp{(3/4) printString} & \ctp{'(3/4)'}\\
+\ct|#(1 2) printString| & \ct|'(1 2 )'|\\
+\ctp{(3/4) printString} & \ct|'(3/4)'|\\
 \ct|$a value| & \ct|$a|. Use \ctp{asciiValue} or \ctp{asInteger}\\
 \ctp{e description} & the class's fixed sentence, \emph{not} the message text.
   Use \ctp{messageText}\\
@@ -84,7 +84,7 @@ Chapter~\ref{ch:contract} is required reading.
 \toprule
 blocks & full closures. They capture variables, outlive their method, and may
   be entered concurrently\\
-\ctp{\^{}} in a block & non-local return, with \ctp{cannotReturn:} when the
+\ct|^| in a block & non-local return, with \ctp{cannotReturn:} when the
   home has already returned\\
 \ctp{ensure:} \ctp{ifCurtailed:} & new\\
 exceptions & new: \ctp{signal}, \ctp{on:do:}, \ctp{retry}, \ctp{resume:},

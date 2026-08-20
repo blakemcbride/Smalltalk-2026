@@ -47,13 +47,26 @@ not.
 
 `chapters/` holds one file per chapter, `preamble.tex` the shared setup.
 
-Two helper scripts exist because the same two mistakes kept recurring:
+Two helper scripts exist because the same mistakes kept recurring:
 
 - **`check.py`** — the gate. `\ct` is `\lstinline` and therefore verbatim, so
   a LaTeX escape inside it prints the backslash and a newline inside it is a
   hard error; neither is visible in the source and one of them does not fail
   the build. It also catches `\ctp|...|` (that macro takes braces) and `\ct`
   inside an `\item[...]` label (lstinline cannot live there).
+
+  `\ctp` has the opposite failure, and it is worse because it is silent: the
+  argument is ordinary text, so a bare `~` sets as a non-breaking space and
+  the tilde *disappears*, `\~{}` and `\^{}` set as raised accents instead of
+  the ASCII characters, and `'` sets as a curly quote no Smalltalk string
+  literal uses. Those are checked too. The `>>` and `--` ligatures are the
+  same class of bug and are turned off for the typewriter family in
+  `preamble.tex`, which is why the linter does not look for them.
+
+  The rule behind all of it: **every character the book prints as code must
+  be one the reader can type and the compiler accepts.** The Blue Book set
+  `^` as an up-arrow because the Xerox keyboard had that glyph. This one does
+  not, so this book sets a caret.
 - **`fix.py`** — the repair. Rewrites `\ct{...}` to `\ct|...|` and drops the
   escapes. Writing the escapes is the habit of anyone who has written LaTeX
   before, so this fixes them rather than asking the author not to have the

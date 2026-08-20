@@ -17,6 +17,14 @@
 \usepackage[charter,vvarbb,scaled=1.02]{newtxmath}
 \usepackage{microtype}
 
+%%  T1 typewriter fonts carry the text ligatures, so >> sets as a guillemet
+%%  and -- as an en dash.  In a book whose method references are written
+%%  Object>>error: and whose build prints "not found -- headless build",
+%%  that silently rewrites the very characters the reader has to type.
+%%  \ct is \lstinline and immune; \ctp is not, and \ctp is what has to be
+%%  used in section titles and \item labels.  Turn them off for tt only.
+\DisableLigatures{encoding = T1, family = tt*}
+
 %%  U.S. Letter, which is what Blake prints on.  The margins are wide
 %%  enough that a code line of eighty columns at this size never has to
 %%  wrap, and the measure stays near sixty-five characters of body text.
@@ -124,8 +132,13 @@
   sensitive=true,
   morecomment=[s]{"}{"},
   morestring=[b]',
+%%  Colour the two markers that carry the most meaning, and colour them
+%%  ONLY.  An earlier version drew ^ as an up-arrow, which is how the Blue
+%%  Book printed it on a Xerox keyboard that had the glyph; this one does
+%%  not, the compiler does not accept it, and no reader can type it.  What
+%%  the system reads is a caret, so a caret is what the book prints.
   literate=
-    {^}{{\textcolor{stblue}{$\uparrow$}}}1
+    {^}{{\textcolor{stblue}{\textasciicircum}}}1
     {:=}{{\textcolor{stblue}{:=}}}2,
 }
 

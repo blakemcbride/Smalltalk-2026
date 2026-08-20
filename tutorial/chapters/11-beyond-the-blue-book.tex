@@ -218,7 +218,7 @@ assumes SistaV1 bytecodes and Spur literals.
 closures, \ctp{ensure:}, exceptions & yes, in the \ctp{closures} dialect\\
 \ct|{ }|, \ct|#[ ]|, block temps, pragmas & yes\\
 traits & yes, flattened at load, \ctp{+} only\\
-\ctp{new} $\rightarrow$ \ctp{initialize} & for loaded packages, synthesised
+\ctp{new} sends \ctp{initialize} & for loaded packages, synthesised
   and reported; not automatic for classes you type in\\
 \ctp{1.23s2} & no, and it silently answers \ctp{nil}\\
 \ct|#(true)| & a Symbol, not \ctp{true}\\
