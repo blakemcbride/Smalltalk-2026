@@ -1501,6 +1501,47 @@ ST_interp_init(char *errbuf, size_t errlen)
             snprintf(errbuf, errlen, "active process has no suspended context");
         return -1;
     }
+    /*
+     *  Refuse a context that does not point at a bytecode.
+     *
+     *  A method's bytes begin with its header and literal frame, so a
+     *  resumable instruction pointer is at least (literals + 1) words in.
+     *  An image whose active process was saved without its registers being
+     *  written back points somewhere inside that frame instead, and the
+     *  interpreter then executes literals: Blake's snapshot resumed at
+     *  IP 2 of a method whose bytecodes start at byte 40, reached the low
+     *  byte of literal 0 -- 0xF6, "send literal 6 with two arguments", in a
+     *  method with four literals -- and died in lookup_method on a selector
+     *  read from past the end of the frame.
+     *
+     *  The writer no longer produces such an image.  This is here because a
+     *  segfault is the worst possible way to be told, and every image
+     *  written before the fix is still on somebody's disk.
+     */
+    {
+        st_oop      ip_field = OM_fetch_pointer(ST_CTX_IP, context);
+        st_oop      method   = OM_fetch_pointer(ST_CTX_METHOD, context);
+        uint32_t    first;
+
+        if (!OM_is_int(ip_field) || !OM_is_present(method)) {
+            if (errbuf)
+                snprintf(errbuf, errlen,
+                         "the saved process resumes at no bytecode: its "
+                         "context has no instruction pointer or no method");
+            return -1;
+        }
+        first = method_initial_ip(method);
+        if ((uint32_t) OM_int_value(ip_field) <= first) {
+            if (errbuf)
+                snprintf(errbuf, errlen,
+                         "the saved process resumes inside its method's "
+                         "literal frame, at %ld where the bytecodes start "
+                         "at %u -- the image was written by a snapshot that "
+                         "did not store the interpreter's registers",
+                         (long) OM_int_value(ip_field), first);
+            return -1;
+        }
+    }
     ST_interp_install_roots(extra_roots);
     ST_interp_register();
     st_vm.active_context = ST_NIL;

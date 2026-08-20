@@ -1768,10 +1768,32 @@ primitive_snapshot(void)
      *  caller that stops a process does this first -- worker.c and
      *  st_sched.c both do -- and this one is a process stopping itself.
      *
+     *  And storing them is only half of it: -run resumes from the active
+     *  PROCESS's suspendedContext, not from whatever context the VM last
+     *  had.  Writing the registers into the context while leaving the
+     *  process pointing at the one it was parked in saves a coherent
+     *  context that nothing will run and a stale one that will.  Blake's
+     *  image resumed at instruction pointer 9 of a method whose bytecodes
+     *  begin at byte 40 -- executing its own literal frame, where the low
+     *  byte of literal 0 happens to be 0xF6, "send literal 6 with two
+     *  arguments", in a method that has four.  That is the whole of the
+     *  segfault: a selector read from past the end of the frame.
+     *
+     *  SCHED_suspend_active does both, in this order, and has since the
+     *  race it documents.  A process snapshotting itself is a process
+     *  parking itself.
+     *
      *  The collection that goes with it is in OM_image_save, so that every
      *  caller gets it and not only this one.
      */
     ST_store_active_context();
+    {
+        st_oop  self = SCHED_active_process();
+
+        if (OM_is_object(self))
+            OM_store_pointer(ST_PROCESS_SUSPENDED_CONTEXT, self,
+                             st_vm.active_context);
+    }
     if (OM_image_save(snapshot_path, err, sizeof err) != 0) {
         fprintf(stderr, "st80: snapshot to %s failed: %s\n",
                 snapshot_path, err);
