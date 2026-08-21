@@ -43,3 +43,7 @@ tutorial/*.out
 tutorial/*.toc
 tutorial/chapters/*.aux
 tutorial/__pycache__/
+
+# Code-RAG local index files (written by bld; machine-local, not part of the project)
+.mcp.json
+CLAUDE.local.md
