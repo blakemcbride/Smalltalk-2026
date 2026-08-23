@@ -198,7 +198,25 @@ ST_header_large_context(st_oop header)
 static inline unsigned
 ST_header_frame_size(st_oop header)
 {
-    return (unsigned) ((header >> ST_HEADER_FRAME_SHIFT) & 0xFF);
+    /*
+     *  Widened before the shift, and the cast is not decoration.
+     *
+     *  Under OM=bb an st_oop is sixteen bits and this field starts at bit
+     *  16, so the answer there is always zero -- which is the design stated
+     *  above ("not stated", fall back to the Blue Book's small/large bit)
+     *  and not an accident.  Shifting the narrow type says exactly that to
+     *  the machine, because the integer promotion to int makes it defined,
+     *  and something alarming to the reader: MSVC answers C4333, "right
+     *  shift by too large amount, data loss", once for every translation
+     *  unit that includes this header.  It is right about the data and
+     *  wrong about the loss.
+     *
+     *  Saying the widening out loud costs nothing -- both compilers fold
+     *  the whole expression to 0 under bb -- and it keeps the warning off
+     *  without anyone reaching for /wd4333, which would also hide the next
+     *  shift that really is a mistake.
+     */
+    return (unsigned) (((uint64_t) header >> ST_HEADER_FRAME_SHIFT) & 0xFF);
 }
 
 /*

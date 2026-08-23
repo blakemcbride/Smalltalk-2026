@@ -14,6 +14,15 @@
 #include <unistd.h>
 #include <time.h>
 #include <errno.h>
+/*
+ *  sched_yield's own header.  Nothing here included it: glibc's
+ *  <pthread.h> pulls it in, which is why this has always built, and
+ *  that is a property of glibc rather than a promise POSIX makes.
+ *  With -Werror=implicit-function-declaration in the warning set, a
+ *  C library that does not do the same favour is not a warning on the
+ *  first build of a new platform -- it is the end of it.
+ */
+#include <sched.h>
 #endif
 
 /*

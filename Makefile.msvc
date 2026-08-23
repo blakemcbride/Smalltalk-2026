@@ -5,9 +5,10 @@
 #   nmake /f Makefile.msvc clean
 #
 # Variables:
-#   OM=bb        16-bit Blue Book object memory (default)
-#   OM=mt        64-bit threaded object memory
+#   OM=mt        64-bit threaded object memory (default; the real system)
+#   OM=bb        16-bit Blue Book object memory (the Xerox trace harness)
 #   SDL3=path    root of an SDL3 development package
+#   SDL3LIB=path the import library, if it is not where SDL3= implies
 #   HEADLESS=1   build with no display at all; the graphics layer becomes
 #                a stub and this build stops asking for SDL3
 #
@@ -22,9 +23,20 @@
 # gets SRWLOCK, CONDITION_VARIABLE and fiber-local storage -- FLS rather than
 # TLS because it is the only Win32 flavour with a destructor callback, which
 # is what pthread_key_create provides on the other side.
+#
+# See Windows.md for the whole story: where to get SDL3, which shell to type
+# this in, and what the build has and has not been checked against.
 
+#
+#  The 64-bit threaded memory is the system; the Blue Book one is the harness
+#  that proves the interpreter right against Xerox's traces.  This defaulted
+#  to bb until the GNU makefile stopped doing so, and the Blue Book memory
+#  cannot bootstrap an image -- so the first thing a new reader did after
+#  building was hit a refusal two layers below the mistake.  Say OM=bb for the
+#  oracle; `nmake /f Makefile.msvc OM=bb test' still runs it.
+#
 !IFNDEF OM
-OM = bb
+OM = mt
 !ENDIF
 
 # nmake cannot go looking for SDL3 the way the GNU makefile's pkg-config
@@ -40,8 +52,45 @@ OM = bb
 !ENDIF
 !ENDIF
 
-CC       = cl
-CFLAGS   = /nologo /std:c11 /W4 /O2 /Zi /D_CRT_SECURE_NO_WARNINGS
+!IFNDEF CC
+CC = cl
+!ENDIF
+
+#
+#  <stdatomic.h> under cl is still gated behind /experimental:c11atomics --
+#  the header compiles to an error without it, which is not what "MSVC has
+#  supported C11 atomics since 17.5" leads anyone to expect.  clang-cl brings
+#  the real gcc/clang atomics and rejects the flag, so it is set for cl only.
+#  If CC is overridden to anything else, assume the clang-cl side.
+#
+!IF "$(CC)" == "cl"
+ATOMICS = /experimental:c11atomics
+!ELSE
+ATOMICS =
+!ENDIF
+
+#
+#  /MD rather than cl's default /MT: SDL3 arrives as a DLL built against
+#  the dynamic CRT, and a program that links the static one ends up with
+#  two C runtimes in the process.  Nothing in SDL's API hands a malloc'd
+#  pointer or a FILE* across the boundary, so it would probably survive
+#  -- "probably" being the word that makes it not worth finding out.
+#
+#  /Fd names the compiler's debug database instead of letting cl drop a
+#  vc140.pdb in the top of the tree.  It is given a filename rather than
+#  a directory: a /Fd argument ending in a backslash is a directory to
+#  cl and a line continuation to nmake, and only one of them can be
+#  right.  The linker's own st80.pdb still lands beside st80.exe, and
+#  `clean' takes that one.
+#
+#  _CRT_NONSTDC_NO_WARNINGS is for strdup, which three files under src/
+#  call and which MSVC deprecates in favour of _strdup.  It is declared,
+#  it links, and under /W4 it is otherwise a run of C4996 saying
+#  so.  doc/PORTABILITY.md says strdup appears nowhere under src/; that
+#  stopped being true and this is the flag that covers for it.
+#
+CFLAGS   = /nologo /std:c11 $(ATOMICS) /W4 /O2 /MD /Zi /Fd$(PDB) \
+           /D_CRT_SECURE_NO_WARNINGS /D_CRT_NONSTDC_NO_WARNINGS
 LDFLAGS  = /nologo
 
 !IF "$(OM)" == "bb"
@@ -60,9 +109,18 @@ INCLUDES = /Isrc /Isrc\port /Isrc\om /Isrc\interp /Isrc\gfx /Isrc\sched \
 # HEADLESS wins over SDL3 if both are given: a flag that asks for the stub
 # and quietly builds the window instead cannot be used to reproduce
 # anything.  Same rule as the GNU makefile's.
+#
+# libsdl.org's SDL3-devel-*-VC.zip puts the import library in lib\x64, not
+# lib -- so that is the default, and SDL3LIB= is for the layouts that differ
+# (vcpkg, or an SDL3 you built and installed yourself, both of which use a
+# flat lib\).
 !IF defined(SDL3) && !defined(HEADLESS)
 SDLDEF  = /DST_HAVE_SDL3 /I"$(SDL3)\include"
-SDLLIBS = "$(SDL3)\lib\SDL3.lib"
+!IFDEF SDL3LIB
+SDLLIBS = "$(SDL3LIB)"
+!ELSE
+SDLLIBS = "$(SDL3)\lib\x64\SDL3.lib"
+!ENDIF
 !ELSE
 SDLDEF  =
 SDLLIBS =
@@ -70,13 +128,27 @@ SDLLIBS =
 
 CPPFLAGS = $(INCLUDES) $(OMDEF) $(SDLDEF)
 BUILD    = build\$(OM)-msvc
+PDB      = $(BUILD)\st80.pdb
 
+#
+#  Every .c under src/ except main.c and the object memory the build did not
+#  ask for.  The GNU makefile wildcards these directories, so a file added
+#  there joins that build and not this one; the list below is the price of
+#  nmake having no wildcard, and it drifted once already -- src/boot was
+#  written after this file and nothing here linked bootstrap.c or profile.c,
+#  which is to say `nmake /f Makefile.msvc' ended in unresolved externals
+#  from main.obj for as long as the file has existed.  Add here when you add
+#  there.
+#
 CORE_OBJ = \
     $(BUILD)\st_port.obj \
     $(BUILD)\interp.obj $(BUILD)\prim.obj $(BUILD)\trace.obj \
-    $(BUILD)\st_sched.obj \
-    $(BUILD)\bitblt.obj $(BUILD)\display.obj \
+    $(BUILD)\st_sched.obj $(BUILD)\worker.obj \
+    $(BUILD)\bitblt.obj $(BUILD)\display.obj $(BUILD)\font_face.obj \
     $(BUILD)\chunk.obj $(BUILD)\lexer.obj $(BUILD)\compiler.obj \
+    $(BUILD)\source.obj $(BUILD)\tonel.obj $(BUILD)\doctest.obj \
+    $(BUILD)\survey.obj \
+    $(BUILD)\bootstrap.obj $(BUILD)\profile.obj \
     $(BUILD)\census.obj
 
 !IF "$(OM)" == "bb"
@@ -105,19 +177,68 @@ $(BUILD):
 	$(CC) $(CFLAGS) $(CPPFLAGS) /c /Fo$(BUILD)\ $<
 {src\compiler\}.c{$(BUILD)\}.obj::
 	$(CC) $(CFLAGS) $(CPPFLAGS) /c /Fo$(BUILD)\ $<
+{src\boot\}.c{$(BUILD)\}.obj::
+	$(CC) $(CFLAGS) $(CPPFLAGS) /c /Fo$(BUILD)\ $<
 
 $(BIN): $(BUILD) $(OBJ) src\main.c
 	$(CC) $(CFLAGS) $(CPPFLAGS) /c /Fo$(BUILD)\ src\main.c
 	$(CC) $(LDFLAGS) /Fe$(BIN) $(BUILD)\main.obj $(OBJ) $(SDLLIBS)
 
+#
+#  Every suite, not a chosen two.  Each one is wrapped in #ifdef ST_OM_MT or
+#  #ifdef ST_OM_BB and reports itself skipped under the other memory, so the
+#  same list is right for both builds -- which is what the GNU makefile does
+#  by wildcarding tests/unit.  The Xerox-tape suites skip again at runtime
+#  when the tape is not there, and it is not distributed with this tree.
+#
+#  Written out one pair of lines per suite rather than looped: nmake and
+#  cmd disagree about how many percent signs a `for' variable wants, and a
+#  test runner is the last place to find out which of them was right.
+#  nmake stops at the first command that returns non-zero, so a suite that
+#  fails ends the run where it failed.
+#
+#  /Fe and /Fo lead rather than trail: a macro whose last character is a
+#  backslash is a line continuation to nmake, and the definition would
+#  swallow the blank line under it and lose the /Fo directory with it.
+#
+BUILDTEST = $(CC) /Fe$(BUILD)\ /Fo$(BUILD)\ $(CFLAGS) $(CPPFLAGS)
+
 test: $(BIN)
-	$(CC) $(CFLAGS) $(CPPFLAGS) /Fe$(BUILD)\test_port.exe \
-	    tests\unit\test_port.c $(OBJ) $(SDLLIBS)
+	$(BUILDTEST) tests\unit\test_port.c $(OBJ) $(SDLLIBS)
 	$(BUILD)\test_port.exe
-	$(CC) $(CFLAGS) $(CPPFLAGS) /Fe$(BUILD)\test_compiler.exe \
-	    tests\unit\test_compiler.c $(OBJ) $(SDLLIBS)
+	$(BUILDTEST) tests\unit\test_compiler.c $(OBJ) $(SDLLIBS)
 	$(BUILD)\test_compiler.exe
+	$(BUILDTEST) tests\unit\test_tonel.c $(OBJ) $(SDLLIBS)
+	$(BUILD)\test_tonel.exe
+	$(BUILDTEST) tests\unit\test_om_bb.c $(OBJ) $(SDLLIBS)
+	$(BUILD)\test_om_bb.exe
+	$(BUILDTEST) tests\unit\test_om_mt.c $(OBJ) $(SDLLIBS)
+	$(BUILD)\test_om_mt.exe
+	$(BUILDTEST) tests\unit\test_image.c $(OBJ) $(SDLLIBS)
+	$(BUILD)\test_image.exe
+	$(BUILDTEST) tests\unit\test_trace.c $(OBJ) $(SDLLIBS)
+	$(BUILD)\test_trace.exe
+	$(BUILDTEST) tests\unit\test_primitives.c $(OBJ) $(SDLLIBS)
+	$(BUILD)\test_primitives.exe
+	$(BUILDTEST) tests\unit\test_bootstrap.c $(OBJ) $(SDLLIBS)
+	$(BUILD)\test_bootstrap.exe
+	$(BUILDTEST) tests\unit\test_library.c $(OBJ) $(SDLLIBS)
+	$(BUILD)\test_library.exe
+	$(BUILDTEST) tests\unit\test_desktop.c $(OBJ) $(SDLLIBS)
+	$(BUILD)\test_desktop.exe
+	$(BUILDTEST) tests\unit\test_parallel.c $(OBJ) $(SDLLIBS)
+	$(BUILD)\test_parallel.exe
+	$(BUILDTEST) tests\unit\test_parallel_interp.c $(OBJ) $(SDLLIBS)
+	$(BUILD)\test_parallel_interp.exe
+	$(BUILDTEST) tests\unit\test_parallel_lib.c $(OBJ) $(SDLLIBS)
+	$(BUILD)\test_parallel_lib.exe
+	$(BUILDTEST) tests\unit\test_parallel_mvc.c $(OBJ) $(SDLLIBS)
+	$(BUILD)\test_parallel_mvc.exe
+	$(BUILDTEST) tests\unit\test_parallel_processes.c $(OBJ) $(SDLLIBS)
+	$(BUILD)\test_parallel_processes.exe
 
 clean:
 	@if exist build rmdir /s /q build
 	@if exist $(BIN) del $(BIN)
+	@if exist st80.pdb del st80.pdb
+	@if exist st80.ilk del st80.ilk

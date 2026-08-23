@@ -4,6 +4,14 @@ st80
 *.a
 *.d
 
+# The MSVC build's leavings.  st80 above does not cover st80.exe, and
+# *.o does not cover *.obj.  *.pdb is the debug database; *.ilk is the
+# incremental-link record.  See Windows.md.
+st80.exe
+*.obj
+*.pdb
+*.ilk
+
 # The Xerox Smalltalk-80 virtual image, its sources, and the Xerox reference
 # execution traces.  These carry no license grant from any host -- not
 # Wolczko's site, not the archive.org mirror.  They are used here as a
