@@ -19,7 +19,7 @@ the interface.
 |---|---|
 | Language | C11 · no dependencies but SDL3, and that only for the window |
 | Graphics | SDL3 |
-| Platforms | Linux (developed on); Windows builds, runs and bootstraps — see [`Windows.md`](Windows.md); the macOS port is written and uncompiled |
+| Platforms | Linux (developed on), Windows and macOS — each builds, bootstraps an image and runs its desktop. See [`Windows.md`](Windows.md) and [`macOS.md`](macOS.md) |
 | Licence | BSD 2-Clause. See [Provenance](#provenance) — parts of the tree are other people's |
 
 ## It runs on every core
@@ -164,15 +164,18 @@ a score may not fall, and may not rise without being recorded:
 
 | Profile | Tests |
 |---|---|
-| `st2026` | 12 / 12 |
-| `pharo-announcements` | 43 / 43 |
-| `pharo-time` | 633 / 633 |
-| `pharo-weak` | 32 / 32 |
-| `pharo-collections` | 469 / 469 |
+| `st2026` | 61 / 61 |
+| `pharo-announcements` | 92 / 92 |
+| `pharo-time` | 682 / 682 |
+| `pharo-weak` | 81 / 81 |
+| `pharo-collections` | 518 / 518 |
 
-**1,177 of those are Pharo's own tests**, run unmodified against this system;
-the other 12 are ours, for the exceptions and concurrency classes 1983 has no
-equivalent of. The composed image is 264 classes and 5,123 methods. Where this is going is
+**1,177 of those are Pharo's own tests**, run unmodified against this system.
+The rest are ours: twelve for the exceptions and concurrency classes 1983 has
+no equivalent of, and a suite for the 1983 library itself — the numeric tower,
+the collections, strings and streams — which every profile requiring `st2026`
+inherits, and which is why the same 49 appear in every row. The composed image
+is 268 classes and 5,208 methods. Where this is going is
 [`doc/PLAN-TO-PHARO.md`](doc/PLAN-TO-PHARO.md).
 
 **A screen that is not from 1983.** The display Form is grown to fill the
