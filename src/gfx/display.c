@@ -490,6 +490,13 @@ GFX_presentation(void)
     return "none -- built without SDL3";
 }
 
+void
+GFX_geometry(char *out, size_t len)
+{
+    if (out && len)
+        snprintf(out, len, "no window -- built without SDL3");
+}
+
 #else   /*  ST_HAVE_SDL3  */
 
 #include <SDL3/SDL.h>
@@ -602,7 +609,30 @@ window_pixels(int *w, int *h)
 {
     int ww = 0, wh = 0;
 
-    if (window)
+    /*
+     *  ASK THE RENDERER, not the window.
+     *
+     *  The number wanted here is the denominator of the scale: how many
+     *  physical pixels the logical presentation is about to be spread over.
+     *  Only the renderer knows it.  SDL_GetWindowSizeInPixels answers how
+     *  big the window is, and the two are the same on most machines and not
+     *  on all of them -- a swapchain can be point-sized under a window that
+     *  measures in pixels, and then the Form is grown to a size the surface
+     *  cannot hold and MINIFIED back down.
+     *
+     *  That is not a theory.  Sizing from the window turned the desktop
+     *  halftone from a checkerboard resampled up by 1.5 -- alternating
+     *  92 and 176 with a drifting amplitude -- into a flat 133 with a
+     *  ripple of plus or minus 3: a 50% stipple averaged away, which is
+     *  what minification does to it and nothing else does.
+     *
+     *  SDL_GetRenderOutputSize is the denominator by definition, whatever
+     *  the platform thinks a window coordinate is.  Fall back to the window
+     *  only before there is a renderer to ask.
+     */
+    if (renderer)
+        SDL_GetRenderOutputSize(renderer, &ww, &wh);
+    else if (window)
         SDL_GetWindowSizeInPixels(window, &ww, &wh);
     if (w)
         *w = ww;
@@ -1062,6 +1092,42 @@ GFX_window_size(int *width, int *height)
 {
     /*  Pixels, so the startup line reports the unit the scale is in.  */
     window_pixels(width, height);
+}
+
+/*
+ *  Every number the scale arithmetic depends on, in one line.
+ *
+ *  Three quantities that are equal on an unscaled desktop and need not be
+ *  anywhere else -- the window as the window manager counts it, the window
+ *  in physical pixels, and the surface the renderer will actually present
+ *  onto.  When the halftone comes out wrong it is because two of these
+ *  disagree and the code believed the wrong one, so the fastest way to a
+ *  diagnosis is to print all three and stop guessing which.
+ */
+void
+GFX_geometry(char *out, size_t len)
+{
+    int     pw = 0, ph = 0;         /*  window, as SDL counts windows  */
+    int     xw = 0, xh = 0;         /*  window, in physical pixels     */
+    int     rw = 0, rh = 0;         /*  what the renderer draws onto   */
+    float   density = 0.0f;
+
+    if (!out || !len)
+        return;
+    if (!window) {
+        snprintf(out, len, "no window");
+        return;
+    }
+    SDL_GetWindowSize(window, &pw, &ph);
+    SDL_GetWindowSizeInPixels(window, &xw, &xh);
+    if (renderer)
+        SDL_GetRenderOutputSize(renderer, &rw, &rh);
+    density = SDL_GetWindowPixelDensity(window);
+    snprintf(out, len,
+             "window %dx%d, in pixels %dx%d, render target %dx%d, "
+             "density %.2f, display scale %.2f",
+             pw, ph, xw, xh, rw, rh, (double) density,
+             (double) display_density());
 }
 
 /*

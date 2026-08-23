@@ -712,10 +712,20 @@ do_run(const char *path, uint64_t max_cycles)
                     /*  Opening may have resized the screen to the window.  */
                     GFX_form_from_oop(GFX_display_form(), &form);
                     GFX_window_size(&ww, &wh);
+                    char    geom[256];
+
                     fprintf(stderr, "st80: display %dx%d at %dx in a %dx%d "
                                     "window, %s\n",
                             form.width, form.height, GFX_scale(), ww, wh,
                             GFX_presentation());
+                    /*
+                     *  The numbers behind that line.  A halftone that comes
+                     *  out uneven means two of these disagree and the scale
+                     *  believed the wrong one; printing them turns a round
+                     *  trip of screenshots into one line of a paste.
+                     */
+                    GFX_geometry(geom, sizeof geom);
+                    fprintf(stderr, "st80: %s\n", geom);
                 }
             }
         }

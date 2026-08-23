@@ -211,6 +211,7 @@ int         GFX_scale(void);
 
 /*  The window's current size in screen pixels; zeroes if none.  */
 void        GFX_window_size(int *width, int *height);
+void        GFX_geometry(char *out, size_t len);
 
 /*  How the display is fitted into the window, and why.  */
 const char *GFX_presentation(void);
