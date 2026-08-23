@@ -1875,14 +1875,50 @@ primitive_file_command(void)
         break;
     }
     case 2: {                                   /*  truncate after a page  */
+        /*
+         *  TO THE END OF THE DATA, not to the end of the page.
+         *
+         *  This used to truncate at `pageNumber * POSIX_PAGE_SIZE', which is
+         *  where the last page ENDS rather than where its data does, so
+         *  every file written through a stream was rounded up to a multiple
+         *  of 512 and the difference arrived as trailing zero bytes.  A
+         *  filed-out class came off the disk with up to 511 nulls stuck on
+         *  the end of it, which an editor shows as ^@^@^@..., git calls a
+         *  binary file, and a re-read has to skip past.
+         *
+         *  The right length is already known and is already used one case
+         *  up: FileStream>>shorten sets `page dataEnd: position', which is
+         *  PosixFilePage's bytesInPage, and the write above puts exactly
+         *  that many bytes at (pageNumber - 1) * POSIX_PAGE_SIZE.  So the
+         *  end of the file is where that write finished, and the two
+         *  computations now agree by construction.
+         *
+         *  A nil page still means length zero -- File>>endFile: documents
+         *  passing nil as "delete all of the receiver's pages", and that is
+         *  what an empty file has to be able to become.
+         */
         st_oop  number = OM_is_object(page) && OM_pointer_bit(page)
                        ? OM_fetch_pointer(PAGE_NUMBER_FIELD, page) : ST_NIL;
+        st_oop  count  = OM_is_object(page) && OM_pointer_bit(page)
+                       && OM_fetch_word_length(page) > PAGE_BYTES_FIELD
+                       ? OM_fetch_pointer(PAGE_BYTES_FIELD, page) : ST_NIL;
         int64_t end = 0;
 
         if (fd < 0)
             return 0;
-        if (OM_is_int(number))
-            end = (int64_t) OM_int_value(number) * POSIX_PAGE_SIZE;
+        if (OM_is_int(number)) {
+            long    n = (long) OM_int_value(number);
+            int64_t len = OM_is_int(count) ? (int64_t) OM_int_value(count)
+                                           : POSIX_PAGE_SIZE;
+
+            if (n < 1)
+                n = 1;
+            if (len < 0)
+                len = 0;
+            if (len > POSIX_PAGE_SIZE)
+                len = POSIX_PAGE_SIZE;
+            end = (int64_t) (n - 1) * POSIX_PAGE_SIZE + len;
+        }
         if (st_file_truncate(fd, end) != 0) {
             posix_errno = errno;
             answer = ST_FALSE;

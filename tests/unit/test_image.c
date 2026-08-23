@@ -2714,6 +2714,63 @@ test_file_out_travels_between_hosts(void)
 }
 
 /*
+ *  A file out ends where its text ends.
+ *
+ *  A file is written a page at a time and a page is 512 bytes, so the last
+ *  one is almost never full.  FileStream>>shorten exists to say where the
+ *  data really stopped -- it sets `page dataEnd: position' and asks the file
+ *  to end there -- and the truncate underneath it ignored the answer and cut
+ *  at `pageNumber * 512' instead, the end of the PAGE rather than the end of
+ *  the data.
+ *
+ *  So every file this system wrote through a stream was rounded up to a
+ *  multiple of 512 and the difference arrived as trailing zero bytes: up to
+ *  511 of them stuck on the end of a filed-out class, which an editor shows
+ *  as ^@^@^@, which git calls a binary file, and which anything reading the
+ *  file back has to skip past.  It was invisible from inside the image,
+ *  because nextChunk stops at the last bang and never reads far enough to
+ *  meet them.
+ */
+static void
+test_file_out_has_no_page_padding(void)
+{
+    /*  Nothing at all after the text -- not one zero byte.  */
+    check_integer(
+        "| name raw |"
+        " name := 'zz-file-out-padding-test.st'."
+        " Object fileOutMessage: #printString fileName: name."
+        " raw := (FileStream oldFileNamed: name) contentsOfEntireFile."
+        " Disk removeKey: name."
+        " ^raw occurrencesOf: (Character value: 0)", 0);
+
+    /*
+     *  And the last byte is the chunk terminator, which is the positive form
+     *  of the same statement: the file ends where the writer stopped.
+     */
+    check_boolean(
+        "| name raw |"
+        " name := 'zz-file-out-padding-test.st'."
+        " Object fileOutMessage: #printString fileName: name."
+        " raw := (FileStream oldFileNamed: name) contentsOfEntireFile."
+        " Disk removeKey: name."
+        " ^raw last = $!", 1);
+
+    /*
+     *  A file whose data does not fill its last page is the whole of the
+     *  case, so write one that certainly does not: a short file out is a few
+     *  hundred bytes and 512 is the page.  Its size on disk is its text.
+     */
+    check_boolean(
+        "| name raw size |"
+        " name := 'zz-file-out-padding-test.st'."
+        " Object fileOutMessage: #printString fileName: name."
+        " raw := (FileStream oldFileNamed: name) contentsOfEntireFile."
+        " size := (FileStream oldFileNamed: name) size."
+        " Disk removeKey: name."
+        " ^size = raw size", 1);
+}
+
+/*
  *  Input, through the path a window's events take.
  *
  *  GFX_inject_* does exactly what the SDL handlers do -- move the pointer,
@@ -3195,6 +3252,7 @@ main(void)
     test_class_side_instance_variables();
     test_menus_compose_as_lines();
     test_file_out_travels_between_hosts();
+    test_file_out_has_no_page_padding();
     test_quit();
     test_input();
     test_where_the_ink_lands();
