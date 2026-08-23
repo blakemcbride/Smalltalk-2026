@@ -1,5 +1,5 @@
 "
-Every expression in the tutorial whose answer the book prints.
+Every expression in the manual whose answer the book prints.
 
 This is not decoration.  A manual whose examples were typed rather than run
 is a manual that is wrong somewhere and cannot tell you where, so each one
@@ -7,7 +7,7 @@ is a doctest here and `make verify' in this directory runs the lot against
 a live image:
 
     ./st80 -bootstrap -profile profiles/st2026.profile \
-           -doctests tutorial/examples/TutorialExamples.class.st
+           -doctests manual/examples/ManualExamples.class.st
 
 The notation is Pharo's own: `expression >>> expected value' inside a method
 comment, checked by evaluating (expression) = (expected).  The runner tells
@@ -25,13 +25,13 @@ The methods are named after the chapter they check, so a failure names the
 page to fix.
 "
 Class {
-	#name : 'TutorialExamples',
+	#name : 'ManualExamples',
 	#superclass : 'Object',
-	#category : 'Tutorial'
+	#category : 'Manual'
 }
 
 { #category : 'ch04 syntax' }
-TutorialExamples >> literals [
+ManualExamples >> literals [
 	"16rFF >>> 255"
 	"16r1F >>> 31"
 	"2r1011 >>> 11"
@@ -60,7 +60,7 @@ TutorialExamples >> literals [
 ]
 
 { #category : 'ch04 syntax' }
-TutorialExamples >> messagesAndCascades [
+ManualExamples >> messagesAndCascades [
 	"3 + 4 * 2 >>> 14"
 	"3 + (4 * 2) >>> 11"
 	"2 raisedTo: 3 + 1 >>> 16"
@@ -71,7 +71,7 @@ TutorialExamples >> messagesAndCascades [
 ]
 
 { #category : 'ch05 objects' }
-TutorialExamples >> objectsAndMessages [
+ManualExamples >> objectsAndMessages [
 	"3 class >>> SmallInteger"
 	"3 class class >>> SmallInteger class"
 	"true class >>> True"
@@ -96,7 +96,7 @@ TutorialExamples >> objectsAndMessages [
 ]
 
 { #category : 'ch05 objects' }
-TutorialExamples >> printing [
+ManualExamples >> printing [
 	"#foo printString >>> 'foo'"
 	"#(1 2) printString >>> '(1 2 )'"
 	"(3/4) printString >>> '(3/4)'"
@@ -112,7 +112,7 @@ TutorialExamples >> printing [
 ]
 
 { #category : 'ch06 blocks' }
-TutorialExamples >> blocks [
+ManualExamples >> blocks [
 	"[3 + 4] value >>> 7"
 	"([:x | x * x] value: 9) >>> 81"
 	"([:a :b | a + b] value: 1 value: 2) >>> 3"
@@ -125,7 +125,7 @@ TutorialExamples >> blocks [
 ]
 
 { #category : 'ch06 blocks' }
-TutorialExamples >> closuresCapture [
+ManualExamples >> closuresCapture [
 	"a captured variable is shared with the enclosing scope, and outlives it"
 	"([:start | | n bump | n := start. bump := [n := n + 1]. bump value. bump value. n] value: 0) >>> 2"
 	"a counter factory: each call makes an independent n"
@@ -134,7 +134,7 @@ TutorialExamples >> closuresCapture [
 ]
 
 { #category : 'ch07 control flow' }
-TutorialExamples >> controlFlow [
+ManualExamples >> controlFlow [
 	"((3 > 2) ifTrue: ['y'] ifFalse: ['n']) >>> 'y'"
 	"(true and: [false]) >>> false"
 	"(false or: [true]) >>> true"
@@ -147,7 +147,7 @@ TutorialExamples >> controlFlow [
 ]
 
 { #category : 'ch10 exceptions' }
-TutorialExamples >> exceptions [
+ManualExamples >> exceptions [
 	"([1/0] on: ZeroDivide do: [:e | 'caught']) >>> 'caught'"
 	"([Error signal: 'x'] on: Error do: [:e | e messageText]) >>> 'x'"
 	"([Error new signal: 'y'] on: Error do: [:e | e return: 5]) >>> 5"
@@ -167,7 +167,7 @@ TutorialExamples >> exceptions [
 ]
 
 { #category : 'ch11 beyond the blue book' }
-TutorialExamples >> extensions [
+ManualExamples >> extensions [
 	"traits are flattened at load time; the class's own method wins"
 	"Greeter new greeting >>> 'hello from a class'"
 	"Greeter defaultGreeting >>> 'hello'"
@@ -182,7 +182,7 @@ TutorialExamples >> extensions [
 ]
 
 { #category : 'ch12 numbers' }
-TutorialExamples >> integers [
+ManualExamples >> integers [
 	"10 factorial >>> 3628800"
 	"(2 raisedTo: 10) >>> 1024"
 	"(2 raisedTo: 100) printString >>> '1267650600228229401496703205376'"
@@ -206,7 +206,7 @@ TutorialExamples >> integers [
 ]
 
 { #category : 'ch12 numbers' }
-TutorialExamples >> division [
+ManualExamples >> division [
 	"7 // 2 >>> 3"
 	"7 \\ 2 >>> 1"
 	"(7 rem: 2) >>> 1"
@@ -220,7 +220,7 @@ TutorialExamples >> division [
 ]
 
 { #category : 'ch12 numbers' }
-TutorialExamples >> fractionsAndFloats [
+ManualExamples >> fractionsAndFloats [
 	"((1/3) + (1/6)) >>> (1/2)"
 	"(1/4) numerator >>> 1"
 	"(1/4) denominator >>> 4"
@@ -246,7 +246,7 @@ TutorialExamples >> fractionsAndFloats [
 ]
 
 { #category : 'ch12 numbers' }
-TutorialExamples >> intervalsAndPoints [
+ManualExamples >> intervalsAndPoints [
 	"(1 to: 5) asArray >>> #(1 2 3 4 5)"
 	"(1 to: 10 by: 3) asArray >>> #(1 4 7 10)"
 	"(1 to: 5) size >>> 5"
@@ -259,7 +259,7 @@ TutorialExamples >> intervalsAndPoints [
 ]
 
 { #category : 'ch13 collections' }
-TutorialExamples >> theFiveWorkhorses [
+ManualExamples >> theFiveWorkhorses [
 	"(#(1 2 3) collect: [:x | x * 10]) >>> #(10 20 30)"
 	"(#(1 2 3 4) select: [:x | x even]) >>> #(2 4)"
 	"(#(1 2 3 4) reject: [:x | x even]) >>> #(1 3)"
@@ -271,7 +271,7 @@ TutorialExamples >> theFiveWorkhorses [
 ]
 
 { #category : 'ch13 collections' }
-TutorialExamples >> collectionProtocol [
+ManualExamples >> collectionProtocol [
 	"#(1 2 3) size >>> 3"
 	"#(1 2 3) isEmpty >>> false"
 	"#() notEmpty >>> false"
@@ -298,7 +298,7 @@ TutorialExamples >> collectionProtocol [
 ]
 
 { #category : 'ch13 collections' }
-TutorialExamples >> collectionKinds [
+ManualExamples >> collectionKinds [
 	"(Set withAll: #(1 1 2)) size >>> 2"
 	"(Bag withAll: #(1 1 2)) size >>> 3"
 	"((Bag withAll: #(1 1 2)) occurrencesOf: 1) >>> 2"
@@ -314,7 +314,7 @@ TutorialExamples >> collectionKinds [
 ]
 
 { #category : 'ch13 collections' }
-TutorialExamples >> dictionaries [
+ManualExamples >> dictionaries [
 	"(((Dictionary new) at: #a put: 1; yourself) at: #a) >>> 1"
 	"((Dictionary new) at: #z ifAbsent: [99]) >>> 99"
 	"((Dictionary new) at: #z ifAbsentPut: [3]) >>> 3"
@@ -329,7 +329,7 @@ TutorialExamples >> dictionaries [
 ]
 
 { #category : 'ch14 streams' }
-TutorialExamples >> readStreams [
+ManualExamples >> readStreams [
 	"(ReadStream on: #(1 2 3)) next >>> 1"
 	"([:s | s next. s peek] value: (ReadStream on: #(1 2 3))) >>> 2"
 	"([:s | s skip: 2. s next] value: (ReadStream on: #(1 2 3))) >>> 3"
@@ -341,7 +341,7 @@ TutorialExamples >> readStreams [
 ]
 
 { #category : 'ch14 streams' }
-TutorialExamples >> writeStreams [
+ManualExamples >> writeStreams [
 	"((WriteStream on: (String new: 0)) nextPutAll: 'ab'; contents) >>> 'ab'"
 	"((WriteStream on: (String new: 0)) nextPut: $a; nextPutAll: 'bcd'; contents) >>> 'abcd'"
 	"((WriteStream on: (String new: 0)) print: 42; contents) >>> '42'"
@@ -353,7 +353,7 @@ TutorialExamples >> writeStreams [
 ]
 
 { #category : 'ch15 text' }
-TutorialExamples >> strings [
+ManualExamples >> strings [
 	"'hello' asUppercase >>> 'HELLO'"
 	"'HELLO' asLowercase >>> 'hello'"
 	"'hello' reversed >>> 'olleh'"
@@ -374,7 +374,7 @@ TutorialExamples >> strings [
 ]
 
 { #category : 'ch15 text' }
-TutorialExamples >> characters [
+ManualExamples >> characters [
 	"$a asciiValue >>> 97"
 	"$a asInteger >>> 97"
 	"(Character value: 97) >>> $a"
@@ -389,7 +389,7 @@ TutorialExamples >> characters [
 ]
 
 { #category : 'ch20 concurrency' }
-TutorialExamples >> concurrencyClasses [
+ManualExamples >> concurrencyClasses [
 	"(Semaphore forMutualExclusion critical: [7]) >>> 7"
 	"(Mutex new critical: [7]) >>> 7"
 	"Mutex new isHeld >>> false"
@@ -402,7 +402,7 @@ TutorialExamples >> concurrencyClasses [
 ]
 
 { #category : 'ch21 processes' }
-TutorialExamples >> processes [
+ManualExamples >> processes [
 	"Processor activePriority >>> 4"
 	"the eight priorities, by the names ProcessorScheduler answers to"
 	"Processor timingPriority >>> 8"
@@ -420,7 +420,7 @@ TutorialExamples >> processes [
 ]
 
 { #category : 'ch22 parallel' }
-TutorialExamples >> parallel [
+ManualExamples >> parallel [
 	"a Promise carries the value back"
 	"(Processor forkParallel: [(1 to: 100) inject: 0 into: [:a :b | a + b]]) value >>> 5050"
 	"and carries the failure back too, rather than losing it"

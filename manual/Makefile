@@ -1,5 +1,5 @@
 #
-#  Smalltalk-2026: A Tutorial.
+#  Smalltalk-2026: A Manual.
 #
 #  pdflatex three times, because the table of contents and the internal
 #  references each need a pass to settle.  No latexmk dependency: the point
@@ -7,7 +7,7 @@
 #
 TEX      := pdflatex
 TEXFLAGS := -interaction=nonstopmode -halt-on-error -file-line-error
-DOC      := smalltalk-2026-tutorial
+DOC      := smalltalk-2026-manual
 SOURCES  := $(DOC).tex preamble.tex $(wildcard chapters/*.tex)
 
 #  The examples file is the book's own test suite: every answer printed in
@@ -23,7 +23,7 @@ SOURCES  := $(DOC).tex preamble.tex $(wildcard chapters/*.tex)
 ROOT     := ..
 ST80     ?= ./st80
 PROFILE  ?= profiles/st2026.profile
-EXAMPLES := examples/TutorialExamples.class.st
+EXAMPLES := examples/ManualExamples.class.st
 
 .PHONY: all verify clean distclean help
 
@@ -39,7 +39,7 @@ $(DOC).pdf: $(SOURCES)
 verify: $(EXAMPLES)
 	@test -x $(ROOT)/$(ST80) || { echo "verify: $(ST80) is not built -- run make in $(ROOT)" >&2; exit 1; }
 	cd $(ROOT) && $(ST80) -bootstrap -profile $(PROFILE) -closures \
-		-doctests tutorial/$(EXAMPLES)
+		-doctests manual/$(EXAMPLES)
 
 clean:
 	rm -f $(DOC).aux $(DOC).log $(DOC).out $(DOC).toc $(DOC).lof \

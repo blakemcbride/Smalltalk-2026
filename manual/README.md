@@ -1,10 +1,10 @@
-# Smalltalk-2026: A Tutorial
+# Smalltalk-2026: A Manual
 
 A book-length introduction to the system and the language — 26 chapters and
 5 appendices, in LaTeX, building to a PDF with `pdflatex` and nothing else.
 
 ```sh
-make            # build smalltalk-2026-tutorial.pdf
+make            # build smalltalk-2026-manual.pdf
 make verify     # run every example in the book against a live image
 make clean      # remove LaTeX intermediates
 ```
@@ -25,7 +25,7 @@ make clean      # remove LaTeX intermediates
 ## The examples are checked
 
 Every expression in the book whose answer is printed is also a doctest in
-`examples/TutorialExamples.class.st`, and `make verify` runs all of them
+`examples/ManualExamples.class.st`, and `make verify` runs all of them
 against an image built from this tree:
 
 ```

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 r"""
-Lint the tutorial's LaTeX for the mistakes this book keeps making.
+Lint the manual's LaTeX for the mistakes this book keeps making.
 
 \ct is \lstinline, so its argument is VERBATIM: a backslash escape inside it
 prints the backslash, and a newline inside it is a hard error.  Both are easy

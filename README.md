@@ -233,7 +233,7 @@ tools/          make_font.py — rasterises an outline face into the strike
 | [`doc/Display.md`](doc/Display.md) | the window, the face, antialiasing, and what the interface expects of you |
 | [`doc/LanguageExtensions.md`](doc/LanguageExtensions.md) | every post-1983 syntax, and where each stands |
 | [`doc/PLAN-TO-PHARO.md`](doc/PLAN-TO-PHARO.md) | where this is going, sized honestly |
-| [`tutorial/`](tutorial/) | **a book-length tutorial** on the system and the language — `cd tutorial && make` |
+| [`manual/`](manual/) | **a book-length manual** on the system and the language — `cd manual && make` |
 | [`Windows.md`](Windows.md) | building with MSVC, and what a real one found |
 | [`macOS.md`](macOS.md) | building with the same makefile Linux uses, and the four places Apple differs |
 | [`doc/LICENSING.md`](doc/LICENSING.md) | what may be redistributed, and what may not |

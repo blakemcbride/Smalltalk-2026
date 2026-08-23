@@ -43,14 +43,14 @@ screen*.cov
 # and no reader of this repository needs one.
 *.pdf
 
-# LaTeX intermediates from tutorial/.  The .tex is the source and the PDF is
+# LaTeX intermediates from manual/.  The .tex is the source and the PDF is
 # already excluded above; these are neither.
-tutorial/*.aux
-tutorial/*.log
-tutorial/*.out
-tutorial/*.toc
-tutorial/chapters/*.aux
-tutorial/__pycache__/
+manual/*.aux
+manual/*.log
+manual/*.out
+manual/*.toc
+manual/chapters/*.aux
+manual/__pycache__/
 
 # Code-RAG local index files (written by bld; machine-local, not part of the project)
 .mcp.json
