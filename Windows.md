@@ -153,7 +153,11 @@ Each `OM` gets its own build directory, so an `mt` object can never be
 linked against a `bb` one.
 
 `nmake /f Makefile.msvc clean` removes `build\`, `st80.exe`, and the `.pdb`
-and `.ilk` beside it.
+and `.ilk` beside it. It needs no SDL3 and no `HEADLESS=1`, which took a
+second attempt to be true: the SDL3 check was a parse-time `!ERROR`, and
+nmake evaluates the whole file before it knows what you asked of it, so
+`clean` was refused for want of a display library. The check is a rule now,
+and `clean` does not depend on it.
 
 There is no `deps` target on this side. The GNU makefile's is
 `tools/check-deps.sh`, which is a shell script and knows package managers
@@ -429,7 +433,15 @@ though someone ran it.
 - `shell32.lib` is not needed. The link resolves SDL3's `SDL_main.h` entry
   point without it.
 
-**Four things it found, all now fixed:**
+**Five things it found, all now fixed:**
+
+- **U1050 on `nmake /f Makefile.msvc clean`.** The SDL3 guard was a
+  parse-time `!ERROR`, and nmake evaluates every directive before it knows
+  the target — so a machine without SDL3 could not clean its own build
+  tree. The GNU makefile keeps `clean` and `help` out of its probe and
+  says why in a comment; this file was written from that file's shape and
+  not from its rule. The check is a rule that `all` and `test` depend on
+  now, and `clean` does not.
 
 - **C1083, `dirent.h`.** `src/interp/prim.c`'s file primitives were written
   straight onto POSIX. They go through a shim now.
@@ -494,6 +506,14 @@ now named outright, after `/link` because `cl` has no `/SUBSYSTEM` of its own.
   image written on Windows reads back short, this is the first place to look.
 - Whether `-run` opens a window at all, which is the largest single untested
   claim in this document.
+- **The `clean` fix itself.** There is no nmake on the machine this was
+  written on, so the rule that replaced the parse-time `!ERROR` has been
+  read and not run. The diagnosis is certain — the U1050 was observed —
+  and the cure is the ordinary nmake idiom, but it is one more thing that
+  has only been reasoned about.
+- One parse-time `!ERROR` is deliberately left: `OM must be bb or mt`. That
+  one fires on a value you just mistyped rather than on something absent
+  from the machine, and the GNU makefile refuses the same way.
 
 The next step will probably turn up something. If it does, that is the
 document doing its job; please report it at

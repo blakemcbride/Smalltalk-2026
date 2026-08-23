@@ -46,11 +46,23 @@ OM = mt
 # a mistyped path and a missing library produced the same silent result:
 # an st80.exe that opens no window and only says why when you run it.
 # Now it stops, and HEADLESS=1 is how you say you meant it.
-!IFNDEF SDL3
-!IFNDEF HEADLESS
-!ERROR SDL3 not set.  st80 draws its display through SDL3; point SDL3= at an SDL3 development package (the directory holding include\ and lib\), as in: nmake /f Makefile.msvc SDL3=C:\SDL3-3.2.0. Get one from https://libsdl.org/. Or build with no display -- -bootstrap, -eval and -doctests all still work, and st80.exe -run will refuse to open a window and say why -- with: nmake /f Makefile.msvc HEADLESS=1
-!ENDIF
-!ENDIF
+#
+# It stops in a RULE and not at !ERROR, which is the whole of the fix below.
+# nmake evaluates every directive in this file before it knows which target
+# was asked for, so a parse-time !ERROR fires on all of them --
+#
+#     C:\Users\blake\Smalltalk-2026>nmake /f Makefile.msvc clean
+#     Makefile.msvc(50) : fatal error U1050: SDL3 not set. [...]
+#
+# -- and refusing to CLEAN a tree because a display library is missing is the
+# one thing a diagnostic must not do.  The GNU makefile says exactly that in
+# its own words and keeps `clean' and `help' out of the probe entirely; this
+# file was written from that file's shape and not from its rule.
+#
+# So the message now lives in the sdl3_ok target further down, which `all'
+# and `test' depend on and `clean' does not.  It is a phony prerequisite of
+# those two rather than of $(BIN), so a build that is up to date does not
+# relink merely for having been checked.
 
 !IFNDEF CC
 CC = cl
@@ -184,7 +196,35 @@ OM_OBJ = $(BUILD)\om_mt.obj $(BUILD)\image_mt.obj
 OBJ = $(CORE_OBJ) $(OM_OBJ)
 BIN = st80.exe
 
-all: $(BIN)
+all: sdl3_ok $(BIN)
+
+#
+#  The check, as a rule.  When SDL3= or HEADLESS=1 is present this is a rem
+#  and costs nothing; when neither is, it prints and stops.  nmake reports a
+#  U1077 of its own after the message, because a recipe has no way to end a
+#  build quietly -- the message above it is the part to read.
+#
+sdl3_ok:
+!IF !defined(SDL3) && !defined(HEADLESS)
+	@echo SDL3 not set.
+	@echo.
+	@echo st80 draws its display through SDL3.  Point SDL3= at a development
+	@echo package -- the directory holding include\ and lib\ -- as in:
+	@echo.
+	@echo     nmake /f Makefile.msvc SDL3=C:\SDL3-3.4.14
+	@echo.
+	@echo Get one from https://libsdl.org/
+	@echo.
+	@echo Or ask for a build with no display.  -bootstrap, -eval and -doctests
+	@echo all still work, and st80.exe -run will refuse to open a window and
+	@echo say why:
+	@echo.
+	@echo     nmake /f Makefile.msvc HEADLESS=1
+	@echo.
+	@exit 1
+!ELSE
+	@rem  SDL3= was given, or HEADLESS=1 was asked for.
+!ENDIF
 
 $(BUILD):
 	@if not exist $(BUILD) mkdir $(BUILD)
@@ -227,7 +267,7 @@ $(BIN): $(BUILD) $(OBJ) src\main.c
 #
 BUILDTEST = $(CC) /Fe$(BUILD)\ /Fo$(BUILD)\ $(CFLAGS) $(CPPFLAGS)
 
-test: $(BIN)
+test: sdl3_ok $(BIN)
 	$(BUILDTEST) tests\unit\test_port.c $(OBJ) $(SDLLIBS) $(LINKOPT)
 	$(BUILD)\test_port.exe
 	$(BUILDTEST) tests\unit\test_compiler.c $(OBJ) $(SDLLIBS) $(LINKOPT)
