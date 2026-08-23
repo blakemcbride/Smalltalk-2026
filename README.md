@@ -74,10 +74,31 @@ That is the central trick of the project.
 
 ## Quick start
 
+A C11 compiler, GNU make, and SDL3 with its headers. Everything else is in
+the tree.
+
+```sh
+sudo dnf install gcc make SDL3-devel        # Fedora, RHEL
+sudo apt install build-essential libsdl3-dev pkg-config   # Debian, Ubuntu
+brew install sdl3 pkg-config                # macOS
+```
+
 ```sh
 make                    # build ./st80
 make test               # unit suites, then every profile's own SUnit suites
+make deps               # what this machine has, and what it is missing
 make help               # targets and variables
+```
+
+`make` stops before it compiles anything if the compiler, the C library or
+SDL3 is not there, and the message carries the command that installs it —
+`make deps` reports on all of them at once, and runs on a machine too bare to
+build. If a machine is *meant* to have no display, say so and the graphics
+layer becomes a stub: `-bootstrap`, `-eval`, `-doctests` and `make test` all
+still work, and `./st80 -run` refuses to open a window and says why.
+
+```sh
+make HEADLESS=1
 ```
 
 Bootstrap an image from source and run its desktop:
@@ -112,6 +133,7 @@ is for:
 |---|---|
 | `OM=mt` | 64-bit threaded object memory — the real system, and the default |
 | `OM=bb` | 16-bit Blue Book memory — the validation harness. It loads the 1983 Xerox image and reproduces its traces; it cannot bootstrap an image, and says so if asked to |
+| `HEADLESS=1` | Build with no display: the graphics layer becomes a stub, and `make` stops asking for SDL3. Its own build directory, so it can never be half-linked against a graphical one |
 | `TSAN=1` | ThreadSanitizer build |
 | `ASAN=1` | Address + UB sanitizer build |
 | `FONT=`, `SIZE=`, `LEAD=` | inputs to `make font` |

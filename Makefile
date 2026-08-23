@@ -3,15 +3,20 @@
 # Targets:
 #   all        (default) build the st80 binary
 #   test       build and run the unit tests
+#   deps       report on SDL3 and the other external requirements
 #   clean      remove build artifacts
 #   help       list targets and variables
 #
 # Variables:
-#   OM=bb      faithful 16-bit Blue Book object memory (default; the
-#              validation harness that must reproduce the Xerox traces)
-#   OM=mt      64-bit threaded object memory (the real system)
+#   OM=mt      64-bit threaded object memory (default; the real system)
+#   OM=bb      faithful 16-bit Blue Book object memory (the validation
+#              harness that must reproduce the Xerox traces)
+#   HEADLESS=1 build without SDL3; the display becomes a stub
 #   TSAN=1     build with the thread sanitizer
 #   ASAN=1     build with the address and undefined-behaviour sanitizers
+#
+# A missing SDL3, compiler or C library stops the build here with the
+# command that installs it -- see the requirements section below.
 
 CC        ?= gcc
 CSTD      := -std=c11
@@ -51,12 +56,256 @@ ifdef ASAN
     SAN_LIBS   := -fsanitize=address,undefined
 endif
 
-# SDL3 is optional: without it the graphics layer builds as a headless stub
-# so the test suite and CI need no display.
-SDL3_CFLAGS := $(shell pkg-config --cflags sdl3 2>/dev/null)
-SDL3_LIBS   := $(shell pkg-config --libs   sdl3 2>/dev/null)
-ifneq ($(SDL3_LIBS),)
-    SDL3_CFLAGS += -DST_HAVE_SDL3
+# ---------------------------------------------------------------------------
+#  What this build needs from the machine, and what it says when one of
+#  those things is not there.
+#
+#  They used to be found silently or not at all.  pkg-config answered
+#  nothing for SDL3, ST_HAVE_SDL3 went undefined, src/gfx/display.c compiled
+#  its headless stub, and `make' printed not one word about any of it -- so
+#  a package nobody installed on Monday surfaced on Tuesday, two layers
+#  down, as `./st80 -run' opening no window and answering "built without
+#  SDL3".  That names the symptom, in another tool, on another day.  A
+#  missing compiler or C library was worse still: the first gcc line of the
+#  build failed on its own terms and left the reader to work backwards from
+#  a linker error to a package name.
+#
+#  So every external requirement is checked here, before one object is
+#  compiled, and a missing one stops the build carrying the line to type.
+#  Two rules keep the check from becoming the obstacle:
+#
+#    - `make clean' and `make help' never need a toolchain and never probe
+#      for one.  Refusing to clean a tree because a library is missing is
+#      the one thing a diagnostic must not do.
+#    - the fast path is a single compiler invocation -- about 40ms -- that
+#      links tools/probe.c against the whole external surface at once.
+#      Only when that fails does anything ask which piece was at fault, and
+#      by then the build is stopping anyway.
+#
+#  `make deps' runs the same checks and reports all of them instead of
+#  stopping at the first.  It is tools/check-deps.sh, which also owns the
+#  table of per-platform install commands the messages below quote -- a
+#  distribution that renames its SDL3 package must not be able to make one
+#  of them right and the other wrong.
+# ---------------------------------------------------------------------------
+
+PKG_CONFIG  ?= pkg-config
+DEPS_SCRIPT := tools/check-deps.sh
+PROBE_SRC   := tools/probe.c
+
+GOALS := $(if $(MAKECMDGOALS),$(MAKECMDGOALS),all)
+
+#  Goals that need no toolchain at all, and goals that must not be stopped
+#  by a parse-time error.  `deps' is in the second list and not the first
+#  because running the probes is its whole job -- it still exits non-zero
+#  when something is missing, but only after it has said what.  `help' is in
+#  it because a reader whose build just refused to run is exactly the reader
+#  who types `make help' next.
+NO_PROBE_GOALS := clean font
+NO_STOP_GOALS  := clean font help deps
+
+PROBE := $(if $(filter-out $(NO_PROBE_GOALS),$(GOALS)),yes)
+STOP  := $(if $(filter-out $(NO_STOP_GOALS),$(GOALS)),yes)
+
+#  `command -v' rather than `which': it is in POSIX, it is a shell builtin
+#  so it costs no process, and it does not print a line of its own on
+#  failure the way some `which' do.
+have = $(shell command -v $(1) >/dev/null 2>&1 && echo yes)
+
+HAVE_CC         := $(call have,$(firstword $(CC)))
+HAVE_PKG_CONFIG := $(call have,$(PKG_CONFIG))
+
+# SDL3 ----------------------------------------------------------------------
+
+ifdef HAVE_PKG_CONFIG
+SDL3_CFLAGS := $(shell $(PKG_CONFIG) --cflags sdl3 2>/dev/null)
+SDL3_LIBS   := $(shell $(PKG_CONFIG) --libs   sdl3 2>/dev/null)
+endif
+
+#  pkg-config is how SDL3 is usually found.  It is not SDL3.  A machine can
+#  carry the library and not the tool -- a hand-built SDL, a distribution
+#  that splits pkgconf out -- and telling that reader to install SDL3 sends
+#  them to install what they already have.  So when pkg-config has no
+#  answer, ask the compiler, which is the only thing that actually knows.
+#  -include puts the header in without a #include line, which make would
+#  otherwise eat as a comment before the shell ever saw it.
+ifeq ($(strip $(SDL3_LIBS)),)
+ifdef HAVE_CC
+ifdef PROBE
+SDL3_LIBS := $(shell printf 'int main(void) { return SDL_Init(0) ? 0 : 1; }\n' | \
+               $(CC) -x c - -include SDL3/SDL.h -o /dev/null -lSDL3 2>/dev/null \
+               && echo -lSDL3)
+endif
+endif
+endif
+
+ifneq ($(strip $(SDL3_LIBS)),)
+    HAVE_SDL3     := yes
+    SDL3_CFLAGS   += -DST_HAVE_SDL3
+    SDL3_VERSION  := $(if $(HAVE_PKG_CONFIG),$(shell $(PKG_CONFIG) --modversion sdl3 2>/dev/null))
+endif
+
+#  HEADLESS=1 means it, on a machine with SDL3 as much as on one without.
+#  A flag that asks for the stub and silently builds the window when the
+#  library happens to be present is a flag that cannot be used to reproduce
+#  anything.
+ifdef HEADLESS
+    HAVE_SDL3   :=
+    SDL3_CFLAGS :=
+    SDL3_LIBS   :=
+endif
+
+# The link the build is really going to make ---------------------------------
+
+PROBE_LINK = $(CC) $(SDL3_CFLAGS) $(THREAD_CFLAGS) $(PROBE_SRC) -o /dev/null \
+             $(THREAD_LIBS) $(SDL3_LIBS) -lm
+
+ifdef PROBE
+ifdef HAVE_CC
+ifneq ($(wildcard $(PROBE_SRC)),)
+LINK_OK := $(shell $(PROBE_LINK) 2>/dev/null && echo yes)
+else
+LINK_OK := unchecked
+endif
+endif
+endif
+
+# What it says ---------------------------------------------------------------
+#
+#  Recursively assigned, every one of them: the hints shell out to
+#  check-deps.sh and the narrow probes run a compiler, and none of that
+#  should happen on a build that is going to succeed.  They expand inside
+#  $(error), which is to say only on the way out.
+
+HINT_CC   = $(or $(shell sh $(DEPS_SCRIPT) --install cc   2>/dev/null),install a C11 compiler)
+HINT_LIBC = $(or $(shell sh $(DEPS_SCRIPT) --install libc 2>/dev/null),install your C library's development package)
+HINT_SDL3 = $(or $(shell sh $(DEPS_SCRIPT) --install sdl3 2>/dev/null),install SDL3 with its headers -- https://libsdl.org)
+
+#  Two ways to have no SDL3, and they send the reader to different places.
+#  Nothing on the machine mentions it -- install the package.  Or
+#  pkg-config names a version and the link still fails, which is the
+#  runtime installed without the headers, or a -devel package left behind by
+#  an upgrade: telling that reader to install SDL3 is telling them to do
+#  what they did.  SDL3_WHY is set to whichever one is true at the point the
+#  build gives up.
+ifdef HAVE_PKG_CONFIG
+SDL3_ABSENT_WHY := pkg-config knows no `sdl3' package, and $(firstword $(CC)) cannot link -lSDL3 either.
+else
+SDL3_ABSENT_WHY := pkg-config is not installed, and $(firstword $(CC)) cannot link -lSDL3 either.
+endif
+
+SDL3_BROKEN_WHY = This machine reports an SDL3$(if $(SDL3_VERSION), -- pkg-config names version $(SDL3_VERSION)) and $(firstword $(CC)) still cannot link $(SDL3_LIBS) against it. The runtime is installed and the development package is not, or an upgrade left the two disagreeing.
+
+SDL3_WHY      := $(SDL3_ABSENT_WHY)
+SDL3_HEADLINE := SDL3 not found.
+
+define ERR_NO_CC
+
+No C compiler.
+
+CC is `$(CC)' and PATH has no such program, so nothing here can be built.
+
+    $(HINT_CC)
+
+Or point the build at a compiler this machine does have:
+
+    make CC=clang
+
+endef
+
+define ERR_NO_SDL3
+
+$(SDL3_HEADLINE)
+
+st80 draws its display through SDL3.
+$(SDL3_WHY)
+
+Install it with its headers -- the runtime package alone is not enough:
+
+    $(HINT_SDL3)
+
+Or ask for a build with no display.  The graphics layer becomes a stub:
+-bootstrap, -eval, -doctests and `make test' all work, and `./st80 -run'
+refuses to open a window and says why.
+
+    make HEADLESS=1
+
+`make deps' reports on every requirement at once.
+
+endef
+
+define ERR_NO_LINK
+
+Required libraries are missing.
+
+$(firstword $(CC)) runs, but tools/probe.c will not link against what st80
+needs.  The verdict comes first because the flags after it are whatever
+this machine's pkg-config handed over, and nothing can be lined up behind
+that:
+
+    $(if $(HAVE_PTHREAD),ok     ,MISSING) pthreads  $(if $(strip $(THREAD_LIBS)),$(THREAD_LIBS),through libSystem)
+    $(if $(HAVE_LIBM),ok     ,MISSING) libm      -lm
+    $(if $(HAVE_SDL3),$(if $(HAVE_SDL3_LINK),ok     ,MISSING) SDL3      $(SDL3_LIBS),--     SDL3      not in this build -- HEADLESS=1)
+
+    $(HINT_LIBC)
+
+The link that failed, to run by hand and read the whole error:
+
+    $(PROBE_LINK)
+
+`make deps' reports on every requirement at once.
+
+endef
+
+# Enforcement ----------------------------------------------------------------
+#
+#  In order, and the order is the point.  The compiler is the instrument
+#  every other check here is made with, so a missing one would otherwise
+#  report every library as missing for the same wrong reason -- and SDL3 is
+#  asked about before the link, because "no SDL3 anywhere" and "an SDL3 that
+#  will not link" are different sentences and only one of them is true.
+
+ifdef STOP
+
+ifndef HAVE_CC
+$(error $(ERR_NO_CC))
+endif
+
+#  HEADLESS=1 clears HAVE_SDL3 above, which is the same emptiness a machine
+#  with no SDL3 produces -- so this asks whether the stub was requested
+#  before it decides the library is missing.  Without that, `make
+#  HEADLESS=1' refused to build for want of the library it had just been
+#  told not to use.
+ifndef HEADLESS
+ifndef HAVE_SDL3
+$(error $(ERR_NO_SDL3))
+endif
+endif
+
+ifndef LINK_OK
+#  Only now, with the build stopping whatever the answer is, is it worth
+#  three more compiler invocations to say which piece was at fault.
+HAVE_PTHREAD := $(shell printf 'int main(void) { pthread_t t; return pthread_create(&t, 0, 0, 0); }\n' | \
+                  $(CC) -x c - -include pthread.h $(THREAD_CFLAGS) -o /dev/null $(THREAD_LIBS) 2>/dev/null && echo yes)
+HAVE_LIBM    := $(shell printf 'int main(void) { volatile double x = 4.0; return (int) sqrt(x) - 2; }\n' | \
+                  $(CC) -x c - -include math.h -o /dev/null -lm 2>/dev/null && echo yes)
+HAVE_SDL3_LINK := $(if $(HAVE_SDL3),$(shell printf 'int main(void) { return 0; }\n' | \
+                  $(CC) -x c - $(SDL3_CFLAGS) -include SDL3/SDL.h -o /dev/null $(SDL3_LIBS) 2>/dev/null && echo yes))
+
+#  A C library that cannot produce a thread or a square root is the deeper
+#  fault and gets the message, even when SDL3 is broken too -- fixing SDL3
+#  on such a machine would only reach the next failure.  When libc is fine
+#  and SDL3 alone will not link, the reader wants the SDL3 message and not a
+#  table of two libraries that work.
+ifeq ($(and $(HAVE_PTHREAD),$(HAVE_LIBM)),)
+$(error $(ERR_NO_LINK))
+else
+SDL3_WHY      := $(SDL3_BROKEN_WHY)
+SDL3_HEADLINE := SDL3 will not link.
+$(error $(ERR_NO_SDL3))
+endif
+endif
+
 endif
 
 INCLUDES  := -Isrc -Isrc/port -Isrc/om -Isrc/interp -Isrc/gfx -Isrc/sched \
@@ -80,7 +329,11 @@ LIBS      := $(THREAD_LIBS) $(SAN_LIBS) $(SDL3_LIBS) -lm
 # switching TSAN on would silently link freshly instrumented test code
 # against stale uninstrumented library objects, and the sanitizer would
 # report nothing because it could not see most of the program.
-BUILD_VARIANT := $(OM)$(if $(TSAN),-tsan)$(if $(ASAN),-asan)
+#  HEADLESS is in the name for the same reason the sanitizers are: a stub
+#  display and a real one are different programs built from the same tree,
+#  and sharing build/mt between them means `make HEADLESS=1' followed by
+#  `make' relinks against whichever objects happened to survive.
+BUILD_VARIANT := $(OM)$(if $(HEADLESS),-headless)$(if $(TSAN),-tsan)$(if $(ASAN),-asan)
 BUILD_DIR := build/$(BUILD_VARIANT)
 OBJ_DIR   := $(BUILD_DIR)/obj
 TEST_DIR  := $(BUILD_DIR)/tests
@@ -118,7 +371,7 @@ MAIN_OBJ  := $(patsubst %.c,$(OBJ_DIR)/%.o,$(MAIN_SRC))
 VARIANT_BIN := $(BUILD_DIR)/st80
 BIN         := st80
 
-.PHONY: all clean test unit-test help
+.PHONY: all clean test unit-test help deps
 .NOTPARALLEL:
 .DEFAULT_GOAL := all
 
@@ -276,6 +529,15 @@ clean:
 	rm -f *.image *.changes
 	rm -f screen*.pbm screen*.cov
 
+#
+#  The same probes make runs, reporting on all of them instead of stopping
+#  at the first.  This is the target to name when someone says the build
+#  will not go: it answers "what does this machine have" in one screen,
+#  and it runs on a machine too bare to build anything.
+#
+deps:
+	@CC='$(CC)' PKG_CONFIG='$(PKG_CONFIG)' HEADLESS='$(HEADLESS)' sh $(DEPS_SCRIPT)
+
 help:
 	@echo "Targets:"
 	@echo "  all          (default) build the st80 binary"
@@ -283,17 +545,19 @@ help:
 	@echo "  unit-test    just the unit tests"
 	@echo "  suite-test   just the imported packages' own SUnit suites"
 	@echo "  bench        the parallel scaling benchmark"
+	@echo "  deps         report on SDL3 and the other external requirements"
 	@echo "  clean        remove build artifacts"
 	@echo "  font         regenerate the built-in face (needs Pillow and a font)"
 	@echo
 	@echo "Variables:"
 	@echo "  OM=mt        64-bit threaded object memory (default) -- the system"
 	@echo "  OM=bb        16-bit Blue Book memory -- the Xerox trace harness"
+	@echo "  HEADLESS=1   build without SDL3 -- the display becomes a stub"
 	@echo "  TSAN=1       build with the thread sanitizer"
 	@echo "  ASAN=1       build with address/UB sanitizers"
 	@echo "  OPT=-O0      override optimization flags"
 	@echo "  FONT=, SIZE=, LEAD=   inputs to the font target"
 	@echo
-	@echo "SDL3: $(if $(SDL3_LIBS),found -- graphics enabled,not found -- headless build)"
+	@echo "SDL3: $(if $(HAVE_SDL3),found -- graphics enabled,$(if $(HEADLESS),not used -- HEADLESS=1 was asked for,NOT FOUND -- make will stop; run 'make deps'))"
 
 -include $(shell find build -name '*.d' 2>/dev/null)

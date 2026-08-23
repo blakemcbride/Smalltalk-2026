@@ -449,6 +449,47 @@ void    GFX_write_coverage(const char *p) { (void) p; }
 void    GFX_warp_pointer(int x, int y) { warp_locally(x, y); }
 void    GFX_present_if_undoing(const gfx_blit *b) { (void) b; }
 
+/*
+ *  Nothing to adopt.  The other half of this file rebuilds the texture and
+ *  tells the image its screen changed size; here there is no texture and no
+ *  window that could have changed, so a new display Form is simply the
+ *  display Form.  GFX_set_display calls it unconditionally -- it is above
+ *  the #ifdef and belongs to both halves -- so the stub has to exist, and
+ *  its absence is what used to keep a headless build from linking at all.
+ */
+static void
+adopt_display_extent(void)
+{
+}
+
+/*
+ *  main.c prints these after GFX_open succeeds, which here it never does,
+ *  so nothing calls them in this build.  They are still declared in gfx.h
+ *  and referenced from a translation unit that does not know which half was
+ *  compiled, and the linker resolves references, not calls.  The answers
+ *  are the ones gfx.h documents for "before there is a window".
+ */
+int
+GFX_scale(void)
+{
+    return 1;
+}
+
+void
+GFX_window_size(int *width, int *height)
+{
+    if (width)
+        *width = 0;
+    if (height)
+        *height = 0;
+}
+
+const char *
+GFX_presentation(void)
+{
+    return "none -- built without SDL3";
+}
+
 #else   /*  ST_HAVE_SDL3  */
 
 #include <SDL3/SDL.h>

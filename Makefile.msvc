@@ -7,8 +7,9 @@
 # Variables:
 #   OM=bb        16-bit Blue Book object memory (default)
 #   OM=mt        64-bit threaded object memory
-#   SDL3=path    root of an SDL3 development package; without it the
-#                graphics layer builds as a headless stub
+#   SDL3=path    root of an SDL3 development package
+#   HEADLESS=1   build with no display at all; the graphics layer becomes
+#                a stub and this build stops asking for SDL3
 #
 # Requires Visual Studio 2022 version 17.8 or later.  Two reasons, both
 # load-bearing rather than incidental: C11 atomics arrived in 17.5, and the
@@ -24,6 +25,19 @@
 
 !IFNDEF OM
 OM = bb
+!ENDIF
+
+# nmake cannot go looking for SDL3 the way the GNU makefile's pkg-config
+# does -- there is no such convention on Windows -- so SDL3= is how it is
+# told, and an unset SDL3 is indistinguishable from a machine that has
+# none.  It used to build the headless stub without a word either way, so
+# a mistyped path and a missing library produced the same silent result:
+# an st80.exe that opens no window and only says why when you run it.
+# Now it stops, and HEADLESS=1 is how you say you meant it.
+!IFNDEF SDL3
+!IFNDEF HEADLESS
+!ERROR SDL3 not set.  st80 draws its display through SDL3; point SDL3= at an SDL3 development package (the directory holding include\ and lib\), as in: nmake /f Makefile.msvc SDL3=C:\SDL3-3.2.0. Get one from https://libsdl.org/. Or build with no display -- -bootstrap, -eval and -doctests all still work, and st80.exe -run will refuse to open a window and say why -- with: nmake /f Makefile.msvc HEADLESS=1
+!ENDIF
 !ENDIF
 
 CC       = cl
@@ -43,7 +57,10 @@ OMDEF = /DST_OM_MT
 INCLUDES = /Isrc /Isrc\port /Isrc\om /Isrc\interp /Isrc\gfx /Isrc\sched \
            /Isrc\compiler /Isrc\boot /Itests
 
-!IFDEF SDL3
+# HEADLESS wins over SDL3 if both are given: a flag that asks for the stub
+# and quietly builds the window instead cannot be used to reproduce
+# anything.  Same rule as the GNU makefile's.
+!IF defined(SDL3) && !defined(HEADLESS)
 SDLDEF  = /DST_HAVE_SDL3 /I"$(SDL3)\include"
 SDLLIBS = "$(SDL3)\lib\SDL3.lib"
 !ELSE
