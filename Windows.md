@@ -6,12 +6,11 @@ Python, no pkg-config, no vendored dependency to fetch. The font is
 rasterised into `src/gfx/font_face.c` and checked in; the class library is
 plain text in `sources/`, `lib/` and `pharo/`.
 
-**Read this first.** This build is partly proven. A real MSVC has compiled
-the portability layer and the interpreter; the files after those have not
-been through a Windows compiler yet, and the program has never linked or
-run there. The last section says exactly where that line falls. Everything
-below is the build as designed, and where a step is a known rough edge
-rather than a confident instruction, it says so.
+**Read this first.** Every file in this program now compiles under a real
+MSVC, and the link runs. What has not happened yet is `st80.exe` starting,
+opening a window, or bootstrapping an image on Windows — so the build
+instructions below are tested and the runtime ones are not. The last
+section says exactly where that line falls.
 
 ## The short version
 
@@ -345,10 +344,9 @@ what every other platform compiles.
 Listed rather than smoothed over, because a first Windows build should know
 which surprises are already accounted for.
 
-1. **The build has been run on Windows, and has not finished there.** It
-   compiles `src/port` and `src/interp` under MSVC 14.50 and stops
-   somewhere after; every file past that point is still unproven. See
-   below for exactly where the line is.
+1. **It compiles and links; it has not run.** Nothing here has watched
+   `st80.exe` start on Windows, so every claim in section 4 and section 5
+   is still reasoning rather than observation.
 2. **`-profile` needs forward slashes.** `src/boot/profile.c`'s
    `directory_of` and `resolve` are `/`-only, so a backslash path silently
    resolves `#requires` against the wrong directory. Fixing it properly means
@@ -376,7 +374,17 @@ which surprises are already accounted for.
    that is SDL3's `SDL_main.h` wanting it; add `shell32.lib` to the link
    line. It should not, on a console-subsystem build where `SDL_RunApp` lives
    in the DLL, but it is the one plausible missing default library.
-7. **No sanitizer builds.** The GNU makefile's `TSAN=1` and `ASAN=1` have no
+7. **`/W4` noise that is not a defect.** Two shapes survive and both are
+   the compiler being conservative rather than the code being wrong.
+   C4701, "potentially uninitialized local variable 'receiver' used",
+   in `compile_unary_sequence` and `compile_binary_sequence`: `receiver`
+   is read only under `if (sent)`, and `sent` is set only after
+   `mark(c, &receiver)` has run, which MSVC's flow analysis cannot
+   correlate and gcc's can. C4456 and C4457, shadowed declarations, in
+   `interp.c`, `bootstrap.c` and `main.c`. Neither is silenced, because
+   the flag that would silence them would also silence the next one that
+   matters.
+8. **No sanitizer builds.** The GNU makefile's `TSAN=1` and `ASAN=1` have no
    nmake equivalent. MSVC has `/fsanitize=address`; it has no thread
    sanitizer, and the thread sanitizer is the one that matters here — the
    suite is a gate at 31 threads. Use Linux or WSL2 for that.
@@ -388,24 +396,47 @@ though someone ran it.
 
 **Confirmed on Windows, by MSVC 14.50 under Visual Studio 18:**
 
-- `nmake /f Makefile.msvc` parses and runs. The inference rules fire, the
-  batch mode compiles, and the variables reach `cl` — the whole file was
-  written without an nmake to try it on, so this was the open question.
+- `nmake /f Makefile.msvc` parses and runs. The inference rules fire, batch
+  mode compiles, and the variables reach `cl` — the whole file was written
+  without an nmake to try it on, so this was the open question.
+- **Every translation unit compiles**, and the link step runs: `src/port`,
+  `src/interp`, `src/sched`, `src/gfx`, `src/compiler`, `src/boot`, `src/om`
+  and `src/main.c`. The Win32 halves of the portability layer — `SRWLOCK`,
+  `CONDITION_VARIABLE`, `FlsAlloc` — and of `profile.c`'s `FindFirstFileA`
+  walk were written from documentation and had never been compiled.
+- `SDL3=` finds the import library where this file expects it. The link line
+  carries `lib\x64\SDL3.lib` out of libsdl.org's `SDL3-devel-3.4.14-VC`
+  package and the linker does not complain about it — so `SDL3LIB=` is for
+  other layouts and not for that one.
 - `/experimental:c11atomics` is required, and is enough. Without it the build
-  stops at `vcruntime_c11_stdatomic.h(12)` with C1189; with it, the atomics
-  compile.
-- `src/port/st_port.c` compiles clean. That is the Win32 half of the
-  portability layer — `SRWLOCK`, `CONDITION_VARIABLE`, `FlsAlloc` — written
-  from the documentation and never before compiled.
-- `src/interp/interp.c` and `trace.c` compile, with two shadowed-declaration
-  warnings (C4456, C4457) and nothing worse.
-- C4333 on `ST_header_frame_size` was real and is fixed. `cl` was right that
-  a 16-bit `st_oop` shifted right by 16 keeps nothing; it is wrong that the
-  loss is a mistake, because zero is what "frame size not stated" means under
-  `OM=bb`. Widened before the shift rather than silenced.
-- `src/interp/prim.c` did not compile: `<dirent.h>` does not exist on
-  Windows. It now goes through a shim, along with `<unistd.h>`, `pread`,
-  `pwrite`, `ftruncate`, `fstat`, `ssize_t` and `off_t`.
+  stops at `vcruntime_c11_stdatomic.h(12)` with C1189.
+- `shell32.lib` is not needed. The link resolves SDL3's `SDL_main.h` entry
+  point without it.
+
+**Four things it found, all now fixed:**
+
+- **C1083, `dirent.h`.** `src/interp/prim.c`'s file primitives were written
+  straight onto POSIX. They go through a shim now.
+- **C4090, "different `_Atomic` qualifiers"**, five times across `om_mt.c`
+  and `image_mt.c`. `st_om_table` and `st_om_refcounts` point at `_Atomic`
+  objects, and C does not let a qualifier drop silently on the way to
+  `void *` — `free`, `realloc` and `memset` each want the allocation rather
+  than the atomics in it. gcc never mentioned it. Nothing was broken, but
+  five silent qualifier discards in the object memory of a threaded system
+  is not a line to learn to scroll past, so the casts are explicit.
+- **C4244, `uint32_t` to `uint16_t`**, in `-inspect`. A real bug, if a small
+  one: `OM_fetch_word_length` answers `uint32_t` and it was held in a
+  `uint16_t`, which truncated *before* the `if (n > 16)` clamp. An object of
+  exactly 65536 words became zero fields, so the diagnostic reported the one
+  size of object it could not describe as empty. Under `OM=mt` an `Array`
+  that big is ordinary.
+- **C4333, the shift in `ST_header_frame_size`.** Real observation, wrong
+  conclusion: a 16-bit `st_oop` shifted right by 16 does keep nothing, and
+  nothing is what "frame size not stated" means under `OM=bb`. Widened
+  before the shift rather than silenced.
+
+Also **LNK4031**, "no subsystem specified; CONSOLE assumed" — correct guess,
+now named outright, after `/link` because `cl` has no `/SUBSYSTEM` of its own.
 
 **Checked, on Linux:**
 
@@ -430,20 +461,19 @@ though someone ran it.
 
 **Still not checked:**
 
-- **Everything after `src/interp`.** `src/sched`, `src/gfx`, `src/compiler`,
-  `src/boot`, `src/om` and `src/main.c` have not been through a Windows
-  compiler. `src/boot/profile.c`'s `FindFirstFileA` walk is in that set.
-- **The link, and the program.** No `st80.exe` has been produced, so
-  `SDL3.lib`, `SDL_main.h`'s entry point, the `shell32.lib` question and
-  every runtime claim in this document remain untested.
+- **The program has never run on Windows.** No image has been bootstrapped,
+  no window opened, no test suite executed there. Everything in section 4 and
+  section 5 — the forward-slash rule for `-profile`, `SDL3.dll` beside the
+  binary, the display environment variables, `nmake test` — is reasoning from
+  the source rather than something observed.
 - The `prim.c` shim's Windows half specifically: `_open` with `_O_BINARY`,
   `_chsize_s`, `_filelengthi64`, and `ReadFile`/`WriteFile` through an
-  `OVERLAPPED`. The POSIX half is exercised by the whole test suite; the
-  Win32 half is exercised by nothing yet.
-- The remaining MSVC-specific flags — `/MD`, `/Fd`,
-  `/D_CRT_DECLARE_NONSTDC_NAMES=1` — are from the documented behaviour of
-  `cl` rather than from a build log.
+  `OVERLAPPED`. The POSIX half is exercised by the whole test suite and by a
+  direct end-to-end check; the Win32 half is exercised by nothing yet. If an
+  image written on Windows reads back short, this is the first place to look.
+- Whether `-run` opens a window at all, which is the largest single untested
+  claim in this document.
 
-The next build will probably turn up something. If it does, that is the
+The next step will probably turn up something. If it does, that is the
 document doing its job; please report it at
 <https://github.com/blakemcbride/Smalltalk-2026>.

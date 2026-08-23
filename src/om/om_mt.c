@@ -429,7 +429,21 @@ OM_init(void)
     st_om_refcounts = (st_atomic_uint *) calloc(ST_OM_MAX_OBJECTS,
                                                sizeof *st_om_refcounts);
     if (!st_om_refcounts) {
-        free(st_om_table);
+        /*
+         *  (void *) said out loud, here and at the three below.
+         *
+         *  st_om_table and st_om_refcounts point at _Atomic objects, and C
+         *  will not quietly drop a qualifier on the way to void * -- the
+         *  conversion is a constraint violation and a compiler is entitled
+         *  to say so.  gcc does not; MSVC answers C4090, "different
+         *  '_Atomic' qualifiers", once per call.  Nothing is wrong: free
+         *  and realloc want the allocation, not the objects in it.  But
+         *  "the object memory of a threaded system discards an _Atomic
+         *  qualifier five times" is not a line anyone should learn to scroll
+         *  past, so the cast makes it deliberate.  memset((void *)
+         *  worker_epoch, ...) below already did.
+         */
+        free((void *) st_om_table);
         st_om_table = NULL;
         return -1;
     }
@@ -465,9 +479,9 @@ OM_shutdown(void)
 
         for (i = 0; i < limit; ++i)
             free(OM_table_get(i));
-        free(st_om_table);
+        free((void *) st_om_table);
     }
-    free(st_om_refcounts);
+    free((void *) st_om_refcounts);
     st_om_refcounts = NULL;
     st_om_table       = NULL;
     st_om_table_size  = 0;

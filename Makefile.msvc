@@ -103,6 +103,20 @@ CFLAGS   = /nologo /std:c11 $(ATOMICS) /W4 /O2 /MD /Zi /Fd$(PDB) \
            /D_CRT_DECLARE_NONSTDC_NAMES=1
 LDFLAGS  = /nologo
 
+#
+#  /SUBSYSTEM:CONSOLE, said rather than assumed.  st80 is a console
+#  program that also opens a window, and SDL3's SDL_main.h supplies a
+#  main() for the console subsystem and a WinMain() for the windowed
+#  one.  With neither named the linker guesses -- correctly, and with
+#  LNK4031 to say it was guessing.
+#
+#  It goes AFTER /link and after the inputs, because that is the only
+#  place cl passes an option through instead of rejecting it: cl has
+#  no /SUBSYSTEM of its own and answers D9002 for one on its own
+#  command line.
+#
+LINKOPT  = /link /SUBSYSTEM:CONSOLE
+
 !IF "$(OM)" == "bb"
 OMDEF = /DST_OM_BB
 !ELSE
@@ -192,7 +206,7 @@ $(BUILD):
 
 $(BIN): $(BUILD) $(OBJ) src\main.c
 	$(CC) $(CFLAGS) $(CPPFLAGS) /c /Fo$(BUILD)\ src\main.c
-	$(CC) $(LDFLAGS) /Fe$(BIN) $(BUILD)\main.obj $(OBJ) $(SDLLIBS)
+	$(CC) $(LDFLAGS) /Fe$(BIN) $(BUILD)\main.obj $(OBJ) $(SDLLIBS) $(LINKOPT)
 
 #
 #  Every suite, not a chosen two.  Each one is wrapped in #ifdef ST_OM_MT or
@@ -214,37 +228,37 @@ $(BIN): $(BUILD) $(OBJ) src\main.c
 BUILDTEST = $(CC) /Fe$(BUILD)\ /Fo$(BUILD)\ $(CFLAGS) $(CPPFLAGS)
 
 test: $(BIN)
-	$(BUILDTEST) tests\unit\test_port.c $(OBJ) $(SDLLIBS)
+	$(BUILDTEST) tests\unit\test_port.c $(OBJ) $(SDLLIBS) $(LINKOPT)
 	$(BUILD)\test_port.exe
-	$(BUILDTEST) tests\unit\test_compiler.c $(OBJ) $(SDLLIBS)
+	$(BUILDTEST) tests\unit\test_compiler.c $(OBJ) $(SDLLIBS) $(LINKOPT)
 	$(BUILD)\test_compiler.exe
-	$(BUILDTEST) tests\unit\test_tonel.c $(OBJ) $(SDLLIBS)
+	$(BUILDTEST) tests\unit\test_tonel.c $(OBJ) $(SDLLIBS) $(LINKOPT)
 	$(BUILD)\test_tonel.exe
-	$(BUILDTEST) tests\unit\test_om_bb.c $(OBJ) $(SDLLIBS)
+	$(BUILDTEST) tests\unit\test_om_bb.c $(OBJ) $(SDLLIBS) $(LINKOPT)
 	$(BUILD)\test_om_bb.exe
-	$(BUILDTEST) tests\unit\test_om_mt.c $(OBJ) $(SDLLIBS)
+	$(BUILDTEST) tests\unit\test_om_mt.c $(OBJ) $(SDLLIBS) $(LINKOPT)
 	$(BUILD)\test_om_mt.exe
-	$(BUILDTEST) tests\unit\test_image.c $(OBJ) $(SDLLIBS)
+	$(BUILDTEST) tests\unit\test_image.c $(OBJ) $(SDLLIBS) $(LINKOPT)
 	$(BUILD)\test_image.exe
-	$(BUILDTEST) tests\unit\test_trace.c $(OBJ) $(SDLLIBS)
+	$(BUILDTEST) tests\unit\test_trace.c $(OBJ) $(SDLLIBS) $(LINKOPT)
 	$(BUILD)\test_trace.exe
-	$(BUILDTEST) tests\unit\test_primitives.c $(OBJ) $(SDLLIBS)
+	$(BUILDTEST) tests\unit\test_primitives.c $(OBJ) $(SDLLIBS) $(LINKOPT)
 	$(BUILD)\test_primitives.exe
-	$(BUILDTEST) tests\unit\test_bootstrap.c $(OBJ) $(SDLLIBS)
+	$(BUILDTEST) tests\unit\test_bootstrap.c $(OBJ) $(SDLLIBS) $(LINKOPT)
 	$(BUILD)\test_bootstrap.exe
-	$(BUILDTEST) tests\unit\test_library.c $(OBJ) $(SDLLIBS)
+	$(BUILDTEST) tests\unit\test_library.c $(OBJ) $(SDLLIBS) $(LINKOPT)
 	$(BUILD)\test_library.exe
-	$(BUILDTEST) tests\unit\test_desktop.c $(OBJ) $(SDLLIBS)
+	$(BUILDTEST) tests\unit\test_desktop.c $(OBJ) $(SDLLIBS) $(LINKOPT)
 	$(BUILD)\test_desktop.exe
-	$(BUILDTEST) tests\unit\test_parallel.c $(OBJ) $(SDLLIBS)
+	$(BUILDTEST) tests\unit\test_parallel.c $(OBJ) $(SDLLIBS) $(LINKOPT)
 	$(BUILD)\test_parallel.exe
-	$(BUILDTEST) tests\unit\test_parallel_interp.c $(OBJ) $(SDLLIBS)
+	$(BUILDTEST) tests\unit\test_parallel_interp.c $(OBJ) $(SDLLIBS) $(LINKOPT)
 	$(BUILD)\test_parallel_interp.exe
-	$(BUILDTEST) tests\unit\test_parallel_lib.c $(OBJ) $(SDLLIBS)
+	$(BUILDTEST) tests\unit\test_parallel_lib.c $(OBJ) $(SDLLIBS) $(LINKOPT)
 	$(BUILD)\test_parallel_lib.exe
-	$(BUILDTEST) tests\unit\test_parallel_mvc.c $(OBJ) $(SDLLIBS)
+	$(BUILDTEST) tests\unit\test_parallel_mvc.c $(OBJ) $(SDLLIBS) $(LINKOPT)
 	$(BUILD)\test_parallel_mvc.exe
-	$(BUILDTEST) tests\unit\test_parallel_processes.c $(OBJ) $(SDLLIBS)
+	$(BUILDTEST) tests\unit\test_parallel_processes.c $(OBJ) $(SDLLIBS) $(LINKOPT)
 	$(BUILD)\test_parallel_processes.exe
 
 clean:

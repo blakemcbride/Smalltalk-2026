@@ -1579,8 +1579,16 @@ do_inspect(const char *path, const char *oop_text)
         OM_string_of(p, name, sizeof name);
         printf("as text        : \"%s\"\n", name);
     }  else  {
-        uint16_t    n = OM_fetch_word_length(p);
-        uint16_t    i;
+        /*
+         *  uint32_t, because that is what OM_fetch_word_length answers.
+         *  Held in a uint16_t it was truncated BEFORE the clamp below, so
+         *  an object of exactly 65536 words became zero and -inspect
+         *  printed no fields at all for it -- the one size where the
+         *  diagnostic silently says the object is empty.  MSVC C4244 found
+         *  it; under OM=mt an Array that big is ordinary.
+         */
+        uint32_t    n = OM_fetch_word_length(p);
+        uint32_t    i;
 
         if (n > 16)
             n = 16;

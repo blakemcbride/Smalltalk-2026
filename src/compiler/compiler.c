@@ -2800,7 +2800,10 @@ discard_statement_value(st_compiler *c)
      *  the current end means these bytes are a target and must not move.
      */
     if (c->store_end == c->out->length && c->store_end != NO_STORE) {
-        c->out->length = c->store_at;
+        /*  store_at is a size_t and length is unsigned; a method's bytecodes
+         *  do not approach 4 GB, so the cast is the narrowing said out loud
+         *  rather than a bound being asserted.  MSVC C4267.  */
+        c->out->length = (unsigned) c->store_at;
         c->store_end   = NO_STORE;
         switch (c->store_kind) {
         case STORE_TEMPORARY:

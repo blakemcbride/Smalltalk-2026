@@ -259,7 +259,10 @@ OM_image_load(const char *path, char *errbuf, size_t errlen)
      *  every stored pointer valid.
      */
     while (st_om_table_size < limit) {
-        st_atomic_ptr  *grown = (st_atomic_ptr *) realloc(st_om_table,
+        /*  (void *) for the same reason as om_mt.c's frees: the qualifier
+         *  is not droppable in silence, and realloc wants the allocation
+         *  rather than the atomics inside it.  */
+        st_atomic_ptr  *grown = (st_atomic_ptr *) realloc((void *) st_om_table,
                                     (size_t) st_om_table_size * 2
                                         * sizeof *grown);
 
@@ -268,7 +271,7 @@ OM_image_load(const char *path, char *errbuf, size_t errlen)
             fclose(f);
             return -1;
         }
-        memset(grown + st_om_table_size, 0,
+        memset((void *) (grown + st_om_table_size), 0,
                (size_t) st_om_table_size * sizeof *grown);
         st_om_table = grown;
         st_om_table_size *= 2;
