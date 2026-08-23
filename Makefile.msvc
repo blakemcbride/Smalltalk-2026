@@ -89,8 +89,18 @@ ATOMICS =
 #  so.  doc/PORTABILITY.md says strdup appears nowhere under src/; that
 #  stopped being true and this is the flag that covers for it.
 #
+#  _CRT_DECLARE_NONSTDC_NAMES=1 is the one that decides whether those
+#  names EXIST, which is a different question from whether using them
+#  warns.  The CRT hides the POSIX spellings -- strdup, struct stat,
+#  S_IFDIR, open, close -- when __STDC__ is 1, and /std:c11 is one of
+#  the ways __STDC__ becomes 1.  src/main.c and src/boot/profile.c want
+#  struct stat and S_IFDIR by those names.  Asking for them explicitly
+#  costs nothing where they were already declared and is the difference
+#  between building and not where they were not.
+#
 CFLAGS   = /nologo /std:c11 $(ATOMICS) /W4 /O2 /MD /Zi /Fd$(PDB) \
-           /D_CRT_SECURE_NO_WARNINGS /D_CRT_NONSTDC_NO_WARNINGS
+           /D_CRT_SECURE_NO_WARNINGS /D_CRT_NONSTDC_NO_WARNINGS \
+           /D_CRT_DECLARE_NONSTDC_NAMES=1
 LDFLAGS  = /nologo
 
 !IF "$(OM)" == "bb"

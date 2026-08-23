@@ -6,11 +6,12 @@ Python, no pkg-config, no vendored dependency to fetch. The font is
 rasterised into `src/gfx/font_face.c` and checked in; the class library is
 plain text in `sources/`, `lib/` and `pharo/`.
 
-**Read this first.** The Windows half of the portability layer is written
-from the documented Win32 APIs and has never been compiled on a Windows
-machine — see the last section, which says exactly what has been checked and
-how. Everything below is the build as designed. Where a step is a known
-rough edge rather than a confident instruction, it says so.
+**Read this first.** This build is partly proven. A real MSVC has compiled
+the portability layer and the interpreter; the files after those have not
+been through a Windows compiler yet, and the program has never linked or
+run there. The last section says exactly where that line falls. Everything
+below is the build as designed, and where a step is a known rough edge
+rather than a confident instruction, it says so.
 
 ## The short version
 
@@ -39,6 +40,10 @@ of the C11 support this code leans on settled in 17.8. `src/port/st_atomic.h`
 includes `<stdatomic.h>` directly and `_Atomic int64_t` appears in it, so
 there is no path through this build that avoids the question.
 
+Newer is fine and does not change the flag below: this has been run
+against MSVC 14.50 under Visual Studio 18, which still keeps C11 atomics
+behind `/experimental:c11atomics`.
+
 **Use the x64 prompt.** The Start menu offers several; the one you want is
 *x64 Native Tools Command Prompt for VS 2022*. The plain *Developer Command
 Prompt* targets x86, and since the build links `lib\x64\SDL3.lib` the link
@@ -51,9 +56,18 @@ LNK1112: module machine type 'x64' conflicts with target machine type 'x86'
 which names the symptom and not the wrong shortcut that caused it.
 
 **`/experimental:c11atomics`.** `cl` still keeps C11 atomics behind that
-flag — `<stdatomic.h>` is a compile error without it, which is not what "MSVC
-has supported C11 atomics since 17.5" leads anyone to expect. `Makefile.msvc`
-sets it for `cl` and not for anything else.
+flag, which is not what "MSVC has supported C11 atomics since 17.5" leads
+anyone to expect. Without it the build stops on the first file that
+includes `st_atomic.h`:
+
+```
+vcruntime_c11_stdatomic.h(12): fatal error C1189: #error:
+    "C atomic support is not enabled"
+```
+
+`Makefile.msvc` sets it for `cl` and not for anything else. If `cl` ever
+answers `D9002: ignoring unknown option` for it and then fails the same
+way, the flag has been renamed and this is the line to change.
 
 **clang-cl** works and is what most portable C projects reach for on Windows,
 since it brings the full GCC and Clang atomics with it. It ships inside the
@@ -306,6 +320,7 @@ wrong is in this list.
 |---|---|
 | `src/port/st_port.h`, `.c` | The whole threading layer forks here on `_WIN32`. Threads, mutexes and condition variables become `CreateThread`, `SRWLOCK` and `CONDITION_VARIABLE`. Thread-local storage is **fibre**-local: `FlsAlloc` is the only Win32 flavour that takes a destructor callback, which is what `pthread_key_create` provides on the other side. |
 | `src/boot/profile.c` | Directory walking forks on `_WIN32`: `FindFirstFileA`/`FindNextFileA` where POSIX gets `opendir`/`readdir`. Path *splitting* does not fork — see above. |
+| `src/interp/prim.c` | The 1983 File and FilePage primitives — open, close, size, read a page, write a page, truncate, list a directory. POSIX answers all seven directly; Windows answers none of them under those names, so they go through a shim at the top of the file's primitive section. `pread`/`pwrite` become `ReadFile`/`WriteFile` with the offset in an `OVERLAPPED`, which is positional in the same way and is not the same thing as seeking first. Every `_open` carries `_O_BINARY`: MSVC's defaults to text mode, and these primitives carry image pages. |
 | `src/port/st_atomic.h` | `<stdatomic.h>` directly. Two self-imposed limits keep every operation lock-free everywhere: only naturally-aligned int-, bool- and pointer-sized types, and never `_Atomic` on a struct. |
 | `src/main.c` | Includes `<SDL3/SDL_main.h>` so SDL can stand up the process entry point. Thread 0 is a dedicated SDL pump that never executes Smalltalk; threads 1..N are Smalltalk workers and never call SDL video. SDL3's main-thread rules force this shape. See [`doc/CONCURRENCY.md`](doc/CONCURRENCY.md). |
 | everywhere | Every file that holds binary — images, `.st` sources, chunk files, Tonel files, screenshots — is opened `"rb"` or `"wb"`. The two text-mode opens are the manifest readers in `main.c` and `profile.c`, one path per line, and both strip CR themselves anyway. |
@@ -330,7 +345,10 @@ what every other platform compiles.
 Listed rather than smoothed over, because a first Windows build should know
 which surprises are already accounted for.
 
-1. **None of this has been compiled on Windows.** See below.
+1. **The build has been run on Windows, and has not finished there.** It
+   compiles `src/port` and `src/interp` under MSVC 14.50 and stops
+   somewhere after; every file past that point is still unproven. See
+   below for exactly where the line is.
 2. **`-profile` needs forward slashes.** `src/boot/profile.c`'s
    `directory_of` and `resolve` are `/`-only, so a backslash path silently
    resolves `#requires` against the wrong directory. Fixing it properly means
@@ -346,11 +364,19 @@ which surprises are already accounted for.
    nowhere under `src/`; three files call it. MSVC declares it and links it,
    deprecated in favour of `_strdup`, so the build sets
    `_CRT_NONSTDC_NO_WARNINGS` rather than leaving a run of C4996 under `/W4`.
-5. **`shell32.lib`.** If the link ever fails on `__imp_CommandLineToArgvW`,
+5. **The CRT's POSIX names.** `strdup`, `struct stat` and `S_IFDIR` are
+   used by `src/main.c` and `src/boot/profile.c` under those spellings,
+   and the CRT hides them when `__STDC__` is 1 — which `/std:c11` is one
+   way of causing. The build asks for them with
+   `/D_CRT_DECLARE_NONSTDC_NAMES=1`, which is free where they were
+   already declared. If a future CRT drops that switch, the answer is
+   the underscore spellings, which is what the `prim.c` shim already
+   uses for exactly this reason.
+6. **`shell32.lib`.** If the link ever fails on `__imp_CommandLineToArgvW`,
    that is SDL3's `SDL_main.h` wanting it; add `shell32.lib` to the link
    line. It should not, on a console-subsystem build where `SDL_RunApp` lives
    in the DLL, but it is the one plausible missing default library.
-6. **No sanitizer builds.** The GNU makefile's `TSAN=1` and `ASAN=1` have no
+7. **No sanitizer builds.** The GNU makefile's `TSAN=1` and `ASAN=1` have no
    nmake equivalent. MSVC has `/fsanitize=address`; it has no thread
    sanitizer, and the thread sanitizer is the one that matters here — the
    suite is a gate at 31 threads. Use Linux or WSL2 for that.
@@ -360,29 +386,64 @@ which surprises are already accounted for.
 Honest accounting, because the alternative is a document that reads as
 though someone ran it.
 
+**Confirmed on Windows, by MSVC 14.50 under Visual Studio 18:**
+
+- `nmake /f Makefile.msvc` parses and runs. The inference rules fire, the
+  batch mode compiles, and the variables reach `cl` — the whole file was
+  written without an nmake to try it on, so this was the open question.
+- `/experimental:c11atomics` is required, and is enough. Without it the build
+  stops at `vcruntime_c11_stdatomic.h(12)` with C1189; with it, the atomics
+  compile.
+- `src/port/st_port.c` compiles clean. That is the Win32 half of the
+  portability layer — `SRWLOCK`, `CONDITION_VARIABLE`, `FlsAlloc` — written
+  from the documentation and never before compiled.
+- `src/interp/interp.c` and `trace.c` compile, with two shadowed-declaration
+  warnings (C4456, C4457) and nothing worse.
+- C4333 on `ST_header_frame_size` was real and is fixed. `cl` was right that
+  a 16-bit `st_oop` shifted right by 16 keeps nothing; it is wrong that the
+  loss is a mistake, because zero is what "frame size not stated" means under
+  `OM=bb`. Widened before the shift rather than silenced.
+- `src/interp/prim.c` did not compile: `<dirent.h>` does not exist on
+  Windows. It now goes through a shim, along with `<unistd.h>`, `pread`,
+  `pwrite`, `ftruncate`, `fstat`, `ssize_t` and `off_t`.
+
 **Checked, on Linux:**
 
 - The object list in `Makefile.msvc` is complete. Exactly the set it names,
   plus `src/main.c`, compiles and links clean with gcc under both `OM=mt` and
   `OM=bb`. The list it named before this document was written produced 40
   undefined references.
+- The `prim.c` shim is behaviour-identical to what it replaced. Both memories
+  build warning-clean, all sixteen unit suites and all five imported-package
+  suites pass at their recorded scores, and the file primitives were driven
+  end to end from inside the image: a 2000-byte file written across four
+  pages through `pwrite` is byte-for-byte what Smalltalk was asked to write
+  when read back from outside; the directory listing finds it; the size
+  primitive answers 2000. Where behaviour looked odd — `newFileNamed:` not
+  truncating, `doCommand: 2` not shortening a file — the committed code
+  before the shim does exactly the same thing, so it is 1983's business and
+  not the shim's.
 - The platform-specific claims above were read out of the source, not
   recalled: the `_WIN32` branches in `st_port.h`/`.c` and `profile.c`, the
   `/`-only path splitting, the `fopen` modes, the `#ifdef ST_OM_*` guard in
   every unit suite.
 
-**Not checked:**
+**Still not checked:**
 
-- **No Windows machine has compiled any of this.** Not `Makefile.msvc`, not
-  the Win32 half of `src/port/st_port.c`, not the `FindFirstFileA` walk in
-  `src/boot/profile.c`. `doc/PORTABILITY.md` has said so since the
-  portability work landed and it is still true.
-- nmake syntax has not been run through nmake. The percent-sign escaping
-  question is the reason the `test` target is written out one suite per line
-  instead of looped.
-- The MSVC-specific flags — `/experimental:c11atomics`, `/MD`, `/Fd` — are
-  from the documented behaviour of `cl`, not from a build log.
+- **Everything after `src/interp`.** `src/sched`, `src/gfx`, `src/compiler`,
+  `src/boot`, `src/om` and `src/main.c` have not been through a Windows
+  compiler. `src/boot/profile.c`'s `FindFirstFileA` walk is in that set.
+- **The link, and the program.** No `st80.exe` has been produced, so
+  `SDL3.lib`, `SDL_main.h`'s entry point, the `shell32.lib` question and
+  every runtime claim in this document remain untested.
+- The `prim.c` shim's Windows half specifically: `_open` with `_O_BINARY`,
+  `_chsize_s`, `_filelengthi64`, and `ReadFile`/`WriteFile` through an
+  `OVERLAPPED`. The POSIX half is exercised by the whole test suite; the
+  Win32 half is exercised by nothing yet.
+- The remaining MSVC-specific flags — `/MD`, `/Fd`,
+  `/D_CRT_DECLARE_NONSTDC_NAMES=1` — are from the documented behaviour of
+  `cl` rather than from a build log.
 
-The first build on this platform will almost certainly turn up something.
-If it does, that is the document doing its job; please report it at
+The next build will probably turn up something. If it does, that is the
+document doing its job; please report it at
 <https://github.com/blakemcbride/Smalltalk-2026>.

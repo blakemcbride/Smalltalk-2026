@@ -15,12 +15,25 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <unistd.h>
 #include <sys/stat.h>
 #include <math.h>
+
+/*
+ *  <dirent.h> and <unistd.h> are POSIX and Windows has neither.  Everything
+ *  this file wants from them is behind the shim further down -- see
+ *  "The file system, on two systems" -- and these are the headers each side
+ *  needs to build it.
+ */
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <io.h>
+#else
+#include <dirent.h>
+#include <unistd.h>
+#endif
 
 /*  ----------  Argument helpers  ----------  */
 
@@ -1282,6 +1295,230 @@ primitive_copy_bits(void)
  *      FilePage    file page binary
  *      PosixFilePage ... then pageNumber bytesInPage
  */
+/*
+ *  ----------  The file system, on two systems  ----------
+ *
+ *  These primitives are the 1983 File and FilePage protocol, and 1983 wrote
+ *  it against a descriptor: open, close, size, read a page, write a page,
+ *  truncate after a page, and list a directory.  POSIX answers all seven
+ *  directly.  Windows answers none of them under those names -- there is no
+ *  <dirent.h>, no <unistd.h>, and no pread or pwrite at all.
+ *
+ *  So the seven live here once each, and the primitive bodies below read the
+ *  same on both platforms.  Three of the translations are worth stating,
+ *  because each is a bug if it is done the obvious way instead:
+ *
+ *  _O_BINARY, ALWAYS.  MSVC's _open defaults to TEXT mode, which turns \n
+ *  into \r\n on the way out, turns it back on the way in, and stops reading
+ *  at the first 0x1A.  These primitives carry image pages -- snapshot.im
+ *  goes through them -- so text mode is not a formatting difference, it is
+ *  a corrupted image that reads back shorter than it was written.
+ *
+ *  POSITIONAL READS STAY POSITIONAL.  pread and pwrite take an offset and
+ *  do not disturb the file pointer, which is what lets two workers hold the
+ *  same file without a lock between them.  Seeking and then reading is two
+ *  operations and a race.  Win32 has the same thing without the same name:
+ *  ReadFile and WriteFile take the offset in an OVERLAPPED, and on a handle
+ *  that was not opened FILE_FLAG_OVERLAPPED they complete synchronously at
+ *  that offset.  That is the translation, and _lseeki64 plus _read is not.
+ *
+ *  SIZE COMES FROM THE DESCRIPTOR, IN 64 BITS.  _filelengthi64 rather than
+ *  fstat, which spares us MSVC's struct _stat / struct _stat64 question and
+ *  answers past 2 GB on both.
+ *
+ *  The directory walk is FindFirstFileA, the same one src/boot/profile.c
+ *  already carries for #packages.  Two copies, and this is the second; if a
+ *  third is ever wanted, that is the moment it belongs in src/port.
+ */
+
+#define ST_OPEN_RDONLY      0
+#define ST_OPEN_RDWR        1
+#define ST_OPEN_RDWR_CREATE 2
+
+#if defined(_WIN32)
+
+typedef struct {
+    HANDLE              h;
+    WIN32_FIND_DATAA    data;
+    int                 pending;    /*  FindFirstFile already fetched one  */
+} st_dir;
+
+static int
+st_file_open(const char *path, int mode)
+{
+    switch (mode) {
+    case ST_OPEN_RDONLY:
+        return _open(path, _O_RDONLY | _O_BINARY);
+    case ST_OPEN_RDWR:
+        return _open(path, _O_RDWR | _O_BINARY);
+    default:
+        return _open(path, _O_RDWR | _O_CREAT | _O_BINARY,
+                     _S_IREAD | _S_IWRITE);
+    }
+}
+
+static void st_file_close(int fd)    { _close(fd); }
+static int64_t st_file_size(int fd)  { return (int64_t) _filelengthi64(fd); }
+
+static int
+st_file_truncate(int fd, int64_t end)
+{
+    /*  _chsize_s answers an errno_t, zero on success, not -1 on failure.  */
+    return _chsize_s(fd, end) == 0 ? 0 : -1;
+}
+
+/*  The offset goes in the OVERLAPPED; nothing here touches the pointer.  */
+static void
+win_overlapped(OVERLAPPED *ov, int64_t off)
+{
+    memset(ov, 0, sizeof *ov);
+    ov->Offset     = (DWORD) ((uint64_t) off & 0xFFFFFFFFu);
+    ov->OffsetHigh = (DWORD) (((uint64_t) off >> 32) & 0xFFFFFFFFu);
+}
+
+static int64_t
+st_file_pread(int fd, void *buf, size_t count, int64_t off)
+{
+    HANDLE      h = (HANDLE) _get_osfhandle(fd);
+    OVERLAPPED  ov;
+    DWORD       got = 0;
+
+    if (h == INVALID_HANDLE_VALUE) {
+        errno = EBADF;
+        return -1;
+    }
+    win_overlapped(&ov, off);
+    if (!ReadFile(h, buf, (DWORD) count, &got, &ov)) {
+        /*  Reading at or past the end is an end, not a fault -- which is
+         *  what a POSIX pread answers 0 for.  */
+        if (GetLastError() == ERROR_HANDLE_EOF)
+            return 0;
+        errno = EIO;
+        return -1;
+    }
+    return (int64_t) got;
+}
+
+static int64_t
+st_file_pwrite(int fd, const void *buf, size_t count, int64_t off)
+{
+    HANDLE      h = (HANDLE) _get_osfhandle(fd);
+    OVERLAPPED  ov;
+    DWORD       put = 0;
+
+    if (h == INVALID_HANDLE_VALUE) {
+        errno = EBADF;
+        return -1;
+    }
+    win_overlapped(&ov, off);
+    if (!WriteFile(h, buf, (DWORD) count, &put, &ov)) {
+        errno = EIO;
+        return -1;
+    }
+    return (int64_t) put;
+}
+
+static int
+st_dir_open(st_dir *d, const char *path)
+{
+    char    pattern[1024];
+
+    snprintf(pattern, sizeof pattern, "%s\\*", path);
+    d->h = FindFirstFileA(pattern, &d->data);
+    if (d->h == INVALID_HANDLE_VALUE) {
+        errno = ENOENT;
+        return 0;
+    }
+    d->pending = 1;
+    return 1;
+}
+
+static const char *
+st_dir_next(st_dir *d)
+{
+    if (d->pending) {
+        d->pending = 0;
+        return d->data.cFileName;
+    }
+    if (!FindNextFileA(d->h, &d->data))
+        return NULL;
+    return d->data.cFileName;
+}
+
+static void
+st_dir_close(st_dir *d)
+{
+    if (d->h != INVALID_HANDLE_VALUE)
+        FindClose(d->h);
+}
+
+#else   /*  POSIX  */
+
+typedef struct { DIR *d; } st_dir;
+
+static int
+st_file_open(const char *path, int mode)
+{
+    switch (mode) {
+    case ST_OPEN_RDONLY:    return open(path, O_RDONLY);
+    case ST_OPEN_RDWR:      return open(path, O_RDWR);
+    default:                return open(path, O_RDWR | O_CREAT, 0666);
+    }
+}
+
+static void st_file_close(int fd)   { close(fd); }
+
+static int64_t
+st_file_size(int fd)
+{
+    struct stat st;
+
+    if (fstat(fd, &st) != 0)
+        return -1;
+    return (int64_t) st.st_size;
+}
+
+static int
+st_file_truncate(int fd, int64_t end)
+{
+    return ftruncate(fd, (off_t) end) == 0 ? 0 : -1;
+}
+
+static int64_t
+st_file_pread(int fd, void *buf, size_t count, int64_t off)
+{
+    return (int64_t) pread(fd, buf, count, (off_t) off);
+}
+
+static int64_t
+st_file_pwrite(int fd, const void *buf, size_t count, int64_t off)
+{
+    return (int64_t) pwrite(fd, buf, count, (off_t) off);
+}
+
+static int
+st_dir_open(st_dir *d, const char *path)
+{
+    d->d = opendir(path);
+    return d->d != NULL;
+}
+
+static const char *
+st_dir_next(st_dir *d)
+{
+    struct dirent *entry = readdir(d->d);
+
+    return entry ? entry->d_name : NULL;
+}
+
+static void
+st_dir_close(st_dir *d)
+{
+    closedir(d->d);
+}
+
+#endif  /*  _WIN32  */
+
 #define FILE_NAME_FIELD         1
 #define POSIX_FD_FIELD          8
 #define PAGE_BUFFER_FIELD       1
@@ -1373,7 +1610,7 @@ posix_own(int fd)
     if (fd < 0)
         return fd;
     if (fd >= POSIX_MAX_FD) {           /*  further than we can vouch for  */
-        close(fd);
+        st_file_close(fd);
         posix_errno = EMFILE;
         return -1;
     }
@@ -1417,9 +1654,9 @@ posix_fd_for(st_oop file, int for_writing)
     if (!c_from_string(OM_fetch_pointer(FILE_NAME_FIELD, file),
                        path, sizeof path))
         return -1;
-    fd = open(path, for_writing ? (O_RDWR | O_CREAT) : O_RDWR, 0666);
+    fd = st_file_open(path, for_writing ? ST_OPEN_RDWR_CREATE : ST_OPEN_RDWR);
     if (fd < 0 && !for_writing)
-        fd = open(path, O_RDONLY);      /*  readable is enough  */
+        fd = st_file_open(path, ST_OPEN_RDONLY);  /*  readable is enough  */
     if (fd < 0) {
         posix_errno = errno;
         return -1;
@@ -1471,9 +1708,9 @@ primitive_file_command(void)
          *  meant `snapshot.im open: No such file or directory' -- the file
          *  being made could never be made.
          */
-        fd = open(path, O_RDWR | O_CREAT, 0666);
+        fd = st_file_open(path, ST_OPEN_RDWR_CREATE);
         if (fd < 0)
-            fd = open(path, O_RDONLY);          /*  readable is enough  */
+            fd = st_file_open(path, ST_OPEN_RDONLY);  /*  readable is enough  */
         if (fd < 0 || posix_own(fd) < 0) {
             if (fd >= 0)
                 answer = ST_FALSE;
@@ -1488,7 +1725,7 @@ primitive_file_command(void)
     }
     case 5:                                     /*  close  */
         if (fd >= 0) {
-            close(fd);
+            st_file_close(fd);
             posix_disown(fd);
             OM_store_pointer(POSIX_FD_FIELD, file, ST_NIL);
         }
@@ -1496,22 +1733,22 @@ primitive_file_command(void)
         break;
 
     case 3: {                                   /*  size on disk  */
-        struct stat st;
+        int64_t size = fd < 0 ? -1 : st_file_size(fd);
 
-        if (fd < 0 || fstat(fd, &st) != 0) {
+        if (size < 0) {
             posix_errno = errno;
             answer = ST_FALSE;
             break;
         }
         ST_pop_n(4);
-        ST_push(OM_int_oop((st_int) st.st_size));
+        ST_push(OM_int_oop((st_int) size));
         return 1;
     }
     case 0: {                                   /*  read a page  */
         st_oop      buffer;
         st_oop      number;
         long        n;
-        ssize_t     got;
+        int64_t     got;
         uint32_t    room;
         uint32_t    i;
         char        bytes[POSIX_PAGE_SIZE];
@@ -1527,8 +1764,8 @@ primitive_file_command(void)
         n = (long) OM_int_value(number);
         if (n < 1)
             n = 1;
-        got = pread(fd, bytes, sizeof bytes,
-                    (off_t) ((n - 1) * POSIX_PAGE_SIZE));
+        got = st_file_pread(fd, bytes, sizeof bytes,
+                            (int64_t) (n - 1) * POSIX_PAGE_SIZE);
         if (got < 0) {
             posix_errno = errno;
             answer = ST_FALSE;
@@ -1584,8 +1821,9 @@ primitive_file_command(void)
             bytes[i] = (char) OM_fetch_byte(i, buffer);
         if (n < 1)
             n = 1;
-        if (pwrite(fd, bytes, len, (off_t) ((n - 1) * POSIX_PAGE_SIZE))
-            != (ssize_t) len) {
+        if (st_file_pwrite(fd, bytes, len,
+                           (int64_t) (n - 1) * POSIX_PAGE_SIZE)
+            != (int64_t) len) {
             posix_errno = errno;
             answer = ST_FALSE;
             break;
@@ -1596,13 +1834,13 @@ primitive_file_command(void)
     case 2: {                                   /*  truncate after a page  */
         st_oop  number = OM_is_object(page) && OM_pointer_bit(page)
                        ? OM_fetch_pointer(PAGE_NUMBER_FIELD, page) : ST_NIL;
-        off_t   end = 0;
+        int64_t end = 0;
 
         if (fd < 0)
             return 0;
         if (OM_is_int(number))
-            end = (off_t) (OM_int_value(number) * POSIX_PAGE_SIZE);
-        if (ftruncate(fd, end) != 0) {
+            end = (int64_t) OM_int_value(number) * POSIX_PAGE_SIZE;
+        if (st_file_truncate(fd, end) != 0) {
             posix_errno = errno;
             answer = ST_FALSE;
             break;
@@ -1663,28 +1901,28 @@ primitive_directory_command(void)
         break;
 
     case 3: {                                   /*  the names  */
-        DIR            *dir = opendir(".");
-        struct dirent  *entry;
+        st_dir          dir;
+        const char     *name;
         st_oop          names[4096];
         uint32_t        count = 0;
         uint32_t        i;
         st_oop          array;
 
-        if (!dir) {
+        if (!st_dir_open(&dir, ".")) {
             posix_errno = errno;
             return 0;
         }
-        while ((entry = readdir(dir)) != NULL && count < 4096) {
+        while ((name = st_dir_next(&dir)) != NULL && count < 4096) {
             st_oop  one;
 
-            if (entry->d_name[0] == '.')        /*  no dot files, no . or ..  */
+            if (name[0] == '.')                 /*  no dot files, no . or ..  */
                 continue;
-            one = string_from_c(entry->d_name, strlen(entry->d_name));
+            one = string_from_c(name, strlen(name));
             if (!OM_is_present(one))
                 break;
             names[count++] = one;
         }
-        closedir(dir);
+        st_dir_close(&dir);
         array = OM_instantiate_pointers(ST_CLASS_ARRAY, count);
         if (!OM_is_present(array))
             return 0;
