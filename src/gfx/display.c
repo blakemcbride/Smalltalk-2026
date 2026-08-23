@@ -578,6 +578,48 @@ choose_theme(void)
  *  Every display pixel is then the same size as every other, which is what
  *  a one-bit screen needs to look deliberate.
  */
+/*
+ *  The window's size in PHYSICAL pixels, and the display's pixels-per-point.
+ *
+ *  Everything below counts in pixels, and it used to count in points.
+ *  SDL_GetWindowSize answers screen coordinates, and on a desktop with no
+ *  scaling set a point IS a pixel -- which is why this was invisible on
+ *  Linux for as long as it was, and why the first machine to show it was a
+ *  Windows desktop at other than 100%.
+ *
+ *  There the two diverge, and sizing the Form in points leaves one last hop
+ *  to the panel that nobody here controls: a one-bit image resampled by a
+ *  fraction.  Every display pixel is then NOT the same size as every other,
+ *  which is the single thing choose_presentation below exists to guarantee.
+ *  A 50% stipple is the worst thing to hand such a resample and the best at
+ *  showing it: the desktop background came out evenly dithered down one side
+ *  and washed out down the other.
+ *
+ *  So: one unit in this file, and it is the panel's.
+ */
+static void
+window_pixels(int *w, int *h)
+{
+    int ww = 0, wh = 0;
+
+    if (window)
+        SDL_GetWindowSizeInPixels(window, &ww, &wh);
+    if (w)
+        *w = ww;
+    if (h)
+        *h = wh;
+}
+
+/*  Pixels per point, before there is a window to ask.  1.0 unscaled.  */
+static float
+display_density(void)
+{
+    SDL_DisplayID   id = SDL_GetPrimaryDisplay();
+    float           d  = id ? SDL_GetDisplayContentScale(id) : 0.0f;
+
+    return d > 0.0f ? d : 1.0f;
+}
+
 static int
 choose_scale(int width, int height)
 {
@@ -594,9 +636,26 @@ choose_scale(int width, int height)
     }
     id = SDL_GetPrimaryDisplay();
     if (id != 0 && SDL_GetDisplayUsableBounds(id, &usable)) {
-        while (scale < 4
-            && (scale + 1) * width  <= usable.w * 4 / 5
-            && (scale + 1) * height <= usable.h * 4 / 5)
+        /*
+         *  The bounds come back in points and the scale is counted in
+         *  pixels, so convert once here.  This is what keeps the desktop the
+         *  same PHYSICAL size on a scaled display instead of shrinking it:
+         *  at 150% the answer becomes 3 where it used to be 2, and the extra
+         *  factor is spent on exact pixels rather than on a resample.
+         *
+         *  The ceiling is 8 and was 4.  Four was four points per display
+         *  pixel; in pixels it would be two of them on a 200% desktop, which
+         *  is the cap becoming twice as tight in the units anyone sees.
+         *  Eight restores the reach it had.  The bounds test is what
+         *  actually decides -- no ordinary screen goes near either number.
+         */
+        float   density = display_density();
+        int     uw = (int) (usable.w * density);
+        int     uh = (int) (usable.h * density);
+
+        while (scale < 8
+            && (scale + 1) * width  <= uw * 4 / 5
+            && (scale + 1) * height <= uh * 4 / 5)
             ++scale;
     }
     return scale;
@@ -649,7 +708,7 @@ choose_presentation(int width, int height)
         presentation_note = "integer (forced)";
         return SDL_LOGICAL_PRESENTATION_INTEGER_SCALE;
     }
-    SDL_GetWindowSize(window, &ww, &wh);
+    window_pixels(&ww, &wh);
     if (ww <= 0 || wh <= 0)
         return SDL_LOGICAL_PRESENTATION_INTEGER_SCALE;
     k = ww / width;
@@ -842,7 +901,7 @@ fit_display_to_window(void)
         return;
     if (!window || !renderer || !GFX_form_from_oop(display_form, &form))
         return;
-    SDL_GetWindowSize(window, &ww, &wh);
+    window_pixels(&ww, &wh);
     if (ww <= 0 || wh <= 0)
         return;
     /*
@@ -891,14 +950,33 @@ GFX_open(const char *title, int width, int height, char *errbuf, size_t errlen)
          *  is how that case is reproduced anywhere else -- and how anyone who
          *  wants a particular desktop size can just say so.
          */
-        const char *want = getenv("ST_DISPLAY_WINDOW");
+        const char *want    = getenv("ST_DISPLAY_WINDOW");
+        float       density = display_density();
         int         ww = 0, wh = 0;
 
-        if (want && sscanf(want, "%dx%d", &ww, &wh) == 2 && ww > 0 && wh > 0)
-            window = SDL_CreateWindow(title, ww, wh, SDL_WINDOW_RESIZABLE);
-        else
-            window = SDL_CreateWindow(title, width * scale, height * scale,
-                                      SDL_WINDOW_RESIZABLE);
+        if (!(want && sscanf(want, "%dx%d", &ww, &wh) == 2
+              && ww > 0 && wh > 0)) {
+            ww = width  * scale;
+            wh = height * scale;
+        }
+        /*
+         *  SDL_CreateWindow takes points; the numbers above are pixels, as
+         *  everything in this file now is.  Divide once, here, and let
+         *  SDL_GetWindowSizeInPixels answer for everything after.
+         *  ST_DISPLAY_WINDOW is pixels too, for the same reason.
+         *
+         *  HIGH_PIXEL_DENSITY is what makes the drawable the panel's own
+         *  size rather than a point-sized one the compositor stretches.
+         *  Without it there is nothing this code can do about the last hop,
+         *  because the last hop is not ours.
+         */
+        ww = (int) (ww / density);
+        wh = (int) (wh / density);
+        if (ww < 1) ww = 1;
+        if (wh < 1) wh = 1;
+        window = SDL_CreateWindow(title, ww, wh,
+                                  SDL_WINDOW_RESIZABLE
+                                      | SDL_WINDOW_HIGH_PIXEL_DENSITY);
     }
     if (!window) {
         if (errbuf)
@@ -982,14 +1060,8 @@ GFX_presentation(void)
 void
 GFX_window_size(int *width, int *height)
 {
-    int w = 0, h = 0;
-
-    if (window)
-        SDL_GetWindowSize(window, &w, &h);
-    if (width)
-        *width = w;
-    if (height)
-        *height = h;
+    /*  Pixels, so the startup line reports the unit the scale is in.  */
+    window_pixels(width, height);
 }
 
 /*

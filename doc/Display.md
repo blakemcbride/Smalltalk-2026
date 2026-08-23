@@ -55,12 +55,47 @@ reported and the old letterboxing applies. Any image this system bootstraps is r
 
 | | |
 |---|---|
-| `ST_DISPLAY_SCALE` | screen pixels per display pixel. Dropped automatically if the chosen scale would leave the desktop smaller than the image's own screen |
-| `ST_DISPLAY_WINDOW` | `WxH` — open the window at exactly this size. How a tiling manager's behaviour is reproduced anywhere else |
+| `ST_DISPLAY_SCALE` | **physical** pixels per display pixel. Dropped automatically if the chosen scale would leave the desktop smaller than the image's own screen |
+| `ST_DISPLAY_WINDOW` | `WxH` in **physical** pixels — open the window at exactly this size. How a tiling manager's behaviour is reproduced anywhere else |
 | `ST_DISPLAY_FIT=off` | keep the image's screen size and letterbox it, as before |
 | `ST_DISPLAY_THEME` | `paper` (default), `classic` (pure black on pure white), `dark` |
 | `ST_DISPLAY_PRESENTATION` | `integer`, `letterbox`, `stretch` — only reachable when fitting is off, or the window is smaller than the screen |
 | `ST_DISPLAY_TRACE` | report why a resize was refused |
+
+### Points are not pixels, and the arithmetic counts pixels
+
+Every number above is a count of **physical** pixels on the panel, and for a
+while it was not.
+
+SDL measures windows in screen coordinates — points — and on a desktop with
+no scaling set a point is a pixel, so the two were interchangeable on every
+machine this was developed on. They are not interchangeable on a Windows
+desktop at 125% or 150%, or on a Retina Mac. There the Form was grown to fill
+the window *in points* and something downstream — the compositor, or SDL's
+own renderer — resampled the result up to the panel by a fraction.
+
+That is precisely the thing integer presentation exists to prevent, arrived
+at from underneath: some display pixels ended up 1 physical pixel wide and
+some 2, and no amount of choosing `SDL_LOGICAL_PRESENTATION_INTEGER_SCALE`
+could help, because the fraction was applied after the renderer was done.
+
+A one-bit screen shows this better than anything else could. The desktop
+halftone is an exact 50% checkerboard, and a checkerboard is the worst
+possible input to a fractional resample: the beat between the pattern and
+the sampling grid walks across the screen. It was reported as "the
+background is uneven", which is exactly what it is — evenly dithered down
+one side and washed out down the other.
+
+So the window is created with `SDL_WINDOW_HIGH_PIXEL_DENSITY`, which makes
+the drawable the panel's own size instead of a point-sized surface someone
+else stretches, and every measurement — the fit, the presentation choice,
+the scale, and the size the startup line reports — is
+`SDL_GetWindowSizeInPixels`. The display's own bounds are converted through
+`SDL_GetDisplayContentScale` before a scale is chosen from them, so a dense
+screen answers with a larger integer scale rather than with a fraction.
+
+On an unscaled display none of this changes anything, which is the point: a
+point is a pixel there and every number is what it was.
 
 ## The menus are press-and-hold
 
