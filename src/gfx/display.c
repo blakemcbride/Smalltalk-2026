@@ -424,6 +424,36 @@ GFX_inject_key(unsigned code, int down)
     queue_transition(down ? ST_EVENT_BISTATE_ON : ST_EVENT_BISTATE_OFF, code);
 }
 
+/*
+ *  ----------  The wheel  ----------
+ *
+ *  1983 had three buttons and no wheel, so there is no event word for one
+ *  and no bit of `bitState' that means it.  Inventing either would put a
+ *  transition in the ring for something that is not a transition: a notch is
+ *  an amount, and two notches are twice as much rather than a second edge.
+ *
+ *  So it is a counter the window fills and the image drains -- read once,
+ *  taken away, and any fraction kept for next time.  A notched mouse reports
+ *  a whole 1.0 and a trackpad reports a tenth of one at a time; both add up
+ *  here, and neither is rounded away.
+ */
+static float    wheel_pending;
+
+void
+GFX_inject_wheel(int notches)
+{
+    wheel_pending += (float) notches;
+}
+
+int
+GFX_wheel_take(void)
+{
+    int whole = (int) wheel_pending;        /*  toward zero, either sign  */
+
+    wheel_pending -= (float) whole;
+    return whole;
+}
+
 #ifndef ST_HAVE_SDL3
 
 /*  ----------  Headless build  ----------  */
@@ -1719,6 +1749,16 @@ GFX_pump(void)
 
         case SDL_EVENT_MOUSE_MOTION:
             handle_mouse_motion(event.motion.x, event.motion.y);
+            break;
+
+        /*
+         *  Away from the user is up, and FLIPPED means the window system has
+         *  already reversed it for the user's preference -- so put it back
+         *  and let one sign mean one direction everywhere.
+         */
+        case SDL_EVENT_MOUSE_WHEEL:
+            wheel_pending += (event.wheel.direction == SDL_MOUSEWHEEL_FLIPPED)
+                           ? -event.wheel.y : event.wheel.y;
             break;
 
         case SDL_EVENT_MOUSE_BUTTON_DOWN:

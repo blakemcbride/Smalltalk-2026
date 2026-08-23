@@ -109,7 +109,8 @@ usage(const char *argv0)
     printf("  -run <image> [n]      run the image, opening a window\n");
     printf("  -screenshot <f.pbm>   with -run or -bootstrap, write the display\n");
     printf("  -inject <script>      post input: m X Y, d CODE, u CODE,\n");
-    printf("                        k CODE, w SLICES (wait), x (expose)\n");
+    printf("                        k CODE, W NOTCHES (wheel),\n");
+    printf("                        w SLICES (wait), x (expose)\n");
     printf("  -wiggle               move the pointer continuously, no clicks\n");
     printf("  -census <image>       load an image and summarize it\n");
     printf("  -classes <image>      list every class, in class.oops format\n");
@@ -297,7 +298,8 @@ static const char *shot_path;
  *  Input to post as though it came from the window.
  *
  *  "m X Y" moves the pointer, "d CODE" presses a button, "u CODE" releases
- *  it, "k CODE" taps a key: 128 is the blue button, 129 yellow, 130 red.
+ *  it, "k CODE" taps a key, "W N" turns the wheel N notches, away from the
+ *  user for a positive N: 128 is the blue button, 129 yellow, 130 red.
  *  It exists so the interactive half can be driven without a person at the
  *  mouse -- what it posts goes through the same queue SDL fills, so what it
  *  drives is the real path.
@@ -615,6 +617,8 @@ run_inject_script(void)
         }  else if (what == 'k') {
             GFX_inject_key((unsigned) a, 1);
             GFX_inject_key((unsigned) a, 0);
+        }  else if (what == 'W') {
+            GFX_inject_wheel((int) a);
         }  else if (what == 'x') {
             GFX_inject_expose();
         }  else if (what == 'w') {

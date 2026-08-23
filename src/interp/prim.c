@@ -2955,6 +2955,26 @@ primitive_millisecond_clock(void)
 }
 
 /*
+ *  primitive 242 -- InputSensor>>wheelDelta
+ *
+ *  Whole notches since the last ask, positive away from the user, and zero
+ *  afterwards.  Signed, so it is a plain SmallInteger rather than one of the
+ *  promoting answers: nobody turns a wheel four thousand million times.
+ *
+ *  A poll and not an event.  ScrollController asks from its control loop --
+ *  the loop that already spins on `Processor yield' -- so nothing has to
+ *  arrive to wake it, and a notch cannot be lost by a controller that was
+ *  not looking when it landed.
+ */
+static int
+primitive_wheel_delta(void)
+{
+    ST_pop_n(1);                            /*  the receiver  */
+    ST_push(OM_int_oop((st_int) GFX_wheel_take()));
+    return 1;
+}
+
+/*
  *  100 and 136: signal that semaphore when the millisecond clock reaches
  *  that value.  One request outstanding, re-armed by each call and cancelled by
  *  a nil semaphore -- the image keeps the queue of waiting Delays itself
@@ -3366,6 +3386,7 @@ ST_primitive_dispatch(unsigned index)
     case 183: return primitive_answer_false_of_receiver();  /*  isPinned  */
     case 184: return primitive_set_flag_false_only();
     case 230: return primitive_relinquish_processor();
+    case 242: return primitive_wheel_delta();
     case 240: return primitive_utc_microsecond_clock();
 
     case 110: return primitive_equivalent();
@@ -3511,6 +3532,7 @@ static const primitive_entry primitive_table[] = {
                              "relinquishProcessorForMicroseconds:" },
     { 240, ST_PRIM_PRESENT,  "UTC microsecond clock"            },
     { 241, ST_PRIM_PRESENT,  "Processor activeProcess -- this worker's" },
+    { 242, ST_PRIM_PRESENT,  "InputSensor wheelDelta -- this system's own" },
     { 243, ST_PRIM_PRESENT,  "Processor activeWorkerIndex -- our own"    },
     { 244, ST_PRIM_PRESENT,  "Processor workerCount -- our own"          },
     { 245, ST_PRIM_PRESENT,  "Object compareAndSwapSlot:from:to: -- ours" },

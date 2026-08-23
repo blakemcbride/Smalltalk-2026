@@ -68,6 +68,13 @@
  *  1983's one line, kept -- and repairCaretOffset, which turns the caret's
  *  offset into the hot spot it was always meant to be.
  *
+ *  687 with Scroll-Wheel, whose five are the wheel: InputSensor>>wheelDelta
+ *  reads the counter the window fills, ScrollController answers it in
+ *  controlActivity through scrollByWheel and wheelScrollAmount, and
+ *  ParagraphEditor repeats the first of those because it overrides
+ *  controlActivity and does not send super -- which is every text view in
+ *  the system.
+ *
  *  678 with Files-Fixes, which is what it costs to let a directory hold a
  *  directory: directoryFromName:setFileName: splits the designator at its
  *  last separator, isDirectoryNamed: and directoryNamed: answer for a file
@@ -80,7 +87,7 @@
  *  since a Paragraph breaks on the carriage return of 1983 and a file on
  *  disk is as likely to be written in either of the other two.
  */
-#define LIB_METHODS             682
+#define LIB_METHODS             687
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -1975,7 +1982,7 @@ test_browsing(void)
      *  the source pointer is 22 bits and silently truncated once, and a
      *  size that stops growing is how that would show.
      */
-    check_integer("(SourceFiles at: 1) contents size", 1368231);
+    check_integer("(SourceFiles at: 1) contents size", 1369395);
 }
 
 /*

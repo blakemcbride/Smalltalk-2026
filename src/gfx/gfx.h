@@ -101,6 +101,7 @@ void    GFX_copy_bits(gfx_blit *b);
 void    GFX_inject_mouse(int x, int y);
 void    GFX_inject_button(unsigned code, int down);
 void    GFX_inject_key(unsigned code, int down);
+void    GFX_inject_wheel(int notches);
 
 /*
  *  Post the window-exposed event a window manager posts when the window
@@ -198,6 +199,19 @@ int     GFX_event_pending(void);
 int     GFX_next_event_word(uint16_t *word);
 void    GFX_mouse_point(int *x, int *y);
 int     GFX_button_state(void);
+
+/*
+ *  Whole wheel notches since this was last asked, and zero afterwards.
+ *
+ *  A counter rather than an event, because the two are read differently: the
+ *  image drains the event ring from its input process, and a controller asks
+ *  about the wheel from its own control loop, which is a poll.  Turning a
+ *  notch into a bistate pair would mean a controller that happens not to be
+ *  looking at the moment loses it, which is the one thing a wheel must not
+ *  do.  Fractions accumulate rather than round, so a trackpad that reports a
+ *  tenth of a notch at a time still adds up to one.
+ */
+int     GFX_wheel_take(void);
 
 #ifdef __cplusplus
 }

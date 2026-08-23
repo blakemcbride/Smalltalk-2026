@@ -684,6 +684,68 @@ test_a_browser_opens(void)
 }
 
 /*
+ *  The wheel scrolls whatever the pointer is over.
+ *
+ *  1983 had three buttons and no wheel, so nothing in the image was waiting
+ *  to be told about one: the notch is a counter the window fills, and the
+ *  controller already running under the pointer reads it at the top of the
+ *  activity it was going to do anyway.  Which makes this the test that
+ *  matters -- not that a primitive answers a number, but that turning the
+ *  wheel over a pane moves that pane.
+ *
+ *  The browser's category list is the pane with the most in it and the least
+ *  room to show it, so it is the one that must move.
+ */
+static void
+test_the_wheel_scrolls_the_view_under_the_pointer(void)
+{
+    const uint16_t *before;
+    region          moved;
+    region          returned;
+
+    printf("---- the wheel scrolls the view under the pointer ----\n");
+
+    /*
+     *  Into the pane FIRST, and settle before the photograph: taking control
+     *  draws the scroll bar, and that is a change this must not mistake for
+     *  scrolling.
+     */
+    move_to(120, 100);
+    settle(60);
+    before = photograph();
+    if (!before)
+        return;
+
+    GFX_inject_wheel(-1);               /*  toward the user: further down  */
+    settle(60);
+    moved = changed_in(before, 45, 60, 200, 140);
+    ++st_test_checks;
+    if (moved.ink == 0) {
+        ++st_test_failures;
+        printf("  FAIL a wheel notch changed nothing in the list pane\n");
+        dump_screen("wheel");
+        return;
+    }
+
+    /*
+     *  And back.  One notch each way is the same distance in both, so the
+     *  pane must return to the pixels it started with -- bit for bit, which
+     *  is what tells a scroll that went the right distance from one that
+     *  went some distance and came back wrong.
+     */
+    GFX_inject_wheel(1);
+    settle(60);
+    returned = changed_in(before, 45, 60, 200, 140);
+    ++st_test_checks;
+    if (returned.ink != 0) {
+        ++st_test_failures;
+        printf("  FAIL a notch each way left %ld pixels changed\n",
+               returned.ink);
+        dump_screen("wheel-back");
+    }
+}
+
+/*
  *  The window menu, and the item that has to work or nothing can be undone:
  *  close.  The blue button raises it anywhere over a window.
  */
@@ -750,6 +812,7 @@ main(void)
     test_the_view_answers_the_yellow_button();
     test_typing_reaches_the_window();
     test_a_browser_opens();
+    test_the_wheel_scrolls_the_view_under_the_pointer();
     test_the_window_menu_closes_a_window();
     test_closing_a_window_restores_the_desktop();
     test_no_button_is_left_held();
