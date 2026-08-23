@@ -1013,11 +1013,8 @@ BOOT_undeclared(const char **names, unsigned max)
     return undeclared_count;
 }
 
-unsigned
-BOOT_undeclared_lowercase(void)
-{
-    return undeclared_lowercase;
-}
+/*  Defined below, once the class table and method_sends are in scope.  */
+static unsigned readers_of_literal(st_oop literal, char *out, size_t out_len);
 
 static boot_class *find_class(const char *name);
 
@@ -2987,6 +2984,101 @@ method_sends(st_oop method, st_oop selector_oop)
             return 1;
     }
     return 0;
+}
+
+/*
+ *  Every loaded method whose literal frame still names that object.
+ *
+ *  A global reference is compiled as a literal variable -- the Association
+ *  itself sits in the frame -- so the test a send needs is the test a
+ *  binding needs, and method_sends already is it.  What differs is why one
+ *  asks: a superseded method is gone from its dictionary, and with it every
+ *  name it read, so scanning the finished image is how a fault that has
+ *  been corrected stops being reported as one.
+ */
+static unsigned
+readers_of_literal(st_oop literal, char *out, size_t out_len)
+{
+    unsigned    found = 0;
+    unsigned    named = 0;
+    unsigned    ci;
+
+    out[0] = '\0';
+    for (ci = 0; ci < class_count; ++ci) {
+        int     side;
+
+        for (side = 0; side < 2; ++side) {
+            st_oop      target = side ? classes[ci].metaclass_oop
+                                      : classes[ci].class_oop;
+            st_oop      dict;
+            uint32_t    capacity;
+            uint32_t    slot;
+
+            if (!OM_is_present(target))
+                continue;
+            dict = OM_fetch_pointer(CLASS_METHOD_DICT, target);
+            if (!OM_is_present(dict))
+                continue;
+            capacity = OM_method_dict_capacity(dict);
+            for (slot = 0; slot < capacity; ++slot) {
+                st_oop  key    = OM_method_dict_key(dict, slot);
+                st_oop  method = OM_method_dict_value(dict, slot);
+
+                if (!OM_is_present(method))
+                    continue;
+                if (!method_sends(method, literal))
+                    continue;
+                ++found;
+                if (named >= 3)
+                    continue;
+                {
+                    char    selector[128];
+                    char    name[300];
+
+                    OM_string_of(key, selector, sizeof selector);
+                    snprintf(name, sizeof name, "%s%s%s>>%s",
+                             named ? ", " : "", classes[ci].name,
+                             side ? " class" : "", selector);
+                    if (strlen(out) + strlen(name) + 1 < out_len) {
+                        strcat(out, name);
+                        ++named;
+                    }
+                }
+            }
+        }
+    }
+    if (found > named && strlen(out) + 16 < out_len)
+        snprintf(out + strlen(out), out_len - strlen(out), " and %u more",
+                 found - named);
+    return found;
+}
+
+unsigned
+BOOT_undeclared_still_read(st_undeclared_use *out, unsigned max)
+{
+    unsigned    n = 0;
+    unsigned    i;
+
+    for (i = 0; i < undeclared_count && n < max; ++i) {
+        const char *name = undeclared_names[i];
+        st_oop      binding;
+        char        readers[256];
+
+        if (name[0] >= 'A' && name[0] <= 'Z')
+            continue;
+        binding = global_association(name);
+        if (!OM_is_present(binding))
+            continue;
+        /*  Something gave it a value after all; then it is not the fault.  */
+        if (OM_fetch_pointer(ST_ASSOCIATION_VALUE, binding) != ST_NIL)
+            continue;
+        if (readers_of_literal(binding, readers, sizeof readers) == 0)
+            continue;
+        out[n].name = name;
+        snprintf(out[n].readers, sizeof out[n].readers, "%s", readers);
+        ++n;
+    }
+    return n;
 }
 
 /*

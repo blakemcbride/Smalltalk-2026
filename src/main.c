@@ -1252,22 +1252,27 @@ do_bootstrap(const char *const *sources, const int *dialects, unsigned count,
         /*
          *  Names nothing defined.  Capitalised ones are ordinary forward
          *  references -- Sensor, Display and Transcript are made when an
-         *  image is built, long after the code using them is compiled.  A
-         *  lower-case one is almost always a bug in the source, and the 1983
-         *  library has some; they are reported rather than hidden.
+         *  image is built, long after the code using them is compiled.
+         *
+         *  A lower-case one is the block-argument fault, and the 1983
+         *  library has four; this line used to say so, as "4 lower-case
+         *  (probable source bugs)", and went on saying it after lib/
+         *  Scope-Fixes corrected all four.  It was counting what the
+         *  COMPILER met, and a superseded method takes its references with
+         *  it.  So the question is asked of the finished image instead --
+         *  the binding is still nil and a method dictionary still names it
+         *  -- and each survivor is named with the method that reads it,
+         *  because a count answers "how bad" and what one needs is "which".
          */
         const char *names[256];
         unsigned    n = BOOT_undeclared(names, 256);
-        unsigned    lower = BOOT_undeclared_lowercase();
+        st_undeclared_use   still[32];
+        unsigned    unfixed = BOOT_undeclared_still_read(still, 32);
         unsigned    i;
 
         if (n) {
-            fprintf(stderr, "st80: %u undeclared global%s", n,
+            fprintf(stderr, "st80: %u undeclared global%s:", n,
                     n == 1 ? "" : "s");
-            if (lower)
-                fprintf(stderr, ", %u lower-case (probable source bugs)",
-                        lower);
-            fprintf(stderr, ":");
             {
                 unsigned limit = getenv("ST_BOOT_LOG") ? n : 12;
 
@@ -1277,6 +1282,16 @@ do_bootstrap(const char *const *sources, const int *dialects, unsigned count,
                     fprintf(stderr, " ... and %u more", n - limit);
             }
             fprintf(stderr, "\n");
+        }
+        if (unfixed) {
+            fprintf(stderr, "st80: %u lower-case name%s nothing defines %s "
+                            "still read by a loaded method -- a block "
+                            "argument used outside its block:\n",
+                    unfixed, unfixed == 1 ? "" : "s",
+                    unfixed == 1 ? "is" : "are");
+            for (i = 0; i < unfixed; ++i)
+                fprintf(stderr, "  %-16s read by %s\n",
+                        still[i].name, still[i].readers);
         }
     }
 

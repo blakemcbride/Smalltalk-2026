@@ -139,8 +139,23 @@ st_oop  BOOT_make_character(unsigned code, void *user);
  */
 unsigned BOOT_undeclared(const char **names, unsigned max);
 
-/*  How many of those began with a lower-case letter -- probable bugs.  */
-unsigned BOOT_undeclared_lowercase(void);
+/*
+ *  Of those, the lower-case ones a loaded method still reads.
+ *
+ *  A lower-case undeclared name is the block-argument fault: the parameter's
+ *  scope ends at the bracket, so the name after it is a different one
+ *  altogether and holds nil for ever.  Counting them is not the same as
+ *  finding one, because a method that has since been superseded takes its
+ *  reference with it -- so this asks the finished image instead: the binding
+ *  is still nil, and some method in a method dictionary still names it.
+ *  Only that is a bug anybody can go and fix.
+ */
+typedef struct {
+    const char *name;
+    char        readers[256];   /*  up to three, then "and N more"  */
+} st_undeclared_use;
+
+unsigned BOOT_undeclared_still_read(st_undeclared_use *out, unsigned max);
 
 /*
  *  What running the class-side initializers did.
