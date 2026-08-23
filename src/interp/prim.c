@@ -1361,6 +1361,15 @@ static void st_file_close(int fd)    { _close(fd); }
 static int64_t st_file_size(int fd)  { return (int64_t) _filelengthi64(fd); }
 
 static int
+st_path_is_directory(const char *path)
+{
+    DWORD   attr = GetFileAttributesA(path);
+
+    return attr != INVALID_FILE_ATTRIBUTES
+        && (attr & FILE_ATTRIBUTE_DIRECTORY) != 0;
+}
+
+static int
 st_file_truncate(int fd, int64_t end)
 {
     /*  _chsize_s answers an errno_t, zero on success, not -1 on failure.  */
@@ -1459,14 +1468,48 @@ typedef struct { DIR *d; } st_dir;
 static int
 st_file_open(const char *path, int mode)
 {
+    int         fd;
+    struct stat st;
+
     switch (mode) {
-    case ST_OPEN_RDONLY:    return open(path, O_RDONLY);
-    case ST_OPEN_RDWR:      return open(path, O_RDWR);
-    default:                return open(path, O_RDWR | O_CREAT, 0666);
+    case ST_OPEN_RDONLY:    fd = open(path, O_RDONLY);              break;
+    case ST_OPEN_RDWR:      fd = open(path, O_RDWR);                break;
+    default:                fd = open(path, O_RDWR | O_CREAT, 0666); break;
     }
+    /*
+     *  A directory is not a file, and POSIX will not say so until later.
+     *
+     *  open(2) on a directory SUCCEEDS read-only -- it is how one gets a
+     *  descriptor to fstat or fdopendir -- so the image was handed a live
+     *  descriptor for `doc' and did not find out until pread answered
+     *  EISDIR, four frames further on:
+     *
+     *      PosixFile(Object)>>error:  ...  PosixFile>>read:
+     *      doc read:, Is a directory
+     *
+     *  Windows never had the fault, because _open refuses a directory
+     *  outright -- so the two platforms disagreed about where the same
+     *  click failed.  Refusing here is what makes them agree, and it is the
+     *  honest answer to the question this function was asked: there is no
+     *  file of that name to open.
+     */
+    if (fd >= 0 && fstat(fd, &st) == 0 && S_ISDIR(st.st_mode)) {
+        close(fd);
+        errno = EISDIR;
+        return -1;
+    }
+    return fd;
 }
 
 static void st_file_close(int fd)   { close(fd); }
+
+static int
+st_path_is_directory(const char *path)
+{
+    struct stat st;
+
+    return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
+}
 
 static int64_t
 st_file_size(int fd)
@@ -1859,10 +1902,18 @@ primitive_file_command(void)
 /*
  *  primitive 131 -- PosixFileDirectory>>doPrimitive:arg1:arg2:
  *
- *  1 removes a file, 2 renames one, 3 answers the names in the directory.
- *  The directory is the one the system was started in: PosixFileDirectory
- *  new sets its directoryName to the empty string, and the empty string is
- *  where a relative name resolves.
+ *  1 removes a file, 2 renames one, 3 answers the names in a directory,
+ *  4 answers whether a name is a directory.
+ *  3 walks the directory the system was started in unless it is told
+ *  otherwise: PosixFileDirectory new sets its directoryName to the empty
+ *  string, and the empty string is where a relative name resolves.
+ *
+ *  4 is not 1983's.  1983's file systems had no directory inside a
+ *  directory -- FileDirectory class>>directoryFromName:setFileName: answers
+ *  `Disk' whatever it is handed, and means it -- so the protocol has no way
+ *  to ask, and the walk in 3 reports a subdirectory as a name like any
+ *  other.  A name that cannot be opened is worth listing and is not worth
+ *  reading, and this is what lets the image tell the two apart.
  */
 static int
 primitive_directory_command(void)
@@ -1907,8 +1958,22 @@ primitive_directory_command(void)
         uint32_t        count = 0;
         uint32_t        i;
         st_oop          array;
+        /*
+         *  arg1 names the directory to walk, and nil means the one the
+         *  system was started in -- which is every 1983 caller, because
+         *  PosixFileDirectory>>fileNames passes nil and 1983 had nowhere
+         *  else to look.  Reading a directory in a File List is what wants
+         *  the other case: the pane answers its listing, and a listing has
+         *  to be of the directory that was asked for.
+         */
+        const char     *path = ".";
 
-        if (!st_dir_open(&dir, ".")) {
+        if (OM_is_present(arg1)) {
+            if (!c_from_string(arg1, a, sizeof a))
+                return 0;
+            path = a;
+        }
+        if (!st_dir_open(&dir, path)) {
             posix_errno = errno;
             return 0;
         }
@@ -1932,6 +1997,12 @@ primitive_directory_command(void)
         ST_push(array);
         return 1;
     }
+    case 4:                                     /*  is arg1 a directory  */
+        if (!c_from_string(arg1, a, sizeof a))
+            return 0;
+        answer = st_path_is_directory(a) ? ST_TRUE : ST_FALSE;
+        break;
+
     default:
         return 0;
     }

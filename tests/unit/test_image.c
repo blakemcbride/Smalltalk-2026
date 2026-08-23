@@ -67,8 +67,20 @@
  *  604 with Graphics-Fixes, whose two are Paragraph class>>initialize --
  *  1983's one line, kept -- and repairCaretOffset, which turns the caret's
  *  offset into the hot spot it was always meant to be.
+ *
+ *  678 with Files-Fixes, which is what it costs to let a directory hold a
+ *  directory: directoryFromName:setFileName: splits the designator at its
+ *  last separator, isDirectoryNamed: and directoryNamed: answer for a file
+ *  system that has them and for 1983's that does not, and a
+ *  PosixFileDirectory reads the directoryName 1983 gave it and never used
+ *  -- fileNames, initFileName: and pathFor:.  Above that, FileList>>getFile
+ *  enters a directory rather than reading it, FileList>>pattern answers
+ *  text a text pane can compose, and FileModel>>text is left to files --
+ *  translating the line ending on the way in and back again on the way out,
+ *  since a Paragraph breaks on the carriage return of 1983 and a file on
+ *  disk is as likely to be written in either of the other two.
  */
-#define LIB_METHODS             666
+#define LIB_METHODS             682
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -1963,7 +1975,7 @@ test_browsing(void)
      *  the source pointer is 22 bits and silently truncated once, and a
      *  size that stops growing is how that would show.
      */
-    check_integer("(SourceFiles at: 1) contents size", 1361564);
+    check_integer("(SourceFiles at: 1) contents size", 1368231);
 }
 
 /*
