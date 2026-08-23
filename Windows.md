@@ -6,11 +6,11 @@ Python, no pkg-config, no vendored dependency to fetch. The font is
 rasterised into `src/gfx/font_face.c` and checked in; the class library is
 plain text in `sources/`, `lib/` and `pharo/`.
 
-**Read this first.** Every file in this program now compiles under a real
-MSVC, and the link runs. What has not happened yet is `st80.exe` starting,
-opening a window, or bootstrapping an image on Windows — so the build
-instructions below are tested and the runtime ones are not. The last
-section says exactly where that line falls.
+**Read this first.** This builds, links, runs, bootstraps an image and opens
+its desktop on Windows, all of it confirmed on a real MSVC. What remains
+untested is narrower than it was and named exactly in the last section —
+chiefly `nmake test`, and the Win32 half of the file primitives under
+sustained use.
 
 ## The short version
 
@@ -359,9 +359,9 @@ what every other platform compiles.
 Listed rather than smoothed over, because a first Windows build should know
 which surprises are already accounted for.
 
-1. **It runs; it has not yet built an image.** `st80.exe -version` works on
-   Windows. Everything past that — bootstrapping, the window, the suites —
-   is still reasoning rather than observation.
+1. **The suites have not been run there.** `nmake /f Makefile.msvc test`
+   builds and runs sixteen executables and no one has watched it do so. That
+   is now the largest untested claim in this file.
 2. **Paths are the only thing `-bootstrap` has been seen to get wrong**, and
    that is fixed: `profile.c` now splits on either separator. It is listed
    here because the class of problem — POSIX assumptions in code that has
@@ -415,7 +415,21 @@ though someone ran it.
   `platform : Windows`.
 - **`SDL3.dll` beside the binary is what it takes.** Copied from the
   package's `lib\x64`, the program starts.
-
+- **An image bootstraps, and its desktop opens.** `-bootstrap -profile` builds
+  the 264-class image from source, `-run` loads it and SDL3 puts up the
+  window. That is the compiler, the bootstrap, the object memory, the image
+  writer, BitBlt and the SDL3 pump, all on Windows.
+- **Backslash paths work.** `-profile profiles\st2026.profile` resolves its
+  `#requires` and bootstraps. Before the separator fix that spelling answered
+  `cannot open ./bluebook.profile`.
+- **The display is exact.** With `ST_DISPLAY_TRACE=1` the guest reported
+  `form 640x480 at 1x, integer -- window 640x480, in pixels 640x480, render
+  target 640x480, density 1.00, display scale 1.00`, and a screenshot of the
+  desktop halftone autocorrelates to -1.00 at lag 1 and +1.00 at lag 2: an
+  intact, exactly period-2 checkerboard. The banding visible in that
+  screenshot was a VM display resampling the guest by 0.2% and is neither
+  Windows' fault nor this program's — [`doc/Display.md`](doc/Display.md) has
+  the working.
 - `nmake /f Makefile.msvc` parses and runs. The inference rules fire, batch
   mode compiles, and the variables reach `cl` — the whole file was written
   without an nmake to try it on, so this was the open question.
@@ -489,28 +503,21 @@ now named outright, after `/link` because `cl` has no `/SUBSYSTEM` of its own.
 
 **Still not checked:**
 
-- **No image has been bootstrapped on Windows**, no window opened, no test
-  suite run. `-version` is the only subcommand seen to work there. The
-  display environment variables and `nmake test` are still reasoning from
-  the source rather than anything observed.
-- **The path fix is tested, but not on Windows.** Both branches of
-  `last_separator` and `path_is_absolute` were lifted out and driven over
-  eight cases with `_WIN32` forced on and off — backslash paths, drive
-  letters, UNC roots, mixed separators, `..` — and the Windows branch is
-  right on all of them while the POSIX branch is unchanged. That is the
-  logic proven, not the platform.
+- **`nmake /f Makefile.msvc test` has not been run.** Sixteen suites build
+  and run from that target and nobody has watched them. It is the largest
+  untested claim left in this file.
+- **`nmake /f Makefile.msvc clean` has not been run** since it was changed
+  from a parse-time `!ERROR` to a rule, which is what let a machine without
+  SDL3 refuse to clean its own build tree.
+- The display environment variables — `ST_DISPLAY_SCALE`, `ST_DISPLAY_WINDOW`,
+  `ST_DISPLAY_PRESENTATION`, `ST_DISPLAY_THEME` — and the interface itself:
+  menus, window framing, the keyboard. The desktop has been seen to draw, not
+  to be used.
 - The `prim.c` shim's Windows half specifically: `_open` with `_O_BINARY`,
   `_chsize_s`, `_filelengthi64`, and `ReadFile`/`WriteFile` through an
   `OVERLAPPED`. The POSIX half is exercised by the whole test suite and by a
   direct end-to-end check; the Win32 half is exercised by nothing yet. If an
   image written on Windows reads back short, this is the first place to look.
-- Whether `-run` opens a window at all, which is the largest single untested
-  claim in this document.
-- **The `clean` fix itself.** There is no nmake on the machine this was
-  written on, so the rule that replaced the parse-time `!ERROR` has been
-  read and not run. The diagnosis is certain — the U1050 was observed —
-  and the cure is the ordinary nmake idiom, but it is one more thing that
-  has only been reasoned about.
 - One parse-time `!ERROR` is deliberately left: `OM must be bb or mt`. That
   one fires on a value you just mistyped rather than on something absent
   from the machine, and the GNU makefile refuses the same way.

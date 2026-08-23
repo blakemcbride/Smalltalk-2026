@@ -19,7 +19,7 @@ the interface.
 |---|---|
 | Language | C11 · no dependencies but SDL3, and that only for the window |
 | Graphics | SDL3 |
-| Platforms | Linux (developed on); macOS and Windows ports exist and are unverified |
+| Platforms | Linux (developed on); Windows builds, runs and bootstraps — see [`Windows.md`](Windows.md); the macOS port is written and uncompiled |
 | Licence | BSD 2-Clause. See [Provenance](#provenance) — parts of the tree are other people's |
 
 ## It runs on every core
@@ -231,6 +231,8 @@ tools/          make_font.py — rasterises an outline face into the strike
 | [`doc/LanguageExtensions.md`](doc/LanguageExtensions.md) | every post-1983 syntax, and where each stands |
 | [`doc/PLAN-TO-PHARO.md`](doc/PLAN-TO-PHARO.md) | where this is going, sized honestly |
 | [`tutorial/`](tutorial/) | **a book-length tutorial** on the system and the language — `cd tutorial && make` |
+| [`Windows.md`](Windows.md) | building with MSVC, and what a real one found |
+| [`macOS.md`](macOS.md) | building with the same makefile Linux uses, and the four places Apple differs |
 | [`doc/LICENSING.md`](doc/LICENSING.md) | what may be redistributed, and what may not |
 
 ## Provenance

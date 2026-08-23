@@ -19,10 +19,27 @@ Two self-imposed limits keep every operation lock-free on every platform:
 only naturally-aligned int-, bool- and pointer-sized types, and never
 `_Atomic` on a struct.
 
-**No POSIX-only calls in shipping code.** `strdup`, `open_memstream`,
-`getline`, `usleep` and `gettimeofday` appear nowhere under `src/`. The
-tests needed two of them and use portable equivalents: `st_test_strdup` in
-`tests/st_test.h`, and a `tmpfile()` capture in place of `open_memstream`.
+**Few POSIX-only calls in shipping code, and they are named.**
+`open_memstream`, `getline`, `usleep` and `gettimeofday` appear nowhere under
+`src/`. The tests needed two of them and use portable equivalents:
+`st_test_strdup` in `tests/st_test.h`, and a `tmpfile()` capture in place of
+`open_memstream`.
+
+`strdup` is the exception, in `src/main.c`, `src/compiler/source.c` and
+`src/boot/bootstrap.c`. This file claimed it appeared nowhere and had stopped
+being true; the first MSVC build is what said so. MSVC declares and links it
+under the POSIX spelling, so the Windows build asks for that with
+`/D_CRT_DECLARE_NONSTDC_NAMES=1` and silences the deprecation with
+`/D_CRT_NONSTDC_NO_WARNINGS`.
+
+`<dirent.h>` and `<unistd.h>` were the other exception, unguarded in
+`src/interp/prim.c`, where the 1983 File and FilePage primitives were written
+straight onto POSIX — `open`, `close`, `fstat`, `pread`, `pwrite`,
+`ftruncate`, `ssize_t`, `off_t`. They now go through a shim in that file with
+a Win32 half: `_open` with `_O_BINARY` because MSVC's defaults to text mode
+and these primitives carry image pages, `_filelengthi64`, `_chsize_s`, and
+`ReadFile`/`WriteFile` through an `OVERLAPPED`, which is positional the way
+`pread` is and the way seek-then-read is not.
 
 **SDL3's main-thread rule is honoured by construction.** `SDL_PumpEvents`,
 `SDL_WaitEvent`, `SDL_CreateRenderer` and `SDL_LockTexture` are all
@@ -37,10 +54,10 @@ stub, so the suite runs anywhere.
 
 ## Build
 
-| Platform | Command |
-|---|---|
-| Linux, macOS | `make` (the 64-bit memory; `make OM=bb` for the trace harness) |
-| Windows | `nmake /f Makefile.msvc` |
+| Platform | Command | |
+|---|---|---|
+| Linux, macOS | `make` (the 64-bit memory; `make OM=bb` for the trace harness) | [`macOS.md`](../macOS.md) |
+| Windows | `nmake /f Makefile.msvc SDL3=<path>` | [`Windows.md`](../Windows.md) |
 
 Windows needs Visual Studio 2022 **17.8** or later — C11 atomics arrived in
 17.5 and the rest of the C11 support settled in 17.8. `clang-cl` also works
@@ -55,8 +72,19 @@ Verified here, on Fedora 44 with gcc 16.1.1:
 - All suites pass under ASAN + UBSAN and under TSAN, in both memories.
 - No POSIX-only calls remain in shipping code.
 
-**Not yet verified: an actual macOS or Windows build.** Neither machine was
-available. `Makefile.msvc` and the Win32 half of the portability shim are
-written from the documented APIs and have not been compiled. Treat Phase 6
-as complete in intent and unconfirmed in fact until someone runs it on those
-platforms; the first build on each will almost certainly turn up something.
+**Windows: verified, and it turned up plenty.** `Makefile.msvc` and the Win32
+half of the portability shim now compile, link and run under MSVC 14.50 —
+`st80.exe` bootstraps an image and opens its desktop. Getting there took an
+object list eight files stale, `/experimental:c11atomics`, a `<dirent.h>` the
+file primitives assumed, five `_Atomic` qualifiers discarded silently on the
+way to `free`, a `uint16_t` that truncated a word count, path splitting that
+knew only `/`, and a parse-time `!ERROR` that refused to let a machine clean
+its own build tree. [`Windows.md`](../Windows.md) lists what is confirmed and
+what is still untested — chiefly `nmake test`.
+
+**macOS: still not verified.** No Mac was available. The Darwin branches are
+four: `-pthread` dropped, Apple's one-argument `pthread_setname_np`, no
+`sched_getaffinity`, and the benchmark's core pinning compiled out. All four
+were exercised on Linux with `__linux__` undefined, which is the same
+compiler taking the same branches and not the same compiler.
+[`macOS.md`](../macOS.md) says exactly what that does and does not prove.
