@@ -626,6 +626,15 @@ choose_theme(void)
  *  desktop, and INTEGER_SCALE presentation so it stays exact when resized.
  *  Every display pixel is then the same size as every other, which is what
  *  a one-bit screen needs to look deliberate.
+ *
+ *  What it decides is now narrower than that reads, because fitting arrived
+ *  afterwards and answers the same question better.  With fitting on -- the
+ *  default -- this picks HOW BIG THE WINDOW OPENS and nothing else: the
+ *  desktop then fills that window at 1:1, and a postage stamp was only ever
+ *  the complaint that the WINDOW was small.  It is still a magnification
+ *  under ST_DISPLAY_FIT=off, where the screen stays 640x480 and something
+ *  has to make it fill the window, and under an ST_DISPLAY_SCALE the user
+ *  set.  fit_display_to_window says why the automatic one stops there.
  */
 /*
  *  The window's size in PHYSICAL pixels, and the display's pixels-per-point.
@@ -978,10 +987,8 @@ resize_display(int width, int height)
 }
 
 /*
- *  Choose the screen the window can hold, at the largest scale that still
- *  leaves the image at least the size it already is.  A 956x1557 tile at 2x
- *  would be a 478-pixel-wide desktop -- narrower than the image's own 640 --
- *  so the scale drops to 1 and the desktop becomes the whole tile.
+ *  Choose the screen the window can hold.  The desktop fills the window, and
+ *  the magnification is 1 unless somebody asked for one.
  */
 static void
 fit_display_to_window(void)
@@ -999,19 +1006,47 @@ fit_display_to_window(void)
     if (ww <= 0 || wh <= 0)
         return;
     /*
-     *  An automatic scale gives way to the screen: 2x on a 956-wide tile
-     *  would be a 478-pixel desktop, narrower than the image's own 640, so it
-     *  drops to 1x and the desktop becomes the whole tile.  A scale the user
-     *  asked for is kept -- they said what they wanted, and readable text in
-     *  a smaller desktop is a legitimate thing to want.
+     *  ONE SCALE, AND IT DOES NOT DEPEND ON HOW THE WINDOW GOT HERE.
+     *
+     *  This used to hold the opening scale for as long as the window could
+     *  still show the image's own screen at it, and drop a step when it
+     *  could not:
+     *
+     *      for (scale = base_scale; scale > 1; --scale)
+     *          if (ww / scale >= form.width && wh / scale >= form.height)
+     *              break;
+     *
+     *  Two things are wrong with that, and together they made the size of
+     *  everything on the screen a coin toss at startup.
+     *
+     *  The first is that the test is against the FORM, and the form only
+     *  ever grows -- so the scale only ever falls, and can never climb back.
+     *  One window size therefore has two answers: 2x if it opened there, 1x
+     *  if it ever passed through a size that would not hold the screen
+     *  doubled.  The scale was a function of the window's history and not of
+     *  the window, which is why resizing once fixed it and fixed it for good.
+     *
+     *  The second is that the threshold lands in the middle of the sizes a
+     *  tile actually takes.  base_scale is 2 on a 3840x1600 desktop, so 2x
+     *  survived exactly when the tile was at least 1280 wide: i3's
+     *  two-column tile is 1916 and kept it, its three-column tile is 1276 --
+     *  638 a side, two pixels under the image's 640 -- and lost it.  Same
+     *  machine, same image, same binary, and every window and every glyph
+     *  twice the size it was the run before, decided by what else happened
+     *  to be on the workspace.
+     *
+     *  So: 1:1, which is what "the screen is the window" says it should be.
+     *  A bigger window is MORE DESKTOP, not the same desktop under a
+     *  magnifier -- the Form is grown to fill the window a few lines below,
+     *  and dividing here only undoes that.  The automatic scale still sizes
+     *  the window at open, which is the job it is actually good at.
+     *
+     *  A scale the user ASKED for is still theirs, because they said what
+     *  they wanted: ST_DISPLAY_SCALE=2 doubles as before, and
+     *  ST_DISPLAY_FIT=off keeps the fixed 640x480 screen magnified to fill
+     *  the window, which is where an automatic scale still means something.
      */
-    if (!scale_forced)
-        for (scale = base_scale; scale > 1; --scale) {
-            if (ww / scale >= form.width && wh / scale >= form.height)
-                break;
-        }
-    else
-        scale = base_scale;
+    scale = scale_forced ? base_scale : 1;
     open_scale = scale;
     {
         int lw = ww / scale;

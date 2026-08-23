@@ -27,6 +27,22 @@ is no border at all.
 The screen only ever **grows**. Shrinking it would put scheduled windows off the screen,
 where MVC gives you no way to reach them.
 
+And it fills the window at **1:1**. A bigger window is more desktop, not the same desktop
+under a magnifier — the two are alternatives, and doing both means dividing the window by a
+scale and then growing the Form to fill it again. The automatic scale therefore decides how
+big the window *opens* and stops there.
+
+It did not always stop there, and the way it failed is worth keeping. The scale used to be
+held for as long as the window could still show the image's own 640x480 at it, tested
+against the Form — which only ever grows, so the scale only ever fell and could never climb
+back. One window size then had two answers, depending on how it got there, and the
+threshold sat right in the middle of the sizes a tile actually takes: on a 3840x1600 desktop
+the automatic scale is 2, so i3's two-column tile at 1916 kept the doubling and its
+three-column tile at 1276 — 638 a side, two pixels under 640 — did not. Same machine, same
+image, same binary, and every window and every glyph twice the size it was the run before,
+decided by what else was on the workspace. Resizing the window once fixed it permanently,
+which was the ratchet being heard from rather than a cure.
+
 ### The image has to be told, or the mouse dies
 
 Growing the Form is only half of it, and the other half fails in a way that looks nothing
@@ -55,7 +71,7 @@ reported and the old letterboxing applies. Any image this system bootstraps is r
 
 | | |
 |---|---|
-| `ST_DISPLAY_SCALE` | **physical** pixels per display pixel. Dropped automatically if the chosen scale would leave the desktop smaller than the image's own screen |
+| `ST_DISPLAY_SCALE` | **physical** pixels per display pixel. The only way to magnify while fitting is on, and it is honoured as asked — the desktop becomes the window divided by it |
 | `ST_DISPLAY_WINDOW` | `WxH` in **physical** pixels — open the window at exactly this size. How a tiling manager's behaviour is reproduced anywhere else |
 | `ST_DISPLAY_FIT=off` | keep the image's screen size and letterbox it, as before |
 | `ST_DISPLAY_THEME` | `paper` (default), `classic` (pure black on pure white), `dark` |
