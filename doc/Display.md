@@ -97,6 +97,52 @@ screen answers with a larger integer scale rather than with a fraction.
 On an unscaled display none of this changes anything, which is the point: a
 point is a pixel there and every number is what it was.
 
+### A halftone is a moire detector, and will catch your compositor
+
+The desktop background is an exact 50% checkerboard: alternate pixels, ink
+and paper. At 1:1 that is flat warm grey to the eye, and it is *supposed* to
+be flat — a 50% stipple looks like 50% grey, which is the whole idea.
+
+It is also the most sensitive test pattern in common use. A checkerboard sits
+exactly at the Nyquist frequency, so ANY resample, by any ratio however close
+to 1, beats against it: bands where the phase aligns and the pixels stay
+black and white, bands where it cancels and they average to grey. The result
+reads as "the background is uneven", and it is the last thing to have touched
+the pixels that did it, not this program.
+
+Worked example, because it cost several rounds to find. A Windows guest under
+`quickemu --display sdl` reported, through `ST_DISPLAY_TRACE=1`:
+
+    form 640x480 at 1x, integer -- window 640x480, in pixels 640x480,
+    render target 640x480, density 1.00, display scale 1.00
+
+Every number equal, integer presentation, nearest-neighbour texture: no
+resample is arithmetically possible inside st80. The screenshot nevertheless
+showed banding. Measuring it settled where from:
+
+- Autocorrelation along a row: -1.00 at lag 1, +1.00 at lag 2. The
+  checkerboard is intact and exactly period-2, so nothing *geometric* had
+  happened to it.
+- The commonest colour in the desktop was (136,133,127), which is the exact
+  midpoint of paper (246,242,233) and ink (27,24,21) — averaging, not
+  distortion.
+- The amplitude envelope had nulls every 480 pixels.
+
+That last number names the culprit. A period-2 pattern scaled by *s* nulls
+every `1/(1-s)` pixels, so 480 means `s = 1 - 1/480`, and for a 1920-wide
+guest that is a host window 1916 wide — four pixels short, 0.2%. The
+tiling window manager on the host hands out 1916-wide tiles; QEMU's SDL
+window took one and scaled the guest's 1920 into it. Simulating exactly that
+reproduces null spacing 480, 478, 480.
+
+**The rule.** If the halftone bands, check `ST_DISPLAY_TRACE=1` first. If the
+form, the window, the pixels and the render target are all equal and the
+presentation is integer, st80 has handed over an exact image and something
+downstream — a VM display, a compositor scaling a non-1:1 window, a monitor
+not running at its native resolution — is resampling it. The fix is there:
+make that stage 1:1, usually by matching the guest or window size to the
+framebuffer rather than by changing anything here.
+
 ## The menus are press-and-hold
 
 There is no click-to-open menu anywhere in this interface. **Press and keep the button
