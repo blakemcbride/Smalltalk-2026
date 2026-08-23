@@ -57,3 +57,12 @@ FileDirectory >> isDirectoryNamed: aString [
 
 	^false
 ]
+
+{ #category : '*Files-Fixes' }
+FileDirectory >> textFile: aFileName [
+	"Answer a stream on an old or new file of that name, which writes the
+	 host's line ending where the image holds a carriage return.  `file:'
+	 with the translation on, and what every file out uses."
+
+	^(self findOrAddKey: aFileName) asTextFileStream
+]

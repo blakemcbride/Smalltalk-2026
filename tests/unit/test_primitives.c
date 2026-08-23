@@ -67,7 +67,19 @@ test_the_four_answers(void)
     CHECK_EQ_INT(ST_primitive_status_of(21, &name), ST_PRIM_ABSENT);
     CHECK(name == NULL);
     CHECK_EQ_INT(ST_primitive_status_of(0, NULL), ST_PRIM_ABSENT);
-    CHECK_EQ_INT(ST_primitive_status_of(254, NULL), ST_PRIM_ABSENT);
+    CHECK_EQ_INT(ST_primitive_status_of(134, NULL), ST_PRIM_ABSENT);
+
+    /*
+     *  254 stood here as the absent one until it became the host's line
+     *  ending, which is what a file out is written in -- lib/Files-Fixes
+     *  asks for it by number and gets a line feed or a carriage return and
+     *  line feed depending on the machine.  A silent absence would put the
+     *  Alto's carriage returns back in every filed-out class, so the number
+     *  is checked present and named rather than left to the floor count.
+     */
+    name = NULL;
+    CHECK_EQ_INT(ST_primitive_status_of(254, &name), ST_PRIM_PRESENT);
+    CHECK(name != NULL);
 
     /*
      *  Every number the table claims is one the compiler will accept, so a

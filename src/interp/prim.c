@@ -2151,6 +2151,45 @@ primitive_error_string(void)
     return 1;
 }
 
+/*
+ *  The host's own line ending, primitive 254.
+ *
+ *  A Smalltalk-80 line ends with Character cr, and that is not a convention
+ *  this system is free to change: CompositionScanner stops on carriage
+ *  return and on nothing else, so a linefeed inside a String is a character
+ *  with no glyph and no line break.  Paragraph, CharacterScanner and
+ *  String>>lines all agree with it.  The image keeps carriage returns and
+ *  there is no argument about it.
+ *
+ *  A FILE is another matter.  The Alto wrote carriage returns because the
+ *  Alto did, and nothing anybody now runs reads them: a filed-out class
+ *  arrives in an editor, in git and in a diff as one line thousands of
+ *  characters long.  So the ending is translated at the file's edge -- in on
+ *  the way in, out on the way out -- and this is the only part of that which
+ *  C has to answer, because the image has no way to ask what it is running
+ *  on.
+ *
+ *  It answers a String rather than a flag, so the caller can write it
+ *  without knowing how long it is -- which is the whole of the difference
+ *  between the two platforms this builds for.
+ */
+static int
+primitive_native_line_end(void)
+{
+#if defined(_WIN32)
+    static const char   ending[] = "\r\n";
+#else
+    static const char   ending[] = "\n";
+#endif
+    st_oop  s = string_from_c(ending, sizeof ending - 1);
+
+    if (!OM_is_present(s))
+        return 0;
+    ST_pop_n(1);
+    ST_push(s);
+    return 1;
+}
+
 /*  ----------  Input and display, primitives 90 to 95, 101, 102  ----------  */
 
 static int
@@ -3368,6 +3407,7 @@ ST_primitive_dispatch(unsigned index)
     case 130: return primitive_file_command();
     case 131: return primitive_directory_command();
     case 133: return primitive_error_string();
+    case 254: return primitive_native_line_end();
     case 100: return primitive_signal_at_milliseconds();
     case 135: return primitive_millisecond_clock();
     case 255: return primitive_float_print_string();
@@ -3500,6 +3540,7 @@ static const primitive_entry primitive_table[] = {
     { 132, ST_PRIM_PRESENT,  "Object instVarsInclude:"          },
     { 100, ST_PRIM_PRESENT,  "signal a semaphore at a time"     },
     { 135, ST_PRIM_PRESENT,  "millisecond clock"                },
+    { 254, ST_PRIM_PRESENT,  "FileStream class nativeLineEnd -- ours" },
     { 255, ST_PRIM_PRESENT,  "Float>>printString"               },
     { 136, ST_PRIM_PRESENT,  "signal a semaphore at a time"     },
     { 148, ST_PRIM_PRESENT,  "Object shallowCopy / clone"       },

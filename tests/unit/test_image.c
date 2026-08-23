@@ -50,7 +50,7 @@
  *  test had not, among them the whole of lib/Concurrency, ClassTestCase,
  *  MessageSend, SharedPool and the exception classes added this session.
  */
-#define LIB_CLASSES             42
+#define LIB_CLASSES             43
 /*
  *  This number is a ratchet and is meant to move: lib/ is where every
  *  divergence from the frozen 1983 sources lives, so it grows whenever a
@@ -86,15 +86,29 @@
  *  translating the line ending on the way in and back again on the way out,
  *  since a Paragraph breaks on the carriage return of 1983 and a file on
  *  disk is as likely to be written in either of the other two.
+ *
+ *  700 when a FILE OUT was given the same treatment the viewed file already
+ *  had.  1983 wrote carriage returns because the Alto did, and nothing now
+ *  reads them: a filed-out class opens in an editor and in a diff as one
+ *  line thousands of characters long.  TextFileStream is a FileStream that
+ *  writes the host's ending instead -- FileStream class>>nativeLineEnd asks
+ *  primitive 254 which that is -- reached through File>>asTextFileStream
+ *  and FileDirectory>>textFile:, and the four methods that open a file out
+ *  now open it that way.  PositionableStream>>nextChunk is the other half:
+ *  it turns every ending back into a carriage return as source is read, so
+ *  filing in what this system filed out does not fill the browser with
+ *  methods that display as a single line.  Thirteen with the `new' the
+ *  bootstrap synthesizes for the new class.
  */
-#define LIB_METHODS             687
+#define LIB_METHODS             700
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
  *  none.  Collections-Protocol was in that group until CollectionElement,
- *  the box a Set stores nil in, gave it a class of its own.
+ *  the box a Set stores nil in, gave it a class of its own.  Files-Fixes
+ *  joined them when TextFileStream gave it one too.
  */
-#define LIB_CATEGORIES          11
+#define LIB_CATEGORIES          12
 /*
  *  The image this test measures is the one profiles/st2026.profile builds,
  *  and it is built BY that profile rather than by a list kept alongside it.
@@ -191,7 +205,7 @@ build_once(void)
      *  alone brings Mutex, Monitor, Promise, SharedQueue and the fixtures,
      *  and every one of them defines initialize and no class-side new.
      */
-    CHECK_EQ_INT(res.news_synthesized, 42);
+    CHECK_EQ_INT(res.news_synthesized, 43);
     built = 1;
     return 1;
 }
@@ -1982,7 +1996,7 @@ test_browsing(void)
      *  the source pointer is 22 bits and silently truncated once, and a
      *  size that stops growing is how that would show.
      */
-    check_integer("(SourceFiles at: 1) contents size", 1369395);
+    check_integer("(SourceFiles at: 1) contents size", 1374635);
 }
 
 /*
@@ -2619,6 +2633,87 @@ test_menus_compose_as_lines(void)
 }
 
 /*
+ *  A file out travels between hosts.
+ *
+ *  Writing the host's own line ending is only half a promise.  The other
+ *  half is that a file written on one machine reads back on another: a class
+ *  filed out on Linux, mailed to somebody on Windows and filed in there has
+ *  to arrive as the same source, and the Alto's carriage returns have to keep
+ *  working too, because every .st file written before this change and the
+ *  whole of sources/ is in them.
+ *
+ *  So the reader takes all three and the writer picks one.  That asymmetry
+ *  is deliberate and it is what makes the exchange work in both directions
+ *  at once -- there is no negotiation and no marker in the file, and a file
+ *  half converted by something else on the way still reads, because each
+ *  ending is decided on its own.
+ *
+ *  PositionableStream>>nextChunk does the reading, src/compiler/chunk.c does
+ *  the same for the bootstrap, and Character>>isSeparator already counted a
+ *  line feed in 1983 -- which is why the bang framing between chunks never
+ *  needed anything doing to it.
+ */
+static void
+test_file_out_travels_between_hosts(void)
+{
+    /*
+     *  The same text in each of the three conventions reads back as one
+     *  String, and it is the carriage-return one.
+     */
+    check_boolean(
+        "| cr lf crlf read want |"
+        " cr := String with: (Character value: 13)."
+        " lf := String with: (Character value: 10)."
+        " crlf := cr , lf."
+        " read := [:e | (ReadStream on: 'x' , e , 'y' , e , 'z!') nextChunk]."
+        " want := 'x' , cr , 'y' , cr , 'z'."
+        " ^((read value: cr) = want)"
+        " and: [((read value: lf) = want)"
+        " and: [(read value: crlf) = want]]", 1);
+
+    /*  A carriage return and a line feed are ONE ending, not two.  */
+    check_integer(
+        "| crlf |"
+        " crlf := (String with: (Character value: 13)) , (String with: (Character value: 10))."
+        " ^((ReadStream on: 'x' , crlf , 'y!') nextChunk) size", 3);
+
+    /*  Nothing foreign survives into the image.  */
+    check_integer(
+        "| lf |"
+        " lf := String with: (Character value: 10)."
+        " ^((ReadStream on: 'x' , lf , 'y!') nextChunk)"
+        " occurrencesOf: (Character value: 10)", 0);
+
+    /*  The writer answers one of the two endings anybody now runs.  */
+    check_boolean(
+        "| e lf |"
+        " lf := String with: (Character value: 10)."
+        " e := FileStream nativeLineEnd."
+        " ^(e = lf) or: [e = ((String with: (Character value: 13)) , lf)]", 1);
+
+    /*
+     *  And a real file out is written in it: on a line-feed host no carriage
+     *  return reaches the disk at all, and on a carriage-return-and-line-feed
+     *  one every carriage return is paired with a line feed.  Stated that way
+     *  the check is the same check on both.
+     */
+    check_boolean(
+        "| name raw cr lf native |"
+        " cr := Character value: 13."
+        " lf := Character value: 10."
+        " native := FileStream nativeLineEnd."
+        " name := 'zz-line-ending-test.st'."
+        " Object fileOutMessage: #printString fileName: name."
+        " raw := (FileStream oldFileNamed: name) contentsOfEntireFile."
+        " Disk removeKey: name."
+        " ^native = (String with: lf)"
+        "     ifTrue: [((raw occurrencesOf: cr) = 0)"
+        "                and: [(raw occurrencesOf: lf) > 0]]"
+        "     ifFalse: [((raw occurrencesOf: cr) = (raw occurrencesOf: lf))"
+        "                and: [(raw occurrencesOf: cr) > 0]]", 1);
+}
+
+/*
  *  Input, through the path a window's events take.
  *
  *  GFX_inject_* does exactly what the SDL handlers do -- move the pointer,
@@ -3099,6 +3194,7 @@ main(void)
     test_changing_the_image();
     test_class_side_instance_variables();
     test_menus_compose_as_lines();
+    test_file_out_travels_between_hosts();
     test_quit();
     test_input();
     test_where_the_ink_lands();

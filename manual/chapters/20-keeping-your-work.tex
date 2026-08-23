@@ -113,6 +113,21 @@ exclamation marks, with method bodies in bang-terminated chunks. It is what
 everything in \ct{sources/} is written in. It works, and it is worth knowing
 because it is how you rescue code from an image.
 
+\begin{stnote}[Line endings]
+A line ends with \ct{Character cr} inside the image and there is no choice
+about it --- \ct{CompositionScanner} breaks on a carriage return and on
+nothing else, so a line feed in a String is a character with no glyph and no
+line break.
+
+On \emph{disk} that convention is the Alto's, and nothing you own reads it: a
+file of carriage returns opens in an editor and in a \ct{git diff} as one line
+thousands of characters long. So a file out is written in the host's own
+ending --- a line feed here, a carriage return and line feed on Windows ---
+and reading a chunk turns every ending back into a carriage return on the way
+in. The file is native, the image is 1983, and neither has to know about the
+other.
+\end{stnote}
+
 \section{What to do instead}
 
 For anything you intend to keep, write it as a package on disk---a directory
