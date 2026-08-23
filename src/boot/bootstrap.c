@@ -5048,13 +5048,48 @@ build_strike_font(void)
          *  The scanner's stop-condition table, indexed by character code and
          *  by two values past the end: EndOfRun is 257 and CrossedX is 258,
          *  which is why it is not merely 256 long.  CharacterScanner>>
-         *  setStopConditions fills it; it only has to exist, and be big
-         *  enough that filling it does not run off the end.
+         *  setStopConditions fills the codes it cares about; it only has to
+         *  exist, and be big enough that filling it does not run off the end.
+         *
+         *  Every code this face cannot draw is marked here, because nothing
+         *  else marks it.  CharacterScanner>>scanCharactersFrom:to:in:
+         *  rightX:stopConditions:displaying: is the inner loop of all text
+         *  layout, and it reads
+         *
+         *      (stopConditions at: ascii + 1) ~~ nil ifTrue: [^...].
+         *      sourceX _ xTable at: ascii + 1.
+         *
+         *  -- the stop condition is the ONLY thing standing between a
+         *  character code and the xTable index.  1983 needed nothing else:
+         *  its fonts ran the whole way to 255, so every code was a code the
+         *  font had.  This face has 128 and the xTable is 130 long, so any
+         *  byte over 127 walks off the end of it -- and a byte over 127 is
+         *  every em dash and arrow written since, which is to say most text
+         *  files.  Reading one into a File List answered `subscript is out
+         *  of bounds: 227' from Paragraph>>composeAll -- 227 being 226, the
+         *  lead byte of a UTF-8 dash, plus one -- and the notifier came
+         *  straight back when dismissed, because composing the text is what
+         *  redisplaying it does.
+         *
+         *  #characterNotInFont is 1983's own answer and the scanner already
+         *  implements it: it scans `(font maxAscii + 1) asCharacter' in
+         *  place of the character it cannot draw.  So the substitute itself,
+         *  code 128 here, must NOT be marked -- it would stop on itself for
+         *  ever -- and the xTable's two spare entries above are what make it
+         *  zero wide instead.  Marking therefore starts one past it, at 129.
          */
-        st_oop  stops = OM_instantiate_pointers(array_class, 258);
+        st_oop      stops = OM_instantiate_pointers(array_class, 258);
+        st_oop      absent;
+        unsigned    code;
 
         if (!OM_is_present(stops))
             return ST_OOP_INVALID;
+        absent = BOOT_intern_symbol("characterNotInFont", NULL);
+        if (!OM_is_present(absent))
+            return ST_OOP_INVALID;
+        /*  The array index is the code plus one, so 129 is the 130th.  */
+        for (code = FONT_CODES + 1; code <= 255; ++code)
+            OM_store_pointer(code, stops, absent);
         OM_store_pointer(3, font, stops);
     }
     OM_store_pointer(4,  font, OM_int_oop(0));  /*  type                      */
