@@ -522,6 +522,18 @@ coverage_resize(int width, int height)
     coverage_h = coverage ? height : 0;
 }
 
+/*
+ *  The title, kept so ST_DISPLAY_TRACE can rebuild it after a resize.
+ *
+ *  A screenshot is what anyone sends when the screen looks wrong, and a
+ *  screenshot of a window cannot say how many physical pixels its logical
+ *  presentation was spread over -- which is the only number that decides
+ *  whether a one-bit halftone comes out exact.  Three rounds of images went
+ *  by before that was obvious.  So under ST_DISPLAY_TRACE the numbers go in
+ *  the title bar, where the screenshot already is.
+ */
+static char             window_title[96];
+
 /*  The pointer's current shape, kept so an unchanged one is not rebuilt.  */
 static SDL_Cursor      *sdl_cursor;
 static uint16_t         cursor_bits[16];
@@ -793,6 +805,28 @@ adopt_display_extent(void)
 }
 
 /*
+ *  Put the geometry in the title bar, when asked.  Called after every fit,
+ *  because a resize is exactly when these numbers change.
+ */
+static void
+retitle_if_tracing(void)
+{
+    char        geom[256];
+    char        title[512];
+    gfx_form    form;
+
+    if (!window || !getenv("ST_DISPLAY_TRACE"))
+        return;
+    if (!GFX_form_from_oop(display_form, &form))
+        return;
+    GFX_geometry(geom, sizeof geom);
+    snprintf(title, sizeof title, "%s -- form %dx%d at %dx, %s -- %s",
+             window_title[0] ? window_title : "Smalltalk-2026",
+             form.width, form.height, open_scale, presentation_note, geom);
+    SDL_SetWindowTitle(window, title);
+}
+
+/*
  *  ----------  The screen is the window  ----------
  *
  *  Scaling and letterboxing both answer "how do I show a 640x480 screen in a
@@ -959,6 +993,7 @@ fit_display_to_window(void)
             lh = form.height;
         resize_display(lw, lh);
     }
+    retitle_if_tracing();
 }
 
 int
@@ -1004,6 +1039,8 @@ GFX_open(const char *title, int width, int height, char *errbuf, size_t errlen)
         wh = (int) (wh / density);
         if (ww < 1) ww = 1;
         if (wh < 1) wh = 1;
+        snprintf(window_title, sizeof window_title, "%s",
+                 title ? title : "Smalltalk-2026");
         window = SDL_CreateWindow(title, ww, wh,
                                   SDL_WINDOW_RESIZABLE
                                       | SDL_WINDOW_HIGH_PIXEL_DENSITY);
@@ -1050,6 +1087,7 @@ GFX_open(const char *title, int width, int height, char *errbuf, size_t errlen)
      *  first moment the right screen size is knowable.
      */
     fit_display_to_window();
+    retitle_if_tracing();
     GFX_damage_all();
     return 0;
 }
