@@ -24,8 +24,7 @@ st80.exe -bootstrap -profile profiles/st2026.profile -o st80.image
 st80.exe -run st80.image
 ```
 
-Note the forward slashes in `profiles/st2026.profile`. That is not a
-typo — see [Forward slashes](#forward-slashes-in-paths-given-to--profile).
+Backslashes work too — `profiles\st2026.profile` is the same thing.
 
 ## 1. The compiler
 
@@ -192,24 +191,36 @@ you the museum piece.
 and reproduces its traces; asked to build an image it refuses and says why.
 Build the default `OM=mt` unless you are working on the oracle.
 
-### Forward slashes in paths given to `-profile`
+### Either separator works
 
-`src/boot/profile.c` splits and joins paths on `/` and only `/`. It has a
-Win32 directory walk — `FindFirstFileA` where POSIX gets `opendir` — but
-`directory_of` is `strrchr(path, '/')` on every platform.
+`src/boot/profile.c` used to split paths on `/` and only `/`, on every
+platform. It had a Win32 directory walk — `FindFirstFileA` where POSIX gets
+`opendir` — but `directory_of` was `strrchr(path, '/')` regardless. So
 
-So `-profile profiles\st2026.profile` finds no separator, decides the
-profile lives in `.`, and then cannot resolve the `#requires : [ 'bluebook' ]`
-inside it, because it looks for `.\bluebook.profile` rather than
-`profiles\bluebook.profile`. `-profile profiles/st2026.profile` works,
-because every Win32 file API accepts forward slashes.
+```bat
+st80.exe -bootstrap -profile profiles\st2026.profile -o st80.image
+```
 
-The same holds for source paths handed to `-bootstrap`, `-syntax` and
-`-primitives`. **Use forward slashes.** Tab completion in `cmd` will give
-you backslashes, so this is worth remembering rather than deriving.
+found no separator at all, concluded the profile lived in `.`, and looked
+there for the profile that one requires:
 
-This is a rough edge in the code, not a property of Windows, and it is
-listed as such below.
+```
+st80: cannot open ./bluebook.profile
+```
+
+— a file nobody wrote, in a directory nobody named, for a command spelled
+the way the platform spells paths and the way tab completion produces them.
+
+It now splits on `\` as well as `/` under `_WIN32`, takes whichever comes
+last, and treats `C:\x`, `\x` and `\\host\share` as already anchored
+alongside `/x`. Mixed separators are fine going out — `C:\proj\profiles` +
+`bluebook.profile` becomes `C:\proj\profiles/bluebook.profile`, and every
+Win32 file call takes that.
+
+**Only under `_WIN32`.** Backslash is a legal character in a POSIX filename,
+so a Linux build that treated it as a separator would be breaking files that
+are allowed to exist. The POSIX path through those functions is unchanged,
+character for character.
 
 ### Environment
 
@@ -344,14 +355,13 @@ what every other platform compiles.
 Listed rather than smoothed over, because a first Windows build should know
 which surprises are already accounted for.
 
-1. **It compiles and links; it has not run.** Nothing here has watched
-   `st80.exe` start on Windows, so every claim in section 4 and section 5
+1. **It runs; it has not yet built an image.** `st80.exe -version` works on
+   Windows. Everything past that — bootstrapping, the window, the suites —
    is still reasoning rather than observation.
-2. **`-profile` needs forward slashes.** `src/boot/profile.c`'s
-   `directory_of` and `resolve` are `/`-only, so a backslash path silently
-   resolves `#requires` against the wrong directory. Fixing it properly means
-   splitting on either separator under `_WIN32`, and treating `C:\` as
-   absolute in `resolve`, which today tests only `path[0] == '/'`.
+2. **Paths are the only thing `-bootstrap` has been seen to get wrong**, and
+   that is fixed: `profile.c` now splits on either separator. It is listed
+   here because the class of problem — POSIX assumptions in code that has
+   a Win32 branch a few lines away — is the one this port keeps finding.
 3. **The object list in `Makefile.msvc` is maintained by hand.** nmake has no
    wildcard, so the GNU makefile picks up a new `.c` under `src/` and this one
    does not. It had already drifted once: `src/boot/` was written after
@@ -395,6 +405,12 @@ Honest accounting, because the alternative is a document that reads as
 though someone ran it.
 
 **Confirmed on Windows, by MSVC 14.50 under Visual Studio 18:**
+
+- **`st80.exe` builds, links and runs.** `st80.exe -version` answers on
+  Windows, reports `mt (64-bit threaded)`, counts the CPUs, and prints
+  `platform : Windows`.
+- **`SDL3.dll` beside the binary is what it takes.** Copied from the
+  package's `lib\x64`, the program starts.
 
 - `nmake /f Makefile.msvc` parses and runs. The inference rules fire, batch
   mode compiles, and the variables reach `cl` — the whole file was written
@@ -461,11 +477,16 @@ now named outright, after `/link` because `cl` has no `/SUBSYSTEM` of its own.
 
 **Still not checked:**
 
-- **The program has never run on Windows.** No image has been bootstrapped,
-  no window opened, no test suite executed there. Everything in section 4 and
-  section 5 — the forward-slash rule for `-profile`, `SDL3.dll` beside the
-  binary, the display environment variables, `nmake test` — is reasoning from
-  the source rather than something observed.
+- **No image has been bootstrapped on Windows**, no window opened, no test
+  suite run. `-version` is the only subcommand seen to work there. The
+  display environment variables and `nmake test` are still reasoning from
+  the source rather than anything observed.
+- **The path fix is tested, but not on Windows.** Both branches of
+  `last_separator` and `path_is_absolute` were lifted out and driven over
+  eight cases with `_WIN32` forced on and off — backslash paths, drive
+  letters, UNC roots, mixed separators, `..` — and the Windows branch is
+  right on all of them while the POSIX branch is unchanged. That is the
+  logic proven, not the platform.
 - The `prim.c` shim's Windows half specifically: `_open` with `_O_BINARY`,
   `_chsize_s`, `_filelengthi64`, and `ReadFile`/`WriteFile` through an
   `OVERLAPPED`. The POSIX half is exercised by the whole test suite and by a

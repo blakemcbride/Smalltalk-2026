@@ -77,11 +77,68 @@ static int expand_one(expansion *e, const char *path, unsigned depth);
 
 /*  ----------  Paths  ----------  */
 
+/*
+ *  The last path separator in `path', or NULL.
+ *
+ *  '/' everywhere; on Windows '\' as well, and whichever comes later wins.
+ *  Every Win32 file call takes either separator, so both spellings of a path
+ *  open the same file -- which is exactly why splitting on '/' alone was so
+ *  quiet.  `-profile profiles\st2026.profile' found no separator, concluded
+ *  the profile lived in ".", and then looked there for the profile it
+ *  requires:
+ *
+ *      st80: cannot open ./bluebook.profile
+ *
+ *  naming a file nobody wrote, in a directory nobody named, for a request
+ *  that was spelled the way the platform spells paths and the way tab
+ *  completion at a cmd prompt produces them.
+ */
+static const char *
+last_separator(const char *path)
+{
+    const char *slash = strrchr(path, '/');
+#if defined(_WIN32)
+    const char *back  = strrchr(path, '\\');
+
+    if (!slash || (back && back > slash))
+        slash = back;
+#endif
+    return slash;
+}
+
+/*
+ *  Is this path already anchored, so that no base applies to it?
+ *
+ *  POSIX has one form.  Windows has three: a drive, "C:\x" and "C:/x"
+ *  alike; the current drive's root, "\x"; and a UNC share, "\\host\share",
+ *  which the leading-backslash test already covers.
+ *
+ *  "C:x" -- drive-relative, no separator, meaning "x in whatever directory
+ *  that drive is currently on" -- is counted absolute here too.  It is not,
+ *  strictly.  But the alternative is to paste a base in front of a string
+ *  that already carries a drive letter, and "profiles/C:x" is not a path at
+ *  all; leaving it alone at least fails as itself.
+ */
+static int
+path_is_absolute(const char *path)
+{
+    if (path[0] == '/')
+        return 1;
+#if defined(_WIN32)
+    if (path[0] == '\\')
+        return 1;
+    if (((path[0] >= 'A' && path[0] <= 'Z')
+      || (path[0] >= 'a' && path[0] <= 'z')) && path[1] == ':')
+        return 1;
+#endif
+    return 0;
+}
+
 /*  The directory a path lives in, "." when it has none.  */
 static void
 directory_of(const char *path, char *out, size_t out_len)
 {
-    const char *slash = strrchr(path, '/');
+    const char *slash = last_separator(path);
 
     if (!slash) {
         snprintf(out, out_len, ".");
@@ -101,7 +158,7 @@ resolve(const char *base, const char *path, char *out, size_t out_len)
 {
     int n;
 
-    if (path[0] == '/')
+    if (path_is_absolute(path))
         n = snprintf(out, out_len, "%s", path);
     else
         n = snprintf(out, out_len, "%s/%s", base, path);
@@ -115,7 +172,7 @@ resolve(const char *base, const char *path, char *out, size_t out_len)
 static void
 class_name_of(const char *path, char *out, size_t out_len)
 {
-    const char *slash = strrchr(path, '/');
+    const char *slash = last_separator(path);
     const char *name = slash ? slash + 1 : path;
     const char *dot = strchr(name, '.');
     size_t      n = dot ? (size_t) (dot - name) : strlen(name);
@@ -145,7 +202,7 @@ class_name_of(const char *path, char *out, size_t out_len)
 static int
 file_defines_its_class(const char *path)
 {
-    const char *slash = strrchr(path, '/');
+    const char *slash = last_separator(path);
     const char *name = slash ? slash + 1 : path;
 
     return strstr(name, ".extension.") == NULL;
