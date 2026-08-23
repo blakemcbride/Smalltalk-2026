@@ -1,0 +1,257 @@
+\chapter{The System Browser}
+\label{ch:browser}
+
+\standfirst{One window, five panes and six menus, and every line of the
+system behind them. This is where the work happens, and the half hour spent
+learning its menus is the best-paid half hour in Smalltalk.}
+
+\section{The shape of it}
+
+\ct{browser} on the desktop menu sends \ct{BrowserView openOn: SystemOrganization}
+--- a browser on the whole system. Four list panes across the top, a code pane
+across the bottom, and two switches under the second list.
+
+\begin{center}
+\small
+\begin{tabular}{@{}lp{0.58\textwidth}@{}}
+\toprule
+1. category & groups of classes, e.g.\ \ctp{Collections-Unordered}\\
+2. class & the classes in that group\\
+3. message category & groups of methods, e.g.\ \ctp{accessing}\\
+4. message & the selectors in that group\\
+\midrule
+code pane & whatever the four above have narrowed down to\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Selection runs left to right: choosing a category fills the class list,
+choosing a class fills the message categories, choosing one of those fills the
+messages. Deselecting a pane empties everything to its right. There is no
+other state --- what you are looking at is exactly what the four selections
+say you are looking at.
+
+The wheel scrolls any of the five panes, this system having taught
+\ct{ScrollController} and \ct{ParagraphEditor} what a wheel is; 1983 had no
+such thing and scrolled with a bar on the left edge that appears when the
+pointer enters the pane.
+
+\begin{stnote}[Source comes from a file]
+The image does not store method source. It stores a pointer into the sources
+or changes file and reads the text back when you select a method, which is why
+Chapter~\ref{ch:keeping} is so insistent that the changes file travels with the
+image. A browser showing you nothing for a method you wrote is that file
+missing, not the method.
+\end{stnote}
+
+\section{\ctp{instance} and \ctp{class}}
+
+Under the class list are two switches. \ct{instance} shows the methods an
+instance of the selected class understands; \ct{class} shows the methods the
+class object itself understands --- \ct{new}, and the rest of
+Chapter~\ref{ch:classside}. They are the same browser looking at two different
+objects, and forgetting which one is lit is the most common way to write a
+method that is never called.
+
+\section{What the code pane is showing}
+
+The code pane has no scrollback and no tabs. It shows one thing, and which
+thing depends on what you last chose:
+
+\begin{center}
+\small
+\begin{tabular}{@{}lp{0.58\textwidth}@{}}
+\toprule
+a message selected & that method's source\\
+a class, no message category & its \emph{definition} --- the
+  \ctp{subclass:} \ldots{} \ctp{category:} expression\\
+\ctp{comment} chosen & the class comment\\
+\ctp{hierarchy} chosen & the class's ancestors and descendants, as text\\
+\ctp{protocols} chosen & the class's message categories, as editable text\\
+\ctp{edit all} chosen & the whole category list, as editable text\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The last four are modes you enter from a menu and leave by selecting something
+else. They are not separate windows, which is worth knowing the first time
+\ct{comment} appears to have replaced your method.
+
+\section{Accept is the compiler}
+
+Editing in the code pane changes nothing. \ct{accept} on its middle-button
+menu compiles what is there and installs it, and the installation is immediate
+--- no build, nothing to restart, no possibility of a stale version running.
+
+What \ct{accept} means depends on the mode above. On a method it compiles a
+method into the selected class, on the selected side. On a class definition it
+redefines the class and recompiles every method affected by the change. On a
+comment it stores the comment. On \ct{protocols} or \ct{edit all} it
+reorganizes.
+
+\begin{stwarn}
+A code pane you have edited and not accepted holds the only copy of that text.
+\ct{cancel} throws it away without asking, and choosing another item in any
+list pane asks first --- that question is the system's one guard against
+losing work, so read it rather than dismissing it.
+\end{stwarn}
+
+\section{The category pane menu}
+
+With a category selected:
+
+\begin{description}
+\item[\ctp{file out}] Write every class in the category to
+  \ctp{Category-Name.st}, in superclass order, in chunk format.
+\item[\ctp{print out}] The same, formatted for reading rather than for filing
+  back in.
+\item[\ctp{spawn}] A new browser on this category alone.
+\item[\ctp{add category}] Prompt for a name and insert it.
+\item[\ctp{rename}] Prompt for a new name and rename it in place.
+\item[\ctp{remove}] Remove the category \emph{and every class in it}. It asks
+  ``are you certain that you want to remove all classes in this category?''
+  first, and that question is not a formality.
+\item[\ctp{update}] Re-read the category list from \ct{SystemOrganization}.
+  What you want after filing code in from somewhere else, or after another
+  process has added a class.
+\item[\ctp{edit all}] The whole category list as text in the code pane.
+  Reorder it, add to it, \ct{accept}.
+\end{description}
+
+With no category selected the menu shrinks to \ct{add category},
+\ct{update} and \ct{edit all}, those being the three that do not need one.
+
+\section{The class pane menu}
+
+Thirteen items in four groups, and the middle two groups are the ones worth
+learning.
+
+\begin{description}
+\item[\ctp{file out}, \ctp{print out}] As above, for this class: both sides,
+  one file.
+\item[\ctp{spawn}] A browser on this class alone.
+\item[\ctp{spawn hierarchy}] A browser whose category list holds one entry,
+  \ct{**Hierarchy**}, and whose class list is this class's ancestors followed
+  by all of its descendants. The best way there is to read an inherited method
+  and its overrides together.
+\medskip
+\item[\ctp{hierarchy}] The same information as text in the code pane, without
+  opening a window.
+\item[\ctp{definition}] The \ctp{subclass:} expression. Edit it and
+  \ct{accept} to add an instance variable, change the superclass or move the
+  class to another category; every affected method is recompiled for you.
+\item[\ctp{comment}] The class comment, editable. Write one.
+\item[\ctp{protocols}] The class's message categories as editable text.
+\medskip
+\item[\ctp{inst var refs}] Pops up a menu of the instance variables of this
+  class \emph{and its superclasses}; choose one and get a browser of every
+  method that reads or writes it. This is how you find out what a variable is
+  for.
+\item[\ctp{class var refs}] The same for class variables.
+\item[\ctp{class refs}] Every method anywhere in the system that mentions this
+  class by name. How you find out who uses what you are about to change.
+\medskip
+\item[\ctp{rename}] Rename the class. References to it are not rewritten ---
+  \ctp{class refs} first.
+\item[\ctp{remove}] Remove it from the system.
+\end{description}
+
+\section{The message category pane menu}
+
+The third pane has a menu of its own, which is easy to go years without
+noticing:
+
+\begin{description}
+\item[\ctp{file out}, \ctp{print out}] Just the methods in this protocol.
+\item[\ctp{spawn}] A browser on this protocol alone.
+\item[\ctp{add protocol}] Prompt for a name and add it.
+\item[\ctp{rename}, \ctp{remove}] As they read. Removing a protocol removes
+  the methods in it.
+\end{description}
+
+With nothing selected in that pane the menu is the single item
+\ct{add protocol}. Categorising methods is not decoration: it is the only
+index a reader of your class has, and \ctp{as yet unclassified} is a
+confession.
+
+\section{The message pane menu, and the three that matter}
+
+\begin{description}
+\item[\ctp{file out}, \ctp{print out}] This one method.
+\item[\ctp{spawn}] A browser on this method alone --- useful when you want to
+  keep it on screen while you navigate elsewhere.
+\item[\ctp{move}] Prompt for a destination protocol. Type a protocol name to
+  move the method within the class; type \ct{Class>protocol} and it is
+  \emph{copied} to that protocol of that class instead. The prompt says so, in
+  four words, and it is the only place the system explains it.
+\item[\ctp{remove}] Remove the method.
+\end{description}
+
+The other three are the ones that make a system of five thousand methods
+navigable, and they are worth learning by name.
+
+\begin{description}
+\item[\ctp{senders}] Every method in the system that sends this selector.
+  \ct{Smalltalk browseAllCallsOn:} under the hood. This is how you find out
+  who calls something, and therefore whether it is safe to change.
+\item[\ctp{implementors}] Every class that implements this selector.
+  This is how you find out what a message \emph{means} when the receiver could
+  be anything.
+\item[\ctp{messages}] A menu of every selector this method sends; choose one
+  and you get its implementors. This is how you walk forwards through code you
+  are reading, one send at a time.
+\end{description}
+
+\begin{stnote}
+\ctp{implementors} is the answer to ``what does \ctp{do:} do?'' --- there are
+dozens, one per collection, and reading three of them tells you more than any
+documentation could. \ctp{senders} is the answer to ``is anyone relying on
+this?'' Between them they replace grep, and they are better than grep because
+they know the difference between a selector and a word.
+\end{stnote}
+
+All three open a \emph{message-list browser}: two panes, a list of
+\ctp{Class selector} lines above and the source below, with the same
+middle-button menu on the list. You can read, edit and accept in it exactly as
+in the full browser.
+
+\section{The code pane menu}
+
+Every text pane in the system shares one editor menu
+(Section~\ref{sec:texteditor}). In a browser's code pane it carries three
+more:
+
+\begin{description}
+\item[\ctp{format}] Pretty-print the method: the system's own indentation,
+  computed by parsing it. It refuses --- and the window flashes --- if the
+  text has unaccepted edits, because it works from the compiled method and not
+  from what is on the screen. Hold the left shift key for the tighter
+  \ctp{miniFormat}.
+\item[\ctp{spawn}] A browser on just this method's text.
+\item[\ctp{explain}] Select a token and choose this; an explanation of what
+  that token \emph{is} --- temporary, instance variable, global, selector,
+  class --- is inserted after it, as text, for you to read and then delete.
+  The one piece of built-in documentation in the system.
+\end{description}
+
+One more editor item behaves differently here than its one-line description
+suggests: \ct{again} repeats the last replacement at the next occurrence, and
+with the left shift key held it makes the replacement throughout the whole
+pane. That is the system's find-and-replace-all, and nothing announces it.
+
+\section{Four questions and where to click}
+
+\begin{description}
+\item[``What does this message do?''] Select the selector in any code pane,
+  or find it in a message list, and choose \ctp{implementors}.
+\item[``Can I change this method?''] \ctp{senders}. Read them. There is no
+  other answer.
+\item[``What is this class for?''] Select it and choose \ctp{comment}, then
+  \ctp{hierarchy} --- what it inherits from is usually a better description
+  than its own methods.
+\item[``Where did this variable come from?''] \ctp{inst var refs} on the
+  class, and choose the variable. Every method that touches it, in one window.
+\end{description}
+
+And when the window is not the answer, Section~\ref{sec:withoutbrowser} has
+the same questions asked from code and from the command line.

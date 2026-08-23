@@ -1,6 +1,6 @@
 # Smalltalk-2026: A Manual
 
-A book-length introduction to the system and the language — 26 chapters and
+A book-length introduction to the system and the language — 27 chapters and
 5 appendices, in LaTeX, building to a PDF with `pdflatex` and nothing else.
 
 ```sh
@@ -16,7 +16,7 @@ make clean      # remove LaTeX intermediates
 | I — Getting Started | what this is, building and running, ten minutes in the image |
 | II — The Language | syntax, objects and messages, blocks, control flow, classes, the class side, exceptions, what is past the Blue Book |
 | III — The Library | numbers, collections, streams, text, graphics |
-| IV — Living in the Image | the desktop, the tools, keeping your work |
+| IV — Living in the Image | the desktop, the System Browser, the other tools, keeping your work |
 | V — Concurrency | the contract, processes, writing parallel Smalltalk |
 | VI — Working on Disk | packages and profiles, tests and doctests, the command-line toolbox |
 | VII — Under the Hood | how the virtual machine works |

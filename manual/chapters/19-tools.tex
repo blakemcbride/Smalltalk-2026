@@ -1,66 +1,9 @@
-\chapter{Browsing, Inspecting, Debugging}
+\chapter{Inspecting, Debugging, Filing}
 \label{ch:tools}
 
-\standfirst{Five tools, all written in the language, all changeable from
+\standfirst{The Browser has a chapter of its own. These are the other four
+tools you live with --- all written in the language, all changeable from
 inside themselves.}
-
-\section{The System Browser}
-
-Four list panes across the top and a code pane below.
-
-\begin{center}
-\small
-\begin{tabular}{@{}lp{0.60\textwidth}@{}}
-\toprule
-1. category & groups of classes, e.g. \ctp{Collections-Unordered}\\
-2. class & the classes in that category\\
-3. message category & groups of methods, e.g. \ctp{accessing}\\
-4. message & the methods in that group\\
-\bottomrule
-\end{tabular}
-\end{center}
-
-Under the class list are two buttons, \ct{instance} and \ct{class}, which
-switch between the instance side and the class side
-(Chapter~\ref{ch:classside}).
-
-Selecting a class with no message category selected shows its
-\emph{definition} --- the \ct{subclass:} \ldots{} \ct{category:} expression of
-Chapter~\ref{ch:classes}.
-Edit it and \ct{accept} to add an instance variable or change the superclass;
-the system recompiles every affected method for you.
-
-\subsection{The list menus}
-
-Each list pane has its own middle-button menu.
-
-\textbf{Category pane:} \ct{file out}, \ct{print out}, \ct{spawn},
-\ct{add category}, \ct{rename}, \ct{remove}, \ct{update}, \ct{edit all}.
-
-\textbf{Class pane:} \ct{file out}, \ct{print out}, \ct{spawn},
-\ct{spawn hierarchy}, \ct{hierarchy}, \ct{definition}, \ct{comment},
-\ct{protocols}, \ct{inst var refs}, \ct{class var refs}, \ct{class refs},
-\ct{rename}, \ct{remove}.
-
-\textbf{Message pane:} \ct{file out}, \ct{print out}, \ct{spawn},
-\ct{senders}, \ct{implementors}, \ct{messages}, \ct{move}, \ct{remove}.
-
-The three in the middle of that last list are the ones that make Smalltalk
-navigable, and they are worth learning by name:
-
-\begin{description}
-\item[senders] every method in the system that sends this selector. This is
-  how you find out who calls something.
-\item[implementors] every class that implements this selector. This is how you
-  find out what a message means, when the receiver could be anything.
-\item[messages] every selector this method sends, so you can jump onwards.
-\end{description}
-
-\begin{stnote}
-\ct{implementors} is the answer to "what does \ct{do:} do?"---there are
-dozens, one per collection, and reading three of them tells you more than any
-documentation. \ct{senders} is the answer to "is it safe to change this?"
-\end{stnote}
 
 \section{The Workspace}
 
@@ -135,6 +78,7 @@ deliberate; an error during a bootstrap must not try to open a window.
 \end{stnote}
 
 \section{The File List}
+\label{sec:filelist}
 
 \ct{file list} on the desktop menu. The top pane takes a pattern; type one and
 \ct{accept} it. The pattern is a shell-style glob:
@@ -145,14 +89,40 @@ deliberate; an error during a bootstrap must not try to open a window.
 /home/blake/*.txt
 \end{st}
 
-The list fills with matching files. Selecting one and choosing \ct|get contents| from the middle-button menu shows it in the bottom pane. The file menu is
-\ct{get contents}, \ct{file in}, \ct{copy name}, \ct{rename}, \ct{remove}.
+The list fills with matching names. Selecting one and choosing
+\ct|get contents| from the middle-button menu shows it in the bottom pane. The
+file menu is \ct{get contents}, \ct{file in}, \ct{copy name}, \ct{rename},
+\ct{remove}.
 
 \ct{file in} reads a chunk-format source file and installs everything in
 it---which is how code moved between images before there were packages, and
 still works.
 
+\subsection{Directories}
+
+\ct|get contents| on a \emph{directory} enters it rather than trying to read
+it: the list becomes that directory's contents and the pattern pane says where
+you now are. 1983 had no word for a directory at all and simply failed here.
+
+The pattern is both the display and the control, so moving around is always
+the same gesture --- edit the top pane and \ct{accept}:
+
+\begin{center}
+\small
+\begin{tabular}{@{}lp{0.58\textwidth}@{}}
+\toprule
+\ctp{doc/*} & what entering \ctp{doc} writes for you\\
+\ctp{*} & back to where the system was started\\
+\ctp{../*} & above it\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Names in the list carry their directory with them, so what you select is what
+you get however deep you have gone.
+
 \section{Finding things without the Browser}
+\label{sec:withoutbrowser}
 
 \begin{st}
 Smalltalk at: #OrderedCollection      "the class, by name"

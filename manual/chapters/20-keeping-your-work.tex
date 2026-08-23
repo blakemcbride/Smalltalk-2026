@@ -28,9 +28,10 @@ keep.
 
 \section{Saving the image}
 
-\ct{save} on the desktop menu prompts for a name (defaulting to
-\ct{snapshot}), writes \ct{name.image} and \ct{name.changes}, and keeps
-running. \ct{quit} offers to do the same and then exit.
+\ct{save} on the desktop menu prompts for a name, offering \ct{snapshot}, and
+writes \ct{name.im} beside \ct{name.changes}, then keeps running. \ct{quit}
+offers to do the same and then exit. An empty answer to the prompt cancels
+either.
 
 From code:
 
@@ -41,8 +42,17 @@ Smalltalk saveAs: 'myimage' thenQuit: false
 Resume it later with:
 
 \begin{sh}
-./st80 -run myimage.image
+./st80 -run myimage.im
 \end{sh}
+
+\begin{stnote}[\ctp{.im} and \ctp{.image} are the same thing]
+\ct{SystemDictionary>>snapshotAs:} appends \ct{.im}, and it is the only thing
+that names the file --- so every image saved from inside the desktop ends in
+\ct{.im} whatever you type at the prompt. The bootstrap's \ct{-o} names its
+output whatever you tell it to, which is why the one in this tree is
+\ct{st80.image}. \ct{-run} reads either; the extension carries no meaning
+beyond saying which end it came out of.
+\end{stnote}
 
 Everything comes back: windows where you left them, text you had not accepted,
 processes that were running.

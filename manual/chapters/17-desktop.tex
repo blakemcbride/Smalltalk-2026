@@ -35,8 +35,12 @@ right & the window's menu --- what you can do to the window\\
 it; release outside to choose nothing.
 
 \section{The desktop menu}
+\label{sec:desktopmenu}
 
-The middle button on the background:
+Press and hold the middle button anywhere the background shows through. Ten
+items in three groups, and every one of them is a message sent by
+\ct{ScreenController} --- the controller whose view is the grey halftone, and
+which exists to provide exactly this menu.
 
 \begin{center}
 \small
@@ -50,7 +54,7 @@ The middle button on the background:
 \ctp{browser} & the System Browser\\
 \ctp{workspace} & a scratch pad\\
 \ctp{system transcript} & where \ctp{Transcript show:} goes\\
-\ctp{system workspace} & a workspace pre-filled with useful expressions\\
+\ctp{system workspace} & a workspace pre-filled with expressions to run\\
 \midrule
 \ctp{save} & write the image, keep running\\
 \ctp{quit} & save and quit, quit without saving, or continue\\
@@ -59,8 +63,157 @@ The middle button on the background:
 \end{center}
 
 Every one of these that opens a window then asks you to frame it: press the
-left button,
-drag out a rectangle, release.
+left button, drag out a rectangle, release. The rest of this section is what
+each one actually does.
+
+\subsection{The screen and the project}
+
+\begin{description}
+
+\item[\ctp{restore display}] Sends \ct{ScheduledControllers restore}, which
+repaints the desktop halftone and then asks every scheduled window to display
+itself again.
+
+You will want it more often than you expect, and that is not a fault. The
+display is an ordinary \ct{Form} that any code can draw on --- including a
+line you just evaluated in a workspace, which is the fastest way to learn what
+\ct{Form} does and also the fastest way to paint over a Browser. Nothing is
+lost when this happens; the windows are still there, still listening, and
+still know how to draw themselves. This is the message that asks them to.
+
+It is also what to reach for after the window has been resized, because
+\ct{restore} re-reads \ct{Display boundingBox} rather than trusting the
+rectangle a window was given when it opened.
+
+\item[\ctp{exit project}] Leaves the project you are in and re-enters the one
+that holds it (Section~\ref{sec:projects}). The top project holds
+\emph{itself}, so choosing this at the top level re-enters the top project:
+the screen is rebuilt from the same window list and nothing is lost.
+
+\begin{stnote}[Why that is worth saying]
+In 1983 this item ended the session. \ct{Project class>>initialize} captures
+\ct{ScheduledControllers} into the top project before that variable has been
+filled in, and \ct{Project>>initialProject} never assigns the transcript at
+all --- so exiting the top project installed \ct{nil} as the window list and
+\ct{nil} as the \ct{Transcript}, and every process that then asked either of
+them for anything answered \ct{doesNotUnderstand}, several hundred times a
+second, with no way back.
+
+The bootstrap runs that initializer again once both objects exist, and fills
+in the transcript the 1983 method leaves out. The menu item then does what
+\ct{projectHolder _ self} always said it should.
+\end{stnote}
+
+\end{description}
+
+\subsection{The six that open something}
+
+\begin{description}
+
+\item[\ctp{project}] Sends \ct{ProjectView open}. You frame a window, and that
+window \emph{is} the project --- a text pane you can label with whatever the
+project is for. Its middle-button menu carries one item the ordinary editor
+menu does not: \ct{enter}. Choose it and the screen is replaced by that
+project's own window list and its own Transcript.
+Section~\ref{sec:projects} has the rest.
+
+\item[\ctp{file list}] Sends \ct{FileList open}: a pattern pane, a list of
+matching files, and a contents pane. It reads files, files code in, renames,
+removes, and in this system walks into directories.
+Section~\ref{sec:filelist} covers it.
+
+\item[\ctp{browser}] Sends \ct{BrowserView openOn: SystemOrganization} --- a
+System Browser on the whole system, which is where nearly all of the work in
+Smalltalk gets done. Chapter~\ref{ch:browser} is about it.
+
+\item[\ctp{workspace}] Sends \ct{StringHolderView open}: a text pane with no
+model behind it and nothing to accept into. Type an expression, select it,
+choose \ct{do it} or \ct{print it}. Assigning to a name you never declared
+makes it a workspace variable that lives as long as the window does, which is
+what makes this a scratch pad rather than a series of one-shot evaluations.
+
+\item[\ctp{system transcript}] Sends
+\ct{TextCollectorView open: Transcript label: 'System Transcript'}. The
+important word is \emph{view}: there is one global \ct{Transcript}, and this
+opens a window onto it. Choose the item twice and you get two windows showing
+the same text.
+
+Everything the system says out loud arrives here --- your own
+\ct{Transcript show:}, and the timestamp \ct{save} writes when it takes a
+snapshot. Close it and the \ct{Transcript} still exists and still collects;
+you have only stopped looking.
+
+\item[\ctp{system workspace}] A workspace that opens with text already in it,
+ready to select and run.
+
+The text is this system's own. 1983's System Workspace is a page of Xerox's
+prose and example expressions, and that is precisely the part of this project
+that carries no licence from anybody --- so this one says what is true of
+\emph{this} system instead:
+
+\begin{st}
+3 + 4 factorial
+(1 to: 10) inject: 0 into: [:a :b | a + b]
+Smalltalk at: #Transcript
+
+Display extent
+Display fill: (40@40 corner: 200@120) rule: 3 mask: Form black
+ScheduledControllers restore
+
+BrowserView openOn: SystemOrganization
+StringHolderView open
+
+Processor activeProcess
+[Transcript show: 'from a process'; cr] fork
+\end{st}
+
+The \ct{Display fill:} line paints a rectangle straight onto the screen, and
+the \ct{ScheduledControllers restore} two lines under it is how you put the
+screen back --- which is the point of having them next to each other.
+
+\end{description}
+
+\subsection{Saving and leaving}
+
+\begin{description}
+
+\item[\ctp{save}] Prompts for a name, offering \ct{snapshot}, and writes the
+whole image to that name with \ct{.im} on the end. Unless the name is
+\ct{snapshot}, the changes file is copied to match first, so \ct{work.im}
+arrives beside \ct{work.changes}. Then the system carries on running.
+
+Answer the prompt with nothing at all and the save is cancelled. That is the
+only way out of it, and it is worth knowing, because there is no button that
+says cancel.
+
+\begin{st}
+./st80 -run work.im
+\end{st}
+
+is how you come back to it. Chapter~\ref{ch:keeping} is about what is in that
+file and what is not.
+
+\item[\ctp{quit}] Opens a second menu of three:
+
+\begin{center}
+\small
+\begin{tabular}{@{}lp{0.62\textwidth}@{}}
+\toprule
+\ctp{Save, then quit} & prompt for a name exactly as \ctp{save} does, write
+  the image, and exit\\
+\ctp{Quit, without saving} & exit now. Everything since the last snapshot is
+  gone\\
+\ctp{Continue} & never mind\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Releasing the button outside the menu chooses nothing, which is the same as
+\ct{Continue}. An empty answer to the name prompt cancels the quit as well as
+the save, so a slip at that prompt leaves you where you were rather than
+exiting unsaved.
+
+\end{description}
 
 \section{The window menu}
 
@@ -84,6 +237,7 @@ The right button, anywhere over a window:
 interrupt and ask whether you meant it.
 
 \section{The text editor}
+\label{sec:texteditor}
 
 Every text pane in the system is the same editor, and it has the same
 middle-button menu:
@@ -150,12 +304,30 @@ of that text. Closing it asks first, but \ct{cancel} does not. Accept early.
 \end{stwarn}
 
 \section{Projects}
+\label{sec:projects}
 
 \ct{project} on the desktop menu opens a \ct{Project}: a separate desktop with
-its own window list and its own changes. Enter one and the screen is empty
-again; \ct{exit project} comes back. It is a virtual desktop, from 1983, and
-it is useful when you want a clean screen for one task without closing what
-you had.
+its own window list, its own Transcript and its own changes. It is a virtual
+desktop, from 1983, and it is useful when you want a clean screen for one task
+without closing what you had.
+
+The window you frame is a text pane, and what makes it a door rather than a
+note is one extra item on its middle-button menu:
+
+\begin{center}
+\small
+\begin{tabular}{@{}lp{0.62\textwidth}@{}}
+\toprule
+\ctp{enter} & replace the current project with this one\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Choose it and the screen goes empty --- not because anything closed, but
+because you are looking at a different window list. \ct{exit project} on the
+desktop menu comes back. Type into the pane before you enter and you have
+labelled the door with what is behind it, which is the whole of the interface
+the feature was given.
 
 \section{When the screen goes wrong}
 
