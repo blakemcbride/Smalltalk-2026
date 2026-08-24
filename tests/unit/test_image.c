@@ -104,8 +104,13 @@
  *  category and protocol panes were in the order things were made in,
  *  because Categorizer appends a category and sorts only the elements
  *  inside one.
+ *
+ *  707 with lib/Cursor-Keys, which is five.  The arrow keys reached nothing
+ *  at all -- every SDL keycode above 127 was dropped where it arrived -- and
+ *  a key that reaches the image without a place in the keyboard map is not
+ *  inert either: it decodes to 255, unassigned, which ParagraphEditor types.
  */
-#define LIB_METHODS             702
+#define LIB_METHODS             707
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -2024,7 +2029,7 @@ test_browsing(void)
      *  the source pointer is 22 bits and silently truncated once, and a
      *  size that stops growing is how that would show.
      */
-    check_integer("(SourceFiles at: 1) contents size", 1375057);
+    check_integer("(SourceFiles at: 1) contents size", 1378062);
 }
 
 /*

@@ -1837,6 +1837,30 @@ GFX_pump(void)
                 code = 9;
             else if (key == SDLK_ESCAPE)
                 code = 27;
+            /*
+             *  The four keys the Alto keyboard did not have.  Their SDL
+             *  keycodes are all far above 255, so they are given codes of
+             *  their own inside the range InputState>>keyAt:put: passes
+             *  through to the keyboard queue: above the mouse and keyset bits
+             *  at 128-135 and the modifier keys at 136-139, and clear of
+             *  140-145, which the 1983 keyboard map already spends on the
+             *  Alto's own special keys.
+             *
+             *  lib/Cursor-Keys is the other half and has to agree with this
+             *  list: InputSensor>>initMap makes these four decode to
+             *  themselves instead of to `unassigned', and
+             *  ParagraphEditor>>normalCharacter: moves the caret rather than
+             *  typing them.  InputSensor class>>cursorKeyCodes is where the
+             *  image says the same four numbers.
+             */
+            else if (key == SDLK_LEFT)
+                code = 152;
+            else if (key == SDLK_RIGHT)
+                code = 153;
+            else if (key == SDLK_UP)
+                code = 154;
+            else if (key == SDLK_DOWN)
+                code = 155;
             else if (key < 128)
                 code = (unsigned) key;
             else

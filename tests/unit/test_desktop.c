@@ -624,6 +624,73 @@ test_typing_reaches_the_window(void)
 }
 
 /*
+ *  The cursor keys, which the Alto keyboard did not have.
+ *
+ *  Two failures to catch, and they are opposite ones.  Before lib/Cursor-Keys
+ *  the arrows never reached the image at all: every SDL keycode above 127
+ *  fell off the end of the key branch in display.c.  And a code that DOES
+ *  reach the image without a place in the keyboard map decodes to 255,
+ *  `unassigned', which is not inert -- ParagraphEditor types it, so the
+ *  fix applied by halves would put a box in your text.
+ *
+ *  Both show as ink, and both are checked without needing to know where
+ *  anything is on the screen, by ending each gesture with the caret back
+ *  where it started.  Three lefts and three rights type nothing and leave
+ *  the caret after the C, so the window must be pixel for pixel what it
+ *  was.  Then three lefts, a backspace and three rights: if the arrows
+ *  moved the caret it is in front of the A when the backspace arrives,
+ *  there is nothing there to delete, and the window is again unchanged.  If
+ *  they had been ignored the caret would still have been after the C and
+ *  the backspace would have eaten it.
+ *
+ *  This runs on the workspace the earlier tests opened and typed ABC into.
+ */
+static void
+test_the_cursor_keys_move_the_caret(void)
+{
+    /*  What display.c sends for them.  lib/Cursor-Keys agrees.  */
+    enum { LEFT_KEY = 152, RIGHT_KEY = 153, BACKSPACE_KEY = 8 };
+    region  typed, after;
+    int     i;
+
+    printf("---- the cursor keys move the caret and type nothing ----\n");
+
+    typed = scan(120, 200, 480, 400);
+
+    for (i = 0; i < 3; ++i) {
+        GFX_inject_key(LEFT_KEY, 1); GFX_inject_key(LEFT_KEY, 0); settle(20);
+    }
+    for (i = 0; i < 3; ++i) {
+        GFX_inject_key(RIGHT_KEY, 1); GFX_inject_key(RIGHT_KEY, 0); settle(20);
+    }
+    settle(30);
+    after = scan(120, 200, 480, 400);
+    ++st_test_checks;
+    if (after.ink != typed.ink) {
+        ++st_test_failures;
+        printf("  FAIL six cursor keys changed the window by %ld pixels\n",
+               after.ink - typed.ink);
+    }
+
+    for (i = 0; i < 3; ++i) {
+        GFX_inject_key(LEFT_KEY, 1); GFX_inject_key(LEFT_KEY, 0); settle(20);
+    }
+    GFX_inject_key(BACKSPACE_KEY, 1); GFX_inject_key(BACKSPACE_KEY, 0);
+    settle(30);
+    for (i = 0; i < 3; ++i) {
+        GFX_inject_key(RIGHT_KEY, 1); GFX_inject_key(RIGHT_KEY, 0); settle(20);
+    }
+    settle(30);
+    after = scan(120, 200, 480, 400);
+    ++st_test_checks;
+    if (after.ink != typed.ink) {
+        ++st_test_failures;
+        printf("  FAIL a backspace in front of the first character took %ld "
+               "pixels\n", typed.ink - after.ink);
+    }
+}
+
+/*
  *  The Browser is the largest thing the interface builds, and the one whose
  *  failure was reported as "I tried to bring a browser up and nothing
  *  happened for a long time" -- which was not slowness but a missing
@@ -811,6 +878,7 @@ main(void)
     test_a_workspace_opens_where_it_was_framed();
     test_the_view_answers_the_yellow_button();
     test_typing_reaches_the_window();
+    test_the_cursor_keys_move_the_caret();
     test_a_browser_opens();
     test_the_wheel_scrolls_the_view_under_the_pointer();
     test_the_window_menu_closes_a_window();
