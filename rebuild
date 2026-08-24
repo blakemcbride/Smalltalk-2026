@@ -1,0 +1,4 @@
+#
+make clean
+make
+./st80 -bootstrap -profile profiles/st2026.profile -o st80.image
