@@ -176,6 +176,46 @@ trying to do. Everything here is in the \ct{st2026} profile.}
 \end{tabular}
 \end{center}
 
+\section{Database}
+
+\begin{center}
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+\ctp{DbConnection open:} \ctp{open:do:} \ctp{close} \ctp{isOpen} \ctp{kind} & \\
+\ctp{transact:} \ctp{commit} \ctp{rollback} \ctp{autoCommit:} \ctp{readOnly:} & \\
+\ctp{execute:with:} \ctp{executeImmediate:} & no rows\\
+\ctp{query:with:} \ctp{fetchOne:with:} \ctp{fetchAll:with:} & rows\\
+\ctp{newCommand} \ctp{newQueryBuilder:} \ctp{newRecord:} & \\
+\ctp{tableNames} \ctp{tableExists:} \ctp{primaryKeysOf:} \ctp{columnsOf:} & catalogue\\
+\ctp{schema} \ctp{schema:} \ctp{schemaGraph} \ctp{schemaGraph:} & \\
+\midrule
+\ctp{next} \ctp{fetchOne} \ctp{fetchAll} \ctp{do:} \ctp{collect:} \ctp{select:} & a cursor\\
+\ctp{columns} \ctp{columnCount} \ctp{maxRows:} \ctp{close} \ctp{isClosed} & \\
+\midrule
+\ctp{at:} \ctp{at:ifAbsent:} \ctp{at:put:} \ctp{includesColumn:} & a record\\
+\ctp{integerAt:} \ctp{numberAt:} \ctp{floatAt:} \ctp{stringAt:} & \\
+\ctp{booleanAt:} \ctp{dateAt:} \ctp{timeAt:} \ctp{timestampAt:} & \\
+\ctp{bytesAt:} \ctp{dateIntegerAt:} & \\
+\ctp{insert} \ctp{insertReturningKey:} \ctp{update} \ctp{delete} & \\
+\ctp{copyCorrespondingFrom:} \ctp{isChanged} \ctp{tableName} & \\
+\midrule
+\ctp{select:} \ctp{distinct} \ctp{selectCount:as:} \ctp{selectSum:as:} & a builder\\
+\ctp{where:with:} \ctp{where:in:} \ctp{where:notIn:} \ctp{whereExists:} & \\
+\ctp{startOr} \ctp{startAnd} \ctp{endGroup} & \\
+\ctp{groupBy:} \ctp{having:with:} \ctp{orderBy:} \ctp{orderByDescending:} & \\
+\ctp{limit:} \ctp{leftJoin:} \ctp{rightJoin:} \ctp{table:as:} & \\
+\ctp{build} \ctp{parameters} \ctp{query} \ctp{fetchAll} \ctp{fetchOne} & \\
+\midrule
+\ctp{from:column:to:column:} \ctp{from:columns:to:columns:} & a graph\\
+\ctp{joinPathFor:root:} \ctp{tableNames} \ctp{foreignKeysOf:} & \\
+\ctp{storeOn:} \ctp{readFrom:} & \\
+\midrule
+\ctp{Odbc isAvailable} \ctp{lastError} \ctp{numberFromDigits:} & \\
+\bottomrule
+\end{tabular}
+\end{center}
+
 \section{Testing}
 
 \begin{center}

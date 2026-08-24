@@ -431,3 +431,36 @@ ManualExamples >> parallel [
 	"(Processor parallelCollect: (1 to: 4) do: [:x | x]) asArray >>> #(1 2 3 4)"
 	^self
 ]
+
+{ #category : 'ch17 database' }
+ManualExamples >> databaseWithoutADatabase [
+	"The half of Chapter 17 that needs no database: the SQL the query builder
+	 generates, the join path it finds, and the exactness of a DECIMAL.
+
+	 That half is most of what the chapter claims, which is the point --
+	 a generator's job is to produce one particular string, and a test that
+	 ran the query would need a database to say what checking the string
+	 says directly.  The connection, cursor and record examples cannot be
+	 here: they need a driver this machine may not have, and are covered by
+	 lib/Database-Live-Tests under its own profile."
+	"a DECIMAL column is exact, and the image's own reader is not"
+	"(Odbc numberFromDigits: '0.10') * 10 >>> 1"
+	"((Odbc numberFromDigits: '0.10') isKindOf: Fraction) >>> true"
+	"('0.10' asNumber * 10) >>> 1.0"
+	"(Odbc numberFromDigits: '123.45') >>> 2469/20"
+	"the join is found from the columns, not written by hand"
+	"([:g | g from: 'employee' column: 'department_id' to: 'department' column: 'department_id'. ((DbQueryBuilder onGraph: g table: 'employee') select: 'employee.last_name'; select: 'department.name'; build)] value: DbSchemaGraph new) >>> 'SELECT employee.last_name, department.name FROM employee JOIN department ON employee.department_id = department.department_id'"
+	"and through a table the query never named"
+	"([:g | g from: 'employee' column: 'employee_id' to: 'assignment' column: 'employee_id'; from: 'assignment' column: 'project_id' to: 'project' column: 'project_id'. ((DbQueryBuilder onGraph: g table: 'employee') select: 'employee.last_name'; where: 'project.project_id = ?' with: #(17); build)] value: DbSchemaGraph new) >>> 'SELECT employee.last_name FROM employee JOIN assignment ON employee.employee_id = assignment.employee_id JOIN project ON assignment.project_id = project.project_id WHERE project.project_id = ?'"
+	"a OR group is parenthesised, and its values keep their order"
+	"([:q | q where: 'employee.active = ?' with: #(1); startOr; where: 'employee.last_name = ?' with: #('Hopper'); where: 'employee.last_name = ?' with: #('Lovelace'); endGroup; build] value: (DbQueryBuilder onGraph: DbSchemaGraph new table: 'employee')) >>> 'SELECT * FROM employee WHERE employee.active = ? AND (employee.last_name = ? OR employee.last_name = ?)'"
+	"([:q | q where: 'employee.active = ?' with: #(1); startOr; where: 'employee.last_name = ?' with: #('Hopper'); where: 'employee.last_name = ?' with: #('Lovelace'); endGroup; parameters] value: (DbQueryBuilder onGraph: DbSchemaGraph new table: 'employee')) >>> #(1 'Hopper' 'Lovelace')"
+	"an IN list binds every value; an empty one is not a syntax error"
+	"([:q | q where: 'employee.employee_id' in: #(1 2 3); build] value: (DbQueryBuilder onGraph: DbSchemaGraph new table: 'employee')) >>> 'SELECT * FROM employee WHERE employee.employee_id IN (?, ?, ?)'"
+	"([:q | q where: 'employee.employee_id' in: #(); build] value: (DbQueryBuilder onGraph: DbSchemaGraph new table: 'employee')) >>> 'SELECT * FROM employee WHERE 1 = 0'"
+	"a composite foreign key joins on both columns"
+	"([:g | g from: 'order_line' columns: #('order_id' 'product_id') to: 'order_product' columns: #('order_id' 'product_id'). ((g joinPathFor: #('order_line' 'order_product') root: 'order_line') first onConditionFrom: nil to: nil)] value: DbSchemaGraph new) >>> 'order_line.order_id = order_product.order_id AND order_line.product_id = order_product.product_id'"
+	"a build with no ODBC still answers rather than failing to understand"
+	"(Odbc isAvailable isKindOf: Boolean) >>> true"
+	^self
+]

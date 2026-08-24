@@ -17,7 +17,7 @@ the interface.
 
 | | |
 |---|---|
-| Language | C11 · no dependencies but SDL3, and that only for the window |
+| Language | C11 · no dependencies but SDL3 for the window, and ODBC — optional — for the database |
 | Graphics | SDL3 |
 | Platforms | Linux (developed on), Windows and macOS — each builds, bootstraps an image and runs its desktop. See [`Windows.md`](Windows.md) and [`macOS.md`](macOS.md) |
 | Licence | BSD 2-Clause. See [Provenance](#provenance) — parts of the tree are other people's |
@@ -101,6 +101,17 @@ still work, and `./st80 -run` refuses to open a window and says why.
 make HEADLESS=1
 ```
 
+A database is optional in the same way, and absent is a first-class outcome: a
+build without ODBC has every method of `lib/Database` present, `Odbc
+isAvailable` answering false, and any attempt to connect raising with a
+sentence saying so. `make deps` says whether a driver manager was found and
+names the package that installs one — `unixODBC-devel` on Fedora,
+`unixodbc-dev` on Debian; macOS and Windows already have one.
+
+```sh
+make NODB=1
+```
+
 Bootstrap an image from source and run its desktop:
 
 ```sh
@@ -164,19 +175,32 @@ a score may not fall, and may not rise without being recorded:
 
 | Profile | Tests |
 |---|---|
-| `st2026` | 61 / 61 |
-| `pharo-announcements` | 92 / 92 |
-| `pharo-time` | 682 / 682 |
-| `pharo-weak` | 81 / 81 |
-| `pharo-collections` | 518 / 518 |
+| `st2026` | 104 / 104 |
+| `pharo-announcements` | 135 / 135 |
+| `pharo-time` | 725 / 725 |
+| `pharo-weak` | 124 / 124 |
+| `pharo-collections` | 561 / 561 |
 
 **1,177 of those are Pharo's own tests**, run unmodified against this system.
 The rest are ours: twelve for the exceptions and concurrency classes 1983 has
-no equivalent of, and a suite for the 1983 library itself — the numeric tower,
-the collections, strings and streams — which every profile requiring `st2026`
-inherits, and which is why the same 49 appear in every row. The composed image
-is 268 classes and 5,208 methods. Where this is going is
-[`doc/PLAN-TO-PHARO.md`](doc/PLAN-TO-PHARO.md).
+no equivalent of, a suite for the 1983 library itself — the numeric tower, the
+collections, strings and streams — and 43 for the database. Every profile
+requiring `st2026` inherits all of them, which is why the same 92 appear in
+every row. The composed image is 284 classes and 5,598 methods. Where this is
+going is [`doc/PLAN-TO-PHARO.md`](doc/PLAN-TO-PHARO.md).
+
+**SQL, on every core at once.** `lib/Database` reaches PostgreSQL, MySQL,
+SQLite, Oracle and SQL Server through ODBC, with a query builder that finds its
+own joins — name a column from a fourth table and the join appears, because a
+graph of the schema's foreign keys knows how the tables connect. Every other
+Smalltalk schedules its processes green, so N processes share one connection
+and take turns at one socket; here N workers hold N connections on N cores and
+the database sees N clients. That needs the blocking calls to park the worker
+rather than stall it, which is the whole design and is in
+[`doc/DATABASE.md`](doc/DATABASE.md) — and is gated by a test that fails if it
+regresses: a 0.24s query is interrupted by a safepoint granted in 0.0000s, where
+without the parking it takes the whole 0.2396s. `DECIMAL` columns answer exact
+`Fraction`s, because a money column read through a float is wrong quietly.
 
 **A screen that is not from 1983.** The display Form is grown to fill the
 window rather than letterboxed into it, and text is Inter, proportional and
@@ -216,9 +240,10 @@ src/interp/     bytecode interpreter, contexts, method lookup, primitives
 src/gfx/        BitBlt, display, SDL3 pump, the rasterised face
 src/sched/      Process, Semaphore, the scheduler
 src/compiler/   Smalltalk compiler in C, chunk and Tonel readers
+src/db/         ODBC, and nothing else that knows what a database is
 src/boot/       image bootstrap
 sources/        the 1983 class library (MIT), vendored, frozen — 226 classes
-lib/            ours: exceptions, concurrency, SUnit, protocol shims
+lib/            ours: exceptions, concurrency, SUnit, protocol shims, SQL
 pharo/          imported Pharo packages, each with a PROVENANCE.md
 profiles/       which packages compose an image
 tools/          make_font.py — rasterises an outline face into the strike
@@ -232,8 +257,9 @@ tools/          make_font.py — rasterises an outline face into the strike
 | [`doc/SCALING.md`](doc/SCALING.md) | the benchmark, and what each kernel is actually measuring |
 | [`doc/Display.md`](doc/Display.md) | the window, the face, antialiasing, and what the interface expects of you |
 | [`doc/LanguageExtensions.md`](doc/LanguageExtensions.md) | every post-1983 syntax, and where each stands |
+| [`doc/DATABASE.md`](doc/DATABASE.md) | SQL through ODBC, the join graph, and why a query does not stop the world |
 | [`doc/PLAN-TO-PHARO.md`](doc/PLAN-TO-PHARO.md) | where this is going, sized honestly |
-| [`manual/`](manual/) | **a book-length manual** on the system and the language — `cd manual && make` |
+| [`manual/`](manual/) | **a book-length manual** on the system, the language and the database — `cd manual && make` |
 | [`Windows.md`](Windows.md) | building with MSVC, and what a real one found |
 | [`macOS.md`](macOS.md) | building with the same makefile Linux uses, and the four places Apple differs |
 | [`doc/LICENSING.md`](doc/LICENSING.md) | what may be redistributed, and what may not |
@@ -243,6 +269,13 @@ tools/          make_font.py — rasterises an outline face into the strike
 The tree is not all one licence, and the distinction matters:
 
 - **Ours** — `src/`, `lib/`, `tests/`, `tools/`, `doc/`: BSD 2-Clause.
+- **`lib/Database`** — ours and BSD 2-Clause too, and a port of
+  `org.kissweb.database` from [Kiss](https://github.com/blakemcbride/Kiss), by
+  the same author under the same licence. No Java was copied: the query
+  builder, the join search and the type mapping are the same designs
+  re-expressed, and JDBC was replaced with ODBC.
+  [`lib/Database/PROVENANCE.md`](lib/Database/PROVENANCE.md) records every
+  place the two now differ, and why.
 - **`sources/`** — the 1983 class library from
   [`markbush/Smalltalk-80-Sources`](https://github.com/markbush/Smalltalk-80-Sources),
   MIT. Vendored and never edited.

@@ -1,0 +1,486 @@
+\chapter{Talking to a Database}
+\label{ch:database}
+
+\standfirst{SQL through ODBC, a query builder that finds its own joins, exact
+decimals, and a query that does not stop the other cores while it runs.}
+
+The \ct{Database} category reaches PostgreSQL, MySQL, SQLite, Oracle and SQL
+Server. It is the first part of this system that talks to something outside
+itself, and the only part that needs a library the Blue Book never heard of.
+
+\section{A first query}
+
+\begin{st}
+DbConnection open: 'DRIVER=SQLITE3;Database=payroll.db;' do: [:db |
+    db execute: 'INSERT INTO employee VALUES (?, ?, ?)'
+       with: (Array with: 1 with: 'Ada' with: 'Lovelace').
+    db commit.
+    (db fetchOne: 'SELECT last_name FROM employee WHERE employee_id = ?'
+        with: (Array with: 1)) at: 'last_name']
+\end{st}
+
+Three things in that are worth naming straight away.
+
+The \ct{?} marks are \emph{bound parameters} and the values go beside them,
+never into the text. The column is read by name, case-insensitively, because
+SQL identifiers are. And \ct{open:do:} closes the connection even if the block
+raises---which is the form to prefer, because a connection left open by a
+method that returned early is a server-side resource nothing in this image
+will ever free.
+
+\section{One connection per process}
+
+A \ct{DbConnection} belongs to one process. That is not a limitation of the
+implementation; it is the design, and it is what makes database access here
+genuinely parallel rather than merely concurrent.
+
+Every other Smalltalk schedules its processes green, so $N$ processes share
+one connection and take turns at one socket. Here $N$ workers hold $N$
+connections on $N$ cores and the database sees $N$ clients.
+
+\begin{stwarn}
+Sharing one connection between two processes is a program error. A driver has
+one result set per statement and no notion of whose turn it is, so the second
+caller does not wait---it corrupts the first one's answer. Open one per
+process. They are cheap next to what they do.
+\end{stwarn}
+
+\section{Transactions}
+
+Autocommit is \emph{off}. A connection opens inside a transaction and nothing
+is durable until you say so:
+
+\begin{st}
+db transact: [ record update. other delete ]
+\end{st}
+
+\ct{transact:} commits when the block finishes and rolls back if it raises.
+Prefer it over \ct{commit} and \ct{rollback} by hand: an exception through a
+half-finished transaction otherwise leaves the connection holding locks the
+server will not release until somebody decides, and this decides.
+
+Off by default is the safe direction. A program that forgets to commit loses
+work it did not mean to keep; autocommit loses the ability to undo work it did
+not mean to do.
+
+\section{Reading}
+
+\ct{query:} answers a \ct{DbCursor}, which reads one row at a time and closes
+itself when it reaches the end:
+
+\begin{st}
+(db query: 'SELECT * FROM employee ORDER BY last_name')
+    do: [:each | Transcript show: (each at: 'last_name'); cr]
+\end{st}
+
+\ct{do:}, \ct{collect:}, \ct{select:} and \ct{fetchAll} all close the cursor
+when they finish---including when the block leaves early or raises, because
+the close is in an \ct{ensure:}. A leaked statement is invisible until a
+connection runs out of them.
+
+\begin{center}
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+\ctp{next} & the next row as a \ctp{DbRecord}, or nil\\
+\ctp{fetchOne} \ctp{fetchAll} & one row, or all of them, then close\\
+\ctp{do:} \ctp{collect:} \ctp{select:} \ctp{detect:ifNone:} \ctp{inject:into:} & and close\\
+\ctp{columns} \ctp{columnCount} & the \ctp{DbColumnInfo} of each column\\
+\ctp{maxRows:} & stop after this many\\
+\ctp{close} \ctp{isClosed} & harmless twice\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{stnote}[Every row is a new record]
+The Java this was ported from reuses one row object across a cursor. Here the
+process holding a row and the process advancing the cursor can be on two cores
+at once, so reuse would turn \ct{cursor fetchAll} into a collection of $N$
+references to one row holding the last one's values. An allocation per row is
+small beside the round trip that produced it.
+\end{stnote}
+
+\subsection{What a column answers}
+
+\begin{center}
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+\ctp{TINYINT} \ldots{} \ctp{BIGINT} & \ctp{Integer}, exactly, at any width\\
+\ctp{REAL} \ctp{FLOAT} \ctp{DOUBLE} & \ctp{Float}\\
+\ctp{DECIMAL} \ctp{NUMERIC} & \ctp{Fraction} --- exact\\
+\ctp{CHAR} \ctp{VARCHAR} and the long and national forms & \ctp{String}\\
+\ctp{BINARY} \ctp{VARBINARY} \ctp{BLOB} & \ctp{ByteArray}\\
+\ctp{DATE} & \ctp{Date}\\
+\ctp{TIME} & \ctp{Time}\\
+\ctp{TIMESTAMP} & \ctp{DbTimestamp}\\
+\ctp{BIT} \ctp{BOOLEAN} & \ctp{true} / \ctp{false}\\
+\ctp{NULL} & \ctp{nil}\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+A record also has typed accessors for the cases where you know better than the
+column does---\ct{integerAt:}, \ct{numberAt:}, \ct{stringAt:},
+\ct{booleanAt:}, \ct{dateAt:}, \ct{bytesAt:} and \ct{dateIntegerAt:}, which
+answers a date as \ctp{yyyymmdd}.
+
+\ct{at:} raises if there is no such column, and that is deliberate: a
+misspelled name answering nil is indistinguishable from a \ctp{NULL}, and the
+report that comes out is wrong rather than missing. Use \ct{at:ifAbsent:} when
+absence is a real possibility.
+
+\ct{DbTimestamp} exists because the 1983 image has no single class for a date
+and a time together, and its \ct{Time} is whole seconds. A timestamp is both
+halves at once and carries a fraction. It answers \ct{asDate}, \ct{asTime},
+\ct{asInteger}, and \ct{asDateAndTime} in an image that has Pharo's
+\ct{DateAndTime} loaded.
+
+\section{Writing}
+
+A record from a single-table select knows where it came from and can be
+written back:
+
+\begin{st}
+| row |
+row := db fetchOne: 'SELECT * FROM employee WHERE employee_id = 1'.
+row at: 'last_name' put: 'Byron'.
+row update                            "answers the number of rows changed"
+\end{st}
+
+\begin{center}
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+\ctp{insert} & \ctp{INSERT}, answering the count\\
+\ctp{insertReturningKey:} & and answer the key the database generated\\
+\ctp{update} & only the columns that changed\\
+\ctp{delete} & matched on the primary key\\
+\ctp{copyCorrespondingFrom:} & take every column both records have\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+A new row is built with \ct{newRecord:} and filled in:
+
+\begin{st}
+| record |
+record := db newRecord: 'employee'.
+record at: 'first_name' put: 'Edsger'; at: 'last_name' put: 'Dijkstra'.
+record insertReturningKey: 'employee_id'
+\end{st}
+
+\ct{insertReturningKey:} is where the five databases differ and the only place
+in this package that has to know which one it is talking to. PostgreSQL gets
+\ctp{RETURNING}, SQLite \ctp{last\_insert\_rowid()}, MySQL
+\ctp{LAST\_INSERT\_ID()}, SQL Server \ctp{SCOPE\_IDENTITY()}. ODBC has no
+equivalent of JDBC's \ctp{getGeneratedKeys} and this is the substitute.
+
+\begin{stnote}[Update writes only what changed]
+Writing every column---which is what the Java does---means two processes
+updating two different fields of one row each overwrite the other's work, and
+neither ever sees a conflict. In a green-threaded Smalltalk that race needs
+two transactions to interleave; here it needs two cores.
+
+The key is matched \emph{as it was read}, not as it now stands. A record whose
+primary key is itself changed must still be found by its old key, or the
+update matches nothing---or, worse, matches a different row that has since
+taken the new value.
+\end{stnote}
+
+A record from a join has no single table to be written back to, and says so
+rather than guessing. So does a table with no primary key: there is no way to
+name one row of it, and an update built without a key would match every row in
+the table.
+
+\section{The query builder}
+
+The reason the category is worth having. You say what you want; it works out
+how to reach it:
+
+\begin{st}
+(db newQueryBuilder: 'employee')
+    select: 'employee.last_name';
+    select: 'department.name';
+    where: 'project.project_id = ?' with: (Array with: 17);
+    orderBy: 'employee.last_name';
+    fetchAll
+\end{st}
+
+Nothing there says how \ctp{employee} reaches \ctp{department}, or how either
+reaches \ctp{project}. The builder reads the table names out of the columns
+and conditions, asks the schema graph for the foreign keys that connect them,
+and writes the joins:
+
+\begin{plain}
+SELECT employee.last_name, department.name FROM employee
+  JOIN department ON employee.department_id = department.department_id
+  JOIN assignment ON employee.employee_id = assignment.employee_id
+  JOIN project ON assignment.project_id = project.project_id
+ WHERE project.project_id = ? ORDER BY employee.last_name
+\end{plain}
+
+\ctp{assignment} appears in that and nowhere in the query that asked for it.
+Adding a column from a fourth table adds a join without anybody editing a
+\ctp{FROM} clause, which is the point: a hand-written join that is one table
+out of date is a query that still runs.
+
+\begin{center}
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+\ctp{select:} \ctp{selectAll:} \ctp{distinct} & columns\\
+\ctp{selectCount:as:} \ctp{selectSum:as:} \ctp{selectAverage:as:} & aggregates\\
+\ctp{selectMinimum:as:} \ctp{selectMaximum:as:} & \\
+\midrule
+\ctp{where:with:} & a condition and its values\\
+\ctp{where:in:} \ctp{where:notIn:} & an \ctp{IN} list, bound\\
+\ctp{whereExists:} \ctp{whereNotExists:} & taking another builder\\
+\ctp{startOr} \ctp{startAnd} \ctp{endGroup} & nesting\\
+\midrule
+\ctp{groupBy:} \ctp{having:with:} \ctp{orderBy:} \ctp{orderByDescending:} & \\
+\ctp{limit:} & spelled per database\\
+\midrule
+\ctp{leftJoin:} \ctp{rightJoin:} & reach a table this way instead\\
+\ctp{join:column:to:column:} & a join the graph does not have\\
+\ctp{table:as:} & an alias, for a self-join\\
+\ctp{with:as:} \ctp{union:} \ctp{unionAll:} & \\
+\midrule
+\ctp{build} \ctp{parameters} & the SQL, and its values\\
+\ctp{query} \ctp{fetchAll} \ctp{fetchOne} \ctp{do:} & run it\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Grouping conditions}
+
+\ctp{a AND (b OR c)} is not \ctp{a AND b OR c}, and a builder that kept
+conditions in a flat list could only produce the second:
+
+\begin{st}
+(db newQueryBuilder: 'employee')
+    where: 'employee.active = ?' with: (Array with: 1);
+    startOr;
+        where: 'employee.last_name = ?' with: (Array with: 'Hopper');
+        where: 'employee.last_name = ?' with: (Array with: 'Lovelace');
+    endGroup
+\end{st}
+
+\begin{plain}
+SELECT * FROM employee WHERE employee.active = ?
+  AND (employee.last_name = ? OR employee.last_name = ?)
+\end{plain}
+
+The values come out in the order the question marks are \emph{written}, not
+the order the methods were called in---each condition carries its own values,
+so moving a clause moves its parameters with it.
+
+\subsection{Nothing is pasted into the text}
+
+\begin{stwarn}[Injection]
+Not one value written through this package is ever put into SQL text. Every
+one goes as a bound parameter, so there is nothing for a quote in a surname to
+break and nothing for an attacker to close early. The only things built into
+the text are table and column names, and those come from the schema.
+
+That is why every method taking a value takes it separately:
+
+\begin{st}
+q where: 'salary > ?' with: (Array with: amount)   "safe, with any value"
+q where: 'salary > ', amount printString           "not, and never"
+\end{st}
+\end{stwarn}
+
+An empty \ct{where:in:} becomes a condition that is false rather than
+\ctp{IN ()}, which is a syntax error in every database---so an empty filter
+produces an empty result instead of a broken query.
+
+\section{The join graph}
+
+\ct{DbSchemaGraph} models the schema as a graph: tables are nodes, foreign
+keys are edges. A connection reads its own on first use and keeps it, because
+walking a large schema's metadata is a great many round trips.
+
+You can also build one by hand, which is what to do when the database was
+never told about a relationship that exists:
+
+\begin{st}
+| graph |
+graph := DbSchemaGraph new.
+graph from: 'employee' column: 'department_id'
+       to: 'department' column: 'department_id'.
+graph from: 'order_line' columns: #('order_id' 'product_id')
+       to: 'order_product' columns: #('order_id' 'product_id').
+db schemaGraph: graph
+\end{st}
+
+Composite keys are the ordinary case rather than a special one, and the two
+forms are the same method with one column or several.
+
+Connecting $N$ tables with the fewest joins is the Steiner tree problem, which
+is NP-hard, so this does what everyone does: take one table as the root, then
+repeatedly attach whichever remaining table has the shortest breadth-first
+path to anything already attached. That is an approximation and it is not
+always the true minimum. It is \emph{deterministic}, which matters more here:
+the same query must produce the same SQL every time, or two runs of one report
+join differently and nobody can tell which was right.
+
+Two tables with no path between them raise, rather than producing a cross join
+nobody asked for and a result set the size of the product.
+
+A graph can be written out and read back---\ct{storeOn:} and \ct{readFrom:},
+one line per edge---so an application can read the schema once and keep the
+answer.
+
+\section{Exact decimals}
+
+\ctp{DECIMAL} and \ctp{NUMERIC} columns come back as the digits the database
+printed, read into a \ct{Fraction}:
+
+\begin{st}
+(Odbc numberFromDigits: '0.10') * 10        "1, exactly"
+'0.10' asNumber * 10                        "1.0, and never was one tenth"
+\end{st}
+
+This is the one respect in which the port is better than the Java it came
+from. A money column read through a float is wrong in exactly the cases
+anybody cares about, and wrong quietly. Smalltalk has exact arithmetic, so the
+only place the exactness could be lost is this boundary---and the boundary is
+where it is easiest not to lose it.
+
+The image's own \ct{Number class>>readFrom:} converts the fractional part with
+\ct{asFloat} and divides. That is 1983's behaviour and it stays; this package
+does not go through it.
+
+\begin{stwarn}[SQLite has no decimal type]
+SQLite applies numeric affinity: a column declared \ctp{DECIMAL(20,4)} stores
+\ctp{12345678901234.5678} as a C double and hands back
+\ctp{12345678901234.6}. The digits are gone at \ctp{INSERT}, before anything
+here sees them, and its driver then reports the column as \ctp{VARCHAR}---so
+this package correctly answers the string it was given, and there was never an
+exact value to answer.
+
+Checking the claim above on SQLite will suggest it does not hold. It is SQLite
+that does not hold it. PostgreSQL, Oracle, SQL Server and MySQL all have a
+real \ctp{DECIMAL} and report it as one.
+\end{stwarn}
+
+\section{It does not stop the world}
+
+This is the part that is specific to this system, and the reason the category
+could not simply be lifted from somewhere else.
+
+A worker inside \ctp{SQLExecute} is not running bytecodes, so it never reaches
+the safepoint poll (Chapter~\ref{ch:contract}). Nothing is wrong with that
+until a collection is asked for, and then everything is: the collector waits
+for a worker that is waiting for a server, and one slow query stops every core
+for as long as the query takes.
+
+So every database call that can block declares itself. The worker parks for
+the duration exactly as the poll would---counted among the parked, registers
+written back---and the collector runs \emph{while} it sits in the driver.
+
+Measured, by deleting the declaration and running the same test:
+
+\begin{center}
+\small
+\begin{tabular}{@{}lll@{}}
+\toprule
+& query & safepoint granted in\\
+\midrule
+with the native regions & 0.24s & \textbf{0.0000s}\\
+without them & 0.24s & \textbf{0.2396s}\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Without them the collector waits for the whole query. With them it does not
+wait at all. \ct{tests/unit/test_odbc_parallel.c} is that measurement, and
+it fails if the property regresses.
+
+\begin{stnote}
+Nothing you write has to do anything about this. It is a property of the
+primitive, not a rule for callers. It is here because it is the answer to
+``what happens to the other cores while my report runs'', and the answer is
+``they keep running''.
+\end{stnote}
+
+\section{Getting a driver}
+
+ODBC is optional and its absence is a first-class outcome. A build without it
+has every method present, \ct{Odbc isAvailable} answering false, and any
+attempt to connect raising with a sentence saying so.
+
+\begin{sh}
+make deps                # says whether ODBC was found, and how to install it
+make NODB=1              # build without it, on a machine that has it
+\end{sh}
+
+Fedora wants \ct{unixODBC-devel}, Debian \ct{unixodbc-dev}; macOS ships iODBC
+and Homebrew has unixODBC, and both are found. Windows carries the driver
+manager in the operating system.
+
+The connection string is ODBC's, not this system's---a DSN name, or the
+driver-specific form for a driver that needs no DSN:
+
+\begin{plain}
+DSN=payroll;UID=blake;PWD=secret
+DRIVER=SQLITE3;Database=payroll.db;
+DRIVER={PostgreSQL Unicode};Server=localhost;Database=payroll;UID=blake;
+\end{plain}
+
+\ct{odbcinst -q -d} lists the drivers a machine has.
+
+\section{The classes}
+
+\begin{center}
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+\ctp{DbConnection} & one per process; transactions, catalogue, caches\\
+\ctp{DbCommand} & a prepared statement, reused across rows\\
+\ctp{DbCursor} & a result set, one row at a time\\
+\ctp{DbRecord} & one row, and the ability to write it back\\
+\ctp{DbQueryBuilder} & SQL from what you want, not how to reach it\\
+\ctp{DbSchemaGraph} & tables as nodes, foreign keys as edges\\
+\ctp{DbForeignKey} & one key, composite or not\\
+\ctp{DbColumnInfo} & what a result set says about a column\\
+\ctp{DbTimestamp} & a moment, to the precision a database keeps one\\
+\ctp{DbWhereGroup} & a node of a \ctp{WHERE} tree\\
+\ctp{DbError} & what the driver said, in the driver's own words\\
+\ctp{Odbc} & the only class that knows a primitive exists\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Everything above \ct{Odbc} is ordinary Smalltalk sending ordinary messages.
+The category can be read without knowing ODBC, a second driver could be put
+underneath without touching anything above it, and there is exactly one file
+to look in when a database does something a database should not.
+
+A \ct{DbError} carries the driver's own text, \ctp{SQLSTATE} and all. There is
+no hierarchy of database error classes, because the useful distinction is not
+between kinds of refusal---a caller almost never wants to handle a constraint
+violation and not a deadlock---but between what the driver said and anything
+this image might invent instead. If you do want to tell one refusal from
+another, the \ctp{SQLSTATE} at the front of the message is the part that is
+the same across every database.
+
+\begin{sttry}
+No database to hand? The query builder and the join graph need none---they
+build strings. Build a graph by hand, point a builder at it with
+\ct{DbQueryBuilder onGraph: g table: 'employee'}, and \ct{build} the SQL. That
+is how the 43 tests in \ct{lib/Database-Tests} check the generator, and they
+run everywhere.
+\end{sttry}
+
+\section{Where the rest of it is}
+
+\ct{doc/DATABASE.md} carries the design notes: why ODBC rather than a driver
+per database, the two things ODBC does not have, what the tests found, and the
+provenance. \ct{lib/Database-Live-Tests} is the suite that needs a real
+database, in a profile of its own, run deliberately:
+
+\begin{sh}
+./st80 -bootstrap -profile profiles/database-live.profile -tests
+\end{sh}
