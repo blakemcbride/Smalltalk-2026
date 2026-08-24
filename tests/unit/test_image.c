@@ -99,8 +99,13 @@
  *  filing in what this system filed out does not fill the browser with
  *  methods that display as a single line.  Thirteen with the `new' the
  *  bootstrap synthesizes for the new class.
+ *
+ *  702 with lib/Browser-Sorting, which is two methods: the browser's
+ *  category and protocol panes were in the order things were made in,
+ *  because Categorizer appends a category and sorts only the elements
+ *  inside one.
  */
-#define LIB_METHODS             700
+#define LIB_METHODS             702
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -1627,7 +1632,7 @@ test_browser(void)
                *  category list filled, and an empty text pane because no
                *  method is selected yet.  Less ink, and all of it wanted.
                */
-              11418);
+              11398);
 }
 
 /*
@@ -1970,10 +1975,33 @@ test_browsing(void)
     check_integer("| b | b := Browser new on: SystemOrganization."
                   " b category: #'Kernel-Objects'. b className: #Boolean."
                   " ^b protocolList size", 5);
+    /*
+     *  Named rather than taken by position.  The pane is in alphabetical
+     *  order since lib/Browser-Sorting, so `at: 1' now answers the starred
+     *  extension protocol and not the one this check is about -- and an
+     *  index whose meaning depends on the order is the wrong thing to pin
+     *  either way.
+     */
     check_integer("| b | b := Browser new on: SystemOrganization."
                   " b category: #'Kernel-Objects'. b className: #Boolean."
-                  " b protocol: (b protocolList at: 1)."
+                  " b protocol: #'controlling'."
                   " ^b selectorList size", 6);
+
+    /*
+     *  And the two panes that lib/Browser-Sorting sorts really are sorted.
+     *  Asked of the browser rather than of the organizer, because the
+     *  organizers deliberately keep their own order -- that order is what a
+     *  file out is written in -- and only the display was changed.
+     */
+    check_integer("| l | l := (Browser new on: SystemOrganization)"
+                  " categoryList."
+                  " ^(l asOrderedCollection = l asSortedCollection"
+                  " asOrderedCollection) ifTrue: [1] ifFalse: [0]", 1);
+    check_integer("| b l | b := Browser new on: SystemOrganization."
+                  " b category: #'Kernel-Objects'. b className: #Boolean."
+                  " l := b protocolList."
+                  " ^(l asOrderedCollection = l asSortedCollection"
+                  " asOrderedCollection) ifTrue: [1] ifFalse: [0]", 1);
 
     /*  And the source of a method, read back out of SourceFiles.  */
     check_integer("(Boolean sourceCodeAt: #not) size", 122);
@@ -1996,7 +2024,7 @@ test_browsing(void)
      *  the source pointer is 22 bits and silently truncated once, and a
      *  size that stops growing is how that would show.
      */
-    check_integer("(SourceFiles at: 1) contents size", 1374635);
+    check_integer("(SourceFiles at: 1) contents size", 1375057);
 }
 
 /*
