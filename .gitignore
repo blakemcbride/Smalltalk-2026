@@ -52,6 +52,14 @@ manual/*.toc
 manual/chapters/*.aux
 manual/__pycache__/
 
+# The fixture lib/Database-Live-Tests makes and empties.  It is a build
+# product of running that suite -- the tests recreate its tables on every
+# setUp -- and SQLite's rollback journal beside it is one too.
+st80-dblive-test.db
+st80-dblive-test.db-journal
+st80-odbc-parallel-test.db
+st80-odbc-parallel-test.db-journal
+
 # Code-RAG local index files (written by bld; machine-local, not part of the project)
 .mcp.json
 CLAUDE.local.md

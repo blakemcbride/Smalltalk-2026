@@ -94,6 +94,68 @@ WORKER_poll_slow(void)
 }
 
 /*
+ *  ----------  Blocking outside the object memory  ----------
+ *
+ *  These two are WORKER_poll_slow cut in half.  The first half parks; the
+ *  second half waits for the release and unparks.  A blocking region is the
+ *  same thing with the caller's own work in the middle, so the code that
+ *  makes a worker count as stopped is the code above, not a second copy of
+ *  it that could drift.
+ *
+ *  lock_ready is checked because the bootstrap runs before the pool exists,
+ *  and a database opened from a startup expression would otherwise lock an
+ *  uninitialised mutex.  current_worker being NULL is the same case seen
+ *  from the other side -- the main thread is not a worker, nobody is waiting
+ *  for it to park, and it may block freely.
+ */
+void
+WORKER_enter_native(void)
+{
+    st_worker  *self = current_worker;
+
+    if (!self || !lock_ready)
+        return;
+
+    /*
+     *  The same store, for the same reason, as the poll does: the collector
+     *  marks a context only as far as the stack pointer recorded IN the
+     *  context, and the interpreter keeps its live copy in a register.
+     *  Blocking without writing it back leaves the collector reading a
+     *  pointer from the last context switch, and the parked worker's live
+     *  stack either under-marked or over-marked -- the first of which frees
+     *  an object the worker is about to use.
+     */
+    ST_store_active_context();
+    ST_mutex_lock(&safepoint_lock);
+    ST_store_relaxed(&self->at_safepoint, 1);
+    ST_fetch_add_acq_rel(&parked_count, 1);
+    /*
+     *  Broadcast even though nobody may be asking yet.  A requester that
+     *  arrives a microsecond later reads parked_count and finds this worker
+     *  already counted; one that is mid-wait needs the wake.  The cost of
+     *  the broadcast is paid once per database call, against a round trip.
+     */
+    ST_cond_broadcast(&safepoint_reached);
+    ST_mutex_unlock(&safepoint_lock);
+}
+
+void
+WORKER_leave_native(void)
+{
+    st_worker  *self = current_worker;
+
+    if (!self || !lock_ready)
+        return;
+
+    ST_mutex_lock(&safepoint_lock);
+    while (ST_load_relaxed(&st_safepoint_requested) != 0)
+        ST_cond_wait(&safepoint_released, &safepoint_lock);
+    ST_store_relaxed(&self->at_safepoint, 0);
+    ST_fetch_sub_acq_rel(&parked_count, 1);
+    ST_mutex_unlock(&safepoint_lock);
+}
+
+/*
  *  How many threads still have to park before the requester may proceed.
  *
  *  Two exclusions, both required for the protocol to terminate:

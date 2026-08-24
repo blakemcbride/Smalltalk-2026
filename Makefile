@@ -155,10 +155,69 @@ ifdef HEADLESS
     SDL3_LIBS   :=
 endif
 
+# ODBC ----------------------------------------------------------------------
+#
+#  Optional, and absent is a first-class outcome.  A system that cannot reach
+#  a database is still a Smalltalk; one that refuses to build because a
+#  database library is missing is not.  So this follows SDL3's shape -- ask
+#  pkg-config, then ask the compiler, and let NODB=1 mean it -- but where a
+#  missing SDL3 stops the build, a missing ODBC only clears ST_HAVE_ODBC and
+#  the Database package answers "this build has no ODBC" when asked to
+#  connect.  See the stub half of src/db/st_odbc.c.
+#
+#  unixODBC calls its pkg-config file `odbc'; iODBC, which is what macOS
+#  ships, calls it `libiodbc'.  Both answer the same headers and the same
+#  entry points, which is the whole reason this port targets ODBC and not a
+#  driver.
+
+ifdef HAVE_PKG_CONFIG
+ODBC_CFLAGS := $(shell $(PKG_CONFIG) --cflags odbc 2>/dev/null)
+ODBC_LIBS   := $(shell $(PKG_CONFIG) --libs   odbc 2>/dev/null)
+ifeq ($(strip $(ODBC_LIBS)),)
+ODBC_CFLAGS := $(shell $(PKG_CONFIG) --cflags libiodbc 2>/dev/null)
+ODBC_LIBS   := $(shell $(PKG_CONFIG) --libs   libiodbc 2>/dev/null)
+endif
+endif
+
+#  No pkg-config answer is not the same as no ODBC -- see the SDL3 note above,
+#  which this has the same reason for.  Windows carries the driver manager in
+#  the operating system and has never had a .pc file for it.
+ifeq ($(strip $(ODBC_LIBS)),)
+ifdef HAVE_CC
+ifdef PROBE
+ODBC_LIBS := $(shell printf 'int main(void) { SQLHENV e; return SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &e); }\n' | \
+               $(CC) -x c - -include sql.h -include sqlext.h -o /dev/null -lodbc 2>/dev/null \
+               && echo -lodbc)
+ifeq ($(strip $(ODBC_LIBS)),)
+ODBC_LIBS := $(shell printf 'int main(void) { SQLHENV e; return SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &e); }\n' | \
+               $(CC) -x c - -include sql.h -include sqlext.h -o /dev/null -lodbc32 2>/dev/null \
+               && echo -lodbc32)
+endif
+endif
+endif
+endif
+
+ifneq ($(strip $(ODBC_LIBS)),)
+    HAVE_ODBC     := yes
+    ODBC_CFLAGS   += -DST_HAVE_ODBC
+    ODBC_VERSION  := $(if $(HAVE_PKG_CONFIG),$(shell $(PKG_CONFIG) --modversion odbc 2>/dev/null))
+endif
+
+#  NODB=1 means it, on a machine with ODBC as much as on one without -- the
+#  same promise HEADLESS=1 makes, and for the same reason: a flag that asks
+#  for the stub and silently builds the real thing cannot reproduce anything.
+ifdef NODB
+    HAVE_ODBC   :=
+    ODBC_CFLAGS :=
+    ODBC_LIBS   :=
+endif
+
+HINT_ODBC = $(or $(shell sh $(DEPS_SCRIPT) --install odbc 2>/dev/null),install unixODBC with its headers -- the package is usually called unixODBC-devel or unixodbc-dev)
+
 # The link the build is really going to make ---------------------------------
 
 PROBE_LINK = $(CC) $(SDL3_CFLAGS) $(THREAD_CFLAGS) $(PROBE_SRC) -o /dev/null \
-             $(THREAD_LIBS) $(SDL3_LIBS) -lm
+             $(THREAD_LIBS) $(SDL3_LIBS) $(ODBC_LIBS) -lm
 
 ifdef PROBE
 ifdef HAVE_CC
@@ -246,6 +305,7 @@ that:
     $(if $(HAVE_PTHREAD),ok     ,MISSING) pthreads  $(if $(strip $(THREAD_LIBS)),$(THREAD_LIBS),through libSystem)
     $(if $(HAVE_LIBM),ok     ,MISSING) libm      -lm
     $(if $(HAVE_SDL3),$(if $(HAVE_SDL3_LINK),ok     ,MISSING) SDL3      $(SDL3_LIBS),--     SDL3      not in this build -- HEADLESS=1)
+    $(if $(HAVE_ODBC),ok     ODBC      $(ODBC_LIBS),--     ODBC      not in this build -- $(if $(NODB),NODB=1,no driver manager found; $(HINT_ODBC)))
 
     $(HINT_LIBC)
 
@@ -309,8 +369,8 @@ endif
 endif
 
 INCLUDES  := -Isrc -Isrc/port -Isrc/om -Isrc/interp -Isrc/gfx -Isrc/sched \
-             -Isrc/compiler -Isrc/boot -Itests
-CPPFLAGS  := $(INCLUDES) -D_GNU_SOURCE $(SDL3_CFLAGS)
+             -Isrc/compiler -Isrc/boot -Isrc/db -Itests
+CPPFLAGS  := $(INCLUDES) -D_GNU_SOURCE $(SDL3_CFLAGS) $(ODBC_CFLAGS)
 
 ifeq ($(OM),bb)
     CPPFLAGS += -DST_OM_BB
@@ -323,7 +383,7 @@ endif
 CFLAGS    ?= $(CSTD) $(WARN) $(OPT)
 CFLAGS    += $(THREAD_CFLAGS) $(SAN_CFLAGS)
 LDFLAGS   ?=
-LIBS      := $(THREAD_LIBS) $(SAN_LIBS) $(SDL3_LIBS) -lm
+LIBS      := $(THREAD_LIBS) $(SAN_LIBS) $(SDL3_LIBS) $(ODBC_LIBS) -lm
 
 # The sanitizer variant is part of the build directory name.  Without this,
 # switching TSAN on would silently link freshly instrumented test code
@@ -333,7 +393,14 @@ LIBS      := $(THREAD_LIBS) $(SAN_LIBS) $(SDL3_LIBS) -lm
 #  display and a real one are different programs built from the same tree,
 #  and sharing build/mt between them means `make HEADLESS=1' followed by
 #  `make' relinks against whichever objects happened to survive.
-BUILD_VARIANT := $(OM)$(if $(HEADLESS),-headless)$(if $(TSAN),-tsan)$(if $(ASAN),-asan)
+#
+#  NODB is in it for exactly that reason, found exactly that way: `make
+#  NODB=1' and then `make' produced a binary that still had the stub ODBC
+#  compiled in, and the live database suite failed 22 tests saying this
+#  build has no ODBC -- on a machine where it does, from a tree that had
+#  just been told to build it.  A flag that changes which code is compiled
+#  has to change where the objects go, or the second build is a lie.
+BUILD_VARIANT := $(OM)$(if $(HEADLESS),-headless)$(if $(NODB),-nodb)$(if $(TSAN),-tsan)$(if $(ASAN),-asan)
 BUILD_DIR := build/$(BUILD_VARIANT)
 OBJ_DIR   := $(BUILD_DIR)/obj
 TEST_DIR  := $(BUILD_DIR)/tests
@@ -349,6 +416,7 @@ CORE_SRC  := $(wildcard src/port/*.c) \
              $(wildcard src/sched/*.c) \
              $(wildcard src/gfx/*.c) \
              $(wildcard src/compiler/*.c) \
+             $(wildcard src/db/*.c) \
              $(wildcard src/boot/*.c)
 
 # Object-memory sources: the selected implementation plus every file in
@@ -536,7 +604,7 @@ clean:
 #  and it runs on a machine too bare to build anything.
 #
 deps:
-	@CC='$(CC)' PKG_CONFIG='$(PKG_CONFIG)' HEADLESS='$(HEADLESS)' sh $(DEPS_SCRIPT)
+	@CC='$(CC)' PKG_CONFIG='$(PKG_CONFIG)' HEADLESS='$(HEADLESS)' NODB='$(NODB)' sh $(DEPS_SCRIPT)
 
 help:
 	@echo "Targets:"
@@ -553,6 +621,7 @@ help:
 	@echo "  OM=mt        64-bit threaded object memory (default) -- the system"
 	@echo "  OM=bb        16-bit Blue Book memory -- the Xerox trace harness"
 	@echo "  HEADLESS=1   build without SDL3 -- the display becomes a stub"
+	@echo "  NODB=1       build without ODBC -- the Database package refuses to connect"
 	@echo "  TSAN=1       build with the thread sanitizer"
 	@echo "  ASAN=1       build with address/UB sanitizers"
 	@echo "  OPT=-O0      override optimization flags"

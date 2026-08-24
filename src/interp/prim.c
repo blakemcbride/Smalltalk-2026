@@ -11,6 +11,7 @@
 #include "st_sched.h"
 #include "worker.h"
 #include "st_port.h"
+#include "st_odbc.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -3295,6 +3296,591 @@ primitive_first_ready_process_at(void)
     return 1;
 }
 
+/*  ----------  The database  ----------
+ *
+ *  primitive 129 -- Odbc class >> primCommand:with:with:with:
+ *
+ *  ONE primitive with a command number, not thirty numbered primitives, for
+ *  the reason primitive 130 is one primitive for the whole file system: a
+ *  subsystem that grows should grow inside its own number rather than eat
+ *  its way through a space of 255 that the Blue Book, Squeak, Pharo and this
+ *  system are all already spending.  Adding a command here costs a case;
+ *  adding a primitive costs a number that can never be given back.
+ *
+ *  Four argument slots, fixed, so that the hot path -- read one column of
+ *  one row -- allocates nothing to make the call.  A command needing more
+ *  than three operands packs the extras into an Array in the third, which is
+ *  only ever the catalogue calls and the date binders, none of them hot.
+ *
+ *  ARGUMENTS ARE COPIED OUT OF THE OBJECT MEMORY BEFORE THE CALL, and results
+ *  are built after it.  This is not tidiness.  ST_odbc_* parks the worker for
+ *  the duration of anything that can block, which lets the collector run
+ *  while this thread is inside the driver -- so an OOP survives, being an
+ *  object-table index, but a pointer into an object's bytes does not.  Every
+ *  string below is therefore copied to the C heap or a local buffer first,
+ *  and every answer is made from C values afterwards.
+ */
+
+/*  The command numbers, as Odbc's class-side methods name them.  */
+enum {
+    ODBC_AVAILABLE          =  0,
+    ODBC_LAST_ERROR         =  1,
+    ODBC_CONNECT            =  2,
+    ODBC_DISCONNECT         =  3,
+    ODBC_IS_CONNECTED       =  4,
+    ODBC_SET_AUTOCOMMIT     =  5,
+    ODBC_SET_READ_ONLY      =  6,
+    ODBC_COMMIT             =  7,
+    ODBC_ROLLBACK           =  8,
+    ODBC_INFO_STRING        =  9,
+    ODBC_SET_SCHEMA         = 10,
+    ODBC_GET_SCHEMA         = 11,
+    ODBC_PREPARE            = 12,
+    ODBC_CLOSE_STATEMENT    = 13,
+    ODBC_CLEAR_PARAMETERS   = 14,
+    ODBC_BIND               = 15,
+    ODBC_BIND_NULL          = 16,
+    ODBC_EXECUTE            = 17,
+    ODBC_EXECUTE_DIRECT     = 18,
+    ODBC_FETCH              = 19,
+    ODBC_ROW_COUNT          = 20,
+    ODBC_COLUMN_COUNT       = 21,
+    ODBC_DESCRIBE_COLUMN    = 22,
+    ODBC_GET_VALUE          = 23,
+    ODBC_TABLES             = 24,
+    ODBC_COLUMNS            = 25,
+    ODBC_PRIMARY_KEYS       = 26,
+    ODBC_IMPORTED_KEYS      = 27,
+    ODBC_BIND_DATE          = 28,
+    ODBC_BIND_TIME          = 29,
+    ODBC_BIND_TIMESTAMP     = 30
+};
+
+/*
+ *  A Smalltalk byte object as a C string on the heap, or NULL.
+ *
+ *  On the heap rather than in a buffer because the longest thing that comes
+ *  through here is SQL, and QueryBuilder writes SQL as long as the query is.
+ *  A fixed buffer would work for years and then silently truncate somebody's
+ *  forty-table join into a syntax error.
+ *
+ *  nil answers NULL with *ok set, which is how "no schema was named" reaches
+ *  ODBC as the pattern that matches any -- see the note on pattern() in
+ *  st_odbc.c, where an empty string would instead match nothing.
+ */
+static char *
+odbc_string(st_oop s, int *ok)
+{
+    uint32_t    n;
+    uint32_t    i;
+    char       *text;
+
+    *ok = 0;
+    if (s == ST_NIL) {
+        *ok = 1;
+        return NULL;
+    }
+    if (!OM_is_object(s) || OM_pointer_bit(s))
+        return NULL;
+    n = OM_fetch_byte_length(s);
+    text = malloc((size_t) n + 1);
+    if (!text)
+        return NULL;
+    for (i = 0; i < n; ++i)
+        text[i] = (char) OM_fetch_byte(i, s);
+    text[n] = '\0';
+    *ok = 1;
+    return text;
+}
+
+/*
+ *  An integer answer, whatever its size.
+ *
+ *  The Blue Book memory's SmallInteger holds fifteen bits, so on that build
+ *  an ordinary row id is already too big and the LargePositiveInteger path
+ *  is the common one rather than the exception.  A large NEGATIVE value is
+ *  the one case answered as text: LargeNegativeInteger is not among the
+ *  guaranteed object pointers, so the class cannot be named from here
+ *  without a global lookup that would have to work in a resumed image too.
+ *  The caller knows the column's type and sends asNumber, which is exact,
+ *  and the case is a negative BIGINT beyond 2^62 -- rare enough that paying
+ *  for it in text costs nothing real.
+ */
+static st_oop
+odbc_integer(int64_t value)
+{
+    st_oop      big;
+    unsigned    bytes = 0;
+    uint64_t    scan;
+    unsigned    i;
+
+    if (value >= (int64_t) ST_INT_MIN && value <= (int64_t) ST_INT_MAX)
+        return OM_int_oop((st_int) value);
+    if (value < 0) {
+        char    text[32];
+
+        snprintf(text, sizeof text, "%lld", (long long) value);
+        return string_from_c(text, strlen(text));
+    }
+    scan = (uint64_t) value;
+    while (scan) {
+        ++bytes;
+        scan >>= 8;
+    }
+    big = OM_instantiate_bytes(ST_CLASS_LARGE_POSITIVE_INTEGER, bytes);
+    if (!OM_is_present(big))
+        return ST_OOP_INVALID;
+    for (i = 0; i < bytes; ++i)
+        OM_store_byte(i, big, (uint8_t) (((uint64_t) value >> (i * 8)) & 0xFF));
+    return big;
+}
+
+/*  A SmallInteger argument, or -1 for anything else.  */
+static int
+odbc_int_arg(st_oop p)
+{
+    if (!OM_is_int(p))
+        return -1;
+    return (int) OM_int_value(p);
+}
+
+/*
+ *  Element `index' of an Array argument, or nil.
+ *
+ *  Answers nil rather than failing for a short array so that the caller's
+ *  own checking is the only checking: a date is three elements and a
+ *  timestamp is seven, and a Smalltalk-side mistake should arrive as a
+ *  refused bind with a message, not as a primitive failure whose fallback
+ *  code has to guess what went wrong.
+ */
+static st_oop
+odbc_element(st_oop array, uint32_t index)
+{
+    if (!OM_is_object(array) || !OM_pointer_bit(array)
+     || OM_fetch_word_length(array) <= index)
+        return ST_NIL;
+    return OM_fetch_pointer(index, array);
+}
+
+/*  Answer, having popped the receiver and four arguments.  */
+static int
+odbc_answer(st_oop value)
+{
+    if (value == ST_OOP_INVALID)
+        return 0;
+    ST_pop_n(5);
+    ST_push(value);
+    return 1;
+}
+
+/*
+ *  Bind one value, choosing the SQL type from the Smalltalk object's class.
+ *
+ *  Dates, times and timestamps are NOT here.  An Array of three integers is
+ *  a date to a reader and an array of three integers to this code, and a
+ *  guess that is right most of the time is the worst kind: it fails on the
+ *  row where somebody stores three numbers in an array column.  So the
+ *  caller names those explicitly, with their own commands.
+ */
+static int
+odbc_bind_value(int statement, int index, st_oop value)
+{
+    if (value == ST_NIL)
+        return ST_odbc_bind_null(statement, index, 0);
+    if (value == ST_TRUE)
+        return ST_odbc_bind_boolean(statement, index, 1);
+    if (value == ST_FALSE)
+        return ST_odbc_bind_boolean(statement, index, 0);
+    if (OM_is_int(value))
+        return ST_odbc_bind_int(statement, index,
+                                (int64_t) OM_int_value(value));
+    if (!OM_is_object(value))
+        return -1;
+    if (OM_fetch_class(value) == ST_CLASS_FLOAT) {
+        double  d;
+
+        if (!float_value(value, &d))
+            return -1;
+        return ST_odbc_bind_double(statement, index, d);
+    }
+    if (OM_fetch_class(value) == ST_CLASS_LARGE_POSITIVE_INTEGER) {
+        uint32_t    n = OM_fetch_byte_length(value);
+        uint64_t    v = 0;
+        uint32_t    i;
+
+        if (n > 8)                      /*  wider than the database has  */
+            return -1;
+        for (i = 0; i < n; ++i)
+            v |= (uint64_t) OM_fetch_byte(i, value) << (i * 8);
+        if (v > (uint64_t) INT64_MAX)
+            return -1;
+        return ST_odbc_bind_int(statement, index, (int64_t) v);
+    }
+    if (!OM_pointer_bit(value)) {
+        /*
+         *  Any other byte object: String, Symbol, ByteArray, and the
+         *  LargeNegativeInteger the caller has already turned into digits.
+         *  Bound as characters, which every database will convert from.
+         */
+        char   *text;
+        int     ok;
+        int     result;
+
+        text = odbc_string(value, &ok);
+        if (!ok)
+            return -1;
+        result = ST_odbc_bind_string(statement, index, text ? text : "",
+                                     text ? strlen(text) : 0);
+        free(text);
+        return result;
+    }
+    return -1;
+}
+
+/*
+ *  One column of the current row, as a Smalltalk object.
+ *
+ *  DECIMAL and NUMERIC arrive as their digits and are answered as a String.
+ *  That is deliberate and is explained in st_odbc.h: the caller knows the
+ *  column's type, sends asNumber, and gets a Fraction -- exact, where a
+ *  Float would have rounded somebody's money.  Bytes are answered as a
+ *  String too, for the same reason large negatives are: ByteArray is not a
+ *  guaranteed object pointer, and asByteArray on the Smalltalk side is one
+ *  send against a global lookup here that would have to survive a snapshot.
+ */
+static st_oop
+odbc_value_object(const st_odbc_value *value)
+{
+    st_oop  array;
+
+    switch (value->kind) {
+    case ST_ODBC_NULL:
+        return ST_NIL;
+    case ST_ODBC_BOOLEAN:
+        return value->i ? ST_TRUE : ST_FALSE;
+    case ST_ODBC_INT:
+        return odbc_integer(value->i);
+    case ST_ODBC_DOUBLE:
+        return make_float(value->d);
+    case ST_ODBC_STRING:
+    case ST_ODBC_DECIMAL:
+    case ST_ODBC_BYTES:
+        return string_from_c(value->text, value->length);
+    case ST_ODBC_DATE:
+        array = OM_instantiate_pointers(ST_CLASS_ARRAY, 3);
+        if (!OM_is_present(array))
+            return ST_OOP_INVALID;
+        OM_store_pointer(0, array, OM_int_oop((st_int) value->year));
+        OM_store_pointer(1, array, OM_int_oop((st_int) value->month));
+        OM_store_pointer(2, array, OM_int_oop((st_int) value->day));
+        return array;
+    case ST_ODBC_TIME:
+        array = OM_instantiate_pointers(ST_CLASS_ARRAY, 4);
+        if (!OM_is_present(array))
+            return ST_OOP_INVALID;
+        OM_store_pointer(0, array, OM_int_oop((st_int) value->hour));
+        OM_store_pointer(1, array, OM_int_oop((st_int) value->minute));
+        OM_store_pointer(2, array, OM_int_oop((st_int) value->second));
+        OM_store_pointer(3, array, odbc_integer(value->nanosecond));
+        return array;
+    case ST_ODBC_TIMESTAMP:
+        array = OM_instantiate_pointers(ST_CLASS_ARRAY, 7);
+        if (!OM_is_present(array))
+            return ST_OOP_INVALID;
+        OM_store_pointer(0, array, OM_int_oop((st_int) value->year));
+        OM_store_pointer(1, array, OM_int_oop((st_int) value->month));
+        OM_store_pointer(2, array, OM_int_oop((st_int) value->day));
+        OM_store_pointer(3, array, OM_int_oop((st_int) value->hour));
+        OM_store_pointer(4, array, OM_int_oop((st_int) value->minute));
+        OM_store_pointer(5, array, OM_int_oop((st_int) value->second));
+        OM_store_pointer(6, array, odbc_integer(value->nanosecond));
+        return array;
+    }
+    return ST_NIL;
+}
+
+static int
+primitive_odbc_command(void)
+{
+    st_oop  c   = ST_stack_value(0);
+    st_oop  b   = ST_stack_value(1);
+    st_oop  a   = ST_stack_value(2);
+    st_oop  cmd = ST_stack_value(3);
+    long    command;
+
+    if (!OM_is_int(cmd))
+        return 0;
+    command = (long) OM_int_value(cmd);
+
+    switch (command) {
+
+    case ODBC_AVAILABLE:
+        return odbc_answer(ST_odbc_available() ? ST_TRUE : ST_FALSE);
+
+    case ODBC_LAST_ERROR: {
+        const char *text = ST_odbc_last_error();
+
+        return odbc_answer(string_from_c(text, strlen(text)));
+    }
+
+    case ODBC_CONNECT: {
+        char   *text;
+        int     ok;
+        int     handle;
+
+        text = odbc_string(a, &ok);
+        if (!ok || !text) {
+            free(text);
+            return 0;
+        }
+        handle = ST_odbc_connect(text);
+        free(text);
+        return odbc_answer(handle < 0 ? ST_NIL : OM_int_oop((st_int) handle));
+    }
+
+    case ODBC_DISCONNECT:
+        return odbc_answer(ST_odbc_disconnect(odbc_int_arg(a)) == 0
+                           ? ST_TRUE : ST_FALSE);
+
+    case ODBC_IS_CONNECTED:
+        return odbc_answer(ST_odbc_is_connected(odbc_int_arg(a))
+                           ? ST_TRUE : ST_FALSE);
+
+    case ODBC_SET_AUTOCOMMIT:
+        return odbc_answer(ST_odbc_set_autocommit(odbc_int_arg(a),
+                                                  b == ST_TRUE) == 0
+                           ? ST_TRUE : ST_FALSE);
+
+    case ODBC_SET_READ_ONLY:
+        return odbc_answer(ST_odbc_set_read_only(odbc_int_arg(a),
+                                                 b == ST_TRUE) == 0
+                           ? ST_TRUE : ST_FALSE);
+
+    case ODBC_COMMIT:
+        return odbc_answer(ST_odbc_commit(odbc_int_arg(a)) == 0
+                           ? ST_TRUE : ST_FALSE);
+
+    case ODBC_ROLLBACK:
+        return odbc_answer(ST_odbc_rollback(odbc_int_arg(a)) == 0
+                           ? ST_TRUE : ST_FALSE);
+
+    case ODBC_INFO_STRING: {
+        char    text[512];
+
+        if (ST_odbc_info_string(odbc_int_arg(a), odbc_int_arg(b),
+                                text, sizeof text) != 0)
+            return odbc_answer(ST_NIL);
+        return odbc_answer(string_from_c(text, strlen(text)));
+    }
+
+    case ODBC_SET_SCHEMA: {
+        char   *text;
+        int     ok;
+        int     result;
+
+        text = odbc_string(b, &ok);
+        if (!ok)
+            return 0;
+        result = ST_odbc_set_schema(odbc_int_arg(a), text ? text : "");
+        free(text);
+        return odbc_answer(result == 0 ? ST_TRUE : ST_FALSE);
+    }
+
+    case ODBC_GET_SCHEMA: {
+        char    text[512];
+
+        if (ST_odbc_get_schema(odbc_int_arg(a), text, sizeof text) != 0)
+            return odbc_answer(ST_NIL);
+        return odbc_answer(string_from_c(text, strlen(text)));
+    }
+
+    case ODBC_PREPARE: {
+        char   *sql;
+        int     ok;
+        int     handle;
+
+        sql = odbc_string(b, &ok);
+        if (!ok || !sql) {
+            free(sql);
+            return 0;
+        }
+        handle = ST_odbc_prepare(odbc_int_arg(a), sql);
+        free(sql);
+        return odbc_answer(handle < 0 ? ST_NIL : OM_int_oop((st_int) handle));
+    }
+
+    case ODBC_CLOSE_STATEMENT:
+        return odbc_answer(ST_odbc_close_statement(odbc_int_arg(a)) == 0
+                           ? ST_TRUE : ST_FALSE);
+
+    case ODBC_CLEAR_PARAMETERS:
+        return odbc_answer(ST_odbc_clear_parameters(odbc_int_arg(a)) == 0
+                           ? ST_TRUE : ST_FALSE);
+
+    case ODBC_BIND:
+        return odbc_answer(odbc_bind_value(odbc_int_arg(a), odbc_int_arg(b),
+                                           c) == 0 ? ST_TRUE : ST_FALSE);
+
+    case ODBC_BIND_NULL:
+        return odbc_answer(ST_odbc_bind_null(odbc_int_arg(a), odbc_int_arg(b),
+                                             OM_is_int(c)
+                                             ? (int) OM_int_value(c) : 0) == 0
+                           ? ST_TRUE : ST_FALSE);
+
+    case ODBC_BIND_DATE:
+        return odbc_answer(ST_odbc_bind_date(odbc_int_arg(a), odbc_int_arg(b),
+                                             odbc_int_arg(odbc_element(c, 0)),
+                                             odbc_int_arg(odbc_element(c, 1)),
+                                             odbc_int_arg(odbc_element(c, 2)))
+                           == 0 ? ST_TRUE : ST_FALSE);
+
+    case ODBC_BIND_TIME:
+        return odbc_answer(ST_odbc_bind_time(odbc_int_arg(a), odbc_int_arg(b),
+                                             odbc_int_arg(odbc_element(c, 0)),
+                                             odbc_int_arg(odbc_element(c, 1)),
+                                             odbc_int_arg(odbc_element(c, 2)),
+                                             0) == 0 ? ST_TRUE : ST_FALSE);
+
+    case ODBC_BIND_TIMESTAMP:
+        return odbc_answer(ST_odbc_bind_timestamp(
+                               odbc_int_arg(a), odbc_int_arg(b),
+                               odbc_int_arg(odbc_element(c, 0)),
+                               odbc_int_arg(odbc_element(c, 1)),
+                               odbc_int_arg(odbc_element(c, 2)),
+                               odbc_int_arg(odbc_element(c, 3)),
+                               odbc_int_arg(odbc_element(c, 4)),
+                               odbc_int_arg(odbc_element(c, 5)),
+                               (uint32_t) odbc_int_arg(odbc_element(c, 6)))
+                           == 0 ? ST_TRUE : ST_FALSE);
+
+    case ODBC_EXECUTE:
+        return odbc_answer(ST_odbc_execute(odbc_int_arg(a)) == 0
+                           ? ST_TRUE : ST_FALSE);
+
+    case ODBC_EXECUTE_DIRECT: {
+        char   *sql;
+        int     ok;
+        int64_t rows = 0;
+        int     result;
+
+        sql = odbc_string(b, &ok);
+        if (!ok || !sql) {
+            free(sql);
+            return 0;
+        }
+        result = ST_odbc_execute_direct(odbc_int_arg(a), sql, &rows);
+        free(sql);
+        return odbc_answer(result == 0 ? odbc_integer(rows) : ST_NIL);
+    }
+
+    case ODBC_FETCH: {
+        int     got = ST_odbc_fetch(odbc_int_arg(a));
+
+        /*
+         *  Three answers, not two.  A row, the end of the result set, and a
+         *  failure are three different pieces of news, and a caller shown
+         *  false for the last two treats a broken connection as an empty
+         *  table -- which is a report that runs, and is wrong.
+         */
+        return odbc_answer(got < 0 ? ST_NIL : got ? ST_TRUE : ST_FALSE);
+    }
+
+    case ODBC_ROW_COUNT: {
+        int64_t rows = 0;
+
+        if (ST_odbc_row_count(odbc_int_arg(a), &rows) != 0)
+            return odbc_answer(ST_NIL);
+        return odbc_answer(odbc_integer(rows));
+    }
+
+    case ODBC_COLUMN_COUNT: {
+        int     count = ST_odbc_column_count(odbc_int_arg(a));
+
+        return odbc_answer(count < 0 ? ST_NIL : OM_int_oop((st_int) count));
+    }
+
+    case ODBC_DESCRIBE_COLUMN: {
+        char        name[128];
+        int         sql_type = 0;
+        int64_t     size = 0;
+        int         digits = 0;
+        int         nullable = 0;
+        st_oop      array;
+        st_oop      name_string;
+
+        if (ST_odbc_describe_column(odbc_int_arg(a), odbc_int_arg(b),
+                                    name, sizeof name, &sql_type, &size,
+                                    &digits, &nullable) != 0)
+            return odbc_answer(ST_NIL);
+        name_string = string_from_c(name, strlen(name));
+        if (!OM_is_present(name_string))
+            return 0;
+        array = OM_instantiate_pointers(ST_CLASS_ARRAY, 5);
+        if (!OM_is_present(array))
+            return 0;
+        OM_store_pointer(0, array, name_string);
+        OM_store_pointer(1, array, OM_int_oop((st_int) sql_type));
+        OM_store_pointer(2, array, odbc_integer(size));
+        OM_store_pointer(3, array, OM_int_oop((st_int) digits));
+        OM_store_pointer(4, array, OM_int_oop((st_int) nullable));
+        return odbc_answer(array);
+    }
+
+    case ODBC_GET_VALUE: {
+        st_odbc_value   value;
+
+        if (ST_odbc_get(odbc_int_arg(a), odbc_int_arg(b), &value) != 0)
+            return 0;                   /*  the fallback code raises  */
+        return odbc_answer(odbc_value_object(&value));
+    }
+
+    case ODBC_TABLES:
+    case ODBC_COLUMNS:
+    case ODBC_PRIMARY_KEYS:
+    case ODBC_IMPORTED_KEYS: {
+        char   *schema;
+        char   *first;
+        char   *second = NULL;
+        int     ok;
+        int     handle;
+        int     connection = odbc_int_arg(a);
+
+        schema = odbc_string(b, &ok);
+        if (!ok)
+            return 0;
+        first = odbc_string(odbc_element(c, 0), &ok);
+        if (!ok) {
+            free(schema);
+            return 0;
+        }
+        if (command == ODBC_TABLES || command == ODBC_COLUMNS) {
+            second = odbc_string(odbc_element(c, 1), &ok);
+            if (!ok) {
+                free(schema);
+                free(first);
+                return 0;
+            }
+        }
+        handle = command == ODBC_TABLES
+                     ? ST_odbc_tables(connection, schema, first, second)
+               : command == ODBC_COLUMNS
+                     ? ST_odbc_columns(connection, schema, first, second)
+               : command == ODBC_PRIMARY_KEYS
+                     ? ST_odbc_primary_keys(connection, schema, first)
+                     : ST_odbc_imported_keys(connection, schema, first);
+        free(schema);
+        free(first);
+        free(second);
+        return odbc_answer(handle < 0 ? ST_NIL
+                                      : OM_int_oop((st_int) handle));
+    }
+
+    default:
+        break;
+    }
+    return 0;
+}
+
 /*  ----------  Dispatch  ----------  */
 
 int
@@ -3442,6 +4028,7 @@ ST_primitive_dispatch(unsigned index)
     case 128: return primitive_be_snapshot_file();
     case 130: return primitive_file_command();
     case 131: return primitive_directory_command();
+    case 129: return primitive_odbc_command();
     case 133: return primitive_error_string();
     case 254: return primitive_native_line_end();
     case 100: return primitive_signal_at_milliseconds();
@@ -3577,6 +4164,7 @@ static const primitive_entry primitive_table[] = {
     { 100, ST_PRIM_PRESENT,  "signal a semaphore at a time"     },
     { 135, ST_PRIM_PRESENT,  "millisecond clock"                },
     { 254, ST_PRIM_PRESENT,  "FileStream class nativeLineEnd -- ours" },
+    { 129, ST_PRIM_PRESENT,  "Odbc primCommand:with:with:with: -- ours" },
     { 255, ST_PRIM_PRESENT,  "Float>>printString"               },
     { 136, ST_PRIM_PRESENT,  "signal a semaphore at a time"     },
     { 148, ST_PRIM_PRESENT,  "Object shallowCopy / clone"       },

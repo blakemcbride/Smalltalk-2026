@@ -27,6 +27,7 @@ set -u
 CC=${CC:-gcc}
 PKG_CONFIG=${PKG_CONFIG:-pkg-config}
 HEADLESS=${HEADLESS:-}
+NODB=${NODB:-}
 
 #  ---------------------------------------------------------------------
 #  The install table.
@@ -76,6 +77,15 @@ install_hint() {
         alpine='sudo apk add sdl3-dev'
         mac='brew install sdl3'
         generic='install SDL3 with its headers -- https://libsdl.org'
+        ;;
+    odbc)
+        fedora='sudo dnf install unixODBC-devel'
+        debian='sudo apt install unixodbc-dev'
+        arch='sudo pacman -S unixodbc'
+        suse='sudo zypper install unixODBC-devel'
+        alpine='sudo apk add unixodbc-dev'
+        mac='brew install unixodbc'
+        generic='install unixODBC with its headers -- https://www.unixodbc.org'
         ;;
     *)
         echo "check-deps: no install hint for '${1:-}'" >&2
@@ -216,13 +226,51 @@ else
 fi
 
 # shellcheck disable=SC2086
-if [ -n "$HEADLESS" ]; then
+if [ -n "${HEADLESS:-}" ]; then
     note 'SDL3' '(not used)' 'HEADLESS=1 -- the display is a stub'
 elif "$CC" $sdl3_cflags "$tmp/sdl3.c" -o "$tmp/a.out" $sdl3_libs >/dev/null 2>&1; then
     note 'SDL3' "$sdl3_libs" "links -- $sdl3_how"
 else
     note 'SDL3' "$sdl3_libs" "WILL NOT LINK -- $sdl3_how"
     want sdl3
+fi
+
+#
+#  ODBC is OPTIONAL and its absence is not counted against the build.
+#
+#  `want' is deliberately not called here.  Everything above it is something
+#  st80 cannot run without, so a missing one has to be a failure; a database
+#  is something st80 can run perfectly well without, and reporting its
+#  absence as a fault would teach a reader to ignore this report -- which is
+#  the only thing that could make the required entries stop working.
+#
+cat > "$tmp/odbc.c" <<'EOF'
+#include <sql.h>
+#include <sqlext.h>
+int main(void) { SQLHENV e; return SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &e); }
+EOF
+
+odbc_cflags='' odbc_libs='' odbc_how=''
+if [ -n "$have_pkg_config" ] && "$PKG_CONFIG" --exists odbc 2>/dev/null; then
+    odbc_cflags=$("$PKG_CONFIG" --cflags odbc 2>/dev/null)
+    odbc_libs=$("$PKG_CONFIG" --libs odbc 2>/dev/null)
+    odbc_how="pkg-config, $("$PKG_CONFIG" --modversion odbc 2>/dev/null)"
+elif [ -n "$have_pkg_config" ] && "$PKG_CONFIG" --exists libiodbc 2>/dev/null; then
+    odbc_cflags=$("$PKG_CONFIG" --cflags libiodbc 2>/dev/null)
+    odbc_libs=$("$PKG_CONFIG" --libs libiodbc 2>/dev/null)
+    odbc_how="pkg-config, iODBC $("$PKG_CONFIG" --modversion libiodbc 2>/dev/null)"
+else
+    odbc_libs='-lodbc'
+    odbc_how='no pkg-config entry; tried -lodbc'
+fi
+
+# shellcheck disable=SC2086
+if [ -n "$NODB" ]; then
+    note 'ODBC' '(not used)' 'NODB=1 -- the Database package will refuse to connect'
+elif "$CC" $odbc_cflags "$tmp/odbc.c" -o "$tmp/a.out" $odbc_libs >/dev/null 2>&1; then
+    note 'ODBC' "$odbc_libs" "links -- $odbc_how"
+else
+    note 'ODBC' '(absent)' "optional -- no database.  $(install_hint odbc)"
 fi
 
 echo

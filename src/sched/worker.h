@@ -136,6 +136,35 @@ WORKER_poll(void)
 void    WORKER_request_safepoint(void);
 void    WORKER_release_safepoint(void);
 
+/*
+ *  ----------  Blocking outside the object memory  ----------
+ *
+ *  A worker that calls into a library which may block -- a database driver
+ *  waiting on a socket is the case this was written for -- stops reaching
+ *  WORKER_poll, because it is not running bytecodes.  Nothing is wrong with
+ *  that until a safepoint is asked for, and then everything is: the
+ *  requester waits for a worker that is waiting for a server, and one slow
+ *  query stops every core for as long as the query takes.
+ *
+ *  So the worker declares the blocking region.  WORKER_enter_native parks it
+ *  exactly as the poll would -- registers written back, counted among the
+ *  parked -- and WORKER_leave_native waits for any safepoint in progress and
+ *  rejoins.  The collector then runs while the worker is inside the driver,
+ *  which is correct precisely because the worker has promised not to touch
+ *  the object memory in there.
+ *
+ *  THE PROMISE IS NOT CHECKED, so it must be kept by construction: copy
+ *  every argument out of the object memory before entering, and build every
+ *  result after leaving.  An OOP itself survives -- it is an object-table
+ *  index, and the collector may move the object but not the entry -- but a
+ *  raw pointer into an object's bytes does not, and neither does the
+ *  reachability of anything the parked worker's context does not name.
+ *
+ *  Nesting is not supported; a region is entered and left once.
+ */
+void    WORKER_enter_native(void);
+void    WORKER_leave_native(void);
+
 /*  Run fn with every worker parked.  Returns what fn returned.  */
 uint32_t WORKER_at_safepoint(uint32_t (*fn)(void *user), void *user);
 
