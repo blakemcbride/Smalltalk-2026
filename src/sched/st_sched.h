@@ -121,6 +121,16 @@ void        SCHED_timer_stop(void);
 void        SCHED_set_input_semaphore(st_oop semaphore);
 st_oop      SCHED_input_semaphore(void);
 
+/*
+ *  Called while no process can run and the system is waiting on the timer.
+ *
+ *  An idling interpreter never returns to whoever called ST_interp_run, so
+ *  without this the window is only serviced at the end of a bytecode slice
+ *  -- and a slice that covers several delays covers seconds.  The hook is
+ *  the host's chance to keep the screen honest while the image sleeps.
+ */
+void        SCHED_set_idle_hook(void (*hook)(void));
+
 void        SCHED_reset(void);
 
 #ifdef __cplusplus

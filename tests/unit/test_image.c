@@ -109,8 +109,14 @@
  *  at all -- every SDL keycode above 127 was dropped where it arrived -- and
  *  a key that reaches the image without a place in the keyboard map is not
  *  inert either: it decodes to 255, unassigned, which ParagraphEditor types.
+ *
+ *  708 with lib/Confirm-Nag, which is one: BinaryChoiceController>>
+ *  isControlActive.  A confirm insisted on an answer by flashing its view
+ *  until the pointer came back, and the same controller drives the View
+ *  holding the yes and no switches, so the switches strobed whenever the
+ *  pointer was anywhere else in the dialog.
  */
-#define LIB_METHODS             707
+#define LIB_METHODS             708
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -2029,7 +2035,7 @@ test_browsing(void)
      *  the source pointer is 22 bits and silently truncated once, and a
      *  size that stops growing is how that would show.
      */
-    check_integer("(SourceFiles at: 1) contents size", 1378062);
+    check_integer("(SourceFiles at: 1) contents size", 1378378);
 }
 
 /*

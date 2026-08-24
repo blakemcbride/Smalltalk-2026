@@ -19,6 +19,6 @@ Profile {
 	#packages : [ '../lib/Kernel', '../lib/Kernel-Exceptions', '../lib/Kernel-Protocol', '../lib/Kernel-Methods', '../lib/Kernel-Pragmas', '../lib/Collections-Protocol', '../lib/Streams-Protocol',
 	              '../lib/Strings-Protocol', '../lib/System', '../lib/Concurrency', '../lib/Concurrency-Tests', '../lib/SUnit', '../lib/SUnit-Tests',
 	              '../lib/Graphics-Fixes', '../lib/Scope-Fixes', '../lib/Files-Fixes',
-	              '../lib/Scroll-Wheel', '../lib/Cursor-Keys', '../lib/Browser-Sorting', '../lib/Library-Tests',
+	              '../lib/Scroll-Wheel', '../lib/Cursor-Keys', '../lib/Browser-Sorting', '../lib/Confirm-Nag', '../lib/Library-Tests',
 	              '../lib/Probe' ]
 }

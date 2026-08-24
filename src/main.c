@@ -537,6 +537,43 @@ report_font_age(const char *path)
             strike.height, ST_FONT_HEIGHT, path);
 }
 
+/*
+ *  Keep the window honest while the image is asleep.
+ *
+ *  ST_interp_run does not return while every process is waiting on a Delay
+ *  -- the scheduler sleeps inside it -- so the pump in do_run runs only
+ *  between bytecode slices, and a slice that spans several delays spans
+ *  seconds of wall clock.  DisplayScreen>>flash: reverses a rectangle,
+ *  waits 60 ms, reverses it back and waits again; serviced only at slice
+ *  boundaries the window showed one of those two halves for a second at a
+ *  time, which is how the confirm dialog's yes/no switches came to sit in
+ *  reverse video until the pointer went back over them.
+ *
+ *  Safe to touch SDL from here for the same reason the pump in do_run is:
+ *  the idle wait sits inside SCHED_check_process_switch, which the
+ *  interpreter calls between bytecodes, so no Smalltalk code is part-way
+ *  through reading the Form a resize would replace -- and here no process
+ *  is running at all.
+ *
+ *  Only the thread that installed this may talk to SDL, and only an open
+ *  window can be pumped.  A close seen here is remembered rather than acted
+ *  on: the run loop owns the decision to stop, and swallowing the event
+ *  would lose it.
+ */
+static st_thread_id run_thread;
+static int          idle_saw_close;
+
+static void
+pump_while_idle(void)
+{
+    if (!ST_thread_id_equal(ST_thread_self(), run_thread))
+        return;
+    if (!GFX_is_open())
+        return;
+    if (!GFX_pump())
+        idle_saw_close = 1;
+}
+
 static int
 screen_follows_display(int width, int height)
 {
@@ -588,6 +625,32 @@ screen_follows_display(int width, int height)
  */
 static int inject_wait;
 
+/*
+ *  Say so when a script does not parse, rather than posting the wreckage.
+ *
+ *  The argument to -inject IS the script; it is not a path to read one
+ *  from.  Hand it a filename and every letter of that filename is read as a
+ *  command -- the `d' of a directory becomes a button press, the `k' of
+ *  "Smalltalk-2026" becomes `k -2026', and the image spends the rest of the
+ *  run failing to turn -2026 into a Character.  That cost an afternoon
+ *  once, and it cost it silently, so the parser now says what it threw away.
+ *
+ *  Capped, because a rejected script rejects most of itself and eight lines
+ *  are enough to see what happened.
+ */
+static void
+inject_reject(const char *what)
+{
+    static unsigned said;
+
+    if (said >= 8)
+        return;
+    if (++said == 1)
+        fprintf(stderr, "st80: -inject takes the script itself, not the name "
+                        "of a file holding one\n");
+    fprintf(stderr, "st80: -inject: ignoring %s\n", what);
+}
+
 static void
 run_inject_script(void)
 {
@@ -610,13 +673,27 @@ run_inject_script(void)
                 ++p;
             b = strtol(p, (char **) &p, 10);
             GFX_inject_mouse((int) a, (int) b);
-        }  else if (what == 'd') {
-            GFX_inject_button((unsigned) a, 1);
-        }  else if (what == 'u') {
-            GFX_inject_button((unsigned) a, 0);
+        }  else if (what == 'd' || what == 'u') {
+            char    note[64];
+
+            if (a < 128 || a > 135) {
+                snprintf(note, sizeof note,
+                         "button %ld -- codes are 128 to 135", a);
+                inject_reject(note);
+            }  else {
+                GFX_inject_button((unsigned) a, what == 'd');
+            }
         }  else if (what == 'k') {
-            GFX_inject_key((unsigned) a, 1);
-            GFX_inject_key((unsigned) a, 0);
+            char    note[64];
+
+            if (a < 0 || a > 255) {
+                snprintf(note, sizeof note,
+                         "key %ld -- codes are 0 to 255", a);
+                inject_reject(note);
+            }  else {
+                GFX_inject_key((unsigned) a, 1);
+                GFX_inject_key((unsigned) a, 0);
+            }
         }  else if (what == 'W') {
             GFX_inject_wheel((int) a);
         }  else if (what == 'x') {
@@ -627,6 +704,12 @@ run_inject_script(void)
             inject_script = p;
             inject_wait = (int) a;
             return;                 /*  resume here after the wait  */
+        }  else if (what != ' ' && what != ';') {
+            char    note[64];
+
+            snprintf(note, sizeof note, "'%c' -- not one of m d u k W w x",
+                     what);
+            inject_reject(note);
         }
         while (*p == ' ' || *p == ';')
             ++p;
@@ -662,6 +745,8 @@ do_run(const char *path, uint64_t max_cycles)
         fprintf(stderr, "st80: %s\n", err);
         return 1;
     }
+    run_thread = ST_thread_self();
+    SCHED_set_idle_hook(pump_while_idle);
     while (st_vm.running) {
         total += ST_interp_run(SLICE_BYTECODES);
         /*
@@ -733,7 +818,7 @@ do_run(const char *path, uint64_t max_cycles)
                 }
             }
         }
-        if (GFX_is_open() && !GFX_pump()) {
+        if (GFX_is_open() && (idle_saw_close || !GFX_pump())) {
             why = "the window was closed";
             break;
         }

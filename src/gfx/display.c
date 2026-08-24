@@ -408,19 +408,52 @@ GFX_inject_mouse(int x, int y)
     queue_motion(x, y);
 }
 
+/*
+ *  What the image is able to decode, and why a code outside it must never
+ *  reach the ring.
+ *
+ *  InputState>>keyAt:put: hands any code it does not recognise straight to
+ *  KeyboardEvent, which asks Character for `value: code' -- and
+ *  CharacterTable has 256 entries.  Anything above that raises
+ *  SubscriptOutOfBounds inside the input process, and an unhandled error
+ *  there is not fatal: Error>>defaultAction answers nil and the process goes
+ *  round its loop for the next event.  So one bad code does not fail once,
+ *  it fails forever, and the input process runs at lowIOPriority -- above
+ *  the user process that draws.  Everything below it starves.  A window that
+ *  stops repainting while the image is plainly busy is what that looks like.
+ *
+ *  The SDL path never produces one: it drops any keycode it has no mapping
+ *  for.  These two take their number from a script, so they hold the same
+ *  line rather than trusting the caller.
+ */
+#define KEY_CODE_MAX        255
+
+/*
+ *  The bits InputState reserves for the mouse and keyset -- its BitMin to
+ *  BitMax, 8r200 to 8r207.  The shift below is defined only for those: the
+ *  code used to be shifted by whatever the caller passed, and `1 << (0 -
+ *  128)' is undefined behaviour rather than merely a wrong answer.
+ */
+#define KEYSET_BIT_FIRST    128
+#define KEYSET_BIT_LAST     135
+
 void
 GFX_inject_button(unsigned code, int down)
 {
+    if (code < KEYSET_BIT_FIRST || code > KEYSET_BIT_LAST)
+        return;
     if (down)
-        button_state |= 1 << (int) (code - 128);
+        button_state |= 1 << (int) (code - KEYSET_BIT_FIRST);
     else
-        button_state &= ~(1 << (int) (code - 128));
+        button_state &= ~(1 << (int) (code - KEYSET_BIT_FIRST));
     queue_transition(down ? ST_EVENT_BISTATE_ON : ST_EVENT_BISTATE_OFF, code);
 }
 
 void
 GFX_inject_key(unsigned code, int down)
 {
+    if (code > KEY_CODE_MAX)
+        return;
     queue_transition(down ? ST_EVENT_BISTATE_ON : ST_EVENT_BISTATE_OFF, code);
 }
 
@@ -1266,6 +1299,35 @@ GFX_inject_expose(void)
     SDL_PushEvent(&e);
 }
 
+/*
+ *  The position the image last warped to, while its echo is outstanding.
+ *
+ *  SDL_WarpMouseInWindow does not move the pointer silently: it posts a
+ *  motion event, and that event arrives back here through
+ *  SDL_ConvertEventToRenderCoordinates.  Display to window and back is the
+ *  identity only while the scale is 1 -- letterboxed at a fractional scale
+ *  a warp to 140,148 came back as 139,147 -- so the echo overwrote the
+ *  position the image had just chosen, and queued a motion word nobody
+ *  asked for.  The note on GFX_inject_expose says this cannot happen
+ *  because warp_locally recorded the same position first; that holds only
+ *  at scale 1.
+ *
+ *  Sensor cursorPoint: is how the image puts the pointer on a grid point,
+ *  or on the hot spot of a cursor it is about to show -- Cursor>>show goes
+ *  through it whenever the new shape's offset differs, which is every time
+ *  a BinaryChoice switch swaps thumbs up for thumbs down.  Landing a pixel
+ *  away from the asked-for point each time is a drift the image cannot see
+ *  and cannot correct.
+ *
+ *  So a warp's own echo is answered with the position that was asked for.
+ *  Only the first motion after a warp, and only when it lands within a
+ *  pixel of the target: anything further away is the user's own hand and is
+ *  reported as it arrived.
+ */
+static int  warp_echo_pending;
+static int  warp_echo_x;
+static int  warp_echo_y;
+
 void
 GFX_warp_pointer(int x, int y)
 {
@@ -1275,6 +1337,13 @@ GFX_warp_pointer(int x, int y)
 
         SDL_RenderCoordinatesToWindow(renderer, (float) x, (float) y,
                                       &wx, &wy);
+        /*
+         *  Recorded from mouse_x rather than from x: warp_locally clamps to
+         *  the display, and the echo will arrive clamped too.
+         */
+        warp_echo_pending = 1;
+        warp_echo_x       = mouse_x;
+        warp_echo_y       = mouse_y;
         SDL_WarpMouseInWindow(window, wx, wy);
     }
 }
@@ -1598,6 +1667,7 @@ static struct {
     int     valid;
     int     x, y, w, h;
     int     cx, cy, cw, ch;
+    int64_t when;
 } last_blit;
 
 /*
@@ -1617,6 +1687,41 @@ static struct {
 #define PRESENT_INTERVAL_NS     INT64_C(16000000)    /*  ~60 Hz  */
 #define FLASH_OWNS_SCREEN_NS    INT64_C(50000000)    /*  50 ms   */
 
+/*
+ *  How long after a reverse its twin still counts as the undo half of a pair.
+ *
+ *  Shape cannot say what a pair of identical reverses MEANS, because two
+ *  unrelated places draw one and they want opposite things.
+ *
+ *  StandardSystemView>>getFrame rubber-bands a window's frame with two
+ *  statements and nothing between them:
+ *
+ *      Display fill: frame rule: Form reverse mask: Form gray.
+ *      Display fill: frame rule: Form reverse mask: Form gray.
+ *
+ *  The band exists only for the gap between those two sends -- measured at
+ *  0.017 ms, with 1494 of one drag's 1495 pairs inside 0.029 ms and the
+ *  slowest at 3.3 ms.  Nothing would ever upload that, so the drawn half has
+ *  to be forced out before the undo lands, and the pump held off it.
+ *
+ *  DisplayScreen>>flash: draws the same shape and means the opposite: two
+ *  reverses of one rectangle with `(Delay forMilliseconds: 60) wait' between
+ *  them, measured at 60 to 61 ms every time, in every caller.  Both halves
+ *  are meant to be seen.  Forcing one out and then pinning the pump off the
+ *  other for FLASH_OWNS_SCREEN_NS is what left the confirm dialog's yes/no
+ *  switches in reverse video until the pointer came back.
+ *
+ *  So the rule is about sampling rather than intent: a state that came and
+ *  went inside a frame would never be uploaded and must be forced; a state
+ *  the image held for longer is one the pump will sample on its own, and
+ *  anything forced there only pins half a flash to the screen.
+ *
+ *  Eight milliseconds is twice the slowest band and a seventh of the fastest
+ *  flash, and stays under PRESENT_INTERVAL_NS so a band that straddles a
+ *  frame still counts as one pair.
+ */
+#define UNDO_PAIR_WINDOW_NS     INT64_C(8000000)     /*  8 ms    */
+
 static int64_t  last_flash_ns;
 
 static int
@@ -1629,7 +1734,8 @@ flash_owns_screen(void)
 void
 GFX_present_if_undoing(const gfx_blit *b)
 {
-    int same;
+    int     same;
+    int64_t now;
 
     /*
      *  The window check comes FIRST and writes nothing.  copyBits runs on
@@ -1644,7 +1750,9 @@ GFX_present_if_undoing(const gfx_blit *b)
         last_blit.valid = 0;
         return;
     }
+    now  = ST_time_monotonic_ns();
     same = last_blit.valid
+        && now - last_blit.when < UNDO_PAIR_WINDOW_NS
         && last_blit.dest     == b->dest.oop
         && last_blit.source   == (b->has_source ? b->source.oop : ST_NIL)
         && last_blit.halftone == (b->has_halftone ? b->halftone.oop : ST_NIL)
@@ -1654,8 +1762,6 @@ GFX_present_if_undoing(const gfx_blit *b)
         && last_blit.cw == b->clip_w && last_blit.ch == b->clip_h;
 
     if (same) {
-        int64_t now = ST_time_monotonic_ns();
-
         if (now - last_flash_ns >= PRESENT_INTERVAL_NS) {
             present();
             last_flash_ns = now;
@@ -1674,6 +1780,7 @@ GFX_present_if_undoing(const gfx_blit *b)
     last_blit.cy = b->clip_y;
     last_blit.cw = b->clip_w;
     last_blit.ch = b->clip_h;
+    last_blit.when  = now;
     last_blit.valid = 1;
 }
 
@@ -1714,6 +1821,16 @@ handle_mouse_motion(float x, float y)
         nx = form.width - 1;
     if (ny >= form.height)
         ny = form.height - 1;
+    if (warp_echo_pending) {
+        int dx = nx - warp_echo_x;
+        int dy = ny - warp_echo_y;
+
+        warp_echo_pending = 0;
+        if (dx >= -1 && dx <= 1 && dy >= -1 && dy <= 1) {
+            nx = warp_echo_x;
+            ny = warp_echo_y;
+        }
+    }
     queue_motion(nx, ny);
 }
 

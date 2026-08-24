@@ -291,6 +291,28 @@ SCHED_timer_stop(void)
 static st_oop   input_semaphore = ST_NIL;
 
 /*
+ *  What to do while nothing can run.
+ *
+ *  Both waits below sleep in tenth-of-a-millisecond slices rather than on a
+ *  condvar, so there is a natural place to let the host breathe, and the
+ *  host needs it: an interpreter idling on a Delay does not come back out
+ *  of ST_interp_run, so a window driven from that call's return sees
+ *  nothing for the whole of the wait.  With DisplayScreen>>flash: waiting
+ *  60 ms between its two reverses, that is the difference between a screen
+ *  that shows both halves and one that shows whichever half it happened to
+ *  catch.
+ *
+ *  Left null for every headless run, which is every test.
+ */
+static void     (*idle_hook)(void);
+
+void
+SCHED_set_idle_hook(void (*hook)(void))
+{
+    idle_hook = hook;
+}
+
+/*
  *  new_process, new_process_waiting and the active process used to be file
  *  statics, and are now fields of the per-thread interpreter state -- see
  *  st_interp in interp.h for why there rather than in st_worker.  These
@@ -806,6 +828,8 @@ SCHED_suspend_active(void)
                 all_idle = 0;
             }
             WORKER_poll();
+            if (idle_hook)
+                idle_hook();
             ST_sleep_ns(IDLE_WAIT_SLICE_NS);
             drain_async_signals();
             next = SCHED_wake_highest_priority();
@@ -824,6 +848,8 @@ SCHED_suspend_active(void)
      */
     while (next == ST_NIL && !new_process_waiting && SCHED_timer_pending()) {
         WORKER_poll();
+        if (idle_hook)
+            idle_hook();
         ST_sleep_ns(IDLE_WAIT_SLICE_NS);
         drain_async_signals();
         next = SCHED_wake_highest_priority();
