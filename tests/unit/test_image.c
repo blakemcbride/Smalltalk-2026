@@ -50,7 +50,14 @@
  *  test had not, among them the whole of lib/Concurrency, ClassTestCase,
  *  MessageSend, SharedPool and the exception classes added this session.
  */
-#define LIB_CLASSES             43
+/*
+ *  43 -> 58 is lib/Database and lib/Database-Tests: twelve classes for the
+ *  database itself and three of tests.  It is the largest single addition
+ *  lib/ has had, and every one of the twelve is a class this system did not
+ *  previously have any spelling of -- there is nothing in the 1983 image
+ *  between an SQL string and a result set.
+ */
+#define LIB_CLASSES             58
 /*
  *  This number is a ratchet and is meant to move: lib/ is where every
  *  divergence from the frozen 1983 sources lives, so it grows whenever a
@@ -115,8 +122,13 @@
  *  until the pointer came back, and the same controller drives the View
  *  holding the yes and no switches, so the switches strobed whenever the
  *  pointer was anywhere else in the dialog.
+ *
+ *  708 -> 1077 is lib/Database and its tests: the ODBC gateway, connection,
+ *  command, cursor, record, query builder and join graph, and the 43 tests
+ *  that hold them.  A large number for one package, and most of it is the
+ *  query builder, which is a code generator and generators are wide.
  */
-#define LIB_METHODS             708
+#define LIB_METHODS             1077
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -124,7 +136,13 @@
  *  the box a Set stores nil in, gave it a class of its own.  Files-Fixes
  *  joined them when TextFileStream gave it one too.
  */
-#define LIB_CATEGORIES          12
+/*
+ *  12 -> 14: Database and Database-Tests.  A category is a property of a
+ *  class DEFINITION, so a package of pure extensions adds none -- which is
+ *  why this number tracks the packages that define classes and not the
+ *  packages.
+ */
+#define LIB_CATEGORIES          14
 /*
  *  The image this test measures is the one profiles/st2026.profile builds,
  *  and it is built BY that profile rather than by a list kept alongside it.
@@ -221,7 +239,12 @@ build_once(void)
      *  alone brings Mutex, Monitor, Promise, SharedQueue and the fixtures,
      *  and every one of them defines initialize and no class-side new.
      */
-    CHECK_EQ_INT(res.news_synthesized, 43);
+    /*
+     *  43 -> 57 with lib/Database.  Nearly every class in it defines
+     *  initialize and no class-side new, which is the ordinary way to write
+     *  one here and is exactly what this synthesis is for.
+     */
+    CHECK_EQ_INT(res.news_synthesized, 57);
     built = 1;
     return 1;
 }
@@ -1915,7 +1938,8 @@ test_sunit(void)
     check_boolean("Object class subclasses includes: Collection class", 1);
     check_string("(TestCase allSubclasses collect: [:c | c name])"
                  " asSortedCollection asArray printString",
-                 "(ClassTestCase St80CollectionTest St80NumberTest "
+                 "(ClassTestCase DbQueryBuilderTest DbSchemaGraphTest "
+                 "DbValueTest St80CollectionTest St80NumberTest "
                  "St80ReflectionTest St80TextTest SUnitBrokenTest "
                  "SUnitReportingTest "
                  "SUnitTest )");
@@ -1923,7 +1947,14 @@ test_sunit(void)
      *  allTests leaves out the fixture whose tests are meant to go wrong.
      *  A whole-image run that reported those would cry wolf every build.
      */
-    check_integer("TestCase allTests tests size", 61);
+    /*
+     *  61 -> 104 with lib/Database-Tests: the join graph, the SQL generator
+     *  and the value conversions.  The database round trips are NOT among
+     *  them and are not meant to be -- they need a driver this machine may
+     *  not have, so they live in profiles/database-live.profile and are run
+     *  deliberately.  See lib/Database-Live-Tests.
+     */
+    check_integer("TestCase allTests tests size", 104);
 
     /*
      *  And the three buckets, from the outside as well as from within
@@ -2035,7 +2066,7 @@ test_browsing(void)
      *  the source pointer is 22 bits and silently truncated once, and a
      *  size that stops growing is how that would show.
      */
-    check_integer("(SourceFiles at: 1) contents size", 1378378);
+    check_integer("(SourceFiles at: 1) contents size", 1472790);
 }
 
 /*

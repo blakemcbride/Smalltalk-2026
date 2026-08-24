@@ -43,9 +43,31 @@
 # bits wrapped, and the parser dropped whatever followed a complete method
 # body instead of refusing it.
 #
+# lib/Database-Tests adds 43 more, and every number below moved by exactly 43
+# for the same reason: they all require st2026.  A row that moved by anything
+# else would be the interesting case, and there isn't one.
+#
+# Those 43 are the half of the database work that needs no database -- the
+# join-path search, the SQL the query builder generates, and the exact
+# decimals.  They found two real faults on their first run.  The scanner that
+# reads table names out of an expression skipped every parenthesised group as
+# a subquery, so COUNT(employee.employee_id) hid the table being counted, and
+# the query joined nothing and answered a count over a cross product -- SQL
+# that runs, returns numbers, and is wrong.  And a join to an ALIASED table
+# wrote the real table name in its ON clause, referring to a table the FROM
+# clause never introduced.
+#
+# The half that DOES need a database is not counted here and must not be:
+# lib/Database-Live-Tests needs an ODBC driver manager and a driver, which a
+# machine building this system cannot be assumed to have.  A suite that
+# cannot run where it is checked would report a perfect score every time,
+# which is the exact shape of failure this file exists to catch.  It has a
+# profile of its own -- profiles/database-live.profile, 129 tests through
+# SQLite -- and is run deliberately.
+#
 # profile               run  passed
-st2026                  61   61
-pharo-announcements     92   92
-pharo-time              682  682
-pharo-weak              81   81
-pharo-collections       518  518
+st2026                  104  104
+pharo-announcements     135  135
+pharo-time              725  725
+pharo-weak              124  124
+pharo-collections       561  561
