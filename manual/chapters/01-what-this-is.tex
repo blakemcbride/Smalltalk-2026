@@ -95,7 +95,9 @@ from memory. They were checked against a recording of the real machine.
   against this system and pass.
 \item[Concurrency classes 1983 has no equivalent of.] \ct{Mutex},
   \ct{Monitor}, \ct{SharedQueue}, \ct{Promise}, and
-  \ct{Processor>>forkParallel:}.
+  \ct{Processor>>forkParallel:}---and the 1983 library itself audited on
+  thirty-one workers, with what it shared put behind a lock or reorganized
+  away.
 \item[SQL, on every core at once.] PostgreSQL, MySQL, SQLite, Oracle and SQL
   Server through ODBC, with a query builder that finds its own joins, and one
   connection per process rather than N processes taking turns at one socket.

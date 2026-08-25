@@ -70,7 +70,9 @@ the interface fits together, \ct{Controller} and \ct{View} in
 \toprule
 \ctp{lib/Kernel-Exceptions/} & the exception system, in readable Smalltalk\\
 \ctp{lib/Concurrency/} & \ctp{Mutex}, \ctp{Monitor}, \ctp{SharedQueue},
-  \ctp{Promise}. The class comments explain the design decisions\\
+  \ctp{Promise}, \ctp{LibraryLocks}, and the replacements for what 1983 shared
+  without a lock. The class comments explain the design decisions and name
+  the fault each was written for\\
 \ctp{lib/Probe/} & small classes that exist to exercise one feature each ---
   traits, pragmas, unwinding, initialisation\\
 \ctp{profiles/} & each profile's comment explains what it composes and why

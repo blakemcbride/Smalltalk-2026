@@ -71,9 +71,14 @@ This is why the class library has to be audited rather than inherited.
   default. Use the shared variants, or guard them yourself. A class whose
   shared use is not rare but expected may pay, and three do:
   \ct{JSONObject}, \ct{JSONArray} and \ct{DbSchemaGraph} each hold a
-  \ct{Mutex} and say so in their class comments.
-\item \textbf{\ct{Transcript} interleaving.} Output from concurrent processes
-  may interleave unless you hold the Transcript's monitor across an entry.
+  \ct{Mutex} and say so in their class comments. So do the structures the
+  whole image shares whether it means to or not---the Symbol table,
+  \ct{Smalltalk}, the dependents table, the \ct{Transcript}---which
+  \ct{lib/} guards for you (Section~\ref{sec:audit-found}).
+\item \textbf{\ct{Transcript} interleaving.} One send---one \ct{show:}, one
+  \ct{cr}---is atomic; lines from different processes arrive in whatever
+  order they were sent. Build a line in a \ct{WriteStream} and \ct{show:} it
+  once if it must stay together.
 \end{enumerate}
 
 \section{What replaces it}
@@ -126,9 +131,10 @@ thread, so \ct{Processor workerCount} answers 1 there and in a
 \ct{-bootstrap -eval} run.
 
 That does not make this chapter advisory. The library your code will run
-against is being audited to this contract now, and code written to it today
-keeps working when the desktop moves onto the pool. Code written against
-same-priority atomicity does not.
+against has been audited to this contract on thirty-one workers
+(Section~\ref{sec:audit-found}), and code written to it today keeps working
+when the desktop moves onto the pool. Code written against same-priority
+atomicity does not.
 \end{stnote}
 
 \section{The taxonomy to think in}
@@ -141,11 +147,14 @@ system adopts it. For each piece of shared state, choose one:
 \begin{tabular}{@{}lp{0.62\textwidth}@{}}
 \toprule
 \textbf{serialize} & lock it. Correct, and the answer of last resort---if
-  everything lands here the system will not scale\\
-\textbf{replicate} & give each worker its own. The \ctp{Transcript} buffer is
+  everything lands here the system will not scale. The Symbol table and
+  \ct{Smalltalk} are this\\
+\textbf{replicate} & give each worker its own. The digit buffer
+  \ct{SmallInteger>>printOn:base:} kept in a class variable is this: it became
+  a temporary\\
+\textbf{reorganize} & remove the sharing. \ct{Compiler evaluate:} running its
+  method without installing it, and \ct{Processor yield} as a primitive, are
   this\\
-\textbf{reorganize} & remove the sharing. Method dictionaries becoming
-  immutable once published is this\\
 \midrule
 \textbf{immutable} & written once at build, never after\\
 \textbf{thread-confined} & only ever touched by one worker.
@@ -155,6 +164,51 @@ system adopts it. For each piece of shared state, choose one:
 \end{center}
 
 The last two are what keep the audit finite.
+
+\section{What the audit found}
+\label{sec:audit-found}
+
+Every class variable in the image was scanned, and then the image itself was
+run on eight and on thirty-one workers with a kernel for each piece of state
+it shares, each answering a number only a correct run can produce. Eight
+workers at once: the Symbol table made two Symbols for one string 1{,}170
+times in 2{,}400; \ct{Smalltalk at:put:} lost 245 globals of 1{,}600; the
+dependents table lost 143 of 1{,}600; \ct{Compiler evaluate:} answered nil
+138 times in 800; two workers waiting on \ct{Delay}s hung every run; and the
+\ct{Transcript}'s one \ct{String} was written by eight threads while
+\ct{become:} replaced it. Each is now serialized, replicated or reorganized in
+\ct{lib/}, with the choice written at the method:
+
+\begin{center}
+\small
+\begin{tabular}{@{}lll@{}}
+\toprule
+\ct{Symbol intern:} & serialize & \ctp{LibraryLocks}\\
+\ct{Smalltalk at:put:}, and its readers & serialize & \ctp{LibraryLocks}\\
+\ct{addDependent:} and the dependents table & serialize & \ctp{LibraryLocks}\\
+\ct{Transcript}, per send & serialize & \ctp{LibraryLocks}\\
+open directories, method dictionaries & serialize & \ctp{LibraryLocks}\\
+\ct{Compiler evaluate:} & reorganize & primitive 188\\
+\ct{Processor yield} & reorganize & primitive 167\\
+\ct{Delay}'s timing process & reorganize & a stale signal is a look at the clock\\
+\ct{activePriority}, \ct{terminateActive} & replicate & ask the worker\\
+the caches \ct{TempNameCache}, \ct{CachedClassNames} & replicate & read once\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The \ct{Delay} and \ct{yield} kernels did not fail in the library. They
+failed in the scheduler, six ways, and each looked like something else until
+one invariant was written down: \emph{a process runs on one worker at a
+time, and a worker holds what it runs}. A process was linked onto its
+semaphore before its registers were parked; a preempted process was put on
+the ready list while still running; an idle worker never looked at a process
+nominated to it; the timer's signal did not take the semaphore's lock; a
+running process was kept alive by nothing but the last worker's switch; and
+the safepoint wrote a parked process's registers over a running one's. The
+scheduler now refuses to nominate a process still on a list. The whole
+account is in \ct{doc/CONCURRENCY.md}, and \ct{tests/unit/test_parallel_shared.c}
+is the gate.
 
 \section{Rules that follow}
 

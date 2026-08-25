@@ -126,7 +126,11 @@ A delay expires while nothing is running, so it cannot be implemented by
 polling in the idle loop---with every process waiting on one, every worker is
 idle and a loop that only looks at what is already ready would look forever.
 There is a dedicated VM timer thread holding the clock, and it posts to the
-async signal queue when a deadline passes.
+async signal queue when a deadline passes. The process that resumes delays
+treats that signal as \emph{look at the clock}: it resumes whatever is due
+and re-arms the timer for whatever is not, so a signal that arrives late, or
+twice, is harmless. 1983's assumed every signal was the one it had armed for,
+and two workers waiting on one-millisecond delays hung it every time.
 
 \begin{stnote}
 Two bugs were found building that, both worth knowing as shapes. A timer that
