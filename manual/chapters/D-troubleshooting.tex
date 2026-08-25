@@ -115,8 +115,11 @@ st80: N input events were dropped
 \begin{description}
 \item[It works at one worker and fails at eight] It is a race. Read
   Chapter~\ref{ch:contract}, then look for an unsynchronised
-  read-modify-write, a shared collection, or a lazily-initialised class
-  variable.
+  read-modify-write, a shared collection, a lazily-initialised class
+  variable---or a class variable used as scratch space, which is what 1983's
+  \ct{SmallInteger>>printOn:base:} did with \ct{Digitbuffer} until
+  \ct{lib/Concurrency} replaced it. Nothing about the symptom said
+  \emph{printing}: Strings came back with another worker's digits in them.
 \item[A process is waiting forever] If it is on a \ct{Semaphore} you are using
   for mutual exclusion, you may have taken it twice. Use \ct{Mutex}, which
   detects that and raises rather than deadlocking.

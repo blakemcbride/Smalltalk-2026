@@ -39,13 +39,14 @@
  *  whole document out and reads it back.
  *
  *  The values are ready-made Strings from the fixture, not the loop
- *  counter, and that is not tidiness.  With integer values the writer sends
- *  printString on every round trip, and building Strings in parallel
- *  workers is not currently reliable in this system: the same integer
- *  printString'd twice by one worker can answer two different Strings while
- *  others are doing the same, which is reproducible in test_parallel_lib
- *  with six lines and nothing of lib/Json in them.  That is a fault
- *  somewhere below this package and it is not what this test is for; using
+ *  counter, and the reason is worth keeping even now that it is history.
+ *  With integer values the writer sent printString on every round trip,
+ *  and 1983's SmallInteger>>printOn:base: kept its digits in a class
+ *  variable shared by every integer in the image -- so eight workers
+ *  printing at once read back each other's digits, and this kernel
+ *  answered 3,099 of 3,100 with documents carrying 00 where 100 was put.
+ *  lib/Concurrency now replaces that method and test_parallel_lib holds
+ *  it, but a test of a lock is better off not also testing the printer:
  *  text that already exists keeps the subject the lock.  The text must always
  *  be parseable JSON: a writer that enumerated the live object rather than
  *  a snapshot would emit a member with no value, or a trailing comma, at

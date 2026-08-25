@@ -161,8 +161,13 @@
  *  and the two fixtures gained their accessors.  A guarded class needs a
  *  door and a room, and that is what the extra methods are.  1360 with the
  *  two tests that hold the snapshot rule in place.
+ *
+ *  1361 is one method REPLACED rather than added: lib/Concurrency's
+ *  SmallInteger>>printOn:base:, which puts its digits on the stack where
+ *  1983's put them in a class variable shared by every integer in the
+ *  image.  A replacement still compiles, so it still counts.
  */
-#define LIB_METHODS             1360
+#define LIB_METHODS             1361
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -2132,7 +2137,7 @@ test_browsing(void)
      *  the source pointer is 22 bits and silently truncated once, and a
      *  size that stops growing is how that would show.
      */
-    check_integer("(SourceFiles at: 1) contents size", 1558488);
+    check_integer("(SourceFiles at: 1) contents size", 1558869);
 }
 
 /*

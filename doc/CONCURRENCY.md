@@ -217,6 +217,43 @@ That last symptom is the useful one to recognise. A message sent to an object
 of a class that has no business being there is rarely a wrong send -- it is
 almost always a freed object whose slot has been handed to something else.
 
+## The library's implicit locks, and the first one found
+
+The audit this document asks for -- serialize, replicate, or reorganize every
+piece of shared state the 1983 library leans on -- has its first concrete
+entry, and it is worth recording in full because of what it looked like.
+
+`SmallInteger>>printOn:base:` writes each digit into `Digitbuffer`, a class
+variable holding one `Array new: 32`, and reads them back in reverse. Under a
+green scheduler that is correct: no process of the same priority can run
+between the write and the read. Here eight workers printing at once write into
+the same thirty-two slots and each reads back whichever digits landed last.
+
+What it looked like was **anything but printing**. `i printString = i
+printString` on eight workers was true 1,501 times in 16,000. A JSON document
+written while other workers were writing their own came back with `00` where
+`100` had been put. The diagnostics printed to explain it were themselves
+wrong, because they printed integers to say so. And every tool said the code
+was clean: ThreadSanitizer saw nothing, because a class variable read and
+written by Smalltalk is not a data race in any C; an instrumented allocator
+showed no object-table index ever handed out twice; and a build that never
+recycled a freed slot, with an abort on any read of a freed object, still
+failed at the same rate without ever aborting. Three days of plausible
+theories about the collector were ruled out by that last experiment in one
+run, which is the argument for building the experiment before the theory.
+
+The fix is **replicate** in the taxonomy above: `lib/Concurrency` replaces the
+method with one whose buffer is a temporary, sixty-four wide because this
+system's SmallIntegers are 63 bits and `(2 raisedTo: 60) printStringRadix: 2`
+had been overrunning the 1983 buffer on its own, with no second worker
+needed. `tests/unit/test_parallel_lib.c` holds it: every worker prints every
+integer from 1 to 2,000 and checks the length, the first digit and the last.
+
+`Digitbuffer` has no other user. The other class variables in `sources/` that
+hold mutable state -- `CachedClassNames`, `TempNameCache`, the `Symbol`
+table, the `Transcript` -- are caches and structures rather than per-call
+scratch space, and each is a separate question for the same audit.
+
 ## The VM's own connections to the image
 
 Two links from the VM to the image live in C rather than in any instance

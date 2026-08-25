@@ -197,6 +197,17 @@ and \ct{DbSchemaGraph} are the three that guard themselves.
 It stops nobody on another core. It never worked here and it never will.
 \end{stwarn}
 
+\begin{stwarn}[Scratch space in a class variable]
+\begin{st}
+Buffer at: (i := i + 1) put: digit       "every instance, one Buffer"
+\end{st}
+Correct under a green scheduler, because nothing of the same priority can
+run between the write and the read back. Here every worker writes into the
+same slots. 1983's \ct{SmallInteger>>printOn:base:} did exactly this, and
+eight workers printing integers read back each other's digits. Put the
+buffer in a temporary.
+\end{stwarn}
+
 \section{Proving it actually ran in parallel}
 
 A test that merely does not crash proves very little. The discipline used
