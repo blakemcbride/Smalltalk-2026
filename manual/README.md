@@ -1,6 +1,6 @@
 # Smalltalk-2026: A Manual
 
-A book-length introduction to the system and the language — 27 chapters and
+A book-length introduction to the system and the language — 29 chapters and
 5 appendices, in LaTeX, building to a PDF with `pdflatex` and nothing else.
 
 ```sh

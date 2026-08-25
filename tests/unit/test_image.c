@@ -57,7 +57,21 @@
  *  previously have any spelling of -- there is nothing in the 1983 image
  *  between an SQL string and a result set.
  */
-#define LIB_CLASSES             58
+/*
+ *  58 -> 67 is lib/Json and lib/Json-Tests: JSONObject, JSONArray, the
+ *  parser, the writer and the one error class they all raise, and four
+ *  classes of tests.  The 1983 image has no name for any of it -- JSON is
+ *  fifteen years younger than the image is -- so every one of the nine is
+ *  new here in the same way lib/Database's twelve were.
+ *
+ *  67 -> 69 is JSONFixture and DbFixture, which hold the objects
+ *  test_parallel_json and test_parallel_db hand to every worker.  They are
+ *  classes rather than expressions for the reason ConcurrencyFixture is:
+ *  the compiler resolves a global to its Association at COMPILE time, so a
+ *  name installed later with `Smalltalk at:put:' is not the name a method
+ *  compiled afterwards refers to.
+ */
+#define LIB_CLASSES             69
 /*
  *  This number is a ratchet and is meant to move: lib/ is where every
  *  divergence from the frozen 1983 sources lives, so it grows whenever a
@@ -128,7 +142,27 @@
  *  that hold them.  A large number for one package, and most of it is the
  *  query builder, which is a code generator and generators are wide.
  */
-#define LIB_METHODS             1077
+/*
+ *  1077 -> 1337 is lib/Json and its tests: 152 methods of package, 99 of
+ *  tests, and the nine `new' the bootstrap synthesizes for the nine new
+ *  classes.
+ *
+ *  94 of the 152 are JSONObject and JSONArray, which looks like a lot for
+ *  two containers and is the whole point of the port: 28 of them are the
+ *  typed accessors -- stringAt:, numberAt:, integerAt:, floatAt:,
+ *  booleanAt:, objectAt: and arrayAt:, each with an ifAbsent: variant, on
+ *  both classes.  That breadth is what org.kissweb.json has and what makes
+ *  reading a document a line at a time instead of a type test at a time.
+ *  The parser and the writer together are 44.
+ *
+ *  1337 -> 1358 with the locking: JSONObject and JSONArray each gained the
+ *  private snapshot their enumerations are built on, DbSchemaGraph gained
+ *  the four `basic' methods that do its work with the lock already held,
+ *  and the two fixtures gained their accessors.  A guarded class needs a
+ *  door and a room, and that is what the extra methods are.  1360 with the
+ *  two tests that hold the snapshot rule in place.
+ */
+#define LIB_METHODS             1360
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -142,7 +176,13 @@
  *  why this number tracks the packages that define classes and not the
  *  packages.
  */
-#define LIB_CATEGORIES          14
+/*
+ *  14 -> 16: Json and Json-Tests.  lib/Json is nine classes and one
+ *  extension file, and the extension file adds no category for the reason
+ *  above -- its methods land in the *Json protocol of classes that already
+ *  have categories of their own.
+ */
+#define LIB_CATEGORIES          16
 /*
  *  The image this test measures is the one profiles/st2026.profile builds,
  *  and it is built BY that profile rather than by a list kept alongside it.
@@ -244,7 +284,14 @@ build_once(void)
      *  initialize and no class-side new, which is the ordinary way to write
      *  one here and is exactly what this synthesis is for.
      */
-    CHECK_EQ_INT(res.news_synthesized, 57);
+    /*
+     *  57 -> 66 with lib/Json and its tests.  All nine, because not one of
+     *  them defines a class-side new: JSONObject, JSONArray, JSONParser and
+     *  JSONWriter define initialize and let the loader write the new, and
+     *  the error and the four test classes need neither.  68 with the two
+     *  parallel fixtures.
+     */
+    CHECK_EQ_INT(res.news_synthesized, 68);
     built = 1;
     return 1;
 }
@@ -1939,7 +1986,8 @@ test_sunit(void)
     check_string("(TestCase allSubclasses collect: [:c | c name])"
                  " asSortedCollection asArray printString",
                  "(ClassTestCase DbQueryBuilderTest DbSchemaGraphTest "
-                 "DbValueTest St80CollectionTest St80NumberTest "
+                 "DbValueTest JSONArrayTest JSONObjectTest JSONParserTest "
+                 "JSONWriterTest St80CollectionTest St80NumberTest "
                  "St80ReflectionTest St80TextTest SUnitBrokenTest "
                  "SUnitReportingTest "
                  "SUnitTest )");
@@ -1954,7 +2002,20 @@ test_sunit(void)
      *  not have, so they live in profiles/database-live.profile and are run
      *  deliberately.  See lib/Database-Live-Tests.
      */
-    check_integer("TestCase allTests tests size", 104);
+    /*
+     *  104 -> 203 with lib/Json-Tests, which is 99.  Something over a third
+     *  of them are documents the parser must REFUSE, and those are the ones
+     *  worth having: a parser that accepts too much passes every test of a
+     *  valid document, so the leniency this one deliberately does not have
+     *  can only be checked by writing down what must not be accepted.
+     *
+     *  205 with the two that walk a JSONObject and a JSONArray while
+     *  changing them.  Those hold in place the one decision in lib/Json
+     *  nothing else would notice being undone: no block of the caller's
+     *  runs inside the lock, so `json do: [:each | json at: ...]' works
+     *  rather than reporting a re-entered Mutex.
+     */
+    check_integer("TestCase allTests tests size", 205);
 
     /*
      *  And the three buckets, from the outside as well as from within
@@ -2013,10 +2074,15 @@ test_browsing(void)
      *  cull: as an extension, and an extension method's protocol is its
      *  own category with a leading star.  The Browser showing it is the
      *  Browser working -- that is what the star is for.
+     *
+     *  Six once lib/Json gave Boolean an asJsonValue, which is a second
+     *  starred protocol on the same class.  This check moves whenever a
+     *  package extends Boolean, and that is the point of it: an extension
+     *  the Browser does NOT show is a method nobody can find.
      */
     check_integer("| b | b := Browser new on: SystemOrganization."
                   " b category: #'Kernel-Objects'. b className: #Boolean."
-                  " ^b protocolList size", 5);
+                  " ^b protocolList size", 6);
     /*
      *  Named rather than taken by position.  The pane is in alphabetical
      *  order since lib/Browser-Sorting, so `at: 1' now answers the starred
@@ -2066,7 +2132,7 @@ test_browsing(void)
      *  the source pointer is 22 bits and silently truncated once, and a
      *  size that stops growing is how that would show.
      */
-    check_integer("(SourceFiles at: 1) contents size", 1472790);
+    check_integer("(SourceFiles at: 1) contents size", 1558488);
 }
 
 /*

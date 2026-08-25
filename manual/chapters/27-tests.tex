@@ -156,12 +156,16 @@ and holds the scores against \ct{tests/profiles.expected}:
 
 \begin{plain}
 # profile               run  passed
-st2026                  12   12
-pharo-announcements     43   43
-pharo-time              633  633
-pharo-weak              32   32
-pharo-collections       469  469
+st2026                  205  205
+pharo-announcements     236  236
+pharo-time              826  826
+pharo-weak              225  225
+pharo-collections       662  662
 \end{plain}
+
+Every row moves together whenever \ct{lib/} gains tests, because every profile
+there requires \ct{st2026} and so inherits its suites. A row that moved by a
+different amount from the others would be the interesting case.
 
 Both directions fail:
 

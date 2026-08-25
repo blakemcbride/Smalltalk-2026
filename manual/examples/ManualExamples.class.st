@@ -464,3 +464,75 @@ ManualExamples >> databaseWithoutADatabase [
 	"(Odbc isAvailable isKindOf: Boolean) >>> true"
 	^self
 ]
+
+{ #category : 'ch18 json' }
+ManualExamples >> json [
+	"Chapter 18, which needs nothing this machine may not have -- a document
+	 is a String, so every claim the chapter makes is checkable here.
+
+	 The doubled quotes are Smalltalk's, not JSON's: a doctest lives inside a
+	 method comment and a comment ends at the first lone double quote, so
+	 every quote in a JSON document has to be written twice.  What the reader
+	 of the book sees is the single-quoted form, and the two differ only in
+	 that."
+	"asJson and asJsonString are not opposites, and both are on String"
+	"'[1,2]' asJson class >>> JSONArray"
+	"'[1,2]' asJsonString >>> '""[1,2]""'"
+	"reading, by name and with the type checked"
+	"('{""name"": ""Ada"", ""born"": 1815}' asJson) stringAt: 'name' >>> 'Ada'"
+	"('{""name"": ""Ada"", ""born"": 1815}' asJson) integerAt: 'born' >>> 1815"
+	"(('{""tags"": [""maths""]}' asJson arrayAt: 'tags') stringAt: 1) >>> 'maths'"
+	"('{""a"":[1,2]}' asJson arrayAt: 'a') asArray >>> #(1 2)"
+	"the wrong type raises rather than converting"
+	"([:o | [o stringAt: 'n'. 'accepted'] on: JSONError do: [:e | 'refused']] value: '{""n"":42}' asJson) >>> 'refused'"
+	"an absent name answers nil, and null is not the same as absent"
+	"('{""middleName"": null}' asJson at: 'nickname') >>> nil"
+	"('{""middleName"": null}' asJson includesKey: 'middleName') >>> true"
+	"('{""middleName"": null}' asJson isNullAt: 'middleName') >>> true"
+	"('{""middleName"": null}' asJson includesKey: 'nickname') >>> false"
+	"('{""middleName"": null}' asJson isNullAt: 'nickname') >>> false"
+	"writing: anything at all can be asked for its JSON"
+	"#(1 2 3) asJsonString >>> '[1,2,3]'"
+	"(1 to: 3) asJsonString >>> '[1,2,3]'"
+	"'hello' asJsonString >>> '""hello""'"
+	"(Dictionary new at: 'k' put: 1; yourself) asJsonString >>> '{""k"":1}'"
+	"names keep the order they were first put in"
+	"([:o | o at: 'zebra' put: 1; at: 'apple' put: 2; asJsonString] value: JSONObject new) >>> '{""zebra"":1,""apple"":2}'"
+	"the indented form is one member to a line"
+	"(('{""a"":1}' asJson asJsonStringIndent: 2) lines size) >>> 3"
+	"numbers are exact"
+	"'0.1' asJson * 10 >>> 1"
+	"'1.5' asJson >>> 3/2"
+	"'1.5' asJson asJsonString >>> '1.5'"
+	"'3.0' asJson >>> 3"
+	"('3.0' asJson isKindOf: Integer) >>> true"
+	"'1e2' asJson >>> 100"
+	"'123456789012345678901234567890' asJson >>> 123456789012345678901234567890"
+	"and a Float is what you ask for, not what you are given"
+	"('{""rate"": 0.1}' asJson floatAt: 'rate') >>> 0.1"
+	"the six documents the chapter says are refused, and they are"
+	"([:t | [t asJson. 'accepted'] on: JSONError do: [:e | 'refused']] value: '{""a"":1,}') >>> 'refused'"
+	"([:t | [t asJson. 'accepted'] on: JSONError do: [:e | 'refused']] value: '{a:1}') >>> 'refused'"
+	"([:t | [t asJson. 'accepted'] on: JSONError do: [:e | 'refused']] value: '{''a'':1}') >>> 'refused'"
+	"([:t | [t asJson. 'accepted'] on: JSONError do: [:e | 'refused']] value: '01') >>> 'refused'"
+	"([:t | [t asJson. 'accepted'] on: JSONError do: [:e | 'refused']] value: 'banana') >>> 'refused'"
+	"([:t | [t asJson. 'accepted'] on: JSONError do: [:e | 'refused']] value: '{""a"":1} {""b"":2}') >>> 'refused'"
+	"and the message says where"
+	"([:t | [t asJson. ''] on: JSONError do: [:e | e messageText]] value: '{""a"":1,""b"":}') >>> 'a value cannot begin with $} at character 12'"
+	"an escape becomes UTF-8 bytes, so e-acute is two of them"
+	"'""\u00e9""' asJson size >>> 2"
+	"'""\u0041""' asJson >>> 'A'"
+	"building a document converts as it goes, and refuses what has no spelling"
+	"([:r | r at: 'ok' put: true; at: 'rows' put: #(1 2 3); at: 'error' put: nil; asJsonString] value: JSONObject new) >>> '{""ok"":true,""rows"":[1,2,3],""error"":null}'"
+	"([:r | [r at: 'a' put: 1@2. 'accepted'] on: JSONError do: [:e | 'refused']] value: JSONObject new) >>> 'refused'"
+	"an array answers to enough of the collection protocol to be useful"
+	"('[1,2,3,4]' asJson select: [:each | each odd]) asJsonString >>> '[1,3]'"
+	"('[1,2,3,4]' asJson inject: 0 into: [:a :b | a + b]) >>> 10"
+	"('[1,2,3]' asJson asArray) >>> #(1 2 3)"
+	"(('[1,2]' asJson collect: [:each | each class]) isKindOf: OrderedCollection) >>> true"
+	"and an index past the end raises, because an array has a length"
+	"([:a | [a at: 9. 'accepted'] on: JSONError do: [:e | 'refused']] value: '[1]' asJson) >>> 'refused'"
+	"a stream can be read one document at a time"
+	"([:p | p nextValue. p nextValue] value: (JSONParser on: (ReadStream on: '[1] [2]'))) asArray >>> #(2)"
+	^self
+]

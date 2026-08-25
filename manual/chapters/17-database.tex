@@ -45,6 +45,21 @@ caller does not wait---it corrupts the first one's answer. Open one per
 process. They are cheap next to what they do.
 \end{stwarn}
 
+The one thing here that \emph{is} meant to be shared is the schema graph.
+Reading a large schema's foreign keys is the slowest thing a connection does, so
+read it once and hand the same graph to every connection you open:
+
+\begin{st}
+graph := firstConnection schemaGraph.
+anotherConnection schemaGraph: graph
+\end{st}
+
+\noindent A \ct{DbSchemaGraph} holds its own lock and is safe to search from
+every core at once. \ct{joinPathFor:root:} holds that lock across the whole
+search on purpose: half a path through the schema as it was and half through the
+schema as it became connects nothing in particular, and would come back with no
+error at all.
+
 \section{Transactions}
 
 Autocommit is \emph{off}. A connection opens inside a transaction and nothing

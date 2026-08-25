@@ -96,6 +96,13 @@ from memory. They were checked against a recording of the real machine.
 \item[Concurrency classes 1983 has no equivalent of.] \ct{Mutex},
   \ct{Monitor}, \ct{SharedQueue}, \ct{Promise}, and
   \ct{Processor>>forkParallel:}.
+\item[SQL, on every core at once.] PostgreSQL, MySQL, SQLite, Oracle and SQL
+  Server through ODBC, with a query builder that finds its own joins, and one
+  connection per process rather than N processes taking turns at one socket.
+  Chapter~\ref{ch:database}.
+\item[JSON, and exactly.] RFC 8259 read and written, with numbers that are
+  still exact when they come out the other side---a tenth times ten is one.
+  Chapter~\ref{ch:json}.
 \item[A screen that is not from 1983.] The display grows to fill the window,
   and the text is Inter---proportional and antialiased---on a system whose
   BitBlt is still one bit per pixel.

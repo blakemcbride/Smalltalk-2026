@@ -346,11 +346,32 @@ DbConnection >> columnSizeOf: tableName column: columnName [
 
 { #category : 'catalogue' }
 DbConnection >> schemaGraph [
-	"The foreign keys of the whole schema, as a graph.  Read once."
+	"The foreign keys of the whole schema, as a graph.  Read once.
 
-	schemaGraph isNil ifTrue:
-		[schemaGraph := DbSchemaGraph fromConnection: self].
-	^schemaGraph
+	 NOT `schemaGraph isNil ifTrue: [schemaGraph := ...]', which is what this
+	 was and which is check-then-act.  Two processes reaching it together --
+	 and a connection handed out by a pool is reached by whoever has it --
+	 each read the whole schema's metadata, which is the slowest thing this
+	 class does, and one of the two graphs is then dropped.  Anything that
+	 captured the dropped one goes on using a graph nothing else will ever
+	 add an edge to, which is a wrong join found much later.
+
+	 The build happens OUTSIDE the lock and has to: DbSchemaGraph class>>
+	 fromConnection: asks this same connection for its tables and their
+	 imported keys, and those take this same lock.  Mutex is not re-entrant,
+	 so building inside it would report a deadlock rather than deadlock --
+	 better, and still a bug.  So it is built unguarded and installed under
+	 the lock, and whoever arrives second uses the one already installed.
+	 Building twice wastes a schema read; using two graphs would not be a
+	 waste but a fault."
+
+	| built |
+	lock critical: [built := schemaGraph].
+	built notNil ifTrue: [^built].
+	built := DbSchemaGraph fromConnection: self.
+	^lock critical: [
+		schemaGraph isNil ifTrue: [schemaGraph := built].
+		schemaGraph]
 ]
 
 { #category : 'catalogue' }
@@ -359,7 +380,7 @@ DbConnection >> schemaGraph: aGraph [
 	 hand.  Reading a large schema's metadata is slow enough that an
 	 application is entitled to do it once and keep the answer."
 
-	schemaGraph := aGraph
+	lock critical: [schemaGraph := aGraph]
 ]
 
 { #category : 'catalogue' }

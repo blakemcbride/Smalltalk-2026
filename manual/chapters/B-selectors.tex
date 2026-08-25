@@ -216,6 +216,38 @@ trying to do. Everything here is in the \ct{st2026} profile.}
 \end{tabular}
 \end{center}
 
+\section{JSON}
+
+\begin{center}
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+\ctp{asJson} & a String, read \\
+\ctp{asJsonString} \ctp{asJsonStringIndent:} \ctp{writeJsonOn:} & anything, written \\
+\ctp{asJsonValue} & the conversion, for your own classes \\
+\midrule
+\ctp{JSONObject fromString:} \ctp{JSONArray fromString:} & and it must be that \\
+\ctp{JSONParser parse:} \ctp{on:} \ctp{nextValue} \ctp{maxDepth:} & \\
+\ctp{JSONWriter write:} \ctp{write:indent:} \ctp{write:on:} & \\
+\midrule
+\ctp{at:} \ctp{at:ifAbsent:} \ctp{at:put:} & by name, or by index \\
+\ctp{stringAt:} \ctp{numberAt:} \ctp{integerAt:} \ctp{floatAt:} & each with an \\
+\ctp{booleanAt:} \ctp{objectAt:} \ctp{arrayAt:} & ifAbsent: form \\
+\ctp{size} \ctp{isEmpty} \ctp{notEmpty} \ctp{do:} & \\
+\midrule
+\ctp{includesKey:} \ctp{isNullAt:} & an object \\
+\ctp{keys} \ctp{values} \ctp{keysDo:} \ctp{keysAndValuesDo:} & \\
+\ctp{at:ifAbsentPut:} \ctp{removeKey:} \ctp{asDictionary} & \\
+\midrule
+\ctp{add:} \ctp{addAll:} \ctp{first} \ctp{last} \ctp{includes:} & an array \\
+\ctp{removeAt:} \ctp{removeFirst} \ctp{removeLast} & \\
+\ctp{select:} \ctp{reject:} \ctp{detect:ifNone:} \ctp{inject:into:} & \\
+\ctp{collect:} & answers an OrderedCollection \\
+\ctp{asArray} \ctp{asOrderedCollection} & \\
+\bottomrule
+\end{tabular}
+\end{center}
+
 \section{Testing}
 
 \begin{center}

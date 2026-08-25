@@ -175,19 +175,19 @@ a score may not fall, and may not rise without being recorded:
 
 | Profile | Tests |
 |---|---|
-| `st2026` | 104 / 104 |
-| `pharo-announcements` | 135 / 135 |
-| `pharo-time` | 725 / 725 |
-| `pharo-weak` | 124 / 124 |
-| `pharo-collections` | 561 / 561 |
+| `st2026` | 205 / 205 |
+| `pharo-announcements` | 236 / 236 |
+| `pharo-time` | 826 / 826 |
+| `pharo-weak` | 225 / 225 |
+| `pharo-collections` | 662 / 662 |
 
 **1,177 of those are Pharo's own tests**, run unmodified against this system.
 The rest are ours: twelve for the exceptions and concurrency classes 1983 has
 no equivalent of, a suite for the 1983 library itself — the numeric tower, the
-collections, strings and streams — and 43 for the database. Every profile
-requiring `st2026` inherits all of them, which is why the same 92 appear in
-every row. The composed image is 284 classes and 5,598 methods. Where this is
-going is [`doc/PLAN-TO-PHARO.md`](doc/PLAN-TO-PHARO.md).
+collections, strings and streams — 43 for the database and 101 for JSON. Every
+profile requiring `st2026` inherits all of them, which is why the same 193
+appear in every row. The composed image is 295 classes and 5,881 methods.
+Where this is going is [`doc/PLAN-TO-PHARO.md`](doc/PLAN-TO-PHARO.md).
 
 **SQL, on every core at once.** `lib/Database` reaches PostgreSQL, MySQL,
 SQLite, Oracle and SQL Server through ODBC, with a query builder that finds its
@@ -201,6 +201,21 @@ rather than stall it, which is the whole design and is in
 regresses: a 0.24s query is interrupted by a safepoint granted in 0.0000s, where
 without the parking it takes the whole 0.2396s. `DECIMAL` columns answer exact
 `Fraction`s, because a money column read through a float is wrong quietly.
+
+**JSON, and exactly.** `lib/Json` is `JSONObject`, `JSONArray`, a parser and a
+writer, with the API breadth of `org.kissweb.json` and two divergences from it
+that matter. Numbers stay exact — `1.5` reads as the `Fraction` 3/2, so a tenth
+times ten is 1 and a price read out of a document and written back is the price
+that was sent, which is the same decision `DECIMAL` columns get and for the same
+reason. And the grammar is RFC 8259's rather than org.json's, which forgives an
+unquoted name, a trailing comma and any bare word: over a third of the suite is
+documents this parser must *refuse*, because a reader that accepts too much
+passes every test of a valid document. Names keep the order they were put in, so
+a document read and written twice is the same file both times. And a document is
+safe to use from more than one process at once — 31 threads share one in
+`tests/unit/test_parallel_json.c`, which is a gate rather than a hope.
+[`doc/JSON.md`](doc/JSON.md) has the rest, including why not one line could be
+copied.
 
 **A screen that is not from 1983.** The display Form is grown to fill the
 window rather than letterboxed into it, and text is Inter, proportional and
@@ -243,7 +258,7 @@ src/compiler/   Smalltalk compiler in C, chunk and Tonel readers
 src/db/         ODBC, and nothing else that knows what a database is
 src/boot/       image bootstrap
 sources/        the 1983 class library (MIT), vendored, frozen — 226 classes
-lib/            ours: exceptions, concurrency, SUnit, protocol shims, SQL
+lib/            ours: exceptions, concurrency, SUnit, protocol shims, SQL, JSON
 pharo/          imported Pharo packages, each with a PROVENANCE.md
 profiles/       which packages compose an image
 tools/          make_font.py — rasterises an outline face into the strike
@@ -258,8 +273,9 @@ tools/          make_font.py — rasterises an outline face into the strike
 | [`doc/Display.md`](doc/Display.md) | the window, the face, antialiasing, and what the interface expects of you |
 | [`doc/LanguageExtensions.md`](doc/LanguageExtensions.md) | every post-1983 syntax, and where each stands |
 | [`doc/DATABASE.md`](doc/DATABASE.md) | SQL through ODBC, the join graph, and why a query does not stop the world |
+| [`doc/JSON.md`](doc/JSON.md) | RFC 8259, why the numbers stay exact, and why not one line could be ported |
 | [`doc/PLAN-TO-PHARO.md`](doc/PLAN-TO-PHARO.md) | where this is going, sized honestly |
-| [`manual/`](manual/) | **a book-length manual** on the system, the language and the database — `cd manual && make` |
+| [`manual/`](manual/) | **a book-length manual** on the system, the language, the database and JSON — `cd manual && make` |
 | [`Windows.md`](Windows.md) | building with MSVC, and what a real one found |
 | [`macOS.md`](macOS.md) | building with the same makefile Linux uses, and the four places Apple differs |
 | [`doc/LICENSING.md`](doc/LICENSING.md) | what may be redistributed, and what may not |
@@ -276,6 +292,12 @@ The tree is not all one licence, and the distinction matters:
   re-expressed, and JDBC was replaced with ODBC.
   [`lib/Database/PROVENANCE.md`](lib/Database/PROVENANCE.md) records every
   place the two now differ, and why.
+- **`lib/Json`** — ours and BSD 2-Clause, and *not* a port: the obvious source,
+  `org.kissweb.json`, is a fork of JSON-java and carries JSON.org's licence,
+  which adds "The Software shall be used for Good, not Evil" to MIT and is for
+  that reason not free software. Nothing could be taken, so nothing was; what
+  crossed is the shape of the API, and every line is written against RFC 8259.
+  [`lib/Json/PROVENANCE.md`](lib/Json/PROVENANCE.md) records it.
 - **`sources/`** — the 1983 class library from
   [`markbush/Smalltalk-80-Sources`](https://github.com/markbush/Smalltalk-80-Sources),
   MIT. Vendored and never edited.

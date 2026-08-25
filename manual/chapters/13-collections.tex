@@ -246,3 +246,12 @@ default, which is the lesson Java learned from \ct{Vector}. Use \ct{Mutex},
 \ct{Monitor} or \ct{SharedQueue} when a collection really is shared---see
 Chapter~\ref{ch:parallel}.
 \end{stwarn}
+
+Three classes in the library are the exception, and each says why in its own
+chapter: \ct{JSONObject} and \ct{JSONArray}
+(Chapter~\ref{ch:json}) each hold a \ct{Mutex}, because a JSON document is
+the object a request arrives as and is then handed to whatever answers it; and
+\ct{DbSchemaGraph} (Chapter~\ref{ch:database}) holds one because a schema is
+read once and given to every connection. They are exceptions on the same
+argument that makes the rule---the default is right, and these are the cases
+where the shared use is not rare but expected.

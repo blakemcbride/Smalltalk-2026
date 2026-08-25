@@ -28,5 +28,6 @@ Profile {
 	              '../lib/Graphics-Fixes', '../lib/Scope-Fixes', '../lib/Files-Fixes',
 	              '../lib/Scroll-Wheel', '../lib/Cursor-Keys', '../lib/Browser-Sorting', '../lib/Confirm-Nag', '../lib/Library-Tests',
 	              '../lib/Database', '../lib/Database-Tests',
+	              '../lib/Json', '../lib/Json-Tests',
 	              '../lib/Probe' ]
 }

@@ -1,0 +1,412 @@
+\chapter{JSON}
+\label{ch:json}
+
+\standfirst{Two containers, a parser that refuses more than it accepts, and
+numbers that are still exact when they come out the other side.}
+
+The \ct{Json} category reads and writes JSON: \ct{JSONObject} for a document's
+names and values, \ct{JSONArray} for its lists, \ct{JSONParser} to read text
+and \ct{JSONWriter} to write it. Everything raises \ct{JSONError} and nothing
+else.
+
+Most of the time you will not name any of those four. A String knows how to
+read itself and every object knows how to write itself:
+
+\begin{st}
+'{"name": "Ada", "born": 1815}' asJson
+\end{st}
+
+\begin{st}
+(Dictionary new at: 'k' put: 1; yourself) asJsonString
+\end{st}
+
+\ct{asJson} goes one way and \ct{asJsonString} the other, and they are
+\emph{not} opposites---which is worth getting straight before anything else,
+because both are defined on String. \ct{'[1,2]' asJson} is a \ct{JSONArray},
+because there the String is a document being read. \ct{'[1,2]' asJsonString}
+is the eight characters \ctp{"[1,2]"}, because there the String is a value
+being written.
+
+\section{Reading}
+
+\ct{asJson} answers whatever the text is: an object, an array, a number, a
+string, a boolean, or nil for \ct{null}. When you know which you want and
+would rather be told than find out later, ask for it:
+
+\begin{st}
+JSONObject fromString: aString.
+JSONArray fromString: aString.
+JSONParser parse: aString
+\end{st}
+
+The first two raise if the document is not that kind. Reading a name is
+\ct{at:}, and reading it with its type checked is one of seven accessors:
+
+\begin{st}
+| person |
+person := '{"name": "Ada", "born": 1815, "tags": ["maths"]}' asJson.
+person at: 'name'.                  "'Ada'"
+person stringAt: 'name'.            "'Ada' -- and raises if it is not text"
+person integerAt: 'born'.           "1815"
+person arrayAt: 'tags'.             "a JSONArray"
+(person arrayAt: 'tags') stringAt: 1
+\end{st}
+
+The seven are \ct{stringAt:}, \ct{numberAt:}, \ct{integerAt:}, \ct{floatAt:},
+\ct{booleanAt:}, \ct{objectAt:} and \ct{arrayAt:}. Each has an
+\ct{ifAbsent:} form, and each works the same way on a \ct{JSONArray} with an
+index instead of a name.
+
+\begin{stnote}[The wrong type raises]
+\ct{stringAt:} of the number 42 does not answer \ct{'42'}. Java's JSON
+libraries convert, and it is the kind of helpfulness that hides the sender's
+bug in the reader's code: a document that says \ct{42} and one that says
+\ct{"42"} are different documents, and the day one turns into the other is
+the day to be told. The error names the key, what was found and what was
+wanted.
+\end{stnote}
+
+\section{Names that are not there}
+
+\ct{at:} answers nil for a name the document does not have. That is
+deliberate and it is not what \ct{Dictionary} does: in JSON an absent field is
+how \emph{optional} is spelled, and a reader that raised for one would turn
+every read into \ct{at:ifAbsent:}.
+
+The cost is that a missing name and a name whose value is \ct{null} both
+answer nil. Two messages tell them apart and nothing else can:
+
+\begin{st}
+| document |
+document := '{"middleName": null}' asJson.
+document includesKey: 'middleName'.     "true"
+document isNullAt: 'middleName'.        "true"
+document includesKey: 'nickname'.       "false"
+document isNullAt: 'nickname'           "false"
+\end{st}
+
+The difference is real. \ct|{"middleName": null}| says the sender knows about
+middle names and this person has none. A document without the name says the
+sender never considered the question.
+
+\section{Writing}
+
+\ct{asJsonString} answers compact text---no space anywhere it is not inside a
+string---and \ct{asJsonStringIndent:} answers the indented form:
+
+\begin{st}
+aDocument asJsonString.
+aDocument asJsonStringIndent: 2.
+aDocument writeJsonOn: aStream
+\end{st}
+
+Both are on \ct{Object}, so nothing has to be built by hand first:
+
+\begin{st}
+#(1 2 3) asJsonString.                          "'[1,2,3]'"
+(1 to: 3) asJsonString.                         "'[1,2,3]'"
+'hello' asJsonString.                           "'""hello""'"
+(Dictionary new at: 'k' put: 1; yourself) asJsonString
+\end{st}
+
+A \ct{Dictionary} becomes an object, every other collection becomes an array,
+a \ct{Symbol} and a \ct{Character} become strings, and anything else raises.
+A class of your own joins in by implementing \ct{asJsonValue} and answering
+something that is already a JSON value.
+
+\begin{stnote}[Names keep their order]
+A \ct{JSONObject} writes its names in the order they were first put in. JSON
+says the order is insignificant and \ct{diff} says otherwise: a document read
+and written back comes out as it went in, and two runs of one program produce
+the same file. 1983's \ct{Dictionary} iterates in hash order, so this is
+something \ct{JSONObject} does rather than something it inherits.
+\end{stnote}
+
+\section{Numbers are exact}
+
+A JSON number with a point or an exponent reads as a \ct{Fraction}, not a
+\ct{Float}:
+
+\begin{st}
+'0.1' asJson.                   "1/10, and not 0.1"
+'0.1' asJson * 10.              "1 exactly"
+'1.5' asJson.                   "3/2"
+'1.5' asJson asJsonString       "'1.5'"
+\end{st}
+
+This is the same decision \ct{DECIMAL} columns get in
+Chapter~\ref{ch:database}, and JSON deserves it more, because JSON is what
+money travels in now. A tenth read through a Float is already not a tenth;
+the error surfaces as a penny three statements downstream rather than as a
+failure where it happened.
+
+A whole number answers an \ct{Integer} however it was written, because
+Smalltalk's \ct{Fraction} reduces:
+
+\begin{st}
+'3.0' asJson.                   "3"
+'1e2' asJson.                   "100"
+'3.0' asJson isKindOf: Integer  "true"
+\end{st}
+
+And a JSON integer has no width, so an identifier from a database sequence
+survives the trip:
+
+\begin{st}
+'123456789012345678901234567890' asJson
+\end{st}
+
+A C or a JavaScript reader would have lost its low digits, because both read
+every number through a double.
+
+When a Float is what you want, ask for one. \ct{floatAt:} is the lossy
+accessor and it is spelled out at every call site, which is the point:
+
+\begin{st}
+('{"rate": 0.1}' asJson) floatAt: 'rate'
+\end{st}
+
+\begin{stwarn}
+Writing a \ct{Float} back is not the same as writing what you read.
+\ct{0.1 asJsonString} is the shortest decimal that Float rounds to, which is
+\ctp{0.1}, and it is a different number from the one the document sent. Keep
+the Fraction as long as you can and convert at the edge where the answer is
+displayed.
+\end{stwarn}
+
+\section{What the parser refuses}
+
+The grammar is RFC 8259 and nothing else. It is stricter than the JSON
+libraries most people have met, and every one of these is something they
+accept:
+
+\begin{st}
+'{"a":1,}' asJson.      "a trailing comma"
+'{a:1}' asJson.         "an unquoted name"
+'{''a'':1}' asJson.     "a single-quoted string"
+'01' asJson.            "a leading zero"
+'banana' asJson.        "a bare word"
+'{"a":1} {"b":2}' asJson  "two documents where one was asked for"
+\end{st}
+
+All six raise. Leniency is not a kindness: it accepts a document that the
+next program in the pipeline will reject, and the complaint then arrives from
+somewhere that has never heard of this system. The sender of a malformed
+document is the party who can fix it, and the way to tell them is to refuse
+it.
+
+Two limits are refusals of a different kind. A document may not nest deeper
+than 512 levels, and an exponent may not exceed 4096---one so that forty
+thousand open brackets cannot exhaust the heap, the other so that a
+twelve-character document cannot ask this process for a billion digits. Both
+matter because the document usually arrives from somewhere else. The first
+can be raised deliberately:
+
+\begin{st}
+| parser |
+parser := JSONParser on: aVeryDeepDocument.
+parser maxDepth: 5000.
+parser parse
+\end{st}
+
+\section{When it goes wrong}
+
+Everything raises \ct{JSONError}, and every message from the parser carries
+the character position:
+
+\begin{st}
+[aString asJson]
+    on: JSONError
+    do: [:error | Transcript show: error messageText; cr]
+\end{st}
+
+\begin{st}
+'{"a":1,"b":}' asJson
+\end{st}
+
+\noindent answers, through the handler, \ctp{a value cannot begin with \$\} at
+character 12}. A document that goes wrong at character 4096 of 40000 is one
+somebody can open and look at; \ctp{invalid JSON} is not.
+
+\section{Text is UTF-8}
+
+A String in this system is bytes, so an escape has to become bytes.
+\ct{\u0041} answers the one byte that is \ct{A}, and \ct{\u00e9} answers the
+\emph{two} that are e-acute in UTF-8:
+
+\begin{st}
+'"\u00e9"' asJson size
+\end{st}
+
+\noindent is 2, not 1. A surrogate pair---which is how every emoji and a
+great deal of Asian text arrives---is read as the one character it encodes,
+and a lone surrogate is refused, because there is no encoding of one.
+
+Going the other way, a byte above 126 is written as itself. Turning it back
+into an escape would double the size of every document not written in English
+to no purpose, since the two spellings are the same text to every reader.
+
+\begin{stwarn}
+\ct{\n} in a document is a line feed, 10, and it stays one. This image's text
+panes break lines on the carriage return, 13, because that is what the Alto
+did---so JSON text displayed straight in a Paragraph shows its line feeds as
+control characters. Translating is the job of whatever puts the text on the
+screen or in a file, and \ct{lib/Files-Fixes} already does it for files.
+\end{stwarn}
+
+\section{Building a document}
+
+A \ct{JSONObject} is written into with \ct{at:put:}, which converts as it
+goes---a \ct{Dictionary} becomes an object, an \ct{Array} becomes an array,
+and anything with no JSON spelling is refused right there:
+
+\begin{st}
+| reply |
+reply := JSONObject new.
+reply at: 'ok' put: true.
+reply at: 'rows' put: #(1 2 3).
+reply at: 'error' put: nil.
+reply asJsonString
+\end{st}
+
+Refusing at the put rather than at the write is the whole reason the
+conversion is a message. In a web application those two moments are a request
+apart, and only the first one has the code that was wrong on the stack.
+
+A \ct{JSONArray} takes \ct{add:}, \ct{addAll:} and \ct{at:put:}, and answers
+to enough of the collection protocol to be useful:
+
+\begin{st}
+| numbers |
+numbers := '[1,2,3,4]' asJson.
+(numbers select: [:each | each odd]) asJsonString.    "'[1,3]'"
+numbers inject: 0 into: [:a :b | a + b].              "10"
+numbers asArray
+\end{st}
+
+\begin{stnote}[Two places it is not a collection]
+\ct{collect:} answers an \ct{OrderedCollection} and not a \ct{JSONArray},
+because the block may answer anything at all and a \ct{JSONArray} may hold
+only JSON values---\ct{collect: [:each | each class]} would otherwise raise
+on a perfectly reasonable block. And an index past the end raises rather than
+answering nil: an array has a length, and reading past it is a mistake in
+your arithmetic rather than an optional field.
+\end{stnote}
+
+\section{More than one process at once}
+
+A \ct{JSONObject} and a \ct{JSONArray} are safe to use from several processes
+at once, which on this system means several cores. That is not what the base
+collections do---Chapter~\ref{ch:contract} explains why an
+\ct{OrderedCollection} is deliberately unsynchronized---and it is a decision
+made for this one case: a JSON document is the object a request arrives as and
+is then handed to whatever answers it, so it is shared by nature rather than by
+accident.
+
+What you get is that no message loses anything. Two processes putting two names
+both keep them; two processes adding to one array both keep their elements; a
+process reading while another writes sees the value before or the value after.
+
+What you do not get is a sequence:
+
+\begin{st}
+document at: 'n' put: (document at: 'n') + 1
+\end{st}
+
+\noindent is a read and a write with a gap, and two processes doing it lose an
+increment---exactly as they would with any other object. Hold your own lock
+around a sequence that has to happen together. \ct{at:ifAbsentPut:} is provided
+because that particular sequence is common enough to be worth doing properly.
+
+\begin{stnote}[Your block never runs inside the lock]
+\ct{do:}, \ct{keysAndValuesDo:}, \ct{collect:} and \ct{select:} take a
+snapshot and then enumerate it, so your block sees the members as they were when
+it started---and so that \ct{json do: [:each | json at: ...]} works. A
+\ct{Mutex} here is not re-entrant, so a design that held the lock across your
+block would have made the most natural line somebody could write into a
+deadlock.
+\end{stnote}
+
+\begin{stwarn}
+An object with thousands of \emph{names} is quadratic to build, and it is not
+this package's fault: 1983's \ct{String>>hash} reads the first character, the
+second-to-last, and the length, so two hundred names like \ct{key1}..\ct{key200}
+share eleven hash values and the \ct{Dictionary} degenerates into one long
+chain. A few dozen names---what almost every document has---is unaffected. See
+\ct{doc/JSON.md}.
+\end{stwarn}
+
+\section{Streams}
+
+The parser and the writer both take a stream, so a document does not have to
+be a String first:
+
+\begin{st}
+JSONParser parse: aReadStream.
+aValue writeJsonOn: aWriteStream
+\end{st}
+
+A stream can also be read one document at a time, which is what a log file of
+them is:
+
+\begin{st}
+| parser |
+parser := JSONParser on: (ReadStream on: '[1] [2]').
+parser nextValue.       "the first array"
+parser nextValue        "the second"
+\end{st}
+
+\ct{parse} reads one value and insists the text ends there. \ct{nextValue}
+reads one value and leaves the stream where it stopped.
+
+\section{The whole protocol}
+
+\begin{center}
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Reading} & \\
+\ctp{aString asJson} & the value that text spells \\
+\ctp{JSONObject fromString:} & and it must be an object \\
+\ctp{JSONArray fromString:} & and it must be an array \\
+\ctp{JSONParser parse:} & a String or a stream \\
+\ctp{JSONParser on:} & a parser, for maxDepth: and nextValue \\
+\midrule
+\textbf{Writing} & \\
+\ctp{anObject asJsonString} & compact \\
+\ctp{anObject asJsonStringIndent:} & one member to a line \\
+\ctp{anObject writeJsonOn:} & straight onto a stream \\
+\ctp{anObject asJsonValue} & the conversion, for your own classes \\
+\midrule
+\textbf{Both containers} & \\
+\ctp{at:} \ctp{at:ifAbsent:} \ctp{at:put:} & by name, or by index \\
+\ctp{size} \ctp{isEmpty} \ctp{notEmpty} \ctp{do:} & \\
+\ctp{stringAt:} \ctp{numberAt:} \ctp{integerAt:} & each with an ifAbsent: form \\
+\ctp{floatAt:} \ctp{booleanAt:} & \\
+\ctp{objectAt:} \ctp{arrayAt:} & \\
+\midrule
+\textbf{JSONObject} & \\
+\ctp{includesKey:} \ctp{isNullAt:} & absent, or present and null \\
+\ctp{keys} \ctp{values} \ctp{keysAndValuesDo:} & in the order they were put \\
+\ctp{removeKey:} \ctp{at:ifAbsentPut:} \ctp{asDictionary} & \\
+\midrule
+\textbf{JSONArray} & \\
+\ctp{add:} \ctp{addAll:} \ctp{first} \ctp{last} & \\
+\ctp{removeAt:} \ctp{removeFirst} \ctp{removeLast} & \\
+\ctp{select:} \ctp{reject:} \ctp{collect:} \ctp{detect:ifNone:} & collect: answers an OrderedCollection \\
+\ctp{inject:into:} \ctp{asArray} \ctp{asOrderedCollection} & \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{Where it came from, and what it is not}
+
+The API is the shape \ct{org.kissweb.json} has, which is the shape every JSON
+library has had since 2002. None of the code is: that package is a fork of
+JSON-java and carries a licence adding \emph{The Software shall be used for
+Good, not Evil} to MIT, which is why it is not free software and why not one
+line of it could be taken. \ct{lib/Json/PROVENANCE.md} records what was kept
+of the shape, what was deliberately dropped, and why.
+
+What this package is not is a JSON \emph{pointer}, a JSON \emph{path}, or a
+converter to and from XML. Those exist in the Java and are not JSON; if they
+are ever wanted here they belong in packages of their own.

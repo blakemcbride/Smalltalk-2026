@@ -189,7 +189,8 @@ Forbidden. Initialise eagerly in a class-side \ct{initialize}.
 results add: x                            "corrupts it"
 \end{st}
 The base collections are not synchronised. Use a \ct{SharedQueue}, or a
-\ct{Mutex}, or one collection per worker.
+\ct{Mutex}, or one collection per worker. \ct{JSONObject}, \ct{JSONArray}
+and \ct{DbSchemaGraph} are the three that guard themselves.
 \end{stwarn}
 
 \begin{stwarn}[Raising priority for atomicity]

@@ -156,6 +156,52 @@ primary key is itself changed must still be found by its old key, or the
 `UPDATE` matches nothing — or matches a different row that has since taken the
 new value.
 
+## What is shared, and what guards it
+
+A `DbConnection` belongs to one process. That is the design and it is what makes
+this parallel rather than merely concurrent — but "one per process" is a
+convention a caller can break, so the connection's caches (primary keys, column
+descriptions, whether a table exists) and its list of open commands are guarded
+by a `Mutex` anyway. A corrupted `Dictionary` is a far worse way to discover the
+convention was broken than a slow one.
+
+**The schema graph is genuinely shared**, and it is the only object here that
+is. Reading a large schema's foreign keys is the slowest thing a connection
+does, so `DbConnection>>schemaGraph:` invites an application to read it once and
+hand the same `DbSchemaGraph` to every connection it opens — which means N
+workers walking one `Dictionary` of `OrderedCollection`s on N cores. Every
+message that touches its adjacency now takes the graph's own `Mutex`.
+
+Two details of that are worth stating, because both are decisions rather than
+mechanics:
+
+- **`joinPathFor:root:` holds the lock across the whole search**, not per
+  lookup. A path is only an answer if the graph did not change while it was
+  being found: half a path through the schema as it was and half through the
+  schema as it became connects nothing in particular, and would be produced
+  with no error at all. The search is bounded by the size of the schema and runs
+  no block of the caller's, so a query being built on another core waits a
+  moment and nothing worse.
+- **The build of the graph happens outside the lock.** `DbSchemaGraph
+  class>>fromConnection:` asks the connection for its tables and their imported
+  keys, and those take the connection's lock; `Mutex` is not re-entrant, so
+  building inside it would report a deadlock rather than deadlock. The graph is
+  built unguarded and installed under the lock, and whoever arrives second uses
+  the one already installed.
+
+`DbConnection>>schemaGraph` used to be `schemaGraph isNil ifTrue: [schemaGraph
+:= ...]`, which is check-then-act — the one pattern `doc/CONCURRENCY.md` will
+not have. Two processes reaching it together each read the whole schema, and one
+of the two graphs was then dropped along with everything that had captured it: a
+graph nothing else will ever add an edge to, and a wrong join found much later.
+
+`tests/unit/test_parallel_db.c` is the gate: 31 threads add 100 foreign keys
+each to one graph and the table and edge counts afterwards have exactly one
+right answer, then all 31 search it at once. Both were checked against a build
+with the locks taken out, and neither answered a wrong number — the run *hung*.
+1983's `HashedCollection` finds a key by scanning for it or for a nil slot, and
+a `Dictionary` whose invariants two writers have broken can have neither.
+
 ## Injection
 
 Not one value written through this package is ever pasted into SQL text. Every
@@ -249,7 +295,7 @@ only test here that runs the database from real worker threads. It skips
 cleanly without ODBC or without a driver.
 
 It exists because writing this document exposed a gap: `st80 -tests` starts no
-worker pool, so the 129 tests below fork *green* processes, `WORKER_enter_native`
+worker pool, so the tests below fork *green* processes, `WORKER_enter_native`
 returns immediately with no worker to park, and the parking path — the entire
 reason a query does not stall every core — was never once taken.
 
@@ -267,7 +313,8 @@ checked by deleting the parking and re-running:
 The first phase stays green either way — worth knowing, because it is the phase
 that *looks* like the test.
 
-**`lib/Database-Live-Tests`** — 129 tests, in `profiles/database-live.profile`,
+**`lib/Database-Live-Tests`** — 25 tests of its own, in
+`profiles/database-live.profile` (228 with everything the profile inherits),
 run deliberately:
 
 ```

@@ -68,7 +68,10 @@ This is why the class library has to be audited rather than inherited.
   \ct{OrderedCollection}, \ct{Dictionary}, \ct{Set} and \ct{Bag} are
   \textbf{not} synchronised. This follows Java's post-\ct{Vector} lesson:
   paying for a lock on every access to serve the rare shared case is the wrong
-  default. Use the shared variants, or guard them yourself.
+  default. Use the shared variants, or guard them yourself. A class whose
+  shared use is not rare but expected may pay, and three do:
+  \ct{JSONObject}, \ct{JSONArray} and \ct{DbSchemaGraph} each hold a
+  \ct{Mutex} and say so in their class comments.
 \item \textbf{\ct{Transcript} interleaving.} Output from concurrent processes
   may interleave unless you hold the Transcript's monitor across an entry.
 \end{enumerate}

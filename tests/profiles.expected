@@ -57,17 +57,28 @@
 # wrote the real table name in its ON clause, referring to a table the FROM
 # clause never introduced.
 #
+# lib/Json-Tests adds 101, and every number below moved by exactly 101 for the
+# same reason the database's 43 did: they all require st2026.  Something over
+# a third of the 99 are documents the parser must REFUSE -- a trailing comma,
+# an unquoted name, a bare word, a leading zero, a lone surrogate, a second
+# document after the first.  Those are the ones with anything to catch.  This
+# package is deliberately stricter than the org.json that Kiss carries, and
+# strictness is invisible to every test of a valid document: a reader that
+# quietly accepted all six would pass the rest of the suite.
+#
 # The half that DOES need a database is not counted here and must not be:
 # lib/Database-Live-Tests needs an ODBC driver manager and a driver, which a
 # machine building this system cannot be assumed to have.  A suite that
 # cannot run where it is checked would report a perfect score every time,
 # which is the exact shape of failure this file exists to catch.  It has a
-# profile of its own -- profiles/database-live.profile, 129 tests through
-# SQLite -- and is run deliberately.
+# profile of its own -- profiles/database-live.profile, 228 tests through
+# SQLite -- and is run deliberately.  228 rather than the 129 that used to be
+# written here for the same reason every row above moved: the profile requires
+# st2026 and so inherits its suites, and lib/Json-Tests added 99 of them.
 #
 # profile               run  passed
-st2026                  104  104
-pharo-announcements     135  135
-pharo-time              725  725
-pharo-weak              124  124
-pharo-collections       561  561
+st2026                  205  205
+pharo-announcements     236  236
+pharo-time              826  826
+pharo-weak              225  225
+pharo-collections       662  662

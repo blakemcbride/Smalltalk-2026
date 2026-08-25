@@ -29,7 +29,7 @@ it out, and hand it back with schemaGraph:.
 Class {
 	#name : 'DbSchemaGraph',
 	#superclass : 'Object',
-	#instVars : [ 'adjacency' ],
+	#instVars : [ 'adjacency', 'lock' ],
 	#category : 'Database'
 }
 
@@ -59,7 +59,8 @@ DbSchemaGraph class >> fromConnection: aConnection [
 
 { #category : 'initialization' }
 DbSchemaGraph >> initialize [
-	adjacency := Dictionary new
+	adjacency := Dictionary new.
+	lock := Mutex new
 ]
 
 { #category : 'building' }
@@ -72,21 +73,30 @@ DbSchemaGraph >> addRow: aRecord [
 	 two-column key becomes two one-column keys, each of which is wrong and
 	 both of which look plausible."
 
-	| fromTable toTable existing |
+	| fromTable toTable fromColumn toColumn |
 	fromTable := (aRecord at: 'FKTABLE_NAME') asLowercase.
 	toTable := (aRecord at: 'PKTABLE_NAME') asLowercase.
-	existing := self edgeBetween: fromTable and: toTable.
-	existing isNil
-		ifTrue:
-			[self addForeignKey: (DbForeignKey
-				from: fromTable columns: (Array with: (aRecord at: 'FKCOLUMN_NAME'))
-				to: toTable columns: (Array with: (aRecord at: 'PKCOLUMN_NAME')))]
-		ifFalse:
-			[self replace: existing with: (DbForeignKey
-				from: fromTable
-				columns: existing fromColumns , (Array with: (aRecord at: 'FKCOLUMN_NAME'))
-				to: toTable
-				columns: existing toColumns , (Array with: (aRecord at: 'PKCOLUMN_NAME')))]
+	fromColumn := aRecord at: 'FKCOLUMN_NAME'.
+	toColumn := aRecord at: 'PKCOLUMN_NAME'.
+	"The look and the merge are ONE critical section.  As two, the second
+	 row of a composite key can find no edge because the first row's edge has
+	 not been added yet, and a two-column key becomes two one-column keys --
+	 which is the same wrong answer this method was written to avoid, arrived
+	 at from the other direction."
+	lock critical: [
+		| existing |
+		existing := self basicEdgeBetween: fromTable and: toTable.
+		existing isNil
+			ifTrue:
+				[self basicAddForeignKey: (DbForeignKey
+					from: fromTable columns: (Array with: fromColumn)
+					to: toTable columns: (Array with: toColumn))]
+			ifFalse:
+				[self basicReplace: existing with: (DbForeignKey
+					from: fromTable
+					columns: existing fromColumns , (Array with: fromColumn)
+					to: toTable
+					columns: existing toColumns , (Array with: toColumn))]]
 ]
 
 { #category : 'building' }
@@ -106,29 +116,56 @@ DbSchemaGraph >> addForeignKey: anEdge [
 	"Recorded at BOTH ends, because a path may be walked in either
 	 direction.  A key from employee to department is as much a way of
 	 reaching employee from department as the reverse, and a graph that only
-	 recorded the declaring end would find half the joins that exist."
+	 recorded the declaring end would find half the joins that exist.
 
-	(self edgesFrom: anEdge fromTable) add: anEdge.
+	 Both ends under one lock, so that no reader ever sees an edge recorded
+	 at one end and not the other -- which is a graph in which the join
+	 exists in one direction and not the other, for as long as the window
+	 lasts."
+
+	^lock critical: [self basicAddForeignKey: anEdge]
+]
+
+{ #category : 'private' }
+DbSchemaGraph >> basicAddForeignKey: anEdge [
+	"Send only with the lock held."
+
+	(self basicEdgesFrom: anEdge fromTable) add: anEdge.
 	anEdge fromTable = anEdge toTable ifFalse:
-		[(self edgesFrom: anEdge toTable) add: anEdge].
+		[(self basicEdgesFrom: anEdge toTable) add: anEdge].
 	^anEdge
 ]
 
 { #category : 'private' }
-DbSchemaGraph >> replace: anEdge with: aNewEdge [
-	(self edgesFrom: anEdge fromTable) remove: anEdge ifAbsent: [nil].
-	(self edgesFrom: anEdge toTable) remove: anEdge ifAbsent: [nil].
-	self addForeignKey: aNewEdge
+DbSchemaGraph >> basicReplace: anEdge with: aNewEdge [
+	"Send only with the lock held."
+
+	(self basicEdgesFrom: anEdge fromTable) remove: anEdge ifAbsent: [nil].
+	(self basicEdgesFrom: anEdge toTable) remove: anEdge ifAbsent: [nil].
+	self basicAddForeignKey: aNewEdge
 ]
 
 { #category : 'private' }
-DbSchemaGraph >> edgesFrom: aTableName [
+DbSchemaGraph >> basicEdgesFrom: aTableName [
+	"The edge list for that table, made if it is not there.
+
+	 Send only with the lock held -- and note that this READS by adding,
+	 which is why it cannot be a public accessor: a caller asking an empty
+	 graph what it has changes it."
+
 	^adjacency at: aTableName asLowercase
 		ifAbsent: [adjacency at: aTableName asLowercase put: OrderedCollection new]
 ]
 
 { #category : 'private' }
 DbSchemaGraph >> edgeBetween: aTable and: anotherTable [
+	^lock critical: [self basicEdgeBetween: aTable and: anotherTable]
+]
+
+{ #category : 'private' }
+DbSchemaGraph >> basicEdgeBetween: aTable and: anotherTable [
+	"Send only with the lock held."
+
 	(adjacency at: aTable asLowercase ifAbsent: [^nil]) do:
 		[:each |
 		(each fromTable = aTable asLowercase
@@ -139,22 +176,27 @@ DbSchemaGraph >> edgeBetween: aTable and: anotherTable [
 
 { #category : 'accessing' }
 DbSchemaGraph >> tableNames [
-	^adjacency keys
+	^lock critical: [adjacency keys]
 ]
 
 { #category : 'accessing' }
 DbSchemaGraph >> includesTable: aTableName [
-	^adjacency includesKey: aTableName asLowercase
+	^lock critical: [adjacency includesKey: aTableName asLowercase]
 ]
 
 { #category : 'accessing' }
 DbSchemaGraph >> foreignKeysOf: aTableName [
-	^(adjacency at: aTableName asLowercase ifAbsent: [OrderedCollection new]) asArray
+	"An Array, and therefore a copy: a caller holding my own edge list could
+	 read it while another process is adding to it."
+
+	^lock critical: [
+		(adjacency at: aTableName asLowercase
+			ifAbsent: [OrderedCollection new]) asArray]
 ]
 
 { #category : 'accessing' }
 DbSchemaGraph >> isEmpty [
-	^adjacency isEmpty
+	^lock critical: [adjacency isEmpty]
 ]
 
 { #category : 'pathfinding' }
@@ -179,28 +221,57 @@ DbSchemaGraph >> joinPathFor: tableNames root: rootTableOrNil [
 	joinEdges := OrderedCollection new.
 	remaining := (tables reject: [:each | each = root]) asOrderedCollection.
 
-	[remaining isEmpty] whileFalse:
-		[best := nil.
-		 remaining do:
-			[:target |
-			path := self shortestPathFrom: connected to: target.
-			(path notNil and: [best isNil or: [path size < best size]])
-				ifTrue: [best := path]].
-		 best isNil ifTrue:
-			[^DbError signal: 'no foreign key path connects ',
-				remaining asArray printString, ' to ', connected asArray printString].
-		 best do:
-			[:edge |
-			(joinEdges includes: edge) ifFalse: [joinEdges add: edge].
-			(connected includes: edge fromTable) ifFalse: [connected add: edge fromTable].
-			(connected includes: edge toTable) ifFalse: [connected add: edge toTable]].
-		 remaining := (remaining reject: [:each | connected includes: each])
-			asOrderedCollection].
-	^joinEdges
+	"The whole search under one lock, and not a lock per lookup.
+
+	 A join path is only an answer if the graph did not change while it was
+	 being found: half a path through the schema as it was and half through
+	 the schema as it became is a set of joins that connects nothing in
+	 particular, and it would be produced without any error.  The search is
+	 bounded by the size of the schema and runs no block of the caller's, so
+	 holding the lock across it costs a query that is being built at the same
+	 moment on another core a short wait and nothing else.
+
+	 Everything inside sends basicShortestPathFrom:to:, never the public one:
+	 Mutex is not re-entrant and detects re-entry by raising, so a send back
+	 through the guarded door would report a deadlock rather than deadlock --
+	 which is better, and is still a bug."
+
+	^lock critical: [
+		[remaining isEmpty] whileFalse:
+			[best := nil.
+			 remaining do:
+				[:target |
+				path := self basicShortestPathFrom: connected to: target.
+				(path notNil and: [best isNil or: [path size < best size]])
+					ifTrue: [best := path]].
+			 best isNil ifTrue:
+				[^DbError signal: 'no foreign key path connects ',
+					remaining asArray printString, ' to ',
+					connected asArray printString].
+			 best do:
+				[:edge |
+				(joinEdges includes: edge) ifFalse: [joinEdges add: edge].
+				(connected includes: edge fromTable)
+					ifFalse: [connected add: edge fromTable].
+				(connected includes: edge toTable)
+					ifFalse: [connected add: edge toTable]].
+			 remaining := (remaining reject: [:each | connected includes: each])
+				asOrderedCollection].
+		joinEdges]
 ]
 
 { #category : 'pathfinding' }
 DbSchemaGraph >> shortestPathFrom: sourceTables to: targetTable [
+	"The guarded door.  joinPathFor:root: does not come through it -- it
+	 already holds the lock -- and nothing else in this package sends this at
+	 all; it is here because a caller with a graph in hand may reasonably
+	 ask."
+
+	^lock critical: [self basicShortestPathFrom: sourceTables to: targetTable]
+]
+
+{ #category : 'private' }
+DbSchemaGraph >> basicShortestPathFrom: sourceTables to: targetTable [
 	"Breadth first from every source at once, answering the edges to the
 	 target, or nil if it cannot be reached.
 
@@ -240,7 +311,9 @@ DbSchemaGraph >> shortestPathFrom: sourceTables to: targetTable [
 
 { #category : 'printing' }
 DbSchemaGraph >> printOn: aStream [
-	aStream nextPutAll: 'a DbSchemaGraph('; print: adjacency size;
+	| tables |
+	tables := lock critical: [adjacency size].
+	aStream nextPutAll: 'a DbSchemaGraph('; print: tables;
 		nextPutAll: ' tables)'
 ]
 
@@ -259,11 +332,17 @@ DbSchemaGraph >> storeOn: aStream [
 	 other makes the whole file a single line, and a graph read back that
 	 way has one malformed edge in it instead of all of them."
 
-	| written |
+	| written tables edgesOf |
 	written := Set new.
-	(adjacency keys asSortedCollection) do:
+	"A snapshot first, so that the file is the graph as it was at one instant
+	 rather than a walk through one that is still being added to."
+	lock critical: [
+		tables := adjacency keys asSortedCollection.
+		edgesOf := Dictionary new.
+		tables do: [:each | edgesOf at: each put: (adjacency at: each) asArray]].
+	tables do:
 		[:table |
-		(adjacency at: table) do:
+		(edgesOf at: table) do:
 			[:edge |
 			(written includes: edge) ifFalse:
 				[written add: edge.
