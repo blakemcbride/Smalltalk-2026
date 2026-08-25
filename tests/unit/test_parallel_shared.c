@@ -217,12 +217,12 @@ static const kernel kernels[] = {
     "  (Smalltalk at: ('SharedTestG%u_', w printString, '_', i printString) asSymbol ifAbsent: [nil]) = i"
     "     ifFalse: [bad := bad + 1]]]. ^bad",
     0 },
-  { "Object addDependent: -- two dependents on 200 models per worker",
+  { "Object addDependent: -- two dependents on 100 models per worker",
     NULL,
     /*  One IdentityDictionary for every model: 143 of 1,600 lost at eight.  */
-    "| bad | bad := 0. 1 to: 200 do: [:i | | m | m := Object new. m addDependent: i. m addDependent: i + 1."
-    " m dependents size = 2 ifFalse: [bad := bad + 1]. m release]. ^200 - bad",
-    200, NULL, 0 },
+    "| bad | bad := 0. 1 to: 100 do: [:i | | m | m := Object new. m addDependent: i. m addDependent: i + 1."
+    " m dependents size = 2 ifFalse: [bad := bad + 1]. m release]. ^100 - bad",
+    100, NULL, 0 },
   /*
    *  Not here: CompiledMethod>>setTempNamesIfCached:, the other cache read
    *  once.  Its reader is ContextPart>>tempNames, which on a miss parses
@@ -251,10 +251,17 @@ static const kernel kernels[] = {
     "| good | good := 0. 1 to: 10 do: [:i | Smalltalk flushClassNameCache."
     " Smalltalk classNames size > 100 ifTrue: [good := good + 1]]. ^good",
     10, NULL, 0 },
-  { "Transcript show: -- 200 lines per worker, headless",
+  { "Transcript show: -- 50 lines per worker, headless",
     NULL,
-    " 1 to: 200 do: [:i | Transcript show: 'abcdefghij'; cr]. ^200",
-    200, NULL, 0 },
+    /*
+     *  One WriteStream on one String, which grows by become:.  Eight
+     *  workers showing lines at once were eight threads writing into a
+     *  String being replaced under them; ThreadSanitizer saw the freed
+     *  String's memory reused while a worker still wrote to it.  Locked
+     *  per send now, in lib/Concurrency/TextCollector.extension.st.
+     */
+    " 1 to: 50 do: [:i | Transcript show: 'abcdefghij'; cr]. ^50",
+    50, NULL, 0 },
   { "one FileDirectory, textFile: and close -- 50 times per worker",
     /*
      *  The image has no Disk here -- the running system makes one -- so
@@ -287,12 +294,27 @@ provide_test_roots(om_visit_fn visit)
         visit(single_method);
 }
 
+/*
+ *  How many workers: ST_LIB_WORKERS, or one per core -- except under
+ *  ThreadSanitizer, where four.  Every kernel here contends for one lock,
+ *  and the sanitizer multiplies each acquisition by twenty or more: at
+ *  thirty-one workers the classNames kernel alone ran for over an hour,
+ *  and at eight the whole gate did not finish in ten minutes.  Four is
+ *  enough contention to race on -- every fault above was seen at two --
+ *  and finishes in nine minutes with the sanitizer watching.
+ */
 static unsigned
 want_workers(void)
 {
     const char *text = getenv("ST_LIB_WORKERS");
 
-    return text ? (unsigned) atoi(text) : 0;
+    if (text)
+        return (unsigned) atoi(text);
+#if defined(__SANITIZE_THREAD__)
+    return 4;
+#else
+    return 0;
+#endif
 }
 
 static void

@@ -1,14 +1,16 @@
 "
 The locks the 1983 library never had.
 
-Five pieces of state in sources/ are shared by the whole image and written
+Six pieces of state in sources/ are shared by the whole image and written
 without any lock, which was correct under a scheduler that never preempts a
 process by one of the same priority and is wrong on cores: the Symbol table
 (Symbol class>>intern:), the system dictionary (Smalltalk at:put:), the
 dependents table (Object>>addDependent:, one IdentityDictionary for every
 model in the image), the list of open directories (FileDirectory's
-ExternalReferences), and the method dictionaries (Behavior>>addSelector:
-withMethod:, one per class but written by every worker that compiles).  Each one lost entries when real workers wrote to it
+ExternalReferences), the method dictionaries (Behavior>>addSelector:
+withMethod:, one per class but written by every worker that compiles), and
+the Transcript's entry stream (TextCollector>>nextPutAll:, one WriteStream
+on one String, which grows by become: under whoever is writing to it).  Each one lost entries when real workers wrote to it
 together -- two workers interning the same new string made two Symbols,
 which is the worst of them, because a Symbol that is not identical to
 itself cannot be found as a selector.
@@ -40,7 +42,8 @@ Class {
 		'Files',
 		'Globals',
 		'Methods',
-		'Symbols'
+		'Symbols',
+		'Transcript'
 	],
 	#category : 'Concurrency'
 }
@@ -52,7 +55,14 @@ LibraryLocks class >> initialize [
 	Globals := Mutex new.
 	Dependents := Mutex new.
 	Files := Mutex new.
-	Methods := Mutex new
+	Methods := Mutex new.
+	Transcript := Mutex new
+]
+
+{ #category : 'holding' }
+LibraryLocks class >> holdingTranscript: aBlock [
+	"Evaluate aBlock holding the lock on the Transcript's entry stream."
+	^Transcript isNil ifTrue: [aBlock value] ifFalse: [Transcript critical: aBlock]
 ]
 
 { #category : 'holding' }

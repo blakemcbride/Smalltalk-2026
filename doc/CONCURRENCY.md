@@ -68,8 +68,11 @@ for each piece of shared state, choose **serialize** (lock it), **replicate**
    shared case is the wrong default. Use the explicitly shared variants, or
    guard them yourself.
 
-4. **`Transcript` interleaving.** Output from concurrent processes may
-   interleave unless you hold the Transcript's monitor across an entry.
+4. **`Transcript` interleaving.** One send — one `show:`, one `cr` — is
+   atomic, since the Transcript's entry stream is written under a lock
+   (`lib/Concurrency/TextCollector.extension.st`); lines from different
+   processes arrive in whatever order they were sent. Build a line in a
+   `WriteStream` and `show:` it in one send if it must stay together.
 
 ## What replaces it
 
@@ -275,8 +278,9 @@ kept. What it found in the library, and what was done:
 | `CompiledMethod>>setTempNamesIfCached:`, `SystemDictionary>>classNames` — a cache read twice | could tear; not seen to | replicate: read once | `lib/Concurrency`, `lib/System` |
 | `FileDirectory` — `ExternalReferences` | add and remove with nothing between | serialize | `lib/Files-Fixes/FileDirectory.extension.st` |
 | `Behavior>>addSelector:withMethod:` — a method dictionary | not exercised; the same find-then-write | serialize the write | `lib/Concurrency/Behavior.extension.st` |
+| `Transcript` — one `WriteStream` on one `String`, grown by `become:` | eight workers' lines in each other's bytes; ThreadSanitizer saw the freed `String` reused under a writer | serialize each send | `lib/Concurrency/TextCollector.extension.st` |
 
-`LibraryLocks` holds the five locks, one `Mutex` each, in `lib/Concurrency`,
+`LibraryLocks` holds the six locks, one `Mutex` each, in `lib/Concurrency`,
 because a class in `sources/` cannot be given a class variable from `lib/`.
 Its `holding...:` methods run their block unlocked while the lock does not yet
 exist — that is the bootstrap, single-threaded by construction — and never

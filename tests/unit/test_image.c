@@ -196,8 +196,12 @@
  *  activePriority, terminateActive and yield asking THIS worker; Delay's
  *  nine, for a timing process that tolerates a stale signal; and
  *  DelayTest's four.
+ *
+ *  1430: TextCollector's eleven writers under a Transcript lock, and the
+ *  holdingTranscript: that gives it to them -- ThreadSanitizer watched
+ *  eight workers write into one String while become: replaced it.
  */
-#define LIB_METHODS             1418
+#define LIB_METHODS             1430
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -2207,7 +2211,7 @@ test_browsing(void)
      *  the source pointer is 22 bits and silently truncated once, and a
      *  size that stops growing is how that would show.
      */
-    check_integer("(SourceFiles at: 1) contents size", 1577474);
+    check_integer("(SourceFiles at: 1) contents size", 1579179);
 }
 
 /*

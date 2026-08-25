@@ -11,6 +11,7 @@
 #include "st_sched.h"
 #include "worker.h"
 #include "st_port.h"
+#include "st_atomic.h"
 #include "st_odbc.h"
 
 #include <stdio.h>
@@ -1589,7 +1590,16 @@ static int  posix_errno;
  *  cannot be expected to know its file handles died.
  */
 #define POSIX_MAX_FD    4096
-static unsigned char    fd_is_ours[POSIX_MAX_FD];
+/*
+ *  Atomic, not because two workers ever own one descriptor -- the kernel
+ *  hands each number out once -- but because the number comes back: a
+ *  worker closing descriptor 5 clears its byte, the kernel gives 5 to the
+ *  next open on another worker, and that worker sets the same byte with
+ *  nothing but the kernel's ordering between the two.  ThreadSanitizer
+ *  cannot see that ordering and reported it, correctly, as a race; the
+ *  atomic says what the ordering already guaranteed.
+ */
+static st_atomic_int    fd_is_ours[POSIX_MAX_FD];
 
 /*  A Smalltalk String from C, and the reverse.  */
 static st_oop
@@ -1641,7 +1651,7 @@ posix_fd_of(st_oop file)
     {
         long    n = (long) OM_int_value(fd);
 
-        if (n < 0 || n >= POSIX_MAX_FD || !fd_is_ours[n])
+        if (n < 0 || n >= POSIX_MAX_FD || !ST_load_relaxed(&fd_is_ours[n]))
             return -1;                  /*  not ours: from another life  */
         return (int) n;
     }
@@ -1658,7 +1668,7 @@ posix_own(int fd)
         posix_errno = EMFILE;
         return -1;
     }
-    fd_is_ours[fd] = 1;
+    ST_store_relaxed(&fd_is_ours[fd], 1);
     return fd;
 }
 
@@ -1666,7 +1676,7 @@ static void
 posix_disown(int fd)
 {
     if (fd >= 0 && fd < POSIX_MAX_FD)
-        fd_is_ours[fd] = 0;
+        ST_store_relaxed(&fd_is_ours[fd], 0);
 }
 
 /*

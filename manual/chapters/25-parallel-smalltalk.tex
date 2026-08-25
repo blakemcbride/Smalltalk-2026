@@ -220,8 +220,9 @@ Read it once into a temporary and use that. 1983's \ct{TempNameCache} and
 \begin{stnote}
 The 1983 structures that every program shares are guarded for you:
 \ct{Symbol intern:}, \ct{Smalltalk at:put:} and its readers, the dependents
-table behind \ct{addDependent:}, the list of open directories and every method
-dictionary all take a lock from \ct{LibraryLocks}. \ct{Compiler evaluate:}
+table behind \ct{addDependent:}, the list of open directories, every method
+dictionary and each send to the \ct{Transcript} all take a lock from
+\ct{LibraryLocks}. \ct{Compiler evaluate:}
 runs the compiled method without installing it, \ct{Processor yield} is a
 primitive, and a \ct{Delay} survives a stale timer signal. Each was measured
 losing data on eight workers before it was fixed; \ct{doc/CONCURRENCY.md} has

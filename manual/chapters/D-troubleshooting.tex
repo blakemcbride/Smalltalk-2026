@@ -129,8 +129,10 @@ st80: N input events were dropped
   worker was holding. On one worker it usually means what it says. On many it
   once meant a process the scheduler had lost, and the line under it is the
   evidence to bring.
-\item[The Transcript output is interleaved] Expected. Build the line in a
-  \ct{WriteStream} and \ct{show:} it in one send, or hold the monitor.
+\item[The Transcript output is interleaved] Between sends, expected: lines
+  from different workers arrive in the order they were sent. Within one
+  send it cannot be---each \ct{show:} holds the Transcript's lock---so build
+  the line in a \ct{WriteStream} and \ct{show:} it once.
 \item[\ctp{Processor workerCount} answers 1] Expected: neither
   \ct{-bootstrap -eval} nor \ct{-run} starts the worker pool today. The
   parallel test suites and \ct{make bench} do.
