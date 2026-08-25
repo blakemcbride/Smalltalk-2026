@@ -170,8 +170,14 @@
  *  1362 is another replacement: lib/Collections-Protocol's String>>hash,
  *  primitive 223 over every character, where 1983's read three of them
  *  and gave 'key1'..'key200' eleven distinct values.
+ *
+ *  1369: OrderedCollection>>removeIndex: now takes the index at: takes and
+ *  answers the element, where 1983's took an index into the Array behind
+ *  the collection and was private in all but name.  Three replaced
+ *  (removeIndex:, remove:ifAbsent:, removeAllSuchThat:), two added
+ *  (removeAt:, and removeBasicIndex: for the 1983 body), and two tests.
  */
-#define LIB_METHODS             1362
+#define LIB_METHODS             1369
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -2064,7 +2070,7 @@ test_sunit(void)
      *  runs inside the lock, so `json do: [:each | json at: ...]' works
      *  rather than reporting a re-entered Mutex.
      */
-    check_integer("TestCase allTests tests size", 205);
+    check_integer("TestCase allTests tests size", 207);
 
     /*
      *  And the three buckets, from the outside as well as from within
@@ -2181,7 +2187,7 @@ test_browsing(void)
      *  the source pointer is 22 bits and silently truncated once, and a
      *  size that stops growing is how that would show.
      */
-    check_integer("(SourceFiles at: 1) contents size", 1559251);
+    check_integer("(SourceFiles at: 1) contents size", 1561905);
 }
 
 /*

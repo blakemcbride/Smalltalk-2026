@@ -192,37 +192,24 @@ JSONArray >> addAll: aCollection [
 JSONArray >> removeAt: anIndex [
 	"The value that was at that index, which is now shorter by one.
 
-	 A removal from the middle rebuilds, rather than reaching for
-	 OrderedCollection>>removeIndex:, which is not this message however much
-	 it reads like it.  1983 keeps an OrderedCollection's elements in the
-	 middle of a larger Array, and removeIndex: takes an index into THAT
-	 array: it is private and both of its callers walk from firstIndex.
-	 Handed a public index it removes an element from somewhere else
-	 entirely -- `removeAt: 2' on [1,2,3] answered 2, which is right, and
-	 left [2,3] behind, which is not.
+	 The work is OrderedCollection>>removeIndex:, and it is worth saying
+	 which one.  1983's took an index into the Array behind the collection,
+	 not the index a caller has -- `removeAt: 2' on [1,2,3] answered 2,
+	 which is right, and left [2,3] behind, which is not -- and the first
+	 version of this method rebuilt the collection element by element to
+	 stay away from it.  lib/Collections-Protocol now gives removeIndex:
+	 the meaning its name has, and this is a caller of it (doc/JSON.md).
 
-	 The ends stay cheap because removeFirst and removeLast are the
-	 collection's own.  From the middle it is a copy, which is what a
-	 removal from the middle of a sequence costs anywhere."
+	 The bounds check is here rather than left to the collection so that
+	 the error names the JSONArray and the index, under the lock and
+	 without an exception crossing it."
 
 	| found |
 	anIndex isInteger ifFalse: [^self outOfRange: anIndex].
 	found := mutex critical: [
 		(anIndex between: 1 and: elements size)
 			ifFalse: [mutex]
-			ifTrue: [ | value rebuilt |
-				value := elements at: anIndex.
-				anIndex = 1
-					ifTrue: [elements removeFirst]
-					ifFalse: [anIndex = elements size
-						ifTrue: [elements removeLast]
-						ifFalse: [
-							rebuilt := OrderedCollection new: elements size.
-							elements doWithIndex: [:each :index |
-								index = anIndex
-									ifFalse: [rebuilt addLast: each]].
-							elements := rebuilt]].
-				value]].
+			ifTrue: [elements removeIndex: anIndex]].
 	found == mutex ifTrue: [^self outOfRange: anIndex].
 	^found
 ]

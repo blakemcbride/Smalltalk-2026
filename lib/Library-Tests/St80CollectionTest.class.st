@@ -46,6 +46,43 @@ St80CollectionTest >> testOrderedCollectionRemove [
 ]
 
 { #category : 'ordered' }
+St80CollectionTest >> testOrderedCollectionRemoveIndex [
+	"removeIndex: takes the index at: takes, and answers what it removed.
+	 1983's took an index into the Array behind the collection and answered
+	 the collection; `removeIndex: 2' on 1, 2, 3 left 2 and 3."
+	| c |
+	c := OrderedCollection withAll: #(1 2 3).
+	self assert: (c removeIndex: 2) equals: 2.
+	self assert: c asArray equals: #(1 3).
+	self should: [c removeIndex: 3] raise: Error.
+	self should: [c removeIndex: 0] raise: Error.
+	self assert: c asArray equals: #(1 3).
+	self assert: (c removeAt: 1) equals: 1.
+	self assert: c asArray equals: #(3)
+]
+
+{ #category : 'ordered' }
+St80CollectionTest >> testOrderedCollectionRemoveIndexAfterTheFrontMoved [
+	"Once removeFirst and addFirst: have moved firstIndex, the index a
+	 caller sees and the index into the Array differ by more than one --
+	 which is exactly when a removeIndex: that took the Array's index went
+	 wrong quietly.  And the two 1983 removers that always used the Array's
+	 index still work, through removeBasicIndex:."
+	| c |
+	c := OrderedCollection new.
+	1 to: 10 do: [:i | c add: i].
+	c removeFirst; removeFirst; addFirst: 0.
+	self assert: c asArray equals: #(0 3 4 5 6 7 8 9 10).
+	self assert: (c removeIndex: 2) equals: 3.
+	self assert: c asArray equals: #(0 4 5 6 7 8 9 10).
+	self assert: (c removeAllSuchThat: [:e | e even]) asArray
+		equals: #(0 4 6 8 10).
+	self assert: c asArray equals: #(5 7 9).
+	self assert: (c remove: 7) equals: 7.
+	self assert: c asArray equals: #(5 9)
+]
+
+{ #category : 'ordered' }
 St80CollectionTest >> testOrderedCollectionGrowsPastItsStart [
 	"addFirst: many times has to grow the front, not just the back."
 	| c |

@@ -345,13 +345,16 @@ under ThreadSanitizer with the rest.
 
 ### What the tests found
 
-**`OrderedCollection>>removeIndex:` is not a public index.** 1983 keeps an
+**`OrderedCollection>>removeIndex:` was not a public index.** 1983 keeps an
 OrderedCollection's elements in the middle of a larger Array, and `removeIndex:`
-takes an index into *that* Array — it is private, and both of its callers walk
-from `firstIndex`. Handed a public index it removes an element from somewhere
+took an index into *that* Array — it was private, and both of its callers walked
+from `firstIndex`. Handed a public index it removed an element from somewhere
 else entirely: `removeAt: 2` on `[1,2,3]` answered 2, which is right, and left
-`[2,3]` behind, which is not. `JSONArray>>removeAt:` now uses `removeFirst` and
-`removeLast` at the ends and rebuilds for the middle.
+`[2,3]` behind, which is not. `JSONArray>>removeAt:` first worked around it by
+rebuilding the collection; `lib/Collections-Protocol/OrderedCollection.extension.st`
+then fixed the message itself — `removeIndex:` takes the index `at:` takes and
+answers the element, `removeAt:` is its Pharo name, and the 1983 body lives on as
+`removeBasicIndex:` for the two 1983 callers that speak in the Array's indices.
 
 **A JSON document with many names is quadratic**, and the parallel test found
 it by being slow rather than by being wrong. See the section above.
