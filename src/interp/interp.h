@@ -316,6 +316,14 @@ typedef struct {
     st_oop      active_process;
     st_oop      new_process;
     int         new_process_waiting;
+    /*
+     *  Set once this worker has parked its active process -- registers
+     *  into the context, context into the process -- and so no longer
+     *  owns it: another worker may take it from wherever it waits, and
+     *  this one must not write to it again.  Per worker like the rest of
+     *  the scheduler's state.
+     */
+    int         disowned;
 } st_interp;
 
 /*
@@ -404,6 +412,15 @@ void    ST_print_object(st_oop p, char *buf, size_t buflen);
 
 /*  Where the running send came from, innermost first.  Diagnostics only.  */
 unsigned    ST_method_primitive_index(st_oop method);
+/*  The arguments a CompiledMethod's header says it takes.  */
+unsigned    ST_method_argument_count(st_oop method);
+/*
+ *  Run `method' on the receiver and `argc' arguments on the stack, as a
+ *  send would after lookup.  Primitive 188 -- withArgs:executeMethod:.
+ */
+void        ST_execute_method(st_oop method, uint32_t argc);
+/*  Every registered interpreter's scheduling state, on standard error.  */
+void        ST_interp_dump_workers(void);
 /*  The primitive a frame's method declares, or 0.  Safe on a BlockContext. */
 unsigned    ST_context_primitive(st_oop ctx);
 int         ST_activate_closure(st_oop closure, uint32_t argc);

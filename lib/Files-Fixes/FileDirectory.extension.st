@@ -66,3 +66,47 @@ FileDirectory >> textFile: aFileName [
 
 	^(self findOrAddKey: aFileName) asTextFileStream
 ]
+
+{ #category : '*Files-Fixes' }
+FileDirectory class >> addExternalReference: anElement [
+	"Remember an open directory, so a snapshot can release it.  Under
+	 LibraryLocks' files lock: the list is one OrderedCollection for the
+	 image, and open and close from two workers at once were an add and a
+	 remove on it with nothing between them."
+	LibraryLocks holdingFiles: [
+		(ExternalReferences includes: anElement)
+			ifFalse: [ExternalReferences addLast: anElement]]
+]
+
+{ #category : '*Files-Fixes' }
+FileDirectory class >> removeExternalReference: anElement [
+	LibraryLocks holdingFiles: [ExternalReferences remove: anElement ifAbsent: []]
+]
+
+{ #category : '*Files-Fixes' }
+FileDirectory class >> releaseExternalReferences [
+	"Release every open directory.  Taken off the list under the lock and
+	 released outside it, because a release may close and closing takes
+	 the lock."
+	| taken |
+	taken := LibraryLocks holdingFiles: [ | all |
+		all := ExternalReferences copy.
+		ExternalReferences := OrderedCollection new.
+		all].
+	taken reverseDo: [:each | each release]
+]
+
+{ #category : '*Files-Fixes' }
+FileDirectory >> open [
+	"Open the directory."
+	closed := false.
+	self class addExternalReference: self
+]
+
+{ #category : '*Files-Fixes' }
+FileDirectory >> close [
+	"Close the directory."
+	closed ifFalse: [
+		self class removeExternalReference: self.
+		self release]
+]

@@ -124,6 +124,11 @@ st80: N input events were dropped
 \item[A process is waiting forever] If it is on a \ct{Semaphore} you are using
   for mutual exclusion, you may have taken it twice. Use \ct{Mutex}, which
   detects that and raises rather than deadlocking.
+\item[\ctp{every process is blocked; nothing can run}] The scheduler found
+  nothing ready, no timer armed and no signal queued, and prints what each
+  worker was holding. On one worker it usually means what it says. On many it
+  once meant a process the scheduler had lost, and the line under it is the
+  evidence to bring.
 \item[The Transcript output is interleaved] Expected. Build the line in a
   \ct{WriteStream} and \ct{show:} it in one send, or hold the monitor.
 \item[\ctp{Processor workerCount} answers 1] Expected: neither

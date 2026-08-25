@@ -231,6 +231,14 @@ stop-the-world heap scan, pinning for SDL and FFI is free, and compaction
 touches one entry per object rather than every reference to it. We pay one
 indirection to buy atomic identity mutation.
 
+**The 1983 library, audited on real workers.** Every class variable in the
+image was scanned and the image itself was run on thirty-one workers, and what
+leaned on the green scheduler was found and fixed: the Symbol table, `Smalltalk`,
+the dependents table, the compiler's `#DoIt`, `Delay`'s timing process and
+`Processor yield` are each serialized or reorganized in `lib/`, and six faults
+in the scheduler underneath came out with them. `tests/unit/test_parallel_shared.c`
+is the gate; the findings are in `doc/CONCURRENCY.md`.
+
 **The semantic break.** Smalltalk-80 guarantees a process is never preempted by
 another of the same priority, and the 1983 library uses that as an implicit
 lock. We break it deliberately, and supply `Mutex`, `Monitor`, `SharedQueue`

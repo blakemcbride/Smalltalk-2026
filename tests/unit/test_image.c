@@ -71,7 +71,13 @@
  *  name installed later with `Smalltalk at:put:' is not the name a method
  *  compiled afterwards refers to.
  */
-#define LIB_CLASSES             69
+/*
+ *  69 -> 71 is LibraryLocks, which holds the locks the 1983 library never
+ *  had -- for the Symbol table, Smalltalk, the dependents table, the open
+ *  directories and the method dictionaries -- and DelayTest, for the Delay
+ *  whose timing process was rewritten to survive a stale timer signal.
+ */
+#define LIB_CLASSES             71
 /*
  *  This number is a ratchet and is meant to move: lib/ is where every
  *  divergence from the frozen 1983 sources lives, so it grows whenever a
@@ -176,8 +182,22 @@
  *  the collection and was private in all but name.  Three replaced
  *  (removeIndex:, remove:ifAbsent:, removeAllSuchThat:), two added
  *  (removeAt:, and removeBasicIndex: for the 1983 body), and two tests.
+ *
+ *  1418: the audit of what the 1983 library shares without a lock, and
+ *  what cores did to it (doc/CONCURRENCY.md).  LibraryLocks and its six
+ *  methods; Symbol class>>intern: and rehash serialized, with the 1983
+ *  body as basicIntern:; Smalltalk's writers and readers under one lock,
+ *  with lockedAt:put: for the body; Object's four dependents methods;
+ *  CompiledMethod>>setTempNamesIfCached: reading its cache once;
+ *  SystemDictionary>>classNames likewise; FileDirectory's five methods on
+ *  ExternalReferences; Behavior's three method-dictionary writers;
+ *  Compiler>>evaluate:in:to:notifying:ifFail: running the method through
+ *  withArgs:executeMethod: instead of installing #DoIt; ProcessorScheduler
+ *  activePriority, terminateActive and yield asking THIS worker; Delay's
+ *  nine, for a timing process that tolerates a stale signal; and
+ *  DelayTest's four.
  */
-#define LIB_METHODS             1369
+#define LIB_METHODS             1418
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -306,7 +326,7 @@ build_once(void)
      *  the error and the four test classes need neither.  68 with the two
      *  parallel fixtures.
      */
-    CHECK_EQ_INT(res.news_synthesized, 68);
+    CHECK_EQ_INT(res.news_synthesized, 70);
     built = 1;
     return 1;
 }
@@ -2041,7 +2061,7 @@ test_sunit(void)
     check_string("(TestCase allSubclasses collect: [:c | c name])"
                  " asSortedCollection asArray printString",
                  "(ClassTestCase DbQueryBuilderTest DbSchemaGraphTest "
-                 "DbValueTest JSONArrayTest JSONObjectTest JSONParserTest "
+                 "DbValueTest DelayTest JSONArrayTest JSONObjectTest JSONParserTest "
                  "JSONWriterTest St80CollectionTest St80NumberTest "
                  "St80ReflectionTest St80TextTest SUnitBrokenTest "
                  "SUnitReportingTest "
@@ -2070,7 +2090,7 @@ test_sunit(void)
      *  runs inside the lock, so `json do: [:each | json at: ...]' works
      *  rather than reporting a re-entered Mutex.
      */
-    check_integer("TestCase allTests tests size", 207);
+    check_integer("TestCase allTests tests size", 211);
 
     /*
      *  And the three buckets, from the outside as well as from within
@@ -2187,7 +2207,7 @@ test_browsing(void)
      *  the source pointer is 22 bits and silently truncated once, and a
      *  size that stops growing is how that would show.
      */
-    check_integer("(SourceFiles at: 1) contents size", 1561905);
+    check_integer("(SourceFiles at: 1) contents size", 1577474);
 }
 
 /*

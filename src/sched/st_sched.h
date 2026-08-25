@@ -104,6 +104,7 @@ void        SCHED_check_process_switch(void);
 
 /*  Primitives 85 to 88.  */
 int         SCHED_primitive_signal(void);
+int         SCHED_primitive_yield(void);      /*  167  */
 int         SCHED_primitive_wait(void);
 int         SCHED_primitive_resume(void);
 int         SCHED_primitive_suspend(void);

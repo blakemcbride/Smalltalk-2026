@@ -2750,6 +2750,50 @@ primitive_perform_with_arguments(void)
     return 1;
 }
 
+/*
+ *  188: withArgs:executeMethod: -- run a CompiledMethod that is installed
+ *  nowhere.  Pharo's number and Pharo's name.
+ *
+ *  1983's Compiler evaluates an expression by compiling it under the
+ *  selector #DoIt, installing THAT in the receiver's class, sending it,
+ *  and removing it again.  One slot in one method dictionary, for every
+ *  evaluation in the image: eight workers evaluating `3 + 4' at once lost
+ *  138 of 800 answers, each a worker whose DoIt another worker had already
+ *  removed, and a nil from the doesNotUnderstand that followed.  Locking
+ *  the three steps would serialize every evaluation behind every other
+ *  and fail the moment an evaluated expression evaluated something.
+ *  Reorganize instead: with this, the method is run from the compiler's
+ *  hand and nothing shared is touched.
+ *
+ *  Fails, and so falls back to the Smalltalk body, when the arguments are
+ *  not an Array, the method is not a CompiledMethod, or the count does
+ *  not match what the method's header says -- the interpreter would stop
+ *  the image on a mismatch, so it is refused here first.
+ */
+static int
+primitive_execute_method(void)
+{
+    st_oop      arguments = ST_stack_value(1);
+    st_oop      method    = ST_stack_value(0);
+    uint32_t    count;
+    uint32_t    i;
+
+    if (st_vm.argument_count != 2)
+        return 0;
+    if (!OM_is_present(arguments) || !OM_is_present(method)
+     || OM_fetch_class(arguments) != ST_CLASS_ARRAY
+     || OM_fetch_class(method) != ST_CLASS_COMPILED_METHOD)
+        return 0;
+    count = OM_fetch_word_length(arguments);
+    if (ST_method_argument_count(method) != count)
+        return 0;
+    ST_pop_n(2);
+    for (i = 0; i < count; ++i)
+        ST_push(OM_fetch_pointer(i, arguments));
+    ST_execute_method(method, count);
+    return 1;
+}
+
 /*  ----------  Identity and class, primitives 110 and 111  ----------  */
 
 static int
@@ -4013,6 +4057,7 @@ ST_primitive_dispatch(unsigned index)
     case 83:  return primitive_perform();
     case 84:  return primitive_perform_with_arguments();
     case 85:  return SCHED_primitive_signal();
+    case 167: return SCHED_primitive_yield();
     case 86:  return SCHED_primitive_wait();
     case 87:  return SCHED_primitive_resume();
     case 88:  return SCHED_primitive_suspend();
@@ -4145,6 +4190,7 @@ ST_primitive_dispatch(unsigned index)
     case 174: return primitive_inst_var_at_put();
     case 183: return primitive_answer_false_of_receiver();  /*  isPinned  */
     case 184: return primitive_set_flag_false_only();
+    case 188: return primitive_execute_method();
     case 230: return primitive_relinquish_processor();
     case 242: return primitive_wheel_delta();
     case 240: return primitive_utc_microsecond_clock();
@@ -4266,6 +4312,7 @@ static const primitive_entry primitive_table[] = {
     { 136, ST_PRIM_PRESENT,  "signal a semaphore at a time"     },
     { 148, ST_PRIM_PRESENT,  "Object shallowCopy / clone"       },
     { 159, ST_PRIM_PRESENT,  "Integer hashMultiply"             },
+    { 167, ST_PRIM_PRESENT,  "ProcessorScheduler yield -- Squeak's number" },
     { 163, ST_PRIM_PRESENT,  "Object isReadOnly -- always false here" },
     { 164, ST_PRIM_PRESENT,  "Object setIsReadOnly: -- false only"    },
     { 168, ST_PRIM_PRESENT,  "Object copyFrom:"                 },
@@ -4276,6 +4323,7 @@ static const primitive_entry primitive_table[] = {
     { 174, ST_PRIM_PRESENT,  "Object instVarAt:put: -- 74 renumbered" },
     { 183, ST_PRIM_PRESENT,  "Object isPinnedInMemory -- always false here" },
     { 184, ST_PRIM_PRESENT,  "Object setPinnedInMemory: -- false only" },
+    { 188, ST_PRIM_PRESENT,  "Object withArgs:executeMethod: -- Pharo's number" },
     { 195, ST_PRIM_PRESENT,  "ContextPart findNextUnwindContextUpTo:" },
     { 197, ST_PRIM_PRESENT,  "ContextPart findNextHandlerContext"     },
     { 198, ST_PRIM_TAG,      "unwind mark -- ensure:/ifCurtailed:, read by "

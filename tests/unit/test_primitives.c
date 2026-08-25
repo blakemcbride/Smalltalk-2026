@@ -94,6 +94,21 @@ test_the_four_answers(void)
     CHECK(name != NULL && strstr(name, "hash") != NULL);
 
     /*
+     *  188 runs a CompiledMethod that is installed nowhere, and 167 yields
+     *  without forking a helper.  Both have Smalltalk fallbacks that work
+     *  on one worker and race on many -- the compiler's #DoIt slot, the
+     *  helper's shared block context -- so, as with 223, a silent absence
+     *  would pass every single-threaded test and fail only where it costs
+     *  the most to find.
+     */
+    name = NULL;
+    CHECK_EQ_INT(ST_primitive_status_of(188, &name), ST_PRIM_PRESENT);
+    CHECK(name != NULL && strstr(name, "executeMethod") != NULL);
+    name = NULL;
+    CHECK_EQ_INT(ST_primitive_status_of(167, &name), ST_PRIM_PRESENT);
+    CHECK(name != NULL && strstr(name, "yield") != NULL);
+
+    /*
      *  Every number the table claims is one the compiler will accept, so a
      *  typo'd entry cannot sit there describing a primitive no source could
      *  ever ask for.

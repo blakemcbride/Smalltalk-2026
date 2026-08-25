@@ -71,8 +71,8 @@
 # machine building this system cannot be assumed to have.  A suite that
 # cannot run where it is checked would report a perfect score every time,
 # which is the exact shape of failure this file exists to catch.  It has a
-# profile of its own -- profiles/database-live.profile, 230 tests through
-# SQLite -- and is run deliberately.  230 rather than the 129 that used to be
+# profile of its own -- profiles/database-live.profile, 234 tests through
+# SQLite -- and is run deliberately.  234 rather than the 129 that used to be
 # written here for the same reason every row above moved: the profile requires
 # st2026 and so inherits its suites, and lib/Json-Tests added 99 of them.
 #
@@ -81,9 +81,14 @@
 # an index into the Array behind the collection, and `removeIndex: 2' on
 # 1, 2, 3 left 2 and 3.  Every row moved by two; database-live is 230.
 #
+# DelayTest adds four: Delay's timing process was rewritten so that a stale
+# timer signal is a look at the clock rather than the end of the process,
+# and one of the four sends that stale signal on purpose.  Every row moved
+# by four; database-live is 234.
+#
 # profile               run  passed
-st2026                  207  207
-pharo-announcements     238  238
-pharo-time              828  828
-pharo-weak              227  227
-pharo-collections       664  664
+st2026                  211  211
+pharo-announcements     242  242
+pharo-time              832  832
+pharo-weak              231  231
+pharo-collections       668  668

@@ -645,6 +645,20 @@ SCHED_sleep(st_oop process)
 void
 SCHED_transfer_to(st_oop process)
 {
+    /*
+     *  A nominee is on no list: whoever nominates it took it off one, or
+     *  it was never on one.  A process nominated while still linked would
+     *  be run from here and again by whoever next takes it from the list,
+     *  which is the one fault every other scheduler symptom hides behind,
+     *  so it is refused here rather than diagnosed later.
+     */
+    if (OM_is_present(process)
+     && OM_is_present(OM_fetch_pointer(ST_PROCESS_MY_LIST, process))) {
+        fprintf(stderr, "st80: a process still on a list was nominated to "
+                        "run; the scheduler's invariant is broken\n");
+        ST_report_backtrace();
+        abort();
+    }
     OM_increase_ref(process);
     OM_decrease_ref(new_process);       /*  any nomination this supersedes  */
     new_process_waiting = 1;
@@ -740,7 +754,28 @@ static st_atomic_int    idle_workers;
  *  the context of a process this worker still owns, and must NOT park over
  *  one it has handed to somebody else.
  */
-static _Thread_local int    disowned;
+#define disowned                (st_vm.disowned)
+
+/*
+ *  Park the active process where another worker can pick it up from: its
+ *  registers into its context, the context into the process.  After this
+ *  the process belongs to whoever resumes it, and this worker must not
+ *  write to it again -- disowned tells SCHED_check_process_switch so.
+ *  Idempotent, because the wait primitive parks before it links and
+ *  SCHED_suspend_active would otherwise park a second time.
+ */
+static void
+store_active_for_suspension(void)
+{
+    st_oop  self = SCHED_active_process();
+
+    if (OM_is_object(self) && !disowned) {
+        ST_store_active_context();
+        OM_store_pointer(ST_PROCESS_SUSPENDED_CONTEXT, self,
+                         st_vm.active_context);
+        disowned = 1;
+    }
+}
 
 void
 SCHED_suspend_active(void)
@@ -765,21 +800,19 @@ SCHED_suspend_active(void)
      *  never happened.  Waiting here for work made it a second wide and
      *  therefore certain, which is how it was finally seen.
      *
-     *  Parking first closes it.  Disowning matters just as much: once the
-     *  process is resumable it belongs to whoever takes it, and the switch
-     *  below must not write this thread's stale context over the progress
-     *  that thread has since made.
+     *  Parking first closes most of it, and the rest was closed later: the
+     *  width of one list operation is still a window, and twenty-four
+     *  workers spinning in Processor yield found it in seconds -- one
+     *  context pushed on by two threads overflowed its frame.  So a
+     *  process that waits on a Semaphore is now parked INSIDE
+     *  SCHED_primitive_wait, under the semaphore's lock and before it is
+     *  linked, and arrives here already disowned; store_active_for_
+     *  suspension does nothing twice.  Disowning matters just as much:
+     *  once the process is resumable it belongs to whoever takes it, and
+     *  the switch below must not write this thread's stale context over
+     *  the progress that thread has since made.
      */
-    {
-        st_oop  self = SCHED_active_process();
-
-        if (OM_is_object(self)) {
-            ST_store_active_context();
-            OM_store_pointer(ST_PROCESS_SUSPENDED_CONTEXT, self,
-                             st_vm.active_context);
-            disowned = 1;
-        }
-    }
+    store_active_for_suspension();
 
     next = SCHED_wake_highest_priority();
 
@@ -832,6 +865,28 @@ SCHED_suspend_active(void)
                 idle_hook();
             ST_sleep_ns(IDLE_WAIT_SLICE_NS);
             drain_async_signals();
+            /*
+             *  The drain above can NOMINATE rather than enqueue.  A signal
+             *  delivered from the timer resumes its waiter through the
+             *  same path a running process would use, and when the waiter
+             *  outranks this worker's (parked) active process that path is
+             *  SCHED_transfer_to: the process is put in new_process and
+             *  new_process_waiting is set, for the interpreter loop to
+             *  pick up at its next send.  This loop is not the interpreter
+             *  loop, and it went on idling with the process in its hand.
+             *  The other workers saw every worker idle and no timer armed
+             *  -- the timer had fired, that is why there was a signal --
+             *  and after a hundred confirmations one of them declared that
+             *  every process was blocked and stopped, taking its thread
+             *  with it; the rest could then never again count every worker
+             *  idle, and waited for ever.  Two workers waiting on
+             *  one-millisecond Delays hung every run, and one worker never
+             *  did, because the single-worker path below checks exactly
+             *  this.  A nomination is something to run: leave the loop and
+             *  let the switch at the bottom happen.
+             */
+            if (new_process_waiting)
+                break;
             next = SCHED_wake_highest_priority();
             if (next != ST_NIL)
                 break;
@@ -880,7 +935,17 @@ SCHED_suspend_active(void)
         return;
 
     if (next == ST_NIL) {
+        /*
+         *  Said with the evidence, because this verdict has been wrong
+         *  before -- a lost nomination looked exactly like this -- and the
+         *  state that decides it is what a reader needs first.
+         */
         fprintf(stderr, "st80: every process is blocked; nothing can run\n");
+        fprintf(stderr, "       timer pending %d, async signals queued %d, "
+                        "%d of %u workers idle\n",
+                SCHED_timer_pending(), ST_load_relaxed(&async_count),
+                ST_load_seq(&idle_workers), WORKER_count());
+        ST_interp_dump_workers();
         st_vm.running = 0;
         return;
     }
@@ -930,7 +995,36 @@ SCHED_resume(st_oop process)
         return;
     }
     if (OM_int_value(new_priority) > OM_int_value(active_priority)) {
-        SCHED_sleep(active);
+        /*
+         *  The process being preempted goes onto its ready list, and from
+         *  that moment any idle worker may take it and run it -- from its
+         *  suspendedContext.  So a running one is parked FIRST: registers
+         *  into the context, context into the process, and disowned so
+         *  that the switch this nomination causes does not write over it
+         *  again.  Chapter 29 sleeps the active process and switches later,
+         *  which is fine when only one thread can run it; here the gap
+         *  between the two was a running process on the ready list, and
+         *  with twenty-four workers scanning that list every tenth of a
+         *  millisecond it was taken inside the gap.
+         *
+         *  A nominee -- the active process as far as priority goes, but
+         *  not yet running -- is parked already and on no list, and goes
+         *  back on its list.  A disowned one is NOT requeued: this worker
+         *  parked it and handed it on, so it is on the list it waits on,
+         *  or it has finished.  Chapter 29 puts "the active process" back
+         *  unconditionally, and on an idle worker that was one that had
+         *  terminated -- the helper Processor yield forks, which ends
+         *  itself with terminateActive.  Requeued, it was run again from
+         *  where it had stopped: its block signalled its semaphore a
+         *  second time, and when it fell off the bottom of the block it
+         *  took the worker's whole run with it.
+         */
+        if (new_process_waiting) {
+            SCHED_sleep(active);
+        }  else if (!disowned) {
+            store_active_for_suspension();
+            SCHED_sleep(active);
+        }
         SCHED_transfer_to(process);
     }  else  {
         SCHED_sleep(process);
@@ -940,23 +1034,42 @@ SCHED_resume(st_oop process)
 void
 SCHED_synchronous_signal(st_oop semaphore)
 {
-    st_oop  excess;
+    st_mutex   *lock;
+    st_oop      woken = ST_NIL;
 
     if (!OM_is_present(semaphore))
         return;
+    /*
+     *  Under the semaphore's stripe lock, exactly as SCHED_primitive_signal
+     *  is, because SCHED_primitive_wait is: a waiter reads the excess count
+     *  and links itself under that lock, and a signal that runs between
+     *  the read and the link without it sees an empty list, spends itself
+     *  as an excess, and leaves the waiter linked for ever.  This is the
+     *  path the timer's and the input's signals take, drained by whichever
+     *  worker drains them, so the waiter it lost was the Delay timing
+     *  process -- on TimingSemaphore, with the excess count at one and
+     *  nobody ever coming to take it.  Every Delay in the image then
+     *  waited behind it.  One worker never showed it, since the drain and
+     *  the wait were then the same thread; sixteen and up hung within a
+     *  second.  The resume happens outside the lock, as in the primitive:
+     *  resuming can transfer, which polls a safepoint, and a lock held
+     *  across a safepoint poll is the deadlock the stripe rule forbids.
+     */
+    lock = stripe_for(semaphore);
+    stripe_lock(lock);
     if (SCHED_is_empty_list(semaphore)) {
-        /*  Nobody is waiting, so the signal is remembered.  */
-        excess = OM_fetch_pointer(ST_SEMAPHORE_EXCESS_SIGNALS, semaphore);
+        st_oop  excess = OM_fetch_pointer(ST_SEMAPHORE_EXCESS_SIGNALS,
+                                          semaphore);
+
         if (OM_is_int(excess))
             OM_store_pointer(ST_SEMAPHORE_EXCESS_SIGNALS, semaphore,
                              OM_int_oop(OM_int_value(excess) + 1));
-        return;
+    }  else  {
+        woken = SCHED_remove_first_link(semaphore);
     }
-    {
-        st_oop  woken = SCHED_remove_first_link(semaphore);
-
+    stripe_unlock(lock);
+    if (OM_is_present(woken)) {
         SCHED_resume(woken);
-        /*  A list or the nomination holds it; release the removal's loan.  */
         OM_decrease_ref(woken);
     }
 }
@@ -1030,15 +1143,19 @@ SCHED_check_process_switch(void)
      *  the incoming one's context active.  Everything the old process needs
      *  to resume is in that one pointer.
      */
-    ST_store_active_context();
     /*
      *  Unless this worker has already parked and handed the process on.
      *  Parking again would write this thread's stale context over whatever
-     *  progress the worker that took it has since made.
+     *  progress the worker that took it has since made -- and so would
+     *  storing the registers alone, since they are stored INTO the
+     *  context, which the worker that took the process is executing.
+     *  Both stores are skipped, not just the second.
      */
-    if (!disowned)
+    if (!disowned) {
+        ST_store_active_context();
         OM_store_pointer(ST_PROCESS_SUSPENDED_CONTEXT, SCHED_active_process(),
                          st_vm.active_context);
+    }
     disowned = 0;
     /*
      *  The image's field as well as this worker's, because a snapshot
@@ -1048,14 +1165,37 @@ SCHED_check_process_switch(void)
      *  and is why Processor>>activeProcess becomes a primitive that asks
      *  the calling worker instead.
      */
-    st_vm.active_process = new_process;
-    OM_store_pointer(ST_SCHEDULER_ACTIVE_PROCESS, SCHED_scheduler(),
-                     new_process);
-    ST_set_active_context(
-        OM_fetch_pointer(ST_PROCESS_SUSPENDED_CONTEXT, new_process));
-    /*  activeProcess holds it now; this releases the nomination's count.  */
-    OM_decrease_ref(new_process);
-    new_process = ST_NIL;
+    /*
+     *  A running process is held by its worker, and the count says so.
+     *
+     *  This used to release the nomination's count here, once the process
+     *  was active, on the strength of the field above: the image's
+     *  activeProcess variable holds one count, and with one worker it
+     *  always held the running process.  With N workers it holds whichever
+     *  switched last, and every other running process -- on no list, since
+     *  it is running -- had a count of zero.  The next switch on any
+     *  worker stored over the field, the count of the process it had held
+     *  went from one to nothing, and a process that was executing on some
+     *  core was freed and its slot handed out: the Delay timing process
+     *  came back as a MethodContext, with the semaphore it waited on
+     *  pointing at it.  The nomination's count is now kept as the active
+     *  count for as long as the process is active here, and the process
+     *  that was active gives its own up.  That is also what the collector
+     *  counts when it visits each worker's active process, so the two
+     *  agree.
+     */
+    {
+        st_oop  was = st_vm.active_process;
+
+        st_vm.active_process = new_process;
+        new_process = ST_NIL;
+        OM_store_pointer(ST_SCHEDULER_ACTIVE_PROCESS, SCHED_scheduler(),
+                         st_vm.active_process);
+        ST_set_active_context(
+            OM_fetch_pointer(ST_PROCESS_SUSPENDED_CONTEXT,
+                             st_vm.active_process));
+        OM_decrease_ref(was);
+    }
 }
 
 /*
@@ -1221,6 +1361,66 @@ SCHED_primitive_signal(void)
     return 1;               /*  answers the receiver, already on the stack  */
 }
 
+/*
+ *  167: Processor yield -- let another process at my priority run.
+ *
+ *  1983 had no primitive for this and wrote yield as `[semaphore signal]
+ *  fork. semaphore wait': a helper process per call, whose block is a
+ *  BlockContext with its home in the caller's frame, ended by
+ *  terminateActive.  Under one thread that is a neat trick.  Under
+ *  thirty-one it is a process created and destroyed on every call, whose
+ *  context is shared between the two, and it was the one thing that still
+ *  went wrong after every semaphore race in this file had been closed --
+ *  a run of thirty-one workers yielding in a loop failed one time in two.
+ *
+ *  Reorganize, in the contract's word: the primitive parks the active
+ *  process, puts it at the END of its ready list, and switches to whatever
+ *  is ready -- which is itself, when nothing else is, in which case
+ *  nothing happens at all.  No helper, no second context, no semaphore.
+ */
+int
+SCHED_primitive_yield(void)
+{
+    st_oop  active = SCHED_active_process();
+    st_oop  priority;
+    st_oop  lists;
+    st_oop  list;
+    int     someone_waiting;
+
+    if (!OM_is_object(active))
+        return 0;
+    priority = OM_fetch_pointer(ST_PROCESS_PRIORITY, active);
+    lists    = OM_fetch_pointer(ST_SCHEDULER_PROCESS_LISTS, SCHED_scheduler());
+    if (!OM_is_int(priority) || !OM_is_present(lists)
+     || OM_int_value(priority) < 1
+     || (uint32_t) OM_int_value(priority) > OM_fetch_word_length(lists))
+        return 0;
+    /*
+     *  Only worth a switch if something at my priority or above is ready:
+     *  a yield with nothing to yield to answers at once, as Chapter 29's
+     *  version effectively did.  Read without the lock -- a process that
+     *  becomes ready a moment later will get its turn at the next yield.
+     */
+    {
+        uint32_t    i;
+
+        someone_waiting = 0;
+        for (i = OM_fetch_word_length(lists); i >= (uint32_t) OM_int_value(priority); --i) {
+            list = OM_fetch_pointer(i - 1, lists);
+            if (OM_is_object(list) && !SCHED_is_empty_list(list)) {
+                someone_waiting = 1;
+                break;
+            }
+        }
+    }
+    if (!someone_waiting)
+        return 1;               /*  answers the receiver, already on the stack  */
+    store_active_for_suspension();
+    SCHED_sleep(active);
+    SCHED_suspend_active();
+    return 1;
+}
+
 int
 SCHED_primitive_wait(void)
 {
@@ -1253,9 +1453,27 @@ SCHED_primitive_wait(void)
             return 0;
         }
         must_wait = OM_int_value(excess) <= 0;
-        if (must_wait)
+        if (must_wait) {
+            /*
+             *  Parked BEFORE it is linked, and under the lock.
+             *
+             *  Once this process is on the semaphore's list, any worker
+             *  can signal the semaphore, take the process off and run it
+             *  -- from suspendedContext.  Linking first and parking in
+             *  SCHED_suspend_active afterwards left a window, one list
+             *  operation wide, in which another worker ran the process
+             *  from the context it had been parked with LAST time while
+             *  this worker was still finishing the wait.  One context
+             *  pushed on by two threads overflowed its frame inside
+             *  ProcessorScheduler>>yield; a Delay reported itself waited
+             *  on twice; a mutual-exclusion Semaphore was signalled more
+             *  often than it was taken.  Twenty-four workers yielding at
+             *  once found it in seconds and sixteen never did, which is
+             *  how wide the window was.
+             */
+            store_active_for_suspension();
             SCHED_add_last_link(SCHED_active_process(), semaphore);
-        else
+        }  else
             OM_store_pointer(ST_SEMAPHORE_EXCESS_SIGNALS, semaphore,
                              OM_int_oop(OM_int_value(excess) - 1));
         stripe_unlock(lock);

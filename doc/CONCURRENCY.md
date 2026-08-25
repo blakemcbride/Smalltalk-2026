@@ -254,6 +254,98 @@ hold mutable state -- `CachedClassNames`, `TempNameCache`, the `Symbol`
 table, the `Transcript` -- are caches and structures rather than per-call
 scratch space, and each is a separate question for the same audit.
 
+## The audit, and what it found
+
+The audit was run on 2026-08-25, against every class variable in `sources/`,
+`lib/` and `pharo/` (245 of them, 71 written after class initialization, 7
+mutated in place) and then against the image itself: a battery of kernels, each
+run on eight and on thirty-one workers, each answering a number that only a
+correct run can produce. `tests/unit/test_parallel_shared.c` is that battery,
+kept. What it found in the library, and what was done:
+
+| Shared state | What eight workers did to it | Taxonomy | Where |
+|---|---|---|---|
+| `Symbol class>>intern:` — `USTable`, read-modify-write | 1,170 of 2,400 symbols not identical across workers; 132 of 600 at two | serialize | `lib/Concurrency/Symbol.extension.st`, under `LibraryLocks` |
+| `Smalltalk at:put:` — a `Dictionary` that grows by `become:` | 245 of 1,600 globals lost; and an unlocked *reader* mid-probe when the table was replaced missed a key that was there | serialize, readers too | `lib/System/SystemDictionary.extension.st` |
+| `Object>>addDependent:` — `DependentsFields`, one `IdentityDictionary` for every model | 143 of 1,600 dependents lost; 18 of 400 at two | serialize; `dependents` answers a copy | `lib/Concurrency/Object.extension.st` |
+| `Compiler evaluate:` — installs `#DoIt` in the receiver's class, sends it, removes it | 138 of 800 answers nil, each a worker whose `DoIt` another had removed | reorganize: primitive 188, `withArgs:executeMethod:` | `lib/Concurrency/Compiler.extension.st`, `src/interp/prim.c` |
+| `Delay` — the timing process, `initSignals`, a cancelled timer | two workers hung every run | reorganize: a stale signal is a look at the clock | `lib/Concurrency/Delay.extension.st` |
+| `ProcessorScheduler>>activePriority`, `terminateActive` — read the `activeProcess` *variable* | a process forked with another worker's priority; a `yield` helper terminating another worker's process | replicate: ask this worker | `lib/Concurrency/ProcessorScheduler.extension.st` |
+| `ProcessorScheduler>>yield` — a helper process per call, its block context shared with the caller | one run in two failed at thirty-one workers after everything else was fixed | reorganize: primitive 167 | same, `src/sched/st_sched.c` |
+| `CompiledMethod>>setTempNamesIfCached:`, `SystemDictionary>>classNames` — a cache read twice | could tear; not seen to | replicate: read once | `lib/Concurrency`, `lib/System` |
+| `FileDirectory` — `ExternalReferences` | add and remove with nothing between | serialize | `lib/Files-Fixes/FileDirectory.extension.st` |
+| `Behavior>>addSelector:withMethod:` — a method dictionary | not exercised; the same find-then-write | serialize the write | `lib/Concurrency/Behavior.extension.st` |
+
+`LibraryLocks` holds the five locks, one `Mutex` each, in `lib/Concurrency`,
+because a class in `sources/` cannot be given a class variable from `lib/`.
+Its `holding...:` methods run their block unlocked while the lock does not yet
+exist — that is the bootstrap, single-threaded by construction — and never
+after.
+
+Two things the audit left alone, on purpose. The GUI's globals — the
+`ParagraphEditor` clipboard, the lazily-built menus, `Cursor`, `Project` — are
+shared by design under one active controller, and a race there produces a
+second identical menu. And a `WriteStream` shared by every worker loses
+characters (14,217 of 16,000 at eight), which is the contract above: base
+collections and streams are yours to guard.
+
+## Six faults in the scheduler, found by the same audit
+
+The Delay and yield kernels did not fail in the library. They failed in
+`src/sched/st_sched.c`, and each fault looked like something else until an
+invariant was written down and checked. The invariant is: **a process runs on
+one worker at a time, and a worker holds what it runs.** Every symptom below
+— a frame overflowed, a `Delay` "already waiting", a mutual-exclusion
+`Semaphore` signalled more often than taken, a `SortedCollection` whose compare
+answered nil, a `Process` that came back as a `MethodContext` — was that
+invariant broken, seen late. The scheduler now refuses to nominate a process
+that is still on a list, and says so, rather than letting the symptom arrive.
+
+1. **An idle worker never looked at its own nomination.** The timer's signal
+   is drained by whichever worker drains it, and resuming a waiter that
+   outranks that worker's parked process *nominates* it rather than queueing
+   it. The idle loop only looked at the ready lists, went on idling with the
+   process in its hand, and the other workers — every worker idle, no timer
+   armed because it had just fired — declared every process blocked and
+   stopped. Two workers waiting on one-millisecond delays hung every run; one
+   never did, because the single-worker path checked exactly this.
+2. **A process was linked onto its semaphore before it was parked.** One list
+   operation wide, and twenty-four workers found it in seconds: a signaller
+   on another worker took the process off the list and ran it from the
+   context it had been parked with *last* time. Parked first now, under the
+   semaphore's lock.
+3. **A preempted process went onto the ready list while it was still
+   running.** Chapter 29 sleeps the active process and switches later, which
+   is fine when only one thread can run it. Parked first now — and a process
+   this worker has already parked and handed on is not requeued at all, which
+   is how a terminated `yield` helper was being run a second time.
+4. **The timer's signal did not take the semaphore's lock.** `wait` reads the
+   count and links under it; a signal between the two saw an empty list,
+   spent itself as an excess, and left the timing process linked for ever
+   with the count at one. One worker never showed it: the drain and the wait
+   were the same thread.
+5. **A running process was kept alive by nothing but the last worker's
+   switch.** The switch released the nomination's count once the process was
+   active, trusting the image's `activeProcess` variable to hold one — one
+   slot, for N workers. The next switch on any worker stored over it, and a
+   process executing on some core was freed. The Delay timing process came
+   back as a `MethodContext`, with its semaphore pointing at it. A worker now
+   keeps the count for as long as the process is active, which is also what
+   the collector counts when it visits each worker's active process.
+6. **The safepoint wrote a parked process's registers over a running one's.**
+   Every worker stores its registers into its active context before a
+   collection, idle workers included — and an idle worker is one whose last
+   process was parked and taken. `ST_store_active_context` is now a no-op for
+   a disowned process.
+
+And one hazard that is not a fault but a property: `Set>>grow` makes a bigger
+copy and `become:`s it, so an unlocked reader that has already read the old
+`basicSize` probes the new table with the old arithmetic. That is why
+`Smalltalk`'s *readers* are locked as well as its writers, and why a
+collection shared between workers wants a lock around its reads too, not just
+its writes.
+
+
 ## The VM's own connections to the image
 
 Two links from the VM to the image live in C rather than in any instance

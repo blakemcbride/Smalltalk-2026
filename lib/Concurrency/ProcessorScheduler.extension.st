@@ -104,3 +104,51 @@ ProcessorScheduler >> parallelCollect: aCollection do: aBlock [
 		self forkParallel: [aBlock value: each]].
 	^promises collect: [:each | each value]
 ]
+
+{ #category : '*Concurrency' }
+ProcessorScheduler >> activePriority [
+	"The priority of the process THIS worker is running.
+
+	 1983 read the activeProcess instance variable, which several workers
+	 running processes leave holding whichever switched last.  Every fork
+	 asks this for the new process's priority, so a process forked on one
+	 worker took the priority of a process on another -- the timing
+	 process's, sometimes -- and ran ahead of everything it should have
+	 waited behind."
+	^self activeProcess priority
+]
+
+{ #category : '*Concurrency' }
+ProcessorScheduler >> terminateActive [
+	"Terminate the process THIS worker is running.
+
+	 1983 terminated the activeProcess instance variable's process, which
+	 on cores is whichever switched last, on any worker.  Processor yield
+	 forks a helper that ends by sending this, so with twenty-four workers
+	 yielding at once the helpers were terminating each other's callers:
+	 a Delay waited on twice, a mutual-exclusion Semaphore signalled by a
+	 process that had never taken it, and a worker's run ending inside
+	 somebody else's yield.  Sixteen workers never showed it and
+	 twenty-four always did."
+	self activeProcess terminate
+]
+
+{ #category : '*Concurrency' }
+ProcessorScheduler >> yield [
+	"Give other Processes at my priority a chance to run.
+
+	 Primitive 167, this system's own implementation of Squeak's number:
+	 the VM parks the active process at the end of its ready list and
+	 switches to whatever is ready, or does nothing when nothing is.
+	 1983's body -- fork a helper that signals a semaphore, then wait on it
+	 -- is kept as the fallback.  It creates a process per call whose block
+	 context is shared between the caller and the helper, and on many
+	 workers that sharing was the last fault left after every semaphore
+	 race had been closed: thirty-one workers yielding in a loop failed
+	 one run in two.  The primitive shares nothing."
+	<primitive: 167>
+	| semaphore |
+	semaphore := Semaphore new.
+	[semaphore signal] fork.
+	semaphore wait
+]

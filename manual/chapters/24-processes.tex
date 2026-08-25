@@ -62,7 +62,10 @@ Processor workerCount                "how many there are"
 \end{st}
 
 The last two are this system's, not 1983's. They are useful for partitioning
-work and for making a test prove that it really ran in parallel.
+work and for making a test prove that it really ran in parallel. \ct{yield} is
+a primitive here: it parks the process at the end of its ready list and lets
+whatever is ready run. 1983's forked a helper process on every call, which was
+fine on one thread and not on thirty-one.
 
 \section{Process protocol}
 

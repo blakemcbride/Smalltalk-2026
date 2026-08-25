@@ -314,7 +314,7 @@ The first phase stays green either way — worth knowing, because it is the phas
 that *looks* like the test.
 
 **`lib/Database-Live-Tests`** — 25 tests of its own, in
-`profiles/database-live.profile` (230 with everything the profile inherits),
+`profiles/database-live.profile` (234 with everything the profile inherits),
 run deliberately:
 
 ```

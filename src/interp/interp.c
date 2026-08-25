@@ -337,6 +337,32 @@ set_active_context(st_oop ctx)
  */
 static om_root_provider extra_roots;
 
+void
+ST_interp_dump_workers(void)
+{
+    unsigned    i;
+
+    for (i = 0; i < MAX_INTERPRETERS; ++i) {
+        st_interp  *vm = (st_interp *) ST_load_acquire(&interpreters[i]);
+        st_oop      p, l;
+        long        priority = -1;
+        char        list[64] = "no list";
+
+        if (!vm)
+            continue;
+        p = vm->active_process;
+        l = OM_is_present(p) ? OM_fetch_pointer(ST_PROCESS_MY_LIST, p) : ST_NIL;
+        if (OM_is_present(p) && OM_is_int(OM_fetch_pointer(ST_PROCESS_PRIORITY, p)))
+            priority = (long) OM_int_value(OM_fetch_pointer(ST_PROCESS_PRIORITY, p));
+        if (OM_is_present(l))
+            ST_print_object(l, list, sizeof list);
+        fprintf(stderr, "       interpreter %u: running %d, parked %d, nominated %d, "
+                        "active process at priority %ld waiting on %s\n",
+                i, vm->running, vm->disowned, vm->new_process_waiting,
+                priority, list);
+    }
+}
+
 static void
 provide_roots(om_visit_fn visit)
 {
@@ -510,9 +536,24 @@ ST_interp_install_roots(om_root_provider extra)
     OM_set_root_forwarder(ST_interp_forward_roots, ST_interp_forward_forbidden);
 }
 
+/*
+ *  Write this worker's registers into its active context -- unless the
+ *  worker has parked that process and handed it on.  Then the context is
+ *  one another worker may be executing, and the registers here are stale
+ *  by exactly as much as that worker has since done.  The safepoint poll
+ *  calls this on every worker before a collection, idle workers included,
+ *  and an idle worker is precisely one whose last process was parked and
+ *  taken: every collection wrote a parked process's old registers over a
+ *  running one's, and it looked like anything -- a SortedCollection whose
+ *  compare answered nil, Smalltalk reading as nil, a frame overflowed.
+ *  The scheduler's own switch already skipped the store for a disowned
+ *  process; this makes every caller skip it.
+ */
 void
 ST_store_active_context(void)
 {
+    if (st_vm.disowned)
+        return;
     store_context_registers();
 }
 
@@ -1351,29 +1392,20 @@ send_to_class(st_oop selector, uint32_t argc, st_oop lookup_class)
     execute_new_method(receiver, selector, lookup_class, 0);
 }
 
+
+/*
+ *  Run `method' on the receiver and st_vm.argument_count arguments that
+ *  are on the stack, exactly as a send does once lookup has found it: the
+ *  quick returns, the argument-count check, the primitive, the activation.
+ *  Shared by the send path and by primitive 188, withArgs:executeMethod:,
+ *  which runs a CompiledMethod that is installed nowhere.
+ */
 static void
-execute_new_method(st_oop receiver, st_oop selector, st_oop lookup_class,
-                   int traced)
+run_method_found(st_oop receiver, st_oop method)
 {
-    st_oop      found;
-    st_oop      method;
     st_oop      header;
     unsigned    flag;
-    st_oop      args[8];
-    uint32_t    i;
 
-    method = lookup_method(selector, lookup_class, &found);
-
-    for (i = 0; i < st_vm.argument_count && i < 8; ++i)
-        args[i] = ST_stack_value(st_vm.argument_count - 1 - i);
-
-    if (traced)
-        ST_trace_send(receiver, selector, st_vm.argument_count, args);
-
-    if (!OM_is_present(method)) {
-        send_does_not_understand(receiver, selector, lookup_class);
-        return;
-    }
     st_vm.new_method = method;
     header = method_header(method);
     flag   = ST_header_flag_value(header);
@@ -1435,6 +1467,43 @@ execute_new_method(st_oop receiver, st_oop selector, st_oop lookup_class,
         /*  Otherwise fall through and run the method's Smalltalk body.  */
     }
     activate_new_method();
+}
+
+void
+ST_execute_method(st_oop method, uint32_t argc)
+{
+    st_vm.argument_count = argc;
+    run_method_found(ST_stack_value(argc), method);
+}
+
+unsigned
+ST_method_argument_count(st_oop method)
+{
+    return method_argument_count(method);
+}
+
+static void
+execute_new_method(st_oop receiver, st_oop selector, st_oop lookup_class,
+                   int traced)
+{
+    st_oop      found;
+    st_oop      method;
+    st_oop      args[8];
+    uint32_t    i;
+
+    method = lookup_method(selector, lookup_class, &found);
+
+    for (i = 0; i < st_vm.argument_count && i < 8; ++i)
+        args[i] = ST_stack_value(st_vm.argument_count - 1 - i);
+
+    if (traced)
+        ST_trace_send(receiver, selector, st_vm.argument_count, args);
+
+    if (!OM_is_present(method)) {
+        send_does_not_understand(receiver, selector, lookup_class);
+        return;
+    }
+    run_method_found(receiver, method);
 }
 
 /*  ----------  Special selector sends  ----------  */
