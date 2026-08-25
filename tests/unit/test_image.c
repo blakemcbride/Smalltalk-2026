@@ -166,8 +166,12 @@
  *  SmallInteger>>printOn:base:, which puts its digits on the stack where
  *  1983's put them in a class variable shared by every integer in the
  *  image.  A replacement still compiles, so it still counts.
+ *
+ *  1362 is another replacement: lib/Collections-Protocol's String>>hash,
+ *  primitive 223 over every character, where 1983's read three of them
+ *  and gave 'key1'..'key200' eleven distinct values.
  */
-#define LIB_METHODS             1361
+#define LIB_METHODS             1362
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -1174,20 +1178,32 @@ test_floats(void)
  *  BOOT_string_hash duplicates String>>hash in C, to place symbols in the
  *  library's table without interpreting a send per symbol.  A duplicate that
  *  is merely believed is a bug with a long fuse, so it is checked here
- *  against the image's own answer, for strings that reach every branch of
- *  the formula: empty, one character, two, and longer.
+ *  against the image's own answer.
+ *
+ *  There are two String>>hash, and the bootstrap has to follow whichever
+ *  the image it built has: 1983's, three bytes of the string, which the
+ *  bluebook profile keeps; and lib/Collections-Protocol's, primitive 223
+ *  over every byte, which this profile loads.  The samples reach every
+ *  branch of the 1983 formula -- empty, one character, two, and longer --
+ *  and then strings the 1983 formula could not tell apart: same first
+ *  character, same second-to-last, same length.  If the C ever followed
+ *  the wrong method those would still agree on the first ten and disagree
+ *  on the rest, which is the failure this is shaped to show.
  */
 static void
 test_string_hash_agrees(void)
 {
     static const char *const samples[] = {
         "", "a", "z", "ab", "foo", "hello", "printString",
-        "at:put:", "instanceVariableNames:", "x"
+        "at:put:", "instanceVariableNames:", "x",
+        "key1", "key2", "key9", "keyA", "keya", "kez1",
+        "subclass:instanceVariableNames:classVariableNames:"
+        "poolDictionaries:category:"
     };
     unsigned    i;
 
     for (i = 0; i < sizeof samples / sizeof samples[0]; ++i) {
-        char    expression[128];
+        char    expression[160];
         st_oop  from_image;
         st_oop  interned = BOOT_intern_symbol(samples[i], NULL);
         uint32_t from_c  = BOOT_string_hash(interned);
@@ -1208,6 +1224,34 @@ test_string_hash_agrees(void)
                    samples[i], from_c, text);
         }
     }
+}
+
+/*
+ *  The primitive, its Smalltalk fallback and the C are one function, and
+ *  the function is a hash.
+ *
+ *  The first check runs the fallback by hand -- the loop from
+ *  lib/Collections-Protocol/String.extension.st, spelled out here so that
+ *  the literals are parsed a second time -- against what the primitive
+ *  answered.  The second is why the method exists: two hundred names that
+ *  1983 hashed to eleven values must hash to two hundred.  The third is
+ *  the fold at the end of the function.  A 32-slot Set chooses its bucket
+ *  by the low five bits of the hash, 'a' and 'A' differ in bit 5 alone,
+ *  and a multiply alone carries a difference upward and never down, so
+ *  without the fold the two would share a bucket in every small Set.
+ */
+static void
+test_string_hash_spreads(void)
+{
+    check_oop("| h s | s _ 'instanceVariableNames:'. h _ 2166136261."
+              " 1 to: s size do: [:i |"
+              "  h _ ((h bitXor: (s at: i) asciiValue) * 16777619)"
+              "       bitAnd: 16rFFFFFFFF]."
+              " ^((h bitXor: (h bitShift: -16)) bitAnd: 16rFFFFFFF) = s hash",
+              ST_TRUE, "true");
+    check_integer("((1 to: 200) collect: [:i | ('key', i printString) hash])"
+                  " asSet size", 200);
+    check_oop("('a' hash \\\\ 32) = ('A' hash \\\\ 32)", ST_FALSE, "false");
 }
 
 static void
@@ -2137,7 +2181,7 @@ test_browsing(void)
      *  the source pointer is 22 bits and silently truncated once, and a
      *  size that stops growing is how that would show.
      */
-    check_integer("(SourceFiles at: 1) contents size", 1558869);
+    check_integer("(SourceFiles at: 1) contents size", 1559251);
 }
 
 /*
@@ -3367,6 +3411,7 @@ main(void)
     test_printing();
     test_symbols();
     test_string_hash_agrees();
+    test_string_hash_spreads();
     test_floats();
     test_strings();
     test_graphics_objects();

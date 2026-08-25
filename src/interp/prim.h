@@ -25,6 +25,8 @@
 
 #include "om.h"
 
+#include <stddef.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -64,6 +66,19 @@ typedef enum {
  *  short description when it is not NULL, and left alone for ST_PRIM_ABSENT.
  */
 st_primitive_status ST_primitive_status_of(unsigned index, const char **name);
+
+/*
+ *  String>>hash: the number, and the function behind it.
+ *
+ *  Exported because the bootstrap places symbols in the library's own
+ *  table, and the image finds them there by sending hash; the two have to
+ *  be one function, and this is it.  The number is here rather than a bare
+ *  223 in two files so that the bootstrap can recognise the method by it.
+ */
+#define ST_PRIMITIVE_STRING_HASH    223
+
+uint32_t ST_string_hash_text(const void *bytes, size_t length);
+uint32_t ST_string_hash_object(st_oop string);
 
 /*  Report a non-boolean where the compiler guaranteed one.  */
 void    ST_must_be_boolean(st_oop value);

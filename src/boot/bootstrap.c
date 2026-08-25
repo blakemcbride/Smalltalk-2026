@@ -11,6 +11,7 @@
 #include "profile.h"
 #include "compiler.h"
 #include "interp.h"
+#include "prim.h"
 #include "census.h"
 #include "gfx.h"
 #include "font.h"
@@ -240,6 +241,7 @@ new_class_entry(void)
  *  Symbol and the image would make itself another.
  */
 static int          symbol_table_ready;
+static int          string_hash_kind;   /*  see BOOT_string_hash  */
 static st_oop       symbol_table;
 
 /*
@@ -265,7 +267,17 @@ static unsigned     symbol_capacity;
 static uint32_t    *symbol_index;       /*  slot -> position + 1, 0 empty  */
 static unsigned     symbol_index_size;  /*  a power of two                 */
 
-static uint32_t BOOT_string_hash_of_text(const char *text, size_t length);
+/*
+ *  The index hashes with ST_string_hash_text directly, NOT with
+ *  BOOT_string_hash_of_text below.  That one answers whatever the image's
+ *  own String>>hash answers, and which method that is cannot be known until
+ *  the library is compiled -- by which time this index has been in use for
+ *  every selector the compiler interned.  An index whose hash changed
+ *  underneath it would go on holding every symbol and finding none of
+ *  them, and the compiler would mint a second Symbol for each.  This one
+ *  is private to C and compared with nothing in the image, so it can use
+ *  the same function whatever the image does.
+ */
 
 /*  Does the Symbol at `position` spell `text`?  */
 static int
@@ -313,7 +325,7 @@ symbol_index_insert(unsigned position)
         return;                     /*  found by the scan below instead  */
     for (i = 0; i < n; ++i)
         text[i] = (char) OM_fetch_byte(i, symbols[position]);
-    slot = BOOT_string_hash_of_text(text, n) & (symbol_index_size - 1);
+    slot = ST_string_hash_text(text, n) & (symbol_index_size - 1);
     while (symbol_index[slot] != 0)
         slot = (slot + 1) & (symbol_index_size - 1);
     symbol_index[slot] = position + 1;
@@ -334,7 +346,7 @@ symbol_find(const char *text, size_t n)
         }
         return -1;
     }
-    slot = BOOT_string_hash_of_text(text, n) & (symbol_index_size - 1);
+    slot = ST_string_hash_text(text, n) & (symbol_index_size - 1);
     while (symbol_index[slot] != 0) {
         unsigned    position = symbol_index[slot] - 1;
 
@@ -466,7 +478,7 @@ static void install_closure_support(void);
  */
 static const int   *path_dialects;
 static int          current_dialect;
-uint32_t BOOT_string_hash_of_text(const char *text, size_t length);
+static uint32_t BOOT_string_hash_of_text(const char *text, size_t length);
 static int adopt_symbols(void);
 static int adopt_associations(void);
 
@@ -3353,6 +3365,7 @@ boot_build_locked(const char *const *paths, const int *dialects,
     OM_store_pointer(0, ST_SMALLTALK, globals_values);
 
     path_dialects = dialects;
+    string_hash_kind = -1;      /*  which String>>hash: not known yet  */
 
     /*  Pass zero: read every definition, so forward references resolve.  */
     for (i = 0; i < path_count; ++i) {
@@ -3850,7 +3863,9 @@ run_method_on(st_oop method, st_oop receiver, uint64_t budget)
 
 
 /*
- *  String>>hash, as the 1983 library computes it:
+ *  String>>hash, as the IMAGE computes it -- and there are two images.
+ *
+ *  The bluebook profile runs 1983's method:
  *
  *      hash
  *          | l m |
@@ -3862,11 +3877,25 @@ run_method_on(st_oop method, st_oop receiver, uint64_t budget)
  *                               ^21845]].
  *          ^(self at: 1) asciiValue * 48 + ((self at: (m - 1)) asciiValue + l)
  *
- *  Smalltalk indexes from one, so "self at: (m - 1)" is byte m - 2 here.
+ *  three bytes of the string, chosen to keep the answer a 16-bit
+ *  SmallInteger.  Smalltalk indexes from one, so "self at: (m - 1)" is byte
+ *  m - 2 here.
+ *
+ *  Every other profile loads lib/Collections-Protocol, whose String>>hash
+ *  is primitive 223 and reads the whole string: the 1983 formula gives
+ *  'key1'..'key200' eleven distinct values, and a Dictionary of a thousand
+ *  such keys was quadratic to fill (doc/JSON.md, where it was found).
+ *
+ *  Which one the image has is a fact about the compiled String>>hash and
+ *  is read from the method (string_hash_is_primitive), not from the
+ *  profile's name: the profile says what was loaded and the method says
+ *  what will RUN.  It matters because the library's Symbol table is filled
+ *  by this function and read by the image's own stringhash, so the two
+ *  must be one function or a symbol placed here is one the image cannot
+ *  find.  tests/unit/test_image.c holds them equal for both kinds.
  */
-/*  The same formula on plain text, for interning a name not yet a Symbol. */
-uint32_t
-BOOT_string_hash_of_text(const char *text, size_t length)
+static uint32_t
+string_hash_1983_of_text(const char *text, size_t length)
 {
     size_t  m;
 
@@ -3879,15 +3908,12 @@ BOOT_string_hash_of_text(const char *text, size_t length)
          + (uint32_t) (unsigned char) text[m - 2] + (uint32_t) length;
 }
 
-uint32_t
-BOOT_string_hash(st_oop string)
+static uint32_t
+string_hash_1983(st_oop string)
 {
-    uint32_t    length;
+    uint32_t    length = OM_fetch_byte_length(string);
     uint32_t    m;
 
-    if (!OM_is_present(string))
-        return 0;
-    length = OM_fetch_byte_length(string);
     if (length == 0)
         return 21845;
     if (length == 1)
@@ -3895,6 +3921,54 @@ BOOT_string_hash(st_oop string)
     m = (length == 2) ? 3 : length;
     return (uint32_t) OM_fetch_byte(0, string) * 48
          + (uint32_t) OM_fetch_byte(m - 2, string) + length;
+}
+
+/*
+ *  Does the image's String>>hash declare primitive 223?  Read from the
+ *  method dictionary each time until seed_symbol_table has fixed the
+ *  answer in string_hash_kind -- fixed there and not earlier because
+ *  until the library is compiled the method in the dictionary is 1983's,
+ *  and an answer cached from that moment would be wrong for the rest of
+ *  the image's life.  Nothing consults the library's table through this
+ *  before the table exists, and the C index above has its own hash, so
+ *  the lookup is cheap and the window is harmless.
+ */
+static int
+string_hash_is_primitive(void)
+{
+    boot_class *string;
+    st_oop      method;
+
+    if (string_hash_kind >= 0)
+        return string_hash_kind;
+    string = find_class("String");
+    if (!string || !OM_is_present(string->class_oop))
+        return 0;
+    method = method_in_dictionary(
+                 OM_fetch_pointer(CLASS_METHOD_DICT, string->class_oop),
+                 "hash");
+    if (!OM_is_present(method))
+        return 0;
+    return ST_method_primitive_index(method) == ST_PRIMITIVE_STRING_HASH;
+}
+
+/*  The same formula on plain text, for interning a name not yet a Symbol. */
+static uint32_t
+BOOT_string_hash_of_text(const char *text, size_t length)
+{
+    return string_hash_is_primitive()
+         ? ST_string_hash_text(text, length)
+         : string_hash_1983_of_text(text, length);
+}
+
+uint32_t
+BOOT_string_hash(st_oop string)
+{
+    if (!OM_is_present(string))
+        return 0;
+    return string_hash_is_primitive()
+         ? ST_string_hash_object(string)
+         : string_hash_1983(string);
 }
 
 /*
@@ -3984,6 +4058,11 @@ seed_symbol_table(st_boot_init_report *out)
         return 1;
     out->symbols_total = symbol_count;
 
+    /*
+     *  The library is compiled, so which String>>hash the image runs is now
+     *  settled; settle it here, before the first bucket is chosen by it.
+     */
+    string_hash_kind = string_hash_is_primitive();
     symbol_table_ready = 1;
     /*
      *  Place every symbol directly, computing the bucket in C.
@@ -3991,12 +4070,13 @@ seed_symbol_table(st_boot_init_report *out)
      *  The obvious alternative -- sending the image's own intern: 3601 times
      *  -- was tried and abandoned: it added two and a half seconds to every
      *  bootstrap and still placed only a sixth of them.  So the hash is
-     *  computed here instead, which duplicates String>>hash in C, which is
-     *  exactly the sort of copy that drifts.  What makes it safe is that the
-     *  copy is CHECKED: tests/unit/test_image.c asks the image for the hash
-     *  of a sample of symbols and fails if this disagrees with any of them.
-     *  A duplicate that is asserted equal is a cache; one that is trusted is
-     *  a bug waiting for a rainy day.
+     *  computed here instead.  For the library's String>>hash that is the
+     *  very function the primitive runs; for 1983's it is a duplicate in C,
+     *  which is exactly the sort of copy that drifts.  What makes it safe
+     *  is that the copy is CHECKED: tests/unit/test_image.c asks the image
+     *  for the hash of a sample of symbols and fails if this disagrees with
+     *  any of them.  A duplicate that is asserted equal is a cache; one
+     *  that is trusted is a bug waiting for a rainy day.
      */
     for (i = 0; i < symbol_count; ++i) {
         if (place_in_symbol_table(symbols[i]))

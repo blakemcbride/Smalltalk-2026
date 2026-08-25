@@ -279,11 +279,11 @@ resembles, both deliberate and both tested:
   arithmetic — exactly the case where answering nil buries the fault a level
   down. `at:ifAbsent:` is there for the reader who really does not know.
 
-## A limit worth knowing: many names are quadratic
+## Many names, and the hash that made them quadratic
 
-A JSON object with a few dozen names is what almost every document has, and this
-is not about those. An object used as a *map*, with thousands of names, is
-quadratic to build and to read — and the reason is 1983's `String>>hash`:
+A JSON object with a few dozen names is what almost every document has, and
+nothing here is about those. An object used as a *map*, with thousands of names,
+was quadratic to build and to read, and the reason was 1983's `String>>hash`:
 
 ```smalltalk
 hash
@@ -292,28 +292,42 @@ hash
     ^(self at: 1) asciiValue * 48 + ((self at: (m - 1)) asciiValue + l)
 ```
 
-The first character, the second-to-last character, and the length. Nothing else.
-Two hundred names of the form `key1`..`key200` produce **eleven** distinct hash
-values, so the `Dictionary` degenerates to linear probing along one chain:
+The first character, the second-to-last character, and the length — three bytes,
+chosen to keep the answer a 16-bit SmallInteger on the Alto. Two hundred names of
+the form `key1`..`key200` produce **eleven** distinct values, so the `Dictionary`
+degenerates to linear probing along one chain:
 
 | names | distinct hashes | to build |
 |---|---|---|
-| 124 | 13 | 7 ms |
-| 248 | 13 | 34 ms |
-| 496 | 26 | 137 ms |
-| 992 | 46 | 697 ms |
+| 124 | 10 | 23 ms |
+| 248 | 11 | 88 ms |
+| 496 | 11 | 400 ms |
+| 992 | 11 | 1,728 ms |
 
-Four times the time for twice the names, which is the signature. This is a
-property of the 1983 library rather than of this package — every `Dictionary`
-and `Set` keyed by long similar Strings has it, and `lib/Database` does not
-because a table has a few dozen columns — but a JSON reader is the most likely
-thing in the image to meet it, so it is recorded here. It found this package's
-own parallel test first: 15,500 names made that test a benchmark of a hash
-function rather than a test of a lock, at 143 seconds for sixteen workers.
+Four times the time for twice the names, which is the signature. It was found by
+this package's own parallel test: 15,500 names made that test a benchmark of a
+hash function rather than a test of a lock, at 143 seconds for sixteen workers.
 
-Fixing it means giving `String` a hash that reads the whole string, in `lib/`,
-which changes the iteration order of every hashed collection in the image and
-therefore belongs to its own piece of work with its own ratchets.
+`lib/Collections-Protocol/String.extension.st` replaces it. The new `String>>hash`
+is primitive 223 — FNV-1a over every character, the high half folded into the low
+so that a power-of-two table sees every bit, 28 bits wide — with the same function
+in Smalltalk as its fallback; the bootstrap computes it a third time, in C, to
+place symbols in the library's table, and `tests/unit/test_image.c` holds the three
+equal. The same names now:
+
+| names | distinct hashes | to build |
+|---|---|---|
+| 124 | 124 | 1 ms |
+| 248 | 248 | 2 ms |
+| 496 | 496 | 5 ms |
+| 992 | 992 | 9 ms |
+
+Two things follow. `Symbol>>hash` is `super hash`, so `#foo hash = 'foo' hash`
+still holds and a Symbol and a String that spell the same word are one key. And
+the iteration order of every hashed collection in the image changed with it;
+nothing in the tree depended on the old order, and the five profile suites say so.
+The `bluebook` profile keeps 1983's method, and the bootstrap follows whichever
+the image it built has.
 
 ## Testing
 

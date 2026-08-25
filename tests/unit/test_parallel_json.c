@@ -213,15 +213,17 @@ run_method(st_oop method)
  *  see.
  *
  *  The names are built once by JSONFixture and handed out ready-made, not
- *  built per worker.  Few names and many puts, rather than many names, and
- *  the reason is 1983's String>>hash: it is the first character, the
- *  second-to-last character and the length, and nothing else.  Two hundred
- *  names of the form `key1'..`key200' produce ELEVEN distinct hash values,
- *  so a large Dictionary of String keys degenerates to linear probing over
- *  one chain and filling it is quadratic -- measured at 7ms for 124 names,
- *  137ms for 496 and 697ms for 992.  Fifteen thousand names made this a
- *  benchmark of a 1983 hash function rather than a test of a lock: at
- *  sixteen workers it took 143 seconds.  See doc/JSON.md.
+ *  built per worker.  Few names and many puts, rather than many names:
+ *  the first version of this test used 15,500 distinct names and took 143
+ *  seconds at sixteen workers, and what it was measuring was 1983's
+ *  String>>hash -- the first character, the second-to-last and the length,
+ *  which gave `key1'..`key200' ELEVEN distinct values and made a large
+ *  Dictionary of String keys quadratic to fill.  That hash is gone
+ *  (lib/Collections-Protocol/String.extension.st reads every character,
+ *  and 992 such names now fill in 9ms where they took 1.7 seconds), but
+ *  the test keeps its ten names, because ten shared by everyone is what
+ *  makes the count afterwards exact, and the lock is the subject.  See
+ *  doc/JSON.md for the history.
  */
 static const char *const object_source =
     "| n |"

@@ -26,7 +26,8 @@ symbol; the reverse is not true, because a symbol may not be modified.
 
 Use a \ct{Symbol} for anything that names something---a selector, a key in a
 dictionary, a state in a state machine, a tag. Comparison is pointer
-comparison and hashing is free. Use a \ct{String} for data: something a user
+comparison, and a Symbol hashes as the String spelling it does, so the two are
+one key in a \ct{Dictionary}. Use a \ct{String} for data: something a user
 typed, something read from a file, something you built.
 
 \begin{st}

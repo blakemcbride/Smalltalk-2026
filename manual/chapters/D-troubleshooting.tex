@@ -104,10 +104,11 @@ st80: N input events were dropped
   RFC 8259 and refuses what most libraries forgive---a trailing comma, an
   unquoted name, single quotes, a leading zero, a bare word, a second document
   after the first. The position in the message is where to look.
-\item[An object with thousands of names is slow] It is quadratic, and it is
-  1983's \ct{String>>hash} rather than this package: it reads the first
-  character, the second-to-last, and the length. A few dozen names is
-  unaffected. See \ct{doc/JSON.md}.
+\item[An object with thousands of names is slow] You are running the
+  \ct{bluebook} profile. 1983's \ct{String>>hash} reads the first character,
+  the second-to-last, and the length; every other profile loads
+  \ct{lib/Collections-Protocol}, whose \ct{String>>hash} reads them all. See
+  \ct{doc/JSON.md}.
 \end{description}
 
 \section{Concurrency}

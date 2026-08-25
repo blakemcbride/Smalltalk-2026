@@ -2881,6 +2881,92 @@ primitive_hash_multiply(void)
 }
 
 /*
+ *  223: the hash of a String, over every byte of it.  This system's own.
+ *
+ *  1983's String>>hash read three bytes -- the first character, the
+ *  second-to-last and the length -- chosen so that the answer stayed a
+ *  16-bit SmallInteger on the Alto.  On a Dictionary keyed by Strings that
+ *  look alike it is not a hash at all: 'key1'..'key200' produce eleven
+ *  distinct values, and filling a Dictionary with a thousand such keys took
+ *  700ms, quadratically, which is how it was found (doc/JSON.md).
+ *
+ *  A primitive rather than a loop in bytecodes because a hashed collection
+ *  hashes the key on EVERY at:, and a loop over the characters interpreted
+ *  would cost more than the probe it exists to shorten.  The method in
+ *  lib/Collections-Protocol/String.extension.st keeps the same loop in
+ *  Smalltalk as its fallback, and the bootstrap keeps the same function in
+ *  C to place symbols in the library's table; tests/unit/test_image.c
+ *  holds all three equal, since a copy that is merely believed is a bug
+ *  with a long fuse.
+ *
+ *  The function is FNV-1a over the bytes, 32 bits wide, then the high half
+ *  folded into the low half and the top four bits dropped.
+ *
+ *  FNV-1a because it is short enough to write in Smalltalk EXACTLY: each
+ *  step is a 32-bit value times a 24-bit prime, which is a SmallInteger
+ *  here, so the fallback needs no LargePositiveInteger to agree with this.
+ *  And because multiplying by an odd constant is a bijection modulo 2^32,
+ *  two strings that differ only in their last byte never share a hash.
+ *
+ *  The fold because of where the hash goes.  1983's Set and Dictionary
+ *  choose a bucket by `hash \\ basicSize', and basicSize starts at 32 and
+ *  doubles -- a power of two, so only the LOW bits of the hash ever choose
+ *  a bucket.  A multiply carries information upward and never down: the
+ *  low five bits of the product depend on the low five bits of the operand
+ *  alone.  Without the fold 'a' and 'A', which differ in bit 5 and nothing
+ *  else, would share a bucket in every 32-slot Set, and so would any two
+ *  strings whose last characters differ only in case.  Folding the top
+ *  sixteen bits down puts every bit of every byte into the bits a bucket
+ *  is chosen by.
+ *
+ *  28 bits, so that this and hashMultiply above agree about how wide a
+ *  hash is; ported code combines the two.
+ */
+uint32_t
+ST_string_hash_text(const void *bytes, size_t length)
+{
+    const uint8_t  *p = (const uint8_t *) bytes;
+    uint32_t        h = 2166136261u;
+    size_t          i;
+
+    for (i = 0; i < length; ++i)
+        h = (h ^ p[i]) * 16777619u;
+    return (h ^ (h >> 16)) & 0x0FFFFFFFu;
+}
+
+uint32_t
+ST_string_hash_object(st_oop string)
+{
+    uint32_t    length = OM_fetch_byte_length(string);
+    uint32_t    h = 2166136261u;
+    uint32_t    i;
+
+    for (i = 0; i < length; ++i)
+        h = (h ^ OM_fetch_byte(i, string)) * 16777619u;
+    return (h ^ (h >> 16)) & 0x0FFFFFFFu;
+}
+
+/*
+ *  Any byte-indexed receiver, not only a String: a Symbol is one, and
+ *  Symbol>>stringhash is `^super hash'.  A pointer or word object fails,
+ *  which runs the Smalltalk body, which sends at: and asciiValue and will
+ *  say what is wrong in its own words.
+ */
+static int
+primitive_string_hash(void)
+{
+    st_oop      receiver = ST_stack_value(0);
+    om_shape    shape;
+
+    if (!OM_is_object(receiver))
+        return 0;
+    shape = shape_of_class(OM_fetch_class(receiver));
+    if (shape.pointers || shape.words || !shape.indexable)
+        return 0;
+    return answer_positive(ST_string_hash_object(receiver), 1);
+}
+
+/*
  *  163, 164, 183, 184: read-only objects, and pinned ones.
  *
  *  Spur keeps both in the object header.  This memory has neither, and the
@@ -4013,6 +4099,7 @@ ST_primitive_dispatch(unsigned index)
     }
     case 221: return primitive_closure_value(0);
     case 222: return primitive_closure_value(1);
+    case ST_PRIMITIVE_STRING_HASH: return primitive_string_hash();
 
     /*
      *  What Pharo's Kernel names.  See doc/PHARO-INTAKE.md for the ones
@@ -4193,6 +4280,8 @@ static const primitive_entry primitive_table[] = {
     { 206, ST_PRIM_PRESENT,  "BlockClosure valueWithArguments:" },
     { 221, ST_PRIM_PRESENT,  "BlockClosure valueNoContextSwitch" },
     { 222, ST_PRIM_PRESENT,  "BlockClosure valueNoContextSwitch:" },
+    { ST_PRIMITIVE_STRING_HASH, ST_PRIM_PRESENT,
+                             "String hash, over every byte -- ours"   },
     { 230, ST_PRIM_PRESENT,  "ProcessorScheduler class "
                              "relinquishProcessorForMicroseconds:" },
     { 240, ST_PRIM_PRESENT,  "UTC microsecond clock"            },

@@ -82,6 +82,18 @@ test_the_four_answers(void)
     CHECK(name != NULL);
 
     /*
+     *  223 is String>>hash over every byte, this system's own number.
+     *  Silently absent it would fail nothing: the method's Smalltalk body
+     *  computes the same function, so every test would pass and every
+     *  Dictionary lookup would hash its key with a loop in bytecodes.  A
+     *  slowdown with no failure is the absence a floor count is blind to,
+     *  so the number is checked present and named.
+     */
+    name = NULL;
+    CHECK_EQ_INT(ST_primitive_status_of(223, &name), ST_PRIM_PRESENT);
+    CHECK(name != NULL && strstr(name, "hash") != NULL);
+
+    /*
      *  Every number the table claims is one the compiler will accept, so a
      *  typo'd entry cannot sit there describing a primitive no source could
      *  ever ask for.

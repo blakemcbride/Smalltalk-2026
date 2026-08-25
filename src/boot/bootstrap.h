@@ -195,11 +195,14 @@ typedef struct {
 int BOOT_run_initializers(st_boot_init_report *out);
 
 /*
- *  String>>hash as the 1983 library computes it, in C.
+ *  String>>hash as the image being built computes it, in C.
  *
- *  A deliberate duplicate, used to place symbols in the library's own hash
- *  table without interpreting 3601 sends.  tests/unit/test_image.c asserts
- *  it agrees with the image, which is what keeps a copy from drifting.
+ *  Used to place symbols in the library's own hash table without
+ *  interpreting 3601 sends.  Which function that is depends on the image:
+ *  the library's String>>hash is primitive 223 and this calls the same C;
+ *  1983's, which the bluebook profile keeps, is duplicated here.
+ *  tests/unit/test_image.c asserts it agrees with the image, which is what
+ *  keeps a copy from drifting.
  */
 uint32_t BOOT_string_hash(st_oop string);
 

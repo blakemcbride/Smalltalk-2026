@@ -327,14 +327,14 @@ block would have made the most natural line somebody could write into a
 deadlock.
 \end{stnote}
 
-\begin{stwarn}
-An object with thousands of \emph{names} is quadratic to build, and it is not
-this package's fault: 1983's \ct{String>>hash} reads the first character, the
-second-to-last, and the length, so two hundred names like \ct{key1}..\ct{key200}
-share eleven hash values and the \ct{Dictionary} degenerates into one long
-chain. A few dozen names---what almost every document has---is unaffected. See
-\ct{doc/JSON.md}.
-\end{stwarn}
+\begin{stnote}
+An object with thousands of \emph{names} is linear to build. It was not always:
+1983's \ct{String>>hash} read the first character, the second-to-last, and the
+length, so two hundred names like \ct{key1}..\ct{key200} shared eleven hash
+values and a \ct{Dictionary} of them degenerated into one long chain. This
+package's own test found it, and \ct{lib/Collections-Protocol} now gives
+\ct{String} a hash over every character. See \ct{doc/JSON.md}.
+\end{stnote}
 
 \section{Streams}
 
