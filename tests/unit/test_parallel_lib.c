@@ -39,6 +39,16 @@
  *  another coat: an implicit lock the library leaned on, which this system
  *  removed.  No sanitizer can see it, since a class variable written from
  *  Smalltalk is not a data race in any C.
+ *
+ *  And one property of the primitives the other three stand on:
+ *  Processor activeWorkerIndex must be distinct per worker, in range,
+ *  and the same every time one worker asks.  Every parallel kernel in
+ *  tests/bench slices its work by it, and while the printString fault was
+ *  being chased a probe that built keys by PRINTING the index found only
+ *  29 distinct values on 31 workers and blamed the primitive.  The
+ *  primitive was right and the printing was not; this section is here so
+ *  that the next such probe has something to check against that does not
+ *  go through printString.
  */
 
 #include "st_test.h"
@@ -213,6 +223,23 @@ static const char *const queue_source =
  *  to compare against, because with the buffer shared BOTH strings were
  *  wrong and sometimes agreed.
  */
+/*
+ *  Every worker asks which worker it is, how many there are, and then asks
+ *  again PER_WORKER times to see whether the answer holds still.  It
+ *  answers the three numbers in an Array rather than summing them, because
+ *  the property is not a total: it is that each index appears exactly
+ *  once, which only the C side, holding every worker's answer, can check.
+ *  No printString anywhere in it, for the reason in the header.
+ */
+static const char *const index_source =
+    "| index count agreed |"
+    " index := Processor activeWorkerIndex."
+    " count := Processor workerCount."
+    " agreed := 0."
+    " 1 to: 2000 do: [:i |"
+    "    Processor activeWorkerIndex = index ifTrue: [agreed := agreed + 1]]."
+    " ^Array with: index with: count with: agreed";
+
 static const char *const print_source =
     "| n s width |"
     " n := 0."
@@ -233,9 +260,15 @@ static st_oop           read_size_method;
 static st_oop           mutex_method;
 static st_oop           queue_method;
 static st_oop           print_method;
+static st_oop           index_method;
 static st_oop           running_method;
 static st_atomic_int    reported;
 static st_atomic_int    wrong_answers;
+
+/*  What each worker said its index, the pool size and its agreement were. */
+static int              index_said[ST_MAX_WORKERS];
+static int              count_said[ST_MAX_WORKERS];
+static int              agreed_said[ST_MAX_WORKERS];
 
 static void
 provide_lib_roots(om_visit_fn visit)
@@ -260,6 +293,8 @@ provide_lib_roots(om_visit_fn visit)
         visit(queue_method);
     if (OM_is_object(print_method))
         visit(print_method);
+    if (OM_is_object(index_method))
+        visit(index_method);
 }
 
 /*  ST_LIB_WORKERS lets one worker be told apart from many.  */
@@ -294,6 +329,33 @@ lib_worker(st_worker *self, void *user)
 /*
  *  Evaluate one expression on this thread, for setting the globals up.
  */
+/*
+ *  The index kernel's worker: files the three numbers under the slot the
+ *  VM gave this thread, so that the check afterwards can compare what
+ *  Smalltalk said with what C knows.
+ */
+static void
+index_worker(st_worker *self, void *user)
+{
+    st_oop  value;
+
+    (void) user;
+    ST_interp_register();
+    value = run_method(index_method);
+    if (OM_is_object(value) && OM_fetch_word_length(value) == 3
+     && OM_is_int(OM_fetch_pointer(0, value))
+     && OM_is_int(OM_fetch_pointer(1, value))
+     && OM_is_int(OM_fetch_pointer(2, value))) {
+        index_said[self->index]  = (int) OM_int_value(OM_fetch_pointer(0, value));
+        count_said[self->index]  = (int) OM_int_value(OM_fetch_pointer(1, value));
+        agreed_said[self->index] = (int) OM_int_value(OM_fetch_pointer(2, value));
+        ST_fetch_add_relaxed(&reported, 1);
+    } else {
+        ST_fetch_add_relaxed(&wrong_answers, 1);
+    }
+    ST_interp_unregister();
+}
+
 static st_oop
 evaluate(const char *expression)
 {
@@ -391,13 +453,15 @@ main(void)
     mutex_method = compile_expression(mutex_source);
     queue_method = compile_expression(queue_source);
     print_method = compile_expression(print_source);
+    index_method = compile_expression(index_source);
     read_count_method = compile_expression(" ^ConcurrencyFixture count");
     read_size_method  = compile_expression(" ^ConcurrencyFixture queue size");
     CHECK(mutex_method != ST_OOP_INVALID);
     CHECK(queue_method != ST_OOP_INVALID);
     CHECK(print_method != ST_OOP_INVALID);
+    CHECK(index_method != ST_OOP_INVALID);
     if (mutex_method == ST_OOP_INVALID || queue_method == ST_OOP_INVALID
-     || print_method == ST_OOP_INVALID)
+     || print_method == ST_OOP_INVALID || index_method == ST_OOP_INVALID)
         return ST_TEST_END();
 
     /*  ----------  A Mutex-guarded counter  ---------- */
@@ -473,6 +537,40 @@ main(void)
      *  number.
      */
     CHECK_EQ_INT(ST_load_seq(&reported), (int) (workers * PER_WORKER));
+
+    /*  ----------  activeWorkerIndex, from every worker at once  ---------- */
+
+    {
+        int         times_seen[ST_MAX_WORKERS];
+        unsigned    i;
+
+        memset(index_said, -1, sizeof index_said);
+        memset(times_seen, 0, sizeof times_seen);
+        ST_store_seq(&reported, 0);
+        ST_store_seq(&wrong_answers, 0);
+        CHECK_EQ_INT(WORKER_start(want_workers(), index_worker, NULL), 0);
+        workers = WORKER_count();
+        WORKER_stop();
+        ST_interp_register();
+
+        printf("  %u threads asked which worker they were, %u times each\n",
+               workers, (unsigned) PER_WORKER);
+        CHECK_EQ_INT(ST_load_seq(&wrong_answers), 0);
+        CHECK_EQ_INT(ST_load_seq(&reported), (int) workers);
+        for (i = 0; i < workers; ++i) {
+            /*  What Smalltalk said is what the VM gave the thread.  */
+            CHECK_EQ_INT(index_said[i], (int) i);
+            /*  And it saw the whole pool.  */
+            CHECK_EQ_INT(count_said[i], (int) workers);
+            /*  And the answer did not move while it looked.  */
+            CHECK_EQ_INT(agreed_said[i], (int) PER_WORKER);
+            if (index_said[i] >= 0 && index_said[i] < (int) workers)
+                ++times_seen[index_said[i]];
+        }
+        /*  Each index once: none missing, none shared.  */
+        for (i = 0; i < workers; ++i)
+            CHECK_EQ_INT(times_seen[i], 1);
+    }
 
     ST_interp_unregister();
     OM_shutdown();

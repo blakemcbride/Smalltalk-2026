@@ -3306,7 +3306,17 @@ primitive_active_process(void)
     return 1;
 }
 
-/*  243: which worker is asking, zero-based, for confining work to one.  */
+/*
+ *  243: which worker is asking, zero-based, for confining work to one.
+ *
+ *  A thread that is not a worker answers 0: right when there is no pool,
+ *  since the one thread is then worker 0 of 1, and what the main thread
+ *  gets while a pool is up, when it runs no Smalltalk.  Distinct per
+ *  worker, in range and steady is a property tests/unit/test_parallel_lib
+ *  checks from every worker at once, without printing anything -- a probe
+ *  that printed the index to build keys once found 29 values on 31 workers
+ *  and blamed this primitive, when it was printString that was shared.
+ */
 static int
 primitive_active_worker_index(void)
 {
