@@ -83,6 +83,14 @@ uint32_t ST_string_hash_object(st_oop string);
 /*  Report a non-boolean where the compiler guaranteed one.  */
 void    ST_must_be_boolean(st_oop value);
 
+/*
+ *  Bring the network up, with its hooks into the scheduler.  Done on the
+ *  first socket primitive, and by `st80 -serve' before its workers start;
+ *  safe from any thread, any number of times.  0, or -1 and a message on
+ *  standard error.
+ */
+int     ST_net_init(void);
+
 /*  Stack helpers shared with the interpreter.  */
 st_oop  ST_stack_value(uint32_t from_top);
 st_oop  ST_stack_top(void);

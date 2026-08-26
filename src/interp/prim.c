@@ -13,6 +13,7 @@
 #include "st_port.h"
 #include "st_atomic.h"
 #include "st_odbc.h"
+#include "st_socket.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -1362,6 +1363,17 @@ st_file_open(const char *path, int mode)
 static void st_file_close(int fd)    { _close(fd); }
 static int64_t st_file_size(int fd)  { return (int64_t) _filelengthi64(fd); }
 
+/*  Seconds since the Unix epoch, or -1.  _fstat64 for a 64-bit time.  */
+static int64_t
+st_file_mtime(int fd)
+{
+    struct _stat64  st;
+
+    if (_fstat64(fd, &st) != 0)
+        return -1;
+    return (int64_t) st.st_mtime;
+}
+
 static int
 st_path_is_directory(const char *path)
 {
@@ -1521,6 +1533,17 @@ st_file_size(int fd)
     if (fstat(fd, &st) != 0)
         return -1;
     return (int64_t) st.st_size;
+}
+
+/*  Seconds since the Unix epoch, or -1.  */
+static int64_t
+st_file_mtime(int fd)
+{
+    struct stat st;
+
+    if (fstat(fd, &st) != 0)
+        return -1;
+    return (int64_t) st.st_mtime;
 }
 
 static int
@@ -1729,6 +1752,11 @@ posix_fd_for(st_oop file, int for_writing)
  *  failure -- doCommand:name:page:error: tests for it and only then raises
  *  an error -- so a read past the end answers false and read: answers nil,
  *  which is exactly how a stream finds the end of a file.
+ *
+ *  6 is this system's: the time the file was last modified, in seconds on
+ *  the Smalltalk epoch so that it compares with what primitive 98 answers.
+ *  A server that loads a service from a Tonel file on first use reloads it
+ *  when the file changes, and "has it changed" is this number.
  */
 static int
 primitive_file_command(void)
@@ -1745,7 +1773,7 @@ primitive_file_command(void)
         return 0;
     command = (long) OM_int_value(cmd);
     fd = (command == 1 || command == 2) ? posix_fd_for(file, 1)
-       : (command == 0 || command == 3) ? posix_fd_for(file, 0)
+       : (command == 0 || command == 3 || command == 6) ? posix_fd_for(file, 0)
        : posix_fd_of(file);
 
     switch (command) {
@@ -1797,6 +1825,25 @@ primitive_file_command(void)
         ST_pop_n(4);
         ST_push(OM_int_oop((st_int) size));
         return 1;
+    }
+    case 6: {                                   /*  modification time  */
+        int64_t when = fd < 0 ? -1 : st_file_mtime(fd);
+
+        if (when < 0) {
+            posix_errno = errno;
+            answer = ST_FALSE;
+            break;
+        }
+        when += ST_EPOCH_OFFSET_SEC;
+#ifndef ST_OM_MT
+        /*  Fifteen bits cannot hold a date; the Blue Book memory has none.  */
+        answer = ST_FALSE;
+        break;
+#else
+        ST_pop_n(4);
+        ST_push(OM_int_oop((st_int) when));
+        return 1;
+#endif
     }
     case 0: {                                   /*  read a page  */
         st_oop      buffer;
@@ -2001,19 +2048,12 @@ primitive_directory_command(void)
     case 3: {                                   /*  the names  */
         st_dir          dir;
         const char     *name;
-        st_oop          names[4096];
+        char           *names[4096];
         uint32_t        count = 0;
         uint32_t        i;
         st_oop          array;
-        /*
-         *  arg1 names the directory to walk, and nil means the one the
-         *  system was started in -- which is every 1983 caller, because
-         *  PosixFileDirectory>>fileNames passes nil and 1983 had nowhere
-         *  else to look.  Reading a directory in a File List is what wants
-         *  the other case: the pane answers its listing, and a listing has
-         *  to be of the directory that was asked for.
-         */
         const char     *path = ".";
+        int             failed = 0;
 
         if (OM_is_present(arg1)) {
             if (!c_from_string(arg1, a, sizeof a))
@@ -2024,22 +2064,50 @@ primitive_directory_command(void)
             posix_errno = errno;
             return 0;
         }
+        /*
+         *  The names are copied in C first, and become Strings only once
+         *  there is an Array on the stack to hold each one the moment it is
+         *  made.  The first version made every String first and the Array
+         *  last, holding the Strings in a C array with a count of zero; an
+         *  allocation can run a full collection, which frees whatever no
+         *  root reaches, and a C array is not a root.  The REST server
+         *  lists its back-end directory on every request, and on thirty-one
+         *  workers with the collector forced along a listing came back with
+         *  a name that was no longer an object.
+         */
         while ((name = st_dir_next(&dir)) != NULL && count < 4096) {
-            st_oop  one;
+            size_t  n;
 
             if (name[0] == '.')                 /*  no dot files, no . or ..  */
                 continue;
-            one = string_from_c(name, strlen(name));
-            if (!OM_is_present(one))
+            n = strlen(name);
+            names[count] = malloc(n + 1);
+            if (!names[count])
                 break;
-            names[count++] = one;
+            memcpy(names[count], name, n + 1);
+            ++count;
         }
         st_dir_close(&dir);
         array = OM_instantiate_pointers(ST_CLASS_ARRAY, count);
         if (!OM_is_present(array))
-            return 0;
+            failed = 1;
+        else {
+            ST_push(array);
+            for (i = 0; i < count; ++i) {
+                st_oop  one = string_from_c(names[i], strlen(names[i]));
+
+                if (!OM_is_present(one)) {
+                    failed = 1;
+                    break;
+                }
+                OM_store_pointer(i, array, one);
+            }
+            ST_pop_n(1);
+        }
         for (i = 0; i < count; ++i)
-            OM_store_pointer(i, array, names[i]);
+            free(names[i]);
+        if (failed)
+            return 0;
         ST_pop_n(3);
         ST_push(array);
         return 1;
@@ -3446,6 +3514,444 @@ primitive_first_ready_process_at(void)
     return 1;
 }
 
+/*  ----------  The network  ----------
+ *
+ *  primitive 208 -- Socket class >> primCommand:with:with:with:
+ *
+ *  One primitive with a command number, for the reason 129 and 130 are:
+ *  a subsystem that grows should grow inside its own number.  The shape
+ *  is 129's exactly -- four fixed slots, arguments copied out before any
+ *  call, answers built after -- and so is the contract: the primitive
+ *  FAILS when it was called wrongly, which is a bug in the Socket class
+ *  and reaches its fallback code; it answers NIL when the operating system
+ *  said no, with Socket class>>lastError carrying the reason; and it
+ *  answers FALSE when a non-blocking call could not complete yet, which is
+ *  the ordinary case and is what tells the caller to arm and wait.
+ *
+ *  What is NOT here is any blocking.  Every descriptor is non-blocking and
+ *  a worker never waits in this primitive; it waits on a Semaphore that
+ *  the network's own thread signals.  See src/net/st_socket.h.
+ *
+ *  Bytes cross in a per-thread buffer of 64 KiB: RECV reads into it and
+ *  copies into the caller's byte object afterwards, SEND copies out first.
+ *  That is the file primitive's pattern, and it keeps every pointer into
+ *  an object's body out of the network layer, which the parking of
+ *  getaddrinfo requires and which costs nothing next to a system call.
+ */
+
+/*  The command numbers, as Socket's class-side methods name them.  */
+enum {
+    NET_CMD_AVAILABLE       =  0,
+    NET_CMD_LAST_ERROR      =  1,
+    NET_CMD_LAST_ERRNO      =  2,
+    NET_CMD_LISTEN          =  3,   /*  host, port, backlog        */
+    NET_CMD_ACCEPT          =  4,   /*  listener                   */
+    NET_CMD_RECV            =  5,   /*  handle, buffer, max        */
+    NET_CMD_SEND            =  6,   /*  handle, bytes, start       */
+    NET_CMD_CLOSE           =  7,   /*  handle                     */
+    NET_CMD_SHUTDOWN_WRITE  =  8,   /*  handle                     */
+    NET_CMD_SET_SEMAPHORES  =  9,   /*  handle, read, write        */
+    NET_CMD_ARM             = 10,   /*  handle, mask               */
+    NET_CMD_CONNECT         = 11,   /*  host, port                 */
+    NET_CMD_CONNECT_RESULT  = 12,   /*  handle                     */
+    NET_CMD_LOCAL_PORT      = 13,   /*  handle                     */
+    NET_CMD_PEER_ADDRESS    = 14,   /*  handle                     */
+    NET_CMD_SET_OPTION      = 15,   /*  handle, option, value      */
+    NET_CMD_RANDOM_BYTES    = 16,   /*  buffer                     */
+    NET_CMD_ARGUMENTS       = 17,
+    NET_CMD_STOP_REQUESTED  = 18,
+    NET_CMD_OPEN_COUNT      = 19
+};
+
+#define NET_SCRATCH_BYTES   65536
+
+/*
+ *  0 fresh, 1 initialising, 2 up.  A compare-and-swap, so two workers
+ *  opening their first sockets together set the scheduler's hooks once.
+ */
+static st_atomic_int        net_prim_state;
+
+int
+ST_net_init(void)
+{
+    int expected = 0;
+
+    if (ST_cas_strong(&net_prim_state, &expected, 1)) {
+        /*
+         *  The async queue's lock before the thread that will post to it,
+         *  and the wait hook before any worker can idle on a socket.
+         */
+        SCHED_async_init();
+        if (NET_init(SCHED_signal_token) != 0) {
+            fprintf(stderr, "st80: cannot initialise the network: %s\n",
+                    NET_last_error());
+            ST_store_release(&net_prim_state, 0);
+            return -1;
+        }
+        SCHED_set_external_wait_hook(NET_waits_pending);
+        ST_store_release(&net_prim_state, 2);
+        return 0;
+    }
+    while (ST_load_acquire(&net_prim_state) == 1)
+        ST_spin_hint();
+    return ST_load_acquire(&net_prim_state) == 2 ? 0 : -1;
+}
+
+/*  Answer, having popped the receiver and four arguments.  */
+static int
+net_answer(st_oop value)
+{
+    if (value == ST_OOP_INVALID)
+        return 0;
+    ST_pop_n(5);
+    ST_push(value);
+    return 1;
+}
+
+#ifdef ST_OM_MT
+
+static _Thread_local unsigned char  net_scratch[NET_SCRATCH_BYTES];
+
+/*  A handle argument: a SmallInteger, or -1.  */
+static int64_t
+net_handle_arg(st_oop p)
+{
+    if (!OM_is_int(p))
+        return -1;
+    return (int64_t) OM_int_value(p);
+}
+
+/*  A byte object, or not.  */
+static int
+net_is_bytes(st_oop p)
+{
+    return OM_is_object(p) && !OM_pointer_bit(p);
+}
+
+/*  A Semaphore or nil, or not.  */
+static int
+net_is_semaphore_or_nil(st_oop p)
+{
+    return p == ST_NIL
+        || (OM_is_object(p) && OM_fetch_class(p) == ST_CLASS_SEMAPHORE);
+}
+
+/*  What a call answered: a count, would-block, or a failure.  */
+static st_oop
+net_result(long n)
+{
+    if (n == NET_WOULD_BLOCK)
+        return ST_FALSE;
+    if (n < 0)
+        return ST_NIL;
+    return OM_int_oop((st_int) n);
+}
+
+#endif  /*  ST_OM_MT  */
+
+static int
+primitive_net_command(void)
+{
+    st_oop  c   = ST_stack_value(0);
+    st_oop  b   = ST_stack_value(1);
+    st_oop  a   = ST_stack_value(2);
+    st_oop  cmd = ST_stack_value(3);
+    long    command;
+
+    if (!OM_is_int(cmd))
+        return 0;
+    command = (long) OM_int_value(cmd);
+
+#ifndef ST_OM_MT
+    /*
+     *  The Blue Book memory has fifteen-bit SmallIntegers, which cannot
+     *  hold a generation-tagged handle, and no worker pool, which is what
+     *  a server is for.  It can say so, and nothing else.
+     */
+    switch (command) {
+    case NET_CMD_AVAILABLE:
+        return net_answer(ST_FALSE);
+    case NET_CMD_LAST_ERROR: {
+        static const char text[] = "this build has no sockets: the Blue "
+                                   "Book memory cannot hold a handle";
+
+        return net_answer(string_from_c(text, sizeof text - 1));
+    }
+    default:
+        (void) a; (void) b; (void) c;
+        return 0;
+    }
+#else
+    if (command != NET_CMD_AVAILABLE && ST_net_init() != 0)
+        return net_answer(ST_NIL);
+
+    switch (command) {
+
+    case NET_CMD_AVAILABLE:
+        return net_answer(NET_available() ? ST_TRUE : ST_FALSE);
+
+    case NET_CMD_LAST_ERROR: {
+        const char *text = NET_last_error();
+
+        return net_answer(string_from_c(text, strlen(text)));
+    }
+
+    case NET_CMD_LAST_ERRNO:
+        return net_answer(OM_int_oop((st_int) NET_last_errno()));
+
+    case NET_CMD_LISTEN: {
+        char        host[256];
+        int         port;
+        int         backlog;
+        int64_t     handle;
+
+        if (a == ST_NIL)
+            host[0] = '\0';
+        else if (!c_from_string(a, host, sizeof host))
+            return 0;
+        if (!OM_is_int(b))
+            return 0;
+        port    = (int) OM_int_value(b);
+        backlog = OM_is_int(c) ? (int) OM_int_value(c) : 0;
+        handle  = NET_listen(host, port, backlog);
+        return net_answer(handle < 0 ? ST_NIL : OM_int_oop((st_int) handle));
+    }
+
+    case NET_CMD_ACCEPT: {
+        int64_t handle = net_handle_arg(a);
+        int64_t got;
+
+        if (handle < 0)
+            return 0;
+        got = NET_accept(handle);
+        if (got == NET_WOULD_BLOCK)
+            return net_answer(ST_FALSE);
+        return net_answer(got < 0 ? ST_NIL : OM_int_oop((st_int) got));
+    }
+
+    case NET_CMD_RECV: {
+        int64_t     handle = net_handle_arg(a);
+        uint32_t    room;
+        size_t      want;
+        long        n;
+        long        i;
+
+        if (handle < 0 || !net_is_bytes(b) || !OM_is_int(c))
+            return 0;
+        room = OM_fetch_byte_length(b);
+        want = (size_t) OM_int_value(c);
+        if (want > room)
+            want = room;
+        if (want > NET_SCRATCH_BYTES)
+            want = NET_SCRATCH_BYTES;
+        n = NET_recv(handle, net_scratch, want);
+        for (i = 0; i < n; ++i)
+            OM_store_byte((uint32_t) i, b, net_scratch[i]);
+        return net_answer(net_result(n));
+    }
+
+    case NET_CMD_SEND: {
+        int64_t     handle = net_handle_arg(a);
+        uint32_t    length;
+        uint32_t    start;
+        size_t      count;
+        size_t      i;
+
+        if (handle < 0 || !net_is_bytes(b) || !OM_is_int(c)
+         || OM_int_value(c) < 1)
+            return 0;
+        length = OM_fetch_byte_length(b);
+        start  = (uint32_t) OM_int_value(c) - 1;       /*  1-based in  */
+        if (start >= length)
+            return net_answer(OM_int_oop(0));
+        count = length - start;
+        if (count > NET_SCRATCH_BYTES)
+            count = NET_SCRATCH_BYTES;
+        for (i = 0; i < count; ++i)
+            net_scratch[i] = OM_fetch_byte(start + (uint32_t) i, b);
+        return net_answer(net_result(NET_send(handle, net_scratch, count)));
+    }
+
+    case NET_CMD_CLOSE: {
+        int64_t     handle = net_handle_arg(a);
+        uintptr_t   old_read;
+        uintptr_t   old_write;
+        int         rc;
+
+        if (handle < 0)
+            return 0;
+        rc = NET_close(handle, &old_read, &old_write);
+        /*
+         *  The counts the Semaphores held for the table, released now that
+         *  the slot is gone and no thread can hand them to the scheduler.
+         */
+        if (old_read)
+            OM_decrease_ref((st_oop) old_read);
+        if (old_write)
+            OM_decrease_ref((st_oop) old_write);
+        return net_answer(rc == 0 ? ST_TRUE : ST_NIL);
+    }
+
+    case NET_CMD_SHUTDOWN_WRITE: {
+        int64_t handle = net_handle_arg(a);
+
+        if (handle < 0)
+            return 0;
+        return net_answer(NET_shutdown_write(handle) == 0 ? ST_TRUE : ST_NIL);
+    }
+
+    case NET_CMD_SET_SEMAPHORES: {
+        int64_t     handle = net_handle_arg(a);
+        uintptr_t   old_read;
+        uintptr_t   old_write;
+        int         rc;
+
+        if (handle < 0 || !net_is_semaphore_or_nil(b)
+         || !net_is_semaphore_or_nil(c))
+            return 0;
+        /*
+         *  Counted BEFORE the table holds them, released AFTER it lets
+         *  them go, so that at no instant does the I/O thread hold a token
+         *  whose object could be reclaimed.
+         */
+        if (b != ST_NIL)
+            OM_increase_ref(b);
+        if (c != ST_NIL)
+            OM_increase_ref(c);
+        rc = NET_set_tokens(handle,
+                            b == ST_NIL ? 0 : (uintptr_t) b,
+                            c == ST_NIL ? 0 : (uintptr_t) c,
+                            &old_read, &old_write);
+        if (rc != 0) {
+            if (b != ST_NIL)
+                OM_decrease_ref(b);
+            if (c != ST_NIL)
+                OM_decrease_ref(c);
+            return net_answer(ST_NIL);
+        }
+        if (old_read)
+            OM_decrease_ref((st_oop) old_read);
+        if (old_write)
+            OM_decrease_ref((st_oop) old_write);
+        return net_answer(ST_TRUE);
+    }
+
+    case NET_CMD_ARM: {
+        int64_t handle = net_handle_arg(a);
+
+        if (handle < 0 || !OM_is_int(b))
+            return 0;
+        return net_answer(NET_arm(handle, (int) OM_int_value(b)) == 0
+                          ? ST_TRUE : ST_NIL);
+    }
+
+    case NET_CMD_CONNECT: {
+        char        host[256];
+        int64_t     handle;
+
+        if (!c_from_string(a, host, sizeof host) || !OM_is_int(b))
+            return 0;
+        handle = NET_connect(host, (int) OM_int_value(b));
+        return net_answer(handle < 0 ? ST_NIL : OM_int_oop((st_int) handle));
+    }
+
+    case NET_CMD_CONNECT_RESULT: {
+        int64_t handle = net_handle_arg(a);
+        int     rc;
+
+        if (handle < 0)
+            return 0;
+        rc = NET_connect_result(handle);
+        return net_answer(rc == 0 ? ST_TRUE
+                        : rc == NET_WOULD_BLOCK ? ST_FALSE : ST_NIL);
+    }
+
+    case NET_CMD_LOCAL_PORT: {
+        int64_t handle = net_handle_arg(a);
+        int     port;
+
+        if (handle < 0)
+            return 0;
+        port = NET_local_port(handle);
+        return net_answer(port < 0 ? ST_NIL : OM_int_oop((st_int) port));
+    }
+
+    case NET_CMD_PEER_ADDRESS: {
+        int64_t handle = net_handle_arg(a);
+        char    text[128];
+
+        if (handle < 0)
+            return 0;
+        if (NET_peer_address(handle, text, sizeof text) != 0)
+            return net_answer(ST_NIL);
+        return net_answer(string_from_c(text, strlen(text)));
+    }
+
+    case NET_CMD_SET_OPTION: {
+        int64_t handle = net_handle_arg(a);
+
+        if (handle < 0 || !OM_is_int(b))
+            return 0;
+        return net_answer(NET_set_option(handle, (int) OM_int_value(b),
+                                         c == ST_TRUE) == 0
+                          ? ST_TRUE : ST_NIL);
+    }
+
+    case NET_CMD_RANDOM_BYTES: {
+        uint32_t    n;
+        uint32_t    i;
+
+        if (!net_is_bytes(a))
+            return 0;
+        n = OM_fetch_byte_length(a);
+        if (n > NET_SCRATCH_BYTES)
+            n = NET_SCRATCH_BYTES;
+        if (NET_random_bytes(net_scratch, n) != 0)
+            return net_answer(ST_NIL);
+        for (i = 0; i < n; ++i)
+            OM_store_byte(i, a, net_scratch[i]);
+        return net_answer(ST_TRUE);
+    }
+
+    case NET_CMD_ARGUMENTS: {
+        int     n = NET_argument_count();
+        int     i;
+        st_oop  array = OM_instantiate_pointers(ST_CLASS_ARRAY, (uint32_t) n);
+
+        if (!OM_is_present(array))
+            return 0;
+        /*
+         *  On the stack while the strings are made: a collection during
+         *  one of those allocations sees the array only through this
+         *  context, and a reference held only in C protects nothing.
+         */
+        ST_push(array);
+        for (i = 0; i < n; ++i) {
+            const char *text = NET_argument(i);
+            st_oop      s    = string_from_c(text, strlen(text));
+
+            if (!OM_is_present(s)) {
+                ST_pop_n(1);
+                return 0;
+            }
+            OM_store_pointer((uint32_t) i, array, s);
+        }
+        ST_pop_n(1);
+        return net_answer(array);
+    }
+
+    case NET_CMD_STOP_REQUESTED:
+        return net_answer(SCHED_stop_requested() ? ST_TRUE : ST_FALSE);
+
+    case NET_CMD_OPEN_COUNT:
+        return net_answer(OM_int_oop((st_int) NET_open_count()));
+
+    default:
+        return 0;
+    }
+#endif
+}
+
 /*  ----------  The database  ----------
  *
  *  primitive 129 -- Odbc class >> primCommand:with:with:with:
@@ -3962,11 +4468,17 @@ primitive_odbc_command(void)
                                     name, sizeof name, &sql_type, &size,
                                     &digits, &nullable) != 0)
             return odbc_answer(ST_NIL);
-        name_string = string_from_c(name, strlen(name));
-        if (!OM_is_present(name_string))
-            return 0;
+        /*  The Array first, and on the stack, before the String it holds:
+         *  the second allocation can collect, and only a root keeps the
+         *  first one alive through it.  See command 3 of the directory
+         *  primitive.  */
         array = OM_instantiate_pointers(ST_CLASS_ARRAY, 5);
         if (!OM_is_present(array))
+            return 0;
+        ST_push(array);
+        name_string = string_from_c(name, strlen(name));
+        ST_pop_n(1);
+        if (!OM_is_present(name_string))
             return 0;
         OM_store_pointer(0, array, name_string);
         OM_store_pointer(1, array, OM_int_oop((st_int) sql_type));
@@ -4181,6 +4693,7 @@ ST_primitive_dispatch(unsigned index)
     case 130: return primitive_file_command();
     case 131: return primitive_directory_command();
     case 129: return primitive_odbc_command();
+    case 208: return primitive_net_command();
     case 133: return primitive_error_string();
     case 254: return primitive_native_line_end();
     case 100: return primitive_signal_at_milliseconds();
@@ -4318,6 +4831,7 @@ static const primitive_entry primitive_table[] = {
     { 135, ST_PRIM_PRESENT,  "millisecond clock"                },
     { 254, ST_PRIM_PRESENT,  "FileStream class nativeLineEnd -- ours" },
     { 129, ST_PRIM_PRESENT,  "Odbc primCommand:with:with:with: -- ours" },
+    { 208, ST_PRIM_PRESENT,  "Socket primCommand:with:with:with: -- ours" },
     { 255, ST_PRIM_PRESENT,  "Float>>printString"               },
     { 136, ST_PRIM_PRESENT,  "signal a semaphore at a time"     },
     { 148, ST_PRIM_PRESENT,  "Object shallowCopy / clone"       },

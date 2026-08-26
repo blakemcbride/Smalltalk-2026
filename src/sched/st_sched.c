@@ -29,7 +29,16 @@
  *  blocks for long: the critical section is a memcpy of at most 64 words
  *  and holds no other lock.
  */
-#define ASYNC_QUEUE_MAX     64
+/*
+ *  1024 and not 64 since the network arrived.  A keystroke or a timer is
+ *  one signal; a server with a thousand connections waiting is a thousand
+ *  Semaphores the I/O thread may signal in one pass of poll(), and a full
+ *  queue DROPS the signal -- which for a socket is a request that never
+ *  wakes.  The I/O thread is told when that happens and tries again on its
+ *  next pass, so the size is about how often it has to, not correctness;
+ *  the drain's stack copy is eight kilobytes, which a worker affords.
+ */
+#define ASYNC_QUEUE_MAX     1024
 
 static st_oop   async_queue[ASYNC_QUEUE_MAX];
 /*
@@ -61,6 +70,69 @@ async_lock_init(void)
     async_lock_ready = 1;
 }
 
+/*
+ *  The same, for a caller about to start a thread that will post signals
+ *  -- the network I/O thread -- so that the mutex exists before the thread
+ *  does, on the thread that creates it.  The delay timer learnt this the
+ *  hard way (see SCHED_signal_at_ms); a second thread must not learn it
+ *  again.
+ */
+void
+SCHED_async_init(void)
+{
+    async_lock_init();
+}
+
+/*
+ *  ----------  Stopping, from outside  ----------
+ *
+ *  A server ends on a signal from the operating system, which arrives on
+ *  no particular thread and inside no particular bytecode.  The handler
+ *  may do almost nothing, so it does exactly one thing: sets this.  Every
+ *  worker sees it at its next process-switch check or its next idle slice
+ *  and lets its interpreter loop fall out, which is how the pool winds
+ *  down without anybody being interrupted mid-object.
+ */
+static st_atomic_int    stop_requested;
+
+void
+SCHED_request_stop(void)
+{
+    ST_store_seq(&stop_requested, 1);
+}
+
+int
+SCHED_stop_requested(void)
+{
+    return ST_load_relaxed(&stop_requested) != 0;
+}
+
+/*
+ *  ----------  Waits the scheduler cannot see  ----------
+ *
+ *  The idle loop below decides that nothing can ever run again when every
+ *  worker is idle and no delay is armed.  A socket somebody is parked on
+ *  is a wait of the same kind as a delay: something outside the scheduler
+ *  will end it.  The network layer registers a hook that says whether any
+ *  such wait is outstanding, and the loop asks it beside the timer.  A
+ *  hook rather than a call, so that this file knows nothing about sockets.
+ */
+static int  (*external_wait_hook)(void);
+
+void
+SCHED_set_external_wait_hook(int (*hook)(void))
+{
+    external_wait_hook = hook;
+}
+
+static int
+waits_pending(void)
+{
+    if (SCHED_timer_pending())
+        return 1;
+    return external_wait_hook && external_wait_hook();
+}
+
 /*  ----------  The delay timer  ----------
  *
  *  Primitive 136, `Processor signal: aSemaphore atTime: ms'.  One pending
@@ -85,7 +157,7 @@ async_lock_init(void)
 
 static st_mutex     timer_lock;
 static st_cond      timer_cond;
-static int          timer_ready;            /*  lock and cond initialised  */
+static st_atomic_int timer_ready;           /*  0 not yet, 1 in progress, 2 ready  */
 static st_oop       timer_semaphore = ST_NIL;
 static int64_t      timer_deadline_ns;
 static int          timer_armed;
@@ -131,11 +203,24 @@ static void drain_async_signals(void);
 static void
 timer_init(void)
 {
-    if (timer_ready)
+    int     expected = 0;
+
+    /*
+     *  Once, whoever arrives first, and the rest wait for it: the first
+     *  arming worker used to write the flag plainly while idle workers read
+     *  it in SCHED_timer_pending, and two workers arming at once would both
+     *  have initialised the lock.
+     */
+    if (ST_load_acquire(&timer_ready) == 2)
         return;
-    ST_mutex_init(&timer_lock);
-    ST_cond_init(&timer_cond);
-    timer_ready = 1;
+    if (ST_cas_strong(&timer_ready, &expected, 1)) {
+        ST_mutex_init(&timer_lock);
+        ST_cond_init(&timer_cond);
+        ST_store_release(&timer_ready, 2);
+        return;
+    }
+    while (ST_load_acquire(&timer_ready) != 2)
+        ST_sleep_ns(1000);
 }
 
 /*
@@ -152,7 +237,7 @@ SCHED_timer_pending(void)
 {
     int result;
 
-    if (!timer_ready)
+    if (ST_load_acquire(&timer_ready) != 2)
         return 0;
     ST_mutex_lock(&timer_lock);
     result = timer_armed || timer_delivering;
@@ -172,7 +257,23 @@ SCHED_timer_pending(void)
 st_oop
 SCHED_timer_semaphore(void)
 {
-    return timer_semaphore;
+    st_oop  semaphore;
+
+    /*
+     *  Under the timer's lock, because the timer thread writes this field
+     *  under that lock and the root walk reads it from a worker at a
+     *  safepoint -- which parks every worker and not the timer thread.
+     *  ThreadSanitizer saw the two meet under a gate that collects while
+     *  delays are pending; a torn read cannot happen on this platform,
+     *  but a stale one could visit a semaphore the timer had already let
+     *  go of, or miss the one it had just taken.
+     */
+    if (ST_load_acquire(&timer_ready) != 2)
+        return ST_NIL;
+    ST_mutex_lock(&timer_lock);
+    semaphore = timer_semaphore;
+    ST_mutex_unlock(&timer_lock);
+    return semaphore;
 }
 
 static void
@@ -543,15 +644,27 @@ SCHED_remove_first_link(st_oop list)
                            : OM_fetch_pointer(ST_LINK_NEXT, first);
 
     /*
-     *  Clear the link's own pointer BEFORE the list lets go of it.
+     *  The list takes hold of the next link BEFORE this one lets go of it.
      *
-     *  Chapter 29 writes it the other way round -- unlink, then
-     *  "link nextLink: nil" -- which is fine where nothing is counting.
-     *  Here the list holds the only reference: dropping it first takes the
-     *  count to zero, the body is released, and the store that follows lands
-     *  in freed memory.  The order below never leaves the link unreferenced
-     *  while it is still being written to.
+     *  A link in the middle of a list is held by nothing but the link
+     *  before it: the list itself refers only to its first and its last.
+     *  Chapter 29 unlinks and then writes "link nextLink: nil", which is
+     *  fine where nothing is counting.  Here that store was made first, and
+     *  with three or more processes queued it dropped the second one's only
+     *  reference -- and releasing it released ITS next, and so on down the
+     *  chain, so the list's new first link named a freed object.  Ten
+     *  connection processes forked at once found it: the slots were reused
+     *  by contexts, and the scheduler resumed a MethodContext's instruction
+     *  pointer as a suspended context.  Re-pointing the list first keeps
+     *  every link counted at every step; `first' is safe throughout because
+     *  of the reference taken above.
      */
+    if (first == last) {
+        OM_store_pointer(ST_LIST_FIRST_LINK, list, ST_NIL);
+        OM_store_pointer(ST_LIST_LAST_LINK, list, ST_NIL);
+    }  else  {
+        OM_store_pointer(ST_LIST_FIRST_LINK, list, next);
+    }
     OM_store_pointer(ST_LINK_NEXT, first, ST_NIL);
     /*
      *  And it is on no list now, which is what myList is for.  Leaving it
@@ -559,12 +672,6 @@ SCHED_remove_first_link(st_oop list)
      *  addLastLink: below believes it.
      */
     OM_store_pointer(ST_PROCESS_MY_LIST, first, ST_NIL);
-    if (first == last) {
-        OM_store_pointer(ST_LIST_FIRST_LINK, list, ST_NIL);
-        OM_store_pointer(ST_LIST_LAST_LINK, list, ST_NIL);
-    }  else  {
-        OM_store_pointer(ST_LIST_FIRST_LINK, list, next);
-    }
     return first;
 }
 
@@ -841,6 +948,8 @@ SCHED_suspend_active(void)
 
         ST_fetch_add_relaxed(&idle_workers, 1);
         for (slice = 0; slice < IDLE_WAIT_SLICES; ++slice) {
+            if (SCHED_stop_requested())
+                break;
             /*
              *  Every worker idle at once means nobody is left to make
              *  anything ready.  Checked before sleeping, so the last
@@ -853,8 +962,20 @@ SCHED_suspend_active(void)
              *  everyone briefly idle with work already in flight, and
              *  believing that instant costs exactly one process.
              */
-            if (ST_load_seq(&idle_workers) >= (int) WORKER_count()
-             && !SCHED_timer_pending()) {
+            /*
+             *  And it has to be true with nothing owed from outside.  A
+             *  delay armed, or a socket a process is parked on, is a wait
+             *  somebody else will end: not a deadlock, and not the five-
+             *  minute backstop's business either, so the slice count is
+             *  reset while one is outstanding.  A quiet server -- every
+             *  worker idle, a listener armed, no client yet -- sits here
+             *  counted, and the verdict stays reachable the moment the
+             *  last socket is closed.
+             */
+            if (waits_pending()) {
+                all_idle = 0;
+                slice    = 0;
+            }  else if (ST_load_seq(&idle_workers) >= (int) WORKER_count()) {
                 if (++all_idle >= ALL_IDLE_CONFIRMATIONS)
                     break;
             }  else {
@@ -901,7 +1022,8 @@ SCHED_suspend_active(void)
      *  this thread must keep polling safepoints, and a thread asleep on
      *  another subsystem's condvar is a thread the collector waits for.
      */
-    while (next == ST_NIL && !new_process_waiting && SCHED_timer_pending()) {
+    while (next == ST_NIL && !new_process_waiting && waits_pending()
+        && !SCHED_stop_requested()) {
         WORKER_poll();
         if (idle_hook)
             idle_hook();
@@ -913,6 +1035,15 @@ SCHED_suspend_active(void)
         /*  One last look: the timer may have fired as the loop gave up.  */
         drain_async_signals();
         next = SCHED_wake_highest_priority();
+    }
+    /*
+     *  Asked to stop, and holding nothing: this worker's run is over.  A
+     *  process that was taken above is run rather than dropped -- it is a
+     *  held reference, and the stop is seen again at its next switch.
+     */
+    if (next == ST_NIL && !new_process_waiting && SCHED_stop_requested()) {
+        st_vm.running = 0;
+        return;
     }
 
     /*
@@ -941,9 +1072,11 @@ SCHED_suspend_active(void)
          *  state that decides it is what a reader needs first.
          */
         fprintf(stderr, "st80: every process is blocked; nothing can run\n");
-        fprintf(stderr, "       timer pending %d, async signals queued %d, "
-                        "%d of %u workers idle\n",
-                SCHED_timer_pending(), ST_load_relaxed(&async_count),
+        fprintf(stderr, "       timer pending %d, external waits %d, "
+                        "async signals queued %d, %d of %u workers idle\n",
+                SCHED_timer_pending(),
+                external_wait_hook ? external_wait_hook() : 0,
+                ST_load_relaxed(&async_count),
                 ST_load_seq(&idle_workers), WORKER_count());
         ST_interp_dump_workers();
         st_vm.running = 0;
@@ -952,6 +1085,34 @@ SCHED_suspend_active(void)
     SCHED_transfer_to(next);
     /*  The nomination holds it now; this releases the loan from removal.  */
     OM_decrease_ref(next);
+}
+
+/*
+ *  Join the scheduler with no process of one's own.
+ *
+ *  A worker started by `st80 -serve' other than the first has nothing to
+ *  run: the image's startup process belongs to worker 0, and everything
+ *  else is forked later.  The parallel tests give such a worker a compiled
+ *  `Semaphore new wait' to park in, but a run mode has no compiler to hand
+ *  after an image is loaded.  So the worker declares itself idle directly:
+ *  no active process, and DISOWNED, so that store_active_for_suspension,
+ *  SCHED_resume's requeue and SCHED_check_process_switch's park all skip
+ *  the process SCHED_active_process would otherwise fall back to -- the
+ *  scheduler's shared field, which names whatever some other worker
+ *  switched to last.  Then the ordinary wait: the ready lists, the idle
+ *  loop, and a nomination the interpreter loop picks up at its first
+ *  switch check before it fetches a bytecode.  Returns with a nomination
+ *  pending, or with running cleared because the image stopped.
+ */
+void
+SCHED_enter_idle(void)
+{
+    st_vm.active_process = ST_NIL;
+    new_process          = ST_NIL;
+    new_process_waiting  = 0;
+    disowned             = 1;
+    st_vm.running        = 1;
+    SCHED_suspend_active();
 }
 
 /*
@@ -1074,11 +1235,13 @@ SCHED_synchronous_signal(st_oop semaphore)
     }
 }
 
-void
+int
 SCHED_asynchronous_signal(st_oop semaphore)
 {
+    int queued = 0;
+
     if (!OM_is_present(semaphore))
-        return;
+        return 1;                       /*  nothing to deliver: not owed  */
     async_lock_init();
     ST_mutex_lock(&async_lock);
     {
@@ -1087,9 +1250,46 @@ SCHED_asynchronous_signal(st_oop semaphore)
         if (n < ASYNC_QUEUE_MAX) {
             async_queue[n] = semaphore;
             ST_store_release(&async_count, n + 1);
+            queued = 1;
         }
-        /*  else drop rather than corrupt, as before  */
+        /*
+         *  else drop rather than corrupt -- and SAY SO, because for the
+         *  network a dropped signal is a request that never wakes.  The
+         *  I/O thread keeps the socket armed and tries again.
+         */
     }
+    ST_mutex_unlock(&async_lock);
+    return queued;
+}
+
+/*  The same, with the signature the network layer's hook wants.  */
+int
+SCHED_signal_token(uintptr_t token)
+{
+    return SCHED_asynchronous_signal((st_oop) token);
+}
+
+/*
+ *  The queued semaphores, as roots.
+ *
+ *  Between a producer's enqueue and a worker's drain the queue holds a bare
+ *  oop that nothing counts.  For the timer the Delay still holds its
+ *  semaphore, and for input the image does; for a socket whose owner was
+ *  dropped in the same instant, nothing might.  A collection in that
+ *  window -- and the I/O thread enqueues during collections, having no
+ *  idea one is running -- would then reclaim what the drain is about to
+ *  signal.  So the root walk visits the queue.  Under the lock, which the
+ *  producers hold only for a store.
+ */
+void
+SCHED_visit_async_roots(om_visit_fn visit)
+{
+    int     i;
+
+    async_lock_init();
+    ST_mutex_lock(&async_lock);
+    for (i = 0; i < ST_load_relaxed(&async_count); ++i)
+        visit(async_queue[i]);
     ST_mutex_unlock(&async_lock);
 }
 
@@ -1124,8 +1324,33 @@ drain_async_signals(void)
 }
 
 void
+SCHED_release_nomination(void)
+{
+    st_oop  process;
+
+    if (!new_process_waiting)
+        return;
+    process             = new_process;
+    new_process_waiting = 0;
+    new_process         = ST_NIL;
+    if (!OM_is_present(process))
+        return;
+    SCHED_sleep(process);
+    OM_decrease_ref(process);           /*  the nomination's count  */
+}
+
+void
 SCHED_check_process_switch(void)
 {
+    /*
+     *  A stop asked for from outside ends this worker's run here, at a
+     *  bytecode boundary, where its registers are consistent.  One relaxed
+     *  load beside the one the drain already does.
+     */
+    if (SCHED_stop_requested()) {
+        st_vm.running = 0;
+        return;
+    }
     /*
      *  Drain into a local copy and signal outside the lock.  Signalling
      *  can resume a process, which can transfer, which polls a safepoint --
@@ -1133,6 +1358,23 @@ SCHED_check_process_switch(void)
      *  stripe-lock rule above exists to forbid.  The same reasoning
      *  applies here and to every lock this system will ever add.
      */
+    /*
+     *  A run that has ended -- its process returned off the bottom -- must
+     *  neither drain nor switch.  The check runs at the top of the cycle,
+     *  before the loop looks at `running', so on the cycle after the return
+     *  it used to drain the queue, wake the Delay timing process, nominate
+     *  it here because its priority is higher, and switch onto it; the loop
+     *  then broke and the worker went home with the timing process as its
+     *  active process, on no list, run by nobody.  Every Delay after that
+     *  waited for ever, with the timer disarmed and nothing to re-arm it.
+     *  The parallel REST gate found it: its drivers return when the count
+     *  is reached, and the wake that raced the last return lost the timer
+     *  for the next phase.  The queue is left for a worker that is still
+     *  running, and ST_interp_run hands a nominee already held back to its
+     *  ready list on the way out.
+     */
+    if (!st_vm.running)
+        return;
     drain_async_signals();
     if (!new_process_waiting)
         return;
@@ -1189,8 +1431,13 @@ SCHED_check_process_switch(void)
 
         st_vm.active_process = new_process;
         new_process = ST_NIL;
-        OM_store_pointer(ST_SCHEDULER_ACTIVE_PROCESS, SCHED_scheduler(),
-                         st_vm.active_process);
+        /*
+         *  One slot, written by every worker on every switch: exchanged,
+         *  not stored, so the process this evicts is released once and by
+         *  one worker.  See OM_exchange_pointer.
+         */
+        OM_exchange_pointer(ST_SCHEDULER_ACTIVE_PROCESS, SCHED_scheduler(),
+                            st_vm.active_process);
         ST_set_active_context(
             OM_fetch_pointer(ST_PROCESS_SUSPENDED_CONTEXT,
                              st_vm.active_process));
@@ -1246,8 +1493,12 @@ remove_link_from_list(st_oop link, st_oop list)
          *  a body that has just been released lands in freed memory.
          */
         OM_increase_ref(link);
-        OM_store_pointer(ST_LINK_NEXT, link, ST_NIL);
-        OM_store_pointer(ST_PROCESS_MY_LIST, link, ST_NIL);
+        /*
+         *  The same order as SCHED_remove_first_link, for the same reason:
+         *  whoever comes before takes hold of `next' before this link lets
+         *  go of it, or a link in the middle of the list loses its only
+         *  reference.
+         */
         if (OM_is_present(previous))
             OM_store_pointer(ST_LINK_NEXT, previous, next);
         else
@@ -1255,6 +1506,8 @@ remove_link_from_list(st_oop link, st_oop list)
         if (link == last)
             OM_store_pointer(ST_LIST_LAST_LINK, list,
                              OM_is_present(previous) ? previous : ST_NIL);
+        OM_store_pointer(ST_LINK_NEXT, link, ST_NIL);
+        OM_store_pointer(ST_PROCESS_MY_LIST, link, ST_NIL);
         OM_decrease_ref(link);
     }
     return 1;

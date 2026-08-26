@@ -138,6 +138,18 @@ The shape of that bug is worth recognising. A message sent to an object of a
 class that has no business being there---\ct|aMethodContext does not understand #priority|---is rarely a wrong send. It is almost always a freed
 object whose table slot has been handed to something else.
 
+Three rules follow from it that the server's gates enforced. A primitive
+that makes more than one object makes the container first and pushes it on
+the stack before making the elements, because an allocation can run a
+collection and the stack is a root where a C variable is not. A slot that
+every worker writes---the scheduler's \ct{activeProcess}---is exchanged
+atomically, because a plain counted store lets two writers release the same
+old value. And \ct{someInstance} and \ct{nextInstance}, which walk the
+object table, do so at a safepoint when workers are running: a freed header
+is reused in place, so a walk cannot read one while another worker refills
+it. That makes \ct{allInstances} stop the world once per instance under
+\ct{-serve}; it is a tool, not a path.
+
 \section{The bootstrap}
 
 There is no chicken-and-egg problem, because the compiler is in C. Building an

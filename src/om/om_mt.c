@@ -887,11 +887,17 @@ OM_deallocate(st_oop p)
 }
 
 
-st_oop
-OM_next_instance_after(st_oop after, st_oop class_oop)
+struct next_instance_args {
+    st_oop  after;
+    st_oop  class_oop;
+};
+
+static uint32_t
+next_instance_scan(void *user)
 {
-    uint32_t    index = (after == ST_OOP_INVALID) ? 1
-                        : (uint32_t) (after >> 1) + 1;
+    struct next_instance_args  *a = user;
+    uint32_t    index = (a->after == ST_OOP_INVALID) ? 1
+                        : (uint32_t) (a->after >> 1) + 1;
     uint32_t    limit = (uint32_t) ST_load_acquire(&st_om_table_limit);
 
     for (; index < limit; ++index) {
@@ -901,10 +907,35 @@ OM_next_instance_after(st_oop after, st_oop class_oop)
         if (!head || (head->flags & ST_FMT_FREE) != 0)
             continue;
         p = (st_oop) index << 1;
-        if (OM_fetch_class(p) == class_oop)
-            return p;
+        if (OM_fetch_class(p) == a->class_oop)
+            return index;
     }
-    return ST_OOP_INVALID;
+    return 0;
+}
+
+/*
+ *  The next instance of a class after `after' -- someInstance and
+ *  nextInstance -- found by walking the table.
+ *
+ *  With workers running the walk happens at a safepoint.  A freed header is
+ *  reused in place by the next allocation that takes its slot, so a walk
+ *  that reads flags and class while another worker refills them can answer
+ *  an object that is half of one thing and half of another; ThreadSanitizer
+ *  saw exactly that under the REST gate, where Symbol rehash walks every
+ *  Symbol while thirty workers allocate.  Stopping the world per instance is
+ *  slow, and enumeration is meant to be: it is a tool, not a path.
+ */
+st_oop
+OM_next_instance_after(st_oop after, st_oop class_oop)
+{
+    struct next_instance_args   a;
+    uint32_t                    index;
+
+    a.after     = after;
+    a.class_oop = class_oop;
+    index = WORKER_count() > 0 ? WORKER_at_safepoint(next_instance_scan, &a)
+                               : next_instance_scan(&a);
+    return index ? (st_oop) index << 1 : ST_OOP_INVALID;
 }
 
 void

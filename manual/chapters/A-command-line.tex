@@ -54,6 +54,7 @@
 \ctp{\ \ -doctests f.st} & run the \ctp{expr >>> value} examples in a file\\
 \midrule
 \ctp{-run <image> [n]} & run the image, opening a window. \ctp{n} is a bytecode limit, not a worker count\\
+\ctp{-serve <image> [-workers n] [args]} & run the image on \ctp{n} native threads (one per CPU less one by default), no window, until SIGINT, SIGTERM or \ctp{Smalltalk quitPrimitive}; \ctp{args} are what \ctp{Smalltalk arguments} answers. The image's startup is what \ctp{-bootstrap -startup} gave it---Chapter~\ref{ch:serving}\\
 \ctp{-screenshot f.pbm} & with \ctp{-run} or \ctp{-bootstrap}, write the
   display\\
 \ctp{-inject <script>} & post input events\\
@@ -105,6 +106,7 @@ For \ct{-inject}, semicolon-separated:
 \ctp{ST\_DISPLAY\_TRACE=1} & report why a resize was refused; draw and present
   counts at exit\\
 \ctp{ST\_EVAL\_TRACE=1} & trace the bytecodes an \ctp{-eval} runs\\
+\ctp{ST\_NET\_TRACE=1} & narrate the network thread: arms, deliveries, closes\\
 \ctp{ST\_BOTTOM\_LOG=1} & report a return off the bottom of a stack\\
 \bottomrule
 \end{tabular}

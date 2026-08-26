@@ -217,6 +217,24 @@ safe to use from more than one process at once — 31 threads share one in
 [`doc/JSON.md`](doc/JSON.md) has the rest, including why not one line could be
 copied.
 
+**A web server, one request per core.** `st80 -serve image` runs an image on a
+pool of native threads with no window — the first run mode that does — and
+`lib/Rest-Server` puts a Kiss-style JSON-RPC server on it: `POST /rest` with
+`_class` and `_method`, sessions by uuid, one database transaction per request,
+uploads, and a Kiss front end's `Server.js` works unchanged. A service is a
+Tonel file under `backend/`, read into the image on the first request for it,
+read again when it changes on disk, and written back when the class is edited
+in the Browser. Underneath: `lib/JSON-RPC-Server`, an HTTP/1.1 server that is
+what Tomcat was to Kiss; `lib/Network`, TCP sockets on which no worker ever
+blocks — one VM thread polls every armed socket and signals a Semaphore, so a
+hundred idle keep-alive connections cost a hundred parked green processes and
+no thread at all; and `lib/Tonel`, which taught the image's own compiler to
+read `:=`. Gated by `tests/unit/test_parallel_rest.c`: 31 workers, 62 native
+clients, 1,240 requests on kept-alive connections, the world stopped three
+thousand times meanwhile, every sum checked and every worker seen.
+[`doc/REST-SERVER.md`](doc/REST-SERVER.md) and
+[`doc/NETWORK.md`](doc/NETWORK.md).
+
 **A screen that is not from 1983.** The display Form is grown to fill the
 window rather than letterboxed into it, and text is Inter, proportional and
 antialiased — on a system whose BitBlt is still one bit per pixel, because
@@ -264,9 +282,11 @@ src/gfx/        BitBlt, display, SDL3 pump, the rasterised face
 src/sched/      Process, Semaphore, the scheduler
 src/compiler/   Smalltalk compiler in C, chunk and Tonel readers
 src/db/         ODBC, and nothing else that knows what a database is
+src/net/        TCP sockets and the thread that polls them; -serve's pool
 src/boot/       image bootstrap
 sources/        the 1983 class library (MIT), vendored, frozen — 226 classes
-lib/            ours: exceptions, concurrency, SUnit, protocol shims, SQL, JSON
+lib/            ours: exceptions, concurrency, SUnit, protocol shims, SQL, JSON,
+                sockets, Tonel at run time, HTTP, the REST server
 pharo/          imported Pharo packages, each with a PROVENANCE.md
 profiles/       which packages compose an image
 tools/          make_font.py — rasterises an outline face into the strike
@@ -282,6 +302,8 @@ tools/          make_font.py — rasterises an outline face into the strike
 | [`doc/LanguageExtensions.md`](doc/LanguageExtensions.md) | every post-1983 syntax, and where each stands |
 | [`doc/DATABASE.md`](doc/DATABASE.md) | SQL through ODBC, the join graph, and why a query does not stop the world |
 | [`doc/JSON.md`](doc/JSON.md) | RFC 8259, why the numbers stay exact, and why not one line could be ported |
+| [`doc/NETWORK.md`](doc/NETWORK.md) | sockets on which no worker blocks, the I/O thread, and `st80 -serve` |
+| [`doc/REST-SERVER.md`](doc/REST-SERVER.md) | Kiss's protocol on every core; services as Tonel files loaded on first use |
 | [`doc/PLAN-TO-PHARO.md`](doc/PLAN-TO-PHARO.md) | where this is going, sized honestly |
 | [`manual/`](manual/) | **a book-length manual** on the system, the language, the database and JSON — `cd manual && make` |
 | [`Windows.md`](Windows.md) | building with MSVC, and what a real one found |
@@ -300,6 +322,12 @@ The tree is not all one licence, and the distinction matters:
   re-expressed, and JDBC was replaced with ODBC.
   [`lib/Database/PROVENANCE.md`](lib/Database/PROVENANCE.md) records every
   place the two now differ, and why.
+- **`lib/Rest-Server`** and **`lib/JSON-RPC-Server`** — ours and BSD 2-Clause.
+  What they take from Kiss's `org.kissweb.restServer` is the protocol a Kiss
+  front end speaks, name for name, so that `Server.js` needs no change; no
+  file was translated, because the Java is servlet and JVM machinery from end
+  to end. [`lib/Rest-Server/PROVENANCE.md`](lib/Rest-Server/PROVENANCE.md)
+  records what crossed, what changed, and the three Kiss faults not repeated.
 - **`lib/Json`** — ours and BSD 2-Clause, and *not* a port: the obvious source,
   `org.kissweb.json`, is a fork of JSON-java and carries JSON.org's licence,
   which adds "The Software shall be used for Good, not Evil" to MIT and is for

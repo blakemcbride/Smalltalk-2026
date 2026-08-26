@@ -369,7 +369,7 @@ endif
 endif
 
 INCLUDES  := -Isrc -Isrc/port -Isrc/om -Isrc/interp -Isrc/gfx -Isrc/sched \
-             -Isrc/compiler -Isrc/boot -Isrc/db -Itests
+             -Isrc/compiler -Isrc/boot -Isrc/db -Isrc/net -Itests
 CPPFLAGS  := $(INCLUDES) -D_GNU_SOURCE $(SDL3_CFLAGS) $(ODBC_CFLAGS)
 
 ifeq ($(OM),bb)
@@ -417,6 +417,7 @@ CORE_SRC  := $(wildcard src/port/*.c) \
              $(wildcard src/gfx/*.c) \
              $(wildcard src/compiler/*.c) \
              $(wildcard src/db/*.c) \
+             $(wildcard src/net/*.c) \
              $(wildcard src/boot/*.c)
 
 # Object-memory sources: the selected implementation plus every file in

@@ -5414,26 +5414,64 @@ install_text_style(void)
  *  So after the initializers have run, look each undeclared name up in every
  *  pool and give the global its value.  This is the reconciliation a growing
  *  image never needs and a bootstrap always does.
+ *
+ *  A pool is a Dictionary, and a profile may have superseded Dictionary.
+ *  1983's keeps its Associations in its own indexed part; Pharo's keeps them
+ *  one level down, in an Array held by an instance variable, and the indexed
+ *  part is empty.  The first version of this looked only at the indexed
+ *  part, so under pharo-weak and pharo-collections it resolved nothing and
+ *  said nothing, and Read, Write and Shorten stayed nil: those profiles
+ *  could not open a file, and no test of theirs opened one until the Tonel
+ *  loader's did.  So an Array found in a slot is searched too.
  */
+static st_oop
+association_value(st_oop entry, const char *name)
+{
+    st_oop  key;
+    char    text[64];
+
+    if (OM_is_int(entry) || !OM_is_present(entry) || entry == ST_NIL
+     || !OM_pointer_bit(entry) || OM_fetch_word_length(entry) < 2)
+        return ST_OOP_INVALID;
+    key = OM_fetch_pointer(0, entry);
+    if (OM_is_int(key) || !OM_is_present(key) || key == ST_NIL
+     || OM_pointer_bit(key))
+        return ST_OOP_INVALID;          /*  a key that is not a Symbol  */
+    OM_string_of(key, text, sizeof text);
+    if (strcmp(text, name) != 0)
+        return ST_OOP_INVALID;
+    return OM_fetch_pointer(1, entry);
+}
+
 static st_oop
 pool_lookup(st_oop pool, const char *name)
 {
+    st_oop      array_class = BOOT_global("Array");
     uint32_t    n;
     uint32_t    i;
 
-    if (!OM_is_present(pool) || !OM_pointer_bit(pool))
+    if (OM_is_int(pool) || !OM_is_present(pool) || !OM_pointer_bit(pool))
         return ST_OOP_INVALID;
     n = OM_fetch_word_length(pool);
     for (i = 0; i < n; ++i) {
         st_oop  entry = OM_fetch_pointer(i, pool);
-        char    text[64];
+        st_oop  value = association_value(entry, name);
 
-        if (!OM_is_present(entry) || entry == ST_NIL || !OM_pointer_bit(entry)
-         || OM_fetch_word_length(entry) < 2)
+        if (value != ST_OOP_INVALID)
+            return value;
+        if (OM_is_int(entry) || !OM_is_present(entry) || entry == ST_NIL
+         || OM_fetch_class(entry) != array_class)
             continue;
-        OM_string_of(OM_fetch_pointer(0, entry), text, sizeof text);
-        if (strcmp(text, name) == 0)
-            return OM_fetch_pointer(1, entry);
+        {
+            uint32_t    m = OM_fetch_word_length(entry);
+            uint32_t    k;
+
+            for (k = 0; k < m; ++k) {
+                value = association_value(OM_fetch_pointer(k, entry), name);
+                if (value != ST_OOP_INVALID)
+                    return value;
+            }
+        }
     }
     return ST_OOP_INVALID;
 }

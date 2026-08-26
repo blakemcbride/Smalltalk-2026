@@ -29,5 +29,9 @@ Profile {
 	              '../lib/Scroll-Wheel', '../lib/Cursor-Keys', '../lib/Browser-Sorting', '../lib/Confirm-Nag', '../lib/Library-Tests',
 	              '../lib/Database', '../lib/Database-Tests',
 	              '../lib/Json', '../lib/Json-Tests',
+	              '../lib/Network', '../lib/Network-Tests',
+	              '../lib/Tonel', '../lib/Tonel-Tests',
+	              '../lib/JSON-RPC-Server', '../lib/JSON-RPC-Server-Tests',
+	              '../lib/Rest-Server', '../lib/Rest-Server-Tests',
 	              '../lib/Probe' ]
 }

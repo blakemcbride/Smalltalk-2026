@@ -186,6 +186,18 @@ to something else, and the bytes read back belonged to a different string.
 A crash would have been kinder. `BOOT_provide_roots` now visits all of it,
 and a caller that installs its own provider must chain to it.
 
+The same rule reaches into every primitive that makes more than one object,
+because an allocation can run a full collection — the table fills, or another
+worker's safepoint is entered by way of the allocator — and between two
+allocations the first object is held by nothing the walk can see. The
+directory-listing primitive made every name a String and then the Array to
+hold them, keeping the Strings in a C array meanwhile; on thirty-one workers
+with the collector forced along, a listing came back with a name that was
+no longer an object. The order is: make the container first, `ST_push` it
+so the active context's stack — a root — holds it, then make each element
+and store it the moment it exists. `Smalltalk arguments` was written that
+way; the directory listing and the ODBC column description are now too.
+
 ## A process belongs to nobody twice on its way to running
 
 Scheduling a process is a sequence of handoffs, and at three points in it the
@@ -219,6 +231,49 @@ process.** The nomination counts what it holds and the root walk visits it.
 That last symptom is the useful one to recognise. A message sent to an object
 of a class that has no business being there is rarely a wrong send -- it is
 almost always a freed object whose slot has been handed to something else.
+
+The REST server's gates found three more of the same family, months later:
+
+- **A link in the middle of a list is held only by the link before it.**
+  `SCHED_remove_first_link` cleared the removed link's `nextLink` before the
+  list had taken hold of what it pointed at, so with three or more processes
+  queued the second lost its only reference and the release cascaded down
+  the chain. The list now takes hold of `next` first; `remove_link_from_list`
+  the same.
+- **One slot written by every worker.** The scheduler's `activeProcess`
+  instance variable is stored on every switch by every worker, and
+  `OM_store_pointer` is read-old, store-new, release-old as three steps. Two
+  workers switching at once both read the same old occupant and both
+  released it, and the value stored between was never released. The Delay
+  timing process, which every worker runs in turn, lost a count that way
+  about once a minute on 31 workers and was freed while linked on a
+  semaphore. The slot is exchanged atomically now (`OM_exchange_pointer`);
+  a slot that more than one worker writes must be.
+- **A run that ends with a nominee.** `SCHED_check_process_switch` runs
+  before the loop looks at `running`, so a worker whose process had just
+  returned off the bottom could still drain, nominate and switch, then go
+  home holding the nominee. A finished run neither drains nor switches, and
+  `ST_interp_run` hands a nominee back to its ready list on the way out.
+  `-serve` never ends a run; a test harness does.
+
+And a fourth in a neighbouring family: `set_active_context` now reports an
+oop that is not a context -- with the method, the chain and every worker --
+and stops, instead of loading registers from a String's bytes and
+dereferencing them.
+
+ThreadSanitizer, run over the same gates, added two:
+
+- **Instance enumeration walked the table while workers allocated.**
+  `someInstance` / `nextInstance` read every header's flags and class, and a
+  freed header is reused in place by the next allocation that takes its
+  slot, so the walk could answer an object half of one thing and half of
+  another. `Symbol rehash` walks every Symbol. With workers running the walk
+  now happens at a safepoint; it is slow per instance, and enumeration is a
+  tool, not a path.
+- **The timer's once-init flag** was a plain int written by the first worker
+  to arm a Delay and read by every idle worker asking whether a wait is
+  pending. It is an atomic three-state now, and two workers arming at once
+  no longer both initialise the lock.
 
 ## The library's implicit locks, and the first one found
 

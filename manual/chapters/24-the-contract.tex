@@ -125,7 +125,8 @@ the worker pool. \ct{Processor activeProcess} is per-worker state.
 \begin{stnote}[What runs on the pool today]
 That map is the design, and it is what the parallel test suites and
 \ct{make bench} actually run---up to 31 native threads, ThreadSanitizer-clean,
-as a gate rather than a report. It is \emph{not} yet what
+as a gate rather than a report, and it is what \ct{./st80 -serve image}
+runs (Chapter~\ref{ch:serving}). It is \emph{not} yet what
 \ct{./st80 -run image} does: the windowed desktop runs the interpreter on one
 thread, so \ct{Processor workerCount} answers 1 there and in a
 \ct{-bootstrap -eval} run.

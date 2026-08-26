@@ -140,6 +140,15 @@ anything still coming?", hears no, and gives up just before it arrives. And a
 new producer turns latent races into real ones---the moment the timer existed,
 ThreadSanitizer found two races in the async queue that were older than the
 timer and had never been executed by any test before.
+
+The REST server's gates (Chapter~\ref{ch:serving}) added a third shape.
+The timing process that resumes Delays is the one process every worker runs
+in turn, and it lost a reference count about once a minute on 31 workers:
+the scheduler's \ct{activeProcess} slot is written by every worker on every
+switch, and a plain store---read the old value, store the new, release the
+old---lets two workers release the same old occupant. The slot is exchanged
+atomically now. When every \ct{Delay} in a system stops waking at once, the
+timing process is the first thing to look for.
 \end{stnote}
 
 \section{Timing things}

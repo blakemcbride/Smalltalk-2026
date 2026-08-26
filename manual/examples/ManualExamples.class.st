@@ -388,7 +388,7 @@ ManualExamples >> characters [
 	^self
 ]
 
-{ #category : 'ch20 concurrency' }
+{ #category : 'ch24 concurrency' }
 ManualExamples >> concurrencyClasses [
 	"(Semaphore forMutualExclusion critical: [7]) >>> 7"
 	"(Mutex new critical: [7]) >>> 7"
@@ -401,7 +401,7 @@ ManualExamples >> concurrencyClasses [
 	^self
 ]
 
-{ #category : 'ch21 processes' }
+{ #category : 'ch25 processes' }
 ManualExamples >> processes [
 	"Processor activePriority >>> 4"
 	"the eight priorities, by the names ProcessorScheduler answers to"
@@ -419,7 +419,7 @@ ManualExamples >> processes [
 	^self
 ]
 
-{ #category : 'ch22 parallel' }
+{ #category : 'ch26 parallel' }
 ManualExamples >> parallel [
 	"a Promise carries the value back"
 	"(Processor forkParallel: [(1 to: 100) inject: 0 into: [:a :b | a + b]]) value >>> 5050"
@@ -534,5 +534,74 @@ ManualExamples >> json [
 	"([:a | [a at: 9. 'accepted'] on: JSONError do: [:e | 'refused']] value: '[1]' asJson) >>> 'refused'"
 	"a stream can be read one document at a time"
 	"([:p | p nextValue. p nextValue] value: (JSONParser on: (ReadStream on: '[1] [2]'))) asArray >>> #(2)"
+	^self
+]
+
+{ #category : 'ch19 serving' }
+ManualExamples >> serving [
+	"Chapter 19 without a socket: the codec, the request parser on text, a
+	 response, a uuid, and what the service loader refuses by name.  The
+	 server itself is checked where it can listen, in
+	 lib/JSON-RPC-Server-Tests and lib/Rest-Server-Tests; a doctest is one
+	 line and a listener is not."
+	"the codec: percent-encoding, a query string, a content type by extension"
+	"(HttpCodec percentDecode: 'two+words%21') >>> 'two words!'"
+	"((HttpCodec parseQuery: 'a=1&b=two+words') at: 'b') >>> 'two words'"
+	"((HttpCodec parseQuery: 'flag&a=1') at: 'flag') >>> ''"
+	"(HttpCodec mimeTypeForName: 'index.HTML') >>> 'text/html'"
+	"(HttpCodec mimeTypeForName: 'photo.png') >>> 'image/png'"
+	"(HttpCodec mimeTypeForName: 'no-extension') >>> 'application/octet-stream'"
+	"(HttpCodec reasonFor: 404) >>> 'Not Found'"
+	"a request parsed from text: the path decoded, the query taken apart, headers by name in any case"
+	"([:nl | (HttpRequest fromString: 'GET /a%20b?x=1&y=two+words HTTP/1.1', nl, 'Host: here', nl, nl) path] value: (String with: (Character value: 13) with: (Character value: 10))) >>> '/a b'"
+	"([:nl | (HttpRequest fromString: 'GET /a%20b?x=1&y=two+words HTTP/1.1', nl, 'Host: here', nl, nl) parameterAt: 'y'] value: (String with: (Character value: 13) with: (Character value: 10))) >>> 'two words'"
+	"([:nl | (HttpRequest fromString: 'GET / HTTP/1.1', nl, 'Host: here', nl, nl) headerAt: 'HOST'] value: (String with: (Character value: 13) with: (Character value: 10))) >>> 'here'"
+	"([:nl | (HttpRequest fromString: 'GET / HTTP/1.1', nl, 'Host: here', nl, nl) headerAt: 'cookie'] value: (String with: (Character value: 13) with: (Character value: 10))) >>> nil"
+	"([:nl | (HttpRequest fromString: 'POST /rest HTTP/1.1', nl, 'Content-Length: 5', nl, nl, 'hello') body] value: (String with: (Character value: 13) with: (Character value: 10))) >>> 'hello'"
+	"and a body with no declared length is refused, with 411"
+	"([:nl | [HttpRequest fromString: 'POST / HTTP/1.1', nl, 'Transfer-Encoding: chunked', nl, nl, '5', nl, 'hello'. 0] on: HttpError do: [:e | e status]] value: (String with: (Character value: 13) with: (Character value: 10))) >>> 411"
+	"a response is 200 until told otherwise"
+	"HttpResponse new status >>> 200"
+	"(HttpResponse error: 404 reason: 'not here') status >>> 404"
+	"(HttpResponse json: '{}') headerAt: 'Content-Type' >>> 'application/json'"
+	"a session id is a version-4 uuid, thirty-six characters with a 4 where the version goes"
+	"RestUuid new size >>> 36"
+	"(RestUuid new at: 15) >>> $4"
+	"(RestUuid new = RestUuid new) >>> false"
+	"a service is named by its file, and only a name reaches the file system"
+	"((RestServiceLoader on: 'backend') pathFor: 'services.Adder') >>> 'backend/services/Adder.class.st'"
+	"((RestServiceLoader on: 'backend') pathFor: '../../etc/passwd') >>> nil"
+	"((RestServiceLoader on: 'backend') pathFor: '') >>> nil"
+	"login is required when the configuration says so, and otherwise whenever there is a database"
+	"RestServer new requiresAuthentication >>> false"
+	"(RestServer new database: 'DSN=shop'; yourself) requiresAuthentication >>> true"
+	"(RestServer new database: 'DSN=shop'; requireAuthentication: false; yourself) requiresAuthentication >>> false"
+	"([:s | s allowWithoutAuthentication: 'services.Catalog' method: 'list'. s allowsWithoutAuthentication: 'services.Catalog' method: 'list'] value: RestServer new) >>> true"
+	"sockets by hand, on the loopback interface: a listener on a port the system picks, a client, a byte each way"
+	"([:l | [:c | [:s | s send: 'hi'. [c receiveUpTo: 2] ensure: [s close. c close. l close]] value: l accept] value: (Socket connectTo: '127.0.0.1' port: l localPort)] value: (ServerSocket listenOn: 0)) >>> 'hi'"
+	"([:l | [:c | [:s | (SocketStream on: s) nextPutAll: 'one'; nextPut: (Character value: 10); nextPutAll: 'two'; flush. [(SocketStream on: c) nextLine] ensure: [s close. c close. l close]] value: l accept] value: (Socket connectTo: '127.0.0.1' port: l localPort)] value: (ServerSocket listenOn: 0)) >>> 'one'"
+	"([:l | [:c | [:s | s close. [c receiveUpTo: 10] ensure: [c close. l close]] value: l accept] value: (Socket connectTo: '127.0.0.1' port: l localPort)] value: (ServerSocket listenOn: 0)) >>> ''"
+	"([Socket connectTo: '127.0.0.1' port: 1. 'connected'] on: NetError do: [:e | 'refused']) >>> 'refused'"
+	"the user inside a service: who they are, and what the application keeps beside them"
+	"(RestUserData username: 'ada' password: 'x' userId: 1) username >>> 'ada'"
+	"(RestUserData username: 'ada' password: 'x' userId: 1) userId >>> 1"
+	"([:u | u at: #cart put: 3. u at: #cart] value: (RestUserData username: 'ada' password: 'x' userId: 1)) >>> 3"
+	"the error tiers and their codes"
+	"([RestUserError code: 7 signal: 'no such product'] on: RestError do: [:e | e errorCode]) >>> 7"
+	"([RestLogError new signal: 'stock is low'] on: RestError do: [:e | e errorCode]) >>> -1"
+	"([RestLoginRequiredError new signal: 'login required'] on: RestError do: [:e | e errorCode]) >>> 2"
+	"([RestUserError code: 7 signal: 'no'] on: RestError do: [:e | e messageText]) >>> 'no'"
+	^self
+]
+
+{ #category : 'ch27 packages' }
+ManualExamples >> packages [
+	"Chapter 27: a class read from a Tonel file by the running image, and
+	 written back out.  The text stands in for the file."
+	"(TonelReader loadString: 'Class { #name : ''DoctestWidget'', #superclass : ''Object'', #category : ''Doctests'' }' named: 'DoctestWidget.class.st') name >>> 'DoctestWidget'"
+	"(TonelReader loadString: 'Class { #name : ''DoctestWidget'', #superclass : ''Object'', #category : ''Doctests'' }' named: 'DoctestWidget.class.st') superclass >>> Object"
+	"((TonelWriter sourceFor: (TonelReader loadString: 'Class { #name : ''DoctestWidget'', #superclass : ''Object'', #category : ''Doctests'' }' named: 'DoctestWidget.class.st')) includesSubstring: '#name : ''DoctestWidget''') >>> true"
+	"and text that is not a class file is a TonelError, not a notifier"
+	"([TonelReader loadString: 'Class { #name : ' named: 'Broken.class.st'. 'accepted'] on: TonelError do: [:e | 'refused']) >>> 'refused'"
 	^self
 ]

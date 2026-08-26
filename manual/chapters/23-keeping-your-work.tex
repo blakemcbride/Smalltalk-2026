@@ -148,6 +148,31 @@ idea and the worst place to leave one.
 
 Chapter~\ref{ch:packages} is how.
 
+\section{A class that lives in a file}
+
+A class read from a Tonel file at run time is remembered along with the file:
+
+\begin{st}
+TonelSource loadFile: 'backend/services/Adder.class.st'
+\end{st}
+
+reads the file into the image and, from then on, keeps the two together in
+both directions. \ct{TonelSource reloadIfChanged: Adder} reads the file again
+if its time or size has changed---which is what the REST server does before
+every request (Chapter~\ref{ch:serving}). And a method accepted or removed in
+the Browser, on a class that came from a file, writes the file: the Browser's
+accept goes through \ct{compile:classified:notifying:}, which now tells
+\ct{TonelSource}, which asks \ct{TonelWriter} for the class as a file. A
+redefinition of the class through its template writes the file's header. The
+file on disk is the class, and the Browser is one way to edit it.
+
+\begin{stnote}
+The Tonel reader and writer are the image's own now---\ct{TonelReader} and
+\ct{TonelWriter} in \ct{lib/Tonel}---and read and write exactly what the C
+reader the bootstrap uses reads. \ct{tests/unit/test_image.c} checks that the
+C reader accepts what the writer wrote.
+\end{stnote}
+
 \section{A note on \texttt{Undeclared}}
 
 When you accept a method that references a name nothing defines yet, the

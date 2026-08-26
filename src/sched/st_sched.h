@@ -93,7 +93,45 @@ void        SCHED_synchronous_signal(st_oop semaphore);
  *  check rather than applied immediately, because the interpreter may be
  *  midway through a bytecode.
  */
-void        SCHED_asynchronous_signal(st_oop semaphore);
+/*
+ *  Answers 1 if the signal was queued and 0 if the queue was full and it
+ *  was dropped.  The pump and the timer ignore the answer; the network
+ *  I/O thread keeps its socket armed and tries again.
+ */
+int         SCHED_asynchronous_signal(st_oop semaphore);
+
+/*  The same, as the hook the network layer takes: a token is an oop.  */
+int         SCHED_signal_token(uintptr_t token);
+
+/*
+ *  Make the async queue's lock before starting a thread that will post
+ *  to it, on the thread that starts it.
+ */
+void        SCHED_async_init(void);
+
+/*  The queued semaphores, for the root walk.  */
+void        SCHED_visit_async_roots(om_visit_fn visit);
+
+/*
+ *  Something outside the scheduler that will end a wait -- the network
+ *  layer's armed sockets.  Asked, beside the delay timer, before the idle
+ *  loop declares that nothing can ever run again.
+ */
+void        SCHED_set_external_wait_hook(int (*hook)(void));
+
+/*
+ *  Stop every worker at its next bytecode boundary or idle slice.  Safe
+ *  from a signal handler: one atomic store.
+ */
+void        SCHED_request_stop(void);
+int         SCHED_stop_requested(void);
+
+/*
+ *  Join the scheduler with no process of one's own -- what a `-serve'
+ *  worker other than the first does.  Returns with a nomination pending
+ *  for the interpreter loop to act on, or with st_vm.running cleared.
+ */
+void        SCHED_enter_idle(void);
 
 /*
  *  Called once per bytecode.  Delivers queued asynchronous signals and
@@ -101,6 +139,7 @@ void        SCHED_asynchronous_signal(st_oop semaphore);
  *  poll will live once threads arrive.
  */
 void        SCHED_check_process_switch(void);
+void    SCHED_release_nomination(void);   /*  a run that ends hands its nominee back  */
 
 /*  Primitives 85 to 88.  */
 int         SCHED_primitive_signal(void);

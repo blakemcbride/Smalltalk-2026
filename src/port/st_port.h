@@ -146,6 +146,15 @@ uint32_t ST_time_ms_clock(void);
 /*  Milliseconds since the Smalltalk-80 epoch (1 January 1901).  */
 int64_t ST_time_smalltalk_ms(void);
 
+/*
+ *  Seconds from the Smalltalk-80 epoch (1 January 1901) to the Unix epoch
+ *  (1 January 1970).  69 years = 25185 days, plus 17 leap days (1904 through
+ *  1968), = 25202 days = 2177452800 seconds.  Note 1900 was not a leap year
+ *  and in any case falls outside the range.  Here rather than in st_port.c
+ *  because a file's modification time crosses the same gap.
+ */
+#define ST_EPOCH_OFFSET_SEC     INT64_C(2177452800)
+
 void    ST_sleep_ns(int64_t ns);
 
 #ifdef __cplusplus

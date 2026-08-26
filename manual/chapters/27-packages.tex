@@ -128,6 +128,31 @@ Object >> myUsefulThing [
 The leading \ct{*} on the category is the convention that marks a method as
 belonging to another package. Keep it.
 
+\section{A class from a file, at run time}
+
+A profile is read by the C bootstrap. The same files can be read by the
+running image, which is what the REST server does with its services
+(Chapter~\ref{ch:serving}) and what you can do with any class:
+
+\begin{st}
+TonelReader loadFile: 'lib/MyStuff/Widget.class.st'.     "compile it in; answer the class"
+TonelSource loadFile: 'lib/MyStuff/Widget.class.st'.     "the same, and remember where it came from"
+TonelSource reloadIfChanged: Widget.                     "read it again if the file has changed"
+TonelWriter write: Widget toFile: 'lib/MyStuff/Widget.class.st'.
+\end{st}
+
+\ct{TonelReader} reads a class or extension file exactly as the bootstrap
+does---the same grammar, the same \ct|{ #category : ... }| headings---and
+compiles each method through the same compiler the Browser uses, so a syntax
+error is a \ct{TonelError} naming the file, the method and the character,
+not a notifier. Loading a class that already exists redefines it in place
+and removes the methods the file no longer has. \ct{TonelSource} adds the
+registry: a class it loaded is written back to its file when a method is
+accepted or removed in the Browser (Chapter~\ref{ch:keeping}), and
+\ct{reloadIfChanged:} compares the file's time and size with what it saw
+last. \ct{TonelWriter} writes what the reader reads, so a class can go out
+and come back byte for byte.
+
 \section{A profile}
 
 A profile says which packages make an image. \ct{profiles/mystuff.profile}:

@@ -37,8 +37,11 @@ switch in the same method. The second was never portable JDBC either (the Java
 calls it with PostgreSQL type names); `whereIn:` binds one parameter per
 element, which works everywhere.
 
-**`restServer/`, Groovy and ABCL were not ported and will not be.** They are
-servlet-container and JVM-reflection architecture rather than functionality.
+**`restServer/`'s protocol was ported; its Groovy, Java and Lisp loaders and
+its servlet plumbing were not, and will not be.** They are JVM-reflection and
+servlet-container architecture rather than functionality; what a Kiss front
+end speaks is functionality, and `lib/Rest-Server/PROVENANCE.md` records what
+of it crossed.
 
 ## Classes that vanished
 

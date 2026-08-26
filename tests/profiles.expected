@@ -86,9 +86,44 @@
 # and one of the four sends that stale signal on purpose.  Every row moved
 # by four; database-live is 234.
 #
+# lib/Network-Tests adds twenty-eight, over the loopback interface on a port
+# the system picks, so they need no network and no fixed port and run on any
+# build machine.  Each makes its own listener and closes both ends in an
+# ensure:.  The ones with anything to catch are the ones that wait: an accept
+# before anybody connects, a line split across two sends, a 300,000-byte
+# transfer through a producer on another process, a close from one process
+# that must wake a waiter on another, and a wait that a full collection runs
+# through.  Every row moved by twenty-eight; database-live is 262.
+#
+# lib/Tonel-Tests adds nineteen: the reader on every construct that can hide a
+# bracket, the writer's round trip character for character, and the registry
+# against a real file -- loaded, reloaded when the file changes, and written
+# back through the same three messages the Browser sends.  Two of them found
+# faults older than the package: the image's own compiler did not read `:='
+# and hung a headless run on the notifier it opened to say so, and a
+# bootstrapped image logged every compiled method's source over the last one's.
+# Every row moved by nineteen; database-live is 281.
+#
+# lib/JSON-RPC-Server-Tests adds twenty-nine: the request parser on text --
+# more than a third of them requests it must refuse -- the response writer,
+# and a server on the loopback interface driven by a client written on the raw
+# socket, so that what is tested is the wire.  One of them, an idle connection
+# closed after the keep-alive time, found that on Linux a close() from one
+# thread does not release a descriptor another thread is blocked in poll() on,
+# and the network layer now wakes its thread on every close.  Every row moved
+# by twenty-nine; database-live is 310.
+#
+# lib/Rest-Server-Tests adds sixteen, driving the whole stack -- Kiss's wire
+# format, the three framework methods, sessions, a service loaded from a Tonel
+# file and reloaded when the file changes, uploads, a binary reply, the error
+# codes, sixteen calls at once -- over the loopback interface against the
+# back end in tests/rest-backend.  No database here; the half that needs one
+# is lib/Rest-Server-Live-Tests, in database-live with the rest of that kind.
+# Every row moved by sixteen; database-live is 331 with its own three.
+#
 # profile               run  passed
-st2026                  211  211
-pharo-announcements     242  242
-pharo-time              832  832
-pharo-weak              231  231
-pharo-collections       668  668
+st2026                  303  303
+pharo-announcements     334  334
+pharo-time              924  924
+pharo-weak              323  323
+pharo-collections       760  760

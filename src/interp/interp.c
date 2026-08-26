@@ -29,7 +29,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "st_socket.h"
+
 _Thread_local st_interp     st_vm;
+
+static int  name_method(st_oop receiver, st_oop method, char *out, size_t len);
 
 /*
  *  Every running interpreter, so the collector can walk them all.  Written
@@ -134,11 +138,21 @@ ST_push(st_oop value)
     uint32_t    next = st_vm.stack_pointer + 1;
 
     if (next >= st_vm.stack_limit) {
+        char    name[200];
+
+        /*  Named whether or not errors are being reported: an overflow
+         *  ends the run, and the method is the whole of the diagnosis.  */
+        if (!name_method(st_vm.receiver, st_vm.method, name, sizeof name))
+            snprintf(name, sizeof name, "?");
         fprintf(stderr, "st80: a method overflowed its frame at %u slots "
                         "(the context holds %u); its declared frame is too "
-                        "small\n",
-                next, (unsigned) st_vm.stack_limit);
+                        "small: %s\n",
+                next, (unsigned) st_vm.stack_limit, name);
+        ST_set_error_reporting(1);
         ST_report_backtrace();
+        /*  And the chain as the scheduler sees it, registers written back.  */
+        ST_store_active_context();
+        ST_interp_dump_workers();
         st_vm.running = 0;
         return;
     }
@@ -304,6 +318,45 @@ static void
 set_active_context(st_oop ctx)
 {
     /*
+     *  Named before it is fetched from: a Process whose suspendedContext is
+     *  not a context, or a sender that is not one, used to be read as if it
+     *  were, and the registers filled from a String's bytes ran until
+     *  next_byte dereferenced them.  The report is the diagnosis -- the
+     *  chain that made the switch, and every parked process -- and the run
+     *  stops on the context it still has.
+     */
+    if (!OM_is_object(ctx)
+     || (OM_fetch_class(ctx) != ST_CLASS_METHOD_CONTEXT
+      && OM_fetch_class(ctx) != ST_CLASS_BLOCK_CONTEXT)) {
+        char    name[200];
+
+        if (!name_method(st_vm.receiver, st_vm.method, name, sizeof name))
+            snprintf(name, sizeof name, "?");
+        fprintf(stderr, "st80: asked to run %s (oop %#llx) as a context, "
+                        "from %s\n",
+                OM_is_int(ctx) ? "a SmallInteger"
+                : !OM_is_object(ctx) ? "something that is not an object"
+                : "an object that is not a context",
+                (unsigned long long) ctx, name);
+        if (OM_is_object(st_vm.active_process)) {
+            char    cname[100];
+
+            if (!OM_class_name_of(OM_fetch_class(st_vm.active_process),
+                                  cname, sizeof cname))
+                snprintf(cname, sizeof cname, "?");
+            fprintf(stderr, "       the active process oop %#llx is now %s "
+                            "with count %u\n",
+                    (unsigned long long) st_vm.active_process, cname,
+                    OM_count_bits(st_vm.active_process));
+        }
+        ST_set_error_reporting(1);
+        ST_report_backtrace();
+        ST_store_active_context();
+        ST_interp_dump_workers();
+        st_vm.running = 0;
+        return;
+    }
+    /*
      *  The new context is referenced by the interpreter itself, so it must
      *  be counted before the old one is released or a self-transition could
      *  free the context we are switching to.
@@ -337,6 +390,9 @@ set_active_context(st_oop ctx)
  */
 static om_root_provider extra_roots;
 
+/*  How far back a chain is printed, here and by ST_report_backtrace.  */
+#define BACKTRACE_LIMIT     24
+
 void
 ST_interp_dump_workers(void)
 {
@@ -360,7 +416,46 @@ ST_interp_dump_workers(void)
                         "active process at priority %ld waiting on %s\n",
                 i, vm->running, vm->disowned, vm->new_process_waiting,
                 priority, list);
+        /*
+         *  And where that process is.  A verdict that names a semaphore
+         *  and not the method waiting on it leaves the reader to guess
+         *  which of the image's locks was taken twice; the chain names it
+         *  in one line.  From the process's parked context, because the
+         *  registers of an idle worker are stale by construction.
+         */
+        if (OM_is_present(p)) {
+            st_oop      ctx = OM_fetch_pointer(ST_PROCESS_SUSPENDED_CONTEXT, p);
+            unsigned    depth = 0;
+
+            while (OM_is_present(ctx) && depth < BACKTRACE_LIMIT) {
+                st_oop  method   = OM_fetch_pointer(ST_CTX_METHOD, ctx);
+                st_oop  receiver = OM_fetch_pointer(ST_CTX_RECEIVER, ctx);
+                char    name[200];
+
+                if (!OM_is_present(method)
+                 || !name_method(receiver, method, name, sizeof name))
+                    snprintf(name, sizeof name, "?");
+                fprintf(stderr, "           %s %s\n", depth ? "from" : "in", name);
+                ctx = OM_fetch_pointer(ST_CTX_SENDER, ctx);
+                ++depth;
+            }
+        }
     }
+}
+
+/*
+ *  A token is an oop the network layer carries without knowing what it is;
+ *  its visitor takes a user pointer and ours does not, so the visitor of
+ *  the moment sits in a static.  The root walk runs on one thread, at a
+ *  safepoint, so a static is exactly enough.
+ */
+static om_visit_fn  token_visitor;
+
+static void
+visit_token(uintptr_t token, void *user)
+{
+    (void) user;
+    token_visitor((st_oop) token);
 }
 
 static void
@@ -403,6 +498,17 @@ provide_roots(om_visit_fn visit)
     visit(GFX_display_form());
     visit(SCHED_input_semaphore());
     visit(SCHED_timer_semaphore());
+    /*
+     *  The Semaphores the network layer will signal, and the ones already
+     *  queued for delivery.  Held in C -- a socket table and the async
+     *  queue -- and reachable from nowhere in the image once the Socket
+     *  that owned them is dropped; visited here directly, beside the timer
+     *  semaphore, rather than through extra_roots, which a -run has none
+     *  of and a socket can be opened from any mode.
+     */
+    token_visitor = visit;
+    NET_visit_tokens(visit_token, NULL);
+    SCHED_visit_async_roots(visit);
     visit(SCHED_pending_process());
     visit(st_om_vm_state[ST_VM_INPUT_SEMAPHORE]);
     visit(st_om_vm_state[ST_VM_DISPLAY]);
@@ -466,6 +572,9 @@ ST_interp_forward_forbidden(st_oop p)
      */
     if (p == GFX_display_form() || p == SCHED_input_semaphore()
      || p == SCHED_timer_semaphore() || p == SCHED_pending_process())
+        return 1;
+    /*  A Semaphore the socket table names: the I/O thread will signal it.  */
+    if (NET_holds_token((uintptr_t) p))
         return 1;
     /*
      *  And whatever the bootstrap holds -- its symbol table and its class
@@ -683,9 +792,10 @@ name_method(st_oop receiver, st_oop method, char *out, size_t len)
  *  bootstrap are raised by the error REPORTING path -- Object>>error: draws
  *  its message at Sensor cursorPoint, and asks a nil Sensor -- so the class
  *  named was the reporter rather than anything to do with the fault.  The
- *  chain distinguishes the two immediately.
+ *  chain distinguishes the two immediately.  BACKTRACE_LIMIT is defined
+ *  beside ST_interp_dump_workers, which prints the same chain for a parked
+ *  process.
  */
-#define BACKTRACE_LIMIT     24
 
 int         ST_quit_requested;
 
@@ -2010,5 +2120,13 @@ ST_interp_run(uint64_t limit)
             break;
         }
     }
+    /*
+     *  A nominee this worker was about to run, and now never will: back on
+     *  its ready list for whoever is still running.  See
+     *  SCHED_check_process_switch.
+     */
+    SCHED_release_nomination();
     return executed;
 }
+
+

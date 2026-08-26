@@ -1,0 +1,358 @@
+\chapter{Serving HTTP}
+\label{ch:serving}
+
+\standfirst{A web server that runs one request per core, and a JSON-RPC
+protocol on it whose services are files that load themselves.}
+
+Three categories, one on top of the other. \ct{Network} is TCP sockets.
+\ct{JSON-RPC-Server} is an HTTP/1.1 server---a listener, a process per
+connection, a request parser, files under a document root---which is what
+Tomcat was to Kiss. \ct{Rest-Server} is Kiss's protocol on it: \ct{POST /rest}
+with a JSON document naming a class and a method, sessions, one database
+transaction per request. And \ct{Tonel}, which the last of those leans on,
+reads a class from a file into the running image and writes it back.
+
+\section{A first server}
+
+\begin{st}
+| server |
+server := HttpServer new port: 8080; documentRoot: 'frontend'.
+server at: '/hello' put: [:request | HttpResponse text: 'hello, ', request path].
+server start
+\end{st}
+
+\ct{at:put:} maps a path to a handler---a block taking the request, or any
+object answering \ct{handle:} with an \ct{HttpResponse}. The match is exact.
+A path no handler claims is looked for under the document root, and is 404
+otherwise. \ct{stop} closes the listener; connections in flight finish what
+they are doing.
+
+A port of 0 asks the system for one, and \ct{server port} answers it once the
+server has started, which is how the tests avoid stepping on each other.
+
+\subsection{Requests and responses}
+
+\begin{center}
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+\ctp{method} \ctp{path} \ctp{version} & \ct{'GET'}, \ct{'/index.html'} decoded, \ct{'HTTP/1.1'}\\
+\ctp{headerAt:} & by name in any case; nil when absent\\
+\ctp{body} & a String of bytes, whole\\
+\ctp{parameterAt:} \ctp{query} & the query string, decoded\\
+\ctp{contentType} \ctp{isJson} \ctp{isMultipart} & the media type without its parameters\\
+\ctp{parts} \ctp{formParameters} \ctp{partNamed:} & a multipart body, taken apart into \ct{HttpPart}s\\
+\ctp{remoteAddress} & the peer, as text\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{st}
+HttpResponse json: aJsonObject asJsonString.
+HttpResponse ok: '<html>...</html>'.
+HttpResponse bytes: pngBytes contentType: 'image/png'.
+HttpResponse error: 404 reason: 'not here'.
+(HttpResponse status: 201) body: '...'; contentType: 'text/plain'; headerAt: 'Location' put: '/x'
+\end{st}
+
+\ct{Content-Length} is always sent and the body is always whole, so a client
+knows where a response ends and the connection can carry the next request.
+
+\begin{stnote}[What the parser refuses]
+The stream is a stranger's, so every reading is bounded. A line over 8,192
+bytes, more than a hundred headers, a body over the server's limit (64 MB
+unless \ct{maxRequestBytes:} says otherwise) are refused before they are
+read, each with its own status; a body with no declared length---chunked---is
+refused with 411, because a JSON-RPC client always knows how long its document
+is. A handler that raises \ct{HttpError} answers with that status; a handler
+that raises anything else answers 500, and the fault goes to standard error,
+not to the client.
+\end{stnote}
+
+\section{One process per connection}
+
+Every connection the listener accepts is handed to a new \ct{Process}, and
+that process runs on whichever worker is idle. That is the whole of the
+threading: with the pool running, \(N\) connections are served on \(N\) cores.
+
+What makes that affordable is that a process waiting for its client to send
+something costs no worker at all. A socket here is never read by a blocking
+call; a read that cannot complete answers \ct{false}, the process \emph{arms}
+the socket and waits on a \ct{Semaphore}, and a thread of the VM's own polls
+every armed socket and signals the semaphore when the socket is ready. A
+hundred idle keep-alive connections are a hundred parked processes. The
+database layer, by contrast, parks the worker inside the driver, because a
+query has no non-blocking form; a socket does.
+
+\begin{stwarn}[A socket has one reader]
+Two processes receiving from one socket would both arm and both wait, and one
+signal wakes one of them. Sharing a socket between processes is a program
+error, and \ct{Socket} does not try to make it work. Closing a socket a
+process is waiting on wakes that process, which then finds the socket closed.
+\end{stwarn}
+
+\begin{stwarn}[whileTrue: bodies are inlined]
+A temporary declared inside a \ct{whileTrue:} body is one variable for every
+iteration, so a process forked in one iteration that captured it reads
+whatever the next iteration stored. \ct{HttpServer}'s accept loop hands each
+socket to its process as a \emph{method argument} for exactly this reason.
+The gate on the socket layer found two processes reading one socket before
+it did.
+\end{stwarn}
+
+Under \ct{-bootstrap -tests} there is one interpreter and every process is
+green; the same code runs and the same tests pass, because the arm-wait-retry
+contract is the same either way. Chapter~\ref{ch:parallel} says why the
+timing is the only difference.
+
+\section{Sockets by hand}
+
+Nothing above the socket layer is needed to talk to a network. A client is
+a \ct{Socket}, a server is a \ct{ServerSocket}, and a \ct{SocketStream}
+reads either by the line:
+
+\begin{st}
+socket := Socket connectTo: 'example.com' port: 80.
+stream := SocketStream on: socket.
+stream nextPutAll: 'GET / HTTP/1.0'; cr; cr; flush.
+[stream atEnd] whileFalse: [Transcript show: stream nextLine; cr].
+socket close
+\end{st}
+
+\begin{st}
+listener := ServerSocket listenOn: 0.        "0: the system picks; localPort says which"
+[[:c | [c send: (c receiveUpTo: 100)] ensure: [c close]] value: listener accept.
+ true] whileTrue: []
+\end{st}
+
+\ct{connectTo:port:} waits until the connection is made and raises
+\ct{NetError}, carrying the system's own words, if the host cannot be reached
+or refuses. \ct{receiveUpTo:} answers what has arrived---at least one byte,
+at most the number asked for---and an empty String when the peer has closed;
+\ct{send:} sends the whole of its argument, however many pieces the kernel
+takes it in. Bytes are bytes: nothing translates a line ending, and
+\ct{nextLine} drops the CR before an LF because that is what every text
+protocol sends.
+
+Every wait is the process's, not the thread's. A socket with nothing to say
+parks the process on a Semaphore that the VM's network thread signals when
+something arrives, and the worker runs somebody else meanwhile; a hundred
+idle connections are a hundred parked processes and no thread at all.
+\ct{readTimeout:} on a \ct{SocketStream} bounds every wait for data and
+raises \ct{TimedOut} when it runs out, which is how a server stops waiting on
+a client that will never speak again. Closing a socket wakes whoever is
+waiting on it, so they find it closed rather than sleeping for ever; and one
+process reads a socket at a time---two waiting on one connection is a
+program error, not a case the class tries to make work.
+
+\section{A REST server}
+
+\begin{st}
+RestServer new
+    port: 8080;
+    backendDirectory: 'backend';
+    documentRoot: 'frontend';
+    database: 'DSN=shop;UID=app;PWD=secret';
+    start
+\end{st}
+
+A service is a Tonel file under the back-end directory, a subclass of
+\ct{RestService}:
+
+\begin{plain}
+backend/services/Adder.class.st
+
+Class { #name : 'Adder', #superclass : 'RestService', #category : 'services' }
+Adder >> addNumbers [
+    outjson at: 'num3' put: (injson integerAt: 'num1') + (injson integerAt: 'num2')
+]
+\end{plain}
+
+and a request is a \ct{POST} to \ct{/rest}:
+
+\begin{plain}
+$ curl -d '{"_class":"services.Adder","_method":"addNumbers","num1":3,"num2":4}' \
+       http://localhost:8080/rest
+{"num3":7,"_Success":true,"_ErrorCode":0,"_BootId":"fcec7be8-..."}
+\end{plain}
+
+The method named by \ct{_method} is sent, as it is, to a \emph{new} instance
+of the class, with four instance variables already set: \ct{injson}, the
+request's document; \ct{outjson}, the reply, empty, which the method fills
+in; \ct{db}, the request's \ct{DbConnection}; and \ct{request}, everything
+else about the request. Kiss hands the same four to a Java method as
+parameters. Here they are state, on an instance that belongs to nobody else,
+which on this system is the property that matters: nothing is shared between
+requests unless a service chooses to share it.
+
+Only a unary method defined in a subclass of \ct{RestService} can be reached
+from outside. \ct{printString}, \ct{halt}, the package's own \ct{requireLogin}
+and anything with a colon in it answer \emph{No such method}.
+
+\subsection{The wire}
+
+The protocol is Kiss's, unchanged, so that a Kiss front end's \ct{Server.js}
+works as it is. The reply is always HTTP 200 and always JSON:
+
+\begin{center}
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+\ctp{\_class} \ctp{\_method} \ctp{\_uuid} & in: the service, the method, the session\\
+\ctp{\_Success} & out: true or false\\
+\ctp{\_ErrorCode} & 0; 2 for \emph{log in first}; $-1$ or the service's own\\
+\ctp{\_ErrorMessage} & out, when \ct{_Success} is false\\
+\ctp{\_BootId} & out: a uuid made at start, so a front end sees a restart\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Three methods on the empty class are the framework's: \ct{LoginRequired},
+\ct{Login} with \ct{username} and \ct{password}, and \ct{Logout}. \ct{Login}
+answers \ct{uuid}, which every later request carries as \ct{_uuid}. The
+checking is the application's, in \ct{backend/Login.class.st}:
+
+\begin{st}
+Login class >> login: username password: password outjson: outjson request: request
+    ...answer a RestUserData from request server userCache newUser:..., or nil
+
+Login class >> checkLogin: aUser request: request
+    ...answer whether the user is still allowed in; asked again after two minutes
+\end{st}
+
+Login is required when the configuration says so, and otherwise whenever
+there is a database. \ct{allowWithoutAuthentication:method:} exempts a method
+---a public catalogue, a sign-up form.
+
+Inside a service the user is \ct{request userData}: nil when nobody is
+logged in, otherwise a \ct{RestUserData} answering \ct{username},
+\ct{userId} and \ct{uuid}, and keeping whatever the application puts beside
+them:
+
+\begin{st}
+Cart >> add
+    | user |
+    user := request requireLogin.              "raises, code 2, if there is no user"
+    user at: #cart put: (user at: #cart ifAbsent: [OrderedCollection new]), ...
+\end{st}
+
+That dictionary is the user's own, shared between every request that user
+makes---which on this system means between workers---so every \ct{at:} and
+\ct{at:put:} takes its Mutex. \ct{request isLoggedIn} asks without raising.
+A user is forgotten by \ct{Logout}, or after \ct{userInactiveSeconds} of
+silence, and \ct{Login class>>checkLogin:request:} is asked again every two
+minutes whether they are still welcome.
+
+\subsection{Errors, uploads, binary replies}
+
+\begin{st}
+RestUserError code: 7 signal: 'no such product'     "the user's news; not logged"
+RestLogError new signal: 'stock is low'             "a line in the log"
+RestServerError new signal: 'the cache is corrupt'  "a fault; logged with everything"
+\end{st}
+
+Any other \ct{Error} inside a service is a fault. The client sees the message
+and the code, $-1$ unless the service said otherwise; the log sees what the
+tier says. The codes are the reply's \ct{_ErrorCode}: 0 for success, 2 when
+a login is required (\ct{RestLoginRequiredError}, which \ct{requireLogin}
+raises), $-1$ for anything the service did not number, and
+\ct{RestUserError code: 7 signal:} for the numbers a front end switches on.
+Whatever the tier, the transaction is rolled back.
+
+An upload arrives as a multipart form, files as \ct{_file-0}, \ct{_file-1}
+and so on, and the request answers \ct{uploadFileCount},
+\ct{uploadFileName:}, \ct{uploadBytes:} and \ct{saveUploadFile:to:}. A
+service that wants to send a file back sends \ct{self returnBinary: bytes}:
+the reply is then \ct{application/octet-stream}, the JSON, one byte 3, and the
+bytes, which is how Kiss's \ct{Server.binaryCall} expects it.
+
+\subsection{One transaction per request}
+
+A connection is taken from a pool before the service runs and put back after.
+The method runs inside a transaction that is committed when it returns and
+rolled back when it raises. A service that wants the connection gone sooner
+sends \ct{request closeConnection: aBoolean}---commit or roll back---and
+nothing more is done to it. The pool is a \ct{SharedQueue} of open
+connections, which bounds how many requests are inside the database at once
+to the pool's size; \ct{lib/Database} asks that a connection belong to one
+process at a time, and the queue is what enforces it.
+
+\section{Services are files}
+
+\ct{services.Adder} names \ct{backend/services/Adder.class.st}. The first
+request for it reads the file into the image, and every later request
+compares the file's time and size with what was loaded and reads it again if
+either changed. Edit the file on a running server and the next call runs the
+new code, with a whole class as the unit.
+
+The other direction is the Browser. A method accepted or removed in it, on a
+class that came from a file, writes the file---Chapter~\ref{ch:keeping} has
+the mechanism. The file on disk is the class.
+
+\begin{stnote}
+Two things the image's own compiler could not do until this needed them. It
+did not read \ct{:=}---every file in \ct{lib/} is spelt that way, and every
+one was compiled by the C bootstrap, so nothing had ever compiled that
+spelling \emph{inside} the image---and a compile error with nobody to tell
+opened 1983's \ct{SyntaxError} notifier and suspended the process, which in
+a headless server is a hang. Both are fixed: \ct{Scanner} reads \ct{:=}, and
+a compile error in a file is a \ct{TonelError} naming the file, the method
+and the character.
+\end{stnote}
+
+\section{Running a server image}
+
+Nothing above needs \ct{-serve}: a \ct{RestServer} started from a workspace
+in \ct{-run} serves requests green, one interpreter switching between them.
+For a server that uses every core:
+
+\begin{plain}
+./st80 -bootstrap -profile profiles/st2026.profile -startup 'RestServer serve' -o server.im
+./st80 -serve server.im -workers 8 server.json
+\end{plain}
+
+\ct{-serve} loads the image, starts the worker pool, and resumes the image's
+startup process on the first worker while the rest join the scheduler with
+nothing to run and take processes as they appear. \ct{RestServer class>>serve}
+reads its configuration from the file named by the first argument---
+\ct{server.json} by default:
+
+\begin{plain}
+{ "port": 8080, "backendDirectory": "backend", "documentRoot": "frontend",
+  "database": "DSN=shop;UID=app;PWD=secret", "requireAuthentication": true,
+  "userInactiveSeconds": 3600, "connectionPoolSize": 12,
+  "allowWithoutAuthentication": [ "services.Catalog:list" ] }
+\end{plain}
+
+Every name in the file is also in \ct{request environment}, so a service can
+read its own settings from the same place. The server stays up until
+\ct{SIGINT} or \ct{SIGTERM}, then stops and quits with exit code 0. The log is
+standard error, one line per event.
+
+\begin{stnote}
+The startup is baked in at bootstrap and not given to \ct{-serve}, because
+the bootstrap's compiler resolves globals through tables a loaded image does
+not have. A desktop image run under \ct{-serve} executes its display loop
+headless on one worker and serves nothing.
+\end{stnote}
+
+\section{Where the rest of it is}
+
+\ct{doc/NETWORK.md} is the socket layer and the run mode: the one decision
+everything follows from, the arm-wait-retry contract, what the VM does, and
+the two things found the hard way. \ct{doc/REST-SERVER.md} is the protocol,
+where Kiss stops and this begins, and what is shared and what guards it.
+\ct{lib/Rest-Server/PROVENANCE.md} records what of Kiss crossed, what changed,
+and the three Kiss faults not repeated. \ct{doc/CONCURRENCY.md} records what
+the gates found in the virtual machine itself while this was built---a list
+unlinked in the wrong order, a slot every worker wrote, an enumeration that
+walked headers being refilled---each older than the server and each waiting
+for thirty-one workers to show it.
+
+The tests are in \ct{lib/Network-Tests}, \ct{lib/JSON-RPC-Server-Tests} and
+\ct{lib/Rest-Server-Tests}, all over the loopback interface on a port the
+system picks; \ct{lib/Rest-Server-Live-Tests} needs a database and lives in
+the \ct{database-live} profile. The gates are
+\ct{tests/unit/test_parallel_net.c} and
+\ct{tests/unit/test_parallel_rest.c}: thirty-one workers, sixty-two native
+clients, every sum checked, every worker seen.

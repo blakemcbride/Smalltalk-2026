@@ -28,6 +28,8 @@
 #include "census.h"
 #include "gfx.h"
 #include "st_sched.h"
+#include "source.h"
+#include "tonel.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -77,7 +79,40 @@
  *  directories and the method dictionaries -- and DelayTest, for the Delay
  *  whose timing process was rewritten to survive a stale timer signal.
  */
-#define LIB_CLASSES             71
+/*
+ *  71 -> 77 is lib/Network and its tests: Socket, the one class that
+ *  knows primitive 208 exists; ServerSocket and SocketStream above it;
+ *  NetError, which carries the operating system's own words; and two
+ *  classes of tests over the loopback interface.  The 1983 image had no
+ *  network -- the Alto talked to the Ethernet through a different machine
+ *  -- so all six are new in the way the database's twelve were.
+ */
+/*
+ *  77 -> 84 is lib/Tonel and its tests: TonelReader, which reads Pharo's
+ *  package format into a running image the way src/compiler/tonel.c reads
+ *  it into a bootstrap; TonelWriter, its inverse, exact on the round trip;
+ *  TonelSource, the registry that reloads a class when its file changes
+ *  and writes the file when the class does; TonelError; and three classes
+ *  of tests.  A server loads its services through these on the first
+ *  request for them.
+ */
+/*
+ *  84 -> 95 is lib/JSON-RPC-Server and its tests: what Tomcat was to Kiss.
+ *  HttpServer, HttpConnection, HttpRequest, HttpResponse, HttpPart,
+ *  HttpStaticFileHandler, HttpCodec and HttpError -- eight -- and three
+ *  classes of tests, one of them a client written on the raw socket so
+ *  that what is tested is the wire.
+ */
+/*
+ *  95 -> 111 is lib/Rest-Server and its test: Kiss's restServer package as
+ *  fifteen classes -- the server, the dispatcher that speaks Kiss's wire
+ *  format, the request a service sees, the service superclass, the loader
+ *  that reads a service's Tonel file on first use, the session cache and
+ *  its user records, the connection pool, five errors, the log and the
+ *  uuid -- and RestServerTest, which drives the whole stack over the
+ *  loopback interface against tests/rest-backend.
+ */
+#define LIB_CLASSES             111
 /*
  *  This number is a ratchet and is meant to move: lib/ is where every
  *  divergence from the frozen 1983 sources lives, so it grows whenever a
@@ -200,8 +235,36 @@
  *  1430: TextCollector's eleven writers under a Transcript lock, and the
  *  holdingTranscript: that gives it to them -- ThreadSanitizer watched
  *  eight workers write into one String while become: replaced it.
+ *
+ *  1526: lib/Network.  Socket's thirty-odd -- the primitive, the arm and
+ *  wait loop that every read and write is built on, the timed wait,
+ *  close that wakes a waiter -- ServerSocket's five, SocketStream's
+ *  twenty over lines and counted reads and buffered writes, NetError's
+ *  three, SystemDictionary>>arguments, and twenty-eight tests.
+ *
+ *  1629: lib/Tonel.  TonelReader's thirty, TonelWriter's dozen, TonelSource's
+ *  fifteen, the two Browser paths -- compile:classified:notifying: and
+ *  removeSelector: -- and the class-definition message, each kept as a
+ *  basic... for the reader and hooked for the file; Scanner>>scanToken,
+ *  so that the image's own compiler reads `:=' as assignment, which it
+ *  never had to before a file written in that spelling was compiled here;
+ *  ReadWriteStream>>setToEnd, without which every method compiled in a
+ *  test run was logged over the last; PosixFile>>modificationTime; and
+ *  twenty-four tests.
+ *
+ *  1797: lib/JSON-RPC-Server.  HttpRequest's thirty over the request line,
+ *  the headers, the body and a multipart body; HttpServer's twenty-five;
+ *  HttpResponse's twenty; HttpCodec's ten; the rest smaller; and
+ *  twenty-nine tests, more than a third of them requests the parser must
+ *  refuse.  SocketStream gained space, tab and cr, which a Stream that
+ *  is not a WriteStream does not inherit.
+ *
+ *  1976: lib/Rest-Server.  RestServer's forty over configuration and the
+ *  components; RestDispatcher's fifteen, the protocol; RestRequest's
+ *  twenty-five; the loader, the cache, the pool and the user record; the
+ *  five errors' handful; and sixteen tests.
  */
-#define LIB_METHODS             1430
+#define LIB_METHODS             1976
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -221,7 +284,23 @@
  *  above -- its methods land in the *Json protocol of classes that already
  *  have categories of their own.
  */
-#define LIB_CATEGORIES          16
+/*
+ *  16 -> 18: Network and Network-Tests, four classes and two.  The
+ *  extension that gives SystemDictionary its arguments lands in the
+ *  *Network protocol of a class that already has a category, as Json's
+ *  extension did.
+ */
+/*
+ *  18 -> 20: Tonel and Tonel-Tests.  The Scanner, ClassDescription, Class,
+ *  PosixFile and ReadWriteStream extensions land in existing categories.
+ */
+/*
+ *  20 -> 22: JSON-RPC-Server and JSON-RPC-Server-Tests.
+ */
+/*
+ *  22 -> 24: Rest-Server and Rest-Server-Tests.
+ */
+#define LIB_CATEGORIES          24
 /*
  *  The image this test measures is the one profiles/st2026.profile builds,
  *  and it is built BY that profile rather than by a list kept alongside it.
@@ -330,7 +409,25 @@ build_once(void)
      *  the error and the four test classes need neither.  68 with the two
      *  parallel fixtures.
      */
-    CHECK_EQ_INT(res.news_synthesized, 70);
+    /*
+     *  70 -> 76 with lib/Network: all six, for the same reason as Json's
+     *  nine -- none defines a class-side new.  Socket and ServerSocket are
+     *  made through connectTo:port: and listenOn:, which send new and then
+     *  setHandle:, and SocketStream through on:, which sends basicNew, so
+     *  the synthesized new is sent and does no harm.
+     */
+    /*
+     *  76 -> 83 with lib/Tonel: all seven of its classes, none defining a
+     *  class-side new.
+     */
+    /*
+     *  83 -> 94 with lib/JSON-RPC-Server: all eleven, for the same reason.
+     */
+    /*
+     *  94 -> 109 with lib/Rest-Server: fifteen of its sixteen; RestUuid
+     *  defines its own class-side new, which is the whole of what it does.
+     */
+    CHECK_EQ_INT(res.news_synthesized, 109);
     built = 1;
     return 1;
 }
@@ -341,6 +438,27 @@ build_once(void)
  */
 /*  Which dialect the expressions below are compiled as.  */
 static int  test_dialect = ST_DIALECT_BLUE_BOOK;
+
+/*  A sink that only counts, for the TonelWriter check below.  */
+typedef struct { unsigned classes; unsigned methods; } tonel_count;
+
+static int
+count_class_def(const st_source_class_def *def, void *user)
+{
+    (void) def;
+    ((tonel_count *) user)->classes++;
+    return 1;
+}
+
+static int
+count_method(const char *class_name, int class_side, const char *category,
+             const char *source, const char *file, unsigned line, void *user)
+{
+    (void) class_name; (void) class_side; (void) category; (void) source;
+    (void) file; (void) line;
+    ((tonel_count *) user)->methods++;
+    return 1;
+}
 
 static st_oop
 evaluate(const char *expression)
@@ -450,7 +568,13 @@ static void
 check_string(const char *expression, const char *want)
 {
     st_oop  value = evaluate(expression);
-    char    text[256];
+    /*
+     *  1024, not 256: the list of every TestCase subclass is compared
+     *  here, and at 256 it was silently cut off at its sixteenth name --
+     *  a check that had passed for months would then have failed for
+     *  ever with a want string no answer could equal.
+     */
+    char    text[1024];
 
     ++st_test_checks;
     if (!OM_is_present(value)) {
@@ -2065,11 +2189,12 @@ test_sunit(void)
     check_string("(TestCase allSubclasses collect: [:c | c name])"
                  " asSortedCollection asArray printString",
                  "(ClassTestCase DbQueryBuilderTest DbSchemaGraphTest "
-                 "DbValueTest DelayTest JSONArrayTest JSONObjectTest JSONParserTest "
-                 "JSONWriterTest St80CollectionTest St80NumberTest "
-                 "St80ReflectionTest St80TextTest SUnitBrokenTest "
-                 "SUnitReportingTest "
-                 "SUnitTest )");
+                 "DbValueTest DelayTest HttpRequestTest HttpResponseTest "
+                 "HttpServerTest JSONArrayTest JSONObjectTest JSONParserTest "
+                 "JSONWriterTest RestServerTest SocketStreamTest SocketTest "
+                 "St80CollectionTest St80NumberTest St80ReflectionTest "
+                 "St80TextTest SUnitBrokenTest SUnitReportingTest SUnitTest "
+                 "TonelReaderTest TonelSourceTest TonelWriterTest )");
     /*
      *  allTests leaves out the fixture whose tests are meant to go wrong.
      *  A whole-image run that reported those would cry wolf every build.
@@ -2094,7 +2219,7 @@ test_sunit(void)
      *  runs inside the lock, so `json do: [:each | json at: ...]' works
      *  rather than reporting a re-entered Mutex.
      */
-    check_integer("TestCase allTests tests size", 211);
+    check_integer("TestCase allTests tests size", 303);
 
     /*
      *  And the three buckets, from the outside as well as from within
@@ -2211,7 +2336,76 @@ test_browsing(void)
      *  the source pointer is 22 bits and silently truncated once, and a
      *  size that stops growing is how that would show.
      */
-    check_integer("(SourceFiles at: 1) contents size", 1579179);
+    check_integer("(SourceFiles at: 1) contents size", 1725451);
+
+    /*
+     *  What TonelWriter writes, src/compiler/tonel.c reads.
+     *
+     *  The two readers -- the C one the bootstrap uses and the Smalltalk one
+     *  a server uses -- and the one writer have to agree on the format, or
+     *  a class written back from the Browser stops loading at the next
+     *  bootstrap.  Checked with a real class, Mutex, whose every method has
+     *  a comment and a few of which have brackets in them: the writer's
+     *  text goes to a file, the C reader reads the file, and the number of
+     *  methods it reports is the number the class has.
+     */
+    {
+        /*
+         *  The count first: evaluate collects before each expression and
+         *  a doIt's answer is reachable from nothing once it returns, so
+         *  the text has to be the LAST thing evaluated and be written out
+         *  before anything else runs.
+         */
+        st_oop      count = evaluate("Mutex selectors size + Mutex class selectors size");
+        st_oop      text = evaluate("TonelWriter sourceFor: Mutex");
+        const char *path = "build/tonel-writer-check.class.st";
+
+        ++st_test_checks;
+        if (!OM_is_object(text) || OM_pointer_bit(text) || !OM_is_int(count)) {
+            char    what[64] = "?";
+
+            if (OM_is_object(text))
+                OM_class_name_of(OM_fetch_class(text), what, sizeof what);
+            ++st_test_failures;
+            printf("  FAIL TonelWriter sourceFor: Mutex answered no text "
+                   "(a%s; count is %s)\n", what,
+                   OM_is_int(count) ? "an integer" : "not an integer");
+        }  else  {
+            FILE       *f = fopen(path, "wb");
+            uint32_t    n = OM_fetch_byte_length(text);
+            uint32_t    k;
+
+            if (!f) {
+                ++st_test_failures;
+                printf("  FAIL cannot write %s\n", path);
+            }  else  {
+                for (k = 0; k < n; ++k)
+                    fputc(OM_fetch_byte(k, text), f);
+                fclose(f);
+                {
+                    tonel_count     seen = { 0, 0 };
+                    char            error[256] = "";
+                    st_source_sink  sink;
+
+                    memset(&sink, 0, sizeof sink);
+                    sink.class_def = count_class_def;
+                    sink.method    = count_method;
+                    if (!TONEL_read(path, &sink, &seen, error, sizeof error)) {
+                        ++st_test_failures;
+                        printf("  FAIL tonel.c refused what TonelWriter wrote: %s\n", error);
+                    }  else if (seen.classes != 1
+                            || seen.methods != (unsigned) OM_int_value(count)) {
+                        ++st_test_failures;
+                        printf("  FAIL tonel.c read %u classes and %u methods from "
+                               "TonelWriter's Mutex, want 1 and %ld\n",
+                               seen.classes, seen.methods,
+                               (long) OM_int_value(count));
+                    }
+                }
+                remove(path);
+            }
+        }
+    }
 }
 
 /*

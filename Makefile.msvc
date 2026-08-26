@@ -127,7 +127,12 @@ LDFLAGS  = /nologo
 #  no /SUBSYSTEM of its own and answers D9002 for one on its own
 #  command line.
 #
-LINKOPT  = /link /SUBSYSTEM:CONSOLE
+#
+#  ws2_32 is Winsock and bcrypt is the system random source, both for
+#  src/net/st_socket.c.  Given here, after /link, for the reason the
+#  subsystem is.
+#
+LINKOPT  = /link ws2_32.lib bcrypt.lib /SUBSYSTEM:CONSOLE
 
 !IF "$(OM)" == "bb"
 OMDEF = /DST_OM_BB
@@ -140,7 +145,7 @@ OMDEF = /DST_OM_MT
 !ENDIF
 
 INCLUDES = /Isrc /Isrc\port /Isrc\om /Isrc\interp /Isrc\gfx /Isrc\sched \
-           /Isrc\compiler /Isrc\boot /Itests
+           /Isrc\compiler /Isrc\boot /Isrc\db /Isrc\net /Itests
 
 # HEADLESS wins over SDL3 if both are given: a flag that asks for the stub
 # and quietly builds the window instead cannot be used to reproduce
@@ -185,6 +190,7 @@ CORE_OBJ = \
     $(BUILD)\source.obj $(BUILD)\tonel.obj $(BUILD)\doctest.obj \
     $(BUILD)\survey.obj \
     $(BUILD)\bootstrap.obj $(BUILD)\profile.obj \
+    $(BUILD)\st_odbc.obj $(BUILD)\st_socket.obj \
     $(BUILD)\census.obj
 
 !IF "$(OM)" == "bb"
@@ -242,6 +248,10 @@ $(BUILD):
 {src\compiler\}.c{$(BUILD)\}.obj::
 	$(CC) $(CFLAGS) $(CPPFLAGS) /c /Fo$(BUILD)\ $<
 {src\boot\}.c{$(BUILD)\}.obj::
+	$(CC) $(CFLAGS) $(CPPFLAGS) /c /Fo$(BUILD)\ $<
+{src\db\}.c{$(BUILD)\}.obj::
+	$(CC) $(CFLAGS) $(CPPFLAGS) /c /Fo$(BUILD)\ $<
+{src\net\}.c{$(BUILD)\}.obj::
 	$(CC) $(CFLAGS) $(CPPFLAGS) /c /Fo$(BUILD)\ $<
 
 $(BIN): $(BUILD) $(OBJ) src\main.c

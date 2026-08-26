@@ -25,13 +25,7 @@
 #include <sched.h>
 #endif
 
-/*
- *  Seconds from the Smalltalk-80 epoch (1 January 1901) to the Unix epoch
- *  (1 January 1970).  69 years = 25185 days, plus 17 leap days (1904 through
- *  1968), = 25202 days = 2177452800 seconds.  Note 1900 was not a leap year
- *  and in any case falls outside the range.
- */
-#define ST_EPOCH_OFFSET_SEC     INT64_C(2177452800)
+/*  ST_EPOCH_OFFSET_SEC is in st_port.h: the file primitives want it too.  */
 
 #define ST_NS_PER_SEC           INT64_C(1000000000)
 #define ST_NS_PER_MS            INT64_C(1000000)

@@ -14,6 +14,10 @@ whole fixture is a file the test makes and deletes.  On Fedora that is
 `sudo dnf install unixODBC-devel sqliteodbc'; elsewhere the packages are
 named unixodbc-dev and libsqliteodbc, or ask `make deps'.
 
+lib/Rest-Server-Live-Tests is here for the same reason: the REST server's
+one promise about a database -- a request that returns is committed, one
+that raises is rolled back -- can only be checked against a database.
+
 There is no line for this profile in tests/profiles.expected, and there must
 not be one.  The ratchet's whole purpose is that a suite which stops being
 found reports a perfect score; a suite that cannot run on the machine
@@ -24,5 +28,5 @@ Profile {
 	#name     : 'database-live',
 	#requires : [ 'st2026' ],
 	#dialect  : 'closures',
-	#packages : [ '../lib/Database-Live-Tests' ]
+	#packages : [ '../lib/Database-Live-Tests', '../lib/Rest-Server-Live-Tests' ]
 }

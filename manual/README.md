@@ -1,6 +1,6 @@
 # Smalltalk-2026: A Manual
 
-A book-length introduction to the system and the language — 29 chapters and
+A book-length introduction to the system and the language — 30 chapters and
 5 appendices, in LaTeX, building to a PDF with `pdflatex` and nothing else.
 
 ```sh
@@ -15,7 +15,7 @@ make clean      # remove LaTeX intermediates
 |---|---|
 | I — Getting Started | what this is, building and running, ten minutes in the image |
 | II — The Language | syntax, objects and messages, blocks, control flow, classes, the class side, exceptions, what is past the Blue Book |
-| III — The Library | numbers, collections, streams, text, graphics |
+| III — The Library | numbers, collections, streams, text, graphics, the database, JSON, serving HTTP |
 | IV — Living in the Image | the desktop, the System Browser, the other tools, keeping your work |
 | V — Concurrency | the contract, processes, writing parallel Smalltalk |
 | VI — Working on Disk | packages and profiles, tests and doctests, the command-line toolbox |
@@ -29,7 +29,7 @@ Every expression in the book whose answer is printed is also a doctest in
 against an image built from this tree:
 
 ```
-st80: 253 doctests in 24 methods of 1 files: 251 passed, 0 wrong, ...
+st80: 358 doctests in 28 methods of 1 files: 358 passed, 0 wrong, 0 need something not here
 ```
 
 A manual whose examples were typed rather than run is wrong somewhere and

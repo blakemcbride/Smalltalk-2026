@@ -503,6 +503,12 @@ now named outright, after `/link` because `cl` has no `/SUBSYSTEM` of its own.
 
 **Still not checked:**
 
+- **The Winsock half of `src/net/st_socket.c` and `st80 -serve`.** The
+  socket layer is POSIX on one side of `ST_WINDOWS` and Winsock on the other
+  — `WSAPoll`, a loopback UDP socket for the wake channel, `BCryptGenRandom`,
+  `SO_EXCLUSIVEADDRUSE` — and `Makefile.msvc` links `ws2_32.lib bcrypt.lib`
+  for it. It compiles for Windows and has never been run there; neither
+  has the server mode or `SetConsoleCtrlHandler` in place of `SIGINT`.
 - **`nmake /f Makefile.msvc test` has not been run.** Sixteen suites build
   and run from that target and nobody has watched them. It is the largest
   untested claim left in this file.

@@ -381,6 +381,10 @@ meet, and when they do, this is the shape they have to meet in.
   Mac, and the Retina behaviour, all of which are reasoned from documented
   behaviour rather than observed.
 - Both sanitizers.
+- The socket layer and `st80 -serve`. `src/net/st_socket.c`'s POSIX half is
+  what a Mac would run — `poll`, `pipe` where `pipe2` is missing,
+  `getentropy` — and those are the branches Linux with `__linux__` undefined
+  compiled, not a Mac; the server has never listened on one.
 
 The gap here is real but narrow: the shared makefile and the shared source
 are exercised continuously, and the macOS-specific surface is the five rows

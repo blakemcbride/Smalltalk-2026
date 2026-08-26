@@ -484,10 +484,11 @@ easy to read a design as a report.
 |---|---|
 | Parallel bytecode execution over a shared heap | **working, measured, TSAN-clean** |
 | Safepoints, parallel-safe collection, atomic `become:` | **working** |
-| M:N multiplexing of green `Process`es over the worker pool, work stealing | not implemented — workers drive interpreters directly |
-| `Mutex`, `Monitor`, `Promise`, `Processor>>#forkParallel:` | specified in `CONCURRENCY.md`, not implemented |
-| Genuinely atomic `Semaphore>>#signal` / `#wait` | not yet. `SharedQueue` is present as the 1983 class and guards itself with `Semaphore>>critical:`, which is exactly as atomic as the semaphore underneath it — correct for green processes, not yet across workers |
-| Per-thread allocation buffers (TLABs) | not implemented — every allocation takes `table_lock` briefly |
+| M:N multiplexing of green `Process`es over the worker pool, work stealing | **working** — `src/sched/st_sched.c`, gated by `test_parallel_shared.c`; `doc/CONCURRENCY.md` has the invariants |
+| `Mutex`, `Monitor`, `Promise`, `Processor>>#forkParallel:` | **implemented**, in `lib/Concurrency` |
+| Genuinely atomic `Semaphore>>#signal` / `#wait` | **working**; `SharedQueue` is `lib/Concurrency`'s, on a `Monitor` |
+| A run mode that starts the pool | **`st80 -serve`** — `doc/NETWORK.md`. `-run` and `-bootstrap -eval` are still single-threaded |
+| Per-thread allocation buffers (TLABs) | **per-worker magazines** in the 64-bit memory: a slot comes from the worker's own magazine, `table_lock` is taken only to refill it, and reclamation is batched by epoch (`src/om/om_mt.c`) |
 | Generational / parallel scavenge | not implemented — collection is a single-threaded mark-and-recount at a safepoint |
 | The interactive desktop (`st80 -run`) | **runs single-threaded**: the main thread interleaves interpreter slices with the SDL pump. The worker pool is exercised by the parallel tests |
 | A scaling benchmark showing speedup across cores | not written. Phase 7's exit criterion names one |

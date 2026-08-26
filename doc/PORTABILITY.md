@@ -32,6 +32,13 @@ under the POSIX spelling, so the Windows build asks for that with
 `/D_CRT_DECLARE_NONSTDC_NAMES=1` and silences the deprecation with
 `/D_CRT_NONSTDC_NO_WARNINGS`.
 
+`src/net/st_socket.c` is POSIX on one side of `ST_WINDOWS` and Winsock on the
+other, by design rather than exception: `poll` and `WSAPoll`, `pipe2` (or
+`pipe` where `pipe2` is missing) and a loopback UDP socket for the wake
+channel, `getaddrinfo` on both, `getrandom`/`getentropy`/`/dev/urandom` and
+`BCryptGenRandom`, `SO_REUSEADDR` and `SO_EXCLUSIVEADDRUSE`. The Windows half
+is compiled for and not yet run.
+
 `<dirent.h>` and `<unistd.h>` were the other exception, unguarded in
 `src/interp/prim.c`, where the 1983 File and FilePage primitives were written
 straight onto POSIX — `open`, `close`, `fstat`, `pread`, `pwrite`,

@@ -248,6 +248,43 @@ trying to do. Everything here is in the \ct{st2026} profile.}
 \end{tabular}
 \end{center}
 
+\section{Serving HTTP}
+
+\begin{center}
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+\ctp{Socket connectTo:port:} \ctp{lastError} \ctp{isAvailable} & \\
+\ctp{receiveInto:} \ctp{receiveUpTo:} \ctp{send:} \ctp{shutdownWrite} \ctp{close} & would-block waits inside \\
+\ctp{peerAddress} \ctp{localPort} \ctp{noDelay:} \ctp{keepAlive:} & \\
+\ctp{ServerSocket listenOn:} \ctp{listenOn:address:backlog:} \ctp{accept} & \\
+\ctp{SocketStream on:} \ctp{next} \ctp{next:} \ctp{upTo:} \ctp{nextLine} & bytes, no translation \\
+\ctp{nextPutAll:} \ctp{flush} \ctp{readTimeout:} & \\
+\ctp{Socket randomBytes:} \ctp{Smalltalk arguments} & \\
+\midrule
+\ctp{HttpServer new} \ctp{port:} \ctp{bindAddress:} \ctp{documentRoot:} & \\
+\ctp{at:put:} \ctp{start} \ctp{stop} \ctp{port} \ctp{connectionCount} & a handler per path \\
+\ctp{maxRequestBytes:} \ctp{keepAliveSeconds:} & \\
+\ctp{method} \ctp{path} \ctp{headerAt:} \ctp{body} \ctp{parameterAt:} & a request \\
+\ctp{isJson} \ctp{isMultipart} \ctp{parts} \ctp{partNamed:} \ctp{formParameters} & \\
+\ctp{HttpResponse ok:} \ctp{json:} \ctp{bytes:contentType:} \ctp{error:reason:} & \\
+\ctp{status:} \ctp{body:} \ctp{contentType:} \ctp{headerAt:put:} & \\
+\midrule
+\ctp{RestServer new} \ctp{port:} \ctp{backendDirectory:} \ctp{database:} & \\
+\ctp{requireAuthentication:} \ctp{allowWithoutAuthentication:method:} & \\
+\ctp{start} \ctp{stop} \ctp{fromConfigFile:} \ctp{RestServer serve} & \\
+\ctp{injson} \ctp{outjson} \ctp{db} \ctp{request} & inside a service \\
+\ctp{requireLogin} \ctp{userData} \ctp{returnBinary:} & \\
+\ctp{uploadFileCount} \ctp{uploadFileName:} \ctp{uploadBytes:}
+  \ctp{saveUploadFile:to:} & the request's \\
+\ctp{environment} \ctp{remoteAddress} \ctp{isLoggedIn} \ctp{closeConnection:} & \\
+\midrule
+\ctp{TonelSource loadFile:} \ctp{reloadIfChanged:} \ctp{pathOf:} \ctp{isTracked:} & a class from a file \\
+\ctp{TonelWriter write:toFile:} \ctp{sourceFor:} & and back to one \\
+\bottomrule
+\end{tabular}
+\end{center}
+
 \section{Testing}
 
 \begin{center}

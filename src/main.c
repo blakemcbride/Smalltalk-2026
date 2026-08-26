@@ -17,6 +17,10 @@
 #include "gfx.h"
 #include "font.h"
 #include "st_sched.h"
+#include "worker.h"
+#include "prim.h"
+#include "st_socket.h"
+#include "st_atomic.h"
 #include "bootstrap.h"
 #include "profile.h"
 
@@ -52,6 +56,9 @@ static uint64_t evaluate_budget = EVAL_BYTECODE_BUDGET;
 #include <stdlib.h>
 #include <math.h>
 #include <string.h>
+#ifndef ST_WINDOWS
+#include <signal.h>
+#endif
 
 /*
  *  SDL3 dropped the static SDLmain library: the translation unit holding
@@ -107,6 +114,13 @@ usage(const char *argv0)
     printf("                        [-startup expr]  what a saved image resumes\n");
     printf("                        build an image from source\n");
     printf("  -run <image> [n]      run the image, opening a window\n");
+    printf("  -serve <image> [-workers n] [args...]\n");
+    printf("                        run the image on n native threads (one per\n");
+    printf("                        CPU less one by default), no window, until\n");
+    printf("                        SIGINT, SIGTERM or Smalltalk quit; the args\n");
+    printf("                        are what `Smalltalk arguments' answers.  The\n");
+    printf("                        image's startup is what -bootstrap -startup\n");
+    printf("                        gave it; a desktop image serves nothing\n");
     printf("  -screenshot <f.pbm>   with -run or -bootstrap, write the display\n");
     printf("  -inject <script>      post input: m X Y, d CODE, u CODE,\n");
     printf("                        k CODE, W NOTCHES (wheel),\n");
@@ -982,6 +996,198 @@ do_run(const char *path, uint64_t max_cycles)
     SCHED_timer_stop();
     OM_shutdown();
     return 0;
+}
+
+/*
+ *  ----------  Serving  ----------
+ *
+ *  `st80 -serve <image> [-workers n] [args...]': run the image on a pool of
+ *  native threads, with no window, until asked to stop.
+ *
+ *  This is the run mode the worker pool was built for and the first one
+ *  that uses it.  -run drives the interpreter on the main thread beside the
+ *  SDL pump, and -bootstrap -eval runs on one thread too; only the parallel
+ *  tests and the benchmark ever called WORKER_start.  A server is the
+ *  opposite shape: no window, and every core running Smalltalk.
+ *
+ *  Worker 0 resumes the image's own startup process -- the one the image
+ *  was bootstrapped with, `-startup 'RestServer serve'' or whatever the
+ *  image holds -- exactly as -run would.  Every other worker joins the
+ *  scheduler with nothing to run and takes ready processes as they appear;
+ *  a process the listener forks for a request is picked up by whichever
+ *  worker is idle, which is how one request runs on one core.
+ *
+ *  NOTHING IS COMPILED HERE.  BOOT_install_scheduler resolves globals
+ *  through the bootstrap's own tables, which a loaded image does not have,
+ *  so a startup expression cannot be given to -serve; it is given to
+ *  -bootstrap and saved in the image.  What -serve does pass in is the
+ *  words after its options, which the image reads back with
+ *  `Smalltalk arguments' -- a configuration file's name, typically.
+ *
+ *  A desktop image run this way executes its display loop headless on one
+ *  worker and serves nothing.  usage() says so.
+ */
+
+static st_atomic_int    serve_ready;        /*  worker 0 has the image up  */
+static int              serve_status;       /*  the exit code             */
+
+static void
+serve_worker(st_worker *self, void *user)
+{
+    char    err[256];
+
+    (void) user;
+    if (self->index == 0) {
+        /*
+         *  ST_interp_init registers this thread's interpreter itself; a
+         *  ST_interp_register before it would take a second slot for the
+         *  same thread, and the root walk would read both.
+         */
+        if (ST_interp_init(err, sizeof err) != 0) {
+            fprintf(stderr, "st80: %s\n", err);
+            serve_status = 1;
+            SCHED_request_stop();
+            ST_store_release(&serve_ready, 1);
+            return;
+        }
+        /*
+         *  Own the startup process explicitly.  SCHED_active_process falls
+         *  back to the scheduler's shared field when this worker's own is
+         *  nil, and that field names whichever process some worker switched
+         *  to LAST -- so the first switch on any other worker would have
+         *  this one parking its registers into somebody else's process.
+         *  The count is the one a running process's worker holds for it,
+         *  which the switch releases when it moves on.
+         */
+        st_vm.active_process =
+            OM_fetch_pointer(ST_SCHEDULER_ACTIVE_PROCESS, SCHED_scheduler());
+        OM_increase_ref(st_vm.active_process);
+        ST_store_release(&serve_ready, 1);
+        ST_interp_run(0);
+    }  else  {
+        ST_interp_register();
+        /*
+         *  Wait for the image to be up -- and POLL while waiting, because a
+         *  collection worker 0 triggers during its start waits for every
+         *  started worker to park, and a thread asleep in a plain loop
+         *  never does.
+         */
+        while (!ST_load_acquire(&serve_ready)) {
+            WORKER_poll();
+            ST_sleep_ns(100000);
+        }
+        if (!SCHED_stop_requested()) {
+            SCHED_enter_idle();
+            if (st_vm.running)
+                ST_interp_run(0);
+        }
+    }
+    /*
+     *  This worker's run is over.  If nobody asked for that -- no signal,
+     *  no `Smalltalk quit' -- the image stopped on its own: the scheduler's
+     *  verdict, a stack that overflowed, memory that ran out.  That is a
+     *  failure, and the exit code says so.  Either way one worker leaving
+     *  ends the pool: with one gone, `every worker idle' can never again be
+     *  true for the rest, and they would wait for ever.
+     */
+    if (!SCHED_stop_requested() && !ST_quit_requested)
+        serve_status = 1;
+    SCHED_request_stop();
+    NET_wake();
+    ST_interp_unregister();
+}
+
+#ifdef ST_WINDOWS
+static BOOL WINAPI
+on_console_control(DWORD kind)
+{
+    (void) kind;
+    SCHED_request_stop();
+    NET_wake();
+    return TRUE;
+}
+
+static void
+install_stop_handlers(void)
+{
+    SetConsoleCtrlHandler(on_console_control, TRUE);
+}
+#else
+/*
+ *  Async-signal-safe by construction: one atomic store and one write(2)
+ *  to the network thread's wake pipe.  Nothing here takes a lock or
+ *  allocates.
+ */
+static void
+on_stop_signal(int sig)
+{
+    (void) sig;
+    SCHED_request_stop();
+    NET_wake();
+}
+
+static void
+install_stop_handlers(void)
+{
+    struct sigaction    sa;
+
+    memset(&sa, 0, sizeof sa);
+    sa.sa_handler = on_stop_signal;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGINT, &sa, NULL);
+    sigaction(SIGTERM, &sa, NULL);
+    /*
+     *  A write to a client that has gone raises SIGPIPE, and the default
+     *  disposition ends the process.  The socket layer asks per call and
+     *  per socket where the platform allows; this covers the rest.
+     */
+    signal(SIGPIPE, SIG_IGN);
+}
+#endif
+
+static int
+do_serve(const char *path, unsigned workers, int argc, char **argv)
+{
+    /*
+     *  Sixty-four is the size of both the worker table and the interpreter
+     *  registry, and the main thread is not a worker but does register in
+     *  some modes; sixty-three leaves the room.
+     */
+    if (workers > ST_MAX_WORKERS - 1) {
+        fprintf(stderr, "st80: -workers %u is more than this build holds; "
+                        "using %u\n", workers, ST_MAX_WORKERS - 1);
+        workers = ST_MAX_WORKERS - 1;
+    }
+    if (load(path) != 0)
+        return 1;
+    SCHED_reset();
+    if (ST_net_init() != 0)
+        return 1;
+    NET_set_arguments(argc, argv);
+    install_stop_handlers();
+    ST_store_seq(&serve_ready, 0);
+    serve_status = 0;
+
+    if (WORKER_start(workers, serve_worker, NULL) != 0) {
+        fprintf(stderr, "st80: cannot start the worker pool\n");
+        return 1;
+    }
+    fprintf(stderr, "st80: serving %s on %u worker%s\n", path, WORKER_count(),
+            WORKER_count() == 1 ? "" : "s");
+    /*
+     *  WORKER_stop is the join.  Then the network, which the workers armed
+     *  sockets on until their last bytecode; then the timer; then the
+     *  memory -- do_run's order.
+     */
+    WORKER_stop();
+    NET_shutdown();
+    SCHED_timer_stop();
+    fprintf(stderr, "st80: %s\n",
+            ST_quit_requested ? "the image quit"
+            : serve_status == 0 ? "stopped as asked"
+            : "the image stopped on its own");
+    OM_shutdown();
+    return serve_status;
 }
 
 /*
@@ -2068,6 +2274,17 @@ main(int argc, char **argv)
         if (!strcmp(argv[i], "-run") && i + 1 < argc)
             return do_run(argv[i + 1],
                           (i + 2 < argc) ? strtoull(argv[i + 2], NULL, 0) : 0);
+        if (!strcmp(argv[i], "-serve") && i + 1 < argc) {
+            const char *image   = argv[i + 1];
+            unsigned    workers = 0;
+            int         j       = i + 2;
+
+            if (j + 1 < argc && !strcmp(argv[j], "-workers")) {
+                workers = (unsigned) strtoul(argv[j + 1], NULL, 0);
+                j += 2;
+            }
+            return do_serve(image, workers, argc - j, argv + j);
+        }
         if (!strcmp(argv[i], "-trace2") && i + 1 < argc)
             return do_trace(argv[i + 1], ST_TRACE_BYTECODES,
                             (i + 2 < argc) ? strtoull(argv[i + 2], NULL, 0) : 0);

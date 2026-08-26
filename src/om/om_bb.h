@@ -462,6 +462,14 @@ void    OM_decrease_ref(st_oop p);
 /*  Store with the correct count adjustments; the interpreter uses this.  */
 void    OM_store_pointer(uint32_t field, st_oop p, st_oop value);
 
+/*  One thread, one store: the exchange the 64-bit memory needs is just a
+ *  store here.  */
+static inline void
+OM_exchange_pointer(uint32_t field, st_oop p, st_oop value)
+{
+    OM_store_pointer(field, p, value);
+}
+
 /*
  *  Store `value` in a field only if it currently holds `expected`, and say
  *  whether it did.  One mutator here, so it cannot fail for the reason it

@@ -59,6 +59,8 @@ st80-dblive-test.db
 st80-dblive-test.db-journal
 st80-odbc-parallel-test.db
 st80-odbc-parallel-test.db-journal
+st80-rest-live-test.db
+st80-rest-live-test.db-journal
 
 # Code-RAG local index files (written by bld; machine-local, not part of the project)
 .mcp.json

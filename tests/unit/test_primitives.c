@@ -42,6 +42,9 @@ test_the_four_answers(void)
 
     name = NULL;
     CHECK_EQ_INT(ST_primitive_status_of(60, &name), ST_PRIM_PRESENT);
+    /*  This system's own: the database and the network, one number each.  */
+    CHECK_EQ_INT(ST_primitive_status_of(129, NULL), ST_PRIM_PRESENT);
+    CHECK_EQ_INT(ST_primitive_status_of(208, NULL), ST_PRIM_PRESENT);
     CHECK(name != NULL);
 
     /*
