@@ -80,6 +80,12 @@ sure `/opt/homebrew/bin` is on `PATH` ahead of anything else that provides a
 `pkg-config`, or the same problem arrives wearing a different hat: MacPorts'
 pkg-config knows nothing about Homebrew's `.pc` files.
 
+OpenSSL, which the https client needs, is the same story one step further:
+Homebrew's `openssl` is *keg-only* and puts its `.pc` files where nothing
+looks by default. `brew install openssl pkg-config` and then
+`PKG_CONFIG_PATH=$(brew --prefix openssl)/lib/pkgconfig make`; without it
+the build is a valid one with no TLS, and `make deps` says so.
+
 Anything not installed by Homebrew — MacPorts, a `cmake` build of SDL3 you
 installed yourself — works the same way as long as pkg-config can see it:
 

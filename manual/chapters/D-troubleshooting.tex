@@ -164,3 +164,50 @@ st80: N input events were dropped
 \bottomrule
 \end{tabular}
 \end{center}
+
+\section{The demo application}
+
+\begin{description}
+\item[The server starts, and every screen says there is no driver] The
+  SQLite ODBC driver is not installed: \ct{odbcinst -q -d} must list
+  \ct{[SQLITE3]}. It is \ct{sqliteodbc} on Fedora and \ct{libsqliteodbc} on
+  Debian. The demo reaches SQLite through ODBC like every database here.
+\item[An https URL answers \emph{this build has no TLS}] OpenSSL was not
+  found when \ct{st80} was built, or \ct{NOTLS=1} was asked for. \ct{make deps}
+  says which; install \ct{openssl-devel} (Fedora) or \ct{libssl-dev}
+  (Debian) and build again. \ct{Socket isTlsAvailable} answers for an image.
+\item[\emph{certificate verify failed}] The server's certificate is not one
+  the system's store vouches for, or is not for the name you asked for; the
+  words after the colon say which---\emph{hostname mismatch},
+  \emph{certificate has expired}, \emph{self-signed certificate}. There is no
+  way to say ``trust it anyway'', on purpose. A private authority goes in
+  the store, or in \ct{SSL_CERT_FILE} in the environment.
+\item[An LLMError says \emph{answered 401}] The key was refused. It is read
+  from the environment \ct{st80} was started in---\ct{Smalltalk environmentAt:}
+  shows what the image sees---and given with \ct{apiKey:}.
+\item[A model \emph{asked for tools twenty times in a row}] Every answer was
+  another tool call: the tool's result is not what the model needs, or the
+  prompt asks for something no tool answers. \ct{messages} on the
+  conversation shows the exchange.
+\item[The Ollama screen says the server is not running, and it is] An
+  older image took the first address \ct{localhost} resolves to, which is
+  often \ct{::1} while Ollama listens on \ct{127.0.0.1} alone;
+  \ct{connectTo:port:} tries every address now. Rebuild the image, or name
+  the server outright with \ct{OllamaUrl} in \ct{server.json}.
+\item[The login page appears, then \emph{Error communicating with the server}]
+  The pages are being served but nothing answers \ct{/rest}: you started
+  an \ct{HttpServer} with the demo's front end as its document root, which
+  serves files and no more. The demo needs a \ct{RestServer}---from a
+  workspace \ct{Smalltalk at: #Demo put: (RestServer fromConfigFile: 'demo/server.json')}
+  and then \ct{Demo start}, or
+  \ct{./st80 -serve demo.im demo/server.json}. The same
+  message means the same thing under \ct{-serve}: the server is not
+  running, or is on another port than the page expects.
+\item[Report and Export answer \emph{No such method}] They are not
+  written: Kiss makes a PDF through \ct{groff} and serves the file back,
+  and this server does not yet serve files it made.
+\item[A service will not load: \ctp{... is undeclared}] A name in the
+  file that is neither a temporary, an instance variable nor a global. If
+  it is a block-local temporary, \ct{[:each | | row | ...]}, move it to the
+  method: the image's own compiler is 1983's and has none.
+\end{description}

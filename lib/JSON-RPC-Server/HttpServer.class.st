@@ -35,6 +35,24 @@ the reads too.
 
 STOPPING.  stop closes the listener, which wakes the accept loop with a
 NetError that ends it; connections in flight finish their request and close.
+
+ORIGINS.  A page served from this host on another port -- Kiss's
+development layout, the front end on 8000 and this server on 8001 -- is
+another origin to the browser, which then sends Origin with every request,
+sends a preflight OPTIONS before a POST with a JSON body, and shows the page
+the reply only if the response says that origin is allowed.  The rule here
+is fixed and not configured: an Origin whose host is the host of the
+request's own Host header, port aside and case aside, is allowed -- echoed
+back in Access-Control-Allow-Origin, never `*' -- and any other host is
+not: its response carries no such header, so the browser withholds it from
+the page, and its preflight is 403.  A request with no Origin is served as
+it always was, with no such header.  Kiss's index.js builds the back-end
+address from the page's own hostname, so the two name the same host by
+construction; `localhost' and `127.0.0.1' are different names to this
+rule, and a front end that mixes them is refused, as it should be.  The
+scheme is not compared: a page on https: calling http: is stopped by the
+browser as mixed content before it gets here.  HttpCodec class>>hostOf: is
+the comparison, and HttpRequest>>isPreflight the question.
 "
 Class {
 	#name : 'HttpServer',
@@ -192,8 +210,62 @@ HttpServer >> connectionClosed: aConnection [
 
 { #category : 'handling' }
 HttpServer >> handle: aRequest [
-	"The response for aRequest: from the handler at its path, else the
-	 static files, else 404.  A handler's own Error is a 500 here."
+	"The response for aRequest: a browser's preflight answered here, else
+	 the handler at its path, else the static files, else 404 -- and, for
+	 a request from a page on this host at another port, the header that
+	 lets the browser show the page the reply.  The class comment, ORIGINS."
+	| response |
+	aRequest isPreflight ifTrue: [^self preflightFor: aRequest].
+	response := [self dispatch: aRequest]
+		on: HttpError
+		do: [:e | HttpResponse error: e status reason: e messageText].
+	^self allow: response for: aRequest
+]
+
+{ #category : 'origins' }
+HttpServer >> allowsOrigin: aRequest [
+	"Whether the request's Origin is this host on any port: the same host
+	 as the Host header's, port aside, case aside."
+	| origin host |
+	origin := aRequest origin.
+	origin isNil ifTrue: [^false].
+	host := aRequest hostName.
+	(host isNil or: [host isEmpty]) ifTrue: [^false].
+	^(HttpCodec hostOf: origin) = host
+]
+
+{ #category : 'origins' }
+HttpServer >> allow: aResponse for: aRequest [
+	"The response, carrying the origin's permission when it has one."
+	(self allowsOrigin: aRequest) ifTrue: [
+		aResponse headerAt: 'Access-Control-Allow-Origin' put: aRequest origin;
+			headerAt: 'Vary' put: 'Origin'].
+	^aResponse
+]
+
+{ #category : 'origins' }
+HttpServer >> preflightFor: aRequest [
+	"The answer to a browser asking whether it may send a request from
+	 another origin: yes, for this host on any port, with what it may
+	 send; 403 for any other host.  No handler sees a preflight."
+	| response requested |
+	(self allowsOrigin: aRequest)
+		ifFalse: [^HttpResponse error: 403 reason: 'origin not allowed: ', aRequest origin].
+	requested := aRequest headerAt: 'access-control-request-headers'.
+	response := HttpResponse status: 204.
+	response headerAt: 'Access-Control-Allow-Origin' put: aRequest origin;
+		headerAt: 'Vary' put: 'Origin';
+		headerAt: 'Access-Control-Allow-Methods' put: 'POST, GET, OPTIONS';
+		headerAt: 'Access-Control-Allow-Headers' put: (requested isNil ifTrue: ['Content-Type'] ifFalse: [requested]);
+		headerAt: 'Access-Control-Max-Age' put: '86400'.
+	^response
+]
+
+{ #category : 'handling' }
+HttpServer >> dispatch: aRequest [
+	"The response from the handler at the request's path, else the static
+	 files, else 404.  A handler's own Error is a 500 here; an HttpError
+	 it raised keeps its status."
 	| handler |
 	handler := handlersLock critical: [handlers at: aRequest path ifAbsent: [nil]].
 	handler isNil ifTrue: [

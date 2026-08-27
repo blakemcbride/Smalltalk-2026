@@ -145,6 +145,22 @@ SocketTest >> testTwoConnectionsAtOnce [
 ]
 
 { #category : 'tests' }
+SocketTest >> testEveryAddressOfANameIsTried [
+	"A listener on 127.0.0.1 alone, reached by the name `localhost', which
+	 on many machines resolves to ::1 first: the connect tries the next
+	 address rather than reporting the first's refusal.  On a machine where
+	 the name is 127.0.0.1 only this passes trivially, and that is fine."
+	| listener client accepted |
+	listener := ServerSocket listenOn: 0 address: '127.0.0.1' backlog: 8.
+	[client := Socket connectTo: 'localhost' port: listener localPort.
+	 accepted := listener accept.
+	 [client send: 'k'.
+	  self assert: (accepted receiveUpTo: 1) equals: 'k']
+		ensure: [client close. accepted close]]
+		ensure: [listener close]
+]
+
+{ #category : 'tests' }
 SocketTest >> testARefusedConnectRaises [
 	"A port nobody listens on: the one the listener had, once it is closed."
 	| port |
@@ -197,6 +213,35 @@ SocketTest >> testAWaitSurvivesACollection [
 	Smalltalk garbageCollect.
 	client send: 'after'.
 	self assert: promise value equals: 'after'
+]
+
+{ #category : 'tests' }
+SocketTest >> testTlsToAPlainPeerIsRefused [
+	"The build either has TLS or says so; and a socket asked to speak it
+	 to a peer that answers in plain text refuses -- with OpenSSL's
+	 reason, or with `no TLS' by name -- rather than carrying on."
+	| crlf error |
+	Socket isAvailable ifFalse: [^self].
+	"#(true false) would be two Symbols in this dialect, hence the spelling."
+	self assert: (Socket isTlsAvailable == true or: [Socket isTlsAvailable == false]).
+	crlf := String with: (Character value: 13) with: (Character value: 10).
+	client := Socket connectTo: '127.0.0.1' port: server localPort.
+	accepted := server accept.
+	self deny: client isSecure.
+	[accepted send: 'HTTP/1.1 400 Bad Request', crlf, crlf. accepted close] fork.
+	error := [client startTls: '127.0.0.1' timeout: 5000. nil] on: NetError do: [:e | e].
+	self assert: error notNil.
+	self assert: (error messageText includesSubstring: 'TLS')
+]
+
+{ #category : 'tests' }
+SocketTest >> testTheEnvironment [
+	"Smalltalk environmentAt: is the shell's environment: PATH is there on
+	 any machine that ran this, and a name nobody set is nil."
+	self assert: (Smalltalk environmentAt: 'PATH') notNil.
+	self assert: (Smalltalk environmentAt: 'PATH') size > 0.
+	self assert: (Smalltalk environmentAt: 'ST_NO_SUCH_VARIABLE_FOR_THIS_TEST') isNil.
+	self assert: (Socket environmentAt: '') isNil
 ]
 
 { #category : 'tests' }

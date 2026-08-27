@@ -16,6 +16,15 @@ with.  Every one of those silently prints a character the reader cannot type
 and the compiler will not accept, so they are checked too.  (>> and -- would
 ligature into a guillemet and an en dash; \DisableLigatures in preamble.tex
 handles those, which is why they are not listed here.)
+
+A listing that folds is the third kind.  breaklines=true in preamble.tex
+lets a long line wrap onto a second, with an arrow, and the PDF reads fine;
+but copy that statement out of the PDF into a workspace and the fold is a
+line break, one statement has become two, and a one-line-at-a-time doit
+stops on the first with "Argument expected".  So every line inside a
+listing environment is held to the width that fits.  The width is measured,
+not computed -- Inconsolata at its 0.94 scale in this measure sets 92
+columns and folds 93 -- and it is the same for st and sh.
 """
 import re, sys, glob
 
@@ -80,6 +89,21 @@ for f in sorted(glob.glob('chapters/*.tex')):
         for pattern, why in CTP_TRAPS:
             if re.search(pattern, arg):
                 bad.append((f, text[:m.start()].count('\n') + 1, why, arg))
+
+LISTING_WIDTH = 92
+TABSIZE = {'st': 4, 'sh': 8, 'plain': 4}
+for f in sorted(glob.glob('chapters/*.tex')):
+    env = None
+    for n, line in enumerate(open(f), 1):
+        m = re.match(r'\\(begin|end)\{(st|sh|plain)\}', line)
+        if m:
+            env = m.group(2) if m.group(1) == 'begin' else None
+            continue
+        if env is None:
+            continue
+        width = len(line.rstrip('\n').expandtabs(TABSIZE[env]))
+        if width > LISTING_WIDTH:
+            bad.append((f, n, f'listing line of {width} columns folds in the PDF (limit {LISTING_WIDTH})', line.strip()[:60]))
 
 for f, line, why, arg in bad:
     print(f'{f}:{line}: {why}  {arg}')

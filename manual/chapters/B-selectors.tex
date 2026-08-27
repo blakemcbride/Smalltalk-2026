@@ -281,6 +281,35 @@ trying to do. Everything here is in the \ct{st2026} profile.}
 \midrule
 \ctp{TonelSource loadFile:} \ctp{reloadIfChanged:} \ctp{pathOf:} \ctp{isTracked:} & a class from a file \\
 \ctp{TonelWriter write:toFile:} \ctp{sourceFor:} & and back to one \\
+\midrule
+\ctp{Init class init:} \ctp{init2:} & the application's startup \\
+\ctp{environmentAt:} & a service's own settings \\
+\ctp{origin} \ctp{hostName} \ctp{isPreflight} \ctp{HttpCodec hostOf:} & another origin \\
+\midrule
+\ctp{Crypto sha256:} \ctp{hmacSha256:message:} \ctp{pbkdf2:salt:iterations:} & 32-byte Strings \\
+\ctp{randomBytes:} \ctp{constantTimeEqual:to:} \ctp{hex:} & \\
+\ctp{PasswordHash hash:} \ctp{verify:against:} \ctp{isHashed:} \ctp{needsRehash:} & Kiss's stored form \\
+\ctp{Base64 encode:} \ctp{encodeWithoutPadding:} \ctp{decode:} & \\
+\midrule
+\ctp{HttpClient get:} \ctp{post:body:contentType:} \ctp{put:body:contentType:} \ctp{delete:} & \\
+\ctp{readTimeout:} \ctp{headerAt:put:} \ctp{get:do:} \ctp{post:body:contentType:do:} & the body left on the wire \\
+\ctp{status} \ctp{isSuccess} \ctp{headerAt:} \ctp{body} \ctp{json} \ctp{bodyStream} & the reply \\
+\ctp{HttpBodyStream next} \ctp{nextLine} \ctp{linesDo:} \ctp{upToEnd} & nil at the end \\
+\ctp{HttpUrl fromString:} \ctp{host} \ctp{port} \ctp{path} \ctp{isSecure} & \\
+\ctp{Socket startTls:} \ctp{startTls:timeout:} \ctp{isSecure} \ctp{Socket isTlsAvailable} & TLS, the client side \\
+\ctp{Smalltalk environmentAt:} & where a key is \\
+\midrule
+\ctp{Anthropic apiKey:model:} \ctp{OpenAI apiKey:model:} \ctp{OpenRouter apiKey:model:} \ctp{Ollama new} & the four services \\
+\ctp{url:} \ctp{model:} \ctp{systemPrompt:} \ctp{temperature:} \ctp{topP:} \ctp{maxTokens:} \ctp{timeoutSeconds:} & \\
+\ctp{send:} \ctp{send:do:} \ctp{send:image:} \ctp{embed:} \ctp{models} \ctp{isUp} & \\
+\ctp{lastResponse} \ctp{lastStatus} \ctp{lastStopReason} & what the last call left \\
+\ctp{conversation} \ctp{ask:} \ctp{ask:do:} \ctp{ask:image:} \ctp{tools:} \ctp{addTool:} \ctp{messages} \ctp{clear} & \\
+\ctp{LLMTool name:description:parameters:do:} \ctp{name:description:do:} \ctp{run:} & \\
+\ctp{effort:} \ctp{fallbacks:} \ctp{reasoningEffort:} \ctp{imageDetail:} \ctp{fallbackModels:} \ctp{siteUrl:} & the services' own \\
+\ctp{Ollama toHtml:} & the demo's screen \\
+\ctp{Qdrant on:} \ctp{url:} \ctp{collections} \ctp{createCollection:size:} \ctp{store:text:document:sequence:payload:} & \\
+\ctp{search:limit:} \ctp{search:limit:filter:} \ctp{at:} \ctp{removeAt:} \ctp{indexField:} & \\
+\ctp{LLMError status} \ctp{body} & \\
 \bottomrule
 \end{tabular}
 \end{center}

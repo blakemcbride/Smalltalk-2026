@@ -114,6 +114,31 @@ RestServerTest >> testAServiceCall [
 ]
 
 { #category : 'tests' }
+RestServerTest >> testTheFrontEndsSpellingIsTheSameClass [
+	"Kiss's front end sends `services/Adder' where every test here had
+	 sent `services.Adder', and until a browser was pointed at the demo
+	 nothing had sent the slash to this server: it was `not a class name'
+	 and every screen but the login failed.  The two are one class, once
+	 loaded; a slash-spelt name that has no file says so as the dotted one
+	 does; and a separator with nothing after it is still refused."
+	| reply |
+	server start.
+	reply := self call: 'services/Adder' method: 'addNumbers' with: [:j | j at: 'num1' put: 3; at: 'num2' put: 4].
+	self assert: (reply booleanAt: '_Success').
+	self assert: (reply integerAt: 'num3') equals: 7.
+	reply := self call: 'services.Adder' method: 'addNumbers' with: [:j | j at: 'num1' put: 5; at: 'num2' put: 6].
+	self assert: (reply integerAt: 'num3') equals: 11.
+	self assert: (server loader classFor: 'services/Adder') == (server loader classFor: 'services.Adder').
+	reply := self call: 'services/Nowhere' method: 'x'.
+	self deny: (reply booleanAt: '_Success').
+	self assert: ((reply stringAt: '_ErrorMessage') includesSubstring: 'No back-end code found').
+	#('services//Adder' '/services.Adder' 'services.Adder/' 'services/../Adder' '.') do: [:each |
+		reply := self call: each method: 'addNumbers'.
+		self deny: (reply booleanAt: '_Success').
+		self assert: ((reply stringAt: '_ErrorMessage') includesSubstring: 'not a class name')]
+]
+
+{ #category : 'tests' }
 RestServerTest >> testLoginRequiredIsFalseWithNoDatabase [
 	| reply |
 	server start.
@@ -318,6 +343,40 @@ RestServerTest >> testOnlyPostReachesRest [
 	 in readTimeout: 5000.
 	 reply := self readResponseFrom: in] ensure: [socket close].
 	self assert: (reply at: 1) equals: 'HTTP/1.1 405 Method Not Allowed'
+]
+
+{ #category : 'tests' }
+RestServerTest >> testInitRunsBeforeListening [
+	"A back end with an Init class is told init: before the listener opens
+	 and init2: -- with nil, there being no database -- before the first
+	 request; a back end without one, which tests/rest-backend is, is told
+	 nothing."
+	| s |
+	Smalltalk at: #RestInitSeen put: nil.
+	server start.
+	self assert: (Smalltalk at: #RestInitSeen) isNil.
+	s := RestServer new
+		port: 0; bindAddress: '127.0.0.1'; backendDirectory: 'tests/rest-init-backend'; name: 'init';
+		yourself.
+	[s start.
+	 self assert: (Smalltalk at: #RestInitSeen) first == s.
+	 self deny: (Smalltalk at: #RestInitSeen) last.
+	 self assert: (Smalltalk at: #RestInit2Seen) isNil.
+	 self assert: s isRunning]
+		ensure: [s stop]
+]
+
+{ #category : 'tests' }
+RestServerTest >> testInitFailureStopsTheStart [
+	"An application that could not initialise is not listening."
+	| s |
+	s := RestServer new
+		port: 0; bindAddress: '127.0.0.1'; backendDirectory: 'tests/rest-init-backend'; name: 'init';
+		yourself.
+	s environmentAt: 'initMode' put: 'fail'.
+	self should: [s start] raise: Error.
+	self deny: s isRunning.
+	self assert: s httpServer isNil
 ]
 
 { #category : 'tests' }

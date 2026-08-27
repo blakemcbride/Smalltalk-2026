@@ -4,13 +4,18 @@ Kiss's JSON-RPC protocol, served from this image on every core, with the
 services loaded from Tonel files on first use.
 
 ```smalltalk
-RestServer new
+Smalltalk at: #Rest put: (RestServer new
     port: 8080;
     backendDirectory: 'backend';
     documentRoot: 'frontend';
     database: 'DSN=shop;UID=app;PWD=secret';
-    start
+    yourself).
+Rest start                                     "and later, Rest stop"
 ```
+
+A global and not a temporary, so that a later doit can reach the server to
+stop it. The bare name works in the same doit: a name nothing has defined
+compiles quietly as a global, and `Smalltalk at:put:` fills that binding.
 
 ```
 backend/services/Adder.class.st
@@ -101,7 +106,9 @@ user).
 
 ## Loaded on first use, reloaded on change, written back on edit
 
-`services.Adder` names `backend/services/Adder.class.st`. The first request
+`services.Adder` names `backend/services/Adder.class.st`, and so does
+`services/Adder` — the spelling Kiss's front end sends, and one Kiss reads
+the same way (`_className.replace(".", "/")`). The first request
 for it reads the file into the image through `TonelSource`, which records the
 file's time and size; every later request compares them and reads the file
 again if either changed. That is Kiss's microservice property — edit the file
@@ -126,6 +133,28 @@ which in a headless server is a hang; `TonelReader` is the compiler's
 requestor now and a compile error is a `TonelError` naming the file, the
 method and the character.
 
+Two more, found when the demo ran under a real `-serve` — a loaded image,
+which no test suite runs in. A method sending a selector defined later in
+its own file compiled in every test and would not compile on the server:
+1983's `Parser>>makeNewSymbol:startingAt:` puts a selector no method has yet
+to the editor's user (*proceed / correct / abort*) and skips the menu only
+for an editor of nil, and `TonelReader` answered no `editor` at all, so the
+outcome was whatever an unhandled `doesNotUnderstand:` answered — nil in the
+bootstrap process, not nil in a loaded image. A reader that
+`internsNewSelectors` now gets the selector interned
+(`lib/Tonel/Parser.extension.st`). And the image's own compiler is 1983's,
+with no block-local temporaries: a service declares `| row |` at the method,
+not inside `[:each | ...]`, which the bootstrap's closures dialect accepts
+and every test therefore passed. Both are in `TonelReaderTest`.
+
+And one found only by a browser, after every test, the manual's `curl` and
+the smoke runs had passed: the loader took `services.Adder` and refused
+`services/Adder` as *not a class name*, and the slash is what every screen
+of Kiss's front end sends — so on a browser every screen but the login
+failed, while the CRUD grid simply stayed empty. The loader takes both now,
+`RestServerTest` sends both, and the demo's tests send what the front end
+sends.
+
 ## One transaction per request
 
 A connection is taken from `RestConnectionPool` before the service runs and
@@ -141,6 +170,39 @@ otherwise whenever there is a database — Kiss's rule.
 `lib/Rest-Server-Live-Tests`, in the `database-live` profile with the rest of
 that kind, watches a row inserted by a request that returned stay and a row
 inserted by a request that raised go.
+
+## Startup
+
+Kiss's `KissInit.groovy` has two static methods the container calls on the
+way up: `init()` before the database is opened and `init2(db)` after, with
+a connection — or null when there is no database. Here that is
+`backend/Init.class.st`, optional, and two class-side messages
+`RestServer>>start` sends if the file exists:
+
+```smalltalk
+Init class >> init: aRestServer
+    "before anything is opened: a logout handler, an exemption, a setting read"
+    aRestServer logoutHandler: [:user | ...].
+    aRestServer allowWithoutAuthentication: 'services.Catalog' method: 'list'
+
+Init class >> init2: aConnectionOrNil
+    "once the pool is open and before the listener is: schema, seed rows"
+    (aConnectionOrNil tableExists: 'users') ifFalse: [...]
+```
+
+`init2:` runs with a pooled connection in a transaction of its own,
+committed when it returns and rolled back when it raises, and gets nil when
+the server has no database. Either method raising **stops the start**: the
+pool is closed again, nothing is listening, and the error reaches whoever
+sent `start` — an application that could not initialise must not be taking
+requests. A class that defines only one of the two is sent only that one.
+`RestServerTest` and `RestLiveTest` check all of it against
+`tests/rest-init-backend`, including that a row written before `init2:`
+raised is not there afterwards.
+
+The demo's `Init` (`doc/WebDemo.md`) uses `init2:` to create its tables from
+`schema.sqlite` the first time the server starts, which is why the demo has
+no separate database step.
 
 ## What is shared, and what guards it
 
@@ -182,6 +244,31 @@ a temporary declared in its body is one variable for every iteration — the
 gate on the socket layer found a forked process reading the socket the next
 iteration accepted.
 
+### Another port is another origin
+
+Kiss's development layout serves the front end from its own static server on
+port 8000 and expects the back end on 8001. To the browser those are two
+origins, so it sends `Origin` with every request, a preflight `OPTIONS`
+before a `POST` with a JSON body, and shows the page the reply only if the
+response says the origin is allowed. Kiss gets that from Tomcat's
+`CorsFilter`, set to `*` for development with a warning not to ship it.
+
+The rule here is fixed, not configured — Blake's, 2026-08-26: **the same
+host, on any port.** An `Origin` whose host equals the host of the request's
+own `Host` header (port stripped, case ignored) is allowed and echoed back in
+`Access-Control-Allow-Origin` — never `*` — with `Vary: Origin`; its
+preflight is answered 204 with `Allow-Methods: POST, GET, OPTIONS`, the
+headers it asked for, and a day's `Max-Age`, before any handler sees it. Any
+other host gets its response with no such header, which is what makes the
+browser withhold it from the page, and a 403 for its preflight. A request
+with no `Origin` is served exactly as before. `index.js` builds the back-end
+address from the page's own hostname, so the two name the same host by
+construction; `localhost` and `127.0.0.1` are different names to the rule.
+The scheme is not compared, because a page on `https:` calling `http:` is
+stopped by the browser as mixed content before it arrives.
+`HttpCodec class>>hostOf:` is the comparison; `HttpServerTest`'s origin
+tests are the contract on the wire.
+
 TLS is not here; put a reverse proxy in front. Server-sent events, which Kiss
 has, are not here yet.
 
@@ -216,6 +303,12 @@ exit code 0. The log is standard error, one line per event, timestamped.
 | `RestServerTest` | `st2026` | the whole stack against `tests/rest-backend`: the envelope, sessions, uploads, a binary reply, error codes, a service edited and reloaded, sixteen calls at once |
 | `RestLiveTest` | `database-live` | commit on return, rollback on raise, through SQLite |
 | `tests/unit/test_parallel_rest.c` | `make test` | 31 workers, 62 native clients, 1,240 requests on kept-alive connections, the world stopped 3,000 times meanwhile; every sum checked, every worker seen |
+| `HttpServerTest`'s origin tests | `st2026` | a preflight answered with no handler run, this host on another port echoed, another host given no permission |
+| `WebDemoTest` | `st2026` | the demo without a database: Kiss's front end served by the browser's paths, `addNumbers`, an upload, the one-button REST Services screen, what the database screens say — the services spelt as the front end spells them, `services/…` |
+| `WebDemoLiveTest` | `database-live` | the demo with SQLite: Kiss's user logging in with the hash Java made, the phone list and the users screen through a session, legacy passwords, a second start finding its tables |
+| `HttpClientTest` | `st2026` | the client against `HttpServer` and against a listener of the test's own: chunked, to-the-close, 204, not HTTP, a body read by the line, https to a plain peer refused |
+| `AnthropicTest`, `OpenAITest`, `OpenRouterTest`, `OllamaTest`, `LLMConversationTest`, `QdrantTest` | `st2026` | each service's wire against a listener that keeps every request: headers, bodies, streams, tool round trips, embeddings, errors — `doc/LLM.md` |
+| `CryptoTest`, `Base64Test`, `PasswordHashTest`, `tests/unit/test_crypto.c` | `st2026`, `make test` | the published answers, and the Kiss hash |
 
 ### What the tests found
 
@@ -286,6 +379,20 @@ file-mode pool variables — `Read`, `Write`, `Shorten` — by reading a pool
 not where Pharo's does. Every profile that superseded `Dictionary` had a
 `FileStream` that could not open a file, and no test in those profiles had
 opened one.
+
+## The demo
+
+Kiss's demo application runs on all of this, under `demo/`: the back end in
+Smalltalk (`demo/backend`, category `Web-Demo`), Kiss's own front end copied
+whole (`demo/frontend`, one line stamped and the name on its pages changed,
+`PROVENANCE.md` beside it), one
+`RestServer` serving both from one port. `make demo-image`, then
+`./st80 -serve demo.im demo/server.json`, then `http://localhost:8080` and
+`smalltalk` / `password`. The first start makes the database from Kiss's
+`schema.sqlite` through the `Init` hook, and the user's stored password is
+the PBKDF2 hash Java made, verified byte for byte by `lib/Crypto`.
+`demo/README.md` is the guide; `doc/WebDemo.md` is the plan it was built
+from, with every decision and everything the building found.
 
 ## Provenance
 

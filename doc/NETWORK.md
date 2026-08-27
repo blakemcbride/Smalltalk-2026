@@ -23,7 +23,7 @@ the gate.
 it.
 
 A server here is one green `Process` per connection on a fixed pool of native
-workers — `st80 -serve` starts N of them, one per core less one. If a worker
+workers — `st80 -serve` starts N of them, four per core by default. If a worker
 sat in `recv()` waiting for a browser to send its next request, eight idle
 browsers on eight workers would stop the server, and a keep-alive connection
 is idle nearly all of its life. So no worker ever waits in a socket call.
@@ -129,6 +129,72 @@ is how this was seen.
 root walk on a worker at a safepoint, while the timer thread — which no
 safepoint parks — wrote it. ThreadSanitizer saw the two meet under a gate
 that collects while delays are pending. It takes the lock now.
+
+### A name with two addresses
+
+`Socket connectTo: 'localhost' port: 11434` answered *connection refused*
+from an Ollama that was up. `localhost` resolves to `::1` and then
+`127.0.0.1` here, Ollama listens on `127.0.0.1` alone, and `NET_connect`
+took the first address only, on the grounds that no caller had needed
+more. Now `connectTo:port:` asks how many addresses the name has
+(`NET_address_count`) and connects to each in turn (`NET_connect`'s third
+argument), raising the last one's error; the loop is in Smalltalk because a
+non-blocking connect learns of a refusal only later, from
+`NET_connect_result`. `SocketTest>>testEveryAddressOfANameIsTried` listens
+on `127.0.0.1` alone and connects by name.
+
+## TLS
+
+The client side, through OpenSSL when the build found it (`ST_HAVE_TLS`)
+and refused by name when it did not. `NET_tls_start` attaches the TLS state
+to a connected socket and does no I/O; `NET_tls_handshake` advances the
+handshake one step; after it, `NET_recv` and `NET_send` carry the bytes
+through the state, and `NET_close` sends the close notice and frees it.
+The certificate is checked against the system's store and its name against
+the host — `Socket>>startTls:` and `doc/HTTP-CLIENT.md` say what is
+refused and how it reads.
+
+The socket stays non-blocking and the contract above stays the whole
+contract. What TLS adds is that a read can need the socket **writable**
+first and a write can need it **readable** first — the handshake, and a
+key update, are conversations that run underneath whichever call the
+caller made — so beside `NET_WOULD_BLOCK` there are `NET_WANT_READ` and
+`NET_WANT_WRITE`, which say which way to wait when it is not the obvious
+way. The primitive answers them as the SmallIntegers −1 and −2, which no
+count can be; `false` still means what it always meant, so a plain
+socket's caller reads exactly what it always read. `Socket>>waitOn:default:`
+is the one place that knows.
+
+The TLS state has a lock of its own per slot, outside the slot because
+`NET_close` wipes the slot: an `SSL` object is not safe to use from two
+threads at once, and the two that can meet on one are a process reading
+through it and another process closing it — which the plain socket
+tolerates (`recv` on a closed descriptor is `EBADF`) and which `SSL_free`
+would make a use after free. The lock is held for the length of one
+OpenSSL call, none of which blocks. Lock order is the slot's TLS lock, then
+`net_lock`; `NET_close` takes `net_lock`, lets it go, and only then takes
+the TLS lock, so neither waits on the other while holding what the other
+wants. The state is created and freed under it; the handshake, a read and
+a write take it, re-check under `net_lock` that the slot still holds the
+state they were given, and let it go.
+
+Two OpenSSL modes matter to a non-blocking caller and are set on the one
+context: a partial write is answered as one, the way `send` answers one,
+and a retried write may come from another address — the bytes cross in a
+per-thread scratch buffer and the process that retries may be on another
+thread by then. And `SSL_OP_IGNORE_UNEXPECTED_EOF`, because most HTTP
+servers close after `Connection: close` without the TLS close notice, and
+HTTP frames its own bodies, so a truncation is caught one layer up.
+
+`tests/unit/test_socket.c` checks the shape without a TLS server: the
+state attaches to a connection and not to a listener, a stranger or a
+socket that has it already; the handshake waits and says which way; a peer
+answering in plain text is refused with *wrong version number*. The real
+thing is `lib/HTTP-Client-Live-Tests`, on the internet.
+
+`NET_environment` is the third OS service beside random bytes and the
+arguments: an environment variable, which is where an API key belongs and
+the one place `Smalltalk environmentAt:` reads one from.
 
 ## `st80 -serve`
 

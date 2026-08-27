@@ -123,6 +123,38 @@ TonelReaderTest >> testAPackageFileDefinesNothing [
 ]
 
 { #category : 'tests' }
+TonelReaderTest >> testASelectorDefinedLaterInTheFileCompiles [
+	"A method that sends a selector no method has yet -- one defined
+	 further down the same file, or in a file not loaded yet -- compiles,
+	 with the selector interned as written.  1983's Parser put that to a
+	 menu, and with this reader as requestor the answer depended on what
+	 an unhandled doesNotUnderstand: answered, which is not the same in a
+	 loaded image as in the bootstrap: the server could not load a file
+	 every test loaded."
+	| class |
+	class := TonelReader loadString: 'Class { #name : ''TonelTestSample'', #superclass : ''Object'' }', (String with: Character cr),
+		'TonelTestSample >> first [ ^self definedSecond: 40 plus: 2 ]', (String with: Character cr),
+		'TonelTestSample >> definedSecond: a plus: b [ ^a + b ]', (String with: Character cr),
+		'TonelTestSample >> third [ ^self neverDefinedAnywhere: 1 ]' named: 'sample'.
+	self assert: class new first equals: 42.
+	self assert: (Symbol hasInterned: 'neverDefinedAnywhere:' ifTrue: [:s | true]).
+	self should: [class new third] raise: Error
+]
+
+{ #category : 'tests' }
+TonelReaderTest >> testAnUndeclaredVariableIsRefused [
+	"A name that is neither a temporary, an instance variable nor a global
+	 is a mistake in the file, and the error names it."
+	[TonelReader loadString: 'Class { #name : ''TonelTestSample'', #superclass : ''Object'' }', (String with: Character cr),
+		'TonelTestSample >> broken [ ^nowhereDeclared + 1 ]' named: 'x'.
+	 self assert: false]
+		on: TonelError
+		do: [:e |
+			self assert: (e messageText includesSubstring: 'nowhereDeclared').
+			self assert: (e messageText includesSubstring: 'undeclared')]
+]
+
+{ #category : 'tests' }
 TonelReaderTest >> testRefusals [
 	self should: [TonelReader loadString: 'Class { #superclass : ''Object'' }' named: 'x'] raise: TonelError.
 	self should: [TonelReader loadString: 'Class { #name : ''TonelTestSample'', #superclass : ''NoSuchClassAnywhere'' }' named: 'x'] raise: TonelError.

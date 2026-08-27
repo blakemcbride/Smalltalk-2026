@@ -870,6 +870,15 @@ main(void)
 {
     ST_TEST_BEGIN("desktop");
 
+    /*
+     *  The clipboard with no window, which is this test's condition under
+     *  both builds: `nothing there' -- NULL to read, -1 to set -- and the
+     *  primitive above them answers nil and false.  The real clipboard
+     *  needs a window and a person.
+     */
+    CHECK(GFX_clipboard_text() == NULL);
+    CHECK_EQ_INT(GFX_clipboard_set("anything"), -1);
+
     if (!build_desktop())
         return ST_TEST_END();
 

@@ -84,3 +84,24 @@ running threads, a one-shot init flag two threads could both take, a dead
 209, `LispService.java` 155, `UserCache.java` 140, `SecurityHeadersFilter.java`
 130, `UserData.java` 106, `CompiledJavaService.java` 74, `QueueManager.java`
 69, `RequestConnectionPreparer.java` 48, `LoginRequiredException.java` 21.
+
+## The demo back end
+
+`demo/backend` is Kiss's `src/main/backend` (592 lines: `Login.groovy`,
+`KissInit.groovy`, `services/Crud`, `Users`, `MyGroovyService`,
+`MyJavaService`, `MyLispService`, `FileUpload`, `OllamaQuery`,
+`scripts/MyScript`) rewritten as Tonel files under category `Web-Demo`
+(the three `My…Service`s as one, `MyService` — below),
+method for method where the front end calls one: the same service and
+method names, the same JSON in and out, the same three password tiers in
+`Login`, the same `nodb` answer, the same `0` for a missing number. Kept
+out: `runReport` and `runExport` (a PDF through `groff` and a CSV, served
+back as files — nothing here serves a file it made), `CronTasks/` (the
+demo's crontab is entirely commented out), and `services/xxx.groovy`, a
+stray import program. `KissInit` is `Init`; `init` and `init2(db)` are
+`init:` and `init2:`. Kiss's three `addNumbers` files — Groovy, Java, Lisp,
+to show a service in each language — are one file, `MyService`, and the
+front end's three buttons are one, *Call Service*: every service here is
+Smalltalk, and three buttons doing the same thing offered a choice that was
+not one (Blake, 2026-08-26). `demo/frontend` is otherwise Kiss's front end
+verbatim — `demo/frontend/PROVENANCE.md`.

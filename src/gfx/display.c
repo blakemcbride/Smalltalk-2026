@@ -511,6 +511,8 @@ void    GFX_note_blit(const gfx_blit *b) { (void) b; }
 void    GFX_write_coverage(const char *p) { (void) p; }
 void    GFX_warp_pointer(int x, int y) { warp_locally(x, y); }
 void    GFX_present_if_undoing(const gfx_blit *b) { (void) b; }
+char   *GFX_clipboard_text(void) { return NULL; }
+int     GFX_clipboard_set(const char *text) { (void) text; return -1; }
 
 /*
  *  Nothing to adopt.  The other half of this file rebuilds the texture and
@@ -607,6 +609,49 @@ int
 GFX_is_open(void)
 {
     return window != NULL;
+}
+
+/*
+ *  The system's clipboard.  What the text editor copies or cuts goes here
+ *  as well as into the image's own CurrentSelection, and what it pastes
+ *  comes from here when there is anything, so text moves between a
+ *  workspace and the rest of the desktop in both directions.
+ *
+ *  SDL_GetClipboardText answers an SDL allocation, and an empty string
+ *  rather than NULL when there is nothing; the copy handed back is a
+ *  plain malloc so that prim.c need know nothing about SDL, and an empty
+ *  clipboard is NULL, which is what `nothing there' means to the image.
+ */
+char *
+GFX_clipboard_text(void)
+{
+    char   *text;
+    char   *copy;
+    size_t  n;
+
+    if (!window)
+        return NULL;
+    text = SDL_GetClipboardText();
+    if (!text)
+        return NULL;
+    n = strlen(text);
+    if (n == 0) {
+        SDL_free(text);
+        return NULL;
+    }
+    copy = (char *) malloc(n + 1);
+    if (copy)
+        memcpy(copy, text, n + 1);
+    SDL_free(text);
+    return copy;
+}
+
+int
+GFX_clipboard_set(const char *text)
+{
+    if (!window || !text)
+        return -1;
+    return SDL_SetClipboardText(text) ? 0 : -1;
 }
 /*
  *  Smalltalk-80 is one bit per pixel and a set bit is ink, so the whole of

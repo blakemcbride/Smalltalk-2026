@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+
+  <!-- Kiss demo application.  See https://kissweb.org -->
+
+<head>
+    <title>Smalltalk-2026 Application</title>
+    <meta charset="UTF-8">
+
+    <!--
+        Cache busting (rock-solid, single source of truth).
+
+        The version lives HERE, in index.html, which the kernel below keeps perpetually
+        uncached via the ?now redirect.  Because index.html is always fresh, this version
+        is always fresh, and every other file the app downloads is loaded with ?ver=<version>
+        so a single bump force-refreshes all of them.
+
+        On each release: bump app-version (the version of the application, not of the Kiss
+        framework).  app-mode is "development" or "production".  In production, files are
+        busted with the app-version, so the browser caches everything until the version
+        changes.  In development, files are busted with a fresh per-page-load timestamp,
+        so nothing is cached and a plain reload always fetches fresh files.
+    -->
+    <meta name="app-version" content="EDIT-1">
+    <meta name="app-mode" content="development">  <!-- the WAR build stamps "production" -->
+
+    <!--
+        Content-Security-Policy is delivered as an HTTP response header by
+        SecurityHeadersFilter (org.kissweb.restServer), NOT here.  The one allowed inline
+        script is the bootstrap kernel below; its 'sha256-...' hash is pinned in that
+        filter, so the kernel must stay byte-for-byte unchanged (it carries no per-deploy
+        values — those are in the <meta> tags).
+    -->
+
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+    <style>
+
+        .ck-powered-by {
+            display: none;
+        }
+
+        html, body {
+            width: 100%;
+            box-sizing: border-box;
+            background-color: #b7e4ff;
+        }
+
+        label {
+            margin-top: 3px;
+        }
+
+        .center {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translateX(-50%) translateY(-50%);
+        }
+
+        input[type=button], input[type=checkbox], input[type=radio], select {
+            cursor: pointer;
+        }
+
+    </style>
+
+    <!--
+        Bootstrap kernel.  Byte-stable: do NOT edit per deployment (its CSP hash depends on
+        it being unchanged; all per-deploy values live in the <meta> tags above).  It keeps
+        index.html fresh (?now), reads the version from the meta, exposes window.cacheBust(), and
+        loads the rest of the framework version-busted.
+    -->
+    <script>
+        (function () {
+            function meta(n) {
+                var m = document.querySelector('meta[name="' + n + '"]');
+                return m ? m.getAttribute('content') : '';
+            }
+            var ver = meta('app-version');
+            var cacheOn = meta('app-mode') === 'production';
+            window.KissVersion = ver;
+            window.KissCacheOn = cacheOn;
+            //  Cache-bust token: the release version in production (stable across a release),
+            //  or a fresh per-page-load timestamp in development so nothing is ever served
+            //  from cache — a plain reload always re-fetches every file.
+            var token = cacheOn ? ver : String(Date.now());
+            window.KissBustToken = token;
+            window.cacheBust = function (url) {
+                return url + (url.indexOf('?') >= 0 ? '&' : '?') + 'ver=' + token;
+            };
+            //  Keep index.html itself uncached via a ?now redirect (both modes) so the
+            //  version/meta and this kernel are always fresh on reload.
+            var now = null, s = window.location.search;
+            if (s) {
+                var parts = s.substring(1).split('&');
+                for (var i = 0; i < parts.length; i++) {
+                    var kv = parts[i].split('=');
+                    if (kv[0] === 'now')
+                        now = kv[1];
+                }
+            }
+            if (!(now && Math.abs((Date.now() - Number(now)) / 1000) <= 30)) {
+                window.onbeforeunload = null;
+                var args = s ? s.substring(1).replace(/now=[^&]*&*/g, '') : '';
+                window.location.href = 'index.html?now=' + Date.now() + (args ? '&' + args : '') + window.location.hash;
+                return;
+            }
+            var b = document.createElement('script');
+            b.src = window.cacheBust('kiss/bootstrap.js');
+            document.head.appendChild(b);
+        })();
+    </script>
+
+</head>
+
+<body>
+</body>
+
+</html>

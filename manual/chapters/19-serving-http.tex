@@ -11,15 +11,72 @@ Tomcat was to Kiss. \ct{Rest-Server} is Kiss's protocol on it: \ct{POST /rest}
 with a JSON document naming a class and a method, sessions, one database
 transaction per request. And \ct{Tonel}, which the last of those leans on,
 reads a class from a file into the running image and writes it back.
+Beside them: \ct{Crypto}, the password hashing a login rests on;
+\ct{HTTP-Client}, the other direction; and \ct{LLM}, a local model server
+asked through it. And under \ct{demo/}, Kiss's own demo application on all
+of it, which is the first thing this chapter runs and the last thing it
+explains.
 
 \section{A first server}
+\label{sec:first-server}
 
 \begin{st}
-| server |
-server := HttpServer new port: 8080; documentRoot: 'frontend'.
-server at: '/hello' put: [:request | HttpResponse text: 'hello, ', request path].
-server start
+Smalltalk at: #Demo put: (RestServer fromConfigFile: 'demo/server.json').
+Demo start
 \end{st}
+
+Select that in a workspace and \emph{do it}---both lines, or one at a
+time; each is a statement whole on its own---with the image started from
+the repository root, so that \ct{demo/} is found, on a machine with the
+SQLite ODBC driver (\ct{odbcinst -q -d} lists \ct{[SQLITE3]};
+Section~\ref{sec:demo} says where to get it). Then
+\ct{http://localhost:8080} in a browser is the demo's login screen. Log in as
+\ct{smalltalk} with the password \ct{password}, and every screen on the menu
+works: a phone list with a database behind it, a users screen, a file
+upload, three \emph{add two numbers} services, an Ollama chat if one is
+running. That is the whole of the demo application of
+Section~\ref{sec:demo}, serving beside the desktop, green, one interpreter
+switching between it and you; and the back end it runs is Smalltalk in
+files under \ct{demo/backend}, which can be edited while it serves. Its
+log---\ct{rest: listening on port 8080}, and on the first start
+\ct{demo: made the tables from demo/schema.sqlite}---goes to the terminal
+the image was started from, not the Transcript. Later, from any doit:
+
+\begin{st}
+Demo stop
+\end{st}
+
+The server is a global and not a \ct{| server |} temporary because a
+temporary lives only as long as the doit that declared it, and the
+server outlives the doit: something has to name it when you want it
+stopped. The bare name works from the second line on, in the same doit: a
+name nothing has defined yet compiles quietly as a global holding nil
+(Appendix~\ref{app:trouble}), and \ct{Smalltalk at:put:} fills that very
+binding rather than making another.
+
+What \ct{RestServer} stands on is an \ct{HttpServer}, and one of those can
+be had on its own---here on another port, so that both can run:
+
+\begin{st}
+Smalltalk at: #WebServer put: HttpServer new.
+WebServer port: 8081; documentRoot: 'demo/frontend'.
+WebServer at: '/hello' put: [:request | HttpResponse text: 'hello, ', request path].
+WebServer start
+\end{st}
+
+\ct{curl http://localhost:8081/hello} answers \ct{hello, /hello}, and
+\ct{http://localhost:8081/} in a browser is the same login page, served as
+files from the same document root. \ct{WebServer stop} ends it.
+
+\begin{stwarn}[Files only: this one's login button does not work]
+What an \ct{HttpServer} knows is handlers by path and files under a document
+root. The demo's pages are files, so they appear; but every button on them
+posts a JSON document to \ct{/rest}, nothing here answers that path, and a
+\ct{POST} to the file handler is a 405, which the front end reports as
+\emph{Error communicating with the server}. A \ct{RestServer} is an
+\ct{HttpServer} with a handler at \ct{/rest} (Section~\ref{sec:rest}), and
+that is the whole difference between the two servers above.
+\end{stwarn}
 
 \ct{at:put:} maps a path to a handler---a block taking the request, or any
 object answering \ct{handle:} with an \ct{HttpResponse}. The match is exact.
@@ -52,7 +109,7 @@ HttpResponse json: aJsonObject asJsonString.
 HttpResponse ok: '<html>...</html>'.
 HttpResponse bytes: pngBytes contentType: 'image/png'.
 HttpResponse error: 404 reason: 'not here'.
-(HttpResponse status: 201) body: '...'; contentType: 'text/plain'; headerAt: 'Location' put: '/x'
+(HttpResponse status: 201) body: '...'; headerAt: 'Location' put: '/x'
 \end{st}
 
 \ct{Content-Length} is always sent and the body is always whole, so a client
@@ -68,6 +125,25 @@ is. A handler that raises \ct{HttpError} answers with that status; a handler
 that raises anything else answers 500, and the fault goes to standard error,
 not to the client.
 \end{stnote}
+
+\subsection{Another port is another origin}
+\label{sec:origins}
+
+A page served from this host on another port is another origin to the
+browser: it sends \ct{Origin} with every request, a preflight \ct{OPTIONS}
+before a \ct{POST} with a JSON body, and shows the page the reply only if
+the response says that origin is allowed. The rule here is fixed, not
+configured: an \ct{Origin} whose host is the host of the request's own
+\ct{Host} header---port aside, case aside---is allowed, echoed back in
+\ct{Access-Control-Allow-Origin} (never \ct{*}), and its preflight is
+answered 204 before any handler sees it. Any other host gets its reply with
+no such header, which is what makes the browser withhold it from the page,
+and a 403 for its preflight; a request with no \ct{Origin} is served as it
+always was. \ct{localhost} and \ct{127.0.0.1} are different names to the
+rule, and the scheme is not compared, because a page on \ct{https:} calling
+\ct{http:} is stopped by the browser first. \ct{HttpCodec hostOf:} is the
+comparison; \ct{request origin}, \ct{hostName} and \ct{isPreflight} are
+the questions.
 
 \section{One process per connection}
 
@@ -127,7 +203,10 @@ listener := ServerSocket listenOn: 0.        "0: the system picks; localPort say
 
 \ct{connectTo:port:} waits until the connection is made and raises
 \ct{NetError}, carrying the system's own words, if the host cannot be reached
-or refuses. \ct{receiveUpTo:} answers what has arrived---at least one byte,
+or refuses. A name that resolves to several addresses---\ct{localhost} is
+often \ct{::1} and then \ct{127.0.0.1}---is tried at each in turn, so a
+server listening on one of them is reached whichever the resolver names
+first. \ct{receiveUpTo:} answers what has arrived---at least one byte,
 at most the number asked for---and an empty String when the peer has closed;
 \ct{send:} sends the whole of its argument, however many pieces the kernel
 takes it in. Bytes are bytes: nothing translates a line ending, and
@@ -146,14 +225,16 @@ process reads a socket at a time---two waiting on one connection is a
 program error, not a case the class tries to make work.
 
 \section{A REST server}
+\label{sec:rest}
 
 \begin{st}
-RestServer new
+Smalltalk at: #Rest put: (RestServer new
     port: 8080;
     backendDirectory: 'backend';
     documentRoot: 'frontend';
     database: 'DSN=shop;UID=app;PWD=secret';
-    start
+    yourself).
+Rest start                                     "and later, Rest stop"
 \end{st}
 
 A service is a Tonel file under the back-end directory, a subclass of
@@ -277,9 +358,24 @@ connections, which bounds how many requests are inside the database at once
 to the pool's size; \ct{lib/Database} asks that a connection belong to one
 process at a time, and the queue is what enforces it.
 
+\subsection{Startup}
+
+If \ct{backend/Init.class.st} exists it is the application's startup---
+Kiss's \ct{KissInit.groovy}---and \ct{start} sends it two messages on the
+way up. \ct{init:} comes with the server before anything is opened, for a
+logout handler, an exemption, a setting read; \ct{init2:} once the pool is
+open and before the listener is, with a connection of its own in a
+transaction committed when it returns and rolled back when it raises---nil
+when there is no database, as Kiss passes null. Either raising stops the
+start: the pool is closed again, nothing listens, and under \ct{-serve} the
+image exits 1. The demo's \ct{Init} makes its tables from
+\ct{schema.sqlite} the first time, which is why the demo has no database
+step.
+
 \section{Services are files}
 
-\ct{services.Adder} names \ct{backend/services/Adder.class.st}. The first
+\ct{services.Adder} names \ct{backend/services/Adder.class.st}, and so does
+\ct{services/Adder}, which is how Kiss's front end spells it. The first
 request for it reads the file into the image, and every later request
 compares the file's time and size with what was loaded and reads it again if
 either changed. Edit the file on a running server and the next call runs the
@@ -298,6 +394,34 @@ opened 1983's \ct{SyntaxError} notifier and suspended the process, which in
 a headless server is a hang. Both are fixed: \ct{Scanner} reads \ct{:=}, and
 a compile error in a file is a \ct{TonelError} naming the file, the method
 and the character.
+\end{stnote}
+
+\begin{stnote}[Two more, found by the demo]
+A method that sent a selector defined later in its own file compiled in
+every test and would not compile on the server. 1983's \ct{Parser} puts a
+selector no method has yet to its editor's user---\emph{proceed, correct,
+abort}---and \ct{TonelReader} had no \ct{editor}, so the answer was
+whatever an unhandled \ct{doesNotUnderstand:} answered, which is nil in the
+bootstrap process and not nil in an image read back from disk. A reader
+with no user now gets the selector interned. And the image's own compiler
+is 1983's: it has no block-local temporaries, so a service declares
+\ct{| row |} at the method and not inside \ct{[:each | ...]}, which the
+bootstrap's closures dialect would have accepted and every test therefore
+missed. Both are in \ct{TonelReaderTest}; the first is the reason anything
+compiled at run time is smoked under \ct{-serve}, in a loaded image, and
+not only in the tests.
+\end{stnote}
+
+\begin{stnote}[One more, found by a browser]
+Every test, the \ct{curl} above and the smoke runs spelled a service
+\ct{services.Adder}, and the loader took nothing else. Kiss's front end
+spells it \ct{services/Adder}---Kiss reads the two the same way---so the
+first browser pointed at the demo found every screen but the login
+answering \emph{not a class name}, and the CRUD grid simply empty. The
+loader takes both spellings now, and the demo's tests send what the front
+end sends. The lesson is the one above with the other party changed: what
+the tests send is not what a browser sends until a test sends the
+browser's exact text.
 \end{stnote}
 
 \section{Running a server image}
@@ -336,6 +460,197 @@ not have. A desktop image run under \ct{-serve} executes its display loop
 headless on one worker and serves nothing.
 \end{stnote}
 
+\section{An HTTP client}
+
+\begin{st}
+(HttpClient get: 'http://localhost:11434/api/tags') json.
+(HttpClient post: url body: aJsonString contentType: 'application/json') body.
+HttpClient new readTimeout: 60000; headerAt: 'Authorization' put: token; get: url
+\end{st}
+
+The reply is an \ct{HttpClientResponse}: \ct{status}, \ct{isSuccess},
+\ct{headerAt:}, \ct{body}, \ct{json}. A 404 is a reply and not an error;
+a host that refuses is a \ct{NetError}; a reply that takes longer than the
+timeout---thirty seconds unless told---is a \ct{TimedOut}. An \ct{https}
+URL is answered with TLS, the certificate checked against the system's
+store and its name against the host, and refused with OpenSSL's reason when
+either is wrong (Chapter~\ref{ch:llm}). Every request opens a connection
+and closes it after, which is what makes the third way a body can end safe:
+by \ct{Content-Length}, by chunks, or with the connection. The wait parks
+the process and not the worker, as every socket wait here does.
+
+A reply can also be read as it arrives, which is what a model's streamed
+answer needs:
+
+\begin{st}
+HttpClient new get: url do: [:r | r bodyStream linesDo: [:line | Transcript show: line; cr]]
+\end{st}
+
+The block gets the reply with its status and headers read and its body
+still on the wire; \ct{bodyStream} reads it by the line, \ct{nil} at the
+end, and the connection closes when the block is done. \ct{Ollama}, and the
+three cloud services beside it, are asked through this client; that is
+Chapter~\ref{ch:llm}.
+
+\section{The demo application}
+\label{sec:demo}
+
+Kiss ships as a running application---a phone list, a users screen, a file
+upload, an \emph{add two numbers} service, an SQL-access check, an
+Ollama chat---whose back end can be edited while the server runs. It is
+here, under \ct{demo/}: the back end in Smalltalk under \ct{demo/backend}
+(category \ct{Web-Demo}), Kiss's own front end copied whole under
+\ct{demo/frontend}, and one \ct{RestServer} serving both from one port.
+
+\subsection{Step by step}
+
+Everything below is typed at a shell in the repository root, on a machine
+where \ct{make} has already built \ct{./st80} (Chapter~\ref{ch:building}).
+
+\begin{enumerate}
+\item \textbf{Have the SQLite ODBC driver.} The demo keeps its data in
+  SQLite and reaches it through ODBC, like every database on this system.
+  \ct{odbcinst -q -d} must list \ct{[SQLITE3]}; if it does not, install
+  \ct{sqliteodbc} (Fedora) or \ct{libsqliteodbc} (Debian, Ubuntu) and ask
+  again. Nothing else is needed. An Ollama at \ct{localhost:11434} is
+  optional and only the Ollama screen wants it.
+
+\item \textbf{Build the server image.}
+\begin{plain}
+make demo-image
+\end{plain}
+  This bootstraps an image whose startup is \ct{RestServer serve} and
+  writes it to \ct{demo.im}. The last line printed is
+  \ct{built demo.im -- now: ./st80 -serve demo.im demo/server.json}.
+
+\item \textbf{Start the server.}
+\begin{plain}
+./st80 -serve demo.im demo/server.json
+\end{plain}
+  Three lines say it is up: \ct{st80: serving demo.im on N workers} (four
+  per CPU unless \ct{-workers n} was given), then on the first start only
+  \ct{demo: made the tables from demo/schema.sqlite}, then
+  \ct{rest: listening on port 8080}. The first start made
+  \ct{demo/DB.sqlite}---the driver creates the file on connection---and
+  \ct{backend/Init.class.st} filled it from Kiss's own \ct{schema.sqlite},
+  with one user, whose stored password is the PBKDF2 hash Java made and
+  \ct{PasswordHash} checks byte for byte. Leave this terminal be; the
+  server's log goes to it.
+
+\item \textbf{Open the application.} In a browser, go to
+  \ct{http://localhost:8080}. The page redirects itself once (its
+  cache-busting \ct{?now=}) and shows the demo's login screen.
+
+\item \textbf{Log in} as \ct{smalltalk} with the password \ct{password}. The
+  main screen's menu lists the demo's screens.
+
+\item \textbf{Try the screens.} \emph{CRUD}: add a record, edit it,
+  delete it---the phone list is the \ct{phone} table. \emph{Users}: add a
+  user, log out, log in as them; a blank password on an edit keeps the old
+  one. \emph{REST Services}: two numbers and their sum. \emph{SQL Access}
+  says whether there is a database.
+  \emph{File Upload}: choose a file and send it; the server's terminal logs
+  its name and size. \emph{Ollama}, if one is running: pick a model and
+  ask. The \emph{Report} and \emph{Export} buttons on the CRUD screen
+  answer \emph{No such method}: those are not written yet.
+
+\item \textbf{Change the running server.} With it still running, open
+  \ct{demo/backend/services/MyService.class.st} in an editor, find
+  \ct{a + b} in \ct{addNumbers}, make it \ct{a + b + 100}, and save. Press
+  \emph{Call Service} on the REST Services screen: \ct{3} and \ct{4} now
+  answer \ct{107}. Nothing was restarted; the file's time changed, and the
+  next request read it again. Put it back the same way.
+
+\item \textbf{Stop the server} with Ctrl-C in its terminal. It prints
+  \ct{st80: stopped as asked} and exits 0.
+
+\item \textbf{Start over}, when wanted, by deleting \ct{demo/DB.sqlite};
+  the next start makes it again.
+\end{enumerate}
+
+The same server runs without the worker pool, green, from the desktop
+image: that is the two lines of Section~\ref{sec:first-server}, and
+\ct{Demo stop} ends it. Everything above then applies; the log still goes
+to the terminal's standard error, not the Transcript.
+
+\begin{center}
+\small
+\begin{tabular}{@{}lll@{}}
+\toprule
+screen & service & database\\
+\midrule
+login & \ctp{Login} & yes\\
+CRUD & \ctp{Crud}: \ctp{getRecords addRecord updateRecord deleteRecord} & yes\\
+Users & \ctp{Users}: the same four, passwords hashed & yes\\
+REST Services & \ctp{MyService addNumbers} & no\\
+SQL Access & \ctp{MyService hasDatabase} & no\\
+File Upload & \ctp{FileUpload upload} & no\\
+Ollama & \ctp{OllamaQuery}: \ctp{isOllamaUp listModels ask} & no\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Any service is edited the way step 7 edits one: change the file, and the
+next request runs the new code. The class is in the Browser under
+\ct{Web-Demo} once it has been loaded, and a method accepted there is
+written back to the file. The Report and Export buttons answer \emph{No
+such method}: Kiss makes a PDF through \ct{groff} and serves the file
+back, and this server does not yet serve files it made.
+
+The front end is Kiss's at one commit, verbatim but for three things: one
+line, \ct{SystemInfo.sameOriginBackend = true}---the stamp Kiss's build
+applies to the copy its own server serves; the name its pages show, which
+is Smalltalk-2026 rather than Kiss; and the REST Services screen, whose
+three buttons---Groovy, Java, Lisp, the languages a Kiss service can be
+written in---are one, \emph{Call Service}, because every service here is
+Smalltalk. \ct{demo/frontend/PROVENANCE.md}
+says which commit and which licences: Kiss and AG Grid are BSD and MIT;
+CKEditor is GPL or commercial, and is kept because its file is verbatim.
+
+\begin{stnote}[The demo says it cannot connect]
+The demo reaches SQLite through ODBC, so the machine needs the SQLite ODBC
+driver---\ct{sqliteodbc} on Fedora, \ct{libsqliteodbc} on Debian---and
+\ct{odbcinst -q -d} should list \ct{[SQLITE3]}. Without it the server
+starts and every screen says what \ct{lib/Database} says: no driver.
+\end{stnote}
+
+\subsection{Two servers instead of one}
+
+Kiss's development layout serves the front end from a static server on
+port 8000, and its \ct{index.js} then expects the back end on 8001. That
+works here because the second port is the same host, and the rule of
+Section~\ref{sec:origins} admits it on its own:
+
+\begin{enumerate}
+\item Copy \ct{demo/frontend} somewhere the static server will serve,
+  and in that copy's \ct{SystemInfo.js} set \ct{sameOriginBackend} back to
+  \ct{false}---or set \ct{SystemInfo.backendUrl} to
+  \ct{http://localhost:8001} outright.
+\item In \ct{demo/server.json} set \ct{"port": 8001} and remove the
+  \ct{documentRoot} line.
+\item Start the static server on port 8000 against the copy (Kiss's own
+  \ct{serve} script does exactly that), and this server as in step 3
+  above.
+\item Open \ct{http://localhost:8000}. The browser sends every request
+  with \ct{Origin: http://localhost:8000}, this server sees the same host
+  and answers with the permission, and the page reads the reply.
+\end{enumerate}
+
+\subsection{The threads}
+
+What runs under \ct{./st80 -serve demo.im}, in the operating system's
+terms. One thread waits---in \ct{poll()}, over the listening socket and
+every kept-alive connection---and each arrival goes on a queue. A pool of
+worker threads, four per CPU unless \ct{-workers} says otherwise, each
+takes the next queued request and runs it to its reply. A request that has
+to wait for anything but the database---the rest of a slow upload, a lock
+another worker holds, a model's answer---gives its worker back and is
+resumed by the next free one when the wait ends; a database call holds its
+worker, blocked inside the driver, and the collector is told so that it
+does not wait. So a request is on one thread at a time and not always the
+same one, idle connections cost no thread at all, and a thousand of them
+are a thousand parked processes.
+
 \section{Where the rest of it is}
 
 \ct{doc/NETWORK.md} is the socket layer and the run mode: the one decision
@@ -343,16 +658,21 @@ everything follows from, the arm-wait-retry contract, what the VM does, and
 the two things found the hard way. \ct{doc/REST-SERVER.md} is the protocol,
 where Kiss stops and this begins, and what is shared and what guards it.
 \ct{lib/Rest-Server/PROVENANCE.md} records what of Kiss crossed, what changed,
-and the three Kiss faults not repeated. \ct{doc/CONCURRENCY.md} records what
+and the three Kiss faults not repeated. \ct{doc/HTTP-CLIENT.md} is the
+client and \ct{Ollama}; \ct{lib/Crypto/PROVENANCE.md} the password hash's
+standards and vectors; and \ct{doc/WebDemo.md} the plan the demo was built
+from, with every decision and everything the building found. \ct{doc/CONCURRENCY.md} records what
 the gates found in the virtual machine itself while this was built---a list
 unlinked in the wrong order, a slot every worker wrote, an enumeration that
 walked headers being refilled---each older than the server and each waiting
 for thirty-one workers to show it.
 
-The tests are in \ct{lib/Network-Tests}, \ct{lib/JSON-RPC-Server-Tests} and
-\ct{lib/Rest-Server-Tests}, all over the loopback interface on a port the
-system picks; \ct{lib/Rest-Server-Live-Tests} needs a database and lives in
-the \ct{database-live} profile. The gates are
+The tests are in \ct{lib/Network-Tests}, \ct{lib/JSON-RPC-Server-Tests},
+\ct{lib/Rest-Server-Tests}, \ct{lib/HTTP-Client-Tests}, \ct{lib/LLM-Tests}
+and \ct{lib/Web-Demo-Tests}, all over the loopback interface on a port the
+system picks, and \ct{lib/Crypto-Tests} against the published answers;
+\ct{lib/Rest-Server-Live-Tests} and \ct{lib/Web-Demo-Live-Tests} need a
+database and live in the \ct{database-live} profile. The gates are
 \ct{tests/unit/test_parallel_net.c} and
 \ct{tests/unit/test_parallel_rest.c}: thirty-one workers, sixty-two native
 clients, every sum checked, every worker seen.

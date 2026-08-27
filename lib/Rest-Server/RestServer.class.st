@@ -32,6 +32,24 @@ once at start and read for ever after.
 Authentication is required when the configuration says so, and otherwise
 when there is a database -- Kiss's rule.  The application's Login class does
 the actual checking; see RestDispatcher.
+
+STARTUP.  If <backendDirectory>/Init.class.st exists, it is the application's
+startup -- Kiss's KissInit.groovy -- and start sends it two messages on the
+way up:
+
+    Init class >> init: aRestServer
+        before anything is opened: the place to register a logout handler,
+        read the environment, allow a method without authentication
+    Init class >> init2: aDbConnectionOrNil
+        once the pool is open and before the listener is, with a connection
+        of its own in a transaction that is committed when the method
+        returns and rolled back when it raises; nil when there is no
+        database, as Kiss passes null
+
+Either raising stops the start: the pool is closed again, nothing listens,
+and the error reaches whoever sent start.  An application that could not
+initialise must not be taking requests.  Without the file nothing happens,
+and a class that defines only one of the two is sent only that one.
 "
 Class {
 	#name : 'RestServer',
@@ -47,8 +65,18 @@ RestServer class >> serve [
 	 it, and stay up until the operating system asks the image to stop."
 	| path server |
 	path := Smalltalk arguments isEmpty ifTrue: ['server.json'] ifFalse: [Smalltalk arguments first].
-	server := self fromConfigFile: path.
-	server start.
+	"A start that fails -- no configuration, a database that cannot be
+	 reached, the application's Init raising -- is logged and ends the
+	 startup process, which -serve reports as `the image stopped on its
+	 own' with exit code 1.  Handled here on purpose: an Error nobody
+	 handles in a headless image is printed and resumed, and a server
+	 that could not initialise would go on to listen."
+	server := [self fromConfigFile: path]
+		on: Error
+		do: [:e | RestLog error: 'cannot read ', path, ': ', e messageText. ^self].
+	[server start]
+		on: Error
+		do: [:e | RestLog error: 'cannot start: ', e messageText. ^self].
 	[Socket stopRequested] whileFalse: [(Delay forMilliseconds: 250) wait].
 	server stop.
 	RestLog info: 'stopping as asked'.
@@ -257,6 +285,13 @@ RestServer >> loginClass [
 	^self loader classFor: 'Login'
 ]
 
+{ #category : 'startup' }
+RestServer >> initClass [
+	"The application's Init class, from <backendDirectory>/Init.class.st,
+	 or nil when there is no such file.  See the class comment, STARTUP."
+	^self loader classFor: 'Init' ifAbsent: [nil]
+]
+
 { #category : 'database' }
 RestServer >> acquireConnection [
 	^pool acquire
@@ -267,15 +302,51 @@ RestServer >> releaseConnection: aConnection [
 	pool release: aConnection
 ]
 
+{ #category : 'database' }
+RestServer >> withConnectionDo: aBlock [
+	"aBlock with a pooled connection, committed after it answers and rolled
+	 back if it raises, and back in the pool either way; with nil when there
+	 is no database.  What init2: runs inside."
+	| db result committed |
+	connectionString isNil ifTrue: [^aBlock value: nil].
+	db := self acquireConnection.
+	committed := false.
+	^[result := aBlock value: db.
+	  db commit.
+	  committed := true.
+	  result]
+		ensure: [
+			committed ifFalse: [[db rollback] on: Error do: [:e | nil]].
+			self releaseConnection: db]
+]
+
+{ #category : 'database' }
+RestServer >> closePool [
+	pool notNil ifTrue: [pool closeAll. pool := nil]
+]
+
 { #category : 'starting and stopping' }
 RestServer >> start [
 	"Open the database pool, then listen.  A database that cannot be
-	 reached stops the start rather than the first request."
+	 reached stops the start rather than the first request; so does the
+	 application's Init class raising from init: or init2: (see the class
+	 comment, STARTUP), and then the pool is closed again, because a start
+	 that did not finish must leave nothing open."
+	| initClass initialised |
 	self isRunning ifTrue: [^self].
 	self userCache; loader.
+	initClass := self initClass.
+	(initClass notNil and: [initClass respondsTo: #init:])
+		ifTrue: [initClass init: self].
 	connectionString notNil ifTrue: [
 		pool := RestConnectionPool on: connectionString size: poolSize.
 		pool open].
+	(initClass notNil and: [initClass respondsTo: #init2:])
+		ifTrue: [
+			initialised := false.
+			[self withConnectionDo: [:db | initClass init2: db].
+			 initialised := true]
+				ensure: [initialised ifFalse: [self closePool]]].
 	httpServer := HttpServer new
 		port: port;
 		bindAddress: bindAddress;
@@ -297,5 +368,5 @@ RestServer >> stop [
 	self isRunning ifFalse: [^self].
 	userCache stopPurging.
 	httpServer stop.
-	pool notNil ifTrue: [pool closeAll. pool := nil]
+	self closePool
 ]

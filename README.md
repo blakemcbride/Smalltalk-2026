@@ -17,7 +17,7 @@ the interface.
 
 | | |
 |---|---|
-| Language | C11 · no dependencies but SDL3 for the window, and ODBC — optional — for the database |
+| Language | C11 · no dependencies but SDL3 for the window, and — both optional — ODBC for the database and OpenSSL for https |
 | Graphics | SDL3 |
 | Platforms | Linux (developed on), Windows and macOS — each builds, bootstraps an image and runs its desktop. See [`Windows.md`](Windows.md) and [`macOS.md`](macOS.md) |
 | Licence | BSD 2-Clause. See [Provenance](#provenance) — parts of the tree are other people's |
@@ -112,6 +112,16 @@ names the package that installs one — `unixODBC-devel` on Fedora,
 make NODB=1
 ```
 
+And https is optional the same way: a build without OpenSSL refuses an
+`https` URL by name, `Socket isTlsAvailable` answers false, and `make deps`
+names the package — `openssl-devel` on Fedora, `libssl-dev` on Debian. Only
+the client side is ever built; a server here sits behind a reverse proxy
+that terminates TLS.
+
+```sh
+make NOTLS=1
+```
+
 Bootstrap an image from source and run its desktop:
 
 ```sh
@@ -175,18 +185,21 @@ a score may not fall, and may not rise without being recorded:
 
 | Profile | Tests |
 |---|---|
-| `st2026` | 205 / 205 |
-| `pharo-announcements` | 236 / 236 |
-| `pharo-time` | 826 / 826 |
-| `pharo-weak` | 225 / 225 |
-| `pharo-collections` | 662 / 662 |
+| `st2026` | 410 / 410 |
+| `pharo-announcements` | 441 / 441 |
+| `pharo-time` | 1031 / 1031 |
+| `pharo-weak` | 430 / 430 |
+| `pharo-collections` | 867 / 867 |
 
 **1,177 of those are Pharo's own tests**, run unmodified against this system.
-The rest are ours: twelve for the exceptions and concurrency classes 1983 has
-no equivalent of, a suite for the 1983 library itself — the numeric tower, the
-collections, strings and streams — 43 for the database and 101 for JSON. Every
-profile requiring `st2026` inherits all of them, which is why the same 193
-appear in every row. The composed image is 295 classes and 5,881 methods.
+The rest are ours: the exceptions and concurrency classes 1983 has no
+equivalent of, a suite for the 1983 library itself — the numeric tower, the
+collections, strings and streams — the database, JSON, sockets, Tonel, the
+HTTP and REST servers, the HTTP client and TLS, the password hashing, the
+demo application, the clipboard, and the language models. Every profile
+requiring `st2026` inherits all of them, which is why the same 410 appear in
+every row; three more profiles need a database, the internet, or API keys, and
+are run on purpose. The composed image is 369 classes and 6,960 methods.
 Where this is going is [`doc/PLAN-TO-PHARO.md`](doc/PLAN-TO-PHARO.md).
 
 **SQL, on every core at once.** `lib/Database` reaches PostgreSQL, MySQL,
@@ -249,6 +262,35 @@ stop-the-world heap scan, pinning for SDL and FFI is free, and compaction
 touches one entry per object rather than every reference to it. We pay one
 indirection to buy atomic identity mutation.
 
+**A web application, end to end: Kiss's demo, on all of it.** `demo/` is
+the demo Kiss ships as a running program — a login, a phone list, a users
+screen, an upload, an Ollama chat — with its back end rewritten as Tonel
+services under `demo/backend` and Kiss's own front end copied whole under
+`demo/frontend`, one `RestServer` serving both from one port: `make
+demo-image`, `./st80 -serve demo.im demo/server.json`,
+`http://localhost:8080`, `smalltalk` / `password`. The database is made on the
+first start from Kiss's own schema, and its stored password is the PBKDF2 hash
+Java made, checked byte for byte by `lib/Crypto`. Edit a service while it
+runs and the next request runs the new code. That is what a web application
+on this system looks like: a directory of Smalltalk services, a front end,
+a `server.json`, and a database reached through ODBC — the manual's
+chapter 19 walks through it. `demo/README.md`; the plan and everything the
+building found are in `doc/WebDemo.md`.
+
+**Language models, over TLS.** `lib/LLM` asks Anthropic, OpenAI, OpenRouter
+and a local Ollama the same way: `send:` for an answer, `send:do:` for the
+answer as it streams, a `conversation` that remembers, `LLMTool`s the model
+calls through your block in a loop that ends when it answers with text, a
+picture sent inline, `embed:` for the vector a text becomes and `Qdrant` to
+keep it in. One abstract class knows the shape; each subclass knows only its
+service's wire, and thirty-three tests check those wires against a listener
+that keeps every request. Underneath is the client side of TLS — OpenSSL,
+optional like ODBC — with the certificate and its name checked and no way to
+say "trust it anyway", and a reply read as it arrives. A key is read from the
+environment with `Smalltalk environmentAt:`, which is where a secret belongs.
+[`doc/LLM.md`](doc/LLM.md) and [`doc/HTTP-CLIENT.md`](doc/HTTP-CLIENT.md);
+the manual's chapter 20.
+
 **The 1983 library, audited on real workers.** Every class variable in the
 image was scanned and the image itself was run on thirty-one workers, and what
 leaned on the green scheduler was found and fixed: the Symbol table, `Smalltalk`,
@@ -282,11 +324,16 @@ src/gfx/        BitBlt, display, SDL3 pump, the rasterised face
 src/sched/      Process, Semaphore, the scheduler
 src/compiler/   Smalltalk compiler in C, chunk and Tonel readers
 src/db/         ODBC, and nothing else that knows what a database is
-src/net/        TCP sockets and the thread that polls them; -serve's pool
+src/net/        TCP sockets, TLS through OpenSSL, and the thread that polls them
+src/crypto/     SHA-256, HMAC, PBKDF2 -- what a stored password rests on
 src/boot/       image bootstrap
 sources/        the 1983 class library (MIT), vendored, frozen — 226 classes
 lib/            ours: exceptions, concurrency, SUnit, protocol shims, SQL, JSON,
-                sockets, Tonel at run time, HTTP, the REST server
+                sockets, Tonel at run time, HTTP both ways and https out, the
+                REST server, password hashing, the clipboard, four language
+                model services and a vector store
+demo/           Kiss's demo application: its back end in Smalltalk, its own
+                front end copied whole, one server for both -- demo/README.md
 pharo/          imported Pharo packages, each with a PROVENANCE.md
 profiles/       which packages compose an image
 tools/          make_font.py — rasterises an outline face into the strike
@@ -304,8 +351,11 @@ tools/          make_font.py — rasterises an outline face into the strike
 | [`doc/JSON.md`](doc/JSON.md) | RFC 8259, why the numbers stay exact, and why not one line could be ported |
 | [`doc/NETWORK.md`](doc/NETWORK.md) | sockets on which no worker blocks, the I/O thread, and `st80 -serve` |
 | [`doc/REST-SERVER.md`](doc/REST-SERVER.md) | Kiss's protocol on every core; services as Tonel files loaded on first use |
+| [`doc/HTTP-CLIENT.md`](doc/HTTP-CLIENT.md) | the other direction: https, and a reply read as it comes |
+| [`doc/LLM.md`](doc/LLM.md) | Anthropic, OpenAI, OpenRouter and Ollama asked one way; tools, conversations, embeddings, Qdrant |
+| [`doc/WebDemo.md`](doc/WebDemo.md) | the plan the demo application was built from, its decisions, and what the building found |
 | [`doc/PLAN-TO-PHARO.md`](doc/PLAN-TO-PHARO.md) | where this is going, sized honestly |
-| [`manual/`](manual/) | **a book-length manual** on the system, the language, the database and JSON — `cd manual && make` |
+| [`manual/`](manual/) | **a book-length manual** on the system, the language, the database, JSON, serving HTTP and talking to language models — `cd manual && make` |
 | [`Windows.md`](Windows.md) | building with MSVC, and what a real one found |
 | [`macOS.md`](macOS.md) | building with the same makefile Linux uses, and the four places Apple differs |
 | [`doc/LICENSING.md`](doc/LICENSING.md) | what may be redistributed, and what may not |

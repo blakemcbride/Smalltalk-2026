@@ -1,0 +1,8 @@
+{ "port": 8080,
+  "backendDirectory": "demo/backend",
+  "documentRoot": "demo/frontend",
+  "database": "DRIVER=SQLITE3;Database=demo/DB.sqlite;",
+  "schema": "demo/schema.sqlite",
+  "userInactiveSeconds": 900,
+  "connectionPoolSize": 8,
+  "keepAliveSeconds": 15 }

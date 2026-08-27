@@ -112,7 +112,46 @@
  *  uuid -- and RestServerTest, which drives the whole stack over the
  *  loopback interface against tests/rest-backend.
  */
-#define LIB_CLASSES             111
+/*
+ *  111 -> 118 is lib/Crypto and its tests: what a stored password rests
+ *  on.  Crypto, the face of primitive 209 (SHA-256, HMAC, PBKDF2, random
+ *  bytes, a constant-time compare, all in src/crypto); Base64; PasswordHash,
+ *  Kiss's stored format byte for byte; CryptoError; and three classes of
+ *  tests, one of which verifies the hash Kiss's own demo database stores.
+ */
+/*
+ *  118 -> 119 is lib/Web-Demo-Tests: WebDemoTest, which starts the demo
+ *  application -- demo/backend and Kiss's front end under demo/frontend --
+ *  on a port the system picks and drives it the way a browser does.  The
+ *  demo's own classes are not counted: they are Tonel files the server
+ *  loads on the first request for them, not packages in the image.
+ */
+/*
+ *  119 -> 125 is lib/HTTP-Client and lib/LLM with their tests: HttpUrl,
+ *  HttpClient and HttpClientResponse -- the other half of JSON-RPC-Server,
+ *  as far as a program calling a service needs it -- Ollama, a local model
+ *  server asked three things through that client, and the two test
+ *  classes, whose replies come from a listener of their own on the
+ *  loopback interface so that chunked bodies are tested on the wire.
+ */
+/*
+ *  125 -> 127 is lib/Clipboard and its test: the system's clipboard, which
+ *  the 1983 editor's copy, cut and paste now fill and read, so that text
+ *  crosses between a workspace and the rest of the desktop; and the test
+ *  of the one piece of logic in it, the line ends.
+ */
+/*
+ *  127 -> 143 is lib/LLM built out, lib/HTTP-Client's fourth class, and
+ *  their tests.  LLM is the abstract model -- the configuration, the HTTP,
+ *  the tool loop, the conversation -- with Anthropic, OpenAI, OpenRouter
+ *  and Ollama under it, each knowing only its service's wire; LLMTool,
+ *  LLMToolCall, LLMConversation and LLMError beside it; Qdrant, where the
+ *  embeddings go.  HttpBodyStream reads a reply as it comes, which a
+ *  model's streamed answer needs.  And LLMTestCase, the listener that
+ *  keeps every request so the tests check the wire, with a test class per
+ *  service and one for the conversation.
+ */
+#define LIB_CLASSES             143
 /*
  *  This number is a ratchet and is meant to move: lib/ is where every
  *  divergence from the frozen 1983 sources lives, so it grows whenever a
@@ -263,8 +302,58 @@
  *  components; RestDispatcher's fifteen, the protocol; RestRequest's
  *  twenty-five; the loader, the cache, the pool and the user record; the
  *  five errors' handful; and sixteen tests.
+ *
+ *  2041: lib/Crypto.  Crypto's ten over primitive 209, Base64's seven,
+ *  PasswordHash's ten, the error's one, and thirty across the three test
+ *  classes -- fifty-eight -- plus the seven `new's the bootstrap
+ *  synthesizes, one per class.
+ *
+ *  2047: the server's startup hook.  RestServer's initClass,
+ *  withConnectionDo: and closePool, the loader's classFor:ifAbsent:, and
+ *  two tests of an Init class told init: before the listener opens and
+ *  init2: before the first request.
+ *
+ *  2066: lib/Web-Demo-Tests.  WebDemoTest's nine tests and the ten
+ *  private methods under them -- a client on the raw socket that GETs a
+ *  page and POSTs a request -- and the one `new' the bootstrap adds.
+ *
+ *  2071: a selector nobody has defined yet is interned, not put to a
+ *  menu.  Parser>>makeNewSymbol:startingAt: superseded in lib/Tonel,
+ *  TonelReader's editor and internsNewSelectors, and two tests -- one of
+ *  which loads a method that sends a selector defined later in its file,
+ *  which every test had passed and the server had refused.
+ *
+ *  2087: another origin.  HttpCodec's hostOf:, HttpRequest's origin,
+ *  hostName and isPreflight, HttpServer's dispatch: split out of handle:
+ *  and its allowsOrigin:, allow:for: and preflightFor:, and eight in the
+ *  tests -- six of them tests, two of them a request written whole.
+ *
+ *  2170: lib/HTTP-Client and lib/LLM.  HttpUrl's eleven, HttpClient's
+ *  eight, HttpClientResponse's fifteen (three ways a body ends), Ollama's
+ *  seventeen with the four text substitutions on the class side,
+ *  RestRequest's environmentAt: for a service reading its settings, and
+ *  twenty-five across the three test classes -- plus the six `new's --
+ *  and SocketTest's one for a name with two addresses, which the demo's
+ *  Ollama found: `localhost' was ::1 first and the server was on
+ *  127.0.0.1, and connectTo:port: now tries every address in turn.
+ *
+ *  2186: lib/Clipboard.  Clipboard's six over primitive 210 and the two
+ *  line-end translations, ParagraphEditor's copySelection, cut and paste
+ *  superseded to touch the system's clipboard, four tests, and the two
+ *  `new's.
  */
-#define LIB_METHODS             1976
+/*
+ *  2439: lib/LLM built out, and TLS.  Socket's startTls:, the timed form,
+ *  isSecure, isTlsAvailable and environmentAt: over primitive 208's five
+ *  new commands, with the two cross-direction waits; Smalltalk
+ *  environmentAt:; HttpClient's do: forms, put and delete; HttpBodyStream;
+ *  HttpClientResponse's body made lazy.  LLM's forty-odd -- the
+ *  configuration, the loop, the HTTP, the images; the four services'
+ *  wires; LLMConversation, LLMTool, LLMToolCall, LLMError; Qdrant.  And
+ *  the tests: LLMTestCase's listener, thirty-three tests, four of them
+ *  in HttpClientTest and SocketTest for the streaming and the TLS.
+ */
+#define LIB_METHODS             2439
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -300,7 +389,20 @@
 /*
  *  22 -> 24: Rest-Server and Rest-Server-Tests.
  */
-#define LIB_CATEGORIES          24
+/*
+ *  24 -> 26: Crypto and Crypto-Tests.
+ */
+/*
+ *  26 -> 27: Web-Demo-Tests.  Web-Demo itself is the category of the
+ *  demo's classes and reaches the image only when a request loads one.
+ */
+/*
+ *  27 -> 31: HTTP-Client, HTTP-Client-Tests, LLM, LLM-Tests.
+ */
+/*
+ *  31 -> 33: Clipboard and Clipboard-Tests.
+ */
+#define LIB_CATEGORIES          33
 /*
  *  The image this test measures is the one profiles/st2026.profile builds,
  *  and it is built BY that profile rather than by a list kept alongside it.
@@ -427,7 +529,14 @@ build_once(void)
      *  94 -> 109 with lib/Rest-Server: fifteen of its sixteen; RestUuid
      *  defines its own class-side new, which is the whole of what it does.
      */
-    CHECK_EQ_INT(res.news_synthesized, 109);
+    /*
+     *  125 -> 141 with lib/LLM built out and HttpBodyStream: all sixteen
+     *  classes, none defining a class-side new.  The models are made
+     *  through model: and apiKey:model:, LLMConversation through on:,
+     *  LLMTool through name:description:do:, and each sends the
+     *  synthesized new first.
+     */
+    CHECK_EQ_INT(res.news_synthesized, 141);
     built = 1;
     return 1;
 }
@@ -1915,8 +2024,16 @@ test_browser(void)
                *  draws to completion: a title tab, five list panes with the
                *  category list filled, and an empty text pane because no
                *  method is selected yet.  Less ink, and all of it wanted.
+               *
+               *  11296 since lib/Clipboard: the category pane shows the
+               *  first however-many categories in order, and `Clipboard'
+               *  and `Clipboard-Tests' now stand ahead of the Collections
+               *  ones, pushing two long names out of the pane and drawing
+               *  two short ones in their place.  This number moves whenever
+               *  a category is added near the front of the alphabet, and
+               *  that is what it is for.
                */
-              11398);
+              11296);
 }
 
 /*
@@ -2188,13 +2305,14 @@ test_sunit(void)
     check_boolean("Object class subclasses includes: Collection class", 1);
     check_string("(TestCase allSubclasses collect: [:c | c name])"
                  " asSortedCollection asArray printString",
-                 "(ClassTestCase DbQueryBuilderTest DbSchemaGraphTest "
-                 "DbValueTest DelayTest HttpRequestTest HttpResponseTest "
+                 "(AnthropicTest Base64Test ClassTestCase ClipboardTest CryptoTest DbQueryBuilderTest DbSchemaGraphTest "
+                 "DbValueTest DelayTest HttpClientTest HttpRequestTest HttpResponseTest "
                  "HttpServerTest JSONArrayTest JSONObjectTest JSONParserTest "
-                 "JSONWriterTest RestServerTest SocketStreamTest SocketTest "
+                 "JSONWriterTest LLMConversationTest LLMTestCase OllamaTest OpenAITest OpenRouterTest "
+                 "PasswordHashTest QdrantTest RestServerTest SocketStreamTest SocketTest "
                  "St80CollectionTest St80NumberTest St80ReflectionTest "
                  "St80TextTest SUnitBrokenTest SUnitReportingTest SUnitTest "
-                 "TonelReaderTest TonelSourceTest TonelWriterTest )");
+                 "TonelReaderTest TonelSourceTest TonelWriterTest WebDemoTest )");
     /*
      *  allTests leaves out the fixture whose tests are meant to go wrong.
      *  A whole-image run that reported those would cry wolf every build.
@@ -2218,8 +2336,40 @@ test_sunit(void)
      *  nothing else would notice being undone: no block of the caller's
      *  runs inside the lock, so `json do: [:each | json at: ...]' works
      *  rather than reporting a re-entered Mutex.
+     *
+     *  332 with lib/Crypto-Tests' twenty-nine: the published SHA-256, HMAC
+     *  and PBKDF2 answers through primitive 209, Base64 both ways, and the
+     *  hash Kiss's demo database stores, verified -- the proof that a users
+     *  table Kiss made logs in here unchanged.
+     *
+     *  334 with the two for the startup hook: an Init class in the back
+     *  end told init: and init2: in order, and one that raises leaving the
+     *  server not listening.
+     *
+     *  343 with lib/Web-Demo-Tests' nine: the demo application without a
+     *  database -- Kiss's front end served from the document root, the
+     *  three addNumbers by the front end's three names, an upload, what
+     *  the database screens say when there is none.
+     *
+     *  345 with the two for the Parser: a selector defined later in the
+     *  file compiles, an undeclared variable is refused by name.
+     *
+     *  351 with the six for another origin: a preflight answered with no
+     *  handler run, this host on another port echoed, another host given
+     *  no permission and its preflight refused, no Origin served as
+     *  before, an OPTIONS without one reaching the handler, and the host
+     *  comparison on text.
+     *
+     *  370 with the nineteen for the HTTP client, Ollama and the demo's
+     *  OllamaQuery: bodies by length, by chunks and by the close, a URL
+     *  taken apart, a model server's three answers from a listener of the
+     *  test's own, and Kiss's text substitutions; and one in SocketTest
+     *  for a listener on 127.0.0.1 alone reached by the name localhost.
+     *
+     *  375 with lib/Clipboard-Tests' four: no window means nothing there,
+     *  the line ends both ways, a wrong argument answering nil.
      */
-    check_integer("TestCase allTests tests size", 303);
+    check_integer("TestCase allTests tests size", 410);
 
     /*
      *  And the three buckets, from the outside as well as from within
@@ -2336,7 +2486,7 @@ test_browsing(void)
      *  the source pointer is 22 bits and silently truncated once, and a
      *  size that stops growing is how that would show.
      */
-    check_integer("(SourceFiles at: 1) contents size", 1725451);
+    check_integer("(SourceFiles at: 1) contents size", 1872528);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -2936,10 +3086,13 @@ test_browsing_finds_every_method(void)
 
     /*
      *  And the path a person takes: a category, a class, a protocol, a
-     *  message, and the source of it.
+     *  message, and the source of it.  A 1983 category rather than the
+     *  first in the list: the first is whichever of ours sorts earliest,
+     *  and lib/Clipboard's class has no instance side to browse, which is
+     *  the browser answering nothing rather than the browser being broken.
      */
     check_oop("| b | b _ Browser new on: SystemOrganization."
-              " b category: b categoryList first."
+              " b category: 'Collections-Abstract'."
               " b className: b classList first."
               " b protocol: b protocolList first."
               " b selector: b selectorList first."

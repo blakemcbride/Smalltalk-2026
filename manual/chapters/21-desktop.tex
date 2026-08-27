@@ -249,7 +249,7 @@ middle-button menu:
 \ctp{again} & repeat the last replacement, at the next occurrence\\
 \ctp{undo} & undo the last change. One level\\
 \midrule
-\ctp{copy} \ctp{cut} \ctp{paste} & one system-wide clipboard\\
+\ctp{copy} \ctp{cut} \ctp{paste} & the system's clipboard, both ways\\
 \midrule
 \ctp{do it} & evaluate the selection, discard the answer\\
 \ctp{print it} & evaluate the selection and insert the answer after it\\
@@ -263,6 +263,23 @@ middle-button menu:
 In a Browser's code pane there are three more: \ct{format} (pretty-print),
 \ct{spawn} (open a new browser on just this method) and \ct{explain} (say what
 the selected token is).
+
+\subsection{The clipboard is the system's}
+
+\ct{copy} and \ct{cut} put the selection on the system's clipboard as well
+as the image's own, and \ct{paste} takes the system's when it holds
+something the image did not put there itself; so text moves between a
+workspace and a terminal, an editor or a browser in both directions, and
+the last thing copied anywhere is what pastes. Line ends are translated on
+the way---the image's CR to the world's LF and back---so a method pasted
+from an editor compiles, and one copied out reads as lines. Nothing else
+is: the image's strings are bytes and the clipboard is UTF-8, so a
+character outside ASCII pasted in arrives as the bytes of its encoding, a
+curly quote as three of them. Copying inside the image and pasting inside
+it keeps emphasis; what comes from outside is plain. The 1983 editor's
+clipboard was a class variable that nothing outside the image could see;
+\ct{lib/Clipboard} is the bridge, and there is none under \ct{-serve},
+where there is no window.
 
 \subsection{Selecting}
 

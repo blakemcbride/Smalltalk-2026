@@ -9,7 +9,10 @@ work on your machine the reason is in this chapter.}
 A C11 compiler and \ct{make}. That is the whole hard requirement. SDL3 is
 optional---without it the graphics layer builds as a headless stub and
 everything except the window still works, which is exactly what the test
-suites use.
+suites use. ODBC and OpenSSL are optional in the same way: without the
+first there is no database (Chapter~\ref{ch:database}), without the second
+no \ct{https} (Chapter~\ref{ch:llm}), and \ct{make deps} reports on all
+three at once.
 
 \begin{sh}
 git clone https://github.com/blakemcbride/Smalltalk-2026

@@ -367,12 +367,40 @@ TonelReader >> insertAndSelect: aString at: anInteger [
 ]
 
 { #category : 'compiler requestor' }
+TonelReader >> editor [
+	"What Parser>>editor asks its requestor for: the thing it will send
+	 selectFrom:to: to, and offer menus through.  This reader is its own
+	 editor, so that an undeclared variable reaches selectFrom:to: below
+	 and raises.
+
+	 It was not always answered.  Without it the Parser's `requestor
+	 editor' was a doesNotUnderstand:, and what an unhandled one answers
+	 differs between the bootstrap process (nil, so the Parser went on as
+	 if there were no editor) and an image read back from disk (not nil,
+	 so the Parser took the answer for an editor).  That is how a service
+	 sending a selector defined later in its own file loaded in every test
+	 and failed on the server; lib/Tonel/Parser.extension.st has the rest."
+	^self
+]
+
+{ #category : 'compiler requestor' }
+TonelReader >> internsNewSelectors [
+	"Yes: a selector no method has yet is interned as written, not put to
+	 a menu (Parser>>makeNewSymbol:startingAt:).  A file being loaded
+	 sends selectors defined later in the file, or in files not loaded
+	 yet, as the ordinary case; there is no user to ask, and a typo is a
+	 doesNotUnderstand: at run time, as it would be anywhere."
+	^true
+]
+
+{ #category : 'compiler requestor' }
 TonelReader >> selectFrom: start to: end [
 	"What the Parser sends its editor for an undeclared variable, just
 	 before the Encoder offers a menu of ways to declare it.  A menu is a
 	 question for a user, and a service file with a name in it that the
 	 image does not know is a mistake in the file; raising here, before
-	 the menu, is how the file's author is told."
+	 the menu, is how the file's author is told.  (A selector nobody has
+	 defined does not come this way: internsNewSelectors.)"
 
 	| name |
 	name := (start between: 1 and: currentSource size) & (end between: start and: currentSource size)

@@ -16,6 +16,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef ST_HAVE_TLS
+#include <openssl/ssl.h>
+#include <openssl/err.h>
+#include <openssl/x509v3.h>
+#endif
+
 #ifdef ST_WINDOWS
 
 #include <winsock2.h>
@@ -87,10 +93,26 @@ typedef struct {
     unsigned char   want_write;
     uintptr_t       read_token;
     uintptr_t       write_token;
+    void           *ssl;            /*  the TLS state, or NULL: see NET_tls_start  */
 } net_socket;
 
 static net_socket       table[NET_MAX_SOCKETS];
 static st_mutex         net_lock;
+
+#ifdef ST_HAVE_TLS
+/*
+ *  One context for the process, made on the first TLS socket.  And one
+ *  lock PER SLOT, outside the slot because NET_close wipes the slot: an
+ *  SSL object is not safe to use from two threads at once, and the two
+ *  threads that can meet on one are a process reading through it and
+ *  another process closing it -- which the plain socket tolerates
+ *  (recv on a closed descriptor is EBADF) and which SSL_free would make
+ *  a use after free.  The lock is held for the length of one OpenSSL
+ *  call, none of which blocks on a non-blocking descriptor.
+ */
+static SSL_CTX         *tls_ctx;
+static st_mutex         tls_locks[NET_MAX_SOCKETS];
+#endif
 
 static st_atomic_int    net_armed;      /*  slots with want_read or want_write  */
 static st_atomic_int    net_open;       /*  slots in use  */
@@ -418,8 +440,12 @@ NET_init(int (*hook)(uintptr_t token))
         {
             uint32_t    i;
 
-            for (i = 0; i < NET_MAX_SOCKETS; ++i)
+            for (i = 0; i < NET_MAX_SOCKETS; ++i) {
                 table[i].fd = NET_FD_INVALID;
+#ifdef ST_HAVE_TLS
+                ST_mutex_init(&tls_locks[i]);
+#endif
+            }
         }
         /*
          *  The generation starts at the clock, so that a handle saved in an
@@ -656,11 +682,22 @@ NET_shutdown(void)
     }
     ST_mutex_lock(&net_lock);
     for (i = 0; i < NET_MAX_SOCKETS; ++i) {
+#ifdef ST_HAVE_TLS
+        if (table[i].ssl)
+            SSL_free((SSL *) table[i].ssl);
+        ST_mutex_destroy(&tls_locks[i]);
+#endif
         if (table[i].in_use && NET_FD_IS_VALID(table[i].fd))
             net_close_fd(table[i].fd);
         memset(&table[i], 0, sizeof table[i]);
         table[i].fd = NET_FD_INVALID;
     }
+#ifdef ST_HAVE_TLS
+    if (tls_ctx) {
+        SSL_CTX_free(tls_ctx);
+        tls_ctx = NULL;
+    }
+#endif
     ST_store_seq(&net_armed, 0);
     ST_store_seq(&net_open, 0);
     ST_mutex_unlock(&net_lock);
@@ -784,9 +821,10 @@ NET_accept(int64_t listener)
 }
 
 int64_t
-NET_connect(const char *host, int port)
+NET_connect(const char *host, int port, int address_index)
 {
     struct addrinfo    *info;
+    struct addrinfo    *chosen;
     net_fd              fd;
     int64_t             handle;
     int                 rc;
@@ -798,12 +836,24 @@ NET_connect(const char *host, int port)
     if (!info)
         return -1;
     /*
-     *  The first address only.  A non-blocking connect that tries several
-     *  addresses in turn has to remember where it got to, and the callers
-     *  this exists for -- a test connecting to its own listener, a client
-     *  to a named host -- do not need it.
+     *  The address asked for, by its place in the list the resolver
+     *  answered.  A non-blocking connect learns of a refusal only later,
+     *  from NET_connect_result, so trying the next address cannot happen
+     *  here; it is the caller's loop -- Socket class>>connectTo:port: asks
+     *  NET_address_count and comes back with the next index.  This used
+     *  to take the first address only, on the grounds that nobody needed
+     *  more; then `localhost' resolved to ::1 before 127.0.0.1 on a
+     *  machine whose Ollama listened on 127.0.0.1 alone, and a server that
+     *  was up was reported as refusing.
      */
-    fd = socket(info->ai_family, info->ai_socktype, info->ai_protocol);
+    for (chosen = info; chosen && address_index > 0; chosen = chosen->ai_next)
+        --address_index;
+    if (!chosen) {
+        set_error_text("no such address for the host");
+        freeaddrinfo(info);
+        return -1;
+    }
+    fd = socket(chosen->ai_family, chosen->ai_socktype, chosen->ai_protocol);
     if (!NET_FD_IS_VALID(fd)) {
         set_error(net_errno(), "socket");
         freeaddrinfo(info);
@@ -816,7 +866,7 @@ NET_connect(const char *host, int port)
         return -1;
     }
     quiet_sigpipe(fd);
-    rc    = connect(fd, info->ai_addr, (net_socklen) info->ai_addrlen);
+    rc    = connect(fd, chosen->ai_addr, (net_socklen) chosen->ai_addrlen);
     saved = net_errno();
     freeaddrinfo(info);
     if (rc != 0 && saved != NET_EINPROGRESS && saved != NET_EWOULDBLOCK) {
@@ -830,6 +880,27 @@ NET_connect(const char *host, int port)
     if (handle < 0)
         net_close_fd(fd);
     return handle;
+}
+
+/*  How many addresses the name resolves to at that port: what
+ *  Socket class>>connectTo:port: loops over.  -1 when it does not resolve,
+ *  with the resolver's words in NET_last_error.  */
+int
+NET_address_count(const char *host, int port)
+{
+    struct addrinfo    *info;
+    struct addrinfo    *p;
+    int                 count = 0;
+
+    if (!ready())
+        return -1;
+    info = resolve(host, port, 0);
+    if (!info)
+        return -1;
+    for (p = info; p; p = p->ai_next)
+        ++count;
+    freeaddrinfo(info);
+    return count;
 }
 
 int
@@ -887,6 +958,201 @@ fd_of(int64_t handle)
     return fd;
 }
 
+/*  The descriptor and whether TLS is on it, in one look at the table.  */
+static net_fd
+fd_and_tls_of(int64_t handle, void **ssl)
+{
+    net_socket *s;
+    net_fd      fd;
+
+    ST_mutex_lock(&net_lock);
+    s    = slot_for(handle);
+    fd   = s ? s->fd : NET_FD_INVALID;
+    *ssl = s ? s->ssl : NULL;
+    ST_mutex_unlock(&net_lock);
+    if (!NET_FD_IS_VALID(fd))
+        set_error_text("no such socket");
+    return fd;
+}
+
+#ifdef ST_HAVE_TLS
+
+/*
+ *  OpenSSL's words for what just failed, into the thread's last error.  A
+ *  certificate that did not verify says why in the verify result, which
+ *  is the useful half: "hostname mismatch" or "certificate has expired"
+ *  against the library's one line, "certificate verify failed".
+ */
+static void
+tls_set_error(const char *what, SSL *ssl)
+{
+    unsigned long   code = ERR_peek_last_error();
+    const char     *reason;
+    char            text[160];
+
+    last_errno = NET_EBADF;
+    if (ssl && SSL_get_verify_result(ssl) != X509_V_OK) {
+        snprintf(last_text, sizeof last_text, "%s: certificate verify failed: %s",
+                 what, X509_verify_cert_error_string(SSL_get_verify_result(ssl)));
+        ERR_clear_error();
+        return;
+    }
+    if (code) {
+        reason = ERR_reason_error_string(code);
+        if (!reason) {
+            ERR_error_string_n(code, text, sizeof text);
+            reason = text;
+        }
+        snprintf(last_text, sizeof last_text, "%s: %s", what, reason);
+    } else
+        snprintf(last_text, sizeof last_text, "%s: TLS failed", what);
+    ERR_clear_error();
+}
+
+/*
+ *  The process's one context, made under net_lock the first time it is
+ *  wanted: the system's certificate store, peer verification that cannot
+ *  be turned off, nothing older than TLS 1.2.  Two modes matter to a
+ *  non-blocking caller: a partial write is answered as one, the way send
+ *  answers one, and a retried write may come from another address --
+ *  the bytes cross in a per-thread scratch buffer and the process that
+ *  retries may be on another thread by then.
+ */
+static SSL_CTX *
+tls_context_locked(void)
+{
+    SSL_CTX *ctx;
+
+    if (tls_ctx)
+        return tls_ctx;
+    ERR_clear_error();
+    ctx = SSL_CTX_new(TLS_client_method());
+    if (!ctx) {
+        tls_set_error("TLS context", NULL);
+        return NULL;
+    }
+    SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
+    SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, NULL);
+    if (SSL_CTX_set_default_verify_paths(ctx) != 1) {
+        tls_set_error("the system's certificate store", NULL);
+        SSL_CTX_free(ctx);
+        return NULL;
+    }
+#ifdef SSL_OP_IGNORE_UNEXPECTED_EOF
+    /*
+     *  A peer that closes the connection without the TLS close notice --
+     *  which is most HTTP servers after `Connection: close' -- is end of
+     *  stream and not an error.  HTTP frames its own bodies, so a
+     *  truncation is caught one layer up, by the length or the chunks.
+     */
+    SSL_CTX_set_options(ctx, SSL_OP_IGNORE_UNEXPECTED_EOF);
+#endif
+    SSL_CTX_set_mode(ctx, SSL_MODE_ENABLE_PARTIAL_WRITE
+                        | SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
+    tls_ctx = ctx;
+    return ctx;
+}
+
+static int
+is_ip_literal(const char *name)
+{
+    struct in_addr  v4;
+    struct in6_addr v6;
+
+    return inet_pton(AF_INET, name, &v4) == 1 || inet_pton(AF_INET6, name, &v6) == 1;
+}
+
+/*
+ *  Take the TLS state of a handle, held against a close from another
+ *  thread: answers the slot's index with tls_locks[index] HELD and *ssl
+ *  set, or -1 holding nothing.  Two looks at the table: the first finds
+ *  the state; the second, under the per-slot lock, confirms the slot
+ *  still holds it, because NET_close frees the state only under that same
+ *  lock, and a caller that got there first keeps it until it is done.
+ *  The lock order is tls_locks[i] then net_lock.  NET_close takes
+ *  net_lock, lets it go, and only then takes tls_locks[i], so neither
+ *  ever waits on the other while holding what the other wants.
+ */
+static int
+tls_acquire(int64_t handle, SSL **ssl)
+{
+    net_socket *s;
+    uint32_t    index;
+    SSL        *found;
+
+    ST_mutex_lock(&net_lock);
+    s     = slot_for(handle);
+    found = s ? (SSL *) s->ssl : NULL;
+    ST_mutex_unlock(&net_lock);
+    if (!found) {
+        set_error_text(s ? "TLS is not started on this socket" : "no such socket");
+        return -1;
+    }
+    index = (uint32_t) ((uint64_t) handle & NET_INDEX_MASK);
+    ST_mutex_lock(&tls_locks[index]);
+    ST_mutex_lock(&net_lock);
+    s = slot_for(handle);
+    if (!s || (SSL *) s->ssl != found) {
+        ST_mutex_unlock(&net_lock);
+        ST_mutex_unlock(&tls_locks[index]);
+        set_error_text("no such socket");
+        return -1;
+    }
+    ST_mutex_unlock(&net_lock);
+    *ssl = found;
+    return (int) index;
+}
+
+static void
+tls_release(int index)
+{
+    ST_mutex_unlock(&tls_locks[index]);
+}
+
+enum { TLS_HANDSHAKING, TLS_READING, TLS_WRITING };
+
+/*
+ *  What an OpenSSL call that did not succeed means, as this file's
+ *  answers.  Which "wait" is the obvious one depends on the call: a read
+ *  waiting to read is NET_WOULD_BLOCK, a read waiting to WRITE is
+ *  NET_WANT_WRITE, and the handshake, which is neither, always says which.
+ */
+static long
+tls_outcome(SSL *ssl, int rc, int saved, int mode, const char *what)
+{
+    switch (SSL_get_error(ssl, rc)) {
+    case SSL_ERROR_WANT_READ:
+        ERR_clear_error();
+        return mode == TLS_READING ? NET_WOULD_BLOCK : NET_WANT_READ;
+    case SSL_ERROR_WANT_WRITE:
+        ERR_clear_error();
+        return mode == TLS_WRITING ? NET_WOULD_BLOCK : NET_WANT_WRITE;
+    case SSL_ERROR_ZERO_RETURN:
+        ERR_clear_error();
+        if (mode == TLS_READING)
+            return 0;                   /*  the close notice: end of stream  */
+        set_error_text(mode == TLS_WRITING ? "send: the TLS connection was closed"
+                                           : "TLS handshake: the connection was closed");
+        return -1;
+    case SSL_ERROR_SYSCALL:
+        ERR_clear_error();
+        if (saved == 0) {
+            if (mode == TLS_READING)
+                return 0;               /*  gone without a word: end of stream  */
+            set_error_text(mode == TLS_WRITING ? "send: the connection was closed"
+                                               : "TLS handshake: the connection was closed");
+            return -1;
+        }
+        set_error(saved, what);
+        return -1;
+    default:
+        tls_set_error(what, ssl);
+        return -1;
+    }
+}
+
+#endif  /*  ST_HAVE_TLS  */
+
 static int
 would_block(int code)
 {
@@ -905,12 +1171,30 @@ NET_recv(int64_t handle, void *buffer, size_t max)
     net_fd  fd;
     long    n;
     int     saved;
+    void   *tls;
 
     if (!ready())
         return -1;
-    fd = fd_of(handle);
+    fd = fd_and_tls_of(handle, &tls);
     if (!NET_FD_IS_VALID(fd))
         return -1;
+#ifdef ST_HAVE_TLS
+    if (tls) {
+        SSL    *ssl;
+        int     index = tls_acquire(handle, &ssl);
+        size_t  got   = 0;
+        int     ok;
+
+        if (index < 0)
+            return -1;
+        ERR_clear_error();
+        ok    = SSL_read_ex(ssl, buffer, max, &got);
+        saved = net_errno();
+        n     = ok ? (long) got : tls_outcome(ssl, 0, saved, TLS_READING, "recv");
+        tls_release(index);
+        return n;
+    }
+#endif
     do {
         n     = (long) recv(fd, (char *) buffer, (int) max, 0);
         saved = net_errno();
@@ -930,12 +1214,30 @@ NET_send(int64_t handle, const void *buffer, size_t count)
     net_fd  fd;
     long    n;
     int     saved;
+    void   *tls;
 
     if (!ready())
         return -1;
-    fd = fd_of(handle);
+    fd = fd_and_tls_of(handle, &tls);
     if (!NET_FD_IS_VALID(fd))
         return -1;
+#ifdef ST_HAVE_TLS
+    if (tls) {
+        SSL    *ssl;
+        int     index = tls_acquire(handle, &ssl);
+        size_t  sent  = 0;
+        int     ok;
+
+        if (index < 0)
+            return -1;
+        ERR_clear_error();
+        ok    = SSL_write_ex(ssl, buffer, count, &sent);
+        saved = net_errno();
+        n     = ok ? (long) sent : tls_outcome(ssl, 0, saved, TLS_WRITING, "send");
+        tls_release(index);
+        return n;
+    }
+#endif
     do {
         n     = (long) send(fd, (const char *) buffer, (int) count, send_flags());
         saved = net_errno();
@@ -953,12 +1255,32 @@ int
 NET_shutdown_write(int64_t handle)
 {
     net_fd  fd;
+    void   *tls;
 
     if (!ready())
         return -1;
-    fd = fd_of(handle);
+    fd = fd_and_tls_of(handle, &tls);
     if (!NET_FD_IS_VALID(fd))
         return -1;
+#ifdef ST_HAVE_TLS
+    if (tls) {
+        /*
+         *  The TLS close notice first, so that the peer's library reads a
+         *  proper end rather than a truncation.  Not waited for: a
+         *  notice the kernel cannot take this instant is not worth a
+         *  wait, and the FIN behind it says the same thing.
+         */
+        SSL    *ssl;
+        int     index = tls_acquire(handle, &ssl);
+
+        if (index < 0)
+            return -1;
+        ERR_clear_error();
+        SSL_shutdown(ssl);
+        ERR_clear_error();
+        tls_release(index);
+    }
+#endif
 #ifdef ST_WINDOWS
     if (shutdown(fd, SD_SEND) != 0) {
 #else
@@ -975,6 +1297,7 @@ NET_close(int64_t handle, uintptr_t *old_read, uintptr_t *old_write)
 {
     net_socket *s;
     net_fd      fd;
+    void       *tls;
 
     if (old_read)
         *old_read = 0;
@@ -1001,11 +1324,32 @@ NET_close(int64_t handle, uintptr_t *old_read, uintptr_t *old_write)
         ST_fetch_sub_relaxed(&net_armed, 1);
     if (s->want_write)
         ST_fetch_sub_relaxed(&net_armed, 1);
-    fd = s->fd;
+    fd  = s->fd;
+    tls = s->ssl;
     memset(s, 0, sizeof *s);
     s->fd = NET_FD_INVALID;
     ST_fetch_sub_relaxed(&net_open, 1);
     ST_mutex_unlock(&net_lock);
+#ifdef ST_HAVE_TLS
+    if (tls) {
+        /*
+         *  Under the slot's TLS lock, AFTER the slot is cleared: a reader
+         *  inside SSL_read on another thread holds that lock until its
+         *  call returns, and its next call finds no slot.  The close
+         *  notice is sent if the kernel takes it now and not waited for.
+         */
+        uint32_t    index = (uint32_t) ((uint64_t) handle & NET_INDEX_MASK);
+
+        ST_mutex_lock(&tls_locks[index]);
+        ERR_clear_error();
+        SSL_shutdown((SSL *) tls);
+        ERR_clear_error();
+        SSL_free((SSL *) tls);
+        ST_mutex_unlock(&tls_locks[index]);
+    }
+#else
+    (void) tls;
+#endif
     /*
      *  Closed AFTER the slot is cleared, so that a number the kernel
      *  reissues in the same instant cannot be attributed to a slot that
@@ -1231,6 +1575,174 @@ NET_holds_token(uintptr_t token)
     return found;
 }
 
+/*  ----------  TLS  ----------  */
+
+int
+NET_tls_available(void)
+{
+#ifdef ST_HAVE_TLS
+    return 1;
+#else
+    return 0;
+#endif
+}
+
+#ifdef ST_HAVE_TLS
+
+int
+NET_tls_start(int64_t handle, const char *hostname)
+{
+    net_socket *s;
+    SSL_CTX    *ctx;
+    SSL        *ssl;
+    char        name[256];
+    size_t      n;
+    int         ok;
+
+    if (!ready())
+        return -1;
+    if (!hostname || !hostname[0]) {
+        set_error_text("TLS needs the host's name, to check the certificate against");
+        return -1;
+    }
+    /*  HttpUrl keeps an IPv6 literal's brackets; a certificate has none.  */
+    n = strlen(hostname);
+    if (hostname[0] == '[' && n > 2 && hostname[n - 1] == ']') {
+        ++hostname;
+        n -= 2;
+    }
+    if (n >= sizeof name) {
+        set_error_text("TLS: the host name is too long");
+        return -1;
+    }
+    memcpy(name, hostname, n);
+    name[n] = '\0';
+
+    ST_mutex_lock(&net_lock);
+    s = slot_for(handle);
+    if (!s) {
+        ST_mutex_unlock(&net_lock);
+        set_error_text("no such socket");
+        return -1;
+    }
+    if (s->listening || s->ssl) {
+        ST_mutex_unlock(&net_lock);
+        set_error_text(s->ssl ? "TLS is already started on this socket"
+                              : "TLS: not on a listener");
+        return -1;
+    }
+    ctx = tls_context_locked();
+    if (!ctx) {
+        ST_mutex_unlock(&net_lock);
+        return -1;
+    }
+    ERR_clear_error();
+    ssl = SSL_new(ctx);
+    if (!ssl) {
+        ST_mutex_unlock(&net_lock);
+        tls_set_error("TLS state", NULL);
+        return -1;
+    }
+    /*
+     *  The name goes two places: into the handshake as SNI, which is how a
+     *  host serving many names picks its certificate, and into the verify
+     *  parameters, which is what checks the certificate is for this name.
+     *  An address literal goes only to the second, as an address -- SNI
+     *  is names only, and a certificate carries an address in a field of
+     *  its own.
+     */
+    ok = SSL_set_fd(ssl, (int) s->fd) == 1;
+    if (ok) {
+        if (is_ip_literal(name))
+            ok = X509_VERIFY_PARAM_set1_ip_asc(SSL_get0_param(ssl), name) == 1;
+        else
+            ok = SSL_set_tlsext_host_name(ssl, name) == 1
+              && SSL_set1_host(ssl, name) == 1;
+    }
+    if (!ok) {
+        SSL_free(ssl);
+        ST_mutex_unlock(&net_lock);
+        tls_set_error("TLS setup", NULL);
+        return -1;
+    }
+    SSL_set_connect_state(ssl);
+    s->ssl = ssl;
+    ST_mutex_unlock(&net_lock);
+    if (tracing())
+        fprintf(stderr, "net: tls started on handle %lld for %s\n",
+                (long long) handle, name);
+    return 0;
+}
+
+int
+NET_tls_handshake(int64_t handle)
+{
+    SSL    *ssl;
+    int     index;
+    int     rc;
+    int     saved;
+    long    outcome;
+
+    if (!ready())
+        return -1;
+    index = tls_acquire(handle, &ssl);
+    if (index < 0)
+        return -1;
+    ERR_clear_error();
+    rc      = SSL_do_handshake(ssl);
+    saved   = net_errno();
+    outcome = rc == 1 ? 0 : tls_outcome(ssl, rc, saved, TLS_HANDSHAKING, "TLS handshake");
+    tls_release(index);
+    if (tracing())
+        fprintf(stderr, "net: tls handshake on handle %lld: %ld%s%s\n",
+                (long long) handle, outcome,
+                outcome == -1 ? " " : "", outcome == -1 ? last_text : "");
+    return (int) outcome;
+}
+
+int
+NET_is_tls(int64_t handle)
+{
+    net_socket *s;
+    int         yes;
+
+    if (!ready())
+        return 0;
+    ST_mutex_lock(&net_lock);
+    s   = slot_for(handle);
+    yes = s != NULL && s->ssl != NULL;
+    ST_mutex_unlock(&net_lock);
+    return yes;
+}
+
+#else   /*  no TLS in this build  */
+
+int
+NET_tls_start(int64_t handle, const char *hostname)
+{
+    (void) handle;
+    (void) hostname;
+    set_error_text("this build has no TLS: OpenSSL was not found when it was built");
+    return -1;
+}
+
+int
+NET_tls_handshake(int64_t handle)
+{
+    (void) handle;
+    set_error_text("this build has no TLS: OpenSSL was not found when it was built");
+    return -1;
+}
+
+int
+NET_is_tls(int64_t handle)
+{
+    (void) handle;
+    return 0;
+}
+
+#endif  /*  ST_HAVE_TLS  */
+
 /*  ----------  Two OS services  ----------  */
 
 int
@@ -1317,4 +1829,12 @@ NET_argument(int index)
     if (index < 0 || index >= argument_count || !argument_vector)
         return NULL;
     return argument_vector[index];
+}
+
+const char *
+NET_environment(const char *name)
+{
+    if (!name || !name[0])
+        return NULL;
+    return getenv(name);
 }

@@ -388,7 +388,7 @@ ManualExamples >> characters [
 	^self
 ]
 
-{ #category : 'ch24 concurrency' }
+{ #category : 'ch25 concurrency' }
 ManualExamples >> concurrencyClasses [
 	"(Semaphore forMutualExclusion critical: [7]) >>> 7"
 	"(Mutex new critical: [7]) >>> 7"
@@ -401,7 +401,7 @@ ManualExamples >> concurrencyClasses [
 	^self
 ]
 
-{ #category : 'ch25 processes' }
+{ #category : 'ch26 processes' }
 ManualExamples >> processes [
 	"Processor activePriority >>> 4"
 	"the eight priorities, by the names ProcessorScheduler answers to"
@@ -419,7 +419,7 @@ ManualExamples >> processes [
 	^self
 ]
 
-{ #category : 'ch26 parallel' }
+{ #category : 'ch27 parallel' }
 ManualExamples >> parallel [
 	"a Promise carries the value back"
 	"(Processor forkParallel: [(1 to: 100) inject: 0 into: [:a :b | a + b]]) value >>> 5050"
@@ -594,9 +594,67 @@ ManualExamples >> serving [
 	^self
 ]
 
-{ #category : 'ch27 packages' }
+{ #category : 'ch19 serving' }
+ManualExamples >> webDemo [
+	"Chapter 19's last sections: the password hash Kiss's demo database
+	 stores, checked byte for byte; Base64; a digest; the origin rule's
+	 comparison; a URL taken apart; and what the Ollama screen shows.  The
+	 demo itself is a server and a database and is checked in
+	 lib/Web-Demo-Tests and lib/Web-Demo-Live-Tests."
+	"(PasswordHash verify: 'password' against: 'pbkdf2$600000$XXxhRHyyeLvk3AfmOhTYhA$ZX/GcXFZJaj94VBbxu3zTVTwdVy7CxfxXfK/irpetUI') >>> true"
+	"(PasswordHash verify: 'Password' against: 'pbkdf2$600000$XXxhRHyyeLvk3AfmOhTYhA$ZX/GcXFZJaj94VBbxu3zTVTwdVy7CxfxXfK/irpetUI') >>> false"
+	"(PasswordHash isHashed: 'password') >>> false"
+	"(PasswordHash isHashed: 'pbkdf2$1$YQ$YQ') >>> true"
+	"(Base64 encodeWithoutPadding: 'foob') >>> 'Zm9vYg'"
+	"(Base64 decode: 'Zm9vYg==') >>> 'foob'"
+	"(Crypto hex: (Crypto sha256: 'abc')) >>> 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad'"
+	"(HttpCodec hostOf: 'http://Example.com:8000/index.html') >>> 'example.com'"
+	"(HttpUrl fromString: 'http://localhost:11434/api/tags') port >>> 11434"
+	"(HttpUrl fromString: 'http://localhost:11434/api/tags') path >>> '/api/tags'"
+	"(Ollama toHtml: 'a **bold** word') >>> 'a <b>bold</b> word'"
+	"Ollama new url >>> 'http://localhost:11434'"
+	^self
+]
+
+{ #category : 'ch20 language models' }
+ManualExamples >> languageModels [
+	"Chapter 20 without a service: the URLs, what a request body carries
+	 and does not, a message in each service's shape, a tool run, and what
+	 cannot be asked.  The services themselves are reached in
+	 lib/LLM-Live-Tests, with keys, and lib/LLM-Tests checks each wire
+	 against a listener of its own.  Doubled quotes are Smalltalk's, as in
+	 json above."
+	"Anthropic new url >>> 'https://api.anthropic.com'"
+	"OpenAI new url >>> 'https://api.openai.com'"
+	"OpenRouter new url >>> 'https://openrouter.ai/api'"
+	"Ollama new url >>> 'http://localhost:11434'"
+	"(Ollama new url: 'http://box:11434/api/'; yourself) url >>> 'http://box:11434'"
+	"only what was set is sent, and Anthropic's max_tokens always"
+	"((Anthropic apiKey: 'k' model: 'm') requestBodyFor: OrderedCollection new tools: nil stream: false) asJsonString >>> '{""model"":""m"",""max_tokens"":8192,""messages"":[]}'"
+	"((OpenAI apiKey: 'k' model: 'm') systemPrompt: 'Be brief'; requestBodyFor: OrderedCollection new tools: nil stream: true) asJsonString >>> '{""model"":""m"",""messages"":[{""role"":""system"",""content"":""Be brief""}],""stream"":true}'"
+	"((Anthropic apiKey: 'k' model: 'm') temperature: 0.2; topP: 0.9; temperature) >>> nil"
+	"a user's message, in each service's shape"
+	"((Anthropic apiKey: 'k' model: 'm') userMessage: 'hi' image: nil) asJsonString >>> '{""role"":""user"",""content"":[{""type"":""text"",""text"":""hi""}]}'"
+	"(Ollama new userMessage: 'hi' image: nil) asJsonString >>> '{""role"":""user"",""content"":""hi""}'"
+	"a tool: its wire, and what it answers"
+	"((Anthropic apiKey: 'k' model: 'm') toolWireFor: (LLMTool name: 'time' description: 'the time' do: [:a | ''])) asJsonString >>> '{""name"":""time"",""description"":""the time"",""input_schema"":{""type"":""object"",""properties"":{}}}'"
+	"((LLMTool name: 'time' description: 'the time' do: [:a | '12:00']) run: JSONObject new) >>> '12:00'"
+	"((LLMTool missing: 'launch') run: JSONObject new) >>> 'no such tool: launch'"
+	"a conversation starts empty"
+	"Ollama new conversation messages size >>> 0"
+	"what cannot be asked says so"
+	"([(Anthropic apiKey: 'k' model: nil) send: 'hi'] on: LLMError do: [:e | e messageText]) >>> 'Model not set'"
+	"([(Anthropic apiKey: 'k' model: 'm') embed: 'x'] on: LLMError do: [:e | e messageText]) >>> 'Anthropic has no embeddings API'"
+	"an id for a vector store, and the URL a key is sent to"
+	"Qdrant newId size >>> 36"
+	"(HttpUrl fromString: 'https://api.anthropic.com/v1/messages') port >>> 443"
+	"(HttpUrl fromString: 'https://api.anthropic.com/v1/messages') isSecure >>> true"
+	^self
+]
+
+{ #category : 'ch28 packages' }
 ManualExamples >> packages [
-	"Chapter 27: a class read from a Tonel file by the running image, and
+	"Chapter 28: a class read from a Tonel file by the running image, and
 	 written back out.  The text stands in for the file."
 	"(TonelReader loadString: 'Class { #name : ''DoctestWidget'', #superclass : ''Object'', #category : ''Doctests'' }' named: 'DoctestWidget.class.st') name >>> 'DoctestWidget'"
 	"(TonelReader loadString: 'Class { #name : ''DoctestWidget'', #superclass : ''Object'', #category : ''Doctests'' }' named: 'DoctestWidget.class.st') superclass >>> Object"

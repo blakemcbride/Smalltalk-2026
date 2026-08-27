@@ -136,6 +136,17 @@ void    GFX_set_cursor(st_oop form);
 void    GFX_warp_pointer(int x, int y);
 
 /*
+ *  The system's clipboard, for the text editor's copy, cut and paste.
+ *  GFX_clipboard_text answers a malloc'd copy of what is on it, NULL when
+ *  there is no window or nothing on it -- the caller frees it.
+ *  GFX_clipboard_set puts text there, 0 on success.  Both call SDL and so
+ *  belong to the thread that runs the window, which under -run is the one
+ *  running bytecodes; under -serve there is no window and both say so.
+ */
+char   *GFX_clipboard_text(void);
+int     GFX_clipboard_set(const char *text);
+
+/*
  *  Called before a blit lands.  A reversing blit that exactly repeats the one
  *  before it is 1983's flash idiom -- the two cancel -- so the frame worth
  *  showing is the one BEFORE the undo.  See the comment in display.c.

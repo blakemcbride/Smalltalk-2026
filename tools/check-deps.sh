@@ -28,6 +28,7 @@ CC=${CC:-gcc}
 PKG_CONFIG=${PKG_CONFIG:-pkg-config}
 HEADLESS=${HEADLESS:-}
 NODB=${NODB:-}
+NOTLS=${NOTLS:-}
 
 #  ---------------------------------------------------------------------
 #  The install table.
@@ -86,6 +87,15 @@ install_hint() {
         alpine='sudo apk add unixodbc-dev'
         mac='brew install unixodbc'
         generic='install unixODBC with its headers -- https://www.unixodbc.org'
+        ;;
+    openssl)
+        fedora='sudo dnf install openssl-devel'
+        debian='sudo apt install libssl-dev'
+        arch='sudo pacman -S openssl'
+        suse='sudo zypper install libopenssl-devel'
+        alpine='sudo apk add openssl-dev'
+        mac='brew install openssl pkg-config   # and PKG_CONFIG_PATH=$(brew --prefix openssl)/lib/pkgconfig'
+        generic='install OpenSSL 1.1.1 or later with its headers -- https://www.openssl.org'
         ;;
     *)
         echo "check-deps: no install hint for '${1:-}'" >&2
@@ -271,6 +281,35 @@ elif "$CC" $odbc_cflags "$tmp/odbc.c" -o "$tmp/a.out" $odbc_libs >/dev/null 2>&1
     note 'ODBC' "$odbc_libs" "links -- $odbc_how"
 else
     note 'ODBC' '(absent)' "optional -- no database.  $(install_hint odbc)"
+fi
+
+#
+#  OpenSSL is OPTIONAL too, for the same reason and with the same rule: the
+#  client side of https, which every language model's API is, and nothing
+#  else on this system.  Without it an https URL is refused by name.
+#
+cat > "$tmp/tls.c" <<'EOF'
+#include <openssl/ssl.h>
+int main(void) { return SSL_CTX_new(TLS_client_method()) == 0; }
+EOF
+
+tls_cflags='' tls_libs='' tls_how=''
+if [ -n "$have_pkg_config" ] && "$PKG_CONFIG" --exists openssl 2>/dev/null; then
+    tls_cflags=$("$PKG_CONFIG" --cflags openssl 2>/dev/null)
+    tls_libs=$("$PKG_CONFIG" --libs openssl 2>/dev/null)
+    tls_how="pkg-config, $("$PKG_CONFIG" --modversion openssl 2>/dev/null)"
+else
+    tls_libs='-lssl -lcrypto'
+    tls_how='no pkg-config entry; tried -lssl -lcrypto'
+fi
+
+# shellcheck disable=SC2086
+if [ -n "$NOTLS" ]; then
+    note 'OpenSSL' '(not used)' 'NOTLS=1 -- an https URL will be refused by name'
+elif "$CC" $tls_cflags "$tmp/tls.c" -o "$tmp/a.out" $tls_libs >/dev/null 2>&1; then
+    note 'OpenSSL' "$tls_libs" "links -- $tls_how"
+else
+    note 'OpenSSL' '(absent)' "optional -- no https.  $(install_hint openssl)"
 fi
 
 echo

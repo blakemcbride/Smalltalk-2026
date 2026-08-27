@@ -287,6 +287,21 @@ Changing the face means rebuilding the image — `TextList` fixes its line grid 
 once, so an image built with one face cannot be shown another. The VM says so at startup
 when they disagree.
 
+## The clipboard is the system's
+
+1983's text editor kept its clipboard in a class variable, `CurrentSelection`
+of `ParagraphEditor`, and nothing outside the image could see or fill it.
+`lib/Clipboard` makes `copy` and `cut` put the selection on the system's
+clipboard too (SDL3's `SDL_SetClipboardText`) and `paste` take the system's
+when it holds text the image did not put there itself, so the last thing
+copied on either side of the window is what pastes. Primitive 210 is the
+whole of the VM's part — is there a window, what is on it, put this on it —
+and it calls SDL only from the thread that runs the window, which under
+`-run` is the one running bytecodes; under `-serve` there is no window and
+the image is told so, and the editor is left with its own buffer as in 1983.
+Line ends are translated in the image (CR in, LF out); bytes are otherwise
+as they come, so a non-ASCII character arrives as its UTF-8.
+
 ## The rubber band is a flash, not a drawing
 
 Dragging out a new window's size runs this, once per turn of the tracking loop:

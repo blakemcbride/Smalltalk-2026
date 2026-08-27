@@ -154,3 +154,41 @@ HttpCodec class >> reasonFor: status [
 	status = 503 ifTrue: [^'Service Unavailable'].
 	^'Unknown'
 ]
+
+{ #category : 'origins' }
+HttpCodec class >> hostOf: aString [
+	"The host an Origin or Host header names, lowercased: what is left of
+	 `http://Example.com:8000/x' and of `example.com:8001' once the
+	 scheme, the port and any path are gone.  This is the whole of the
+	 server's rule for another origin (HttpServer, ORIGINS): the two
+	 headers' hosts, compared.
+
+	 An IPv6 literal keeps its brackets, so `[::1]' is one host and `::1'
+	 is not mistaken for a name with ports in it.  A value with no host --
+	 `null', which a sandboxed page sends -- answers itself, and compares
+	 equal to no real host, which is the answer wanted.  Nil for nil."
+	| start end i host colon |
+	aString isNil ifTrue: [^nil].
+	start := 1.
+	i := 1.
+	[i + 2 <= aString size and: [start = 1]] whileTrue: [
+		(aString copyFrom: i to: i + 2) = '://' ifTrue: [start := i + 3].
+		i := i + 1].
+	end := aString size.
+	i := start.
+	[i <= aString size and: [i <= end]] whileTrue: [
+		('/?#' includes: (aString at: i)) ifTrue: [end := i - 1].
+		i := i + 1].
+	start > end ifTrue: [^''].
+	host := aString copyFrom: start to: end.
+	host first = $[
+		ifTrue: [
+			colon := host indexOf: $].
+			colon > 0 ifTrue: [host := host copyFrom: 1 to: colon]]
+		ifFalse: [
+			colon := 0.
+			1 to: host size do: [:k | (host at: k) = $: ifTrue: [colon := k]].
+			(colon > 0 and: [(host copyFrom: colon + 1 to: host size) allSatisfy: [:c | c isDigit]])
+				ifTrue: [host := host copyFrom: 1 to: colon - 1]].
+	^host asLowercase
+]

@@ -15,7 +15,7 @@ make clean      # remove LaTeX intermediates
 |---|---|
 | I — Getting Started | what this is, building and running, ten minutes in the image |
 | II — The Language | syntax, objects and messages, blocks, control flow, classes, the class side, exceptions, what is past the Blue Book |
-| III — The Library | numbers, collections, streams, text, graphics, the database, JSON, serving HTTP |
+| III — The Library | numbers, collections, streams, text, graphics, the database, JSON, serving HTTP, talking to language models |
 | IV — Living in the Image | the desktop, the System Browser, the other tools, keeping your work |
 | V — Concurrency | the contract, processes, writing parallel Smalltalk |
 | VI — Working on Disk | packages and profiles, tests and doctests, the command-line toolbox |
@@ -29,7 +29,7 @@ Every expression in the book whose answer is printed is also a doctest in
 against an image built from this tree:
 
 ```
-st80: 358 doctests in 28 methods of 1 files: 358 passed, 0 wrong, 0 need something not here
+st80: 389 doctests in 30 methods of 1 files: 389 passed, 0 wrong, 0 need something not here
 ```
 
 A manual whose examples were typed rather than run is wrong somewhere and
@@ -62,6 +62,11 @@ Two helper scripts exist because the same mistakes kept recurring:
   literal uses. Those are checked too. The `>>` and `--` ligatures are the
   same class of bug and are turned off for the typewriter family in
   `preamble.tex`, which is why the linter does not look for them.
+
+  It also holds every line inside a listing to 92 columns. `breaklines`
+  folds a longer one in the PDF, and the fold copies out of the PDF as a line
+  break: one statement becomes two, and the first of them is a syntax error.
+  The number is measured, not derived -- 92 sets, 93 folds.
 
   The rule behind all of it: **every character the book prints as code must
   be one the reader can type and the compiler accepts.** The Blue Book set

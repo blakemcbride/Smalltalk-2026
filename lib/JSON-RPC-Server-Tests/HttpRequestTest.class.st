@@ -30,6 +30,30 @@ HttpRequestTest >> request: lines body: aBody [
 	^out contents
 ]
 
+{ #category : 'tests - origins' }
+HttpRequestTest >> testTheHostOfAnOriginOrAHost [
+	"The comparison behind the origin rule: scheme, port and path gone,
+	 case gone, brackets kept."
+	self assert: (HttpCodec hostOf: 'http://localhost:8000') equals: 'localhost'.
+	self assert: (HttpCodec hostOf: 'https://Example.COM') equals: 'example.com'.
+	self assert: (HttpCodec hostOf: 'http://example.com:8000/index.html?x=1') equals: 'example.com'.
+	self assert: (HttpCodec hostOf: 'localhost:8001') equals: 'localhost'.
+	self assert: (HttpCodec hostOf: 'localhost') equals: 'localhost'.
+	self assert: (HttpCodec hostOf: '127.0.0.1:8080') equals: '127.0.0.1'.
+	self assert: (HttpCodec hostOf: '[::1]:8080') equals: '[::1]'.
+	self assert: (HttpCodec hostOf: 'http://[::1]:8000/x') equals: '[::1]'.
+	self assert: (HttpCodec hostOf: 'null') equals: 'null'.
+	self assert: (HttpCodec hostOf: '') equals: ''.
+	self assert: (HttpCodec hostOf: 'http://') equals: ''.
+	self assert: (HttpCodec hostOf: nil) isNil.
+	self assert: ([:nl | (HttpRequest fromString: 'OPTIONS /rest HTTP/1.1', nl, 'Host: a:1', nl, 'Origin: http://A:2', nl, 'Access-Control-Request-Method: POST', nl, nl) isPreflight]
+		value: (String with: (Character value: 13) with: (Character value: 10))).
+	self deny: ([:nl | (HttpRequest fromString: 'OPTIONS /rest HTTP/1.1', nl, 'Host: a:1', nl, nl) isPreflight]
+		value: (String with: (Character value: 13) with: (Character value: 10))).
+	self assert: ([:nl | (HttpRequest fromString: 'GET / HTTP/1.1', nl, 'Host: Example.com:8080', nl, nl) hostName]
+		value: (String with: (Character value: 13) with: (Character value: 10))) equals: 'example.com'
+]
+
 { #category : 'tests' }
 HttpRequestTest >> testAGet [
 	| r |

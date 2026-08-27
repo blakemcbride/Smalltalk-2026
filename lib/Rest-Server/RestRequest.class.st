@@ -77,6 +77,13 @@ RestRequest >> environment [
 ]
 
 { #category : 'accessing' }
+RestRequest >> environmentAt: aKey [
+	"One setting from the configuration file, or nil: what a service reads
+	 its own settings with -- Kiss's MainServlet.getEnvironment(name)."
+	^server environmentAt: aKey
+]
+
+{ #category : 'accessing' }
 RestRequest >> remoteAddress [
 	^httpRequest remoteAddress
 ]

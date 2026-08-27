@@ -60,6 +60,13 @@ st80-dblive-test.db-journal
 st80-odbc-parallel-test.db
 st80-odbc-parallel-test.db-journal
 st80-rest-live-test.db
+st80-web-demo-test.db
+st80-web-demo-test.db-journal
+
+# The demo application's database, made by the SQLite ODBC driver on the
+# first start and filled from demo/schema.sqlite by demo/backend/Init.
+demo/DB.sqlite
+demo/DB.sqlite-journal
 st80-rest-live-test.db-journal
 
 # Code-RAG local index files (written by bld; machine-local, not part of the project)

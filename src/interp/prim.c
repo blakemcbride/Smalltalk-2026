@@ -14,6 +14,7 @@
 #include "st_atomic.h"
 #include "st_odbc.h"
 #include "st_socket.h"
+#include "st_crypto.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -3239,6 +3240,83 @@ primitive_millisecond_clock(void)
 }
 
 /*
+ *  primitive 210 -- Clipboard class>>primCommand:with:
+ *
+ *  The system's clipboard, three ways: 0 answers whether there is one (a
+ *  window is open), 1 answers its text as a String or nil when there is
+ *  none, 2 puts a String on it and answers whether it could.  The
+ *  editor's copy and cut send 2 and its paste sends 1, so that text moves
+ *  between a workspace and the rest of the desktop -- which the 1983
+ *  editor, whose clipboard was a class variable, could not do.
+ *
+ *  Bytes cross as they are.  The image's strings are bytes and the
+ *  system's clipboard is UTF-8, and translating between them is a job for
+ *  the image, which knows what it wants; lib/Clipboard translates the line
+ *  ends and nothing else.  The primitive FAILS when called wrongly and
+ *  answers nil or false when there is no window -- headless, or -serve --
+ *  so the editor's own buffer is what is left, as before.
+ */
+static int
+primitive_clipboard(void)
+{
+    st_oop  arg = ST_stack_value(0);
+    st_oop  cmd = ST_stack_value(1);
+
+    if (!OM_is_int(cmd))
+        return 0;
+    switch ((long) OM_int_value(cmd)) {
+
+    case 0:
+        ST_pop_n(3);
+        ST_push(GFX_is_open() ? ST_TRUE : ST_FALSE);
+        return 1;
+
+    case 1: {
+        char   *text = GFX_clipboard_text();
+        st_oop  string;
+
+        if (text == NULL) {
+            ST_pop_n(3);
+            ST_push(ST_NIL);
+            return 1;
+        }
+        string = string_from_c(text, strlen(text));
+        free(text);
+        if (string == ST_OOP_INVALID)
+            return 0;
+        ST_pop_n(3);
+        ST_push(string);
+        return 1;
+    }
+
+    case 2: {
+        uint32_t    n;
+        uint32_t    i;
+        char       *text;
+        int         rc;
+
+        if (!OM_is_object(arg) || OM_pointer_bit(arg))
+            return 0;
+        n    = OM_fetch_byte_length(arg);
+        text = (char *) malloc((size_t) n + 1);
+        if (text == NULL)
+            return 0;
+        for (i = 0; i < n; ++i)
+            text[i] = (char) OM_fetch_byte(i, arg);
+        text[n] = '\0';
+        rc = GFX_clipboard_set(text);
+        free(text);
+        ST_pop_n(3);
+        ST_push(rc == 0 ? ST_TRUE : ST_FALSE);
+        return 1;
+    }
+
+    default:
+        return 0;
+    }
+}
+
+/*
  *  primitive 242 -- InputSensor>>wheelDelta
  *
  *  Whole notches since the last ask, positive away from the user, and zero
@@ -3514,6 +3592,214 @@ primitive_first_ready_process_at(void)
     return 1;
 }
 
+/*  ----------  Cryptography  ----------
+ *
+ *  primitive 209 -- Crypto class >> primCommand:with:with:with:
+ *
+ *  SHA-256, HMAC-SHA256, PBKDF2-HMAC-SHA256, random bytes and a
+ *  constant-time compare, for lib/Crypto's PasswordHash: the stored form
+ *  of a password is six hundred thousand HMAC rounds, a fifth of a second
+ *  in C and minutes in the interpreter.  The arithmetic is
+ *  src/crypto/st_crypto.c, which knows nothing about the object memory;
+ *  this is the marshalling, in 208's shape -- a command number and three
+ *  slots, arguments copied out before any call, answers built after --
+ *  and under 208's contract: the primitive FAILS when it was called
+ *  wrongly (an Integer where bytes were wanted, a count out of range) and
+ *  the Smalltalk fallback raises; it answers NIL when the system could not
+ *  do it (no entropy, no memory); and a value otherwise.
+ *
+ *  THE COPY OUT IS NOT AN OPTIMISATION.  A key derivation runs inside a
+ *  WORKER_enter_native region, so that a worker spending a fifth of a
+ *  second on a login does not hold up a collection on every other core
+ *  (worker.h, `Blocking outside the object memory').  Inside the region
+ *  the object memory may move; so the password, the salt and the message
+ *  are copied into malloc'd buffers first and the digest is made into a
+ *  String after, and the buffers that held key material are wiped before
+ *  they are freed.  The hashes take the same road for the same reason: a
+ *  64 MB upload's digest is a tenth of a second too.
+ *
+ *  Unlike 208 this is not under ST_OM_MT: nothing here needs a handle
+ *  wider than fifteen bits or a worker, so the Blue Book memory computes
+ *  the same answers.  Its fifteen-bit SmallInteger cannot hold 600,000,
+ *  and a count that arrives as a LargePositiveInteger fails the
+ *  primitive, which is the truth about that memory and the format.
+ */
+
+enum {
+    CRYPTO_CMD_SHA256   = 1,    /*  bytes                      */
+    CRYPTO_CMD_HMAC     = 2,    /*  key, message               */
+    CRYPTO_CMD_PBKDF2   = 3,    /*  password, salt, iterations */
+    CRYPTO_CMD_RANDOM   = 4,    /*  buffer                     */
+    CRYPTO_CMD_EQUAL    = 5     /*  bytes, bytes               */
+};
+
+/*  Crypto class >> maxIterations says the same number; its comment says why.  */
+#define CRYPTO_MAX_ITERATIONS   10000000
+
+static int
+crypto_is_bytes(st_oop p)
+{
+    return OM_is_object(p) && !OM_pointer_bit(p);
+}
+
+/*  A byte object's bytes in a fresh buffer -- one byte even for none, so
+ *  that NULL means only that malloc said no.  */
+static unsigned char *
+crypto_copy_out(st_oop p, size_t *count)
+{
+    uint32_t        n = OM_fetch_byte_length(p);
+    unsigned char  *buffer = (unsigned char *) malloc(n ? n : 1);
+    uint32_t        i;
+
+    if (buffer == NULL)
+        return NULL;
+    for (i = 0; i < n; ++i)
+        buffer[i] = OM_fetch_byte(i, p);
+    *count = n;
+    return buffer;
+}
+
+static void
+crypto_free(unsigned char *buffer, size_t count)
+{
+    if (buffer != NULL) {
+        ST_crypto_wipe(buffer, count);
+        free(buffer);
+    }
+}
+
+/*  Answer, having popped the receiver and four arguments.  */
+static int
+crypto_answer(st_oop value)
+{
+    if (value == ST_OOP_INVALID)
+        return 0;
+    ST_pop_n(5);
+    ST_push(value);
+    return 1;
+}
+
+static int
+primitive_crypto_command(void)
+{
+    st_oop          c   = ST_stack_value(0);
+    st_oop          b   = ST_stack_value(1);
+    st_oop          a   = ST_stack_value(2);
+    st_oop          cmd = ST_stack_value(3);
+    unsigned char   digest[ST_SHA256_DIGEST_BYTES];
+    unsigned char  *first = NULL;
+    unsigned char  *second = NULL;
+    size_t          first_count = 0;
+    size_t          second_count = 0;
+
+    if (!OM_is_int(cmd))
+        return 0;
+
+    switch ((long) OM_int_value(cmd)) {
+
+    case CRYPTO_CMD_SHA256:
+        if (!crypto_is_bytes(a))
+            return 0;
+        first = crypto_copy_out(a, &first_count);
+        if (first == NULL)
+            return crypto_answer(ST_NIL);
+        WORKER_enter_native();
+        ST_sha256(first, first_count, digest);
+        WORKER_leave_native();
+        crypto_free(first, first_count);
+        return crypto_answer(string_from_c((const char *) digest, sizeof digest));
+
+    case CRYPTO_CMD_HMAC:
+        if (!crypto_is_bytes(a) || !crypto_is_bytes(b))
+            return 0;
+        first  = crypto_copy_out(a, &first_count);
+        second = crypto_copy_out(b, &second_count);
+        if (first == NULL || second == NULL) {
+            crypto_free(first, first_count);
+            crypto_free(second, second_count);
+            return crypto_answer(ST_NIL);
+        }
+        WORKER_enter_native();
+        ST_hmac_sha256(first, first_count, second, second_count, digest);
+        WORKER_leave_native();
+        crypto_free(first, first_count);
+        crypto_free(second, second_count);
+        return crypto_answer(string_from_c((const char *) digest, sizeof digest));
+
+    case CRYPTO_CMD_PBKDF2: {
+        int64_t     iterations;
+        int         rc;
+        st_oop      key;
+
+        if (!crypto_is_bytes(a) || !crypto_is_bytes(b) || !OM_is_int(c))
+            return 0;
+        iterations = (int64_t) OM_int_value(c);
+        if (iterations < 1 || iterations > CRYPTO_MAX_ITERATIONS)
+            return 0;
+        first  = crypto_copy_out(a, &first_count);
+        second = crypto_copy_out(b, &second_count);
+        if (first == NULL || second == NULL) {
+            crypto_free(first, first_count);
+            crypto_free(second, second_count);
+            return crypto_answer(ST_NIL);
+        }
+        WORKER_enter_native();
+        rc = ST_pbkdf2_hmac_sha256(first, first_count, second, second_count,
+                                   (uint32_t) iterations, digest, sizeof digest);
+        WORKER_leave_native();
+        crypto_free(first, first_count);
+        crypto_free(second, second_count);
+        if (rc != 0)
+            return crypto_answer(ST_NIL);
+        key = string_from_c((const char *) digest, sizeof digest);
+        ST_crypto_wipe(digest, sizeof digest);
+        return crypto_answer(key);
+    }
+
+    case CRYPTO_CMD_RANDOM: {
+        uint32_t    n;
+        uint32_t    i;
+
+        if (!crypto_is_bytes(a))
+            return 0;
+        n = OM_fetch_byte_length(a);
+        first = (unsigned char *) malloc(n ? n : 1);
+        if (first == NULL)
+            return crypto_answer(ST_NIL);
+        if (n > 0 && NET_random_bytes(first, n) != 0) {
+            crypto_free(first, n);
+            return crypto_answer(ST_NIL);
+        }
+        for (i = 0; i < n; ++i)
+            OM_store_byte(i, a, first[i]);
+        crypto_free(first, n);
+        return crypto_answer(ST_TRUE);
+    }
+
+    case CRYPTO_CMD_EQUAL: {
+        int     equal;
+
+        if (!crypto_is_bytes(a) || !crypto_is_bytes(b))
+            return 0;
+        first  = crypto_copy_out(a, &first_count);
+        second = crypto_copy_out(b, &second_count);
+        if (first == NULL || second == NULL) {
+            crypto_free(first, first_count);
+            crypto_free(second, second_count);
+            return crypto_answer(ST_NIL);
+        }
+        equal = first_count == second_count
+             && ST_constant_time_equal(first, second, first_count);
+        crypto_free(first, first_count);
+        crypto_free(second, second_count);
+        return crypto_answer(equal ? ST_TRUE : ST_FALSE);
+    }
+
+    default:
+        return 0;
+    }
+}
+
 /*  ----------  The network  ----------
  *
  *  primitive 208 -- Socket class >> primCommand:with:with:with:
@@ -3560,7 +3846,13 @@ enum {
     NET_CMD_RANDOM_BYTES    = 16,   /*  buffer                     */
     NET_CMD_ARGUMENTS       = 17,
     NET_CMD_STOP_REQUESTED  = 18,
-    NET_CMD_OPEN_COUNT      = 19
+    NET_CMD_OPEN_COUNT      = 19,
+    NET_CMD_ADDRESS_COUNT   = 20,   /*  host, port                 */
+    NET_CMD_TLS_AVAILABLE   = 21,
+    NET_CMD_TLS_START       = 22,   /*  handle, host name          */
+    NET_CMD_TLS_HANDSHAKE   = 23,   /*  handle                     */
+    NET_CMD_IS_TLS          = 24,   /*  handle                     */
+    NET_CMD_ENVIRONMENT     = 25    /*  name                       */
 };
 
 #define NET_SCRATCH_BYTES   65536
@@ -3636,12 +3928,23 @@ net_is_semaphore_or_nil(st_oop p)
         || (OM_is_object(p) && OM_fetch_class(p) == ST_CLASS_SEMAPHORE);
 }
 
-/*  What a call answered: a count, would-block, or a failure.  */
+/*
+ *  What a call answered: a count, would-block, or a failure.  The two
+ *  other waits -- a TLS read that must first write, a TLS write that
+ *  must first read, a handshake that is either -- are answered as the
+ *  SmallIntegers -1 (wait readable) and -2 (wait writable), which no
+ *  count can be; false stays "wait the obvious way", so that a plain
+ *  socket's caller reads exactly what it always read.
+ */
 static st_oop
 net_result(long n)
 {
     if (n == NET_WOULD_BLOCK)
         return ST_FALSE;
+    if (n == NET_WANT_READ)
+        return OM_int_oop(-1);
+    if (n == NET_WANT_WRITE)
+        return OM_int_oop(-2);
     if (n < 0)
         return ST_NIL;
     return OM_int_oop((st_int) n);
@@ -3670,12 +3973,24 @@ primitive_net_command(void)
      */
     switch (command) {
     case NET_CMD_AVAILABLE:
+    case NET_CMD_TLS_AVAILABLE:
         return net_answer(ST_FALSE);
     case NET_CMD_LAST_ERROR: {
         static const char text[] = "this build has no sockets: the Blue "
                                    "Book memory cannot hold a handle";
 
         return net_answer(string_from_c(text, sizeof text - 1));
+    }
+    case NET_CMD_ENVIRONMENT: {
+        /*  The one command with no socket in it works in every build.  */
+        char        name[256];
+        const char *value;
+
+        if (!c_from_string(a, name, sizeof name))
+            return 0;
+        value = NET_environment(name);
+        (void) b; (void) c;
+        return net_answer(value ? string_from_c(value, strlen(value)) : ST_NIL);
     }
     default:
         (void) a; (void) b; (void) c;
@@ -3848,11 +4163,67 @@ primitive_net_command(void)
     case NET_CMD_CONNECT: {
         char        host[256];
         int64_t     handle;
+        int         index;
 
         if (!c_from_string(a, host, sizeof host) || !OM_is_int(b))
             return 0;
-        handle = NET_connect(host, (int) OM_int_value(b));
+        /*  c: which of the host's addresses, from 0; nil is the first.  */
+        index = OM_is_int(c) ? (int) OM_int_value(c) : 0;
+        if (index < 0)
+            return 0;
+        handle = NET_connect(host, (int) OM_int_value(b), index);
         return net_answer(handle < 0 ? ST_NIL : OM_int_oop((st_int) handle));
+    }
+
+    case NET_CMD_ADDRESS_COUNT: {
+        char        host[256];
+        int         count;
+
+        if (!c_from_string(a, host, sizeof host) || !OM_is_int(b))
+            return 0;
+        count = NET_address_count(host, (int) OM_int_value(b));
+        return net_answer(count < 0 ? ST_NIL : OM_int_oop((st_int) count));
+    }
+
+    case NET_CMD_TLS_AVAILABLE:
+        return net_answer(NET_tls_available() ? ST_TRUE : ST_FALSE);
+
+    case NET_CMD_TLS_START: {
+        int64_t handle = net_handle_arg(a);
+        char    host[256];
+
+        if (handle < 0 || !c_from_string(b, host, sizeof host))
+            return 0;
+        return net_answer(NET_tls_start(handle, host) == 0 ? ST_TRUE : ST_NIL);
+    }
+
+    case NET_CMD_TLS_HANDSHAKE: {
+        /*  true when done; -1 or -2 to wait, as net_result spells them.  */
+        int64_t handle = net_handle_arg(a);
+        int     rc;
+
+        if (handle < 0)
+            return 0;
+        rc = NET_tls_handshake(handle);
+        return net_answer(rc == 0 ? ST_TRUE : net_result(rc));
+    }
+
+    case NET_CMD_IS_TLS: {
+        int64_t handle = net_handle_arg(a);
+
+        if (handle < 0)
+            return 0;
+        return net_answer(NET_is_tls(handle) ? ST_TRUE : ST_FALSE);
+    }
+
+    case NET_CMD_ENVIRONMENT: {
+        char        name[256];
+        const char *value;
+
+        if (!c_from_string(a, name, sizeof name))
+            return 0;
+        value = NET_environment(name);
+        return net_answer(value ? string_from_c(value, strlen(value)) : ST_NIL);
     }
 
     case NET_CMD_CONNECT_RESULT: {
@@ -4694,6 +5065,7 @@ ST_primitive_dispatch(unsigned index)
     case 131: return primitive_directory_command();
     case 129: return primitive_odbc_command();
     case 208: return primitive_net_command();
+    case 209: return primitive_crypto_command();
     case 133: return primitive_error_string();
     case 254: return primitive_native_line_end();
     case 100: return primitive_signal_at_milliseconds();
@@ -4716,6 +5088,7 @@ ST_primitive_dispatch(unsigned index)
     case 188: return primitive_execute_method();
     case 230: return primitive_relinquish_processor();
     case 242: return primitive_wheel_delta();
+    case 210: return primitive_clipboard();
     case 240: return primitive_utc_microsecond_clock();
 
     case 110: return primitive_equivalent();
@@ -4869,6 +5242,7 @@ static const primitive_entry primitive_table[] = {
     { 240, ST_PRIM_PRESENT,  "UTC microsecond clock"            },
     { 241, ST_PRIM_PRESENT,  "Processor activeProcess -- this worker's" },
     { 242, ST_PRIM_PRESENT,  "InputSensor wheelDelta -- this system's own" },
+    { 210, ST_PRIM_PRESENT,  "Clipboard -- the system's, this system's own" },
     { 243, ST_PRIM_PRESENT,  "Processor activeWorkerIndex -- our own"    },
     { 244, ST_PRIM_PRESENT,  "Processor workerCount -- our own"          },
     { 245, ST_PRIM_PRESENT,  "Object compareAndSwapSlot:from:to: -- ours" },

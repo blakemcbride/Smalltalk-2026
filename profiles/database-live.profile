@@ -28,5 +28,5 @@ Profile {
 	#name     : 'database-live',
 	#requires : [ 'st2026' ],
 	#dialect  : 'closures',
-	#packages : [ '../lib/Database-Live-Tests', '../lib/Rest-Server-Live-Tests' ]
+	#packages : [ '../lib/Database-Live-Tests', '../lib/Rest-Server-Live-Tests', '../lib/Web-Demo-Live-Tests' ]
 }

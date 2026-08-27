@@ -230,6 +230,30 @@ HttpRequest >> isKeepAlive [
 	^(connection includesSubstring: 'close') not
 ]
 
+{ #category : 'origins' }
+HttpRequest >> origin [
+	"The Origin header, which a browser sends with a request from a page
+	 on another origin; nil otherwise."
+	^self headerAt: 'origin'
+]
+
+{ #category : 'origins' }
+HttpRequest >> hostName [
+	"The host of the Host header, without its port, lowercased; nil when
+	 there is no Host."
+	^HttpCodec hostOf: (self headerAt: 'host')
+]
+
+{ #category : 'origins' }
+HttpRequest >> isPreflight [
+	"Whether this is the OPTIONS a browser sends before a cross-origin
+	 request to ask what it may send: an Origin, and the method it means
+	 to use."
+	^method = 'OPTIONS'
+		and: [self origin notNil
+		and: [(self headerAt: 'access-control-request-method') notNil]]
+]
+
 { #category : 'testing' }
 HttpRequest >> isMultipart [
 	^self contentType = 'multipart/form-data'

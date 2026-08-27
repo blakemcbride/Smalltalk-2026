@@ -77,8 +77,17 @@ extern "C" {
  *  Answers from calls that can be asked too early.  Distinct from -1,
  *  which is a failure NET_last_error explains, because "not yet" is the
  *  ordinary case on a non-blocking socket and must not read as an error.
+ *
+ *  NET_WOULD_BLOCK means "wait for the direction this call is about":
+ *  readable for a recv, writable for a send.  The other two exist for TLS,
+ *  where a read can need the socket WRITABLE first and a write can need it
+ *  READABLE -- the handshake, and a key update, are conversations that run
+ *  underneath whichever call the caller made.  They say which way to wait
+ *  when it is not the obvious way; a plain socket never answers them.
  */
 #define NET_WOULD_BLOCK     (-2)
+#define NET_WANT_READ       (-3)
+#define NET_WANT_WRITE      (-4)
 
 /*  What NET_arm takes.  */
 #define NET_ARM_READ        1
@@ -134,19 +143,23 @@ int64_t     NET_accept(int64_t listener);
  *  NET_connect_result, which answers 0 when connected, NET_WOULD_BLOCK
  *  while still in progress, and -1 when the attempt failed.
  */
-int64_t     NET_connect(const char *host, int port);
+int64_t     NET_connect(const char *host, int port, int address_index);
+int         NET_address_count(const char *host, int port);
 int         NET_connect_result(int64_t handle);
 
 /*  ----------  Reading and writing  ----------  */
 
 /*
  *  Bytes read (more than zero), 0 at end of stream, NET_WOULD_BLOCK, or -1.
+ *  On a TLS socket also NET_WANT_WRITE: wait for writable, then read again.
  */
 long        NET_recv(int64_t handle, void *buffer, size_t max);
 
 /*
  *  Bytes sent (possibly fewer than asked), NET_WOULD_BLOCK when the
- *  kernel's buffer is full, or -1.  The caller loops.
+ *  kernel's buffer is full, or -1.  The caller loops.  On a TLS socket
+ *  also NET_WANT_READ: wait for readable, then send again -- with the
+ *  same bytes, which the caller's loop from `start' does anyway.
  */
 long        NET_send(int64_t handle, const void *buffer, size_t count);
 
@@ -200,6 +213,36 @@ int         NET_open_count(void);
 /*  Wake the I/O thread so it rebuilds its set; also how a stop reaches it.  */
 void        NET_wake(void);
 
+/*  ----------  TLS  ----------
+ *
+ *  A client's side of TLS over a connected socket, through OpenSSL when
+ *  the build found it (ST_HAVE_TLS) and refused by name when it did not.
+ *  The socket stays non-blocking and the contract above stays the whole
+ *  contract: NET_tls_start attaches the TLS state and does no I/O;
+ *  NET_tls_handshake advances the handshake one step and answers 0 when
+ *  it is done, NET_WANT_READ or NET_WANT_WRITE when it must wait, and -1
+ *  with OpenSSL's words when it failed -- a certificate the system's
+ *  store does not vouch for, a name the certificate is not for, a peer
+ *  that does not speak TLS.  After the handshake, NET_recv and NET_send
+ *  carry the bytes through the TLS state, and NET_close sends the close
+ *  notice and frees it.
+ *
+ *  The certificate is checked against the system's own store -- what
+ *  SSL_CTX_set_default_verify_paths finds, which SSL_CERT_FILE and
+ *  SSL_CERT_DIR in the environment override -- and its name against the
+ *  host asked for, as a browser checks them.  There is no way to turn
+ *  either check off, on purpose: a client that can be asked to trust
+ *  anything will one day be asked to.
+ *
+ *  Server-side TLS is not here.  A server on this system sits behind a
+ *  reverse proxy that terminates TLS, which is the arrangement Kiss has
+ *  with Tomcat and nginx.
+ */
+int         NET_tls_available(void);
+int         NET_tls_start(int64_t handle, const char *hostname);
+int         NET_tls_handshake(int64_t handle);
+int         NET_is_tls(int64_t handle);
+
 /*  ----------  Asking about a socket  ----------  */
 
 int         NET_local_port(int64_t handle);
@@ -228,6 +271,14 @@ int         NET_random_bytes(void *out, size_t count);
 void        NET_set_arguments(int argc, char **argv);
 int         NET_argument_count(void);
 const char *NET_argument(int index);
+
+/*
+ *  An environment variable's value, or NULL when there is none.  Here
+ *  because it has the arguments' shape and the same customer: a program
+ *  reading an API key from where the shell put it, which is the one place
+ *  a key should be.
+ */
+const char *NET_environment(const char *name);
 
 #ifdef __cplusplus
 }

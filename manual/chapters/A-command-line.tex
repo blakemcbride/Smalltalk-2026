@@ -12,6 +12,7 @@
 \ctp{make unit-test} & just the unit suites\\
 \ctp{make suite-test} & just the imported packages' suites\\
 \ctp{make bench} & the parallel scaling benchmark\\
+\ctp{make demo-image} & bootstrap the demo application's server image (Chapter~\ref{ch:serving})\\
 \ctp{make font} & regenerate the built-in face (needs Pillow and a font)\\
 \ctp{make clean} & remove build artifacts\\
 \ctp{make help} & targets and variables\\
@@ -54,7 +55,7 @@
 \ctp{\ \ -doctests f.st} & run the \ctp{expr >>> value} examples in a file\\
 \midrule
 \ctp{-run <image> [n]} & run the image, opening a window. \ctp{n} is a bytecode limit, not a worker count\\
-\ctp{-serve <image> [-workers n] [args]} & run the image on \ctp{n} native threads (one per CPU less one by default), no window, until SIGINT, SIGTERM or \ctp{Smalltalk quitPrimitive}; \ctp{args} are what \ctp{Smalltalk arguments} answers. The image's startup is what \ctp{-bootstrap -startup} gave it---Chapter~\ref{ch:serving}\\
+\ctp{-serve <image> [-workers n] [args]} & run the image on \ctp{n} native threads (four per CPU by default), no window, until SIGINT, SIGTERM or \ctp{Smalltalk quitPrimitive}; \ctp{args} are what \ctp{Smalltalk arguments} answers. The image's startup is what \ctp{-bootstrap -startup} gave it---Chapter~\ref{ch:serving}\\
 \ctp{-screenshot f.pbm} & with \ctp{-run} or \ctp{-bootstrap}, write the
   display\\
 \ctp{-inject <script>} & post input events\\

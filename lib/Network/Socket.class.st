@@ -55,6 +55,19 @@ and raises rather than sleeping on for ever.
 A handle survives a snapshot as a number and nothing else.  The VM tags every
 handle with a generation and finds a resumed image's handles in no slot, so a
 Socket read back from an image is closed, and says so.
+
+TLS, on the client side.  startTls: turns a connected socket into the client
+end of a TLS connection, through OpenSSL when the build found it and refused
+by name when it did not; the bytes then go through the same receiveInto: and
+send:, encrypted underneath.  The certificate is checked against the system's
+store and its name against the host asked for, and neither check can be
+turned off, on purpose.  What TLS adds to the waiting is one thing: a read
+may have to WRITE first and a write may have to READ first -- the handshake,
+a key update -- so the primitive has a fourth answer beside a count, nil and
+false: -1 means wait readable and -2 means wait writable, whichever call was
+made.  A plain socket never answers them, and false still means what it
+always meant.  There is no server side: a server here sits behind a reverse
+proxy that speaks TLS for it.
 "
 Class {
 	#name : 'Socket',
@@ -83,6 +96,25 @@ Socket class >> isAvailable [
 	 a server to run on."
 
 	^self primCommand: 0 with: nil with: nil with: nil
+]
+
+{ #category : 'availability' }
+Socket class >> isTlsAvailable [
+	"Whether this build can speak TLS: OpenSSL was found when it was
+	 built.  Without it startTls: raises, and HttpClient refuses an https
+	 URL by name."
+
+	^self primCommand: 21 with: nil with: nil with: nil
+]
+
+{ #category : 'services' }
+Socket class >> environmentAt: aName [
+	"The environment variable's value as a String, or nil when there is
+	 none.  Smalltalk environmentAt: is the spelling to use; it is here
+	 because it has the arguments' shape and the same customer -- an API
+	 key read from where the shell put it."
+
+	^self primCommand: 25 with: aName with: nil with: nil
 ]
 
 { #category : 'availability' }
@@ -115,14 +147,29 @@ Socket class >> connectTo: hostString port: portInteger [
 
 	 The connect begins at once and completes in the background; the
 	 socket is writable when it has, so the wait is a wait for writable
-	 and the answer is then asked for."
+	 and the answer is then asked for.
 
-	| socket |
-	socket := self new.
-	socket setHandle: (self check:
-		(self primCommand: 11 with: hostString with: portInteger with: nil)).
-	[socket connectResult] whileFalse: [socket waitWritable].
-	^socket
+	 Every address the name resolves to is tried, in the resolver's order,
+	 and the error raised is the last address's.  A name can resolve to
+	 several addresses and a server may listen on one of them: `localhost'
+	 is ::1 and then 127.0.0.1 on many machines, and an Ollama listens on
+	 127.0.0.1 alone -- which was a `connection refused' from a server that
+	 was up, until this looped.  The VM connects to one address at a time
+	 (command 11's third argument says which) because a non-blocking
+	 connect learns of a refusal only from connectResult, later; so the
+	 loop is here, and command 20 says how many addresses there are."
+
+	| count last |
+	count := self check: (self primCommand: 20 with: hostString with: portInteger with: nil).
+	0 to: count - 1 do: [:i | | socket |
+		socket := self new.
+		[socket setHandle: (self check:
+			(self primCommand: 11 with: hostString with: portInteger with: i)).
+		 [socket connectResult] whileFalse: [socket waitWritable].
+		 ^socket]
+			on: NetError
+			do: [:e | socket close. last := e]].
+	^(NetError new) errno: last errno; signal: last messageText
 ]
 
 { #category : 'instance creation' }
@@ -244,16 +291,44 @@ Socket >> waitReadableTimeout: milliseconds [
 	 armed after a timeout for the same reason: a signal nobody is waiting
 	 for is an excess signal, not a lost one."
 
+	^self wait: 1 on: readSemaphore timeout: milliseconds
+]
+
+{ #category : 'waiting' }
+Socket >> waitWritableTimeout: milliseconds [
+	"As waitReadableTimeout:, for the other direction: what a timed read
+	 does when TLS answers that the read must first write."
+
+	^self wait: 2 on: writeSemaphore timeout: milliseconds
+]
+
+{ #category : 'private' }
+Socket >> wait: maskInteger on: aSemaphore timeout: milliseconds [
 	| deadline done |
-	self arm: 1.
+	self arm: maskInteger.
 	deadline := Time millisecondClockValue + milliseconds.
 	done := false.
 	[(Delay forMilliseconds: milliseconds) wait.
-	 done ifFalse: [readSemaphore signal]] fork.
-	readSemaphore wait.
+	 done ifFalse: [aSemaphore signal]] fork.
+	aSemaphore wait.
 	done := true.
 	self checkOpen.
 	^Time millisecondClockValue < deadline
+]
+
+{ #category : 'private' }
+Socket >> waitOn: answer default: maskInteger [
+	"Whether the primitive's answer was `not yet' -- and if it was, the
+	 wait is taken here first.  false is `not yet, the obvious way', which
+	 is maskInteger's direction; -1 and -2 are TLS saying the other way,
+	 readable and writable.  Anything else is a result for the caller."
+
+	answer == false ifTrue: [
+		maskInteger = 1 ifTrue: [self waitReadable] ifFalse: [self waitWritable].
+		^true].
+	answer == -1 ifTrue: [self waitReadable. ^true].
+	answer == -2 ifTrue: [self waitWritable. ^true].
+	^false
 ]
 
 { #category : 'reading' }
@@ -265,7 +340,7 @@ Socket >> receiveInto: aString [
 	| answer |
 	[self checkOpen.
 	 answer := self class primCommand: 5 with: handle with: aString with: aString size.
-	 answer == false] whileTrue: [self waitReadable].
+	 self waitOn: answer default: 1] whileTrue.
 	^self class check: answer
 ]
 
@@ -283,10 +358,12 @@ Socket >> receiveInto: aString timeout: milliseconds [
 	deadline := Time millisecondClockValue + milliseconds.
 	[self checkOpen.
 	 answer := self class primCommand: 5 with: handle with: aString with: aString size.
-	 answer == false] whileTrue: [ | left |
+	 answer == false or: [answer == -1 or: [answer == -2]]] whileTrue: [ | left |
 		left := deadline - Time millisecondClockValue.
 		left <= 0 ifTrue: [^nil].
-		self waitReadableTimeout: left].
+		answer == -2
+			ifTrue: [self waitWritableTimeout: left]
+			ifFalse: [self waitReadableTimeout: left]].
 	^self class check: answer
 ]
 
@@ -313,9 +390,56 @@ Socket >> send: aString [
 	[start <= aString size] whileTrue: [
 		self checkOpen.
 		answer := self class primCommand: 6 with: handle with: aString with: start.
-		answer == false
-			ifTrue: [self waitWritable]
+		(self waitOn: answer default: 2)
 			ifFalse: [start := start + (self class check: answer)]]
+]
+
+{ #category : 'tls' }
+Socket >> startTls: hostName [
+	"Make this connected socket the client end of a TLS connection to
+	 hostName, and complete the handshake, waiting as every wait here
+	 waits.  The certificate must be one the system's store vouches for
+	 and must be for hostName, or this raises with OpenSSL's reason; so
+	 does a peer that does not speak TLS, and a build that has none.
+	 After it, receiveInto: and send: carry the bytes encrypted."
+
+	| answer |
+	self checkOpen.
+	self class check: (self class primCommand: 22 with: handle with: hostName with: nil).
+	[self checkOpen.
+	 answer := self class primCommand: 23 with: handle with: nil with: nil.
+	 self waitOn: answer default: 1] whileTrue.
+	self class check: answer
+]
+
+{ #category : 'tls' }
+Socket >> startTls: hostName timeout: milliseconds [
+	"As startTls:, giving up with a TimedOut when the handshake has not
+	 finished in milliseconds -- a peer that accepts the connection and
+	 then says nothing would otherwise hold the process for ever, which
+	 an HTTP client's read timeout is meant to prevent and could not."
+
+	| deadline answer |
+	self checkOpen.
+	self class check: (self class primCommand: 22 with: handle with: hostName with: nil).
+	deadline := Time millisecondClockValue + milliseconds.
+	[self checkOpen.
+	 answer := self class primCommand: 23 with: handle with: nil with: nil.
+	 answer == -1 or: [answer == -2]] whileTrue: [ | left |
+		left := deadline - Time millisecondClockValue.
+		left <= 0 ifTrue: [
+			^(TimedOut new) tag: self; signal: 'the TLS handshake did not finish in ', milliseconds printString, ' ms'].
+		answer == -2
+			ifTrue: [self waitWritableTimeout: left]
+			ifFalse: [self waitReadableTimeout: left]].
+	self class check: answer
+]
+
+{ #category : 'tls' }
+Socket >> isSecure [
+	"Whether startTls: has been sent to this socket."
+	handle isNil ifTrue: [^false].
+	^self class primCommand: 24 with: handle with: nil with: nil
 ]
 
 { #category : 'writing' }

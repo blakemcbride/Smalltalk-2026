@@ -121,9 +121,109 @@
 # is lib/Rest-Server-Live-Tests, in database-live with the rest of that kind.
 # Every row moved by sixteen; database-live is 331 with its own three.
 #
+# lib/Crypto-Tests adds twenty-nine: SHA-256, HMAC-SHA256 and PBKDF2 through
+# primitive 209 against their published answers (the arithmetic itself is
+# checked in C, in tests/unit/test_crypto.c); Base64 both ways, both
+# paddings, and what it refuses; and the stored password format against the
+# hash Kiss's own schema.sqlite holds for its demo user -- the one test that
+# runs six hundred thousand rounds, and the proof that a users table Kiss
+# made logs in here unchanged.  Every row moved by twenty-nine; database-live
+# is 360.
+#
+# lib/Rest-Server-Tests adds two for the server's startup hook: an Init class
+# in the back end is told init: before the listener opens and init2: with nil
+# when there is no database, and a back end without one is told nothing; and
+# an Init that raises leaves the server not listening.  The half that needs a
+# database -- init2: committed, or rolled back when it raises -- is two more
+# in lib/Rest-Server-Live-Tests against tests/rest-init-backend.  Every row
+# moved by two; database-live is 364.
+#
+# lib/Web-Demo-Tests adds nine: the demo application -- demo/backend, and
+# Kiss's own front end copied under demo/frontend -- started on a port the
+# system picks and driven as a browser drives it: the pages by the paths the
+# browser asks for, the three addNumbers by the front end's three names, an
+# upload, and what the database screens say when there is no database.  The
+# half with a database -- Kiss's user logging in with the hash Kiss stored,
+# the phone list and the users screen through a session -- is eight more in
+# lib/Web-Demo-Live-Tests, in database-live with the rest of that kind.  Every
+# row moved by nine; database-live is 381.
+#
+# lib/Tonel-Tests adds two, for a fault the demo found on the server that no
+# test had: a method sending a selector defined later in its own file loaded
+# in every test and failed under `st80 -serve', because 1983's Parser puts a
+# new selector to the editor's user and TonelReader had no `editor' -- so
+# the outcome was whatever an unhandled doesNotUnderstand: answered, nil in
+# the bootstrap process and not nil in a loaded image.  A new selector is
+# now interned as written for a requestor with no user, and an undeclared
+# variable is still refused by name.  Every row moved by two; database-live
+# is 383.
+#
+# lib/JSON-RPC-Server-Tests adds six for another origin -- a page on this
+# host at another port, which is Kiss's development layout: a preflight
+# answered with the permissions and no handler run, an origin on this host
+# echoed back, another host served but given no permission and its preflight
+# refused, no Origin served as before, an OPTIONS without one reaching the
+# handler; and the host comparison on text.  Every row moved by six;
+# database-live is 389.
+#
+# lib/HTTP-Client-Tests adds thirteen and lib/LLM-Tests five, with one more in
+# lib/Web-Demo-Tests: an HTTP client against HttpServer on the loopback
+# interface and against a listener of the test's own answering what
+# HttpServer never sends -- a chunked body, a body that ends with the
+# connection, a 204, a reply that is not HTTP -- plus the URL parser on
+# text; Ollama's three questions answered by that listener the way the real
+# server answers them, and Kiss's four text substitutions; and the demo's
+# OllamaQuery asked whether an Ollama is up.  And one more in
+# lib/Network-Tests, for what that service found on a machine with an Ollama
+# running: `localhost' resolved to ::1 before 127.0.0.1, the server listened
+# on 127.0.0.1 alone, and connectTo:port: took the first address only, so an
+# Ollama that was up was `connection refused'.  It tries every address now,
+# and the test listens on 127.0.0.1 alone and connects by name.  Every row
+# moved by twenty; database-live is 409.
+#
+# lib/Clipboard-Tests adds four, for the bridge between the 1983 editor's
+# clipboard and the system's: with no window -- which is every test run --
+# there is nothing there and the editor keeps its own buffer; the line ends
+# are translated both ways; a wrong argument to the primitive is nil and not
+# an error.  Every row moved by four; database-live is 413.
+#
+# lib/Web-Demo-Tests adds one, and loses none, when the demo's three
+# addNumbers services became one: Kiss's REST Services screen offers a
+# Groovy, a Java and a Lisp back end, a choice that means nothing where every
+# service is Smalltalk, so the screen has one button and the back end one
+# file, MyService.  The test that called all three names now calls the one;
+# the new test reads the screen itself back through the server and refuses
+# the three buttons, because the front end is a copy of Kiss's and a re-copy
+# would bring them back against a back end that no longer has them.  Every
+# row moved by one; database-live is 414.
+#
+# lib/Rest-Server-Tests adds one for what a browser found the same day, after
+# every test, the manual's curl and the smoke runs had passed: Kiss's front
+# end spells a service `services/Adder', with a slash, and the loader took
+# `services.Adder' alone -- so in a browser every screen but the login was
+# `not a class name'.  The new test sends both spellings and gets one class;
+# and the demo's suites, here and in database-live, now spell every service
+# as the front end does, since a suite that spells it its own way passes
+# whatever the browser gets.  Every row moved by one; database-live is 415.
+#
+# lib/LLM-Tests adds twenty-nine and lib/HTTP-Client-Tests and
+# lib/Network-Tests two each, for the language models and the TLS under
+# them.  The LLM tests run against a listener of the test's own that keeps
+# every request, so what is checked is the wire: the header each service
+# wants, the body a request carries, a streamed reply cut into pieces
+# across a chunk boundary, a tool call and its answer going back, an
+# embedding, and what a refusal, a rate limit and an error mid-stream
+# become.  No service is reached; profiles/llm-live.profile reaches them
+# with keys, and profiles/internet-live.profile reaches real certificates
+# -- neither is here, for the reason database-live is not.  The four
+# others: a reply read by the line as it arrives, a body left unread until
+# asked for, an https URL to a peer speaking plain text refused with
+# OpenSSL's reason, and the environment read.  Every row moved by
+# thirty-three; database-live is 448.
+#
 # profile               run  passed
-st2026                  303  303
-pharo-announcements     334  334
-pharo-time              924  924
-pharo-weak              323  323
-pharo-collections       760  760
+st2026                  410  410
+pharo-announcements     441  441
+pharo-time              1031 1031
+pharo-weak              430  430
+pharo-collections       867  867

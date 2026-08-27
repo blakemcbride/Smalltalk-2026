@@ -214,10 +214,55 @@ endif
 
 HINT_ODBC = $(or $(shell sh $(DEPS_SCRIPT) --install odbc 2>/dev/null),install unixODBC with its headers -- the package is usually called unixODBC-devel or unixodbc-dev)
 
+# TLS -----------------------------------------------------------------------
+#
+#  OpenSSL, for the client side of https: what reaching a language model's
+#  API needs, since every one of them is https only.  Optional in ODBC's
+#  exact shape -- ask pkg-config, then the compiler, let NOTLS=1 mean it --
+#  and absent is a first-class outcome: the build clears ST_HAVE_TLS, and an
+#  https URL answers "this build has no TLS" by name instead of connecting
+#  to something it cannot check.  1.1.1 is the floor, for SSL_read_ex and
+#  SSL_set1_host; LibreSSL answers the same names.
+#
+#  The server side is not built at all, with or without the library: a
+#  server here sits behind a reverse proxy that terminates TLS, which is
+#  the arrangement Kiss has with Tomcat and nginx.
+
+ifdef HAVE_PKG_CONFIG
+TLS_CFLAGS := $(shell $(PKG_CONFIG) --cflags openssl 2>/dev/null)
+TLS_LIBS   := $(shell $(PKG_CONFIG) --libs   openssl 2>/dev/null)
+endif
+
+ifeq ($(strip $(TLS_LIBS)),)
+ifdef HAVE_CC
+ifdef PROBE
+TLS_LIBS := $(shell printf 'int main(void) { return SSL_CTX_new(TLS_client_method()) == 0; }\n' | \
+              $(CC) -x c - -include openssl/ssl.h -o /dev/null -lssl -lcrypto 2>/dev/null \
+              && echo -lssl -lcrypto)
+endif
+endif
+endif
+
+ifneq ($(strip $(TLS_LIBS)),)
+    HAVE_TLS     := yes
+    TLS_CFLAGS   += -DST_HAVE_TLS
+    TLS_VERSION  := $(if $(HAVE_PKG_CONFIG),$(shell $(PKG_CONFIG) --modversion openssl 2>/dev/null))
+endif
+
+#  NOTLS=1 means it, on a machine with OpenSSL as much as on one without,
+#  for the reason NODB=1 does.
+ifdef NOTLS
+    HAVE_TLS   :=
+    TLS_CFLAGS :=
+    TLS_LIBS   :=
+endif
+
+HINT_TLS = $(or $(shell sh $(DEPS_SCRIPT) --install openssl 2>/dev/null),install OpenSSL with its headers -- the package is usually called openssl-devel or libssl-dev)
+
 # The link the build is really going to make ---------------------------------
 
 PROBE_LINK = $(CC) $(SDL3_CFLAGS) $(THREAD_CFLAGS) $(PROBE_SRC) -o /dev/null \
-             $(THREAD_LIBS) $(SDL3_LIBS) $(ODBC_LIBS) -lm
+             $(THREAD_LIBS) $(SDL3_LIBS) $(ODBC_LIBS) $(TLS_LIBS) -lm
 
 ifdef PROBE
 ifdef HAVE_CC
@@ -306,6 +351,7 @@ that:
     $(if $(HAVE_LIBM),ok     ,MISSING) libm      -lm
     $(if $(HAVE_SDL3),$(if $(HAVE_SDL3_LINK),ok     ,MISSING) SDL3      $(SDL3_LIBS),--     SDL3      not in this build -- HEADLESS=1)
     $(if $(HAVE_ODBC),ok     ODBC      $(ODBC_LIBS),--     ODBC      not in this build -- $(if $(NODB),NODB=1,no driver manager found; $(HINT_ODBC)))
+    $(if $(HAVE_TLS),ok     OpenSSL   $(TLS_LIBS),--     OpenSSL   not in this build -- $(if $(NOTLS),NOTLS=1,not found; $(HINT_TLS)))
 
     $(HINT_LIBC)
 
@@ -369,8 +415,8 @@ endif
 endif
 
 INCLUDES  := -Isrc -Isrc/port -Isrc/om -Isrc/interp -Isrc/gfx -Isrc/sched \
-             -Isrc/compiler -Isrc/boot -Isrc/db -Isrc/net -Itests
-CPPFLAGS  := $(INCLUDES) -D_GNU_SOURCE $(SDL3_CFLAGS) $(ODBC_CFLAGS)
+             -Isrc/compiler -Isrc/boot -Isrc/db -Isrc/net -Isrc/crypto -Itests
+CPPFLAGS  := $(INCLUDES) -D_GNU_SOURCE $(SDL3_CFLAGS) $(ODBC_CFLAGS) $(TLS_CFLAGS)
 
 ifeq ($(OM),bb)
     CPPFLAGS += -DST_OM_BB
@@ -383,7 +429,7 @@ endif
 CFLAGS    ?= $(CSTD) $(WARN) $(OPT)
 CFLAGS    += $(THREAD_CFLAGS) $(SAN_CFLAGS)
 LDFLAGS   ?=
-LIBS      := $(THREAD_LIBS) $(SAN_LIBS) $(SDL3_LIBS) $(ODBC_LIBS) -lm
+LIBS      := $(THREAD_LIBS) $(SAN_LIBS) $(SDL3_LIBS) $(ODBC_LIBS) $(TLS_LIBS) -lm
 
 # The sanitizer variant is part of the build directory name.  Without this,
 # switching TSAN on would silently link freshly instrumented test code
@@ -400,7 +446,7 @@ LIBS      := $(THREAD_LIBS) $(SAN_LIBS) $(SDL3_LIBS) $(ODBC_LIBS) -lm
 #  build has no ODBC -- on a machine where it does, from a tree that had
 #  just been told to build it.  A flag that changes which code is compiled
 #  has to change where the objects go, or the second build is a lie.
-BUILD_VARIANT := $(OM)$(if $(HEADLESS),-headless)$(if $(NODB),-nodb)$(if $(TSAN),-tsan)$(if $(ASAN),-asan)
+BUILD_VARIANT := $(OM)$(if $(HEADLESS),-headless)$(if $(NODB),-nodb)$(if $(NOTLS),-notls)$(if $(TSAN),-tsan)$(if $(ASAN),-asan)
 BUILD_DIR := build/$(BUILD_VARIANT)
 OBJ_DIR   := $(BUILD_DIR)/obj
 TEST_DIR  := $(BUILD_DIR)/tests
@@ -418,6 +464,7 @@ CORE_SRC  := $(wildcard src/port/*.c) \
              $(wildcard src/compiler/*.c) \
              $(wildcard src/db/*.c) \
              $(wildcard src/net/*.c) \
+             $(wildcard src/crypto/*.c) \
              $(wildcard src/boot/*.c)
 
 # Object-memory sources: the selected implementation plus every file in
@@ -546,6 +593,14 @@ bench: $(BENCH_BIN)
 	    "$$b" || exit 1; \
 	done
 
+# The demo application's server image: demo/README.md and doc/WebDemo.md.
+# The startup is baked in at bootstrap because the bootstrap's compiler
+# resolves globals through tables a loaded image does not have.
+.PHONY: demo-image
+demo-image: $(BIN)
+	./st80 -bootstrap -profile profiles/st2026.profile -startup 'RestServer serve' -o demo.im
+	@echo "built demo.im -- now: ./st80 -serve demo.im demo/server.json"
+
 test: unit-test suite-test
 
 # The imported packages' own suites -------------------------------------------
@@ -605,7 +660,7 @@ clean:
 #  and it runs on a machine too bare to build anything.
 #
 deps:
-	@CC='$(CC)' PKG_CONFIG='$(PKG_CONFIG)' HEADLESS='$(HEADLESS)' NODB='$(NODB)' sh $(DEPS_SCRIPT)
+	@CC='$(CC)' PKG_CONFIG='$(PKG_CONFIG)' HEADLESS='$(HEADLESS)' NODB='$(NODB)' NOTLS='$(NOTLS)' sh $(DEPS_SCRIPT)
 
 help:
 	@echo "Targets:"
@@ -617,12 +672,14 @@ help:
 	@echo "  deps         report on SDL3 and the other external requirements"
 	@echo "  clean        remove build artifacts"
 	@echo "  font         regenerate the built-in face (needs Pillow and a font)"
+	@echo "  demo-image   bootstrap the demo application's server image (demo/README.md)"
 	@echo
 	@echo "Variables:"
 	@echo "  OM=mt        64-bit threaded object memory (default) -- the system"
 	@echo "  OM=bb        16-bit Blue Book memory -- the Xerox trace harness"
 	@echo "  HEADLESS=1   build without SDL3 -- the display becomes a stub"
 	@echo "  NODB=1       build without ODBC -- the Database package refuses to connect"
+	@echo "  NOTLS=1      build without OpenSSL -- an https URL is refused by name"
 	@echo "  TSAN=1       build with the thread sanitizer"
 	@echo "  ASAN=1       build with address/UB sanitizers"
 	@echo "  OPT=-O0      override optimization flags"

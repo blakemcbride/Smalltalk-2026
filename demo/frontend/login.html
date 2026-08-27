@@ -1,0 +1,22 @@
+<div class="center">
+    <div style="display: inline-block; text-align: center;">
+        <h1>Smalltalk-2026 Login Page</h1>
+
+        <form onsubmit="return false;" autocomplete="on">
+            <div style="display: inline-block; width: 100px; text-align: right; margin-right: 10px;">Username:</div>
+            <text-input id="username" required autocomplete="username"></text-input>
+
+            <br>
+
+            <div style="display: inline-block; width: 100px; text-align: right; margin-right: 10px;">Password:</div>
+            <text-input id="password" style="margin-top: 20px;" required password autocomplete="current-password"></text-input>
+
+            <br>
+
+            <push-button id="login" style="margin-top: 20px;">Login</push-button>
+        </form>
+        <br><br><br><br>
+        (As shipped, Smalltalk-2026 is configured to use an included SQLite demo database.  The default Username is "smalltalk" and the
+        default password is "password".  If no database is configured, any username and password will work.)
+    </div>
+</div>

@@ -115,8 +115,8 @@ usage(const char *argv0)
     printf("                        build an image from source\n");
     printf("  -run <image> [n]      run the image, opening a window\n");
     printf("  -serve <image> [-workers n] [args...]\n");
-    printf("                        run the image on n native threads (one per\n");
-    printf("                        CPU less one by default), no window, until\n");
+    printf("                        run the image on n native threads (four per\n");
+    printf("                        CPU by default), no window, until\n");
     printf("                        SIGINT, SIGTERM or Smalltalk quit; the args\n");
     printf("                        are what `Smalltalk arguments' answers.  The\n");
     printf("                        image's startup is what -bootstrap -startup\n");
@@ -1157,6 +1157,25 @@ do_serve(const char *path, unsigned workers, int argc, char **argv)
         fprintf(stderr, "st80: -workers %u is more than this build holds; "
                         "using %u\n", workers, ST_MAX_WORKERS - 1);
         workers = ST_MAX_WORKERS - 1;
+    }
+    if (workers == 0) {
+        /*
+         *  Four workers per CPU, not one per CPU less one.  WORKER_start's
+         *  own default reserves a core for the SDL pump, which a server
+         *  has not got; and a server's workers spend much of their time
+         *  parked inside the database driver, where a worker holds its
+         *  thread but no core (worker.h, `Blocking outside the object
+         *  memory').  A pool the size of the machine then leaves cores
+         *  idle while the pool waits on the database; four times the
+         *  machine keeps them busy, and a worker with nothing to do costs a
+         *  parked thread and nothing else.  The cap is the table's, and
+         *  is applied silently here because nobody asked for a number.
+         */
+        int cpus = ST_cpu_count();
+
+        workers = (unsigned) (cpus > 0 ? cpus : 1) * 4;
+        if (workers > ST_MAX_WORKERS - 1)
+            workers = ST_MAX_WORKERS - 1;
     }
     if (load(path) != 0)
         return 1;

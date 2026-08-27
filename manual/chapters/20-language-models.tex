@@ -1,0 +1,302 @@
+\chapter{Talking to Language Models}
+\label{ch:llm}
+
+\standfirst{A model behind an API, asked from a workspace: one prompt and
+its answer, the answer as it arrives, a conversation that remembers, tools
+the model runs through you, and the vector a text becomes. Four services,
+one way of asking.}
+
+\section{What you need}
+
+A key, and a build that speaks TLS.
+
+The key goes in the environment before \ct{st80} starts, because that is
+where a secret belongs and the one place this system reads one from:
+
+\begin{sh}
+export ANTHROPIC_API_KEY=sk-ant-...
+./st80
+\end{sh}
+
+\begin{st}
+Smalltalk environmentAt: 'ANTHROPIC_API_KEY'
+\end{st}
+
+answers it, or \ct{nil} when it was never set.
+
+TLS is OpenSSL, found when the system was built and optional the way ODBC
+is (Chapter~\ref{ch:building}): \ct{make deps} says whether the machine has
+it, \ct{Socket isTlsAvailable} says whether this image does, and an
+\ct{https} URL on a build without it is a \ct{NetError} saying so by name.
+Every cloud service here is https only. A local Ollama is plain http and
+needs neither the key nor the library.
+
+\section{The first call}
+
+\begin{st}
+Smalltalk at: #Key put: (Smalltalk environmentAt: 'ANTHROPIC_API_KEY').
+Smalltalk at: #Claude put: (Anthropic apiKey: Key model: 'claude-opus-5').
+Claude send: 'What is the capital of France?'
+\end{st}
+
+The answer is a String, the whole of it, once the model has finished.
+\ct{send:} is the same message on every service; only the first line
+differs:
+
+\begin{st}
+Smalltalk at: #Gpt put: (OpenAI apiKey: Key model: 'gpt-4o').
+Smalltalk at: #Router put: (OpenRouter apiKey: Key model: 'anthropic/claude-sonnet-4').
+Smalltalk at: #Llama put: (Ollama new model: 'llama3.2'; yourself).
+\end{st}
+
+What the model is told beside the prompt is set beforehand, and only what
+was set is sent---a model runs at its own defaults until you say
+otherwise:
+
+\begin{st}
+Claude systemPrompt: 'Answer in one sentence.'; temperature: 0.2; maxTokens: 400.
+Claude timeoutSeconds: 120.                     "five minutes unless told"
+\end{st}
+
+\ct{temperature:} and \ct{topP:} forget each other, because Anthropic
+refuses a request naming both. \ct{maxTokens:} is sent when set, and
+always to Anthropic, which requires it: 8192 unless told.
+
+Three things go wrong, three ways. A reply that is not 2xx is an
+\ct{LLMError} carrying the status and the body, which is the service's own
+sentence about what was wrong---a bad key is a 401 that says so. A service
+that cannot be reached is a \ct{NetError}. One that takes longer than the
+timeout is a \ct{TimedOut}.
+
+\begin{st}
+[Claude send: 'hi'] on: LLMError do: [:e | e status printString, ' ', e body]
+\end{st}
+
+And what the last call left behind is kept: \ct{lastResponse} is the whole
+JSON of a reply that was not streamed, for the token counts and whatever
+else this does not surface; \ct{lastStopReason} is why the model stopped,
+in the service's own word---\ct{end_turn}, \ct{stop}, or \ct{refusal},
+which is not an error but an empty answer with the reason in
+\ct{lastResponse}.
+
+\section{The answer as it comes}
+
+\begin{st}
+Claude send: 'Tell me a story' do: [:piece | Transcript show: piece]
+\end{st}
+
+Each piece of text goes to the block as the service sends it---a few words
+at a time, as server-sent events from Anthropic and OpenAI and as one JSON
+document a line from Ollama---and the whole is answered at the end. The
+wait is the same wait as before, and parks the process and not the worker,
+so a server answering many requests can have many of these in flight on a
+few threads. The timeout bounds each piece rather than the whole: a model
+that keeps talking is allowed to.
+
+\section{A conversation}
+
+A model remembers nothing between calls; a conversation does, and sends
+the whole of what was said with every question:
+
+\begin{st}
+Smalltalk at: #Talk put: Claude conversation.
+Talk ask: 'My name is Ada.'.
+Talk ask: 'What is my name?'.
+Talk ask: 'Say it slowly' do: [:piece | Transcript show: piece].
+Talk messages size.                             "6: three questions, three answers"
+Talk clear
+\end{st}
+
+\ct{messages} is the history in the service's own shape---Anthropic's
+content blocks, OpenAI's tool calls---because a tool exchange has to be
+echoed back exactly as the service wrote it, and because the shape is the
+model's business. A conversation belongs to one model; to talk to another,
+start another. \ct{send:} is a conversation of one question.
+
+\section{Tools}
+
+A tool is something the model may ask you to run: a name, the description
+it reads to decide when, a JSON schema for the arguments it should send,
+and a block that does it. The block gets the arguments as a
+\ct{JSONObject} and answers what the model should read---a String as it
+is, JSON as JSON, anything else printed.
+
+\begin{st}
+Smalltalk at: #Now put: [:args | Time now printString].
+Talk addTool: (LLMTool name: 'time' description: 'the time now' do: Now).
+Talk ask: 'What time is it?'
+\end{st}
+
+With arguments, the schema says what they are:
+
+\begin{st}
+Smalltalk at: #Schema put: '{"type":"object","properties":{"n":{"type":"number"}}}' asJson.
+Smalltalk at: #Sq put: [:args | (args numberAt: 'n') squared printString].
+Talk addTool: (LLMTool name: 'square' description: 'n squared' parameters: Schema do: Sq).
+Talk ask: 'Use the square tool on 12 and answer with the number alone.'
+\end{st}
+
+What happens underneath is a loop. The question is posted with the tools;
+when the reply asks for one, the reply's own message is added to the
+conversation, the block runs, its answer is added as the tool's result in
+the service's shape, and the model is asked again---until it answers with
+text, which is what \ct{ask:} answers. Twenty rounds is the limit, after
+which it is an \ct{LLMError} and not a conversation. A model that asks for
+a tool nobody gave it is told \ct{no such tool} as the tool's result and
+asked again, since a model that invents a tool reads the answer and gets
+over it.
+
+A tool reads its arguments defensively. The schema says \ct{n} is a
+number, and a large model sends one; a small local model sends \ct{'12'}
+as often as not, so the robust block takes \ct{args at: 'n'} and converts
+a String rather than asking \ct{numberAt:} and raising.
+
+Tools belong to the conversation, not the model: the same model answers
+plainly in one conversation and runs tools in another. And a conversation
+with tools answers whole rather than as it comes, even to \ct{ask:do:}: a
+reply that turns out to be a tool call has no text to stream, and the
+request cannot know in advance, so the block gets the text once, at the
+end.
+
+\section{A picture}
+
+\begin{st}
+Claude send: 'What is in this chart?' image: 'chart.png'
+\end{st}
+
+The file is read as bytes and sent inline, base64, with its type by the
+extension---PNG, GIF, WebP, and JPEG for the rest---in each service's own
+shape: a content block for Anthropic, a data URL for OpenAI and OpenRouter,
+an \ct{images} list for Ollama. \ct{ask:image:} does the same in a
+conversation, and OpenAI's \ct{imageDetail:}---\ct{low}, \ct{high},
+\ct{auto}---says how closely to look.
+
+\section{Embeddings, and where to keep them}
+
+\begin{st}
+Smalltalk at: #Embedder put: (OpenAI apiKey: Key model: 'text-embedding-3-small').
+(Embedder embed: 'Cats sleep sixteen hours a day.') size          "1536"
+\end{st}
+
+\ct{embed:} answers an Array of Floats---Floats, and not the exact
+Fractions the JSON reader answers for decimals, which are right for money
+and wrong for fifteen hundred coordinates. OpenAI and OpenRouter have an
+embeddings endpoint; Ollama has one for its embedding models; Anthropic has
+none and says so.
+
+Where they go is \ct{Qdrant}, a vector database, asked over plain HTTP on
+this machine:
+
+\begin{st}
+Smalltalk at: #Store put: (Qdrant on: 'notes').
+Store createCollection: 'notes' size: 1536.
+Smalltalk at: #Text put: 'Cats sleep sixteen hours a day.'.
+Store store: (Embedder embed: Text) text: Text document: 'notes' sequence: 1 payload: nil.
+(Store search: (Embedder embed: 'how long do cats sleep?') limit: 3) asJsonString
+\end{st}
+
+A record is a vector, an id this makes when none is given, and a payload
+carrying the text, the document it came from and its place in it, plus
+whatever \ct{payload:} adds; a search answers the nearest records as the
+server's own JSON, each with its id, its score and its payload. That is
+the whole of a retrieval-augmented answer: embed the question, search, put
+the texts found in front of the model, ask.
+
+\section{The four services}
+
+\begin{center}
+\small
+\begin{tabular}{@{}llp{6.2cm}@{}}
+\toprule
+class & the key, and where it talks & what is its own\\
+\midrule
+\ctp{Anthropic} & \ctp{ANTHROPIC\_API\_KEY}, \ctp{api.anthropic.com} & \ctp{maxTokens:} always sent; \ctp{effort:} how hard it thinks; \ctp{fallbacks:} models to try when it declines; \ctp{version:}\\
+\ctp{OpenAI} & \ctp{OPENAI\_API\_KEY}, \ctp{api.openai.com} & \ctp{reasoningEffort:} for the models that reason; \ctp{imageDetail:}; \ctp{embed:}\\
+\ctp{OpenRouter} & \ctp{OPENROUTER\_API\_KEY}, \ctp{openrouter.ai} & many services' models as \ctp{provider/model}; \ctp{fallbackModels:} tried in order; \ctp{siteUrl:} and \ctp{siteName:} for the gateway's credit\\
+\ctp{Ollama} & no key; \ctp{localhost:11434} & \ctp{isUp}, never an error; \ctp{models}; \ctp{url:} for another machine; \ctp{embed:} with an embedding model; \ctp{Ollama toHtml:} for a screen\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\ct{url:} on any of them points it at a proxy, a gateway or a test. Every
+one of them is asked the same way; the class knows only its wire: the
+endpoint and the headers, the shape of a message and a tool, where the text
+and the tool calls are in a reply, and how a streamed reply is cut up.
+\ct{doc/LLM.md} lays the four wires side by side.
+
+\section{TLS, and what it refuses}
+
+An \ct{https} URL connects and then makes the socket the client end of a
+TLS connection. The certificate is checked against the system's own store
+and its name against the host you asked for, as a browser checks them, and
+neither check can be turned off---a client that can be asked to trust
+anything will one day be asked to. Anything wrong is a \ct{NetError} that
+says what:
+
+\begin{st}
+(HttpClient get: 'https://api.anthropic.com/v1/models') status         "401: a reply"
+[HttpClient get: 'https://expired.badssl.com/'] on: NetError do: [:e | e messageText]
+\end{st}
+
+\begin{plain}
+'TLS handshake: certificate verify failed: certificate has expired'
+\end{plain}
+
+and likewise \emph{hostname mismatch}, \emph{self-signed certificate},
+\emph{IP address mismatch} for an address that is not in the certificate,
+and \emph{wrong version number} from a peer that does not speak TLS at
+all. A private authority goes in the system's store, or in
+\ct{SSL_CERT_FILE} in the environment, which OpenSSL reads.
+
+\begin{stwarn}[The server side is not here]
+This system's servers speak plain HTTP. A server on the internet sits
+behind a reverse proxy---nginx, Caddy---that terminates TLS and passes the
+request on, which is the arrangement Kiss has with Tomcat and the one
+Chapter~\ref{ch:serving} assumes. TLS here is the client's, for reaching
+services that are https only.
+\end{stwarn}
+
+Underneath, the socket stays non-blocking and the arm-wait-retry contract
+of Chapter~\ref{ch:serving} stays the whole contract; what TLS adds is that
+a read may have to write first and a write may have to read first, and the
+primitive says which way to wait. \ct{doc/NETWORK.md} has it.
+
+\section{Testing it}
+
+Thirty-three tests in \ct{lib/LLM-Tests} reach no service. They run each
+class against a listener of the test's own that answers canned replies
+and keeps every request it was sent, parsed---so what is checked is the
+wire: the header each service wants, the body a request carries and does
+not carry, a streamed reply cut into pieces with the chunk boundary falling
+inside an event, a tool call and its answer going back in the second
+request, an embedding, and what a refusal, a rate limit and an error
+mid-stream become. Two profiles reach the real thing and are run on
+purpose: \ct{internet-live} fetches real certificates---Anthropic's without
+a key, for a 401 over a good one, and three from badssl.com that must be
+refused---and \ct{llm-live} asks the four services with keys from the
+environment, failing by name for a key that is not there.
+
+\begin{stnote}[Found while building it]
+\ct{#(true false)} is two Symbols in this dialect, not two Booleans, and a
+test that meant the Booleans said so before it passed. A method may
+reference sixty-three literals and no more, in the 1983 compiler; one test
+was split. The JSON reader's exact decimals---\ct{0.25} is \ct{1/4}---are
+the wrong thing for a vector, and \ct{embed:} converts. An event stream's
+lines cross chunk boundaries, because a server chunks by its buffer and
+not by the line; the body reader reads through them, and the test puts a
+boundary inside an event to prove it. And a peer that accepts a connection
+and then says nothing holds a TLS handshake for ever, which a client's read
+timeout did not cover until it did.
+\end{stnote}
+
+\section{Where the rest of it is}
+
+\ct{doc/LLM.md} is the design: what \ct{LLM} knows once and what each
+subclass answers, the four wires in one table, the tool loop, and what is
+deliberately not here---OpenAI's Responses endpoint, Kiss's retries,
+server-side TLS. \ct{lib/LLM/PROVENANCE.md} records what crossed from
+Kiss's \ct{org.kissweb.llm} and what changed. \ct{doc/HTTP-CLIENT.md} is
+the client underneath: https, and a reply read as it comes.
+\ct{doc/NETWORK.md} is TLS in the socket layer. The tests are
+\ct{lib/LLM-Tests}, \ct{lib/HTTP-Client-Tests} and \ct{lib/Network-Tests};
+the live ones \ct{lib/LLM-Live-Tests} and \ct{lib/HTTP-Client-Live-Tests}.

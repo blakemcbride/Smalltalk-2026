@@ -1,0 +1,79 @@
+<div>
+
+    <h1 style="margin-left: 150px;">Smalltalk-2026 Sample</h1>
+
+    <style>
+        .button-left {
+            width: 115px;
+            margin-bottom: 10px;
+        }
+    </style>
+
+    <div style="display:inline-block; vertical-align: top; margin-right: 30px; margin-left: 10px;">
+        <push-button class="button-left" id="controls">Controls</push-button>
+        <br>
+        <push-button class="button-left" id="rest-services">REST Services</push-button>
+        <br>
+        <push-button class="button-left" id="crud">CRUD</push-button>
+        <br>
+        <push-button class="button-left" id="users">Users</push-button>
+        <br>
+        <push-button class="button-left" id="file-upload">File Upload</push-button>
+        <br>
+        <push-button class="button-left" id="ai">AI</push-button>
+        <br>
+        <push-button class="button-left" id="logout">Logout</push-button>
+    </div>
+
+    <div style="display: inline-block; width: 600px;" id="app-screen-area">
+        Select one of the buttons on the left.
+    </div>
+
+    <popup id="intro-popup" height="520px" width="700px">
+        <popup-title>Writing Sophisticated Applications</popup-title>
+        <popup-body style="margin: 0 30px 0 30px;">
+            <p>
+                <b><i>Smalltalk-2026</i></b> comes with this basic running application. Since
+            the front-end and back-end can be changed while the system is running,
+            the idea is that a developer starts with this basic application and
+            builds it into the desired application.
+            </p>
+            <p>
+            The basic application the system comes with does not represent the
+            kind of application that can be built with <b><i>Smalltalk-2026</i></b>. It is
+            intentionally kept basic so that it is easy to see how it works.  In a
+            real application, all the possibilities made available with
+            <i>HTML</i> and <i>CSS</i> are at your disposal without limitation. In
+            other words, the only limitations to the sophistication of the
+            application are your imagination and the amount of work you're willing
+            to put into it.
+            </p>
+            <p>
+            <b><i>Smalltalk-2026</i></b> comes with a complete front-end framework that
+            includes most of the things needed for a modern business web
+            application. However, there is nothing in <b><i>Smalltalk-2026</i></b> that
+            prevents you from using other front-end frameworks such as
+            <i>React</i>, <i>Angular</i>, <i>Vue</i>, etc. In fact, except for
+            dealing with web services and authentication, you could exclusively
+            use your preferred front-end framework.
+            </p>
+            <p>
+            The <b><i>Smalltalk-2026</i></b> back-end is a complete back-end: an HTTP
+            server that runs one request per core, sessions, one database
+            transaction per request, and web services that are Smalltalk classes
+            in files, read into the running image the first time a request names
+            them and read again when they change. A web service is a single source
+            file containing just a handful of lines of code, and it can be edited
+            while the server runs. Everything in <b><i>Smalltalk-2026</i></b> is
+            designed to be simple to understand and simple to use.
+            </p>
+            <div style="position: absolute; bottom: 30px; width: 100%;">
+                <div style="text-align: center;">
+                    <push-button id="close-intro">Close</push-button>
+                </div>
+            </div>
+        </popup-body>
+    </popup>
+
+
+</div>

@@ -1,7 +1,17 @@
 "
-Smalltalk arguments: the words after `st80 -serve <image> [-workers n]'.
+Smalltalk arguments: the words after `st80 -serve <image> [-workers n]';
+Smalltalk environmentAt: an environment variable's value, or nil.
 "
 Extension { #name : 'SystemDictionary' }
+
+{ #category : '*Network' }
+SystemDictionary >> environmentAt: aName [
+	"The environment variable's value, or nil: where an API key belongs.
+
+	    Smalltalk environmentAt: 'ANTHROPIC_API_KEY'"
+
+	^Socket environmentAt: aName
+]
 
 { #category : '*Network' }
 SystemDictionary >> arguments [

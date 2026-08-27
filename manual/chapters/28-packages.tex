@@ -136,8 +136,8 @@ running image, which is what the REST server does with its services
 
 \begin{st}
 TonelReader loadFile: 'lib/MyStuff/Widget.class.st'.     "compile it in; answer the class"
-TonelSource loadFile: 'lib/MyStuff/Widget.class.st'.     "the same, and remember where it came from"
-TonelSource reloadIfChanged: Widget.                     "read it again if the file has changed"
+TonelSource loadFile: 'lib/MyStuff/Widget.class.st'.     "the same, remembering the file"
+TonelSource reloadIfChanged: Widget.                     "read it again if it has changed"
 TonelWriter write: Widget toFile: 'lib/MyStuff/Widget.class.st'.
 \end{st}
 

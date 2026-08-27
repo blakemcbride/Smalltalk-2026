@@ -51,12 +51,19 @@ RestLiveTest >> call: aMethod [
 
 { #category : 'private' }
 RestLiveTest >> call: aMethod with: aBlock [
-	"POST to services.Ledger; answer the reply as a JSONObject."
-	| injson body socket in status line length text |
+	"POST to services.Ledger on the fixture's server; answer the reply as a JSONObject."
+	| injson |
 	injson := JSONObject new at: '_class' put: 'services.Ledger'; at: '_method' put: aMethod; yourself.
 	aBlock value: injson.
+	^self post: injson to: server
+]
+
+{ #category : 'private' }
+RestLiveTest >> post: injson to: aServer [
+	"POST the document to aServer's /rest; answer the reply as a JSONObject."
+	| body socket in status line length text |
 	body := injson asJsonString.
-	socket := Socket connectTo: '127.0.0.1' port: server port.
+	socket := Socket connectTo: '127.0.0.1' port: aServer port.
 	^[socket send: 'POST /rest HTTP/1.1', self crlf, 'Host: live', self crlf,
 		'Content-Type: application/json', self crlf,
 		'Content-Length: ', body size printString, self crlf, 'Connection: close', self crlf, self crlf, body.
@@ -87,6 +94,60 @@ RestLiveTest >> testRollbackOnFailure [
 	self deny: (reply booleanAt: '_Success').
 	self assert: (reply integerAt: '_ErrorCode') equals: 9.
 	self assert: ((self call: 'count') integerAt: 'count') equals: 1
+]
+
+{ #category : 'private' }
+RestLiveTest >> initServerInMode: aStringOrNil [
+	"A server on tests/rest-init-backend and this database, its Init told
+	 what to do through the environment."
+	| s |
+	s := RestServer new
+		port: 0;
+		bindAddress: '127.0.0.1';
+		backendDirectory: 'tests/rest-init-backend';
+		database: 'DRIVER=SQLITE3;Database=', self class databaseFile, ';';
+		connectionPoolSize: 1;
+		requireAuthentication: false;
+		name: 'init';
+		yourself.
+	aStringOrNil notNil ifTrue: [s environmentAt: 'init2Mode' put: aStringOrNil].
+	^s
+]
+
+{ #category : 'private' }
+RestLiveTest >> marksOn: aServer [
+	^(self post: (JSONObject new at: '_class' put: 'services.Marks'; at: '_method' put: 'count'; yourself) to: aServer)
+		integerAt: 'count'
+]
+
+{ #category : 'tests' }
+RestLiveTest >> testInit2IsCommitted [
+	"init2: gets a connection of its own and what it wrote is there for the
+	 first request."
+	| s |
+	s := self initServerInMode: 'reset'.
+	s start; stop.
+	s := self initServerInMode: nil.
+	[s start.
+	 self assert: ((Smalltalk at: #RestInit2Seen) isKindOf: DbConnection).
+	 self assert: (self marksOn: s) equals: 1]
+		ensure: [s stop]
+]
+
+{ #category : 'tests' }
+RestLiveTest >> testInit2FailureIsRolledBackAndStopsTheStart [
+	"A row inserted before init2: raised is not there afterwards, and the
+	 server that could not initialise is not listening."
+	| s |
+	s := self initServerInMode: 'reset'.
+	s start; stop.
+	s := self initServerInMode: 'fail'.
+	self should: [s start] raise: Error.
+	self deny: s isRunning.
+	s := self initServerInMode: nil.
+	[s start.
+	 self assert: (self marksOn: s) equals: 1]
+		ensure: [s stop]
 ]
 
 { #category : 'tests' }
