@@ -403,8 +403,15 @@
  *  compile:notifying:, OrderedCollection>>removeFirst:, removeLast:,
  *  add:afterIndex:, String>>trimSeparators, PositionableStream>>collect:
  *  and a skip: that clamps.
+ *
+ *  2577 -> 2576 is a method REMOVED: lib/Kernel-Protocol's Object extension
+ *  defined identityHash twice, and the two were not the same method.  Tonel
+ *  loads a file in order, so the later one -- `^self basicIdentityHash' --
+ *  had always won; the earlier was `<primitive: 75>' falling back on
+ *  `^self hash', which is a VALUE hash for every class lib/ has given one,
+ *  and it would have come back the day somebody reordered the file.
  */
-#define LIB_METHODS             2577
+#define LIB_METHODS             2576
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -2618,12 +2625,12 @@ test_browsing(void)
      *  size that stops growing is how that would show.
      */
     /*
-     *  1948287 -> 2193653 is 47 new methods and, much the larger half, every
+     *  1948287 -> 2195190 is 46 new methods and, much the larger half, every
      *  class's COMMENT: they are filed into the sources beside the methods
      *  now instead of being read and dropped, so 367 of the 373 classes
      *  answer one where none did.
      */
-    check_integer("(SourceFiles at: 1) contents size", 2193653);
+    check_integer("(SourceFiles at: 1) contents size", 2195190);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -4011,6 +4018,20 @@ test_bugs2(void)
      *  time a process waited on it.
      */
     check_boolean("Semaphore new = Semaphore new", 0);
+    /*
+     *  And identityHash, which is the same argument at the other end: a
+     *  hash that collapses.  Primitive 75 refuses a SmallInteger -- it has
+     *  no object pointer and needs none -- and the fallback answered 0, so
+     *  every integer shared one identity hash.  1983's collections bucket
+     *  by `hash' and never saw it; Pharo's IdentitySet and IdentityDictionary
+     *  bucket by `identityHash \\ size', so in profiles/pharo-collections
+     *  every integer key landed in bucket one.
+     */
+    check_integer("((1 to: 50) collect: [:i | i identityHash]) asSet size", 50);
+    check_integer("3 identityHash", 3);
+    check_boolean("| a b | a := 'abc' copy. b := 'abc' copy. "
+                  "^(a hash = b hash) and: [a identityHash ~= b identityHash]",
+                  1);
     check_integer("| a b | a := Semaphore new. b := Semaphore new. "
                   "^(Set with: a with: b) size", 2);
 

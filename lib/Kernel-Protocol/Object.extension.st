@@ -101,20 +101,6 @@ Object >> -> anObject [
 ]
 
 { #category : '*Kernel-Protocol' }
-Object >> identityHash [
-	"The hash of the OBJECT rather than of its value, which is what an
-	 identity collection needs: two equal Strings have one hash and two
-	 identityHashes.
-
-	 1983 has the primitive -- 75, and Object>>hash declares it -- but
-	 never gave it this name, because in a system where hash IS identity
-	 the distinction has nowhere to show.  Pharo's identity collections
-	 send it, and they are right to."
-	<primitive: 75>
-	^self hash
-]
-
-{ #category : '*Kernel-Protocol' }
 Object >> ~~ anObject [
 	"Not the same object.  The primitive is the whole of it; the fallback
 	 says the same thing one send more slowly."
@@ -373,13 +359,47 @@ Object >> basicIdentityHash [
 	 matters here more than it used to: lib/ gives Symbol a value-based
 	 hash so that it agrees with a value-based =, so for a Symbol the two
 	 answers are now different numbers.  Anything asking for the IDENTITY
-	 hash has to get the identity one."
+	 hash has to get the identity one.
+
+	 The fallback answers SELF because the only receiver that reaches it is
+	 a SmallInteger.  The primitive refuses exactly one thing -- a receiver
+	 that is not an object -- and for a real object it cannot fail at all,
+	 since the hash it answers is masked to fourteen bits and always fits.
+	 A SmallInteger has no object pointer to hash, and needs none: its
+	 identity IS its value, which is what the primitive's own C says.
+
+	 It used to answer 0, and that made every SmallInteger share one
+	 identity hash.  1983's hashed collections bucket by `hash' and so
+	 never saw it, but Pharo's IdentitySet and IdentityDictionary bucket by
+	 `identityHash \\ size' -- so in profiles/pharo-collections every
+	 integer key landed in bucket one and the collection was a linear scan.
+	 The same fault Bugs2's B6 found in Array>>hash, one indirection away."
 	<primitive: 75>
-	^0
+	^self
 ]
 
 { #category : '*Kernel-Protocol' }
 Object >> identityHash [
+	"The hash of the OBJECT rather than of its value, which is what an
+	 identity collection needs: two equal Strings have one hash and two
+	 identityHashes.
+
+	 1983 has the primitive -- 75, and Object>>hash declares it -- but
+	 never gave it this name, because in a system where hash IS identity
+	 the distinction has nowhere to show.  Pharo's identity collections
+	 send it, and they are right to.
+
+	 This file used to define it TWICE, and the two were not the same
+	 method.  The earlier one was `<primitive: 75>' with `^self hash' as
+	 its fallback, and that fallback is the bug basicIdentityHash below was
+	 written to avoid: lib/ gives Symbol a value-based hash so that it
+	 agrees with a value-based =, and Bugs2 gave every sequenceable
+	 collection one for the same reason -- so falling back on `hash'
+	 answers a VALUE hash to a caller that asked for an identity hash.
+	 Tonel loads a file in order, so the later definition won and the
+	 system has always run the right one; the earlier was dead code whose
+	 comment was the only part anyone read, and it would have come back to
+	 life the day somebody reordered the file."
 	^self basicIdentityHash
 ]
 
