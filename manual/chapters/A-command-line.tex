@@ -50,7 +50,6 @@
 \ctp{\ \ -o image} & write the image (needs \ctp{OM=mt})\\
 \ctp{\ \ -eval expr} & evaluate and print\\
 \ctp{\ \ -startup expr} & what a saved image evaluates when it resumes\\
-\ctp{\ \ -closures} & compile in the closures dialect\\
 \ctp{\ \ -tests} & run every SUnit test; exit non-zero if any failed\\
 \ctp{\ \ -doctests f.st} & run the \ctp{expr >>> value} examples in a file\\
 \midrule
@@ -153,4 +152,4 @@ hundred thousand frames is about fifty megabytes of contexts and is reached in
 a tenth of a second; it is far above anything a program that means to recurse
 uses, and far below where the object table runs out. Set the variable higher
 if you have a genuinely deep recursion, or to \ct{0} to let it run until the
-memory is gone, which is what the system used to do.
+memory is gone.

@@ -25,19 +25,10 @@ example \ct{-doctests} runs. So \ct{[:x | x] class} answers
 \ct{BlockClosure} under \ct{profiles/st2026.profile} and \ct{BlockContext}
 under \ct{profiles/bluebook.profile}, which is what each profile says it is.
 
-This was not always so: a doit used to default to the Blue Book dialect
-however the profile was written, so one image answered \ct{(3 3 3)} at the
-command line and \ct{(1 2 3)} inside a method for the same expression. The
-\ct{-closures} switch still forces closures on for a profile that does not
-ask for them.
-
-There is only one code generator, so a method you accept in the Browser
-and an expression you evaluate in a workspace are compiled by the same one
-that built the image. That was not always so either: the compiler inside
-the image was 1983's, which has no closures, so the same text meant one
-thing in a compiled method and another in a workspace. The image reaches
-this compiler through primitive 228 now; the 1983 parser is still what
-pretty-prints, decompiles and answers \ct{parseSelector:}.
+There is only one code generator, so a method you accept in the Browser and
+an expression you evaluate in a workspace are compiled by the same one that
+built the image. The image reaches it through primitive 228; the 1983 parser
+is what pretty-prints, decompiles and answers \ct{parseSelector:}.
 \end{stnote}
 
 \section{Full closures}

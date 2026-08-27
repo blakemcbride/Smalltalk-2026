@@ -13,10 +13,11 @@ SOURCES  := $(DOC).tex preamble.tex $(wildcard chapters/*.tex)
 #  The examples file is the book's own test suite: every answer printed in
 #  the text is a doctest here, checked against a real image.
 #
-#  -closures matters: a profile's #dialect governs the PACKAGES it loads, and
-#  the doit each doctest is compiled into is a separate compilation that
-#  defaults to the Blue Book dialect.  Without this flag [:x | x] class
-#  answers BlockContext and the book looks wrong when it is not.
+#  The dialect comes from PROFILE: #dialect governs the packages a profile
+#  loads and the doit each doctest is compiled into alike, so the book is
+#  checked in the language it documents.  Point PROFILE at bluebook and the
+#  1983 answers are what the run demands.
+#
 #  Run from the repository root, not from here: a profile's package paths are
 #  relative to the profile file, but the 1983 MANIFEST's entries are relative
 #  to the tree root, so a bootstrap started anywhere else cannot find them.
@@ -38,7 +39,7 @@ $(DOC).pdf: $(SOURCES)
 #  Check every example in the book against a live image.  Fails loudly.
 verify: $(EXAMPLES)
 	@test -x $(ROOT)/$(ST80) || { echo "verify: $(ST80) is not built -- run make in $(ROOT)" >&2; exit 1; }
-	cd $(ROOT) && $(ST80) -bootstrap -profile $(PROFILE) -closures \
+	cd $(ROOT) && $(ST80) -bootstrap -profile $(PROFILE) \
 		-doctests manual/$(EXAMPLES)
 
 clean:

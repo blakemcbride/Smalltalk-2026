@@ -40,9 +40,9 @@ Error new signal: 'the same thing'
 self error: 'the 1983 spelling, now an Error'
 \end{st}
 
-\ct{Object>>error:} has been rewritten to signal an \ct{Error}, so every one of
-the hundreds of 1983 library methods that calls it now raises something you
-can catch, and an unhandled one still opens the same debugger it always did.
+\ct{Object>>error:} signals an \ct{Error}, so every one of the hundreds of
+1983 library methods that calls it raises something you can catch, and an
+unhandled one opens the debugger.
 
 \section{What the handler can do}
 

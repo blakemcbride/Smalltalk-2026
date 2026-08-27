@@ -29,27 +29,29 @@
   being told, so no controller believes the cursor is inside it. Run with
   \ct|ST_DISPLAY_TRACE=1| to see which step refused. As a workaround,
   \ct|ST_DISPLAY_FIT=off| keeps the image's own screen size.
-\item[The screen does not update when I switch back to it] Fixed; if you see
-  it, the window-exposed event is not arriving. \ct{restore display} on the
-  desktop menu redraws everything.
+\item[The screen does not update when I switch back to it] The
+  window-exposed event is not arriving. \ct{restore display} on the desktop
+  menu redraws everything.
 \item[A window is drawn but ignores every click and keystroke] The image
   rebuilds its idea of which buttons are down from the event stream and from
   nothing else, so a lost button-release leaves it believing a button is
   still held: \ct{Sensor noButtonPressed} never answers true again, no
   controller takes control, and the window sits there looking perfectly
-  fine. Framing a window used to do this---the one gesture that drags at
-  full rate with a button held while the image is busy drawing a rubber
-  band. Positions now coalesce in the event ring and transitions never do,
-  so the events that cannot be reconstructed can no longer be lost. If you
-  ever see
+  fine. The gesture that risks it is dragging at full rate with a button
+  held while the image is busy---framing a window, or any rubber band.
+  Positions coalesce in the event ring and transitions never do, so the
+  events that cannot be reconstructed are the ones that are never dropped.
+  If you ever see
 \begin{plain}
 st80: N input events were dropped
 \end{plain}
   at exit, the image's button state may have been left wrong, and that
   message is worth reporting.
-\item[The rubber band blinks while I drag] Fixed. The 1983 idiom draws the
-  rectangle as a flash between two cancelling blits, and the window is now
-  presented at the right moment rather than at random.
+\item[The rubber band blinks while I drag] The 1983 idiom draws the
+  rectangle as a flash between two cancelling blits, and the band exists
+  only for the gap between them---too short for a frame to sample. The drawn
+  half is forced to the screen before the undo lands rather than left for
+  the next frame to catch.
 \item[The window is tiny / has huge borders] Set the window size with
   \ct|ST_DISPLAY_WINDOW=WxH|, and the pixel scale with
   \ct|ST_DISPLAY_SCALE|.

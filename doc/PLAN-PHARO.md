@@ -321,11 +321,18 @@ The dialect is a field in the compile context and defaults to Blue Book, so the 
 library, `test_self_hosting` and the trace oracle never meet any of it. `trace2` and
 `trace3` stayed byte-exact through every step, including the rewrite of `return_value`.
 
-Two things remain open and are Phase F/G work rather than D's: **a package cannot yet
-declare its dialect** — `-closures` is a developer switch on `-eval`, and the real answer
-is a `#dialect` key in a profile; and **`cannotReturn:` cannot be exercised end to end**
-until closures can be compiled into methods rather than only doIts, because in a doIt
-every `^` targets the doIt itself, which is always alive.
+Two things were left open as Phase F/G work rather than D's, and both are now closed:
+
+- **A package could not declare its dialect** — `-closures` was a developer switch on
+  `-eval`. The answer was a `#dialect` key in a profile (`profile.c:498-505`), which
+  governs the packages a profile loads and the doit `-eval`, `-startup` and each doctest
+  are compiled into alike. The switch was removed once it could only disagree with the
+  image it was building.
+- **`cannotReturn:` could not be exercised end to end** until closures could be compiled
+  into methods rather than only doIts, because in a doIt every `^` targets the doIt
+  itself, which is always alive. `lib/Kernel-Exceptions/ContextPart.extension.st`
+  implements it, `Unwind escapingBlock` in `lib/Probe` is a real method that answers a
+  block whose home has returned, and `test_image.c` asserts the `Error` it signals.
 
 - **The compiler needs two passes.** `numCopied`, which names are remote, and each frame's
   index map are whole-method properties known before the first byte of a block is emitted.

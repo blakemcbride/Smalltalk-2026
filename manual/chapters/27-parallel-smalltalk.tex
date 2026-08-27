@@ -224,9 +224,8 @@ table behind \ct{addDependent:}, the list of open directories, every method
 dictionary and each send to the \ct{Transcript} all take a lock from
 \ct{LibraryLocks}. \ct{Compiler evaluate:}
 runs the compiled method without installing it, \ct{Processor yield} is a
-primitive, and a \ct{Delay} survives a stale timer signal. Each was measured
-losing data on eight workers before it was fixed; \ct{doc/CONCURRENCY.md} has
-the table.
+primitive, and a \ct{Delay} survives a stale timer signal.
+\ct{doc/CONCURRENCY.md} has the table.
 \end{stnote}
 
 \section{Proving it actually ran in parallel}

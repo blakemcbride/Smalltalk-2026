@@ -661,11 +661,10 @@ where Kiss stops and this begins, and what is shared and what guards it.
 and the three Kiss faults not repeated. \ct{doc/HTTP-CLIENT.md} is the
 client and \ct{Ollama}; \ct{lib/Crypto/PROVENANCE.md} the password hash's
 standards and vectors; and \ct{doc/WebDemo.md} the plan the demo was built
-from, with every decision and everything the building found. \ct{doc/CONCURRENCY.md} records what
-the gates found in the virtual machine itself while this was built---a list
-unlinked in the wrong order, a slot every worker wrote, an enumeration that
-walked headers being refilled---each older than the server and each waiting
-for thirty-one workers to show it.
+from, with every decision and everything the building found.
+\ct{doc/CONCURRENCY.md} is the virtual machine's own shared state and what
+guards it---the lists, the slots every worker writes, and the enumerations
+that run while what they walk is being refilled.
 
 The tests are in \ct{lib/Network-Tests}, \ct{lib/JSON-RPC-Server-Tests},
 \ct{lib/Rest-Server-Tests}, \ct{lib/HTTP-Client-Tests}, \ct{lib/LLM-Tests}

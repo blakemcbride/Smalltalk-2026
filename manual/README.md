@@ -37,11 +37,11 @@ cannot tell you where. If the book and the system ever disagree, `make verify`
 is the referee — and it has already been: five answers in the first draft were
 wrong and the run found all five.
 
-`-closures` is passed deliberately. A profile's `#dialect` governs the
-*packages* it loads; the doit each doctest is compiled into is a separate
-compilation that defaults to the Blue Book dialect. Without the flag
-`[:x | x] class` answers `BlockContext` and the book looks wrong when it is
-not.
+The dialect comes from the profile. `#dialect` governs the *packages* a
+profile loads and the doit each doctest is compiled into alike, so the book
+is checked in the language it documents: `[:x | x] class` answers
+`BlockClosure` under `profiles/st2026.profile`. Set `PROFILE` to
+`profiles/bluebook.profile` and the 1983 answers are what the run demands.
 
 ## Editing it
 

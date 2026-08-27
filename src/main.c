@@ -25,14 +25,15 @@
 #include "profile.h"
 
 /*
- *  Compile expressions as closures rather than Blue Book blocks.
+ *  The dialect an expression is compiled in: -eval, -startup and every
+ *  doctest.
  *
- *  A developer switch for now.  Which dialect a package is written in
- *  belongs in its profile eventually; until the library is ported there is
- *  nothing to attach it to, and being able to run one expression both ways
- *  is exactly what is wanted while the two are being compared.
+ *  Not a switch.  Which dialect a package is written in is its profile's
+ *  #dialect to say, and an expression compiled after the image is built is
+ *  compiled the way the image was -- see the bootstrap arm below, which is
+ *  the only thing that sets this.
  */
-static int  use_closures;
+static int  eval_dialect = ST_DIALECT_BLUE_BOOK;
 
 #define EVAL_BYTECODE_BUDGET    UINT64_C(200000000)
 
@@ -110,9 +111,10 @@ usage(const char *argv0)
     printf("\n");
     printf("  -version              print version and build configuration\n");
     printf("  -bootstrap <a.st...> [-profile p] [-manifest f] [-o image]\n");
-    printf("                       [-eval expr] [-startup expr] [-closures]\n");
-    printf("                        [-startup expr]  what a saved image resumes\n");
-    printf("                        build an image from source\n");
+    printf("                       [-eval expr] [-startup expr]\n");
+    printf("                        build an image from source; -startup is\n");
+    printf("                        what a saved image evaluates when it\n");
+    printf("                        resumes\n");
     printf("  -run <image> [n]      run the image, opening a window\n");
     printf("  -serve <image> [-workers n] [args...]\n");
     printf("                        run the image on n native threads (four per\n");
@@ -1237,8 +1239,7 @@ evaluate(const char *expression, char *errbuf, size_t errlen)
     ctx.make_method_state  = BOOT_make_method_state;
     ctx.make_character     = BOOT_make_character;
     ctx.lookup_global      = BOOT_lookup_global;
-    ctx.dialect            = use_closures ? ST_DIALECT_CLOSURES
-                                          : ST_DIALECT_BLUE_BOOK;
+    ctx.dialect            = eval_dialect;
 
     /*
      *  Compiled as a BODY, not as a method.
@@ -2187,8 +2188,6 @@ main(int argc, char **argv)
                     expression = argv[++j];
                 }  else if (!strcmp(argv[j], "-startup") && j + 1 < argc) {
                     startup = argv[++j];
-                }  else if (!strcmp(argv[j], "-closures")) {
-                    use_closures = 1;
                 }  else if (!strcmp(argv[j], "-tests")) {
                     run_tests = 1;
                 }  else if (!strcmp(argv[j], "-doctests") && j + 1 < argc) {
@@ -2255,8 +2254,7 @@ main(int argc, char **argv)
                     for (k = 0; k < tree.count; ++k) {
                         if (!path_list_add(&sources, tree.items[k])
                          || !dialect_list_add(&dialects,
-                                use_closures ? ST_DIALECT_CLOSURES
-                                             : ST_DIALECT_BLUE_BOOK)) {
+                                               ST_DIALECT_BLUE_BOOK)) {
                             fprintf(stderr, "st80: out of memory\n");
                             SRC_names_free(&tree);
                             path_list_free(&sources);
@@ -2266,8 +2264,7 @@ main(int argc, char **argv)
                     SRC_names_free(&tree);
                 }  else if (!path_list_add(&sources, argv[j])
                          || !dialect_list_add(&dialects,
-                                use_closures ? ST_DIALECT_CLOSURES
-                                             : ST_DIALECT_BLUE_BOOK)) {
+                                               ST_DIALECT_BLUE_BOOK)) {
                     fprintf(stderr, "st80: out of memory\n");
                     path_list_free(&sources);
                     return 1;
@@ -2298,15 +2295,17 @@ main(int argc, char **argv)
              *
              *  Any file compiled as closures settles it, which is the same
              *  rule as `the image contains closure code, so read expressions
-             *  the same way'.  -closures still forces it on for a profile
-             *  that does not ask, which is what that switch was for.
+             *  the same way'.  A profile that asks for neither leaves the
+             *  Blue Book, which is what -manifest and profiles/bluebook are
+             *  for; there is no switch, because a switch that disagrees with
+             *  the image only builds one that cannot run its own doits.
              */
             {
                 unsigned    k;
 
                 for (k = 0; k < dialects.count; ++k) {
                     if (dialects.items[k] == ST_DIALECT_CLOSURES) {
-                        use_closures = 1;
+                        eval_dialect = ST_DIALECT_CLOSURES;
                         break;
                     }
                 }

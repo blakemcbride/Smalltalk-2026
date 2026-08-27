@@ -328,12 +328,12 @@ deadlock.
 \end{stnote}
 
 \begin{stnote}
-An object with thousands of \emph{names} is linear to build. It was not always:
-1983's \ct{String>>hash} read the first character, the second-to-last, and the
-length, so two hundred names like \ct{key1}..\ct{key200} shared eleven hash
-values and a \ct{Dictionary} of them degenerated into one long chain. This
-package's own test found it, and \ct{lib/Collections-Protocol} now gives
-\ct{String} a hash over every character. See \ct{doc/JSON.md}.
+An object with thousands of \emph{names} is linear to build, because
+\ct{lib/Collections-Protocol} gives \ct{String} a hash over every character.
+1983's \ct{String>>hash} reads the first character, the second-to-last and the
+length, so two hundred names like \ct{key1}..\ct{key200} share eleven hash
+values and a \ct{Dictionary} of them degenerates into one long chain. See
+\ct{doc/JSON.md}.
 \end{stnote}
 
 \section{Streams}
