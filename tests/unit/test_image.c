@@ -410,8 +410,20 @@
  *  had always won; the earlier was `<primitive: 75>' falling back on
  *  `^self hash', which is a VALUE hash for every class lib/ has given one,
  *  and it would have come back the day somebody reordered the file.
+ *
+ *  2576 -> 2583 is the rest of the keys a keyboard made since the Alto has.
+ *  lib/Keyboard-Map had the four arrows; it now has home, end and the delete
+ *  that goes forward, and control makes left and right step a word and home
+ *  and end address the whole text.  Seven methods: InputSensor>>
+ *  keyboardEventPeek, which answers the keystroke undecoded so that the
+ *  editor can read the control bit as it was when the key was struck rather
+ *  than as the hardware has it now; and six on ParagraphEditor --
+ *  editingKey:typeIn:, deleteForward:, indexOfWordStartBefore:,
+ *  indexOfWordStartAfter:, indexOfLineStartAt: and indexOfLineEndAt:.
+ *  cursorKeyCodes became editingKeyCodes and cursorIndexFor: became
+ *  cursorIndexFor:control:, which is a rename each and costs nothing.
  */
-#define LIB_METHODS             2576
+#define LIB_METHODS             2583
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -2630,7 +2642,7 @@ test_browsing(void)
      *  now instead of being read and dropped, so 367 of the 373 classes
      *  answer one where none did.
      */
-    check_integer("(SourceFiles at: 1) contents size", 2195190);
+    check_integer("(SourceFiles at: 1) contents size", 2202177);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.

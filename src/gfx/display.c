@@ -2000,20 +2000,34 @@ GFX_pump(void)
             else if (key == SDLK_ESCAPE)
                 code = 27;
             /*
-             *  The four keys the Alto keyboard did not have.  Their SDL
-             *  keycodes are all far above 255, so they are given codes of
-             *  their own inside the range InputState>>keyAt:put: passes
-             *  through to the keyboard queue: above the mouse and keyset bits
-             *  at 128-135 and the modifier keys at 136-139, and clear of
-             *  140-145, which the 1983 keyboard map already spends on the
-             *  Alto's own special keys.
+             *  The keys the Alto keyboard did not have.  Their SDL keycodes
+             *  are far above 255 -- all but Delete's, which is 127 and means
+             *  something else here -- so they are given codes of their own
+             *  inside the range InputState>>keyAt:put: passes through to the
+             *  keyboard queue: above the mouse and keyset bits at 128-135 and
+             *  the modifier keys at 136-139, and clear of 140-145, which the
+             *  1983 keyboard map already spends on the Alto's own special
+             *  keys.
+             *
+             *  Delete is 146 rather than the 158 that would have kept this
+             *  block together, because 158 is the code the image already
+             *  decodes to BS2 and dispatches to
+             *  ParagraphEditor>>leaveBrackets:.  It is not 127 either: 127 is
+             *  what SDL reports for the key, and the 1983 map turns 127 into
+             *  Cut, because on the Alto DEL was the cut key.  On a keyboard
+             *  made since, the key to the right of Backspace deletes forward.
+             *
+             *  Control is NOT part of the code.  It travels with the event as
+             *  meta state -- InputState>>keyAt:put: puts it there and
+             *  KeyboardEvent>>hasCtrl reads it back -- so control-left is the
+             *  same 152 as left, and the image decides what the pair means.
              *
              *  lib/Keyboard-Map is the other half and has to agree with this
-             *  list: InputSensor>>initMap makes these four decode to
+             *  list: InputSensor>>initMap makes these codes decode to
              *  themselves instead of to `unassigned', and
-             *  ParagraphEditor>>normalCharacter: moves the caret rather than
-             *  typing them.  InputSensor class>>cursorKeyCodes is where the
-             *  image says the same four numbers.
+             *  ParagraphEditor>>normalCharacter: moves the caret or deletes
+             *  rather than typing them.  InputSensor class>>editingKeyCodes
+             *  is where the image says the same seven numbers.
              */
             else if (key == SDLK_LEFT)
                 code = 152;
@@ -2023,6 +2037,12 @@ GFX_pump(void)
                 code = 154;
             else if (key == SDLK_DOWN)
                 code = 155;
+            else if (key == SDLK_HOME)
+                code = 156;
+            else if (key == SDLK_END)
+                code = 157;
+            else if (key == SDLK_DELETE)
+                code = 146;
             else if (key < 128)
                 code = (unsigned) key;
             else

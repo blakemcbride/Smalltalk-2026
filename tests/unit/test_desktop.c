@@ -691,6 +691,162 @@ test_the_cursor_keys_move_the_caret(void)
 }
 
 /*
+ *  The rest of the keys a keyboard made since the Alto has: home, end, the
+ *  delete that goes forward, and control to widen a step into a word.
+ *
+ *  Checked the way the arrows above are, by pixels rather than by position:
+ *  every gesture here ends with the same three characters and the caret back
+ *  where it was, so the window must be bit for bit what it was before.  That
+ *  catches both halves of the failure at once -- a key that does nothing and
+ *  a key that types a box -- without this test having to know where anything
+ *  is on the screen.
+ *
+ *  A caret is the same shape wherever it stands, so counting ink cannot tell
+ *  a caret at the front of the text from one at the end.  These compare the
+ *  actual bits, through photograph(), which can.  And a backspace is the
+ *  probe that says where the caret really went: at the front of the text it
+ *  takes nothing, anywhere else it takes a character, and the difference is
+ *  loud.
+ *
+ *  This runs on the workspace the earlier tests opened, typed ABC into, and
+ *  left with the caret after the C.
+ */
+static void
+check_window(const uint16_t *shot, int changed, const char *what)
+{
+    region  r = changed_in(shot, 120, 200, 480, 400);
+
+    ++st_test_checks;
+    if ((r.ink != 0) == (changed != 0))
+        return;
+    ++st_test_failures;
+    printf("  FAIL %s %s the window (%ld pixels)\n", what,
+           changed ? "did not change" : "changed", r.ink);
+    dump_screen(what);
+}
+
+static void
+tap(unsigned code)
+{
+    GFX_inject_key(code, 1);
+    GFX_inject_key(code, 0);
+    settle(20);
+}
+
+/*  The same, with the control key held across it, as a hand would.  */
+static void
+tap_with_control(unsigned code)
+{
+    enum { CTRL_KEY = 138 };
+
+    GFX_inject_key(CTRL_KEY, 1);
+    settle(5);
+    GFX_inject_key(code, 1);
+    GFX_inject_key(code, 0);
+    settle(20);
+    GFX_inject_key(CTRL_KEY, 0);
+    settle(20);
+}
+
+static void
+test_the_editing_keys(void)
+{
+    /*  What display.c sends for them.  lib/Keyboard-Map agrees.  */
+    enum { LEFT_KEY = 152, RIGHT_KEY = 153, HOME_KEY = 156, END_KEY = 157,
+           DELETE_KEY = 146, BACKSPACE_KEY = 8, A_KEY = 'A' };
+    const uint16_t *typed;
+    long            ink;
+
+    printf("---- home, end, control-arrow and delete forward ----\n");
+
+    settle(30);
+    ink = scan(120, 200, 480, 400).ink;
+    if (!(typed = photograph()))
+        return;
+
+    /*
+     *  Home and back again types nothing and leaves the caret where it was.
+     */
+    tap(HOME_KEY);
+    tap(END_KEY);
+    settle(30);
+    check_window(typed, 0, "home-and-end");
+
+    /*
+     *  And home really went to the front: a backspace there takes nothing.
+     *  Had home been ignored the backspace would have eaten the C.
+     */
+    tap(HOME_KEY);
+    tap(BACKSPACE_KEY);
+    tap(END_KEY);
+    settle(30);
+    check_window(typed, 0, "backspace-after-home");
+
+    /*
+     *  Delete at the end of the text has nothing in front of it to take.
+     */
+    tap(DELETE_KEY);
+    settle(30);
+    check_window(typed, 0, "delete-past-the-end");
+
+    /*
+     *  Control-left is a word and not a character, so from after the C it
+     *  lands on the A rather than on the B -- and the backspace takes
+     *  nothing again.  Plain left would have left it in the middle.
+     */
+    tap_with_control(LEFT_KEY);
+    tap(BACKSPACE_KEY);
+    tap_with_control(RIGHT_KEY);
+    settle(30);
+    check_window(typed, 0, "backspace-after-control-left");
+
+    /*
+     *  Control-home and control-end address the whole text, which on one
+     *  line is the same place -- what this checks is that they are not
+     *  ignored for having a modifier held, which is how the map used to
+     *  answer 255 for anything it did not know.
+     */
+    tap_with_control(HOME_KEY);
+    tap(BACKSPACE_KEY);
+    tap_with_control(END_KEY);
+    settle(30);
+    check_window(typed, 0, "backspace-after-control-home");
+
+    /*
+     *  Now the one gesture that must change something: delete forward at the
+     *  front takes the A, and the window loses that letter's ink.  Ink and
+     *  not pixels, because home moved the caret and that is a change all by
+     *  itself -- a key that reached the image and did nothing would pass a
+     *  bare change test here.  A caret is the same shape wherever it stands,
+     *  so it adds the same ink at either end and cancels out of this.
+     */
+    tap(HOME_KEY);
+    tap(DELETE_KEY);
+    settle(30);
+    {
+        long    after = scan(120, 200, 480, 400).ink;
+
+        ++st_test_checks;
+        if (after >= ink) {
+            ++st_test_failures;
+            printf("  FAIL delete forward left the window %ld pixels of ink, "
+                   "was %ld\n", after, ink);
+            dump_screen("delete-forward");
+        }
+    }
+
+    /*
+     *  And typing it back and returning to the end restores the window
+     *  exactly, which is how we know delete took ONE character and put the
+     *  caret where the A had been.
+     */
+    tap(A_KEY);
+    tap(END_KEY);
+    settle(30);
+    check_window(typed, 0, "retyping-what-delete-took");
+}
+
+/*
  *  The Browser is the largest thing the interface builds, and the one whose
  *  failure was reported as "I tried to bring a browser up and nothing
  *  happened for a long time" -- which was not slowness but a missing
@@ -888,6 +1044,7 @@ main(void)
     test_the_view_answers_the_yellow_button();
     test_typing_reaches_the_window();
     test_the_cursor_keys_move_the_caret();
+    test_the_editing_keys();
     test_a_browser_opens();
     test_the_wheel_scrolls_the_view_under_the_pointer();
     test_the_window_menu_closes_a_window();

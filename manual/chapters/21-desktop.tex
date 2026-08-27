@@ -300,10 +300,35 @@ There is no \ct{Ctrl-D}, no \ct{Ctrl-S}, no \ct{Ctrl-Z}. \ct{do it},
 few editing and emphasis ones: \ct{Ctrl-W} deletes the previous word,
 \ct{Ctrl-B} bolds, \ct{Ctrl-I} italicises, \ct{Ctrl-X} clears emphasis.
 
+\subsection{Moving the insertion point}
+
+The keys a keyboard has for it all move it, and holding \ct{Ctrl} widens the
+step.
+
+\begin{center}
+\small
+\begin{tabular}{@{}lp{0.62\textwidth}@{}}
+\toprule
+\ctp{Left} \ctp{Right} & a character\\
+\ctp{Up} \ctp{Down} & a line, keeping the column\\
+\ctp{Ctrl-Left} \ctp{Ctrl-Right} & a word, landing on its first character
+  either way\\
+\ctp{Home} \ctp{End} & the ends of the line\\
+\ctp{Ctrl-Home} \ctp{Ctrl-End} & the ends of the text\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+A word is a run of letters, digits and colons, so \ct{at:put:} is one word
+and not three. The line \ct{Home} and \ct{End} mean is the line you can see:
+text too long for the pane wraps, and each wrapped part has its own ends.
+Pressing any of these while text is selected drops the selection at the end
+the key points at.
+
 \begin{stnote}
-Backspace deletes; the arrow keys move the insertion point; \ct{Return}
-inserts a carriage return. Typing with a selection active replaces the
-selection.
+Backspace deletes the character behind the insertion point and \ct{Delete}
+the one in front of it; \ct{Return} inserts a carriage return. Typing with a
+selection active replaces the selection, and either delete key removes it.
 \end{stnote}
 
 \section{Accept means compile}

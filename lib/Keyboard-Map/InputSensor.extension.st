@@ -6,8 +6,9 @@ layout, before any modifier is applied -- and the image is what applies the
 shift, through a map built by InputSensor class>>initialize.  That map is
 1983's, which is to say the Alto's, and the Alto's keyboard is not the one
 anybody has.  Everything unshifted agrees; three shifted keys do not, and
-all three are keys a Smalltalk programmer reaches for.  Four keys are
-missing outright: the arrows.
+all three are keys a Smalltalk programmer reaches for.  Seven keys are
+missing outright: the four arrows, home, end, and the delete that goes
+forward.
 
 The keyboard map is a String of 256 entries for each of the five meta states
 -- none, shift, control, shift and control, lock -- indexed by
@@ -19,23 +20,36 @@ In this system it is worse than a box -- code 255 is past the end of the
 face, so the scanner substitutes the zero-width `character not in font' and
 the key appears to do nothing at all.
 
-The window sends the cursor keys as codes of their own -- see the comment in
-src/gfx/display.c for why those four numbers and not others -- and this is
-where they stop being unassigned.  They decode to themselves, in every meta
-state, so that a shift or a control held down while an arrow is pressed
-still yields the arrow instead of a 255.
+The window sends those seven as codes of their own -- see the comment in
+src/gfx/display.c for why those numbers and not others -- and this is where
+they stop being unassigned.  They decode to themselves, in every meta state,
+so that a shift or a control held down while one is pressed still yields the
+key instead of a 255.
+
+That the map answers the same thing in all five planes is the point rather
+than an omission.  These keys are not characters, so there is no shifted
+form for the map to hold; what control does to left is not a different
+character but a different distance, and distance is the editor's business.
+It reads the control bit off the event, through keyboardEventPeek, where
+the state at the moment the key was struck is kept.
 "
 Extension { #name : 'InputSensor' }
 
 { #category : '*Keyboard-Map' }
-InputSensor class >> cursorKeyCodes [
-	"The codes the window sends for left, right, up and down, in that order.
+InputSensor class >> editingKeyCodes [
+	"The codes the window sends for the keys the Alto keyboard did not have:
+	 left, right, up, down, home, end and delete-forward, in that order.  The
+	 order is the meaning -- ParagraphEditor>>normalCharacter: dispatches on
+	 the position of a code in this list and nothing else.
 
-	 This list and the one in src/gfx/display.c are the same four numbers and
+	 This list and the one in src/gfx/display.c are the same seven numbers and
 	 have to stay that way; nothing checks it, because the image cannot see
-	 the C."
+	 the C.
 
-	^#(152 153 154 155)
+	 Delete is out of line at 146 because 158, which would have continued the
+	 run, is BS2 -- ParagraphEditor>>leaveBrackets: already answers for it."
+
+	^#(152 153 154 155 156 157 146)
 ]
 
 { #category : '*Keyboard-Map' }
@@ -64,7 +78,7 @@ InputSensor class >> shiftedKeys [
 
 { #category : '*Keyboard-Map' }
 InputSensor >> initMap [
-	"1983's map, with the cursor keys decoding to themselves and the shifted
+	"1983's map, with the editing keys decoding to themselves and the shifted
 	 punctuation reading off a keyboard that exists.
 
 	 Copied rather than poked in place: DefaultKeyboardMap is one String
@@ -74,10 +88,31 @@ InputSensor >> initMap [
 
 	| map |
 	map := DefaultKeyboardMap copy.
-	InputSensor cursorKeyCodes do: [:code |
+	InputSensor editingKeyCodes do: [:code |
 		#(0 256 512 768 1024) do: [:meta |
 			map at: meta + code + 1 put: code asCharacter]].
 	InputSensor shiftedKeys do: [:each |
 		map at: 256 + each key + 1 put: each value].
 	keyboardMap := map
+]
+
+{ #category : '*Keyboard-Map' }
+InputSensor >> keyboardEventPeek [
+	"The next keystroke undecoded: the key's own code, and the state of the
+	 meta keys at the moment it was struck.
+
+	 keyboardPeek answers what the map makes of the two together, which is
+	 the character to type.  That is the whole answer for a key that IS a
+	 character, and no answer at all for a key whose meaning depends on the
+	 meta state without being a character in any of them -- control-left is
+	 not a letter, it is a longer left.
+
+	 The state has to come off the event rather than off the keyboard now.
+	 A keystroke waits in the queue until the controller whose window it
+	 belongs to reaches it, and the control key can be let go in between; ask
+	 the hardware and a burst of typeahead decides on whichever keys happen
+	 to be down when it is drained."
+
+	self keyboardPressed ifTrue: [^self primKbdPeek].
+	self error: 'Cant peek when nothing there'
 ]
