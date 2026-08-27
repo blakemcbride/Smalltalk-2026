@@ -991,13 +991,35 @@ is_a_context(st_oop p)
  *  moment an exception outlives its handler -- stored in a variable and
  *  resumed later -- which is a mistake worth a message rather than a crash.
  */
+/*
+ *  The walk has no step limit, and taking one out is what this comment is
+ *  about.
+ *
+ *  It used to give up after 100,000 hops and answer `not live'.  That is a
+ *  wrong answer rather than a cheap one, and the shape of what it caused is
+ *  worth writing down: an exception raised 100,000 frames down found its
+ *  handler, called ContextPart>>return:, had this primitive fail, fell back
+ *  on the Smalltalk body -- which signals `return from a method that has
+ *  already returned' -- and that new Error searched from the same depth,
+ *  found the same handler, and failed here again.  A loop, not a stack
+ *  overflow, so nothing grew and nothing reported: the process spun in
+ *  silence for ever.  At 99,000 frames the same expression answered in
+ *  seventy milliseconds.
+ *
+ *  The chain being walked ends at nil and is built by this interpreter one
+ *  link at a time; the two other walkers in this file --
+ *  primitive_find_next_handler and primitive_find_next_unwind -- have never
+ *  had a limit, for the same reason.  A guard here bought nothing that they
+ *  do not already do without and cost a hang at a depth a program can
+ *  reach.  ST_MAX_CALL_DEPTH is where a stack that is too deep is stopped,
+ *  before it can be walked at all.
+ */
 static int
 context_is_live(st_oop ctx)
 {
-    st_oop      scan = st_vm.active_context;
-    unsigned    guard = 0;
+    st_oop  scan = st_vm.active_context;
 
-    while (OM_is_present(scan) && guard++ < 100000) {
+    while (OM_is_present(scan)) {
         if (scan == ctx)
             return 1;
         scan = OM_fetch_pointer(ST_CTX_SENDER, scan);
@@ -3100,6 +3122,40 @@ primitive_float_arc_cos(void)
 }
 
 /*
+ *  Float>>raisedTo: a Float, which is C's pow.
+ *
+ *  1983 computes it as `(exponent * self ln) exp' -- two transcendentals
+ *  where one would do -- so `10 raisedTo: 2.0' answered 100.00000000000004
+ *  and `2 raisedTo: 0.5' was not `2 sqrt'.  Pharo does the same thing, so
+ *  this is not a conformance failure; it is simply less accurate than the
+ *  machine can be for free.  pow is correctly rounded for the exact cases
+ *  on every libm worth the name, and no worse than the logarithm elsewhere.
+ *
+ *  It fails for a negative receiver with a fractional exponent, where the
+ *  answer is not real, and for a receiver of zero with a negative one --
+ *  the two cases where pow answers a NaN or an infinity.  The image's own
+ *  1983 body then runs and raises whatever it always raised.
+ */
+static int
+primitive_float_raised_to(void)
+{
+    double  base;
+    double  exponent;
+    double  answer;
+
+    if (!float_value(ST_stack_value(1), &base))
+        return 0;
+    if (!float_value(ST_stack_value(0), &exponent))
+        return 0;
+    answer = pow(base, exponent);
+    if (answer != answer)               /*  a NaN: not a real answer  */
+        return 0;
+    if (base == 0.0 && exponent < 0.0)
+        return 0;
+    return answer_float(answer, 2);
+}
+
+/*
  *  228: compile source into a CompiledMethod, in the running image.
  *
  *  The image had a second compiler -- 1983's, in Smalltalk -- and it did not
@@ -3704,17 +3760,35 @@ primitive_float_print_string(void)
 
     if (!float_value(receiver, &value))
         return 0;
-    for (digits = 15; digits <= 17; ++digits) {
-        snprintf(text, sizeof text, "%.*g", digits, value);
-        if (strtod(text, NULL) == value)
-            break;
+    /*
+     *  A NaN prints as "nan", never as "-nan".
+     *
+     *  IEEE 754 gives a NaN a sign bit and says nothing about what it
+     *  means; which one you get out of `infinity - infinity' is the
+     *  hardware's business, and on x86 it is the negative one.  So
+     *  `Float nan printString' answered '-nan' here and would answer 'nan'
+     *  on a machine that chose differently -- a platform detail leaking
+     *  into a printed form, and one that makes a test written against
+     *  either answer fail on the other.  There is only one NaN as far as
+     *  this system is concerned, so there is only one spelling of it.
+     *
+     *  An infinity keeps its sign, because there its sign means something.
+     */
+    if (value != value) {
+        snprintf(text, sizeof text, "nan");
+        digits = 0;
+    } else {
+        for (digits = 15; digits <= 17; ++digits) {
+            snprintf(text, sizeof text, "%.*g", digits, value);
+            if (strtod(text, NULL) == value)
+                break;
+        }
     }
     /*
-     *  A NaN or an infinity never compares equal, not even to itself, so the
-     *  loop above always runs out for them.  Seventeen digits is what it
-     *  leaves behind, and printing "nan" or "inf" is better than failing the
-     *  primitive and falling back on arithmetic that cannot represent them
-     *  either.
+     *  An infinity never compares equal to the text it printed, so the loop
+     *  above always runs out for one.  Seventeen digits is what it leaves
+     *  behind, and printing "inf" is better than failing the primitive and
+     *  falling back on arithmetic that cannot represent it either.
      */
     /*
      *  %g writes an exponent C's way -- "1e+16", "1e-05", "1e+308" -- and
@@ -5391,6 +5465,7 @@ ST_primitive_dispatch(unsigned index)
     case 225: return primitive_float_tan();
     case 226: return primitive_float_arc_sin();
     case 227: return primitive_float_arc_cos();
+    case 229: return primitive_float_raised_to();
     case 228: return primitive_compile_method();
     /*  Told apart by arity; see primitive_last_error.  */
     case 132: return st_vm.argument_count == 0
@@ -5543,6 +5618,7 @@ static const primitive_entry primitive_table[] = {
     { 225, ST_PRIM_PRESENT,  "Float tan -- ours; no Blue Book number" },
     { 226, ST_PRIM_PRESENT,  "Float arcSin -- ours; no Blue Book number" },
     { 227, ST_PRIM_PRESENT,  "Float arcCos -- ours; no Blue Book number" },
+    { 229, ST_PRIM_PRESENT,  "Float raisedTo: -- ours; no Blue Book number" },
     { 228, ST_PRIM_PRESENT,  "Compiler class compile -- ours"    },
     { 132, ST_PRIM_PRESENT,  "Object instVarsInclude:"          },
     { 100, ST_PRIM_PRESENT,  "signal a semaphore at a time"     },

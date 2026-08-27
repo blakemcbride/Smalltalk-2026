@@ -60,3 +60,22 @@ Behavior >> compile: code notifying: requestor trailer: bytes ifFail: failBlock 
 	self addSelector: selector withMethod: method.
 	^selector
 ]
+
+{ #category : '*Compiler-Fixes' }
+Behavior >> compile: code [
+	"Compile code for me and install it, answering the selector.
+
+	 The Blue Book gives this and compile:notifying: as THE spelling for
+	 adding a method programmatically, and neither existed here: only
+	 compile:classified: and compile:notifying:trailer:ifFail:, so the
+	 documented one-argument form was a doesNotUnderstand.  Squeak and
+	 Pharo both answer it, and generated code and tests reach for it first."
+	^self compile: code notifying: nil
+]
+
+{ #category : '*Compiler-Fixes' }
+Behavior >> compile: code notifying: requestor [
+	"compile:, with somewhere to report a syntax error.  The Blue Book's
+	 own body: the default trailer and a failure that answers nil."
+	^self compile: code notifying: requestor trailer: #(0 0 0) ifFail: [^nil]
+]

@@ -60,10 +60,13 @@ Error >> canOpenNotifier [
 	 to ask -- was false in exactly the builds that cannot draw.  What is
 	 actually needed is a controller driving the screen, and
 	 ScheduledControllers has an active one only while the desktop is
-	 pumping.  A bootstrap, a test run and a doIt all answer nil."
-	^Sensor notNil
-		and: [ScheduledControllers notNil
-		and: [ScheduledControllers activeController notNil]]
+	 pumping.  A bootstrap, a test run and a doIt all answer nil.
+
+	 The test itself moved to Object>>canOpenUserInterface when halt,
+	 halt:, notify:, confirm: and inspect were given the same guard.
+	 Several places asking the same question is fine; several places each
+	 deciding what the question means is how they drift apart."
+	^self canOpenUserInterface
 ]
 
 { #category : 'private' }

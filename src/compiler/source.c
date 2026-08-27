@@ -109,32 +109,79 @@ cur_advance(st_cursor *c)
     ++c->pos;
 }
 
-void
-SRC_skip_separators(st_cursor *c, char *comment, size_t comment_len)
+/*
+ *  Skip whitespace and comments, keeping the LAST comment seen when asked
+ *  for it -- as a string the caller owns, of whatever length it turns out
+ *  to be.
+ *
+ *  It used to write into a caller's fixed buffer, and Tonel's was 4096
+ *  bytes: a ceiling on how much a class may say about itself, silently
+ *  applied, in a system whose own class comments regularly run to a page.
+ *  Nothing here has a ceiling now.
+ */
+static char *
+skip_separators_taking(st_cursor *c, int want_text)
 {
+    char   *text = NULL;
+    size_t  capacity = 0;
+
     for (;;) {
+        size_t  n = 0;
+
         while (!cur_at_end(c) && isspace((unsigned char) cur_here(c)))
             cur_advance(c);
         if (cur_here(c) != '"')
-            return;
+            return text;
         cur_advance(c);
-        {
-            size_t  n = 0;
-
-            while (!cur_at_end(c)) {
-                if (cur_here(c) == '"') {
-                    cur_advance(c);
-                    if (cur_here(c) != '"')
-                        break;      /*  the comment ends  */
-                }
-                if (comment && n + 1 < comment_len)
-                    comment[n++] = cur_here(c);
+        while (!cur_at_end(c)) {
+            if (cur_here(c) == '"') {
                 cur_advance(c);
+                if (cur_here(c) != '"')
+                    break;          /*  the comment ends  */
             }
-            if (comment && comment_len)
-                comment[n] = '\0';
+            if (want_text) {
+                if (n + 2 > capacity) {
+                    size_t  want  = capacity ? capacity * 2 : 256;
+                    char   *grown = (char *) realloc(text, want);
+
+                    if (!grown) {
+                        want_text = 0;      /*  keep skipping, keep nothing */
+                        free(text);
+                        text = NULL;
+                        capacity = 0;
+                    }  else  {
+                        text = grown;
+                        capacity = want;
+                    }
+                }
+                if (want_text)
+                    text[n++] = cur_here(c);
+            }
+            cur_advance(c);
         }
+        if (want_text && text)
+            text[n] = '\0';        /*  the last comment wins  */
     }
+}
+
+void
+SRC_skip_separators(st_cursor *c, char *comment, size_t comment_len)
+{
+    char   *taken = skip_separators_taking(c, comment != NULL
+                                              && comment_len != 0);
+
+    if (comment && comment_len) {
+        comment[0] = '\0';
+        if (taken)
+            snprintf(comment, comment_len, "%s", taken);
+    }
+    free(taken);
+}
+
+char *
+SRC_take_comment(st_cursor *c)
+{
+    return skip_separators_taking(c, 1);
 }
 
 static int
@@ -440,6 +487,100 @@ chunk_class_side_definition(const char *text, const st_source_sink *sink,
     return 1;
 }
 
+/*
+ *  "Set comment: 'I am an unordered collection ...'" -- a whole chunk, and
+ *  nothing else in it.
+ *
+ *  1983 files a class comment as an expression chunk of exactly this shape,
+ *  which this reader used to skip: the class-definition and method-category
+ *  recognisers below did not match it and nothing else looked.  So no class
+ *  in an image built from sources/ had a comment -- 0 of 373 -- although the
+ *  text was sitting in the file three lines under the class definition, and
+ *  the Browser's comment pane, which is the class-side half of a Smalltalk's
+ *  documentation, was empty for every one of them.
+ *
+ *  Strict on purpose, and tried BEFORE the two recognisers below.  It reads
+ *  a name, an optional `class', the keyword, one string literal and nothing
+ *  after it; a chunk that is anything else is left for them.  The other way
+ *  round, a comment whose text happened to contain `instanceVariableNames:'
+ *  -- ClassDescription's does, near enough -- would be read as a class-side
+ *  definition.
+ */
+static int
+chunk_class_comment(const char *text, const st_source_sink *sink,
+                    void *user, int *stopped)
+{
+    const char *p = text;
+    char        name[256];
+    size_t      n = 0;
+    size_t      length = 0;
+    size_t      capacity = 0;
+    char       *body = NULL;
+    int         class_side = 0;
+    int         ok;
+
+    while (isspace((unsigned char) *p))
+        ++p;
+    if (!isupper((unsigned char) *p))
+        return 0;                   /*  a class name begins with a capital */
+    while ((isalnum((unsigned char) *p) || *p == '_') && n + 1 < sizeof name)
+        name[n++] = *p++;
+    name[n] = '\0';
+    while (*p == ' ' || *p == '\t')
+        ++p;
+    if (strncmp(p, "class", 5) == 0 && isspace((unsigned char) p[5])) {
+        class_side = 1;
+        p += 5;
+        while (isspace((unsigned char) *p))
+            ++p;
+    }
+    if (strncmp(p, "comment:", 8) != 0)
+        return 0;
+    p += 8;
+    while (isspace((unsigned char) *p))
+        ++p;
+    if (*p != '\'')
+        return 0;
+    ++p;
+    for (;;) {
+        if (!*p) {                  /*  unterminated: not ours after all  */
+            free(body);
+            return 0;
+        }
+        if (*p == '\'') {
+            ++p;
+            if (*p != '\'')
+                break;              /*  the literal ends  */
+        }
+        if (length + 2 > capacity) {
+            size_t  want  = capacity ? capacity * 2 : 256;
+            char   *grown = (char *) realloc(body, want);
+
+            if (!grown) {
+                free(body);
+                return 0;
+            }
+            body = grown;
+            capacity = want;
+        }
+        body[length++] = *p++;
+    }
+    if (body)
+        body[length] = '\0';
+    while (isspace((unsigned char) *p))
+        ++p;
+    if (*p) {                       /*  more code after it: not a comment  */
+        free(body);
+        return 0;
+    }
+    ok = sink->comment ? sink->comment(name, class_side, body ? body : "",
+                                       user) : 1;
+    free(body);
+    if (!ok)
+        *stopped = 1;
+    return 1;
+}
+
 static int
 chunk_class_definition(const char *text, const st_source_sink *sink,
                        void *user, int *stopped)
@@ -616,7 +757,8 @@ read_chunks(const char *path, const st_source_sink *sink, void *user,
                 stopped = 1;
             continue;
         }
-        if (!chunk_class_side_definition(chunk.text, sink, user, &stopped))
+        if (!chunk_class_comment(chunk.text, sink, user, &stopped)
+         && !chunk_class_side_definition(chunk.text, sink, user, &stopped))
             chunk_class_definition(chunk.text, sink, user, &stopped);
     }
     CHUNK_close(reader);

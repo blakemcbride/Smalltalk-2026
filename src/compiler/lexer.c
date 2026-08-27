@@ -17,6 +17,22 @@
 #include <stdlib.h>
 #include <string.h>
 
+/*
+ *  Text of a token too long for the token's own buffer.
+ *
+ *  Kept by the LEXER rather than by the token, and never freed until
+ *  LEX_close, because tokens here are copied by value all the time: the
+ *  compiler peeks, saves and restores them, and a token that owned its own
+ *  storage would either be freed while a saved copy still pointed at it or
+ *  need a copy discipline nothing else in this file has.  One allocation
+ *  per over-long literal, for the life of one compile, is the cheaper half
+ *  of that trade by a wide margin.
+ */
+typedef struct lex_overflow {
+    struct lex_overflow    *next;
+    char                    text[1];    /*  and as much more as it needs  */
+} lex_overflow;
+
 struct st_lexer {
     const char *source;
     size_t      pos;
@@ -31,8 +47,110 @@ struct st_lexer {
      *  spent: see the underscore and the binary-selector length below.
      */
     int         dialect;
+    lex_overflow *overflow;
     char        error[160];
 };
+
+/*
+ *  Somewhere to accumulate a token's text while it is being scanned, with
+ *  no ceiling on how long it may become.
+ *
+ *  The common token fits in `stack' and costs no allocation at all; the
+ *  rare one that does not grows a heap buffer by doubling.  Every scanner
+ *  below that used to write into a fixed array and drop the overflow --
+ *  the string at 255, the symbol at 127, the identifier and the binary
+ *  selector -- writes into one of these instead.
+ */
+typedef struct {
+    char       *text;
+    size_t      length;
+    size_t      capacity;
+    int         failed;         /*  an allocation did not happen  */
+    char        stack[256];
+} lex_text_buffer;
+
+static void
+buffer_open(lex_text_buffer *b)
+{
+    b->text     = b->stack;
+    b->length   = 0;
+    b->capacity = sizeof b->stack;
+    b->failed   = 0;
+    b->text[0]  = '\0';
+}
+
+static void
+buffer_push(lex_text_buffer *b, char c)
+{
+    if (b->failed)
+        return;
+    if (b->length + 2 > b->capacity) {
+        size_t  want  = b->capacity * 2;
+        char   *grown = (b->text == b->stack)
+                            ? (char *) malloc(want)
+                            : (char *) realloc(b->text, want);
+
+        if (!grown) {
+            b->failed = 1;
+            return;
+        }
+        if (b->text == b->stack)
+            memcpy(grown, b->stack, b->length);
+        b->text     = grown;
+        b->capacity = want;
+    }
+    b->text[b->length++] = c;
+}
+
+/*
+ *  Hand the accumulated text to the token and let the buffer go.
+ *
+ *  `text' always gets as much as it holds, so every diagnostic that prints
+ *  a token still prints one; `long_text' is set only when there was more,
+ *  and points into storage this lexer owns for the rest of its life.
+ */
+static void
+buffer_close(st_lexer *lx, lex_text_buffer *b, st_token *out)
+{
+    size_t  keep = b->length < sizeof out->text - 1
+                        ? b->length : sizeof out->text - 1;
+
+    if (b->failed) {
+        snprintf(lx->error, sizeof lx->error,
+                 "line %u: out of memory reading a token", out->line);
+        out->kind = ST_TOK_ERROR;
+        snprintf(out->text, sizeof out->text, "%s", lx->error);
+        if (b->text != b->stack)
+            free(b->text);
+        return;
+    }
+    memcpy(out->text, b->text, keep);
+    out->text[keep]  = '\0';
+    out->text_length = b->length;
+    if (b->length >= sizeof out->text) {
+        lex_overflow   *held = (lex_overflow *)
+                                malloc(sizeof *held + b->length);
+
+        if (!held) {
+            b->failed = 1;
+            buffer_close(lx, b, out);
+            return;
+        }
+        memcpy(held->text, b->text, b->length);
+        held->text[b->length] = '\0';
+        held->next     = lx->overflow;
+        lx->overflow   = held;
+        out->long_text = held->text;
+    }
+    if (b->text != b->stack)
+        free(b->text);
+}
+
+const char *
+LEX_text(const st_token *tok)
+{
+    return tok->long_text ? tok->long_text : tok->text;
+}
 
 /*  The characters Smalltalk-80 allows in a binary selector.  */
 static int
@@ -70,6 +188,14 @@ LEX_open(const char *source)
 void
 LEX_close(st_lexer *lx)
 {
+    if (lx) {
+        while (lx->overflow) {
+            lex_overflow   *next = lx->overflow->next;
+
+            free(lx->overflow);
+            lx->overflow = next;
+        }
+    }
     free(lx);
 }
 
@@ -204,8 +330,28 @@ note_big_integer(st_token *out, st_lexer *lx, size_t from, unsigned radix,
     out->integer_radix = radix;
     if (!too_big)
         return;
-    if (n >= sizeof out->text)
+    /*
+     *  Every digit, however many there are.  A literal with more than 255
+     *  of them -- 848 bits and up -- used to lose the rest of them here and
+     *  answer a number that was merely plausible, which is the same fault
+     *  the string scanner had and just as quiet.
+     */
+    out->text_length = n;
+    if (n >= sizeof out->text) {
+        lex_overflow   *held = (lex_overflow *) malloc(sizeof *held + n);
+
+        if (!held) {
+            lex_fail(lx, out, "line %u: out of memory reading an integer",
+                     out->line);
+            return;
+        }
+        memcpy(held->text, lx->source + from, n);
+        held->text[n]  = '\0';
+        held->next     = lx->overflow;
+        lx->overflow   = held;
+        out->long_text = held->text;
         n = sizeof out->text - 1;
+    }
     memcpy(out->text, lx->source + from, n);
     out->text[n]     = '\0';
     out->integer_big = 1;
@@ -355,14 +501,28 @@ scan_number(st_lexer *lx, st_token *out, int negative)
         return;
     }
     {
-        char    buf[128];
-        size_t  n = lx->pos - start;
+        lex_text_buffer buf;
+        size_t          n = lx->pos - start;
+        size_t          i;
 
-        if (n >= sizeof buf)
-            n = sizeof buf - 1;
-        memcpy(buf, lx->source + start, n);
-        buf[n] = '\0';
-        real = strtod(buf, NULL);
+        /*
+         *  The whole of it, not the first 127 characters of it.  A fixed
+         *  buffer here read "1" out of "1000...0e5" once the digits ran
+         *  past its end, and answered a Float that was off by whatever the
+         *  discarded tail was worth -- with nothing to see.
+         */
+        buffer_open(&buf);
+        for (i = 0; i < n; ++i)
+            buffer_push(&buf, lx->source[start + i]);
+        if (buf.failed) {
+            if (buf.text != buf.stack)
+                free(buf.text);
+            lex_fail(lx, out, "line %u: out of memory reading a number",
+                     out->line);
+            return;
+        }
+        buf.text[buf.length] = '\0';
+        real = strtod(buf.text, NULL);
         /*
          *  strtod answers an infinity for a decimal too big to hold, which
          *  is what IEEE 754 says an overflow produces and the wrong thing
@@ -377,9 +537,14 @@ scan_number(st_lexer *lx, st_token *out, int negative)
          *  reader in every language does.
          */
         if (real > DBL_MAX || real < -DBL_MAX) {
-            lex_fail(lx, out, "this number is too large for a Float: %s", buf);
+            lex_fail(lx, out, "this number is too large for a Float: %.120s",
+                     buf.text);
+            if (buf.text != buf.stack)
+                free(buf.text);
             return;
         }
+        if (buf.text != buf.stack)
+            free(buf.text);
     }
     out->kind = ST_TOK_FLOAT;
     out->real = negative ? -real : real;
@@ -462,8 +627,9 @@ underscore_is_assignment(const st_lexer *lx)
     return !is_word_char(lx, (unsigned char) next);
 }
 
-static void
-scan_word(st_lexer *lx, char *buf, size_t buflen)
+/*  Append a run of word characters to `into'.  Answers how many there were. */
+static size_t
+scan_word(st_lexer *lx, lex_text_buffer *into)
 {
     size_t  n = 0;
 
@@ -472,11 +638,11 @@ scan_word(st_lexer *lx, char *buf, size_t buflen)
 
         if (!is_word_char(lx, (unsigned char) c))
             break;
-        if (n + 1 < buflen)
-            buf[n++] = c;
+        buffer_push(into, c);
+        ++n;
         ++lx->pos;
     }
-    buf[n] = '\0';
+    return n;
 }
 
 static int
@@ -507,32 +673,22 @@ lex_token(st_lexer *lx, st_token *out)
      */
     if (is_word_start(lx, (unsigned char) c)
      && !(c == '_' && underscore_is_assignment(lx))) {
-        size_t  n = 0;
+        lex_text_buffer buf;
 
-        while (!at_end(lx)) {
-            char    d = lx->source[lx->pos];
-
-            if (!is_word_char(lx, (unsigned char) d))
-                break;
-            if (n + 1 < sizeof out->text)
-                out->text[n++] = d;
-            ++lx->pos;
-        }
-        out->text[n] = '\0';
+        buffer_open(&buf);
+        scan_word(lx, &buf);
         /*
          *  A trailing colon makes it a keyword, unless the colon is part of
          *  an assignment -- "x := 1" must not lex "x:" as a keyword.
          */
         if (!at_end(lx) && lx->source[lx->pos] == ':' && peek_char(lx, 1) != '=') {
-            if (n + 2 < sizeof out->text) {
-                out->text[n]     = ':';
-                out->text[n + 1] = '\0';
-            }
+            buffer_push(&buf, ':');
             ++lx->pos;
             out->kind = ST_TOK_KEYWORD;
-            return 1;
+        } else {
+            out->kind = ST_TOK_IDENTIFIER;
         }
-        out->kind = ST_TOK_IDENTIFIER;
+        buffer_close(lx, &buf, out);
         return 1;
     }
 
@@ -591,18 +747,20 @@ lex_token(st_lexer *lx, st_token *out)
         return 1;
 
     case '\'': {
-        size_t  n = 0;
+        lex_text_buffer buf;
 
+        buffer_open(&buf);
         ++lx->pos;
         for (;;) {
             if (at_end(lx)) {
+                if (buf.text != buf.stack)
+                    free(buf.text);
                 lex_fail(lx, out, "line %u: unterminated string", out->line);
                 return 1;
             }
             if (lx->source[lx->pos] == '\'') {
                 if (peek_char(lx, 1) == '\'') {
-                    if (n + 1 < sizeof out->text)
-                        out->text[n++] = '\'';
+                    buffer_push(&buf, '\'');
                     lx->pos += 2;
                     continue;
                 }
@@ -611,12 +769,11 @@ lex_token(st_lexer *lx, st_token *out)
             }
             if (lx->source[lx->pos] == '\n')
                 ++lx->line;
-            if (n + 1 < sizeof out->text)
-                out->text[n++] = lx->source[lx->pos];
+            buffer_push(&buf, lx->source[lx->pos]);
             ++lx->pos;
         }
-        out->text[n] = '\0';
-        out->kind    = ST_TOK_STRING;
+        out->kind = ST_TOK_STRING;
+        buffer_close(lx, &buf, out);
         return 1;
     }
 
@@ -644,51 +801,57 @@ lex_token(st_lexer *lx, st_token *out)
 
             lex_token(lx, &inner);
             memcpy(out->text, inner.text, sizeof out->text);
-            out->kind = ST_TOK_SYMBOL;
+            /*
+             *  Including the overflow, which the inner token may carry:
+             *  #'...' is spelled as a string and so has a string's length,
+             *  and the storage it points at belongs to this same lexer.
+             */
+            out->long_text   = inner.long_text;
+            out->text_length = inner.text_length;
+            out->kind = inner.kind == ST_TOK_ERROR
+                            ? ST_TOK_ERROR : ST_TOK_SYMBOL;
             return 1;
         }
         if (!at_end(lx) && is_binary_char((unsigned char) lx->source[lx->pos])) {
-            size_t  n = 0;
+            lex_text_buffer buf;
 
+            buffer_open(&buf);
             while (!at_end(lx)
                 && is_binary_char((unsigned char) lx->source[lx->pos])) {
-                if (n + 1 < sizeof out->text)
-                    out->text[n++] = lx->source[lx->pos];
+                buffer_push(&buf, lx->source[lx->pos]);
                 ++lx->pos;
             }
-            out->text[n] = '\0';
-            out->kind    = ST_TOK_SYMBOL;
+            out->kind = ST_TOK_SYMBOL;
+            buffer_close(lx, &buf, out);
             return 1;
         }
         {
             /*  A symbol may be several keywords run together.  */
-            size_t  n = 0;
+            lex_text_buffer buf;
+            size_t          n = 0;
 
+            buffer_open(&buf);
             for (;;) {
-                char    word[128];
-
-                scan_word(lx, word, sizeof word);
-                if (word[0] == '\0')
+                if (scan_word(lx, &buf) == 0)
                     break;
-                if (n + strlen(word) + 2 < sizeof out->text) {
-                    memcpy(out->text + n, word, strlen(word));
-                    n += strlen(word);
-                }
+                n = buf.length;
                 if (!at_end(lx) && lx->source[lx->pos] == ':') {
-                    if (n + 2 < sizeof out->text)
-                        out->text[n++] = ':';
+                    buffer_push(&buf, ':');
+                    n = buf.length;
                     ++lx->pos;
                     continue;
                 }
                 break;
             }
-            out->text[n] = '\0';
             if (n == 0) {
+                if (buf.text != buf.stack)
+                    free(buf.text);
                 lex_fail(lx, out, "line %u: # must be followed by a symbol",
                          out->line);
                 return 1;
             }
             out->kind = ST_TOK_SYMBOL;
+            buffer_close(lx, &buf, out);
             return 1;
         }
 
@@ -785,8 +948,10 @@ lex_token(st_lexer *lx, st_token *out)
     }
 
     if (is_binary_char((unsigned char) c)) {
-        size_t  n = 0;
+        lex_text_buffer buf;
+        size_t          n = 0;
 
+        buffer_open(&buf);
         /*
          *  A minus in front of a digit belongs to the literal only where an
          *  operand cannot already have been read.  "3-4" is a send of minus;
@@ -814,6 +979,8 @@ lex_token(st_lexer *lx, st_token *out)
           || lx->last_kind == ST_TOK_PERIOD
           || lx->last_kind == ST_TOK_BAR
           || lx->last_kind == ST_TOK_COLON)) {
+            if (buf.text != buf.stack)
+                free(buf.text);
             ++lx->pos;
             scan_number(lx, out, 1);
             return 1;
@@ -834,8 +1001,8 @@ lex_token(st_lexer *lx, st_token *out)
              && lx->pos + 1 < lx->length
              && isdigit((unsigned char) lx->source[lx->pos + 1]))
                 break;
-            if (n + 1 < sizeof out->text)
-                out->text[n++] = lx->source[lx->pos];
+            buffer_push(&buf, lx->source[lx->pos]);
+            ++n;
             ++lx->pos;
             /*
              *  Two characters at most in Smalltalk-80.  Post-1983 source
@@ -848,8 +1015,8 @@ lex_token(st_lexer *lx, st_token *out)
             if (n == 2 && lx->dialect != ST_DIALECT_CLOSURES)
                 break;
         }
-        out->text[n] = '\0';
-        out->kind    = ST_TOK_BINARY;
+        out->kind = ST_TOK_BINARY;
+        buffer_close(lx, &buf, out);
         return 1;
     }
 

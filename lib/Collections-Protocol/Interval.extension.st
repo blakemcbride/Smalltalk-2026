@@ -40,8 +40,11 @@ Interval >> hash [
 	 `(Set with: #(1 2 3)) includes: (1 to: 3)' answered false for a
 	 collection it was equal to.
 
-	 Same formula as Array>>hash, first and last, so the equality above and
-	 this agree by construction rather than by coincidence."
-	self size = 0 ifTrue: [^17171].
-	^self first hash + self last hash
+	 It used to say so by copying Array's body, first and last, which was
+	 the right reasoning about a function that read two elements out of
+	 however many there were.  Now Array>>hash is
+	 SequenceableCollection>>hash and so is this: the two agree because
+	 they are the same method, which is a stronger guarantee than agreeing
+	 because somebody kept two copies in step."
+	^super hash
 ]

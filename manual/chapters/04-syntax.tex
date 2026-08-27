@@ -116,13 +116,19 @@ is a literal, and bare words inside become \emph{symbols}.
 #(foo bar)                   "two Symbols"
 \end{st}
 
-\begin{stwarn}[\ctp{\#(true false nil)} is three symbols]
-In the 1983 grammar---which is this one---\ct{true}, \ct{false} and \ct{nil}
-inside a literal array are ordinary bare words, and bare words become symbols.
-Pharo special-cases them into the objects. Here, \ct|#(true) first class|
-answers \ct{Symbol}. If you want the objects, use a dynamic array:
-\ct|{true. false. nil}|.
-\end{stwarn}
+\begin{stnote}[\ctp{\#(true false nil)} is the three objects]
+\ct{true}, \ct{false} and \ct{nil} inside a literal array are the objects,
+not three symbols spelled like them: \ct|#(true) first class| answers
+\ct{True} and \ct|#(nil) first| is \ct{nil}. That is what ANSI specifies and
+what Squeak, Pharo and VisualWorks all answer.
+
+The 1983 grammar makes every bare word a symbol, those three included, and
+this system read it that way until an audit noticed. The failure was silent
+in the worst way---\ct|#nil printString| is \ct{'nil'}, so nothing printed
+could tell you---and it made \ct|#(1 nil 2) copyWithout: nil| remove nothing.
+The Blue Book dialect still reads 1983's way, because 1983's own library
+depends on it; see \ct{doc/LanguageExtensions.md}.
+\end{stnote}
 
 \subsection{Byte arrays}
 

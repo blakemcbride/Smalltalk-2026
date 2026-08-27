@@ -77,3 +77,44 @@ PositionableStream >> nextLine [
 		ifTrue: [line copyFrom: 1 to: line size - 1]
 		ifFalse: [line]
 ]
+
+{ #category : '*Streams-Protocol' }
+PositionableStream >> skip: anInteger [
+	"Move anInteger elements along, CLAMPED to my two ends.
+
+	 1983's does `self position: position + anInteger' and lets position:
+	 raise, and 1983's own comment on it says a subclass `might choose to be
+	 more helpful and select the minimum of self size and position+anInteger
+	 or maximum of 1'.  It is helpful in the way that matters: skip: is what
+	 a parser sends to step over something it has already looked at, and
+	 `(ReadStream on: #(1 2 3)) skip: 10' raising means every such caller
+	 has to compare against the size first -- which is the same clamp,
+	 written once per call site instead of once here.  Pharo clamps."
+	| target limit |
+	"
+	 The far end is readLimit, except on a WriteStream, where position runs
+	 ahead of readLimit until something sets it back -- WriteStream>>position:
+	 is `readLimit := readLimit max: position' and then the inherited one.
+	 Taking the max here is that same rule, read rather than written.
+	"
+	limit := readLimit max: self position.
+	target := self position + anInteger.
+	target < 0 ifTrue: [target := 0].
+	target > limit ifTrue: [target := limit].
+	self position: target
+]
+
+{ #category : '*Streams-Protocol' }
+PositionableStream >> collect: aBlock [
+	"A stream over aBlock's value for each of my remaining elements.
+
+	 Answered as a ReadStream on a collected Array rather than as a lazy
+	 stream: laziness would mean a class of its own and a second position to
+	 keep in step, and every caller in sight -- Pharo's included -- drains
+	 it at once anyway.  I am left at the end, which is what draining me
+	 means."
+	| collected |
+	collected := OrderedCollection new.
+	[self atEnd] whileFalse: [collected add: (aBlock value: self next)].
+	^ReadStream on: collected asArray
+]

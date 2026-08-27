@@ -98,9 +98,24 @@ Character space
 \end{st}
 
 \begin{stwarn}
-\ct|$a value| answers \ct|$a|, not 97: \ct{Character} implements
-\ct{asciiValue}, and \ct{Object>>value}---added for Pharo
-compatibility---answers the receiver. Use \ct{asciiValue} or \ct{asInteger}.
+\ct|$a value| answers 97, the code point---the same number as
+\ct{asciiValue} and \ct{asInteger}, and the third spelling because it is the
+one ported source uses. It answered \ct|$a| for a while, because
+\ct{Object>>value}---added for Pharo compatibility---answers the receiver
+and \ct{Character} had nothing of its own; a code point read that way came
+back as a \ct{Character} and was found out later, in arithmetic, rather than
+at the send.
+\end{stwarn}
+
+\begin{stwarn}
+\textbf{Characters run from 0 to 255, and that is the whole set.} A
+\ct{Character} here is the Blue Book's: a unique entry in
+\ct{CharacterTable}, which has 256 of them. \ct{Character value: 256} raises
+\ct{SubscriptOutOfBounds}, and a \ct{String} is a byte array of them, so there
+is no Unicode above Latin-1 and no wide string. Source files are read as
+UTF-8 and a multi-byte sequence in one is scanned as a single character, so a
+character literal past 255 is refused by its code point when the file is read
+rather than mis-scanned into two.
 \end{stwarn}
 
 \section{Building strings}

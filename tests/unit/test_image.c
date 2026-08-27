@@ -158,8 +158,14 @@
  *  than the end of the VM; BlockTemporaryNode, which is how the image's
  *  own Parser now carries `[:x | | t | ...]'; and OutOfMemory, which the
  *  interpreter raises where it used to print a line and stop.
+ *
+ *  147 -> 148 with the Bugs2 fixes: RecursionDepthExceeded, which the
+ *  interpreter raises when a stack passes ST_MAX_CALL_DEPTH frames.  A
+ *  method that does not stop calling itself used to reach five million
+ *  frames, twelve gigabytes and the end of the process; it is now an Error
+ *  one request can catch.
  */
-#define LIB_CLASSES             147
+#define LIB_CLASSES             148
 /*
  *  This number is a ratchet and is meant to move: lib/ is where every
  *  divergence from the frozen 1983 sources lives, so it grows whenever a
@@ -378,8 +384,27 @@
  *  2529 -> 2530 is File class>>initialize: 1983 put 3 in FilePool at #Shorten
  *  and every reader of it asks `rwmode bitAnd: Shorten', so the shorten bit
  *  was never set and no file written through a stream was ever truncated.
+ *
+ *  2530 -> 2577 is the Bugs2 fixes, and they are worth naming by what they
+ *  repair rather than by count.  The hash contract: SequenceableCollection,
+ *  Array and Interval hash over every element, so an OrderedCollection or a
+ *  ByteArray can be a Set element or a Dictionary key at all, and a
+ *  Dictionary keyed by Arrays stops being a linear scan -- 4,000 of them
+ *  went from 26 seconds to 82 milliseconds.  LinkedList goes the other way,
+ *  to identity =, because a Semaphore is one and its contents are whoever
+ *  is waiting on it this instant.  Set, IdentitySet and CollectionElement,
+ *  so `aSet add: nil' adds one.  Bag = and hash, and a Bag that refuses a
+ *  negative number of occurrences.  ZeroDivide from Float>>/, Integer>>//,
+ *  Fraction>>reciprocal and Number>>reciprocal, where only SmallInteger
+ *  raised it before.  Object>>halt, halt:, notify:, confirm:, inspect and
+ *  basicInspect, which opened a window a headless image can never dismiss.
+ *  Time normalising its hours.  Float>>raisedTo: through the machine's pow.
+ *  And the Blue Book protocol Bugs2 found missing: Behavior>>compile:,
+ *  compile:notifying:, OrderedCollection>>removeFirst:, removeLast:,
+ *  add:afterIndex:, String>>trimSeparators, PositionableStream>>collect:
+ *  and a skip: that clamps.
  */
-#define LIB_METHODS             2530
+#define LIB_METHODS             2577
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -567,8 +592,10 @@ build_once(void)
      *  141 -> 145 with lib/Compiler-Fixes and OutOfMemory:
      *  SyntaxErrorNotification, NonBooleanReceiver, BlockTemporaryNode and
      *  OutOfMemory, none of which defines a class-side new either.
+     *
+     *  145 -> 146 with RecursionDepthExceeded, which does not either.
      */
-    CHECK_EQ_INT(res.news_synthesized, 145);
+    CHECK_EQ_INT(res.news_synthesized, 146);
     built = 1;
     return 1;
 }
@@ -601,26 +628,37 @@ count_method(const char *class_name, int class_side, const char *category,
     return 1;
 }
 
+static void
+fill_compile_context(st_compile_context *ctx)
+{
+    memset(ctx, 0, sizeof *ctx);
+    ctx->intern_symbol      = BOOT_intern_symbol;
+    ctx->make_string        = BOOT_make_string;
+    ctx->make_float         = BOOT_make_float;
+    ctx->make_large_integer = BOOT_make_large_integer;
+    ctx->make_large_integer_digits = BOOT_make_large_integer_digits;
+    ctx->make_array         = BOOT_make_array;
+    ctx->make_byte_array    = BOOT_make_byte_array;
+    ctx->make_method_state  = BOOT_make_method_state;
+    ctx->make_character     = BOOT_make_character;
+    ctx->lookup_global      = BOOT_lookup_global;
+    ctx->dialect            = test_dialect;
+}
+
 static st_oop
 evaluate(const char *expression)
 {
     st_compile_context  ctx;
     st_compile_result   res;
-    char                source[1024];
+    /*
+     *  2048, not 1024: the Bugs2 checks below write out a 300-element
+     *  literal array and a 300-character string literal, because the fault
+     *  they are about was a buffer that dropped what did not fit.
+     */
+    char                source[2048];
     st_oop              context;
 
-    memset(&ctx, 0, sizeof ctx);
-    ctx.intern_symbol      = BOOT_intern_symbol;
-    ctx.make_string        = BOOT_make_string;
-    ctx.make_float         = BOOT_make_float;
-    ctx.make_large_integer = BOOT_make_large_integer;
-    ctx.make_large_integer_digits = BOOT_make_large_integer_digits;
-    ctx.make_array         = BOOT_make_array;
-    ctx.make_byte_array    = BOOT_make_byte_array;
-    ctx.make_method_state  = BOOT_make_method_state;
-    ctx.make_character     = BOOT_make_character;
-    ctx.lookup_global      = BOOT_lookup_global;
-    ctx.dialect            = test_dialect;
+    fill_compile_context(&ctx);
 
     /*
      *  Collect first.  Every doIt here is unreachable the moment it finishes,
@@ -669,6 +707,39 @@ evaluate(const char *expression)
         return ST_OOP_INVALID;
     }
     return st_vm.return_value;
+}
+
+/*
+ *  A doIt this compiler must REFUSE, and the words it must refuse it in.
+ *
+ *  Half the Bugs2 compiler fixes are about refusing rather than answering:
+ *  before them a name too long for the frame tables was silently truncated
+ *  to a DIFFERENT name, and the diagnostic that eventually came out named
+ *  the assignment rather than the name.  A test that only checked what the
+ *  compiler accepts cannot see any of that.
+ */
+static void
+check_refused(const char *expression, const char *wanted)
+{
+    st_compile_context  ctx;
+    st_compile_result   res;
+    char                source[2048];
+
+    fill_compile_context(&ctx);
+    snprintf(source, sizeof source, "doIt %s", expression);
+    memset(&res, 0, sizeof res);
+    ++st_test_checks;
+    if (COMPILE_method(source, &ctx, &res) == 0) {
+        ++st_test_failures;
+        printf("  FAIL a %u-character doIt compiled; it should have been "
+               "refused with '%s'\n", (unsigned) strlen(source), wanted);
+        return;
+    }
+    if (!strstr(res.error, wanted)) {
+        ++st_test_failures;
+        printf("  FAIL refused with '%s', want something holding '%s'\n",
+               res.error, wanted);
+    }
 }
 
 static void
@@ -2546,7 +2617,13 @@ test_browsing(void)
      *  the source pointer is 22 bits and silently truncated once, and a
      *  size that stops growing is how that would show.
      */
-    check_integer("(SourceFiles at: 1) contents size", 1948287);
+    /*
+     *  1948287 -> 2193653 is 47 new methods and, much the larger half, every
+     *  class's COMMENT: they are filed into the sources beside the methods
+     *  now instead of being read and dropped, so 367 of the 373 classes
+     *  answer one where none did.
+     */
+    check_integer("(SourceFiles at: 1) contents size", 2193653);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -3801,6 +3878,299 @@ test_where_the_ink_lands(void)
     }
 }
 
+/*
+ *  Bugs2.md: a second outside-in audit, and what each of its findings looks
+ *  like from in here.
+ *
+ *  The first audit's fixes are held by the checks above, scattered among
+ *  the subjects they belong to.  These are kept together instead, because
+ *  what they have in common is not a subject: every one of them is a case
+ *  where the system answered something plausible rather than failing, and
+ *  the reason to write them down in one place is that the NEXT such audit
+ *  should be able to read what the last one found.
+ */
+static void
+test_bugs2(void)
+{
+    int     saved = test_dialect;
+    char    expression[1600];
+    size_t  i;
+    size_t  k;
+
+    test_dialect = ST_DIALECT_CLOSURES;
+
+    /*
+     *  B1: a string literal is as long as it is written.
+     *
+     *  The lexer's token buffer was 256 bytes and the scanner consumed the
+     *  rest of the literal without storing it, so every string literal past
+     *  255 characters was silently truncated -- and four methods in the
+     *  image as built were already carrying one.  Benchmark>>longishString
+     *  is a 422-character quotation that stopped mid-word at `ssible
+     *  example o'.
+     */
+    expression[0] = '\'';
+    for (i = 1; i <= 300; ++i)
+        expression[i] = 'a';
+    expression[301] = '\'';
+    snprintf(expression + 302, sizeof expression - 302, " size");
+    check_integer(expression, 300);
+    check_integer("Benchmark new longishString size", 422);
+
+    /*  B3: and so is a symbol literal, which had a second limit at 127.  */
+    expression[0] = '#';
+    for (i = 1; i <= 300; ++i)
+        expression[i] = 'b';
+    snprintf(expression + 301, sizeof expression - 301, " size");
+    check_integer(expression, 300);
+
+    /*
+     *  B2: a literal array holds every element written in it.
+     *
+     *  It stopped at 256, and the visible half of that was storeString:
+     *  Array>>storeOn: writes the literal form when every element is a
+     *  literal, so an Array of a thousand numbers stored itself into
+     *  something that read back a quarter the size.
+     */
+    k = 0;
+    expression[k++] = '#';
+    expression[k++] = '(';
+    for (i = 0; i < 300; ++i) {
+        expression[k++] = '1';
+        expression[k++] = ' ';
+    }
+    expression[k++] = ')';
+    snprintf(expression + k, sizeof expression - k, " size");
+    check_integer(expression, 300);
+    check_integer("(Compiler evaluate: (1 to: 300) asArray storeString) size",
+                  300);
+
+    /*
+     *  B4: a name too long to hold is refused, and the refusal says so.
+     *
+     *  It used to truncate the declaration and the use to 63 characters and
+     *  then look the ASSIGNMENT up against the full text -- so the compiler
+     *  reported `cannot assign to' for a name that was declared right there,
+     *  which is the one thing that was not wrong with the code.
+     */
+    k = 0;
+    expression[k++] = '|';
+    expression[k++] = ' ';
+    for (i = 0; i < 200; ++i)
+        expression[k++] = 'c';
+    snprintf(expression + k, sizeof expression - k, " | ^1");
+    check_refused(expression, "characters long");
+
+    /*
+     *  B8: nil, true and false inside #( ) are the objects.
+     *
+     *  They were three Symbols, and `#nil printString' is 'nil', so nothing
+     *  printed could tell you.  In the closure dialect only; the Blue Book
+     *  keeps 1983's reading, which its own library depends on.
+     */
+    check_boolean("#(nil) first isNil", 1);
+    check_boolean("#(true) first", 1);
+    check_boolean("#(false) first not", 1);
+    check_integer("#(1 nil 2) indexOf: nil", 2);
+    check_boolean("#(nil) = (Array with: nil)", 1);
+    check_integer("(#(1 nil 2) copyWithout: nil) size", 2);
+
+    /*
+     *  B5 and B6: = and hash agree across the sequenceable collections.
+     *
+     *  Array>>hash read the first and last element only, so a hundred
+     *  arrays of the shape (0, i, 0) shared one hash and a Dictionary keyed
+     *  by Arrays was a linear scan.  Everything else sequenceable had
+     *  structural = and Object's identity hash, which a Set cannot hold:
+     *  600 distinct one-element OrderedCollections deduplicated to 599, and
+     *  which 599 depended on where the collector had put them.
+     */
+    check_boolean("(OrderedCollection with: 1) hash "
+                  "= (OrderedCollection with: 1) hash", 1);
+    check_boolean("#(1 2 3) hash = #(1 99 3) hash", 0);
+    check_boolean("#(1 2 3) hash = (1 to: 3) hash", 1);
+    check_integer("((1 to: 100) collect: [:i | (Array with: 0 with: i "
+                  "with: 0) hash]) asSet size", 100);
+    check_integer("| s | s := Set new. 1 to: 300 do: [:i | "
+                  "s add: (OrderedCollection with: i)]. 1 to: 300 do: [:i | "
+                  "s add: (OrderedCollection with: i)]. ^s size", 300);
+    check_integer("| s | s := Set new. 1 to: 300 do: [:i | "
+                  "s add: i printString asByteArray]. 1 to: 300 do: [:i | "
+                  "s add: i printString asByteArray]. ^s size", 300);
+    check_string("| d | d := Dictionary new. "
+                 "d at: (OrderedCollection with: 1) put: 'v'. "
+                 "^d at: (OrderedCollection with: 1) ifAbsent: ['MISS']",
+                 "v");
+    /*
+     *  And LinkedList back OUT of it, in the same breath.  Semaphore is a
+     *  LinkedList, its `elements' are the processes waiting on it at this
+     *  instant, and `Semaphore new = Semaphore new' has answered true since
+     *  1983 -- harmlessly, while the hash was Object's, because a Set could
+     *  still hold both.  A structural hash would have made the two agree in
+     *  the wrong direction and given a Semaphore a hash that moved every
+     *  time a process waited on it.
+     */
+    check_boolean("Semaphore new = Semaphore new", 0);
+    check_integer("| a b | a := Semaphore new. b := Semaphore new. "
+                  "^(Set with: a with: b) size", 2);
+
+    /*  B7: and across Bag, which had neither = nor hash.  */
+    check_boolean("(Bag withAll: #(1 1 2)) = (Bag withAll: #(1 1 2))", 1);
+    check_boolean("(Bag withAll: #(1 1 2)) = (Bag withAll: #(1 2 2))", 0);
+    check_boolean("(Bag withAll: #(1 1 2)) hash "
+                  "= (Bag withAll: #(2 1 1)) hash", 1);
+    check_string("[Bag new add: 3 withOccurrences: -2] "
+                 "on: Error do: [:e | e messageText]",
+                 "a Bag cannot hold an element -2 times");
+
+    /*
+     *  B9: a Set can hold nil.
+     *
+     *  `aSet add: nil' did nothing and answered its argument, so a caller
+     *  checking the return value saw a successful add.  It reached
+     *  Dictionary, which stores a nil key perfectly well and then could not
+     *  enumerate it, because keys builds a Set.
+     */
+    check_integer("| s | s := Set new. s add: nil. ^s size", 1);
+    check_integer("(Array with: 1 with: nil with: 2) asSet size", 3);
+    check_integer("| d | d := Dictionary new. d at: nil put: 7. "
+                  "^d keys size", 1);
+    check_boolean("| s | s := Set new. s add: nil. ^s includes: nil", 1);
+    check_integer("| s | s := Set new. s add: nil. s remove: nil. ^s size", 0);
+    check_integer("| s | s := IdentitySet new. s add: nil; add: nil; add: 3. "
+                  "^s size", 2);
+
+    /*
+     *  B10: dividing by zero is a ZeroDivide whatever the receiver is.
+     *
+     *  It was raised for a SmallInteger and nowhere else, so the two cases
+     *  that fire on computed data rather than on literals -- every Float,
+     *  and every Integer past 2^62 -- defeated the handler a careful caller
+     *  had written.
+     */
+    check_string("[1/0] on: ZeroDivide do: [:e | 'caught']", "caught");
+    check_string("[1.0/0] on: ZeroDivide do: [:e | 'caught']", "caught");
+    check_string("[1.0/0.0] on: ZeroDivide do: [:e | 'caught']", "caught");
+    check_string("[(1/2)/0] on: ZeroDivide do: [:e | 'caught']", "caught");
+    check_string("[(2 raisedTo: 70)//0] on: ZeroDivide do: [:e | 'caught']",
+                 "caught");
+    check_string("[(2 raisedTo: 70)\\\\0] on: ZeroDivide do: [:e | 'caught']",
+                 "caught");
+    check_string("[0 reciprocal] on: ZeroDivide do: [:e | 'caught']", "caught");
+    check_string("[0.0 reciprocal] on: ZeroDivide do: [:e | 'caught']",
+                 "caught");
+
+    /*
+     *  B11: the five methods that opened a window signal instead when there
+     *  is nothing to open one on.
+     *
+     *  A headless image has no screen and nobody to click, so each of them
+     *  parked its process on the input semaphore for ever -- and `[self
+     *  halt] on: Error do:' did not catch it, because nothing was
+     *  signalled.  halt is the single most likely thing to be left in code
+     *  by accident.
+     */
+    check_integer("[nil halt] on: Warning do: [:e | 42]", 42);
+    check_integer("[nil halt: 'x'] on: Warning do: [:e | 43]", 43);
+    check_boolean("[nil notify: 'x'] on: Warning do: [:e | e resume: nil]", 1);
+    check_boolean("nil confirm: 'ok?'", 0);
+    check_boolean("[nil confirm: 'ok?'] on: Warning do: [:e | e resume: true]",
+                  1);
+    check_integer("3 inspect. ^7", 7);
+
+    /*
+     *  B12: a method that does not stop calling itself is an Error, not the
+     *  end of the process.
+     *
+     *  It reached about five million frames, 12 GB and `out of memory
+     *  activating a method' -- every worker, every open connection and every
+     *  request in flight.  Nothing was signalled on the way.
+     */
+    check_integer("[[:b | b value: b] value: [:b | b value: b]] "
+                  "on: RecursionDepthExceeded do: [:e | 99]", 99);
+    /*
+     *  And a stack that is merely DEEP still works, which is the other half
+     *  of the same claim: an exception 150,000 frames down is delivered.
+     *  It was not -- context_is_live gave up walking after 100,000 hops and
+     *  answered `that context has already returned', so the handler's
+     *  return signalled a fresh error from the same depth, which did the
+     *  same thing.  A loop with no output at all.
+     */
+    check_string("[[:blk :n | n = 0 ifTrue: [Error new signal: 'deep'] "
+                 "ifFalse: [blk value: blk value: n - 1]] "
+                 "value: [:blk :n | n = 0 ifTrue: [Error new signal: 'deep'] "
+                 "ifFalse: [blk value: blk value: n - 1]] value: 150000] "
+                 "on: Error do: [:e | 'caught']", "caught");
+
+    /*
+     *  B14: a class answers its comment.
+     *
+     *  Zero of 373 did.  Both readers handed the text to the bootstrap and
+     *  the bootstrap dropped it; it is filed into the sources beside the
+     *  methods now, which is where a shipped 1983 image keeps it.
+     */
+    check_string("Set comment",
+                 "I am an unordered collection of elements that are not "
+                 "duplicated in me.");
+    check_boolean("Object comment isEmpty", 0);
+    check_boolean("CollectionElement comment isEmpty", 0);
+
+    /*
+     *  B15: a Time is a time of day at both ends.
+     *
+     *  fromSeconds: did not reduce and printOn: subtracted twelve rather
+     *  than taking the remainder, so hour 24 printed as noon and hour 25 as
+     *  the impossible `13 pm'.
+     */
+    check_string("(Time fromSeconds: 86400) printString", "12:00:00 am");
+    check_string("(Time fromSeconds: 90000) printString", "1:00:00 am");
+    check_string("(Time fromSeconds: -1) printString", "11:59:59 pm");
+    check_string("(Time fromSeconds: 0) printString", "12:00:00 am");
+    check_string("(Time fromSeconds: 43200) printString", "12:00:00 pm");
+    /*  200 consecutive seconds used to produce 60 distinct hashes.  */
+    check_integer("((1 to: 200) collect: [:i | (Time fromSeconds: i) hash]) "
+                  "asSet size", 200);
+
+    /*  B16: the Blue Book protocol the audit found missing.  */
+    check_integer("(OrderedCollection withAll: #(1 2 3 4 5)) removeFirst: 2; "
+                  "yourself; size", 3);
+    check_string("((OrderedCollection withAll: #(1 2 3 4 5)) removeLast: 2) "
+                 "printString", "an OrderedCollection(4 5 )");
+    check_string("| c | c := OrderedCollection withAll: #(1 2 3). "
+                 "c add: 99 afterIndex: 2. ^c printString",
+                 "an OrderedCollection(1 2 99 3 )");
+    check_string("'  hi  ' trimSeparators", "hi");
+    check_string("'hello' copy replaceAll: $l with: $L", "heLLo");
+    check_string("((ReadStream on: #(1 2 3)) collect: [:x | x * 2]) upToEnd "
+                 "printString", "(2 4 6 )");
+
+    /*
+     *  B17: the smaller things.  A NaN prints as one spelling on every
+     *  machine; a String that is not a number answers nil rather than 0,
+     *  which cannot be told from a parse of '0'; and skip: past the end
+     *  clamps rather than signalling.
+     */
+    check_string("Float nan printString", "nan");
+    /*
+     *  And raisedTo: with a non-integer exponent, which 1983 computes as
+     *  `(exponent * self ln) exp' -- two transcendental functions where the
+     *  machine has one.  An INTEGER exponent still keeps the receiver's
+     *  kind, which is the part that must not change.
+     */
+    check_string("(10 raisedTo: 2.0) printString", "100.0");
+    check_boolean("(2 raisedTo: 0.5) = 2 sqrt", 1);
+    check_integer("2 raisedTo: 10", 1024);
+    check_string("((1/2) raisedTo: 2) printString", "(1/4)");
+    check_boolean("'abc' asNumber isNil", 1);
+    check_integer("'12abc' asNumber", 12);
+    check_integer("'0' asNumber", 0);
+    check_boolean("(ReadStream on: #(1 2 3)) skip: 10; atEnd", 1);
+    check_boolean("| s | s := ReadStream on: #(1 2 3). s skip: -10. "
+                  "^s position = 0", 1);
+
+    test_dialect = saved;
+}
+
 int
 main(void)
 {
@@ -3890,6 +4260,7 @@ main(void)
     test_a_restarted_frame_counts_its_arguments_once();
     test_weak_references();
     test_pragmas_are_objects();
+    test_bugs2();
 
     OM_shutdown();
     return ST_TEST_END();

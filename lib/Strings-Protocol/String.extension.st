@@ -334,3 +334,34 @@ String >> tokenize: aSeparator [
 		ifTrue: [String with: aSeparator]
 		ifFalse: [aSeparator])
 ]
+
+{ #category : '*Strings-Protocol' }
+String >> trimSeparators [
+	"trimBoth under the name Pharo and Squeak give it, which is the name
+	 forty years of ported code writes."
+	^self trimBoth
+]
+
+{ #category : '*Strings-Protocol' }
+String >> asNumber [
+	"The number this text spells, or NIL when it does not spell one.
+
+	 1983 answers `Number readFromString: self', and that reader answers 0
+	 for anything it cannot read -- so `'abc' asNumber' was 0 and could not
+	 be told from a parse of `'0''.  A parse failure that answers a number
+	 is the worst possible answer, because every caller downstream treats
+	 it as data.  String>>asInteger in this same file already answers nil
+	 for the same reason, in the same words; the two disagreeing about the
+	 same text was the odd part.
+
+	 A leading number followed by other text still parses -- `'12abc'
+	 asNumber' is 12, as it is in Pharo -- because that is the reader's
+	 documented behaviour and callers rely on it.  Only text with no
+	 number at the front at all answers nil."
+	| stream |
+	stream := ReadStream on: self trimLeft.
+	(stream atEnd not and: [stream peek = $- or: [stream peek = $+]])
+		ifTrue: [stream next].
+	(stream atEnd not and: [stream peek isDigit]) ifFalse: [^nil].
+	^Number readFromString: self trimLeft
+]

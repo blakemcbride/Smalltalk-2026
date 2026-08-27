@@ -175,3 +175,142 @@ Object >> outOfMemory [
 	 process stops."
 	^OutOfMemory new signal: 'out of room: no object table entry for a method''s context'
 ]
+
+{ #category : '*Kernel-Exceptions' }
+Object >> recursionDepthExceeded [
+	"The interpreter refused to go deeper on this stack.
+
+	 Sent by the VM in place of the send it would not make, exactly as
+	 outOfMemory above is, so what this answers is what that send answers.
+	 See RecursionDepthExceeded for why it is a separate class, and
+	 ST_MAX_CALL_DEPTH in src/interp/interp.c for where the ceiling is and
+	 how to move it.
+
+	 A constant message, like outOfMemory's and for a weaker version of the
+	 same reason: there is room here, but this is raised from a stack a
+	 quarter of a million frames deep and every object it makes is one more
+	 the collector has to walk past."
+	^RecursionDepthExceeded new signal:
+		'the call stack went too deep -- a method or block that does not stop calling itself; ST_MAX_CALL_DEPTH raises the limit'
+]
+
+{ #category : '*Kernel-Exceptions' }
+Object >> canOpenUserInterface [
+	"Whether there is a user interface that could open a window.
+
+	 Sensor alone does not answer it: an InputSensor exists in every image
+	 including a headless one, so `Sensor isNil' is false in exactly the
+	 builds that cannot draw.  What is needed is a controller driving the
+	 screen, and ScheduledControllers has an active one only while the
+	 desktop is pumping.  A bootstrap, a test run, `-eval' and `-serve' all
+	 answer nil.
+
+	 Error>>canOpenNotifier is this method under its own name.  The methods
+	 below, Dictionary>>inspect and the debugger all have to agree about
+	 what `there is a screen' means, and agreeing by being one method is the
+	 only way that stays true."
+	^Sensor notNil
+		and: [ScheduledControllers notNil
+		and: [ScheduledControllers activeController notNil]]
+]
+
+{ #category : '*Kernel-Exceptions' }
+Object >> halt [
+	"Stop here, in a debugger if there is one and in an exception if not.
+
+	 1983 opens a NotifierView and the process then waits on the input
+	 semaphore for a click that a headless image will never produce.
+	 `[self halt] on: Error do: [...]' did not catch it, because nothing was
+	 signalled -- the process simply stopped, and `st80 -serve' printed
+	 `every process is blocked; nothing can run' and exited.  halt is the
+	 single most likely thing to be left in code by accident, so of the five
+	 methods that did this it is the one that matters most.
+
+	 Signalling a Warning is the headless equivalent of a notifier: it is
+	 resumable, so a handler can look and carry on exactly as a person
+	 dismissing the window does, and unhandled it writes one line to
+	 standard error and resumes -- which is what a breakpoint with nobody
+	 watching should do.  Nothing changes where there IS a screen."
+	self canOpenUserInterface ifTrue: [
+		^NotifierView
+			openContext: thisContext
+			label: 'Halt encountered.'
+			contents: thisContext shortStack].
+	^Warning new signal: 'halt'
+]
+
+{ #category : '*Kernel-Exceptions' }
+Object >> halt: aString [
+	"halt, with something to say.  See halt above."
+	self canOpenUserInterface ifTrue: [
+		^NotifierView
+			openContext: thisContext
+			label: aString
+			contents: thisContext shortStack].
+	^Warning new signal: 'halt: ' , aString
+]
+
+{ #category : '*Kernel-Exceptions' }
+Object >> notify: aString [
+	"Say something and carry on.  See halt above.
+
+	 Answers true either way, as 1983's does -- the answer is not the
+	 person's, it is `the notification happened'."
+	self canOpenUserInterface
+		ifTrue: [NotifierView
+					openContext: thisContext
+					label: 'Notifier'
+					contents: aString]
+		ifFalse: [Warning new signal: aString].
+	^true
+]
+
+{ #category : '*Kernel-Exceptions' }
+Object >> confirm: aString [
+	"Ask a yes-or-no question.  See halt above.
+
+	 Headless there is nobody to ask, so the question is signalled as a
+	 resumable Warning and the ANSWER is what resumes it: a handler that
+	 says `e resume: true' has answered yes.  Unhandled, the Warning
+	 resumes with nil and this answers false, which is the safe reading of
+	 an unanswered question -- and which is a great deal safer than 1983's
+	 behaviour here, which was to read Sensor cursorPoint, open a
+	 BinaryChoice and wait for a click for ever."
+	| answer |
+	self canOpenUserInterface ifFalse: [
+		^(Warning new signal: aString) == true].
+	answer := false.
+	BinaryChoice
+		message: aString
+		displayAt: Sensor cursorPoint
+		centered: true
+		ifTrue: [answer := true]
+		ifFalse: [answer := false].
+	^answer
+]
+
+{ #category : '*Kernel-Exceptions' }
+Object >> inspect [
+	"Open an inspector on me, or say what I am when there is nowhere to
+	 open one.  See halt above.
+
+	 printString is guarded because inspect is reached for objects that
+	 cannot print -- a half-built one, a recursive structure -- and an
+	 inspect that raises while reporting that it cannot inspect is the
+	 least useful failure available."
+	self canOpenUserInterface ifTrue: [^self basicInspect].
+	Warning new signal: 'inspect: no display; ',
+		([self printString] on: Error do: [:e | 'a ' , self class name]).
+	^self
+]
+
+{ #category : '*Kernel-Exceptions' }
+Object >> basicInspect [
+	"The inspector 1983 opens directly, guarded the same way inspect is.
+
+	 Dictionary>>inspect and DictionaryInspector open an InspectorView
+	 without going through inspect, so guarding inspect alone leaves two
+	 doors into the same hang."
+	self canOpenUserInterface ifFalse: [^self inspect].
+	InspectorView open: (Inspector inspect: self)
+]

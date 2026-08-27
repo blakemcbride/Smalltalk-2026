@@ -19,6 +19,7 @@ Where the six candidates stand, measured rather than assumed:
 | Byte arrays `#[1 2 3]` | **Implemented**, including nested inside `#(...)` |
 | Named primitives `<primitive: 'p' module: 'M'>` | **Implemented** as Squeak's primitive 117 with the descriptor as literal 0. The VM does not yet dispatch it |
 | Scaled decimals `1.23s2` | **Not implemented, deliberately.** See below |
+| `nil`, `true` and `false` inside `#( )` | **The objects, in the closure dialect.** A seventh, found later; see below |
 
 The first four were clean parse errors before, which is what an absent feature
 should look like, and is why adding them could take no meaning away from
@@ -74,6 +75,46 @@ existing meaning to take away, there is no `ScaledDecimal` class in the 1983
 library for it to answer, and Pharo code needing exact decimals is rare — so it
 stays out. Should it ever go in, it must require the `s` to be followed by
 digits and then a non-alphanumeric, so that `1.23some` remains a unary send.
+
+## The seventh: `nil`, `true` and `false` inside a literal array
+
+Not one of the six, because it is not a new construct -- `#(nil)` has always
+parsed. It is a question about what the three bare words in it MEAN, and the
+answer changed after 1983.
+
+1983 interns every bare word in a literal array, those three included, so
+`#(nil true false)` is three Symbols. ANSI specifies the objects, and Squeak,
+Pharo and VisualWorks all answer the objects. The failure is invisible from
+inside, because `#nil printString` is `'nil'`:
+
+```smalltalk
+(#(nil) at: 1) class name      "Symbol"
+#(1 nil 2) copyWithout: nil    "(1 nil 2 ) -- nothing removed"
+#(1 nil 2) indexOf: nil        "0"
+#(nil) = (Array with: nil)     "false"
+```
+
+An array written to hold a hole held a symbol instead, and every test of it
+answered the wrong way round with nothing printed to say so. `{nil. true.
+false}` -- the brace form -- was already correct, which is what made the
+literal form a trap rather than a documented limitation; and the compiler was
+inconsistent with itself, because `pragma_literal` in the same file already
+special-cased the same three words, so `<foo: nil>` got `nil` while `#(nil)`
+got `#nil`.
+
+**So the closure dialect answers the objects, and the Blue Book dialect does
+not.** The split is not a hedge. Under the Blue Book this compiler is
+compiling 1983's own library, where
+`ClassDescription>>subclassOf:oldClass:instanceVariableNames:...` builds
+`#(self super thisContext true false nil) asSet` and means the six NAMES; and
+`trace2` checks this compiler's literal frames against the ones Xerox shipped,
+which a changed literal would break. Every dialect-dependent decision in this
+lexer and compiler has the same shape -- the underscore, the length of a binary
+selector -- and for the same reason: post-1983 Smalltalk spent a character
+1983 had already spent, and only the caller knows which spending is meant.
+
+Everything in `lib/` and everything a user writes is compiled in the closure
+dialect, so the ANSI reading is what a program of this system's own gets.
 
 ## What the implementation cost, and one thing it removed
 

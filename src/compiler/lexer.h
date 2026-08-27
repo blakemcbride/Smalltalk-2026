@@ -74,6 +74,29 @@ typedef enum {
 typedef struct {
     st_token_kind   kind;
     char            text[256];
+    /*
+     *  The WHOLE text, when it did not fit in `text'.  NULL when it did.
+     *
+     *  A string literal is data, and 255 characters is short for the SQL,
+     *  the HTML, the JSON templates and the prompts this system was built
+     *  to carry.  The scanner used to consume the rest of such a literal
+     *  and store none of it, with no diagnostic of any kind, so a
+     *  407-character quotation in Benchmark>>longishString came back 255
+     *  characters long and stopped mid-word -- and four methods in the
+     *  image as built were carrying truncated strings before anyone looked.
+     *  A symbol had a second, smaller limit of its own at 127, so `#foo'
+     *  and `'foo' asSymbol' disagreed about what a long enough foo means.
+     *
+     *  So the token carries the whole of it now.  `text' still holds a
+     *  truncated copy, because every diagnostic in the compiler prints a
+     *  token from it and an empty one would name nothing; anything that
+     *  wants the literal's VALUE calls LEX_text, which answers this when
+     *  it is set.  The storage belongs to the LEXER and lives until
+     *  LEX_close, so a token may be copied, peeked at, saved and restored
+     *  like any other -- which the compiler does constantly.
+     */
+    const char     *long_text;
+    size_t          text_length;    /*  strlen of the whole text  */
     int64_t         integer;
     /*
      *  Set when the literal does not fit in `integer'.  The digits are then
@@ -168,6 +191,15 @@ int         LEX_next(st_lexer *lx, st_token *out);
 
 /*  Look at the next token without consuming it.  */
 int         LEX_peek(st_lexer *lx, st_token *out);
+
+/*
+ *  A token's whole text, however long it is.  Never NULL.
+ *
+ *  Use this wherever the text is the token's VALUE -- a string literal, a
+ *  symbol, a variable name -- and `tok.text' only where a truncated copy is
+ *  all that is wanted, which is diagnostics.
+ */
+const char *LEX_text(const st_token *tok);
 
 const char *LEX_error(const st_lexer *lx);
 

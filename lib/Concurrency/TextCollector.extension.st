@@ -75,11 +75,47 @@ TextCollector >> print: anObject [
 TextCollector >> endEntry [
 	"If the entry stream is not empty, hand its text to my dependents and
 	 start a fresh one -- under the lock, so that the text handed on is
-	 one worker's whole entry and the fresh stream is seen by everyone."
+	 one worker's whole entry and the fresh stream is seen by everyone.
+
+	 With no dependents the text goes to STANDARD ERROR instead of being
+	 dropped.  A headless image has no Transcript window, so `self changed:
+	 #appendEntry' reached nobody and every entry was built, locked, and
+	 thrown away.  `st80 -serve' asked to evaluate a show: followed by a
+	 literal answered the literal and put nothing on stdout, nothing on
+	 stderr, and said nothing about it.
+
+	 printNl and displayNl are the supported spelling and say so in
+	 lib/Kernel-Protocol, but `Transcript show:' is what forty years of
+	 Smalltalk writes and what doc/CONCURRENCY.md documents the locking of.
+	 Failing without a word is the one behaviour it should not have.
+
+	 Standard error, not standard output, because that is where printNl and
+	 displayNl already go: two spellings of `say something' landing in two
+	 different streams is worse than either choice.
+
+	 Line ends are translated on the way out: Smalltalk separates lines with
+	 a carriage return and a terminal wants a newline.  A separator at
+	 either END of an entry is dropped and an entry that is nothing but
+	 separators is not written at all, because the primitive supplies the
+	 final newline itself and `Transcript show: ''a''; cr; show: ''b''; cr'
+	 is FOUR entries -- `a', then a carriage return with `b' behind it,
+	 then a lone carriage return.  Printed literally that is two lines and
+	 two blank ones.  Trimmed, it is the two lines that were written."
+	| entry |
 	LibraryLocks holdingTranscript: [
 		entryStream isEmpty ifFalse: [
-			self changed: #appendEntry.
-			entryStream := WriteStream on: (String new: 200)]]
+			self dependents isEmpty
+				ifTrue: [entry := entryStream contents]
+				ifFalse: [self changed: #appendEntry].
+			entryStream := WriteStream on: (String new: 200)].
+		entry isNil ifFalse: [
+			entry := entry collect: [:each |
+				each = Character cr ifTrue: [Character nl] ifFalse: [each]].
+			[entry notEmpty and: [entry last = Character nl]]
+				whileTrue: [entry := entry copyFrom: 1 to: entry size - 1].
+			[entry notEmpty and: [entry first = Character nl]]
+				whileTrue: [entry := entry copyFrom: 2 to: entry size].
+			entry isEmpty ifFalse: [self reportOnStandardError: entry]]]
 ]
 
 { #category : '*Concurrency' }

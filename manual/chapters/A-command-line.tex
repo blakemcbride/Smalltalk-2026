@@ -109,6 +109,48 @@ For \ct{-inject}, semicolon-separated:
 \ctp{ST\_EVAL\_TRACE=1} & trace the bytecodes an \ctp{-eval} runs\\
 \ctp{ST\_NET\_TRACE=1} & narrate the network thread: arms, deliveries, closes\\
 \ctp{ST\_BOTTOM\_LOG=1} & report a return off the bottom of a stack\\
+\ctp{ST\_ERROR\_BACKTRACE=1} & print the sender chain under every error
+  reported on standard error\\
+\ctp{ST\_MAX\_OBJECTS} & the object table's ceiling in entries; the default is
+  67{,}108{,}864 and the table grows to it as needed\\
+\ctp{ST\_MAX\_CALL\_DEPTH} & how many frames deep a stack may get before
+  \ctp{RecursionDepthExceeded} is signalled. 200{,}000 by default, and
+  \ctp{0} turns the check off---see \S\ref{sec:runaway}\\
 \bottomrule
 \end{tabular}
 \end{center}
+
+\section{Where the output goes}
+\label{sec:whereoutput}
+
+\ct{printNl} and \ct{displayNl} write to \textbf{standard error}, not standard
+output, and so does every error report. That is deliberate---a server's
+answers go down its socket and its diagnostics go to the log---but it
+surprises anyone who redirects:
+
+\begin{lstlisting}
+./st80 -serve app.im 'expr'  > out.txt     # catches nothing
+./st80 -serve app.im 'expr' 2> out.txt     # catches it
+\end{lstlisting}
+
+\ct{Transcript show:} goes there too when there is no Transcript window to
+draw in, which is every \ct{-serve} and every \ct{-bootstrap}. In a desktop
+image it draws, as it always did.
+
+\section{A method that does not stop calling itself}
+\label{sec:runaway}
+
+A runaway recursion signals \ct{RecursionDepthExceeded}, an \ct{Error}, once
+its stack passes \ctp{ST\_MAX\_CALL\_DEPTH} frames:
+
+\begin{lstlisting}
+[[:b | b value: b] value: [:b | b value: b]]
+    on: RecursionDepthExceeded do: [:e | 'caught']
+\end{lstlisting}
+
+One bad method therefore costs one request rather than the process. Two
+hundred thousand frames is about fifty megabytes of contexts and is reached in
+a tenth of a second; it is far above anything a program that means to recurse
+uses, and far below where the object table runs out. Set the variable higher
+if you have a genuinely deep recursion, or to \ct{0} to let it run until the
+memory is gone, which is what the system used to do.

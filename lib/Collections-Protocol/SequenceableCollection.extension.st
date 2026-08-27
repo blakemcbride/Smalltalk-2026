@@ -459,3 +459,65 @@ SequenceableCollection >> identityIndexOf: anObject ifAbsent: aBlock [
 		(self at: i) == anObject ifTrue: [^i]].
 	^aBlock value
 ]
+
+{ #category : '*Collections-Protocol' }
+SequenceableCollection >> hash [
+	"A hash over every element, because = compares every element.
+
+	 SequenceableCollection>>= is structural -- same species, same size,
+	 element by element -- and 1983 defines hash on Array, String, Symbol
+	 and Interval alone.  So OrderedCollection, SortedCollection, ByteArray
+	 and every user subclass had value equality and Object's IDENTITY hash,
+	 which is the one pair a hashed collection cannot hold:
+
+		(OrderedCollection with: 1) = (OrderedCollection with: 1)   true
+		(OrderedCollection with: 1) hash = ... hash                 false
+
+	 and the symptom is worse than wrong, it is nondeterministic.  A Set
+	 given 300 distinct one-element OrderedCollections twice over ended up
+	 with 599 elements rather than 600: one pair happened to probe into its
+	 own twin before it reached an empty slot, and WHICH pair that is
+	 depends on where the collector put the objects.  The same program
+	 answers 599 today and 600 tomorrow.  A Dictionary keyed by one could
+	 not find a key it held.  `'ab' asByteArray' is what DbRecord>>bytesAt:
+	 and the crypto library hand back, so this reached real data.
+
+	 The function is String>>hash's, FNV-1a, over the elements' hashes
+	 rather than over characters -- see lib/Collections-Protocol's String
+	 extension for why the arithmetic is written the way it is, why the
+	 fold at the end matters for a table that buckets by `\\ basicSize',
+	 and why it never leaves SmallInteger.  Each element's hash is masked
+	 to 32 bits first because a hash may be negative (`-5 hash' is -5) and
+	 the mixing has to stay non-negative.
+
+	 The species is deliberately NOT folded in.  An Array and an
+	 OrderedCollection holding the same elements are not equal and would
+	 be allowed to hash differently, but a class's hash here is derived
+	 from its pointer, and a hash that moves when the collector moves a
+	 class is not a hash a Set can be built on.  They collide; collisions
+	 are cheap and wrong answers are not."
+	| h |
+	h := 2166136261.
+	self do: [:each |
+		h := ((h bitXor: (each hash bitAnd: 16rFFFFFFFF)) * 16777619)
+				bitAnd: 16rFFFFFFFF].
+	^(h bitXor: (h bitShift: -16)) bitAnd: 16rFFFFFFF
+]
+
+{ #category : '*Collections-Protocol' }
+SequenceableCollection >> replaceAll: oldObject with: newObject [
+	"Replace every element equal to oldObject with newObject, IN PLACE, and
+	 answer me.
+
+	 In place and answering the receiver, which is Pharo's contract and not
+	 the obvious one: the copying version is copyReplaceAll:with:, which
+	 1983 already has and which takes SUBSEQUENCES rather than elements.
+	 The two names differ by four characters and mean different things in
+	 both dimensions, so it is worth saying which is which:
+
+		'hello' replaceAll: $l with: $L         'heLLo', changed in place
+		'hello' copyReplaceAll: 'll' with: 'LL' 'heLLo', a copy"
+	1 to: self size do: [:i |
+		(self at: i) = oldObject ifTrue: [self at: i put: newObject]].
+	^self
+]

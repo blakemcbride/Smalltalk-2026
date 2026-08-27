@@ -190,3 +190,21 @@ Number >> ln [
 	 answers rather than not understanding."
 	^self asFloat ln
 ]
+
+{ #category : '*Kernel-Protocol' }
+Number >> raisedTo: aNumber [
+	"Me raised to that power.
+
+	 1983's body, with one arm changed: a non-integer exponent goes through
+	 the machine's pow rather than through `(aNumber * self ln) exp'.  See
+	 Float>>raisedTo: for why -- the short version is that two
+	 transcendental functions lose digits where one does not, and
+	 `10 raisedTo: 2.0' answered 100.00000000000004.
+
+	 An INTEGER exponent still goes to raisedToInteger:, which is exact by
+	 repeated squaring and keeps the receiver's kind: `2 raisedTo: 10' is
+	 the Integer 1024 and `(1/2) raisedTo: 2' is the Fraction 1/4.  Coercing
+	 those to Float would be a wrong answer, not a rounder one."
+	aNumber isInteger ifTrue: [^self raisedToInteger: aNumber].
+	^self asFloat primRaisedTo: aNumber asFloat
+]

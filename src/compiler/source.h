@@ -159,6 +159,13 @@ void        SRC_skip_separators(st_cursor *c, char *comment,
                                 size_t comment_len);
 
 /*
+ *  The same, answering the last comment as a string the caller must free --
+ *  or NULL if there was none.  For a class comment, which has no length a
+ *  reader is entitled to assume.
+ */
+char       *SRC_take_comment(st_cursor *c);
+
+/*
  *  Read "{ #a : b, #c : [ d, e ] }" at the cursor.  Answers 0 and fills
  *  `error` on a malformed header.  The caller frees each pair's list.
  */

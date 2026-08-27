@@ -26,6 +26,7 @@
 #include "st_atomic.h"
 
 #include <stdio.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -515,6 +516,7 @@ provide_roots(om_visit_fn visit)
     visit(st_om_vm_state[ST_VM_CLASS_BLOCK_CLOSURE]);
     visit(st_om_vm_state[ST_VM_SELECTOR_ABOUT_TO_RETURN]);
     visit(st_om_vm_state[ST_VM_SELECTOR_OUT_OF_MEMORY]);
+    visit(st_om_vm_state[ST_VM_SELECTOR_DEPTH_EXCEEDED]);
     if (extra_roots)
         extra_roots(visit);
 }
@@ -705,6 +707,13 @@ void
 ST_set_active_context(st_oop ctx)
 {
     set_active_context(ctx);
+    /*
+     *  A process switch replaces the whole stack, so the depth of the one
+     *  that just left says nothing about the one arriving.  See
+     *  ST_return_to.
+     */
+    st_vm.call_depth      = ST_stack_depth();
+    st_vm.depth_signalled = 0;
 }
 
 /*  ----------  Method lookup  ----------  */
@@ -900,26 +909,149 @@ ST_report_backtrace(void)
  *  top, which is what a zero-argument send wants.
  */
 /*
- *  How deep a stack an out-of-room error can be raised on, and the number is
- *  MEASURED rather than chosen.
+ *  How deep a stack an out-of-room error can be raised on.
  *
- *  Signalling walks the sender chain to find a handler, and unwinding walks
- *  it again per frame it passes -- both linear, so the pair is quadratic in
- *  the depth.  Timed on this machine, an Error raised 10,000 frames down and
- *  caught at the top is instant; the same thing 100,000 frames down had not
- *  finished after five minutes.  That is a property of the exception design
- *  and not of this path, but it decides what this path may do: raising an
- *  error nothing can deliver would turn a process that dies in two minutes
- *  with a message into one that hangs, and a hang is the failure Bugs1.md
- *  calls the most expensive to diagnose in the field.
+ *  It was 16,384, and the number was measured: an Error raised 10,000
+ *  frames down and caught at the top was instant, and the same thing
+ *  100,000 frames down had not finished after five minutes.  Raising an
+ *  error nothing can deliver turns a process that dies in two minutes with
+ *  a message into one that hangs, and a hang is the failure Bugs1.md calls
+ *  the most expensive to diagnose in the field -- so anything deeper than
+ *  that was left to stop the way it always had.
  *
- *  A runaway recursion is exactly the case that is too deep -- it takes about
- *  five million frames to exhaust the table -- so it still stops, promptly,
- *  with the line on stderr it always had.  A worker that runs out of room
- *  with an ordinary stack, which is what a REST request or a test is, gets an
- *  error it can catch, and the other workers keep working.
+ *  The measurement was right and the diagnosis was wrong, which is why the
+ *  number has moved rather than been defended.  Exception delivery is not
+ *  quadratic: context_is_live in prim.c gave up walking after exactly
+ *  100,000 hops and answered `that context has already returned', so the
+ *  handler's return signalled a fresh error from the same depth, which did
+ *  the same thing, for ever.  A loop with no output at all, and the cliff
+ *  was between 99,000 frames and 100,000 rather than anywhere a cost curve
+ *  would put one.  With that guard gone, an Error a MILLION frames down is
+ *  caught in 350 milliseconds and the cost is linear.
+ *
+ *  So the cap is now high enough that no stack this VM will allow -- see
+ *  ST_MAX_CALL_DEPTH below, which stops one long before here -- is refused
+ *  an out-of-room error it could have caught.  It stays as a backstop
+ *  rather than being deleted, because raising on a stack nothing can walk
+ *  would still be a hang, and a hang is worse than a message.
  */
-#define ST_OOM_MAX_UNWIND_DEPTH  16384
+#define ST_OOM_MAX_UNWIND_DEPTH  (16 * 1024 * 1024)
+
+/*
+ *  How deep a stack may get before the image is told it has a runaway.
+ *
+ *  A method that does not stop calling itself reached about five million
+ *  frames here: 4.4 GB resident after five seconds, 12.3 GB after fifteen,
+ *  and then `out of memory activating a method' and exit -- taking every
+ *  other worker, every open connection and every request in flight with it.
+ *  Nothing was signalled on the way, so nothing could be caught.
+ *
+ *  Two hundred thousand frames is about fifty megabytes of contexts and is
+ *  reached in a tenth of a second, which is the point: the error arrives
+ *  while the machine is still healthy.  It is far above anything a program
+ *  that means to recurse will use -- a balanced tree of a billion nodes is
+ *  thirty frames deep -- and far below where the table runs out.
+ *
+ *  ST_MAX_CALL_DEPTH in the environment moves it; 0 turns it off, which
+ *  restores the old behaviour exactly for anyone who wants it.
+ */
+#define ST_DEFAULT_MAX_CALL_DEPTH   200000
+
+/*
+ *  Read once, from any worker, and atomic because `any worker' means every
+ *  worker may be the one that reads it.  -1 is `not yet'; the value each of
+ *  them would compute is the same, so a race is harmless in fact and is
+ *  still a race, which ThreadSanitizer is right to say so about.
+ */
+static st_atomic_int    st_max_call_depth = -1;
+
+static int
+max_call_depth(void)
+{
+    int known = ST_load_relaxed(&st_max_call_depth);
+
+    if (known < 0) {
+        const char *text = getenv("ST_MAX_CALL_DEPTH");
+
+        known = ST_DEFAULT_MAX_CALL_DEPTH;
+        if (text && *text) {
+            long    wanted = strtol(text, NULL, 10);
+
+            if (wanted >= 0 && wanted <= INT_MAX)
+                known = (int) wanted;
+        }
+        ST_store_relaxed(&st_max_call_depth, known);
+    }
+    return known;
+}
+
+/*
+ *  The true depth of the running stack, by walking it.
+ *
+ *  st_vm.call_depth is a counter, and a counter cannot see a handler that
+ *  returns past a million frames in one jump.  Every non-local move calls
+ *  this to put the counter right; see the field's comment in interp.h.
+ */
+int
+ST_stack_depth(void)
+{
+    st_oop  scan = st_vm.active_context;
+    int     depth = 0;
+
+    while (OM_is_present(scan)) {
+        ++depth;
+        scan = OM_fetch_pointer(ST_CTX_SENDER, scan);
+    }
+    return depth;
+}
+
+/*
+ *  Tell the image its stack is too deep, and answer whether that was
+ *  possible.
+ *
+ *  Same shape as send_out_of_memory below, and for the same reasons: a
+ *  selector the bootstrap bound, a method to find under it, and the
+ *  arguments of the failed send taken off so the receiver is on top.  The
+ *  send REPLACES the one that was about to be made, so what it answers is
+ *  what that send answers -- which for an unhandled Error is nil, and for a
+ *  handled one is whatever the handler decided.
+ */
+static int
+send_depth_exceeded(uint32_t argc)
+{
+    st_oop  selector = st_om_vm_state[ST_VM_SELECTOR_DEPTH_EXCEEDED];
+    st_oop  receiver;
+    st_oop  found = ST_NIL;
+
+    if (!OM_is_present(selector))
+        return 0;
+    receiver = ST_stack_value(argc);
+    if (!OM_is_present(lookup_method(selector, OM_fetch_class(receiver),
+                                     &found)))
+        return 0;
+    ST_pop_n(argc);
+    st_vm.argument_count  = 0;
+    st_vm.depth_signalled = 1;
+    ST_send_selector(selector, 0);
+    return 1;
+}
+
+/*
+ *  Whether this activation is the one that goes too far.
+ *
+ *  Costs one comparison on the ordinary path.  The flag is what keeps the
+ *  error deliverable: raising it, finding a handler and running one are all
+ *  sends from a stack that is by definition over the ceiling, and every
+ *  non-local move resets both the counter and the flag, so the ceiling
+ *  re-arms as soon as the stack is genuinely shallow again.
+ */
+static int
+depth_ceiling_reached(void)
+{
+    int limit = max_call_depth();
+
+    return limit > 0 && st_vm.call_depth > limit && !st_vm.depth_signalled;
+}
 
 static int
 send_out_of_memory(void)
@@ -957,6 +1089,16 @@ activate_new_method(void)
     st_oop      ctx;
     uint32_t    temps  = method_temporary_count(st_vm.new_method);
     uint32_t    i;
+
+    /*
+     *  Too deep before out of room: a runaway recursion is a bug in a
+     *  program and not a program that needs more room, and stopping it here
+     *  costs a tenth of a second where letting it run to the table's end
+     *  cost twenty seconds, twelve gigabytes and the whole process.  See
+     *  ST_MAX_CALL_DEPTH.
+     */
+    if (depth_ceiling_reached() && send_depth_exceeded(st_vm.argument_count))
+        return;
 
     ctx = OM_instantiate_pointers(ST_CLASS_METHOD_CONTEXT, slots);
     if (!OM_is_object(ctx)) {
@@ -1040,6 +1182,10 @@ ST_activate_block(st_oop block, uint32_t argc)
 {
     st_oop      initial_ip;
     uint32_t    i;
+
+    /*  See activate_new_method: a block can run away just as a method can. */
+    if (depth_ceiling_reached() && send_depth_exceeded(argc))
+        return 1;
 
     for (i = 0; i < argc; ++i)
         OM_store_pointer(ST_CTX_TEMP_FRAME_START + i, block,
@@ -1190,6 +1336,15 @@ ST_activate_closure(st_oop closure, uint32_t argc)
     if (argc + copied + ST_CTX_TEMP_FRAME_START > slots)
         return 0;                   /*  the frame cannot hold them  */
 
+    /*
+     *  See activate_new_method.  This is the path a runaway BLOCK takes --
+     *  `b := [:x | b value: x + 1]. b value: 0' never activates a method at
+     *  all, because value: is a primitive -- so guarding methods alone
+     *  would have left the shortest runaway in Smalltalk unguarded.
+     */
+    if (depth_ceiling_reached() && send_depth_exceeded(argc))
+        return 1;
+
     ctx = OM_instantiate_pointers(ST_CLASS_METHOD_CONTEXT, slots);
     if (!OM_is_object(ctx))
         return 0;
@@ -1296,6 +1451,14 @@ ST_return_to(st_oop value, st_oop ctx)
         return;
     sender = OM_fetch_pointer(ST_CTX_SENDER, ctx);
     do_return(value, sender, 0);
+    /*
+     *  One jump, however many frames it skipped: do_return counted the one
+     *  it was handed.  Recount, or the counter drifts upward for ever after
+     *  the first caught exception and the depth ceiling fires on a stack
+     *  three frames deep.
+     */
+    st_vm.call_depth      = ST_stack_depth();
+    st_vm.depth_signalled = 0;
 }
 
 /*
@@ -1344,6 +1507,8 @@ ST_resume_at(st_oop value, st_oop ctx)
     OM_store_pointer(ST_CTX_IP, st_vm.active_context, ST_NIL);
     set_active_context(ctx);
     ST_push(value);
+    st_vm.call_depth      = ST_stack_depth();   /*  see ST_return_to  */
+    st_vm.depth_signalled = 0;
 }
 
 /*

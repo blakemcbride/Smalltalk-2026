@@ -89,12 +89,28 @@ OM_is_present(st_oop p)
  *  A profile that never binds it leaves the slot nil, and the interpreter
  *  stops exactly as it did before -- which is what the bb build does.
  */
-#define ST_VM_STATE_SLOTS               5
+/*
+ *  And a sixth, #recursionDepthExceeded.
+ *
+ *  A method that does not stop calling itself used to take the whole
+ *  process with it: about five million frames, 12 GB resident, and then
+ *  `out of memory activating a method' and exit -- every worker, every open
+ *  connection, every request in flight.  The interpreter now stops a stack
+ *  at ST_MAX_CALL_DEPTH frames and sends this instead, which is an Error a
+ *  handler can catch, so one runaway method costs one request.
+ *
+ *  A separate selector rather than #outOfMemory because the two are
+ *  different faults with different fixes: one is a program that needs more
+ *  room and the other is a program with a bug in it, and a handler that
+ *  wants to retry on the first must not retry on the second.
+ */
+#define ST_VM_STATE_SLOTS               6
 #define ST_VM_INPUT_SEMAPHORE           0
 #define ST_VM_DISPLAY                   1
 #define ST_VM_CLASS_BLOCK_CLOSURE       2
 #define ST_VM_SELECTOR_ABOUT_TO_RETURN  3
 #define ST_VM_SELECTOR_OUT_OF_MEMORY    4
+#define ST_VM_SELECTOR_DEPTH_EXCEEDED   5
 
 extern st_oop   st_om_vm_state[ST_VM_STATE_SLOTS];
 

@@ -395,3 +395,33 @@ Float >> hash [
 	self fractionPart = 0.0 ifTrue: [^self truncated hash].
 	^(self basicAt: 1) bitAnd: 16383
 ]
+
+{ #category : '*Kernel-Protocol' }
+Float >> raisedTo: aNumber [
+	"Me raised to that power, through the machine's own pow.
+
+	 1983's Number>>raisedTo: sends `(aNumber * self ln) exp' for a
+	 non-integer exponent -- two transcendental functions where one would
+	 do -- so `10 raisedTo: 2.0' answered 100.00000000000004 and
+	 `2 raisedTo: 0.5' was not equal to `2 sqrt'.  Both are exact now.
+
+	 An integer exponent still goes to raisedToInteger:, which is exact by
+	 repeated squaring and does not lose the receiver's kind: `2 raisedTo:
+	 10' must answer the Integer 1024, not the Float.  Only the case 1983
+	 sent through logarithms comes here.
+
+	 The primitive declines a negative receiver with a fractional exponent,
+	 where there is no real answer, and 0 raised to a negative power; the
+	 body below is then 1983's, unchanged, and raises what it always did."
+	aNumber isInteger ifTrue: [^self raisedToInteger: aNumber].
+	^self primRaisedTo: aNumber asFloat
+]
+
+{ #category : '*Kernel-Protocol' }
+Float >> primRaisedTo: aFloat [
+	"pow, with 1983's logarithms as the fallback when it declines."
+	<primitive: 229>
+	aFloat = 0 ifTrue: [^1].
+	aFloat = 1 ifTrue: [^self].
+	^(aFloat * self ln) exp
+]

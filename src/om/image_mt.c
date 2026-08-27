@@ -36,7 +36,12 @@ uint32_t    st_om_image_ot_words;
  *  version rather than read with its slots one short, which would put the
  *  object count where a selector belongs.
  */
-#define IMAGE_VERSION   4
+/*
+ *  4 -> 5: a sixth VM-state slot, the #recursionDepthExceeded selector.
+ *  Refused by version rather than read one slot short, for the reason the
+ *  fifth was.
+ */
+#define IMAGE_VERSION   5
 
 static void
 fail(char *errbuf, size_t errlen, const char *fmt, ...)

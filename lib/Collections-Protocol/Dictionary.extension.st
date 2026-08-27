@@ -41,3 +41,18 @@ Dictionary >> , aDictionary [
 		merged at: each key put: each value].
 	^merged
 ]
+
+{ #category : '*Collections-Protocol' }
+Dictionary >> inspect [
+	"Open an inspector on me, or say what I am when there is nowhere to
+	 open one.
+
+	 Object>>inspect and Object>>basicInspect are guarded in
+	 lib/Kernel-Exceptions for the reason given there -- an InspectorView
+	 opened with no screen parks the process on the input semaphore for
+	 ever -- and this is the second door into the same room: 1983's
+	 Dictionary>>inspect opens a DictionaryInspector directly rather than
+	 going through either of them."
+	self canOpenUserInterface ifFalse: [^super inspect].
+	InspectorView open: (DictionaryInspector inspect: self)
+]

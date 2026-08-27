@@ -1162,6 +1162,28 @@ static unsigned     method_protocol_count;
 static unsigned     method_protocol_capacity;
 
 /*
+ *  What each class says about itself.
+ *
+ *  Collected while the sources are read and installed at the end, once the
+ *  organizations exist -- a comment lives in the class's ClassOrganizer, so
+ *  there is nowhere to put one until install_class_organization has run.
+ *
+ *  Nothing installed them at all until now: `Set comment' answered '' in an
+ *  image whose Set.stClass plainly holds `Set comment: ''I am an unordered
+ *  collection of elements that are not duplicated in me.'''', and 0 of the
+ *  373 classes had one.  Both readers deliver the text here -- see
+ *  chunk_class_comment and TONEL_read in src/compiler -- and only the store
+ *  was missing.
+ */
+static struct {
+    char       *class_name;
+    int         class_side;
+    char       *text;
+} *class_comments;
+static unsigned     class_comment_count;
+static unsigned     class_comment_capacity;
+
+/*
  *  Every method's source, in one buffer, in chunk format.
  *
  *  Smalltalk-80 does not keep source in the image: a CompiledMethod carries
@@ -2223,16 +2245,54 @@ static int
 sink_comment(const char *class_name, int class_side, const char *text,
              void *user)
 {
+    boot_sink_state    *state = (boot_sink_state *) user;
+    unsigned            i;
+
     /*
-     *  Class comments are carried by Tonel and not by the chunk files this
-     *  system reads, and nothing installs them yet.  Accepting and dropping
-     *  them keeps the two formats producing the same image, which is the
-     *  property Phase C is gated on.
+     *  Recorded in the DEFINITIONS pass only, so that a file read twice --
+     *  which is what the two passes are -- does not file its comment twice.
      */
-    (void) class_name;
-    (void) class_side;
-    (void) text;
-    (void) user;
+    if (!state->definitions)
+        return 1;
+    if (!class_name || !text || !text[0])
+        return 1;
+    /*
+     *  A class named twice keeps the LAST comment, which is what filing in
+     *  a fresh comment over an old one means.
+     */
+    for (i = 0; i < class_comment_count; ++i) {
+        if (class_comments[i].class_side == class_side
+         && strcmp(class_comments[i].class_name, class_name) == 0) {
+            char   *copy = strdup(text);
+
+            if (copy) {
+                free(class_comments[i].text);
+                class_comments[i].text = copy;
+            }
+            return 1;
+        }
+    }
+    if (class_comment_count == class_comment_capacity) {
+        unsigned    want = class_comment_capacity ? class_comment_capacity * 2
+                                                  : 256;
+        void       *grown = realloc(class_comments,
+                                    want * sizeof *class_comments);
+
+        if (!grown)
+            return 1;               /*  a comment is not worth failing over */
+        class_comments         = grown;
+        class_comment_capacity = want;
+    }
+    class_comments[class_comment_count].class_name = strdup(class_name);
+    class_comments[class_comment_count].text       = strdup(text);
+    class_comments[class_comment_count].class_side = class_side;
+    if (!class_comments[class_comment_count].class_name
+     || !class_comments[class_comment_count].text) {
+        free(class_comments[class_comment_count].class_name);
+        free(class_comments[class_comment_count].text);
+        return 1;
+    }
+    ++class_comment_count;
     return 1;
 }
 
@@ -3726,6 +3786,21 @@ install_closure_support(void)
             OM_increase_ref(selector);
         }
     }
+    /*
+     *  And #recursionDepthExceeded, sent when a stack reaches
+     *  ST_MAX_CALL_DEPTH frames.  Bound and checked exactly as the one
+     *  above is, so a profile in which nothing implements it -- the Blue
+     *  Book one -- keeps 1983's behaviour of running until the table is
+     *  gone.
+     */
+    {
+        st_oop  selector = BOOT_intern_symbol("recursionDepthExceeded", NULL);
+
+        if (OM_is_present(selector)) {
+            st_om_vm_state[ST_VM_SELECTOR_DEPTH_EXCEEDED] = selector;
+            OM_increase_ref(selector);
+        }
+    }
 }
 
 /*
@@ -4835,6 +4910,166 @@ install_class_organization(void)
         args[1] = BOOT_make_string(method_protocols[i].protocol, NULL);
         run_method_with(classify, organization, args, 2, 2000000);
     }
+    return 1;
+}
+
+/*
+ *  File each class's comment where the Browser reads it.
+ *
+ *  Through the image's own `comment:', which writes the chunk form -- the
+ *  class name, `comment:', and the text as a store string -- into the
+ *  class's organization, exactly as accepting one in a Browser does.  Doing
+ *  it in C would mean a second encoding of the same thing, and
+ *  ClassDescription>>comment reads it back with `String readFromString:',
+ *  so the two would have to agree for ever.
+ *
+ *  After install_class_organization, because `comment:' sends
+ *  `self organization' and a class with none makes one -- which is fine,
+ *  and then the organization pass would find one already there and skip
+ *  classifying its selectors into it.
+ */
+static void
+forget_class_comments(void)
+{
+    unsigned    i;
+
+    for (i = 0; i < class_comment_count; ++i) {
+        free(class_comments[i].class_name);
+        free(class_comments[i].text);
+    }
+    free(class_comments);
+    class_comments         = NULL;
+    class_comment_count    = 0;
+    class_comment_capacity = 0;
+}
+
+static int
+install_class_comments(void)
+{
+    st_oop      remote_class = BOOT_global("RemoteString");
+    st_oop      maker;
+    unsigned    i;
+
+    /*
+     *  A profile with no RemoteString -- the bare kernel -- has nowhere to
+     *  put a comment, and that is not an error: it is a system that does
+     *  not have the class the Browser reads them through.
+     */
+    if (!OM_is_present(remote_class)) {
+        forget_class_comments();
+        return 1;
+    }
+    maker = lookup_in_chain(OM_fetch_class(remote_class),
+                            "newFileNumber:position:");
+    if (!OM_is_present(maker)) {
+        forget_class_comments();
+        return 1;
+    }
+
+    for (i = 0; i < class_comment_count; ++i) {
+        boot_class *c = find_class(class_comments[i].class_name);
+        st_oop      target;
+        st_oop      organization;
+        st_oop      args[2];
+        unsigned    file_index = 0;
+        size_t      position = 0;
+        char       *chunk;
+        size_t      n;
+        size_t      j;
+        size_t      k;
+
+        if (!c)
+            continue;               /*  a trait, or a class this profile has not */
+        target = class_comments[i].class_side ? c->metaclass_oop
+                                              : c->class_oop;
+        if (!OM_is_present(target))
+            continue;
+
+        /*
+         *  The text as ClassDescription>>comment: would have filed it: the
+         *  class name, `comment:', a carriage return, and the comment as a
+         *  string literal with its quotes doubled.  comment reads it back
+         *  with `String readFromString:', which takes the first literal it
+         *  finds, so the prefix is for a person reading the file.
+         */
+        {
+            size_t  quotes = 0;
+
+            n = strlen(class_comments[i].text);
+            for (j = 0; j < n; ++j) {
+                if (class_comments[i].text[j] == '\'')
+                    ++quotes;
+            }
+            n += quotes;            /*  each quote is doubled  */
+        }
+        chunk = (char *) malloc(strlen(class_comments[i].class_name)
+                                + strlen(" class comment:") + n + 4);
+        if (!chunk)
+            continue;
+        k = 0;
+        {
+            const char *name = class_comments[i].class_name;
+
+            while (*name)
+                chunk[k++] = *name++;
+        }
+        if (class_comments[i].class_side) {
+            memcpy(chunk + k, " class", 6);
+            k += 6;
+        }
+        memcpy(chunk + k, " comment:", 9);
+        k += 9;
+        chunk[k++] = '\r';
+        chunk[k++] = '\'';
+        for (j = 0; j < strlen(class_comments[i].text); ++j) {
+            chunk[k++] = class_comments[i].text[j];
+            if (class_comments[i].text[j] == '\'')
+                chunk[k++] = '\'';
+        }
+        chunk[k++] = '\'';
+        chunk[k]   = '\0';
+
+        /*
+         *  Into the SOURCES file, beside every method's text, and not into
+         *  the changes file -- which is where ClassOrganizer>>classComment:
+         *  would put it, because in a running image a comment is a change.
+         *  These are not changes: they came out of sources/ and lib/ with
+         *  the rest of the system, and a bootstrap that wrote them to the
+         *  changes file would grow it by a third of a megabyte on every
+         *  build and leave a fresh image looking modified.
+         */
+        if (!remember_source(chunk, &file_index, &position)) {
+            free(chunk);
+            continue;
+        }
+        free(chunk);
+
+        organization = OM_fetch_pointer(CLASS_ORGANIZATION, target);
+        if (!OM_is_present(organization) || organization == ST_NIL) {
+            st_oop  ask = lookup_in_chain(OM_fetch_class(target),
+                                          "organization");
+
+            if (!OM_is_present(ask))
+                continue;
+            if (!run_method_on(ask, target, 2000000))
+                continue;
+            organization = st_vm.return_value;
+            if (!OM_is_present(organization) || organization == ST_NIL)
+                continue;
+        }
+
+        /*  The file index is one-relative to the image; see remember_source. */
+        args[0] = OM_int_oop((st_int) file_index + 1);
+        args[1] = OM_int_oop((st_int) position);
+        if (!run_method_with(maker, remote_class, args, 2, 2000000))
+            continue;
+        if (!OM_is_present(st_vm.return_value)
+         || st_vm.return_value == ST_NIL)
+            continue;
+        /*  globalComment is ClassOrganizer's first instance variable.  */
+        OM_store_pointer(0, organization, st_vm.return_value);
+    }
+    forget_class_comments();
     return 1;
 }
 
@@ -5981,6 +6216,7 @@ BOOT_run_initializers(st_boot_init_report *out)
     install_user_interface();
     install_subclass_graph();
     install_class_organization();
+    install_class_comments();
     install_sources();
     install_system_organization();
     return 0;

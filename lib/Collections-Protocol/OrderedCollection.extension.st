@@ -121,3 +121,53 @@ OrderedCollection >> add: newObject beforeIndexBasic: anIndex [
 		index := index - 1].
 	self at: anIndex put: newObject
 ]
+
+{ #category : '*Collections-Protocol' }
+OrderedCollection >> add: newObject afterIndex: anIndex [
+	"Put newObject just after the element at anIndex, and answer it.
+
+	 The Blue Book names add:after: and add:before:, which find the place
+	 by SEARCHING for an element; both fail when the collection holds
+	 duplicates or when the caller is walking by index in the first place.
+	 Pharo adds these two by index; add:beforeIndex: is already here and
+	 this is its other half, with an index of 0 meaning `at the front'."
+	(anIndex between: 0 and: self size)
+		ifFalse: [^self errorSubscriptBounds: anIndex].
+	^self add: newObject beforeIndex: anIndex + 1
+]
+
+{ #category : '*Collections-Protocol' }
+OrderedCollection >> removeFirst: count [
+	"Remove my first count elements and answer them, in order.
+
+	 Answers what was removed rather than the receiver, which is what makes
+	 it useful as the front half of a queue: `batch := queue removeFirst:
+	 10'.  Removing more than there are is an error rather than a short
+	 answer -- a caller that asked for ten and silently got three has a
+	 wrong answer, not a small one."
+	| removed |
+	(count between: 0 and: self size)
+		ifFalse: [^self error: 'cannot remove ', count printString,
+			' of ', self size printString, ' elements'].
+	removed := OrderedCollection new: count.
+	count timesRepeat: [removed addLast: self removeFirst].
+	^removed
+]
+
+{ #category : '*Collections-Protocol' }
+OrderedCollection >> removeLast: count [
+	"Remove my last count elements and answer them, IN MY ORDER.
+
+	 In my order, not in the order they came off: `#(1 2 3 4) asOrderedCollection
+	 removeLast: 2' answers (3 4), which is what the elements looked like
+	 in me.  Pharo answers the same way, and answering (4 3) would make
+	 `coll removeLast: n' and `coll last: n' disagree about a sequence
+	 neither of them reordered."
+	| removed |
+	(count between: 0 and: self size)
+		ifFalse: [^self error: 'cannot remove ', count printString,
+			' of ', self size printString, ' elements'].
+	removed := OrderedCollection new: count.
+	count timesRepeat: [removed addFirst: self removeLast].
+	^removed
+]

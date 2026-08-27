@@ -80,6 +80,13 @@ for each piece of shared state, choose **serialize** (lock it), **replicate**
    processes arrive in whatever order they were sent. Build a line in a
    `WriteStream` and `show:` it in one send if it must stay together.
 
+   **Headless it goes to standard error.** A `-serve` image has no
+   Transcript window, so `self changed: #appendEntry` reached nobody and
+   every entry was built, locked and dropped — output that failed without a
+   word. `endEntry` now writes the entry to standard error when there are no
+   dependents, carriage returns translated to newlines, which is where
+   `printNl` and `displayNl` already go. Redirect `2>`, not `>`.
+
 ## What replaces it
 
 The base library adds:

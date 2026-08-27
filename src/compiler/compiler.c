@@ -92,6 +92,18 @@ typedef struct {
  */
 
 /*
+ *  The longest variable name the frame tables hold, terminator included.
+ *
+ *  Sixty-four used to be it, and going past it did not refuse the name --
+ *  it stored a DIFFERENT one.  The declaration truncated and so did every
+ *  use, but an assignment target was looked up against the full text, so
+ *  "| ccc...(64 c's) | ccc...(64 c's) := 5" reported "cannot assign to
+ *  'ccc...'", which is the one thing that was not wrong with the code.
+ *  Now the ceiling is twice as far away and hitting it says so by name.
+ */
+#define MAX_NAME        128
+
+/*
  *  Blocks per method.  Thirty-two was generous for 1983 source and is not
  *  for a Metacello baseline, which is one method holding a spec for every
  *  package in a project -- four of Pharo's exceed it.  The bytecode limit
@@ -102,7 +114,7 @@ typedef struct {
 #define MAX_NEEDS       512
 
 typedef struct {
-    char        name[64];
+    char        name[MAX_NAME];
     unsigned    scope;
     int         is_argument;
     int         assigned;       /*  appears as an assignment target  */
@@ -186,7 +198,7 @@ typedef struct {
     unsigned    pragma_count;
 
     /*  Argument and temporary names, arguments first as the frame expects. */
-    char        names[MAX_TEMPS][64];
+    char        names[MAX_TEMPS][MAX_NAME];
     unsigned    name_count;
     unsigned    argument_count;
 
@@ -285,6 +297,26 @@ fail(st_compiler *c, const char *fmt, ...)
     c->out->error_offset = c->token.offset;
 }
 
+/*
+ *  Refuse a name the frame tables cannot hold, rather than storing a
+ *  shorter one that means something else.  See MAX_NAME.
+ *
+ *  Answers whether it fits.  Callers that ignore the answer are still
+ *  correct: fail() has set c->failed, so at() answers false, every parse
+ *  loop unwinds, and the first message is the one that reaches the caller.
+ */
+static int
+name_fits(st_compiler *c, const char *name)
+{
+    size_t  length = strlen(name);
+
+    if (length < MAX_NAME)
+        return 1;
+    fail(c, "'%.32s...' is %u characters long; a variable name here may be "
+            "at most %u", name, (unsigned) length, (unsigned) MAX_NAME - 1);
+    return 0;
+}
+
 /*  ----------  Token handling  ----------  */
 
 static void
@@ -293,8 +325,29 @@ advance(st_compiler *c)
     if (c->failed)
         return;
     LEX_next(c->lx, &c->token);
-    if (c->token.kind == ST_TOK_ERROR)
+    if (c->token.kind == ST_TOK_ERROR) {
         fail(c, "%s", c->token.text);
+        return;
+    }
+    /*
+     *  A name is not data.
+     *
+     *  A string or a symbol may be as long as it likes -- the lexer keeps
+     *  the whole of it, see st_token.long_text -- but an identifier, a
+     *  keyword or a binary selector past what a token holds would be
+     *  truncated by the buffers this file resolves names and builds
+     *  selectors in, and a truncated name is a name that resolves to
+     *  something else.  Refused here, once, rather than mis-read in eight
+     *  places; below this line every one of those buffers is provably big
+     *  enough for any token that reaches it.
+     */
+    if (c->token.long_text
+     && (c->token.kind == ST_TOK_IDENTIFIER
+      || c->token.kind == ST_TOK_KEYWORD
+      || c->token.kind == ST_TOK_BINARY))
+        fail(c, "'%.32s...' is %u characters long; a name may be at most %u",
+             c->token.text, (unsigned) c->token.text_length,
+             (unsigned) (sizeof c->token.text - 1));
 }
 
 static int
@@ -328,9 +381,11 @@ accept_argument_bar(st_compiler *c)
     if (accept(c, ST_TOK_BAR))
         return 1;
     if (at(c, ST_TOK_BINARY) && strcmp(c->token.text, "||") == 0) {
-        c->token.kind    = ST_TOK_BAR;
-        c->token.text[0] = '|';
-        c->token.text[1] = '\0';
+        c->token.kind        = ST_TOK_BAR;
+        c->token.text[0]     = '|';
+        c->token.text[1]     = '\0';
+        c->token.long_text   = NULL;
+        c->token.text_length = 1;
         return 1;
     }
     return 0;
@@ -736,9 +791,11 @@ declare(st_compiler *c, const char *name, int is_argument)
         fail(c, "too many names in one method");
         return;
     }
+    if (!name_fits(c, name))
+        return;
     d = &c->decls[c->decl_count++];
     memset(d, 0, sizeof *d);
-    snprintf(d->name, sizeof d->name, "%.63s", name);
+    snprintf(d->name, sizeof d->name, "%s", name);
     d->scope       = c->current_scope;
     d->is_argument = is_argument;
     if (is_argument)
@@ -1104,7 +1161,7 @@ emit_push_variable(st_compiler *c, const var_ref *v, const char *name)
     case VAR_INSTANCE:   emit_push_receiver_variable(c, v->index); break;
     case VAR_GLOBAL:     emit_push_literal_variable(c, v->association); break;
     default:
-        snprintf(c->out->undeclared, sizeof c->out->undeclared, "%.63s", name);
+        snprintf(c->out->undeclared, sizeof c->out->undeclared, "%s", name);
         fail(c, "undeclared variable '%s'", name);
         break;
     }
@@ -1159,7 +1216,7 @@ integer_literal(st_compiler *c)
             fail(c, "integer literal too large for this compile context");
             return ST_NIL;
         }
-        return c->ctx->make_large_integer_digits(c->token.text,
+        return c->ctx->make_large_integer_digits(LEX_text(&c->token),
                                                  c->token.integer_radix,
                                                  c->token.integer < 0,
                                                  c->ctx->user);
@@ -1169,12 +1226,69 @@ integer_literal(st_compiler *c)
     return c->ctx->make_large_integer(c->token.integer, c->ctx->user);
 }
 
+/*
+ *  The elements of one literal array, however many there are.
+ *
+ *  This used to be `st_oop elements[256]' with the store past the end
+ *  simply skipped while the parser read on to the closing paren, so
+ *  `#(1 2 ... 300)' compiled to an Array of 256 with nothing said.  The
+ *  visible half of that was storeString: Array>>storeOn: writes the literal
+ *  form when every element is a literal, so any Array of more than 256
+ *  numbers or strings stored itself into something that read back 74%
+ *  shorter -- printString and storeString being readable back is the
+ *  contract, and it was silently not being kept.
+ */
+typedef struct {
+    st_oop     *elements;
+    unsigned    count;
+    unsigned    capacity;
+    st_oop      first[64];      /*  most literal arrays are small  */
+} literal_elements;
+
+static void
+elements_open(literal_elements *e)
+{
+    e->elements = e->first;
+    e->count    = 0;
+    e->capacity = (unsigned) (sizeof e->first / sizeof e->first[0]);
+}
+
+/*  Answers 0 when there was no memory for it, which the caller reports.  */
+static int
+elements_add(literal_elements *e, st_oop element)
+{
+    if (e->count == e->capacity) {
+        unsigned    want  = e->capacity * 2;
+        st_oop     *grown = (e->elements == e->first)
+                                ? (st_oop *) malloc(want * sizeof *grown)
+                                : (st_oop *) realloc(e->elements,
+                                                     want * sizeof *grown);
+
+        if (!grown)
+            return 0;
+        if (e->elements == e->first)
+            memcpy(grown, e->first, e->count * sizeof *grown);
+        e->elements = grown;
+        e->capacity = want;
+    }
+    e->elements[e->count++] = element;
+    return 1;
+}
+
+static void
+elements_close(literal_elements *e)
+{
+    if (e->elements != e->first)
+        free(e->elements);
+}
+
 static st_oop
 parse_literal_array(st_compiler *c)
 {
-    st_oop      elements[256];
-    unsigned    count = 0;
+    literal_elements    elements;
+    st_oop              result;
 
+    elements_open(&elements);
     while (!c->failed && !at(c, ST_TOK_RPAREN) && !at(c, ST_TOK_END)) {
         st_oop  element = ST_NIL;
 
@@ -1213,7 +1327,7 @@ parse_literal_array(st_compiler *c)
             advance(c);
             break;
         case ST_TOK_STRING:
-            element = c->ctx->make_string(c->token.text, c->ctx->user);
+            element = c->ctx->make_string(LEX_text(&c->token), c->ctx->user);
             advance(c);
             break;
         case ST_TOK_CHARACTER:
@@ -1246,26 +1360,103 @@ parse_literal_array(st_compiler *c)
              *  compiled every conditional and every loop as a real message
              *  send with real blocks.
              */
-            char        joined[256];
-            size_t      n = 0;
+            char        stack[256];
+            char       *joined   = stack;
+            size_t      capacity = sizeof stack;
+            size_t      n        = 0;
+            int         ran_out  = 0;
 
             for (;;) {
-                const char *part = c->token.text;
+                const char *part = LEX_text(&c->token);
+                size_t      len  = strlen(part);
 
-                while (*part && n + 1 < sizeof joined)
-                    joined[n++] = *part++;
+                if (n + len + 1 > capacity) {
+                    size_t  want = capacity;
+                    char   *grown;
+
+                    while (n + len + 1 > want)
+                        want *= 2;
+                    grown = joined == stack ? (char *) malloc(want)
+                                            : (char *) realloc(joined, want);
+                    if (!grown) {
+                        ran_out = 1;
+                        break;
+                    }
+                    if (joined == stack)
+                        memcpy(grown, stack, n);
+                    joined   = grown;
+                    capacity = want;
+                }
+                memcpy(joined + n, part, len);
+                n += len;
                 advance(c);
                 if (!at(c, ST_TOK_KEYWORD) || c->token.after_space)
                     break;
             }
+            if (ran_out) {
+                if (joined != stack)
+                    free(joined);
+                fail(c, "out of memory building a literal array");
+                elements_close(&elements);
+                return ST_NIL;
+            }
             joined[n] = '\0';
             element = c->ctx->intern_symbol(joined, c->ctx->user);
+            if (joined != stack)
+                free(joined);
             break;
         }
-        case ST_TOK_SYMBOL:
         case ST_TOK_IDENTIFIER:
+            /*
+             *  nil, true and false inside #( ) are the OBJECTS, not three
+             *  symbols that print like them.
+             *
+             *  1983 interned every bare word in a literal array, this one
+             *  included, and the failure is invisible: #nil printString is
+             *  'nil', so printing the array cannot tell you what it holds.
+             *  `#(1 nil 2) copyWithout: nil' removed nothing, `indexOf: nil'
+             *  answered 0, and `#(nil) = (Array with: nil)' was false --
+             *  an array written to hold a hole held a symbol instead.
+             *
+             *  ANSI specifies the objects and Squeak, Pharo and VisualWorks
+             *  all answer them, and the compiler was already inconsistent
+             *  with itself about it: pragma_literal below special-cases the
+             *  same three words, so <foo: nil> got nil while #(nil) got
+             *  #nil.  { } -- the brace form -- got them right too.
+             *
+             *  It is taken in the closure dialect only.  Under the Blue
+             *  Book this is 1983's own compiler compiling 1983's own
+             *  library, where ClassDescription>>subclassOf:... builds
+             *  `#(self super thisContext true false nil) asSet' and MEANS
+             *  the six names; and the trace oracle checks this compiler's
+             *  literal frames against the ones Xerox shipped.  See
+             *  doc/LanguageExtensions.md.
+             */
+            if (c->dialect == ST_DIALECT_CLOSURES) {
+                const char *word = LEX_text(&c->token);
+
+                if (strcmp(word, "nil") == 0) {
+                    element = ST_NIL;
+                    advance(c);
+                    break;
+                }
+                if (strcmp(word, "true") == 0) {
+                    element = ST_TRUE;
+                    advance(c);
+                    break;
+                }
+                if (strcmp(word, "false") == 0) {
+                    element = ST_FALSE;
+                    advance(c);
+                    break;
+                }
+            }
+            element = c->ctx->intern_symbol(LEX_text(&c->token), c->ctx->user);
+            advance(c);
+            break;
+        case ST_TOK_SYMBOL:
         case ST_TOK_BINARY:
-            element = c->ctx->intern_symbol(c->token.text, c->ctx->user);
+            element = c->ctx->intern_symbol(LEX_text(&c->token), c->ctx->user);
             advance(c);
             break;
         /*
@@ -1313,13 +1504,20 @@ parse_literal_array(st_compiler *c)
             break;
         default:
             fail(c, "unexpected token in a literal array");
+            elements_close(&elements);
             return ST_NIL;
         }
-        if (count < 256)
-            elements[count++] = element;
+        if (!elements_add(&elements, element)) {
+            fail(c, "out of memory building a literal array");
+            elements_close(&elements);
+            return ST_NIL;
+        }
     }
     accept(c, ST_TOK_RPAREN);
-    return c->ctx->make_array(elements, count, c->ctx->user);
+    result = c->ctx->make_array(elements.elements, elements.count,
+                                c->ctx->user);
+    elements_close(&elements);
+    return result;
 }
 
 /*
@@ -1421,11 +1619,11 @@ pragma_literal(st_compiler *c, pragma_arg *out)
     case ST_TOK_STRING:
         out->is_string = 1;
         snprintf(out->text, sizeof out->text, "%s", c->token.text);
-        out->value = c->ctx->make_string(c->token.text, c->ctx->user);
+        out->value = c->ctx->make_string(LEX_text(&c->token), c->ctx->user);
         break;
     case ST_TOK_SYMBOL:
         snprintf(out->text, sizeof out->text, "%s", c->token.text);
-        out->value = c->ctx->intern_symbol(c->token.text, c->ctx->user);
+        out->value = c->ctx->intern_symbol(LEX_text(&c->token), c->ctx->user);
         break;
     case ST_TOK_CHARACTER:
         out->value = c->ctx->make_character
@@ -1505,7 +1703,8 @@ apply_pragma(st_compiler *c, const char *selector,
         c->out->primitive = (unsigned) args[0].integer;
         c->out->primitive_encodable = args[0].integer <= 255;
         if (c->name_count < MAX_TEMPS) {
-            snprintf(c->names[c->name_count], 64, "%.63s", args[1].text);
+            name_fits(c, args[1].text);
+            snprintf(c->names[c->name_count], MAX_NAME, "%s", args[1].text);
             ++c->name_count;
             if (c->name_count > c->max_names)
                 c->max_names = c->name_count;
@@ -1604,6 +1803,8 @@ parse_pragma(st_compiler *c)
         while (at(c, ST_TOK_KEYWORD)) {
             const char *part = c->token.text;
 
+            if (n + c->token.text_length >= sizeof selector)
+                return 0;               /*  not a pragma this compiler knows */
             while (*part && n + 1 < sizeof selector)
                 selector[n++] = *part++;
             selector[n] = '\0';
@@ -1856,7 +2057,7 @@ compile_primary(st_compiler *c, var_ref *out_var)
         return;
     case ST_TOK_STRING:
         emit_push_literal_constant(c,
-            c->ctx->make_string(c->token.text, c->ctx->user));
+            c->ctx->make_string(LEX_text(&c->token), c->ctx->user));
         advance(c);
         return;
     case ST_TOK_CHARACTER:
@@ -1870,7 +2071,7 @@ compile_primary(st_compiler *c, var_ref *out_var)
         return;
     case ST_TOK_SYMBOL:
         emit_push_literal_constant(c,
-            c->ctx->intern_symbol(c->token.text, c->ctx->user));
+            c->ctx->intern_symbol(LEX_text(&c->token), c->ctx->user));
         advance(c);
         return;
     case ST_TOK_ARRAY_OPEN: {
@@ -2018,7 +2219,9 @@ compile_primary(st_compiler *c, var_ref *out_var)
                 }
             }
             if (slot == c->name_count && c->name_count < MAX_TEMPS) {
-                snprintf(c->names[c->name_count], 64, "%.63s", c->token.text);
+                name_fits(c, LEX_text(&c->token));
+                snprintf(c->names[c->name_count], MAX_NAME, "%s",
+                         LEX_text(&c->token));
                 ++c->name_count;
             }
             if (argc < MAX_ARGS)
@@ -2071,8 +2274,9 @@ compile_primary(st_compiler *c, var_ref *out_var)
                  *  and so finds the innermost.
                  */
                 if (c->name_count < MAX_TEMPS) {
-                    snprintf(c->names[c->name_count], 64, "%.63s",
-                             c->token.text);
+                    name_fits(c, LEX_text(&c->token));
+                    snprintf(c->names[c->name_count], MAX_NAME, "%s",
+                             LEX_text(&c->token));
                     ++c->name_count;
                 }
                 advance(c);
@@ -2320,7 +2524,9 @@ compile_inline_block(st_compiler *c)
         advance(c);
         while (at(c, ST_TOK_IDENTIFIER)) {
             if (c->name_count < MAX_TEMPS) {
-                snprintf(c->names[c->name_count], 64, "%.63s", c->token.text);
+                name_fits(c, LEX_text(&c->token));
+                snprintf(c->names[c->name_count], MAX_NAME, "%s",
+                         LEX_text(&c->token));
                 ++c->name_count;
                 if (c->name_count > c->max_names)
                     c->max_names = c->name_count;
@@ -2619,6 +2825,15 @@ compile_keyword_message(st_compiler *c, int receiver_is_super)
     while (at(c, ST_TOK_KEYWORD)) {
         size_t  used = strlen(selector);
 
+        /*
+         *  Enough keyword parts to overflow this buffer would truncate the
+         *  selector and send a DIFFERENT message, so it is refused instead.
+         */
+        if (used + c->token.text_length >= sizeof selector) {
+            fail(c, "this selector is longer than the %u characters a "
+                    "message may name", (unsigned) (sizeof selector - 1));
+            return;
+        }
         snprintf(selector + used, sizeof selector - used, "%s", c->token.text);
         advance(c);
         compile_binary_expression(c);
@@ -2707,7 +2922,7 @@ compile_expression(st_compiler *c)
             case VAR_GLOBAL:    emit_store_literal_variable(c, v.association, 0); break;
             default:
                 snprintf(c->out->undeclared, sizeof c->out->undeclared,
-                         "%.63s", name);
+                         "%s", name);
                 fail(c, "cannot assign to '%s'", name);
                 break;
             }
@@ -3163,7 +3378,9 @@ compile_pattern(st_compiler *c)
             fail(c, "expected an argument name");
             return;
         }
-        snprintf(c->names[c->name_count++], 64, "%.63s", c->token.text);
+        name_fits(c, LEX_text(&c->token));
+        snprintf(c->names[c->name_count++], MAX_NAME, "%s",
+                 LEX_text(&c->token));
         if (c->dialect == ST_DIALECT_CLOSURES)
             declare(c, c->token.text, 1);
         ++c->argument_count;
@@ -3176,6 +3393,12 @@ compile_pattern(st_compiler *c)
         while (at(c, ST_TOK_KEYWORD)) {
             size_t  used = strlen(c->out->selector);
 
+            if (used + c->token.text_length >= sizeof c->out->selector) {
+                fail(c, "this selector is longer than the %u characters a "
+                        "method may name",
+                     (unsigned) (sizeof c->out->selector - 1));
+                return;
+            }
             snprintf(c->out->selector + used,
                      sizeof c->out->selector - used, "%s", c->token.text);
             advance(c);
@@ -3183,8 +3406,11 @@ compile_pattern(st_compiler *c)
                 fail(c, "expected an argument name");
                 return;
             }
-            if (c->name_count < MAX_TEMPS)
-                snprintf(c->names[c->name_count++], 64, "%.63s", c->token.text);
+            if (c->name_count < MAX_TEMPS) {
+                name_fits(c, LEX_text(&c->token));
+                snprintf(c->names[c->name_count++], MAX_NAME, "%s",
+                         LEX_text(&c->token));
+            }
             /*
              *  A method's arguments are names in scope zero exactly as its
              *  temporaries are.  Missing them here was invisible in every
@@ -3331,9 +3557,11 @@ COMPILE_to_bytecodes(const char *source, const st_compile_context *ctx,
             if (at(&c, ST_TOK_BAR)) {
                 advance(&c);
                 while (at(&c, ST_TOK_IDENTIFIER)) {
-                    if (c.name_count < MAX_TEMPS)
-                        snprintf(c.names[c.name_count++], 64, "%.63s",
-                                 c.token.text);
+                    if (c.name_count < MAX_TEMPS) {
+                        name_fits(&c, LEX_text(&c.token));
+                        snprintf(c.names[c.name_count++], MAX_NAME, "%s",
+                                 LEX_text(&c.token));
+                    }
                     if (c.dialect == ST_DIALECT_CLOSURES)
                         declare(&c, c.token.text, 0);
                     advance(&c);

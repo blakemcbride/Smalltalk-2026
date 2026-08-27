@@ -461,7 +461,13 @@ TONEL_read(const char *path, const st_source_sink *sink, void *user,
     FILE       *f;
     long        size;
     char       *text;
-    char        comment[4096];
+    /*
+     *  The class comment, however long it is.  It used to be `char
+     *  comment[4096]', which is a ceiling on how much a class may say about
+     *  itself -- silently applied, and several of this system's own class
+     *  comments are most of the way to it.
+     */
+    char       *comment = NULL;
     char        type[64];
     st_ston_pair pairs[ST_STON_MAX_PAIRS];
     unsigned    pair_count = 0;
@@ -508,8 +514,7 @@ TONEL_read(const char *path, const st_source_sink *sink, void *user,
     t.error     = error;
     t.error_len = error_len;
 
-    comment[0] = '\0';
-    skip_separators(&t, comment, sizeof comment);
+    comment = SRC_take_comment(&t.c);
 
     /*  The type word.  */
     {
@@ -523,6 +528,7 @@ TONEL_read(const char *path, const st_source_sink *sink, void *user,
         type[n] = '\0';
     }
     if (!type[0]) {
+        free(comment);
         free(text);
         snprintf(error, error_len, "%s: not a Tonel file", path);
         return 0;
@@ -530,12 +536,14 @@ TONEL_read(const char *path, const st_source_sink *sink, void *user,
     skip_separators(&t, NULL, 0);
     if (!SRC_ston_object(&t.c, pairs, &pair_count, ST_STON_MAX_PAIRS,
                          error, error_len)) {
+        free(comment);
         free(text);
         return 0;
     }
 
     if (strcmp(type, "Package") == 0) {
         /*  Nothing to define; a package file only names the package.  */
+        free(comment);
         free(text);
         return 1;
     }
@@ -544,6 +552,7 @@ TONEL_read(const char *path, const st_source_sink *sink, void *user,
     }  else if (strcmp(type, "Trait") == 0) {
         is_trait = 1;
     }  else if (strcmp(type, "Class") != 0) {
+        free(comment);
         free(text);
         snprintf(error, error_len, "%s: unknown Tonel type '%s'", path, type);
         return 0;
@@ -618,13 +627,14 @@ TONEL_read(const char *path, const st_source_sink *sink, void *user,
         }
 
         if (!def.name) {
+            free(comment);
             free(text);
             snprintf(error, error_len, "%s: a Tonel class has no #name", path);
             return 0;
         }
         if (sink->class_def && !sink->class_def(&def, user))
             ok = 0;
-        if (ok && comment[0] && sink->comment)
+        if (ok && comment && comment[0] && sink->comment)
             ok = sink->comment(def.name, 0, comment, user);
     }
 
@@ -660,6 +670,7 @@ TONEL_read(const char *path, const st_source_sink *sink, void *user,
     }
 
     SRC_ston_free(pairs, pair_count);
+    free(comment);
     free(text);
     return ok;
 }

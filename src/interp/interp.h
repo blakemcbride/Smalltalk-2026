@@ -284,7 +284,29 @@ typedef struct {
 
     uint64_t    cycle;                  /*  bytecodes executed  */
     int         running;
+    /*
+     *  How many frames deep the running stack is.
+     *
+     *  Kept accurate rather than approximately: activation adds one, an
+     *  ordinary return takes one away, and every NON-LOCAL move -- a
+     *  handler returning past a million frames in a single jump, a resume,
+     *  a process switch -- recounts, because those move the top of the
+     *  stack by an amount nobody counted.  It used to drift upward for ever
+     *  after the first caught exception, which mattered only to a trace's
+     *  indentation and now decides whether ST_MAX_CALL_DEPTH has been
+     *  reached.
+     */
     int         call_depth;
+    /*
+     *  Whether #recursionDepthExceeded has already been sent on this stack
+     *  and not yet unwound.
+     *
+     *  Raising the error is itself a send, and so are the handler search
+     *  and everything the handler does, all of them from a stack that is by
+     *  definition over the ceiling.  Without this, the first frame of the
+     *  error would trip the ceiling again, for ever.
+     */
+    int         depth_signalled;
 
     /*
      *  What the outermost method answered.  A return whose sender is nil has
@@ -387,6 +409,13 @@ uint64_t    ST_interp_run(uint64_t limit);
  */
 void        ST_store_active_context(void);
 void        ST_set_active_context(st_oop ctx);
+
+/*
+ *  How many frames the running stack really has, counted by walking it.
+ *  st_vm.call_depth is the cheap running total; this is the truth, and is
+ *  what puts the total right after a non-local move.
+ */
+int         ST_stack_depth(void);
 
 /*  ----------  Tracing  ----------
  *

@@ -160,7 +160,7 @@ typedef struct {
      *  which is that behaviour reproduced without teaching this compiler
      *  how to write a Smalltalk Dictionary.
      */
-    char        undeclared[64];
+    char        undeclared[256];    /*  as long as a token's text  */
 } st_compile_result;
 
 /*
@@ -214,7 +214,7 @@ typedef struct {
     char        error[256];
     unsigned    error_line;
     size_t      error_offset;       /*  see st_compile_result  */
-    char        undeclared[64];     /*  see st_compile_result  */
+    char        undeclared[256];    /*  see st_compile_result  */
 } st_compiled_code;
 
 /*
