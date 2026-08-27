@@ -37,6 +37,19 @@ scope that ends at the block, a pragma on either side of the temporaries,
 selectors longer than two characters, and a temporary that shadows an instance
 variable or a global. The census is 0 of 6,875 now.
 
+**And the image no longer WRITES a second dialect either.** Reading was half
+of it: the image's own compiler emitted Chapter 27's `BlockContext` where this
+one emits closures, so the same text meant different things depending on which
+had compiled it — and a Tonel service file reloaded on a running server is
+exactly the case where both do. `Behavior>>compile:notifying:trailer:ifFail:`
+reaches this compiler through primitive 228 now, and
+`tests/unit/test_image.c`'s self-hosting check compares the bytecodes a
+compile inside the image produces against the bytecodes a direct call
+produces, byte for byte. The 1983 parser is still what pretty-prints,
+decompiles and answers `parseSelector:`; if it drifts, a *tool* complains
+about a method that compiles, which is visible where a semantic difference was
+not.
+
 The scaled decimal is the one that already compiles, and it was recorded here
 as arguably a bug on the grounds that a Blue Book compiler ought to reject
 `1.23s2` outright. Measured, that turns out to be wrong, and the reason is why

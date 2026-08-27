@@ -31,9 +31,13 @@ command line and \ct{(1 2 3)} inside a method for the same expression. The
 \ct{-closures} switch still forces closures on for a profile that does not
 ask for them.
 
-The compiler \emph{inside} the image is 1983's and has no closures at all,
-so \ct{Compiler evaluate:} in a workspace still builds \ct{BlockContext}
-objects with the 1983 restrictions.
+There is only one code generator, so a method you accept in the Browser
+and an expression you evaluate in a workspace are compiled by the same one
+that built the image. That was not always so either: the compiler inside
+the image was 1983's, which has no closures, so the same text meant one
+thing in a compiled method and another in a workspace. The image reaches
+this compiler through primitive 228 now; the 1983 parser is still what
+pretty-prints, decompiles and answers \ct{parseSelector:}.
 \end{stnote}
 
 \section{Full closures}

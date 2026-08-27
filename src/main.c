@@ -1241,14 +1241,22 @@ evaluate(const char *expression, char *errbuf, size_t errlen)
                                           : ST_DIALECT_BLUE_BOOK;
 
     /*
-     *  An expression with a caret in it is already a method body, temporary
-     *  declarations and all, so it is used as written.  Anything else is a
-     *  single expression whose value is wanted.
+     *  Compiled as a BODY, not as a method.
+     *
+     *  This used to guess: a caret anywhere in the text meant "already a
+     *  method body" and it was wrapped as `doIt <text>', and anything else
+     *  as `doIt ^<text>'.  The guess is wrong in both directions.  Text
+     *  with a caret inside a block -- `coll detect: [:x | ^x]' -- got no
+     *  return and answered self; and text with temporaries, which every
+     *  multi-statement expression needs, could not be written at all,
+     *  because `doIt ^| x | ...' is not a method.
+     *
+     *  The compiler is told instead: no pattern, and the last statement's
+     *  value is the answer.  `| a | a := 2. a * 3' works now, and so does
+     *  an explicit ^ wherever it appears.
      */
-    if (strchr(expression, '^'))
-        snprintf(source, sizeof source, "doIt %s", expression);
-    else
-        snprintf(source, sizeof source, "doIt ^%s", expression);
+    ctx.no_pattern = 1;
+    snprintf(source, sizeof source, "%s", expression);
     if (COMPILE_method(source, &ctx, &res) != 0) {
         snprintf(errbuf, errlen, "%s", res.error);
         return ST_OOP_INVALID;

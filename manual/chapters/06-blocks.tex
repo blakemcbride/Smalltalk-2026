@@ -94,8 +94,10 @@ profile in \ct{profiles/} except \ct{bluebook} selects---for its packages
 and for whatever you hand to \ct{-eval} alike. On the command line,
 \ct{-closures} forces them on for a profile that does not ask. If you build
 with \ct{-manifest sources/MANIFEST} you get the 1983 dialect, where blocks
-are \ct{BlockContext} objects with the 1983 restrictions, and so is
-anything \ct{Compiler evaluate:} compiles inside a running image.
+are \ct{BlockContext} objects with the 1983 restrictions. Accepting a method
+in the Browser, loading a Tonel file into a running server and evaluating in
+a workspace all reach the same compiler, so a block means the same thing
+wherever it was compiled.
 \end{stnote}
 
 \section{Non-local return}

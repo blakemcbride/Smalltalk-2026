@@ -428,6 +428,40 @@ is_word_start(const st_lexer *lx, int c)
     return c == '_' || c >= 0x80;
 }
 
+/*
+ *  Whether the underscore under the cursor is the ASSIGNMENT ARROW.
+ *
+ *  In the Blue Book it always is, and there is no question.  The closure
+ *  dialect made it a letter, because Pharo identifiers contain it -- and
+ *  that was fine while the closure dialect only ever read lib/, which
+ *  writes assignment as `:='.
+ *
+ *  It stopped being fine when the image's own compiler was routed through
+ *  this one.  The Browser's commonest use is editing a method in sources/,
+ *  and every one of those 4,500 methods is written `s _ WriteStream on:
+ *  String new'.  Read as a letter, the lone `_' became an identifier,
+ *  which was undeclared, and `shCascade' compiled and answered nil.
+ *
+ *  So: an underscore begins an identifier only when something can FOLLOW it
+ *  in one.  A lone `_' -- one with a space, a bracket or anything else that
+ *  is not a word character after it -- is the arrow, in both dialects.
+ *  `_foo' and `a_b' are identifiers, which is what Pharo source needs;
+ *  `a _ b' is an assignment, which is what 1983 source needs; and no text
+ *  means both.
+ */
+static int
+underscore_is_assignment(const st_lexer *lx)
+{
+    char    next;
+
+    if (lx->dialect != ST_DIALECT_CLOSURES)
+        return 1;
+    if (lx->pos + 1 >= lx->length)
+        return 1;
+    next = lx->source[lx->pos + 1];
+    return !is_word_char(lx, (unsigned char) next);
+}
+
 static void
 scan_word(st_lexer *lx, char *buf, size_t buflen)
 {
@@ -471,7 +505,8 @@ lex_token(st_lexer *lx, st_token *out)
      *  A leading underscore starts one only in the closure dialect; in the
      *  Blue Book it is the assignment arrow, handled in the switch below.
      */
-    if (is_word_start(lx, (unsigned char) c)) {
+    if (is_word_start(lx, (unsigned char) c)
+     && !(c == '_' && underscore_is_assignment(lx))) {
         size_t  n = 0;
 
         while (!at_end(lx)) {
@@ -704,11 +739,10 @@ lex_token(st_lexer *lx, st_token *out)
 
     case '_':
         /*
-         *  The 1983 assignment arrow -- and, in the closure dialect, an
-         *  ordinary letter -- which is why the closure dialect never gets
-         *  here at all: the identifier scanner above has already taken it.
-         *  A leading underscore in an identifier was not legal
-         *  Smalltalk-80, so in that dialect this is unambiguous.
+         *  The 1983 assignment arrow.  The closure dialect reaches here only
+         *  for a LONE underscore -- see underscore_is_assignment -- because
+         *  one with a word character after it was taken by the identifier
+         *  scanner above.
          */
         ++lx->pos;
         out->kind = ST_TOK_ASSIGN;

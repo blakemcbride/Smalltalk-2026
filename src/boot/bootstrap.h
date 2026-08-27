@@ -116,6 +116,13 @@ int     BOOT_build_dialects(const char *const *paths, const int *dialects,
 
 /*  Look up a global by name in the bootstrapped SystemDictionary.  */
 st_oop  BOOT_global(const char *name);
+/*
+ *  An Association in that Dictionary whose key spells that name, found by
+ *  scanning rather than by hashing -- see the definition for why.
+ */
+st_oop  BOOT_image_association(st_oop dictionary, const char *name);
+/*  The value of a global in the image, by name, or nil.  */
+st_oop  BOOT_global_value_named(const char *name);
 
 /*  The SystemDictionary itself, which is also the guaranteed pointer 18.  */
 st_oop  BOOT_smalltalk(void);

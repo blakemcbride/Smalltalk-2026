@@ -43,6 +43,21 @@ extern "C" {
 
 typedef struct {
     int                 dialect;
+    /*
+     *  Compile a body rather than a method: no pattern line, and the value
+     *  of the LAST statement is what the method answers.
+     *
+     *  That is what a doIt is, and it is the one thing the image's own
+     *  compiler could do that this one could not.  `Compiler evaluate:'
+     *  takes text with temporaries and several statements and wants the
+     *  last one's value; a method with no explicit return answers self.
+     *  compile_statements already knows the difference -- it is the same
+     *  distinction a block draws from a method -- so this only has to say
+     *  which of the two is meant.
+     *
+     *  The selector of the result is `DoIt'.
+     */
+    int                 no_pattern;
     const char *const  *instance_variables;
     unsigned            instance_variable_count;
 
@@ -134,6 +149,18 @@ typedef struct {
      *  about the whole method.
      */
     size_t      error_offset;
+    /*
+     *  The name, when the failure was that a variable is not declared.
+     *
+     *  Named rather than left in the message, because a caller has to ACT
+     *  on it and matching on prose is how a message becomes an interface.
+     *  The image's own Encoder, asked to compile with no editor to ask a
+     *  person, puts an unknown name in Undeclared bound to nil and carries
+     *  on -- so an image-side caller declares this name and compiles again,
+     *  which is that behaviour reproduced without teaching this compiler
+     *  how to write a Smalltalk Dictionary.
+     */
+    char        undeclared[64];
 } st_compile_result;
 
 /*
@@ -187,6 +214,7 @@ typedef struct {
     char        error[256];
     unsigned    error_line;
     size_t      error_offset;       /*  see st_compile_result  */
+    char        undeclared[64];     /*  see st_compile_result  */
 } st_compiled_code;
 
 /*

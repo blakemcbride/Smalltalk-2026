@@ -15,6 +15,8 @@
 #include "st_odbc.h"
 #include "st_socket.h"
 #include "st_crypto.h"
+#include "image_compile.h"
+#include "bootstrap.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -3097,6 +3099,119 @@ primitive_float_arc_cos(void)
     return answer_float(acos(value), 1);
 }
 
+/*
+ *  228: compile source into a CompiledMethod, in the running image.
+ *
+ *  The image had a second compiler -- 1983's, in Smalltalk -- and it did not
+ *  agree with this one: it gives blocks Chapter 27's BlockContext where the
+ *  C compiler gives them closures, so the same text meant one thing when it
+ *  was compiled INTO the image and another when it was recompiled inside it.
+ *  A Tonel service file reloaded on a running server is the case that made
+ *  it matter.  This is the door that lets the image reach the code generator
+ *  it was built with; see src/compiler/image_compile.c for the whole
+ *  argument and for what the compile needs that the bootstrap's context
+ *  cannot give it.
+ *
+ *  Five arguments, and none of them is a convenience:
+ *
+ *    source       the text, a String
+ *    class        the Behavior it is being compiled for, or nil
+ *    ivarNames    that class's allInstVarNames, computed by the IMAGE so
+ *                 that what is in scope has one definition and not two
+ *    association  an Association whose value is the class, for a super
+ *                 send, or nil
+ *    noPattern    true for a doIt: no pattern line, and the last
+ *                 statement's value is the answer
+ *
+ *  Answers an Array of six, always, because a compile that fails is an
+ *  ordinary outcome and not a primitive failure:
+ *
+ *    1  the CompiledMethod, or nil
+ *    2  its selector as a Symbol, or nil
+ *    3  the message, or nil when it succeeded
+ *    4  the line the message is about, one-relative
+ *    5  the CHARACTER POSITION, one-relative, which is what an editor
+ *       needs -- Compiler>>notify:at: selects the text there
+ *    6  the name, when the failure was an undeclared variable, so the
+ *       caller can declare it and compile again -- which is what the
+ *       image's own Encoder does when there is no editor to ask a person
+ *
+ *  THE CALLER MUST HOLD THE IMAGE'S SYMBOL LOCK.  Interning here goes
+ *  through the bootstrap's table, which has no lock of its own, while the
+ *  image's Symbol class>>intern: holds LibraryLocks' Symbol mutex; the two
+ *  are serialised only if this side takes the same one.  Two workers
+ *  interning one new selector make two Symbols, and a Symbol that is not
+ *  identical to itself cannot be found as a selector.
+ */
+static int
+primitive_compile_method(void)
+{
+    st_oop              source     = ST_stack_value(4);
+    st_oop              class_oop  = ST_stack_value(3);
+    st_oop              ivar_names = ST_stack_value(2);
+    st_oop              assoc      = ST_stack_value(1);
+    st_oop              no_pattern = ST_stack_value(0);
+    st_compile_result   res;
+    st_oop              guard;
+    st_oop              answer;
+    st_oop              text;
+    int                 status;
+
+    if (!OM_is_object(source) || OM_pointer_bit(source))
+        return 0;
+
+    /*
+     *  The guard is pushed BEFORE the compile and stays until the answer is
+     *  built, because everything either of them makes is otherwise held in
+     *  C alone.  A context's stack is marked up to its stack pointer, so a
+     *  push is all it takes to make one reachable.
+     */
+    guard = OM_instantiate_pointers(ST_CLASS_ARRAY, 256);
+    if (!OM_is_object(guard))
+        return 0;
+    ST_push(guard);
+
+    status = IMGC_compile(source, class_oop, ivar_names, assoc,
+                          no_pattern == ST_TRUE, ST_DIALECT_CLOSURES,
+                          guard, &res);
+
+    answer = OM_instantiate_pointers(ST_CLASS_ARRAY, 6);
+    if (!OM_is_object(answer)) {
+        ST_pop_n(1);                /*  the guard  */
+        return 0;
+    }
+    ST_push(answer);
+    if (status == 0) {
+        OM_store_pointer(0, answer, res.method);
+        text = BOOT_intern_symbol(res.selector, NULL);
+        OM_store_pointer(1, answer, text);
+    }  else  {
+        text = BOOT_make_string(res.error, NULL);
+        OM_store_pointer(2, answer, text);
+        OM_store_pointer(3, answer, OM_int_oop((st_int) res.error_line));
+        OM_store_pointer(4, answer,
+                         OM_int_oop((st_int) res.error_offset + 1));
+        if (res.undeclared[0]) {
+            text = BOOT_make_string(res.undeclared, NULL);
+            OM_store_pointer(5, answer, text);
+        }
+    }
+    /*
+     *  The guard and the rooting push come off, then the receiver and its
+     *  five arguments, and the answer goes where the receiver was -- which
+     *  is what every primitive leaves behind.  Popping the arguments and
+     *  not the receiver left TWO values where the send expected one, and
+     *  the caller's stack was off by one from there on: the first symptom
+     *  was addSelector:withMethod: sending #asOop to something that was not
+     *  a Symbol.  Nothing is allocated between the pop and the push, so the
+     *  answer needs no root across it.
+     */
+    ST_pop_n(2);                    /*  the answer and the guard  */
+    ST_pop_n(6);                    /*  the arguments and the receiver  */
+    ST_push(answer);
+    return 1;
+}
+
 /*  132: does this object hold that one in one of its fields?  */
 static int
 primitive_inst_vars_include(void)
@@ -5276,6 +5391,7 @@ ST_primitive_dispatch(unsigned index)
     case 225: return primitive_float_tan();
     case 226: return primitive_float_arc_sin();
     case 227: return primitive_float_arc_cos();
+    case 228: return primitive_compile_method();
     /*  Told apart by arity; see primitive_last_error.  */
     case 132: return st_vm.argument_count == 0
                      ? primitive_last_error()
@@ -5427,6 +5543,7 @@ static const primitive_entry primitive_table[] = {
     { 225, ST_PRIM_PRESENT,  "Float tan -- ours; no Blue Book number" },
     { 226, ST_PRIM_PRESENT,  "Float arcSin -- ours; no Blue Book number" },
     { 227, ST_PRIM_PRESENT,  "Float arcCos -- ours; no Blue Book number" },
+    { 228, ST_PRIM_PRESENT,  "Compiler class compile -- ours"    },
     { 132, ST_PRIM_PRESENT,  "Object instVarsInclude:"          },
     { 100, ST_PRIM_PRESENT,  "signal a semaphore at a time"     },
     { 135, ST_PRIM_PRESENT,  "millisecond clock"                },

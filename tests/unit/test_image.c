@@ -371,7 +371,7 @@
  *  agrees with = across Integer, Float and Fraction; and the small protocol
  *  the audit found missing.
  */
-#define LIB_METHODS             2518
+#define LIB_METHODS             2528
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -2510,7 +2510,7 @@ test_browsing(void)
      *  the source pointer is 22 bits and silently truncated once, and a
      *  size that stops growing is how that would show.
      */
-    check_integer("(SourceFiles at: 1) contents size", 1935761);
+    check_integer("(SourceFiles at: 1) contents size", 1944591);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -2685,6 +2685,7 @@ check_same_bytecodes(const char *selector, const char *source)
 
     /*  And in C, from the same text.  */
     memset(&ctx, 0, sizeof ctx);
+    ctx.dialect            = ST_DIALECT_CLOSURES;
     ctx.intern_symbol      = BOOT_intern_symbol;
     ctx.make_string        = BOOT_make_string;
     ctx.make_float         = BOOT_make_float;

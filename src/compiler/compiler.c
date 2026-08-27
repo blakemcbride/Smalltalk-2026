@@ -1104,6 +1104,7 @@ emit_push_variable(st_compiler *c, const var_ref *v, const char *name)
     case VAR_INSTANCE:   emit_push_receiver_variable(c, v->index); break;
     case VAR_GLOBAL:     emit_push_literal_variable(c, v->association); break;
     default:
+        snprintf(c->out->undeclared, sizeof c->out->undeclared, "%.63s", name);
         fail(c, "undeclared variable '%s'", name);
         break;
     }
@@ -2705,6 +2706,8 @@ compile_expression(st_compiler *c)
             case VAR_INSTANCE:  emit_store_receiver_variable(c, v.index, 0); break;
             case VAR_GLOBAL:    emit_store_literal_variable(c, v.association, 0); break;
             default:
+                snprintf(c->out->undeclared, sizeof c->out->undeclared,
+                         "%.63s", name);
                 fail(c, "cannot assign to '%s'", name);
                 break;
             }
@@ -3296,8 +3299,21 @@ COMPILE_to_bytecodes(const char *source, const st_compile_context *ctx,
             snprintf(out->error, sizeof out->error, "out of memory");
             return -1;
         }
-        advance(&c);
-        compile_pattern(&c);
+        if (ctx->no_pattern) {
+            /*
+             *  A doIt.  LEX_begin_statement before the first advance rather
+             *  than after a pattern, because here the first token IS the
+             *  first token of the body -- and `-4 foo' begins with a
+             *  negative literal, which the lexer decides from what came
+             *  before and there is nothing before it.
+             */
+            snprintf(c.out->selector, sizeof c.out->selector, "DoIt");
+            LEX_begin_statement(c.lx);
+            advance(&c);
+        }  else  {
+            advance(&c);
+            compile_pattern(&c);
+        }
 
         /*
          *  Temporaries and pragmas, in either order and any number of
@@ -3382,7 +3398,7 @@ COMPILE_to_bytecodes(const char *source, const st_compile_context *ctx,
             }
         }
 
-        compile_statements(&c, 0);
+        compile_statements(&c, ctx->no_pattern);
 
         /*
          *  And nothing may be left over.
@@ -3403,11 +3419,13 @@ COMPILE_to_bytecodes(const char *source, const st_compile_context *ctx,
 
         /*
          *  A method with no explicit return answers the receiver, which the
-         *  one-byte "return self" bytecode does directly.
+         *  one-byte "return self" bytecode does directly.  A doIt answers
+         *  its last statement, which compile_statements has left on the
+         *  stack, so it returns the stack top instead.
          */
         if (!c.failed) {
             if (out->length == 0 || out->bytecodes[out->length - 1] != 124)
-                emit(&c, 120);
+                emit(&c, ctx->no_pattern ? 124 : 120);
         }
         add_method_state_literal(&c);
         append_method_class_literal(&c);
@@ -3518,6 +3536,8 @@ COMPILE_method(const char *source, const st_compile_context *ctx,
         snprintf(out->error, sizeof out->error, "%s", code.error);
         out->error_line   = code.error_line;
         out->error_offset = code.error_offset;
+        snprintf(out->undeclared, sizeof out->undeclared, "%s",
+                 code.undeclared);
         out->method       = ST_OOP_INVALID;
         return -1;
     }

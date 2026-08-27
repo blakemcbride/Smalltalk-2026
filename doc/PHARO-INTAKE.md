@@ -106,6 +106,14 @@ which was right for a twenty-four bit mantissa. Once `ln` and `exp` moved
 onto primitives the system answered seventeen correct digits for those and
 six for everything else, with nothing to say which one a caller had.
 
+**And 228, which is not a Pharo number at all.** `Compiler class>>primCompile:
+class:instVarNames:classAssociation:noPattern:` is how the IMAGE reaches this
+compiler. It exists because there were two compilers and they disagreed: the
+one in `src/compiler/` gives blocks closures, and 1983's, in Smalltalk, gives
+them Chapter 27's BlockContext — so `(1 to: 3) collect: [:i | [i]]` answered
+1, 2, 3 compiled into the image and 3, 3, 3 recompiled inside it. There is one
+code generator now; see `src/compiler/image_compile.c`.
+
 **A collision worth naming, and since resolved by implementing it.** Pharo uses
 primitive **249** for `Array>>elementsForwardIdentityTo:copyHash:`, a bulk `become:`.
 This system had taken 249 for `ContextPart>>restartAndJump`. Loading that one Array

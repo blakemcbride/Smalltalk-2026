@@ -482,6 +482,91 @@ static uint32_t BOOT_string_hash_of_text(const char *text, size_t length);
 static int adopt_symbols(void);
 static int adopt_associations(void);
 
+/*
+ *  Behavior's fields, repeated here because the class-layout defines below
+ *  come after this point in the file and moving them would move a block of
+ *  comment that belongs with the class construction.
+ */
+#define BOOT_CLASS_POOL_FIELD   7
+
+/*
+ *  Attach to a LOADED image's symbol table.
+ *
+ *  seed_symbol_table sets these while an image is being built.  A process
+ *  that loaded one instead has never run it, so the table has to be found:
+ *  it is Symbol's class variable USTable, and Symbol is a global.  Done
+ *  once, lazily, because the only thing that needs it in a loaded image is
+ *  a compile, and most runs do not compile.
+ */
+static void
+ensure_symbol_table(void)
+{
+    st_oop  symbol_class;
+    st_oop  assoc;
+
+    if (symbol_table_ready)
+        return;
+    symbol_class = BOOT_global("Symbol");
+    if (!OM_is_object(symbol_class)
+     || OM_fetch_word_length(symbol_class) <= BOOT_CLASS_POOL_FIELD)
+        return;
+    assoc = BOOT_image_association(
+                OM_fetch_pointer(BOOT_CLASS_POOL_FIELD, symbol_class),
+                "USTable");
+    if (assoc == ST_OOP_INVALID)
+        return;
+    symbol_table = OM_fetch_pointer(ST_ASSOCIATION_VALUE, assoc);
+    if (!OM_is_object(symbol_table))
+        return;
+    /*
+     *  Which String>>hash the image runs decides which bucket a name is in,
+     *  and this has to be read from the IMAGE.  string_hash_is_primitive
+     *  asks the bootstrap's own class table, which is empty here, so it
+     *  answered `no' and every lookup went to the wrong bucket -- missed,
+     *  made a second Symbol with the same characters, and installed the
+     *  method under a selector nothing could send.
+     */
+    {
+        st_oop      string_class = BOOT_global("String");
+        st_oop      dict;
+        uint32_t    capacity;
+        uint32_t    slot;
+
+        string_hash_kind = 0;
+        if (!OM_is_object(string_class))
+            return;
+        dict = OM_fetch_pointer(ST_CLASS_METHOD_DICT, string_class);
+        if (!OM_is_present(dict))
+            return;
+        /*
+         *  Scanned by the key's BYTES rather than by interning `hash' and
+         *  comparing identity, which is what method_in_dictionary does.
+         *  Interning is what is being made to work here, so asking it now
+         *  is a recursion -- and it was one: ensure_symbol_table called
+         *  method_in_dictionary called BOOT_intern_symbol called
+         *  ensure_symbol_table, until the stack ran out.
+         */
+        capacity = OM_method_dict_capacity(dict);
+        for (slot = 0; slot < capacity; ++slot) {
+            st_oop      key = OM_method_dict_key(dict, slot);
+            uint32_t    n;
+
+            if (!OM_is_object(key) || OM_pointer_bit(key))
+                continue;
+            n = OM_fetch_byte_length(key);
+            if (n != 4
+             || OM_fetch_byte(0, key) != 'h' || OM_fetch_byte(1, key) != 'a'
+             || OM_fetch_byte(2, key) != 's' || OM_fetch_byte(3, key) != 'h')
+                continue;
+            string_hash_kind =
+                ST_method_primitive_index(OM_method_dict_value(dict, slot))
+                    == ST_PRIMITIVE_STRING_HASH ? 1 : 0;
+            break;
+        }
+    }
+    symbol_table_ready = 1;
+}
+
 st_oop
 BOOT_intern_symbol(const char *text, void *user)
 {
@@ -490,6 +575,7 @@ BOOT_intern_symbol(const char *text, void *user)
     size_t      n = strlen(text);
 
     (void) user;
+    ensure_symbol_table();
     /*
      *  Compare against the Symbol's own bytes, not a copy.
      *
@@ -831,10 +917,125 @@ global_association(const char *name)
     return ST_OOP_INVALID;
 }
 
+/*
+ *  An Association in that Dictionary whose key spells `name'.
+ *
+ *  Scanned rather than probed by hash, deliberately: probing would mean
+ *  writing the image's hash policy a second time in C and keeping it in
+ *  step with String>>hash forever.  A SystemDictionary holds a few hundred
+ *  entries and this is asked a few dozen times per compile, so the scan is
+ *  not something a compile notices.
+ *
+ *  Comparing BYTES rather than interning the name first matters: this is
+ *  reached from interning, and it must not need what it is looking for.
+ */
+static st_oop
+association_in_slots(st_oop object, const char *name, size_t length)
+{
+    uint32_t    slots;
+    uint32_t    i;
+
+    if (!OM_is_object(object) || !OM_pointer_bit(object))
+        return ST_OOP_INVALID;
+    slots = OM_fetch_word_length(object);
+    for (i = 0; i < slots; ++i) {
+        st_oop      slot = OM_fetch_pointer(i, object);
+        st_oop      key;
+        uint32_t    n;
+        uint32_t    k;
+
+        if (!OM_is_object(slot) || !OM_pointer_bit(slot)
+         || OM_fetch_word_length(slot) < 2)
+            continue;
+        key = OM_fetch_pointer(ST_ASSOCIATION_KEY, slot);
+        if (!OM_is_object(key) || OM_pointer_bit(key))
+            continue;
+        n = OM_fetch_byte_length(key);
+        if (n != (uint32_t) length)
+            continue;
+        for (k = 0; k < n; ++k) {
+            if (OM_fetch_byte(k, key) != (uint8_t) name[k])
+                break;
+        }
+        if (k == n)
+            return slot;
+    }
+    return ST_OOP_INVALID;
+}
+
+st_oop
+BOOT_image_association(st_oop dictionary, const char *name)
+{
+    size_t      length = strlen(name);
+    st_oop      found;
+    uint32_t    slots;
+    uint32_t    i;
+
+    found = association_in_slots(dictionary, name, length);
+    if (found != ST_OOP_INVALID)
+        return found;
+
+    /*
+     *  And one level in, because a Dictionary is not one shape.
+     *
+     *  1983's HashedCollection keeps its entries in its OWN indexed slots,
+     *  which is what the scan above walks.  Pharo's keeps them in an `array'
+     *  instance variable -- and profiles/pharo-collections.profile
+     *  substitutes Pharo's Dictionary, which SystemDictionary inherits from,
+     *  so in that image Smalltalk itself is the second shape.  Looking one
+     *  slot deeper reads both without knowing which is which: every global
+     *  in that profile came back `undeclared', including String.
+     *
+     *  One level only.  The entries are Associations, which are two fields
+     *  and not collections, so there is nothing below them to look at.
+     */
+    if (!OM_is_object(dictionary) || !OM_pointer_bit(dictionary))
+        return ST_OOP_INVALID;
+    slots = OM_fetch_word_length(dictionary);
+    for (i = 0; i < slots; ++i) {
+        found = association_in_slots(OM_fetch_pointer(i, dictionary),
+                                     name, length);
+        if (found != ST_OOP_INVALID)
+            return found;
+    }
+    return ST_OOP_INVALID;
+}
+
+/*
+ *  The VALUE of a global, by name, from the image.  A convenience over
+ *  BOOT_image_association for the callers that want the object rather than
+ *  the binding.
+ */
+st_oop
+BOOT_global_value_named(const char *name)
+{
+    st_oop  association = BOOT_image_association(ST_SMALLTALK, name);
+
+    if (association == ST_OOP_INVALID)
+        return ST_NIL;
+    return OM_fetch_pointer(ST_ASSOCIATION_VALUE, association);
+}
+
 st_oop
 BOOT_global(const char *name)
 {
     st_oop  association = global_association(name);
+
+    /*
+     *  Not in the bootstrap's array, which means this process LOADED an
+     *  image rather than building one: globals_values is the table this
+     *  side filled while making an image and there is none here.
+     *
+     *  Everything under BOOT_ that makes an object asks this for the class
+     *  to make it of -- BOOT_make_string, BOOT_make_float, the Symbol in
+     *  BOOT_intern_symbol -- so without the fallback they answered objects
+     *  whose class is nil, which print as a bare oop and understand
+     *  nothing.  It went unnoticed for as long as nothing compiled in a
+     *  loaded image, which is exactly what routing the image's compiler
+     *  through this one changes.
+     */
+    if (association == ST_OOP_INVALID)
+        association = BOOT_image_association(ST_SMALLTALK, name);
 
     if (association == ST_OOP_INVALID)
         return ST_NIL;
