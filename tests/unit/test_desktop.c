@@ -626,7 +626,7 @@ test_typing_reaches_the_window(void)
 /*
  *  The cursor keys, which the Alto keyboard did not have.
  *
- *  Two failures to catch, and they are opposite ones.  Before lib/Cursor-Keys
+ *  Two failures to catch, and they are opposite ones.  Before lib/Keyboard-Map
  *  the arrows never reached the image at all: every SDL keycode above 127
  *  fell off the end of the key branch in display.c.  And a code that DOES
  *  reach the image without a place in the keyboard map decodes to 255,
@@ -648,7 +648,7 @@ test_typing_reaches_the_window(void)
 static void
 test_the_cursor_keys_move_the_caret(void)
 {
-    /*  What display.c sends for them.  lib/Cursor-Keys agrees.  */
+    /*  What display.c sends for them.  lib/Keyboard-Map agrees.  */
     enum { LEFT_KEY = 152, RIGHT_KEY = 153, BACKSPACE_KEY = 8 };
     region  typed, after;
     int     i;

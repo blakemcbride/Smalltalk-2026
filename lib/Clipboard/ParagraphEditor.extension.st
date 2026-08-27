@@ -12,7 +12,7 @@ its bold and italic, and copying outside and pasting inside brings the
 outside text; and the image never pastes something older than what the
 desktop has.
 
-These supersede the 1983 methods of the same names, as Cursor-Keys and
+These supersede the 1983 methods of the same names, as Keyboard-Map and
 Scroll-Wheel supersede theirs; the class variables they use are
 ParagraphEditor's own.
 "

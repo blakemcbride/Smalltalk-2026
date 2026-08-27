@@ -50,7 +50,17 @@ FileModel >> acceptText: aText from: aController [
 FileModel >> lineEndingOfFile [
 	"The line ending the file on disk is written in: the first one in it, or
 	 a line feed if it has none.  Read from the file rather than remembered
-	 from the display, so that the file itself is what decides."
+	 from the display, so that the file itself is what decides.
+
+	 readOnly before the first character, because a FileStream that is asked
+	 to close without ever having been given a mode gives itself one:
+	 FileStream>>writing answers `rwmode == nil ifTrue: [self
+	 readWriteShorten. ^true]', and close then shortens the file at wherever
+	 reading stopped.  Without it this method truncated the file it was only
+	 looking at -- a three-line file came back one line long.  1983's own
+	 readers all say readOnly first and this is the same discipline; see
+	 File class>>initialize in this package for why the shortening had been
+	 dormant."
 
 	| dir localName stream lf cr answer |
 	cr := Character cr.
@@ -61,6 +71,7 @@ FileModel >> lineEndingOfFile [
 	(dir includesKey: localName) ifFalse: [^String with: lf].
 	answer := nil.
 	stream := FileStream oldFileNamed: fileName.
+	stream readOnly.
 	[answer isNil and: [stream atEnd not]] whileTrue: [
 		| c |
 		c := stream next.

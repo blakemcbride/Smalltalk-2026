@@ -23,7 +23,7 @@ before the caret moves, and the loop is told there is nothing left to do.
 "
 Extension { #name : 'ParagraphEditor' }
 
-{ #category : '*Cursor-Keys' }
+{ #category : '*Keyboard-Map' }
 ParagraphEditor >> normalCharacter: characterStream [
 	"1983 puts the character into the type-in stream.  A cursor key is not a
 	 character to type, so it is taken here instead."
@@ -36,7 +36,7 @@ ParagraphEditor >> normalCharacter: characterStream [
 	^self moveCursor: which typeIn: characterStream
 ]
 
-{ #category : '*Cursor-Keys' }
+{ #category : '*Keyboard-Map' }
 ParagraphEditor >> moveCursor: which typeIn: characterStream [
 	"Finish what has been typed so far and put the caret where cursor key
 	 number which says.  Answers true; see the class comment above."
@@ -54,7 +54,7 @@ ParagraphEditor >> moveCursor: which typeIn: characterStream [
 	^true
 ]
 
-{ #category : '*Cursor-Keys' }
+{ #category : '*Keyboard-Map' }
 ParagraphEditor >> cursorIndexFor: which [
 	"Where the caret goes for cursor key number which: 1 left, 2 right,
 	 3 up, 4 down.

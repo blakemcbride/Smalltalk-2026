@@ -2008,7 +2008,7 @@ GFX_pump(void)
              *  140-145, which the 1983 keyboard map already spends on the
              *  Alto's own special keys.
              *
-             *  lib/Cursor-Keys is the other half and has to agree with this
+             *  lib/Keyboard-Map is the other half and has to agree with this
              *  list: InputSensor>>initMap makes these four decode to
              *  themselves instead of to `unassigned', and
              *  ParagraphEditor>>normalCharacter: moves the caret rather than

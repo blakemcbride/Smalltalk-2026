@@ -268,11 +268,22 @@ static const kernel kernels[] = {
      *  the setup makes a directory of its own and every worker shares it,
      *  the way every worker shares Disk.  The setup answers 0 only if a
      *  file really opened; the kernel counts only files that did.
+     *
+     *  A FILE OF ITS OWN, and not one of the repository's.  This opened
+     *  README.md, which textFile: opens to write, and closing a stream that
+     *  was never given a mode shortens it where it stands: FileStream>>
+     *  writing answers `rwmode == nil ifTrue: [self readWriteShorten.
+     *  ^true]' and close then truncates at position zero.  That was dormant
+     *  only because FilePool held 3 for Shorten, so the bit test never
+     *  matched and close flushed instead; the moment Shorten became the bit
+     *  it is meant to be, this suite emptied README.md.  See File class>>
+     *  initialize in lib/Files-Fixes.
      */
     "| d f | d := PosixFileDirectory new. Smalltalk at: #SharedTestDisk put: d."
-    " f := d textFile: 'README.md'. f isNil ifTrue: [^-1]. f close. ^0",
+    " f := d textFile: 'st80-parallel-file-test.txt'. f isNil ifTrue: [^-1]."
+    " f close. ^0",
     "| d good | d := Smalltalk at: #SharedTestDisk. good := 0."
-    " 1 to: 50 do: [:i | | f | f := d textFile: 'README.md'."
+    " 1 to: 50 do: [:i | | f | f := d textFile: 'st80-parallel-file-test.txt'."
     "   f isNil ifFalse: [f close. good := good + 1]]. ^good",
     50, NULL, 0 },
 };

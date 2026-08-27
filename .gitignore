@@ -63,6 +63,11 @@ st80-rest-live-test.db
 st80-web-demo-test.db
 st80-web-demo-test.db-journal
 
+# The empty file tests/unit/test_parallel_shared opens and closes on every
+# worker.  It used to open README.md, and closing a stream that was never
+# given a mode truncates it -- see File class>>initialize in lib/Files-Fixes.
+st80-parallel-file-test.txt
+
 # The demo application's database, made by the SQLite ODBC driver on the
 # first start and filled from demo/schema.sqlite by demo/backend/Init.
 demo/DB.sqlite

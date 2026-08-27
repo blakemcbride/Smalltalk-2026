@@ -214,7 +214,7 @@
  *  because Categorizer appends a category and sorts only the elements
  *  inside one.
  *
- *  707 with lib/Cursor-Keys, which is five.  The arrow keys reached nothing
+ *  707 with lib/Keyboard-Map, which is five.  The arrow keys reached nothing
  *  at all -- every SDL keycode above 127 was dropped where it arrived -- and
  *  a key that reaches the image without a place in the keyboard map is not
  *  inert either: it decodes to 255, unassigned, which ParagraphEditor types.
@@ -370,8 +370,16 @@
  *  numeric tower's exact truncated, full-precision trig and a hash that
  *  agrees with = across Integer, Float and Fraction; and the small protocol
  *  the audit found missing.
+ *
+ *  2528 -> 2529 is InputSensor class>>shiftedKeys: the keyboard map 1983
+ *  built is the Alto's, and three of its shifted punctuation keys are not
+ *  what a keyboard made since answers.
+ *
+ *  2529 -> 2530 is File class>>initialize: 1983 put 3 in FilePool at #Shorten
+ *  and every reader of it asks `rwmode bitAnd: Shorten', so the shorten bit
+ *  was never set and no file written through a stream was ever truncated.
  */
-#define LIB_METHODS             2528
+#define LIB_METHODS             2530
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -1995,6 +2003,34 @@ test_processes(void)
     check_class("Sensor cursorPoint", "Point");
     check_oop("Sensor anyButtonPressed", ST_FALSE, "false");
 
+    /*
+     *  And what the Sensor makes of a shifted key.
+     *
+     *  The window sends the code a key carries unshifted and the image's
+     *  keyboard map applies the shift, so the map has to be the map of the
+     *  keyboard in front of the user.  1983's is the Alto's, and on three
+     *  keys they disagree: shift-minus answered code 21, an Alto code this
+     *  face has no glyph for; shift-6 answered ~, because the Alto put the
+     *  tilde over the 6; and shift-backquote answered 255, unassigned,
+     *  because no Alto key carried a backquote unshifted.  Reported as
+     *  "~ doesn't show at all, ^ displays a ~" -- 255 is past the end of
+     *  the face, so the scanner draws the zero-width `character not in
+     *  font' and the key looks dead.
+     *
+     *  Read straight out of the map, at `256 * meta + code + 1', because
+     *  that is the whole of what mapKeyboardEvent: does with it, and the
+     *  instance variable is the only place the answer lives -- InputSensor
+     *  has no accessor for it.
+     */
+    check_string("String with: ((Sensor instVarAt: 1) at: 256 + 45 + 1)"
+                 " with: ((Sensor instVarAt: 1) at: 256 + 54 + 1)"
+                 " with: ((Sensor instVarAt: 1) at: 256 + 96 + 1)", "_^~");
+
+    /*  Unshifted, those same three keys are themselves, as they were.  */
+    check_string("String with: ((Sensor instVarAt: 1) at: 45 + 1)"
+                 " with: ((Sensor instVarAt: 1) at: 54 + 1)"
+                 " with: ((Sensor instVarAt: 1) at: 96 + 1)", "-6`");
+
     /*  And a controller under the cursor wants control.  */
     check_oop("| v | v := StandardSystemView new."
               " v window: (0@0 corner: 640@480)."
@@ -2510,7 +2546,7 @@ test_browsing(void)
      *  the source pointer is 22 bits and silently truncated once, and a
      *  size that stops growing is how that would show.
      */
-    check_integer("(SourceFiles at: 1) contents size", 1944591);
+    check_integer("(SourceFiles at: 1) contents size", 1948287);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
