@@ -87,6 +87,18 @@ typedef struct {
     double          real;
     unsigned        line;
     /*
+     *  Where this token STARTS, as a byte offset into the source the lexer
+     *  was opened on.
+     *
+     *  A line number is what a build log wants and a character offset is
+     *  what an EDITOR wants: the image's Compiler>>notify:at: selects the
+     *  text at a position, and a line cannot be turned back into one without
+     *  the source and a second scan.  Recorded for every token, at the point
+     *  skip_blanks has just finished, so it is the first character of the
+     *  token itself and not of the whitespace before it.
+     */
+    size_t          offset;
+    /*
      *  Whether anything -- space, tab, newline or a comment -- stood between
      *  this token and the one before it.
      *

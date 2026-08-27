@@ -281,7 +281,8 @@ fail(st_compiler *c, const char *fmt, ...)
     va_start(ap, fmt);
     vsnprintf(c->out->error, sizeof c->out->error, fmt, ap);
     va_end(ap);
-    c->out->error_line = c->token.line;
+    c->out->error_line   = c->token.line;
+    c->out->error_offset = c->token.offset;
 }
 
 /*  ----------  Token handling  ----------  */
@@ -3515,8 +3516,9 @@ COMPILE_method(const char *source, const st_compile_context *ctx,
     memset(out, 0, sizeof *out);
     if (COMPILE_to_bytecodes(source, ctx, &code) != 0) {
         snprintf(out->error, sizeof out->error, "%s", code.error);
-        out->error_line = code.error_line;
-        out->method     = ST_OOP_INVALID;
+        out->error_line   = code.error_line;
+        out->error_offset = code.error_offset;
+        out->method       = ST_OOP_INVALID;
         return -1;
     }
     snprintf(out->selector, sizeof out->selector, "%s", code.selector);
@@ -3547,8 +3549,9 @@ COMPILE_method(const char *source, const st_compile_context *ctx,
                  "more than %u literals referenced: %u, and the header "
                  "extension this method needs is one of them; split it",
                  (unsigned) ST_HEADER_LITERAL_MAX, literals);
-        out->error_line = 0;
-        out->method     = ST_OOP_INVALID;
+        out->error_line   = 0;
+        out->error_offset = 0;
+        out->method       = ST_OOP_INVALID;
         return -1;
     }
 

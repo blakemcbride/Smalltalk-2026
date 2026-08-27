@@ -457,7 +457,8 @@ lex_token(st_lexer *lx, st_token *out)
         skip_blanks(lx);
         out->after_space = (lx->pos != before) || before == 0;
     }
-    out->line = lx->line;
+    out->line   = lx->line;
+    out->offset = lx->pos;
     if (at_end(lx)) {
         out->kind = ST_TOK_END;
         return 0;

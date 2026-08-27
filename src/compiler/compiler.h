@@ -127,6 +127,13 @@ typedef struct {
     unsigned    primitive;
     char        error[256];
     unsigned    error_line;
+    /*
+     *  And where in the source, as a byte offset, so a caller with an editor
+     *  can select the text rather than count lines to find it.  Zero when
+     *  the failure has no position -- a method with too many literals is
+     *  about the whole method.
+     */
+    size_t      error_offset;
 } st_compile_result;
 
 /*
@@ -179,6 +186,7 @@ typedef struct {
     char        selector[256];
     char        error[256];
     unsigned    error_line;
+    size_t      error_offset;       /*  see st_compile_result  */
 } st_compiled_code;
 
 /*
