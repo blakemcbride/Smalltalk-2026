@@ -16,6 +16,29 @@
 st_atomic_ptr  *st_om_table;
 st_atomic_uint *st_om_refcounts;
 uint32_t         st_om_table_size;
+uint32_t         st_om_table_max = ST_OM_MAX_OBJECTS_CEILING;
+
+/*
+ *  The ceiling, read once from the environment.
+ *
+ *  Called from OM_init rather than from a constructor so that a test can set
+ *  it and re-init.  A value below the STARTING size is ignored: a ceiling
+ *  under the floor would fail the first allocation of the bootstrap, and the
+ *  message would then be about a method rather than about the setting.
+ */
+static void
+read_table_ceiling(void)
+{
+    const char *text = getenv("ST_MAX_OBJECTS");
+
+    st_om_table_max = ST_OM_MAX_OBJECTS_CEILING;
+    if (text && *text) {
+        unsigned long   wanted = strtoul(text, NULL, 10);
+
+        if (wanted >= ST_OM_MAX_OBJECTS && wanted <= UINT32_MAX)
+            st_om_table_max = (uint32_t) wanted;
+    }
+}
 st_atomic_uint   st_om_table_limit;
 
 uint32_t     st_om_collections;
@@ -448,6 +471,7 @@ OM_init(void)
         return -1;
     }
     st_om_table_size  = ST_OM_MAX_OBJECTS;
+    read_table_ceiling();
     /*
      *  Index 0 is never handed out: object pointer 0 means "invalid", and
      *  index 1 is nil, whose pointer is 2.
@@ -516,6 +540,141 @@ OM_is_object(st_oop p)
 }
 
 /*  ----------  Allocation  ----------  */
+
+/*  ----------  Growing the table  ----------  */
+
+/*
+ *  Both arrays, together, and the counts FIRST.
+ *
+ *  The order is the whole of the failure handling.  If the counts grow and
+ *  the table then cannot, the counts are merely larger than they need to
+ *  be, which costs memory and breaks nothing; the reverse would leave a
+ *  table whose upper entries have no count behind them, which is the fault
+ *  this function exists to make impossible.
+ */
+static int
+grow_tables_to(uint32_t entries)
+{
+    uint32_t        size = st_om_table_size;
+    uint32_t        old  = st_om_table_size;
+    st_atomic_ptr  *grown;
+    st_atomic_uint *counts;
+
+    if (entries <= size)
+        return 1;
+    if (entries > st_om_table_max)
+        return 0;
+    while (size < entries) {
+        if (size > UINT32_MAX / 2u) {
+            size = entries;
+            break;
+        }
+        size *= 2u;
+    }
+    /*
+     *  Doubling overshoots, and the overshoot must not cross the ceiling:
+     *  growing to 8,388,608 under a ceiling of 6,000,000 left the allocator
+     *  handing out entries past the limit it was asked to stop at, and
+     *  OM_oops_left subtracting a larger number from a smaller one.
+     */
+    if (size > st_om_table_max)
+        size = st_om_table_max;
+    counts = (st_atomic_uint *) realloc((void *) st_om_refcounts,
+                                        (size_t) size * sizeof *counts);
+    if (!counts)
+        return 0;
+    memset((void *) (counts + old), 0,
+           (size_t) (size - old) * sizeof *counts);
+    st_om_refcounts = counts;
+
+    grown = (st_atomic_ptr *) realloc((void *) st_om_table,
+                                      (size_t) size * sizeof *grown);
+    if (!grown)
+        return 0;
+    memset((void *) (grown + old), 0, (size_t) (size - old) * sizeof *grown);
+    st_om_table      = grown;
+    st_om_table_size = size;
+    return 1;
+}
+
+static uint32_t     grow_wanted;
+
+static uint32_t
+grow_at_safepoint(void *user)
+{
+    (void) user;
+    return (uint32_t) grow_tables_to(grow_wanted);
+}
+
+/*
+ *  A last handful of entries, released once, so that the image can raise an
+ *  error about being out of room.
+ *
+ *  Signalling costs objects -- an Exception, its message text, the contexts
+ *  the handler search walks through -- and the moment it is needed is the
+ *  moment there are none.  So the ceiling is lifted by a reserve, ONCE, and
+ *  the interpreter then sends #outOfMemory; a handler that unwinds gives the
+ *  frames back, the collector reclaims them, and the reserve is re-armed
+ *  below the ceiling it was lifted from.  A program that ignores the error
+ *  and allocates on hits the raised ceiling with the reserve already spent,
+ *  and that is the end of it -- which is the point: the rope is finite.
+ *
+ *  Sixty-four thousand entries is far more than a signal needs and far less
+ *  than a runaway can hide in.
+ */
+#define OM_TABLE_RESERVE    (64u * 1024u)
+
+static int          reserve_released;
+static uint32_t     reserve_ceiling;    /*  what it was lifted from  */
+
+int
+OM_release_table_reserve(void)
+{
+    if (reserve_released)
+        return 0;
+    if (st_om_table_max > UINT32_MAX - OM_TABLE_RESERVE)
+        return 0;
+    reserve_ceiling  = st_om_table_max;
+    st_om_table_max += OM_TABLE_RESERVE;
+    reserve_released = 1;
+    return 1;
+}
+
+/*
+ *  Re-arm once the image is comfortably back under the ceiling the reserve
+ *  was lifted from.  Called by the collector, which is the only thing that
+ *  can make the statement true.
+ */
+void
+OM_rearm_table_reserve(void)
+{
+    if (!reserve_released)
+        return;
+    if ((uint32_t) ST_load_relaxed(&st_om_table_limit) < reserve_ceiling / 2u) {
+        st_om_table_max  = reserve_ceiling;
+        reserve_released = 0;
+    }
+}
+
+int
+OM_grow_table_to(uint32_t entries)
+{
+    if (entries <= st_om_table_size)
+        return 1;
+    if (entries > st_om_table_max)
+        return 0;
+    /*
+     *  At a safepoint, because realloc moves the array and every worker
+     *  dereferences it without a lock.  Parked at a bytecode boundary, no
+     *  worker holds a pointer into it and all of them re-read the global
+     *  when they resume.
+     */
+    if (WORKER_count() > 0) {
+        grow_wanted = entries;
+        return (int) WORKER_at_safepoint(grow_at_safepoint, NULL);
+    }
+    return grow_tables_to(entries);
+}
 
 static uint32_t
 table_alloc_locked(void)
@@ -693,9 +852,40 @@ instantiate(st_oop class_pointer, uint32_t size, uint32_t format,
         ST_mutex_lock(&table_lock);
         index = table_alloc_locked();
         if (index == 0) {
+            /*
+             *  A collection did not help, so the table itself is full rather
+             *  than merely due for one.  Grow it.
+             *
+             *  This is the line that used to be the end of the process:
+             *  four million entries was a constant, nothing raised it, and
+             *  crossing it killed the image with hundreds of millions of
+             *  words of heap still free.  The lock goes first, for the same
+             *  reason the collection above drops it -- growth parks every
+             *  other worker, and a worker reaches its safepoint by way of
+             *  an allocation, which would deadlock against a table lock
+             *  held across the wait.
+             */
             ST_mutex_unlock(&table_lock);
-            free(head);
-            return ST_OOP_INVALID;
+            if (!OM_grow_table_to(st_om_table_size + 1u)) {
+                free(head);
+                return ST_OOP_INVALID;
+            }
+            ST_mutex_lock(&table_lock);
+            /*
+             *  The threshold is what a fresh collection would now compute:
+             *  the live limit is about the old size, which is half the new
+             *  one, so limit * GC_THRESHOLD_GROWTH is the new size.  Without
+             *  this the allocator would refuse on the threshold it was
+             *  already refusing on and the growth would buy nothing.
+             */
+            if (gc_threshold < st_om_table_size)
+                gc_threshold = st_om_table_size;
+            index = table_alloc_locked();
+            if (index == 0) {
+                ST_mutex_unlock(&table_lock);
+                free(head);
+                return ST_OOP_INVALID;
+            }
         }
     }
     OM_table_set(index, head);
@@ -938,35 +1128,107 @@ OM_next_instance_after(st_oop after, st_oop class_oop)
     return index ? (st_oop) index << 1 : ST_OOP_INVALID;
 }
 
+struct swap_args {
+    st_oop  a;
+    st_oop  b;
+};
+
+static uint32_t
+swap_identities_unguarded(void *user)
+{
+    struct swap_args   *args = user;
+    uint32_t            ia = (uint32_t) (args->a >> 1);
+    uint32_t            ib = (uint32_t) (args->b >> 1);
+    om_header          *ha;
+    om_header          *hb;
+
+    ha = OM_table_get(ia);
+    hb = OM_table_get(ib);
+    OM_table_set(ia, hb);
+    OM_table_set(ib, ha);
+    /*
+     *  The counts do not move: they are indexed by identity and the
+     *  identities are what stayed still.  Putting them back after the
+     *  swap was necessary only while a count lived in the body.
+     */
+    return 1;
+}
+
+static uint32_t
+swap_identities_locked(void *user)
+{
+    struct swap_args   *args = user;
+
+    /*
+     *  Asked HERE and only here, inside the safepoint.
+     *
+     *  Not as a second opinion: as the only one.  Whether an object is
+     *  pinned is a question about what some worker is executing right now,
+     *  and both the question and the answer change until every worker has
+     *  stopped.  Asking it first, outside, cost a whole test run -- 31
+     *  threads through test_parallel_json, every Dictionary>>grow refused
+     *  with `become: refused: nil, true, false, a fixed class or a pinned
+     *  object cannot change identity' for Arrays that were pinned by
+     *  nobody.
+     */
+    if (!OM_can_swap_identities(args->a, args->b))
+        return 0;
+    return swap_identities_unguarded(args);
+}
+
+/*
+ *  The bootstrap's own door, and the reason it is a second function rather
+ *  than a flag.
+ *
+ *  Building an image means giving the guaranteed pointers their bodies, and
+ *  ST_SMALLTALK is filled in exactly this way: the globals go into a fresh
+ *  Dictionary and then OOP 18 is exchanged with it, because the reserved
+ *  pointer has to end up naming the real dictionary.  That is legitimate
+ *  where nothing is running and no image exists yet, and it is precisely
+ *  what OM_swap_identities must refuse afterwards.  Naming the two cases
+ *  separately keeps the guard unconditional in the one that ships.
+ */
 void
+OM_swap_identities_at_boot(st_oop a, st_oop b)
+{
+    struct swap_args    args;
+
+    if (!OM_is_object(a) || !OM_is_object(b) || a == b)
+        return;
+    args.a = a;
+    args.b = b;
+    (void) swap_identities_unguarded(&args);
+}
+
+int
 OM_swap_identities(st_oop a, st_oop b)
 {
-    uint32_t    ia;
-    uint32_t    ib;
-    om_header  *t;
+    struct swap_args    args;
 
     if (!OM_is_object(a) || !OM_is_object(b))
-        return;
-    ia = (uint32_t) (a >> 1);
-    ib = (uint32_t) (b >> 1);
+        return 0;
+    if (a == b)
+        return 1;
+    args.a = a;
+    args.b = b;
     /*
      *  Two-way become: the bodies stay put and only the table entries move,
      *  so no reference anywhere in the heap has to be found or rewritten.
-     *  Counts belong to the identity rather than the body, so they are put
-     *  back after the swap.
+     *
+     *  But `only two stores' is not `atomic', and this system has other
+     *  workers running during them.  Between the two OM_table_set calls both
+     *  OOPs name the same body, and a reader that looks then sees an object
+     *  that is about to stop existing -- which matters here more than it
+     *  would in a green system, because become: is not exotic in the 1983
+     *  library: Set>>grow and >>rehash, Dictionary>>grow and >>rehash,
+     *  OrderedCollection>>grow, SortedCollection>>grow,
+     *  MethodDictionary>>removeKey:ifAbsent:, CompiledMethod and
+     *  ProcessorScheduler all reach it.  So the swap goes through the same
+     *  safepoint the one-way path already used, and for the same reason.
      */
-    {
-        om_header  *ha = OM_table_get(ia);
-        om_header  *hb = OM_table_get(ib);
-        t = ha;
-        OM_table_set(ia, hb);
-        OM_table_set(ib, t);
-        /*
-         *  The counts do not move: they are indexed by identity and the
-         *  identities are what stayed still.  Putting them back after the
-         *  swap was necessary only while a count lived in the body.
-         */
-    }
+    if (WORKER_count() > 0)
+        return (int) WORKER_at_safepoint(swap_identities_locked, &args);
+    return (int) swap_identities_locked(&args);
 }
 
 
@@ -974,12 +1236,19 @@ OM_swap_identities(st_oop a, st_oop b)
 
 static om_root_forwarder    root_forwarder;
 static om_root_pin_fn       root_pinned;
+static om_root_pin_fn       swap_pinned;
 
 void
 OM_set_root_forwarder(om_root_forwarder forwarder, om_root_pin_fn pinned)
 {
     root_forwarder = forwarder;
     root_pinned    = pinned;
+}
+
+void
+OM_set_swap_guard(om_root_pin_fn pinned)
+{
+    swap_pinned = pinned;
 }
 
 static st_oop   forward_from;
@@ -1079,6 +1348,55 @@ OM_can_forward_identity(st_oop from, st_oop to)
      *  the interpreter reading freed memory.
      */
     if (root_pinned && root_pinned(from))
+        return 0;
+    return 1;
+}
+
+/*
+ *  Whether a two-way become: may proceed.  ASK THIS AT A SAFEPOINT: half of
+ *  what it answers -- whether either side is pinned -- is a fact about what
+ *  the other workers are doing, and is true only while they are stopped.
+ *
+ *  Without any test at all, `nil become: Object new' SUCCEEDED.  nil is OOP
+ *  2, which is an object by OM_is_object, and afterwards `nil printString'
+ *  answered 'an Object' and the image was finished -- not an error, not a
+ *  wrong answer that could be traced, but every nil in the heap quietly
+ *  naming somebody else's body.  true and false are OOPs 6 and 4 and went
+ *  the same way, and so would any of the fixed classes.
+ *
+ *  The test is NOT the one the one-way path applies, and the difference is
+ *  the whole of this comment.  Forwarding a guaranteed pointer DESTROYS it
+ *  -- afterwards nothing names the old object -- so the one-way path refuses
+ *  every immortal outright.  A swap exchanges bodies and both pointers
+ *  survive, so OOP 18 is still Smalltalk afterwards; what it must not become
+ *  is a Smalltalk of a different SHAPE.  Refusing all of them was tried and
+ *  broke the image: SystemDictionary>>grow is a become:, so every global
+ *  added at run time goes through one, and test_parallel_shared -- 31
+ *  threads defining classes -- printed fifty-five thousand refusals.
+ *
+ *  So: a guaranteed pointer may exchange bodies with an object of its own
+ *  class and with nothing else.  `nil become: Object new' is UndefinedObject
+ *  against Object and is refused; `true become: false' is True against False
+ *  and is refused; Smalltalk growing into a bigger SystemDictionary is the
+ *  same class on both sides and is exactly what become: is for.
+ */
+int
+OM_can_swap_identities(st_oop a, st_oop b)
+{
+    if (!OM_is_object(a) || !OM_is_object(b))
+        return 0;
+    if (a == b)
+        return 1;
+    if ((a <= ST_LAST_IMMORTAL_OOP || b <= ST_LAST_IMMORTAL_OOP)
+     && OM_fetch_class(a) != OM_fetch_class(b))
+        return 0;
+    /*
+     *  What C holds in a place with no setter -- the context a worker is
+     *  executing in, the method it is executing, the display form -- may not
+     *  change body under it either, for the same reason the one-way path
+     *  refuses to move it.
+     */
+    if (swap_pinned && (swap_pinned(a) || swap_pinned(b)))
         return 0;
     return 1;
 }
@@ -1242,8 +1560,18 @@ OM_oops_left(void)
         ++n;
         index = (uint32_t) OM_table_get(index)->class_oop;
     }
-    return n + (st_om_table_size
-                - (uint32_t) ST_load_relaxed(&st_om_table_limit));
+    /*
+     *  Against the CEILING, not against what is mapped today.  The table
+     *  grows on demand, so what is left to allocate is what the ceiling
+     *  allows and not what the last growth happened to reserve -- reporting
+     *  the latter said "0 object table entries free" at a moment when the
+     *  answer was tens of millions.
+     */
+    {
+        uint32_t    limit = (uint32_t) ST_load_relaxed(&st_om_table_limit);
+
+        return n + (limit >= st_om_table_max ? 0 : st_om_table_max - limit);
+    }
 }
 
 /*  ----------  Garbage collection  ----------  */
@@ -1660,6 +1988,12 @@ collect_at_safepoint(void *unused)
                         : limit * GC_THRESHOLD_GROWTH;
         if (gc_threshold < GC_THRESHOLD_FLOOR)
             gc_threshold = GC_THRESHOLD_FLOOR;
+        /*
+         *  And take the emergency reserve back if this collection put the
+         *  image comfortably under the ceiling it was lifted from.  Here
+         *  because a collection is the only thing that can make that true.
+         */
+        OM_rearm_table_reserve();
     }
 
     free(mark_stack);

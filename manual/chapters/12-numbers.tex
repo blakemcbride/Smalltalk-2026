@@ -139,12 +139,14 @@ Rounding and truncation, which are four different questions:
 \end{tabular}
 \end{center}
 
-\begin{stnote}[Two that are not here]
-\ct{printString: aBase} and \ct{radix:} are Pharo's and this library does not
-have them---\ct{255 printString: 16} is a doesNotUnderstand. What is here is
-\ct{printOn:base:length:padded:} and \ct{printStringPadded:}, from the
-protocol shims in \ct{lib/Kernel-Protocol}. Radix \emph{literals} (\ct{16rFF})
-work fine; it is only printing in a base that is missing.
+\begin{stnote}[Printing in a base]
+\ct{255 printString: 16} is \ct{'FF'} and \ct{255 radix: 16} is
+\ct{'16rFF'}---the second carries the prefix, so the compiler reads it back
+as the same number. \ct{5 printPaddedWith: \$0 to: 3} is \ct{'005'}, and a
+zero pad goes after a minus sign rather than in front of it. All three are
+Pharo's spellings, added because ported code writes them; the 1983 originals
+underneath are \ct{printStringRadix:}, \ct{storeStringRadix:} and
+\ct{printOn:base:length:padded:}, and they are still there.
 \end{stnote}
 
 \section{Numbers as loop control}

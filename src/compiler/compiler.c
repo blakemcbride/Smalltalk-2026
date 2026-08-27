@@ -1379,11 +1379,12 @@ done:
  *  here instead -- in the parser, which knows that the only place a pragma
  *  can appear is between the temporaries and the first statement.
  *
- *  Everything but the two primitive forms is parsed and discarded.  Keeping
- *  them would need a CompiledMethod with somewhere to put them, which in
- *  Pharo is an AdditionalMethodState in the literal frame; that is its own
- *  piece of work and it belongs with the rest of the object model.  Parsing
- *  and discarding is what unblocks compiling the source.
+ *  Everything but the two primitive forms is KEPT, in an
+ *  AdditionalMethodState in the literal frame, which is where Pharo puts
+ *  them and where CompiledMethod>>pragmas looks -- see
+ *  add_method_state_literal below.  A profile with no such class compiles
+ *  the method exactly as it did before pragmas were kept, which is what the
+ *  bluebook profile does.
  */
 
 typedef struct {

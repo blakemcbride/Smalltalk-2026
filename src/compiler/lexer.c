@@ -11,6 +11,7 @@
 
 #include <ctype.h>
 #include <math.h>
+#include <float.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -362,6 +363,23 @@ scan_number(st_lexer *lx, st_token *out, int negative)
         memcpy(buf, lx->source + start, n);
         buf[n] = '\0';
         real = strtod(buf, NULL);
+        /*
+         *  strtod answers an infinity for a decimal too big to hold, which
+         *  is what IEEE 754 says an overflow produces and the wrong thing
+         *  for a LITERAL: "1e1000" compiled to a method that returned
+         *  infinity, with nothing to say the number in the source was not
+         *  the number in the method.  It is refused here, and the image's
+         *  own Number class>>readFrom: refuses it too, so both compilers
+         *  say the same thing about the same text.
+         *
+         *  Underflow is left alone.  A decimal too SMALL for a double
+         *  rounding to zero is ordinary IEEE behaviour and what every
+         *  reader in every language does.
+         */
+        if (real > DBL_MAX || real < -DBL_MAX) {
+            lex_fail(lx, out, "this number is too large for a Float: %s", buf);
+            return;
+        }
     }
     out->kind = ST_TOK_FLOAT;
     out->real = negative ? -real : real;

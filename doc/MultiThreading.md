@@ -115,14 +115,42 @@ extern st_atomic_uint   st_om_table_limit;  /*  first index past the used range 
 Two properties matter, and both are threading requirements rather than
 simplifications:
 
-**The table is allocated at full size and never moves.** A growable table has
-to be reallocated, and reallocation moves it — while other threads are indexing
-it without a lock, since taking one on every field access would defeat the
-point of having a table. Reserving the whole range costs eight bytes of
-*address space* per possible object and nothing resident until a slot is
-touched, because the pages arrive on first write. When four million objects is
-no longer enough, the growth path is a segmented table: a fixed directory of
-fixed-size chunks, so growth adds a chunk and never moves an existing one.
+**The table starts at four million entries and grows at a safepoint.** A
+growable table has to be reallocated, and reallocation moves it — while other
+threads are indexing it without a lock, since taking one on every field access
+would defeat the point of having a table. That is a real objection and it is
+answered rather than argued away: growth runs through `WORKER_at_safepoint`,
+where every other worker is parked at a bytecode boundary and none of them
+holds a pointer into the array, which is the same mechanism the one-way
+`become:` and instance enumeration already use.
+
+Four million *was* the ceiling, and it was the wrong one. A table of four
+million entries is four million live objects however much memory the machine
+has, and the message a program got when it crossed the line said so: `out of
+memory activating a method: 282316026 words and 0 object table entries free`
+— two hundred and eighty-two million words of heap still free, and the process
+gone. Two ordinary mistakes reach it: recursion about five million frames deep,
+and `printString` of a structure that contains itself.
+
+There is still a ceiling, now a variable rather than a constant: sixteen times
+the starting size, and `ST_MAX_OBJECTS` in the environment moves it. A ceiling
+is wanted — growing until `malloc` says no means a runaway takes the machine
+rather than the image, and on a server that is other people's processes.
+Reserving the range costs eight bytes of *address space* per possible object
+and nothing resident until a slot is touched, because the pages arrive on first
+write, so the ceiling itself costs nothing.
+
+The counts beside the table grow with it, through the same function, and that
+is not tidiness: the image loader used to double `st_om_table` until it covered
+the image's own limit and leave `st_om_refcounts` at the size `OM_init` gave
+it, so an image with more than four million objects would have written past the
+end of the counts. It was unreachable only because the fixed ceiling stopped
+such an image from being built.
+
+A segmented table — a fixed directory of fixed-size chunks, so growth adds a
+chunk and never moves an existing one — is still the shape to want, because it
+needs no safepoint at all. It is a change to the hot path in `OM_table_get`;
+this is not, and the wall is gone either way.
 
 **The slots are atomic**, because they are written under `table_lock` but read
 without it on every single dereference. Publishing a *new* entry is ordered by
@@ -388,6 +416,29 @@ of heap still free, having collected once in a hundred and seventy-four million
 bytecodes. The desktop's own event loop allocates a context per iteration and
 asks for nothing else — precisely the shape of program that exhausts the table
 first.
+
+A collection that does not help is now a third case rather than the end: the
+table grows, at a safepoint, up to `st_om_table_max`. Reaching *that* raises
+an `OutOfMemory` the image can catch, which needed one more piece — raising an
+error costs objects at the moment there are none, so the memory keeps an
+emergency reserve of 64K entries and releases it once, for the signal.  A
+handler that unwinds gives the frames back and the collector re-arms the
+reserve below the ceiling it was lifted from; a program that ignores the error
+and allocates on reaches the raised ceiling with the reserve spent, and that is
+where the process stops.
+
+There is a measured limit on when the error can be raised at all, and it is
+worth stating because it is a property of the *exception* design rather than of
+this path. Signalling walks the sender chain to find a handler and unwinding
+walks it again per frame, so delivering an exception is quadratic in the depth:
+timed here, an `Error` raised 10,000 frames down and caught at the top is
+instant, and the same thing 100,000 frames down had not finished after five
+minutes. Past `ST_OOM_MAX_UNWIND_DEPTH` — 16,384 frames — the interpreter does
+not signal, because an error nothing can deliver would turn a process that dies
+in four seconds with a message into one that hangs. A runaway recursion takes
+about five million frames to exhaust the table and so is always on that side of
+the line; a worker that runs out of room with an ordinary stack, which is what a
+REST request or a test is, gets the error and the other workers keep working.
 
 ---
 

@@ -16,11 +16,10 @@ document contains one, is written as its Float.  1/3 has to become
 0.3333333333333333 or nothing, and nothing is worse.
 
 A Float prints with Float>>printString, which produces JSON's grammar for
-every finite value: 1e-05 and 1e+100 are both numbers to RFC 8259, whose
-exponent is a sign and digits and does not care that the mantissa has no
-point.  A Float that is not finite is refused, because JSON has no
-spelling for infinity or for a NaN and every library that writes one
-anyway produces a document nothing else will read.
+every finite value: 1.0e-5 and 1.0e100 are both numbers to RFC 8259, whose
+exponent is an optional sign and digits.  A Float that is not finite is
+refused, because JSON has no spelling for infinity or for a NaN and every
+library that writes one anyway produces a document nothing else will read.
 
 ONE WRITER IS ONE DOCUMENT, like the parser: my state is a stream, an
 indent and a level, and asJsonString makes one of me per call.

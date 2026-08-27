@@ -76,11 +76,25 @@ OM_is_present(st_oop p)
  *  closure primitive fails and the closure bytecodes are unreachable.  The
  *  1983 image cannot see closures at all, which is what keeps trace2 exact.
  */
-#define ST_VM_STATE_SLOTS               4
+/*
+ *  And a fifth, for the same reason as the two above and one more.
+ *
+ *  #outOfMemory is what the interpreter sends when it cannot allocate the
+ *  context for a method it has already found.  That used to print a line and
+ *  clear st_vm.running -- no send, so nothing for `on: Error do:' to catch,
+ *  and one runaway recursion took every other worker's work down with it.
+ *  Sending needs a Symbol reachable from C, and the Blue Book's guaranteed
+ *  pointers end at 56, so it goes here.
+ *
+ *  A profile that never binds it leaves the slot nil, and the interpreter
+ *  stops exactly as it did before -- which is what the bb build does.
+ */
+#define ST_VM_STATE_SLOTS               5
 #define ST_VM_INPUT_SEMAPHORE           0
 #define ST_VM_DISPLAY                   1
 #define ST_VM_CLASS_BLOCK_CLOSURE       2
 #define ST_VM_SELECTOR_ABOUT_TO_RETURN  3
+#define ST_VM_SELECTOR_OUT_OF_MEMORY    4
 
 extern st_oop   st_om_vm_state[ST_VM_STATE_SLOTS];
 

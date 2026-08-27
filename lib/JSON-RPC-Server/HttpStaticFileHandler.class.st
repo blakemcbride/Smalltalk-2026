@@ -56,11 +56,34 @@ HttpStaticFileHandler >> handle: aRequest [
 
 { #category : 'private' }
 HttpStaticFileHandler >> safeRelativePathFor: aPath [
-	"The path relative to the root, or nil if it must not be served."
+	"The path relative to the root, or nil if it must not be served.
+
+	 The escape this refuses is `..', and the way it refuses it is by
+	 splitting the DECODED path on its separators and looking at each
+	 segment -- decoded first, so `%2F' is a real slash by the time the
+	 split happens and cannot smuggle a segment past.
+
+	 A BACKSLASH is a separator too, on Windows, and this method has no
+	 platform test in it -- nor should it, since a path arrives from the
+	 network and the machine that serves it is not the machine that wrote
+	 it.  Splitting on `/' alone left `..\..\..\windows\win.ini' as ONE
+	 segment, which is not `..', so it passed the filter and reached fopen
+	 intact.  Windows.md says the platform is supported.
+
+	 A segment holding a backslash is therefore refused outright rather than
+	 split on it.  Refusing is the choice with no wrong answer in it:
+	 splitting would turn a POSIX file legitimately named `a\b' into the
+	 path a/b and serve a DIFFERENT file, where refusing only declines to
+	 serve a name nobody should be asking for over HTTP.  A NUL is refused
+	 the same way and for the same reason -- it truncates the name inside
+	 the C library."
 	| segments out |
 	(aPath isEmpty or: [aPath first ~= $/]) ifTrue: [^nil].
 	segments := (aPath substrings: '/') reject: [:s | s isEmpty or: [s = '.']].
-	(segments anySatisfy: [:s | s = '..' or: [s includes: (Character value: 0)]]) ifTrue: [^nil].
+	(segments anySatisfy: [:s |
+		s = '..'
+			or: [(s includes: $\)
+			or: [s includes: (Character value: 0)]]]) ifTrue: [^nil].
 	out := WriteStream on: (String new: aPath size).
 	segments do: [:s | out nextPutAll: s] separatedBy: [out nextPut: $/].
 	^out contents

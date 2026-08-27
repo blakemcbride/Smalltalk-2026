@@ -173,21 +173,56 @@ OM_refcount_of(st_oop p)
  *  either, and lets a future collector move the pair together.
  */
 /*
- *  The table is allocated once, at its maximum, and never moved.
+ *  How big the table STARTS.  It is no longer how big it can get.
  *
- *  That is a threading requirement rather than a simplification.  A growable
- *  table has to be reallocated, and reallocation moves it -- while other
- *  threads are indexing it without a lock, since taking one on every field
- *  access would defeat the point of the object table.  Reserving the whole
- *  range up front costs eight bytes of address space per possible object and
- *  nothing in resident memory until an entry is touched, because the pages
- *  are only mapped on first write.
+ *  This was a ceiling, and it was the wrong one.  A table of four million
+ *  entries is four million live objects however much memory the machine
+ *  has, and the message a program got when it crossed the line said so
+ *  itself: "out of memory activating a method: 282316026 words and 0 object
+ *  table entries free" -- two hundred and eighty-two million words of heap
+ *  still free, and the process gone.  Two ordinary mistakes reach it:
+ *  recursion about five million frames deep, and printString of a structure
+ *  that contains itself.
  *
- *  The growth path, when four million objects is no longer enough, is a
- *  segmented table: a fixed directory of fixed-size chunks, so growth adds a
- *  chunk and never moves an existing one.
+ *  It grows now, and the reason it could not before is real and is answered
+ *  rather than argued away.  Reallocation MOVES the array while other
+ *  threads are indexing it without a lock -- taking one on every field
+ *  access would defeat the point of an object table -- so the growth is
+ *  done at a SAFEPOINT, where every other worker is parked at a bytecode
+ *  boundary and none of them is holding a pointer into it.  That is the
+ *  same mechanism OM_forward_identity and OM_next_instance_after already
+ *  use, and for the same reason.
+ *
+ *  A segmented table -- a fixed directory of fixed-size chunks, so growth
+ *  adds a chunk and never moves one -- is still the shape to want, because
+ *  it needs no safepoint at all.  It is a change to the hot path in
+ *  OM_table_get; this is not, and the wall is gone either way.
+ *
+ *  Reserving the range up front costs eight bytes of address space per
+ *  possible object and nothing resident until an entry is touched, because
+ *  the pages are only mapped on first write.
  */
 #define ST_OM_MAX_OBJECTS   (4u * 1024u * 1024u)
+
+/*
+ *  And how big it may GET, which is a variable rather than a constant so
+ *  that a runaway is bounded without being bounded at four million.
+ *
+ *  A ceiling is still wanted.  Growing until malloc says no means a
+ *  recursion with no base case, or a printString of a structure that
+ *  contains itself, takes the machine rather than the image -- and on a
+ *  server that is other people's processes, not only this one's.  Sixteen
+ *  times the starting size is the default: the case Bugs1.md measured died
+ *  with four million entries used and 282 million words of heap free, and
+ *  this clears that by an order of magnitude while still stopping.
+ *
+ *  Costs nothing until it is used.  The table is lazily mapped, so the
+ *  ceiling is address space, not memory.  ST_MAX_OBJECTS in the environment
+ *  moves it, and the message printed when it is reached names it.
+ */
+#define ST_OM_MAX_OBJECTS_CEILING   (64u * 1024u * 1024u)
+
+extern uint32_t         st_om_table_max;    /*  entries this run may reach  */
 
 /*
  *  The table's slots are atomic because they are written under table_lock
@@ -199,6 +234,31 @@ OM_refcount_of(st_oop p)
  */
 extern st_atomic_ptr   *st_om_table;
 extern uint32_t         st_om_table_size;   /*  entries reserved  */
+
+/*
+ *  Grow the table -- and the counts beside it -- to hold at least that many
+ *  entries.  Answers zero if the memory is not there.
+ *
+ *  ONE function for both arrays, deliberately.  They are indexed by the same
+ *  number and they were not grown together: the image loader doubled
+ *  st_om_table until it covered the image's own limit and left
+ *  st_om_refcounts at the size OM_init gave it, so an image with more than
+ *  four million objects would have written past the end of the counts.  It
+ *  was unreachable only because the ceiling above stopped such an image from
+ *  being built.  Now that the ceiling is gone, the two limits are the same
+ *  variable and there is one place that changes it.
+ *
+ *  Safe to call with workers running: it parks them first.
+ */
+int     OM_grow_table_to(uint32_t entries);
+
+/*
+ *  Lift the ceiling by an emergency reserve so the image can raise an error
+ *  about having run out of room.  Answers zero if it is already spent.  The
+ *  collector re-arms it once the image is comfortably back underneath.
+ */
+int     OM_release_table_reserve(void);
+void    OM_rearm_table_reserve(void);
 extern st_atomic_uint   st_om_table_limit;  /*  first index past the used range */
 
 static inline om_header *
@@ -489,7 +549,13 @@ st_oop  OM_instantiate_words(st_oop class_pointer, uint32_t size);
 st_oop  OM_instantiate_bytes(st_oop class_pointer, uint32_t size);
 
 /*  Two-way identity exchange: one swap of table entries.  */
-void    OM_swap_identities(st_oop a, st_oop b);
+/*  Answers whether the swap happened; see OM_can_swap_identities.  */
+int     OM_can_swap_identities(st_oop a, st_oop b);
+
+int     OM_swap_identities(st_oop a, st_oop b);
+/*  Bootstrap only: exchanges without the guard, for the guaranteed
+    pointers whose bodies are being built.  */
+void    OM_swap_identities_at_boot(st_oop a, st_oop b);
 
 /*
  *  One-way identity forwarding: every reference to `from' becomes a
@@ -569,6 +635,15 @@ typedef int  (*om_root_pin_fn)(st_oop p);
 
 void        OM_set_root_forwarder(om_root_forwarder forwarder,
                                   om_root_pin_fn pinned);
+
+/*
+ *  What a two-way become: may not touch: an object some C register has
+ *  cached a raw pointer into.  Narrower than the forwarder's pin above --
+ *  see ST_interp_swap_forbidden -- because a swap exchanges bodies and
+ *  leaves every object pointer naming a live object, so a C array of oops
+ *  is as valid afterwards as it was before.
+ */
+void        OM_set_swap_guard(om_root_pin_fn pinned);
 uint32_t    OM_collect(void);
 
 /*

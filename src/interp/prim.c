@@ -66,7 +66,26 @@ positive_16bit_value(st_oop p, uint32_t *out)
     if (OM_is_int(p)) {
         st_int  v = OM_int_value(p);
 
+        /*
+         *  The upper test is not decoration.  A 64-bit SmallInteger carries
+         *  values this uint32_t cannot, and truncating them here does not
+         *  fail safely -- it produces a DIFFERENT, in-range index that the
+         *  bounds check downstream then approves.  `#(11 22 33) at: 4294967297'
+         *  answered 11 rather than raising, and `Array new: 4294967296'
+         *  answered an empty Array.  Nothing read out of bounds, so no
+         *  sanitizer had anything to say; it was simply the wrong answer.
+         */
         if (v < 0)
+            return 0;
+        /*
+         *  Widened rather than cast, and that is not fussiness.  st_int is
+         *  int64_t in this memory and INT32_T in the Blue Book one, where
+         *  `(st_int) UINT32_MAX' is -1 -- so `v > (st_int) UINT32_MAX' was
+         *  true for every non-negative value and every `new:' in the OM=bb
+         *  build failed its primitive.  The 1983 traces said so at cycle
+         *  125, four hundred and thirty-two lines out.
+         */
+        if ((uint64_t) v > (uint64_t) UINT32_MAX)
             return 0;
         *out = (uint32_t) v;
         return 1;
@@ -627,6 +646,15 @@ primitive_new_with_arg(void)
     shape = shape_of_class(cls);
     if (!shape.indexable)
         return 0;
+    /*
+     *  A variableSubclass: has named instance variables ahead of its indexed
+     *  ones, and the sum is what gets allocated.  Both halves are uint32_t,
+     *  so a count near the top of the range wraps: a class with three named
+     *  variables asked for `new: 4294967294' answered an object of basicSize
+     *  0.  Fail the primitive instead and let new: raise.
+     */
+    if (count > UINT32_MAX - shape.fixed)
+        return 0;
     if (shape.pointers && shape.ephemeron)
         instance = OM_instantiate_ephemeron(cls, shape.fixed + count);
     else if (shape.pointers && shape.weak)
@@ -650,6 +678,13 @@ primitive_new_with_arg(void)
  *  table entries and nothing else in the heap moves or is rewritten -- which
  *  is the argument for keeping the table once threads arrive, where the
  *  alternative is a stop-the-world heap scan.
+ *
+ *  OM_is_object on both sides is NOT the whole test, and taking it for the
+ *  whole test cost an image: nil is OOP 2 and passes it, so
+ *  `nil become: Object new' answered normally and every subsequent
+ *  `nil printString' said 'an Object'.  The one-way path already refused
+ *  exactly this; the memory now asks the same question for a swap, and a
+ *  refusal fails the primitive so Object>>become:'s fallback raises.
  */
 static int
 primitive_become(void)
@@ -657,9 +692,8 @@ primitive_become(void)
     st_oop  a = ST_stack_value(1);
     st_oop  b = ST_stack_value(0);
 
-    if (!OM_is_object(a) || !OM_is_object(b))
+    if (!OM_swap_identities(a, b))
         return 0;
-    OM_swap_identities(a, b);
     ST_pop_n(1);
     return 1;
 }
@@ -2597,9 +2631,15 @@ float_primitive(unsigned index)
         return answer_integer((st_int) a, 1);
     }
     case 52:                            /*  fractionPart  */
+        /*
+         *  trunc, not a cast to long long.  The cast is undefined for any
+         *  receiver outside the integer's range -- `1.0e100 fractionPart'
+         *  reached it -- and trunc is exact for every double there is,
+         *  including the ones with no fractional part left to speak of.
+         */
         if (!float_value(ST_stack_value(0), &a))
             return 0;
-        return answer_float(a - (double) (long long) a, 1);
+        return answer_float(a - trunc(a), 1);
     case 53: {                          /*  exponent  */
         int exponent;
 
@@ -2932,6 +2972,129 @@ primitive_float_exp(void)
     if (!float_value(ST_stack_value(0), &value))
         return 0;
     return answer_float(exp(value), 1);
+}
+
+/*
+ *  55, 56 and 57: sqrt, sin and arcTan -- and 223 and 224, cos and tan.
+ *
+ *  The same argument as 58 and 59 above, and the audit that forced it is
+ *  worth stating.  Float class>>initialize in the 1983 source assigns
+ *  `Pi _ 3.14159' and five-digit coefficient tables for sin, tan, exp and
+ *  ln, which was right for the twenty-four bit mantissa Chapter 30 had.
+ *  This memory's Float is a double, so once ln and exp moved onto
+ *  primitives the system answered SEVENTEEN correct digits for some
+ *  functions and SIX for others, with nothing to say which one a caller
+ *  was getting: `1.0 cos' was 0.5403011272718037 where the answer is
+ *  0.5403023058681398, and `Float pi' printed 3.14159 in a system whose
+ *  printer now shows every digit it has.  Errors from 4e-8 to 4.7e-5, in
+ *  a form that looks like precision.
+ *
+ *  55, 56 and 57 are the Blue Book's own numbers for these three, the same
+ *  block 58 and 59 came from, so ported source that says `<primitive: 56>'
+ *  means what it says here.
+ *
+ *  THE BLUE BOOK HAS NO NUMBER FOR COS, TAN, ARCSIN OR ARCCOS, and neither
+ *  does Squeak or Pharo: all three derive them from sin and arcTan --
+ *  `cos(x) = sin(x + pi/2)', `tan = sin/cos', `arcSin(x) = arcTan(x/sqrt(1
+ *  - x*x))', `arcCos = pi/2 - arcSin'.  Those derivations were MEASURED
+ *  before they were rejected, and each loses digits somewhere:
+ *
+ *    cos    at x = 1e6, sin(x + pi/2) answers 0.9367521275136697 where cos
+ *           is 0.9367521275331447 -- nine digits instead of sixteen,
+ *           because adding a rounded pi/2 spends what the argument's own
+ *           exponent has already spent.  Angles accumulate, which is
+ *           exactly when x gets large.
+ *    tan    sin/cos is an ulp out at x = 1.0: 1.557407724654902 for
+ *           1.5574077246549023.
+ *    arcSin near the ends of its domain: at x = 0.99999999 the arcTan form
+ *           answers 1.570654905438225 for 1.5706549054381862, ten digits.
+ *    arcCos at x = 0.5, pi/2 - arcSin answers 1.0471975511965976 for
+ *           1.0471975511965979.
+ *
+ *  So the four get numbers of their own -- 224 to 227, from the stretch
+ *  above ST_PRIMITIVE_STRING_HASH that neither the Blue Book nor Squeak
+ *  assigns -- chosen so no ported source can already mean something else
+ *  by them, which is the rule the collision doc/PHARO-INTAKE.md records
+ *  over primitive 249 exists to state.
+ *
+ *  Each fails for a receiver that is not a Float and, where the function
+ *  has no answer, for a receiver outside its domain -- so the image's own
+ *  1983 fallback runs and raises the sentence it always raised.
+ */
+static int
+primitive_float_sqrt(void)
+{
+    double  value;
+
+    if (!float_value(ST_stack_value(0), &value))
+        return 0;
+    if (!(value >= 0.0))
+        return 0;               /*  negative, or a NaN: the image raises  */
+    return answer_float(sqrt(value), 1);
+}
+
+static int
+primitive_float_sin(void)
+{
+    double  value;
+
+    if (!float_value(ST_stack_value(0), &value))
+        return 0;
+    return answer_float(sin(value), 1);
+}
+
+static int
+primitive_float_arc_tan(void)
+{
+    double  value;
+
+    if (!float_value(ST_stack_value(0), &value))
+        return 0;
+    return answer_float(atan(value), 1);
+}
+
+static int
+primitive_float_cos(void)
+{
+    double  value;
+
+    if (!float_value(ST_stack_value(0), &value))
+        return 0;
+    return answer_float(cos(value), 1);
+}
+
+static int
+primitive_float_tan(void)
+{
+    double  value;
+
+    if (!float_value(ST_stack_value(0), &value))
+        return 0;
+    return answer_float(tan(value), 1);
+}
+
+static int
+primitive_float_arc_sin(void)
+{
+    double  value;
+
+    if (!float_value(ST_stack_value(0), &value))
+        return 0;
+    if (!(value >= -1.0 && value <= 1.0))
+        return 0;               /*  out of domain, or a NaN: the image raises  */
+    return answer_float(asin(value), 1);
+}
+
+static int
+primitive_float_arc_cos(void)
+{
+    double  value;
+
+    if (!float_value(ST_stack_value(0), &value))
+        return 0;
+    if (!(value >= -1.0 && value <= 1.0))
+        return 0;
+    return answer_float(acos(value), 1);
 }
 
 /*  132: does this object hold that one in one of its fields?  */
@@ -3439,15 +3602,66 @@ primitive_float_print_string(void)
      *  either.
      */
     /*
+     *  %g writes an exponent C's way -- "1e+16", "1e-05", "1e+308" -- and
+     *  the `+' is a spelling no Smalltalk scanner accepts.  Neither this
+     *  system's nor Pharo's: the grammar has an optional MINUS after the
+     *  `e' and nothing else.  So `1e+16' was not read back as a Float that
+     *  differed in the last bit; it was read as THREE tokens, the Float 1.0
+     *  and a binary #+ and the Integer 16, and
+     *  `Compiler evaluate: (Array with: 1e16 with: 2.5) storeString'
+     *  answered an Array of FOUR elements.  Sixteen of the sixty-one powers
+     *  of ten from 1e-30 to 1e30 failed to round-trip this way -- all of
+     *  them positive, because `-' happens to be the spelling both sides
+     *  agree on.
+     *
+     *  It reached source as well as output: the Parser prints a parse tree
+     *  back through Float>>printString, so a method holding `^1e16' filed
+     *  out as `^1e+16', and reading THAT gave a method returning 17.0.
+     *
+     *  Leading zeros go too -- "1e-05" for "1e-5" -- which both scanners do
+     *  accept, but 1983's own printer never wrote and no reader expects.
+     */
+    {
+        char   *exponent = strpbrk(text, "eE");
+
+        if (exponent != NULL) {
+            char   *from = exponent + 1;
+            char   *to   = exponent + 1;
+
+            if (*from == '+')
+                ++from;
+            else if (*from == '-')
+                *to++ = *from++;
+            while (from[0] == '0' && from[1] != '\0')
+                ++from;
+            memmove(to, from, strlen(from) + 1);
+        }
+    }
+    /*
      *  %g drops a trailing ".0", so 1.0 formats as "1" -- which reads back
      *  as an Integer, not as the Float that printed it.  A Float's printed
      *  form has to say it is one.
+     *
+     *  That holds for an exponent too, and there it is not merely tidiness.
+     *  This dialect reads `1e16' as a Float, but Pharo and the ANSI grammar
+     *  read a mantissa with no point as an INTEGER with a scale, so `2e3' is
+     *  2000 the SmallInteger.  Writing the point makes the printed form say
+     *  Float to every reader rather than only to this one, and it is what
+     *  1983's absPrintOn:digits: wrote: "1.0e16".
      */
-    if (!strpbrk(text, ".eEnN")) {
-        size_t  used = strlen(text);
+    if (!strpbrk(text, ".nN")) {
+        char   *exponent = strpbrk(text, "eE");
 
-        if (used + 3 < sizeof text)
-            snprintf(text + used, sizeof text - used, ".0");
+        if (exponent == NULL) {
+            size_t  used = strlen(text);
+
+            if (used + 3 < sizeof text)
+                snprintf(text + used, sizeof text - used, ".0");
+        } else if (strlen(text) + 2 < sizeof text) {
+            memmove(exponent + 2, exponent, strlen(exponent) + 1);
+            exponent[0] = '.';
+            exponent[1] = '0';
+        }
     }
     n = (uint32_t) strlen(text);
     result = OM_instantiate_bytes(ST_CLASS_STRING, n);
@@ -5053,8 +5267,15 @@ ST_primitive_dispatch(unsigned index)
      *  What Pharo's Kernel names.  See doc/PHARO-INTAKE.md for the ones
      *  deliberately absent and why.
      */
+    case  55: return primitive_float_sqrt();
+    case  56: return primitive_float_sin();
+    case  57: return primitive_float_arc_tan();
     case  58: return primitive_float_ln();
     case  59: return primitive_float_exp();
+    case 224: return primitive_float_cos();
+    case 225: return primitive_float_tan();
+    case 226: return primitive_float_arc_sin();
+    case 227: return primitive_float_arc_cos();
     /*  Told apart by arity; see primitive_last_error.  */
     case 132: return st_vm.argument_count == 0
                      ? primitive_last_error()
@@ -5197,8 +5418,15 @@ static const primitive_entry primitive_table[] = {
     { 115, ST_PRIM_PRESENT,  "SystemDictionary oopsLeft"        },
     { 116, ST_PRIM_ACCEPTED, "signal:atOopsLeft:wordsLeft: -- no low-space "
                              "warning yet"                      },
+    {  55, ST_PRIM_PRESENT,  "Float sqrt"                       },
+    {  56, ST_PRIM_PRESENT,  "Float sin"                        },
+    {  57, ST_PRIM_PRESENT,  "Float arcTan"                     },
     {  58, ST_PRIM_PRESENT,  "Float ln"                         },
     {  59, ST_PRIM_PRESENT,  "Float exp"                        },
+    { 224, ST_PRIM_PRESENT,  "Float cos -- ours; no Blue Book number" },
+    { 225, ST_PRIM_PRESENT,  "Float tan -- ours; no Blue Book number" },
+    { 226, ST_PRIM_PRESENT,  "Float arcSin -- ours; no Blue Book number" },
+    { 227, ST_PRIM_PRESENT,  "Float arcCos -- ours; no Blue Book number" },
     { 132, ST_PRIM_PRESENT,  "Object instVarsInclude:"          },
     { 100, ST_PRIM_PRESENT,  "signal a semaphore at a time"     },
     { 135, ST_PRIM_PRESENT,  "millisecond clock"                },

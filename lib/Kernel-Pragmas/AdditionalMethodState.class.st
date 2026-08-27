@@ -25,6 +25,17 @@ AdditionalMethodState >> pragmaSpecs [
 ]
 
 { #category : 'accessing' }
+AdditionalMethodState >> pragmaSpecs: anArray [
+	"Set the specs.
+
+	 Here because the C bootstrap compiler builds one of these through a
+	 factory in the compile context, and the IMAGE's compiler -- which now
+	 reads pragmas too, see lib/Compiler-Fixes -- has only ordinary sends to
+	 build it with."
+	pragmaSpecs := anArray
+]
+
+{ #category : 'accessing' }
 AdditionalMethodState >> pragmasFor: aMethod [
 	| all |
 	pragmaSpecs isNil ifTrue: [^Array new: 0].

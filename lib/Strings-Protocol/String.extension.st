@@ -312,3 +312,25 @@ String >> article [
 	first := (self at: 1) asUppercase.
 	^('AEIOU' includes: first) ifTrue: ['an'] ifFalse: ['a']
 ]
+
+{ #category : '*Strings-Protocol' }
+String >> tokenize: aSeparator [
+	"My pieces between runs of the separator, with no empty piece among
+	 them.
+
+	 The name is Squeak's and Pharo's, and the receiver is what ported code
+	 sends it to.  aSeparator may be a Character or a String of characters,
+	 either of which is what substrings: takes -- so this is substrings:
+	 under the name the other dialects use, and the only reason it exists
+	 is that the other name is the one ported source writes.
+
+	 Pharo's version is a regular-expression split, and this is not: there
+	 is no regular-expression engine here, and pretending otherwise by
+	 accepting the syntax and treating it as literal characters would be a
+	 wrong answer rather than a doesNotUnderstand.  A separator of '\\s+'
+	 splits on backslash and s and plus, which is exactly what it says it
+	 does."
+	^self substrings: (aSeparator isCharacter
+		ifTrue: [String with: aSeparator]
+		ifFalse: [aSeparator])
+]

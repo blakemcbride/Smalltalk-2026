@@ -257,10 +257,11 @@ part, and it is in [`doc/Display.md`](doc/Display.md).
 ## Design
 
 **Why keep an object table**, when Spur and every modern VM dropped it? Under
-threading the trade inverts: `become:` is one atomic swap instead of a
-stop-the-world heap scan, pinning for SDL and FFI is free, and compaction
-touches one entry per object rather than every reference to it. We pay one
-indirection to buy atomic identity mutation.
+threading the trade inverts: `become:` is two table stores at a safepoint
+instead of a stop-the-world scan of every reference in the heap, pinning for
+SDL and FFI is free, and compaction touches one entry per object rather than
+every reference to it. We pay one indirection to buy atomic identity
+mutation.
 
 **A web application, end to end: Kiss's demo, on all of it.** `demo/` is
 the demo Kiss ships as a running program — a login, a phone list, a users

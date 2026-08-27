@@ -56,3 +56,24 @@ PositionableStream >> upToEnd [
 	[self atEnd] whileFalse: [result nextPut: self next].
 	^result contents
 ]
+
+{ #category : '*Streams-Protocol' }
+PositionableStream >> nextLine [
+	"The next line, without its line ending, or nil when there is nothing
+	 left.
+
+	 A CR before an LF goes with it, so text written on any of the three
+	 conventions reads back the same -- which is the same rule
+	 lib/Network's SocketStream>>nextLine states, and the reason this is
+	 not simply `self upTo: Character lf'.
+
+	 Answers nil at the end rather than an empty String, so that
+	 `[stream nextLine] whileNotNil:' terminates; an empty LINE still
+	 answers an empty String, and those two have to be told apart."
+	| line |
+	self atEnd ifTrue: [^nil].
+	line := self upTo: Character lf.
+	^(line isEmpty not and: [line last = Character cr])
+		ifTrue: [line copyFrom: 1 to: line size - 1]
+		ifFalse: [line]
+]

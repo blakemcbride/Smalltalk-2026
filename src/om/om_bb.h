@@ -363,7 +363,12 @@ void    OM_deallocate(st_oop p);
  *  Two-way identity exchange -- primitive 72.  With an object table this is
  *  a swap of two entries and nothing in the heap moves or is rewritten.
  */
-void    OM_swap_identities(st_oop a, st_oop b);
+/*  Answers whether the swap happened; see OM_can_swap_identities.  */
+int     OM_can_swap_identities(st_oop a, st_oop b);
+int     OM_swap_identities(st_oop a, st_oop b);
+/*  Bootstrap only: exchanges without the guard, for the guaranteed
+    pointers whose bodies are being built.  */
+void    OM_swap_identities_at_boot(st_oop a, st_oop b);
 
 /*  Words currently available across every segment.  Blue Book coreLeft.  */
 uint32_t    OM_core_left(void);
@@ -407,6 +412,15 @@ typedef int  (*om_root_pin_fn)(st_oop p);
 
 void        OM_set_root_forwarder(om_root_forwarder forwarder,
                                   om_root_pin_fn pinned);
+
+/*
+ *  What a two-way become: may not touch: an object some C register has
+ *  cached a raw pointer into.  Narrower than the forwarder's pin above --
+ *  see ST_interp_swap_forbidden -- because a swap exchanges bodies and
+ *  leaves every object pointer naming a live object, so a C array of oops
+ *  is as valid afterwards as it was before.
+ */
+void        OM_set_swap_guard(om_root_pin_fn pinned);
 /*
  *  Ephemerons, which this memory does not have either.  No 1983 class is
  *  one -- the concept postdates the Blue Book -- so this answers an

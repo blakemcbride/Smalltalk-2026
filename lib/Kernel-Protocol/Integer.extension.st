@@ -149,3 +149,105 @@ Integer >> isPrime [
 		d := d + 2].
 	^true
 ]
+
+{ #category : '*Kernel-Protocol' }
+Integer >> digitLogic: arg op: op length: len [
+	"bitAnd:, bitOr: and bitXor:, byte by byte, over the two's-complement
+	 forms of the receiver and the argument.
+
+	 THE BUG THIS EXISTS FOR.  1983's version drops every interior zero byte
+	 of a NEGATIVE result.  `(0 - (2 raisedTo: 70)) bitOr: 1' answered
+	 -1162144876643701752063 where the answer is -1180591620717411303423 --
+	 off by 1.8e19, about 1.5% of the value, with nothing said.  Comparing
+	 900 random bit operations against Python's arbitrary precision found 33
+	 wrong, and every one of them had a LargeInteger operand and a negative
+	 result.  The same 300 operand pairs came back exact for + - * // \\
+	 quo: rem: gcd: < and bitShift:, so the fault was these three operators
+	 and nothing else.
+
+	 WHY.  The loop works in two's complement and stores in sign-and-
+	 magnitude, so a negative result has to be negated on the way out: from
+	 the low end, the first non-zero byte becomes 256 - b and every byte
+	 above it becomes 255 - b.  1983 tests `b = 0' FIRST and stores a plain
+	 zero, which is right below the first non-zero byte and wrong above it,
+	 where a zero byte of the two's-complement form is a 255 of the
+	 magnitude.  The 0x00FF0000-shaped differences the comparison produced
+	 are exactly that.  rdigits was not extended over such a byte either, so
+	 the result was then trimmed to a length that ended below it.
+
+	 Written here rather than in sources/ because nothing in sources/ is
+	 ever edited; this is the 1983 method with the store rearranged to
+	 compute the stored byte first and to raise rdigits only when that byte
+	 is non-zero, which also trims a leading 255 - 255 correctly."
+
+	| result neg1 neg2 rneg z1 z2 rz b1 b2 b stored rdigits |
+	neg1 := self negative.
+	neg2 := arg negative.
+	rneg := ((neg1 ifTrue: [-1] ifFalse: [0])
+		perform: op
+		with: (neg2 ifTrue: [-1] ifFalse: [0])) < 0.
+	result := Integer new: len neg: rneg.
+	rz := z1 := z2 := true.
+	rdigits := 1.
+	1 to: result digitLength do: [:i |
+		b1 := self digitAt: i.
+		neg1 ifTrue: [
+			b1 := z1
+				ifTrue: [b1 = 0 ifTrue: [0] ifFalse: [z1 := false. 256 - b1]]
+				ifFalse: [255 - b1]].
+		b2 := arg digitAt: i.
+		neg2 ifTrue: [
+			b2 := z2
+				ifTrue: [b2 = 0 ifTrue: [0] ifFalse: [z2 := false. 256 - b2]]
+				ifFalse: [255 - b2]].
+		b := b1 perform: op with: b2.
+		stored := rneg
+			ifTrue: [b = 0
+				ifTrue: [rz ifTrue: [0] ifFalse: [255]]
+				ifFalse: [rz ifTrue: [rz := false. 256 - b] ifFalse: [255 - b]]]
+			ifFalse: [b].
+		stored = 0 ifFalse: [rdigits := i].
+		result digitAt: i put: stored].
+	rdigits ~= result digitLength ifTrue: [^(result growto: rdigits) truncated].
+	^result truncated
+]
+
+{ #category : '*Kernel-Protocol' }
+Integer >> printString: aRadix [
+	"My digits in that base, with no radix prefix.
+
+	 Blue Book protocol that this image did not have: 1983 spells it
+	 printStringRadix:, and every dialect since spells it printString:.
+	 `255 printString: 16' is 'FF'."
+	^self printStringRadix: aRadix
+]
+
+{ #category : '*Kernel-Protocol' }
+Integer >> radix: aRadix [
+	"My digits in that base, WITH the radix prefix -- '16rFF'.
+
+	 The pair to printString:, and the difference between them is the same
+	 one 1983 draws between printStringRadix: and storeStringRadix:: this
+	 answers text the compiler reads back as the same number."
+	^self storeStringRadix: aRadix
+]
+
+{ #category : '*Kernel-Protocol' }
+Integer >> printPaddedWith: aCharacter to: aWidth [
+	"My digits in base ten, at least aWidth of them, padded on the left.
+
+	 Blue Book protocol.  A receiver too wide to fit is NOT truncated --
+	 the width is a minimum, which is what every caller formatting a table
+	 or a timestamp means by it.
+
+	 A zero pad goes AFTER the minus sign, or -1 padded to three prints as
+	 `0-1' rather than `-01' -- the same rule printOn:base:length:padded:
+	 above already states, and the reason this does not simply prepend."
+	| text pad |
+	text := self printString.
+	pad := aWidth - text size.
+	pad <= 0 ifTrue: [^text].
+	(aCharacter = $0 and: [self negative]) ifTrue: [
+		^'-' , (String new: pad withAll: $0) , (text copyFrom: 2 to: text size)].
+	^(String new: pad withAll: aCharacter) , text
+]

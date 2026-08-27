@@ -85,6 +85,27 @@ worth reaching from a Blue Book image: `Float>>ln`, `Float>>exp`, `Object>>~~`,
 1983 Taylor series stops at `MathApproximationEpsilon` and was wrong in float32's last
 digit, and `(2 raisedTo: 1/12) = 1.0594630943592953` went from false to **true**.
 
+**Seven more, from the Bugs1 audit.** **55 `sqrt`**, **56 `sin`** and
+**57 `arcTan`** are the Blue Book's own numbers for the same block 58 and 59
+came from, and **224 `cos`**, **225 `tan`**, **226 `arcSin`** and
+**227 `arcCos`** are this system's own, from the stretch above
+`ST_PRIMITIVE_STRING_HASH` that neither the Blue Book nor Squeak assigns.
+
+The four with no standard number are there because the derivations every
+other dialect uses were *measured* and each loses digits: `cos` from
+`sin(x + pi/2)` answers nine correct digits at x = 1e6 where the primitive
+answers sixteen, `tan` from `sin/cos` is an ulp out at x = 1.0, `arcSin`
+from `arcTan(x/sqrt(1-x*x))` loses six digits near the ends of its domain,
+and `arcCos` from `pi/2 - arcSin` is an ulp out at 0.5. Angles accumulate,
+which is exactly when the argument gets large. The full argument is beside
+the primitives in `src/interp/prim.c`.
+
+What made them necessary rather than merely nice: `Float class>>initialize`
+in the 1983 source assigns `Pi _ 3.14159` and five-digit coefficient tables,
+which was right for a twenty-four bit mantissa. Once `ln` and `exp` moved
+onto primitives the system answered seventeen correct digits for those and
+six for everything else, with nothing to say which one a caller had.
+
 **A collision worth naming, and since resolved by implementing it.** Pharo uses
 primitive **249** for `Array>>elementsForwardIdentityTo:copyHash:`, a bulk `become:`.
 This system had taken 249 for `ContextPart>>restartAndJump`. Loading that one Array

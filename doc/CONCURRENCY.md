@@ -40,9 +40,15 @@ for each piece of shared state, choose **serialize** (lock it), **replicate**
    yields some value previously written to that field, never a mixture. Object
    headers, the object table, and the class of an object are always consistent.
 
-2. **`become:` is atomic.** Identity mutation is a single atomic swap of two
-   object-table entries. No thread ever observes a half-completed `become:`.
-   This is the payoff for keeping an object table.
+2. **`become:` is atomic.** Identity mutation is two object-table stores,
+   done at a safepoint, so no thread ever observes a half-completed
+   `become:`. It used to be two stores with every other worker still
+   running, and between them both object pointers named the same body --
+   which matters more here than in a green system, because `become:` is not
+   exotic in the 1983 library: `Set` and `Dictionary` grow through one, and
+   so does every global added to `Smalltalk` at run time. What keeping an
+   object table buys is that the safepoint is O(1) rather than a
+   stop-the-world scan of every reference in the heap.
 
 3. **`Semaphore>>#signal` and `#wait` are atomic** with respect to each other
    and to process suspension and resumption.

@@ -18,18 +18,23 @@ block semantics; \ct{closures} is everything in this chapter. Every profile in
 Building with \ct{-manifest sources/MANIFEST} and no profile gives you the
 museum piece: no closures, no exceptions, no \ct{Mutex}.
 
-\begin{stwarn}[A doit is not compiled in the profile's dialect]
-\ct|#dialect| governs the \emph{packages} a profile loads. The expression
-you hand to \ct{-eval}, and each example \ct{-doctests} runs, is compiled
-separately and defaults to the Blue Book dialect however the profile was
-written. The visible symptom is that \ct{[:x | x] class} answers
-\ct{BlockContext} rather than \ct{BlockClosure}. Pass \ct{-closures} on the
-command line to compile doits the same way:
+\begin{stnote}[A doit is compiled in the profile's dialect]
+\ct|#dialect| governs the packages a profile loads, and it governs the
+expression you hand to \ct{-eval}, \ct{-startup} or \ct{-serve} and each
+example \ct{-doctests} runs. So \ct{[:x | x] class} answers
+\ct{BlockClosure} under \ct{profiles/st2026.profile} and \ct{BlockContext}
+under \ct{profiles/bluebook.profile}, which is what each profile says it is.
 
-\begin{sh}
-./st80 -bootstrap -profile profiles/st2026.profile -closures -eval '[:x | x] class'
-\end{sh}
-\end{stwarn}
+This was not always so: a doit used to default to the Blue Book dialect
+however the profile was written, so one image answered \ct{(3 3 3)} at the
+command line and \ct{(1 2 3)} inside a method for the same expression. The
+\ct{-closures} switch still forces closures on for a profile that does not
+ask for them.
+
+The compiler \emph{inside} the image is 1983's and has no closures at all,
+so \ct{Compiler evaluate:} in a workspace still builds \ct{BlockContext}
+objects with the 1983 restrictions.
+\end{stnote}
 
 \section{Full closures}
 

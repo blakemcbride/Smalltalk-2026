@@ -362,6 +362,11 @@ void        ST_interp_install_roots(om_root_provider extra);
  *  together with the root provider above; see OM_forward_identity.
  */
 int         ST_interp_forward_forbidden(st_oop p);
+/*
+ *  The narrower half: what a two-way become: may not touch.  See the
+ *  definition for why a swap asks less than a forward does.
+ */
+int         ST_interp_swap_forbidden(st_oop p);
 void        ST_interp_forward_roots(st_oop from, st_oop to);
 
 /*  ----------  API  ----------  */

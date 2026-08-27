@@ -621,16 +621,38 @@ OM_next_instance_after(st_oop after, st_oop class_oop)
     return ST_OOP_INVALID;
 }
 
-void
-OM_swap_identities(st_oop a, st_oop b)
+/*
+ *  Whether a two-way become: may proceed.  See the same function in om_mt.c
+ *  for the argument; this is the same rule stated for this memory.
+ *
+ *  The guaranteed pointers of Chapter 27 -- nil, true, false, the fixed
+ *  classes and the fixed selectors, OOPs 2 through 56 -- name themselves for
+ *  the whole image's life.  One of them may exchange bodies with an object
+ *  of its OWN CLASS, which is what SystemDictionary>>grow does every time a
+ *  global is added, and with nothing else: `nil become: Object new' leaves
+ *  an image in which nil is somebody else's body.
+ */
+int
+OM_can_swap_identities(st_oop a, st_oop b)
+{
+    if (!OM_is_object(a) || !OM_is_object(b))
+        return 0;
+    if (a == b)
+        return 1;
+    if ((a <= ST_SELECTOR_CANNOT_INTERPRET || b <= ST_SELECTOR_CANNOT_INTERPRET)
+     && OM_fetch_class(a) != OM_fetch_class(b))
+        return 0;
+    return 1;
+}
+
+static void
+swap_identities_unguarded(st_oop a, st_oop b)
 {
     uint16_t    a0;
     uint16_t    a1;
     unsigned    ca;
     unsigned    cb;
 
-    if (!OM_is_object(a) || !OM_is_object(b))
-        return;
     a0 = st_om_ot[a];
     a1 = st_om_ot[a + 1];
     st_om_ot[a]     = st_om_ot[b];
@@ -645,10 +667,44 @@ OM_swap_identities(st_oop a, st_oop b)
     OM_set_count_bits(b, cb);
 }
 
+/*
+ *  The bootstrap's own door -- see the note beside the same function in
+ *  om_mt.c.  Giving ST_SMALLTALK its Dictionary means exchanging a
+ *  guaranteed pointer, which is legitimate exactly once and never again.
+ */
+void
+OM_swap_identities_at_boot(st_oop a, st_oop b)
+{
+    if (!OM_is_object(a) || !OM_is_object(b) || a == b)
+        return;
+    swap_identities_unguarded(a, b);
+}
+
+int
+OM_swap_identities(st_oop a, st_oop b)
+{
+    if (!OM_can_swap_identities(a, b))
+        return 0;
+    if (a == b)
+        return 1;
+    swap_identities_unguarded(a, b);
+    return 1;
+}
+
 void
 OM_set_root_forwarder(om_root_forwarder forwarder, om_root_pin_fn pinned)
 {
     (void) forwarder;
+    (void) pinned;
+}
+
+/*
+ *  Nothing to guard: this memory runs one thread and holds no raw pointer
+ *  into an object's body across a send.
+ */
+void
+OM_set_swap_guard(om_root_pin_fn pinned)
+{
     (void) pinned;
 }
 

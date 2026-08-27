@@ -45,9 +45,11 @@ This is why the class library has to be audited rather than inherited.
   field read yields some value previously written to that field, never a
   mixture. Object headers, the object table and the class of an object are
   always consistent.
-\item \textbf{\ct{become:} is atomic.} Identity mutation is a single atomic
-  swap of two object-table entries. No thread ever observes a half-completed
-  \ct{become:}. This is the payoff for keeping an object table.
+\item \textbf{\ct{become:} is atomic.} Identity mutation is two
+  object-table stores, made at a safepoint, so no thread ever observes a
+  half-completed \ct{become:}. What keeping an object table buys is that the
+  safepoint is O(1) rather than a stop-the-world scan of every reference in
+  the heap.
 \item \textbf{\ct{Semaphore>>signal} and \ct{wait} are atomic} with respect to
   each other and to process suspension and resumption.
 \item \textbf{Garbage collection is invisible.} Collection happens at

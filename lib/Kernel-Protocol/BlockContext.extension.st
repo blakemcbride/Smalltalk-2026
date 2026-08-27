@@ -43,3 +43,19 @@ BlockContext >> cull: first cull: second [
 BlockContext >> isBlock [
 	^true
 ]
+
+{ #category : '*Kernel-Protocol' }
+BlockContext >> value: arg1 value: arg2 value: arg3 value: arg4 [
+	"Evaluate me on four arguments.
+
+	 1983 stops at three, and the compiler does not: it accepts a
+	 four-argument block and then there is no way to call one except
+	 valueWithArguments:, which is a doesNotUnderstand waiting for the
+	 first caller who writes the obvious thing.  Primitive 81 takes its
+	 argument count from the send, so the fourth costs nothing but the
+	 method."
+
+	<primitive: 81>
+	^self valueWithArguments:
+		(Array with: arg1 with: arg2 with: arg3 with: arg4)
+]

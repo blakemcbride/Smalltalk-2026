@@ -150,8 +150,16 @@
  *  model's streamed answer needs.  And LLMTestCase, the listener that
  *  keeps every request so the tests check the wire, with a test class per
  *  service and one for the conversation.
+ *
+ *  143 -> 146 with the Bugs1 fixes: SyntaxErrorNotification, so a syntax
+ *  error with no requestor signals instead of opening a window and
+ *  suspending the process; NonBooleanReceiver, so a conditional given
+ *  something that is not a Boolean is an error a handler can name rather
+ *  than the end of the VM; BlockTemporaryNode, which is how the image's
+ *  own Parser now carries `[:x | | t | ...]'; and OutOfMemory, which the
+ *  interpreter raises where it used to print a line and stop.
  */
-#define LIB_CLASSES             143
+#define LIB_CLASSES             147
 /*
  *  This number is a ratchet and is meant to move: lib/ is where every
  *  divergence from the frozen 1983 sources lives, so it grows whenever a
@@ -352,8 +360,18 @@
  *  wires; LLMConversation, LLMTool, LLMToolCall, LLMError; Qdrant.  And
  *  the tests: LLMTestCase's listener, thirty-three tests, four of them
  *  in HttpClientTest and SocketTest for the streaming and the TLS.
+ *
+ *  2439 -> 2515 is the Bugs1 audit worked through: lib/Compiler-Fixes, which
+ *  teaches the image's own compiler the four constructs the C bootstrap
+ *  compiler already accepted (86 of the image's own methods could not be
+ *  re-parsed by the image holding them, and now none cannot); the four
+ *  Object accessors and Number>>retry:coercing: rewritten so an unhandled
+ *  error RETURNS instead of falling through and looping forever; the
+ *  numeric tower's exact truncated, full-precision trig and a hash that
+ *  agrees with = across Integer, Float and Fraction; and the small protocol
+ *  the audit found missing.
  */
-#define LIB_METHODS             2439
+#define LIB_METHODS             2518
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -401,8 +419,9 @@
  */
 /*
  *  31 -> 33: Clipboard and Clipboard-Tests.
+ *  33 -> 34: Compiler-Fixes.
  */
-#define LIB_CATEGORIES          33
+#define LIB_CATEGORIES          34
 /*
  *  The image this test measures is the one profiles/st2026.profile builds,
  *  and it is built BY that profile rather than by a list kept alongside it.
@@ -536,7 +555,12 @@ build_once(void)
      *  LLMTool through name:description:do:, and each sends the
      *  synthesized new first.
      */
-    CHECK_EQ_INT(res.news_synthesized, 141);
+    /*
+     *  141 -> 145 with lib/Compiler-Fixes and OutOfMemory:
+     *  SyntaxErrorNotification, NonBooleanReceiver, BlockTemporaryNode and
+     *  OutOfMemory, none of which defines a class-side new either.
+     */
+    CHECK_EQ_INT(res.news_synthesized, 145);
     built = 1;
     return 1;
 }
@@ -2486,7 +2510,7 @@ test_browsing(void)
      *  the source pointer is 22 bits and silently truncated once, and a
      *  size that stops growing is how that would show.
      */
-    check_integer("(SourceFiles at: 1) contents size", 1872528);
+    check_integer("(SourceFiles at: 1) contents size", 1935761);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.

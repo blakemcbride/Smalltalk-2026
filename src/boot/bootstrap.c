@@ -1670,6 +1670,35 @@ link_class_objects(void)
         OM_store_pointer(METACLASS_THIS_CLASS, c->metaclass_oop, c->class_oop);
         OM_set_class_of_object(c->metaclass_oop, metaclass_class);
 
+        /*
+         *  And the metaclass's OWN instance variable names, which are the
+         *  class-side ones -- `SmallInteger class instanceVariableNames:
+         *  ''minVal maxVal maxBits maxBytes'''.
+         *
+         *  The slots were always there; the metaclass's format counts them,
+         *  and SmallInteger class instSize has answered 13 all along.  Only
+         *  the NAMES were never stored, so Behavior>>instVarNames answered
+         *  an empty Array for every metaclass in the image.
+         *
+         *  That is not cosmetic, because it is what a COMPILER reads.  The
+         *  image's own Encoder builds its scope table from
+         *  `class allInstVarNames', so re-compiling a class-side method that
+         *  mentions one of these -- SmallInteger class>>maxVal is `^maxVal',
+         *  Form class>>black is `^blackMask' -- found no such variable and
+         *  either asked the requestor about an undeclared name or quietly
+         *  declared a GLOBAL of that name and bound the method to it.  Every
+         *  such method is one the C compiler here had just compiled
+         *  correctly, and the two compilers disagreeing about the same source
+         *  is what Bugs1.md's census of 86 unreparseable methods was
+         *  measuring.
+         */
+        ivar_array = OM_instantiate_pointers(BOOT_global("Array"),
+                                             c->class_ivars.count);
+        for (v = 0; v < c->class_ivars.count; ++v)
+            OM_store_pointer(v, ivar_array,
+                             make_string_object(c->class_ivars.items[v]));
+        OM_store_pointer(CLASS_INSTANCE_VARS, c->metaclass_oop, ivar_array);
+
         define_global(c->name, c->class_oop);
     }
     return 1;
@@ -3478,6 +3507,24 @@ install_closure_support(void)
             OM_increase_ref(selector);
         }
     }
+    /*
+     *  And #outOfMemory, which the interpreter sends when it cannot allocate
+     *  a context for a method it has already found.
+     *
+     *  Bound here and CHECKED there: the interpreter looks the selector up
+     *  in the receiver's class before sending, exactly as send_cannot_return
+     *  does, so a profile in which nothing implements it stops the way it
+     *  always did rather than sending into a doesNotUnderstand while it is
+     *  out of room.
+     */
+    {
+        st_oop  selector = BOOT_intern_symbol("outOfMemory", NULL);
+
+        if (OM_is_present(selector)) {
+            st_om_vm_state[ST_VM_SELECTOR_OUT_OF_MEMORY] = selector;
+            OM_increase_ref(selector);
+        }
+    }
 }
 
 /*
@@ -4158,7 +4205,7 @@ install_system_dictionary(void)
     if (getenv("ST_BOOT_LOG"))
         fprintf(stderr, "  Smalltalk: %u globals into a %u-slot dictionary\n",
                 global_count, (unsigned) OM_fetch_word_length(dict));
-    OM_swap_identities(ST_SMALLTALK, dict);
+    OM_swap_identities_at_boot(ST_SMALLTALK, dict);
     smalltalk = ST_SMALLTALK;
     define_global("Smalltalk", ST_SMALLTALK);
     if (getenv("ST_BOOT_LOG")) {

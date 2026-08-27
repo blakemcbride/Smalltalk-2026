@@ -30,7 +30,13 @@ uint32_t    st_om_image_ot_words;
 #define IMAGE_MAGIC     "ST26MT\0\0"
 #define IMAGE_MAGIC_LEN 8
 /*  2 added the VM-state slots; 3 added BlockClosure to them.  */
-#define IMAGE_VERSION   3
+/*
+ *  3 -> 4: st_om_vm_state gained a fifth slot, the #outOfMemory selector, and
+ *  the header carries one 64-bit word per slot.  An older image is refused by
+ *  version rather than read with its slots one short, which would put the
+ *  object count where a selector belongs.
+ */
+#define IMAGE_VERSION   4
 
 static void
 fail(char *errbuf, size_t errlen, const char *fmt, ...)
@@ -257,24 +263,20 @@ OM_image_load(const char *path, char *errbuf, size_t errlen)
      *  Object pointers in the file refer to table indices, so the table has
      *  to regain exactly its old shape -- including the gaps, which keep
      *  every stored pointer valid.
+     *
+     *  Through OM_grow_table_to, which is the object memory's own growth and
+     *  grows the COUNTS beside the table.  This loop used to be written out
+     *  here and doubled st_om_table alone, leaving st_om_refcounts at the
+     *  size OM_init gave it -- so an image with more than four million
+     *  objects would have written past the end of the counts a few lines
+     *  below.  Nothing could build such an image while the table had a fixed
+     *  ceiling; now that it grows, the two limits are one variable and there
+     *  is one function that moves it.
      */
-    while (st_om_table_size < limit) {
-        /*  (void *) for the same reason as om_mt.c's frees: the qualifier
-         *  is not droppable in silence, and realloc wants the allocation
-         *  rather than the atomics inside it.  */
-        st_atomic_ptr  *grown = (st_atomic_ptr *) realloc((void *) st_om_table,
-                                    (size_t) st_om_table_size * 2
-                                        * sizeof *grown);
-
-        if (!grown) {
-            fail(errbuf, errlen, "cannot grow the object table to %u", limit);
-            fclose(f);
-            return -1;
-        }
-        memset((void *) (grown + st_om_table_size), 0,
-               (size_t) st_om_table_size * sizeof *grown);
-        st_om_table = grown;
-        st_om_table_size *= 2;
+    if (!OM_grow_table_to(limit)) {
+        fail(errbuf, errlen, "cannot grow the object table to %u", limit);
+        fclose(f);
+        return -1;
     }
     st_om_table_limit = limit;
 

@@ -52,3 +52,21 @@ Fraction >> asFloat [
 		ifTrue: [quotient negated]
 		ifFalse: [quotient]) asFloat timesTwoPower: shift negated
 ]
+
+{ #category : '*Kernel-Protocol' }
+Fraction >> hash [
+	"My Float's hash, because that is what = decides on.
+
+	 `(1/2) = 0.5' is true, because comparing a Fraction with a Float
+	 coerces the Fraction, and `(1/2) hash = 0.5 hash' was false -- 1983
+	 hashes a Fraction as `numerator bitXor: denominator', which is a fine
+	 hash of a ratio and unrelated to the hash of the number it equals.  So
+	 `(Set with: 1/2) includes: 0.5' answered false.
+
+	 Answering asFloat's hash makes every Fraction agree with the Float it
+	 compares equal to, at the cost of one division per hash and of two
+	 different Fractions that round to the same double colliding -- which
+	 is what a hash may do, where disagreeing is not.  See Float>>hash for
+	 what this does NOT fix and why."
+	^self asFloat hash
+]

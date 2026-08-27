@@ -173,10 +173,44 @@ Exception
         AssertionFailure
         NotFound
         SubscriptOutOfBounds
+        NonBooleanReceiver
+        SyntaxErrorNotification
+        OutOfMemory
         TestFailure          (SUnit)
     Warning
     TimedOut
 \end{plain}
+
+The last two are raised by the VM and by the compiler rather than by library
+code, and both replaced something that could not be caught at all.
+
+\ct{NonBooleanReceiver} is what \ct|x ifTrue: [...] ifFalse: [...]| raises
+when \ct{x} is neither \ct{true} nor \ct{false}. The interpreter used to
+print a line and stop---no send, so nothing to catch, and the process was
+simply gone along with every other worker's work. It arrives almost always
+from an instance variable that \ct{new} never set, so \ct{e object} answers
+the value and the message text names it. \ct{Object>>mustBeBoolean} answers
+\ct{true} when nobody handles it, which is 1983's `proceed for truth', and
+the interpreter retests what it answers.
+
+\ct{SyntaxErrorNotification} is what \ct{Compiler evaluate:} raises when the
+text will not parse and there is no editor to put the complaint into.
+Headless, 1983 opened a window that nothing could dismiss and suspended the
+process for good; \ct{on: Error do:} caught neither, because nothing was
+signalled. \ct{e errorPosition} is where, and \ct{e errorCode} is the source
+with the complaint spliced in at that point. An unhandled one still opens
+the 1983 notifier when there is a screen for it.
+
+\ct{OutOfMemory} is raised when there was no room to enter a method. Catching
+it is what lets one worker's runaway stop being every worker's: a REST
+request that exhausts the object table fails, and the server goes on serving.
+Raising it costs objects at the moment there are none, so the object memory
+keeps an emergency reserve and releases it once for the signal---which means
+a program that catches this and then allocates on regardless does eventually
+stop. Very deep stacks are the exception: past sixteen thousand frames the
+interpreter stops rather than signals, because delivering an exception is
+quadratic in the depth and a runaway recursion is millions of frames down.
+That case still prints a line and stops, in about four seconds.
 
 \section{How it works, in one paragraph}
 

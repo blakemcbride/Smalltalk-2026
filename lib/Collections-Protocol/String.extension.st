@@ -52,3 +52,30 @@ String >> hash [
 		h := ((h bitXor: (self at: i) asciiValue) * 16777619) bitAnd: 16rFFFFFFFF].
 	^(h bitXor: (h bitShift: -16)) bitAnd: 16rFFFFFFF
 ]
+
+{ #category : '*Collections-Protocol' }
+String >> asByteArray [
+	"My characters' codes as a ByteArray.
+
+	 There has to be one of these on String because Collection>>asByteArray
+	 cannot serve: it stores each element into the ByteArray directly, which
+	 is right for a collection of Integers and raises `Improper store into
+	 indexable object' for a collection of CHARACTERS.  `'hello'
+	 asByteArray' therefore raised, and so did every String-valued column
+	 read through DbRecord>>bytesAt: -- which is the one caller in the tree,
+	 and which profiles/st2026.profile's own comment names as the reason
+	 lib/Database is ordered after this package.
+
+	 Written as a loop over asInteger rather than through
+	 replaceFrom:to:with:startingAt:, which would be one memcpy in primitive
+	 105 and was tried first: the primitive is declared on STRING and a
+	 ByteArray inherits the Smalltalk version, which stores each element as
+	 it finds it and so raises in the same place for the same reason.
+	 Declaring 105 on ArrayedCollection would fix both and is a change to
+	 every byte and pointer collection in the image, which is its own piece
+	 of work."
+	| bytes |
+	bytes := ByteArray new: self size.
+	1 to: self size do: [:i | bytes at: i put: (self at: i) asInteger].
+	^bytes
+]

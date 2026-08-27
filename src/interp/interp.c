@@ -514,6 +514,7 @@ provide_roots(om_visit_fn visit)
     visit(st_om_vm_state[ST_VM_DISPLAY]);
     visit(st_om_vm_state[ST_VM_CLASS_BLOCK_CLOSURE]);
     visit(st_om_vm_state[ST_VM_SELECTOR_ABOUT_TO_RETURN]);
+    visit(st_om_vm_state[ST_VM_SELECTOR_OUT_OF_MEMORY]);
     if (extra_roots)
         extra_roots(visit);
 }
@@ -530,8 +531,20 @@ provide_roots(om_visit_fn visit)
  *  primitive fails and nothing has moved.  Doing it the other way would
  *  mean discovering half way through the sweep that the answer was no.
  */
-static st_oop   probe_for;
-static int      probe_found;
+/*
+ *  Thread-local, because this predicate is asked outside a safepoint.
+ *
+ *  ST_interp_forward_forbidden runs on whichever worker is asking, and
+ *  primitive 249 asks it once per element of a bulk forward with every other
+ *  worker still running.  Two workers asking at once through one pair of
+ *  globals answer each other's question: the first stores its oop, the
+ *  second overwrites it, and the first reads a `found' that belongs to a
+ *  search it did not make.  That is a wrong answer, not merely a race the
+ *  sanitizer would name -- a legitimate become: refused, or worse, a
+ *  forbidden one allowed.
+ */
+static _Thread_local st_oop   probe_for;
+static _Thread_local int      probe_found;
 
 static void
 probe_visit(st_oop p)
@@ -541,7 +554,7 @@ probe_visit(st_oop p)
 }
 
 int
-ST_interp_forward_forbidden(st_oop p)
+ST_interp_swap_forbidden(st_oop p)
 {
     unsigned    i;
 
@@ -576,11 +589,32 @@ ST_interp_forward_forbidden(st_oop p)
     /*  A Semaphore the socket table names: the I/O thread will signal it.  */
     if (NET_holds_token((uintptr_t) p))
         return 1;
-    /*
-     *  And whatever the bootstrap holds -- its symbol table and its class
-     *  table, which are C arrays of oops.  Asked through the visitor it
-     *  already provides, so this stays right when that set changes.
-     */
+    return 0;
+}
+
+/*
+ *  And the same question for a FORWARD, which is the swap's question plus
+ *  one more.
+ *
+ *  The extra one is everything the bootstrap holds -- its symbol table and
+ *  its class table, C arrays of oops with no setter this can reach.
+ *  Forwarding rewrites references, and it cannot rewrite those, so an object
+ *  in either would be left named by a table pointing at a dead entry.
+ *
+ *  A SWAP does not ask this, and that distinction is the difference between
+ *  a working image and fifty-five thousand refusals.  Swapping exchanges
+ *  BODIES and leaves every object pointer naming a live object, so a C array
+ *  of oops is as valid afterwards as before -- and Smalltalk itself is in
+ *  that array, while SystemDictionary>>grow is a become:, so every global
+ *  defined at run time goes through one.  What a swap must still refuse is
+ *  an object whose BODY some C register has cached a raw pointer into,
+ *  which is what the test above covers.
+ */
+int
+ST_interp_forward_forbidden(st_oop p)
+{
+    if (ST_interp_swap_forbidden(p))
+        return 1;
     if (extra_roots) {
         probe_for   = p;
         probe_found = 0;
@@ -643,6 +677,7 @@ ST_interp_install_roots(om_root_provider extra)
     extra_roots = extra;
     OM_set_root_provider(provide_roots);
     OM_set_root_forwarder(ST_interp_forward_roots, ST_interp_forward_forbidden);
+    OM_set_swap_guard(ST_interp_swap_forbidden);
 }
 
 /*
@@ -849,6 +884,71 @@ ST_report_backtrace(void)
 
 /*  ----------  Activation and return  ----------  */
 
+/*
+ *  Tell the image it has run out of room, and answer whether that was
+ *  possible.
+ *
+ *  Three things have to be true, and each of them is a reason to stop rather
+ *  than send if it is not: an emergency reserve that has not already been
+ *  spent, a selector the bootstrap bound, and a method to find under it.
+ *  The last matters for the Blue Book profile, which loads sources/ alone:
+ *  1983's Object has no outOfMemory, so that build stops exactly as it did
+ *  before rather than sending into a doesNotUnderstand with no room to
+ *  build the Message.
+ *
+ *  The arguments of the failed send come off first, leaving its receiver on
+ *  top, which is what a zero-argument send wants.
+ */
+/*
+ *  How deep a stack an out-of-room error can be raised on, and the number is
+ *  MEASURED rather than chosen.
+ *
+ *  Signalling walks the sender chain to find a handler, and unwinding walks
+ *  it again per frame it passes -- both linear, so the pair is quadratic in
+ *  the depth.  Timed on this machine, an Error raised 10,000 frames down and
+ *  caught at the top is instant; the same thing 100,000 frames down had not
+ *  finished after five minutes.  That is a property of the exception design
+ *  and not of this path, but it decides what this path may do: raising an
+ *  error nothing can deliver would turn a process that dies in two minutes
+ *  with a message into one that hangs, and a hang is the failure Bugs1.md
+ *  calls the most expensive to diagnose in the field.
+ *
+ *  A runaway recursion is exactly the case that is too deep -- it takes about
+ *  five million frames to exhaust the table -- so it still stops, promptly,
+ *  with the line on stderr it always had.  A worker that runs out of room
+ *  with an ordinary stack, which is what a REST request or a test is, gets an
+ *  error it can catch, and the other workers keep working.
+ */
+#define ST_OOM_MAX_UNWIND_DEPTH  16384
+
+static int
+send_out_of_memory(void)
+{
+#ifdef ST_OM_MT
+    st_oop  selector = st_om_vm_state[ST_VM_SELECTOR_OUT_OF_MEMORY];
+    st_oop  receiver;
+    st_oop  found = ST_NIL;
+
+    if (!OM_is_present(selector))
+        return 0;
+    if (st_vm.call_depth > ST_OOM_MAX_UNWIND_DEPTH)
+        return 0;
+    receiver = ST_stack_value(st_vm.argument_count);
+    if (!OM_is_present(lookup_method(selector, OM_fetch_class(receiver),
+                                     &found)))
+        return 0;
+    if (!OM_release_table_reserve())
+        return 0;
+    ST_pop_n(st_vm.argument_count);
+    st_vm.argument_count = 0;
+    ST_send_selector(selector, 0);
+    return 1;
+#else
+    /*  Chapter 27's table is a fixed 16-bit one and has no reserve to give. */
+    return 0;
+#endif
+}
+
 static void
 activate_new_method(void)
 {
@@ -860,9 +960,44 @@ activate_new_method(void)
 
     ctx = OM_instantiate_pointers(ST_CLASS_METHOD_CONTEXT, slots);
     if (!OM_is_object(ctx)) {
+        /*
+         *  Out of room, which used to be the end of the image.
+         *
+         *  The object table stopped at a fixed four million entries and this
+         *  was where a program died -- with, in the case that found it, 282
+         *  million words of heap still free.  It grows now, up to
+         *  st_om_table_max, so reaching here means that ceiling or a real
+         *  refusal from the allocator.
+         *
+         *  Where the stack is shallow enough to unwind, the image is TOLD
+         *  before it is stopped.  Signalling costs objects at the moment
+         *  there are none, so the ceiling is lifted by an emergency reserve
+         *  first and #outOfMemory is then sent to the receiver of the send
+         *  that could not be made.  A handler unwinds and the program
+         *  carries on; an unhandled Error reports, resumes, allocates again,
+         *  and arrives here with the reserve already spent, which is where
+         *  the process stops.  See send_out_of_memory for what `shallow
+         *  enough' means and why there is a limit at all.
+         *
+         *  The send replaces the one that failed, so its answer is what that
+         *  send answers.  Nothing else could be true: the method is exactly
+         *  the one there was no room to enter.
+         */
+        if (send_out_of_memory())
+            return;
+#ifdef ST_OM_MT
+        fprintf(stderr, "st80: out of memory activating a method: "
+                        "%u words and %u object table entries free "
+                        "(the table holds %u of at most %u; ST_MAX_OBJECTS "
+                        "raises the ceiling)\n",
+                OM_core_left(), OM_oops_left(),
+                st_om_table_size, st_om_table_max);
+#else
+        /*  The Blue Book memory's table is Chapter 27's and does not grow. */
         fprintf(stderr, "st80: out of memory activating a method: "
                         "%u words and %u object table entries free\n",
                 OM_core_left(), OM_oops_left());
+#endif
         st_vm.running = 0;
         return;
     }
@@ -1289,6 +1424,52 @@ send_cannot_return(st_oop ctx, st_oop result)
     ST_push(ctx);
     ST_push(result);
     ST_send_selector(ST_SELECTOR_CANNOT_RETURN, 1);
+}
+
+/*
+ *  A conditional jump whose value is neither true nor false.
+ *
+ *  This used to stop the VM: ST_must_be_boolean printed a line, dumped a
+ *  backtrace and set st_vm.running = 0.  There was no send, so there was
+ *  nothing for `on: Error do:' to catch -- the process was simply gone,
+ *  and with it every other worker's work, on a system whose whole claim is
+ *  that it is a server on every core.  It was reachable from the library:
+ *  `FileDirectory new printString' halted the image, because printOn:
+ *  tests an instance variable that new never set, which is the single most
+ *  common consequence of an uninitialised variable and the reason every
+ *  other Smalltalk makes this an ordinary error.
+ *
+ *  So the Blue Book's own answer: put the value back and send it
+ *  #mustBeBoolean, which Object implements and lib/Kernel-Exceptions
+ *  overrides to signal a catchable NonBooleanReceiver.
+ *
+ *  The instruction pointer is REWOUND to the jump first, so what
+ *  mustBeBoolean answers is retested by the same bytecode rather than
+ *  landing on the stack beside a branch that was silently not taken.  That
+ *  is what makes the 1983 comment -- "proceed for truth" -- true here: the
+ *  method answers true, the jump runs again and takes the true arm, and
+ *  the stack is the depth the compiler computed.  It also means a handler
+ *  can answer false and pick the other arm.  Retesting could loop if
+ *  mustBeBoolean answered a non-Boolean, which is why the override in
+ *  lib/ answers one of exactly two objects whatever a handler does.
+ *
+ *  With no mustBeBoolean anywhere in the receiver's chain -- during the
+ *  bootstrap, before Object has any methods -- there is nobody to tell,
+ *  and stopping is still what to do.
+ */
+static void
+send_must_be_boolean(st_oop value, uint32_t ip_at_start)
+{
+    st_oop  found = ST_NIL;
+
+    if (!OM_is_present(lookup_method(ST_SELECTOR_MUST_BE_BOOLEAN,
+                                     OM_fetch_class(value), &found))) {
+        ST_must_be_boolean(value);
+        return;
+    }
+    st_vm.instruction_pointer = ip_at_start;
+    ST_push(value);
+    ST_send_selector(ST_SELECTOR_MUST_BE_BOOLEAN, 0);
 }
 
 static void
@@ -2056,7 +2237,7 @@ ST_interp_run(uint64_t limit)
             if (value == ST_FALSE)
                 st_vm.instruction_pointer += (uint32_t) (code - 151);
             else if (value != ST_TRUE)
-                ST_must_be_boolean(value);
+                send_must_be_boolean(value, ip_at_start);
             break;
         }
 
@@ -2079,7 +2260,7 @@ ST_interp_run(uint64_t limit)
                 st_vm.instruction_pointer =
                     (uint32_t) ((int32_t) st_vm.instruction_pointer + offset);
             else if (value != ST_FALSE)
-                ST_must_be_boolean(value);
+                send_must_be_boolean(value, ip_at_start);
             break;
         }
 
@@ -2092,7 +2273,7 @@ ST_interp_run(uint64_t limit)
                 st_vm.instruction_pointer =
                     (uint32_t) ((int32_t) st_vm.instruction_pointer + offset);
             else if (value != ST_TRUE)
-                ST_must_be_boolean(value);
+                send_must_be_boolean(value, ip_at_start);
             break;
         }
 

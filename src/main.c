@@ -2270,6 +2270,39 @@ main(int argc, char **argv)
                 path_list_free(&sources);
                 return 1;
             }
+            /*
+             *  An expression compiled after the image is built is compiled
+             *  the way the image was.
+             *
+             *  -eval, -startup, -serve's argument and every doctest go
+             *  through the same compiler as the library, and they were
+             *  hard-wired to the Blue Book dialect while the library was
+             *  being compiled as closures.  So profiles/st2026.profile said
+             *  `#dialect : ''closures''' and
+             *
+             *    ((1 to: 3) collect: [:i | [i]]) collect: [:b | b value]
+             *
+             *  answered (3 3 3) at the command line and (1 2 3) inside a
+             *  method of the same image -- one image, two languages, and
+             *  nothing to say which one an expression was about to be read
+             *  in.  A declaration that only some of the compiler honours is
+             *  worse than no declaration.
+             *
+             *  Any file compiled as closures settles it, which is the same
+             *  rule as `the image contains closure code, so read expressions
+             *  the same way'.  -closures still forces it on for a profile
+             *  that does not ask, which is what that switch was for.
+             */
+            {
+                unsigned    k;
+
+                for (k = 0; k < dialects.count; ++k) {
+                    if (dialects.items[k] == ST_DIALECT_CLOSURES) {
+                        use_closures = 1;
+                        break;
+                    }
+                }
+            }
             status = do_bootstrap((const char *const *) sources.items,
                                   dialects.items, sources.count, out_path,
                                   expression, startup, run_tests,

@@ -14,7 +14,7 @@ Where the six candidates stand, measured rather than assumed:
 | Extension | Today |
 |---|---|
 | Dynamic arrays `{ a. b }` | **Implemented.** Compiled as `Array new: n` filled by `at:put:`, so it needs no new bytecode |
-| General pragmas `<foo: 1>` | **Implemented**, several per method, all literal argument kinds. Parsed and discarded except the two primitive forms |
+| General pragmas `<foo: 1>` | **Implemented**, several per method, all literal argument kinds. Kept in the literal frame as an `AdditionalMethodState`, which `CompiledMethod>>pragmas` reads back |
 | Block-local temporaries `[:x \| \| t \| ...]` | **Implemented.** Each gets a frame slot and is nilled at every activation |
 | Byte arrays `#[1 2 3]` | **Implemented**, including nested inside `#(...)` |
 | Named primitives `<primitive: 'p' module: 'M'>` | **Implemented** as Squeak's primitive 117 with the descriptor as literal 0. The VM does not yet dispatch it |
@@ -24,6 +24,18 @@ The first four were clean parse errors before, which is what an absent feature
 should look like, and is why adding them could take no meaning away from
 anything that compiled: the 1983 library still compiles 4,521 of 4,521 methods,
 and `trace2` is still byte-exact.
+
+**And the same four in the image's own compiler**, which is a separate answer
+to the same question and was `no' for a long time after this one was `yes'.
+1983's Parser is what the Browser and `Compiler evaluate:` use, and it read
+none of them -- so 86 of a bootstrapped image's own 6,843 methods could not be
+re-parsed by the image holding them, which meant the Browser could not edit
+the system's own source and a Tonel file that loaded at bootstrap might not
+load at run time. `lib/Compiler-Fixes` closes that: block temporaries with a
+scope that ends at the block, a pragma on either side of the temporaries,
+`#[1 2 3]` in the Scanner, `{1. 2. 3}` as a cascade the Parser builds, binary
+selectors longer than two characters, and a temporary that shadows an instance
+variable or a global. The census is 0 of 6,875 now.
 
 The scaled decimal is the one that already compiles, and it was recorded here
 as arguably a bug on the grounds that a Blue Book compiler ought to reject

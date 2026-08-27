@@ -283,6 +283,44 @@ Object >> join: aCollection [
 ]
 
 { #category : '*Kernel-Protocol' }
+Object >> become: otherObject [
+	"Exchange my identity with otherObject's: every reference to me becomes
+	 a reference to it and every reference to it becomes a reference to me.
+
+	 Here only for the failure, which 1983 leaves as `primitiveFailed' and
+	 so as the sentence `a primitive has failed'.  The primitive now refuses
+	 three cases, and none of them is a caller error worth guessing at:
+
+	 A GUARANTEED POINTER may only exchange bodies with an object of its own
+	 class.  nil, true, false and the fixed classes name themselves for the
+	 whole image's life, and `nil become: Object new' used to SUCCEED --
+	 after which `nil printString' answered 'an Object' and the image was
+	 finished.  Not an error and not a wrong answer that could be traced
+	 back: every nil in the heap quietly naming somebody else's body.  Same
+	 class on both sides is still allowed and has to be, because
+	 SystemDictionary>>grow is a become: and every global added at run time
+	 goes through one.
+
+	 A PINNED object may not be swapped at all -- what C holds in a place
+	 with no setter, the context a worker is executing in, the method it is
+	 executing -- because changing its body under the interpreter leaves it
+	 reading freed memory.
+
+	 A SmallInteger fails as well, as it always did: it has no body to
+	 exchange.
+
+	 Answers otherObject, which after the exchange is the instance the
+	 receiver's pointer used to name."
+
+	<primitive: 72>
+	(self isKindOf: SmallInteger) | (otherObject isKindOf: SmallInteger)
+		ifTrue: [^self error: 'become: needs two objects; a SmallInteger has no identity to exchange'].
+	^self error: 'become: refused: nil, true, false and the fixed classes '
+		, 'may only exchange bodies with their own class, and a pinned '
+		, 'object may not exchange at all'
+]
+
+{ #category : '*Kernel-Protocol' }
 Object >> becomeForward: anObject [
 	"Every reference to me becomes a reference to anObject.
 

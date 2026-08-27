@@ -86,3 +86,38 @@ OrderedCollection >> removeAllSuchThat: aBlock [
 				ifFalse: [index := index + 1]].
 	^newCollection
 ]
+
+{ #category : '*Collections-Protocol' }
+OrderedCollection >> add: newObject beforeIndex: anIndex [
+	"Put newObject where anIndex is now, moving that element and everything
+	 after it up one.  Answers newObject.
+
+	 The index is MINE, one-based over my elements, not an index into the
+	 Array behind me -- the same distinction removeIndex: above had to make,
+	 and the same one that made 1983's version of that method remove the
+	 wrong element.  An index of size + 1 appends, which is what makes
+	 `add: x beforeIndex: coll size + 1' work without a special case at the
+	 caller."
+	(anIndex between: 1 and: self size + 1)
+		ifFalse: [^self errorSubscriptBounds: anIndex].
+	anIndex = (self size + 1)
+		ifTrue: [^self addLast: newObject].
+	self add: newObject beforeIndexBasic: anIndex.
+	^newObject
+]
+
+{ #category : '*Collections-Protocol' }
+OrderedCollection >> add: newObject beforeIndexBasic: anIndex [
+	"The insertion itself: grow by one at the end, then shift the tail up.
+
+	 Written on addLast: and at:put: rather than on firstIndex and lastIndex
+	 so that it stays correct however the collection grows -- addLast: is
+	 the one method that knows what to do when there is no room left."
+	| index |
+	self addLast: self last.
+	index := self size - 1.
+	[index > anIndex] whileTrue: [
+		self at: index put: (self at: index - 1).
+		index := index - 1].
+	self at: anIndex put: newObject
+]
