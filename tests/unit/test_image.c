@@ -164,8 +164,11 @@
  *  method that does not stop calling itself used to reach five million
  *  frames, twelve gigabytes and the end of the process; it is now an Error
  *  one request can catch.
+ *
+ *  148 -> 149 with St80FileTest, in lib/Library-Tests: file names and the
+ *  File List's pattern pane, which is where a person types a path.
  */
-#define LIB_CLASSES             148
+#define LIB_CLASSES             149
 /*
  *  This number is a ratchet and is meant to move: lib/ is where every
  *  divergence from the frozen 1983 sources lives, so it grows whenever a
@@ -422,8 +425,33 @@
  *  indexOfWordStartAfter:, indexOfLineStartAt: and indexOfLineEndAt:.
  *  cursorKeyCodes became editingKeyCodes and cursorIndexFor: became
  *  cursorIndexFor:control:, which is a rename each and costs nothing.
+ *
+ *  2583 -> 2603: seven for the paths a person types into the File List's
+ *  pattern pane -- a leading tilde, the dot segments, a directory name
+ *  entered rather than matched, and a pattern matched against the local
+ *  name it was cut from -- and thirteen in St80FileTest for them.
+ *
+ *  2603 -> 2609: four for `new' on the File List's list menu -- the menu
+ *  itself, which now answers one command when nothing is selected; the
+ *  command; where a bare name is taken; and the directory the pattern says
+ *  the list is showing -- and two tests for the last two of them.
+ *
+ *  2609 -> 2613: the two openers and the list pane they now share, so that
+ *  the pane is opened with a selector to ask the model which row to
+ *  highlight, and a test that it keeps the selection when the rows are
+ *  rebuilt.
+ *
+ *  2613 -> 2622: seven for the mark a directory carries in the list pane --
+ *  the mark itself, the rows, the row one name is shown in, the name a row
+ *  stands for, the selection reported as a row, and the one question about
+ *  a designator that three methods each carried a copy of -- and two tests.
+ *
+ *  2622 -> 2627: three for the way up, which a directory listing holds so
+ *  that going up is a row to select rather than a path to type -- the name
+ *  of the place above, putting it in the list, and telling that name from
+ *  the rest -- and two tests.
  */
-#define LIB_METHODS             2583
+#define LIB_METHODS             2627
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -613,8 +641,10 @@ build_once(void)
      *  OutOfMemory, none of which defines a class-side new either.
      *
      *  145 -> 146 with RecursionDepthExceeded, which does not either.
+     *
+     *  146 -> 147 with St80FileTest, which does not either.
      */
-    CHECK_EQ_INT(res.news_synthesized, 146);
+    CHECK_EQ_INT(res.news_synthesized, 147);
     built = 1;
     return 1;
 }
@@ -2460,7 +2490,7 @@ test_sunit(void)
                  "HttpServerTest JSONArrayTest JSONObjectTest JSONParserTest "
                  "JSONWriterTest LLMConversationTest LLMTestCase OllamaTest OpenAITest OpenRouterTest "
                  "PasswordHashTest QdrantTest RestServerTest SocketStreamTest SocketTest "
-                 "St80CollectionTest St80NumberTest St80ReflectionTest "
+                 "St80CollectionTest St80FileTest St80NumberTest St80ReflectionTest "
                  "St80TextTest SUnitBrokenTest SUnitReportingTest SUnitTest "
                  "TonelReaderTest TonelSourceTest TonelWriterTest WebDemoTest )");
     /*
@@ -2518,8 +2548,18 @@ test_sunit(void)
      *
      *  375 with lib/Clipboard-Tests' four: no window means nothing there,
      *  the line ends both ways, a wrong argument answering nil.
+     *
+     *  410 -> 420 with St80FileTest's ten: the tilde, the dot segments,
+     *  where a designator is cut, and the pattern pane on the six things a
+     *  person types into it -- the last of them a path that is not there.
+     *
+     *  420 -> 422 with two more: where a bare name typed into `new' is
+     *  taken, and the places that have no directory to take it in.
+     *
+     *  422 -> 423 with the list pane keeping its selection when its rows are
+     *  rebuilt, which is what leaves a new file ready to be typed into.
      */
-    check_integer("TestCase allTests tests size", 410);
+    check_integer("TestCase allTests tests size", 427);
 
     /*
      *  And the three buckets, from the outside as well as from within
@@ -2642,7 +2682,7 @@ test_browsing(void)
      *  now instead of being read and dropped, so 367 of the 373 classes
      *  answer one where none did.
      */
-    check_integer("(SourceFiles at: 1) contents size", 2202177);
+    check_integer("(SourceFiles at: 1) contents size", 2238539);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.

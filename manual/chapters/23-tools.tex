@@ -92,11 +92,23 @@ deliberate; an error during a bootstrap must not try to open a window.
 The list fills with matching names. Selecting one and choosing
 \ct|get contents| from the middle-button menu shows it in the bottom pane. The
 file menu is \ct{get contents}, \ct{file in}, \ct{copy name}, \ct{rename},
-\ct{remove}.
+\ct{remove}, \ct{new}.
+
+A selection survives a rebuild of the list. Accept the pattern again, or
+\ct{rename} the file you are on, and the same file is still selected---the
+bottom pane clears, and \ct|get contents| brings it back.
 
 \ct{file in} reads a chunk-format source file and installs everything in
 it---which is how code moved between images before there were packages, and
 still works.
+
+\ct{new} asks for a name, creates an empty file of that name, and selects it,
+so the bottom pane is ready to type into; \ct{accept} writes it. A bare name
+goes in the directory the list is showing, so if the pattern says \ctp{doc/*}
+then \ctp{notes.txt} is \ctp{doc/notes.txt}; a name with a \ctp{/} in it, or
+one beginning with \ctp{\textasciitilde}, is a path in its own right and is
+taken as written. \ct{new} is on the menu whether or not a file is selected,
+because a directory you have just entered has nothing selected in it.
 
 \subsection{Directories}
 
@@ -104,19 +116,50 @@ still works.
 it: the list becomes that directory's contents and the pattern pane says where
 you now are. 1983 had no word for a directory at all and simply failed here.
 
+The list says which of its names are directories: a directory's row reads
+\ctp{lib (dir)} where a file's reads \ctp{lib}. The mark is on the row and not
+on the name, so \ct|get contents|, \ct{copy name}, \ct{rename} and \ct{remove}
+all work on the name behind it, and a file whose own name ends in
+\ctp{ (dir)} is still the file it is named after.
+
+The first row of a directory listing is \ctp{..}, the directory above the one
+you are in; \ct|get contents| on it goes up. It is there so that going up is
+the same gesture as going anywhere else. The root has no row above it, and
+neither does a list showing a file name or several patterns at once.
+
 The pattern is both the display and the control, so moving around is always
-the same gesture --- edit the top pane and \ct{accept}:
+the same gesture --- edit the top pane and \ct{accept}. A pattern that
+\emph{names a directory} is a move rather than a filter: it takes you there,
+the same thing \ct|get contents| does to a directory in the list. The paths
+are the ones you would write at a shell prompt.
 
 \begin{center}
 \small
-\begin{tabular}{@{}lp{0.58\textwidth}@{}}
+\begin{tabular}{@{}lp{0.55\textwidth}@{}}
 \toprule
-\ctp{doc/*} & what entering \ctp{doc} writes for you\\
-\ctp{*} & back to where the system was started\\
-\ctp{../*} & above it\\
+\ctp{doc} & go to \ctp{doc}; the pane then says \ctp{doc/*}\\
+\ctp{*} & where the system was started\\
+\ctp{.} & the same place, written the other way\\
+\ctp{..} & the directory above\\
+\ctp{\textasciitilde} & your home directory\\
+\ctp{\textasciitilde/notes/*.txt} & the text files in \ctp{notes} under it\\
+\ctp{/} & the root\\
 \bottomrule
 \end{tabular}
 \end{center}
+
+The pane is rewritten with the answer. A leading \ctp{\textasciitilde} becomes
+the directory it stands for, and \ctp{.} and \ctp{..} are taken out of the
+middle of a name --- accept \ctp{src/../lib} and the pane says \ctp{lib/*}. So
+what the top pane says is always a path you could have typed yourself, and it
+is the path the names in the list are built from.
+
+A \ctp{\textasciitilde} is only the home directory when it is the whole name or
+is followed by \ctp{/}. Anywhere else it is an ordinary character, because
+\ctp{\textasciitilde scratch} is a legal file name here.
+
+Names beginning with a period are not listed, so a home directory shows what a
+plain \ct{ls} shows.
 
 Names in the list carry their directory with them, so what you select is what
 you get however deep you have gone.

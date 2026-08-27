@@ -221,9 +221,50 @@
 # OpenSSL's reason, and the environment read.  Every row moved by
 # thirty-three; database-live is 448.
 #
+# lib/Library-Tests adds ten, for the paths a person types into the File
+# List's top pane: a leading tilde made into the home directory, `.' and
+# `..' and a bare directory name entered rather than matched, and the dot
+# segments taken back out so the pane keeps saying a name that can be typed
+# in again.  Three of them are for faults that pane already had: `..' went
+# through 1983's trailing-period rule and became `.', a file name nothing
+# answered to; a pattern was matched against the whole designator, so
+# `Files-F*' in lib was compared against lib/Files-Fixes and found nothing;
+# and a directory that could not be walked answered ITSELF rather than no
+# names, so a mistyped path opened a doesNotUnderstand on collect:.
+# Every row moved by ten; database-live is 458.
+#
+# Two more for `new' on the File List's list menu: where a bare name typed
+# into it is taken -- the directory the list is showing, which the pattern
+# is the only record of -- and the places that have no directory to take it
+# in.  Every row moved by two; database-live is 460.
+#
+# One more for the list pane keeping its selection when its rows are rebuilt.
+# The pane is opened with no selector to ask the model which row to
+# highlight, so it answered `nothing' and reported `fileName: nil' back, and
+# every announcement of #fileName threw the selection away -- a renamed file
+# came back unselected, and a new file had nothing behind the text pane.
+# Every row moved by one; database-live is 461.
+#
+# Two more for the mark a directory carries in the list pane.  What a
+# directory holds is files and directories, and a row that is only a name
+# does not say which of the two it is -- so a directory is written with
+# ` (dir)' after it, and `get contents' stops being a guess.  The second test
+# is for the way a row is turned back into a name: looked up in the list
+# rather than cut back, because ` (dir)' is a legal ending for a POSIX file
+# name and a file that really has one must stay selectable.  Every row moved
+# by two; database-live is 463.
+#
+# Two more for the way up.  A directory listing holds `..', so going up is
+# the same gesture as going anywhere else rather than a path that has to be
+# typed; the row says `..' and the name behind it says it after the directory
+# the list is showing, which keeps it a designator that opens.  The second
+# test is for the places that have no way up: the root, where `/..' is `/', a
+# directory that is not there, a bare file name, and a list of patterns that
+# is showing no one place.  Every row moved by two; database-live is 465.
+#
 # profile               run  passed
-st2026                  410  410
-pharo-announcements     441  441
-pharo-time              1031 1031
-pharo-weak              430  430
-pharo-collections       867  867
+st2026                  427  427
+pharo-announcements     458  458
+pharo-time              1048 1048
+pharo-weak              447  447
+pharo-collections       884  884
