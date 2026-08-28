@@ -30,6 +30,14 @@ reach here by two different routes, deliberately:
 
 Getting those the same way round is what makes a diagnostic useful: the first
 says a method here is wrong, the second says what the database told us.
+
+AND A THIRD ANSWER, which is the one Bugs3 B57 found nobody was reading.  The
+commands that do not produce a value -- every bind, execute, commit -- answer
+TRUE or FALSE, not a value or nil, so check: (which raises on nil) passes
+their failure straight through.  A bind that the driver refused therefore
+reported success, the statement ran with the parameter unbound, and the row
+was not there afterwards: a data loss with nothing anywhere saying so.  Those
+commands go through checkStatus: instead, which raises on anything but true.
 "
 Class {
 	#name : 'Odbc',
@@ -72,6 +80,28 @@ Odbc class >> lastError [
 	 often is the one that was going to produce the connection."
 
 	^self primCommand: 1 with: nil with: nil with: nil
+]
+
+{ #category : 'private' }
+Odbc class >> checkStatus: answer saying: aString [
+	"Answer true, or raise with the driver's own words and then ours.
+
+	 The companion to check:, for the commands that answer a Boolean rather
+	 than a value.  See the class comment: `self check:' on one of those is
+	 a no-op, because false is not nil, and Bugs3 B57 is what that costs --
+	 a bind refused by the driver, an INSERT that then ran without the
+	 parameter, and a caller told the row went in.
+
+	 The driver's message comes first when there is one; aString says which
+	 call it was, since a bind failure names a parameter the driver has
+	 never heard of."
+
+	| said |
+	answer == true ifTrue: [^answer].
+	said := [self lastError] on: Error do: [:e | nil].
+	^DbError signal: ((said isNil or: [said isEmpty])
+		ifTrue: [aString]
+		ifFalse: [aString, ': ', said])
 ]
 
 { #category : 'private' }
@@ -158,6 +188,25 @@ Odbc class >> clearParameters: statement [
 ]
 
 { #category : 'binding' }
+Odbc class >> maxParameterInteger [
+	"The largest Integer a parameter holds: 2^63 - 1.
+
+	 SQL_C_SBIGINT is the widest integer type ODBC has, and ST_odbc_bind_int
+	 takes an int64_t.  This is a property of the interface and not of any
+	 one driver, which is why it is written here as a number rather than
+	 asked of a connection."
+
+	^9223372036854775807
+]
+
+{ #category : 'binding' }
+Odbc class >> minParameterInteger [
+	"The smallest Integer a parameter holds: -2^63."
+
+	^0 - 9223372036854775808
+]
+
+{ #category : 'binding' }
 Odbc class >> statement: statement bind: index to: aValue [
 	"Bind by the value's own class: nil, Boolean, Integer, Float, String,
 	 Symbol and ByteArray all know what they are.
@@ -166,37 +215,85 @@ Odbc class >> statement: statement bind: index to: aValue [
 	 Array of three integers is a date to a reader and an array of three
 	 integers to this method, and a guess that is usually right is the worst
 	 kind -- it would fail only on the row that really did hold three
-	 numbers."
+	 numbers.
 
-	^self primCommand: 15 with: statement with: index with: aValue
+	 AN INTEGER WIDER THAN 64 BITS IS REFUSED HERE, before the driver is
+	 asked.  Bugs3 B57: binding 2^63 answered success and inserted nothing,
+	 because the primitive could not fit the value into the int64_t a
+	 parameter is, answered false, and nothing looked at the answer.
+	 Refusing is the honest end of that: there is no wider parameter to bind
+	 it to, and a caller with a DECIMAL column wider than 64 bits can send
+	 the number as a String or a Fraction, both of which go to the driver as
+	 digits and arrive exact.  It is checked HERE rather than in the
+	 primitive so that the message can name the value; the primitive's only
+	 vocabulary is false.
+
+	 A LARGE NEGATIVE INTEGER GOES AS ITS DIGITS, for a different reason.
+	 The primitive reads a LargePositiveInteger's bytes but has no branch
+	 for a LargeNegativeInteger -- the class is not one of the guaranteed
+	 object pointers, and prim.c says why it will not look it up -- so such
+	 a value fell through to the branch that binds any other byte object as
+	 characters, and bound the raw bytes of its magnitude.  SQLite stored a
+	 NULL and reported success.  On this build every integer below -2^62 is
+	 a LargeNegativeInteger, so that is the whole bottom of the range a
+	 BIGINT column has.  printString is what the primitive's own comment
+	 says the caller does, and it is what DbCommand already does for a
+	 Fraction: digits, which every database converts from exactly."
+
+	| bound |
+	bound := aValue.
+	(aValue isKindOf: Integer) ifTrue: [
+		(aValue > self maxParameterInteger or: [aValue < self minParameterInteger])
+			ifTrue: [^DbError signal: 'parameter ', index printString,
+				' cannot hold ', aValue printString,
+				': an ODBC parameter is 64 bits.  Send a wider number as a String or a Fraction'].
+		(aValue isKindOf: LargeNegativeInteger) ifTrue: [bound := aValue printString]].
+	^self checkStatus: (self primCommand: 15 with: statement with: index with: bound)
+		saying: 'parameter ', index printString, ' would not bind as ', aValue class name
 ]
 
 { #category : 'binding' }
 Odbc class >> statement: statement bindNull: index type: sqlTypeOrNil [
-	^self primCommand: 16 with: statement with: index with: sqlTypeOrNil
+	^self checkStatus: (self primCommand: 16 with: statement with: index with: sqlTypeOrNil)
+		saying: 'parameter ', index printString, ' would not bind as null'
 ]
 
 { #category : 'binding' }
 Odbc class >> statement: statement bind: index toDate: aDate [
-	^self primCommand: 28 with: statement with: index
-		with: (Array with: aDate year with: aDate monthIndex with: aDate dayOfMonth)
+	^self checkStatus: (self primCommand: 28 with: statement with: index
+			with: (Array with: aDate year with: aDate monthIndex with: aDate dayOfMonth))
+		saying: 'parameter ', index printString, ' would not bind as a Date'
 ]
 
 { #category : 'binding' }
 Odbc class >> statement: statement bind: index toTime: aTime [
-	^self primCommand: 29 with: statement with: index
-		with: (Array with: aTime hours with: aTime minutes with: aTime seconds)
+	^self checkStatus: (self primCommand: 29 with: statement with: index
+			with: (Array with: aTime hours with: aTime minutes with: aTime seconds))
+		saying: 'parameter ', index printString, ' would not bind as a Time'
 ]
 
 { #category : 'binding' }
 Odbc class >> statement: statement bind: index toTimestamp: aDbTimestamp [
-	^self primCommand: 30 with: statement with: index
-		with: aDbTimestamp asArray
+	^self checkStatus: (self primCommand: 30 with: statement with: index
+			with: aDbTimestamp asArray)
+		saying: 'parameter ', index printString, ' would not bind as a DbTimestamp'
 ]
 
 { #category : 'executing' }
 Odbc class >> execute: statement [
-	^self check: (self primCommand: 17 with: statement with: nil with: nil)
+	"Run the prepared statement.  Raises with the driver's words if it will
+	 not run.
+
+	 checkStatus: and not check:, for the reason the class comment gives:
+	 this command answers false for a failure, so `self check:' -- which is
+	 what stood here -- raised on nothing.  An INSERT the database refused
+	 answered false and DbCommand>>execute: then asked for the row count of
+	 a statement that had not executed.  That is the second half of Bugs3
+	 B57: the bind was the silent failure, and this was the silence after
+	 it."
+
+	^self checkStatus: (self primCommand: 17 with: statement with: nil with: nil)
+		saying: 'the statement would not execute'
 ]
 
 { #category : 'executing' }

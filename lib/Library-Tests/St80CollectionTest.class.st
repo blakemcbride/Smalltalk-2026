@@ -257,3 +257,298 @@ St80CollectionTest >> testWithCollect [
 	self assert: (#(1 2) with: #(10 20) collect: [:a :b | a + b])
 		equals: #(11 22)
 ]
+
+{ #category : 'sorting' }
+St80CollectionTest >> testSortIsStable [
+	"Elements the block ranks equal keep the order they were in, through
+	 sort:, sorted: and asSortedCollection: alike -- all three sorted
+	 through 1983's quicksort and shuffled them (Bugs3 B51)."
+	| pairs inOrder |
+	pairs := (1 to: 300) collect: [:i | i \\ 7 -> i].
+	inOrder := [:a :b | a key < b key or: [a key = b key and: [a value < b value]]].
+	self assert: ((pairs copy sort: [:a :b | a key <= b key]) isSortedBy: inOrder).
+	self assert: ((pairs sorted: [:a :b | a key <= b key]) isSortedBy: inOrder).
+	self assert: ((pairs asSortedCollection: [:a :b | a key <= b key]) asArray
+		isSortedBy: inOrder).
+	self assert: #(3 1 2) copy sort equals: #(1 2 3).
+	self assert: 'hello' copy sort equals: 'ehllo'.
+	self assert: ((SortedCollection sortBlock: nil) add: 3; add: 1; yourself) asArray
+		equals: #(1 3)
+]
+
+{ #category : 'associations' }
+St80CollectionTest >> testAssociationsCompareBothHalves [
+	"1983's LookupKey>>= compared keys alone, so a Set of Associations lost
+	 every pair whose key it had seen (Bugs3 B51).  The Dictionary at the
+	 end is the reason the hash stays the key's: removeKey: re-probes by
+	 the Association's hash and looks up by the key's."
+	| d |
+	self deny: (1->2) = (1->3).
+	self assert: (1->2) = (1->2).
+	self assert: (1->2) hash equals: (1->2) hash.
+	self deny: ((Set with: 1->2) includes: 1->3).
+	self assert: (Set with: 1->2 with: 1->3) size equals: 2.
+	d := Dictionary new.
+	1 to: 50 do: [:i | d at: i put: i * i].
+	1 to: 50 by: 2 do: [:i | d removeKey: i].
+	self assert: ((2 to: 50 by: 2) inject: 0 into: [:sum :i | sum + (d at: i)])
+		equals: 22100.
+	self assert: (d includesAssociation: 2->4).
+	self deny: (d includesAssociation: 2->5)
+]
+
+{ #category : 'linked lists' }
+St80CollectionTest >> testLinkedListRefusesWhatBreaksIt [
+	"A Link added twice pointed at itself and size never returned; a
+	 non-Link went into the chain; at: indexed the list's own slots; copy
+	 shared one chain between two lists (Bugs3 B51)."
+	| l a b c |
+	l := LinkedList new.
+	a := Link new.
+	b := Link new.
+	l add: a.
+	self should: [l add: a] raise: Error.
+	self should: [l add: 3] raise: Error.
+	self assert: l size equals: 1.
+	l add: b.
+	self assert: (l at: 1) == a.
+	self assert: (l at: 2) == b.
+	self should: [l at: 3] raise: Error.
+	c := l copy.
+	c add: Link new.
+	self assert: l size equals: 2.
+	self assert: c size equals: 3.
+	self deny: c first == l first.
+	l remove: a.
+	l add: a.
+	self assert: l size equals: 2
+]
+
+{ #category : 'copying' }
+St80CollectionTest >> testCopyingPastTheEnds [
+	"An inverted range copies nothing, as OrderedCollection's always did; a
+	 negative count is refused in words; copyFrom: alone is the tail, not
+	 Object>>copyFrom: (Bugs3 B51)."
+	self assert: #() allButFirst equals: #().
+	self assert: (#(1 2 3) allButFirst: 5) equals: #().
+	self assert: ('abc' allButLast: 7) equals: ''.
+	self should: [#(1 2 3) first: -1] raise: Error.
+	self should: [#(1 2 3) last: -1] raise: Error.
+	self assert: (#(1 2 3) copyFrom: 2) equals: #(2 3).
+	self assert: ('hello' copyFrom: 3) equals: 'llo'
+]
+
+{ #category : 'concatenation' }
+St80CollectionTest >> testConcatenationRefusesNonCollections [
+	"Object>>size is 0 for a SmallInteger and for nil, so `'abc' , 3' was
+	 'abc' (Bugs3 B51)."
+	self should: ['abc' , 3] raise: Error.
+	self should: ['abc' , nil] raise: Error.
+	self assert: 'abc' , 'def' equals: 'abcdef'.
+	self assert: #(1 2) , (OrderedCollection with: 3) equals: #(1 2 3)
+]
+
+{ #category : 'dictionaries' }
+St80CollectionTest >> testDictionaryNewFromDictionary [
+	"newFrom: takes a Dictionary as well as a collection of Associations
+	 (Bugs3 B51).  That the 1983 one copies the bindings rather than
+	 sharing them is asserted in tests/unit/test_image.c and not here: the
+	 pharo-collections and pharo-weak profiles run Pharo's Dictionary,
+	 whose own newFrom: is loaded over this library's and shares them."
+	| a b |
+	a := Dictionary new at: 1 put: 2; at: 3 put: 4; yourself.
+	b := Dictionary newFrom: a.
+	self assert: b size equals: 2.
+	self assert: (b at: 1) equals: 2.
+	self assert: (b at: 3) equals: 4.
+	self assert: (Dictionary newFrom: {1->2. 3->4}) size equals: 2.
+	self assert: ((Dictionary newFrom: {1->2. 3->4}) at: 3) equals: 4
+]
+
+{ #category : 'copying' }
+St80CollectionTest >> testDictionaryCopyHasItsOwnAssociations [
+	"A shallow copy of a Dictionary copied the slot Array and shared the
+	 Associations in it, so a store into the copy was a store into the
+	 original; select:, reject: and the library's own `,' shared them the
+	 same way (Bugs3 B42)."
+	| d d2 |
+	d := Dictionary new.
+	d at: #k put: 1.
+	d2 := d copy.
+	d2 at: #k put: 2.
+	self assert: (d at: #k) equals: 1.
+	self assert: (d2 at: #k) equals: 2.
+	d2 := d select: [:each | true].
+	d2 at: #k put: 3.
+	self assert: (d at: #k) equals: 1.
+	d2 := d reject: [:each | false].
+	d2 at: #k put: 4.
+	self assert: (d at: #k) equals: 1.
+	d2 := d , (Dictionary new at: #k put: 5; yourself).
+	self assert: (d at: #k) equals: 1.
+	self assert: (d2 at: #k) equals: 5.
+	d := IdentityDictionary new.
+	d at: #k put: 1.
+	d2 := d copy.
+	d2 at: #k put: 2.
+	self assert: (d at: #k) equals: 1
+]
+
+{ #category : 'copying' }
+St80CollectionTest >> testBagCopyHasItsOwnCounts [
+	"A Bag is one Dictionary, and a shallow copy shared it: adding to the
+	 copy counted in the original, and removing from the copy removed from
+	 both (Bugs3 B43)."
+	| b b2 |
+	b := Bag with: 1.
+	b2 := b copy.
+	b2 add: 2.
+	self assert: b size equals: 1.
+	self assert: b2 size equals: 2.
+	b2 remove: 1.
+	self assert: b size equals: 1.
+	self assert: (b occurrencesOf: 1) equals: 1.
+	self assert: (b2 occurrencesOf: 1) equals: 0
+]
+
+{ #category : 'dictionaries' }
+St80CollectionTest >> testIdentityDictionaryHasNoGhostForNilKey [
+	"nil in a 1983 IdentityDictionary's key slots is what an empty slot
+	 looks like: `at: nil put:' counted an entry nothing could find, and a
+	 second store made the count 0 (Bugs3 B44).  1983's refuses nil now.
+	 Pharo's IdentityDictionary, which profiles/pharo-collections and
+	 pharo-weak run this test against, keeps Associations and holds nil
+	 as a key perfectly well.  What must never happen in either is the
+	 ghost: a store that is counted and cannot be found.  A Dictionary
+	 holds nil as a key in both."
+	| d stored |
+	d := IdentityDictionary new.
+	stored := [d at: nil put: 1. true] on: Error do: [:e | false].
+	stored
+		ifTrue: [
+			self assert: d size equals: 1.
+			self assert: (d at: nil) equals: 1.
+			self assert: (d includesKey: nil).
+			self assert: d keys size equals: 1.
+			d at: nil put: 2.
+			self assert: d size equals: 1.
+			self assert: (d at: nil) equals: 2]
+		ifFalse: [
+			self assert: d size equals: 0.
+			self deny: (d includesKey: nil).
+			self assert: (d at: nil ifAbsent: ['absent']) equals: 'absent'].
+	d at: #a put: 1.
+	self assert: (d at: #a) equals: 1.
+	d := Dictionary new.
+	d at: nil put: 7.
+	self assert: (d at: nil) equals: 7.
+	self assert: d keys size equals: 1
+]
+
+{ #category : 'sorted' }
+St80CollectionTest >> testSortedCollectionRefusesPositionalAdds [
+	"Where an element goes is the sortBlock's decision.  1983's image
+	 refuses addFirst: and the rest with shouldNotImplement; the sources
+	 here had lost that, and `addFirst: 9' on 1 2 3 answered 9 1 2 3
+	 (Bugs3 B45).  The collection is untouched by a refused add."
+	| s |
+	s := SortedCollection withAll: #(3 1 2).
+	self should: [s addFirst: 9] raise: Error.
+	self should: [s addLast: 0] raise: Error.
+	self should: [s addAllFirst: #(9 8)] raise: Error.
+	self should: [s addAllLast: #(0)] raise: Error.
+	self should: [s add: 9 before: 1] raise: Error.
+	self should: [s add: 9 after: 1] raise: Error.
+	self should: [s add: 9 beforeIndex: 1] raise: Error.
+	self should: [s at: 1 put: 9] raise: Error.
+	self assert: s asArray equals: #(1 2 3).
+	s add: 0.
+	self assert: s asArray equals: #(0 1 2 3)
+]
+
+{ #category : 'sorted' }
+St80CollectionTest >> testSortedCollectionCopiesKeepTheirBlock [
+	"copyFrom:to: -- and with it shallowCopy, first:, last:, allButFirst
+	 and allButLast -- reverse, copyWithout: and `,' all built their answer
+	 with `species new:', which has the DEFAULT block, so a copy of a
+	 descending collection was ascending and its next add: went where the
+	 wrong block said (Bugs3 B45).  Each answer here is checked by what
+	 an add: does to it afterwards, which is the only test that matters."
+	| s |
+	s := SortedCollection sortBlock: [:a :b | a > b].
+	s addAll: #(3 1 2).
+	self assert: s asArray equals: #(3 2 1).
+	self assert: ((s copyFrom: 1 to: 2) add: 5; yourself) asArray equals: #(5 3 2).
+	self assert: (s shallowCopy add: 0; yourself) asArray equals: #(3 2 1 0).
+	self assert: (s copy add: 5; yourself) asArray equals: #(5 3 2 1).
+	self assert: ((s first: 2) add: 5; yourself) asArray equals: #(5 3 2).
+	self assert: (s allButFirst add: 5; yourself) asArray equals: #(5 2 1).
+	self assert: ((s , #(7)) add: 5; yourself) asArray equals: #(7 5 3 2 1).
+	self assert: ((s copyWithout: 2) add: 5; yourself) asArray equals: #(5 3 1).
+	self assert: (s reverse add: 5; yourself) asArray equals: #(1 2 3 5).
+	self assert: s reverse reverse asArray equals: s asArray.
+	self assert: (s copyFrom: 3 to: 2) isEmpty
+]
+
+{ #category : 'adding' }
+St80CollectionTest >> testAddAllAndRemoveAllOfSelf [
+	"Enumerating a collection while adding to it or removing from it walks
+	 over its own changes: `removeAll: self' on 1 2 3 4 left 2 4, and
+	 `addAll: self' on 1 2 3 added four copies of three (Bugs3 B49).  The
+	 argument is copied first when it is the receiver."
+	| oc s b |
+	oc := OrderedCollection withAll: #(1 2 3 4).
+	oc removeAll: oc.
+	self assert: oc isEmpty.
+	oc := OrderedCollection withAll: #(1 2 3).
+	oc addAll: oc.
+	self assert: oc asArray equals: #(1 2 3 1 2 3).
+	oc addAllFirst: oc.
+	self assert: oc size equals: 12.
+	s := SortedCollection withAll: #(1 2 3).
+	s addAll: s.
+	self assert: s asArray equals: #(1 1 2 2 3 3).
+	s := Set withAll: #(1 2 3).
+	s removeAll: s.
+	self assert: s isEmpty.
+	b := Bag withAll: #(1 2 3).
+	b addAll: b.
+	self assert: b size equals: 6.
+	b removeAll: b.
+	self assert: b isEmpty
+]
+
+{ #category : 'intervals' }
+St80CollectionTest >> testIntervalRefusesZeroStep [
+	"`(1 to: 10 by: 0) do:' never passed 10 and never stopped (Bugs3
+	 B14); an Interval with no step is refused where it is made."
+	self should: [1 to: 10 by: 0] raise: Error.
+	self should: [Interval from: 1 to: 10 by: 0] raise: Error.
+	self assert: (1 to: 10 by: 3) asArray equals: #(1 4 7 10).
+	self assert: (10 to: 1 by: -3) asArray equals: #(10 7 4 1)
+]
+
+{ #category : 'copying' }
+St80CollectionTest >> testDeepCopyStopsAtCode [
+	"deepCopy of anything holding a block followed the block's context
+	 to its sender and from there through the whole image, for 47 seconds
+	 and 788 MB, and then failed (Bugs3 B47).  Blocks, contexts, classes,
+	 methods, processes and semaphores are shared by a deep copy; a
+	 nested collection is still copied all the way down."
+	| s a b |
+	s := SortedCollection sortBlock: [:x :y | x > y].
+	s addAll: #(3 1 2).
+	self assert: s deepCopy asArray equals: #(3 2 1).
+	self assert: (s deepCopy add: 5; yourself) asArray equals: #(5 3 2 1).
+	self assert: [:x | x] deepCopy class equals: BlockClosure.
+	self assert: Object deepCopy == Object.
+	self assert: Object class deepCopy == Object class.
+	self assert: (Object >> #copy) deepCopy == (Object >> #copy).
+	self assert: Processor activeProcess deepCopy == Processor activeProcess.
+	self assert: thisContext deepCopy == thisContext.
+	a := Array with: (OrderedCollection with: 'x').
+	b := a deepCopy.
+	self deny: b first == a first.
+	self deny: b first first == a first first.
+	self assert: b first first equals: 'x'
+]

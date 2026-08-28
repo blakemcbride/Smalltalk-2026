@@ -246,7 +246,17 @@ RestDispatcher >> selectorFor: methodName on: aClass [
 	| selector implementor |
 	(methodName isEmpty or: [methodName includes: $:])
 		ifTrue: [RestError new signal: 'No such method: ', methodName].
-	selector := methodName asSymbol.
+	"LOOKED UP, NOT INTERNED.  asSymbol here made a Symbol out of whatever
+	 the request said before anything had asked whether such a method
+	 existed, and a Symbol is never collected -- Bugs3 B55 counted eight
+	 thousand bogus names becoming eight thousand permanent Symbols that two
+	 full collections did not touch, on a server whose only gate is a login
+	 the caller may not have.  A method that exists has its selector in a
+	 MethodDictionary already, so looking the name up finds every real one
+	 and creates none of the rest."
+	selector := Symbol lookup: methodName.
+	selector isNil ifTrue: [
+		RestError new signal: 'No such method: ', aClass name, '>>', methodName].
 	implementor := aClass whichClassIncludesSelector: selector.
 	(implementor notNil
 	 and: [implementor ~~ RestService

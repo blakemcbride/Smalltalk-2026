@@ -33,6 +33,11 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <time.h>
 
 
 /*
@@ -167,8 +172,17 @@
  *
  *  148 -> 149 with St80FileTest, in lib/Library-Tests: file names and the
  *  File List's pattern pane, which is where a person types a path.
+ *
+ *  149 -> 153 with the Bugs3 fixes: CorruptMethod, which the interpreter
+ *  raises where a literal index, an instruction pointer or a stack pointer
+ *  in a context points outside what it belongs to -- it used to trust all
+ *  three and segfault; MonitorTest and ProcessTest in lib/Concurrency-Tests,
+ *  for a Monitor that is finally reentrant and for terminate, suspend and
+ *  signalException: reaching a process another worker is running; and
+ *  St80ExceptionTest in lib/Library-Tests, for an ensure: block that used
+ *  to run twice and a handler guard that is not a class.
  */
-#define LIB_CLASSES             149
+#define LIB_CLASSES             153
 /*
  *  This number is a ratchet and is meant to move: lib/ is where every
  *  divergence from the frozen 1983 sources lives, so it grows whenever a
@@ -450,8 +464,47 @@
  *  that going up is a row to select rather than a path to type -- the name
  *  of the place above, putting it in the list, and telling that name from
  *  the rest -- and two tests.
+ *
+ *  2627 -> 2920 is the Bugs3 fixes, sixty-four findings from a third
+ *  outside-in audit, and the count is large because the audit reached
+ *  every layer at once.  The hash functions: Float from all sixty-four
+ *  bits, LargeInteger over every digit, Date from its seconds, Point and
+ *  Rectangle without the cancelling xor, and Set, Dictionary, IdentitySet
+ *  and LiteralDictionary mixing a hash before `\\ length' so a table whose
+ *  size is a power of two stops putting every round number in one slot --
+ *  a Set of 20,000 Floats went from 64 seconds to under one.  Exact
+ *  comparison of an Integer or Fraction with a Float (asExactFraction),
+ *  LargeInteger>>asFloat rounded once, Float>>rounded without the addition
+ *  that rounded first, ln, sqrt and log of an Integer past 1e308, gcd: with
+ *  zero, a printString: base refused outside 2..36.  Copies that copy:
+ *  Dictionary, Bag and IdentityDictionary postCopy, SortedCollection
+ *  refusing the positional adders and keeping its block through every copy,
+ *  deepCopy answering self for blocks, contexts, classes, methods and
+ *  processes.  Streams over an OrderedCollection, FileStream agreeing with
+ *  ReadStream past the end, a file whose stat size is zero read to its end,
+ *  Time reading noon as noon, Date refusing what is not a date in one
+ *  sentence, a Random with 53 bits and a seed, a stable sort:, and the
+ *  smaller protocol Bugs3 found missing -- copyFrom:, space:, tab:,
+ *  subStrings:, valuesDo:, valueWithExit, display:, Number readFrom: a
+ *  String.  The process protocol: terminate, suspend, resume and
+ *  signalException: over primitives 231 and 232 so that they reach a
+ *  process another worker holds, terminate running the unwind blocks, a
+ *  reentrant Monitor, a Delay validated before it is published, ensure:
+ *  disarming itself through runUnwindBlock, and a handler guard that is not
+ *  a class raising instead of hanging.  The servers: percent-decoding of
+ *  lowercase escapes, a digit cap and a linear conversion in JSONParser,
+ *  header values refused with CR or LF in them, Symbol class>>lookup: so an
+ *  unknown _class or _method is never interned, the RFC 7230 framing
+ *  refusals, every ODBC bind checked, a body cap on the HTTP client, a
+ *  realPathNamed: so a symlink cannot leave the doc root, and HEAD
+ *  answering GET's length.  Tonel: an extension file written back as an
+ *  extension, weak classes and trait compositions round-tripping, a file
+ *  with a bad method loading nothing, a BOM skipped, and the 1983 body of
+ *  Compiler>>evaluate:in:to:notifying:ifFail: kept under its own selector
+ *  so a Debugger's do-it works.  And the tests for all of it: MonitorTest,
+ *  ProcessTest, St80ExceptionTest, and additions to nine suites.
  */
-#define LIB_METHODS             2627
+#define LIB_METHODS             2920
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -643,8 +696,11 @@ build_once(void)
      *  145 -> 146 with RecursionDepthExceeded, which does not either.
      *
      *  146 -> 147 with St80FileTest, which does not either.
+     *
+     *  147 -> 151 with the Bugs3 fixes: CorruptMethod, MonitorTest,
+     *  ProcessTest and St80ExceptionTest, none of which defines one.
      */
-    CHECK_EQ_INT(res.news_synthesized, 147);
+    CHECK_EQ_INT(res.news_synthesized, 151);
     built = 1;
     return 1;
 }
@@ -2488,9 +2544,9 @@ test_sunit(void)
                  "(AnthropicTest Base64Test ClassTestCase ClipboardTest CryptoTest DbQueryBuilderTest DbSchemaGraphTest "
                  "DbValueTest DelayTest HttpClientTest HttpRequestTest HttpResponseTest "
                  "HttpServerTest JSONArrayTest JSONObjectTest JSONParserTest "
-                 "JSONWriterTest LLMConversationTest LLMTestCase OllamaTest OpenAITest OpenRouterTest "
-                 "PasswordHashTest QdrantTest RestServerTest SocketStreamTest SocketTest "
-                 "St80CollectionTest St80FileTest St80NumberTest St80ReflectionTest "
+                 "JSONWriterTest LLMConversationTest LLMTestCase MonitorTest OllamaTest OpenAITest OpenRouterTest "
+                 "PasswordHashTest ProcessTest QdrantTest RestServerTest SocketStreamTest SocketTest "
+                 "St80CollectionTest St80ExceptionTest St80FileTest St80NumberTest St80ReflectionTest "
                  "St80TextTest SUnitBrokenTest SUnitReportingTest SUnitTest "
                  "TonelReaderTest TonelSourceTest TonelWriterTest WebDemoTest )");
     /*
@@ -2558,8 +2614,16 @@ test_sunit(void)
      *
      *  422 -> 423 with the list pane keeping its selection when its rows are
      *  rebuilt, which is what leaves a new file ready to be typed into.
+     *
+     *  427 -> 504 with the Bugs3 fixes: MonitorTest, ProcessTest and three
+     *  more in DelayTest for the process protocol; St80ExceptionTest and
+     *  additions to St80CollectionTest, St80NumberTest and St80TextTest for
+     *  the library; HttpRequestTest, HttpResponseTest, HttpServerTest,
+     *  JSONParserTest, HttpClientTest and RestServerTest for what a hostile
+     *  client sends; and TonelReaderTest, TonelWriterTest and
+     *  TonelSourceTest for the files that come back as they went out.
      */
-    check_integer("TestCase allTests tests size", 427);
+    check_integer("TestCase allTests tests size", 504);
 
     /*
      *  And the three buckets, from the outside as well as from within
@@ -2682,7 +2746,11 @@ test_browsing(void)
      *  now instead of being read and dropped, so 367 of the 373 classes
      *  answer one where none did.
      */
-    check_integer("(SourceFiles at: 1) contents size", 2238539);
+    /*
+     *  2238539 -> 2482762 with the Bugs3 fixes: 293 methods and the comments
+     *  that say what each was for.
+     */
+    check_integer("(SourceFiles at: 1) contents size", 2482762);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -2702,7 +2770,16 @@ test_browsing(void)
          *  the text has to be the LAST thing evaluated and be written out
          *  before anything else runs.
          */
-        st_oop      count = evaluate("Mutex selectors size + Mutex class selectors size");
+        /*
+         *  Less the `new' the loader synthesized, which TonelWriter leaves
+         *  out of the file because the file never had it -- Bugs3 B61's
+         *  round trip is byte for byte, and Mutex defines initialize and
+         *  no new, so it has one.
+         */
+        st_oop      count = evaluate("Mutex selectors size + (Mutex class selectors "
+                                     "select: [:s | ((Mutex class sourceCodeAt: s) "
+                                     "includesSubstring: 'Synthesized by the loader') "
+                                     "not]) size");
         st_oop      text = evaluate("TonelWriter sourceFor: Mutex");
         const char *path = "build/tonel-writer-check.class.st";
 
@@ -4243,6 +4320,2446 @@ test_bugs2(void)
 
     test_dialect = saved;
 }
+/*
+ *  Bugs3.md: a third audit -- the system at its limits, under load, and
+ *  from outside.  One function per area, in the order the report keeps
+ *  them, so that the next audit can read what this one found.
+ */
+
+/*
+ *  Bugs3.md: the interpreter and its primitives.
+ */
+/*
+ *  The interpreter's frame counter after an expression, compared with the
+ *  counter after an expression known to leak nothing.  The counter is read
+ *  at the moment the doIt returns off the bottom, before anything resets
+ *  it, so what it holds is the doIt's own frame plus whatever the
+ *  expression left behind -- which is the B15 leak, one frame per
+ *  non-local return, made visible without the 200,000 iterations it took
+ *  to reach the ceiling.
+ */
+static void
+check_depth_unchanged(const char *expression, int baseline)
+{
+    st_oop  value = evaluate(expression);
+
+    ++st_test_checks;
+    if (value == ST_OOP_INVALID) {
+        ++st_test_failures;
+        printf("  FAIL %s: no answer\n", expression);
+        return;
+    }
+    if (st_vm.call_depth != baseline) {
+        ++st_test_failures;
+        printf("  FAIL %s: left the depth counter at %d, the baseline is "
+               "%d\n", expression, st_vm.call_depth, baseline);
+    }
+}
+
+static void
+test_bugs3_interp(void)
+{
+    int     saved = test_dialect;
+    int     baseline;
+    char    expression[1600];
+    char    ro_path[64];
+    int     ro_fd;
+
+    test_dialect = ST_DIALECT_CLOSURES;
+
+    /*
+     *  B1: an Array too long for the calling frame fails the primitive
+     *  and the fallback says so.
+     *
+     *  perform:withArguments:, valueWithArguments: and
+     *  withArgs:executeMethod: spread the Array onto the SENDER's stack,
+     *  sized by the compiler for the sender's own pushes; twelve elements
+     *  overflowed the frame and stopped the run, eighteen segfaulted.  The
+     *  sends here are made from inside a block so that the frame is a
+     *  small one -- the doIt's own context is 64 slots and takes eighteen
+     *  in its stride, which is also checked.
+     */
+    check_string("Object subclass: #Bugs3CM instanceVariableNames: ''"
+                 " classVariableNames: '' poolDictionaries: ''"
+                 " category: 'Bugs3'."
+                 " (Smalltalk at: #Bugs3CM) compile: 'a1: a a2: b a3: c a4: d"
+                 " a5: e a6: f a7: g a8: h a9: i a10: j a11: k a12: l a13: m"
+                 " a14: n a15: o a16: p a17: q a18: r a19: s a20: t a21: u"
+                 " a22: v a23: w a24: x a25: y a26: z a27: aa a28: bb a29: cc"
+                 " a30: dd ^dd'."
+                 " (Smalltalk at: #Bugs3CM) compile: 'wide ^[:a :b :c :d :e :f"
+                 " :g :h :i :j :k :l :m :n :o | a]'."
+                 " (Smalltalk at: #Bugs3CM) compile: 'bar ^self wide"
+                 " valueWithArguments: (Array new: 15)'."
+                 " ^((Smalltalk at: #Bugs3CM) compiledMethodAt: "
+                 "#a1:a2:a3:a4:a5:a6:a7:a8:a9:a10:a11:a12:a13:a14:a15:a16:a17:a18:a19:a20:a21:a22:a23:a24:a25:a26:a27:a28:a29:a30:) numArgs printString", "30");
+    check_string("[nil perform: #a1:a2:a3:a4:a5:a6:a7:a8:a9:a10:a11:a12:a13:a14:a15:a16:a17:a18:a19:a20:a21:a22:a23:a24:a25:a26:a27:a28:a29:a30:"
+                 " withArguments: (Array new: 30)]"
+                 " on: Error do: [:e | e messageText]",
+                 "perform:withArguments: cannot spread 30 arguments: the "
+                 "calling method's frame has no room for them");
+    /*
+     *  A block's arguments count toward the frame of the method that
+     *  DEFINES it -- a closure's context is sized from its home method's
+     *  header -- so the fifteen-argument block is made in one method and
+     *  sent valueWithArguments: from another, whose frame is the small
+     *  one.  Sent from this doIt, whose frame is 64 slots, fifteen fit.
+     */
+    check_string("[(Smalltalk at: #Bugs3CM) new bar]"
+                 " on: Error do: [:e | e messageText]",
+                 "valueWithArguments: cannot spread 15 arguments: the "
+                 "calling method's frame has no room for them");
+    check_integer("[:a :b :c :d :e :f :g :h :i :j :k :l :m :n :o | o]"
+                  " valueWithArguments: (1 to: 15) asArray", 15);
+    check_string("[(Smalltalk at: #Bugs3CM) new withArgs: (Array new: 30)"
+                 " executeMethod: ((Smalltalk at: #Bugs3CM) compiledMethodAt:"
+                 " #a1:a2:a3:a4:a5:a6:a7:a8:a9:a10:a11:a12:a13:a14:a15:a16:a17:a18:a19:a20:a21:a22:a23:a24:a25:a26:a27:a28:a29:a30:)]"
+                 " on: Error do: [:e | e messageText]",
+                 "withArgs:executeMethod: cannot spread 30 arguments: the "
+                 "calling method's frame has no room for them");
+    check_string("[nil perform: #a1:a2:a3: withArguments: (Array new: 3)]"
+                 " on: MessageNotUnderstood do: [:e | e message selector]",
+                 "a1:a2:a3:");
+    /*  And with room -- this doIt's frame has 64 slots -- thirty fit.  */
+    check_integer("(Smalltalk at: #Bugs3CM) new perform: #a1:a2:a3:a4:a5:a6:a7:a8:a9:a10:a11:a12:a13:a14:a15:a16:a17:a18:a19:a20:a21:a22:a23:a24:a25:a26:a27:a28:a29:a30:"
+                  " withArguments: (1 to: 30) asArray", 30);
+    check_integer("(Smalltalk at: #Bugs3CM) new withArgs: (1 to: 30) asArray"
+                  " executeMethod: ((Smalltalk at: #Bugs3CM) compiledMethodAt:"
+                  " #a1:a2:a3:a4:a5:a6:a7:a8:a9:a10:a11:a12:a13:a14:a15:a16:a17:a18:a19:a20:a21:a22:a23:a24:a25:a26:a27:a28:a29:a30:)", 30);
+
+    /*
+     *  B5: perform: with the wrong number of arguments is an error in the
+     *  image, not the end of it.  Primitives 83 and 84 fail on the
+     *  mismatch, as the Blue Book's primitivePerform does, and the fallback
+     *  names both counts.  A selector nobody implements is not a mismatch:
+     *  doesNotUnderstand: takes the arguments however many there are.
+     */
+    check_string("[3 perform: #+] on: Error do: [:e | e messageText]",
+                 "perform: + with 0 arguments; it takes 1");
+    check_string("[3 perform: #at:put: with: 1] on: Error do:"
+                 " [:e | e messageText]",
+                 "perform: at:put: with 1 arguments; it takes 2");
+    check_string("[3 perform: #== with: 3 with: 4] on: Error do:"
+                 " [:e | e messageText]",
+                 "perform: == with 2 arguments; it takes 1");
+    check_integer("3 perform: #+ with: 4", 7);
+    check_boolean("3 perform: #between:and: withArguments: #(1 5)", 1);
+    check_string("[3 perform: #zork with: 1 with: 2]"
+                 " on: MessageNotUnderstood do:"
+                 " [:e | e message arguments size printString]", "2");
+
+    /*
+     *  B6: a cycle in the superclass chain is refused where it is made,
+     *  and one made behind the library's back -- through instVarAt:put:
+     *  -- is a doesNotUnderstand rather than a worker spinning in C for
+     *  ever.  The chain is put back afterwards: two classes going round
+     *  would be found by any later walk of the class tree.
+     */
+    check_string("Object subclass: #Bugs3CA instanceVariableNames: ''"
+                 " classVariableNames: '' poolDictionaries: ''"
+                 " category: 'Bugs3'."
+                 " Object subclass: #Bugs3CB instanceVariableNames: ''"
+                 " classVariableNames: '' poolDictionaries: ''"
+                 " category: 'Bugs3'."
+                 " (Smalltalk at: #Bugs3CA) superclass: (Smalltalk at: #Bugs3CB)."
+                 " ^[(Smalltalk at: #Bugs3CB) superclass: (Smalltalk at: #Bugs3CA)]"
+                 " on: Error do: [:e | e messageText]",
+                 "Bugs3CA inherits from Bugs3CB, so making it the superclass"
+                 " would put a cycle in the class chain");
+    check_string("[(Smalltalk at: #Bugs3CA) superclass: (Smalltalk at: #Bugs3CA)]"
+                 " on: Error do: [:e | e messageText]",
+                 "Bugs3CA inherits from Bugs3CA, so making it the superclass"
+                 " would put a cycle in the class chain");
+    check_string("(Smalltalk at: #Bugs3CA) superclass name", "Bugs3CB");
+    check_string("[:ca :cb | | answer |"
+                 " ca instVarAt: 1 put: cb. cb instVarAt: 1 put: ca."
+                 " answer := [ca new zork] on: MessageNotUnderstood do:"
+                 " [:e | e message selector]."
+                 " ca instVarAt: 1 put: Object. cb instVarAt: 1 put: Object."
+                 " answer] value: (Smalltalk at: #Bugs3CA)"
+                 " value: (Smalltalk at: #Bugs3CB)", "zork");
+    check_string("(Smalltalk at: #Bugs3CA) superclass name", "Object");
+
+    /*
+     *  B7: a receiver whose class chain has no doesNotUnderstand: gets a
+     *  MessageNotUnderstood like everything else, through Object's
+     *  handler sent to it directly, and cannotInterpret: is there for a
+     *  chain that has lost doesNotUnderstand: but still reaches Object.
+     *  Before, `Behavior new new printString' cleared the interpreter's
+     *  running flag, and under -serve that is the pool.
+     */
+    check_string("[Behavior new new printString]"
+                 " on: MessageNotUnderstood do: [:e | e message selector]",
+                 "printString");
+    check_string("[Behavior new new foo: 1 bar: 2]"
+                 " on: MessageNotUnderstood do:"
+                 " [:e | e message arguments size printString]", "2");
+    check_string("[3 cannotInterpret:"
+                 " (Message selector: #zork arguments: #())]"
+                 " on: MessageNotUnderstood do: [:e | e message selector]",
+                 "zork");
+    check_boolean("(Smalltalk at: #Object) includesSelector:"
+                  " #cannotInterpret:", 1);
+
+    /*
+     *  B11: a method whose bytes have been rewritten, and a context whose
+     *  registers have been, are abandoned with a CorruptMethod raised in
+     *  the image -- where each was a segfault.  255 is `send literal 15
+     *  with two arguments' and foo has one literal; 0 is `push the first
+     *  instance variable' to the end of the method with no return, which
+     *  runs off the end -- and, before it does, names an instance
+     *  variable the receiver has not got, which ASAN caught reading the
+     *  word after the object; the index is bounded now like the literal.
+     *  The context cases write the ip and then the sp of a frame that is
+     *  about to be returned to.
+     */
+    check_string("(Smalltalk at: #Bugs3CM) compile: 'foo ^3'."
+                 " [:m | m initialPC to: m size do: [:i | m at: i put: 255]]"
+                 " value: ((Smalltalk at: #Bugs3CM) compiledMethodAt: #foo)."
+                 " ^[(Smalltalk at: #Bugs3CM) new foo]"
+                 " on: CorruptMethod do: [:e | e class name]",
+                 "CorruptMethod");
+    check_string("[:m | m initialPC to: m size do: [:i | m at: i put: 0]]"
+                 " value: ((Smalltalk at: #Bugs3CM) compiledMethodAt: #foo)."
+                 " ^[(Smalltalk at: #Bugs3CM) new foo]"
+                 " on: Error do: [:e | e class name]",
+                 "CorruptMethod");
+    check_integer("[[thisContext sender instVarAt: 2 put: -1. 3] value]"
+                  " on: CorruptMethod do: [:e | 7]", 7);
+    check_integer("[[thisContext sender instVarAt: 2 put: 1. 3] value]"
+                  " on: CorruptMethod do: [:e | 7]", 7);
+    check_integer("[[thisContext sender instVarAt: 3 put: -1. 3] value]"
+                  " on: CorruptMethod do: [:e | 7]", 7);
+    check_integer("[[thisContext sender instVarAt: 3 put: 100000. 3] value]"
+                  " on: CorruptMethod do: [:e | 7]", 7);
+    check_boolean("CorruptMethod new isResumable", 0);
+
+    /*
+     *  B15: a non-local return takes every frame it discards off the
+     *  depth counter, not one.  The counter is read straight after each
+     *  expression and held to what an expression with no non-local return
+     *  leaves; then the loop that used to raise RecursionDepthExceeded at
+     *  200,000 iterations -- the Blue Book block arm through includes:,
+     *  the closure arm through detect: -- is run past that number.
+     */
+    evaluate("3 + 4");
+    baseline = st_vm.call_depth;
+    check_depth_unchanged("3 + 4", baseline);
+    check_depth_unchanged("1 to: 1000 do: [:i | #(1 2 3) includes: 2]. ^3 + 4",
+                          baseline);
+    check_depth_unchanged("1 to: 1000 do: [:i | #(1 2 3) detect:"
+                          " [:x | x = 2]]. ^3 + 4", baseline);
+    check_depth_unchanged("1 to: 1000 do: [:i | 1 isKindOf: Integer]. ^3 + 4",
+                          baseline);
+    check_depth_unchanged("1 to: 300 do: [:i | 1 + 1.0]. ^3 + 4", baseline);
+    check_depth_unchanged("1 to: 300 do: [:i | [:k | #(1 2 3) do:"
+                          " [:x | x = k ifTrue: [^x]]. nil] value: 2]. 3 + 4",
+                          baseline);
+    check_integer("1 to: 205000 do: [:i | #(1 2 3) includes: 2]. ^7", 7);
+    check_integer("1 to: 205000 do: [:i | #(1 2 3) detect: [:x | x = 2]]. ^7",
+                  7);
+
+    /*
+     *  B19: the whole line, in one write.  Interleaving needs eight
+     *  workers and is checked in test_serve_faults; here only that the
+     *  primitive still answers the receiver and still prints.
+     */
+    check_string("'bugs3-b19 one line' displayNl", "bugs3-b19 one line");
+
+    /*
+     *  B21: become: refuses a Symbol on either side.  `#zzE become: #zzF'
+     *  left two Symbols spelled zzE, and the literal was not the interned
+     *  one.
+     */
+    check_string("[#zzE become: #zzF] on: Error do: [:e | e messageText]",
+                 "become: refused: a Symbol names itself for the whole "
+                 "image's life; the symbol table and every method dictionary"
+                 " are keyed by its identity");
+    check_string("[String new become: #zzF] on: Error do:"
+                 " [:e | e messageText]",
+                 "become: refused: a Symbol names itself for the whole "
+                 "image's life; the symbol table and every method dictionary"
+                 " are keyed by its identity");
+    check_boolean("'zzE' asSymbol == #zzE", 1);
+    check_boolean("'zzF' asSymbol == #zzF", 1);
+    check_integer("(Symbol allInstances select: [:s | s = 'zzE']) size", 1);
+
+    /*
+     *  B58: Smalltalk garbageCollect answers the count its comment has
+     *  always promised, not the receiver.
+     */
+    check_boolean("Smalltalk garbageCollect isInteger", 1);
+    check_boolean("Smalltalk garbageCollect >= 0", 1);
+
+    /*
+     *  B58: a file this process may only read opens read-only and the
+     *  stream KNOWS: close does not flush, a write is refused where it is
+     *  made, and reading works.  A file that cannot be opened at all says
+     *  why in the operating system's words, and asking for an old file
+     *  that is not there does not create it.  Root may write anything, so
+     *  the read-only half is skipped there.
+     */
+    snprintf(ro_path, sizeof ro_path, "/tmp/bugs3-ro-XXXXXX");
+    ro_fd = mkstemp(ro_path);
+    if (ro_fd >= 0) {
+        if (write(ro_fd, "ro\n", 3) != 3)
+            printf("  (could not write %s)\n", ro_path);
+        close(ro_fd);
+        chmod(ro_path, 0444);
+        if (geteuid() != 0) {
+            snprintf(expression, sizeof expression,
+                     "[(FileStream oldFileNamed: '%s') close. 'closed']"
+                     " on: Error do: [:e | e messageText]", ro_path);
+            check_string(expression, "closed");
+            snprintf(expression, sizeof expression,
+                     "[(FileStream oldFileNamed: '%s') nextPutAll: 'x'; close."
+                     " 'wrote'] on: Error do: [:e | e messageText]", ro_path);
+            check_string(expression, "no writing allowed!");
+            snprintf(expression, sizeof expression,
+                     "(FileStream oldFileNamed: '%s') contentsOfEntireFile"
+                     " size", ro_path);
+            check_integer(expression, 3);
+            snprintf(expression, sizeof expression,
+                     "[:f | | answer | f open. answer := f isReadOnly."
+                     " f close. answer] value: (Disk findKey: '%s')", ro_path);
+            check_boolean(expression, 1);
+        }
+        unlink(ro_path);
+    }
+    check_string("[FileStream oldFileNamed: '/nonexistent/bugs3-zz']"
+                 " on: Error do: [:e | e messageText]",
+                 "/nonexistent/bugs3-zz file not found, No such file or "
+                 "directory");
+    check_string("[FileStream oldFileNamed: '/tmp/bugs3-not-here-either']"
+                 " on: Error do: [:e | e messageText]",
+                 "/tmp/bugs3-not-here-either file not found, No such file "
+                 "or directory");
+    ++st_test_checks;
+    if (access("/tmp/bugs3-not-here-either", F_OK) == 0) {
+        ++st_test_failures;
+        printf("  FAIL oldFileNamed: created the file it was asked for\n");
+        unlink("/tmp/bugs3-not-here-either");
+    }
+    check_boolean("[:f | | answer | f open. answer := f isReadOnly. f close."
+                  " answer] value: (Disk findKey: 'profiles/st2026.profile')",
+                  0);
+
+    test_dialect = saved;
+}
+
+/*
+ *  Bugs3.md: the scheduler and the process protocol.
+ *
+ *  One worker here, so these hold the single-process half of each fix;
+ *  the cross-worker half -- a process running on another core being
+ *  terminated, and a snapshot taken while one is -- is in
+ *  tests/unit/test_parallel_shared.c and tests/run_snapshot.sh.
+ */
+static void
+test_bugs3_sched(void)
+{
+    int saved = test_dialect;
+
+    test_dialect = ST_DIALECT_CLOSURES;
+
+    /*
+     *  B3: resuming a terminated process raises; it used to stop the
+     *  image.  Primitive 87 queued any Process, and a terminated one has
+     *  a nil suspendedContext, so the next worker to take it asked to run
+     *  nil as a context and the whole run ended.  The primitive now
+     *  refuses a process whose context is not a context, or that is on a
+     *  list, and Process>>resume says which.  The process here never ran
+     *  -- forked at the same priority, it waits on the ready list until
+     *  the doIt waits, and the doIt never does -- which is the ready-list
+     *  branch of terminate; the running branch is in the parallel gate.
+     */
+    check_string("| p | p := [Semaphore new wait] fork. p terminate. "
+                 "^[p resume. #resumed] on: Error do: [:e | e messageText]",
+                 "cannot resume a process that has terminated");
+    check_boolean("| p | p := [Semaphore new wait] fork. p terminate. "
+                  "^p suspendedContext isNil", 1);
+    /*  And a process already waiting is refused too, not queued twice. */
+    check_string("| p | p := [Semaphore new wait] fork. "
+                 "^[p resume. #resumed] on: Error do: [:e | e messageText]",
+                 "cannot resume a process that is already waiting");
+
+    /*
+     *  B17: `Processor activeProcess resume' put the running process on
+     *  its ready list while this worker was still executing it, and an
+     *  idle worker ran it from its stale context.  Refused now.
+     */
+    check_string("^[Processor activeProcess resume. #resumed] "
+                 "on: Error do: [:e | e messageText]",
+                 "cannot resume a process that is running");
+    check_integer("[Processor activeProcess resume] on: Error do: [:e | nil]. "
+                  "^3 + 4", 7);
+
+    /*
+     *  B13: terminate runs the ensure: blocks the process is inside.
+     *  1983's ran none, so a process terminated inside `aMutex critical:'
+     *  left the Mutex held for ever.  Processor yield runs the forked
+     *  process up to its wait and comes back; terminate then unwinds its
+     *  parked stack on THIS process, which is where the ensure: block's
+     *  side effect is checked.
+     */
+    check_string("| log sem p | log := OrderedCollection new. sem := Semaphore new. "
+                 "p := [[sem wait. log add: #after] ensure: [log add: #ensure]] fork. "
+                 "Processor yield. p terminate. ^log asArray printString",
+                 "(ensure )");
+    check_boolean("| m sem p | m := Mutex new. sem := Semaphore new. "
+                  "p := [m critical: [sem wait]] fork. Processor yield. "
+                  "p terminate. ^m isHeld", 0);
+    check_string("| m sem p | m := Mutex new. sem := Semaphore new. "
+                 "p := [m critical: [sem wait]] fork. Processor yield. "
+                 "p terminate. ^m critical: [#acquired]", "acquired");
+    /*  Nested ensure: blocks run innermost first, each once.  */
+    check_string("| log sem p | log := OrderedCollection new. sem := Semaphore new. "
+                 "p := [[[sem wait] ensure: [log add: #inner]] ensure: [log add: #outer]] fork. "
+                 "Processor yield. p terminate. p terminate. ^log asArray printString",
+                 "(inner outer )");
+    /*  A process that ends on its own is terminated the same way.  */
+    check_boolean("| p | p := [3 + 4] fork. Processor yield. "
+                  "^p suspendedContext isNil", 1);
+    /*
+     *  suspend of a process on a Semaphore is still refused, as 1983
+     *  refused it, but of a ready process it works and resume restarts
+     *  it where it stood.
+     */
+    check_string("| sem p | sem := Semaphore new. p := [sem wait] fork. Processor yield. "
+                 "^[p suspend. #suspended] on: Error do: [:e | e messageText]",
+                 "This process is waiting on a Semaphore and cannot be suspended");
+    check_string("| log p | log := OrderedCollection new. "
+                 "p := [log add: #ran] fork. p suspend. Processor yield. "
+                 "log add: #between. p resume. Processor yield. ^log asArray printString",
+                 "(between ran )");
+    /*  signalException: reaches a process parked on a Semaphore.  */
+    check_string("| sem p log | sem := Semaphore new. log := OrderedCollection new. "
+                 "p := [[sem wait] on: Error do: [:e | log add: e messageText]] fork. "
+                 "Processor yield. p signalException: (Error new messageText: 'cut short'). "
+                 "Processor yield. ^log asArray printString",
+                 "('cut short' )");
+
+    /*
+     *  B12: a Delay the timer could not arm poisoned every later Delay.
+     *  `Delay forMilliseconds: 0.5' raised digitLength inside wait with
+     *  ActiveDelay already pointing at it, and the next Delay queued
+     *  behind a delay that would never fire.  Durations are checked when
+     *  the Delay is made: rounded to the millisecond, floored at zero,
+     *  refused beyond what the timer counts -- and the second wait here
+     *  is the check that the first did no harm.
+     */
+    check_integer("(Delay forMilliseconds: 0.5) instVarAt: 1", 1);
+    check_integer("(Delay forMilliseconds: 0.4) instVarAt: 1", 0);
+    check_integer("(Delay forMilliseconds: -7) instVarAt: 1", 0);
+    check_integer("(Delay forSeconds: 1.5) instVarAt: 1", 1500);
+    check_boolean("(Delay forMilliseconds: 0.5) wait. (Delay forMilliseconds: 5) wait. ^true", 1);
+    check_string("^[Delay forSeconds: 1e12] on: Error do: [:e | e messageText]",
+                 "a Delay of 1000000000000000 milliseconds is longer than "
+                 "the timer can count (536870911)");
+    check_string("^[Delay forMilliseconds: 'soon'] on: Error do: [:e | e messageText]",
+                 "a Delay is made from a number of milliseconds, not 'soon'");
+    check_string("^[Delay untilMilliseconds: -1] on: Error do: [:e | e messageText]",
+                 "-1 is not a value of the millisecond clock");
+    check_integer("Delay maximumMilliseconds", 536870911);
+
+    /*
+     *  B60: Monitor is reentrant, as doc/CONCURRENCY.md and the manual
+     *  say, and was not -- `critical:' was a Mutex's, which refuses a
+     *  second acquire by its holder.  An owner and a depth now; and
+     *  waitForChange gives up the whole depth, or a waiter two levels in
+     *  would sleep holding the monitor and nothing could ever change.
+     */
+    check_string("| m | m := Monitor new. ^m critical: [m critical: [#reentered]]",
+                 "reentered");
+    check_boolean("| m | m := Monitor new. m critical: [m critical: [nil]]. "
+                  "^m isHeldByActiveProcess", 0);
+    check_boolean("| m | m := Monitor new. "
+                  "^m critical: [m critical: [m isHeldByActiveProcess]]", 1);
+    check_string("| m log p | m := Monitor new. log := OrderedCollection new. "
+                 "p := [m critical: [m critical: [m waitUntil: [log includes: #go]. "
+                 "log add: #woken]]] fork. Processor yield. "
+                 "m critical: [log add: #go. m signalAll]. Processor yield. "
+                 "^log asArray printString", "(go woken )");
+    /*  The outermost exit releases, however it happens.  */
+    check_string("| m | m := Monitor new. "
+                 "[m critical: [m critical: [Error new signal: 'out']]] on: Error do: [:e | nil]. "
+                 "^m critical: [#free]", "free");
+
+    test_dialect = saved;
+}
+
+/*
+ *  A whole method source this compiler must REFUSE, pattern and all, and
+ *  the words it must refuse it in.  check_refused writes "doIt " in front
+ *  of its expression, which cannot spell a method with arguments -- and
+ *  half of what Bugs3 found wrong with the compiler is about arguments.
+ */
+static void
+check_refused_method(const char *source, const char *wanted)
+{
+    st_compile_context  ctx;
+    st_compile_result   res;
+
+    fill_compile_context(&ctx);
+    memset(&res, 0, sizeof res);
+    ++st_test_checks;
+    if (COMPILE_method(source, &ctx, &res) == 0) {
+        ++st_test_failures;
+        printf("  FAIL '%.60s' compiled; it should have been refused with "
+               "'%s'\n", source, wanted);
+        return;
+    }
+    if (!strstr(res.error, wanted)) {
+        ++st_test_failures;
+        printf("  FAIL refused with '%s', want something holding '%s'\n",
+               res.error, wanted);
+    }
+}
+
+/*
+ *  And one that must compile, when the point is that it does.  A method
+ *  of more than four arguments carries a header extension and so needs
+ *  its class as its last literal, which fill_compile_context does not
+ *  supply; Object's binding serves.
+ */
+static void
+check_compiles_method(const char *source)
+{
+    st_compile_context  ctx;
+    st_compile_result   res;
+
+    fill_compile_context(&ctx);
+    ctx.method_class_association = BOOT_lookup_global("Object", NULL);
+    memset(&res, 0, sizeof res);
+    ++st_test_checks;
+    if (COMPILE_method(source, &ctx, &res) != 0) {
+        ++st_test_failures;
+        printf("  FAIL '%.60s' was refused: %s\n", source, res.error);
+    }
+}
+
+/*
+ *  Bugs3.md: the C compiler and lexer.
+ *
+ *  The thread through these is the one the audit named: the bytecode
+ *  format has fields of four, five, six and seven bits, and the compiler
+ *  masked every count down to fit rather than refusing what did not --
+ *  so a method with 32 temporaries, a class with 65 instance variables and
+ *  a block with 16 arguments all installed and all answered wrongly.  The
+ *  rest are the lexer reading a number, a character or a NUL as something
+ *  other than what was written, and the parser accepting what 1983's
+ *  refused.  Every check here is a refusal that used to be an answer, or
+ *  an answer that used to be a different one.
+ */
+static void
+test_bugs3_compiler(void)
+{
+    int     saved = test_dialect;
+    char    expression[2000];
+    size_t  i;
+    size_t  k;
+
+    test_dialect = ST_DIALECT_CLOSURES;
+
+    /*
+     *  B2: nesting is bounded by the compiler, not by the C stack.
+     *
+     *  Three thousand parentheses, or ten thousand nested literal arrays,
+     *  recursed the parser off the end of the thread's stack and the
+     *  server died of SIGSEGV.  Three hundred is past MAX_NESTING and is
+     *  refused by name; two hundred compiles and answers.
+     */
+    k = 0;
+    for (i = 0; i < 300; ++i)
+        expression[k++] = '(';
+    expression[k++] = '1';
+    for (i = 0; i < 300; ++i)
+        expression[k++] = ')';
+    expression[k] = '\0';
+    check_refused(expression, "nested too deeply");
+    k = 0;
+    for (i = 0; i < 200; ++i)
+        expression[k++] = '(';
+    expression[k++] = '1';
+    for (i = 0; i < 200; ++i)
+        expression[k++] = ')';
+    expression[k] = '\0';
+    check_integer(expression, 1);
+    k = 0;
+    expression[k++] = '#';
+    for (i = 0; i < 300; ++i)
+        expression[k++] = '(';
+    for (i = 0; i < 300; ++i)
+        expression[k++] = ')';
+    expression[k] = '\0';
+    check_refused(expression, "nested too deeply");
+    k = 0;
+    expression[k++] = '#';
+    for (i = 0; i < 200; ++i)
+        expression[k++] = '(';
+    for (i = 0; i < 200; ++i)
+        expression[k++] = ')';
+    snprintf(expression + k, sizeof expression - k, " size");
+    check_integer(expression, 1);
+
+    /*
+     *  B22: 32 temporaries are refused, not wrapped to 0.
+     *
+     *  The header's temporary count is five bits and build_header masked
+     *  it, so a 32-temporary method claimed none and its stack began on
+     *  top of its first temporary; `^Array with: t1 with: t2' answered the
+     *  class the expression had just pushed.  Thirty-one still compile,
+     *  as they do in 1983.
+     */
+    k = (size_t) snprintf(expression, sizeof expression, "| ");
+    for (i = 1; i <= 32; ++i)
+        k += (size_t) snprintf(expression + k, sizeof expression - k,
+                               "t%u ", (unsigned) i);
+    snprintf(expression + k, sizeof expression - k, "| ^ 1");
+    check_refused(expression, "at most 31");
+    k = (size_t) snprintf(expression, sizeof expression, "| ");
+    for (i = 1; i <= 31; ++i)
+        k += (size_t) snprintf(expression + k, sizeof expression - k,
+                               "t%u ", (unsigned) i);
+    snprintf(expression + k, sizeof expression - k, "| t31 := 31. ^ t31");
+    check_integer(expression, 31);
+    /*
+     *  And a frame slot past 63 is refused where it would be emitted: a
+     *  closure block's own temporaries are numbered by the compiler, and
+     *  the extended bytecodes hold six bits of index.
+     */
+    k = (size_t) snprintf(expression, sizeof expression, "[ | ");
+    for (i = 1; i <= 70; ++i)
+        k += (size_t) snprintf(expression + k, sizeof expression - k,
+                               "b%u ", (unsigned) i);
+    snprintf(expression + k, sizeof expression - k, "| b70 := 1. b70 ] value");
+    check_refused(expression, "addresses 64");
+
+    /*
+     *  B23: the 65th instance variable is refused, not read as the first.
+     *
+     *  `index & 63' in the receiver-variable emitters made `v65 ^v65'
+     *  push receiver variable 0.  The compiler refuses the reference by
+     *  name, and the class-definition message refuses the class.
+     */
+    {
+        st_compile_context  ctx;
+        st_compile_result   res;
+        char                names[70][8];
+        const char         *pointers[70];
+
+        for (i = 0; i < 70; ++i) {
+            snprintf(names[i], sizeof names[i], "v%u", (unsigned) i + 1);
+            pointers[i] = names[i];
+        }
+        fill_compile_context(&ctx);
+        ctx.instance_variables      = pointers;
+        ctx.instance_variable_count = 70;
+        ++st_test_checks;
+        if (COMPILE_method("foo ^v65", &ctx, &res) == 0
+         || !strstr(res.error, "first 64")) {
+            ++st_test_failures;
+            printf("  FAIL 'foo ^v65' with 70 instance variables: %s\n",
+                   res.error[0] ? res.error : "compiled");
+        }
+        ++st_test_checks;
+        if (COMPILE_method("foo: x v65 := x", &ctx, &res) == 0
+         || !strstr(res.error, "first 64")) {
+            ++st_test_failures;
+            printf("  FAIL 'foo: x v65 := x' with 70 instance variables: "
+                   "%s\n", res.error[0] ? res.error : "compiled");
+        }
+        ++st_test_checks;
+        if (COMPILE_method("foo ^v64", &ctx, &res) != 0) {
+            ++st_test_failures;
+            printf("  FAIL 'foo ^v64' was refused: %s\n", res.error);
+        }
+    }
+    k = (size_t) snprintf(expression, sizeof expression,
+                          "[Object subclass: #Iv70 instanceVariableNames: '");
+    for (i = 1; i <= 70; ++i)
+        k += (size_t) snprintf(expression + k, sizeof expression - k,
+                               "v%u ", (unsigned) i);
+    snprintf(expression + k, sizeof expression - k,
+             "' classVariableNames: '' poolDictionaries: '' category: 'x']"
+             " on: Error do: [:e | e messageText]");
+    check_string(expression, "Iv70 would have 70 instance variables, its "
+                             "superclasses' included; the bytecode set "
+                             "addresses 64");
+    check_boolean("Smalltalk includesKey: #Iv70", 0);
+
+    /*
+     *  B24: 16 block arguments and 32 method arguments are refused.
+     *
+     *  Bytecode 143 holds numArgs in four bits and the header extension
+     *  holds a method's in five; both were masked, so a sixteen-argument
+     *  block answered 0 to numArgs and a 32-keyword method installed with
+     *  none.  Fifteen and thirty-one are the ceilings and still compile.
+     */
+    k = (size_t) snprintf(expression, sizeof expression, "[");
+    for (i = 1; i <= 16; ++i)
+        k += (size_t) snprintf(expression + k, sizeof expression - k,
+                               ":a%u ", (unsigned) i);
+    snprintf(expression + k, sizeof expression - k, "| a16] numArgs");
+    check_refused(expression, "at most 15");
+    k = (size_t) snprintf(expression, sizeof expression, "[");
+    for (i = 1; i <= 15; ++i)
+        k += (size_t) snprintf(expression + k, sizeof expression - k,
+                               ":a%u ", (unsigned) i);
+    snprintf(expression + k, sizeof expression - k, "| a15] numArgs");
+    check_integer(expression, 15);
+    k = 0;
+    for (i = 1; i <= 32; ++i)
+        k += (size_t) snprintf(expression + k, sizeof expression - k,
+                               "k%u: a%u ", (unsigned) i, (unsigned) i);
+    snprintf(expression + k, sizeof expression - k, "^a1");
+    check_refused_method(expression, "at most 31 arguments");
+    k = 0;
+    for (i = 1; i <= 31; ++i)
+        k += (size_t) snprintf(expression + k, sizeof expression - k,
+                               "k%u: a%u ", (unsigned) i, (unsigned) i);
+    snprintf(expression + k, sizeof expression - k, "^a1");
+    check_compiles_method(expression);
+
+    /*
+     *  B25: `d' is not an exponent marker.
+     *
+     *  The lexer took `1d2' as one token and strtod read it as far as the
+     *  d, so 1d2 was 1.0.  It is `1 d2' now -- a unary send, as in 1983
+     *  -- which inside a literal array is the integer and a symbol.
+     */
+    check_integer("#(1d2) size", 2);
+    check_boolean("(#(1d2) at: 2) == #d2", 1);
+    check_boolean("1e2 = 100.0", 1);
+
+    /*
+     *  B26: a radix number's sign goes after the r, and digits must
+     *  follow.
+     *
+     *  `16r-FF' is what Integer>>storeStringRadix: writes for -255 and
+     *  what Number class>>readFrom: reads; the lexer left the minus after
+     *  a digitless `16r', which was 0.  `2r-101' was therefore 0 - 101.
+     */
+    check_integer("16r-FF", -255);
+    check_integer("2r-101", -5);
+    check_integer("-2r101", -5);
+    check_boolean("16r-1.8 = -1.5", 1);
+    check_refused("16r", "digits expected after 16r");
+    check_refused("16rff", "digits expected after 16r");
+    check_refused("-16r-FF", "one minus sign");
+    check_integer("Compiler evaluate: (-255 storeStringRadix: 16)", -255);
+    check_boolean("(Number readFrom: (ReadStream on: '16r-FF')) = 16r-FF", 1);
+
+    /*
+     *  B27: `$' followed by a Latin-1 byte is that character.
+     *
+     *  A lead byte that promises continuation bytes it does not have is
+     *  not UTF-8; the lexer kept the partial decode, so `$é' in a Latin-1
+     *  file was $<tab> and the storeString of any Character from 192 up
+     *  read back as a different one.  The UTF-8 spelling still reads.
+     */
+    check_integer("$\xE9 asInteger", 233);
+    check_integer("$\xC3\xA9 asInteger", 233);
+    check_integer("$\xFF asInteger", 255);
+    check_integer("(Compiler evaluate: (Character value: 233) storeString) "
+                  "asInteger", 233);
+    check_integer("(Compiler evaluate: (Character value: 255) storeString) "
+                  "asInteger", 255);
+
+    /*
+     *  B28: a NUL in the source is read, not silently taken as its end.
+     *
+     *  The seam from the image handed the compiler a C string, so a String
+     *  holding a NUL was compiled up to it and no further: `3 + 4 <NUL>
+     *  + 100' answered 7.  Inside a string literal it is data and the
+     *  literal round-trips through storeString; outside one it is refused
+     *  by name.  These go through Compiler evaluate: because a C string
+     *  literal in this file cannot carry a NUL either.
+     */
+    check_boolean("[:x | (Compiler evaluate: x storeString) = x] value: "
+                  "(String with: (Character value: 0) with: $a)", 1);
+    check_integer("(Compiler evaluate: (String with: $' with: "
+                  "(Character value: 0) with: $a with: $')) size", 2);
+    check_string("[Compiler evaluate: ('3 + 4 ', (String with: "
+                 "(Character value: 0)), ' + 100')] on: Error do: "
+                 "[:e | e messageText]",
+                 "line 1: a NUL byte outside a string literal");
+
+    /*
+     *  B29: a pop-and-store counts as a pop in the frame estimate.
+     *
+     *  Bytecodes 96..111 were tested after the `b <= 119' branch that
+     *  counts pushes, so every short assignment in statement position
+     *  added two slots to the frame; a method of 125 assignments was
+     *  refused as needing 503 slots.  Twenty temporaries and four stores
+     *  need twenty-one: the stack never holds more than the one value
+     *  being stored.
+     */
+    {
+        st_compile_context  ctx;
+        st_compiled_code    code;
+
+        k = (size_t) snprintf(expression, sizeof expression, "foo | ");
+        for (i = 1; i <= 20; ++i)
+            k += (size_t) snprintf(expression + k, sizeof expression - k,
+                                   "t%u ", (unsigned) i);
+        snprintf(expression + k, sizeof expression - k,
+                 "| t1 := 3. t1 := 4. t1 := 5. t1 := 6");
+        fill_compile_context(&ctx);
+        ++st_test_checks;
+        if (COMPILE_to_bytecodes(expression, &ctx, &code) != 0) {
+            ++st_test_failures;
+            printf("  FAIL the twenty-temporary method was refused: %s\n",
+                   code.error);
+        }  else if (code.frame_slots != 21) {
+            ++st_test_failures;
+            printf("  FAIL twenty temporaries and four stores were given "
+                   "%u frame slots, want 21\n", code.frame_slots);
+        }
+    }
+    /*
+     *  And a hundred and fifty of them run, in a frame the estimate now
+     *  sizes at two slots rather than three hundred.  (Not the audit's
+     *  250: eight characters each and the expression buffer is 2000.)
+     */
+    k = (size_t) snprintf(expression, sizeof expression, "| a | ");
+    for (i = 0; i < 150; ++i)
+        k += (size_t) snprintf(expression + k, sizeof expression - k,
+                               "a := 1. ");
+    snprintf(expression + k, sizeof expression - k, "^a");
+    check_integer(expression, 1);
+
+    /*
+     *  B30: a brace array is built by bytecode 138, one pass, no literals.
+     *
+     *  It was `Array new: n' and an at:put: per element, which spent a
+     *  literal on every index from 3 up and compiled the elements twice
+     *  -- 2^depth times for nested braces, 68 seconds for 22 deep.  Now
+     *  eight strings are eight literals and no SmallIntegers, 62 strings
+     *  compile, 127 elements is the operand's ceiling, and the deep brace
+     *  takes no time worth measuring.
+     */
+    check_integer("{1. 2. 3} size", 3);
+    check_integer("{} size", 0);
+    check_string("{1. {2. 3}. 4} printString", "(1 (2 3 ) 4 )");
+    check_string("| a b | a := 0. b := {a := 5. a + 1. "
+                 "[a > 3] whileTrue: [a := a - 1]. {a. {}}}. "
+                 "^(Array with: b with: a) printString",
+                 "((5 6 nil (3 () ) ) 3 )");
+    check_integer("Object compile: 'zzB30 ^ {''s1''. ''s2''. ''s3''. "
+                  "''s4''. ''s5''. ''s6''. ''s7''. ''s8''}'. "
+                  "^((Object compiledMethodAt: #zzB30) literals "
+                  "select: [:l | l isKindOf: SmallInteger]) size "
+                  "+ (nil zzB30 size * 100)", 800);
+    /*
+     *  Through Compiler evaluate:, because the elements sit on the stack
+     *  until the 138 takes them and the context evaluate() hands a doIt
+     *  here has 64 slots; the image sizes its own contexts from the
+     *  method's frame.
+     */
+    k = (size_t) snprintf(expression, sizeof expression,
+                          "Compiler evaluate: '{");
+    for (i = 1; i <= 62; ++i)
+        k += (size_t) snprintf(expression + k, sizeof expression - k,
+                               "''s%u''. ", (unsigned) i);
+    snprintf(expression + k, sizeof expression - k, "''last''} size'");
+    check_integer(expression, 63);
+    k = (size_t) snprintf(expression, sizeof expression,
+                          "Compiler evaluate: '{");
+    for (i = 1; i <= 127; ++i)
+        k += (size_t) snprintf(expression + k, sizeof expression - k,
+                               "1. ");
+    snprintf(expression + k, sizeof expression - k, "} size'");
+    check_integer(expression, 127);
+    k = (size_t) snprintf(expression, sizeof expression, "{");
+    for (i = 1; i <= 128; ++i)
+        k += (size_t) snprintf(expression + k, sizeof expression - k,
+                               "1. ");
+    snprintf(expression + k, sizeof expression - k, "} size");
+    check_refused(expression, "at most 127 elements");
+    {
+        clock_t     started = clock();
+        double      seconds;
+
+        k = 0;
+        for (i = 0; i < 22; ++i)
+            expression[k++] = '{';
+        expression[k++] = '1';
+        for (i = 0; i < 22; ++i)
+            expression[k++] = '}';
+        snprintf(expression + k, sizeof expression - k, " size");
+        check_integer(expression, 1);
+        seconds = (double) (clock() - started) / CLOCKS_PER_SEC;
+        ++st_test_checks;
+        if (seconds > 2.0) {
+            ++st_test_failures;
+            printf("  FAIL a 22-deep brace took %.1f seconds to compile\n",
+                   seconds);
+        }
+    }
+
+    /*
+     *  B31: what 1983 refuses, this compiler refuses.
+     *
+     *  Assignment to a method argument; a duplicate temporary, against a
+     *  temporary or an argument, in a method or in a block; a statement
+     *  after a return; a comment with no closing quote, which used to
+     *  swallow the rest of the method; a literal array with no closing
+     *  parenthesis, which used to swallow the rest as symbols.  And
+     *  `self := 5' no longer names `self' as undeclared, which put it in
+     *  Undeclared for good.  What 1983 ALLOWS stays allowed: a block
+     *  storing into its own argument, and `[:a | a | 2]', whose second
+     *  `a' is an operand and not a redeclaration.
+     */
+    check_refused_method("zzArg: a a := 5. ^a", "cannot assign to argument 'a'");
+    check_refused("| a a | ^a", "'a' is already declared");
+    check_refused_method("zzDup2: a | a | ^a", "'a' is already declared");
+    check_refused("[:a :a | a] value: 1 value: 2", "'a' is already declared");
+    check_refused("[:a | | a | a] value: 1", "'a' is already declared");
+    check_integer("[:a | a | 2] value: 1", 3);
+    check_integer("[:x | x := x + 1. x] value: 1", 2);
+    check_refused("^ 1. 3", "after a return");
+    check_refused("[^ 1. 3] value", "after a return");
+    check_refused("\"abc", "unterminated comment");
+    check_integer("\"a \"\"quoted\"\" comment\" 3", 3);
+    check_refused("#(1 2", "closing a literal array");
+    {
+        st_compile_context  ctx;
+        st_compile_result   res;
+
+        fill_compile_context(&ctx);
+        /*
+         *  Only the unassignable half can be checked at this level: the
+         *  bootstrap's lookup_global declares a name it has never seen,
+         *  so nothing is undeclared to it.  The image-level check below
+         *  covers what the field is FOR.
+         */
+        ++st_test_checks;
+        if (COMPILE_method("doIt self := 5", &ctx, &res) == 0
+         || res.undeclared[0] != '\0') {
+            ++st_test_failures;
+            printf("  FAIL 'self := 5': %s, undeclared '%s'\n",
+                   res.error[0] ? res.error : "compiled", res.undeclared);
+        }
+    }
+    check_boolean("[Compiler evaluate: 'self := 5'] on: Error do: "
+                  "[:e | Undeclared includesKey: #self]", 0);
+
+    /*
+     *  B32: an infinity or a NaN stores as something that reads back.
+     *
+     *  They printed as `inf' and `nan', and Number>>storeOn: prints, so
+     *  their storeString read back as an undeclared variable -- nil, plus
+     *  `inf' in Undeclared.  They store as the expressions that make them
+     *  now, an Array holding one falls back from the literal form, and
+     *  `2r1e3000' is refused as `1e400' already was.
+     */
+    check_refused("2r1e3000", "too large for a Float");
+    check_string("(1.0e308 * 10) storeString", "Float infinity");
+    check_string("(1.0e308 * 10) negated storeString",
+                 "Float infinity negated");
+    check_string("Float nan storeString", "Float nan");
+    check_string("1.5 storeString", "1.5");
+    check_boolean("(Compiler evaluate: (1.0e308 * 10) storeString) "
+                  "= (1.0e308 * 10)", 1);
+    check_boolean("(Compiler evaluate: Float nan storeString) isNaN", 1);
+    check_boolean("Float infinity isLiteral", 0);
+    check_boolean("1.5 isLiteral", 1);
+    check_boolean("(Compiler evaluate: (Array with: Float infinity with: 1.5)"
+                  " storeString) first = Float infinity", 1);
+    check_boolean("[Compiler evaluate: '2r1e3000'] on: Error do: "
+                  "[:e | Undeclared includesKey: #inf]", 0);
+
+    test_dialect = saved;
+}
+
+/*
+ *  Bugs3.md: the object memory and the image file.
+ */
+static void
+test_bugs3_om(void)
+{
+    int saved = test_dialect;
+
+    test_dialect = ST_DIALECT_CLOSURES;
+
+    /*
+     *  B8: dropping a chain of objects does not recurse on the C stack.
+     *
+     *  OM_deallocate released an object's fields from inside itself, one C
+     *  frame pair per link, so a linked list of 400,000 Arrays let go in a
+     *  method was a segfault in every no-worker mode -- which is this
+     *  harness, -bootstrap, -eval and -run, every image build and every
+     *  doctest.  The free is a worklist now, and this is the audit's own
+     *  program at five hundred thousand links; test_om_mt.c drops three
+     *  million by hand.  The trailing allocations are the audit's too:
+     *  they make sure the memory is still usable after the drop.
+     */
+    check_string("| a b | a := Array new: 1. "
+                 "1 to: 500000 do: [:i | b := Array new: 1. b at: 1 put: a. "
+                 "a := b]. "
+                 "b := nil. a := nil. "
+                 "1 to: 30000 do: [:i | Array new: 10]. "
+                 "^'dropped in method'",
+                 "dropped in method");
+
+    /*
+     *  B33, the C half: identityHash is thirty bits wide.
+     *
+     *  OM_identity_hash masked the allocation number to fourteen bits, the
+     *  width of a 1983 oop, so a hundred thousand fresh objects had 16,384
+     *  hashes between them and every identity-hashed collection past a few
+     *  thousand elements was a linear scan -- and Object>>hash IS
+     *  identityHash, so that was a Set of anything without a hash of its
+     *  own.  Forty thousand rather than the audit's hundred thousand only
+     *  because a Set that size, through the mixed probe Set>>findElementOrNil:
+     *  now runs, is more bytecodes than one doIt gets here; forty thousand
+     *  is still two and a half times what fourteen bits could hold.  The
+     *  hash is still a SmallInteger, still the same for the life of the
+     *  object, and stays one across a become: (test_om_mt.c holds it across
+     *  a save and a reload).
+     */
+    check_integer("((1 to: 40000) collect: [:i | Object new identityHash]) "
+                  "asSet size", 40000);
+    check_boolean("| o | o := Object new. ^o identityHash = o identityHash",
+                  1);
+    check_boolean("Object new identityHash class == SmallInteger", 1);
+    check_boolean("Object new identityHash < (1 bitShift: 30)", 1);
+    check_boolean("| a b h | a := Array new: 1. b := Array new: 2. "
+                  "h := a identityHash. a become: b. "
+                  "^a identityHash = h and: [a size = 2]", 1);
+
+    /*
+     *  B10 and B58 are faults of the image file -- a snapshot written over
+     *  its target in place, and a corrupt image followed rather than
+     *  refused -- and need a file and a fresh memory to show.  Their
+     *  checks are in test_om_mt.c: test_snapshot_never_destroys_the_old_image
+     *  and test_corrupt_image_is_refused.
+     */
+
+    test_dialect = saved;
+}
+
+/*
+ *  Bugs3.md: hashing, equality and the numeric conversions.
+ *
+ *  A note on the timing gates.  evaluate() above runs each expression for
+ *  at most twenty million bytecodes and reports "did not finish" past that,
+ *  so a Set fill written here IS a timing test: the quadratic fills Bugs3
+ *  B33 measured -- five thousand round numbers in one bucket is twelve
+ *  million probes -- cannot complete inside the budget, and the linear ones
+ *  use a fraction of it.  No clock is read, so the checks do not flake
+ *  under load.
+ */
+static void
+test_bugs3_hashing(void)
+{
+    int saved = test_dialect;
+
+    test_dialect = ST_DIALECT_CLOSURES;
+
+    /*
+     *  B33: Float>>hash reads all sixty-four bits.
+     *
+     *  1983's read the first sixteen-bit word -- sign, exponent and four
+     *  bits of mantissa -- so every Float between 0.5 and 1.0 hashed to one
+     *  of sixteen values and a Set of twenty thousand Floats in (0, 1) took
+     *  sixty-four seconds.  The integral rule survives: a Float with no
+     *  fractional part hashes as the Integer it equals, and a Fraction as
+     *  its Float.
+     */
+    check_integer("((1 to: 2000) collect: [:i | (i / 2001.0) hash]) asSet size",
+                  2000);
+    check_integer("((1 to: 2000) collect: [:i | (i * 0.001) hash]) asSet size",
+                  2000);
+    check_integer("| s | s := Set new. 1 to: 3000 do: [:i | s add: i / 3001.0]. "
+                  "^s size", 3000);
+    check_integer("| d | d := Dictionary new. "
+                  "1 to: 3000 do: [:i | d at: i / 3001.0 put: i]. "
+                  "^d at: 1500 / 3001.0", 1500);
+    check_boolean("1 hash = 1.0 hash", 1);
+    check_boolean("(2 raisedTo: 70) hash = (2 raisedTo: 70) asFloat hash", 1);
+    check_boolean("0.5 hash = (1/2) hash", 1);
+    check_boolean("-0.0 hash = 0 hash", 1);
+    check_boolean("1.5 hash = -1.5 hash", 0);
+
+    /*
+     *  B33: Integer>>hash for a LargeInteger reads every byte.
+     *
+     *  1983's read the top byte and the bottom byte: 256 values for a run
+     *  of consecutive numbers, and eighty-eight seconds for a Set of five
+     *  thousand of them.  The number is built once outside the loop
+     *  because `2 raisedTo: 70' is LargeInteger multiplication in
+     *  Smalltalk and costs more than the hash being measured.
+     */
+    check_integer("| big | big := 2 raisedTo: 70. "
+                  "^((1 to: 2000) collect: [:i | (big + i) hash]) asSet size",
+                  2000);
+    check_integer("| s big | big := 2 raisedTo: 70. s := Set new. "
+                  "1 to: 3000 do: [:i | s add: big + i]. ^s size", 3000);
+    check_boolean("(2 raisedTo: 70) hash = (2 raisedTo: 70) negated hash", 0);
+
+    /*
+     *  B33: Date, Rectangle and Point.
+     *
+     *  Date's hash shifted the year by three and xor-ed the day over it,
+     *  510 values for 5,000 consecutive days.  Rectangle's xor-ed an origin
+     *  and a corner that move together, 58 values for 5,000 rectangles of
+     *  one shape.  Point's shifted x by two, so `i @ 0' used a quarter of a
+     *  power-of-two table.  A Point with Float coordinates is equal to the
+     *  Point with the Integer ones, and hashes with it.
+     */
+    check_integer("((1 to: 2000) collect: [:i | (Date fromDays: i) hash]) "
+                  "asSet size", 2000);
+    check_integer("| s | s := Set new. "
+                  "1 to: 3000 do: [:i | s add: (Date fromDays: i)]. ^s size",
+                  3000);
+    check_integer("((1 to: 2000) collect: [:i | "
+                  "(i @ i corner: (i + 5) @ (i + 7)) hash]) asSet size", 2000);
+    check_integer("| s | s := Set new. 1 to: 3000 do: [:i | "
+                  "s add: (i @ i corner: (i + 5) @ (i + 7))]. ^s size", 3000);
+    check_integer("((1 to: 2000) collect: [:i | (i @ 0) hash]) asSet size",
+                  2000);
+    check_boolean("(1 @ 2) hash = (1.0 @ 2.0) hash", 1);
+
+    /*
+     *  B33: the probe loops mix the hash before choosing a bucket.
+     *
+     *  A Set's capacity is always a power of two and SmallInteger>>hash is
+     *  the number, so every multiple of 65536 landed in one slot until the
+     *  table outgrew 65536: twenty thousand of them took forty-seven
+     *  seconds.  Set, Dictionary and IdentitySet each have their own copy
+     *  of the loop and are each checked; a Dictionary is also read back,
+     *  because a probe that stores by one arithmetic and finds by another
+     *  would fill happily and answer `key not found'.
+     */
+    check_integer("| s | s := Set new. 1 to: 5000 do: [:i | s add: i * 65536]. "
+                  "^s size", 5000);
+    check_integer("| s | s := Set new. "
+                  "1 to: 5000 do: [:i | s add: (i bitShift: 40)]. ^s size", 5000);
+    check_integer("| d | d := Dictionary new. "
+                  "1 to: 5000 do: [:i | d at: i * 65536 put: i]. "
+                  "^(d at: 4000 * 65536) + (d at: 65536)", 4001);
+    check_integer("| s | s := IdentitySet new. "
+                  "1 to: 5000 do: [:i | s add: i * 65536]. ^s size", 5000);
+    check_boolean("| s | s := Set new. 1 to: 5000 do: [:i | s add: i * 65536]. "
+                  "1 to: 5000 do: [:i | (s includes: i * 65536) ifFalse: [^false]]. "
+                  "^(s includes: 65536 * 5001) not", 1);
+
+    /*
+     *  B33: Interval>>hash is constant in the Interval's length, and still
+     *  agrees with the Array of its elements.
+     *
+     *  `#(1 2 3) = (1 to: 3)' is true, so the two must hash alike, and the
+     *  shared hash walked every element -- a million for `(1 to: 1000000)'
+     *  and two minutes without finishing for a Set of twenty thousand
+     *  Intervals.  It walks thirty-two now and samples sixteen beyond that,
+     *  and Interval computes the same sample arithmetically; the checks
+     *  straddle the threshold, go backwards, step by three, cross zero and
+     *  use Floats, which is the arm Interval hands back to the shared body.
+     */
+    check_boolean("#(1 2 3) hash = (1 to: 3) hash", 1);
+    check_boolean("(1 to: 32) asArray hash = (1 to: 32) hash", 1);
+    check_boolean("(1 to: 33) asArray hash = (1 to: 33) hash", 1);
+    check_boolean("(1 to: 100 by: 3) asArray hash = (1 to: 100 by: 3) hash", 1);
+    check_boolean("(100 to: 1 by: -1) asArray hash = (100 to: 1 by: -1) hash", 1);
+    check_boolean("(-50 to: 50) asArray hash = (-50 to: 50) hash", 1);
+    check_boolean("(0.5 to: 50.5) asArray hash = (0.5 to: 50.5) hash", 1);
+    check_boolean("(1 to: 100000) hash = (1 to: 100000) asArray hash", 1);
+    check_boolean("(Set with: (1 to: 100)) includes: (1 to: 100) asArray", 1);
+    check_boolean("(Set with: (1 to: 100) asArray) includes: (1 to: 100)", 1);
+    check_boolean("#(1 2 3) hash = #(1 99 3) hash", 0);
+    check_integer("| s | s := Set new. 1 to: 3000 do: [:i | s add: (1 to: i)]. "
+                  "^s size", 3000);
+
+    /*
+     *  B34: a collection that holds itself can be hashed, so a class can
+     *  name TextConstants as a pool at run time.
+     *
+     *  Set>>hash xor-ed every element's hash and a Dictionary's elements
+     *  are its values; TextConstants holds itself under #TextConstants and
+     *  Smalltalk holds Smalltalk, so hashing either recursed until
+     *  RecursionDepthExceeded, and 1983's Class>>sharing: -- which adds
+     *  each pool to a Set -- failed for any class naming TextConstants.
+     *  Dictionary hashes its keys now, Set and Array skip themselves, and
+     *  Dictionary has the = its key-only hash is lawful for: two
+     *  Dictionaries with the same values under different keys were equal.
+     *  sharing: is sent to a class that already shares the pool, which
+     *  walks the whole path and defines nothing new.
+     */
+    check_boolean("TextConstants hash class == SmallInteger", 1);
+    check_boolean("Smalltalk hash class == SmallInteger", 1);
+    check_integer("(Set new add: TextConstants; yourself) size", 1);
+    check_boolean("[:a | a at: 1 put: a. a hash class == SmallInteger] "
+                  "value: (Array new: 2)", 1);
+    check_boolean("[:s | s add: s. s hash class == SmallInteger] value: Set new",
+                  1);
+    check_boolean("TextStyle sharing: 'TextConstants'", 0);
+    check_boolean("(Dictionary new at: 1 put: 2; yourself) "
+                  "= (Dictionary new at: 3 put: 2; yourself)", 0);
+    check_boolean("(Dictionary new at: 1 put: 2; yourself) "
+                  "= (Dictionary new at: 1 put: 2; yourself)", 1);
+    check_boolean("(Dictionary new at: 1 put: 2; yourself) hash "
+                  "= (Dictionary new at: 1 put: 2; yourself) hash", 1);
+    check_boolean("(Dictionary new at: 1 put: 2; yourself) "
+                  "= (Dictionary new at: 1 put: 3; yourself)", 0);
+    /*
+     *  And the bootstrap records a class's pools in sharedPools, so that
+     *  definition and TonelWriter can write the clause back.  TextStyle is
+     *  a 1983 chunk-file class with `poolDictionaries: 'TextConstants'';
+     *  Object shares nothing.
+     */
+    check_integer("TextStyle sharedPools size", 1);
+    check_boolean("TextStyle sharedPools includes: TextConstants", 1);
+    check_boolean("TextStyle definition includesSubstring: "
+                  "'poolDictionaries: ''TextConstants '''", 1);
+    check_integer("Object sharedPools size", 0);
+
+    /*
+     *  B35: the two classes whose = was structural and whose hash was not.
+     */
+    check_integer("(Set new add: (MethodDescription whichClass: Object "
+                  "selector: #yourself); add: (MethodDescription whichClass: "
+                  "Object selector: #yourself); yourself) size", 1);
+    check_boolean("(CharacterBlock stringIndex: 3 character: $a topLeft: 0@0 "
+                  "extent: 5@7) hash = (CharacterBlock stringIndex: 3 "
+                  "character: $a topLeft: 10@3 extent: 5@7) hash", 1);
+
+    /*
+     *  B36: a comparison between a Float and an exact number is exact.
+     *
+     *  retry:coercing: rounded the Integer or Fraction to a double first,
+     *  so 2^53 + 1 was equal to 2^53 asFloat, SmallInteger maxVal to its
+     *  own asFloat, 1/3 to (1/3) asFloat, and every Integer past 1.8e308
+     *  to infinity -- and not below it.  The Set of three has two elements
+     *  because (2^53 + 1) asFloat IS 2^53, correctly rounded, and 2^53 is
+     *  already there; before, it had two for the wrong reason.
+     */
+    check_boolean("9007199254740993 = 9007199254740992.0", 0);
+    check_boolean("9007199254740993 > 9007199254740992.0", 1);
+    check_boolean("SmallInteger maxVal = SmallInteger maxVal asFloat", 0);
+    check_boolean("SmallInteger maxVal < SmallInteger maxVal asFloat", 1);
+    check_boolean("(1/3) = (1/3) asFloat", 0);
+    check_boolean("(1/3) > (1/3) asFloat", 1);
+    check_boolean("(10 raisedTo: 400) = Float infinity", 0);
+    check_boolean("(10 raisedTo: 400) < Float infinity", 1);
+    check_boolean("Float infinity > (10 raisedTo: 400)", 1);
+    check_boolean("Float infinity negated < (10 raisedTo: 400) negated", 1);
+    check_boolean("Float nan = 1", 0);
+    check_boolean("Float nan ~= 1", 1);
+    check_boolean("1 < Float nan", 0);
+    check_boolean("(1/2) = 0.5", 1);
+    check_boolean("0.5 = (1/2)", 1);
+    check_boolean("1 = 1.0", 1);
+    check_boolean("3 < 3.5", 1);
+    check_boolean("1.0e22 = (10 raisedTo: 22)", 1);
+    check_boolean("1.0e23 = (10 raisedTo: 23)", 0);
+    check_boolean("((2 raisedTo: 53) + 1) = ((2 raisedTo: 53) + 1) asFloat", 0);
+    check_integer("(Set with: (2 raisedTo: 53) with: (2 raisedTo: 53) + 1 "
+                  "with: ((2 raisedTo: 53) + 1) asFloat) size", 2);
+    check_string("0.1 asExactFraction printString",
+                 "(3602879701896397/36028797018963968)");
+    check_string("-2.5 asExactFraction printString", "(-5/2)");
+    check_integer("3.0 asExactFraction", 3);
+
+    /*
+     *  B37: LargePositiveInteger>>asFloat rounds once, to nearest, ties to
+     *  even.  The four values are the finding's, against Python's float();
+     *  the three after them sit exactly on, just above and just below a
+     *  tie in the fifty-fourth bit, where ties-to-even is the whole
+     *  question.
+     */
+    check_string("35249751169645885018 asFloat printString",
+                 "3.5249751169645883e19");
+    check_string("5527461779710717517408 asFloat printString",
+                 "5.527461779710718e21");
+    check_string("-235876359782728832226947132462 asFloat truncated printString",
+                 "-235876359782728846121470263296");
+    check_string("888821955897402360796333836200876596023 asFloat truncated "
+                 "printString",
+                 "888821955897402289882734643824384016384");
+    check_boolean("(((2 raisedTo: 52) + 1) * (2 raisedTo: 20) + (2 raisedTo: 19)) "
+                  "asFloat truncated = (((2 raisedTo: 52) + 2) * (2 raisedTo: 20))",
+                  1);
+    check_boolean("(((2 raisedTo: 52) + 1) * (2 raisedTo: 20) + (2 raisedTo: 19) + 1) "
+                  "asFloat truncated = (((2 raisedTo: 52) + 2) * (2 raisedTo: 20))",
+                  1);
+    check_boolean("(((2 raisedTo: 52) + 1) * (2 raisedTo: 20) + (2 raisedTo: 19) - 1) "
+                  "asFloat truncated = (((2 raisedTo: 52) + 1) * (2 raisedTo: 20))",
+                  1);
+    check_string("(2 raisedTo: 62) negated asFloat printString",
+                 "-4.611686018427388e18");
+    check_string("(1/3) asFloat printString", "0.3333333333333333");
+
+    /*
+     *  B38: Float>>rounded does not add a half first.
+     */
+    check_string("0.49999999999999994 rounded printString", "0");
+    check_string("-0.49999999999999994 rounded printString", "0");
+    check_string("4503599627370497.0 rounded printString", "4503599627370497");
+    check_string("2.5 rounded printString", "3");
+    check_string("-2.5 rounded printString", "-3");
+    check_string("1.5e30 rounded printString", "1499999999999999889089448902656");
+    check_string("(1/2) rounded printString", "1");
+    check_string("(-1/2) rounded printString", "-1");
+
+    /*
+     *  B39: ln, log:, sqrt and log of a LargeInteger past 1e308, and a
+     *  base-ten logarithm that counts digits exactly.
+     */
+    check_string("((2 raisedTo: 1100) log: 2) printString", "1100.0");
+    check_string("(2 raisedTo: 1100) ln printString", "762.4618986159398");
+    check_string("(2 raisedTo: 1100) sqrt printString", "3.6855101804897865e165");
+    check_string("(2 raisedTo: 1100) log printString", "331.13299523037927");
+    check_string("1000 log printString", "3.0");
+    check_string("1000.0 log printString", "3.0");
+    check_string("0.001 log printString", "-3.0");
+    check_string("(1000 log: 10) printString", "3.0");
+    check_string("(1024 log: 2) printString", "10.0");
+    check_string("(1000 log: 3) printString", "6.287709822868153");
+    check_string("[0 log] on: Error do: [:e | e messageText]",
+                 "ln is defined only for positive numbers");
+
+    /*
+     *  B40: gcd: and lcm: with a zero.
+     */
+    check_integer("12 gcd: 0", 12);
+    check_integer("0 gcd: 12", 12);
+    check_integer("0 gcd: 0", 0);
+    check_integer("12 gcd: 18", 6);
+    check_integer("4 lcm: 0", 0);
+    check_integer("0 lcm: 0", 0);
+    check_integer("4 lcm: 6", 12);
+    check_boolean("((2 raisedTo: 70) gcd: 0) = (2 raisedTo: 70)", 1);
+
+    /*
+     *  B41: a base outside 2..36 is refused by name, on both the
+     *  SmallInteger and the LargeInteger path; and -0.0 abs is 0.0.
+     */
+    check_string("[40 printString: 37] on: Error do: [:e | e messageText]",
+                 "a number can be printed in a base from 2 to 36, not 37");
+    check_string("[12 printString: 1] on: Error do: [:e | e messageText]",
+                 "a number can be printed in a base from 2 to 36, not 1");
+    check_string("[(2 raisedTo: 70) printString: 0] on: Error do: [:e | e messageText]",
+                 "a number can be printed in a base from 2 to 36, not 0");
+    check_string("255 printString: 16", "FF");
+    check_string("-255 printString: 36", "-73");
+    check_string("(2 raisedTo: 70) printString: 16", "400000000000000000");
+    check_string("-0.0 abs printString", "0.0");
+    check_string("-3.5 abs printString", "3.5");
+    check_boolean("Float nan abs isNaN", 1);
+
+    test_dialect = saved;
+}
+
+/*  access, unlink and rmdir, for the restart check below.  */
+#include <unistd.h>
+
+/*
+ *  Bugs3.md B20: a restarted image appends to its changes file rather than
+ *  writing over what the session before it appended.
+ *
+ *  This one cannot be asked of the image this test builds in-process,
+ *  because the fault is in what a SAVED image remembers: the -o path wrote
+ *  the image with its changes stream open, so the page buffer and the
+ *  File's cached last page number went into the image as they stood, and
+ *  every session that resumed it took setToEnd as the end the buffer
+ *  remembered.  So this drives the real binary the way a person does --
+ *  build an image with one method compiled into it, run it once compiling
+ *  a second, run it AGAIN from the same image compiling a third -- and
+ *  reads the changes file back: all three records must be there.  Before
+ *  the fix the second session wrote over the first's record.
+ *
+ *  The sessions run under -serve with a startup that evaluates the
+ *  argument, which exits when the expression has been evaluated; -run
+ *  keeps the display loop going and never comes back.  Skipped, saying so,
+ *  when ./st80 is not beside the test -- the Makefile copies it there
+ *  after every build, so that is a build that was not made rather than a
+ *  fault to hide.
+ */
+static void
+check_changes_file_survives_a_restart(void)
+{
+    static const char *const startup =
+        "Compiler evaluate: (Smalltalk arguments isEmpty"
+        " ifTrue: ['nil'] ifFalse: [Smalltalk arguments first])";
+    char        dir[] = "/tmp/st80-bugs3-b20-XXXXXX";
+    char        image[256];
+    char        changes[256];
+    char        command[2048];
+    char       *text;
+    long        length;
+    FILE       *f;
+    int         ok;
+
+    ++st_test_checks;
+    if (access("./st80", X_OK) != 0) {
+        printf("  (skipping the changes-file restart check: no ./st80)\n");
+        return;
+    }
+    if (!mkdtemp(dir)) {
+        ++st_test_failures;
+        printf("  FAIL cannot make a scratch directory for the restart check\n");
+        return;
+    }
+    snprintf(image, sizeof image, "%s/b20.im", dir);
+    snprintf(changes, sizeof changes, "%s/b20.im.changes", dir);
+    snprintf(command, sizeof command,
+             "./st80 -bootstrap -profile " PROFILE " -startup \"%s\""
+             " -eval \"Object compile: 'zzBootA ^ 42' classified: 'b20'\""
+             " -o %s >/dev/null 2>&1", startup, image);
+    ok = system(command) == 0;
+    if (ok) {
+        snprintf(command, sizeof command,
+                 "./st80 -serve %s -workers 1"
+                 " \"Object compile: 'zzBootB ^ 43' classified: 'b20'\""
+                 " >/dev/null 2>&1", image);
+        (void) system(command);
+        snprintf(command, sizeof command,
+                 "./st80 -serve %s -workers 1"
+                 " \"Object compile: 'zzBootC ^ 44' classified: 'b20'\""
+                 " >/dev/null 2>&1", image);
+        (void) system(command);
+    }
+    text = NULL;
+    length = 0;
+    f = ok ? fopen(changes, "rb") : NULL;
+    if (f) {
+        if (fseek(f, 0, SEEK_END) == 0 && (length = ftell(f)) > 0
+         && fseek(f, 0, SEEK_SET) == 0
+         && (text = malloc((size_t) length + 1)) != NULL) {
+            length = (long) fread(text, 1, (size_t) length, f);
+            text[length] = '\0';
+        }
+        fclose(f);
+    }
+    if (!text || !strstr(text, "zzBootA ^ 42") || !strstr(text, "zzBootB ^ 43")
+     || !strstr(text, "zzBootC ^ 44")) {
+        ++st_test_failures;
+        printf("  FAIL the changes file of a restarted image should hold all"
+               " three methods; it holds:\n%s\n", text ? text : "(nothing)");
+    }
+    free(text);
+    unlink(image);
+    unlink(changes);
+    rmdir(dir);
+}
+
+/*
+ *  Bugs3.md: collections, streams, dates and files -- and the two exception
+ *  faults that hung or double-ran, which are library code in the same
+ *  packages.
+ */
+static void
+test_bugs3_collections(void)
+{
+    int saved = test_dialect;
+
+    test_dialect = ST_DIALECT_CLOSURES;
+
+    /*
+     *  B4: `on: 3 do:' -- any guard that is not an exception class -- hung
+     *  the process for ever.  Asking 3 whether it handles the exception
+     *  was a doesNotUnderstand, itself a signal, whose search came back
+     *  through the same still-active frame and asked 3 again.  The frame
+     *  is out of service while its guard is asked, so the fault goes
+     *  outward; Object>>handles: gives it a sentence; and the next
+     *  expression runs.  evaluate() has a bytecode budget, so a hang here
+     *  would fail as "did not finish" rather than hold the test.
+     */
+    check_string("[[Error new signal: 'x'] on: 3 do: [:e | 'inner']] "
+                 "on: Error do: [:e | e messageText]",
+                 "3 cannot be the guard of an on:do: -- it is not an exception class");
+    check_string("[[Error new signal: 'x'] on: #foo do: [:e | 'inner']] "
+                 "on: Error do: [:e | 'reached']", "reached");
+    check_integer("([[Error new signal: 'x'] on: 'str' do: [:e | 0]] "
+                  "on: Error do: [:e | 41]) + 1", 42);
+    check_string("[Error new signal: 'x'] on: Error do: [:e | 'caught']", "caught");
+    check_string("[[Error new signal: 'x'] on: nil do: [:e | 'inner']] "
+                 "on: Error do: [:e | 'outer']", "outer");
+
+    /*
+     *  B18: an ensure: block that raised, or returned non-locally, ran
+     *  twice, and the second raise escaped the handler that caught the
+     *  first.  The normal path ran the block with the frame still armed;
+     *  the unwind through that frame found it and ran it again.  The log
+     *  says what ran and how often.
+     */
+    check_string("| log r | log := OrderedCollection new. "
+                 "r := [[log add: #body. 1] ensure: [log add: #ensure. "
+                 "Error new signal: 'in ensure']] "
+                 "on: Error do: [:e | log add: e messageText. e return: 9]. "
+                 "^(log asArray -> r) printString",
+                 "(body ensure 'in ensure' )->9");
+    /*
+     *  The non-local return is judged by its side effect, in a global,
+     *  and not by what the expression answers.  What it answers is a
+     *  finding of its own, outside this list: a ^ through an ensure: from
+     *  a doIt that ST_interp_run drives directly -- this evaluate(), or
+     *  -eval -- answers a MethodContext, or falls off the end when the
+     *  doIt has no sender (primitive 246 refuses to return from it); under
+     *  a scheduled process it answers what it should.  The log is what
+     *  B18 is about: before the fix it read (1 2 2).
+     */
+    evaluate("Smalltalk at: #ZzBugs3Log put: OrderedCollection new. "
+             "[(Smalltalk at: #ZzBugs3Log) add: 1. 1] "
+             "ensure: [(Smalltalk at: #ZzBugs3Log) add: 2. ^#nlr]. ^#fell");
+    check_string("(Smalltalk at: #ZzBugs3Log) asArray printString", "(1 2 )");
+    check_integer("| n | n := 0. [1] ensure: [n := n + 1]. ^n", 1);
+    check_string("| log | log := OrderedCollection new. "
+                 "[[[Error new signal: 'x'] ensure: [log add: 2]] ensure: [log add: 3]] "
+                 "on: Error do: [:e | e return: nil]. ^log asArray printString",
+                 "(2 3 )");
+    /*  ifCurtailed: was right, and must stay right.  */
+    check_string("| log | log := OrderedCollection new. "
+                 "[[log add: #body. Error new signal: 'boom'] "
+                 "ifCurtailed: [log add: #curtailed]] on: Error do: [:e | e return: nil]. "
+                 "^log asArray printString", "(body curtailed )");
+
+    /*
+     *  B14: `(1 to: 10 by: 0) do:' never terminated.  Refused where the
+     *  Interval is made, which every spelling goes through.
+     */
+    check_string("[(1 to: 10 by: 0) do: [:i | i]. 'ran'] on: Error do: [:e | e messageText]",
+                 "an Interval cannot have a step of zero");
+    check_string("[1 to: 10 by: 0] on: Error do: [:e | 'refused']", "refused");
+    check_integer("(1 to: 10 by: 3) size", 4);
+    check_string("(10 to: 1 by: -3) asArray printString", "(10 7 4 1 )");
+
+    /*
+     *  B42: Dictionary copy shared its Associations with the original, so
+     *  a store into the copy was a store into the original; select: and
+     *  reject: added the receiver's own Associations; the library's `,'
+     *  began with copy and so modified its receiver.
+     */
+    check_integer("| d d2 | d := Dictionary new. d at: #k put: 1. "
+                  "d2 := d copy. d2 at: #k put: 2. ^d at: #k", 1);
+    check_integer("| d d2 | d := Dictionary new. d at: #k put: 1. "
+                  "d2 := d select: [:x | true]. d2 at: #k put: 99. ^d at: #k", 1);
+    check_integer("| d d2 | d := Dictionary new. d at: #k put: 1. "
+                  "d2 := d reject: [:x | false]. d2 at: #k put: 99. ^d at: #k", 1);
+    check_integer("| a b c | a := Dictionary new. a at: 1 put: 1. "
+                  "b := Dictionary new. b at: 1 put: 2. c := a , b. ^(a at: 1) * 10 + (c at: 1)",
+                  12);
+    check_integer("| d d2 | d := IdentityDictionary new. d at: #k put: 1. "
+                  "d2 := d copy. d2 at: #k put: 2. ^d at: #k", 1);
+    check_integer("| d d2 | d := IdentityDictionary new. d at: #k put: 1. "
+                  "d2 := d shallowCopy postCopy. d2 at: #k put: 2. ^d at: #k", 1);
+
+    /*  B43: Bag copy shared the Bag's Dictionary.  */
+    check_integer("| b b2 | b := Bag with: 1. b2 := b copy. b2 add: 2. ^b size", 1);
+    check_integer("| b b2 | b := Bag with: 1. b2 := b copy. b2 remove: 1. ^b size", 1);
+
+    /*
+     *  B44: IdentityDictionary at: nil put: made a ghost -- counted by
+     *  size, found by nothing, and a second store made size 0.  nil is
+     *  refused as a key with a sentence; a Dictionary still holds it.
+     */
+    check_string("[IdentityDictionary new at: nil put: 1] on: Error do: [:e | e messageText]",
+                 "an IdentityDictionary cannot hold nil as a key; a Dictionary can");
+    check_integer("| d | d := IdentityDictionary new. "
+                  "[d at: nil put: 1] on: Error do: [:e | nil]. ^d size", 0);
+    check_boolean("IdentityDictionary new includesKey: nil", 0);
+    check_string("IdentityDictionary new at: nil ifAbsent: ['absent']", "absent");
+    check_integer("(IdentityDictionary new at: #a put: 1; yourself) size", 1);
+    check_integer("(Dictionary new at: nil put: 7; yourself) at: nil", 7);
+
+    /*
+     *  B45: a SortedCollection took addFirst: and its relatives and broke
+     *  its order; and every copy made through `species new:' -- copyFrom:to:
+     *  and so shallowCopy, first:, allButFirst; reverse; `,'; copyWithout:
+     *  -- had the default block instead of the receiver's.  Each copy is
+     *  judged by where its next add: lands.
+     */
+    check_string("| s | s := SortedCollection withAll: #(3 1 2). "
+                 "^(Array with: ([s addFirst: 9. 0] on: Error do: [:e | 1])"
+                 " with: ([s addLast: 0. 0] on: Error do: [:e | 1])"
+                 " with: ([s addAllFirst: #(9 8). 0] on: Error do: [:e | 1])"
+                 " with: s asArray) printString",
+                 "(1 1 1 (1 2 3 ) )");
+    check_string("| s | s := SortedCollection withAll: #(3 1 2). "
+                 "^(Array with: ([s addAllLast: #(0). 0] on: Error do: [:e | 1])"
+                 " with: ([s add: 9 before: 1. 0] on: Error do: [:e | 1])"
+                 " with: ([s add: 9 after: 1. 0] on: Error do: [:e | 1])"
+                 " with: s asArray) printString",
+                 "(1 1 1 (1 2 3 ) )");
+    check_string("| s | s := SortedCollection sortBlock: [:a :b | a > b]. s addAll: #(3 1 2). "
+                 "^((s copyFrom: 1 to: 2) add: 5; yourself) asArray printString", "(5 3 2 )");
+    check_string("| s | s := SortedCollection sortBlock: [:a :b | a > b]. s addAll: #(3 1 2). "
+                 "^(s shallowCopy add: 0; yourself) asArray printString", "(3 2 1 0 )");
+    check_string("| s | s := SortedCollection sortBlock: [:a :b | a > b]. s addAll: #(3 1 2). "
+                 "^((s first: 2) add: 5; yourself) asArray printString", "(5 3 2 )");
+    check_string("| s | s := SortedCollection sortBlock: [:a :b | a > b]. s addAll: #(3 1 2). "
+                 "^(s allButFirst add: 5; yourself) asArray printString", "(5 2 1 )");
+    check_string("| s | s := SortedCollection sortBlock: [:a :b | a > b]. s addAll: #(3 1 2). "
+                 "^((s , #(7)) add: 5; yourself) asArray printString", "(7 5 3 2 1 )");
+    check_string("| s | s := SortedCollection sortBlock: [:a :b | a > b]. s addAll: #(3 1 2). "
+                 "^((s copyWithout: 2) add: 5; yourself) asArray printString", "(5 3 1 )");
+    check_string("| s | s := SortedCollection sortBlock: [:a :b | a > b]. s addAll: #(3 1 2). "
+                 "^(s reverse add: 5; yourself) asArray printString", "(1 2 3 5 )");
+    check_string("| s | s := SortedCollection sortBlock: [:a :b | a > b]. s addAll: #(3 1 2). "
+                 "^s reverse reverse asArray printString", "(3 2 1 )");
+    /*  copy, select: and copyWith: were right, and must stay right.  */
+    check_string("| s | s := SortedCollection sortBlock: [:a :b | a > b]. s addAll: #(3 1 2). "
+                 "^(s copy add: 5; yourself) asArray printString", "(5 3 2 1 )");
+    check_string("| s | s := SortedCollection sortBlock: [:a :b | a > b]. s addAll: #(3 1 2). "
+                 "^((s select: [:x | x > 1]) add: 5; yourself) asArray printString", "(5 3 2 )");
+
+    /*
+     *  B46: a ReadStream over an OrderedCollection failed on every method
+     *  that builds a result, and a WriteStream on one could not nextPut:,
+     *  because `OrderedCollection new: n' is empty and refuses at:put:
+     *  past its end.  A WriteStream grows an OrderedCollection by addLast:
+     *  now, and a ReadStream copies its run of elements.
+     */
+    check_string("(ReadStream on: (OrderedCollection withAll: #(1 2 3))) upToEnd printString",
+                 "an OrderedCollection(1 2 3 )");
+    check_string("((ReadStream on: (OrderedCollection withAll: #(1 2 3))) next: 2) printString",
+                 "an OrderedCollection(1 2 )");
+    check_string("| r | r := ReadStream on: (OrderedCollection withAll: #(1 2 3)). "
+                 "r next: 2. ^(r next: 5) printString, ' ', r atEnd printString",
+                 "an OrderedCollection(3 ) true");
+    check_string("((ReadStream on: (OrderedCollection withAll: #(1 2 3))) upTo: 2) printString",
+                 "an OrderedCollection(1 )");
+    check_string("(ReadStream on: (OrderedCollection with: $a with: Character lf with: $b)) "
+                 "nextLine printString", "an OrderedCollection($a )");
+    check_string("((WriteStream on: OrderedCollection new) nextPut: 1; nextPut: 2; "
+                 "nextPutAll: #(3 4); contents) printString", "an OrderedCollection(1 2 3 4 )");
+    check_string("((WriteStream with: (OrderedCollection with: 0)) nextPut: 1; contents) "
+                 "printString", "an OrderedCollection(0 1 )");
+    check_string("| w | w := ReadWriteStream on: OrderedCollection new. "
+                 "w nextPut: 7; nextPut: 8; reset. ^w upToEnd printString",
+                 "an OrderedCollection(7 8 )");
+    check_string("[(WriteStream on: SortedCollection new) nextPut: 1. 'took it'] "
+                 "on: Error do: [:e | 'refused']", "refused");
+    /*  And the streams that worked keep working, index-aware or not.  */
+    check_string("(ReadStream on: (1 to: 5)) upToEnd printString", "(1 2 3 4 5 )");
+    check_string("(ReadStream on: 'hello world') next: 30", "hello world");
+    check_string("(ReadStream on: 'hello world') next: 3", "hel");
+    check_string("(ReadStream on: 'hello world') upToEnd", "hello world");
+    check_string("| r | r := ReadStream on: 'hello world'. r next: 6. ^r upToEnd", "world");
+    check_string("(ReadStream on: #sym) upToEnd", "sym");
+    check_string("(ReadStream on: 'abc' from: 2 to: 3) upToEnd", "bc");
+    check_integer("((ReadStream on: 'abc') next: -1) size", 0);
+
+    /*
+     *  B47: deepCopy of anything holding a block took 47 seconds and
+     *  788 MB and then failed, because the closure's outer context reaches
+     *  the whole image.  Blocks, contexts, classes, methods, processes and
+     *  semaphores answer themselves; a nested collection is still copied
+     *  all the way down.  evaluate()'s budget turns the old behaviour into
+     *  "did not finish".
+     */
+    check_integer("SortedCollection new deepCopy size", 0);
+    check_string("| s | s := SortedCollection sortBlock: [:a :b | a > b]. s addAll: #(3 1 2). "
+                 "^(s deepCopy add: 5; yourself) asArray printString", "(5 3 2 1 )");
+    check_boolean("[:x | x deepCopy == x] value: [:a :b | a > b]", 1);
+    check_boolean("Object deepCopy == Object", 1);
+    check_boolean("Object class deepCopy == Object class", 1);
+    check_boolean("(Object >> #copy) deepCopy == (Object >> #copy)", 1);
+    check_boolean("Processor activeProcess deepCopy == Processor activeProcess", 1);
+    check_boolean("[:s | s deepCopy == s] value: Semaphore new", 1);
+    check_boolean("| a b | a := Array with: (OrderedCollection with: 'x'). b := a deepCopy. "
+                  "^(b first == a first) | (b first first == a first first)", 0);
+    check_string("(Array with: (OrderedCollection with: 1 with: (Array with: 2))) "
+                 "deepCopy printString", "(an OrderedCollection(1 (2 ) ) )");
+
+    /*
+     *  B49: `removeAll: self' removed half, `addAll: self' added four copies
+     *  of three -- the enumeration walked over its own changes.  The
+     *  argument is copied first when it is the receiver, in Collection and
+     *  in the two OrderedCollection and SortedCollection overrides.
+     */
+    check_string("| oc | oc := OrderedCollection withAll: #(1 2 3 4). oc removeAll: oc. "
+                 "^oc asArray printString", "()");
+    check_string("| oc | oc := OrderedCollection withAll: #(1 2 3). oc addAll: oc. "
+                 "^oc asArray printString", "(1 2 3 1 2 3 )");
+    check_integer("| oc | oc := OrderedCollection withAll: #(1 2 3). oc addAllFirst: oc. ^oc size",
+                  6);
+    check_string("| s | s := SortedCollection withAll: #(1 2 3). s addAll: s. "
+                 "^s asArray printString", "(1 1 2 2 3 3 )");
+    check_integer("| s | s := Set withAll: #(1 2 3). s removeAll: s. ^s size", 0);
+    check_integer("| b | b := Bag withAll: #(1 2 3). b addAll: b. ^b size", 6);
+    check_integer("| b | b := Bag withAll: #(1 2 3). b removeAll: b. ^b size", 0);
+    check_integer("| oc | oc := OrderedCollection withAll: #(1 2). ^(oc addAll: #(3 4)) size",
+                  2);
+
+    /*
+     *  B20, the part that can be asked in-process: a CLOSED FileStream
+     *  reopens to the file as it is now.  The stream below is closed, the
+     *  file is grown past a page by another stream, and setToEnd on the
+     *  first must land at the real end -- a fresh page and a fresh last
+     *  page number, which is the mechanism the restart fix relies on.
+     */
+    {
+        char    dir[] = "/tmp/st80-bugs3-b20i-XXXXXX";
+
+        if (mkdtemp(dir)) {
+            char    expression[512];
+
+            snprintf(expression, sizeof expression,
+                     "| a b | a := FileStream fileNamed: '%s/f.txt'. "
+                     "a nextPutAll: 'abc'. a close. "
+                     "b := FileStream oldFileNamed: '%s/f.txt'. b setToEnd. "
+                     "1 to: 600 do: [:i | b nextPut: $x]. b close. "
+                     "a setToEnd. ^a position", dir, dir);
+            check_integer(expression, 603);
+            snprintf(expression, sizeof expression,
+                     "(FileStream oldFileNamed: '%s/f.txt') size", dir);
+            check_integer(expression, 603);
+            snprintf(expression, sizeof expression, "%s/f.txt", dir);
+            unlink(expression);
+            rmdir(dir);
+        }
+    }
+    check_changes_file_survives_a_restart();
+
+    test_dialect = saved;
+}
+
+/*
+ *  Bugs3.md: streams, dates, files and the smaller collection faults.
+ */
+static void
+test_bugs3_streams(void)
+{
+    int         saved = test_dialect;
+    char        expression[1024];
+    const char *scratch = "bugs3-streams-scratch.txt";
+    FILE       *f;
+
+    test_dialect = ST_DIALECT_CLOSURES;
+
+    /*
+     *  B48: noon reads as noon and midnight as midnight.
+     *
+     *  Time class>>readFrom: added twelve for pm and left am alone, so on
+     *  the twelve-hour clock it writes, 12 pm was hour 24 -- which
+     *  fromSeconds: folds to midnight -- and 12 am stayed noon.  The
+     *  storeString of noon evaluated to midnight, and 119 of the day's
+     *  minutes did not survive printString and readFromString:.  What is
+     *  not a time -- hour 25, minute 60, `garbage' -- read as some time or
+     *  other; it is refused now, in words that quote the text.
+     */
+    check_integer("(Time readFromString: '12:00:00 pm') asSeconds", 43200);
+    check_integer("(Time readFromString: '12:00:00 am') asSeconds", 0);
+    check_integer("(Compiler evaluate: (Time fromSeconds: 43200) storeString) "
+                  "asSeconds", 43200);
+    check_integer("((0 to: 86399 by: 61) select: [:s | (Time readFromString: "
+                  "(Time fromSeconds: s) printString) asSeconds ~= s]) size", 0);
+    check_integer("(Time readFromString: '8AM') asSeconds", 28800);
+    check_integer("(Time readFromString: '15:30') asSeconds", 55800);
+    check_integer("(Time readFromString: '1:59:30 pm') asSeconds", 50370);
+    check_boolean("[Time readFromString: '25:00'. false] on: Error do: [:e | "
+                  "e messageText = 'not a time: ''25:00''']", 1);
+    check_boolean("[Time readFromString: 'garbage'. false] on: Error do: "
+                  "[:e | true]", 1);
+    check_boolean("[Time readFromString: '8:60'. false] on: Error do: "
+                  "[:e | true]", 1);
+    check_boolean("[Time readFromString: '13:00 pm'. false] on: Error do: "
+                  "[:e | true]", 1);
+
+    /*
+     *  B50: Random is 48 bits of state seeded so that no two are alike.
+     *
+     *  1983's held sixteen bits seeded from the low sixteen bits of the
+     *  millisecond clock, so a thousand generators made in a loop were
+     *  twenty distinct streams and every answer was a multiple of 1/65536.
+     *  The generator is java.util.Random's, which is why a seed of 42 has
+     *  a published first answer; the split multiply that keeps it in
+     *  SmallInteger arithmetic is checked by that answer being exact.
+     */
+    check_integer("((1 to: 1000) collect: [:i | Random new next]) asSet size",
+                  1000);
+    check_boolean("| a b | a := Random new. b := Random new. ^a next = b next",
+                  0);
+    check_string("(Random seed: 42) next printString", "0.7275636800328681");
+    check_string("| r | r := Random seed: 42. r next. ^r next printString",
+                 "0.6832234717598454");
+    check_integer("(Random seed: 42) nextBits: 32", 3124862261);
+    check_boolean("(Random seed: 1) next = (Random seed: 1) next", 1);
+    check_boolean("| r | r := Random seed: 7. ^((1 to: 1000) collect: [:i | "
+                  "r between: 3 and: 5]) asSet size = 3", 1);
+    check_boolean("| r | r := Random new. ^((1 to: 1000) select: [:i | | x | "
+                  "x := r next. x < 0 or: [x >= 1]]) isEmpty", 1);
+    check_integer("(Random new next: 3) size", 3);
+
+    /*
+     *  B51: a FileStream meets its end the way a ReadStream does.
+     *
+     *  next: past the end raised `Strings only store Characters' where a
+     *  ReadStream answers what is there; skip: backwards raised `cannot
+     *  skip -5' where a ReadStream clamps; position: past the end was
+     *  refused as `cannot read page 1'.  A writer may still position past
+     *  its end, because that is how a file is extended (B58 below).
+     */
+    f = fopen(scratch, "wb");
+    if (f == NULL) {
+        printf("  skipped: cannot write %s\n", scratch);
+    } else {
+        fputs("abc", f);
+        fclose(f);
+        /*
+         *  readOnly on every one of these, and not only for the position:
+         *  check that needs it: a stream that was never told a mode is a
+         *  writer by 1983's default, and close on a writer SHORTENS the
+         *  file to wherever its position is.  Without it the `skip: -5'
+         *  check closed at position 0 and left an empty file for the
+         *  next check to read.
+         */
+        snprintf(expression, sizeof expression,
+                 "| s r | s := FileStream oldFileNamed: '%s'. s readOnly. "
+                 "r := s next: 10. s close. ^r", scratch);
+        check_string(expression, "abc");
+        snprintf(expression, sizeof expression,
+                 "| s r | s := FileStream oldFileNamed: '%s'. s readOnly; "
+                 "skip: -5. r := s position. s close. ^r", scratch);
+        check_integer(expression, 0);
+        snprintf(expression, sizeof expression,
+                 "| s r | s := FileStream oldFileNamed: '%s'. s readOnly; "
+                 "skip: 10. r := s position. s close. ^r", scratch);
+        check_integer(expression, 3);
+        snprintf(expression, sizeof expression,
+                 "| s | s := FileStream oldFileNamed: '%s'. s readOnly. "
+                 "^[s position: 99. false] on: Error do: [:e | s close. true]",
+                 scratch);
+        check_boolean(expression, 1);
+        snprintf(expression, sizeof expression,
+                 "| s | s := FileStream oldFileNamed: '%s'. s readOnly. "
+                 "^[s position: -1. false] on: Error do: [:e | s close. true]",
+                 scratch);
+        check_boolean(expression, 1);
+        /*  And the file is still the three bytes it was.  */
+        snprintf(expression, sizeof expression,
+                 "(FileStream oldFileNamed: '%s') contentsOfEntireFile", scratch);
+        check_string(expression, "abc");
+        remove(scratch);
+    }
+
+    /*
+     *  B51: an inverted range copies nothing, a negative count is refused
+     *  by name, and copyFrom: with one argument is the tail.
+     *
+     *  copyFrom:to: asked the species for `stop - start + 1' elements,
+     *  which for `#() allButFirst' is -1 and fails a primitive; `#(1 2 3)
+     *  copyFrom: 2' found Object>>copyFrom:, which copies instance
+     *  variables, and answered the whole array.
+     */
+    check_integer("#() allButFirst size", 0);
+    check_integer("(#(1 2 3) allButFirst: 5) size", 0);
+    check_boolean("(#(1 2 3) allButFirst: 5) class == Array", 1);
+    check_integer("('abc' allButLast: 7) size", 0);
+    check_boolean("[#(1 2 3) first: -1. false] on: Error do: [:e | "
+                  "e messageText = 'a count of elements cannot be negative: -1']",
+                  1);
+    check_boolean("[#(1 2 3) last: -1. false] on: Error do: [:e | true]", 1);
+    check_string("(#(1 2 3) copyFrom: 2) printString", "(2 3 )");
+    check_string("'hello' copyFrom: 3", "llo");
+
+    /*
+     *  B51: a LinkedList refuses what broke it.
+     *
+     *  Adding the same Link twice pointed it at itself and size never
+     *  returned; a non-Link went into the chain and the next walk was a
+     *  doesNotUnderstand; at: indexed the list's own slots; copy shared one
+     *  chain between two lists.
+     */
+    check_boolean("| l a | l := LinkedList new. a := Link new. l add: a. "
+                  "^[l add: a. false] on: Error do: [:e | l size = 1]", 1);
+    check_boolean("[LinkedList new add: 3. false] on: Error do: [:e | true]", 1);
+    check_boolean("| l a b | l := LinkedList new. a := Link new. b := Link new. "
+                  "l add: a; add: b. ^(l at: 1) == a and: [(l at: 2) == b]", 1);
+    check_boolean("| l | l := LinkedList new. l add: Link new. "
+                  "^[l at: 2. false] on: Error do: [:e | true]", 1);
+    check_boolean("| l c | l := LinkedList new. l add: Link new; add: Link new. "
+                  "c := l copy. c add: Link new. "
+                  "^l size = 2 and: [c size = 3 and: [c first ~~ l first]]", 1);
+    check_boolean("| l a | l := LinkedList new. a := Link new. l add: a. "
+                  "l remove: a. l add: a. ^l size = 1", 1);
+
+    /*
+     *  B51: two Associations are equal when both halves are.
+     *
+     *  LookupKey>>= compared keys alone, so a Set of Associations lost
+     *  every pair whose key it had seen.  The hash stays the key's, and the
+     *  Dictionary check is why: removeKey: re-probes displaced entries by
+     *  the Association's hash and looks them up by the key's, and the two
+     *  must land in the same slot.
+     */
+    check_boolean("(1->2) = (1->3)", 0);
+    check_boolean("(1->2) = (1->2)", 1);
+    check_boolean("(Set with: 1->2) includes: 1->3", 0);
+    check_integer("(Set with: 1->2 with: 1->3) size", 2);
+    check_boolean("(1->2) hash = 1 hash", 1);
+    check_integer("| d | d := Dictionary new. 1 to: 50 do: [:i | d at: i put: "
+                  "i * i]. 1 to: 50 by: 2 do: [:i | d removeKey: i]. "
+                  "^(2 to: 50 by: 2) inject: 0 into: [:sum :i | sum + (d at: i)]",
+                  22100);
+    check_boolean("| d | d := Dictionary new. d add: 1->2. ^(d includesAssociation: "
+                  "1->3) not and: [d includesAssociation: 1->2]", 1);
+
+    /*
+     *  B51: `,' refuses what is not a collection.
+     *
+     *  Object>>size answers 0 for a SmallInteger and for nil, so `'abc' , 3'
+     *  and `'abc' , nil' were 'abc'.
+     */
+    check_boolean("['abc' , 3. false] on: Error do: [:e | true]", 1);
+    check_boolean("['abc' , nil. false] on: Error do: [:e | true]", 1);
+    check_string("'abc' , 'def'", "abcdef");
+    check_string("(#(1 2) , (OrderedCollection with: 3)) printString", "(1 2 3 )");
+    check_string("((1 to: 3) , #(4)) printString", "(1 2 3 4 )");
+
+    /*
+     *  B51: a Date reads in 1983's three forms and the year-first one, and
+     *  what is not a date is one error.
+     *
+     *  1983's reader checked nothing: month 13 and day 2024 went to a table
+     *  lookup and died as SubscriptOutOfBounds, `garbage' as a
+     *  doesNotUnderstand of isLetter.
+     */
+    check_string("(Date readFromString: '2024-01-02') printString", "2 January 2024");
+    check_string("(Date readFromString: '5 April 1982') printString", "5 April 1982");
+    check_string("(Date readFromString: 'April 5, 1982') printString", "5 April 1982");
+    check_string("(Date readFromString: '4/5/82') printString", "5 April 1982");
+    check_string("(Date readFromString: '5APR82') printString", "5 April 1982");
+    check_string("(Date readFromString: 'February 29, 2024') printString",
+                 "29 February 2024");
+    check_boolean("[Date readFromString: '13/13/2024'. false] on: Error do: [:e | "
+                  "e messageText = 'not a date: ''13/13/2024''']", 1);
+    check_boolean("[Date readFromString: '31/2/2024'. false] on: Error do: "
+                  "[:e | true]", 1);
+    check_boolean("[Date readFromString: 'garbage'. false] on: Error do: "
+                  "[:e | true]", 1);
+    check_boolean("[Date readFromString: 'February 29, 2023'. false] on: Error "
+                  "do: [:e | true]", 1);
+    check_boolean("[Date readFromString: '2024-02-30'. false] on: Error do: "
+                  "[:e | true]", 1);
+
+    /*
+     *  B51: radix digits in either case, an r with no digits is a letter,
+     *  and a reader takes a String.
+     *
+     *  `'16rff' asNumber' was 0 because digitValue knew capitals only;
+     *  `'16r' asNumber' was 0 where `'16r' asInteger' was 16; `Number
+     *  readFrom: '42'' sent atEnd to a String.  `'abc' asNumber' is still
+     *  nil, which Bugs2 established.
+     */
+    check_integer("'16rff' asNumber", 255);
+    check_integer("'16rFF' asNumber", 255);
+    check_integer("'16r' asNumber", 16);
+    check_integer("'16r' asInteger", 16);
+    check_integer("'16r-FF' asNumber", -255);
+    check_integer("Number readFrom: '42'", 42);
+    check_integer("Integer readFrom: '42'", 42);
+    check_boolean("'abc' asNumber isNil", 1);
+    check_integer("'12abc' asNumber", 12);
+    check_integer("$f digitValue", 15);
+    check_integer("$F digitValue", 15);
+    check_integer("$z digitValue", 35);
+    check_integer("$? digitValue", -1);
+    check_string("(Number readFrom: '3r-22.2') printString", "-8.666666666666666");
+
+    /*
+     *  B51: the rest of the missing protocol.  A nil sortBlock is the
+     *  default; newFrom: takes a Dictionary and copies its bindings rather
+     *  than sharing its Associations; space: and tab: write that many;
+     *  subStrings: is substrings: under its other spelling.
+     */
+    check_string("((SortedCollection sortBlock: nil) add: 3; add: 1; add: 2; "
+                 "yourself) asArray printString", "(1 2 3 )");
+    check_integer("(Dictionary newFrom: (Dictionary new at: 1 put: 2; yourself)) "
+                  "at: 1", 2);
+    check_boolean("| a b | a := Dictionary new at: 1 put: 2; yourself. "
+                  "b := Dictionary newFrom: a. b at: 1 put: 99. ^(a at: 1) = 2", 1);
+    check_integer("(Dictionary newFrom: {1->2. 3->4}) size", 2);
+    check_string("(WriteStream on: String new) space: 3; tab: 2; contents",
+                 "   \t\t");
+    check_string("('a,b;c' subStrings: ',;') asArray printString",
+                 "('a' 'b' 'c' )");
+    check_integer("'a b  c' subStrings size", 3);
+
+    /*
+     *  B51: sort: is stable, and so is everything that sorts through
+     *  SortedCollection>>reSort -- sorted:, asSortedCollection: and a
+     *  sortBlock: on a full collection.
+     *
+     *  All of them went through 1983's quicksort, so pairs sorted by their
+     *  first element came back with the second elements shuffled -- and
+     *  shuffled differently at every size.
+     */
+    check_string("(#(#(1 a) #(0 b) #(1 c) #(0 d) #(1 e) #(0 f) #(1 g) #(0 h)) "
+                 "copy sort: [:a :b | a first <= b first]) printString",
+                 "((0 b ) (0 d ) (0 f ) (0 h ) (1 a ) (1 c ) (1 e ) (1 g ) )");
+    check_string("(#(#(1 a) #(0 b) #(1 c) #(0 d) #(1 e) #(0 f) #(1 g) #(0 h)) "
+                 "asSortedCollection: [:a :b | a first <= b first]) asArray "
+                 "printString",
+                 "((0 b ) (0 d ) (0 f ) (0 h ) (1 a ) (1 c ) (1 e ) (1 g ) )");
+    check_string("(#(#(1 a) #(0 b) #(1 c) #(0 d) #(1 e) #(0 f) #(1 g) #(0 h)) "
+                 "sorted: [:a :b | a first <= b first]) printString",
+                 "((0 b ) (0 d ) (0 f ) (0 h ) (1 a ) (1 c ) (1 e ) (1 g ) )");
+    check_boolean("(((1 to: 500) asArray collect: [:i | i \\\\ 7 -> i]) sort: "
+                  "[:a :b | a key <= b key]) isSortedBy: [:a :b | a key < b key "
+                  "or: [a key = b key and: [a value < b value]]]", 1);
+    check_boolean("(((1 to: 500) asArray collect: [:i | i \\\\ 7 -> i]) "
+                  "asSortedCollection: [:a :b | a key <= b key]) asArray "
+                  "isSortedBy: [:a :b | a key < b key "
+                  "or: [a key = b key and: [a value < b value]]]", 1);
+    check_string("#(3 1 2) copy sort printString", "(1 2 3 )");
+    check_string("'hello' copy sort", "ehllo");
+    check_string("((OrderedCollection withAll: #(3 1 2)) sort: [:a :b | a > b]) "
+                 "printString", "an OrderedCollection(3 2 1 )");
+
+    /*
+     *  B58: a file whose stat size is 0 is read until it ends.
+     *
+     *  PosixFile>>findLastPageNumber divided the size on disk by the page
+     *  size, and for anything under /proc the size on disk is 0, so
+     *  contentsOfEntireFile of /proc/cpuinfo was its first 512 bytes.  The
+     *  process's own environment is the same bytes here and in the image
+     *  -- the image runs in this process -- so its size is compared
+     *  exactly.  /proc/cpuinfo is the larger one, a hundred pages, and the
+     *  kernel regenerates it on every read with the clock speeds of the
+     *  moment, so its size is compared to within a page and its first and
+     *  last bytes to what this process read: the last two are what say the
+     *  read went to the end rather than stopping at the first page.  (Not
+     *  a line count: splitting 55 KB into lines in the image is more than
+     *  the 20,000,000 bytecodes a doIt here is allowed.)
+     */
+    f = fopen("/proc/self/environ", "rb");
+    if (f == NULL) {
+        printf("  skipped: no /proc on this machine\n");
+    } else {
+        long    bytes = 0;
+        size_t  got;
+        char    block[4096];
+        char    tail[2] = { 0, 0 };   /*  tail[1]: environ's last byte  */
+
+        /*  fread, not fgets: the environment is NUL-separated.  */
+        while ((got = fread(block, 1, sizeof block, f)) > 0) {
+            bytes += (long) got;
+            tail[1] = block[got - 1];
+        }
+        fclose(f);
+        check_integer("(FileStream oldFileNamed: '/proc/self/environ') "
+                      "contentsOfEntireFile size", (st_int) bytes);
+        /*
+         *  And its last byte, which is what says the read went to the END
+         *  rather than stopping at a page boundary: the environment does
+         *  not change while it is read, so its last byte is a fact.
+         */
+        if (bytes > 0) {
+            snprintf(expression, sizeof expression,
+                     "(FileStream oldFileNamed: '/proc/self/environ') "
+                     "contentsOfEntireFile last asInteger = %d",
+                     (int) (unsigned char) tail[1]);
+            check_boolean(expression, 1);
+        }
+        f = fopen("/proc/cpuinfo", "rb");
+        if (f != NULL) {
+            bytes = 0;
+            while ((got = fread(block, 1, sizeof block, f)) > 0)
+                bytes += (long) got;
+            fclose(f);
+            /*
+             *  Three separate checks rather than one conjunction, so that
+             *  a failure names its part.  Not its last two bytes: the
+             *  kernel regenerates cpuinfo on every read, and under TSAN --
+             *  fifty times slower, on a machine whose clock speeds were
+             *  changing width -- the file was longer by the time the last
+             *  page was read than when its size was taken, so the read
+             *  ended mid-line.  A file that changes while it is read has
+             *  no end to check; environ's, above, is the check that the
+             *  read goes to the end.
+             */
+            check_boolean("(FileStream oldFileNamed: '/proc/cpuinfo') "
+                          "contentsOfEntireFile size > 512", 1);
+            snprintf(expression, sizeof expression,
+                     "((FileStream oldFileNamed: '/proc/cpuinfo') "
+                     "contentsOfEntireFile size - %ld) abs < 512", bytes);
+            check_boolean(expression, 1);
+            check_string("((FileStream oldFileNamed: '/proc/cpuinfo') "
+                         "contentsOfEntireFile copyFrom: 1 to: 9)",
+                         "processor");
+        }
+    }
+
+    /*
+     *  B58: a writer positioned more than one page past its end.
+     *
+     *  File>>readOrAdd: handed a zero-argument block to Interval>>do: for
+     *  the intermediate pages, so `position: 600' worked and `position:
+     *  2000' raised `The block needs more or fewer arguments defined' and
+     *  lost the write.  The bytes before the write read as zeros.
+     */
+    remove(scratch);
+    snprintf(expression, sizeof expression,
+             "| f s | f := FileStream newFileNamed: '%s'. f position: 2000. "
+             "f nextPut: $X. f close. "
+             "s := (FileStream oldFileNamed: '%s') contentsOfEntireFile. "
+             "^s size = 2001 and: [(s at: 2001) = $X and: [(s copyFrom: 1 to: 2000) "
+             "asSet size = 1 and: [(s at: 1) asInteger = 0]]]",
+             scratch, scratch);
+    check_boolean(expression, 1);
+    remove(scratch);
+
+    test_dialect = saved;
+}
+
+/*
+ *  Bugs3.md: the HTTP, JSON and ODBC layers.
+ *
+ *  The wire itself is tested where the wire is: lib/JSON-RPC-Server-Tests
+ *  and lib/Rest-Server-Tests start a server on a port the system picks and
+ *  drive it with a raw socket, and lib/HTTP-Client-Tests answers a client
+ *  from a listener of its own.  What is here is the half of each fix that
+ *  is a pure function -- a codec, a validator, a limit -- because those are
+ *  the ones a check can hold in one expression, and because a fault in one
+ *  of them is a fault in every request rather than in a shape of request.
+ */
+static void
+test_bugs3_web(void)
+{
+    int saved = test_dialect;
+
+    test_dialect = ST_DIALECT_CLOSURES;
+
+    /*
+     *  B52: a percent escape is decoded the same in either case.
+     *
+     *  1983's Character>>digitValue answers -1 for a lowercase letter, and
+     *  HttpCodec checked the uppercase of the character while taking the
+     *  value from the character as written.  So `%2f' answered character 31
+     *  rather than a slash -- an ordinary lowercase URL 404'd -- and `%0a',
+     *  whose second digit is a lowercase letter, computed 0 * 16 + -1 and
+     *  raised SubscriptOutOfBounds inside the request parser.  That is not
+     *  an HttpError, so it escaped the parser and the connection was
+     *  dropped with no reply at all.
+     */
+    check_string("HttpCodec percentDecode: '%2F'", "/");
+    check_string("HttpCodec percentDecode: '%2f'", "/");
+    check_integer("(HttpCodec percentDecode: '%0a') first asInteger", 10);
+    check_integer("(HttpCodec percentDecode: '%0A') first asInteger", 10);
+    check_integer("(HttpCodec percentDecodePath: '/caf%c3%a9') size", 6);
+    check_string("HttpCodec percentDecode: 'a%20b+c%2Fd'", "a b c/d");
+    check_string("HttpCodec percentDecodePath: 'a+b%41'", "a+bA");
+    check_integer("$f asUppercase digitValue", 15);
+
+    /*
+     *  B52, the other half: a malformed escape is a 400 and not the text it
+     *  is written with.  `%zz' means nothing, and a proxy in front that
+     *  decides differently from this parser is how a path gets past a
+     *  filter here and arrives elsewhere as another path.
+     */
+    check_integer("[HttpCodec percentDecode: '%zz'. 0] on: HttpError do: [:e | e status]",
+                  400);
+    check_integer("[HttpCodec percentDecode: '100%'. 0] on: HttpError do: [:e | e status]",
+                  400);
+    check_integer("[HttpCodec percentDecode: '%2'. 0] on: HttpError do: [:e | e status]",
+                  400);
+    check_integer("[HttpCodec percentDecodePath: '/a%g0'. 0] on: HttpError do: [:e | e status]",
+                  400);
+
+    /*
+     *  B53: a number is bounded by its digits, and reading one is no longer
+     *  quadratic.
+     *
+     *  Four thousand sevens took thirteen and a half seconds to read, and a
+     *  REST request carrying one spent every one of them before the session
+     *  token in the same document had been looked at -- the token is INSIDE
+     *  the document, so the parser is the only place that can refuse the
+     *  work.  The digits are counted before any arithmetic is done, so the
+     *  refusal costs nothing; and the arithmetic that remains reads
+     *  SmallInteger chunks rather than one digit at a time and reduces the
+     *  fraction without a gcd.
+     */
+    check_boolean("[JSONParser parse: (String new: 300 withAll: $7). false] "
+                  "on: JSONError do: [:e | true]", 1);
+    check_boolean("[JSONParser parse: '0.', (String new: 300 withAll: $7). false] "
+                  "on: JSONError do: [:e | true]", 1);
+    check_boolean("[JSONParser parse: '1e', (String new: 300 withAll: $0). false] "
+                  "on: JSONError do: [:e | true]", 1);
+    check_integer("(JSONParser parse: (String new: 256 withAll: $7)) printString size", 256);
+    check_integer("JSONParser new maxDigits", 256);
+    /*  And the answers themselves, which the chunking must not have moved.  */
+    check_string("(JSONParser parse: '123456789012345678901234567890') printString",
+                 "123456789012345678901234567890");
+    check_string("(JSONParser parse: '0.1') printString", "(1/10)");
+    check_string("(JSONParser parse: '12.34') printString", "(617/50)");
+    check_string("(JSONParser parse: '3.0') printString", "3");
+    check_string("(JSONParser parse: '2.5e-1') printString", "(1/4)");
+    check_string("(JSONParser parse: '1.5e3') printString", "1500");
+    check_string("(JSONParser parse: '-0.125') printString", "(-1/8)");
+    check_boolean("(JSONParser parse: (String new: 200 withAll: $9)) = ((10 raisedTo: 200) - 1)", 1);
+
+    /*
+     *  B54: a header value with a line ending in it is an Error, not a
+     *  header.
+     *
+     *  Nothing filtered CR or LF, so a handler reflecting a request
+     *  parameter into a Location -- the ordinary shape of a redirect -- let
+     *  the client write headers of its own, and everything after the
+     *  injected one was the client's too.  Refused rather than stripped: a
+     *  stripped Location is still a redirect, to a URL the handler did not
+     *  write, and nothing anywhere says so.
+     */
+    check_boolean("[(HttpResponse status: 302) headerAt: 'Location' "
+                  "put: 'http://x/', (String with: (Character value: 13) "
+                  "with: (Character value: 10)), 'Set-Cookie: s=1'. false] "
+                  "on: Error do: [:e | true]", 1);
+    check_boolean("[(HttpResponse ok: 'x') headerAt: 'X-Thing' "
+                  "put: 'a', (String with: (Character value: 0)), 'b'. false] "
+                  "on: Error do: [:e | true]", 1);
+    check_boolean("[(HttpResponse ok: 'x') headerAt: 'X Thing' put: 'v'. false] "
+                  "on: Error do: [:e | true]", 1);
+    check_boolean("[(HttpResponse ok: 'x') headerAt: 'X:Thing' put: 'v'. false] "
+                  "on: Error do: [:e | true]", 1);
+    check_string("(HttpResponse ok: 'x') headerAt: 'X-Thing' put: 'plain'; "
+                 "headerAt: 'x-thing'", "plain");
+
+    /*
+     *  B55: a name is looked up without being interned.
+     *
+     *  A Symbol is never collected, and the REST dispatcher interned
+     *  `_class' and `_method' before anything asked whether such a class or
+     *  such a method existed: eight thousand bogus lookups left eight
+     *  thousand permanent Symbols that two full collections did not touch.
+     *  Symbol class>>lookup: is what the two now ask.
+     */
+    check_boolean("(Symbol lookup: 'printString') == #printString", 1);
+    check_boolean("(Symbol lookup: 'zzNoSuchSymbolHasEverBeenMadeZz') isNil", 1);
+    check_boolean("| before | "
+                  "before := Symbol allInstances size. "
+                  "1 to: 100 do: [:i | Symbol lookup: 'zzNothingNamedThis', i printString]. "
+                  "^Symbol allInstances size = before", 1);
+
+    /*
+     *  B56: framing is strict, because the documented way to run this
+     *  server is behind a reverse proxy and two parsers that divide the
+     *  same bytes differently is the whole of request smuggling.  A bare
+     *  line feed, a field name with whitespace before its colon, a second
+     *  Content-Length, and a length that is not all digits were each
+     *  accepted; each is 400 now.
+     */
+    check_integer("[HttpRequest fromString: 'GET / HTTP/1.1', "
+                  "(String with: (Character value: 10)), "
+                  "(String with: (Character value: 10)). 0] "
+                  "on: HttpError do: [:e | e status]", 400);
+    check_integer("[:nl | [HttpRequest fromString: 'POST / HTTP/1.1', nl, "
+                  "'Content-Length : 25', nl, nl, 'GET /x HTTP/1.1'. 0] "
+                  "on: HttpError do: [:e | e status]] "
+                  "value: (String with: (Character value: 13) with: (Character value: 10))",
+                  400);
+    check_integer("[:nl | [HttpRequest fromString: 'POST / HTTP/1.1', nl, "
+                  "'Content-Length: 5', nl, 'Content-Length: 5', nl, nl, 'hello'. 0] "
+                  "on: HttpError do: [:e | e status]] "
+                  "value: (String with: (Character value: 13) with: (Character value: 10))",
+                  400);
+    check_integer("[:nl | [HttpRequest fromString: 'POST / HTTP/1.1', nl, "
+                  "'Content-Length: 5, 5', nl, nl, 'hello'. 0] "
+                  "on: HttpError do: [:e | e status]] "
+                  "value: (String with: (Character value: 13) with: (Character value: 10))",
+                  400);
+    check_integer("[:nl | [HttpRequest fromString: 'POST / HTTP/1.1', nl, "
+                  "'Transfer-Encoding: chunked', nl, 'Content-Length: 5', nl, nl, 'hello'. 0] "
+                  "on: HttpError do: [:e | e status]] "
+                  "value: (String with: (Character value: 13) with: (Character value: 10))",
+                  400);
+    /*  Transfer-Encoding on its own is still the 411 it was.  */
+    check_integer("[:nl | [HttpRequest fromString: 'POST / HTTP/1.1', nl, "
+                  "'Transfer-Encoding: chunked', nl, nl. 0] "
+                  "on: HttpError do: [:e | e status]] "
+                  "value: (String with: (Character value: 13) with: (Character value: 10))",
+                  411);
+    /*  And a well-formed request is read as it always was.  */
+    check_string("[:nl | (HttpRequest fromString: 'POST /rest HTTP/1.1', nl, "
+                 "'Content-Length: 5', nl, nl, 'hello') body] "
+                 "value: (String with: (Character value: 13) with: (Character value: 10))",
+                 "hello");
+
+    /*
+     *  B57: an Integer wider than a parameter is a DbError and not a row
+     *  that quietly is not there.
+     *
+     *  statement:bind:to: answered whatever the primitive answered, and the
+     *  primitive answers FALSE for a refusal rather than nil -- so `self
+     *  check:', which raises on nil, would not have helped either.  Binding
+     *  2^63 reported success and inserted nothing.  The range is checked
+     *  here, before the driver is asked, so that the message can name the
+     *  value; the primitive's only vocabulary is false.
+     */
+    check_boolean("Odbc maxParameterInteger = ((2 raisedTo: 63) - 1)", 1);
+    check_boolean("Odbc minParameterInteger = (0 - (2 raisedTo: 63))", 1);
+    check_boolean("[Odbc statement: 1 bind: 1 to: (2 raisedTo: 63). false] "
+                  "on: DbError do: [:e | e messageText includesSubstring: '64 bits']", 1);
+    check_boolean("[Odbc statement: 1 bind: 1 to: (0 - (2 raisedTo: 63) - 1). false] "
+                  "on: DbError do: [:e | e messageText includesSubstring: '64 bits']", 1);
+
+    /*
+     *  B57, lower: a HEAD answers the length a GET would have.  It answered
+     *  Content-Length: 0, which is a lie to the one client that asks a HEAD
+     *  to find out how big something is.  The response is built as the
+     *  GET's and written without its body.
+     */
+    check_boolean("| out | out := WriteStream on: (String new: 200). "
+                  "((HttpResponse text: 'twelve bytes') omitBody; yourself) "
+                  "writeOn: out keepAlive: false. "
+                  "^(out contents includesSubstring: 'Content-Length: 12') "
+                  "and: [(out contents includesSubstring: 'twelve bytes') not]", 1);
+
+    /*
+     *  B57, lower: the body of a reply is bounded, and a chunk size that
+     *  cannot be one is a NetError rather than `a primitive has failed'.
+     */
+    check_boolean("HttpBodyStream defaultMaxBodyBytes = (64 * 1024 * 1024)", 1);
+    check_boolean("HttpClient new maxBodyBytes = (64 * 1024 * 1024)", 1);
+
+    test_dialect = saved;
+}
+
+/*
+ *  Bugs3.md: packages, the Debugger seam and the manual.
+ */
+static void
+test_bugs3_tonel(void)
+{
+    int saved = test_dialect;
+
+    test_dialect = ST_DIALECT_CLOSURES;
+
+    /*
+     *  B62: a doIt in a context -- what the Debugger's code pane sends --
+     *  runs, and can read the context's temporaries.
+     *
+     *  lib/Compiler-Fixes's evaluate:in:to:notifying:ifFail: routes a doIt
+     *  to the C compiler, which has no notion of a context, and for the
+     *  context case sent `super' meaning "the 1983 one" -- which it had
+     *  overwritten, being in the same method dictionary.  super was
+     *  Object, and every `do it' in a Debugger was a doesNotUnderstand
+     *  on the Compiler.  The body it wanted is kept under its own selector
+     *  now.
+     *
+     *  The context is a real method's, because 1983's Encoder asks the
+     *  context for its tempNames, and a context whose method has no source
+     *  -- this test's doIts -- gets them by DECOMPILING the method, which
+     *  1983's Decompiler cannot do past a closure bytecode.  So the one
+     *  doIt evaluated in thisContext is written with no block in it, and
+     *  the rest use a context of Unwind's.  A syntax error with no
+     *  requestor is a SyntaxErrorNotification on this path as on the C
+     *  one, and the ifFail: block is not reached on either; that case is
+     *  not checked here because 1983's parser signalling inside this
+     *  harness's hand-made context stops the interpreter without an
+     *  answer, where the same expression under -eval and -serve answers
+     *  the handler's value.
+     */
+    check_integer("Compiler new evaluate: '3 + 4' in: nil to: nil "
+                  "notifying: nil ifFail: [#failed]", 7);
+    check_integer("Compiler new evaluate: '3 + 4' in: thisContext to: nil "
+                  "notifying: nil ifFail: nil", 7);
+    check_integer("Compiler new evaluate: '3 + 4' "
+                  "in: (Unwind contextTakingTwoArgs: 40 and: 2) to: nil "
+                  "notifying: nil ifFail: [#failed]", 7);
+    check_integer("Compiler new evaluate: 'a + b' "
+                  "in: (Unwind contextTakingTwoArgs: 40 and: 2) to: nil "
+                  "notifying: nil ifFail: [#failed]", 42);
+
+    /*
+     *  B64: the protocol the manual documents.  display: on a stream and
+     *  on the Transcript, which is a StringHolder and not a Stream;
+     *  valueWithExit, answering what the exit was given or the block's
+     *  value when it was never taken; valuesDo: on a Dictionary.
+     */
+    check_string("(WriteStream on: (String new: 0)) display: 42; "
+                 "display: 'x'; display: #y; contents", "42xy");
+    check_boolean("(TextCollector canUnderstand: #display:)", 1);
+    check_integer("[:exit | exit value: 3. 4] valueWithExit", 3);
+    check_integer("[:exit | 4] valueWithExit", 4);
+    check_integer("[:exit | #(1 2 3) do: [:each | "
+                  "each > 1 ifTrue: [exit value: each]]. 0] valueWithExit",
+                  2);
+    check_integer("| n | n := 0. (Dictionary new at: #a put: 1; at: #b put: 2; "
+                  "yourself) valuesDo: [:v | n := n + v]. ^n", 3);
+    check_integer("| n | n := 0. (IdentityDictionary new at: #a put: 5; "
+                  "yourself) valuesDo: [:v | n := n + v]. ^n", 5);
+
+    /*
+     *  B61: the format's weak bit is answerable, from the format word the
+     *  way isVariable reads its own bit; a weak class can be made at run
+     *  time; and the writer says what the loader read -- `weak', not
+     *  `variable' -- and names a class's trait rather than owning the
+     *  trait's methods.  The composition comes from TraitCompositions,
+     *  which the bootstrap fills.
+     */
+    check_boolean("WeakArray isWeak", 1);
+    check_boolean("WeakArray isVariable", 1);
+    check_boolean("Array isWeak", 0);
+    check_boolean("Object isWeak", 0);
+    check_boolean("WeakArray isEphemeron", 0);
+    /*
+     *  And the sign bit is not the ephemeron bit.  1983's definition
+     *  messages write the pointers flag as -16384, so a class made at run
+     *  time has a negative format, and both isEphemeron and the VM's
+     *  shape_of_class read bit 15 -- the sign, extended -- as "ephemeron"
+     *  for every one of them.  A run-time class is ordinary; one asked
+     *  for with ephemeronSubclass: is not, and its format is positive.
+     */
+    check_boolean("(Object subclass: #Bugs3Plain instanceVariableNames: 'k v' "
+                  "classVariableNames: '' poolDictionaries: '' category: 'x') "
+                  "format < 0", 1);
+    check_boolean("(Smalltalk at: #Bugs3Plain) isEphemeron", 0);
+    check_boolean("(Smalltalk at: #Bugs3Plain) isPointers", 1);
+    check_boolean("(Object ephemeronSubclass: #Bugs3Eph instanceVariableNames: 'k v' "
+                  "classVariableNames: '' poolDictionaries: '' category: 'x') "
+                  "isEphemeron", 1);
+    check_boolean("(Smalltalk at: #Bugs3Eph) format > 0", 1);
+    check_boolean("(Smalltalk at: #Bugs3Eph) isPointers", 1);
+    check_boolean("(Smalltalk at: #Bugs3Eph) isVariable", 0);
+    check_integer("(Smalltalk at: #Bugs3Eph) instSize", 2);
+    check_boolean("(Smalltalk at: #Bugs3Plain) removeFromSystem. "
+                  "(Smalltalk at: #Bugs3Eph) removeFromSystem. "
+                  "^Smalltalk includesKey: #Bugs3Eph", 0);
+    check_boolean("(Smalltalk at: #TraitCompositions) class == Dictionary", 1);
+    check_string("Greeter traitComposition", "TGreeting");
+    check_boolean("Object traitComposition isNil", 1);
+    check_boolean("(TonelWriter sourceFor: WeakArray) "
+                  "includesSubstring: '#type : ''weak'''", 1);
+    check_boolean("(TonelWriter sourceFor: WeakArray) "
+                  "includesSubstring: '#type : ''variable'''", 0);
+    check_boolean("(TonelWriter sourceFor: Greeter) "
+                  "includesSubstring: '#traits : ''TGreeting'''", 1);
+    check_boolean("(TonelWriter sourceFor: Greeter) "
+                  "includesSubstring: 'Greeter >> greeting'", 0);
+    check_boolean("(TonelWriter sourceFor: Greeter) "
+                  "includesSubstring: 'Synthesized'", 0);
+    check_string("TonelWriter classTraitsFor: 'TA + (TB - {#x})'",
+                 "TA classTrait + TB classTrait");
+
+    /*
+     *  B63: a file with a mistake in it loads nothing, and a byte-order
+     *  mark is not a type word.  Through TonelReader on text; the C
+     *  reader's mark is tests/unit/test_tonel.c's.
+     */
+    /*
+     *  Asked after the handler has returned, not inside it: the class is
+     *  taken out by an ifCurtailed: block, and unwinding runs those when
+     *  the handler completes -- a handler that looked would still see it.
+     */
+    check_boolean("[TonelReader loadString: 'Class { #name : ''Bugs3Bad'', "
+                  "#superclass : ''Object'' }', (String with: Character cr), "
+                  "'Bugs3Bad >> one [ ^1 ]', (String with: Character cr), "
+                  "'Bugs3Bad >> two [ ^( ]' named: 'bad'] "
+                  "on: TonelError do: [:e | nil]. "
+                  "^Smalltalk includesKey: #Bugs3Bad", 0);
+    check_integer("| bom c | bom := String with: (Character value: 239) "
+                  "with: (Character value: 187) with: (Character value: 191). "
+                  "c := TonelReader loadString: bom, 'Class { #name : "
+                  "''Bugs3Bom'', #superclass : ''Object'' }', "
+                  "(String with: Character cr), 'Bugs3Bom >> one [ ^1 ]' "
+                  "named: 'bom'. ^[c new one] ensure: [c removeFromSystem]",
+                  1);
+
+    test_dialect = saved;
+}
 
 int
 main(void)
@@ -4334,6 +6851,15 @@ main(void)
     test_weak_references();
     test_pragmas_are_objects();
     test_bugs2();
+    test_bugs3_interp();
+    test_bugs3_sched();
+    test_bugs3_compiler();
+    test_bugs3_om();
+    test_bugs3_hashing();
+    test_bugs3_collections();
+    test_bugs3_streams();
+    test_bugs3_web();
+    test_bugs3_tonel();
 
     OM_shutdown();
     return ST_TEST_END();

@@ -103,7 +103,7 @@ Exception >> findHandlerFrom: aContext [
 	 which handler HANDLES this exception stays a Smalltalk question,
 	 because it is one -- it sends #handles: -- and so does whether the
 	 handler is currently running and therefore disabled."
-	| ctx guard |
+	| ctx guard willing |
 	ctx := aContext findNextHandlerContext.
 	[ctx isNil] whileFalse: [
 		guard := ctx tempAt: 1.
@@ -119,10 +119,24 @@ Exception >> findHandlerFrom: aContext [
 
 		 Found by Pharo's own AnnouncerTest, which signals NotFound: a class
 		 we have not imported, so the global is nil, so this.  Every
-		 unimported exception class in the port will arrive the same way."
-		(guard notNil
-			and: [ctx handlerIsActive and: [guard handles: self]])
-			ifTrue: [^ctx].
+		 unimported exception class in the port will arrive the same way.
+
+		 The nil test is kept because it is free, but it is not the fix: it
+		 guards one value, and `on: 3 do:' -- or #foo, or a String, or any
+		 object that is not an exception class -- went round the same loop
+		 for ever (Bugs3 B4).  What actually stops the loop is that the
+		 frame is taken OUT OF SERVICE while its guard is being asked.  A
+		 fault inside #handles: then searches outward from a frame that is
+		 not listening, reaches the next handler out or the default action,
+		 and reports; it cannot come back here.  runHandler does the same
+		 thing for the same reason while the handler block runs.  The
+		 wrong-guard error itself is Object>>handles:, in this package's
+		 Object extension, which says what was wrong in one sentence."
+		(guard notNil and: [ctx handlerIsActive]) ifTrue: [
+			ctx handlerIsActive: false.
+			willing := guard handles: self.
+			ctx handlerIsActive: true.
+			willing ifTrue: [^ctx]].
 		ctx := ctx findNextHandlerContext].
 	^nil
 ]

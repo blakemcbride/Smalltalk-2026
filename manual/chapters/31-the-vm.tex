@@ -111,7 +111,7 @@ Receiver's class, then its method dictionary, then up the superclass chain to
 \ct{doesNotUnderstand:} is sent instead.
 
 \begin{stnote}[There is no method cache]
-Primitive 89, \ct{flushCache:}, is a no-op because there is nothing to flush.
+Primitive 89, \ct{flushCache}, is a no-op because there is nothing to flush.
 That is a measured decision rather than an omission: \ct|lookup_method| probes
 from the selector's hash, and its inclusive cost is 0.1\% of a steady-state
 profile and 8.4\% of a whole image build---the most send-heavy thing the system

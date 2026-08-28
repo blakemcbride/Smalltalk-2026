@@ -1,6 +1,20 @@
 "
 What the 1983 image still asks of Date after Pharo's replaced it.
 See Time.extension.st in this package for why these exist at all.
+
+A method that was here and is not: Date class>>readFrom:.
+
+It was a shim for the one form 1983 writes -- `1 January 2026' -- and it
+read only that form: `4/5/82' came out as `4 January 0000', `13/13/2024' as
+`13 January 0000', and `2024-01-02' as a DateError about the day.  It also
+shadowed a better reader that was already installed on this class.  A
+#supersede drops a class's DEFINITION and keeps every extension file on
+it, so lib/Kernel-Protocol/Date.extension.st -- loaded before System-Time,
+and written against nothing but newDay:month:year: with a month name,
+which Pharo's Date takes as 1983's does -- was there under the shim the
+whole time, reading all four of 1983's forms and refusing what is not a
+date (Bugs3 B51).  The lesson is the one Time.extension.st already states:
+check what the built image answers before writing a shim for it.
 "
 Extension { #name : 'Date' }
 
@@ -16,23 +30,4 @@ Date class >> leapYear: yearInteger [
 		or: [yearInteger \\ 100 = 0 and: [yearInteger \\ 400 ~= 0]])
 			ifTrue: [^0].
 	^1
-]
-
-{ #category : '*Chronology-Compat' }
-Date class >> readFrom: aStream [
-	"A day, a month name and a year -- `1 January 2026' -- which is the
-	 format 1983 writes and reads."
-	| day monthName year |
-	[aStream atEnd not and: [aStream peek isDigit not]] whileTrue: [aStream next].
-	day := Integer readFrom: aStream.
-	[aStream atEnd not and: [aStream peek isLetter not]] whileTrue: [aStream next].
-	monthName := WriteStream on: (String new: 12).
-	[aStream atEnd not and: [aStream peek isLetter]]
-		whileTrue: [monthName nextPut: aStream next].
-	[aStream atEnd not and: [aStream peek isDigit not]] whileTrue: [aStream next].
-	year := Integer readFrom: aStream.
-	^self
-		newDay: day
-		month: (self indexOfMonth: monthName contents)
-		year: year
 ]

@@ -115,6 +115,17 @@ imgc_make_string(const char *text, void *user)
     return imgc_hold((imgc_scope *) user, BOOT_make_string(text, user));
 }
 
+/*
+ *  And from bytes, for a string literal holding a NUL -- which is data in
+ *  a String and the end of the text to make_string.  Bugs3 B28.
+ */
+static st_oop
+imgc_make_string_n(const char *bytes, size_t length, void *user)
+{
+    return imgc_hold((imgc_scope *) user,
+                     BOOT_make_string_n(bytes, length, user));
+}
+
 static st_oop
 imgc_make_float(double value, void *user)
 {
@@ -304,9 +315,19 @@ imgc_lookup_global(const char *name, void *user)
     return ST_NIL;                  /*  the compiler reports it undeclared  */
 }
 
-/*  A C string holding that String object's bytes, or NULL.  */
+/*
+ *  A copy of that String object's bytes, terminated for the callers that
+ *  want a C string, with the byte count in `*length' for the one that
+ *  must not trust the terminator.
+ *
+ *  The source of a compile is the second kind.  A String may hold a NUL,
+ *  and this copy used to be handed to the compiler as a C string, so the
+ *  compile stopped at the first NUL in silence: `3 + 4 <NUL> + 100'
+ *  answered 7, and a method compiled from such text installed with the
+ *  prefix as its code and the whole text as its source.  Bugs3 B28.
+ */
 static char *
-c_string_of(st_oop string)
+c_string_of(st_oop string, size_t *length)
 {
     uint32_t    n;
     uint32_t    i;
@@ -321,6 +342,8 @@ c_string_of(st_oop string)
     for (i = 0; i < n; ++i)
         text[i] = (char) OM_fetch_byte(i, string);
     text[n] = '\0';
+    if (length)
+        *length = n;
     return text;
 }
 
@@ -332,6 +355,7 @@ IMGC_compile(st_oop source, st_oop class_oop, st_oop ivar_names,
     st_compile_context  ctx;
     imgc_scope          scope;
     char               *text;
+    size_t              length = 0;
     char               *ivars[IMGC_MAX_IVARS];
     const char         *ivar_pointers[IMGC_MAX_IVARS];
     unsigned            ivar_count = 0;
@@ -341,7 +365,7 @@ IMGC_compile(st_oop source, st_oop class_oop, st_oop ivar_names,
     memset(out, 0, sizeof *out);
     out->method = ST_OOP_INVALID;
 
-    text = c_string_of(source);
+    text = c_string_of(source, &length);
     if (!text) {
         snprintf(out->error, sizeof out->error,
                  "the source to compile must be a String");
@@ -352,7 +376,7 @@ IMGC_compile(st_oop source, st_oop class_oop, st_oop ivar_names,
         uint32_t    n = OM_fetch_word_length(ivar_names);
 
         for (i = 0; i < n && ivar_count < IMGC_MAX_IVARS; ++i) {
-            char   *one = c_string_of(OM_fetch_pointer(i, ivar_names));
+            char   *one = c_string_of(OM_fetch_pointer(i, ivar_names), NULL);
 
             if (!one)
                 continue;
@@ -375,6 +399,7 @@ IMGC_compile(st_oop source, st_oop class_oop, st_oop ivar_names,
     ctx.user                      = &scope;
     ctx.intern_symbol             = BOOT_intern_symbol;
     ctx.make_string               = imgc_make_string;
+    ctx.make_string_n             = imgc_make_string_n;
     ctx.make_float                = imgc_make_float;
     ctx.make_large_integer        = imgc_make_large_integer;
     ctx.make_large_integer_digits = imgc_make_large_integer_digits;
@@ -386,7 +411,7 @@ IMGC_compile(st_oop source, st_oop class_oop, st_oop ivar_names,
                                         ? class_association
                                         : ST_OOP_INVALID;
 
-    status = COMPILE_method(text, &ctx, out);
+    status = COMPILE_method_n(text, length, &ctx, out);
     /*
      *  And the method itself, for the moment between building it and the
      *  caller storing it somewhere the collector can see.

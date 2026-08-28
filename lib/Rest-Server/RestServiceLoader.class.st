@@ -28,6 +28,9 @@ separator with nothing between it and the next -- `services//Adder',
 `.Adder', `services.Adder/' -- is refused rather than skipped, so no
 spelling of a name is a path with an empty or a `..' step in it.
 
+The name is also looked up before it is interned.  A Symbol is never
+collected, and `_class' is a stranger's text; see classFor: and Bugs3 B55.
+
 The lock is held across a load, so two requests that arrive for a class
 nobody has loaded yet load it once.
 "
@@ -97,12 +100,23 @@ RestServiceLoader >> classFor: aClassPath ifAbsent: aBlock [
 	 not load still raises, because that is a fault and not an absence.
 	 This is how the server asks for the optional Init class."
 
-	| path dir name |
+	| path |
 	path := self pathFor: aClassPath.
 	path isNil ifTrue: [^aBlock value].
-	dir := FileDirectory directoryFromName: path setFileName: [:n | name := n].
-	([dir includesKey: name] on: Error do: [:e | false]) ifFalse: [^aBlock value].
+	(self fileExistsAt: path) ifFalse: [^aBlock value].
 	^self classFor: aClassPath
+]
+
+{ #category : 'private' }
+RestServiceLoader >> fileExistsAt: aPath [
+	"Whether there is a file of that name.  Any error from the file system
+	 -- a directory that is not there, a name it will not take -- is `no',
+	 because the question being asked is whether this loader has something
+	 to load."
+
+	| dir name |
+	dir := FileDirectory directoryFromName: aPath setFileName: [:n | name := n].
+	^[dir includesKey: name] on: Error do: [:e | false]
 ]
 
 { #category : 'loading' }
@@ -113,8 +127,22 @@ RestServiceLoader >> classFor: aClassPath [
 	| segments className path class |
 	segments := self segmentsOf: aClassPath.
 	segments isNil ifTrue: [^RestError new signal: 'not a class name: ', aClassPath printString].
-	className := segments last asSymbol.
 	path := self pathFor: aClassPath.
+	"THE NAME IS LOOKED UP BEFORE IT IS INTERNED, and interned only once
+	 the file system has agreed that there is a file for it.  `segments
+	 last asSymbol' made a Symbol out of whatever a stranger put in _class,
+	 and a Symbol is never collected: Bugs3 B55 watched eight thousand
+	 requests naming eight thousand classes that do not exist add eight
+	 thousand permanent Symbols, which two full collections did not touch.
+	 A class that IS loaded has its name interned already -- that is what
+	 being in Smalltalk means -- so the ordinary path finds the Symbol here
+	 and the file system is asked only about names nothing answers to,
+	 which is the path an attacker is on."
+	className := Symbol lookup: segments last.
+	className isNil ifTrue: [
+		(self fileExistsAt: path) ifFalse: [
+			^RestError new signal: 'No back-end code found for ', aClassPath].
+		className := segments last asSymbol].
 	^lock critical: [
 		class := Smalltalk at: className ifAbsent: [nil].
 		(class notNil and: [(TonelSource pathOf: class) = path])

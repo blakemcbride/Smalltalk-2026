@@ -74,6 +74,15 @@ HttpConnection >> serveOne [
 	response := [server handle: request]
 		on: HttpError
 		do: [:e | HttpResponse error: e status reason: e messageText].
+	"A HEAD is a GET without the bytes, and the response for one is built
+	 exactly as the GET's is and then sent without its body -- so the
+	 Content-Length it carries is the length the GET would have.  This is
+	 the one place that knows the method and the response at once, which is
+	 why it is done here rather than in each handler; the static handler
+	 used to answer an empty body for a HEAD and the reply then said
+	 `Content-Length: 0', which is a lie to the one client that asks a HEAD
+	 to find out how big something is (Bugs3 B57, lower)."
+	request method = 'HEAD' ifTrue: [response omitBody].
 	served := served + 1.
 	self write: response keepAlive: keepAlive.
 	^keepAlive

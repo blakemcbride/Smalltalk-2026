@@ -239,10 +239,18 @@ Set >> hash [
 	 Combined with bitXor:, which is commutative, because a Set has no
 	 order and two Sets that are equal must hash the same however they were
 	 built up.  The size is folded in so that sets whose elements happen to
-	 cancel are still told apart."
+	 cancel are still told apart.
+
+	 A Set that holds ITSELF is skipped over rather than recursed into
+	 (Bugs3 B34): its own hash is what is being computed, so there is
+	 nothing to ask it for, and asking recursed until
+	 RecursionDepthExceeded.  Dictionary, which inherits everything else
+	 here, has a hash of its own over its keys, because a Dictionary's
+	 self-reference lives in a value -- TextConstants under #TextConstants,
+	 Smalltalk under #Smalltalk -- and do: yields the values."
 	| h |
 	h := self size hash.
-	self do: [:each | h := h bitXor: each hash].
+	self do: [:each | each == self ifFalse: [h := h bitXor: each hash]].
 	^h
 ]
 
@@ -530,6 +538,40 @@ Collection >> removeAllSuchThat: aBlock [
 	self do: [:each | (aBlock value: each) ifTrue: [doomed add: each]].
 	doomed do: [:each | self remove: each ifAbsent: [nil]].
 	^self
+]
+
+{ #category : '*Collections-Protocol' }
+Collection >> addAll: aCollection [
+	"1983's, guarded against being given myself.
+
+	 `aCollection do: [:each | self add: each]' enumerates the argument
+	 while adding to the receiver, and when they are the same object the
+	 enumeration walks over what it is adding: an OrderedCollection of
+	 1 2 3 answered 1 2 3 1 2 3 1, stopping only when its growth happened
+	 to move the elements out from under the walk (Bugs3 B49).  What
+	 `addAll: self' can only mean is `add every element I had', so the
+	 argument is copied first, once, and the answer is still the argument
+	 as 1983 promises.  OrderedCollection and SortedCollection have their
+	 own addAll: and carry the same guard."
+	aCollection == self ifTrue: [self addAll: self copy. ^aCollection].
+	aCollection do: [:each | self add: each].
+	^aCollection
+]
+
+{ #category : '*Collections-Protocol' }
+Collection >> removeAll: aCollection [
+	"1983's, guarded against being given myself.
+
+	 Removing from the receiver while enumerating it is undefined for
+	 every kind of collection here -- an OrderedCollection shifts the rest
+	 down over the index being walked, so `removeAll: self' on 1 2 3 4
+	 removed 1 and 3 and left 2 4 (Bugs3 B49); a Set relocates on every
+	 removal.  The copy makes the enumeration walk something that stays
+	 put, which is the same thing removeAllSuchThat: below does by
+	 gathering first."
+	aCollection == self ifTrue: [self removeAll: self copy. ^aCollection].
+	aCollection do: [:each | self remove: each].
+	^aCollection
 ]
 
 { #category : '*Collections-Protocol' }

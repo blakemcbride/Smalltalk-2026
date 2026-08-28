@@ -514,6 +514,19 @@ TONEL_read(const char *path, const st_source_sink *sink, void *user,
     t.error     = error;
     t.error_len = error_len;
 
+    /*
+     *  A UTF-8 byte-order mark, if an editor left one.  Three bytes that
+     *  mean nothing and that Windows editors and some Pharo exports put
+     *  in front of the first character; the loop below took them for a
+     *  type word of no letters and refused the file as "not a Tonel file"
+     *  (Bugs3 B63).  Skipped here, before the comment, since a file whose
+     *  first character is the comment's opening quote has the mark in
+     *  front of that.  TonelReader>>setText:path: does the same.
+     */
+    if (t.c.length >= 3 && (unsigned char) text[0] == 0xEF
+     && (unsigned char) text[1] == 0xBB && (unsigned char) text[2] == 0xBF)
+        t.c.pos = 3;
+
     comment = SRC_take_comment(&t.c);
 
     /*  The type word.  */

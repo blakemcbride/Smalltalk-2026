@@ -200,7 +200,6 @@ HttpRequestTest >> testAMultipartBodyWithoutABoundaryIsRefused [
 { #category : 'tests' }
 HttpRequestTest >> testCodec [
 	self assert: (HttpCodec percentDecode: 'a%20b+c%2Fd') equals: 'a b c/d'.
-	self assert: (HttpCodec percentDecode: '100%') equals: '100%'.
 	self assert: (HttpCodec percentDecodePath: 'a+b%41') equals: 'a+bA'.
 	self assert: ((HttpCodec parseQuery: 'x=1&y=%7B%7D&flag') at: 'y') equals: '{}'.
 	self assert: ((HttpCodec parseQuery: 'x=1&y=%7B%7D&flag') at: 'flag') equals: ''.
@@ -210,4 +209,109 @@ HttpRequestTest >> testCodec [
 	self assert: (HttpCodec reasonFor: 404) equals: 'Not Found'.
 	self assert: HttpCodec httpDate size equals: 29.
 	self assert: (HttpCodec httpDate endsWith: ' GMT')
+]
+
+{ #category : 'tests - percent escapes' }
+HttpRequestTest >> testAnEscapeIsDecodedInEitherCase [
+	"Bugs3 B52.  1983's Character>>digitValue answers -1 for a lowercase
+	 letter, and the decoder took the value from the character as written
+	 while checking the uppercase of it -- so `%2f' answered character 31
+	 instead of a slash, an ordinary lowercase URL 404'd, and `%0a'
+	 computed 0 * 16 + -1 and raised SubscriptOutOfBounds inside the
+	 request parser, which is not an HttpError and dropped the connection
+	 with no reply at all."
+	self assert: (HttpCodec percentDecode: '%2F') equals: '/'.
+	self assert: (HttpCodec percentDecode: '%2f') equals: '/'.
+	self assert: (HttpCodec percentDecode: '%0a') equals: (String with: (Character value: 10)).
+	self assert: (HttpCodec percentDecode: '%0A') equals: (String with: (Character value: 10)).
+	self assert: (HttpCodec percentDecodePath: '/caf%c3%a9') size equals: 6.
+	self assert: (HttpCodec percentDecodePath: '/caf%C3%A9') equals: (HttpCodec percentDecodePath: '/caf%c3%a9').
+	self assert: ((HttpCodec parseQuery: 'v=%7bx%7d') at: 'v') equals: '{x}'.
+	self assert: (HttpRequest fromString: (self request: #('GET /sub%2findex.html HTTP/1.1') body: '')) path
+		equals: '/sub/index.html'
+]
+
+{ #category : 'tests - percent escapes' }
+HttpRequestTest >> testAMalformedEscapeIsRefused [
+	"And refused as an HttpError with 400, not passed through as the
+	 characters that spell it: this parser and the proxy in front of it
+	 must not decide separately what `%zz' means."
+	self should: [HttpCodec percentDecode: '%zz'] raise: HttpError.
+	self should: [HttpCodec percentDecode: '100%'] raise: HttpError.
+	self should: [HttpCodec percentDecode: '%2'] raise: HttpError.
+	self should: [HttpCodec percentDecode: '%g0'] raise: HttpError.
+	self should: [HttpCodec percentDecodePath: '/a%'] raise: HttpError.
+	self should: [HttpRequest fromString: (self request: #('GET /a%zz HTTP/1.1') body: '')] raise: HttpError.
+	[HttpCodec percentDecode: '%zz'. self assert: false]
+		on: HttpError do: [:e | self assert: e status equals: 400]
+]
+
+{ #category : 'tests - framing' }
+HttpRequestTest >> testABareLineFeedIsRefused [
+	"Bugs3 B56.  A proxy in front that recognises only CR LF divides the
+	 same bytes into different messages than a server that also takes a
+	 bare LF, and two parsers disagreeing about where a request ends is the
+	 whole of request smuggling."
+	| lf |
+	lf := String with: (Character value: 10).
+	self should: [HttpRequest fromString: 'GET / HTTP/1.1', lf, 'Host: here', lf, lf] raise: HttpError.
+	self should: [HttpRequest fromString: 'GET / HTTP/1.1', self crlf, 'Host: here', lf, self crlf] raise: HttpError.
+	self should: [HttpRequest fromString: 'GET / HTTP/1.1', self crlf, 'Host: here', self crlf, lf] raise: HttpError.
+	"and the good shape still parses"
+	self assert: (HttpRequest fromString: (self request: #('GET / HTTP/1.1' 'Host: here') body: '')) path equals: '/'
+]
+
+{ #category : 'tests - framing' }
+HttpRequestTest >> testTwoContentLengthsAreRefused [
+	"Headers are a Dictionary, so the second used to win -- which is one of
+	 the two answers a proxy in front might not have kept."
+	self should: [HttpRequest fromString: (self request: #('POST / HTTP/1.1' 'Content-Length: 5' 'Content-Length: 5') body: 'hello')]
+		raise: HttpError.
+	self should: [HttpRequest fromString: (self request: #('POST / HTTP/1.1' 'Content-Length: 5' 'content-length: 25') body: 'hello')]
+		raise: HttpError.
+	self assert: (HttpRequest fromString: (self request: #('POST / HTTP/1.1' 'Content-Length: 5') body: 'hello')) body
+		equals: 'hello'
+]
+
+{ #category : 'tests - framing' }
+HttpRequestTest >> testWhitespaceInAHeaderNameIsRefused [
+	"`Content-Length : 25' was read as a header named `content-length '
+	 -- with the space -- which headerAt: never finds, so the length was
+	 ignored and the body's bytes became the next request on the
+	 connection.  That is a smuggled request, and it worked."
+	self should: [HttpRequest fromString: (self request: #('POST / HTTP/1.1' 'Content-Length : 25') body: 'GET /x HTTP/1.1')]
+		raise: HttpError.
+	self should: [HttpRequest fromString: (self request: #('GET / HTTP/1.1' 'X Y: 1') body: '')] raise: HttpError.
+	"a space AFTER the colon is ordinary and stays ordinary"
+	self assert: (HttpRequest fromString: (self request: #('GET / HTTP/1.1' 'X-Thing:    spaced   ') body: '')) headers
+		size equals: 1.
+	self assert: ((HttpRequest fromString: (self request: #('GET / HTTP/1.1' 'X-Thing:    spaced   ') body: ''))
+		headerAt: 'x-thing') equals: 'spaced'
+]
+
+{ #category : 'tests - framing' }
+HttpRequestTest >> testAContentLengthThatIsNotDigitsIsRefused [
+	"asInteger read as far as it understood: `5, 5' -- the shape a proxy
+	 makes when it folds two headers into one -- answered 5, and the rest
+	 of the body stayed on the connection to be read as a request."
+	self should: [HttpRequest fromString: (self request: #('POST / HTTP/1.1' 'Content-Length: 5, 5') body: 'helloworld')]
+		raise: HttpError.
+	self should: [HttpRequest fromString: (self request: #('POST / HTTP/1.1' 'Content-Length: +5') body: 'hello')]
+		raise: HttpError.
+	self should: [HttpRequest fromString: (self request: #('POST / HTTP/1.1' 'Content-Length: ') body: '')]
+		raise: HttpError.
+	self should: [HttpRequest fromString: (self request: #('POST / HTTP/1.1' 'Content-Length: 0x5') body: 'hello')]
+		raise: HttpError
+]
+
+{ #category : 'tests - framing' }
+HttpRequestTest >> testTransferEncodingWithAContentLengthIsRefused [
+	"Two headers, two answers to where the body ends: 400, and not the 411
+	 that Transfer-Encoding alone still gets."
+	[HttpRequest fromString: (self request: #('POST / HTTP/1.1' 'Transfer-Encoding: chunked' 'Content-Length: 5') body: 'hello').
+	 self assert: false]
+		on: HttpError do: [:e | self assert: e status equals: 400].
+	[HttpRequest fromString: (self request: #('POST / HTTP/1.1' 'Transfer-Encoding: chunked') body: '').
+	 self assert: false]
+		on: HttpError do: [:e | self assert: e status equals: 411]
 ]

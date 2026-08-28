@@ -423,6 +423,297 @@ SCHED_set_idle_hook(void (*hook)(void))
 #define new_process_waiting     (st_vm.new_process_waiting)
 
 /*
+ *  ----------  What each worker has in its hands  ----------
+ *
+ *  Bugs3 B16 and B17: `terminate', `suspend' and `signalException:' of a
+ *  process running on ANOTHER worker did nothing, and `Processor
+ *  activeProcess resume' handed the running process to a second worker.
+ *  Both come from the same gap: the state above -- active_process,
+ *  new_process, disowned -- is this worker's own, read and written
+ *  plainly, and no other worker can ask "is that process running
+ *  somewhere?" without a data race.  Chapter 29 never needed the
+ *  question; with one thread a process that is not the active process is
+ *  on a list or suspended, and there is nothing else it can be.
+ *
+ *  So every worker publishes, in a row of this table, the processes it
+ *  has in its hands and nowhere else:
+ *
+ *      held      the process it is executing, or has parked and not yet
+ *                LANDED -- put on a list, or deliberately set free
+ *      nominee   the process it will switch to at its next check
+ *      taken     a process it has taken off a list and not yet landed
+ *
+ *  Three words that only the owning worker writes, with release, and that
+ *  any worker reads, with acquire.  The discipline that makes them exact:
+ *  a process is written into the slot it is moving TO before it is
+ *  cleared from the one it is moving FROM (taken before nominee before
+ *  held), and it is cleared only once it has landed -- `land' below runs
+ *  after SCHED_add_last_link, not before.  A reader that sees no slot
+ *  naming a process on any worker, and no list holding it, has therefore
+ *  seen it free, provided nothing can make it un-free behind the reader's
+ *  back.  The detach table further down is what provides that.
+ *
+ *  A STATIC table, and not three fields of st_interp read through the
+ *  registry, because the registry is read safely only at a safepoint: a
+ *  worker that leaves the pool takes its thread-locals with it, and a
+ *  scanner that had just loaded the pointer would read freed memory.
+ *  A row here outlives every thread; the worst a scanner can read is a
+ *  stale nil.
+ */
+typedef struct {
+    st_atomic_ptr   held;
+    st_atomic_ptr   nominee;
+    st_atomic_ptr   taken;
+} st_hands;
+
+static st_hands     hands[ST_MAX_INTERPRETERS];
+
+/*  This worker's row, or NULL for a thread that never registered.  */
+static st_hands *
+my_hands(void)
+{
+    return st_vm.hands_slot ? &hands[st_vm.hands_slot - 1] : NULL;
+}
+
+static void
+clear_hands(st_hands *h)
+{
+    ST_store_release(&h->held,    (uintptr_t) ST_OOP_INVALID);
+    ST_store_release(&h->nominee, (uintptr_t) ST_OOP_INVALID);
+    ST_store_release(&h->taken,   (uintptr_t) ST_OOP_INVALID);
+}
+
+void
+SCHED_hands_register(unsigned slot)
+{
+    if (slot >= ST_MAX_INTERPRETERS)
+        return;
+    clear_hands(&hands[slot]);
+    st_vm.hands_slot = slot + 1;
+}
+
+void
+SCHED_hands_unregister(void)
+{
+    st_hands   *h = my_hands();
+
+    if (h)
+        clear_hands(h);
+    st_vm.hands_slot = 0;
+}
+
+static void
+publish(st_atomic_ptr *slot, st_oop process)
+{
+    ST_store_release(slot, (uintptr_t) process);
+}
+
+/*
+ *  The process has arrived where it will wait -- on a list, or free on
+ *  purpose -- and this worker no longer answers for it.
+ */
+static void
+land(st_oop process)
+{
+    st_hands   *h = my_hands();
+
+    if (!h)
+        return;
+    if ((st_oop) ST_load_relaxed(&h->taken) == process)
+        publish(&h->taken, ST_OOP_INVALID);
+    if ((st_oop) ST_load_relaxed(&h->nominee) == process)
+        publish(&h->nominee, ST_OOP_INVALID);
+    if ((st_oop) ST_load_relaxed(&h->held) == process)
+        publish(&h->held, ST_OOP_INVALID);
+}
+
+/*  Does any worker -- this one included -- have the process in hand?  */
+static int
+in_anyones_hands(st_oop process)
+{
+    unsigned    i;
+
+    if (!OM_is_present(process))
+        return 0;
+    for (i = 0; i < ST_MAX_INTERPRETERS; ++i) {
+        st_hands   *h = &hands[i];
+
+        /*
+         *  In the order the slots are cleared -- taken, nominee, held --
+         *  so that a process moving between two of them on one worker is
+         *  seen in at least one: it is written into the next before it
+         *  is cleared from the last.
+         */
+        if ((st_oop) ST_load_acquire(&h->taken)   == process
+         || (st_oop) ST_load_acquire(&h->nominee) == process
+         || (st_oop) ST_load_acquire(&h->held)    == process)
+            return 1;
+    }
+    return 0;
+}
+
+/*
+ *  ----------  Processes that must not run  ----------
+ *
+ *  The other half of B16.  Knowing where a process is does not let
+ *  another worker stop it: its registers are in that worker's
+ *  interpreter, and only that worker can park them.  So a worker wanting
+ *  a process stopped NAMES it here, and every worker honours the table
+ *  at the three places a process can start or continue running:
+ *
+ *      SCHED_check_process_switch   a worker executing a named process
+ *                                   parks it onto its ready list at its
+ *                                   next bytecode boundary and goes to
+ *                                   find something else; a named nominee
+ *                                   is released to its ready list rather
+ *                                   than switched to
+ *      take_first_runnable          a named process is left on whatever
+ *                                   list it waits on; the signal or the
+ *                                   idle worker takes the next one
+ *      SCHED_primitive_resume       a named process is refused
+ *
+ *  Between them a named process can only move TOWARDS being free: from a
+ *  worker's hands to a list, never from a list or from freedom into
+ *  anyone's hands.  That is what lets SCHED_detach, which names a process
+ *  and then looks, conclude anything from what it sees.
+ *
+ *  Lock-free, and small: an entry is an oop stored with a compare-and-
+ *  swap into an empty slot, cleared with a store, and the count beside
+ *  the table is what every hot-path reader checks first -- one relaxed
+ *  load, zero for the whole life of an image that never detaches
+ *  anything.  A stale zero on that load is harmless: the requester's
+ *  own list operations take the same locks the takers do, and a taker
+ *  that took the process before the name landed shows it in `taken'.
+ *
+ *  Sixty-four entries, one per worker at most, since a worker names one
+ *  process at a time and waits for it.  A full table makes the requester
+ *  wait for a slot rather than proceed without one, because proceeding
+ *  without one is the old behaviour -- a terminate that terminates
+ *  nothing.
+ */
+#define DETACH_MAX          ST_MAX_INTERPRETERS
+
+static st_atomic_ptr    detach_table[DETACH_MAX];
+static st_atomic_int    detach_count;
+
+/*
+ *  And the same rule applied to EVERY process at once, for a snapshot
+ *  (B9): while frozen, no worker switches to anything, and every worker
+ *  parks what it runs onto its ready list and idles, so that the image
+ *  written meanwhile holds every process on a list that a reloaded
+ *  worker can take it from.  Signals are still delivered during a
+ *  freeze -- a waiter taken off a semaphore lands on its ready list --
+ *  because a signal spent as an excess while its waiter sits on the list
+ *  would leave a semaphore that never wakes.
+ */
+static st_atomic_int    frozen;
+
+static int
+is_named(st_oop process)
+{
+    unsigned    i;
+
+    if (ST_load_relaxed(&detach_count) == 0)
+        return 0;
+    for (i = 0; i < DETACH_MAX; ++i)
+        if ((st_oop) ST_load_acquire(&detach_table[i]) == process)
+            return 1;
+    return 0;
+}
+
+static int
+must_not_run(st_oop process)
+{
+    if (!OM_is_present(process))
+        return 0;
+    return ST_load_relaxed(&frozen) || is_named(process);
+}
+
+/*  Whether either rule is in force; the one load the hot path pays.  */
+static int
+attention_wanted(void)
+{
+    return ST_load_relaxed(&frozen) || ST_load_relaxed(&detach_count);
+}
+
+static int
+name_process(st_oop process)
+{
+    unsigned    i;
+
+    for (i = 0; i < DETACH_MAX; ++i) {
+        uintptr_t   empty = (uintptr_t) ST_OOP_INVALID;
+
+        if (ST_cas_strong(&detach_table[i], &empty, (uintptr_t) process)) {
+            ST_fetch_add_acq_rel(&detach_count, 1);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void
+unname_process(st_oop process)
+{
+    unsigned    i;
+
+    for (i = 0; i < DETACH_MAX; ++i) {
+        uintptr_t   mine = (uintptr_t) process;
+
+        if (ST_cas_strong(&detach_table[i], &mine, (uintptr_t) ST_OOP_INVALID)) {
+            ST_fetch_sub_acq_rel(&detach_count, 1);
+            return;
+        }
+    }
+}
+
+static int  remove_link_from_list(st_oop link, st_oop list);
+
+/*
+ *  The first process on the list that is allowed to run, taken off it
+ *  and held; or nil.  SCHED_remove_first_link when nothing is named,
+ *  which is always, and a walk past the named ones otherwise.  Under the
+ *  list's lock, like every caller of SCHED_remove_first_link.
+ */
+static st_oop
+take_first_runnable(st_oop list)
+{
+    st_oop  link;
+
+    if (ST_load_relaxed(&detach_count) == 0)
+        return SCHED_remove_first_link(list);
+    if (!OM_is_present(list) || !OM_pointer_bit(list)
+     || OM_fetch_word_length(list) <= ST_LIST_LAST_LINK)
+        return ST_NIL;
+    link = OM_fetch_pointer(ST_LIST_FIRST_LINK, list);
+    while (OM_is_present(link)) {
+        if (!OM_pointer_bit(link)
+         || OM_fetch_word_length(link) <= ST_PROCESS_MY_LIST)
+            return ST_NIL;
+        if (!is_named(link)) {
+            if (link == OM_fetch_pointer(ST_LIST_FIRST_LINK, list))
+                return SCHED_remove_first_link(list);
+            /*
+             *  From the middle: counted first, as remove_link_from_list
+             *  asks, and published exactly as SCHED_remove_first_link
+             *  publishes what it takes.
+             */
+            OM_increase_ref(link);
+            remove_link_from_list(link, list);
+            {
+                st_hands   *h = my_hands();
+
+                if (h)
+                    publish(&h->taken, link);
+            }
+            return link;
+        }
+        link = OM_fetch_pointer(ST_LINK_NEXT, link);
+    }
+    return ST_NIL;
+}
+
+/*
  *  ----------  Semaphore stripe locks  ----------
  *
  *  The bug being closed, which has been in this file since the day it was
@@ -557,6 +848,21 @@ SCHED_reset(void)
     new_process_waiting    = 0;
     new_process            = ST_NIL;
     st_vm.active_process   = ST_NIL;
+    /*
+     *  And the cross-worker tables, which a test harness that resets the
+     *  scheduler between runs would otherwise carry from one to the next:
+     *  a name left in the detach table is a process that can never run.
+     */
+    {
+        unsigned    i;
+
+        for (i = 0; i < DETACH_MAX; ++i)
+            ST_store_release(&detach_table[i], (uintptr_t) ST_OOP_INVALID);
+        ST_store_seq(&detach_count, 0);
+        ST_store_seq(&frozen, 0);
+        if (my_hands())
+            clear_hands(my_hands());
+    }
 }
 
 st_oop
@@ -667,6 +973,22 @@ SCHED_remove_first_link(st_oop list)
     }
     OM_store_pointer(ST_LINK_NEXT, first, ST_NIL);
     /*
+     *  Published as in this worker's hands BEFORE myList says it is on no
+     *  list, and before the caller's lock is dropped -- every caller
+     *  holds the list's lock here -- so that a worker asking after the
+     *  process finds it somewhere at every instant: on the list, or here.
+     *  The window between a removal and the nomination or requeue that
+     *  follows it is a few instructions wide, and it is the one place a
+     *  process is held by nothing but a C local.  Cleared by `land' from
+     *  SCHED_sleep or SCHED_transfer_to.
+     */
+    {
+        st_hands   *h = my_hands();
+
+        if (h)
+            publish(&h->taken, first);
+    }
+    /*
      *  And it is on no list now, which is what myList is for.  Leaving it
      *  set says the process is still queued when it is not, and the guard in
      *  addLastLink: below believes it.
@@ -736,6 +1058,12 @@ SCHED_sleep(st_oop process)
     ready_lock_init();
     ST_mutex_lock(&ready_lock);
     SCHED_add_last_link(process, list);
+    /*
+     *  Landed: the list holds it, and only now does this worker stop
+     *  answering for it.  Inside the lock, so that a worker which then
+     *  takes the lock to look for the process sees it on the list.
+     */
+    land(process);
     ST_mutex_unlock(&ready_lock);
 }
 
@@ -770,6 +1098,19 @@ SCHED_transfer_to(st_oop process)
     OM_decrease_ref(new_process);       /*  any nomination this supersedes  */
     new_process_waiting = 1;
     new_process         = process;
+    /*
+     *  Into `nominee' before out of `taken': a scanner reading the two in
+     *  the opposite order still finds it in one of them.
+     */
+    {
+        st_hands   *h = my_hands();
+
+        if (h) {
+            publish(&h->nominee, process);
+            if ((st_oop) ST_load_relaxed(&h->taken) == process)
+                publish(&h->taken, ST_OOP_INVALID);
+        }
+    }
 }
 
 st_oop
@@ -794,6 +1135,13 @@ SCHED_wake_highest_priority(void)
     if (!OM_is_present(lists))
         return ST_NIL;
     /*
+     *  Nothing is ready while a snapshot is being written: the ready
+     *  lists are what the image is being saved WITH, and a process taken
+     *  off one now would be running, on no list, when the file is closed.
+     */
+    if (ST_load_relaxed(&frozen))
+        return ST_NIL;
+    /*
      *  Finding the highest non-empty list and taking from it is ONE step.
      *  Two workers that both look, both see the same process at the head,
      *  and both take it end up running it twice -- on two native threads,
@@ -806,8 +1154,14 @@ SCHED_wake_highest_priority(void)
         st_oop  list = OM_fetch_pointer(i - 1, lists);
 
         if (OM_is_object(list) && !SCHED_is_empty_list(list)) {
-            found = SCHED_remove_first_link(list);
-            break;
+            /*
+             *  A list whose only occupants are being detached answers
+             *  nil, and the search goes on to the next priority down
+             *  rather than stopping at a list that has nothing to give.
+             */
+            found = take_first_runnable(list);
+            if (OM_is_present(found))
+                break;
         }
     }
     ST_mutex_unlock(&ready_lock);
@@ -870,6 +1224,10 @@ static st_atomic_int    idle_workers;
  *  write to it again -- disowned tells SCHED_check_process_switch so.
  *  Idempotent, because the wait primitive parks before it links and
  *  SCHED_suspend_active would otherwise park a second time.
+ *
+ *  Parking is not landing: `held' still names the process until the
+ *  caller has put it on a list or set it free, which is the caller's
+ *  next line in every case.
  */
 static void
 store_active_for_suspension(void)
@@ -972,7 +1330,12 @@ SCHED_suspend_active(void)
              *  counted, and the verdict stays reachable the moment the
              *  last socket is closed.
              */
-            if (waits_pending()) {
+            /*
+             *  A freeze is a wait of the same kind: the worker writing
+             *  the snapshot is not idle and will thaw the rest when the
+             *  file is closed.  Counted as neither idle nor stuck.
+             */
+            if (waits_pending() || ST_load_relaxed(&frozen)) {
                 all_idle = 0;
                 slice    = 0;
             }  else if (ST_load_seq(&idle_workers) >= (int) WORKER_count()) {
@@ -1112,7 +1475,24 @@ SCHED_enter_idle(void)
     new_process_waiting  = 0;
     disowned             = 1;
     st_vm.running        = 1;
+    if (my_hands())
+        clear_hands(my_hands());
     SCHED_suspend_active();
+}
+
+/*
+ *  A worker that took its first process by hand -- `-serve''s worker 0
+ *  adopts the image's startup process before it runs a bytecode -- says
+ *  so here, so that a terminate from another worker finds that process
+ *  in somebody's hands and not free.
+ */
+void
+SCHED_publish_active(void)
+{
+    st_hands   *h = my_hands();
+
+    if (h && OM_is_present(st_vm.active_process))
+        publish(&h->held, st_vm.active_process);
 }
 
 /*
@@ -1218,15 +1598,20 @@ SCHED_synchronous_signal(st_oop semaphore)
      */
     lock = stripe_for(semaphore);
     stripe_lock(lock);
-    if (SCHED_is_empty_list(semaphore)) {
+    if (!SCHED_is_empty_list(semaphore))
+        woken = take_first_runnable(semaphore);
+    /*
+     *  Nobody to wake -- an empty list, or one holding only a process
+     *  that is being detached, which its detacher will take off the list
+     *  and which must not be handed this signal -- is an excess.
+     */
+    if (!OM_is_present(woken)) {
         st_oop  excess = OM_fetch_pointer(ST_SEMAPHORE_EXCESS_SIGNALS,
                                           semaphore);
 
         if (OM_is_int(excess))
             OM_store_pointer(ST_SEMAPHORE_EXCESS_SIGNALS, semaphore,
                              OM_int_oop(OM_int_value(excess) + 1));
-    }  else  {
-        woken = SCHED_remove_first_link(semaphore);
     }
     stripe_unlock(lock);
     if (OM_is_present(woken)) {
@@ -1376,9 +1761,79 @@ SCHED_check_process_switch(void)
     if (!st_vm.running)
         return;
     drain_async_signals();
-    if (!new_process_waiting)
-        return;
-    new_process_waiting = 0;
+
+    /*
+     *  The two rare cases, behind one load: a snapshot has frozen the
+     *  scheduler, or some worker is detaching a process (see the two
+     *  tables above).  A process this worker is executing and must not
+     *  run is parked onto its ready list exactly as Processor yield parks
+     *  one; a nominee it must not switch to goes back to its ready list.
+     *  Then, holding nothing runnable, the worker goes to find something
+     *  else -- and looks again at what it finds, since during a freeze
+     *  nothing it finds may be run either, and the idle loop is where a
+     *  frozen worker waits.
+     */
+    if (attention_wanted()) {
+        for (;;) {
+            if (new_process_waiting && must_not_run(new_process))
+                SCHED_release_nomination();
+            if (!disowned && must_not_run(SCHED_active_process())) {
+                st_oop  active = SCHED_active_process();
+
+                store_active_for_suspension();
+                SCHED_sleep(active);
+            }
+            if (new_process_waiting || !disowned)
+                break;
+            SCHED_suspend_active();
+            if (!st_vm.running)
+                return;
+        }
+    }
+
+    for (;;) {
+        st_oop  incoming;
+
+        if (!new_process_waiting)
+            return;
+        new_process_waiting = 0;
+
+        /*
+         *  A nominee whose suspendedContext is not a context is never
+         *  run.  Bugs3 B3: nil is the mark of a terminated process, and
+         *  a terminated process can still arrive here -- taken off a
+         *  semaphore by a signal that raced its terminate, or resumed by
+         *  an image written before primitive 87 learnt to refuse it --
+         *  and switching to it stopped the worker's whole run, and under
+         *  -serve the whole image, on `asked to run an object that is not
+         *  a context'.  Dropped instead: the nomination's count is
+         *  released, the process stays terminated, and this worker either
+         *  carries on with the process it never stopped running or, if it
+         *  had parked that one already, looks for another.  Anything
+         *  else in the field is a process somebody has broken, which is
+         *  reported, once, and dropped the same way.
+         */
+        incoming = OM_fetch_pointer(ST_PROCESS_SUSPENDED_CONTEXT, new_process);
+        if (!OM_is_object(incoming)
+         || (OM_fetch_class(incoming) != ST_CLASS_METHOD_CONTEXT
+          && OM_fetch_class(incoming) != ST_CLASS_BLOCK_CONTEXT)) {
+            st_oop  dead = new_process;
+
+            if (incoming != ST_NIL)
+                fprintf(stderr, "st80: a process whose suspended context is "
+                                "not a context was scheduled; it is dropped\n");
+            new_process = ST_NIL;
+            land(dead);
+            OM_decrease_ref(dead);
+            if (!disowned)
+                return;
+            SCHED_suspend_active();
+            if (!st_vm.running)
+                return;
+            continue;
+        }
+        break;
+    }
 
     /*
      *  Park the running process's context in its Process object, then make
@@ -1428,8 +1883,14 @@ SCHED_check_process_switch(void)
      */
     {
         st_oop  was = st_vm.active_process;
+        st_hands   *h = my_hands();
 
         st_vm.active_process = new_process;
+        /*  Into `held' before out of `nominee', for the same reader.  */
+        if (h) {
+            publish(&h->held, new_process);
+            publish(&h->nominee, ST_OOP_INVALID);
+        }
         new_process = ST_NIL;
         /*
          *  One slot, written by every worker on every switch: exchanged,
@@ -1593,7 +2054,10 @@ SCHED_primitive_signal(void)
      */
     lock = stripe_for(semaphore);
     stripe_lock(lock);
-    if (SCHED_is_empty_list(semaphore)) {
+    woken = SCHED_is_empty_list(semaphore) ? ST_NIL
+                                           : take_first_runnable(semaphore);
+    /*  As in SCHED_synchronous_signal: nobody to wake is an excess.  */
+    if (!OM_is_present(woken)) {
         st_oop  excess = OM_fetch_pointer(ST_SEMAPHORE_EXCESS_SIGNALS,
                                           semaphore);
 
@@ -1603,7 +2067,6 @@ SCHED_primitive_signal(void)
         stripe_unlock(lock);
         return 1;
     }
-    woken = SCHED_remove_first_link(semaphore);
     stripe_unlock(lock);
 
     if (OM_is_present(woken)) {
@@ -1726,6 +2189,8 @@ SCHED_primitive_wait(void)
              */
             store_active_for_suspension();
             SCHED_add_last_link(SCHED_active_process(), semaphore);
+            /*  Landed on the semaphore, under its lock: no longer ours. */
+            land(SCHED_active_process());
         }  else
             OM_store_pointer(ST_SEMAPHORE_EXCESS_SIGNALS, semaphore,
                              OM_int_oop(OM_int_value(excess) - 1));
@@ -1737,13 +2202,46 @@ SCHED_primitive_wait(void)
     return 1;
 }
 
+/*
+ *  87: Process>>resume.  Fails, and so raises in the image, for a process
+ *  that is anything but parked and free.  Bugs3 B3 and B17.
+ *
+ *  Chapter 29 queued whatever it was given.  A terminated process -- its
+ *  suspendedContext nil, which is how both 1983's terminate and this
+ *  system's leave it -- was queued too, and the next worker to take it
+ *  called set_active_context(nil) and stopped the whole image; a watchdog
+ *  that cleans up twice is exactly the shape that produced it.  And a
+ *  process that is RUNNING -- `Processor activeProcess resume', or a
+ *  process on another worker -- was queued while its registers were
+ *  still in some interpreter, so an idle worker ran it from its stale
+ *  context and two threads were inside one context.  Squeak's
+ *  primitiveResume checks the first two conditions; the third has no
+ *  meaning on one thread and is this system's own.
+ *
+ *  The order of the checks is the order of their cost.  The scan of the
+ *  hands table is sixty-four rows of three loads, paid on every fork;
+ *  it is nothing beside making the process.
+ */
 int
 SCHED_primitive_resume(void)
 {
     st_oop  process = ST_stack_top();
+    st_oop  context;
 
-    if (!OM_is_object(process))
+    if (!OM_is_object(process) || !OM_pointer_bit(process)
+     || OM_fetch_word_length(process) <= ST_PROCESS_MY_LIST)
         return 0;
+    context = OM_fetch_pointer(ST_PROCESS_SUSPENDED_CONTEXT, process);
+    if (!OM_is_object(context)
+     || (OM_fetch_class(context) != ST_CLASS_METHOD_CONTEXT
+      && OM_fetch_class(context) != ST_CLASS_BLOCK_CONTEXT))
+        return 0;               /*  terminated, or never given a context  */
+    if (OM_is_present(OM_fetch_pointer(ST_PROCESS_MY_LIST, process)))
+        return 0;               /*  already waiting somewhere  */
+    if (process == SCHED_active_process())
+        return 0;               /*  running: here  */
+    if (in_anyones_hands(process) || is_named(process))
+        return 0;               /*  running, or being stopped: elsewhere  */
     SCHED_resume(process);
     return 1;
 }
@@ -1757,8 +2255,254 @@ SCHED_primitive_suspend(void)
         return 0;               /*  only the active process may suspend  */
     ST_pop_n(1);
     ST_push(ST_NIL);
+    /*
+     *  Parked and then set free on purpose -- on no list, for a resume
+     *  to find -- so it is landed here, before this worker goes looking
+     *  for something else to run.
+     */
+    store_active_for_suspension();
+    land(process);
     SCHED_suspend_active();
     return 1;
+}
+
+/*
+ *  232: Process>>primTerminateActive -- end the process this worker is
+ *  running, for good.  Bugs3 B3 and B13.
+ *
+ *  1983's Process>>terminate, for the active process, was `thisContext
+ *  removeSelf suspend': the process parked itself in the terminate frame
+ *  and stayed resumable, and resuming it ran off the bottom of that frame
+ *  and took the worker's whole run with it.  What marks a process as
+ *  terminated here is a nil suspendedContext -- the same mark 1983's
+ *  other branch left, the one primitive 87 refuses and the switch drops
+ *  -- so the active process's context is discarded rather than parked.
+ *  The unwind blocks have already been run by the Smalltalk side, from
+ *  thisContext outwards, before this is sent.
+ *
+ *  Nothing is written to the process after this except by its own
+ *  worker's switch, which releases the count it held; disowned is what
+ *  keeps the switch from parking the dead registers over the nil.
+ */
+int
+SCHED_primitive_terminate_active(void)
+{
+    st_oop  process = SCHED_active_process();
+
+    if (!OM_is_object(process) || disowned)
+        return 0;
+    disowned = 1;
+    OM_store_pointer(ST_PROCESS_SUSPENDED_CONTEXT, process, ST_NIL);
+    land(process);
+    SCHED_suspend_active();
+    return 1;               /*  the receiver stays on the dead stack  */
+}
+
+/*
+ *  231: Process>>primDetach: takeFromSemaphore -- bring the receiver to
+ *  a stop wherever it is, and say where that was.  Bugs3 B16.
+ *
+ *  Answers a SmallInteger:
+ *
+ *      0   it was nowhere: on no list and in no worker's hands, which is
+ *          a process already suspended, terminated, or never resumed
+ *      1   it was running on a worker, or about to be; that worker has
+ *          parked it and let go
+ *      2   it was waiting for the processor on a ready list
+ *      3   it was waiting on a Semaphore and was taken off it
+ *      4   it was waiting on a Semaphore and was LEFT there, because the
+ *          argument was false -- suspend keeps 1983's refusal to take a
+ *          process out of a wait it would later continue past
+ *
+ *  and in every case but 4 the receiver is afterwards parked, on no list,
+ *  in nobody's hands, with its suspendedContext where it stopped: the
+ *  state Process>>terminate, >>suspend and >>signalException: each go on
+ *  from.  Fails for the caller's own active process, which those methods
+ *  handle themselves, and for anything that is not a Process.
+ *
+ *  The loop is the whole argument for the two tables above.  Naming the
+ *  process first means that from here on it can only move towards being
+ *  free: a worker executing it parks it onto its ready list at its next
+ *  bytecode, a worker about to switch to it releases it to its ready
+ *  list instead, no signal and no idle worker takes it off a list, and
+ *  primitive 87 will not resume it.  So each pass either finds it on a
+ *  list -- and takes it off under that list's lock, which is the lock the
+ *  takers use, so the two cannot interleave -- or finds it in some
+ *  worker's hands and waits a moment for that worker to land it, or
+ *  finds it in neither and is done: with the exits closed, nowhere is
+ *  free.  The order within a pass matters and is the order written:
+ *  the hands, and THEN the list again, because a worker lands a process
+ *  on a list before it clears `held' -- so a process seen in no hands is
+ *  on a list or free, and only a look at the list taken after that
+ *  sighting can tell which.
+ *
+ *  Waiting polls the safepoint and holds no lock, since the worker being
+ *  waited for may be the one asking for a collection.  A stop request
+ *  ends the wait: the run is over and the answer no longer matters.
+ */
+int
+SCHED_primitive_detach(void)
+{
+    st_oop  take    = ST_stack_value(0);
+    st_oop  process = ST_stack_value(1);
+    int     where   = 0;
+    int     seen_in_hands = 0;
+
+    if (!OM_is_object(process) || !OM_pointer_bit(process)
+     || OM_fetch_word_length(process) <= ST_PROCESS_MY_LIST)
+        return 0;
+    if (take != ST_TRUE && take != ST_FALSE)
+        return 0;
+    if (process == SCHED_active_process())
+        return 0;
+    /*
+     *  This worker's own nominee is the one case it can settle itself:
+     *  the nomination goes back to the ready list, where the loop below
+     *  finds it.
+     */
+    if (new_process_waiting && new_process == process) {
+        SCHED_release_nomination();
+        seen_in_hands = 1;
+    }
+    while (!name_process(process)) {
+        /*  Every slot taken by another worker's detach: wait for one.  */
+        if (SCHED_stop_requested())
+            return 0;
+        WORKER_poll();
+        ST_sleep_ns(1000);
+    }
+    for (;;) {
+        st_oop  list = OM_fetch_pointer(ST_PROCESS_MY_LIST, process);
+
+        if (SCHED_stop_requested())
+            break;
+        if (OM_is_present(list)) {
+            st_oop  priority = OM_fetch_pointer(ST_PROCESS_PRIORITY, process);
+            st_oop  ready    = OM_is_int(priority)
+                             ? ready_list_at(OM_int_value(priority)) : ST_NIL;
+
+            if (list == ready) {
+                if (SCHED_remove_ready_process(process)) {
+                    where = seen_in_hands ? 1 : 2;
+                    break;
+                }
+                continue;           /*  it moved between the read and the lock  */
+            }
+            if (take == ST_FALSE) {
+                where = 4;
+                break;
+            }
+            {
+                st_mutex   *lock = stripe_for(list);
+                int         removed;
+
+                stripe_lock(lock);
+                removed = OM_fetch_pointer(ST_PROCESS_MY_LIST, process) == list
+                       && remove_link_from_list(process, list);
+                stripe_unlock(lock);
+                if (removed) {
+                    where = seen_in_hands ? 1 : 3;
+                    break;
+                }
+                continue;
+            }
+        }
+        if (in_anyones_hands(process)) {
+            seen_in_hands = 1;
+            WORKER_poll();
+            ST_sleep_ns(1000);
+            continue;
+        }
+        /*
+         *  In nobody's hands -- and the list is looked at AGAIN, after
+         *  that, not before it.  A worker that parks the process links it
+         *  before it clears `held', so between this pass's first read of
+         *  myList and its read of the hands the process can have landed
+         *  on a semaphore: read in the other order that is a process on
+         *  no list and in no hands, which is the conclusion, and wrong.
+         *  Read in this order it is on the list, or it is free, and
+         *  nothing can change either while it is named.
+         */
+        if (OM_is_present(OM_fetch_pointer(ST_PROCESS_MY_LIST, process)))
+            continue;
+        where = seen_in_hands ? 1 : 0;
+        break;
+    }
+    unname_process(process);
+    ST_pop_n(2);
+    ST_push(OM_int_oop(where));
+    return 1;
+}
+
+/*
+ *  ----------  Freezing every worker, for a snapshot  ----------
+ *
+ *  Bugs3 B9.  A snapshot from a worker pool parked the process taking it
+ *  and nothing else: every process running on another worker at that
+ *  instant was written with the suspendedContext it had been parked with
+ *  LAST time, on no list, and was simply gone from the image that came
+ *  back -- and whatever it held, a Mutex say, was held for ever there.
+ *  SCHED_freeze asks every other worker to park what it runs onto its
+ *  ready list and idle; SCHED_wait_frozen waits until they have; and
+ *  SCHED_thaw lets them take it all back once the file is closed.
+ *
+ *  Not a safepoint, though it looks like one, because the image writer
+ *  takes a safepoint of its own for the collection it runs first, and a
+ *  safepoint inside a safepoint is a requester parked waiting for
+ *  itself.  What the freeze provides is weaker and enough: the scheduler
+ *  state the writer needs is the LISTS, and the lists are complete once
+ *  every other worker is in the idle loop with nothing in its hands.
+ *
+ *  Signals keep flowing during a freeze -- a waiter taken off a
+ *  semaphore lands on its ready list and stays there -- so an image
+ *  saved mid-delay has that delay's waiter ready rather than lost.
+ */
+void
+SCHED_freeze(void)
+{
+    ST_store_seq(&frozen, 1);
+}
+
+void
+SCHED_thaw(void)
+{
+    ST_store_seq(&frozen, 0);
+}
+
+int
+SCHED_wait_frozen(int64_t timeout_ns)
+{
+    int64_t     deadline = ST_time_monotonic_ns() + timeout_ns;
+    unsigned    others   = WORKER_count() > 0 ? WORKER_count() - 1 : 0;
+
+    for (;;) {
+        unsigned    i;
+        int         quiet = ST_load_seq(&idle_workers) >= (int) others;
+
+        /*
+         *  Idle is not the same as landed: a worker enters the idle
+         *  count before it has cleared `held' for a process a drained
+         *  signal handed it a moment ago.  Both, then.
+         */
+        if (quiet) {
+            for (i = 0; i < ST_MAX_INTERPRETERS; ++i) {
+                st_hands   *h = &hands[i];
+
+                if (h == my_hands())
+                    continue;
+                if (OM_is_present((st_oop) ST_load_acquire(&h->held))
+                 || OM_is_present((st_oop) ST_load_acquire(&h->nominee))
+                 || OM_is_present((st_oop) ST_load_acquire(&h->taken)))
+                    quiet = 0;
+            }
+        }
+        if (quiet)
+            return 1;
+        if (ST_time_monotonic_ns() > deadline || SCHED_stop_requested())
+            return 0;
+        WORKER_poll();
+        ST_sleep_ns(IDLE_WAIT_SLICE_NS);
+    }
 }
 
 /*  ----------  Input  ----------  */

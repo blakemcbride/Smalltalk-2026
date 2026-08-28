@@ -42,6 +42,31 @@ Object >> doesNotUnderstand: aMessage [
 		signal
 ]
 
+{ #category : '*Kernel-Exceptions' }
+Object >> handles: anException [
+	"I am not an exception class, and somebody wrote me as the guard of an
+	 on:do: -- `on: 3 do:', `on: #foo do:', `on: 'oops' do:'.
+
+	 Exception>>findHandlerFrom: asks every guard it passes whether it
+	 handles the exception being signalled, and a guard that is not an
+	 exception class used to answer with a doesNotUnderstand -- which was
+	 correct and useless, because the doesNotUnderstand is itself a signal,
+	 and its search went back through the same frame (Bugs3 B4).  The frame
+	 is out of service during the question now, so the loop is gone
+	 whatever this answers; what this adds is the sentence.  A
+	 `3 does not understand #handles:' names the mechanism, and the reader
+	 has to know how on:do: works to see that the 3 was the guard.
+
+	 On Object, at the cost of nothing, rather than a test in on:do: --
+	 which runs on every protected block, whether or not anything is ever
+	 signalled -- or a respondsTo: in the handler search, which runs once
+	 per frame per signal.  An object that legitimately answers handles:
+	 (an exception class; an ExceptionSet, should one arrive) defines its
+	 own and never reaches this."
+	^Error new signal: self printString,
+		' cannot be the guard of an on:do: -- it is not an exception class'
+]
+
 
 { #category : '*Kernel-Exceptions' }
 Object >> errorSubscriptBounds: index [
@@ -313,4 +338,53 @@ Object >> basicInspect [
 	 doors into the same hang."
 	self canOpenUserInterface ifFalse: [^self inspect].
 	InspectorView open: (Inspector inspect: self)
+]
+
+{ #category : '*Kernel-Exceptions' }
+Object >> cannotInterpret: aMessage [
+	"A message I do not understand, sent to me when nothing up my class
+	 chain implements doesNotUnderstand: either (Bugs3 B7).
+
+	 The interpreter looks for doesNotUnderstand: first and this second,
+	 both up the receiver's own chain, and Object has both so that removing
+	 one -- `Object removeSelector: #doesNotUnderstand:' is a line anybody
+	 can type -- leaves the other to raise the same catchable error.  Before
+	 there was a second, the VM printed a line and cleared its running flag,
+	 which under -serve ended the worker and so the pool: one reflective
+	 expression in one request took every other request down.
+
+	 The Blue Book reserves the selector for a class whose method dictionary
+	 is nil; Squeak sends it with the Message.  Here it is what a class
+	 chain with no doesNotUnderstand: gets, which is the same idea one step
+	 further out.  A receiver whose chain does not reach Object at all --
+	 `Behavior new new' -- gets neither, and the interpreter then sends
+	 Object's doesNotUnderstand: to it directly; see send_does_not_understand
+	 in src/interp/interp.c."
+	^MessageNotUnderstood new
+		message: aMessage;
+		receiver: self;
+		signal
+]
+
+{ #category : '*Kernel-Exceptions' }
+Object >> corruptMethod [
+	"The interpreter could not execute the method it was running on me
+	 (Bugs3 B11): a bytecode named a literal past the method's literal
+	 frame, the instruction pointer ran past the method's end, or a context
+	 it was asked to resume had an instruction or stack pointer outside its
+	 bounds.
+
+	 Sent in place of the ANSWER of that activation, which has already been
+	 abandoned -- the bytes that would have come next are the bytes that
+	 were wrong -- so what this answers is what the sender receives.  A
+	 handler around the call sees a CorruptMethod; unhandled, it reports
+	 and the sender gets nil.  Not resumable: there is nothing to resume.
+
+	 A CompiledMethod's bytes are written through at:put:, which is how the
+	 1983 compiler writes them, so the writing cannot be refused; the check
+	 is made when the bytes are run, where before it there was a segfault.
+	 A constant message, like recursionDepthExceeded's: the VM has already
+	 named the method on stderr."
+	^CorruptMethod new signal:
+		'the running method cannot be executed: its bytecodes or its context''s registers are outside their bounds'
 ]

@@ -29,7 +29,10 @@ AnthropicTest >> testTheWire [
 	self assert: (body stringAt: 'model') equals: 'claude-test'.
 	self assert: (body integerAt: 'max_tokens') equals: 100.
 	self assert: (body stringAt: 'system') equals: 'Be brief'.
-	self assert: (body numberAt: 'temperature') equals: 0.3.
+	"3/10 and not 0.3: the wire carries the decimal 0.3, the reader gives it
+	 back as the exact 3/10, and a Fraction is equal to a Float only when the
+	 Float is exactly that value (Bugs3 B36) -- which 0.3 is not."
+	self assert: (body numberAt: 'temperature') equals: 3/10.
 	self deny: (body includesKey: 'top_p').
 	self deny: (body includesKey: 'stream').
 	self deny: (body includesKey: 'tools').

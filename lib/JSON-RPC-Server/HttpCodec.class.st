@@ -46,49 +46,83 @@ HttpCodec class >> mimeTypeForName: aFileName [
 { #category : 'percent encoding' }
 HttpCodec class >> percentDecode: aString [
 	"`%41' is A and `+' is a space, as in a query string or a form."
-	| out i c |
-	out := WriteStream on: (String new: aString size).
-	i := 1.
-	[i <= aString size] whileTrue: [
-		c := aString at: i.
-		(c = $% and: [i + 2 <= aString size])
-			ifTrue: [ | value |
-				value := self hexValueOf: (aString copyFrom: i + 1 to: i + 2).
-				value isNil
-					ifTrue: [out nextPut: c. i := i + 1]
-					ifFalse: [out nextPut: (Character value: value). i := i + 3]]
-			ifFalse: [
-				out nextPut: (c = $+ ifTrue: [$ ] ifFalse: [c]).
-				i := i + 1]].
-	^out contents
+	^self decode: aString plusIsSpace: true
 ]
 
 { #category : 'percent encoding' }
 HttpCodec class >> percentDecodePath: aString [
 	"As percentDecode:, but `+' stays a plus: it is only a space in a
 	 form, and this is a path."
+	^self decode: aString plusIsSpace: false
+]
+
+{ #category : 'private' }
+HttpCodec class >> decode: aString plusIsSpace: aBoolean [
+	"The one decoder both of the above are, so that a change to what an
+	 escape means cannot be made in one of them and forgotten in the other.
+
+	 A MALFORMED ESCAPE IS REFUSED, with 400, rather than passed through as
+	 the characters that spell it.  Passing it through was the older
+	 behaviour and it is indefensible for the same reason `01' is not JSON:
+	 `%zz' means nothing, every server in the world decides for itself what
+	 to do with it, and a proxy that decides differently from this one is
+	 how a path gets past a filter here and arrives somewhere else as a
+	 different path.  Refusing is the one answer no two parties can disagree
+	 about.  A `%' at the end of the string, and a `%' with one character
+	 after it, are the same fault and are refused the same way.
+
+	 The refusal names the position and not the characters: this string
+	 came off the wire and the message goes back on it, and there is no
+	 reason to reflect a stranger's bytes even into a plain-text body."
 	| out i c |
 	out := WriteStream on: (String new: aString size).
 	i := 1.
 	[i <= aString size] whileTrue: [
 		c := aString at: i.
-		(c = $% and: [i + 2 <= aString size])
+		c = $%
 			ifTrue: [ | value |
+				i + 2 <= aString size ifFalse: [
+					HttpError status: 400
+						reason: 'a percent escape at character ', i printString,
+							' has fewer than two digits after it'].
 				value := self hexValueOf: (aString copyFrom: i + 1 to: i + 2).
-				value isNil
-					ifTrue: [out nextPut: c. i := i + 1]
-					ifFalse: [out nextPut: (Character value: value). i := i + 3]]
-			ifFalse: [out nextPut: c. i := i + 1]].
+				value isNil ifTrue: [
+					HttpError status: 400
+						reason: 'the percent escape at character ', i printString,
+							' is not two hexadecimal digits'].
+				out nextPut: (Character value: value).
+				i := i + 3]
+			ifFalse: [
+				out nextPut: ((aBoolean and: [c = $+]) ifTrue: [$ ] ifFalse: [c]).
+				i := i + 1]].
 	^out contents
 ]
 
 { #category : 'private' }
 HttpCodec class >> hexValueOf: twoChars [
+	"The value of two hexadecimal digits, or nil when they are not two.
+
+	 asUppercase BEFORE digitValue, and Bugs3 B52 is what happens without
+	 it: 1983's Character>>digitValue answers the value only for $0 to $9
+	 and $A to $Z, and -1 for every lowercase letter.  The older code here
+	 guarded acceptance with `c asUppercase between: $A and: $F' and then
+	 took the value from the character as written, so every lowercase
+	 escape decoded to something else -- `%2f' answered 31 rather than 47,
+	 so an ordinary lowercase URL 404'd -- and `%0a', whose first digit is
+	 a $0 and whose second is a lowercase letter, computed 0 * 16 + -1 and
+	 handed Character value: -1 a subscript out of bounds.  That is not an
+	 HttpError, so it escaped the request parser, and the connection was
+	 dropped with no response at all.  The JSON parser's nextHex4
+	 documents the same trap and uppercases first.
+
+	 digitValue answers 10 to 35 for $A to $Z, so the range test is on the
+	 VALUE and not on the character: anything above 15 is a letter past $F
+	 and anything below zero is not a digit at all."
 	| value |
 	value := 0.
 	twoChars do: [:c | | d |
-		d := c digitValue.
-		(c isDigit or: [(c asUppercase between: $A and: $F)]) ifFalse: [^nil].
+		d := c asUppercase digitValue.
+		(d < 0 or: [d > 15]) ifTrue: [^nil].
 		value := value * 16 + d].
 	^value
 ]

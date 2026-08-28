@@ -59,3 +59,32 @@ BlockContext >> value: arg1 value: arg2 value: arg3 value: arg4 [
 	^self valueWithArguments:
 		(Array with: arg1 with: arg2 with: arg3 with: arg4)
 ]
+
+{ #category : '*Kernel-Protocol' }
+BlockContext >> valueWithArguments: anArray [
+	"Evaluate me with the elements of anArray as my arguments.
+
+	 1983's fallback reads the primitive's failure as `already being
+	 evaluated' when the count matches, and the count is not the only thing
+	 the primitive checks any more (Bugs3 B1): the elements are spread onto
+	 the CALLING method's stack, in a frame the compiler sized for that
+	 method's own pushes, and an Array that does not fit fails the primitive
+	 rather than overflowing the frame.  So the two reasons are told apart
+	 here, and the one that is new is named."
+	<primitive: 82>
+	anArray isArray ifFalse: [^self error: 'valueWithArguments: takes an Array'].
+	nargs = anArray size
+		ifFalse: [^self error: 'The block needs more or fewer arguments defined'].
+	^self error: 'valueWithArguments: cannot spread ' , anArray size printString
+		, ' arguments: the calling method''s frame has no room for them'
+]
+
+{ #category : '*Kernel-Protocol' }
+BlockContext >> deepCopy [
+	"Myself, for the reason BlockClosure>>deepCopy gives: a Blue Book
+	 block is its own activation record, and its home holds the sender
+	 chain and through it the image (Bugs3 B47).  ContextPart answers the
+	 same; this is here so that the class which IS the block in the
+	 bluebook dialect says so in its own name."
+	^self
+]

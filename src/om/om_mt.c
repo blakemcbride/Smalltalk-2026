@@ -255,6 +255,28 @@ next_identity_hash(om_magazine *mag)
     return mag->hash_next++;
 }
 
+/*
+ *  Carry the identity hashes on from past the highest one an image holds.
+ *
+ *  The counter restarts at one with the memory, and loading an image
+ *  restarts the memory -- so every object made after a load took a hash
+ *  the image's first objects already had.  While the hash was fourteen
+ *  bits nothing could tell: sixteen thousand values over a bootstrapped
+ *  image of a hundred and seventy thousand objects meant every value was
+ *  shared a dozen times over anyway.  At thirty bits (Bugs3 B33) the
+ *  loaded objects hold one dense run of values and the new ones would
+ *  start a second run at one, colliding pairwise with the oldest objects
+ *  in the image -- which are the kernel: the classes and selectors every
+ *  identity collection holds.  The loader says where the image's run
+ *  ends and the counter goes on from there.
+ */
+void
+OM_continue_identity_hashes_after(uint32_t hash)
+{
+    if (hash != UINT32_MAX && (uint32_t) ST_load_relaxed(&next_hash) <= hash)
+        ST_store_relaxed(&next_hash, hash + 1);
+}
+
 static om_magazine *
 magazine_of(void)
 {
@@ -523,12 +545,26 @@ OM_is_object(st_oop p)
 
     if (p == ST_OOP_INVALID || (p & 1))
         return 0;
-    index = (uint32_t) (p >> 1);
     /*
      *  Acquire, to pair with the release in table_alloc: seeing an index
      *  below the limit must also mean seeing the header stored there.
+     *
+     *  And compared at FULL width, before the value is narrowed to a table
+     *  index.  This used to read `index = (uint32_t) (p >> 1)' and compare
+     *  the narrowed value against the limit, while every accessor that
+     *  follows a yes from here -- OM_head, OM_refcount_of -- indexes with
+     *  the whole 64-bit value.  So an oop with anything in its upper
+     *  thirty-two bits and a plausible index in its lower ones was "an
+     *  object" to this guard and a wild pointer to the next line: one byte
+     *  flipped in the high half of a pointer field in an image file passed
+     *  the loader, passed this, and took the collector down in mark_visit
+     *  (Bugs3 B58).  Narrowing after the comparison makes the guard and
+     *  the accessors agree about what an oop is.
      */
-    if (index == 0 || index >= (uint32_t) ST_load_acquire(&st_om_table_limit))
+    if ((p >> 1) >= (st_oop) (uint32_t) ST_load_acquire(&st_om_table_limit))
+        return 0;
+    index = (uint32_t) (p >> 1);
+    if (index == 0)
         return 0;
     {
         om_header  *head = OM_table_get(index);
@@ -973,15 +1009,108 @@ OM_instantiate_bytes(st_oop class_pointer, uint32_t size)
     return instantiate(class_pointer, size, ST_FMT_BYTES, size);
 }
 
+/*
+ *  ----------  Releasing without recursing  ----------
+ *
+ *  Releasing an object releases its fields, and a field whose count
+ *  reaches zero is released in turn.  Written the obvious way that is a C
+ *  recursion one frame pair deep per object -- OM_deallocate,
+ *  OM_decrease_ref_object, OM_deallocate -- and its depth is the length of
+ *  the longest chain of objects that die together.  A linked list of
+ *  400,000 Arrays, dropped in a method, took every no-worker mode down
+ *  with SIGSEGV on the C stack: -bootstrap, -eval, -run, every image build
+ *  and every doctest (Bugs3 B8).  The same program survived under -serve
+ *  only because a worker's zero counts go through the epoch buckets, which
+ *  bucket_release drains in a loop.  The marker had already been made
+ *  iterative, with mark_stack, for exactly this shape of graph, so the
+ *  chain survived a collection and died on being dropped.
+ *
+ *  So the recursion is a worklist.  OM_deallocate is entered from outside,
+ *  sets `draining', and releases the one object; any object whose count
+ *  reaches zero while that is happening finds the flag set and is pushed
+ *  rather than released, and the outer call pops and releases until the
+ *  list is empty.  The list only grows as WIDE as one object's dying
+ *  children -- a chain of three million is never more than one entry deep
+ *  -- and it is thread-local because the bootstrap and the tests drive the
+ *  memory from threads that are not workers, and two of them must not
+ *  share a list.  A worker never fills it at all: with a pool running the
+ *  children retire into a bucket instead of coming back here.
+ *
+ *  If the list cannot grow, the object is left where it is: unreachable,
+ *  with a zero count, which is what the next collection sweeps.  That is
+ *  the same degradation the epoch buckets choose when they overflow, and
+ *  for the same reason -- the delicate part of a memory manager should fail
+ *  into the mechanism that already works.
+ */
+typedef struct {
+    uint32_t   *index;
+    uint32_t    n;
+    uint32_t    capacity;
+    int         draining;
+} om_release_work;
+
+static _Thread_local om_release_work    release_work;
+
+#define RELEASE_WORK_INITIAL    1024u
+#define RELEASE_WORK_KEEP       (64u * 1024u)
+
+static void release_one(st_oop p);
+
 void
 OM_deallocate(st_oop p)
+{
+    if (!OM_is_object(p))
+        return;
+    /*  A guaranteed pointer is not freed, whatever its count says.  */
+    if (p <= ST_LAST_IMMORTAL_OOP)
+        return;
+    if (release_work.draining) {
+        if (release_work.n == release_work.capacity) {
+            uint32_t    grown = release_work.capacity
+                                ? release_work.capacity * 2u
+                                : RELEASE_WORK_INITIAL;
+            uint32_t   *list  = (uint32_t *) realloc(release_work.index,
+                                                      (size_t) grown
+                                                      * sizeof *list);
+
+            if (!list)
+                return;         /*  the sweep will get it  */
+            release_work.index    = list;
+            release_work.capacity = grown;
+        }
+        release_work.index[release_work.n++] = (uint32_t) (p >> 1);
+        return;
+    }
+    release_work.draining = 1;
+    release_one(p);
+    while (release_work.n > 0)
+        release_one((st_oop) release_work.index[--release_work.n] << 1);
+    release_work.draining = 0;
+    /*
+     *  A list that grew to hold one enormous object's children need not
+     *  stay that size for the rest of the thread's life.
+     */
+    if (release_work.capacity > RELEASE_WORK_KEEP) {
+        free(release_work.index);
+        release_work.index    = NULL;
+        release_work.capacity = 0;
+    }
+}
+
+/*
+ *  Release ONE object: drop what its fields hold, then give its entry
+ *  back.  Only OM_deallocate calls this, and only with the worklist
+ *  armed, so a field released here that reaches zero is queued rather
+ *  than released underneath us.
+ */
+static void
+release_one(st_oop p)
 {
     om_header  *head;
     uint32_t    index;
 
     if (!OM_is_object(p))
         return;
-    /*  A guaranteed pointer is not freed, whatever its count says.  */
     if (p <= ST_LAST_IMMORTAL_OOP)
         return;
     index = (uint32_t) (p >> 1);
@@ -1150,7 +1279,27 @@ swap_identities_unguarded(void *user)
      *  The counts do not move: they are indexed by identity and the
      *  identities are what stayed still.  Putting them back after the
      *  swap was necessary only while a count lived in the body.
+     *
+     *  The identity hashes do not move either, and they live in the
+     *  headers that just did, so they are put back.  An identity hash
+     *  belongs to the identity for the object's whole life -- that is what
+     *  every identity collection holding it assumes -- and a two-way
+     *  become: is a change of body, not of identity: every reference in the
+     *  heap still names the same oop.  Left in the swapped headers, `self
+     *  become: newSet' in Set>>grow would have handed the Set a new hash
+     *  and left it in the wrong bucket of any IdentitySet that held it.
+     *  Fourteen bits hid this behind ordinary collisions; at thirty
+     *  (Bugs3 B33) it would have been visible, so it is fixed here rather
+     *  than widened along with everything else.  The one-way become:
+     *  forwards references to the other object and keeps that object's
+     *  hash, which is the right answer for that operation.
      */
+    {
+        uint32_t    hash = ha->hash;
+
+        ha->hash = hb->hash;
+        hb->hash = hash;
+    }
     return 1;
 }
 

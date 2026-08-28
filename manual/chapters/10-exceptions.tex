@@ -142,6 +142,10 @@ Error subclass: #InsufficientFunds
     poolDictionaries: ''
     category: 'MyStuff-Banking'
 
+InsufficientFunds >> requested: anAmount available: anotherAmount
+    requested := anAmount.
+    available := anotherAmount
+
 InsufficientFunds >> description
     ^'not enough money'
 

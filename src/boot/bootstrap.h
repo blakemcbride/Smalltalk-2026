@@ -133,6 +133,12 @@ st_oop  BOOT_smalltalk(void);
  */
 st_oop  BOOT_intern_symbol(const char *text, void *user);
 st_oop  BOOT_make_string(const char *text, void *user);
+/*
+ *  From bytes rather than a C string, so a NUL can be one of them.  The
+ *  compiler's string literals come through this when the source is a
+ *  String in the image; see make_string_n in compiler.h.  Bugs3 B28.
+ */
+st_oop  BOOT_make_string_n(const char *bytes, size_t length, void *user);
 st_oop  BOOT_make_float(double value, void *user);
 st_oop  BOOT_make_large_integer(int64_t value, void *user);
 st_oop  BOOT_make_array(st_oop *elements, unsigned count, void *user);

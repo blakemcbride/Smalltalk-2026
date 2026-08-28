@@ -16,11 +16,13 @@
 
 #include "om_mt.h"
 #include "om.h"
+#include "st_port.h"
 
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
 #include <stdlib.h>
+#include <errno.h>
 
 st_oop      st_om_vm_state[ST_VM_STATE_SLOTS];
 
@@ -41,7 +43,11 @@ uint32_t    st_om_image_ot_words;
  *  Refused by version rather than read one slot short, for the reason the
  *  fifth was.
  */
-#define IMAGE_VERSION   5
+/*
+ *  5 -> 6: a seventh VM-state slot, the #corruptMethod selector (Bugs3
+ *  B11).  Refused by version for the same reason as the two before it.
+ */
+#define IMAGE_VERSION   6
 
 static void
 fail(char *errbuf, size_t errlen, const char *fmt, ...)
@@ -109,8 +115,13 @@ body_bytes(uint32_t flags, uint32_t size)
     return size;
 }
 
-int
-OM_image_save(const char *path, char *errbuf, size_t errlen)
+/*
+ *  Write the whole image to `tmp'.  The messages name `path', the image
+ *  the caller asked for, because that is the name the caller knows; the
+ *  temporary is OM_image_save's business, below.
+ */
+static int
+write_image(const char *tmp, const char *path, char *errbuf, size_t errlen)
 {
     FILE       *f;
     uint32_t    index;
@@ -136,9 +147,9 @@ OM_image_save(const char *path, char *errbuf, size_t errlen)
      *  left -- and that is exactly the asymmetry this removes.
      */
     OM_collect();
-    f = fopen(path, "wb");
+    f = fopen(tmp, "wb");
     if (!f) {
-        fail(errbuf, errlen, "cannot write %s", path);
+        fail(errbuf, errlen, "cannot write %s: %s", tmp, strerror(errno));
         return -1;
     }
     if (fwrite(IMAGE_MAGIC, 1, IMAGE_MAGIC_LEN, f) != IMAGE_MAGIC_LEN
@@ -204,7 +215,221 @@ OM_image_save(const char *path, char *errbuf, size_t errlen)
             }
         }
     }
-    fclose(f);
+    /*
+     *  Everything above went into a stdio buffer; the last of it reaches
+     *  the kernel at fflush and the device at fsync, and either can be the
+     *  step that fails -- a full disk says so at the flush, not at the
+     *  fwrite that filled the buffer.  Checked, because a file this
+     *  function reports as written is about to replace the only image.
+     */
+    if (ST_file_sync(f) != 0) {
+        fail(errbuf, errlen, "%s: cannot flush the image to disk: %s", path,
+             strerror(errno));
+        fclose(f);
+        return -1;
+    }
+    if (fclose(f) != 0) {
+        fail(errbuf, errlen, "%s: cannot close the image: %s", path,
+             strerror(errno));
+        return -1;
+    }
+    return 0;
+}
+
+/*
+ *  Written beside the target and renamed over it, never written in place.
+ *
+ *  fopen(path, "wb") truncates the old image before the first byte of the
+ *  new one is written, so anything that stopped the write part way -- a
+ *  full disk, a file-size limit, a SIGINT, the process dying -- left the
+ *  only copy truncated: a 4.3 MB image cut to 1,024,000 bytes by a
+ *  `ulimit -f 1000', and refused at the next start with "truncated in
+ *  object 15173" (Bugs3 B10).  snapshotAs:, -o and the desktop's save all
+ *  come through here, so every one of them could destroy the image it was
+ *  asked to preserve.
+ *
+ *  So the new image goes to `<path>.tmp' in the same directory, is flushed
+ *  and synced to the device, closed, and only then renamed over the target
+ *  -- one step on every platform we build for; see ST_file_replace.  A
+ *  failure anywhere before the rename leaves the old file exactly as it
+ *  was, and the temporary is removed so it does not sit beside the image
+ *  pretending to be one.  The same directory, deliberately: a rename
+ *  across file systems is a copy, and a copy is not one step.
+ */
+int
+OM_image_save(const char *path, char *errbuf, size_t errlen)
+{
+    size_t  len = strlen(path);
+    char   *tmp = (char *) malloc(len + sizeof ".tmp");
+
+    if (errbuf && errlen)
+        errbuf[0] = '\0';
+    if (!tmp) {
+        fail(errbuf, errlen, "out of memory");
+        return -1;
+    }
+    memcpy(tmp, path, len);
+    memcpy(tmp + len, ".tmp", sizeof ".tmp");
+    if (write_image(tmp, path, errbuf, errlen) != 0) {
+        (void) remove(tmp);
+        free(tmp);
+        return -1;
+    }
+    if (ST_file_replace(tmp, path) != 0) {
+        fail(errbuf, errlen, "cannot replace %s with the new image: %s",
+             path, strerror(errno));
+        (void) remove(tmp);
+        free(tmp);
+        return -1;
+    }
+    free(tmp);
+    return 0;
+}
+
+/*
+ *  Every pointer the file gave us, checked before anything follows it.
+ *
+ *  The loader used to take the file's word for every oop: a pointer field
+ *  went into the body as read, and the first thing to look at it was the
+ *  collector's mark, which reads the header it names.  So a corrupt image
+ *  was found out by a segfault in mark_visit -- three of twenty-four
+ *  single-byte flips did that -- or not found out at all: a class pointer
+ *  aimed at a free entry, a field aimed past the table, both loaded and
+ *  ran until something reached the hole (Bugs3 B58).  OM_is_object guards
+ *  the collector now, but the interpreter reads fields with OM_head and no
+ *  guard at all, on purpose, because not asking is what an object table is
+ *  for.  The interpreter's guard is here: nothing gets into the table that
+ *  is not what the interpreter assumes about it.
+ *
+ *  What is assumed, and therefore checked, object by object: the format
+ *  bits name one of the three formats; the class pointer names an object
+ *  that is present; every field of a pointer object is a SmallInteger or
+ *  names a present object; a CompiledMethod's header is a SmallInteger and
+ *  each literal it counts is a SmallInteger or a present object, which is
+ *  the walk the marker makes; the guaranteed objects -- nil, true, false,
+ *  the kernel classes, the special selectors -- are all present, since the
+ *  interpreter names them by number and never asks; and each VM-state slot
+ *  is empty, a SmallInteger or a present object.  A file that fails any of
+ *  these is refused with the object's index in the message and nothing of
+ *  it runs: the caller reports and exits.
+ *
+ *  The walk also finds the highest identity hash in the image, for
+ *  OM_continue_identity_hashes_after, since every object is being looked
+ *  at anyway.
+ */
+static int
+oop_present(st_oop p, uint32_t limit)
+{
+    om_header  *head;
+
+    if (p == ST_OOP_INVALID || (p & 1))
+        return 0;
+    if ((p >> 1) >= (st_oop) limit)
+        return 0;
+    head = OM_table_get((uint32_t) (p >> 1));
+    return head != NULL && (head->flags & ST_FMT_FREE) == 0;
+}
+
+static int
+oop_valid(st_oop p, uint32_t limit)
+{
+    return (p & 1) != 0 || oop_present(p, limit);
+}
+
+static int
+check_image(const char *path, uint32_t limit, char *errbuf, size_t errlen,
+            uint32_t *max_hash)
+{
+    uint32_t    index;
+    unsigned    slot;
+
+    *max_hash = 0;
+    /*
+     *  The guaranteed objects first, on their own, because everything
+     *  refers to them: with nil missing, the first fault the walk below
+     *  would report is a VM-state slot or a class pointer that "is not an
+     *  object", and the useful message is that the image has no nil.
+     */
+    for (index = 1; ((st_oop) index << 1) <= ST_LAST_IMMORTAL_OOP; ++index) {
+        om_header  *head = index < limit ? OM_table_get(index) : NULL;
+
+        if (!head || (head->flags & ST_FMT_FREE)) {
+            fail(errbuf, errlen, "%s: guaranteed object %u is missing",
+                 path, index);
+            return -1;
+        }
+    }
+    for (slot = 0; slot < ST_VM_STATE_SLOTS; ++slot) {
+        st_oop  value = st_om_vm_state[slot];
+
+        if (value != ST_OOP_INVALID && !oop_valid(value, limit)) {
+            fail(errbuf, errlen,
+                 "%s: VM state slot %u holds 0x%llx, which is not an object",
+                 path, slot, (unsigned long long) value);
+            return -1;
+        }
+    }
+    for (index = 1; index < limit; ++index) {
+        om_header  *head = OM_table_get(index);
+        st_oop     *fields;
+        uint32_t    format;
+        uint32_t    i;
+
+        if (!head || (head->flags & ST_FMT_FREE))
+            continue;
+        if (head->hash > *max_hash)
+            *max_hash = head->hash;
+        format = head->flags & (ST_FMT_POINTERS | ST_FMT_WORDS | ST_FMT_BYTES);
+        if (format != ST_FMT_POINTERS && format != ST_FMT_WORDS
+         && format != ST_FMT_BYTES) {
+            fail(errbuf, errlen,
+                 "%s: object %u has format flags 0x%x, which name no format",
+                 path, index, (unsigned) head->flags);
+            return -1;
+        }
+        if (!oop_present(head->class_oop, limit)) {
+            fail(errbuf, errlen,
+                 "%s: object %u: class pointer 0x%llx is not an object",
+                 path, index, (unsigned long long) head->class_oop);
+            return -1;
+        }
+        fields = (st_oop *) (head + 1);
+        if (head->class_oop == ST_CLASS_COMPILED_METHOD) {
+            uint32_t    slots = head->size / (uint32_t) sizeof(st_oop);
+            uint32_t    literals;
+
+            if (slots == 0)
+                continue;
+            if ((fields[0] & 1) == 0) {
+                fail(errbuf, errlen,
+                     "%s: object %u: a CompiledMethod whose header 0x%llx "
+                     "is not a SmallInteger",
+                     path, index, (unsigned long long) fields[0]);
+                return -1;
+            }
+            literals = (uint32_t) ((fields[0] >> 1) & 63);
+            for (i = 1; i <= literals && i < slots; ++i) {
+                if (!oop_valid(fields[i], limit)) {
+                    fail(errbuf, errlen,
+                         "%s: object %u: literal %u is 0x%llx, which is "
+                         "not an object",
+                         path, index, i, (unsigned long long) fields[i]);
+                    return -1;
+                }
+            }
+        }
+        if (format != ST_FMT_POINTERS)
+            continue;
+        for (i = 0; i < head->size; ++i) {
+            if (!oop_valid(fields[i], limit)) {
+                fail(errbuf, errlen,
+                     "%s: object %u: field %u is 0x%llx, which is not an "
+                     "object",
+                     path, index, i, (unsigned long long) fields[i]);
+                return -1;
+            }
+        }
+    }
     return 0;
 }
 
@@ -354,6 +579,20 @@ OM_image_load(const char *path, char *errbuf, size_t errlen)
         OM_table_set(index, head);
     }
     fclose(f);
+
+    /*
+     *  Before the collector, which is the first thing that would follow a
+     *  pointer -- see check_image.  A refused image leaves the table as it
+     *  is; the caller exits, and a test that loads another calls OM_init
+     *  through this function again.
+     */
+    {
+        uint32_t    max_hash;
+
+        if (check_image(path, limit, errbuf, errlen, &max_hash) != 0)
+            return -1;
+        OM_continue_identity_hashes_after(max_hash);
+    }
 
     st_om_image_ot_words     = limit;
     st_om_image_object_words = 0;

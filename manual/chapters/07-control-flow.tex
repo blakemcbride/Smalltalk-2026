@@ -131,13 +131,19 @@ makes the block ugly, that is the language suggesting the body wants to be its
 own method.
 
 When you need to leave a loop without leaving the method, wrap the loop in a
-block and call it:
+block that takes an exit and send it \ct{valueWithExit}. Sending \ct{value:}
+to the exit leaves the block at once, and \ct{valueWithExit} answers what the
+exit was given---or the block's own value when the exit is never taken:
 
 \begin{st}
-result := [:exit |
-    aCollection do: [:each |
-        each isBad ifTrue: [exit value: nil]].
-    #allGood] valueWithExit
+[:exit |
+    #(1 2 3) do: [:each |
+        each > 2 ifTrue: [exit value: each]].
+    #allGood] valueWithExit                "3"
+[:exit |
+    #(1 2) do: [:each |
+        each > 2 ifTrue: [exit value: each]].
+    #allGood] valueWithExit                "#allGood"
 \end{st}
 
 \ldots or, more simply, use \ct{detect:ifNone:}, which is that pattern with a

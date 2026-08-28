@@ -9,11 +9,15 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
+
+#ifdef ST_WINDOWS
+#include <io.h>         /*  _commit and _fileno, for ST_file_sync  */
+#endif
 
 #ifdef ST_POSIX
 #include <unistd.h>
 #include <time.h>
-#include <errno.h>
 /*
  *  sched_yield's own header.  Nothing here included it: glibc's
  *  <pthread.h> pulls it in, which is why this has always built, and
@@ -595,3 +599,69 @@ ST_time_ms_clock(void)
 {
     return (uint32_t) ((ST_time_monotonic_ns() / 1000000) & 0x3FFFFFFF);
 }
+
+/*  ----------  Files  ----------  */
+
+/*
+ *  Both halves flush the stream first, because the stdio buffer is the
+ *  one cache the kernel cannot see: syncing the descriptor under a stream
+ *  with bytes still in its buffer syncs everything but the end of the
+ *  file.
+ */
+
+#ifdef ST_WINDOWS
+
+int
+ST_file_sync(FILE *f)
+{
+    if (fflush(f) != 0)
+        return -1;
+    return _commit(_fileno(f)) == 0 ? 0 : -1;
+}
+
+int
+ST_file_replace(const char *from, const char *to)
+{
+    /*
+     *  MOVEFILE_REPLACE_EXISTING is the whole reason this is not rename():
+     *  the C library's rename fails on Windows when the target exists, and
+     *  the target existing is the normal case for a snapshot.
+     *  WRITE_THROUGH makes the call return only once the move is on disk.
+     */
+    if (MoveFileExA(from, to,
+                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+        return 0;
+    /*
+     *  Win32 reports through GetLastError and leaves errno alone, and the
+     *  caller prints strerror(errno) in its message; give it the nearest
+     *  errno so the message says "permission denied" rather than
+     *  "success".
+     */
+    switch (GetLastError()) {
+    case ERROR_ACCESS_DENIED:
+    case ERROR_SHARING_VIOLATION:   errno = EACCES; break;
+    case ERROR_FILE_NOT_FOUND:
+    case ERROR_PATH_NOT_FOUND:      errno = ENOENT; break;
+    case ERROR_NOT_SAME_DEVICE:     errno = EXDEV;  break;
+    default:                        errno = EIO;    break;
+    }
+    return -1;
+}
+
+#else
+
+int
+ST_file_sync(FILE *f)
+{
+    if (fflush(f) != 0)
+        return -1;
+    return fsync(fileno(f)) == 0 ? 0 : -1;
+}
+
+int
+ST_file_replace(const char *from, const char *to)
+{
+    return rename(from, to) == 0 ? 0 : -1;
+}
+
+#endif

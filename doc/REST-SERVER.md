@@ -237,6 +237,30 @@ bytes, more than a hundred headers, a body over the limit (64 MB by default)
 are refused before they are read. Kiss's `SecurityHeadersFilter` headers are
 sent with every response.
 
+**Framing is strict**, because the documented way to run this is behind a
+reverse proxy and two parsers that divide the same bytes into different
+messages is the whole of request smuggling. Each of these is 400: a line ended
+by a bare line feed, a field name with whitespace in it (`Content-Length : 25`),
+a second `Content-Length`, a `Content-Length` that is not all digits
+(`5, 5`), and `Transfer-Encoding` together with `Content-Length`. A malformed
+percent escape in the target — `%zz`, `%2`, a trailing `%` — is 400 as well,
+rather than passed through as the characters that spell it.
+
+**A header is one header.** A response header value holding a CR, an LF or a
+NUL, and a header name holding whitespace or a colon, raise — so a handler that
+copies request data into a `Location` or a `Set-Cookie` gets a 500 and a line on
+standard error rather than a reply with headers of the client's choosing. The
+refusal is deliberate: stripping the line ending would leave a redirect to a URL
+the handler did not write, with nothing anywhere saying so.
+
+**A file must really be under the document root.** `..` is caught by reading
+the path's segments; a symbolic link inside the root that points out of it is
+not visible in the path at all, so the file's resolved name and the root's are
+asked of the file system and compared, and anything outside is 403.
+
+**A `HEAD` answers the length a `GET` would have.** The response is built
+exactly as the `GET`'s and sent without its body.
+
 One `Process` per connection, forked by the accept loop and picked up by
 whichever worker is idle: that is the whole of the threading. The socket
 reaches the process as a method argument, because `whileTrue:` is inlined and

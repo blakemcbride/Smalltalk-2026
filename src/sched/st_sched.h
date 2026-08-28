@@ -148,6 +148,39 @@ int         SCHED_primitive_wait(void);
 int         SCHED_primitive_resume(void);
 int         SCHED_primitive_suspend(void);
 
+/*
+ *  This system's own, for stopping a process from outside it.  231 brings
+ *  a process to a stop wherever it is -- running on another worker
+ *  included -- and answers where that was; 232 ends the caller's own
+ *  process.  See the block above them in st_sched.c: they are the whole
+ *  of Bugs3 B16, and what Process>>terminate, >>suspend and
+ *  >>signalException: in lib/Concurrency are written over.
+ */
+int         SCHED_primitive_detach(void);            /*  231  */
+int         SCHED_primitive_terminate_active(void);  /*  232  */
+
+/*
+ *  What each worker has in its hands, published for the others.  A row
+ *  is claimed when a thread registers its interpreter and cleared when it
+ *  unregisters; a worker that took its first process by hand rather than
+ *  through a switch says so with SCHED_publish_active.
+ */
+void        SCHED_hands_register(unsigned slot);
+void        SCHED_hands_unregister(void);
+void        SCHED_publish_active(void);
+
+/*
+ *  Stop every other worker taking or running anything, wait until each
+ *  has parked what it ran onto a ready list, and let them go again: what
+ *  a snapshot needs so that the image it writes holds every process
+ *  somewhere a reloaded worker can find it.  wait answers 0 if some
+ *  worker had not parked within the timeout, in which case the snapshot
+ *  is refused rather than written short a process.
+ */
+void        SCHED_freeze(void);
+int         SCHED_wait_frozen(int64_t timeout_ns);
+void        SCHED_thaw(void);
+
 /*  Set by primitive 93; signalled when input arrives.  */
 /*
  *  The delay timer -- primitive 136.  See the block in st_sched.c for why

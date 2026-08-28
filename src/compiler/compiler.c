@@ -22,6 +22,52 @@
 #define MAX_TEMPS       64
 #define MAX_ARGS        16
 #define MAX_BLOCK_DEPTH 16
+
+/*
+ *  How deeply an expression may nest, in parentheses, braces, blocks and
+ *  literal arrays together.
+ *
+ *  This is a C-stack limit made visible.  compile_primary reaches
+ *  compile_expression for a parenthesis and compile_expression reaches
+ *  compile_primary again, and each turn of that holds two compiler_marks
+ *  -- each carrying a whole st_token -- plus a name buffer, about 2.7 KB;
+ *  three thousand parentheses exhausted an 8 MB thread stack and the
+ *  server died of SIGSEGV with nothing to read.  A literal array nested
+ *  ten thousand deep did the same through parse_literal_array, which keeps
+ *  64 oops per level.  Nothing counted depth: MAX_SCOPES bounds real
+ *  blocks, "method is too long" happens to save nested conditionals, and
+ *  parentheses emit no bytes at all.  Bugs3 B2.
+ *
+ *  256 is far past any method anyone writes and far short of the stack:
+ *  a quarter of a megabyte at the worst per-level cost, on every thread
+ *  this compiler runs on.  1983's Parser raises RecursionDepthExceeded at
+ *  its own ceiling; this one refuses by name at a lower one.
+ */
+#define MAX_NESTING     256
+
+/*
+ *  What the bytecode set can address, which the header and the extended
+ *  bytecodes fix and this compiler must refuse rather than mask:
+ *
+ *      temporaries and arguments   header temp field, five bits      31
+ *      a frame slot                bytecodes 128..130, six bits       63
+ *      an instance variable        bytecodes 128..130, six bits       63
+ *      a method's arguments        header extension, five bits        31
+ *      a block's arguments         bytecode 143, four bits            15
+ *      a vector's slots            bytecode 138, seven bits          127
+ *
+ *  Every one of these used to be masked away at emission -- `temps & 31',
+ *  `index & 63', `argc & 15' -- so a method with 32 temporaries started
+ *  its stack on top of its first temporary, the 65th instance variable
+ *  read and wrote the first, and a 16-argument block installed with
+ *  numArgs 0.  Wrong answers, nothing said.  Bugs3 B22, B23, B24.
+ */
+#define MAX_HEADER_TEMPS    31
+#define MAX_FRAME_INDEX     63
+#define MAX_IVAR_INDEX      63
+#define MAX_METHOD_ARGS     31
+#define MAX_BLOCK_ARGS      15
+#define MAX_VECTOR_SIZE     127
 /*
  *  A byte-array literal's size.
  *
@@ -201,6 +247,22 @@ typedef struct {
     char        names[MAX_TEMPS][MAX_NAME];
     unsigned    name_count;
     unsigned    argument_count;
+    /*
+     *  Which of `names' are ARGUMENTS, so that an assignment to one can be
+     *  refused.  1983's Parser says "Cannot store into argument" for a
+     *  method argument, and this compiler stored into any name it could
+     *  find a slot for, so `zzArg: a  a := 5. ^a' compiled and answered
+     *  5.  Bugs3 B31.  Kept beside names[] because that is the table the
+     *  Blue Book dialect resolves from; the closure dialect keeps the same
+     *  fact in var_decl.is_argument.
+     */
+    unsigned char name_is_argument[MAX_TEMPS];
+
+    /*
+     *  How many expressions, literal arrays and blocks are open around the
+     *  one being compiled.  Compared against MAX_NESTING, which see.
+     */
+    unsigned    depth;
 
     /*
      *  The most names ever in scope at once.
@@ -456,14 +518,42 @@ emit_push_literal_variable(st_compiler *c, st_oop association)
     }
 }
 
+/*
+ *  The extended push and store bytecodes carry a two-bit kind and a six-bit
+ *  index, so 63 is the last frame slot and the last instance variable they
+ *  can name.  Masking a larger index down named a DIFFERENT slot: the 65th
+ *  instance variable was read and written as the first, and temporary 64
+ *  as temporary 0.  Refused here, once, for every emitter that writes the
+ *  six-bit form.  Bugs3 B22, B23.
+ */
+static int
+frame_index_fits(st_compiler *c, unsigned index)
+{
+    if (index <= MAX_FRAME_INDEX)
+        return 1;
+    fail(c, "this frame needs %u slots and the bytecode set addresses %u",
+         index + 1, (unsigned) MAX_FRAME_INDEX + 1);
+    return 0;
+}
+
+static int
+receiver_index_fits(st_compiler *c, unsigned index)
+{
+    if (index <= MAX_IVAR_INDEX)
+        return 1;
+    fail(c, "instance variable %u is beyond the %u the bytecode set can "
+            "address", index + 1, (unsigned) MAX_IVAR_INDEX + 1);
+    return 0;
+}
+
 static void
 emit_push_temporary(st_compiler *c, unsigned index)
 {
     if (index < 16)
         emit(c, (uint8_t) (16 + index));
-    else {
+    else if (frame_index_fits(c, index)) {
         emit(c, 128);
-        emit(c, (uint8_t) (0x40 | (index & 63)));
+        emit(c, (uint8_t) (0x40 | index));
     }
 }
 
@@ -472,9 +562,9 @@ emit_push_receiver_variable(st_compiler *c, unsigned index)
 {
     if (index < 16)
         emit(c, (uint8_t) index);
-    else {
+    else if (receiver_index_fits(c, index)) {
         emit(c, 128);
-        emit(c, (uint8_t) (index & 63));
+        emit(c, (uint8_t) index);
     }
 }
 
@@ -507,8 +597,10 @@ emit_store_temporary(st_compiler *c, unsigned index, int pop)
         emit(c, (uint8_t) (104 + index));
         return;
     }
+    if (!frame_index_fits(c, index))
+        return;
     emit(c, (uint8_t) (pop ? 130 : 129));
-    emit(c, (uint8_t) (0x40 | (index & 63)));
+    emit(c, (uint8_t) (0x40 | index));
     if (!pop)
         note_store(c, at, STORE_TEMPORARY, index, ST_NIL);
 }
@@ -522,8 +614,10 @@ emit_store_receiver_variable(st_compiler *c, unsigned index, int pop)
         emit(c, (uint8_t) (96 + index));
         return;
     }
+    if (!receiver_index_fits(c, index))
+        return;
     emit(c, (uint8_t) (pop ? 130 : 129));
-    emit(c, (uint8_t) (index & 63));
+    emit(c, (uint8_t) index);
     if (!pop)
         note_store(c, at, STORE_RECEIVER, index, ST_NIL);
 }
@@ -889,6 +983,19 @@ plan_frames(st_compiler *c)
                 c->decls[i].slot = scope->vector_size++;
         }
         scope->has_vector = scope->vector_size > 0;
+        /*
+         *  The vector is made by bytecode 138, whose operand keeps its top
+         *  bit for "take the elements off the stack" and seven bits for
+         *  the size.  A vector of 128 would have been emitted as that
+         *  flag plus a size of 0 and popped nothing into nothing.  MAX_DECLS
+         *  is 192, so it is reachable.  Bugs3 B22's family.
+         */
+        if (scope->vector_size > MAX_VECTOR_SIZE) {
+            fail(c, "%u names are shared with blocks and assigned in one "
+                    "scope; the bytecode set holds %u in a vector",
+                 scope->vector_size, (unsigned) MAX_VECTOR_SIZE);
+            return;
+        }
 
         /*  Arguments first, in declaration order, as an activation fills them. */
         next = 0;
@@ -1014,6 +1121,25 @@ resolve_scoped(st_compiler *c, const char *name, int assigning, var_ref *out)
     note_use(c, d, assigning);
     decl = &c->decls[d];
 
+    /*
+     *  A METHOD argument is not assignable: 1983's Parser says "Cannot
+     *  store into argument", and this compiler stored into it.  A block
+     *  argument stays assignable, as it is in 1983 -- Encoder>>autoBind:
+     *  makes it an ordinary temporary -- and the library uses that:
+     *  ChangeList>>list writes `fieldList do: [:f | f _ c perform: f ...]'.
+     *  Pharo refuses the block case too, but every 1983 method is
+     *  recompiled through this dialect the moment somebody accepts it in
+     *  a Browser, so the 1983 rule is the one this compiler can afford.
+     *  The method's arguments are the ones declared in scope zero.
+     *  Bugs3 B31.
+     */
+    if (assigning && decl->is_argument && decl->scope == 0) {
+        fail(c, "cannot assign to argument '%s'", name);
+        out->kind  = VAR_TEMPORARY;
+        out->index = 0;
+        return 1;
+    }
+
     if (c->pass == 0) {
         /*
          *  Nothing is laid out yet, so answer something structurally right
@@ -1068,6 +1194,17 @@ resolve_for(st_compiler *c, const char *name, int assigning)
         /*  Fall through to instance variables and globals, as below.  */
         for (i = 0; i < c->ctx->instance_variable_count; ++i) {
             if (strcmp(c->ctx->instance_variables[i], name) == 0) {
+                /*
+                 *  Named here, where the name is known, as well as in the
+                 *  emitter: "instance variable 65" is the same fact as
+                 *  "'v65' is beyond the 64th", and the second is what a
+                 *  person can act on.  Bugs3 B23.
+                 */
+                if (i > MAX_IVAR_INDEX)
+                    fail(c, "'%s' is instance variable %u of this class, "
+                            "and the bytecode set addresses only the "
+                            "first %u", name, i + 1,
+                         (unsigned) MAX_IVAR_INDEX + 1);
                 v.kind  = VAR_INSTANCE;
                 v.index = i;
                 return v;
@@ -1111,6 +1248,15 @@ resolve_for(st_compiler *c, const char *name, int assigning)
      */
     for (i = c->name_count; i-- > 0; ) {
         if (strcmp(c->names[i], name) == 0) {
+            /*
+             *  1983's rule exactly: a METHOD argument cannot be stored
+             *  into.  A block argument here is a temporary of the home
+             *  frame -- Encoder>>autoBind: makes it one -- and 1983 let a
+             *  block store into its own argument, so this dialect does
+             *  too; only the closure dialect refuses both.  Bugs3 B31.
+             */
+            if (assigning && c->name_is_argument[i])
+                fail(c, "cannot assign to argument '%s'", name);
             v.kind  = VAR_TEMPORARY;
             v.index = i;
             return v;
@@ -1118,6 +1264,10 @@ resolve_for(st_compiler *c, const char *name, int assigning)
     }
     for (i = 0; i < c->ctx->instance_variable_count; ++i) {
         if (strcmp(c->ctx->instance_variables[i], name) == 0) {
+            if (i > MAX_IVAR_INDEX)
+                fail(c, "'%s' is instance variable %u of this class, and "
+                        "the bytecode set addresses only the first %u",
+                     name, i + 1, (unsigned) MAX_IVAR_INDEX + 1);
             v.kind  = VAR_INSTANCE;
             v.index = i;
             return v;
@@ -1140,6 +1290,56 @@ static var_ref
 resolve(st_compiler *c, const char *name)
 {
     return resolve_for(c, name, 0);
+}
+
+/*
+ *  Add a name to names[], the flat table both dialects keep of a method's
+ *  arguments and temporaries (and, in the Blue Book dialect, of every
+ *  block's as well, since a Blue Book block lives in its home frame).
+ *
+ *  Two refusals live here rather than at the six places that used to
+ *  write the table.  A name already in the table from `from' on is a
+ *  DUPLICATE -- `| a a |', or `foo: a | a |', or `[:a :a | ]' -- which
+ *  1983's Encoder refuses as "Name is already defined" and this compiler
+ *  accepted, giving the second declaration a slot of its own that the
+ *  first name's uses never saw.  And a table with no room used to skip
+ *  the name in silence, so the 65th temporary was simply undeclared at
+ *  its first use, a message about the wrong thing.  Bugs3 B31, B22.
+ *
+ *  `from' is where the caller's own declaration list begins: a block or
+ *  an inlined block checks against its own arguments and temporaries,
+ *  not against the enclosing method's, because shadowing an outer name
+ *  is legal and 1983's block arguments do it on purpose.
+ */
+static int
+name_declared_since(const st_compiler *c, const char *name, unsigned from)
+{
+    unsigned    i;
+
+    for (i = from; i < c->name_count; ++i) {
+        if (strcmp(c->names[i], name) == 0)
+            return 1;
+    }
+    return 0;
+}
+
+static int
+add_name(st_compiler *c, const char *name, unsigned from, int is_argument)
+{
+    if (name_declared_since(c, name, from)) {
+        fail(c, "'%s' is already declared", name);
+        return 0;
+    }
+    if (c->name_count >= MAX_TEMPS) {
+        fail(c, "more than %d names in one method", MAX_TEMPS);
+        return 0;
+    }
+    if (!name_fits(c, name))
+        return 0;
+    snprintf(c->names[c->name_count], MAX_NAME, "%s", name);
+    c->name_is_argument[c->name_count] = (unsigned char) (is_argument != 0);
+    ++c->name_count;
+    return 1;
 }
 
 static void
@@ -1227,6 +1427,26 @@ integer_literal(st_compiler *c)
 }
 
 /*
+ *  One string literal, the whole of it.
+ *
+ *  A String may hold a NUL and a string literal may spell one -- that is
+ *  what `(String with: (Character value: 0) with: $a) storeString' writes
+ *  -- and make_string takes a C string, which ends at the first NUL.  So
+ *  the literal's byte count goes with its bytes, through make_string_n,
+ *  when the context offers it; a context that offers only make_string
+ *  (the bootstrap, whose source comes from files as C strings anyway)
+ *  gets what it always got.  Bugs3 B28.
+ */
+static st_oop
+string_literal(st_compiler *c)
+{
+    if (c->ctx->make_string_n)
+        return c->ctx->make_string_n(LEX_text(&c->token),
+                                     c->token.text_length, c->ctx->user);
+    return c->ctx->make_string(LEX_text(&c->token), c->ctx->user);
+}
+
+/*
  *  The elements of one literal array, however many there are.
  *
  *  This used to be `st_oop elements[256]' with the store past the end
@@ -1282,8 +1502,31 @@ elements_close(literal_elements *e)
         free(e->elements);
 }
 
+static st_oop parse_literal_array_body(st_compiler *c);
+
+/*
+ *  The depth guard around the recursion; see MAX_NESTING.  A literal array
+ *  nested ten thousand deep used to recurse through here with 64 oops of
+ *  automatic storage per level until the stack ran out.  Bugs3 B2.
+ */
 static st_oop
 parse_literal_array(st_compiler *c)
+{
+    st_oop  result;
+
+    if (c->depth >= MAX_NESTING) {
+        fail(c, "expression nested too deeply; more than %d levels",
+             MAX_NESTING);
+        return ST_NIL;
+    }
+    ++c->depth;
+    result = parse_literal_array_body(c);
+    --c->depth;
+    return result;
+}
+
+static st_oop
+parse_literal_array_body(st_compiler *c)
 {
     literal_elements    elements;
     st_oop              result;
@@ -1327,7 +1570,7 @@ parse_literal_array(st_compiler *c)
             advance(c);
             break;
         case ST_TOK_STRING:
-            element = c->ctx->make_string(LEX_text(&c->token), c->ctx->user);
+            element = string_literal(c);
             advance(c);
             break;
         case ST_TOK_CHARACTER:
@@ -1513,7 +1756,15 @@ parse_literal_array(st_compiler *c)
             return ST_NIL;
         }
     }
-    accept(c, ST_TOK_RPAREN);
+    /*
+     *  Expected, not accepted.  The loop above stops at a right
+     *  parenthesis or at the end of the text, and at the end of the text
+     *  an `accept' simply answered no: `zzUnterm3 ^ #(1 2' compiled, with
+     *  everything to the end of the method read as symbols into the
+     *  array.  1983 says "right parenthesis expected".  Bugs3 B31.
+     */
+    if (!accept(c, ST_TOK_RPAREN))
+        fail(c, "expected ) closing a literal array");
     result = c->ctx->make_array(elements.elements, elements.count,
                                 c->ctx->user);
     elements_close(&elements);
@@ -1619,7 +1870,7 @@ pragma_literal(st_compiler *c, pragma_arg *out)
     case ST_TOK_STRING:
         out->is_string = 1;
         snprintf(out->text, sizeof out->text, "%s", c->token.text);
-        out->value = c->ctx->make_string(LEX_text(&c->token), c->ctx->user);
+        out->value = string_literal(c);
         break;
     case ST_TOK_SYMBOL:
         snprintf(out->text, sizeof out->text, "%s", c->token.text);
@@ -1869,6 +2120,39 @@ parse_pragma(st_compiler *c)
  *  blocks are real blocks and which are inlined conditionals, and stay in
  *  agreement about it forever.
  */
+/*
+ *  Declare one of a closure's own arguments or temporaries.
+ *
+ *  A name already declared by THIS block -- from `first_decl', where the
+ *  block's declarations begin -- is a duplicate, `[:a :a | ]' or
+ *  `[:a | | a | ]', and is refused as 1983's Encoder refuses it.  A name
+ *  declared further out is shadowing, which is legal.  Pass one only walks
+ *  the declarations pass zero made, so the check is pass zero's.  Bugs3
+ *  B31.
+ */
+static int
+block_declared(const st_compiler *c, const char *name, unsigned first_decl)
+{
+    unsigned    i;
+
+    for (i = first_decl; i < c->decl_count; ++i) {
+        if (strcmp(c->decls[i].name, name) == 0)
+            return 1;
+    }
+    return 0;
+}
+
+static void
+declare_in_block(st_compiler *c, const char *name, unsigned first_decl,
+                 int is_argument)
+{
+    if (c->pass == 0 && block_declared(c, name, first_decl)) {
+        fail(c, "'%s' is already declared", name);
+        return;
+    }
+    declare(c, name, is_argument);
+}
+
 static void
 compile_closure(st_compiler *c)
 {
@@ -1876,6 +2160,7 @@ compile_closure(st_compiler *c)
     unsigned        scope;
     scope_info     *info;
     unsigned        argc = 0;
+    unsigned        first_decl = c->decl_count;
     size_t          size_at;
     size_t          body_start;
     unsigned        i;
@@ -1910,9 +2195,21 @@ compile_closure(st_compiler *c)
             c->current_scope = outer_scope;
             return;
         }
-        declare(c, c->token.text, 1);
+        declare_in_block(c, c->token.text, first_decl, 1);
         ++argc;
         advance(c);
+    }
+    /*
+     *  Bytecode 143 gives numArgs four bits.  Sixteen arguments used to be
+     *  emitted as `argc & 15' -- zero -- and the block installed with
+     *  numArgs 0, answering wrongly to anyone who asked.  1983 refuses a
+     *  sixteen-argument block too, in its own words.  Bugs3 B24.
+     */
+    if (argc > MAX_BLOCK_ARGS) {
+        fail(c, "a block may have at most %d arguments; this one has %u",
+             MAX_BLOCK_ARGS, argc);
+        c->current_scope = outer_scope;
+        return;
     }
     if (argc > 0 && !at(c, ST_TOK_RBRACKET) && !accept_argument_bar(c)) {
         fail(c, "expected | after block arguments");
@@ -1922,15 +2219,32 @@ compile_closure(st_compiler *c)
     /*  Block-local temporaries, which here really are local.  */
     if (at(c, ST_TOK_BAR)) {
         compiler_mark   before_temps;
+        char            duplicate[sizeof c->token.text];
 
+        duplicate[0] = '\0';
         mark(c, &before_temps);
         advance(c);
         while (at(c, ST_TOK_IDENTIFIER)) {
+            /*
+             *  Speculative, like the Blue Book path: `[:a | a | c]' is a
+             *  send, not a declaration, and the duplicate can only be
+             *  reported once the closing bar has made it one.
+             */
+            if (c->pass == 0 && !duplicate[0]
+             && block_declared(c, c->token.text, first_decl))
+                snprintf(duplicate, sizeof duplicate, "%s", c->token.text);
             declare(c, c->token.text, 0);
             advance(c);
         }
-        if (!accept(c, ST_TOK_BAR))
+        if (accept(c, ST_TOK_BAR)) {
+            if (duplicate[0]) {
+                fail(c, "'%s' is already declared", duplicate);
+                c->current_scope = outer_scope;
+                return;
+            }
+        }  else  {
             rewind_to(c, &before_temps);
+        }
     }
 
     /*  The copied values, taken from the frame this block is created in.  */
@@ -2056,8 +2370,7 @@ compile_primary(st_compiler *c, var_ref *out_var)
         advance(c);
         return;
     case ST_TOK_STRING:
-        emit_push_literal_constant(c,
-            c->ctx->make_string(LEX_text(&c->token), c->ctx->user));
+        emit_push_literal_constant(c, string_literal(c));
         advance(c);
         return;
     case ST_TOK_CHARACTER:
@@ -2092,28 +2405,37 @@ compile_primary(st_compiler *c, var_ref *out_var)
          *  Unlike #(...) the elements are expressions evaluated at run time,
          *  so this is code rather than a literal:
          *
-         *      push Array; push n; send new:
-         *      for each element:  dup; push i; <element>; at:put:; pop
+         *      <element> <element> ... <element>
+         *      push new Array of n, taking the n elements off the stack
          *
-         *  at:put: answers the value it stored rather than the collection,
-         *  which is why each element ends with a pop rather than leaving the
-         *  array on top.
+         *  which is bytecode 138 with the top bit of its operand set --
+         *  the form the interpreter has implemented all along for exactly
+         *  this, and the one Squeak and Pharo emit.  Each element is
+         *  compiled once, in order, and the count is known by the time the
+         *  bytecode that needs it is written.
          *
-         *  The size has to be pushed before any element is compiled, and it
-         *  is not known until they all have been -- so the elements are
-         *  compiled once to count them, the buffer is rewound, and they are
-         *  compiled again for real.  That is the same mark/rewind the
-         *  cascade and whileTrue: receiver already use, for the same reason:
-         *  a decision that can only be made after reading ahead.  The cost is
-         *  compiling nested braces 2^depth times, which in practice is twice.
+         *  It used to be `Array new: n' followed by dup, push i, element,
+         *  at:put:, pop for every element.  That spent a LITERAL on each
+         *  index from 3 up (only -1..2 have push bytecodes), so eight
+         *  strings cost fifteen literals and a brace of sixty-two strings
+         *  was refused for exceeding the frame -- and the count had to be
+         *  pushed before any element was compiled, so the elements were
+         *  compiled once to count them and again for real, which compiled
+         *  a brace nested d deep 2^d times: a 22-deep brace took 68
+         *  seconds and a Tonel file holding one hung the server's reload.
+         *  Bugs3 B30.  One change removes both.
+         *
+         *  The operand keeps seven bits for the count, so 127 elements is
+         *  the ceiling and it is refused by name.  Keeping the old shape
+         *  as a fallback past it was considered and is pointless: it
+         *  spends a literal per index from 3 up, so a brace of 128 or more
+         *  elements could never have compiled that way either -- it was
+         *  refused for its literals -- and the refusal below at least says
+         *  what the limit is.
          */
-        compiler_mark   first_element;
         unsigned        count = 0;
-        unsigned        i;
-        var_ref         array_class;
 
         advance(c);
-        mark(c, &first_element);
         while (!c->failed && !at(c, ST_TOK_RBRACE) && !at(c, ST_TOK_END)) {
             compile_expression(c);
             ++count;
@@ -2122,28 +2444,20 @@ compile_primary(st_compiler *c, var_ref *out_var)
         }
         if (c->failed)
             return;
-        rewind_to(c, &first_element);
-        /*
-         *  The rewind moved the end of the buffer backwards, so any recorded
-         *  offset into it is now stale -- the same hazard patch_jump guards
-         *  against, and worth the two lines rather than the argument that
-         *  nothing can reach it from here.
-         */
-        c->loop_nil_end = 0;
-        c->store_end    = 0;
-
-        array_class = resolve(c, "Array");
-        emit_push_variable(c, &array_class, "Array");
-        emit_push_integer(c, (int64_t) count);
-        emit_send(c, "new:", 1, 0);
-        for (i = 1; i <= count; ++i) {
-            emit(c, 136);                   /*  dup the array          */
-            emit_push_integer(c, (int64_t) i);
-            compile_expression(c);
-            emit_send(c, "at:put:", 2, 0);
-            emit(c, 135);                   /*  drop at:put:'s answer  */
-            accept(c, ST_TOK_PERIOD);
+        if (count > MAX_VECTOR_SIZE) {
+            fail(c, "a brace array may have at most %u elements; this one "
+                    "has %u", (unsigned) MAX_VECTOR_SIZE, count);
+            return;
         }
+        emit(c, 138);
+        emit(c, (uint8_t) (128 | count));
+        /*
+         *  The last element's store or loop nil is no longer the last thing
+         *  emitted, and must not be taken back by discard_statement_value
+         *  as if it were.  Same reason compile_closure clears them.
+         */
+        c->loop_nil_end = NO_LOOP_NIL;
+        c->store_end    = NO_STORE;
         if (!accept(c, ST_TOK_RBRACE))
             fail(c, "a dynamic array must end with }");
         return;
@@ -2218,14 +2532,37 @@ compile_primary(st_compiler *c, var_ref *out_var)
                     break;
                 }
             }
-            if (slot == c->name_count && c->name_count < MAX_TEMPS) {
-                name_fits(c, LEX_text(&c->token));
-                snprintf(c->names[c->name_count], MAX_NAME, "%s",
-                         LEX_text(&c->token));
-                ++c->name_count;
+            /*
+             *  Sharing an ENCLOSING name is the rule above; sharing a name
+             *  this same block already declared is `[:a :a | ]', which is
+             *  a mistake and is refused as one.  Bugs3 B31.
+             */
+            if (slot != c->name_count && slot >= first_arg) {
+                fail(c, "'%s' is already declared", c->token.text);
+                return;
             }
-            if (argc < MAX_ARGS)
-                arg_slots[argc] = slot;
+            /*
+             *  Added as a plain name, not as an argument: a Blue Book block
+             *  argument is a temporary of the home frame and 1983 lets a
+             *  block store into it -- ChangeList>>list does -- so only the
+             *  method's own arguments are marked; see resolve_for.
+             */
+            if (slot == c->name_count
+             && !add_name(c, LEX_text(&c->token), first_arg, 0))
+                return;
+            /*
+             *  arg_slots has room for MAX_ARGS, and past it the arguments
+             *  used to be counted but not stored, so the block's stores
+             *  below missed them and its stack was left misaligned.  The
+             *  closure dialect's ceiling is the same number, for the
+             *  bytecode's reasons; see MAX_BLOCK_ARGS.  Bugs3 B24.
+             */
+            if (argc >= MAX_BLOCK_ARGS) {
+                fail(c, "a block may have at most %d arguments",
+                     MAX_BLOCK_ARGS);
+                return;
+            }
+            arg_slots[argc] = slot;
             ++argc;
             advance(c);
         }
@@ -2261,7 +2598,9 @@ compile_primary(st_compiler *c, var_ref *out_var)
         temp_first = c->name_count;
         if (at(c, ST_TOK_BAR)) {
             compiler_mark   before_temps;
+            char            duplicate[sizeof c->token.text];
 
+            duplicate[0] = '\0';
             mark(c, &before_temps);
             advance(c);
             while (at(c, ST_TOK_IDENTIFIER)) {
@@ -2272,19 +2611,33 @@ compile_primary(st_compiler *c, var_ref *out_var)
                  *  declaration means "a new variable", and appending it gives
                  *  that for free, because resolve searches names backwards
                  *  and so finds the innermost.
+                 *
+                 *  A name this block already declared is only a DUPLICATE if
+                 *  this turns out to be a declaration at all.  `[:a | a | c]'
+                 *  is the send `a | c', and this loop reads its `a' before
+                 *  the missing closing bar says so; failing here would
+                 *  refuse a legal block.  So the duplicate is remembered,
+                 *  and reported only once the closing bar has been seen.
+                 *  Bugs3 B31.
                  */
-                if (c->name_count < MAX_TEMPS) {
-                    name_fits(c, LEX_text(&c->token));
-                    snprintf(c->names[c->name_count], MAX_NAME, "%s",
-                             LEX_text(&c->token));
-                    ++c->name_count;
+                if (name_declared_since(c, LEX_text(&c->token), first_arg)) {
+                    if (!duplicate[0])
+                        snprintf(duplicate, sizeof duplicate, "%s",
+                                 c->token.text);
+                }  else if (!add_name(c, LEX_text(&c->token), first_arg, 0)) {
+                    return;
                 }
                 advance(c);
             }
-            if (accept(c, ST_TOK_BAR))
+            if (accept(c, ST_TOK_BAR)) {
+                if (duplicate[0]) {
+                    fail(c, "'%s' is already declared", duplicate);
+                    return;
+                }
                 temp_count = c->name_count - temp_first;
-            else
+            }  else  {
                 rewind_to(c, &before_temps);
+            }
         }
 
         /*
@@ -2523,14 +2876,15 @@ compile_inline_block(st_compiler *c)
     if (at(c, ST_TOK_BAR)) {
         advance(c);
         while (at(c, ST_TOK_IDENTIFIER)) {
-            if (c->name_count < MAX_TEMPS) {
-                name_fits(c, LEX_text(&c->token));
-                snprintf(c->names[c->name_count], MAX_NAME, "%s",
-                         LEX_text(&c->token));
-                ++c->name_count;
-                if (c->name_count > c->max_names)
-                    c->max_names = c->name_count;
-            }
+            /*
+             *  Checked against this block's own names only (from
+             *  outer_names): shadowing an enclosing temporary from an
+             *  inlined block is legal and Pharo source does it.
+             */
+            if (!add_name(c, LEX_text(&c->token), outer_names, 0))
+                return;
+            if (c->name_count > c->max_names)
+                c->max_names = c->name_count;
             if (c->dialect == ST_DIALECT_CLOSURES)
                 declare(c, c->token.text, 0);
             advance(c);
@@ -2893,8 +3247,31 @@ compile_cascade(st_compiler *c)
     }
 }
 
+static void compile_expression_body(st_compiler *c);
+
+/*
+ *  The depth guard around the whole expression grammar; see MAX_NESTING.
+ *  Every recursion in this parser -- a parenthesis, a brace, a block's
+ *  statements, an inlined conditional's arm, a keyword argument -- passes
+ *  through here, so counting here bounds them all.  Bugs3 B2.
+ */
 static void
 compile_expression(st_compiler *c)
+{
+    if (c->failed)
+        return;
+    if (c->depth >= MAX_NESTING) {
+        fail(c, "expression nested too deeply; more than %d levels",
+             MAX_NESTING);
+        return;
+    }
+    ++c->depth;
+    compile_expression_body(c);
+    --c->depth;
+}
+
+static void
+compile_expression_body(st_compiler *c)
 {
     /*  An assignment is an identifier followed by the assignment arrow.  */
     if (at(c, ST_TOK_IDENTIFIER)) {
@@ -2921,8 +3298,19 @@ compile_expression(st_compiler *c)
             case VAR_INSTANCE:  emit_store_receiver_variable(c, v.index, 0); break;
             case VAR_GLOBAL:    emit_store_literal_variable(c, v.association, 0); break;
             default:
-                snprintf(c->out->undeclared, sizeof c->out->undeclared,
-                         "%s", name);
+                /*
+                 *  Only a name that is UNDECLARED goes into `undeclared',
+                 *  because the caller acts on that field: the image's
+                 *  compileSource:for:noPattern:declaringUndeclared: puts
+                 *  the name in Undeclared and compiles again.  `self',
+                 *  `super', `thisContext', `nil', `true' and `false' are
+                 *  not undeclared, they are unassignable, and copying them
+                 *  here put `self' in Undeclared for the life of the image
+                 *  every time somebody wrote `self := 5'.  Bugs3 B31.
+                 */
+                if (v.kind == VAR_NONE)
+                    snprintf(c->out->undeclared, sizeof c->out->undeclared,
+                             "%s", name);
                 fail(c, "cannot assign to '%s'", name);
                 break;
             }
@@ -3061,7 +3449,16 @@ compile_statements(st_compiler *c, int inside_block)
             accept(c, ST_TOK_PERIOD);
             if (at(c, ST_TOK_END) || at(c, ST_TOK_RBRACKET))
                 return;
-            continue;
+            /*
+             *  A return ends its statement sequence.  Anything after it
+             *  can never run, and 1983 refuses it -- "Nothing more
+             *  expected" in a method, "End of block expected" in a block
+             *  -- where this compiler went on compiling dead code:
+             *  `zzAfter2 ^ 1. self foo. 3' installed.  Bugs3 B31.
+             */
+            if (!c->failed)
+                fail(c, "nothing more expected after a return");
+            return;
         }
         compile_expression(c);
         emitted = 1;
@@ -3236,10 +3633,22 @@ max_stack_depth_range(const st_compiled_code *code, unsigned from, unsigned to)
         uint8_t     b = code->bytecodes[i];
         int         effect = 0;
 
-        if (b <= 119) {
-            /*  0..119 are all pushes: receiver variables, temporaries,
-             *  literals, and the constants self, true, false, nil, -1, 0,
-             *  1 and 2.  */
+        if (b >= 96 && b <= 111) {
+            /*
+             *  Pop and store into receiver variable or temporary 0..7.
+             *  Tested FIRST, because 96..111 sit inside the 0..119 range
+             *  the next branch takes for pushes, and this test used to
+             *  come after it -- dead code, so every short assignment in
+             *  statement position counted +1 instead of -1.  A method of
+             *  125 assignments was refused as needing 503 frame slots when
+             *  its real depth was 2, and every context in the system was
+             *  two slots larger per assignment than it needed.  Bugs3 B29.
+             */
+            effect = -1;
+        }  else if (b <= 119) {
+            /*  0..119 are otherwise all pushes: receiver variables,
+             *  temporaries, literals, and the constants self, true, false,
+             *  nil, -1, 0, 1 and 2.  */
             effect = 1;
         }  else if (b <= 124) {
             effect = 0;                 /*  returns end the walk anyway  */
@@ -3313,8 +3722,6 @@ max_stack_depth_range(const st_compiled_code *code, unsigned from, unsigned to)
                 highest = need;
             effect = 1 - (int) (counts >> 4);
             i += 3 + block_size;
-        }  else if (b >= 96 && b <= 111) {
-            effect = -1;                /*  pop and store                */
         }  else if (b >= 144 && b <= 175) {
             if (b >= 160)
                 ++i;                    /*  long jumps carry a byte      */
@@ -3378,9 +3785,8 @@ compile_pattern(st_compiler *c)
             fail(c, "expected an argument name");
             return;
         }
-        name_fits(c, LEX_text(&c->token));
-        snprintf(c->names[c->name_count++], MAX_NAME, "%s",
-                 LEX_text(&c->token));
+        if (!add_name(c, LEX_text(&c->token), 0, 1))
+            return;
         if (c->dialect == ST_DIALECT_CLOSURES)
             declare(c, c->token.text, 1);
         ++c->argument_count;
@@ -3406,11 +3812,8 @@ compile_pattern(st_compiler *c)
                 fail(c, "expected an argument name");
                 return;
             }
-            if (c->name_count < MAX_TEMPS) {
-                name_fits(c, LEX_text(&c->token));
-                snprintf(c->names[c->name_count++], MAX_NAME, "%s",
-                         LEX_text(&c->token));
-            }
+            if (!add_name(c, LEX_text(&c->token), 0, 1))
+                return;
             /*
              *  A method's arguments are names in scope zero exactly as its
              *  temporaries are.  Missing them here was invisible in every
@@ -3420,6 +3823,18 @@ compile_pattern(st_compiler *c)
             if (c->dialect == ST_DIALECT_CLOSURES)
                 declare(c, c->token.text, 1);
             ++c->argument_count;
+            /*
+             *  The header extension holds the argument count in five bits,
+             *  and `& 31' at build time turned a 32-keyword method into one
+             *  with numArgs 0 -- installed, and a segfault waiting in
+             *  perform:withArguments:.  Bugs3 B24.
+             */
+            if (c->argument_count > MAX_METHOD_ARGS) {
+                fail(c, "a method may have at most %d arguments; the "
+                        "header holds five bits for the count",
+                     MAX_METHOD_ARGS);
+                return;
+            }
             /*
              *  Harmless when another keyword follows -- that token is a
              *  keyword whatever the minus rule thinks -- and necessary when
@@ -3472,6 +3887,13 @@ int
 COMPILE_to_bytecodes(const char *source, const st_compile_context *ctx,
                      st_compiled_code *out)
 {
+    return COMPILE_to_bytecodes_n(source, strlen(source), ctx, out);
+}
+
+int
+COMPILE_to_bytecodes_n(const char *source, size_t length,
+                       const st_compile_context *ctx, st_compiled_code *out)
+{
     st_compiler c;
     int         pass;
 
@@ -3506,6 +3928,7 @@ COMPILE_to_bytecodes(const char *source, const st_compile_context *ctx,
         c.block_seen    = 0;
         c.current_scope = 0;
         c.pragma_count  = 0;
+        c.depth         = 0;
         out->length        = 0;
         out->literal_count = 0;
         out->error[0]      = '\0';
@@ -3518,7 +3941,7 @@ COMPILE_to_bytecodes(const char *source, const st_compile_context *ctx,
             memset(&c.scopes[0], 0, sizeof c.scopes[0]);
         }
 
-        c.lx = LEX_open(source);
+        c.lx = LEX_open_n(source, length);
         if (c.lx)
             LEX_set_dialect(c.lx, c.dialect);
         if (!c.lx) {
@@ -3557,11 +3980,12 @@ COMPILE_to_bytecodes(const char *source, const st_compile_context *ctx,
             if (at(&c, ST_TOK_BAR)) {
                 advance(&c);
                 while (at(&c, ST_TOK_IDENTIFIER)) {
-                    if (c.name_count < MAX_TEMPS) {
-                        name_fits(&c, LEX_text(&c.token));
-                        snprintf(c.names[c.name_count++], MAX_NAME, "%s",
-                                 LEX_text(&c.token));
-                    }
+                    /*
+                     *  From 0: a temporary that repeats an ARGUMENT's name
+                     *  is a duplicate too, `foo: a | a |'.
+                     */
+                    if (!add_name(&c, LEX_text(&c.token), 0, 0))
+                        break;
                     if (c.dialect == ST_DIALECT_CLOSURES)
                         declare(&c, c.token.text, 0);
                     advance(&c);
@@ -3682,6 +4106,24 @@ COMPILE_to_bytecodes(const char *source, const st_compile_context *ctx,
         out->temporary_count = c.max_names;
     }
     /*
+     *  The header keeps the temporary count in five bits, and the
+     *  interpreter starts the stack pointer from it.  build_header used to
+     *  write `temps & 31', so a method of 32 temporaries claimed 0 and its
+     *  stack began ON its first temporary: `t32 := 32. ^Array with: t1
+     *  with: t2' answered (Array Array ...), the class the expression had
+     *  pushed.  1983's MethodNode refuses "Too many temporary variables"
+     *  at the same number, and counts the same things -- in the Blue Book
+     *  dialect every block's names share the frame, and in the closure
+     *  dialect the frame is the method's own arguments, vector and
+     *  temporaries.  Bugs3 B22.
+     */
+    if (out->temporary_count > MAX_HEADER_TEMPS) {
+        fail(&c, "this method needs %u argument and temporary slots; the "
+                 "method header holds at most %u",
+             out->temporary_count, (unsigned) MAX_HEADER_TEMPS);
+        return -1;
+    }
+    /*
      *  Temporaries and stack share the frame, so both count.  Twelve slots
      *  is what a small context has past its fixed fields; anything more
      *  needs the large one.
@@ -3751,6 +4193,13 @@ int
 COMPILE_method(const char *source, const st_compile_context *ctx,
                st_compile_result *out)
 {
+    return COMPILE_method_n(source, strlen(source), ctx, out);
+}
+
+int
+COMPILE_method_n(const char *source, size_t length,
+                 const st_compile_context *ctx, st_compile_result *out)
+{
     st_compiled_code    code;
     st_oop              method;
     unsigned            literals;
@@ -3760,7 +4209,7 @@ COMPILE_method(const char *source, const st_compile_context *ctx,
     unsigned            total_bytes;
 
     memset(out, 0, sizeof *out);
-    if (COMPILE_to_bytecodes(source, ctx, &code) != 0) {
+    if (COMPILE_to_bytecodes_n(source, length, ctx, &code) != 0) {
         snprintf(out->error, sizeof out->error, "%s", code.error);
         out->error_line   = code.error_line;
         out->error_offset = code.error_offset;

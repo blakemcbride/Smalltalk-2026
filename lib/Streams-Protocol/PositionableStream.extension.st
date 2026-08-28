@@ -42,7 +42,14 @@ PositionableStream >> next: anInteger [
 	 compares the size it got against the size it asked for, which is a test
 	 that cannot be written against a reader that raises instead."
 	| result |
-	result := WriteStream on: (self contents species new: anInteger).
+	"
+	 `collection species', not `self contents species': contents COPIES
+	 the whole collection from 1 to readLimit, and it was being asked only
+	 for the class of the answer.  ReadStream has an index-aware version
+	 of this and of upToEnd (Bugs3 B46); this one stays for the streams
+	 whose collection is not the whole thing -- a FileStream's is one page.
+	"
+	result := WriteStream on: (collection species new: anInteger).
 	anInteger timesRepeat: [
 		self atEnd ifFalse: [result nextPut: self next]].
 	^result contents
@@ -52,7 +59,8 @@ PositionableStream >> next: anInteger [
 PositionableStream >> upToEnd [
 	"Everything from here to the end, leaving me at the end."
 	| result |
-	result := WriteStream on: (self contents species new: 0).
+	"collection species, for the reason given at next: above."
+	result := WriteStream on: (collection species new: 0).
 	[self atEnd] whileFalse: [result nextPut: self next].
 	^result contents
 ]

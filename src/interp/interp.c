@@ -41,7 +41,7 @@ static int  name_method(st_oop receiver, st_oop method, char *out, size_t len);
  *  when a thread joins or leaves and read only at a safepoint, where by
  *  construction nothing is joining or leaving.
  */
-#define MAX_INTERPRETERS    64
+#define MAX_INTERPRETERS    ST_MAX_INTERPRETERS
 
 /*
  *  Lock-free on purpose.  The collector reads this table while every mutator
@@ -60,8 +60,12 @@ ST_interp_register(void)
     for (i = 0; i < MAX_INTERPRETERS; ++i) {
         uintptr_t   empty = 0;
 
-        if (ST_cas_strong(&interpreters[i], &empty, (uintptr_t) &st_vm))
+        if (ST_cas_strong(&interpreters[i], &empty, (uintptr_t) &st_vm)) {
+            /*  The row this slot maps to, cleared of whatever the last
+             *  thread to hold the slot left in it.  */
+            SCHED_hands_register(i);
             return;
+        }
     }
 }
 
@@ -73,8 +77,16 @@ ST_interp_unregister(void)
     for (i = 0; i < MAX_INTERPRETERS; ++i) {
         uintptr_t   mine = (uintptr_t) &st_vm;
 
-        if (ST_cas_strong(&interpreters[i], &mine, 0))
+        if (ST_cas_strong(&interpreters[i], &mine, 0)) {
+            /*
+             *  After the table no longer names this thread, and before
+             *  its thread-locals can be freed: the row is static storage,
+             *  so a scanner that read it a moment ago reads nil, never a
+             *  dangling thread-local.
+             */
+            SCHED_hands_unregister();
             return;
+        }
     }
 }
 
@@ -183,6 +195,22 @@ ST_unpop(uint32_t n)
     st_vm.stack_pointer += n;
 }
 
+uint32_t
+ST_stack_room(void)
+{
+    /*
+     *  ST_push refuses when stack_pointer + 1 reaches stack_limit, so the
+     *  last slot it will fill is stack_limit - 1 and the room is the gap
+     *  between there and where the pointer stands.  A pointer already at or
+     *  past the limit -- possible only in a context somebody has been
+     *  writing to by hand -- has no room at all rather than a wrapped
+     *  four billion.
+     */
+    if (st_vm.stack_pointer + 1 >= st_vm.stack_limit)
+        return 0;
+    return st_vm.stack_limit - 1 - st_vm.stack_pointer;
+}
+
 /*  ----------  Method access  ----------  */
 
 static st_oop
@@ -263,13 +291,109 @@ method_temporary_count(st_oop method)
 
 /*  ----------  Instruction fetch  ----------  */
 
+static void corrupt_method(const char *reason);
+
+/*
+ *  The next byte of the running method, or 0 with the fault recorded.
+ *
+ *  Bounded by st_vm.method_end (Bugs3 B11).  This is called for opcodes
+ *  from the top of the dispatch loop, which checks the bound itself before
+ *  calling and delivers the fault there; and for OPERANDS from inside a
+ *  handler, where nothing can be delivered because the handler is half way
+ *  through a bytecode.  So an operand fetch past the end answers 0, leaves
+ *  the pointer where it is, and writes the reason down: the pointer is now
+ *  at the end, and the top of the loop finds it there before the next
+ *  bytecode is fetched.  One bytecode runs with a zero operand first, which
+ *  is a push of the first field or a jump of zero, and then the activation
+ *  is abandoned.
+ */
 static uint8_t
 next_byte(void)
 {
-    uint8_t b = OM_fetch_byte(st_vm.instruction_pointer, st_vm.method);
+    uint8_t b;
 
+    if (st_vm.instruction_pointer >= st_vm.method_end) {
+        if (!st_vm.corrupt_reason)
+            st_vm.corrupt_reason = "an instruction pointer past the end of "
+                                   "the method";
+        return 0;
+    }
+    b = OM_fetch_byte(st_vm.instruction_pointer, st_vm.method);
     ++st_vm.instruction_pointer;
     return b;
+}
+
+/*
+ *  A literal of the running method, by index from a bytecode.
+ *
+ *  ST_OOP_INVALID, with the activation already abandoned, when the index
+ *  is past the method's literal frame -- every caller must test for that
+ *  and touch nothing afterwards, because the context it was executing in
+ *  is no longer the active one.  The Blue Book fetches the literal
+ *  unchecked, which is right for bytecodes a compiler wrote and was the
+ *  segfault in Bugs3 B11 for bytecodes anything else wrote: 255 is `send
+ *  literal 15 with two arguments', and a method with one literal has its
+ *  first bytecode where literal 15 would be.  The comparison is against a
+ *  register cached with the method, so it costs what the stack-limit
+ *  comparison in ST_push costs, which was measured at nothing.
+ */
+static st_oop
+literal_at(uint32_t index)
+{
+    if (index >= st_vm.literal_limit) {
+        corrupt_method("a literal index past the method's literal frame");
+        return ST_OOP_INVALID;
+    }
+    return OM_fetch_pointer(ST_METHOD_LITERAL_START + index, st_vm.method);
+}
+
+/*
+ *  The same two questions for the other two things a bytecode indexes by
+ *  a number it carries: an instance variable of the receiver, and a
+ *  temporary of the home context.  Both bounds are cached registers
+ *  (st_vm.receiver_limit, st_vm.home_limit), so each is the one comparison
+ *  literal_at makes.  A bytecode the compiler wrote can never fail them;
+ *  one written through CompiledMethod>>at:put: can, and did -- ASAN caught
+ *  `push instance variable 0' on an instance with no instance variables
+ *  reading the word after the object.  The activation is abandoned with
+ *  a CorruptMethod, as for a bad literal.
+ */
+static int
+receiver_variable_ok(uint32_t index)
+{
+    if (index >= st_vm.receiver_limit) {
+        corrupt_method("an instance-variable index past the receiver's "
+                       "fields");
+        return 0;
+    }
+    return 1;
+}
+
+static int
+temporary_ok(uint32_t index)
+{
+    if (ST_CTX_TEMP_FRAME_START + index >= st_vm.home_limit) {
+        corrupt_method("a temporary index past the home context");
+        return 0;
+    }
+    return 1;
+}
+
+/*  The receiver's pointer-field count, or zero when it has no fields a
+ *  bytecode may name: a SmallInteger, or a byte or word object.  */
+static uint32_t
+receiver_field_count(st_oop receiver)
+{
+    if (!OM_is_object(receiver))
+        return 0;
+#if defined(ST_OM_MT)
+    if (!(OM_head(receiver)->flags & ST_FMT_POINTERS))
+        return 0;
+#else
+    if (!OM_pointer_bit(receiver))
+        return 0;
+#endif
+    return OM_fetch_word_length(receiver);
 }
 
 /*  ----------  Context registers  ----------  */
@@ -286,11 +410,6 @@ fetch_context_registers(void)
 
     st_vm.receiver = OM_fetch_pointer(ST_CTX_RECEIVER, st_vm.home_context);
     st_vm.method   = OM_fetch_pointer(ST_CTX_METHOD, st_vm.home_context);
-    st_vm.instruction_pointer =
-        (uint32_t) OM_int_value(fetch_integer(ST_CTX_IP, ctx)) - 1;
-    st_vm.stack_pointer =
-        (uint32_t) OM_int_value(fetch_integer(ST_CTX_SP, ctx))
-        + ST_CTX_TEMP_FRAME_START - 1;
     /*
      *  The last slot this context has, cached here rather than read from
      *  the object on every push.  Fetching it per push cost 8-12% across
@@ -299,6 +418,65 @@ fetch_context_registers(void)
      *  a comparison against a field already in cache.
      */
     st_vm.stack_limit = OM_fetch_word_length(ctx);
+    /*  And the two an indexing bytecode is checked against; see
+     *  receiver_variable_ok and temporary_ok.  */
+    st_vm.receiver_limit = receiver_field_count(st_vm.receiver);
+    st_vm.home_limit     = OM_fetch_word_length(st_vm.home_context);
+
+    /*
+     *  Nothing below is believed until it has been looked at (Bugs3 B11).
+     *
+     *  A context's ip and sp are ordinary instance variables, and
+     *  `thisContext sender sender instVarAt: 2 put: -1' is an ordinary
+     *  statement; when that context was returned to, the registers came
+     *  from it as they stood and the next push wrote over the context's own
+     *  header.  The checks are two comparisons per context switch, against
+     *  values this function has just fetched anyway.
+     *
+     *  This cannot raise -- it runs inside do_return and inside a process
+     *  switch, with no bytecode in flight -- so a bad register is CLAMPED
+     *  to something harmless, the reason is written down, and the
+     *  instruction pointer is put at the end of the method, where the top
+     *  of the dispatch loop finds it before fetching anything and abandons
+     *  the activation with #corruptMethod.
+     */
+    {
+        st_oop      ip_field = fetch_integer(ST_CTX_IP, ctx);
+        st_oop      sp_field = fetch_integer(ST_CTX_SP, ctx);
+        st_int      ip = OM_is_int(ip_field) ? OM_int_value(ip_field) : -1;
+        st_int      sp = OM_is_int(sp_field) ? OM_int_value(sp_field) : -1;
+        const char *fault = NULL;
+
+        if (!OM_is_object(st_vm.method)
+         || OM_fetch_class(st_vm.method) != ST_CLASS_COMPILED_METHOD) {
+            st_vm.literal_limit = 0;
+            st_vm.method_end    = 0;
+            fault = "a context whose method is not a CompiledMethod";
+        }  else  {
+            st_vm.literal_limit =
+                ST_header_literal_count(method_header(st_vm.method));
+            st_vm.method_end = OM_fetch_byte_length(st_vm.method);
+            /*  One-relative, and never inside the header and literals.  */
+            if (ip < 1 || (uint32_t) (ip - 1) > st_vm.method_end
+             || (uint32_t) (ip - 1) < method_initial_ip(st_vm.method))
+                fault = "a context whose instruction pointer is outside "
+                        "its method's bytecodes";
+        }
+        /*  Zero is an empty stack; the top must stay inside the object.  */
+        if (sp < 0
+         || (uint32_t) sp + ST_CTX_TEMP_FRAME_START - 1 >= st_vm.stack_limit)
+            fault = "a context whose stack pointer is outside the context";
+
+        if (fault) {
+            if (!st_vm.corrupt_reason)
+                st_vm.corrupt_reason = fault;
+            st_vm.instruction_pointer = st_vm.method_end;
+            st_vm.stack_pointer       = ST_CTX_TEMP_FRAME_START - 1;
+            return;
+        }
+        st_vm.instruction_pointer = (uint32_t) ip - 1;
+        st_vm.stack_pointer = (uint32_t) sp + ST_CTX_TEMP_FRAME_START - 1;
+    }
 }
 
 static void
@@ -723,16 +901,37 @@ ST_set_active_context(st_oop ctx)
  *  dictionary layout was validated against Xerox's method.oops dump before
  *  the interpreter was written, so this traverses known-good structure.
  */
+/*
+ *  How long a superclass chain may be before it is taken for a cycle.
+ *
+ *  `CA superclass: CB. CB superclass: CA. CA new zork' spun this worker in
+ *  C for ever (Bugs3 B6): the walk below has no safepoint in it, so SIGTERM
+ *  could not stop the process and the next collection parked every other
+ *  worker behind the one that never arrived.  The deepest chain in any
+ *  image this system builds is under twenty classes; a walk that has taken
+ *  this many steps is going round, and answering `not found' turns the spin
+ *  into a doesNotUnderstand -- delivered through the same bounded walk, and
+ *  caught by the root-class fallback in send_does_not_understand when the
+ *  cycle hides Object as well.  Behavior>>superclass: in lib/ refuses to
+ *  make a cycle in the first place; this is for the ones made without
+ *  asking, through instVarAt:put: or an image built by hand.
+ */
+#define MAX_SUPERCLASS_CHAIN    4096
+
 static st_oop
 lookup_method(st_oop selector, st_oop start_class, st_oop *found_class)
 {
-    st_oop  cls = start_class;
+    st_oop      cls = start_class;
+    unsigned    hops = 0;
 
     /*  A nil superclass is the top of the chain, so the walk stops there.  */
     while (OM_is_present(cls)) {
         st_oop      dict = OM_fetch_pointer(ST_CLASS_METHOD_DICT, cls);
         uint32_t    capacity = OM_method_dict_capacity(dict);
         uint32_t    slot;
+
+        if (++hops > MAX_SUPERCLASS_CHAIN)
+            break;                      /*  a cycle: see the constant  */
 
         /*
          *  Probe from the selector's hash, the way the dictionary was
@@ -796,9 +995,11 @@ lookup_method(st_oop selector, st_oop start_class, st_oop *found_class)
 static int
 name_method(st_oop receiver, st_oop method, char *out, size_t len)
 {
-    st_oop  cls = OM_fetch_class(receiver);
+    st_oop      cls = OM_fetch_class(receiver);
+    unsigned    hops = 0;
 
-    while (OM_is_present(cls)) {
+    /*  Bounded as lookup_method is: this runs to REPORT a cycle, too.  */
+    while (OM_is_present(cls) && ++hops <= MAX_SUPERCLASS_CHAIN) {
         st_oop      dict = OM_fetch_pointer(ST_CLASS_METHOD_DICT, cls);
         uint32_t    capacity = OM_method_dict_capacity(dict);
         uint32_t    slot;
@@ -1547,12 +1748,14 @@ ST_context_primitive(st_oop ctx)
 }
 
 static st_oop
-find_unwind_between(st_oop from, st_oop home, int *home_found)
+find_unwind_between(st_oop from, st_oop home, int *home_found, int *frames)
 {
     st_oop  ctx = OM_fetch_pointer(ST_CTX_SENDER, from);
 
     *home_found = 0;
+    *frames     = 1;                    /*  `from' itself  */
     while (OM_is_present(ctx)) {
+        ++*frames;
         if (ctx == home) {
             *home_found = 1;
             return ST_NIL;
@@ -1562,6 +1765,70 @@ find_unwind_between(st_oop from, st_oop home, int *home_found)
         ctx = OM_fetch_pointer(ST_CTX_SENDER, ctx);
     }
     return ST_NIL;
+}
+
+/*
+ *  How many contexts a non-local return from `from' discards: `from'
+ *  itself, every caller between it and `home', and `home'.  -1 when home
+ *  is not on the chain at all.  The Blue Book block's chain is its caller
+ *  links, which share the field with a method context's sender.
+ */
+static int
+frames_through(st_oop from, st_oop home)
+{
+    st_oop  ctx = from;
+    int     n = 1;
+
+    while (ctx != home) {
+        ctx = OM_fetch_pointer(ST_CTX_CALLER, ctx);
+        if (!OM_is_present(ctx))
+            return -1;
+        ++n;
+    }
+    return n;
+}
+
+/*
+ *  Put the depth counter right after a non-local return (Bugs3 B15).
+ *
+ *  do_return takes one off the counter, which is right for the ordinary
+ *  return it was written for and wrong for a `^' inside a block, which
+ *  discards the block's context, every frame between it and its home, and
+ *  the home itself in one jump.  The leak was one frame per non-local
+ *  return, and the library returns out of blocks constantly -- includes:,
+ *  detect:, at:ifAbsent:, inheritsFrom: and so isKindOf: and so every
+ *  mixed-type arithmetic -- so `1 to: 200000 do: [:i | 1 + 1.0]' raised
+ *  RecursionDepthExceeded on a stack three frames deep, and the count
+ *  carried across evaluations in one Process because nothing ever reset
+ *  it.  ST_return_to and ST_resume_at recount by walking the whole stack;
+ *  that is right for them and would make deep recursion with a non-local
+ *  return at every level quadratic here, so the frames are counted during
+ *  the walk the return already makes and subtracted, and the whole-stack
+ *  walk is kept only for the case where the home was not found on the
+ *  chain.
+ *
+ *  The ceiling's flag is re-armed only when the stack is genuinely under
+ *  the ceiling again.  Re-arming it unconditionally, as the jumps above
+ *  do, would let a non-local return inside the reporting of a depth error
+ *  -- which runs, by definition, from over the ceiling -- signal a second
+ *  depth error from inside the first, and so on until the table was gone.
+ */
+static void
+settle_depth_after_unwind(int discarded)
+{
+    if (discarded < 0)
+        st_vm.call_depth = ST_stack_depth();
+    else {
+        st_vm.call_depth -= discarded - 1;      /*  do_return took one  */
+        if (st_vm.call_depth < 0)
+            st_vm.call_depth = 0;
+    }
+    if (st_vm.depth_signalled) {
+        int limit = max_call_depth();
+
+        if (limit <= 0 || st_vm.call_depth <= limit)
+            st_vm.depth_signalled = 0;
+    }
 }
 
 /*
@@ -1637,6 +1904,138 @@ send_must_be_boolean(st_oop value, uint32_t ip_at_start)
     ST_send_selector(ST_SELECTOR_MUST_BE_BOOLEAN, 0);
 }
 
+/*
+ *  Find `selector' up the receiver's chain, or failing that up nil's.
+ *
+ *  For the selectors the VM sends on its own account -- the errors it
+ *  raises in place of something it could not do.  A receiver whose class
+ *  chain does not reach Object, which `Behavior new new' is, has none of
+ *  them; nil's class does reach Object, and Object's implementations of
+ *  these send nothing to the receiver that it might not understand.  The
+ *  send is still to the original receiver, which is what a handler wants
+ *  to see.
+ */
+static st_oop
+lookup_for_vm(st_oop selector, st_oop receiver)
+{
+    st_oop  found = ST_NIL;
+    st_oop  method = lookup_method(selector, OM_fetch_class(receiver), &found);
+
+    if (!OM_is_present(method))
+        method = lookup_method(selector, OM_fetch_class(ST_NIL), &found);
+    return method;
+}
+
+/*
+ *  End the process this worker is running, and only that process.
+ *
+ *  Where the interpreter has nothing left to send and nobody to tell:
+ *  a receiver nothing in the image can deliver a doesNotUnderstand: to,
+ *  today; a compiler-emitted send that is not a send, before.  Those
+ *  cleared st_vm.running, which is the right end for a single-process run
+ *  and the wrong one for a pool (Bugs3 B5, B7): a worker whose run ends
+ *  takes the pool with it, because `every worker idle' can never again be
+ *  true for the rest.
+ *
+ *  So this does what `Processor terminateActive' does, from C: the
+ *  faulted send answers nil, the process is parked as if it had
+ *  suspended itself, and the worker looks for something else to run.
+ *  Under -serve that is the next request; with one process and no pool
+ *  the scheduler finds nothing, says so, and the run ends as it would
+ *  have -- with the report first, and the exit code of an unhandled
+ *  error rather than of an answer.
+ */
+static void
+abandon_active_process(const char *why)
+{
+    if (errors_reported)
+        fprintf(stderr, "st80: %s; the process is ended\n", why);
+    ST_report_backtrace();
+    ST_pop_n(st_vm.argument_count + 1);
+    ST_push(ST_NIL);
+    st_vm.argument_count = 0;
+    ++st_vm.unhandled_errors;
+    SCHED_suspend_active();
+}
+
+/*
+ *  Abandon the running activation: its method cannot be executed (Bugs3
+ *  B11).
+ *
+ *  The reasons are literal_at's, next_byte's and fetch_context_registers':
+ *  a literal index past the frame, an instruction pointer past the end, a
+ *  stack pointer outside the context, a method that is not one.  All of
+ *  them used to be trusted and all of them segfaulted; none of them is a
+ *  fault a handler could have seen coming, and none can be continued from,
+ *  because the bytes that come next are the bytes that were wrong.
+ *
+ *  So the context is returned from, with nil, and the nil is then
+ *  replaced by what #corruptMethod answers when sent to the receiver --
+ *  the shape of send_depth_exceeded and send_out_of_memory: the error is
+ *  raised in the image, from the sender's frame, where `on: Error do:'
+ *  around the call can catch it, and unhandled it reports and answers nil
+ *  to the sender, which carries on.  The line on stderr is kept
+ *  regardless, because a method whose bytes have been rewritten is worth
+ *  a line even when the image handles the error: nothing else says which
+ *  method it was.
+ *
+ *  A profile that binds no #corruptMethod -- the Blue Book one -- gets
+ *  the return with nil and the line, which is still not a segfault.
+ */
+static void
+corrupt_method(const char *reason)
+{
+    st_oop      ctx = st_vm.active_context;
+    st_oop      receiver = st_vm.receiver;
+    st_oop      selector = st_om_vm_state[ST_VM_SELECTOR_CORRUPT_METHOD];
+    st_oop      caller;
+    char        name[200];
+
+    st_vm.corrupt_reason = NULL;
+    if (!name_method(receiver, st_vm.method, name, sizeof name))
+        snprintf(name, sizeof name, "?");
+    if (errors_reported)
+        fprintf(stderr, "st80: cannot run %s: %s; the activation is "
+                        "abandoned\n", name, reason);
+    if (!OM_is_object(ctx)) {
+        st_vm.running = 0;
+        return;
+    }
+    caller = OM_fetch_pointer(ST_CTX_CALLER, ctx);
+    /*
+     *  Held across the return.  The abandoned context may be the only
+     *  thing that refers to its receiver -- `Bugs3CM new foo' makes an
+     *  instance whose one reference is the frame's receiver slot -- and
+     *  do_return frees the frame.  Without this the send below went to
+     *  whatever the object table next handed out under that number, which
+     *  in the first run was an Array.
+     */
+    OM_increase_ref(receiver);
+    do_return(ST_NIL, caller, 0);
+    /*
+     *  Not at the bottom of the world, and only where the image has a
+     *  #corruptMethod to send; otherwise nil stands as the answer.
+     */
+    if (st_vm.running && OM_is_present(selector)
+     && OM_is_present(lookup_for_vm(selector, receiver))) {
+        ST_pop_n(1);
+        ST_push(receiver);
+        ST_send_selector(selector, 0);
+    }
+    OM_decrease_ref(receiver);
+}
+
+int
+ST_argument_count_matches(st_oop receiver, st_oop selector, uint32_t argc)
+{
+    st_oop  found = ST_NIL;
+    st_oop  method = lookup_method(selector, OM_fetch_class(receiver), &found);
+
+    if (!OM_is_present(method))
+        return 1;                       /*  doesNotUnderstand: takes any  */
+    return method_argument_count(method) == argc;
+}
+
 static void
 send_about_to_return(st_oop ctx, st_oop result, st_oop unwind)
 {
@@ -1663,12 +2062,16 @@ send_about_to_return(st_oop ctx, st_oop result, st_oop unwind)
 /*
  *  Returning from a method, which is also how a block returns out of one.
  *
- *  The BlockContext arm below is exactly the three lines this function used
- *  to be, and is meant to stay that way: it is on the trace2 path, which
- *  runs blockCopy: twice, and the value of that oracle depends on this code
- *  being untouched rather than carefully preserved.  Everything closures
- *  need is in the other arm, and do_return itself is not modified at all --
- *  its nil-sender stop is what -eval depends on to get an answer back.
+ *  The BlockContext arm below is the three lines this function used to be,
+ *  with the depth accounting of Bugs3 B15 around them, and is meant to
+ *  stay that way: it is on the trace2 path, which runs blockCopy: twice,
+ *  and the value of that oracle depends on this code being untouched
+ *  rather than carefully preserved.  The accounting is a walk of the
+ *  caller chain and an adjustment to a counter -- no send, no bytecode, no
+ *  object touched -- so the trace it produces is the trace it produced.
+ *  Everything closures need is in the other arm, and do_return itself is
+ *  not modified at all -- its nil-sender stop is what -eval depends on to
+ *  get an answer back.
  */
 static void
 return_value(st_oop result)
@@ -1678,9 +2081,13 @@ return_value(st_oop result)
     st_oop  sender;
 
     if (OM_fetch_class(ctx) == ST_CLASS_BLOCK_CONTEXT) {
+        int     discarded;
+
         home   = st_vm.home_context;
         sender = OM_fetch_pointer(ST_CTX_SENDER, home);
+        discarded = frames_through(ctx, home);
         do_return(result, sender, 0);
+        settle_depth_after_unwind(discarded);
         return;
     }
 
@@ -1712,7 +2119,8 @@ return_value(st_oop result)
     }
     {
         int     found = 0;
-        st_oop  unwind = find_unwind_between(ctx, home, &found);
+        int     discarded = 0;
+        st_oop  unwind = find_unwind_between(ctx, home, &found, &discarded);
 
         if (OM_is_present(unwind)) {
             send_about_to_return(ctx, result, unwind);
@@ -1723,9 +2131,10 @@ return_value(st_oop result)
             send_cannot_return(ctx, result);
             return;
         }
+        sender = OM_fetch_pointer(ST_CTX_SENDER, home);
+        do_return(result, sender, 0);
+        settle_depth_after_unwind(discarded);
     }
-    sender = OM_fetch_pointer(ST_CTX_SENDER, home);
-    do_return(result, sender, 0);
 }
 
 /*  ----------  Sending  ----------  */
@@ -1752,9 +2161,56 @@ send_does_not_understand(st_oop receiver, st_oop selector, st_oop lookup_class)
     st_vm.argument_count = 1;
 
     method = lookup_method(ST_SELECTOR_DOES_NOT_UNDERSTAND, lookup_class, &found);
+
+    /*
+     *  Nobody up the receiver's chain implements doesNotUnderstand: (Bugs3
+     *  B7).  `Behavior new new' is such a receiver -- its class has no
+     *  superclass and no methods -- and so is everything, once somebody
+     *  has sent `Object removeSelector: #doesNotUnderstand:'.  This used
+     *  to print a line and clear st_vm.running, which under -serve ends
+     *  the worker and with it the pool: one reflective expression in one
+     *  request took every other request down.
+     *
+     *  Three fallbacks, each an ordinary send the image can catch, before
+     *  anything drastic:
+     *
+     *  cannotInterpret: first, looked up the receiver's chain.  The Blue
+     *  Book reserves the selector for a class whose method dictionary is
+     *  nil, and Squeak sends it with the Message; here it is what a class
+     *  chain with no doesNotUnderstand: gets, which is the same idea one
+     *  step further out, and it lets an image say what such a receiver
+     *  should do.  lib/Kernel-Exceptions gives Object one that raises the
+     *  MessageNotUnderstood doesNotUnderstand: would have.
+     *
+     *  Then doesNotUnderstand: again, from the class of nil: every image
+     *  has nil, its class has Object above it, and Object's handler builds
+     *  a MessageNotUnderstood from the Message and the receiver without
+     *  sending the receiver anything it might not understand -- its
+     *  description guards `receiver class name' with a handler for exactly
+     *  this case.  A receiver whose chain does not reach Object thereby
+     *  gets the error every other object gets.
+     *
+     *  Only when the image has no handler at all -- during the bootstrap,
+     *  before Object has methods, or after both have been removed -- is
+     *  the process ended, and then it is THIS process, not the pool.
+     */
+    if (!OM_is_present(method)) {
+        st_oop  cannot = lookup_method(ST_SELECTOR_CANNOT_INTERPRET,
+                                       lookup_class, &found);
+
+        if (OM_is_present(cannot)
+         && method_argument_count(cannot) == 1) {
+            st_vm.message_selector = ST_SELECTOR_CANNOT_INTERPRET;
+            method = cannot;
+        }
+    }
+    if (!OM_is_present(method))
+        method = lookup_method(ST_SELECTOR_DOES_NOT_UNDERSTAND,
+                               OM_fetch_class(ST_NIL), &found);
     if (!OM_is_present(method)) {
         char        buf[256];
         char        name[256];
+        char        why[600];
         uint32_t    n;
         uint32_t    k;
 
@@ -1772,16 +2228,16 @@ send_does_not_understand(st_oop receiver, st_oop selector, st_oop lookup_class)
             name[k] = (char) OM_fetch_byte(k, selector);
         name[n] = '\0';
 
-        if (errors_reported)
-            fprintf(stderr, "st80: %s does not understand #%s, and does not "
-                            "understand doesNotUnderstand: either\n",
-                    buf, n ? name : "(not a symbol)");
-        ST_report_backtrace();
+        snprintf(why, sizeof why, "%s does not understand #%s, and nothing "
+                                  "in the image understands doesNotUnderstand: "
+                                  "or cannotInterpret: either",
+                 buf, n ? name : "(not a symbol)");
         if (getenv("ST_LOOKUP_LOG")) {
-            st_oop  cls = OM_fetch_class(receiver);
-            char    cname[64];
+            st_oop      cls = OM_fetch_class(receiver);
+            char        cname[64];
+            unsigned    hops = 0;
 
-            while (OM_is_present(cls)) {
+            while (OM_is_present(cls) && ++hops <= MAX_SUPERCLASS_CHAIN) {
                 st_oop  d = OM_fetch_pointer(ST_CLASS_METHOD_DICT, cls);
 
                 OM_class_name_of(cls, cname, sizeof cname);
@@ -1807,7 +2263,7 @@ send_does_not_understand(st_oop receiver, st_oop selector, st_oop lookup_class)
                 cls = OM_fetch_pointer(ST_CLASS_SUPERCLASS, cls);
             }
         }
-        st_vm.running = 0;
+        abandon_active_process(why);
         return;
     }
     st_vm.new_method      = method;
@@ -1901,6 +2357,21 @@ run_method_found(st_oop receiver, st_oop method)
          *  have hit this message twice while porting Pharo protocol, both
          *  times spent a run adding a print to find out which method it
          *  meant, and both times the answer was one send.
+         *
+         *  Reported, and then delivered as a doesNotUnderstand: rather
+         *  than by clearing st_vm.running (Bugs3 B5).  `3 perform: #+'
+         *  arrived here with no arguments for a method that takes one, and
+         *  the halt ended the worker, and one worker leaving ends the pool
+         *  -- a heartbeat process forked beside it stopped too.  The
+         *  perform primitives now fail on the mismatch before the stack is
+         *  shuffled, as the Blue Book's primitivePerform does, so what
+         *  still reaches here is a compiler that emitted a send with the
+         *  wrong count.  That is a bug worth a line on stderr, and it is
+         *  still one process's bug: the receiver did not understand the
+         *  message as it was sent, which is what doesNotUnderstand: means,
+         *  and the Message it is handed carries the arguments as they
+         *  came.  The error is catchable, reported by the image, and
+         *  resumable with nil; the pool never hears of it.
          */
         char    selector[128];
 
@@ -1911,7 +2382,8 @@ run_method_found(st_oop receiver, st_oop method)
                 method_argument_count(method),
                 (unsigned long long) st_vm.cycle);
         ST_report_backtrace();
-        st_vm.running = 0;
+        send_does_not_understand(receiver, st_vm.message_selector,
+                                 OM_fetch_class(receiver));
         return;
     }
     st_vm.primitive_index = ST_method_primitive_index(method);
@@ -2110,6 +2582,22 @@ ST_interp_run(uint64_t limit)
         SCHED_check_process_switch();
         if (!st_vm.running)
             break;
+        /*
+         *  Nothing is fetched from past the end of the method (Bugs3
+         *  B11).  One comparison against a register loaded with the
+         *  method; it is also where a fault that fetch_context_registers
+         *  or an operand fetch could only write down is delivered, since
+         *  both leave the pointer here.  A method that simply runs off its
+         *  end without a return -- which a compiler never writes and a
+         *  rewritten one may -- arrives here too.
+         */
+        if (st_vm.instruction_pointer >= st_vm.method_end) {
+            corrupt_method(st_vm.corrupt_reason
+                           ? st_vm.corrupt_reason
+                           : "an instruction pointer past the end of the "
+                             "method");
+            continue;
+        }
         ip_at_start = st_vm.instruction_pointer;
         code = next_byte();
         ++st_vm.cycle;
@@ -2120,15 +2608,17 @@ ST_interp_run(uint64_t limit)
         /*  0-15: push receiver instance variable  */
         case 0: case 1: case 2: case 3: case 4: case 5: case 6: case 7:
         case 8: case 9: case 10: case 11: case 12: case 13: case 14: case 15:
-            ST_push(OM_fetch_pointer(code, st_vm.receiver));
+            if (receiver_variable_ok(code))
+                ST_push(OM_fetch_pointer(code, st_vm.receiver));
             break;
 
         /*  16-31: push temporary  */
         case 16: case 17: case 18: case 19: case 20: case 21: case 22:
         case 23: case 24: case 25: case 26: case 27: case 28: case 29:
         case 30: case 31:
-            ST_push(OM_fetch_pointer(ST_CTX_TEMP_FRAME_START + (code - 16),
-                                     st_vm.home_context));
+            if (temporary_ok(code - 16))
+                ST_push(OM_fetch_pointer(ST_CTX_TEMP_FRAME_START + (code - 16),
+                                         st_vm.home_context));
             break;
 
         /*  32-63: push literal constant  */
@@ -2136,32 +2626,47 @@ ST_interp_run(uint64_t limit)
         case 39: case 40: case 41: case 42: case 43: case 44: case 45:
         case 46: case 47: case 48: case 49: case 50: case 51: case 52:
         case 53: case 54: case 55: case 56: case 57: case 58: case 59:
-        case 60: case 61: case 62: case 63:
-            ST_push(method_literal(code - 32, st_vm.method));
+        case 60: case 61: case 62: case 63: {
+            st_oop  lit = literal_at(code - 32);
+
+            if (lit != ST_OOP_INVALID)
+                ST_push(lit);
             break;
+        }
 
         /*  64-95: push the value of a literal variable (an Association)  */
         case 64: case 65: case 66: case 67: case 68: case 69: case 70:
         case 71: case 72: case 73: case 74: case 75: case 76: case 77:
         case 78: case 79: case 80: case 81: case 82: case 83: case 84:
         case 85: case 86: case 87: case 88: case 89: case 90: case 91:
-        case 92: case 93: case 94: case 95:
-            ST_push(OM_fetch_pointer(ST_ASSOCIATION_VALUE,
-                                     method_literal(code - 64, st_vm.method)));
+        case 92: case 93: case 94: case 95: {
+            st_oop  lit = literal_at(code - 64);
+
+            if (lit != ST_OOP_INVALID)
+                ST_push(OM_fetch_pointer(ST_ASSOCIATION_VALUE, lit));
             break;
+        }
 
         /*  96-103: pop and store receiver instance variable  */
         case 96: case 97: case 98: case 99:
-        case 100: case 101: case 102: case 103:
-            OM_store_pointer(code - 96, st_vm.receiver, ST_pop());
+        case 100: case 101: case 102: case 103: {
+            st_oop  value = ST_pop();
+
+            if (receiver_variable_ok(code - 96))
+                OM_store_pointer(code - 96, st_vm.receiver, value);
             break;
+        }
 
         /*  104-111: pop and store temporary  */
         case 104: case 105: case 106: case 107:
-        case 108: case 109: case 110: case 111:
-            OM_store_pointer(ST_CTX_TEMP_FRAME_START + (code - 104),
-                             st_vm.home_context, ST_pop());
+        case 108: case 109: case 110: case 111: {
+            st_oop  value = ST_pop();
+
+            if (temporary_ok(code - 104))
+                OM_store_pointer(ST_CTX_TEMP_FRAME_START + (code - 104),
+                                 st_vm.home_context, value);
             break;
+        }
 
         case 112: ST_push(st_vm.receiver); break;
         case 113: ST_push(ST_TRUE);  break;
@@ -2192,16 +2697,23 @@ ST_interp_run(uint64_t limit)
             uint32_t    kind  = desc >> 6;
             uint32_t    index = desc & 63;
 
-            if (kind == 0)
-                ST_push(OM_fetch_pointer(index, st_vm.receiver));
-            else if (kind == 1)
-                ST_push(OM_fetch_pointer(ST_CTX_TEMP_FRAME_START + index,
-                                         st_vm.home_context));
-            else if (kind == 2)
-                ST_push(method_literal(index, st_vm.method));
-            else
-                ST_push(OM_fetch_pointer(ST_ASSOCIATION_VALUE,
-                                         method_literal(index, st_vm.method)));
+            if (kind == 0) {
+                if (receiver_variable_ok(index))
+                    ST_push(OM_fetch_pointer(index, st_vm.receiver));
+            } else if (kind == 1) {
+                if (temporary_ok(index))
+                    ST_push(OM_fetch_pointer(ST_CTX_TEMP_FRAME_START + index,
+                                             st_vm.home_context));
+            } else {
+                st_oop  lit = literal_at(index);
+
+                if (lit == ST_OOP_INVALID)
+                    break;
+                if (kind == 2)
+                    ST_push(lit);
+                else
+                    ST_push(OM_fetch_pointer(ST_ASSOCIATION_VALUE, lit));
+            }
             break;
         }
         case 129:           /*  extended store  */
@@ -2211,40 +2723,55 @@ ST_interp_run(uint64_t limit)
             uint32_t    index = desc & 63;
             st_oop      value = (code == 130) ? ST_pop() : ST_stack_top();
 
-            if (kind == 0)
-                OM_store_pointer(index, st_vm.receiver, value);
-            else if (kind == 1)
-                OM_store_pointer(ST_CTX_TEMP_FRAME_START + index,
-                                 st_vm.home_context, value);
-            else if (kind == 3)
-                OM_store_pointer(ST_ASSOCIATION_VALUE,
-                                 method_literal(index, st_vm.method), value);
+            if (kind == 0) {
+                if (receiver_variable_ok(index))
+                    OM_store_pointer(index, st_vm.receiver, value);
+            } else if (kind == 1) {
+                if (temporary_ok(index))
+                    OM_store_pointer(ST_CTX_TEMP_FRAME_START + index,
+                                     st_vm.home_context, value);
+            } else if (kind == 3) {
+                st_oop  lit = literal_at(index);
+
+                if (lit != ST_OOP_INVALID)
+                    OM_store_pointer(ST_ASSOCIATION_VALUE, lit, value);
+            }
             break;
         }
 
         case 131: {         /*  single extended send  */
             uint8_t     desc = next_byte();
+            st_oop      sel  = literal_at(desc & 31);
 
-            ST_send_selector(method_literal(desc & 31, st_vm.method),
-                             (uint32_t) (desc >> 5));
+            if (sel != ST_OOP_INVALID)
+                ST_send_selector(sel, (uint32_t) (desc >> 5));
             break;
         }
         case 132: {         /*  double extended send  */
             uint8_t     argc = next_byte();
             uint8_t     lit  = next_byte();
+            st_oop      sel  = literal_at(lit);
 
-            ST_send_selector(method_literal(lit, st_vm.method), argc);
+            if (sel != ST_OOP_INVALID)
+                ST_send_selector(sel, argc);
             break;
         }
+        /*
+         *  The super sends read the method's LAST literal for the class
+         *  the method was compiled in.  A method with no literals has no
+         *  last one, and the index wraps; literal_at refuses it.
+         */
         case 133: {         /*  single extended send to super  */
             uint8_t     desc = next_byte();
-            st_oop      cls  = method_literal(
-                                    ST_header_literal_count(
-                                        method_header(st_vm.method)) - 1,
-                                    st_vm.method);
+            st_oop      sel  = literal_at(desc & 31);
+            st_oop      cls;
 
-            send_to_class(method_literal(desc & 31, st_vm.method),
-                          (uint32_t) (desc >> 5),
+            if (sel == ST_OOP_INVALID)
+                break;
+            cls = literal_at(st_vm.literal_limit - 1);
+            if (cls == ST_OOP_INVALID)
+                break;
+            send_to_class(sel, (uint32_t) (desc >> 5),
                           OM_fetch_pointer(ST_CLASS_SUPERCLASS,
                                            OM_fetch_pointer(ST_ASSOCIATION_VALUE, cls)));
             break;
@@ -2252,12 +2779,15 @@ ST_interp_run(uint64_t limit)
         case 134: {         /*  double extended send to super  */
             uint8_t     argc = next_byte();
             uint8_t     lit  = next_byte();
-            st_oop      cls  = method_literal(
-                                    ST_header_literal_count(
-                                        method_header(st_vm.method)) - 1,
-                                    st_vm.method);
+            st_oop      sel  = literal_at(lit);
+            st_oop      cls;
 
-            send_to_class(method_literal(lit, st_vm.method), argc,
+            if (sel == ST_OOP_INVALID)
+                break;
+            cls = literal_at(st_vm.literal_limit - 1);
+            if (cls == ST_OOP_INVALID)
+                break;
+            send_to_class(sel, argc,
                           OM_fetch_pointer(ST_CLASS_SUPERCLASS,
                                            OM_fetch_pointer(ST_ASSOCIATION_VALUE, cls)));
             break;
@@ -2456,8 +2986,10 @@ ST_interp_run(uint64_t limit)
             if (code >= 208) {
                 uint32_t    argc = (uint32_t) (code - 208) / 16;
                 uint32_t    lit  = (uint32_t) (code - 208) % 16;
+                st_oop      sel  = literal_at(lit);
 
-                ST_send_selector(method_literal(lit, st_vm.method), argc);
+                if (sel != ST_OOP_INVALID)
+                    ST_send_selector(sel, argc);
             }  else  {
                 fprintf(stderr, "st80: unused bytecode %u at cycle %llu\n",
                         (unsigned) code, (unsigned long long) st_vm.cycle);

@@ -365,3 +365,19 @@ String >> asNumber [
 	(stream atEnd not and: [stream peek isDigit]) ifFalse: [^nil].
 	^Number readFromString: self trimLeft
 ]
+
+{ #category : '*Strings-Protocol' }
+String >> subStrings: separators [
+	"My pieces between runs of any of those characters -- substrings:
+	 under the capital Squeak and Pharo give it, which is the spelling
+	 ported code writes and the one that was missing (Bugs3 B51).  The
+	 same answer as substrings:, so that the two spellings can never
+	 disagree about what a piece is."
+	^self substrings: separators
+]
+
+{ #category : '*Strings-Protocol' }
+String >> subStrings [
+	"My words, split on spaces: substrings under its other spelling."
+	^self substrings
+]

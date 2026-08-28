@@ -166,6 +166,21 @@ void        LEX_restore(st_lexer *lx, const st_lexer_state *state);
 st_lexer   *LEX_open(const char *source);
 
 /*
+ *  The same, for source that is BYTES rather than a C string.
+ *
+ *  A Smalltalk String may hold a NUL, and `(String with: (Character
+ *  value: 0) with: $a) storeString' is a perfectly good literal that has
+ *  one in the middle.  LEX_open measured its argument with strlen, so the
+ *  seam from the image (image_compile.c) handed over a copy that ended at
+ *  the first NUL and the compile ended there too, in silence: `3 + 4
+ *  <NUL> + 100' answered 7, and a method compiled from such text installed
+ *  with the prefix as its code and the whole text as its source.  Bugs3
+ *  B28.  A caller that knows the length says so here; LEX_open stays for
+ *  the many callers whose source really is a C string.
+ */
+st_lexer   *LEX_open_n(const char *source, size_t length);
+
+/*
  *  Which dialect to read.  Two characters changed meaning after 1983 and
  *  the lexer cannot guess which is meant: the underscore, which was the
  *  assignment arrow and is now a letter, and the length of a binary

@@ -52,3 +52,39 @@ DelayTest >> testAStaleTimerSignalDoesNotKillTheTimingProcess [
 	(Delay forMilliseconds: 5) wait.
 	self assert: true
 ]
+
+{ #category : 'tests' }
+DelayTest >> testADurationIsRoundedToTheMillisecond [
+	"Bugs3 B12: a Float duration reached the timer, which wants an
+	 Integer, with ActiveDelay already pointing at the Delay, and no
+	 Delay in the image ever returned again.  Rounded when the Delay is
+	 made now -- half a millisecond asked for is a millisecond, not
+	 nothing -- and the second wait is the check that the first did no
+	 harm."
+	self assert: ((Delay forMilliseconds: 0.5) instVarAt: 1) equals: 1.
+	self assert: ((Delay forMilliseconds: 0.4) instVarAt: 1) equals: 0.
+	self assert: ((Delay forSeconds: 1.5) instVarAt: 1) equals: 1500.
+	(Delay forMilliseconds: 0.5) wait.
+	(Delay forMilliseconds: 5) wait.
+	self assert: true
+]
+
+{ #category : 'tests' }
+DelayTest >> testANegativeDurationIsOver [
+	self assert: ((Delay forMilliseconds: -7) instVarAt: 1) equals: 0.
+	(Delay forMilliseconds: -7) wait.
+	(Delay forMilliseconds: 2) wait.
+	self assert: true
+]
+
+{ #category : 'tests' }
+DelayTest >> testWhatTheTimerCannotCountIsRefusedWhenMade [
+	"Not inside wait, where 1983 found out, with the lock held."
+	self should: [Delay forSeconds: 1e12] raise: Error.
+	self should: [Delay forMilliseconds: Delay maximumMilliseconds + 1] raise: Error.
+	self should: [Delay forMilliseconds: 'soon'] raise: Error.
+	self should: [Delay untilMilliseconds: -1] raise: Error.
+	(Delay forMilliseconds: Delay maximumMilliseconds) instVarAt: 1.
+	(Delay forMilliseconds: 2) wait.
+	self assert: true
+]

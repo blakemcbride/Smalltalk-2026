@@ -13,7 +13,7 @@ Where the six candidates stand, measured rather than assumed:
 
 | Extension | Today |
 |---|---|
-| Dynamic arrays `{ a. b }` | **Implemented.** Compiled as `Array new: n` filled by `at:put:`, so it needs no new bytecode |
+| Dynamic arrays `{ a. b }` | **Implemented.** The elements are compiled in order and bytecode 138 (push new Array, elements off the stack -- Squeak's, and the interpreter's already) builds the Array from them; up to 127 elements, no literal per element |
 | General pragmas `<foo: 1>` | **Implemented**, several per method, all literal argument kinds. Kept in the literal frame as an `AdditionalMethodState`, which `CompiledMethod>>pragmas` reads back |
 | Block-local temporaries `[:x \| \| t \| ...]` | **Implemented.** Each gets a frame slot and is nilled at every activation |
 | Byte arrays `#[1 2 3]` | **Implemented**, including nested inside `#(...)` |

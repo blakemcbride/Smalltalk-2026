@@ -16,7 +16,7 @@ Extension { #name : 'IdentitySet' }
 { #category : '*Collections-Protocol' }
 IdentitySet >> findElementOrNil: anObject [
 	"1983's, with the identity check extended to see through a wrapper."
-	| index length probe pass |
+	| index length probe pass hash |
 	length := self basicSize.
 	"
 	 An IdentitySet with no indexed part is not one of 1983's.
@@ -32,7 +32,17 @@ IdentitySet >> findElementOrNil: anObject [
 	"
 	length = 0 ifTrue: [^super findElementOrNil: anObject].
 	pass := 1.
-	index := anObject hash \\ length + 1.
+	"
+	 The hash is mixed before it picks a bucket, in exactly the arithmetic
+	 Set>>findElementOrNil: uses and for the reason given there (Bugs3
+	 B33).  An IdentitySet of SmallIntegers has the same round-number
+	 fault as a Set of them, and an IdentitySet of objects buckets by
+	 identityHash, which is an allocation number: sequential, and the
+	 better for being spread.
+	"
+	hash := anObject hash.
+	index := (((hash + (hash bitShift: -30) bitAnd: 16r3FFFFFFF) * 16r9E3779B1)
+				bitShift: -16) \\ length + 1.
 	[(probe := self basicAt: index) == nil
 		or: [probe == anObject
 			or: [probe class == CollectionElement

@@ -1064,6 +1064,12 @@ serve_worker(st_worker *self, void *user)
         st_vm.active_process =
             OM_fetch_pointer(ST_SCHEDULER_ACTIVE_PROCESS, SCHED_scheduler());
         OM_increase_ref(st_vm.active_process);
+        /*
+         *  And say so where the other workers can see it, since a process
+         *  adopted rather than switched to would otherwise look free to a
+         *  terminate from one of them.
+         */
+        SCHED_publish_active();
         ST_store_release(&serve_ready, 1);
         ST_interp_run(0);
     }  else  {
@@ -1662,8 +1668,20 @@ do_bootstrap(const char *const *sources, const int *dialects, unsigned count,
                                 " ScheduledControllers restore."
                                 " [true] whileTrue:"
                                 " [ScheduledControllers"
-                                " searchForActiveController]"))
-        fprintf(stderr, "st80: no startup process installed\n");
+                                " searchForActiveController]")) {
+        /*
+         *  An error, and the end of the build (Bugs3 B58).  This used to
+         *  say so and carry on: `-startup "3 +"' wrote the image and exited
+         *  0, and serving the image answered `active process has no
+         *  suspended context' -- a fault reported one step away from its
+         *  cause, to somebody who had been told the build succeeded.  An
+         *  image with no process to resume is not an image, and a script
+         *  that asked for one must be told.
+         */
+        fprintf(stderr, "st80: no startup process installed; no image "
+                        "is written\n");
+        return 1;
+    }
 
     /*
      *  Run every test in the image and answer through the exit code.
@@ -1809,11 +1827,60 @@ do_bootstrap(const char *const *sources, const int *dialects, unsigned count,
             ST_print_object(value, text, sizeof text);
             printf("%s\n", text);
         }
+        /*
+         *  An Error nobody handled is a failed evaluation, whatever the
+         *  expression went on to answer (Bugs3 B58).  Error>>defaultAction
+         *  reports, unwinds and answers nil, so `-eval "3 zork"' printed
+         *  the MessageNotUnderstood and then `nil' and exited 0, and a
+         *  build script could not tell it from an expression that answered
+         *  nil on purpose.  The answer is still printed -- it is what was
+         *  asked for -- and the exit code says what happened on the way.
+         *  Counted by the VM, on this worker, from the one method every
+         *  unhandled Error reaches; a handled one never gets there.
+         */
+        if (st_vm.unhandled_errors) {
+            fprintf(stderr, "st80: %u error%s went unhandled while "
+                            "evaluating the expression\n",
+                    st_vm.unhandled_errors,
+                    st_vm.unhandled_errors == 1 ? "" : "s");
+            return 1;
+        }
     }
     write_screenshot();
     GFX_write_coverage(shot_path);
     if (out_path) {
 #ifdef ST_OM_MT
+        /*
+         *  Close the files the image holds open before writing it, which
+         *  is what a snapshot taken from inside the image does and this
+         *  path did not.
+         *
+         *  SystemDictionary>>snapshotAs:thenQuit: sends releaseExternalViews
+         *  before its snapshot primitive: it closes SourceFiles, Disk and
+         *  every FileStream the directory remembers, so that the image on
+         *  disk holds CLOSED streams, and a closed stream re-reads its file
+         *  -- page, size, last page number -- the first time it is used
+         *  again.  Writing the image from here skipped that, so the changes
+         *  stream was saved OPEN, with the page buffer and the File's cached
+         *  lastPageNumber as they stood at the moment of the save; the file
+         *  layer reopens a descriptor from another life by name, so nothing
+         *  noticed.  Every session that resumed the image then took
+         *  `setToEnd' as the end the buffer remembered and wrote the next
+         *  method's source over whatever the session before had appended
+         *  (Bugs3 B20) -- the record the manual calls the undo of last
+         *  resort was being erased one restart at a time.
+         *
+         *  Closing does not truncate: the library leaves the changes stream
+         *  readOnly after every write, and a readOnly stream's close flushes
+         *  nothing and shortens nothing.  Nothing runs after the save, so
+         *  there is no one to reopen for.  A failure here is reported and
+         *  not fatal -- an image with open streams is what was being written
+         *  before, and is still an image.
+         */
+        if (evaluate("Smalltalk releaseExternalViews", err, sizeof err)
+            == ST_OOP_INVALID)
+            fprintf(stderr, "st80: could not close the image's files before "
+                            "saving: %s\n", err);
         if (OM_image_save(out_path, err, sizeof err) != 0) {
             fprintf(stderr, "st80: %s\n", err);
             return 1;

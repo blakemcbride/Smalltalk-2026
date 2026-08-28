@@ -20,6 +20,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 
 #if defined(_WIN32)
 #define ST_WINDOWS      1
@@ -156,6 +157,21 @@ int64_t ST_time_smalltalk_ms(void);
 #define ST_EPOCH_OFFSET_SEC     INT64_C(2177452800)
 
 void    ST_sleep_ns(int64_t ns);
+
+/*  Files
+ *
+ *  The two operations a snapshot writer needs that C leaves to the
+ *  platform.  ST_file_sync pushes a stream's buffered bytes through the
+ *  kernel to the device, so that a rename which follows it never publishes
+ *  a file whose tail is still in a cache.  ST_file_replace renames `from'
+ *  over `to' in one step, replacing an existing `to': POSIX rename does
+ *  that and Win32's does not, so the Windows half is MoveFileEx with
+ *  MOVEFILE_REPLACE_EXISTING.  Both are here so that OM_image_save, which
+ *  is what needs them, can be written once; see the note there on why a
+ *  snapshot is never written in place (Bugs3 B10).
+ */
+int     ST_file_sync(FILE *f);
+int     ST_file_replace(const char *from, const char *to);
 
 #ifdef __cplusplus
 }

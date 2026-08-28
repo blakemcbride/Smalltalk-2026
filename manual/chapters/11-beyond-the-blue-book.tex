@@ -60,8 +60,10 @@ difference is code that inspects bytecodes.
 { 1. 2 + 3. Date today }
 \end{st}
 
-Braces, expressions separated by periods, evaluated at run time. Compiled as
-\ct{Array new:} filled by \ct{at:put:}, so it needed no new bytecode.
+Braces, expressions separated by periods, evaluated at run time. The
+elements are compiled in order and one bytecode of the closure set then
+builds the Array from them off the stack, so an element costs no literal
+and a brace may hold up to 127 of them.
 
 The contrast with \ct|#(1 2 3)| is the point: a literal array holds
 compile-time constants and is one shared object; a dynamic array is built
@@ -172,10 +174,14 @@ Greeter >> subject [
 always wins over the trait's.
 
 Composition supports \ct{+} only. Trait subtraction (\ct{-}) and aliasing
-(\ct{@}) are rejected with a report rather than silently mis-loaded, and there
-is no trait reflection or update propagation: flattening is a load-time
-operation, and changing a trait afterwards does not change the classes that
-took it.
+(\ct{@}) are rejected with a report rather than silently mis-loaded. A class
+answers \ct{traitComposition} with the text its header gave---for
+\ct{Greeter} that is \ct{'TGreeting'}---and the flattened methods sit in a
+\ct{*trait:TGreeting} category, which is all the reflection there is: there
+is no update propagation, because flattening is a load-time operation, and
+changing a trait afterwards does not change the classes that took it. A
+class file loaded at run time through \ct{TonelReader} (Chapter~\ref{ch:packages})
+cannot name a trait, since the trait's source lives in the bootstrap.
 
 \section{\texttt{new} calling \texttt{initialize}}
 

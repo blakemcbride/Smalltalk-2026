@@ -195,17 +195,25 @@ somewhere that has never heard of this system. The sender of a malformed
 document is the party who can fix it, and the way to tell them is to refuse
 it.
 
-Two limits are refusals of a different kind. A document may not nest deeper
-than 512 levels, and an exponent may not exceed 4096---one so that forty
-thousand open brackets cannot exhaust the heap, the other so that a
-twelve-character document cannot ask this process for a billion digits. Both
-matter because the document usually arrives from somewhere else. The first
-can be raised deliberately:
+Three limits are refusals of a different kind. A document may not nest
+deeper than 512 levels, an exponent may not exceed 4096, and a number may
+not be written with more than 256 digits---the first so that forty thousand
+open brackets cannot exhaust the heap, the second so that a twelve-character
+document cannot ask this process for a billion digits, the third because
+reading a decimal into a binary integer costs a multiplication per digit of
+a number that grows. All three matter because the document usually arrives
+from somewhere else. 256 digits is past every number that is really a
+number: a 64-bit integer is 19 digits, the widest SQL \ct{DECIMAL} is 38,
+and a double carries 17 significant ones. The count is taken separately in
+the whole part and in the fraction.
+
+Two of the three can be raised deliberately:
 
 \begin{st}
 | parser |
 parser := JSONParser on: aVeryDeepDocument.
 parser maxDepth: 5000.
+parser maxDigits: 2000.
 parser parse
 \end{st}
 
@@ -369,7 +377,7 @@ reads one value and leaves the stream where it stopped.
 \ctp{JSONObject fromString:} & and it must be an object \\
 \ctp{JSONArray fromString:} & and it must be an array \\
 \ctp{JSONParser parse:} & a String or a stream \\
-\ctp{JSONParser on:} & a parser, for maxDepth: and nextValue \\
+\ctp{JSONParser on:} & a parser, for maxDepth:, maxDigits: and nextValue \\
 \midrule
 \textbf{Writing} & \\
 \ctp{anObject asJsonString} & compact \\

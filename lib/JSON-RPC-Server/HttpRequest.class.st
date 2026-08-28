@@ -15,6 +15,17 @@ response.
 Header names are kept lower-cased, so headerAt: 'content-type' finds
 `Content-Type:' and `CONTENT-TYPE:' alike.  The body is a String of bytes.
 
+FRAMING IS STRICT, because the documented way to run this server is behind a
+reverse proxy and two parsers that disagree about where one message ends and
+the next begins is the whole of request smuggling.  Lines end with CR LF and
+a bare line feed is 400; a field name with whitespace in it is 400 rather
+than trimmed; a second Content-Length is 400 rather than the last one
+winning; a Content-Length that is not all digits is 400 rather than as much
+of it as asInteger understood; and Transfer-Encoding together with
+Content-Length is 400 rather than one of them being preferred.  Each of
+those was accepted here, and each was a request whose bytes a proxy in front
+could have divided differently (Bugs3 B56).
+
 A multipart/form-data body is taken apart on request, into HttpParts, by the
 boundary the content type names; formParameters answers the fields among
 them as a Dictionary and parts answers everything.  That is the shape a Kiss
@@ -50,9 +61,23 @@ HttpRequest class >> fromString: aString maxBodyBytes: limit [
 
 { #category : 'private - reading' }
 HttpRequest >> nextLineFrom: aStream limit: anInteger status: statusForTooLong [
-	"A line up to LF with a CR before it dropped, of at most anInteger
-	 bytes; nil at end of stream before any byte."
-	| out c n lf cr |
+	"A line ended by CR LF, of at most anInteger bytes, without its ending;
+	 nil at end of stream before any byte.
+
+	 A BARE LINE FEED IS REFUSED, with 400.  RFC 7230 says a recipient MAY
+	 accept one and this one does not, because Bugs3 B56 is about the case
+	 where accepting it costs something: the documented way to run this
+	 server is behind a reverse proxy, and a proxy in front that recognises
+	 only CR LF sees a different set of message boundaries in the same bytes
+	 than a server that also recognises LF.  Two parsers that disagree about
+	 where a request ends is the whole of request smuggling.  A client that
+	 cannot manage a carriage return is not a client this server has, and a
+	 refusal that names the fault costs it one round trip.
+
+	 The end of the stream is NOT that fault: a connection that stops
+	 mid-line answers what it had, and the caller turns a truncated request
+	 into `the headers were cut off' or `not a request line'."
+	| out c n line lf cr |
 	lf := Character value: 10.
 	cr := Character value: 13.
 	out := WriteStream on: (String new: 80).
@@ -63,9 +88,9 @@ HttpRequest >> nextLineFrom: aStream limit: anInteger status: statusForTooLong [
 		n := n + 1.
 		n > anInteger ifTrue: [HttpError status: statusForTooLong reason: 'a line is too long'].
 		out nextPut: c].
-	n := out contents.
-	(n size > 0 and: [n last = cr]) ifTrue: [^n copyFrom: 1 to: n size - 1].
-	^n
+	line := out contents.
+	(line size > 0 and: [line last = cr]) ifTrue: [^line copyFrom: 1 to: line size - 1].
+	HttpError status: 400 reason: 'a line ends with a bare line feed'
 ]
 
 { #category : 'private - reading' }
@@ -95,6 +120,23 @@ HttpRequest >> readFrom: aStream maxBodyBytes: limit [
 		colon := line indexOf: $:.
 		colon < 2 ifTrue: [HttpError status: 400 reason: 'not a header: ', line].
 		name := (line copyFrom: 1 to: colon - 1) asLowercase.
+		"Bugs3 B56: `Content-Length : 25' -- one space before the colon --
+		 was read as a header named `content-length ', which headerAt:
+		 never finds, so the length was ignored and the body's bytes were
+		 read as the next request on the connection.  That is a smuggled
+		 request, and it worked.  RFC 7230 says there is no whitespace
+		 between a field name and its colon and that a message with any
+		 must be rejected; every character at or below a space, and the
+		 DEL above them, is refused here rather than trimmed away, because
+		 trimming would make this parser agree with a proxy that trims and
+		 disagree with one that rejects."
+		(name anySatisfy: [:c | c asInteger <= 32 or: [c asInteger = 127]])
+			ifTrue: [HttpError status: 400 reason: 'a header name holds whitespace: ', name printString].
+		"Two Content-Lengths are two answers to the question of where the
+		 body ends.  A Dictionary kept the last of them, which is one of
+		 the two answers a proxy in front might not have kept."
+		(name = 'content-length' and: [headers includesKey: name])
+			ifTrue: [HttpError status: 400 reason: 'two Content-Length headers'].
 		value := (line copyFrom: colon + 1 to: line size) trimmed.
 		headers at: name put: value].
 	self readBodyFrom: aStream maxBodyBytes: limit
@@ -102,11 +144,29 @@ HttpRequest >> readFrom: aStream maxBodyBytes: limit [
 
 { #category : 'private - reading' }
 HttpRequest >> readBodyFrom: aStream maxBodyBytes: limit [
+	"The body, of the length the headers declare.
+
+	 THE LENGTH IS ALL DIGITS OR IT IS NOT A LENGTH.  asInteger reads as far
+	 as it understands and answers what it had, so `Content-Length: 5, 5' --
+	 the shape a proxy produces when it folds two of them into one header --
+	 answered 5 and left the second body on the connection (Bugs3 B56).
+	 Every character is checked instead, and an empty value is refused too.
+
+	 TRANSFER-ENCODING WITH CONTENT-LENGTH is 400 and not 411.  Either
+	 header alone has one meaning; the two together have two, and RFC 7230
+	 says the message must be rejected rather than resolved in favour of
+	 one of them, precisely because the parser in front may resolve it in
+	 favour of the other.  Transfer-Encoding on its own stays 411 -- see the
+	 class comment: a chunked body is not read here at all."
 	| length text |
-	(self headerAt: 'transfer-encoding') notNil
-		ifTrue: [HttpError status: 411 reason: 'a body must declare its length'].
+	(self headerAt: 'transfer-encoding') notNil ifTrue: [
+		(self headerAt: 'content-length') notNil
+			ifTrue: [HttpError status: 400 reason: 'both Transfer-Encoding and Content-Length'].
+		HttpError status: 411 reason: 'a body must declare its length'].
 	text := self headerAt: 'content-length'.
 	text isNil ifTrue: [body := ''. ^self].
+	(text isEmpty or: [text anySatisfy: [:c | c isDigit not]])
+		ifTrue: [HttpError status: 400 reason: 'not a length: ', text].
 	length := text asInteger.
 	(length isNil or: [length < 0]) ifTrue: [HttpError status: 400 reason: 'not a length: ', text].
 	length > limit ifTrue: [HttpError status: 413 reason: 'the body is larger than ', limit printString, ' bytes'].

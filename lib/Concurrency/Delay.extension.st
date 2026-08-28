@@ -29,7 +29,11 @@ does anyway.
 The lock is released by ensure: in both the timing process and wait, so
 an error inside either -- setResumption refusing a Delay that is already
 waiting, say -- cannot leave AccessProtect held and every later wait
-behind it.
+behind it.  And what is given to delay: is checked there, when the Delay
+is made, rather than discovered at armTimer with the lock held and the
+class variables half changed: a Float, a negative, or a duration wider
+than the timer counts is rounded, floored at zero, or refused with an
+error that says so (Bugs3 B12).
 
 delaySemaphore is here for BlockClosure>>valueWithin:onTimeout:, which
 signals it directly to retire a watchdog whose job is done; the Delay is
@@ -74,13 +78,24 @@ Delay >> delaySemaphore [
 
 { #category : '*Concurrency' }
 Delay >> wait [
-	"Suspend the active process until my resumption time."
+	"Suspend the active process until my resumption time.
+
+	 Nothing shared is changed until the timer is armed.  This used to
+	 move the old ActiveDelay onto SuspendedDelays and then activate,
+	 which stored ActiveDelay before arming; an armTimer that raised --
+	 for a Float duration, or one wider than the primitive takes -- left
+	 ActiveDelay pointing at a delay with no timer behind it, and every
+	 later, shorter delay was filed behind it in SuspendedDelays, where
+	 nothing would ever fire it (Bugs3 B12).  delay: now refuses what the
+	 timer cannot count, so armTimer cannot raise; the order here is what
+	 keeps the class variables consistent should it ever learn to."
 	AccessProtect wait.
 	[self setResumption.
 	 (ActiveDelay isNil or: [resumptionTime < ActiveDelay resumptionTime])
-		ifTrue: [
-			ActiveDelay isNil ifFalse: [SuspendedDelays add: ActiveDelay].
-			self activate]
+		ifTrue: [ | displaced |
+			displaced := ActiveDelay.
+			self activate.
+			displaced isNil ifFalse: [SuspendedDelays add: displaced]]
 		ifFalse: [SuspendedDelays add: self]]
 			ensure: [AccessProtect signal].
 	delaySemaphore wait
@@ -88,9 +103,72 @@ Delay >> wait [
 
 { #category : '*Concurrency' }
 Delay >> activate [
-	"Become the delay the timer is armed for.  With AccessProtect held."
-	ActiveDelay := self.
-	self armTimer
+	"Become the delay the timer is armed for.  With AccessProtect held.
+	 Armed first and published second, so that a delay the VM would not
+	 time is never the delay everything else queues behind."
+	self armTimer.
+	ActiveDelay := self
+]
+
+{ #category : '*Concurrency' }
+Delay >> delay: millisecondCount [
+	"Set my duration, checked.  1983 stored whatever it was given and
+	 found out at armTimer, inside wait, with AccessProtect held and the
+	 class variables half changed: `Delay forMilliseconds: 0.5' was a
+	 doesNotUnderstand of digitLength on the Float and then no Delay in
+	 the image ever returned (Bugs3 B12)."
+	delayDuration := self class checkedMilliseconds: millisecondCount.
+	delayInProgress := false.
+	delaySemaphore := Semaphore new
+]
+
+{ #category : '*Concurrency' }
+Delay >> resumption: millisecondCount [
+	"Set the clock value I resume at, checked the same way."
+	delayDuration := nil.
+	resumptionTime := self class checkedClockValue: millisecondCount.
+	delayInProgress := false.
+	delaySemaphore := Semaphore new
+]
+
+{ #category : '*Concurrency' }
+Delay class >> maximumMilliseconds [
+	"The longest delay the timer can count: 2^29 - 1, six days and change.
+	 The VM's millisecond clock wraps at 2^30, and primitive 136 reads a
+	 target more than half a wrap ahead as already past -- so a longer
+	 delay would not be refused, it would return at once."
+	^536870911
+]
+
+{ #category : '*Concurrency' }
+Delay class >> checkedMilliseconds: aNumber [
+	"aNumber as a duration the timer can count, or an error that says why.
+
+	 Rounded to the millisecond rather than truncated, because that is
+	 the clock's grain and forSeconds: already rounds: half a millisecond
+	 asked for is a millisecond, not nothing.  A negative duration is a
+	 delay that is already over, and is zero."
+	| count |
+	aNumber isNumber ifFalse: [
+		^self error: 'a Delay is made from a number of milliseconds, not ' , aNumber printString].
+	count := aNumber rounded.
+	count < 0 ifTrue: [^0].
+	count > self maximumMilliseconds ifTrue: [
+		^self error: 'a Delay of ' , count printString , ' milliseconds is longer than the timer can count (' , self maximumMilliseconds printString , ')'].
+	^count
+]
+
+{ #category : '*Concurrency' }
+Delay class >> checkedClockValue: aNumber [
+	"aNumber as a value of the millisecond clock, which counts from zero
+	 to 2^30 - 1 and then wraps."
+	| value |
+	aNumber isNumber ifFalse: [
+		^self error: 'a Delay resumes at a millisecond clock value, not ' , aNumber printString].
+	value := aNumber rounded.
+	(value < 0 or: [value >= 1073741824]) ifTrue: [
+		^self error: value printString , ' is not a value of the millisecond clock'].
+	^value
 ]
 
 { #category : '*Concurrency' }

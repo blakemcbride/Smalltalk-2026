@@ -66,7 +66,20 @@ Fraction >> hash [
 	 Answering asFloat's hash makes every Fraction agree with the Float it
 	 compares equal to, at the cost of one division per hash and of two
 	 different Fractions that round to the same double colliding -- which
-	 is what a hash may do, where disagreeing is not.  See Float>>hash for
-	 what this does NOT fix and why."
+	 is what a hash may do, where disagreeing is not.
+
+	 Since Bugs3 B36 the comparison the other way is exact -- a Float is
+	 equal to a Fraction only when its exact value IS that Fraction -- and
+	 this still agrees with it: such a Fraction converts to that Float
+	 without rounding, so both sides hash the same bits.  Two Fractions
+	 that round to one double are no longer equal to it and merely
+	 collide.  And since Bugs3 B33 the Float hash they inherit reads all
+	 sixty-four bits rather than fourteen, so a Set of Fractions is no
+	 longer quadratic on top of being slow."
 	^self asFloat hash
+]
+
+{ #category : '*Kernel-Protocol' }
+Fraction >> isFraction [
+	^true
 ]

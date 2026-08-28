@@ -45,6 +45,57 @@ Interval >> hash [
 	 however many there were.  Now Array>>hash is
 	 SequenceableCollection>>hash and so is this: the two agree because
 	 they are the same method, which is a stronger guarantee than agreeing
-	 because somebody kept two copies in step."
-	^super hash
+	 because somebody kept two copies in step.
+
+	 That method walked every element when it was first shared, so
+	 `(1 to: 1000000) hash' walked a million of them and a Set of twenty
+	 thousand Intervals did not finish (Bugs3 B33).  It now hashes every
+	 element up to thirty-two and a sixteen-element sample beyond that,
+	 which for an Interval is constant in its length; the trade is argued
+	 there, where the function is.
+
+	 The arm below is that same sample computed without sending at:.
+	 Interval>>at: checks its bounds and computes the size for every
+	 element, which made the sixteen samples cost four times what an
+	 Array's cost and put a Set of twenty thousand Intervals over a
+	 second; here each element is `start + (step * index)' and its hash
+	 is itself, which is only true when start, stop and step are all
+	 SmallIntegers -- then every element lies between start and stop and
+	 is one too, and SmallInteger>>hash is the number.  Any other
+	 Interval, or one short enough to be walked whole, takes the shared
+	 body.  The positions and the arithmetic are SequenceableCollection>>
+	 hash's exactly, and tests/unit/test_image.c holds the two together."
+	| h size last |
+	size := self size.
+	(size <= 32
+	 or: [(start isMemberOf: SmallInteger) not
+	 or: [(stop isMemberOf: SmallInteger) not
+	 or: [(step isMemberOf: SmallInteger) not]]])
+		ifTrue: [^super hash].
+	h := ((2166136261 bitXor: (size bitAnd: 16rFFFFFFFF)) * 16777619) bitAnd: 16rFFFFFFFF.
+	last := size - 1.
+	0 to: 15 do: [:k |
+		h := ((h bitXor: ((start + (step * (k * last // 15))) bitAnd: 16rFFFFFFFF))
+				* 16777619) bitAnd: 16rFFFFFFFF].
+	^(h bitXor: (h bitShift: -16)) bitAnd: 16rFFFFFFF
+]
+
+{ #category : '*Collections-Protocol' }
+Interval class >> from: startInteger to: stopInteger by: stepInteger [
+	"1983's, refusing a step of zero.
+
+	 An Interval walks from start towards stop by adding step until it has
+	 passed stop, and a step of zero never passes anything: `(1 to: 10 by:
+	 0) do:' ran for ever, in the image and not in C, so it could not even
+	 be stopped from outside (Bugs3 B14).  `size' on the same Interval
+	 divided by the step and raised ZeroDivide, which was the right thing
+	 to say, said one message too late.  Every way of making an Interval
+	 -- to:, to:by:, Number>>to:by: -- comes through here, so this is the
+	 one place the question needs asking."
+	stepInteger = 0
+		ifTrue: [^self error: 'an Interval cannot have a step of zero'].
+	^self new
+		setFrom: startInteger
+		to: stopInteger
+		by: stepInteger
 ]

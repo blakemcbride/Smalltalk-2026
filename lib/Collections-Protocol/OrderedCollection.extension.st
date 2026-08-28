@@ -171,3 +171,28 @@ OrderedCollection >> removeLast: count [
 	count timesRepeat: [removed addFirst: self removeLast].
 	^removed
 ]
+
+{ #category : '*Collections-Protocol' }
+OrderedCollection >> addAllLast: aCollection [
+	"1983's, guarded against being given myself.
+
+	 This is where OrderedCollection>>addAll: arrives, and `aCollection do:
+	 [:each | self addLast: each]' with the receiver as the argument walks
+	 an index towards a lastIndex that every addLast: moves further away:
+	 1 2 3 became 1 2 3 1 2 3 1, and where it stopped depended on when the
+	 collection happened to grow (Bugs3 B49).  Collection>>addAll: carries
+	 the same guard for the collections that do not override it."
+	aCollection == self ifTrue: [self addAllLast: self copy. ^aCollection].
+	aCollection do: [:each | self addLast: each].
+	^aCollection
+]
+
+{ #category : '*Collections-Protocol' }
+OrderedCollection >> addAllFirst: aCollection [
+	"1983's, guarded against being given myself, for the reason given at
+	 addAllLast: read from the other end: reverseDo: walks an index down
+	 towards a firstIndex that every addFirst: moves."
+	aCollection == self ifTrue: [self addAllFirst: self copy. ^aCollection].
+	aCollection reverseDo: [:each | self addFirst: each].
+	^aCollection
+]

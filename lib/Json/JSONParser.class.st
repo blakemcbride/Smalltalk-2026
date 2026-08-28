@@ -57,11 +57,42 @@ THE EXPONENT IS BOUNDED for the same reason, at 4096.  1e4096 is a
 four-thousand-digit integer and exact arithmetic will happily produce it;
 1e1000000000 is a twelve-character document asking for a billion digits,
 and refusing it is the only way not to answer.
+
+AND SO ARE THE DIGITS, at 256 of them in the whole part and 256 in the
+fraction.  Bugs3 B53: a number written out as four thousand sevens took
+thirteen and a half SECONDS to read, and a REST request carrying one spent
+every one of them before the session in the same document had been looked
+at -- so an unauthenticated client could hold a worker for as long as it
+liked, one request at a time, and the body limit is 64 MB.  Two things were
+wrong and both are fixed here.  The first is the cost: reading d digits as
+`value := value * 10 + digit' is d multiplications of a number that grows,
+and this image multiplies large integers a BYTE at a time in Smalltalk
+(1983's Integer>>digitMultiply:neg:), so the cost is quadratic with a large
+constant.  integerFrom: reads the digits into as few SmallInteger chunks as
+this build's SmallInteger will hold and combines those, which is the same
+answer for about a fifth of the work; nextNumber reads all three parts of a
+number before it computes anything, since every JSON number is one integer
+over one power of ten; and reduce:over: reduces that by dividing out the 2s
+and 5s which are all its denominator can hold, where the obvious spelling
+paid for a Euclid gcd on numbers thousands of digits long at each of three
+steps.  Together, at the cap: 48 ms became 11 for a whole number, 162 became
+27 for a fraction, and `777...7.777...7e-4096' -- five hundred characters --
+came down from nine and a half seconds to three quarters of one, which is
+what its exponent alone costs.  The second thing wrong was that
+no amount of constant factor is a bound: 256 digits is the bound, it is
+settable with maxDigits: the way maxDepth is, and it is far past every
+number that is really a number -- a 64-bit integer is 19 digits, the widest
+SQL DECIMAL is 38, and a double carries 17 significant ones.
+
+There is no fix for this in the caller.  A REST request carries its session
+token INSIDE the JSON document (`_uuid'), so the document has to be parsed
+before there is anything to authenticate; the parser is the only place that
+can refuse the work.
 "
 Class {
 	#name : 'JSONParser',
 	#superclass : 'Object',
-	#instVars : [ 'stream', 'depth', 'maxDepth' ],
+	#instVars : [ 'stream', 'depth', 'maxDepth', 'maxDigits' ],
 	#category : 'Json'
 }
 
@@ -104,7 +135,8 @@ JSONParser class >> on: aStringOrStream [
 { #category : 'initialization' }
 JSONParser >> initialize [
 	depth := 0.
-	maxDepth := 512
+	maxDepth := 512.
+	maxDigits := 256
 ]
 
 { #category : 'accessing' }
@@ -115,6 +147,20 @@ JSONParser >> maxDepth [
 { #category : 'accessing' }
 JSONParser >> maxDepth: anInteger [
 	maxDepth := anInteger
+]
+
+{ #category : 'accessing' }
+JSONParser >> maxDigits [
+	^maxDigits
+]
+
+{ #category : 'accessing' }
+JSONParser >> maxDigits: anInteger [
+	"How many digits one number may be written with, in its whole part and
+	 again in its fraction.  See the class comment: this is a bound on the
+	 work a document may ask for, not on the arithmetic, which is exact and
+	 would carry on."
+	maxDigits := anInteger
 ]
 
 { #category : 'parsing' }
@@ -225,9 +271,21 @@ JSONParser >> nextNumber [
 	 The leading zero is refused on purpose.  01 is not JSON, and every
 	 language that reads it anyway disagrees with the next one about
 	 whether it is one or an octal -- which is a real class of bug in
-	 configuration files and costs nothing to shut out here."
+	 configuration files and costs nothing to shut out here.
 
-	| negative whole fraction scale exponent value |
+	 EVERY JSON NUMBER IS A DECIMAL, which is to say some integer over a
+	 power of ten, and this method reads all three of its parts before it
+	 does any arithmetic so that it can build that one number once.  The
+	 spelling it replaces built the fraction, added it to the whole part and
+	 then multiplied by the exponent, and each of those three steps reduced
+	 a Fraction with a Euclid gcd on numbers that could be thousands of
+	 digits long: `777...7.777...7e-4096', five hundred characters, took
+	 nine and a half SECONDS.  One number, one reduction, and the reduction
+	 itself needs no gcd -- see reduce:over:.  That is the other half of
+	 Bugs3 B53, which the digit cap alone does not reach because the
+	 exponent may still be 4096."
+
+	| negative whole digits exponent scale value |
 	negative := stream peekFor: $-.
 	(stream atEnd not and: [stream peek isDigit])
 		ifFalse: [self error: 'a number needs at least one digit'].
@@ -238,24 +296,103 @@ JSONParser >> nextNumber [
 			(stream atEnd not and: [stream peek isDigit]) ifTrue: [
 				self error: 'a number may not have a leading zero']]
 		ifFalse: [whole := self nextDigits].
-	value := whole.
+	digits := ''.
 	(stream peekFor: $.) ifTrue: [
 		(stream atEnd not and: [stream peek isDigit])
 			ifFalse: [self error: 'a decimal point needs a digit after it'].
-		fraction := 0.
-		scale := 1.
-		[stream atEnd not and: [stream peek isDigit]] whileTrue: [
-			fraction := fraction * 10 + stream next digitValue.
-			scale := scale * 10].
-		value := value + (fraction / scale)].
+		digits := self nextDigitString].
+	exponent := 0.
 	(stream atEnd not and: [stream peek = $e or: [stream peek = $E]])
 		ifTrue: [
 			stream next.
-			exponent := self nextExponent.
-			value := exponent < 0
-				ifTrue: [value / (10 raisedTo: exponent negated)]
-				ifFalse: [value * (10 raisedTo: exponent)]].
+			exponent := self nextExponent].
+	value := digits isEmpty
+		ifTrue: [whole]
+		ifFalse: [whole * (10 raisedTo: digits size) + (self integerFrom: digits)].
+	"Zero before anything is computed: `0e4096' is zero, and asking for
+	 a four-thousand-digit power of ten to multiply it by would be half a
+	 second spent to answer that."
+	value = 0 ifTrue: [^0].
+	scale := digits size - exponent.
+	value := scale <= 0
+		ifTrue: [value * (10 raisedTo: scale negated)]
+		ifFalse: [self reduce: value over: scale].
 	^negative ifTrue: [value negated] ifFalse: [value]
+]
+
+{ #category : 'private' }
+JSONParser >> reduce: anInteger over: k [
+	"anInteger over ten to the k, as the exact number it is: an Integer
+	 when the denominator divides away, and a reduced Fraction otherwise.
+
+	 REDUCED WITHOUT A gcd, which is the point of the method.  Fraction's
+	 own reduced sends gcd:, which is Euclid, and Euclid on two numbers of
+	 several hundred digits in an image that multiplies and divides large
+	 integers a byte at a time in Smalltalk is most of what reading a long
+	 number cost: 130 of the 162 milliseconds a 256-digit fraction took,
+	 and nine seconds of the nine and a half that `777....777e-4096' took.
+
+	 It is avoidable because the denominator is known.  10^k has no prime
+	 factor but 2 and 5, so the only thing it can share with the numerator
+	 is 2s and 5s, and at most k of each; dividing those out by hand leaves
+	 a numerator and a denominator with no common factor, which is what
+	 reduced would have answered and what Fraction numerator:denominator:
+	 expects to be given, since it does not reduce.  Each division shrinks
+	 the number, and in the ordinary case -- an odd numerator, or one not
+	 divisible by five -- each loop stops on its first test."
+
+	| n twos fives denominator |
+	n := anInteger.
+	twos := 0.
+	[twos < k and: [n even]] whileTrue: [n := n // 2. twos := twos + 1].
+	fives := 0.
+	[fives < k and: [n \\ 5 = 0]] whileTrue: [n := n // 5. fives := fives + 1].
+	denominator := (2 raisedTo: k - twos) * (5 raisedTo: k - fives).
+	denominator = 1 ifTrue: [^n].
+	^Fraction numerator: n denominator: denominator
+]
+
+{ #category : 'private' }
+JSONParser >> integerFrom: aString [
+	"The digits as an Integer, in as few chunks as this build's
+	 SmallInteger will hold.
+
+	 `value := value * 10 + digit' is one multiplication of a growing
+	 LargeInteger per digit, and a LargeInteger multiplication in this image
+	 is 1983's Integer>>digitMultiply:neg:, which walks both numbers a byte
+	 at a time in Smalltalk.  Reading eighteen digits into a SmallInteger --
+	 where the arithmetic is one bytecode -- and folding that in with one
+	 multiplication does the same work in an eighteenth of the sends.
+	 Measured on 256 digits, the cap: 48 ms became 9.
+
+	 The chunk is sized from SmallInteger maxVal rather than written as 18,
+	 because that number is a property of the build: this system's
+	 SmallInteger is 62 bits and holds 18 digits, a 30-bit one holds 9, and
+	 a chunk too large for the receiving build would silently become a
+	 LargeInteger and undo the whole point.  The loop that sizes it runs
+	 eighteen times and costs nothing beside the multiplications it saves.
+
+	 No shared state, deliberately: eight workers parse eight documents at
+	 once and a class variable holding the chunk size would be one more
+	 thing to lock for a value that is cheaper to recompute than to read."
+
+	| perChunk scale value index end chunk |
+	perChunk := 1.
+	scale := 10.
+	[scale * 10 <= SmallInteger maxVal] whileTrue: [
+		scale := scale * 10.
+		perChunk := perChunk + 1].
+	value := 0.
+	index := 1.
+	[index <= aString size] whileTrue: [
+		end := index + perChunk - 1 min: aString size.
+		chunk := 0.
+		index to: end do: [:k | chunk := chunk * 10 + (aString at: k) digitValue].
+		value := end - index + 1 = perChunk
+			ifTrue: [value * scale + chunk]
+			ifFalse: [value * (10 raisedTo: end - index + 1) + chunk].
+		index := end + 1].
+	^value
 ]
 
 { #category : 'private' }
@@ -263,11 +400,30 @@ JSONParser >> nextDigits [
 	"The run of digits at the stream, as an Integer.  At least one digit is
 	 the caller's to have checked."
 
-	| value |
-	value := 0.
-	[stream atEnd not and: [stream peek isDigit]]
-		whileTrue: [value := value * 10 + stream next digitValue].
-	^value
+	^self integerFrom: self nextDigitString
+]
+
+{ #category : 'private' }
+JSONParser >> nextDigitString [
+	"The run of digits at the stream, as the characters they are, refusing
+	 more than maxDigits of them.
+
+	 Collected as characters rather than accumulated into a number as they
+	 are read, for two reasons.  The count has to be known before the
+	 arithmetic is done, or the refusal costs exactly what it is refusing;
+	 and integerFrom: can then read them in chunks, which the one-at-a-time
+	 loop this replaced could not.  See the class comment, Bugs3 B53."
+
+	| out count |
+	out := WriteStream on: (String new: 32).
+	count := 0.
+	[stream atEnd not and: [stream peek isDigit]] whileTrue: [
+		count := count + 1.
+		count > maxDigits ifTrue: [
+			self error: 'a number of more than ', maxDigits printString,
+				' digits is longer than this parser will read'].
+		out nextPut: stream next].
+	^out contents
 ]
 
 { #category : 'private' }

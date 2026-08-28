@@ -38,6 +38,13 @@ Extension { #name : 'SmallInteger' }
 { #category : '*Concurrency' }
 SmallInteger >> printOn: aStream base: b [
 	| digits i x |
+	"A base outside 2..36 cannot be printed -- Character class>>digitValue:
+	 has thirty-six glyphs -- and was not refused: `40 printString: 37'
+	 answered '13' and `12 printString: 0' a ZeroDivide from the loop
+	 below (Bugs3 B41).  Integer>>printOn:base: in lib/Kernel-Protocol,
+	 which LargeIntegers take, refuses in the same words."
+	(b isInteger and: [b between: 2 and: 36])
+		ifFalse: [^self error: 'a number can be printed in a base from 2 to 36, not ' , b printString].
 	(x := self) < 0 ifTrue: [
 		aStream nextPut: $-.
 		x := self negated].

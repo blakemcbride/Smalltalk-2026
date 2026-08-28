@@ -99,6 +99,29 @@ PosixFileDirectory >> isDirectoryNamed: aString [
 ]
 
 { #category : '*Files-Fixes' }
+PosixFileDirectory >> realPathNamed: aString [
+	"The name with every `.', `..' and symbolic link resolved, or nil when
+	 there is no file of that name.
+
+	 Command 5 of primitive 131, added for Bugs3 B57 (lower): the static
+	 file handler can refuse a request path that climbs out of the document
+	 root with `..', because that is visible in the text of the path, but a
+	 SYMBOLIC LINK inside the root goes out of it with nothing in the text
+	 to see -- `/link' pointing at /etc/passwd was served.  The only test
+	 that catches it is to ask the file system what the name really is and
+	 compare that with what the root really is, and only the file system
+	 knows.
+
+	 Nil rather than the name for a file that is not there: a caller
+	 deciding whether to serve something wants `no' from a name it cannot
+	 resolve, and answering the unresolved name would hand back exactly the
+	 text the caller was trying to get behind."
+	| answer |
+	answer := self doPrimitive: 5 arg1: (self pathFor: aString) arg2: nil.
+	^(answer isKindOf: String) ifTrue: [answer] ifFalse: [nil]
+]
+
+{ #category : '*Files-Fixes' }
 PosixFileDirectory >> pathFor: aFileName [
 	"The name, written from where the system was started.
 
@@ -110,4 +133,29 @@ PosixFileDirectory >> pathFor: aFileName [
 	(directoryName isNil or: [directoryName isEmpty]) ifTrue: [^aFileName].
 	directoryName last = $/ ifTrue: [^directoryName , aFileName].
 	^directoryName , '/' , aFileName
+]
+
+{ #category : '*Files-Fixes' }
+PosixFileDirectory >> findKey: aFileName [
+	"The old file of that name in me, or an error that says why not.
+
+	 1983 answers `file not found' for every failure, followed by the
+	 File's error text, which nothing has set: `zz.txt file not found, '
+	 (Bugs3 B58).  A file the listing does not show is asked its SIZE
+	 instead, because that opens it without creating it -- command 4, the
+	 open, creates, since by the time 1983 opens a file it has decided the
+	 file should exist -- and the failure of that open is where the
+	 operating system says what is wrong: `No such file or directory',
+	 `Permission denied'.  doCommand:name:page:error: raises with that text
+	 after the 1983 words.  A file the listing missed but the size finds is
+	 plainly there and is answered, closed again first so that the
+	 descriptor the question opened is not left behind the one asFileStream
+	 opens next: the listing is a readdir, and a directory this user may not
+	 read lists nothing while the files in it may still be opened by name."
+	^self
+		find: (self initFileName: aFileName)
+		ifAbsentDo: [:file |
+			file doCommand: 3 name: nil page: nil error: 'file not found'.
+			file close.
+			file]
 ]

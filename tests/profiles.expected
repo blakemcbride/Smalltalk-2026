@@ -262,9 +262,30 @@
 # directory that is not there, a bare file name, and a list of patterns that
 # is showing no one place.  Every row moved by two; database-live is 465.
 #
+# Seventy-seven more with the Bugs3 fixes, a third outside-in audit that
+# reached every layer at once.  lib/Concurrency-Tests gains MonitorTest (4)
+# and ProcessTest (11) for a Monitor that is reentrant and for terminate,
+# suspend and signalException: reaching a process another worker is running,
+# and DelayTest three more for a Delay validated before it is published.
+# lib/Library-Tests gains St80ExceptionTest (2) for an ensure: block that
+# ran twice and a handler guard that is not a class, and eighteen across
+# St80CollectionTest, St80NumberTest and St80TextTest for copies that copy,
+# a SortedCollection that keeps its block, streams over an
+# OrderedCollection, Time reading noon as noon, a Random with a seed and a
+# stable sort.  lib/JSON-RPC-Server-Tests, lib/Json-Tests,
+# lib/HTTP-Client-Tests and lib/Rest-Server-Tests gain twenty-one for what a
+# hostile client sends: lowercase percent-escapes, a JSON number of three
+# thousand digits, a header value with a line break in it, the RFC 7230
+# framing refusals, a symlink out of the doc root, a chunk size of
+# ffffffffffffffff.  lib/Tonel-Tests gains eighteen for the files that come
+# back as they went out: an extension file written back as an extension, a
+# weak class and a trait composition round-tripping, a file with a bad
+# method loading nothing, a BOM.  Every row moved by seventy-seven;
+# database-live is 542.
+#
 # profile               run  passed
-st2026                  427  427
-pharo-announcements     458  458
-pharo-time              1048 1048
-pharo-weak              447  447
-pharo-collections       884  884
+st2026                  504  504
+pharo-announcements     535  535
+pharo-time              1125 1125
+pharo-weak              524  524
+pharo-collections       961  961

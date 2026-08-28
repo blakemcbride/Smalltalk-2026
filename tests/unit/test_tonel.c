@@ -609,6 +609,41 @@ test_both_tonel_spellings(void)
         CHECK_EQ_STR(r.classes[0].category, "Pack-Age");
 }
 
+/*
+ *  A UTF-8 byte-order mark in front of the file is not a type word.
+ *
+ *  Three bytes that Windows editors and some exports put first; the type
+ *  word was read from the first byte, found no letters, and the file was
+ *  "not a Tonel file" -- with the bootstrap stopping on it (Bugs3 B63).
+ *  Before a comment too, since a file that begins with its class comment
+ *  has the mark in front of the quote.
+ */
+static void
+test_a_byte_order_mark_is_skipped(void)
+{
+    recorder    r;
+    char        error[512] = "";
+
+    /*  Two literals: a hex escape swallows every hex digit after it, and
+     *  the C of "Class" is one, so "\xBFClass" is not the byte wanted.  */
+    CHECK(read_text("bom.class.st",
+        "\xEF\xBB\xBF" "Class { #name : 'M', #superclass : 'Object' }\n"
+        "M >> one [ ^1 ]\n", &r, error, sizeof error));
+    if (error[0])
+        printf("  error: %s\n", error);
+    CHECK_EQ_INT((int) r.class_count, 1);
+    if (r.class_count)
+        CHECK_EQ_STR(r.classes[0].name, "M");
+    CHECK_EQ_INT((int) r.method_count, 1);
+
+    CHECK(read_text("bom-comment.class.st",
+        "\xEF\xBB\xBF" "\"A comment first.\"\n"
+        "Class { #name : 'N', #superclass : 'Object' }\n", &r, error,
+        sizeof error));
+    CHECK_EQ_INT((int) r.class_count, 1);
+    CHECK_EQ_INT((int) r.comments, 1);
+}
+
 static void
 test_a_package_file_defines_nothing(void)
 {
@@ -717,6 +752,7 @@ main(void)
     test_shapes_we_cannot_build_are_reported();
     test_both_tonel_spellings();
     test_a_package_file_defines_nothing();
+    test_a_byte_order_mark_is_skipped();
     test_profiles();
 
     return ST_TEST_END();

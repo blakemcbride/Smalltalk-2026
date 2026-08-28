@@ -67,8 +67,13 @@ Number class >> readFrom: aStream [
 	 Everything else here is 1983's, kept deliberately: the <radix>r<digits>
 	 form, the <mantissa>e<exponent> form, the un-gobbling of a period that
 	 turns out to end a sentence rather than begin a fraction, and answering
-	 an Integer when there is no fraction at all."
+	 an Integer when there is no fraction at all.
+
+	 A String is taken as well as a stream, because `Number readFrom: '42''
+	 is what ported code writes and Pharo answers it; 1983 sent atEnd to
+	 the String (Bugs3 B51)."
 	| value radix fraction digits start negative sawPoint answer |
+	aStream isString ifTrue: [^self readFrom: (ReadStream on: aStream)].
 	radix := 10.
 	sawPoint := false.
 	"
@@ -85,6 +90,19 @@ Number class >> readFrom: aStream [
 	negative := value negative.
 	(aStream peekFor: $r)
 		ifTrue: [
+			"
+			 An r with no digit of the radix after it is not a radix
+			 marker: it is a letter that happens to follow a number, as
+			 in `12abc', and the number is the one before it.  1983 read
+			 the empty digit run as 0 -- `'16r' asNumber' was 0 while
+			 `'16r' asInteger' was 16 (Bugs3 B51) -- so the r is given
+			 back here, as the period is a few lines down when it turns
+			 out not to begin a fraction.
+			"
+			(aStream atEnd
+				or: [(aStream peek digitValue between: 0 and: value - 1) not
+					and: [aStream peek ~= $-]])
+				ifTrue: [aStream skip: -1. ^value].
 			(radix := value) < 2 ifTrue: [^self error: 'INVALID RADIX'].
 			value := Integer readFrom: aStream radix: radix.
 			negative := value negative].
@@ -155,17 +173,77 @@ Number >> retry: aSymbol coercing: aNumber [
 	 it says it does.  And an argument that is not a Number is named as
 	 such before its generality is ever asked for, which is the case that
 	 actually arrives -- 1983 asks that question only for #=, and answers
-	 false there, which stays."
+	 false there, which stays.
+
+	 AND A COMPARISON WITH A FLOAT IS DECIDED EXACTLY (Bugs3 B36).  1983
+	 coerces the less general side, and for a relational selector that
+	 means the Integer or Fraction is ROUNDED to a double before anything
+	 is compared.  So 9007199254740993 = 9007199254740992.0 was true,
+	 because 2^53 + 1 rounds to 2^53; SmallInteger maxVal was equal to its
+	 own asFloat and not below it; `(1/3) = (1/3) asFloat' was true; every
+	 Integer above 1.8e308 was equal to Float infinity, to each other's
+	 asFloat, and not less than infinity; = was not transitive; and two
+	 equal numbers could hash differently, because one hashed as itself
+	 and the other as the integer it had rounded to.  Not a corner: a
+	 Set holding 2^53, 2^53 + 1 and (2^53 + 1) asFloat had two elements.
+
+	 So a relational selector with a Float on one side and an Integer or
+	 Fraction on the other is handed to compare:exactlyWith:, which
+	 compares the Float's EXACT value.  With one exception, for speed: a
+	 SmallInteger below 2^53 in magnitude converts to a double without
+	 loss, so coercing it -- which is what happens below -- is already
+	 exact, and it is the case that arrives ten thousand times for every
+	 other: `aFloat < 0', `aFloat = 1'.  That case costs what it always
+	 cost.  Arithmetic selectors are not touched; `3 + 0.5' still coerces,
+	 because a Float sum is what that means."
 
 	(aNumber isKindOf: Number) ifFalse: [
 		aSymbol == #= ifTrue: [^false].
 		^self error: 'a ' , aNumber class name , ' is not a Number, so '
 			, self printString , ' ' , aSymbol , ' it has no answer'].
+	((self isFloat or: [aNumber isFloat])
+	 and: [aSymbol == #= or: [aSymbol == #< or: [aSymbol == #> or: [
+		aSymbol == #<= or: [aSymbol == #>= or: [aSymbol == #~=]]]]]])
+		ifTrue: [ | exact |
+			exact := self isFloat ifTrue: [aNumber] ifFalse: [self].
+			(exact class == SmallInteger
+			 and: [exact between: -9007199254740992 and: 9007199254740992])
+				ifFalse: [^self compare: aSymbol exactlyWith: aNumber]].
 	self generality < aNumber generality
 		ifTrue: [^(aNumber coerce: self) perform: aSymbol with: aNumber].
 	self generality > aNumber generality
 		ifTrue: [^self perform: aSymbol with: (self coerce: aNumber)].
 	^self error: 'coercion attempt failed'
+]
+
+{ #category : '*Kernel-Protocol' }
+Number >> compare: aSymbol exactlyWith: aNumber [
+	"Decide a relational selector between me and aNumber on exact values,
+	 where one of us is a Float and the other an Integer or a Fraction.
+
+	 Each side is asked what it stands for in an exact comparison
+	 (asExactNumberAgainst:): an Integer or a Fraction is itself, a finite
+	 Float is its asExactFraction, an infinity is a stand-in number of its
+	 sign beyond the other side, and a NaN is nil.  A NaN is equal to
+	 nothing and unordered against everything, so every selector answers
+	 false for it except ~=, which is the one that says `not equal'.  The
+	 two exact numbers are then compared by their own arithmetic, which
+	 coerces an Integer to a Fraction and never rounds.
+
+	 See retry:coercing: for why this exists (Bugs3 B36) and for the one
+	 case -- a SmallInteger a double can hold -- that does not come here."
+	| a b |
+	a := self asExactNumberAgainst: aNumber.
+	b := aNumber asExactNumberAgainst: self.
+	(a isNil or: [b isNil]) ifTrue: [^aSymbol == #~=].
+	^a perform: aSymbol with: b
+]
+
+{ #category : '*Kernel-Protocol' }
+Number >> asExactNumberAgainst: aNumber [
+	"What I stand for in an exact comparison with aNumber: myself.  Float
+	 overrides this; see compare:exactlyWith:."
+	^self
 ]
 
 { #category : '*Kernel-Protocol' }
@@ -180,8 +258,28 @@ Number >> log [
 
 { #category : '*Kernel-Protocol' }
 Number >> log: aNumber [
-	"My logarithm in that base."
-	^self ln / aNumber ln
+	"My logarithm in that base.
+
+	 `self ln / aNumber ln' is what 1983 does and what every dialect
+	 since does, and it is a quotient of two rounded numbers: `1000 log:
+	 10' answered 2.9999999999999996, and `(2 raisedTo: 1100) log: 2'
+	 answered inf before Integer>>ln could be asked (Bugs3 B39).  The
+	 question is nearly always asked of an integer power of an integer
+	 base -- how many digits, how many bits -- so that case is checked
+	 exactly: when both are Integers and the base raised to the nearest
+	 whole number IS the receiver, that whole number is the answer and
+	 the Float has no business being off by an ulp.  raisedTo: is exact
+	 by repeated squaring, and the candidate is bounded by the receiver's
+	 bit count before it is raised, so the check can never build a number
+	 wildly larger than the receiver."
+	| quotient power |
+	quotient := self ln / aNumber ln.
+	(self isInteger and: [aNumber isInteger and: [aNumber > 1 and: [self > 0]]])
+		ifFalse: [^quotient].
+	power := quotient rounded.
+	(power >= 0 and: [power <= self highBit and: [(aNumber raisedTo: power) = self]])
+		ifTrue: [^power asFloat].
+	^quotient
 ]
 
 { #category : '*Kernel-Protocol' }

@@ -411,3 +411,40 @@ RestServerTest >> testTheUserCache [
 	self assert: (RestUuid new) size equals: 36.
 	self deny: RestUuid new equals: RestUuid new
 ]
+
+{ #category : 'tests - interning' }
+RestServerTest >> testBogusNamesInternNoSymbols [
+	"Bugs3 B55.  A Symbol is never collected, and `_class' and `_method'
+	 were interned before anything asked whether such a class or such a
+	 method existed -- so a client naming a hundred classes that do not
+	 exist left a hundred Symbols in the image for good, on a server whose
+	 only gate is a login it may not need.  A hundred bogus calls must move
+	 the count by nothing at all.
+
+	 The real names still work, which is the other half of the check: a
+	 class that is loaded has its name interned already, so looking it up
+	 finds every service and creates none of the rest."
+	| before after reply |
+	server start.
+	reply := self call: 'services.Adder' method: 'addNumbers' with: [:j | j at: 'num1' put: 1; at: 'num2' put: 2].
+	self assert: (reply booleanAt: '_Success').
+	"One of each refusal first, so that whatever a first request through
+	 an untried path interns is interned before the count is taken."
+	self deny: ((self call: 'services.NoSuchServiceWarm' method: 'warm') booleanAt: '_Success').
+	self deny: ((self call: 'services.Adder' method: 'noSuchMethodWarm') booleanAt: '_Success').
+	Smalltalk garbageCollect.
+	before := Symbol allInstances size.
+	1 to: 100 do: [:i |
+		reply := self call: 'services.NoSuchService', i printString method: 'noSuchMethod', i printString.
+		self deny: (reply booleanAt: '_Success')].
+	1 to: 100 do: [:i |
+		reply := self call: 'services.Adder' method: 'noSuchMethod', i printString.
+		self deny: (reply booleanAt: '_Success').
+		self assert: ((reply stringAt: '_ErrorMessage') includesSubstring: 'No such method')].
+	after := Symbol allInstances size.
+	self assert: after equals: before.
+	"and Symbol class>>lookup: is the mechanism, on its own"
+	self assert: (Symbol lookup: 'addNumbers') == #addNumbers.
+	self assert: (Symbol lookup: 'zzNoSuchSymbolHasEverBeenMadeZz') isNil.
+	self assert: Symbol allInstances size equals: before
+]

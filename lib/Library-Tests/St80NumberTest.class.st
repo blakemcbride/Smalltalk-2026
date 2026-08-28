@@ -145,3 +145,64 @@ St80NumberTest >> testIntervals [
 	self assert: ((1 to: 10) inject: 0 into: [:a :b | a + b]) equals: 55.
 	self assert: ((1 to: 4) collect: [:i | i * i]) asArray equals: #(1 4 9 16)
 ]
+
+{ #category : 'reading' }
+St80NumberTest >> testReadingRadixDigitsInEitherCase [
+	"digitValue knew capitals only, so `'16rff' asNumber' was 0; an r with
+	 no digit after it is a letter, so `'16r'' is 16 as asInteger already
+	 said; and a reader takes a String (Bugs3 B51)."
+	self assert: '16rff' asNumber equals: 255.
+	self assert: '16rFF' asNumber equals: 255.
+	self assert: '16r-ff' asNumber equals: -255.
+	self assert: '16r' asNumber equals: 16.
+	self assert: '16r' asInteger equals: 16.
+	self assert: (Number readFrom: '42') equals: 42.
+	self assert: (Integer readFrom: '42') equals: 42.
+	self assert: 'abc' asNumber isNil.
+	self assert: $f digitValue equals: 15.
+	self assert: $? digitValue equals: -1
+]
+
+{ #category : 'random' }
+St80NumberTest >> testRandom [
+	"Two generators are two streams; the same seed is the same stream; and
+	 the stream is java.util.Random's, whose first answers for seed 42 are
+	 published (Bugs3 B50)."
+	| r |
+	self assert: ((1 to: 1000) collect: [:i | Random new next]) asSet size equals: 1000.
+	self assert: (Random seed: 42) next equals: 0.7275636800328681.
+	self assert: (Random seed: 5) next equals: (Random seed: 5) next.
+	r := Random seed: 7.
+	self assert: ((1 to: 1000) collect: [:i | r between: 3 and: 5]) asSet size equals: 3.
+	self assert: ((1 to: 1000) select: [:i | | x | x := r next. x < 0 or: [x >= 1]]) isEmpty
+]
+
+{ #category : 'time' }
+St80NumberTest >> testTimeReadsNoonAndMidnight [
+	"12 pm is noon and 12 am is midnight; 1983 had them the other way
+	 round, so storeString of noon evaluated to midnight (Bugs3 B48)."
+	self assert: (Time readFromString: '12:00:00 pm') asSeconds equals: 43200.
+	self assert: (Time readFromString: '12:00:00 am') asSeconds equals: 0.
+	self assert: (Time readFromString: '1:59:30 pm') asSeconds equals: 50370.
+	self assert: ((0 to: 86399 by: 61) select: [:s |
+		(Time readFromString: (Time fromSeconds: s) printString) asSeconds ~= s]) isEmpty
+]
+
+{ #category : 'dates' }
+St80NumberTest >> testDateReadsEveryFormAndRefusesTheRest [
+	"1983's three forms and the year-first one; month 13, February 31 and
+	 `garbage' are one error rather than four different ones (Bugs3 B51)."
+	| d |
+	d := Date readFromString: '2024-01-02'.
+	self assert: d year equals: 2024.
+	self assert: d monthIndex equals: 1.
+	self assert: d dayOfMonth equals: 2.
+	#('5 April 1982' 'April 5, 1982' '4/5/1982' '5APR1982' '5-apr-1982') do: [:text |
+		d := Date readFromString: text.
+		self assert: d year equals: 1982.
+		self assert: d monthIndex equals: 4.
+		self assert: d dayOfMonth equals: 5].
+	self assert: (Date readFromString: 'February 29, 2024') dayOfMonth equals: 29.
+	#('13/13/2024' '31/2/2024' 'garbage' 'February 29, 2023' '2024-02-30' '') do: [:text |
+		self should: [Date readFromString: text] raise: Error]
+]

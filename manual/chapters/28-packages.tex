@@ -145,13 +145,19 @@ TonelWriter write: Widget toFile: 'lib/MyStuff/Widget.class.st'.
 does---the same grammar, the same \ct|{ #category : ... }| headings---and
 compiles each method through the same compiler the Browser uses, so a syntax
 error is a \ct{TonelError} naming the file, the method and the character,
-not a notifier. Loading a class that already exists redefines it in place
-and removes the methods the file no longer has. \ct{TonelSource} adds the
-registry: a class it loaded is written back to its file when a method is
-accepted or removed in the Browser (Chapter~\ref{ch:keeping}), and
-\ct{reloadIfChanged:} compares the file's time and size with what it saw
-last. \ct{TonelWriter} writes what the reader reads, so a class can go out
-and come back byte for byte.
+not a notifier. Every method in the file is compiled before any is
+installed, so a file with a mistake in it changes nothing. Loading a class
+that already exists redefines it in place and removes the methods the file
+no longer has---its own methods, that is: a method whose category begins with
+a star belongs to another package's extension file, or to a trait, and is
+left alone. \ct{TonelSource} adds the registry: a class it loaded is written
+back to its file when a method is accepted or removed in the Browser
+(Chapter~\ref{ch:keeping}), and \ct{reloadIfChanged:} compares the file's
+time and size with what it saw last. A class loaded from an extension file
+is written back to that file as an extension, holding the package's methods
+and no others. \ct{TonelWriter} writes what the reader reads---a weak class as
+\ct|#type : 'weak'|, a class that takes a trait as \ctp{\#traits} without
+the trait's methods---so a class can go out and come back byte for byte.
 
 \section{A profile}
 

@@ -57,7 +57,10 @@ QdrantTest >> testStoringAndSearching [
 	self assert: (self lineAt: 2) equals: 'POST /collections/docs/points/search HTTP/1.1'.
 	self assert: ((self bodyAt: 2) integerAt: 'limit') equals: 5.
 	self assert: hits size equals: 1.
-	self assert: ((hits objectAt: 1) numberAt: 'score') equals: 0.99
+	"99/100 and not 0.99: the reader answers the exact decimal, and a
+	 Fraction is equal to a Float only when the Float is exactly that value
+	 (Bugs3 B36) -- which 0.99 is not."
+	self assert: ((hits objectAt: 1) numberAt: 'score') equals: 99/100
 ]
 
 { #category : 'tests' }

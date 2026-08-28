@@ -214,12 +214,26 @@ HttpServer >> handle: aRequest [
 	 the handler at its path, else the static files, else 404 -- and, for
 	 a request from a page on this host at another port, the header that
 	 lets the browser show the page the reply.  The class comment, ORIGINS."
-	| response |
-	aRequest isPreflight ifTrue: [^self preflightFor: aRequest].
-	response := [self dispatch: aRequest]
-		on: HttpError
-		do: [:e | HttpResponse error: e status reason: e messageText].
-	^self allow: response for: aRequest
+	^[ | response |
+	  aRequest isPreflight
+		ifTrue: [self preflightFor: aRequest]
+		ifFalse: [
+			response := [self dispatch: aRequest]
+				on: HttpError
+				do: [:e | HttpResponse error: e status reason: e messageText].
+			self allow: response for: aRequest]]
+		on: Error
+		do: [:e |
+			"dispatch: already turns a handler's Error into a 500; this
+			 catches the two places OUTSIDE it that put request data into a
+			 response header -- allow: and preflightFor:, which echo the
+			 Origin back.  A header value is refused rather than filtered
+			 (Bugs3 B54, HttpResponse>>headerAt:put:), and a refusal here
+			 would otherwise leave handle: by an Error the connection does
+			 not catch, which is a closed socket and no reply at all."
+			e class == HttpError ifTrue: [e pass].
+			self log: aRequest printString, ': ', e class name, ': ', e messageText.
+			HttpResponse error: 500 reason: 'internal server error']
 ]
 
 { #category : 'origins' }

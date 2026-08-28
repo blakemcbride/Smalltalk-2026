@@ -82,6 +82,21 @@ fine on one thread and not on thirty-one.
 \end{tabular}
 \end{center}
 
+All three of \ct{terminate}, \ct{suspend} and \ct{signalException:} reach a
+process wherever it is: on a ready list, waiting on a \ct{Semaphore}, or
+running on another worker, in which case that worker parks it at its next
+bytecode and the sender waits for that before going on. \ct{terminate} runs
+every \ct{ensure:} block the process is inside, innermost first, on the
+process that sends \ct{terminate}---so a process terminated inside
+\ct{aMutex critical:} releases the mutex on its way out---and leaves
+\ct{suspendedContext} nil, which is what a terminated process looks like.
+\ct{resume} refuses anything but a process that is parked and free: a
+terminated one, one already waiting on a list, and one that is running
+(\ct{Processor activeProcess resume} included) each raise an error naming
+the reason. \ct{suspend} refuses a process waiting on a \ct{Semaphore},
+because resumed from there it would go on past the wait as though the signal
+had come.
+
 \section{Semaphores}
 
 The Blue Book's primitive, and now genuinely atomic across native threads.
@@ -121,6 +136,12 @@ resource. For mutual exclusion, prefer \ct{Mutex}: it releases in an
 (Delay forSeconds: 2) wait.
 (Delay forMilliseconds: 250) wait.
 \end{st}
+
+A duration is rounded to the millisecond when the \ct{Delay} is made, and a
+negative one is zero. The timer counts up to \ct{Delay maximumMilliseconds},
+$2^{29}-1$ milliseconds or a little over six days; a longer delay, or one
+made from something that is not a number, is refused there with an error
+that says so, rather than discovered inside \ct{wait}.
 
 A delay expires while nothing is running, so it cannot be implemented by
 polling in the idle loop---with every process waiting on one, every worker is

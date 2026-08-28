@@ -141,3 +141,38 @@ St80TextTest >> testPrintStringRoundTripsForNumbers [
 		self assert: (Number readFrom: (ReadStream on: n printString))
 			equals: n]
 ]
+
+{ #category : 'streams' }
+St80TextTest >> testStreamsOverAnOrderedCollection [
+	"Every method of a ReadStream that builds a result -- upToEnd, next:,
+	 upTo:, nextLine -- failed over an OrderedCollection, and a WriteStream
+	 on one could not take a single nextPut:, because `OrderedCollection
+	 new: n' is EMPTY and refuses at:put: past its end (Bugs3 B46)."
+	| oc r w |
+	oc := OrderedCollection withAll: #(1 2 3).
+	self assert: oc readStream upToEnd asArray equals: #(1 2 3).
+	self assert: oc readStream upToEnd class equals: OrderedCollection.
+	r := ReadStream on: oc.
+	self assert: (r next: 2) asArray equals: #(1 2).
+	self assert: (r next: 5) asArray equals: #(3).
+	self assert: r atEnd.
+	self assert: (r next: 2) isEmpty.
+	self assert: ((ReadStream on: oc) upTo: 2) asArray equals: #(1).
+	self assert: (ReadStream on: (OrderedCollection with: $a with: Character lf with: $b))
+		nextLine asArray equals: #($a).
+	w := WriteStream on: OrderedCollection new.
+	w nextPut: 1; nextPut: 2; nextPutAll: #(3 4).
+	self assert: w contents asArray equals: #(1 2 3 4).
+	self assert: w contents class equals: OrderedCollection.
+	w := WriteStream with: (OrderedCollection with: 0).
+	w nextPut: 1.
+	self assert: w contents asArray equals: #(0 1).
+	w := ReadWriteStream on: OrderedCollection new.
+	w nextPut: 7; nextPut: 8; reset.
+	self assert: w upToEnd asArray equals: #(7 8).
+	self assert: (ReadStream on: (1 to: 5)) upToEnd equals: #(1 2 3 4 5).
+	self assert: ((ReadStream on: 'hello world') next: 30) equals: 'hello world'.
+	self assert: ((ReadStream on: 'hello world') next: 3) equals: 'hel'.
+	self assert: (ReadStream on: #sym) upToEnd equals: 'sym'.
+	self should: [(WriteStream on: SortedCollection new) nextPut: 1] raise: Error
+]

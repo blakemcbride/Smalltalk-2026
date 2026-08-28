@@ -90,8 +90,8 @@ over a third of `lib/Json-Tests` is documents the parser must refuse. A reader
 that quietly accepted all six of the above would pass every other test in the
 suite.
 
-Two limits are refusals of a different kind, and both exist because the document
-usually arrives from somewhere else:
+Three limits are refusals of a different kind, and all three exist because the
+document usually arrives from somewhere else:
 
 - **512 levels of nesting.** Forty thousand open brackets is a valid document
   and a recursive descent parser meets it with forty thousand activations. This
@@ -99,6 +99,21 @@ usually arrives from somewhere else:
   allocates until the machine stops. `maxDepth:` raises the limit deliberately.
 - **An exponent of 4096.** `1e1000000000` is a twelve-character document asking
   this process to compute a billion digits, and exact arithmetic will try.
+- **256 digits in a number**, counted separately in the whole part and in the
+  fraction, and raised deliberately with `maxDigits:`. Reading a decimal into a
+  binary integer costs a multiplication per digit of a number that grows, and
+  this image multiplies large integers a byte at a time in Smalltalk — so four
+  thousand digits was thirteen and a half seconds of one worker, spent before
+  the session token *inside the same document* had been looked at. 256 is far
+  past every number that is really a number: a 64-bit integer is 19 digits, the
+  widest SQL `DECIMAL` is 38, and a double carries 17 significant ones.
+
+The arithmetic under those digits is no longer one multiplication per digit
+either. A JSON number is one integer over one power of ten, so all three of its
+parts are read before anything is computed and the number is built once: the
+digits go into `SmallInteger`-sized chunks that are combined, and the fraction
+is reduced by dividing out the twos and fives that are all a power of ten can
+hold, rather than by a `gcd:` on numbers hundreds of digits long.
 
 The writer has the same 512-level guard, where it catches the other version of
 the same accident: a `JSONObject` put inside itself.
@@ -257,7 +272,7 @@ three-element array with the names thrown away, in hash order, silently.
 |---|---|
 | `JSONObject` | names and values, in the order they were put; the seven typed accessors |
 | `JSONArray` | values in order; the same seven by index; enough collection protocol to be useful |
-| `JSONParser` | RFC 8259, recursive descent over a stream, bounded in depth and exponent |
+| `JSONParser` | RFC 8259, recursive descent over a stream, bounded in depth, exponent and digits |
 | `JSONWriter` | compact and indented, exact decimals, the escaping |
 | `JSONError` | every refusal, carrying the character position |
 

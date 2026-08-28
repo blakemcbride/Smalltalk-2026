@@ -322,6 +322,51 @@ JSONParserTest >> testHugeExponentIsRefused [
 	self shouldnt: [JSONParser parse: '1e100'] raise: JSONError
 ]
 
+{ #category : 'tests - limits' }
+JSONParserTest >> testTooManyDigitsAreRefused [
+	"Bugs3 B53.  Four thousand sevens took thirteen and a half seconds to
+	 read, and a REST request carrying one spent every one of them before
+	 the session in the same document had been looked at -- so an
+	 unauthenticated client could hold a worker for as long as it liked.
+	 The digits are counted before the arithmetic is done, so the refusal
+	 costs nothing."
+
+	self should: [JSONParser parse: (String new: 300 withAll: $7)] raise: JSONError.
+	self should: [JSONParser parse: '0.', (String new: 300 withAll: $7)] raise: JSONError.
+	self should: [JSONParser parse: '-', (String new: 300 withAll: $7)] raise: JSONError.
+	self should: [JSONParser parse: '1e', (String new: 300 withAll: $0)] raise: JSONError.
+	self shouldnt: [JSONParser parse: (String new: 256 withAll: $7)] raise: JSONError.
+	self shouldnt: [JSONParser parse: '0.', (String new: 256 withAll: $7)] raise: JSONError
+]
+
+{ #category : 'tests - limits' }
+JSONParserTest >> testTheDigitLimitCanBeRaised [
+	| parser |
+	parser := JSONParser on: (String new: 300 withAll: $7).
+	parser maxDigits: 1000.
+	self shouldnt: [parser parse] raise: JSONError.
+	self assert: JSONParser new maxDigits equals: 256
+]
+
+{ #category : 'tests - limits' }
+JSONParserTest >> testALongNumberIsStillExact [
+	"The digits are read in SmallInteger chunks and combined rather than
+	 one at a time; the answer must be the same number it always was, at
+	 every length and either side of a chunk boundary."
+
+	| digits |
+	self assert: (JSONParser parse: '123456789012345678901234567890')
+		equals: 123456789012345678901234567890.
+	self assert: (JSONParser parse: '1.0000000000000000001')
+		equals: 1 + (1 / 10000000000000000000).
+	digits := String new: 200 withAll: $9.
+	self assert: (JSONParser parse: digits) equals: (10 raisedTo: 200) - 1.
+	self assert: (JSONParser parse: digits) printString equals: digits.
+	1 to: 40 do: [:n | | text |
+		text := (String new: n withAll: $1).
+		self assert: (JSONParser parse: text) printString equals: text]
+]
+
 { #category : 'tests - streams' }
 JSONParserTest >> testAStreamCanBeReadAValueAtATime [
 	"What a file of one document per line is, and the reason nextValue is

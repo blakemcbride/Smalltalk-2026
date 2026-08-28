@@ -72,6 +72,19 @@ typedef struct {
     /*  Intern a Symbol, and make a String and a Float.  */
     st_oop            (*intern_symbol)(const char *text, void *user);
     st_oop            (*make_string)(const char *text, void *user);
+    /*
+     *  A String from BYTES, for a string literal that contains a NUL.
+     *
+     *  make_string takes a C string, which ends at the first NUL, and a
+     *  literal may spell one: `(String with: (Character value: 0) with:
+     *  $a) storeString' does.  A context that supplies this gets every
+     *  string literal through it, with the literal's byte count; one that
+     *  leaves it NULL gets make_string as before and cannot compile such
+     *  a literal whole.  The image's seam supplies it; the bootstrap,
+     *  whose source arrives from files as C strings, need not.  Bugs3 B28.
+     */
+    st_oop            (*make_string_n)(const char *bytes, size_t length,
+                                       void *user);
     st_oop            (*make_float)(double value, void *user);
     st_oop            (*make_large_integer)(int64_t value, void *user);
     /*
@@ -171,6 +184,17 @@ int     COMPILE_method(const char *source, const st_compile_context *ctx,
                        st_compile_result *out);
 
 /*
+ *  The same, for source that is bytes rather than a C string: `length'
+ *  is read, the terminator is not, and a NUL inside a string literal is
+ *  part of the literal.  COMPILE_method measures with strlen and stopped
+ *  at the first NUL, which ended the compile there with nothing said --
+ *  see LEX_open_n in lexer.h.  Bugs3 B28.
+ */
+int     COMPILE_method_n(const char *source, size_t length,
+                         const st_compile_context *ctx,
+                         st_compile_result *out);
+
+/*
  *  Compile to raw bytecodes without building a CompiledMethod, which is how
  *  the compiler is tested against the bytecodes already in an image.
  */
@@ -225,6 +249,9 @@ int     COMPILE_selector_of(const char *source, char *out, size_t out_len);
 
 int     COMPILE_to_bytecodes(const char *source, const st_compile_context *ctx,
                              st_compiled_code *out);
+int     COMPILE_to_bytecodes_n(const char *source, size_t length,
+                               const st_compile_context *ctx,
+                               st_compiled_code *out);
 
 #ifdef __cplusplus
 }

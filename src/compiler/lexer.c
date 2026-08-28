@@ -152,11 +152,20 @@ LEX_text(const st_token *tok)
     return tok->long_text ? tok->long_text : tok->text;
 }
 
-/*  The characters Smalltalk-80 allows in a binary selector.  */
+/*
+ *  The characters Smalltalk-80 allows in a binary selector.
+ *
+ *  NUL is excluded by name, because strchr finds the terminator of the
+ *  string it searches and so answered "yes" for a NUL byte -- which made
+ *  a NUL in the source a binary selector, and a binary selector made of a
+ *  byte no message could ever be spelled with.  The byte could only reach
+ *  here once LEX_open_n let the lexer see past one (Bugs3 B28), but it is
+ *  the wrong answer at any length.
+ */
 static int
 is_binary_char(int c)
 {
-    return strchr("+-*/~<>=&|@%,?!\\", c) != NULL;
+    return c != '\0' && strchr("+-*/~<>=&|@%,?!\\", c) != NULL;
 }
 
 void
@@ -173,16 +182,27 @@ LEX_begin_statement(st_lexer *lx)
 }
 
 st_lexer *
-LEX_open(const char *source)
+LEX_open_n(const char *source, size_t length)
 {
     st_lexer   *lx = (st_lexer *) calloc(1, sizeof *lx);
 
     if (!lx)
         return NULL;
     lx->source = source;
-    lx->length = strlen(source);
+    lx->length = length;
     lx->line   = 1;
     return lx;
+}
+
+/*
+ *  A C string.  Everything below reads `length' and never the terminator,
+ *  so this is the whole of the difference: a caller with bytes that may
+ *  hold a NUL uses LEX_open_n and is read to the end (see lexer.h).
+ */
+st_lexer *
+LEX_open(const char *source)
+{
+    return LEX_open_n(source, strlen(source));
 }
 
 void
@@ -254,12 +274,21 @@ peek_char(st_lexer *lx, size_t ahead)
 /*
  *  Skip whitespace and comments.  A comment is delimited by double quotes,
  *  and a doubled quote inside it is a literal one, so comments can quote.
+ *
+ *  Answers 0 when a comment was opened and never closed, and leaves the
+ *  line it opened on in `*unclosed_line' for the diagnostic.  That used to
+ *  be silence: the loop ran off the end of the source and the caller saw
+ *  ST_TOK_END, so `zzUnterm2 "abc' compiled as a method with no body, and
+ *  a stray quote anywhere in a method swallowed the rest of it -- every
+ *  statement after it gone, nothing said.  1983's Scanner refuses with
+ *  "Unmatched comment quote" and so does this one now.  Bugs3 B31.
  */
-static void
-skip_blanks(st_lexer *lx)
+static int
+skip_blanks(st_lexer *lx, unsigned *unclosed_line)
 {
     for (;;) {
-        char    c;
+        char        c;
+        unsigned    opened;
 
         while (!at_end(lx)) {
             c = lx->source[lx->pos];
@@ -278,9 +307,14 @@ skip_blanks(st_lexer *lx)
                 break;
         }
         if (at_end(lx) || lx->source[lx->pos] != '"')
-            return;
+            return 1;
+        opened = lx->line;
         ++lx->pos;
-        while (!at_end(lx)) {
+        for (;;) {
+            if (at_end(lx)) {
+                *unclosed_line = opened;
+                return 0;
+            }
             if (lx->source[lx->pos] == '"') {
                 if (peek_char(lx, 1) == '"') {
                     lx->pos += 2;
@@ -382,6 +416,33 @@ scan_number(st_lexer *lx, st_token *out, int negative)
         value = 0;
         too_big = 0;
         ++lx->pos;
+        /*
+         *  The sign of a radix number goes AFTER the r.
+         *
+         *  That is the Blue Book's own spelling and the one the image
+         *  writes: Integer>>storeStringRadix: answers '16r-FF' for -255,
+         *  and Number class>>readFrom: reads it back.  This lexer did not
+         *  know the form.  The minus was left standing after `16r' with no
+         *  digits, so `16r' lexed as 0 and `FF' as a variable, and the
+         *  storeString of every negative radix number was unreadable by
+         *  the compiler that installs every method.  Worse, `2r-101' was
+         *  0 followed by the send `- 101', which answers -101 -- a wrong
+         *  number rather than an error.  Bugs3 B26.
+         *
+         *  A minus BEFORE the radix is still the lexer's usual leading
+         *  sign (`-2r101' is -5), and writing both is refused rather than
+         *  cancelled, because nobody who writes `-2r-101' means 5.
+         */
+        if (!at_end(lx) && lx->source[lx->pos] == '-') {
+            if (negative) {
+                lex_fail(lx, out, "line %u: a radix number has one minus "
+                                  "sign, before the radix or after the r",
+                         out->line);
+                return;
+            }
+            negative = 1;
+            ++lx->pos;
+        }
         digits_start = lx->pos;
         while (!at_end(lx)) {
             char    c = lx->source[lx->pos];
@@ -400,6 +461,20 @@ scan_number(st_lexer *lx, st_token *out, int negative)
             else
                 value = value * radix + digit;
             ++lx->pos;
+        }
+        /*
+         *  Something must have been read.  The loop above stops at the
+         *  first byte that is not a digit of the radix, and when that is
+         *  the very first byte the number has no digits at all -- `16r'
+         *  by itself, or `16rff' in lower case, which the Blue Book does
+         *  not allow.  Both used to fall through with value 0 and hand the
+         *  rest of the text on as the next token, so `16r' was zero and
+         *  `16rff' was `0 ff'.  Bugs3 B26.
+         */
+        if (lx->pos == digits_start) {
+            lex_fail(lx, out, "line %u: digits expected after %dr",
+                     out->line, radix);
+            return;
         }
         /*
          *  A radix number may have a fraction and an exponent, and the
@@ -454,6 +529,29 @@ scan_number(st_lexer *lx, st_token *out, int negative)
                         exponent = -exponent;
                     out->real = (whole + fraction) * pow((double) radix,
                                                          (double) exponent);
+                    /*
+                     *  The same refusal the decimal path makes below, for
+                     *  the same reason: `2r1e3000' compiled to a method
+                     *  that answered infinity while `1e400' was refused,
+                     *  and a literal that is not the number written is
+                     *  the wrong kind of quiet.  Bugs3 B32.
+                     */
+                    if (out->real > DBL_MAX || out->real < -DBL_MAX) {
+                        size_t  shown = lx->pos - start;
+
+                        if (shown > 120)
+                            shown = 120;
+                        lex_fail(lx, out, "this number is too large for a "
+                                          "Float: %.*s",
+                                 (int) shown, lx->source + start);
+                        return;
+                    }
+                    if (too_big) {
+                        lex_fail(lx, out, "line %u: this radix Float has "
+                                          "more digits than can be read",
+                                 out->line);
+                        return;
+                    }
                     out->kind = ST_TOK_FLOAT;
                     if (negative)
                         out->real = -out->real;
@@ -462,6 +560,17 @@ scan_number(st_lexer *lx, st_token *out, int negative)
                 lx->pos = save;
             }
             if (radix_float) {
+                /*
+                 *  `whole' was accumulated in an int64 and stopped when it
+                 *  would have wrapped, so a radix Float with more integer
+                 *  digits than that would be built from a truncated whole
+                 *  part -- silently.  Refused instead; nobody writes one.
+                 */
+                if (too_big) {
+                    lex_fail(lx, out, "line %u: this radix Float has more "
+                                      "digits than can be read", out->line);
+                    return;
+                }
                 out->kind = ST_TOK_FLOAT;
                 out->real = negative ? -(whole + fraction) : whole + fraction;
                 return;
@@ -480,7 +589,16 @@ scan_number(st_lexer *lx, st_token *out, int negative)
         while (!at_end(lx) && isdigit((unsigned char) lx->source[lx->pos]))
             ++lx->pos;
     }
-    if (!at_end(lx) && (lx->source[lx->pos] == 'e' || lx->source[lx->pos] == 'd')) {
+    /*
+     *  Only `e' marks an exponent.  This used to take `d' as well, on the
+     *  strength of a spelling some later Smalltalks allow -- but strtod
+     *  below does not know it, so `1d2' scanned as one token and was then
+     *  read by strtod as far as the d: 1.0, silently, with `1d2 = 100.0'
+     *  false.  The Blue Book has only `e'; `1d2' is `1 d2' there, a unary
+     *  send that fails where it is written, and that is what it is here
+     *  now.  Nothing in sources/ or lib/ writes the d form.  Bugs3 B25.
+     */
+    if (!at_end(lx) && lx->source[lx->pos] == 'e') {
         size_t  save = lx->pos;
 
         ++lx->pos;
@@ -651,10 +769,15 @@ lex_token(st_lexer *lx, st_token *out)
     char    c;
 
     {
-        size_t  before = lx->pos;
+        size_t      before = lx->pos;
+        unsigned    unclosed = 0;
 
         memset(out, 0, sizeof *out);
-        skip_blanks(lx);
+        if (!skip_blanks(lx, &unclosed)) {
+            out->line = unclosed;
+            lex_fail(lx, out, "line %u: unterminated comment", unclosed);
+            return 1;
+        }
         out->after_space = (lx->pos != before) || before == 0;
     }
     out->line   = lx->line;
@@ -664,6 +787,20 @@ lex_token(st_lexer *lx, st_token *out)
         return 0;
     }
     c = lx->source[lx->pos];
+
+    /*
+     *  A NUL byte outside a string literal, a comment or a $ literal means
+     *  nothing, and it is named here because the generic message at the
+     *  bottom would print it -- and a NUL printed into a C string ends the
+     *  string, leaving "unexpected character '" with nothing after it.
+     *  Inside a string literal it is data and is kept.  Bugs3 B28.
+     */
+    if (c == '\0') {
+        lex_fail(lx, out, "line %u: a NUL byte outside a string literal",
+                 out->line);
+        ++lx->pos;
+        return 1;
+    }
 
     /*
      *  Identifiers and keywords.
@@ -721,11 +858,13 @@ lex_token(st_lexer *lx, st_token *out)
             unsigned long   code = b0;
             unsigned        extra = 0;
             unsigned        k;
+            size_t          after_lead;
 
             if (b0 >= 0xF0)      { extra = 3; code = b0 & 0x07u; }
             else if (b0 >= 0xE0) { extra = 2; code = b0 & 0x0Fu; }
             else if (b0 >= 0xC0) { extra = 1; code = b0 & 0x1Fu; }
             ++lx->pos;
+            after_lead = lx->pos;
             for (k = 0; k < extra && !at_end(lx); ++k) {
                 unsigned char   cont = (unsigned char) lx->source[lx->pos];
 
@@ -733,6 +872,23 @@ lex_token(st_lexer *lx, st_token *out)
                     break;
                 code = (code << 6) | (cont & 0x3Fu);
                 ++lx->pos;
+            }
+            /*
+             *  A lead byte with fewer continuation bytes behind it than
+             *  it promised is not UTF-8 at all: it is a single Latin-1
+             *  character, which is what a file written in that encoding
+             *  holds and what `(Character value: 233) storeString'
+             *  produces -- `$' followed by the one byte 0xE9.  The loop
+             *  used to break out and KEEP the partial decode, the low
+             *  bits of the lead byte alone, so `$é' in a Latin-1 file was
+             *  $<tab> (233 & 0x1F = 9) and the storeString of every
+             *  Character from 192 up read back as a different Character.
+             *  Bugs3 B27.  The byte is taken as itself, from just past
+             *  the lead byte, so nothing after it is lost either.
+             */
+            if (k < extra) {
+                lx->pos = after_lead;
+                code    = b0;
             }
             if (code > 255) {
                 lex_fail(lx, out, "line %u: character U+%04lX is beyond this "
@@ -800,6 +956,18 @@ lex_token(st_lexer *lx, st_token *out)
             st_token    inner;
 
             lex_token(lx, &inner);
+            /*
+             *  A Symbol is interned by its C string, and a NUL inside one
+             *  would intern the prefix -- a different Symbol, quietly.  A
+             *  String literal carries its NULs (see string_literal in the
+             *  compiler); a Symbol may not.  Bugs3 B28.
+             */
+            if (inner.kind == ST_TOK_STRING
+             && memchr(LEX_text(&inner), '\0', inner.text_length)) {
+                lex_fail(lx, out, "line %u: a Symbol may not contain a NUL "
+                                  "byte", out->line);
+                return 1;
+            }
             memcpy(out->text, inner.text, sizeof out->text);
             /*
              *  Including the overflow, which the inner token may carry:

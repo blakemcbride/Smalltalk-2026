@@ -417,6 +417,74 @@ copy and `become:`s it, so an unlocked reader that has already read the old
 collection shared between workers wants a lock around its reads too, not just
 its writes.
 
+## Stopping a process from outside it
+
+The third audit (Bugs3 B3, B9, B13, B16, B17) found the one question Chapter
+29 never had to answer: *is that process running somewhere?* With one thread
+a process that is not the active process is on a list or suspended, and its
+`suspendedContext` is where it stands. On a pool, a process on another core
+is on no list and its real stack is in that core's registers. Every 1983
+method that touches another process assumed the first world: `terminate`
+unlinked it from nothing and cleared a field nobody read, so the loop kept
+counting; `suspend` said it was not active; `signalException:` gave up on the
+nil it found; and `resume` -- of the active process, or of a process another
+worker was running -- queued it, so an idle worker ran it from a stale
+context and two threads were inside one context.
+
+Two tables in `st_sched.c` answer the question and act on the answer, and
+the shape of each is the argument for it:
+
+- **What each worker has in its hands.** Every worker publishes, in a static
+  row that outlives its thread, the process it is executing (`held`), the
+  one it will switch to (`nominee`), and one it has taken off a list and not
+  yet put anywhere (`taken`). Three atomic words, written only by the owner,
+  read by anyone. The discipline that makes them exact is that a process is
+  written into the slot it is moving *to* before it is cleared from the one
+  it is moving *from*, and cleared from `held` only once it has *landed* --
+  the list holds it, or it is free on purpose. A reader that sees a process
+  in no row and on no list has seen it free, *provided* nothing can make it
+  un-free behind the reader's back.
+
+- **Processes that must not run.** That proviso is the second table: a
+  worker that wants a process stopped names it there, and every place a
+  process can start or continue running honours the name -- a worker
+  executing a named process parks it onto its ready list at its next
+  bytecode and goes to find something else, a named nominee is released
+  to its ready list instead of switched to, no signal and no idle worker
+  takes a named process off a list, and `resume` refuses it. A named process
+  can only move towards being free. So `primDetach:` names the process, then
+  loops: take it off its list under that list's lock if it is on one, or
+  wait a moment if some row names it, or -- neither -- conclude. The
+  conclusion is sound because the exits are closed, and it is what
+  `terminate`, `suspend` and `signalException:` in `lib/Concurrency` go on
+  from.
+
+`terminate` then runs the process's `ensure:` blocks, innermost first, *on
+the terminating process*, the way `Exception>>unwindTo:` and Squeak's
+terminate before `runUntilErrorOrReturnFrom:` ran them -- the only model
+this system's machinery supports, and enough for what an `ensure:` is for.
+A terminated process has a nil `suspendedContext`, primitive 87 refuses to
+resume one, and the switch drops one that a racing signal delivers anyway
+rather than stopping the image on it.
+
+The same rule applied to every process at once is a **freeze**, which is
+what a snapshot on a pool takes: every other worker parks what it runs onto
+its ready list and idles, the image is written with every process on a list
+a reloaded worker can take it from and the snapshotting process published as
+the scheduler's `activeProcess`, and the workers are thawed. Not a
+safepoint, though it looks like one, because the image writer takes a
+safepoint of its own for the collection it runs first, and a safepoint
+inside a safepoint is a requester waiting for itself. Signals keep flowing
+during a freeze -- a waiter taken off a semaphore lands on its ready list --
+because a signal spent as an excess while its waiter sits on the list is a
+semaphore that never wakes.
+
+One residual, inherent and recorded rather than solved: a process terminated
+in the instant between a semaphore signal being handed to it and its running
+again consumes that signal. Squeak's `<criticalSection>` pragma exists for
+exactly this; `Mutex>>critical:` here is exposed to it as every mutex built
+on a semaphore is.
+
 
 ## The VM's own connections to the image
 

@@ -45,10 +45,25 @@ Error >> defaultAction [
 	 So the cleanup happens once, here, and execution carries on exactly as
 	 it did before -- which for an unhandled error is not ideal and is a
 	 separate argument from this one."
+	self noteUnhandled.
 	self reportAsText.
 	self canOpenNotifier ifTrue: [^self openNotifier].
 	self unwindTo: nil.
 	^nil
+]
+
+{ #category : 'private' }
+Error >> noteUnhandled [
+	"Tell the VM that an Error went unhandled on this stack (Bugs3 B58).
+
+	 Sent from defaultAction and nowhere else, so what the VM counts is
+	 exactly the errors nobody caught: a handled Error never reaches
+	 defaultAction, and a Warning has its own.  -eval reads the count to
+	 decide its exit code -- the answer to `3 zork' is nil, which a build
+	 script could not tell from an expression that answered nil on purpose.
+	 Primitive 239, this system's own; a build without it answers self."
+	<primitive: 239>
+	^self
 ]
 
 { #category : 'private' }

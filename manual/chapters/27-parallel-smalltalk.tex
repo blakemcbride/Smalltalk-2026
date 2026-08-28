@@ -105,6 +105,15 @@ m critical: [ queue add: x. m signalAll ].
 \ct{waitUntil:} re-tests its condition after every wake, which is the correct
 discipline and saves you from writing the loop wrong.
 
+Reentrant means that a \ct{critical:} sent from inside another on the same
+monitor, by the same process, goes one level deeper rather than waiting for
+itself; the monitor is released when the outermost block ends, however it
+ends. \ct{waitForChange} and \ct{waitUntil:} give up the whole depth while
+they wait---a waiter two levels in still lets everyone else in---and take it
+back with the monitor. \ct{isHeldByActiveProcess} answers whether the process
+asking holds it, which is what a method that must be sent from inside
+\ct{critical:} can assert.
+
 \section{\texttt{SharedQueue}}
 
 Multi-producer, multi-consumer, blocking. This replaces the 1983

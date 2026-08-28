@@ -57,6 +57,26 @@ beyond saying which end it came out of.
 Everything comes back: windows where you left them, text you had not accepted,
 processes that were running.
 
+A save writes the new image beside the old one, as \ct{name.im.tmp}, and
+replaces the old file with it only once the whole of the new one is on disk.
+A save that fails part way --- a full disk, a file-size limit, the process
+killed --- leaves the previous \ct{name.im} exactly as it was and still
+loadable, and reports the failure; the only trace is the partial \ct{.tmp},
+which the next save overwrites. The same holds for \ct{-o} and
+\ct{snapshotAs:}, which write through the same path.
+
+\begin{stnote}[A snapshot from a worker pool]
+Under \ct{-serve} (Chapter~\ref{ch:serving}) other workers may be running
+processes at the moment of the snapshot. The snapshot first has every other
+worker park what it is running onto its ready list and stand idle, writes the
+image, and lets them go again; the process that took the snapshot is the one
+a reload resumes first, and the rest are taken off their ready lists by the
+other workers as they join. A worker that does not park within ten
+seconds---one inside a native call that has not returned---makes the snapshot
+refuse rather than write an image short a process, and says so on standard
+error.
+\end{stnote}
+
 \begin{stnote}[One arithmetic quirk after a save]
 Saving shrinks the display to a hundred rows so the snapshot is small, then
 puts the height back. \ct{DisplayScreen} rounds a Form's width down to a

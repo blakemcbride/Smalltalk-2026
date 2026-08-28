@@ -31,6 +31,27 @@ ClassDescription >> basicCompile: code classified: heading notifying: requestor 
 ]
 
 { #category : '*Tonel' }
+ClassDescription >> basicInstall: aCompiledMethod selector: aSymbol source: code classified: heading [
+	"The second half of basicCompile:classified:notifying:, for a method
+	 compiled earlier and not yet installed: install, log the source,
+	 classify.  The layer below the write-back hook.
+
+	 TonelReader compiles every method in a file before it installs one,
+	 so that a file with a mistake in its seventh method leaves a class
+	 with six of neither the old set nor the new (Bugs3 B63); this is what
+	 it installs them with, and it is 1983's own three steps with the
+	 compile taken out of the front."
+
+	self addSelector: aSymbol withMethod: aCompiledMethod.
+	(methodDict at: aSymbol)
+		putSource: code asString
+		class: self
+		category: heading
+		inFile: 2.
+	self organization classify: aSymbol under: heading
+]
+
+{ #category : '*Tonel' }
 ClassDescription >> compile: code classified: heading notifying: requestor [
 	"Compile and install code under heading, as 1983 did -- and if this class
 	 came from a Tonel file, write the file."

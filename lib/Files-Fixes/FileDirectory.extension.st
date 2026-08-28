@@ -158,6 +158,20 @@ FileDirectory >> isDirectoryNamed: aString [
 ]
 
 { #category : '*Files-Fixes' }
+FileDirectory >> realPathNamed: aString [
+	"The name with every dot segment and link resolved, or nil.
+
+	 Nil here, for a file system that cannot resolve anything -- 1983's, and
+	 the Alto's.  Nil is the answer a caller can act on: HttpStaticFileHandler
+	 reads it as `this file system cannot tell me where that really is' and
+	 refuses to serve the file rather than serving it unchecked, which is
+	 the safe direction and the only one that does not turn a missing
+	 capability into a way out of the document root."
+
+	^nil
+]
+
+{ #category : '*Files-Fixes' }
 FileDirectory >> textFile: aFileName [
 	"Answer a stream on an old or new file of that name, which writes the
 	 host's line ending where the image holds a carriage return.  `file:'

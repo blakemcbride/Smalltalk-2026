@@ -65,3 +65,18 @@ Bag >> add: newObject withOccurrences: anInteger [
 		ifFalse: [contents at: newObject put: anInteger].
 	^newObject
 ]
+
+{ #category : '*Collections-Protocol' }
+Bag >> postCopy [
+	"Give the copy a dictionary of its own.
+
+	 A Bag is one instance variable, the Dictionary from element to count,
+	 and a shallow copy shares it: `s2 := s copy. s2 add: 2' counted the 2
+	 in s as well, and `s2 remove: 1' took it out of both (Bugs3 B43).
+	 Set and OrderedCollection copies were already independent; this was
+	 the one unordered collection whose copy was not.  Dictionary>>postCopy
+	 makes the inner copy's Associations its own, so the two counts really
+	 are two."
+	super postCopy.
+	contents := contents copy
+]

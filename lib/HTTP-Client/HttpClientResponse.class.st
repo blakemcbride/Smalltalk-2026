@@ -18,8 +18,9 @@ not mix: a body read whole has no stream left, and a stream read from has
 no whole body.
 
 The three ways a body ends, and a status that has none, are the stream's
-business (HttpBodyStream).  A reply that is not HTTP -- no status line --
-is a NetError here: the other end did not speak it.
+business (HttpBodyStream), and so is the limit on how much of one this
+client will read.  A reply that is not HTTP -- no status line -- is a
+NetError here: the other end did not speak it.
 "
 Class {
 	#name : 'HttpClientResponse',
@@ -30,11 +31,21 @@ Class {
 
 { #category : 'instance creation' }
 HttpClientResponse class >> readFrom: aStream [
-	^self new readFrom: aStream
+	^self readFrom: aStream maxBodyBytes: HttpBodyStream defaultMaxBodyBytes
+]
+
+{ #category : 'instance creation' }
+HttpClientResponse class >> readFrom: aStream maxBodyBytes: anInteger [
+	^self new readFrom: aStream maxBodyBytes: anInteger
 ]
 
 { #category : 'reading' }
 HttpClientResponse >> readFrom: aStream [
+	^self readFrom: aStream maxBodyBytes: HttpBodyStream defaultMaxBodyBytes
+]
+
+{ #category : 'reading' }
+HttpClientResponse >> readFrom: aStream maxBodyBytes: anInteger [
 	| line space rest |
 	line := aStream nextLine.
 	(line startsWith: 'HTTP/') ifFalse: [^NetError new signal: 'not an HTTP reply: ', line printString].
@@ -48,6 +59,7 @@ HttpClientResponse >> readFrom: aStream [
 	reason := space = 0 ifTrue: [''] ifFalse: [(rest copyFrom: space + 1 to: rest size) trimmed].
 	self readHeadersFrom: aStream.
 	bodyStream := HttpBodyStream on: aStream status: status headers: headers
+		maxBodyBytes: anInteger
 ]
 
 { #category : 'private' }

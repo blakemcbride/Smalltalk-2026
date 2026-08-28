@@ -434,10 +434,25 @@ shape_of_class(st_oop cls)
      *  Bit 16: an ephemeron.  Above the Blue Book's fields rather than
      *  beside them, because 1983 uses bits 13, 14 and 15 and leaves only
      *  bit 12 between them and the instance size -- and weak has that one.
-     *  Nothing in a 1983 image sets bit 16, so an old format word reads as
-     *  ordinary, which is the requirement.
+     *
+     *  Only in a NON-NEGATIVE format word.  "Nothing in a 1983 image sets
+     *  bit 16" was the requirement and it was not met: 1983's
+     *  Behavior>>format:variable:words:pointers: writes the pointers flag
+     *  as -16384, the sign bit of a 15-bit SmallInteger, and on this
+     *  63-bit one the sign extends through every bit above -- so every
+     *  class defined at run time, in the Browser or by TonelReader, had a
+     *  format that read here as an ephemeron, and every instance of one
+     *  was allocated with OM_instantiate_ephemeron and set aside by the
+     *  collector for the fixed-point pass, its first field a key.  Found
+     *  when Behavior>>isEphemeron read the same bit and answered true for
+     *  a test's sample class (Bugs3 B61, beside the weak bit).  The
+     *  bootstrap's make_format writes +16384 and never a negative word,
+     *  and nothing of 1983's makes an ephemeron, so the sign decides:
+     *  a negative word is the Blue Book's and is never an ephemeron.
+     *  Behavior>>beEphemeron normalises a negative word before it sets
+     *  the bit, for the same reason.
      */
-    shape.ephemeron = (format >> 16) & 1;
+    shape.ephemeron = OM_int_value(format) >= 0 && ((format >> 16) & 1);
     shape.fixed     = (uint32_t) ((format >> 1) & 0x7FF);
     return shape;
 }
@@ -688,12 +703,38 @@ primitive_new_with_arg(void)
  *  exactly this; the memory now asks the same question for a swap, and a
  *  refusal fails the primitive so Object>>become:'s fallback raises.
  */
+/*
+ *  Is this a Symbol?  The class is not a guaranteed pointer, but a
+ *  guaranteed SELECTOR is an instance of it -- in this bootstrap and in
+ *  the Xerox image the bb build reads -- so the class of one names it.
+ */
+static int
+is_a_symbol(st_oop p)
+{
+    return OM_is_object(p)
+        && OM_fetch_class(p) == OM_fetch_class(ST_SELECTOR_DOES_NOT_UNDERSTAND);
+}
+
 static int
 primitive_become(void)
 {
     st_oop  a = ST_stack_value(1);
     st_oop  b = ST_stack_value(0);
 
+    /*
+     *  Not a Symbol, on either side (Bugs3 B21).  A Symbol's identity IS
+     *  its meaning: the compiler interns `#zzE' to the one object the
+     *  symbol table holds under that spelling, and every method dictionary
+     *  is keyed by those objects.  `#zzE become: #zzF' left the table
+     *  entry for zzE naming the object that now spells zzF, so `'zzE'
+     *  asSymbol' answered one object and the literal `#zzE' another, and
+     *  two Symbols spelled zzE existed for the rest of the image's life.
+     *  Nothing raised, nothing printed: only a lookup that found the wrong
+     *  method, later.  Refused like nil and the Booleans, and for the same
+     *  reason -- the object names itself for the whole image's life.
+     */
+    if (is_a_symbol(a) || is_a_symbol(b))
+        return 0;
     if (!OM_swap_identities(a, b))
         return 0;
     ST_pop_n(1);
@@ -915,8 +956,17 @@ copy_block_for_activation(st_oop block)
 static int
 primitive_full_collect(void)
 {
-    OM_collect();
-    return 1;                       /*  answers the receiver  */
+    /*
+     *  Answers the count, as SystemDictionary>>garbageCollect has promised
+     *  since it was written (Bugs3 B58): `Smalltalk garbageCollect class'
+     *  was SystemDictionary because this answered the receiver, and the
+     *  number OM_collect already computes was thrown away.
+     */
+    uint32_t    reclaimed = OM_collect();
+
+    ST_pop_n(1);
+    ST_push(OM_int_oop((st_int) reclaimed));
+    return 1;
 }
 
 /*
@@ -945,10 +995,63 @@ primitive_report_on_standard_error(void)
      *  anything.
      */
     if (ST_errors_reported()) {
+        /*
+         *  One line, one write (Bugs3 B19).
+         *
+         *  This was an fputc per character to stderr, which is unbuffered,
+         *  so every character was its own write(2) and eight workers'
+         *  displayNl lines came out shuffled together: 33 whole lines of
+         *  2,400.  displayNl and printNl are the documented way to print
+         *  from a headless image, and the Transcript's promise of whole
+         *  entries held only because TextCollector locks around this very
+         *  primitive.  A line is assembled in full and handed to the kernel
+         *  in one call, which POSIX delivers whole to a terminal or a pipe
+         *  and in practice to a file; a partial write, or EINTR, is
+         *  resumed from where it stopped.  The buffer is on the stack for
+         *  the line-sized common case and from the heap for a long one;
+         *  no heap means the old character-at-a-time path, which is slow
+         *  and interleaves rather than silent.
+         */
+        char        local[4096];
+        char       *buf = local;
+        size_t      len;
+
         n = OM_fetch_byte_length(text);
-        for (i = 0; i < n; ++i)
-            fputc(OM_fetch_byte(i, text), stderr);
-        fputc('\n', stderr);
+        len = (size_t) n + 1;
+        if (len > sizeof local)
+            buf = malloc(len);
+        fflush(stderr);
+        if (buf) {
+            size_t  done = 0;
+
+            for (i = 0; i < n; ++i)
+                buf[i] = (char) OM_fetch_byte(i, text);
+            buf[n] = '\n';
+            while (done < len) {
+                size_t  chunk = len - done;
+                long    wrote;
+
+                if (chunk > 0x10000000u)
+                    chunk = 0x10000000u;
+#if defined(_WIN32)
+                wrote = _write(2, buf + done, (unsigned) chunk);
+#else
+                wrote = (long) write(2, buf + done, chunk);
+#endif
+                if (wrote < 0) {
+                    if (errno == EINTR)
+                        continue;
+                    break;
+                }
+                done += (size_t) wrote;
+            }
+            if (buf != local)
+                free(buf);
+        }  else  {
+            for (i = 0; i < n; ++i)
+                fputc(OM_fetch_byte(i, text), stderr);
+            fputc('\n', stderr);
+        }
         /*
          *  And where it came from, when asked.
          *
@@ -965,6 +1068,23 @@ primitive_report_on_standard_error(void)
     }
     ST_pop_n(1);                    /*  answers the receiver  */
     return 1;
+}
+
+/*
+ *  239: Error>>noteUnhandled -- an Error found no handler on this stack.
+ *
+ *  Sent from Error>>defaultAction and nowhere else, so what is counted is
+ *  exactly the errors nobody caught: a handled Error never gets there and
+ *  a Warning has its own defaultAction.  The count is this worker's, kept
+ *  in its registers, and -eval reads it to decide its exit code (Bugs3
+ *  B58).  Nothing else reads it yet; a server that wanted to count its
+ *  unhandled errors per request would read the same field.
+ */
+static int
+primitive_note_unhandled_error(void)
+{
+    ++st_vm.unhandled_errors;
+    return 1;                       /*  answers the receiver  */
 }
 
 /*  Is this object a context of either kind?  */
@@ -1196,14 +1316,31 @@ primitive_value_with_arguments(int closure_form)
     }
     if (!OM_is_int(want) || (uint32_t) OM_int_value(want) != argc)
         return 0;
+    /*
+     *  And only if they fit (Bugs3 B1).  The elements go onto the SENDER'S
+     *  stack, in a frame the compiler sized for the sender's own pushes;
+     *  it cannot have allowed for an Array whose length is decided at run
+     *  time.  A fifteen-argument block overflowed the frame at 23 slots,
+     *  ST_push reported it and cleared st_vm.running, and the loop below
+     *  went on pushing into nothing.  The Array is still on the stack, so
+     *  it takes the place of one element: room for all but one is enough.
+     */
+    if (argc > ST_stack_room() + 1)
+        return 0;
 
     /*
      *  Replace the Array with its elements: the receiver stays where it is
      *  and the activation then finds exactly what an ordinary send left.
+     *  The Array is held across the loop: the first push lands in the slot
+     *  it sat in and releases it, and when the stack had its only
+     *  reference the rest of the elements were read from freed memory
+     *  (the use-after-free ASAN found in primitive 84, which see).
      */
+    OM_increase_ref(args);
     ST_pop_n(1);
     for (i = 0; i < argc; ++i)
         ST_push(OM_fetch_pointer(i, args));
+    OM_decrease_ref(args);
 
     if (closure_form)
         return ST_activate_closure(block, argc);
@@ -1442,6 +1579,36 @@ st_path_is_directory(const char *path)
         && (attr & FILE_ATTRIBUTE_DIRECTORY) != 0;
 }
 
+/*
+ *  The real path of a name: absolute, with every `.', `..' and symbolic
+ *  link resolved, or 0 if there is no such file.
+ *
+ *  Added for Bugs3 B57 (lower): the static file handler refused a request
+ *  path with `..' in it by looking at the path's own segments, which is a
+ *  test of the TEXT, and a symbolic link inside the document root is a way
+ *  out of it that no amount of reading the text can see -- `/link' pointing
+ *  at /etc/passwd was served.  Comparing the resolved path of the file with
+ *  the resolved path of the root is the only test that catches it, and
+ *  resolving is something only the file system can do.
+ *
+ *  GetFullPathNameA canonicalises `.' and `..' and makes the name absolute.
+ *  It does NOT follow a junction or a symbolic link the way realpath(3)
+ *  does; GetFinalPathNameByHandleA would, at the cost of opening the file,
+ *  and Windows is not where this server is deployed.  Both platforms
+ *  therefore refuse a path that climbs out by dot segments, and POSIX also
+ *  refuses one that climbs out through a link.
+ */
+static int
+st_real_path(const char *path, char *out, size_t size)
+{
+    DWORD   n;
+
+    if (GetFileAttributesA(path) == INVALID_FILE_ATTRIBUTES)
+        return 0;
+    n = GetFullPathNameA(path, (DWORD) size, out, NULL);
+    return n > 0 && n < size;
+}
+
 static int
 st_file_truncate(int fd, int64_t end)
 {
@@ -1584,6 +1751,32 @@ st_path_is_directory(const char *path)
     return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
 }
 
+/*
+ *  The real path of a name -- see the Windows half above for why this
+ *  exists at all.  realpath(3) with a NULL second argument allocates the
+ *  answer, which is the form that has no PATH_MAX in it; the result is
+ *  copied into the caller's buffer and freed here, and a name that will not
+ *  fit is a failure rather than a truncation, because a truncated path is a
+ *  DIFFERENT path and answering one would be worse than answering none.
+ */
+static int
+st_real_path(const char *path, char *out, size_t size)
+{
+    char   *resolved = realpath(path, NULL);
+    size_t  n;
+
+    if (!resolved)
+        return 0;
+    n = strlen(resolved);
+    if (n + 1 > size) {
+        free(resolved);
+        return 0;
+    }
+    memcpy(out, resolved, n + 1);
+    free(resolved);
+    return 1;
+}
+
 static int64_t
 st_file_size(int fd)
 {
@@ -1683,6 +1876,24 @@ static int  posix_errno;
  */
 static st_atomic_int    fd_is_ours[POSIX_MAX_FD];
 
+/*
+ *  Which of our descriptors were opened READ-ONLY because the file could
+ *  not be opened for writing (Bugs3 B58).
+ *
+ *  1983 opens every old file for reading and writing; a file this process
+ *  may only read -- /etc/hostname, say -- is still worth opening, so the
+ *  open falls back to O_RDONLY and the file works for reading.  What was
+ *  wrong was that nothing was told: the stream's default mode is
+ *  readWriteShorten, close flushes, and the flush was `write:, Bad file
+ *  descriptor' on a file nobody had written to.  The fallback is now
+ *  recorded here, per descriptor, and command 7 of primitive 130 answers
+ *  it, so File>>asFileStream in lib/Files-Fixes can open the stream
+ *  read-only from the start: no flush at close, and a write is refused
+ *  with `no writing allowed' where it is attempted.  Atomic for the
+ *  reason fd_is_ours is.
+ */
+static st_atomic_int    fd_read_only[POSIX_MAX_FD];
+
 /*  A Smalltalk String from C, and the reverse.  */
 static st_oop
 string_from_c(const char *text, size_t n)
@@ -1751,6 +1962,7 @@ posix_own(int fd)
         return -1;
     }
     ST_store_relaxed(&fd_is_ours[fd], 1);
+    ST_store_relaxed(&fd_read_only[fd], 0);     /*  a fresh open: not yet  */
     return fd;
 }
 
@@ -1780,6 +1992,7 @@ static int
 posix_fd_for(st_oop file, int for_writing)
 {
     int     fd = posix_fd_of(file);
+    int     read_only = 0;
     char    path[1024];
 
     if (fd >= 0)
@@ -1791,14 +2004,18 @@ posix_fd_for(st_oop file, int for_writing)
                        path, sizeof path))
         return -1;
     fd = st_file_open(path, for_writing ? ST_OPEN_RDWR_CREATE : ST_OPEN_RDWR);
-    if (fd < 0 && !for_writing)
+    if (fd < 0 && !for_writing) {
         fd = st_file_open(path, ST_OPEN_RDONLY);  /*  readable is enough  */
+        read_only = fd >= 0;                      /*  and is all it is  */
+    }
     if (fd < 0) {
         posix_errno = errno;
         return -1;
     }
     if (posix_own(fd) < 0)
         return -1;
+    if (read_only)
+        ST_store_relaxed(&fd_read_only[fd], 1);
     OM_store_pointer(POSIX_FD_FIELD, file, OM_int_oop((st_int) fd));
     return fd;
 }
@@ -1849,9 +2066,13 @@ primitive_file_command(void)
          *  meant `snapshot.im open: No such file or directory' -- the file
          *  being made could never be made.
          */
+        int     read_only = 0;
+
         fd = st_file_open(path, ST_OPEN_RDWR_CREATE);
-        if (fd < 0)
+        if (fd < 0) {
             fd = st_file_open(path, ST_OPEN_RDONLY);  /*  readable is enough  */
+            read_only = fd >= 0;
+        }
         if (fd < 0 || posix_own(fd) < 0) {
             if (fd >= 0)
                 answer = ST_FALSE;
@@ -1860,6 +2081,9 @@ primitive_file_command(void)
             answer = ST_FALSE;
             break;
         }
+        /*  Remembered for command 7; see fd_read_only.  */
+        if (read_only)
+            ST_store_relaxed(&fd_read_only[fd], 1);
         OM_store_pointer(POSIX_FD_FIELD, file, OM_int_oop((st_int) fd));
         answer = ST_TRUE;
         break;
@@ -1872,6 +2096,19 @@ primitive_file_command(void)
         }
         answer = ST_TRUE;
         break;
+    /*
+     *  7: was this file opened read-only because it could not be opened
+     *  for writing?  This system's own, beside 6 (Bugs3 B58).  True only
+     *  for a descriptor of ours that took the fallback; a file that has
+     *  not been opened, or that opened for writing, answers false -- and
+     *  so does a build whose primitive is older than the question, since
+     *  a failed primitive falls through to a body that answers false.
+     */
+    case 7:
+        ST_pop_n(4);
+        ST_push(fd >= 0 && ST_load_relaxed(&fd_read_only[fd])
+                ? ST_TRUE : ST_FALSE);
+        return 1;
 
     case 3: {                                   /*  size on disk  */
         int64_t size = fd < 0 ? -1 : st_file_size(fd);
@@ -2177,6 +2414,26 @@ primitive_directory_command(void)
         answer = st_path_is_directory(a) ? ST_TRUE : ST_FALSE;
         break;
 
+    case 5:                                     /*  the real path of arg1  */
+        /*
+         *  Answers the resolved name as a String, or nil when there is no
+         *  such file or it will not fit -- nil and not a primitive failure,
+         *  because `there is nothing of that name' is news about the file
+         *  system rather than a fault in the caller, and the Smalltalk
+         *  fallback exists to say that a build without the command answers
+         *  the receiver.  See st_real_path.
+         */
+        if (!c_from_string(arg1, a, sizeof a))
+            return 0;
+        if (!st_real_path(a, b, sizeof b))
+            answer = ST_NIL;
+        else {
+            answer = string_from_c(b, strlen(b));
+            if (!OM_is_present(answer))
+                return 0;
+        }
+        break;
+
     default:
         return 0;
     }
@@ -2269,19 +2526,62 @@ primitive_snapshot(void)
      *  The collection that goes with it is in OM_image_save, so that every
      *  caller gets it and not only this one.
      */
+    /*
+     *  And on a worker pool, two more, both Bugs3 B9.
+     *
+     *  THE OTHER WORKERS' PROCESSES ARE PARKED TOO.  Everything above is
+     *  about this worker's process; a process running on another worker
+     *  at this instant has its registers in THAT interpreter, and its
+     *  Process object says whatever it said when it was last parked.
+     *  Written like that it comes back as a process on no list with a
+     *  context from its past, which nothing ever runs -- and whatever it
+     *  held, a Mutex say, is held for ever in the reloaded image.  So the
+     *  scheduler is frozen first: every other worker parks what it runs
+     *  onto its ready list and idles, and the wait returns once each has.
+     *  A worker that will not park -- one inside a native call that does
+     *  not return -- makes the snapshot refuse rather than write an image
+     *  short a process, and says which.
+     *
+     *  THE IMAGE'S activeProcess NAMES THIS PROCESS.  A reload resumes
+     *  from the scheduler's activeProcess field, and with several workers
+     *  that field holds whichever process any worker switched to LAST --
+     *  on two workers the InputState process worker 1 had picked up, so
+     *  the reloaded image resumed inside InputState>>run with the
+     *  snapshotting process's registers and died on `bitShift: sent to an
+     *  InputState'.  It resumed only when a real switch had happened to
+     *  preceed the snapshot on this worker.  Exchanged, like every other
+     *  store to that one slot, so the process it evicts is released once.
+     */
+#ifdef ST_OM_MT
+    if (WORKER_count() > 1) {
+        SCHED_freeze();
+        if (!SCHED_wait_frozen(INT64_C(10) * 1000000000)) {
+            SCHED_thaw();
+            fprintf(stderr, "st80: snapshot to %s refused: a worker did not "
+                            "park its process within ten seconds\n",
+                    snapshot_path);
+            return 0;
+        }
+    }
+#endif
     ST_store_active_context();
     {
         st_oop  self = SCHED_active_process();
 
-        if (OM_is_object(self))
+        if (OM_is_object(self)) {
             OM_store_pointer(ST_PROCESS_SUSPENDED_CONTEXT, self,
                              st_vm.active_context);
+            OM_exchange_pointer(ST_SCHEDULER_ACTIVE_PROCESS, SCHED_scheduler(),
+                                self);
+        }
     }
     if (OM_image_save(snapshot_path, err, sizeof err) != 0) {
+        SCHED_thaw();
         fprintf(stderr, "st80: snapshot to %s failed: %s\n",
                 snapshot_path, err);
         return 0;
     }
+    SCHED_thaw();
     fprintf(stderr, "st80: wrote %s\n", snapshot_path);
     ST_pop_n(1);
     ST_push(ST_NIL);                    /*  "just written", not "resumed"  */
@@ -2853,6 +3153,19 @@ primitive_perform(void)
     selector = ST_stack_value(argc - 1);
     if (!OM_is_present(selector))
         return 0;
+    /*
+     *  The Blue Book's primitivePerform fails when the method the selector
+     *  names does not take exactly the arguments given, and so does this
+     *  (Bugs3 B5).  It used to shuffle and send regardless, and the send
+     *  path's frame check then found `3 perform: #+' sending no arguments
+     *  to a method that takes one, and stopped the interpreter -- and
+     *  under -serve, the pool.  Failing here runs the 1983 fallback,
+     *  which reaches perform:withArguments: and the error lib/ raises
+     *  there.  The lookup is repeated by the send; perform: is not a path
+     *  that cost was ever measured on.
+     */
+    if (!ST_argument_count_matches(ST_stack_value(argc), selector, argc - 1))
+        return 0;
 
     /*
      *  Shuffle the real arguments down over the selector, leaving the stack
@@ -2883,11 +3196,37 @@ primitive_perform_with_arguments(void)
     if (OM_fetch_class(arguments) != ST_CLASS_ARRAY)
         return 0;
     count = OM_fetch_word_length(arguments);
+    /*
+     *  The count must be the method's (Bugs3 B5; see primitive_perform),
+     *  and the elements must FIT (Bugs3 B1).  They are spread onto the
+     *  sender's stack, which the compiler sized for the sender's own
+     *  pushes and not for an Array of a length nobody knew at compile
+     *  time: twelve arguments overflowed the frame at 18 slots and ended
+     *  the run, eighteen segfaulted.  The selector and the Array are on the
+     *  stack and come off first, so two of the slots are already paid for.
+     *  Failing runs the fallback in lib/, which names the reason.
+     */
+    if (!ST_argument_count_matches(ST_stack_value(2), selector, count))
+        return 0;
+    if (count > ST_stack_room() + 2)
+        return 0;
 
-    /*  Drop the selector and the array, then spread the array out.  */
+    /*
+     *  Drop the selector and the array, then spread the array out --
+     *  holding the array while its elements are read.  A pop leaves the
+     *  slot's reference where it was, and the first push into that slot
+     *  releases it: when the stack held the Array's only reference, the
+     *  second element pushed freed the Array and the third was read out
+     *  of memory the collector had already handed on.  ASAN saw it as a
+     *  heap-buffer-overflow into the free list's own worklist, on
+     *  `nil perform: #a1:a2:a3: withArguments: (Array new: 3)'.  The
+     *  same shape is in primitives 82 and 188.
+     */
+    OM_increase_ref(arguments);
     ST_pop_n(2);
     for (i = 0; i < count; ++i)
         ST_push(OM_fetch_pointer(i, arguments));
+    OM_decrease_ref(arguments);
 
     ST_send_selector(selector, count);
     return 1;
@@ -2930,9 +3269,15 @@ primitive_execute_method(void)
     count = OM_fetch_word_length(arguments);
     if (ST_method_argument_count(method) != count)
         return 0;
+    /*  And the elements must fit the sender's frame: Bugs3 B1, as 84.  */
+    if (count > ST_stack_room() + 2)
+        return 0;
+    /*  Held across the spread, for the reason given in primitive 84.  */
+    OM_increase_ref(arguments);
     ST_pop_n(2);
     for (i = 0; i < count; ++i)
         ST_push(OM_fetch_pointer(i, arguments));
+    OM_decrease_ref(arguments);
     ST_execute_method(method, count);
     return 1;
 }
@@ -3085,6 +3430,30 @@ primitive_float_cos(void)
     if (!float_value(ST_stack_value(0), &value))
         return 0;
     return answer_float(cos(value), 1);
+}
+
+/*
+ *  233: Float>>log, the base-ten logarithm, through the C library's log10.
+ *
+ *  1983 derives it as `self ln / 10.0 ln', and the quotient of two
+ *  correctly rounded numbers is not itself correctly rounded: `1000.0 log'
+ *  answered 2.9999999999999996, and `1000 log' with it (Bugs3 B39) -- in
+ *  the one place a base-ten logarithm is asked for, which is to count
+ *  digits.  log10 is exact for every power of ten a double can hold.  This
+ *  system's own number, beside cos, tan, arcSin and arcCos, which are
+ *  primitives for the same reason.  A non-positive receiver is left to the
+ *  Smalltalk fallback, which raises in ln exactly as it always did.
+ */
+static int
+primitive_float_log10(void)
+{
+    double  value;
+
+    if (!float_value(ST_stack_value(0), &value))
+        return 0;
+    if (!(value > 0.0))
+        return 0;
+    return answer_float(log10(value), 1);
 }
 
 static int
@@ -4949,8 +5318,11 @@ odbc_bind_value(int statement, int index, st_oop value)
     if (!OM_pointer_bit(value)) {
         /*
          *  Any other byte object: String, Symbol, ByteArray, and the
-         *  LargeNegativeInteger the caller has already turned into digits.
-         *  Bound as characters, which every database will convert from.
+         *  LargeNegativeInteger the caller has already turned into digits
+         *  -- see odbc_integer above for why the class is not named here,
+         *  and Odbc class>>statement:bind:to: for the caller that does the
+         *  turning.  Bound as characters, which every database converts
+         *  from.
          */
         char   *text;
         int     ok;
@@ -5407,6 +5779,7 @@ ST_primitive_dispatch(unsigned index)
     case 197: return primitive_find_next_handler();
     case 246: return primitive_context_return();
     case 248: return primitive_report_on_standard_error();
+    case 239: return primitive_note_unhandled_error();
     case 241: return primitive_active_process();
     case 243: return primitive_active_worker_index();
     case 244: return primitive_worker_count();
@@ -5414,6 +5787,8 @@ ST_primitive_dispatch(unsigned index)
     case 251: return primitive_context_restart();
     case 252: return primitive_remove_ready_process();
     case 253: return primitive_first_ready_process_at();
+    case 231: return SCHED_primitive_detach();
+    case 232: return SCHED_primitive_terminate_active();
     case 250: return primitive_full_collect();
     case 247: return primitive_context_resume();
 
@@ -5465,6 +5840,7 @@ ST_primitive_dispatch(unsigned index)
     case 225: return primitive_float_tan();
     case 226: return primitive_float_arc_sin();
     case 227: return primitive_float_arc_cos();
+    case 233: return primitive_float_log10();
     case 229: return primitive_float_raised_to();
     case 228: return primitive_compile_method();
     /*  Told apart by arity; see primitive_last_error.  */
@@ -5618,6 +5994,7 @@ static const primitive_entry primitive_table[] = {
     { 225, ST_PRIM_PRESENT,  "Float tan -- ours; no Blue Book number" },
     { 226, ST_PRIM_PRESENT,  "Float arcSin -- ours; no Blue Book number" },
     { 227, ST_PRIM_PRESENT,  "Float arcCos -- ours; no Blue Book number" },
+    { 233, ST_PRIM_PRESENT,  "Float log -- log10; ours, no Blue Book number" },
     { 229, ST_PRIM_PRESENT,  "Float raisedTo: -- ours; no Blue Book number" },
     { 228, ST_PRIM_PRESENT,  "Compiler class compile -- ours"    },
     { 132, ST_PRIM_PRESENT,  "Object instVarsInclude:"          },
@@ -5671,6 +6048,7 @@ static const primitive_entry primitive_table[] = {
     { 247, ST_PRIM_PRESENT,  "ContextPart resume: -- this system's own"  },
     { 248, ST_PRIM_PRESENT,  "Object reportOnStandardError -- this "
                              "system's own"                     },
+    { 239, ST_PRIM_PRESENT,  "Error noteUnhandled -- this system's own" },
     { 251, ST_PRIM_PRESENT,  "ContextPart restartAndJump -- this system's "
                              "own"                              },
     { 252, ST_PRIM_PRESENT,  "Processor primRemoveReadyProcess: -- ours" },

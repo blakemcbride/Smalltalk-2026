@@ -734,27 +734,24 @@ static void
 test_dynamic_arrays(void)
 {
     /*
-     *  { } is code, not a literal: build an Array and fill it, one dup /
-     *  index / value / at:put: / pop per element.  205 is new:, 193 is
-     *  at:put:, both one-byte special selectors.
+     *  { } is code, not a literal: push every element, then bytecode 138
+     *  with the top bit of its operand set -- "push a new Array of n,
+     *  taking the n elements off the stack".  It used to be `Array new: n'
+     *  and a dup / index / value / at:put: / pop per element, which spent
+     *  a literal on every index from 3 up and compiled the elements twice
+     *  to learn n before pushing it (Bugs3 B30); the shape here is the one
+     *  Squeak and Pharo emit and the interpreter had all along.
      */
     CHECK_CODE("foo ^{ }", "an empty dynamic array",
-               64, 117, 205, 124);
+               138, 128, 124);
     CHECK_CODE("foo ^{ 1. 2 }", "two elements",
-               64, 119, 205,
-               136, 118, 118, 193, 135,
-               136, 119, 119, 193, 135,
-               124);
+               118, 119, 138, 130, 124);
     /*  A trailing period is allowed and does not add an element.  */
     CHECK_CODE("foo ^{ 1. }", "a trailing period",
-               64, 118, 205,
-               136, 118, 118, 193, 135,
-               124);
+               118, 138, 129, 124);
     /*  Elements are expressions, which is the whole point.  */
     CHECK_CODE("foo ^{ 1 + 2 }", "an expression element",
-               64, 118, 205,
-               136, 118, 118, 119, 176, 193, 135,
-               124);
+               118, 119, 176, 138, 129, 124);
     /*
      *  A negative literal directly after the brace.  The lexer decides
      *  whether '-' starts a number by what came before it, so the opening
@@ -762,9 +759,7 @@ test_dynamic_arrays(void)
      *  left operand and the failure surfaces somewhere else entirely.
      */
     CHECK_CODE("foo ^{ -1 }", "a negative first element",
-               64, 118, 205,
-               136, 118, 116, 193, 135,
-               124);
+               116, 138, 129, 124);
 }
 
 static void

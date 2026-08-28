@@ -25,6 +25,12 @@ Interval>>hash follows the same body, and must: `#(1 2 3) = (1 to: 3)' is
 true, so the two have to agree.  1983's Interval>>hash deliberately copied
 1983's Array>>hash for that reason, which was correct reasoning about the
 wrong function, and the two are still one function now.
+
+That one function walks every element up to thirty-two of them and samples
+sixteen beyond that (Bugs3 B33), so that an Interval of a million elements
+-- which is equal to the Array of them and has to hash as one -- costs the
+same as an Array of sixteen.  SequenceableCollection>>hash says why that is
+the right trade and what it gives up.
 "
 Extension { #name : 'Array' }
 

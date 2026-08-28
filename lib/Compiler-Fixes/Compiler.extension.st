@@ -213,6 +213,15 @@ Compiler >> evaluate: textOrStream in: aContext to: receiver notifying: aRequest
 	 the honest cost of the exception and is written down rather than
 	 discovered.
 
+	 The fallback is basicEvaluate:in:to:notifying:ifFail: below, and not
+	 `super': this method REPLACES the one of the same name in the same
+	 method dictionary -- lib/Concurrency's, which is 1983's -- so super
+	 here is Object, which has no such method, and every `do it' in a
+	 Debugger's code pane was a doesNotUnderstand on the Compiler itself
+	 (Bugs3 B62).  An override in lib/ that wants the body it replaced has
+	 to keep that body under another selector; there is no other way to
+	 reach it.
+
 	 Running the method with primitive 188 rather than installing it under
 	 #DoIt is lib/Concurrency's fix and is kept: one slot in one method
 	 dictionary shared by every evaluation in the image is a race in three
@@ -220,8 +229,8 @@ Compiler >> evaluate: textOrStream in: aContext to: receiver notifying: aRequest
 
 	| answer method |
 	aContext == nil ifFalse: [
-		^super
-			evaluate: textOrStream
+		^self
+			basicEvaluate: textOrStream
 			in: aContext
 			to: receiver
 			notifying: aRequestor
@@ -239,4 +248,32 @@ Compiler >> evaluate: textOrStream in: aContext to: receiver notifying: aRequest
 		^failBlock value].
 	Cursor normal show.
 	^receiver withArgs: #() executeMethod: method
+]
+
+{ #category : '*Compiler-Fixes' }
+Compiler >> basicEvaluate: textOrStream in: aContext to: receiver notifying: aRequestor ifFail: failBlock [
+	"1983's evaluate:in:to:notifying:ifFail: as lib/Concurrency rewrote
+	 it, kept here verbatim under its own selector because the method
+	 above overwrote it and still needs it for the one case the C
+	 compiler cannot take, a doIt in a context (Bugs3 B62).  The image's
+	 own Parser, Encoder and code generator, which know how to bind a
+	 context's temporaries: `class' is the context's receiver's class,
+	 the text is translated with noPattern: true into a method of one
+	 argument, and the method is run on receiver with the context as that
+	 argument -- primitive 188, withArgs:executeMethod:, rather than
+	 installed as #DoItIn: and removed, since one slot in one method
+	 dictionary shared by every worker's evaluations is the race
+	 lib/Concurrency's comment describes.  Not 1983's DoItIn: text for
+	 that reason alone; every other line is 1983's."
+	| methodNode method value |
+	Cursor execute show.
+	class := (aContext == nil ifTrue: [receiver] ifFalse: [aContext receiver]) class.
+	self from: textOrStream class: class context: aContext notifying: aRequestor.
+	methodNode := self translate: sourceStream noPattern: true ifFail: [^failBlock value].
+	method := methodNode generate: #(0 0 0).
+	value := aContext == nil
+		ifTrue: [receiver withArgs: #() executeMethod: method]
+		ifFalse: [receiver withArgs: (Array with: aContext) executeMethod: method].
+	Cursor normal show.
+	^value
 ]

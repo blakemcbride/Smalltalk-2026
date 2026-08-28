@@ -378,22 +378,169 @@ Float >> hash [
 	 +0.0 and -0.0 are equal and their representations differ, which the
 	 integral arm settles: both truncate to 0.
 
-	 WHAT IS STILL NOT FIXED, and why it is not fixed here.  Comparing an
-	 Integer with a Float coerces the Integer, so
-	 `(2 raisedTo: 70) + 1 = (2 raisedTo: 70) asFloat' is TRUE -- the
-	 Integer rounds to the same double -- while the two hash differently,
-	 because one hashes as itself and the other as 2^70.  Making those
-	 agree means making = compare EXACTLY rather than by coercion, which is
-	 a change to Number>>retry:coercing: and to what the Blue Book says
-	 arithmetic between representations means.  That is a decision about
-	 the numeric tower and not about hashing, so it is named here rather
-	 than made here.
+	 WHAT WAS STILL NOT FIXED when this was first written, and is now.
+	 Comparing an Integer with a Float used to coerce the Integer, so
+	 `(2 raisedTo: 70) + 1 = (2 raisedTo: 70) asFloat' was TRUE -- the
+	 Integer rounded to the same double -- while the two hashed
+	 differently, because one hashed as itself and the other as 2^70.
+	 Making those agree meant making = compare EXACTLY rather than by
+	 coercion, a change to Number>>retry:coercing: and to what the Blue
+	 Book says arithmetic between representations means; it was named here
+	 rather than made here because it is a decision about the numeric tower
+	 and not about hashing.  Bugs3 B36 made it: a relational selector
+	 between a Float and an Integer or Fraction is now decided on the
+	 Float's exact value (see Number>>compare:exactlyWith:), so a Float is
+	 equal to an Integer only when it IS that integer, and the integral arm
+	 above is then the whole of what agreement needs.
+
+	 The arm for a Float WITH a fractional part is Bugs3 B33's.  1983's
+	 `(self basicAt: 1) bitAnd: 16383' read the first sixteen-bit word of
+	 the representation -- the sign, the eleven exponent bits and the top
+	 four bits of the mantissa -- so every Float between 0.5 and 1.0 hashed
+	 to one of sixteen values, and a Set of twenty thousand Floats in (0, 1)
+	 took sixty-four seconds to build where the same twenty thousand
+	 Integers took a tenth of one.  JSON numbers with a decimal point are
+	 Floats, so a service keying a Dictionary by them was quadratic.  All
+	 four words are read now: the low thirty-two bits, where nearby Floats
+	 differ most, are scrambled by an odd constant and shifted so that every
+	 one of them reaches the bits a bucket is chosen by, and the high
+	 thirty-two -- sign, exponent, top mantissa -- are folded over that.
+	 The multiplier is thirty bits so that the product of a thirty-two bit
+	 word and it stays inside a SmallInteger, which is what keeps this a
+	 handful of arithmetic bytecodes rather than LargeInteger sends.  The
+	 answer is masked to thirty-two bits, the width every other hash in the
+	 library answers, and Set>>findElementOrNil: does the final mixing
+	 before it picks a bucket.
 
 	 A NaN or an infinity has no integer and no useful bits; they answer
 	 zero and collide, which is what a hash may always do."
+	| low |
 	self isFinite ifFalse: [^0].
 	self fractionPart = 0.0 ifTrue: [^self truncated hash].
-	^(self basicAt: 1) bitAnd: 16383
+	low := ((self basicAt: 3) bitShift: 16) + (self basicAt: 4).
+	^((low * 16r2545F491 bitShift: -16)
+		bitXor: (((self basicAt: 1) bitShift: 16) + (self basicAt: 2)))
+			bitAnd: 16rFFFFFFFF
+]
+
+{ #category : '*Kernel-Protocol' }
+Float >> rounded [
+	"The integer nearest me, halves rounding away from zero.
+
+	 1983's is `(self + 0.5) truncated', and the addition ROUNDS before the
+	 truncation gets to look (Bugs3 B38).  0.49999999999999994 is the
+	 largest double below one half, and 0.49999999999999994 + 0.5 is
+	 exactly 1.0 in double arithmetic, so it rounded to 1 while being less
+	 than a half.  At the other end 4503599627370497.0 is an integer -- it
+	 has no fractional part at all -- and 2^52 + 1 + 0.5 is not
+	 representable, so the sum rounded to even and `rounded' answered
+	 4503599627370498 for a number that was already whole.  Every
+	 operation below is exact: truncated is, fractionPart is `self -
+	 self truncated' computed by the primitive with no rounding, and the
+	 comparison against 0.5 loses nothing.
+
+	 Halves go away from zero, which is what 1983 meant and what
+	 Number>>rounded does for a Fraction: 0.5 rounded is 1 and -0.5
+	 rounded is -1.  Number>>rounded is left alone for Fractions, because
+	 `(self + (self sign / 2)) truncated' is exact arithmetic there and
+	 already right.
+
+	 A NaN or an infinity has no nearest integer; truncated says so."
+	| truncated |
+	truncated := self truncated.
+	^self fractionPart abs >= 0.5
+		ifTrue: [truncated + self sign]
+		ifFalse: [truncated]
+]
+
+{ #category : '*Kernel-Protocol' }
+Float >> abs [
+	"My magnitude, with the sign bit off.
+
+	 Number>>abs is `self < 0 ifTrue: [self negated]', and -0.0 is not less
+	 than zero, so `-0.0 abs' answered -0.0 (Bugs3 B41) -- a magnitude
+	 that prints with a minus sign, and a value whose reciprocal is
+	 negative infinity.  The equality test catches it, because -0.0 = 0.0
+	 is true and the two zeros are the only Floats that are equal and
+	 differ, and the answer for either is the positive one.  A NaN is
+	 neither equal to zero nor below it and comes back unchanged, which is
+	 what every abs of a NaN does."
+	self = 0.0 ifTrue: [^0.0].
+	^self < 0.0 ifTrue: [self negated] ifFalse: [self]
+]
+
+{ #category : '*Kernel-Protocol' }
+Float >> asExactFraction [
+	"The Integer or Fraction that is EXACTLY my value, not the nearest one.
+
+	 A double is an integer of at most fifty-three bits times a power of
+	 two and nothing else, so every finite Float has one: exponent answers
+	 the e in `self = m * 2^e with 1 <= |m| < 2', scaling by 2^(52 - e)
+	 makes the mantissa a whole number below 2^53 -- which fits a
+	 SmallInteger, so truncated takes the primitive and is exact -- and the
+	 power of two goes back as a shift or a denominator.  Nothing here
+	 rounds.
+
+	 This is what Number>>compare:exactlyWith: compares against (Bugs3
+	 B36): the exact value, rather than the Integer rounded to a double.
+	 1983's asFraction is a continued-fraction APPROXIMATION that stops at
+	 a denominator of ten thousand, which is a different question -- it
+	 answers 1/3 for 0.3333333333333333 -- and it stays as it is.
+
+	 An infinity or a NaN has no value to answer, and says so."
+	| exponent mantissa |
+	self isFinite ifFalse: [
+		^self error: (self isNaN
+			ifTrue: ['a NaN has no exact value']
+			ifFalse: ['an infinity has no exact value'])].
+	self = 0.0 ifTrue: [^0].
+	exponent := self exponent.
+	mantissa := (self timesTwoPower: 52 - exponent) truncated.
+	exponent >= 52 ifTrue: [^mantissa bitShift: exponent - 52].
+	^(Fraction numerator: mantissa denominator: (1 bitShift: 52 - exponent))
+		reduced
+]
+
+{ #category : '*Kernel-Protocol' }
+Float >> asExactNumberAgainst: aNumber [
+	"What I stand for in an exact comparison with aNumber, an Integer or a
+	 Fraction: my exact value when I have one, nil when I am a NaN, and for
+	 an infinity a number that is on my side of every number there is.
+
+	 An infinity is not an Integer or a Fraction and has no exact value,
+	 but the comparison can only ever see whether I am above or below the
+	 other side, and for that it is enough to stand in a number of my sign
+	 that is farther from zero than aNumber is: aNumber abs + 1.  Every
+	 relational selector then answers exactly what it would for the
+	 infinity itself -- greater than everything, equal to nothing -- and
+	 the six selectors need no six-way case.  See Number>>compare:
+	 exactlyWith:, which is the only sender."
+	self isNaN ifTrue: [^nil].
+	self isFinite ifTrue: [^self asExactFraction].
+	^self > 0.0
+		ifTrue: [aNumber abs + 1]
+		ifFalse: [(aNumber abs + 1) negated]
+]
+
+{ #category : '*Kernel-Protocol' }
+Float >> log [
+	"My base-ten logarithm, through the machine's own log10.
+
+	 1983 derives it: `self ln / 10.0 ln', two correctly rounded numbers
+	 whose quotient is not, so `1000.0 log' answered 2.9999999999999996 and
+	 `1000 log' with it (Bugs3 B39) -- a wrong answer in the one place a
+	 base-ten logarithm is asked for, which is to count digits.  Primitive
+	 231 is this system's own number, beside cos, tan, arcSin and arcCos,
+	 which are primitives for the same reason.  The fallback is 1983's
+	 derivation, for a receiver the primitive somehow declines; a
+	 non-positive one raises in ln exactly as it always did."
+	<primitive: 233>
+	^self ln / 10.0 ln
+]
+
+{ #category : '*Kernel-Protocol' }
+Float >> isFloat [
+	^true
 ]
 
 { #category : '*Kernel-Protocol' }
@@ -424,4 +571,40 @@ Float >> primRaisedTo: aFloat [
 	aFloat = 0 ifTrue: [^1].
 	aFloat = 1 ifTrue: [^self].
 	^(aFloat * self ln) exp
+]
+
+{ #category : '*Kernel-Protocol' }
+Float >> storeOn: aStream [
+	"A form the compiler reads back as me -- which, for an infinity or a
+	 NaN, printString is not.
+
+	 Number>>storeOn: prints, and primitive 255 prints an infinity as `inf'
+	 and a NaN as `nan', which are fine to look at and are not literals:
+	 read back, each is an undeclared variable, so `Compiler evaluate:
+	 (1.0e308 * 10) storeString' answered nil and left `inf' in Undeclared
+	 for the life of the image.  Bugs3 B32.  The three are stored as the
+	 expressions that make them, which Float class>>infinity and nan
+	 answer; printString keeps its spelling, because printing is for
+	 looking at and this is for reading back.  Every finite Float prints
+	 as a literal already (see printOn:) and is stored as it prints."
+	self isNaN ifTrue: [^aStream nextPutAll: 'Float nan'].
+	self isFinite ifFalse:
+		[^aStream nextPutAll: (self > 0
+			ifTrue: ['Float infinity']
+			ifFalse: ['Float infinity negated'])].
+	self printOn: aStream
+]
+
+{ #category : '*Kernel-Protocol' }
+Float >> isLiteral [
+	"Whether I can be written into source as I print.
+
+	 1983 answers true for every Float, and Array>>storeOn: believes it:
+	 an Array whose elements are all literals is stored as `#( ... )' with
+	 each element PRINTED inside, so `(Array with: Float infinity)
+	 storeString' was `#(inf )', which reads as an Array holding the
+	 Symbol #inf.  An infinity and a NaN have no literal spelling -- see
+	 storeOn: -- so they answer false here, and the Array falls back to the
+	 general form, which stores each element with storeOn:.  Bugs3 B32."
+	^self isFinite
 ]

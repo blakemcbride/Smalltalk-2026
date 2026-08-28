@@ -29,3 +29,35 @@ Stream >> nl [
 	 what a Unix file wants, so that the two are never confused."
 	self nextPut: Character nl
 ]
+
+{ #category : '*Streams-Protocol' }
+Stream >> space: anInteger [
+	"That many spaces, for any stream that can write one.
+
+	 Squeak's and Pharo's name for a column of padding, and missing here:
+	 the singular space is 1983's, on WriteStream, and every stream that
+	 answers it answers this (Bugs3 B51)."
+	anInteger timesRepeat: [self space]
+]
+
+{ #category : '*Streams-Protocol' }
+Stream >> tab: anInteger [
+	"That many tabs, as space: is that many spaces."
+	anInteger timesRepeat: [self tab]
+]
+
+{ #category : '*Streams-Protocol' }
+Stream >> display: anObject [
+	"Write anObject's display form -- the text a person reads, without a
+	 String's quotes or a Symbol's hash -- the way print: writes its
+	 printed form.
+
+	 The manual has shown `Transcript display: 42; cr' since its streams
+	 chapter was written, and the image had print: and << but not this
+	 name, so the example was a doesNotUnderstand (Bugs3 B64).  It is the
+	 ANSI name and Pharo's, and it is what << does when the argument has
+	 nothing better to say; it is spelled out here because a cascade wants
+	 a keyword.  Not displayOn: -- that selector is the graphics one, and a
+	 Form asked to displayOn: a stream would try to draw itself on it."
+	self nextPutAll: anObject displayString
+]

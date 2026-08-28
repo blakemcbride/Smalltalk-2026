@@ -81,8 +81,11 @@ that is the whole difference between the two servers above.
 \ct{at:put:} maps a path to a handler---a block taking the request, or any
 object answering \ct{handle:} with an \ct{HttpResponse}. The match is exact.
 A path no handler claims is looked for under the document root, and is 404
-otherwise. \ct{stop} closes the listener; connections in flight finish what
-they are doing.
+otherwise. A path with a \ct{..} segment in it is 403, and so is a file whose
+real name---every dot segment and every symbolic link resolved---is not under
+the root, since a link inside the root that points out of it leaves nothing in
+the path to see. \ct{stop} closes the listener; connections in flight finish
+what they are doing.
 
 A port of 0 asks the system for one, and \ct{server port} answers it once the
 server has started, which is how the tests avoid stepping on each other.
@@ -113,7 +116,14 @@ HttpResponse error: 404 reason: 'not here'.
 \end{st}
 
 \ct{Content-Length} is always sent and the body is always whole, so a client
-knows where a response ends and the connection can carry the next request.
+knows where a response ends and the connection can carry the next request. A
+\ct{HEAD} is answered with everything the \ct{GET} would have sent except the
+bytes, so its \ct{Content-Length} is the length of the file it asked about.
+
+A header value holding a carriage return, a line feed or a NUL raises, and so
+does a header name holding whitespace or a colon. A handler that copies a
+request parameter into a \ct{Location} therefore gets a 500 and a line on
+standard error, rather than a reply carrying a second header the client wrote.
 
 \begin{stnote}[What the parser refuses]
 The stream is a stranger's, so every reading is bounded. A line over 8,192
@@ -121,9 +131,15 @@ bytes, more than a hundred headers, a body over the server's limit (64 MB
 unless \ct{maxRequestBytes:} says otherwise) are refused before they are
 read, each with its own status; a body with no declared length---chunked---is
 refused with 411, because a JSON-RPC client always knows how long its document
-is. A handler that raises \ct{HttpError} answers with that status; a handler
-that raises anything else answers 500, and the fault goes to standard error,
-not to the client.
+is. Framing is strict for the same reason the documents are: a line ended by a
+bare line feed, a field name with whitespace in it, a second
+\ct{Content-Length}, a \ct{Content-Length} that is not all digits, a
+\ct{Transfer-Encoding} beside a \ct{Content-Length}, and a malformed percent
+escape in the target are each 400---a proxy in front that divided those bytes
+differently would be a second opinion about where one request ends. A handler
+that raises \ct{HttpError} answers with that status; a handler that raises
+anything else answers 500, and the fault goes to standard error, not to the
+client.
 \end{stnote}
 
 \subsection{Another port is another origin}

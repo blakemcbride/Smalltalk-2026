@@ -38,15 +38,52 @@ method the class has and the file does not is removed, on either side.  That
 is what makes editing the file and saving it a complete edit rather than an
 additive one.
 
+WHAT A MISTAKE IN THE FILE DOES: nothing.  Every method is compiled before
+any is installed and before any is removed, so a file with a syntax error in
+its last method changes no class, and the TonelError names the file, the
+method and the character.  This is not what the comment on `load' used to
+promise -- it said the file was parsed to the end first, which was true, and
+then defined the class and compiled method by method into it, so a bad
+seventh method left a class with six (Bugs3 B63).  A new class is defined,
+its methods compiled against it, and the class taken out again if one of
+them fails; a class being redefined into the same shape has the new methods
+compiled against the class it is, installed only when all of them compiled;
+and a class being redefined into a NEW shape -- an instance variable added
+-- has them compiled first against a scratch class of that shape, defined
+under a name with `ScratchForTonel' on the end and removed before anything
+is said, because a method that names a new variable cannot be compiled
+against the old class and the old class cannot be reshaped without changing
+the image.  The last case is the one place the promise is weaker than
+`nothing': the reshaping itself can be refused by 1983's own rules, and is,
+before any method is touched.
+
+WHAT A FILE OWNS.  A Class file is the whole truth about the class's OWN
+methods -- the ones in categories that do not begin with a star.  A starred
+category names another package, `*Concurrency', or a trait the loader
+flattened in, `*trait:TGreeting', and those methods have files of their own,
+so a reload of the class file leaves them alone; before it did not, and
+reloading any class another package had extended stripped the extension.  An
+Extension file is the whole truth about the class's methods under ITS
+categories, the ones it used, and a method it no longer has is removed from
+those.
+
+A file that names a trait in its header is refused.  The bootstrap flattens
+traits from the trait's source, which it keeps in C and frees when the image
+is built; nothing in the image has it, so this reader could only define the
+class without the trait's methods and say nothing, which is the outcome the
+refusal replaces.
+
 Line endings: the file holds line feeds, or carriage return and line feed;
 the image holds carriage returns and nothing else will do (see
 lib/Files-Fixes).  The text is translated once, up front, before anything is
-parsed.
+parsed; a UTF-8 byte-order mark at the front is dropped at the same time,
+since the type word was read from the first byte and a file some editor had
+marked was `not a Tonel file' (Bugs3 B63).
 "
 Class {
 	#name : 'TonelReader',
 	#superclass : 'Object',
-	#instVars : [ 'text', 'position', 'path', 'definedClass', 'selectorsSeen', 'classSelectorsSeen', 'currentSource', 'currentLine' ],
+	#instVars : [ 'text', 'position', 'path', 'definedClass', 'fileType', 'fileComment', 'categoriesRead', 'currentSource', 'currentLine' ],
 	#category : 'Tonel'
 }
 
@@ -54,13 +91,20 @@ Class {
 TonelReader class >> loadFile: pathString [
 	"Read the Tonel file at pathString into the image.  Answer the class it
 	 defines, or the class an Extension adds to, or nil for a Package file."
+	^(self onFile: pathString) load
+]
 
+{ #category : 'loading' }
+TonelReader class >> onFile: pathString [
+	"A reader holding the text of the file at pathString, not yet loaded:
+	 for TonelSource, which sends it load and then asks what kind of file
+	 it was and what the file said about itself."
 	| dir name file stream contents |
 	dir := FileDirectory directoryFromName: pathString setFileName: [:n | name := n].
 	file := dir findKey: name.
 	stream := file asFileStream.
 	[contents := stream contentsOfEntireFile] ensure: [stream close].
-	^self loadString: contents named: pathString
+	^self new setText: contents path: pathString
 ]
 
 { #category : 'loading' }
@@ -72,12 +116,20 @@ TonelReader class >> loadString: aString named: pathString [
 { #category : 'private' }
 TonelReader >> setText: aString path: pathString [
 	"Translate every line ending to the carriage return before anything
-	 else looks at the text, as the C reader does per method."
+	 else looks at the text, as the C reader does per method; and drop a
+	 UTF-8 byte-order mark, the three bytes EF BB BF some editors put in
+	 front of the first character, which read as a type word of no
+	 letters and made the file `not a Tonel file'.  The C reader skips
+	 the same three bytes (src/compiler/tonel.c)."
 	| out i c lf cr |
 	lf := Character value: 10.
 	cr := Character cr.
 	out := WriteStream on: (String new: aString size).
 	i := 1.
+	(aString size >= 3
+		and: [(aString at: 1) value = 239
+		and: [(aString at: 2) value = 187
+		and: [(aString at: 3) value = 191]]]) ifTrue: [i := 4].
 	[i <= aString size] whileTrue: [
 		c := aString at: i.
 		(c = cr and: [i < aString size and: [(aString at: i + 1) = lf]])
@@ -88,13 +140,46 @@ TonelReader >> setText: aString path: pathString [
 	text := out contents.
 	position := 1.
 	path := pathString.
-	selectorsSeen := Set new.
-	classSelectorsSeen := Set new
+	categoriesRead := Set new
 ]
 
 { #category : 'accessing' }
 TonelReader >> definedClass [
 	^definedClass
+]
+
+{ #category : 'accessing' }
+TonelReader >> fileType [
+	"'Class', 'Extension' or 'Package', once the header has been read."
+	^fileType
+]
+
+{ #category : 'accessing' }
+TonelReader >> fileComment [
+	"The comment at the top of the file, or nil.  For a Class file that is
+	 the class comment; for an Extension file it belongs to the file and
+	 nothing in the image keeps it, so TonelSource does, for the writer."
+	^fileComment
+]
+
+{ #category : 'accessing' }
+TonelReader >> categoriesRead [
+	"The categories the file's methods were under."
+	^categoriesRead
+]
+
+{ #category : 'accessing' }
+TonelReader >> packageName [
+	"For a Package file, the name it declares; nil for any other kind.
+	 Reads the header and no further: how TonelSource learns the name
+	 of the package an extension file sits in."
+	| type header |
+	self readComment.
+	self skipSeparators.
+	type := self readWord.
+	type = 'Package' ifFalse: [^nil].
+	header := self readSton.
+	^header at: 'name' ifAbsent: [nil]
 ]
 
 { #category : 'private - scanning' }
@@ -332,20 +417,56 @@ TonelReader >> selectorOf: source [
 ]
 
 { #category : 'private - methods' }
-TonelReader >> compile: aMethodArray [
-	"Compile one method read by readMethodClassified:, through the layer
-	 below the write-back hook, with this reader as the compiler's
-	 requestor so that an error is a TonelError and not a window."
-	| target classSide selector |
-	target := Smalltalk at: (aMethodArray at: 1) asSymbol
-		ifAbsent: [^self fail: (aMethodArray at: 1), ' is not a class in this image'].
-	classSide := aMethodArray at: 2.
-	classSide ifTrue: [target := target class].
+TonelReader >> targetOf: aMethodArray substituting: aClassOrNil for: aSymbol [
+	"The class or metaclass a method read by readMethodClassified: is
+	 for, with aClassOrNil standing in for the class named aSymbol -- the
+	 scratch class of a reshaping, or nil when there is none."
+	| target |
+	target := ((aMethodArray at: 1) asSymbol = aSymbol and: [aClassOrNil notNil])
+		ifTrue: [aClassOrNil]
+		ifFalse: [Smalltalk at: (aMethodArray at: 1) asSymbol
+			ifAbsent: [^self fail: (aMethodArray at: 1), ' is not a class in this image']].
+	^(aMethodArray at: 2) ifTrue: [target class] ifFalse: [target]
+]
+
+{ #category : 'private - methods' }
+TonelReader >> compile: aMethodArray for: aBehavior [
+	"Compile one method read by readMethodClassified: for aBehavior WITHOUT
+	 installing it, with this reader as the compiler's requestor so that
+	 an error is a TonelError and not a window.  Answer an Array of what
+	 install: needs: the behavior, the selector, the CompiledMethod, the
+	 source and the category."
+	| selector method |
 	currentSource := aMethodArray at: 4.
 	currentLine := aMethodArray at: 5.
-	selector := target basicCompile: currentSource classified: (aMethodArray at: 3) notifying: self.
-	selector isNil ifTrue: [^self fail: 'could not compile ', (self selectorOf: currentSource) printString].
-	(classSide ifTrue: [classSelectorsSeen] ifFalse: [selectorsSeen]) add: selector
+	aBehavior
+		compileOnly: currentSource
+		notifying: self
+		trailer: #(0 0 0)
+		ifFail: [^self fail: 'could not compile ', (self selectorOf: currentSource) printString]
+		into: [:sel :m | selector := sel. method := m].
+	^Array with: aBehavior with: selector with: method with: currentSource with: (aMethodArray at: 3)
+]
+
+{ #category : 'private - methods' }
+TonelReader >> compileAll: methods substituting: aClassOrNil for: aSymbol [
+	"Every method in the file compiled and none installed, in the file's
+	 order; the first that does not compile raises, and the image is as
+	 it was."
+	^methods collect: [:each |
+		self compile: each for: (self targetOf: each substituting: aClassOrNil for: aSymbol)]
+]
+
+{ #category : 'private - methods' }
+TonelReader >> installAll: compiledMethods [
+	"Install what compileAll:substituting:for: answered, through the layer
+	 below the write-back hook."
+	compiledMethods do: [:each |
+		(each at: 1)
+			basicInstall: (each at: 3)
+			selector: (each at: 2)
+			source: (each at: 4)
+			classified: (each at: 5)]
 ]
 
 { #category : 'compiler requestor' }
@@ -416,10 +537,18 @@ TonelReader >> text [
 ]
 
 { #category : 'private - definitions' }
-TonelReader >> define: header comment: commentOrNil [
-	"Make, or remake, the class the header describes."
-	| name superName superclass ivars cvars civars pools type category existed |
-	name := header at: 'name' ifAbsent: [^self fail: 'a Tonel class has no #name'].
+TonelReader >> define: header comment: commentOrNil as: aSymbol [
+	"Make, or remake, the class the header describes, under the name
+	 aSymbol -- the header's own, or the scratch name a reshaping compiles
+	 against first.  Answer the class.
+
+	 Through the definition messages below the write-back hook, and never
+	 through subclass:..., because a load holds TonelSource's lock and the
+	 hook wants it.  The two shapes the 1983 messages have no word for --
+	 weak and ephemeron -- are the variable and the plain shape with the
+	 bit set afterwards; lib/Kernel-Protocol's Class>>weakSubclass:... is
+	 the same thing for the Browser."
+	| superName superclass ivars cvars civars pools type category class |
 	superName := header at: 'superclass' ifAbsent: ['nil'].
 	superclass := superName = 'nil' ifTrue: [nil] ifFalse: [
 		Smalltalk at: superName asSymbol ifAbsent: [^self fail: superName, ' is not a class in this image']].
@@ -430,21 +559,62 @@ TonelReader >> define: header comment: commentOrNil [
 	type := header at: 'type' ifAbsent: ['normal'].
 	category := header at: 'category' ifAbsent: [header at: 'package' ifAbsent: ['Unclassified']].
 	superclass isNil ifTrue: [^self fail: 'a class with no superclass cannot be made at run time'].
-	existed := Smalltalk includesKey: name asSymbol.
-	definedClass := type = 'bytes'
-		ifTrue: [superclass variableByteSubclass: name asSymbol instanceVariableNames: ivars
+	class := type = 'bytes'
+		ifTrue: [superclass variableByteSubclass: aSymbol instanceVariableNames: ivars
 					classVariableNames: cvars poolDictionaries: pools category: category]
 		ifFalse: [type = 'variable'
-			ifTrue: [superclass variableSubclass: name asSymbol instanceVariableNames: ivars
+			ifTrue: [superclass variableSubclass: aSymbol instanceVariableNames: ivars
 					classVariableNames: cvars poolDictionaries: pools category: category]
 			ifFalse: [type = 'words'
-				ifTrue: [superclass variableWordSubclass: name asSymbol instanceVariableNames: ivars
+				ifTrue: [superclass variableWordSubclass: aSymbol instanceVariableNames: ivars
 					classVariableNames: cvars poolDictionaries: pools category: category]
-				ifFalse: [superclass basicSubclass: name asSymbol instanceVariableNames: ivars
-					classVariableNames: cvars poolDictionaries: pools category: category]]].
-	definedClass class instanceVariableNames: civars.
-	commentOrNil notNil ifTrue: [definedClass comment: commentOrNil].
-	^existed
+				ifFalse: [type = 'weak'
+					ifTrue: [superclass weakSubclass: aSymbol instanceVariableNames: ivars
+						classVariableNames: cvars poolDictionaries: pools category: category]
+					ifFalse: [
+						(type = 'normal' or: [type = 'ephemeron'])
+							ifFalse: [^self fail: 'a #type of ', type printString, ' cannot be made at run time'].
+						class := superclass basicSubclass: aSymbol instanceVariableNames: ivars
+							classVariableNames: cvars poolDictionaries: pools category: category.
+						type = 'ephemeron' ifTrue: [class beEphemeron].
+						class]]]].
+	"The definition messages carry a weak or ephemeron bit the class
+	 already has (Behavior>>format:variable:words:pointers:); a header
+	 that no longer asks for one is obeyed."
+	(type = 'weak' or: [type = 'ephemeron']) ifFalse: [class beStrong].
+	class class instanceVariableNames: civars.
+	commentOrNil notNil ifTrue: [class comment: commentOrNil].
+	^class
+]
+
+{ #category : 'private - definitions' }
+TonelReader >> header: header describesShapeOf: aClass [
+	"Whether the header asks for exactly the shape aClass has: the same
+	 superclass, instance, class and class-instance variables, pools and
+	 #type.  When it does, the file's methods can be compiled against the
+	 class as it is and installed with nothing redefined first."
+	| superName type wanted |
+	superName := header at: 'superclass' ifAbsent: ['nil'].
+	(aClass superclass notNil and: [aClass superclass name = superName]) ifFalse: [^false].
+	(self namesFrom: (header at: 'instVars' ifAbsent: [header at: 'slots' ifAbsent: [#()]]))
+		= (self namesFrom: aClass instVarNames) ifFalse: [^false].
+	(self sortedNamesFrom: (header at: 'classVars' ifAbsent: [#()]))
+		= (self sortedNamesFrom: aClass classVarNames) ifFalse: [^false].
+	(self namesFrom: (header at: 'classInstVars' ifAbsent: [#()]))
+		= (self namesFrom: aClass class instVarNames) ifFalse: [^false].
+	(self sortedNamesFrom: (header at: 'pools' ifAbsent: [#()]))
+		= (self sortedNamesFrom: (aClass sharedPools collect: [:pool | Smalltalk keyAtValue: pool]))
+			ifFalse: [^false].
+	type := header at: 'type' ifAbsent: ['normal'].
+	wanted := type = 'normal' ifTrue: [nil] ifFalse: [type].
+	^(TonelWriter typeOf: aClass) = wanted
+]
+
+{ #category : 'private - definitions' }
+TonelReader >> sortedNamesFrom: aCollection [
+	"The names in a collection of Strings or Symbols, sorted, as one
+	 String, for comparing two sets of them."
+	^self namesFrom: (aCollection collect: [:each | each asString]) asSortedCollection asArray
 ]
 
 { #category : 'private - definitions' }
@@ -459,9 +629,11 @@ TonelReader >> namesFrom: anArray [
 
 { #category : 'private - definitions' }
 TonelReader >> removeMethodsNotIn: methods from: aClass [
-	"The file is the whole truth about the class: what it no longer says,
-	 the class no longer has.  Done BEFORE the class is redefined, because
-	 a redefinition that drops a class variable refuses while a method still
+	"The file is the whole truth about the class's own methods: what it no
+	 longer says, the class no longer has.  A method in a starred category
+	 is another package's extension or a trait's, with a file of its own,
+	 and is left alone.  Done BEFORE the class is redefined, because a
+	 redefinition that drops a class variable refuses while a method still
 	 names it -- and that method is exactly the one the file dropped too.
 	 Through the layer below the write-back hook."
 	| keep classKeep |
@@ -471,27 +643,71 @@ TonelReader >> removeMethodsNotIn: methods from: aClass [
 		((m at: 1) = aClass name) ifTrue: [ | selector |
 			selector := self selectorOf: (m at: 4).
 			selector notNil ifTrue: [((m at: 2) ifTrue: [classKeep] ifFalse: [keep]) add: selector]]].
-	(aClass selectors reject: [:s | keep includes: s])
-		do: [:s | aClass basicRemoveSelector: s].
-	(aClass class selectors reject: [:s | classKeep includes: s])
-		do: [:s | aClass class basicRemoveSelector: s]
+	self removeFrom: aClass allBut: keep in: [:category | TonelWriter isOwnCategory: category].
+	self removeFrom: aClass class allBut: classKeep in: [:category | TonelWriter isOwnCategory: category]
+]
+
+{ #category : 'private - definitions' }
+TonelReader >> removeExtensionMethodsNotIn: methods from: aClass [
+	"An Extension file is the whole truth about the class's methods under
+	 the starred categories it used: a method in one of those that the
+	 file no longer has is removed.  Only the starred ones -- a plain
+	 category in an extension file is a mistake in the file, and taking
+	 the class's own methods away for it would be worse."
+	| keep classKeep mine |
+	keep := Set new.
+	classKeep := Set new.
+	methods do: [:m |
+		((m at: 1) = aClass name) ifTrue: [ | selector |
+			selector := self selectorOf: (m at: 4).
+			selector notNil ifTrue: [((m at: 2) ifTrue: [classKeep] ifFalse: [keep]) add: selector]]].
+	mine := [:category | (TonelWriter isOwnCategory: category) not and: [categoriesRead includes: category]].
+	self removeFrom: aClass allBut: keep in: mine.
+	self removeFrom: aClass class allBut: classKeep in: mine
+]
+
+{ #category : 'private - definitions' }
+TonelReader >> removeFrom: aBehavior allBut: selectors in: categoryBlock [
+	"Remove every method of aBehavior whose category categoryBlock accepts
+	 and whose selector is not in selectors."
+	| organization |
+	organization := aBehavior organization.
+	organization categories do: [:category |
+		(categoryBlock value: category asString) ifTrue: [
+			((organization listAtCategoryNamed: category) reject: [:s | selectors includes: s])
+				do: [:s | aBehavior basicRemoveSelector: s]]]
 ]
 
 { #category : 'loading' }
 TonelReader >> load [
-	"Read the whole file, then act on it: the file is parsed to the end
-	 before anything in the image changes, so a file with a mistake in
-	 its last method leaves the class as it was.  Answer the class defined
-	 or extended, or nil for a Package."
+	"Read the whole file, then act on it.  Answer the class defined or
+	 extended, or nil for a Package.  The class comment says what is
+	 promised: every method compiles before any is installed or removed."
 	| comment type header methods name |
 	comment := self readComment.
 	self skipSeparators.
 	type := self readWord.
 	type isEmpty ifTrue: [^self fail: 'not a Tonel file'].
 	header := self readSton.
+	fileType := type.
+	fileComment := comment.
 	type = 'Package' ifTrue: [^nil].
 	(type = 'Class' or: [type = 'Extension']) ifFalse: [^self fail: 'unknown Tonel type ', type].
 	name := header at: 'name' ifAbsent: [^self fail: 'a Tonel ', type, ' has no #name'].
+	methods := self readMethods.
+	methods do: [:each | categoriesRead add: (each at: 3)].
+	type = 'Class'
+		ifTrue: [self loadClass: header comment: comment methods: methods]
+		ifFalse: [self loadExtension: name asSymbol methods: methods].
+	^definedClass
+]
+
+{ #category : 'loading' }
+TonelReader >> readMethods [
+	"Every method after the header, each with the category of the
+	 `{ #category : ... }' before it, as readMethodClassified: answers
+	 them."
+	| methods |
 	methods := OrderedCollection new.
 	[self skipSeparators.
 	 self atEnd] whileFalse: [ | category |
@@ -500,14 +716,86 @@ TonelReader >> load [
 			category := (self readSton at: 'category' ifAbsent: ['']) asString.
 			self skipSeparators].
 		self atEnd ifFalse: [methods add: (self readMethodClassified: category)]].
-	type = 'Class'
-		ifTrue: [
-			(Smalltalk includesKey: name asSymbol)
-				ifTrue: [self removeMethodsNotIn: methods from: (Smalltalk at: name asSymbol)].
-			self define: header comment: comment]
-		ifFalse: [
-			definedClass := Smalltalk at: name asSymbol
-				ifAbsent: [^self fail: name asString, ' is not a class in this image']].
-	methods do: [:each | self compile: each].
-	^definedClass
+	^methods
+]
+
+{ #category : 'loading' }
+TonelReader >> loadClass: header comment: comment methods: methods [
+	"A Class file: new, or a redefinition into the same shape, or into a
+	 new one.  Each is arranged so that a method that will not compile
+	 changes nothing."
+	| name old traits |
+	name := (header at: 'name') asSymbol.
+	traits := header at: 'traits' ifAbsent: [nil].
+	(traits notNil and: [traits asString isEmpty not])
+		ifTrue: [^self fail: name, ' names a trait, and only the bootstrap can flatten one: load it through a profile'].
+	old := Smalltalk at: name ifAbsent: [nil].
+	old isNil ifTrue: [^self defineNew: header comment: comment methods: methods as: name].
+	(old isKindOf: Behavior)
+		ifFalse: [^self fail: name, ' is a global that is not a class'].
+	^(self header: header describesShapeOf: old)
+		ifTrue: [self redefine: old inPlaceFrom: header comment: comment methods: methods]
+		ifFalse: [self redefine: old reshapedFrom: header comment: comment methods: methods]
+]
+
+{ #category : 'loading' }
+TonelReader >> defineNew: header comment: comment methods: methods as: name [
+	"A class the image has not got: defined, its methods compiled against
+	 it, and taken out again -- removeFromSystem, which is what the
+	 Browser's `remove class' does -- if one of them fails, so that a bad
+	 file leaves no class behind."
+	| compiled |
+	definedClass := self define: header comment: comment as: name.
+	compiled := [self compileAll: methods substituting: nil for: name]
+		ifCurtailed: [definedClass removeFromSystem. definedClass := nil].
+	self installAll: compiled
+]
+
+{ #category : 'loading' }
+TonelReader >> redefine: old inPlaceFrom: header comment: comment methods: methods [
+	"The class exists in the shape the header asks for: its new methods
+	 are compiled against it as it is, installed together once every one
+	 has compiled, and then the methods the file no longer has go.  The
+	 definition message is still sent, for the comment and the category;
+	 with the shape unchanged it makes no new class object."
+	| compiled |
+	compiled := self compileAll: methods substituting: nil for: old name.
+	self installAll: compiled.
+	self removeMethodsNotIn: methods from: old.
+	definedClass := self define: header comment: comment as: old name
+]
+
+{ #category : 'loading' }
+TonelReader >> redefine: old reshapedFrom: header comment: comment methods: methods [
+	"The header asks for a different shape.  The methods are compiled
+	 first against a scratch class of that shape, so that a method naming
+	 a variable the file adds compiles and one with a mistake in it is
+	 refused before the image changes; the scratch class is removed either
+	 way.  Then the old order, which the class-variable rule on
+	 removeMethodsNotIn:from: needs: remove, redefine, compile in."
+	| scratchName scratch |
+	scratchName := (old name, 'ScratchForTonel') asSymbol.
+	(Smalltalk includesKey: scratchName)
+		ifTrue: [^self fail: scratchName, ' is in the way of redefining ', old name, '; remove it'].
+	scratch := self define: header comment: nil as: scratchName.
+	[self compileAll: methods substituting: scratch for: old name]
+		ensure: [scratch removeFromSystem].
+	self removeMethodsNotIn: methods from: old.
+	definedClass := self define: header comment: comment as: old name.
+	methods do: [:each |
+		self installAll: (Array with: (self compile: each
+			for: (self targetOf: each substituting: nil for: old name)))]
+]
+
+{ #category : 'loading' }
+TonelReader >> loadExtension: name methods: methods [
+	"An Extension file: the class must exist, the methods are compiled
+	 against it and installed together, and what the file no longer has
+	 under its own categories is removed."
+	| compiled |
+	definedClass := Smalltalk at: name
+		ifAbsent: [^self fail: name asString, ' is not a class in this image'].
+	compiled := self compileAll: methods substituting: nil for: name.
+	self installAll: compiled.
+	self removeExtensionMethodsNotIn: methods from: definedClass
 ]

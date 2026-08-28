@@ -62,6 +62,34 @@ Behavior >> compile: code notifying: requestor trailer: bytes ifFail: failBlock 
 ]
 
 { #category : '*Compiler-Fixes' }
+Behavior >> compileOnly: code notifying: requestor trailer: bytes ifFail: failBlock into: aTwoArgumentBlock [
+	"Compile code for me and do NOT install it: hand the selector and the
+	 CompiledMethod to aTwoArgumentBlock and answer its value.  The same
+	 compile as compile:notifying:trailer:ifFail: above, without the
+	 addSelector:withMethod: at the end.
+
+	 For a caller that has several methods to install or none: TonelReader
+	 compiles every method in a file this way and installs them together
+	 once all of them have compiled, so that a mistake in one leaves the
+	 class as it was (Bugs3 B63).  Kept beside compile:notifying:trailer:
+	 ifFail: rather than folded into it because that one is the seam every
+	 run-time compile goes through and its shape is 1983's."
+
+	| answer method |
+	answer := Compiler
+		compileSource: code
+		for: self
+		noPattern: false
+		declaringUndeclared: requestor isNil.
+	method := answer at: 1.
+	method isNil ifTrue: [
+		Compiler reportFailure: answer of: code to: requestor.
+		^failBlock value].
+	Compiler put: bytes intoTrailerOf: method.
+	^aTwoArgumentBlock value: (answer at: 2) value: method
+]
+
+{ #category : '*Compiler-Fixes' }
 Behavior >> compile: code [
 	"Compile code for me and install it, answering the selector.
 

@@ -129,6 +129,20 @@ a real `DECIMAL` and report it as one.
 | `BIT` `BOOLEAN` | `true` / `false` |
 | `NULL` | `nil` |
 
+## What a parameter takes
+
+A bound value goes as its own class: `nil`, `true`/`false`, `Integer`, `Float`,
+`String`, `Symbol`, `ByteArray`, `Date`, `Time`, `DbTimestamp` and `Fraction` —
+the last as its digits, so a `DECIMAL` column receives an exact decimal rather
+than a binary float.
+
+An `Integer` parameter is **64 bits**, because `SQL_C_SBIGINT` is the widest
+integer ODBC has: anything outside −2^63 … 2^63−1 is a `DbError` naming the
+value. A number wider than that reaches a `DECIMAL` column as a `String` or a
+`Fraction`, both of which travel as digits. Every bind is checked, and so is
+every execute; a bind or a statement the driver refuses raises with the
+driver's own words rather than answering.
+
 `DbTimestamp` exists because the 1983 image has no single class for a date and
 a time together and its `Time` is whole seconds. A `TIMESTAMP` is both halves at
 once and carries a fraction; rounding that away at the boundary would be a data

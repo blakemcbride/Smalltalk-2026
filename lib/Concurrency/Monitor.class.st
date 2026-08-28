@@ -20,24 +20,61 @@ waitUntil: re-tests in a loop rather than trusting one wakeup.  A woken
 waiter is not promised that what it waited for is still true, because
 another worker may have taken it in between; on eight cores that is not a
 corner case but the ordinary outcome of two consumers and one item.
+
+Reentrant, which a Mutex deliberately is not.  A Monitor is the lock a
+class puts round its whole protocol, and a method of that protocol that
+sends another is the ordinary case, not the mistake Mutex refuses to hide;
+doc/CONCURRENCY.md and the manual promised it and the class did not keep
+the promise -- `m critical: [m critical: [...]]' raised 'Mutex is already
+held' (Bugs3 B60).  So the owner and a depth are kept here, above the
+Mutex: a process that already holds the monitor goes straight in, one
+deeper, and lets go only when the outermost critical: does.  waitForChange
+has to give up the WHOLE depth, or a waiter two levels in would sleep with
+the monitor still held and nothing could ever change; it remembers the
+depth and puts it back once it has the monitor again.
+
+Thread-safe by the shape of the test rather than by another lock: `owner'
+is written only by the process that holds the mutex, so a process that
+reads its own identity there is the holder and nothing can have changed
+that between the read and the increment; a process that reads anything
+else takes the mutex, which orders it after the last release.  The nil
+guard is the one Mutex>>acquire explains: Processor activeProcess answers
+nil where no Process is nominated -- the bootstrap -- and nil == nil would
+read as re-entry into a free monitor.
 "
 Class {
 	#name : 'Monitor',
 	#superclass : 'Object',
-	#instVars : [ 'mutex', 'waiters' ],
+	#instVars : [ 'mutex', 'waiters', 'owner', 'depth' ],
 	#category : 'Concurrency'
 }
 
 { #category : 'initialization' }
 Monitor >> initialize [
 	mutex := Mutex new.
-	waiters := OrderedCollection new
+	waiters := OrderedCollection new.
+	owner := nil.
+	depth := 0
 ]
 
 { #category : 'evaluating' }
 Monitor >> critical: aBlock [
-	"Evaluate aBlock holding the monitor."
-	^mutex critical: aBlock
+	"Evaluate aBlock holding the monitor.  Reentrant: from inside
+	 critical: this goes one level deeper and lets go when that level
+	 does; the monitor is released when the outermost block ends, however
+	 it ends."
+	| me |
+	me := Processor activeProcess.
+	(me notNil and: [owner == me]) ifTrue: [
+		depth := depth + 1.
+		^aBlock ensure: [depth := depth - 1]].
+	mutex acquire.
+	owner := me.
+	depth := 1.
+	^aBlock ensure: [
+		depth := 0.
+		owner := nil.
+		mutex release]
 ]
 
 { #category : 'waiting' }
@@ -51,13 +88,22 @@ Monitor >> waitUntil: aConditionBlock [
 { #category : 'waiting' }
 Monitor >> waitForChange [
 	"Release the monitor, wait until something signals a change, and take
-	 the monitor back.  Send only from inside critical:."
-	| mine |
+	 the monitor back.  Send only from inside critical:.
+
+	 The whole depth is given up, not one level: a waiter that entered
+	 critical: twice still has to let everyone else in while it sleeps.
+	 The depth comes back with the monitor."
+	| mine savedDepth |
 	mine := Semaphore new.
 	waiters addLast: mine.
+	savedDepth := depth.
+	depth := 0.
+	owner := nil.
 	mutex release.
 	mine wait.
-	mutex acquire
+	mutex acquire.
+	owner := Processor activeProcess.
+	depth := savedDepth
 ]
 
 { #category : 'waiting' }
@@ -85,4 +131,14 @@ Monitor >> signal [
 { #category : 'testing' }
 Monitor >> hasWaiters [
 	^waiters isEmpty not
+]
+
+{ #category : 'testing' }
+Monitor >> isHeldByActiveProcess [
+	"Whether the process asking holds me -- what a method that must be
+	 sent from inside critical: can assert.  Exact for the asker, since
+	 only the holder can find itself in owner."
+	| me |
+	me := Processor activeProcess.
+	^me notNil and: [owner == me]
 ]

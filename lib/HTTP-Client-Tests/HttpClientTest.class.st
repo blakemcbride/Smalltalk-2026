@@ -261,3 +261,53 @@ HttpClientTest >> testUrls [
 	self should: [HttpUrl fromString: 'http:///x'] raise: NetError.
 	self should: [HttpUrl fromString: 'http://host:notaport/'] raise: NetError
 ]
+
+{ #category : 'tests - bodies' }
+HttpClientTest >> testABogusChunkSizeIsANetError [
+	"Bugs3 B57, lower.  `ffffffffffffffff' is a valid hexadecimal number
+	 and 2^64-1, and it reached `String new:' -- so a peer that mis-framed
+	 its reply produced `a primitive has failed', a message about this
+	 image rather than about the other end.  A size that cannot be a size
+	 is a NetError, as one that is not a number already was."
+	self should: [self serving: 'HTTP/1.1 200 OK', self crlf,
+			'Transfer-Encoding: chunked', self crlf, self crlf,
+			'ffffffffffffffff', self crlf, 'hello', self crlf
+		do: [:url | HttpClient get: url]] raise: NetError.
+	self should: [self serving: 'HTTP/1.1 200 OK', self crlf,
+			'Transfer-Encoding: chunked', self crlf, self crlf,
+			'fffffffffffffffff0', self crlf, 'hello', self crlf
+		do: [:url | HttpClient get: url]] raise: NetError.
+	self should: [self serving: 'HTTP/1.1 200 OK', self crlf,
+			'Transfer-Encoding: chunked', self crlf, self crlf,
+			'zz', self crlf, 'hello', self crlf
+		do: [:url | HttpClient get: url]] raise: NetError
+]
+
+{ #category : 'tests - bodies' }
+HttpClientTest >> testABodyOverTheLimitIsANetError [
+	"The reply comes from a server this program did not write, and until
+	 Bugs3 B57 (lower) there was no size at which it stopped being read.
+	 The declared length is refused before the bytes are read; a chunked
+	 body, which declares nothing, is refused as its total passes the
+	 limit; and so is one that ends with the connection."
+	| reply |
+	self should: [self serving: 'HTTP/1.1 200 OK', self crlf,
+			'Content-Length: 100000000000', self crlf, self crlf
+		do: [:url | HttpClient get: url]] raise: NetError.
+	self should: [self serving: 'HTTP/1.1 200 OK', self crlf, 'Content-Length: 10', self crlf, self crlf, 'helloworld'
+		do: [:url | HttpClient new maxBodyBytes: 5; get: url]] raise: NetError.
+	self should: [self serving: 'HTTP/1.1 200 OK', self crlf,
+			'Transfer-Encoding: chunked', self crlf, self crlf,
+			'5', self crlf, 'hello', self crlf, '5', self crlf, 'world', self crlf, '0', self crlf, self crlf
+		do: [:url | HttpClient new maxBodyBytes: 6; get: url]] raise: NetError.
+	self should: [self serving: 'HTTP/1.0 200 OK', self crlf, self crlf, 'far too much of it'
+		do: [:url | HttpClient new maxBodyBytes: 5; get: url]] raise: NetError.
+	"a Content-Length that is not a number is not a length"
+	self should: [self serving: 'HTTP/1.1 200 OK', self crlf, 'Content-Length: 12x', self crlf, self crlf, 'hello'
+		do: [:url | HttpClient get: url]] raise: NetError.
+	"and the ordinary reply is unaffected, at the limit and under it"
+	reply := self serving: 'HTTP/1.1 200 OK', self crlf, 'Content-Length: 5', self crlf, self crlf, 'hello'
+		do: [:url | HttpClient new maxBodyBytes: 5; get: url].
+	self assert: reply body equals: 'hello'.
+	self assert: HttpClient new maxBodyBytes equals: 64 * 1024 * 1024
+]

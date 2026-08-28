@@ -83,6 +83,15 @@ safe:
 | `Content-Length` | that many bytes |
 | none of those | everything up to the close |
 
+**All four are bounded**, at 64 MB unless `maxBodyBytes:` says otherwise: the
+reply comes from a server this program did not write, and a
+`Content-Length: 100000000000` is a hundred gigabytes of `String`. A declared
+length over the limit is refused before a byte is read; the two that declare
+nothing are refused as their total passes it. A chunk size that cannot be one
+— more than sixteen hex digits, or a size larger than the limit — is a
+`NetError` naming it, where `ffffffffffffffff` used to reach `String new:` and
+come back as "a primitive has failed".
+
 Go's `net/http` — which is what Ollama is — chunks anything past its
 buffer, so a model's answer always comes the second way; an HTTP/1.0 server
 sends the fourth. `HttpClientTest` serves each kind from a listener of its

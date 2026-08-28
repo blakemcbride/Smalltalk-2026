@@ -27,11 +27,17 @@ BlockContext >> on: anExceptionClass do: aHandlerBlock [
 { #category : '*Kernel-Exceptions' }
 BlockContext >> ensure: aBlock [
 	"Evaluate the receiver, and aBlock afterwards however the receiver
-	 finishes -- normally, or by a return out through it."
+	 finishes -- normally, or by a return out through it.
+
+	 Through runUnwindBlock on the normal path, for the reason given at
+	 BlockClosure>>ensure: above: run as `aBlock value' the block stays
+	 armed in this frame while it runs, and an unwind through the frame --
+	 a handler's return: after the block raised, or a ^ inside it -- runs
+	 it a second time (Bugs3 B18)."
 	| result |
 	<primitive: 198>
 	result := self value.
-	aBlock value.
+	thisContext runUnwindBlock.
 	^result
 ]
 

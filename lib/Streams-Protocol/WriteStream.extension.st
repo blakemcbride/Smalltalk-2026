@@ -23,8 +23,30 @@ Extension { #name : 'WriteStream' }
 
 { #category : '*Streams-Protocol' }
 WriteStream >> pastEndPut: anObject [
-	"Make room by taking a larger collection, leaving the old one alone."
+	"Make room by taking a larger collection, leaving the old one alone.
+
+	 Unless the collection is an OrderedCollection, which makes its own
+	 room.  `OrderedCollection new: 40' is an EMPTY collection with space
+	 for forty, not forty slots, and at:put: past its last element is
+	 refused -- so a WriteStream on one could not take a single nextPut:,
+	 and neither could anything built on `collection species new:', which
+	 is every result-building method of a ReadStream over one: upToEnd,
+	 next:, upTo:, nextLine (Bugs3 B46).  Growing by addLast: is what an
+	 OrderedCollection is for, and every nextPut: at the end comes through
+	 here, because writeLimit is kept equal to its size.  A nextPut: BEFORE
+	 the end still goes through at:put:, overwriting, exactly as on an
+	 Array.  isKindOf: rather than a respondsTo: because it is cheap where
+	 it is asked -- once per growth for an Array, once per element for an
+	 OrderedCollection, and a walk of one or two superclasses either way
+	 -- and because a SortedCollection is the one subclass that must
+	 answer yes here and then refuse: it refuses addLast:, and so it
+	 should."
 	| grown |
+	(collection isKindOf: OrderedCollection) ifTrue: [
+		collection addLast: anObject.
+		position := position + 1.
+		writeLimit := collection size.
+		^anObject].
 	grown := collection species new: (collection size max: 20) * 2.
 	grown replaceFrom: 1 to: collection size with: collection startingAt: 1.
 	collection := grown.

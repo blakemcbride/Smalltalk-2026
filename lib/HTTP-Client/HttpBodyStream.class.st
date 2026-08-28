@@ -23,29 +23,68 @@ chunks by its buffer and not by the line.
 
 upToEnd is what HttpClientResponse>>body asks for, and reads by the chunk
 or the length rather than the character.
+
+THE BODY IS BOUNDED, at 64 MB unless the client says otherwise, in all three
+of those shapes.  The reply comes from somewhere else, and Bugs3 B57 (lower)
+found nothing here that stopped it being any size at all: a Content-Length
+of a hundred gigabytes was a hundred gigabytes of String, and a chunked body
+had no total at all.  A body over the limit is a NetError naming it, raised
+before the bytes are read rather than after.
+
+A CHUNK SIZE THAT IS NOT ONE IS A NetError, and that includes one that is
+too large to be a size.  `ffffffffffffffff' -- sixteen f's, which is a valid
+hexadecimal number and 2^64-1 -- was read as a number and passed to
+`String new:', which came back as `a primitive has failed': a message about
+this image, from a fault in the other end's framing.  A size line longer
+than sixteen digits is refused before it is even converted, because a
+sixty-four-bit count is the most a chunk size can be and a longer one is a
+peer that is not speaking HTTP.
 "
 Class {
 	#name : 'HttpBodyStream',
 	#superclass : 'Object',
-	#instVars : [ 'in', 'mode', 'remaining', 'first' ],
+	#instVars : [ 'in', 'mode', 'remaining', 'first', 'maxBody', 'read' ],
 	#category : 'HTTP-Client'
 }
 
 { #category : 'instance creation' }
+HttpBodyStream class >> defaultMaxBodyBytes [
+	"64 MB, the same number HttpServer holds a request to.  Generous
+	 rather than tight on purpose: a limit that a legitimate reply meets is
+	 a limit somebody turns off, and then there is none."
+	^64 * 1024 * 1024
+]
+
+{ #category : 'instance creation' }
 HttpBodyStream class >> on: aSocketStream status: statusInteger headers: aDictionary [
+	^self on: aSocketStream status: statusInteger headers: aDictionary
+		maxBodyBytes: self defaultMaxBodyBytes
+]
+
+{ #category : 'instance creation' }
+HttpBodyStream class >> on: aSocketStream status: statusInteger headers: aDictionary maxBodyBytes: anInteger [
 	^self new setStream: aSocketStream status: statusInteger headers: aDictionary
+		maxBodyBytes: anInteger
 ]
 
 { #category : 'instance creation' }
 HttpBodyStream class >> empty [
 	^self new setStream: nil status: 204 headers: Dictionary new
+		maxBodyBytes: self defaultMaxBodyBytes
+]
+
+{ #category : 'accessing' }
+HttpBodyStream >> maxBodyBytes [
+	^maxBody
 ]
 
 { #category : 'private' }
-HttpBodyStream >> setStream: aSocketStream status: statusInteger headers: aDictionary [
+HttpBodyStream >> setStream: aSocketStream status: statusInteger headers: aDictionary maxBodyBytes: anInteger [
 	| encoding length |
 	in := aSocketStream.
 	first := true.
+	maxBody := anInteger.
+	read := 0.
 	(statusInteger < 200 or: [statusInteger = 204 or: [statusInteger = 304]]) ifTrue: [mode := #none. ^self].
 	encoding := aDictionary at: 'transfer-encoding' ifAbsent: [nil].
 	(encoding notNil and: [encoding asLowercase includesSubstring: 'chunked']) ifTrue: [
@@ -54,10 +93,33 @@ HttpBodyStream >> setStream: aSocketStream status: statusInteger headers: aDicti
 		^self].
 	length := aDictionary at: 'content-length' ifAbsent: [nil].
 	length notNil ifTrue: [
+		"A Content-Length is digits or it is not a length.  asNumber read as
+		 far as it understood and answered what it had, so a header of
+		 `abc' became 0 and one of `12x' became 12 -- either of which is a
+		 body boundary in the wrong place, on a connection whose other end
+		 chose the header."
+		length := length trimmed.
+		(length isEmpty or: [length anySatisfy: [:c | c isDigit not]])
+			ifTrue: [^NetError new signal: 'not a Content-Length: ', length printString].
 		mode := #length.
-		remaining := length trimmed asNumber.
+		remaining := length asInteger.
+		remaining > maxBody ifTrue: [
+			^NetError new signal: 'the reply declares ', remaining printString,
+				' bytes, over the ', maxBody printString, ' this client reads'].
 		^self].
 	mode := #close
+]
+
+{ #category : 'private' }
+HttpBodyStream >> countBytes: anInteger [
+	"Add to the running total and raise past the limit.  See the class
+	 comment: the three shapes a body has are three ways to be handed more
+	 of it than was asked for, and this is the one place all three pass."
+	read := read + anInteger.
+	read > maxBody ifTrue: [
+		^NetError new signal: 'the reply is longer than the ',
+			maxBody printString, ' bytes this client reads'].
+	^anInteger
 ]
 
 { #category : 'private' }
@@ -71,7 +133,12 @@ HttpBodyStream >> nextChunkSize [
 	line := in nextLine trimmed.
 	semicolon := line indexOf: $;.
 	semicolon > 0 ifTrue: [line := (line copyFrom: 1 to: semicolon - 1) trimmed].
+	line size > 16 ifTrue: [
+		^NetError new signal: 'not a chunk size: ', line printString].
 	size := self hexValueOf: line.
+	size > maxBody ifTrue: [
+		^NetError new signal: 'a chunk of ', size printString,
+			' bytes is over the ', maxBody printString, ' this client reads'].
 	size = 0 ifTrue: [
 		[in nextLine isEmpty] whileFalse: [].
 		mode := #none].
@@ -98,7 +165,10 @@ HttpBodyStream >> next [
 	"The next Character of the body, or nil at its end."
 	| c |
 	mode == #none ifTrue: [^nil].
-	mode == #close ifTrue: [^in next].
+	mode == #close ifTrue: [
+		c := in next.
+		c notNil ifTrue: [self countBytes: 1].
+		^c].
 	mode == #chunked ifTrue: [
 		[remaining = 0] whileTrue: [
 			remaining := self nextChunkSize.
@@ -107,6 +177,7 @@ HttpBodyStream >> next [
 	c := in next.
 	c isNil ifTrue: [mode := #none. ^nil].
 	remaining := remaining - 1.
+	self countBytes: 1.
 	^c
 ]
 
@@ -131,18 +202,37 @@ HttpBodyStream >> nextLine [
 HttpBodyStream >> upToEnd [
 	"The rest of the body as one String: by the length, by the chunk, or
 	 up to the close, and not by the character."
-	| out size |
+	| out size piece |
 	mode == #none ifTrue: [^''].
-	mode == #close ifTrue: [mode := #none. ^in contents].
+	mode == #close ifTrue: [
+		"By the block rather than `in contents', which reads until the peer
+		 closes however long that takes and however much it sends.  The
+		 total is counted, so a peer that never stops meets the limit
+		 instead of the end of memory."
+		mode := #none.
+		out := WriteStream on: (String new: 4096).
+		[piece := in next: 65536.
+		 piece isEmpty] whileFalse: [
+			self countBytes: piece size.
+			out nextPutAll: piece].
+		^out contents].
 	mode == #length ifTrue: [
 		out := in next: remaining.
+		self countBytes: out size.
 		remaining := 0.
 		mode := #none.
 		^out].
 	out := WriteStream on: (String new: 4096).
-	remaining > 0 ifTrue: [out nextPutAll: (in next: remaining). remaining := 0].
+	remaining > 0 ifTrue: [
+		piece := in next: remaining.
+		self countBytes: piece size.
+		out nextPutAll: piece.
+		remaining := 0].
 	[size := self nextChunkSize.
-	 size > 0] whileTrue: [out nextPutAll: (in next: size)].
+	 size > 0] whileTrue: [
+		piece := in next: size.
+		self countBytes: piece size.
+		out nextPutAll: piece].
 	^out contents
 ]
 

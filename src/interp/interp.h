@@ -14,6 +14,7 @@
 #define ST_INTERP_H
 
 #include "om.h"
+#include "st_atomic.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -275,6 +276,58 @@ typedef struct {
     uint32_t    instruction_pointer;    /*  byte index into the method  */
     uint32_t    stack_pointer;          /*  field index within context  */
     uint32_t    stack_limit;            /*  one past the last usable slot  */
+    /*
+     *  The two bounds of the running method, cached beside stack_limit and
+     *  for the same reason: they are compared against on the hottest path
+     *  in the system and must not be re-read from the object per bytecode.
+     *
+     *  literal_limit is the literal count from the method's header, and
+     *  method_end its length in bytes.  Neither was checked before (Bugs3
+     *  B11): a bytecode's literal index was added to the literal frame's
+     *  base and fetched, so a CompiledMethod whose bytes had been rewritten
+     *  through at:put: -- which is how the 1983 compiler writes a method,
+     *  so it cannot be refused -- sent a selector read from past the end of
+     *  the frame and died in lookup_method; and a context whose ip or sp
+     *  had been written through instVarAt:put: was resumed with them as
+     *  they stood.  Both are checked against these at the moment they are
+     *  used, and a violation abandons the activation with #corruptMethod
+     *  rather than a signal from the kernel.
+     */
+    uint32_t    literal_limit;
+    uint32_t    method_end;
+    /*
+     *  And the two objects a bytecode indexes into by a number it carries:
+     *  receiver_limit is the receiver's pointer-field count (zero for a
+     *  SmallInteger or a byte object), home_limit the home context's
+     *  length, which bounds a temporary's slot.  Cached with the others
+     *  at every context switch.  ASAN found what trusting the index did:
+     *  bytecode 0 on an instance of a class with no instance variables --
+     *  a method rewritten through at:put:, the B11 case -- read the word
+     *  after the object and answered whatever the heap held there.
+     */
+    uint32_t    receiver_limit;
+    uint32_t    home_limit;
+    /*
+     *  Why the running context's registers could not be trusted, or NULL.
+     *
+     *  fetch_context_registers cannot raise -- it runs inside a return or a
+     *  process switch, with no bytecode in flight -- so it records the
+     *  reason here, sets the instruction pointer to the end of the method
+     *  and lets the dispatch loop's end-of-method check deliver it before
+     *  the next bytecode is fetched.  Likewise an operand fetch that runs
+     *  off the end: next_byte answers 0 and leaves the reason here.
+     */
+    const char *corrupt_reason;
+    /*
+     *  How many Errors went unhandled on this worker's stack: raised, found
+     *  no handler, and reached Error>>defaultAction (Bugs3 B58).  The
+     *  image tells the VM through primitive 239 from that one method, so
+     *  a handled error is never counted and neither is a Warning.  -eval
+     *  reads it to decide its exit code: the answer to `3 zork' was nil and
+     *  the exit was 0, which a build script cannot tell from an expression
+     *  that answered nil on purpose.
+     */
+    unsigned    unhandled_errors;
 
     st_oop      message_selector;
     uint32_t    argument_count;
@@ -346,7 +399,18 @@ typedef struct {
      *  the scheduler's state.
      */
     int         disowned;
+    /*
+     *  Which row of the scheduler's `hands' table is this worker's: the
+     *  registry slot plus one, so that zero -- what memset leaves, and
+     *  what a thread that never registered has -- means no row.  The
+     *  row is where this worker publishes what it holds for OTHER workers
+     *  to read; see the block above SCHED_hands_register in st_sched.c
+     *  for why that lives in a static table and not in this struct.
+     */
+    unsigned    hands_slot;
 } st_interp;
+
+#define ST_MAX_INTERPRETERS     64
 
 /*
  *  One interpreter per thread.
@@ -416,6 +480,27 @@ void        ST_set_active_context(st_oop ctx);
  *  what puts the total right after a non-local move.
  */
 int         ST_stack_depth(void);
+
+/*
+ *  How many more values the active context can take before ST_push would
+ *  overflow it.  A primitive that spreads a run-time Array onto the stack
+ *  -- perform:withArguments:, valueWithArguments:, withArgs:executeMethod:
+ *  -- must ask this first and fail when the Array does not fit (Bugs3 B1):
+ *  the sender's frame was sized by the compiler for the sender's own
+ *  pushes, which cannot know how long an Array will be.
+ */
+uint32_t    ST_stack_room(void);
+
+/*
+ *  Whether sending `selector' to `receiver' with `argc' arguments would
+ *  activate a method that takes exactly that many.  A selector nobody
+ *  implements answers yes -- doesNotUnderstand: takes the arguments as a
+ *  Message, however many there are.  This is the Blue Book's
+ *  primitivePerform check, done by the perform primitives before they
+ *  shuffle the stack (Bugs3 B5).
+ */
+int         ST_argument_count_matches(st_oop receiver, st_oop selector,
+                                      uint32_t argc);
 
 /*  ----------  Tracing  ----------
  *

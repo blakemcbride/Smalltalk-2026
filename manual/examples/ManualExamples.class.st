@@ -143,6 +143,9 @@ ManualExamples >> controlFlow [
 	"([:n | 4 timesRepeat: [n := n + 2]. n] value: 0) >>> 8"
 	"([:n | [n < 5] whileTrue: [n := n + 1]. n] value: 0) >>> 5"
 	"((1 to: 10) inject: 0 into: [:a :b | a + b]) >>> 55"
+	"valueWithExit answers what the exit was given, or the block's value"
+	"([:exit | #(1 2 3) do: [:each | each > 2 ifTrue: [exit value: each]]. #allGood] valueWithExit) >>> 3"
+	"([:exit | #(1 2) do: [:each | each > 2 ifTrue: [exit value: each]]. #allGood] valueWithExit) >>> #allGood"
 	^self
 ]
 
@@ -323,6 +326,9 @@ ManualExamples >> dictionaries [
 	"(((Dictionary new) at: #a put: 1; yourself) removeKey: #a) >>> (#a -> 1)"
 	"(((Dictionary new) at: #a put: 1; yourself) keys) class >>> Set"
 	"(((Dictionary new) at: #a put: 1; yourself) keyAtValue: 1) >>> #a"
+	"values is a Bag, not an Array: a Dictionary's values need not be distinct"
+	"(((Dictionary new) at: #a put: 1; yourself) values) class >>> Bag"
+	"([:n | ((Dictionary new) at: #a put: 1; at: #b put: 2; yourself) valuesDo: [:v | n := n + v]. n] value: 0) >>> 3"
 	"(#a -> 1) key >>> #a"
 	"(#a -> 1) value >>> 1"
 	^self
@@ -345,6 +351,8 @@ ManualExamples >> writeStreams [
 	"((WriteStream on: (String new: 0)) nextPutAll: 'ab'; contents) >>> 'ab'"
 	"((WriteStream on: (String new: 0)) nextPut: $a; nextPutAll: 'bcd'; contents) >>> 'abcd'"
 	"((WriteStream on: (String new: 0)) print: 42; contents) >>> '42'"
+	"display: writes the display form: a String without its quotes"
+	"((WriteStream on: (String new: 0)) display: 42; display: 'x'; contents) >>> '42x'"
 	"((WriteStream with: 'ab') nextPutAll: 'cd'; contents) >>> 'abcd'"
 	"((ReadWriteStream on: (String new: 0)) nextPutAll: 'hi'; reset; upToEnd) >>> 'hi'"
 	"the loop the book shows for building a string"

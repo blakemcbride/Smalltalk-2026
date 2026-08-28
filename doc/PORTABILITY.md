@@ -32,6 +32,14 @@ under the POSIX spelling, so the Windows build asks for that with
 `/D_CRT_DECLARE_NONSTDC_NAMES=1` and silences the deprecation with
 `/D_CRT_NONSTDC_NO_WARNINGS`.
 
+The snapshot writer needs two file operations C leaves to the platform, and
+they live in `src/port/st_port.c` beside the threads: `ST_file_sync` is
+`fflush` plus `fsync` on POSIX and `_commit` on Windows, and `ST_file_replace`
+is `rename` on POSIX and `MoveFileEx` with `MOVEFILE_REPLACE_EXISTING` on
+Windows, where the C library's `rename` refuses an existing target.
+`OM_image_save` writes `<path>.tmp`, syncs it, and replaces the target with it
+in one step, so an interrupted save leaves the previous image intact.
+
 `src/net/st_socket.c` is POSIX on one side of `ST_WINDOWS` and Winsock on the
 other, by design rather than exception: `poll` and `WSAPoll`, `pipe2` (or
 `pipe` where `pipe2` is missing) and a loopback UDP socket for the wake

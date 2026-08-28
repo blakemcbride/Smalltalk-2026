@@ -11,6 +11,21 @@ its index.html.  Anything else that is not a file is 404, including what the
 file system refuses to open, because `forbidden' would tell a stranger that
 the name exists.
 
+AND A THIRD REFUSAL, WHICH THE TEXT OF THE PATH CANNOT GIVE: the file the
+name finally reaches must really be under the root.  Reading the segments
+catches `..'; it cannot catch a SYMBOLIC LINK inside the root that points
+out of it, because there is nothing in the request to see -- Bugs3 B57 found
+`/link' pointing at /etc/passwd served in full, past a filter that was
+working exactly as written.  So the file's resolved name and the root's
+resolved name are asked of the file system and compared, and a file outside
+is 403.  A file system that cannot resolve a name answers nil and the file
+is refused: a missing capability must not be a way out of the root.
+
+A HEAD is answered with the same response a GET would get, body and all;
+HttpConnection sends it without the body and keeps the Content-Length, so a
+HEAD says how long the file is.  It used to answer an empty body here, which
+made every HEAD report `Content-Length: 0'.
+
 The content type comes from the extension.  The bytes are read whole and sent
 whole; a front end's largest file is a few hundred kilobytes of JavaScript.
 "
@@ -49,9 +64,42 @@ HttpStaticFileHandler >> handle: aRequest [
 	full := relative isEmpty ifTrue: [documentRoot] ifFalse: [documentRoot, '/', relative].
 	(self isDirectory: full) ifTrue: [full := full, '/index.html'].
 	(self isFile: full) ifFalse: [^HttpResponse notFound: 'not found: ', aRequest path].
+	(self isWithinDocumentRoot: full) ifFalse: [^HttpResponse error: 403 reason: 'forbidden'].
+	"The body is read for a HEAD too, and thrown away by the connection.
+	 That is a file read nobody uses, and it is the price of a HEAD that
+	 answers the length a GET would have: the alternative is a second way of
+	 measuring a file, which is a second thing to be wrong."
 	^HttpResponse
-		bytes: (aRequest method = 'HEAD' ifTrue: [''] ifFalse: [self contentsOf: full])
+		bytes: (self contentsOf: full)
 		contentType: (HttpCodec mimeTypeForName: full)
+]
+
+{ #category : 'private' }
+HttpStaticFileHandler >> isWithinDocumentRoot: aPath [
+	"Whether the file that name reaches is really under the root.
+
+	 Both names are resolved -- every dot segment and every symbolic link --
+	 and the file's must be the root's, or the root's followed by a
+	 separator.  The prefix alone is not enough: a root of /srv/www would
+	 otherwise admit /srv/www-old, which is a different directory whose
+	 name happens to start the same way.  Both separators are accepted
+	 because this method has no platform test in it, for the reason
+	 safeRelativePathFor: gives.
+
+	 Resolved on every request rather than once at construction, and that
+	 is deliberate: eight workers share one handler, an instance variable
+	 filled in lazily is shared mutable state, and a link can be made after
+	 the server starts -- a cached answer would then be the answer to a
+	 question about a directory that has since changed.  It is one call to
+	 the file system beside the several a served file already costs."
+	| root real |
+	root := Disk realPathNamed: documentRoot.
+	real := Disk realPathNamed: aPath.
+	(root isNil or: [real isNil]) ifTrue: [^false].
+	real = root ifTrue: [^true].
+	real size > root size ifFalse: [^false].
+	(real copyFrom: 1 to: root size) = root ifFalse: [^false].
+	^('/\' includes: (real at: root size + 1))
 ]
 
 { #category : 'private' }

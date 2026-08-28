@@ -338,3 +338,119 @@ HttpServerTest >> testStartAndStop [
 	self deny: server isRunning.
 	self should: [self connect] raise: NetError
 ]
+
+{ #category : 'private' }
+HttpServerTest >> headOf: aPath [
+	"A HEAD, read as a head alone: the status line and the headers, and no
+	 body however long Content-Length says the body would be."
+	| socket in status headers line |
+	socket := self connect.
+	^[socket send: 'HEAD ', aPath, ' HTTP/1.1', self crlf, 'Host: test', self crlf, 'Connection: close', self crlf, self crlf.
+	  in := SocketStream on: socket.
+	  in readTimeout: 5000.
+	  status := in nextLine.
+	  headers := Dictionary new.
+	  [(line := in nextLine) isEmpty] whileFalse: [ | colon |
+		colon := line indexOf: $:.
+		headers at: (line copyFrom: 1 to: colon - 1) asLowercase
+			put: (line copyFrom: colon + 1 to: line size) trimmed].
+	  Array with: status with: headers with: in contents]
+		ensure: [socket close]
+]
+
+{ #category : 'tests - head' }
+HttpServerTest >> testAHeadAnswersTheLengthAGetWould [
+	"Bugs3 B57, lower.  The static handler answered an empty body for a
+	 HEAD and the writer then said `Content-Length: 0', so the one client
+	 that asks a HEAD to find out how big a file is was told it was empty.
+	 The response is now built as the GET's and sent without its body."
+	| stream get head |
+	stream := Disk textFile: page.
+	[stream nextPutAll: '<html><body>hello</body></html>'; shorten] ensure: [stream close].
+	server documentRoot: '.'.
+	server at: '/text' put: [:request | HttpResponse text: 'twelve bytes'].
+	server start.
+	get := self get: '/', page.
+	head := self headOf: '/', page.
+	self assert: (head at: 1) equals: 'HTTP/1.1 200 OK'.
+	self assert: ((head at: 2) at: 'content-length') equals: ((get at: 2) at: 'content-length').
+	self assert: ((head at: 2) at: 'content-length') asInteger equals: (get at: 3) size.
+	self assert: ((head at: 2) at: 'content-type') equals: 'text/html'.
+	self assert: (head at: 3) equals: ''.
+	"and a handler's own response answers the same way"
+	head := self headOf: '/text'.
+	self assert: ((head at: 2) at: 'content-length') equals: '12'.
+	self assert: (head at: 3) equals: ''
+]
+
+{ #category : 'tests - header injection' }
+HttpServerTest >> testAHandlerThatInjectsAHeaderIsA500 [
+	"Bugs3 B54, over the wire: a redirect handler that copies a query
+	 parameter into Location, and a client that puts a CR LF in the
+	 parameter.  The reply must be one response with no header the client
+	 wrote, and the fault must be the handler's -- a 500 -- rather than a
+	 200 carrying somebody else's Set-Cookie."
+	| reply |
+	server at: '/redir' put: [:request |
+		(HttpResponse status: 302) headerAt: 'Location' put: (request parameterAt: 'to'); yourself].
+	server start.
+	reply := self get: '/redir?to=http://x/%0D%0ASet-Cookie:%20s=1'.
+	self assert: (reply at: 1) equals: 'HTTP/1.1 500 Internal Server Error'.
+	self assert: ((reply at: 2) includesKey: 'set-cookie') not.
+	"the ordinary redirect still works"
+	reply := self get: '/redir?to=http://x/y'.
+	self assert: (reply at: 1) equals: 'HTTP/1.1 302 Found'.
+	self assert: ((reply at: 2) at: 'location') equals: 'http://x/y'
+]
+
+{ #category : 'tests - framing' }
+HttpServerTest >> testASmuggledBodyIsRefused [
+	"Bugs3 B56.  `Content-Length : 25' -- one space before the colon -- was
+	 a header nothing found, so its bytes stayed on the connection and were
+	 read as the next request: the client sent one message and the server
+	 answered two.  Now it is one 400, and the connection closes."
+	| reply |
+	server at: '/echo' put: [:request | HttpResponse text: request body].
+	server start.
+	reply := self request: 'POST /echo HTTP/1.1', self crlf, 'Host: t', self crlf,
+		'Content-Length : 25', self crlf, self crlf, 'GET /echo HTTP/1.1', self crlf, self crlf.
+	self assert: (reply at: 1) equals: 'HTTP/1.1 400 Bad Request'.
+	reply := self request: 'POST /echo HTTP/1.1', self crlf, 'Host: t', self crlf,
+		'Content-Length: 5', self crlf, 'Content-Length: 5', self crlf, self crlf, 'hello'.
+	self assert: (reply at: 1) equals: 'HTTP/1.1 400 Bad Request'.
+	reply := self request: 'POST /echo HTTP/1.1', (String with: (Character value: 10)),
+		'Host: t', (String with: (Character value: 10)), (String with: (Character value: 10)).
+	self assert: (reply at: 1) equals: 'HTTP/1.1 400 Bad Request'.
+	"and the well-formed one is served"
+	reply := self post: '/echo' body: 'hello'.
+	self assert: (reply at: 3) equals: 'hello'
+]
+
+{ #category : 'tests - static files' }
+HttpServerTest >> testAFileOutsideTheDocumentRootIsRefused [
+	"Bugs3 B57, lower.  `..' is refused by reading the path's segments, and
+	 a symbolic link inside the root that points out of it is not visible in
+	 the path at all -- `/link' pointing at /etc/passwd was served whole.
+	 The file's resolved name is compared with the root's, which is the
+	 only test that sees a link; a file system that cannot resolve a name
+	 answers nil and the file is refused, so a missing capability is not a
+	 way out either.
+
+	 The link itself cannot be made from here -- this image has no
+	 primitive that makes one -- so what is checked is the comparison every
+	 request goes through, on names that need no link to be outside."
+	| handler here |
+	handler := HttpStaticFileHandler on: '.'.
+	here := Disk realPathNamed: '.'.
+	self assert: here notNil.
+	self assert: (Disk realPathNamed: 'no-such-file-anywhere.txt') isNil.
+	self deny: (handler isWithinDocumentRoot: '/etc/passwd').
+	self deny: (handler isWithinDocumentRoot: '/no-such-file-anywhere.txt').
+	self deny: (handler isWithinDocumentRoot: here, '/../..').
+	self assert: (handler isWithinDocumentRoot: 'README.md').
+	self assert: (handler isWithinDocumentRoot: here, '/README.md').
+	self assert: (handler isWithinDocumentRoot: '.').
+	"a root of `lib' does not admit a sibling whose name merely starts the same way"
+	self deny: ((HttpStaticFileHandler on: 'lib/Json') isWithinDocumentRoot: 'lib/Json-Tests/package.st').
+	self assert: ((HttpStaticFileHandler on: 'lib/Json') isWithinDocumentRoot: 'lib/Json/package.st')
+]

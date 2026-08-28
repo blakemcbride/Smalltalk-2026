@@ -81,8 +81,18 @@ BlockClosure >> value: a value: b value: c value: d [
 
 { #category : 'evaluating' }
 BlockClosure >> valueWithArguments: anArray [
+	"Evaluate me with the elements of anArray as my arguments.
+
+	 The primitive fails for two reasons, and only one of them is the
+	 count.  The elements are spread onto the CALLING method's stack, in a
+	 frame the compiler sized for that method's own pushes (Bugs3 B1); a
+	 fifteen-argument block overflowed a frame of 23 slots and the run was
+	 over.  It fails now instead, and the two reasons are told apart here."
 	<primitive: 206>
-	^self numArgsError: anArray size
+	anArray isArray ifFalse: [^self error: 'valueWithArguments: takes an Array'].
+	anArray size = self numArgs ifFalse: [^self numArgsError: anArray size].
+	^self error: 'valueWithArguments: cannot spread ' , anArray size printString
+		, ' arguments: the calling method''s frame has no room for them'
 ]
 
 { #category : 'evaluating' }

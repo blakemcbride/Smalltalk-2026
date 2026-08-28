@@ -176,3 +176,157 @@ TonelTestSample >> broken [ ^1'.
 			self assert: (e messageText includesSubstring: 'services/X.class.st:').
 			self assert: (e messageText includesSubstring: 'not closed')]
 ]
+
+{ #category : 'tests' }
+TonelReaderTest >> testABadMethodLeavesNoClass [
+	"Bugs3 B63.  A new class whose third method does not compile: the
+	 error names the file and the method, and no class is left behind --
+	 it left one with the two methods before the mistake."
+	| cr |
+	cr := String with: Character cr.
+	[TonelReader loadString: 'Class { #name : ''TonelTestSample'', #superclass : ''Object'' }', cr,
+		'TonelTestSample >> one [ ^1 ]', cr,
+		'TonelTestSample >> two [ ^2 ]', cr,
+		'TonelTestSample >> three: x [ ^x + ) ]', cr named: 'bad/Sample.class.st'.
+	 self assert: false]
+		on: TonelError
+		do: [:e |
+			self assert: (e messageText includesSubstring: 'bad/Sample.class.st:').
+			self assert: (e messageText includesSubstring: 'three: x')].
+	self deny: (Smalltalk includesKey: #TonelTestSample)
+]
+
+{ #category : 'tests' }
+TonelReaderTest >> testABadMethodLeavesTheOldClassWhole [
+	"Bugs3 B63.  A class redefined into the same shape by a file with a
+	 mistake in it: nothing is installed, nothing is removed, and the
+	 class answers what it did."
+	| class cr |
+	class := TonelReader loadString: self sampleText named: 'sample'.
+	cr := String with: Character cr.
+	self should: [TonelReader loadString:
+		'Class { #name : ''TonelTestSample'', #superclass : ''Object'', #instVars : [ ''a'', ''b'' ], #classVars : [ ''Count'' ], #classInstVars : [ ''registry'' ], #category : ''Tonel-Tests'' }', cr,
+		'TonelTestSample >> setA: anInteger [ a := anInteger + 1000 ]', cr,
+		'TonelTestSample >> fresh [ ^99 ]', cr,
+		'TonelTestSample >> broken [ ^( ]', cr named: 'sample'] raise: TonelError.
+	self assert: (Smalltalk at: #TonelTestSample) == class.
+	self assert: (class new setA: 1) answer equals: 42.
+	self assert: (class includesSelector: #answer).
+	self assert: (class class includesSelector: #make).
+	self deny: (class includesSelector: #fresh).
+	self deny: (class includesSelector: #broken)
+]
+
+{ #category : 'tests' }
+TonelReaderTest >> testABadMethodInAReshapingLeavesTheOldClassWhole [
+	"Bugs3 B63, the hard case: the file changes the shape -- an instance
+	 variable added, and a method that uses it -- and another method has
+	 a mistake.  The methods are compiled first against a scratch class
+	 of the new shape, so the good one compiles and the bad one is
+	 refused, and the class keeps its shape and its methods.  The scratch
+	 class is gone afterwards."
+	| class cr |
+	class := TonelReader loadString: self sampleText named: 'sample'.
+	cr := String with: Character cr.
+	self should: [TonelReader loadString:
+		'Class { #name : ''TonelTestSample'', #superclass : ''Object'', #instVars : [ ''a'', ''b'', ''c'' ], #category : ''Tonel-Tests'' }', cr,
+		'TonelTestSample >> setC: x [ c := x ]', cr,
+		'TonelTestSample >> broken [ ^( ]', cr named: 'sample'] raise: TonelError.
+	self assert: (Smalltalk at: #TonelTestSample) == class.
+	self assert: class instVarNames asArray equals: #('a' 'b').
+	self assert: (class new setA: 1) answer equals: 42.
+	self assert: (class class includesSelector: #make).
+	self deny: (class includesSelector: #setC:).
+	self deny: (Smalltalk includesKey: #TonelTestSampleScratchForTonel).
+	"And the same file with the mistake fixed reshapes the class."
+	TonelReader loadString:
+		'Class { #name : ''TonelTestSample'', #superclass : ''Object'', #instVars : [ ''a'', ''b'', ''c'' ], #category : ''Tonel-Tests'' }', cr,
+		'TonelTestSample >> setC: x [ c := x ]', cr,
+		'TonelTestSample >> c [ ^c ]', cr named: 'sample'.
+	class := Smalltalk at: #TonelTestSample.
+	self assert: class instVarNames asArray equals: #('a' 'b' 'c').
+	self assert: (class new setC: 7) c equals: 7.
+	self deny: (class includesSelector: #answer).
+	self deny: (Smalltalk includesKey: #TonelTestSampleScratchForTonel)
+]
+
+{ #category : 'tests' }
+TonelReaderTest >> testAByteOrderMarkIsSkipped [
+	"Bugs3 B63.  The three bytes an editor may put in front of a UTF-8
+	 file read as a type word of no letters, and the file was `not a
+	 Tonel file'."
+	| bom class |
+	bom := String with: (Character value: 239) with: (Character value: 187) with: (Character value: 191).
+	class := TonelReader loadString: bom, self sampleText named: 'bom'.
+	self assert: class name equals: 'TonelTestSample'.
+	self assert: (class new setA: 1) answer equals: 42.
+	self assert: (class comment asString includesSubstring: 'a " quote')
+]
+
+{ #category : 'tests' }
+TonelReaderTest >> testAWeakClassIsWeak [
+	"Bugs3 B61.  #type : 'weak' read at run time makes a weak class, as
+	 the bootstrap makes WeakArray -- it made an ordinary fixed one --
+	 and the writer says so again."
+	| class |
+	class := TonelReader loadString: 'Class { #name : ''TonelTestSample'', #superclass : ''Object'', #type : ''weak'' }' named: 'weak'.
+	self assert: class isWeak.
+	self assert: class isVariable.
+	self assert: class isPointers.
+	self deny: class isEphemeron.
+	self assert: (class new: 3) size equals: 3.
+	self assert: ((TonelWriter sourceFor: class) includesSubstring: '#type : ''weak''').
+	"Reloaded into the same shape, it stays the same class object."
+	self assert: (TonelReader loadString: 'Class { #name : ''TonelTestSample'', #superclass : ''Object'', #type : ''weak'' }' named: 'weak') == class
+]
+
+{ #category : 'tests' }
+TonelReaderTest >> testATraitHeaderIsRefused [
+	"A trait is flattened from source the bootstrap keeps and the image
+	 has not got, so a file naming one is refused rather than loaded
+	 without the trait's methods."
+	[TonelReader loadString: 'Class { #name : ''TonelTestSample'', #superclass : ''Object'', #traits : ''TGreeting'' }' named: 'x'.
+	 self assert: false]
+		on: TonelError
+		do: [:e | self assert: (e messageText includesSubstring: 'trait')].
+	self deny: (Smalltalk includesKey: #TonelTestSample)
+]
+
+{ #category : 'tests' }
+TonelReaderTest >> testAReloadKeepsAnotherPackagesMethods [
+	"A Class file is the whole truth about the class's OWN methods; one
+	 in a starred category is another package's extension and has a file
+	 of its own, and a reload leaves it alone.  It removed it."
+	| class cr |
+	class := TonelReader loadString: self sampleText named: 'sample'.
+	class basicCompile: 'fromElsewhere ^7' classified: '*Elsewhere' notifying: nil.
+	cr := String with: Character cr.
+	TonelReader loadString: 'Class { #name : ''TonelTestSample'', #superclass : ''Object'', #instVars : [ ''a'', ''b'' ], #classVars : [ ''Count'' ], #classInstVars : [ ''registry'' ], #category : ''Tonel-Tests'' }', cr,
+		'TonelTestSample >> setA: anInteger [ a := anInteger ]', cr named: 'sample'.
+	self deny: (class includesSelector: #answer).
+	self assert: (class includesSelector: #fromElsewhere).
+	self assert: class new fromElsewhere equals: 7
+]
+
+{ #category : 'tests' }
+TonelReaderTest >> testAnExtensionReloadRemovesWhatItNoLongerSays [
+	"An Extension file is the whole truth about the class's methods under
+	 the categories it uses: reloaded without one, the class loses that
+	 one and keeps everything else."
+	| class cr |
+	class := TonelReader loadString: self sampleText named: 'sample'.
+	cr := String with: Character cr.
+	TonelReader loadString: 'Extension { #name : ''TonelTestSample'' }', cr,
+		'{ #category : ''*Tonel-Tests'' }', cr,
+		'TonelTestSample >> twice [ ^self answer * 2 ]', cr,
+		'{ #category : ''*Tonel-Tests'' }', cr,
+		'TonelTestSample >> thrice [ ^self answer * 3 ]', cr named: 'ext'.
+	self assert: (class includesSelector: #thrice).
+	TonelReader loadString: 'Extension { #name : ''TonelTestSample'' }', cr,
+		'{ #category : ''*Tonel-Tests'' }', cr,
+		'TonelTestSample >> twice [ ^self answer * 2 ]', cr named: 'ext'.
+	self assert: (class includesSelector: #twice).
+	self deny: (class includesSelector: #thrice).
+	self assert: (class includesSelector: #answer).
+	self assert: (class class includesSelector: #make)
+]

@@ -451,17 +451,22 @@ boot_note(const char *fmt, ...)
 /*  ----------  Literals the compiler asks us to make  ----------  */
 
 static st_oop
-make_string_object(const char *text)
+make_string_object_n(const char *bytes, size_t n)
 {
-    size_t  n = strlen(text);
     st_oop  s = OM_instantiate_bytes(BOOT_global("String"), (uint32_t) n);
     size_t  i;
 
     if (!OM_is_object(s))
         return ST_NIL;
     for (i = 0; i < n; ++i)
-        OM_store_byte((uint32_t) i, s, (uint8_t) text[i]);
+        OM_store_byte((uint32_t) i, s, (uint8_t) bytes[i]);
     return s;
+}
+
+static st_oop
+make_string_object(const char *text)
+{
+    return make_string_object_n(text, strlen(text));
 }
 
 static int place_in_symbol_table(st_oop sym);
@@ -658,6 +663,13 @@ BOOT_make_string(const char *text, void *user)
 {
     (void) user;
     return make_string_object(text);
+}
+
+st_oop
+BOOT_make_string_n(const char *bytes, size_t length, void *user)
+{
+    (void) user;
+    return make_string_object_n(bytes, length);
 }
 
 st_oop
@@ -1592,6 +1604,22 @@ resolve_ivars(boot_class *c, unsigned depth)
     for (i = 0; i < c->class_ivars.count
              && c->all_class_ivars.count < MAX_IVARS; ++i)
         name_list_add(&c->all_class_ivars, c->class_ivars.items[i]);
+    /*
+     *  The bytecode set addresses sixty-four instance variables and no
+     *  more: the extended push and store carry a six-bit index.  The
+     *  compiler now refuses a reference past that (Bugs3 B23), but a
+     *  class that DECLARES more would still build, with its far fields
+     *  unreachable from any method and its accessors refused one by one
+     *  with a message about a variable rather than about the class.  The
+     *  class is the thing that is wrong, so the class is what is refused.
+     *  The image-side definition message refuses at the same number.
+     */
+    if (c->all_ivars.count > 64) {
+        boot_fail("class %s has %u instance variables, its superclasses' "
+                  "included; the bytecode set addresses 64",
+                  c->name, c->all_ivars.count);
+        return 0;
+    }
     c->resolved = 1;
     return 1;
 }
@@ -2431,7 +2459,13 @@ allocate_fixed_objects(void)
         { ST_CHARACTER_TABLE,              FIX_ARRAY,       NULL,   256 },
         { ST_SELECTOR_MUST_BE_BOOLEAN,     FIX_SYMBOL, "mustBeBoolean", 0 },
         { ST_CLASS_DISPLAY_SCREEN,         FIX_CLASS, "DisplayScreen", 0 },
-        { ST_SELECTOR_CANNOT_INTERPRET,    FIX_SYMBOL, "cannotInterpret", 0 }
+        /*
+         *  With its colon: the interpreter sends it with the Message the
+         *  receiver could not be given a doesNotUnderstand: for (Bugs3
+         *  B7), as Squeak does and as the Blue Book's SystemTracer spells
+         *  it.  It was `cannotInterpret' for as long as nothing sent it.
+         */
+        { ST_SELECTOR_CANNOT_INTERPRET,    FIX_SYMBOL, "cannotInterpret:", 0 }
     };
     unsigned    i;
 
@@ -3033,6 +3067,11 @@ flatten_traits(void)
              *  the convention for "defined elsewhere", which is exactly
              *  true here -- and it puts every flattened method together in
              *  the Browser, where the trait's file is the place to edit it.
+             *
+             *  The spelling is relied on: TonelWriter leaves every method
+             *  whose protocol begins with a star out of a class file, so
+             *  a class that takes a trait is written back naming the trait
+             *  (from TraitCompositions, below) and not owning its methods.
              */
             snprintf(protocol, sizeof protocol, "*trait:%.40s",
                      all.items[i].origin->name);
@@ -3120,6 +3159,13 @@ chain_depth(const boot_class *c)
 static int
 synthesize_initializing_new(void)
 {
+    /*
+     *  The comment is a marker as well as an explanation: TonelWriter
+     *  recognises a class-side `new' whose source says "Synthesized by the
+     *  loader" and leaves it out of the file, because the file never had
+     *  it and a write-back that added it would not read back byte for
+     *  byte.  Change the words here and there together.
+     */
     static const char   source[] = "new\n\t\"Synthesized by the loader: this "
                                    "class defines initialize and no "
                                    "new.\"\n\t^super new initialize";
@@ -3798,6 +3844,21 @@ install_closure_support(void)
 
         if (OM_is_present(selector)) {
             st_om_vm_state[ST_VM_SELECTOR_DEPTH_EXCEEDED] = selector;
+            OM_increase_ref(selector);
+        }
+    }
+    /*
+     *  And #corruptMethod, sent when a method's bytes or a context's
+     *  registers turn out not to be executable (Bugs3 B11).  Bound and
+     *  checked exactly as the two above are: a profile in which nothing
+     *  implements it gets the abandoned activation's nil and a line on
+     *  stderr, which is what the interpreter can do on its own.
+     */
+    {
+        st_oop  selector = BOOT_intern_symbol("corruptMethod", NULL);
+
+        if (OM_is_present(selector)) {
+            st_om_vm_state[ST_VM_SELECTOR_CORRUPT_METHOD] = selector;
             OM_increase_ref(selector);
         }
     }
@@ -5429,6 +5490,103 @@ install_class_pools(void)
 }
 
 /*
+ *  Record each class's pool dictionaries in its sharedPools.
+ *
+ *  A class defined from source names its pools -- `poolDictionaries:
+ *  'TextConstants'' in a 1983 chunk header, `#pools : [ 'TextConstants' ]'
+ *  in a Tonel one -- and this loader read the clause, resolved the names
+ *  the class uses against the pool, and then FORGOT it: nothing was ever
+ *  stored in the class's sharedPools slot.  So `TextStyle sharedPools size'
+ *  was 0, `TextStyle definition' printed `poolDictionaries: '''', and
+ *  TonelWriter, which writes the #pools clause from sharedPools, wrote
+ *  such a class back without it -- a class that came in sharing a pool
+ *  went out sharing nothing, and the next load of that file compiled its
+ *  pool names as undeclared (Bugs3 B34).
+ *
+ *  Built with the image's own Set, as Class>>sharing: builds it, so that
+ *  what the image finds there is exactly what it would have made itself.
+ *  The Set is filled by add:, which hashes the pool; a pool holds itself
+ *  as a value (TextConstants at: #TextConstants), and Dictionary>>hash in
+ *  lib/Collections-Protocol reads keys alone for that reason -- with 1983's
+ *  identity hash, which the Blue Book profile keeps, there is nothing to
+ *  recurse into either way.
+ *
+ *  Only a pool that is a Dictionary is recorded.  A Pharo pool is a CLASS
+ *  -- see the note in BOOT_lookup_global -- and Behavior>>allVarNamesSelect:
+ *  and Class>>poolHas:ifTrue: send keys and associationAt:ifAbsent: to
+ *  whatever sharedPools holds, so a class there would break the first
+ *  Browser compile against a Chronology class.  The names such a pool
+ *  supplies are bound to globals by the resolution above, which is what
+ *  makes those classes work; recording the pool itself waits on SharedPool
+ *  answering a Dictionary's questions.
+ *
+ *  After install_pools, which is what creates the pool dictionaries that
+ *  were only ever named, and before the initializers, which may already
+ *  ask a class for its definition.
+ */
+static void
+install_shared_pools(void)
+{
+    st_oop      set_class = BOOT_global("Set");
+    st_oop      new_with;
+    st_oop      add_to;
+    unsigned    i;
+    unsigned    recorded = 0;
+
+    if (!OM_is_present(set_class))
+        return;
+    new_with = lookup_in_chain(OM_fetch_class(set_class), "new:");
+    add_to   = lookup_in_chain(set_class, "add:");
+    if (!OM_is_present(new_with) || !OM_is_present(add_to))
+        return;
+
+    for (i = 0; i < class_count; ++i) {
+        boot_class *c = &classes[i];
+        st_oop      pools;
+        st_oop      arg;
+        unsigned    p;
+        unsigned    added = 0;
+
+        if (!OM_is_present(c->class_oop) || c->pools.count == 0)
+            continue;
+        for (p = 0; p < c->pools.count; ++p)
+            if (!find_class(c->pools.items[p])
+             && OM_is_present(BOOT_global(c->pools.items[p])))
+                ++added;
+        if (added == 0)
+            continue;
+        added = 0;
+
+        /*  Room to spare: a hashed collection that fills up stops working. */
+        arg = OM_int_oop((st_int) (c->pools.count * 4 + 4));
+        if (!run_method_with(new_with, set_class, &arg, 1, 2000000))
+            continue;
+        pools = st_vm.return_value;
+        if (!OM_is_present(pools))
+            continue;
+        for (p = 0; p < c->pools.count; ++p) {
+            st_oop  pool;
+
+            if (find_class(c->pools.items[p]))
+                continue;               /*  a Pharo pool class: see above  */
+            pool = BOOT_global(c->pools.items[p]);
+            if (!OM_is_present(pool))
+                continue;
+            arg = pool;
+            if (run_method_with(add_to, pools, &arg, 1, 2000000))
+                ++added;
+        }
+        if (added == 0)
+            continue;
+        OM_store_pointer(CLASS_SHARED_POOLS, c->class_oop, pools);
+        ++recorded;
+    }
+    if (getenv("ST_BOOT_LOG"))
+        fprintf(stderr, "  pools: %u class%s recorded sharing one\n",
+                recorded, recorded == 1 ? "" : "es");
+}
+
+/*
  *  The scheduler object itself, and the name Processor for it.
  *
  *  Separated from the startup process because the class initializers need
@@ -5537,7 +5695,16 @@ BOOT_install_scheduler(const char *startup_source)
     ctx.lookup_global      = BOOT_lookup_global;
     snprintf(source, sizeof source, "startUp %s", startup_source);
     if (COMPILE_method(source, &ctx, &res) != 0) {
+        /*
+         *  Said here as well as recorded, because by now nobody reads the
+         *  record: boot_fail writes into the build's result, and the build
+         *  finished before this ran.  `-startup "3 +"' printed only `no
+         *  startup process installed', wrote the image and exited 0
+         *  (Bugs3 B58); what was wrong with the startup was in a buffer
+         *  nothing printed.
+         */
         boot_fail("cannot compile the startup: %s", res.error);
+        fprintf(stderr, "st80: cannot compile the startup: %s\n", res.error);
         return 0;
     }
     OM_increase_ref(res.method);
@@ -6166,6 +6333,82 @@ run_class_initializers(st_boot_init_report *out)
     }
 }
 
+/*
+ *  Hand the image each class's trait composition, as its header wrote it.
+ *
+ *  Flattening leaves the trait's methods in the class under `*trait:TName'
+ *  protocols and nothing else: the composition text -- "TGreeting", or
+ *  "TA + (TB - {#x})" -- lived only in the boot_class record, which is
+ *  freed with the rest of this file's state.  So the image could not say
+ *  which classes used a trait, and TonelWriter wrote Greeter back with no
+ *  `#traits' line and with `greeting' as a method of its own; reading that
+ *  file back makes a class that has stopped taking the trait without
+ *  anything saying so (Bugs3 B61).
+ *
+ *  TraitCompositions is a Dictionary from class name to that text, made
+ *  here the way Undeclared and SystemChanges are made above -- by sending
+ *  new to the class -- and filled by sending at:put:, so that the image's
+ *  own hashing puts the entries where the image's own lookup will find
+ *  them.  Class>>traitComposition in lib/Kernel-Protocol reads it, and
+ *  TonelWriter writes `#traits' and `#classTraits' from it and leaves the
+ *  `*trait:' protocols out of the file.  Keyed by name rather than by the
+ *  class object because a redefinition makes a new object and TonelSource
+ *  follows the name for the same reason.
+ *
+ *  After install_user_interface, because Dictionary>>at:put: on a Symbol
+ *  key needs the class initializers to have run, and that function is the
+ *  first place a Dictionary is made by sending new.  Written once, on this
+ *  thread, before any worker exists; never written again, so the readers
+ *  need no lock (lib/Concurrency/LibraryLocks says why that is enough).
+ *
+ *  define_global at this point stores into a binding that already exists
+ *  and makes a private one otherwise: install_system_dictionary has run,
+ *  and a binding made after it is the bootstrap's view and not Smalltalk's.
+ *  So the name has to have been declared by a method that mentions it --
+ *  Class>>traitComposition does, by design, and says so -- exactly as Disk
+ *  and Undeclared are declared by their senders and filled here.  A profile
+ *  in which nothing mentions the name gets a binding nothing can reach,
+ *  which is the same as not having one.
+ *
+ *  Not a failure when it cannot be done: a profile without Dictionary --
+ *  the raw kernel -- has no traits to record either.
+ */
+static void
+install_trait_compositions(void)
+{
+    st_oop      dictionary_class = BOOT_global("Dictionary");
+    st_oop      make;
+    st_oop      registry;
+    st_oop      at_put;
+    unsigned    i;
+
+    if (!OM_is_present(dictionary_class))
+        return;
+    make = lookup_in_chain(OM_fetch_class(dictionary_class), "new");
+    if (!OM_is_present(make) || !run_method_on(make, dictionary_class, 4000000))
+        return;
+    registry = st_vm.return_value;
+    if (!OM_is_present(registry) || registry == ST_NIL)
+        return;
+    OM_increase_ref(registry);
+    define_global("TraitCompositions", registry);
+
+    at_put = lookup_in_chain(OM_fetch_class(registry), "at:put:");
+    if (!OM_is_present(at_put))
+        return;
+    for (i = 0; i < class_count; ++i) {
+        st_oop  args[2];
+
+        if (!classes[i].traits[0])
+            continue;
+        args[0] = BOOT_intern_symbol(classes[i].name, NULL);
+        args[1] = BOOT_make_string(classes[i].traits, NULL);
+        if (!OM_is_present(args[0]) || !OM_is_present(args[1]))
+            continue;
+        run_method_with(at_put, registry, args, 2, 4000000);
+    }
+}
+
 int
 BOOT_run_initializers(st_boot_init_report *out)
 {
@@ -6176,6 +6419,7 @@ BOOT_run_initializers(st_boot_init_report *out)
         return -1;
     if (!install_pools())
         return -1;
+    install_shared_pools();
 
     /*
      *  The first pass is expected to fail in places, so it says nothing.
@@ -6214,6 +6458,7 @@ BOOT_run_initializers(st_boot_init_report *out)
     resolve_undeclared_from_pools();
 
     install_user_interface();
+    install_trait_compositions();
     install_subclass_graph();
     install_class_organization();
     install_class_comments();

@@ -104,13 +104,28 @@ OM_is_present(st_oop p)
  *  room and the other is a program with a bug in it, and a handler that
  *  wants to retry on the first must not retry on the second.
  */
-#define ST_VM_STATE_SLOTS               6
+/*
+ *  And a seventh, #corruptMethod (Bugs3 B11).
+ *
+ *  Sent when the interpreter finds it cannot execute the method it is in:
+ *  a bytecode names a literal past the method's literal frame, the
+ *  instruction pointer is past the method's end, or a context it has been
+ *  asked to resume has an instruction or stack pointer outside its bounds.
+ *  A CompiledMethod's bytes are written through at:put: -- that is how the
+ *  1983 compiler writes them -- and a context's registers are ordinary
+ *  instance variables, so neither can be refused at the write; the check
+ *  is made at execution, where before it there was a segfault.  The
+ *  activation is abandoned and this is sent to its receiver in place of
+ *  the answer, exactly as the two above are sent in place of a send.
+ */
+#define ST_VM_STATE_SLOTS               7
 #define ST_VM_INPUT_SEMAPHORE           0
 #define ST_VM_DISPLAY                   1
 #define ST_VM_CLASS_BLOCK_CLOSURE       2
 #define ST_VM_SELECTOR_ABOUT_TO_RETURN  3
 #define ST_VM_SELECTOR_OUT_OF_MEMORY    4
 #define ST_VM_SELECTOR_DEPTH_EXCEEDED   5
+#define ST_VM_SELECTOR_CORRUPT_METHOD   6
 
 extern st_oop   st_om_vm_state[ST_VM_STATE_SLOTS];
 

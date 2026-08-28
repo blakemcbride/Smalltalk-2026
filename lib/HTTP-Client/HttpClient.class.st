@@ -49,13 +49,20 @@ and runs out as a TimedOut.  A host that cannot be reached or refuses is a
 NetError with the system's words; DNS is the one call that does block the
 worker, inside getaddrinfo, as everywhere on this system.
 
+THE BODY IS BOUNDED, at 64 MB unless maxBodyBytes: says otherwise.  The
+reply comes from a server this program did not write, and until Bugs3 B57
+(lower) there was no size at which it stopped being read: a
+`Content-Length: 100000000000' was a hundred gigabytes of String, and a
+chunked reply had no total at all.  A reply over the limit is a NetError
+naming it, raised before the bytes are read where the length is declared.
+
 NOT HERE.  Redirects, cookies, authentication: a caller who needs one
 sets the header.
 "
 Class {
 	#name : 'HttpClient',
 	#superclass : 'Object',
-	#instVars : [ 'readTimeout', 'headers' ],
+	#instVars : [ 'readTimeout', 'headers', 'maxBodyBytes' ],
 	#category : 'HTTP-Client'
 }
 
@@ -72,13 +79,26 @@ HttpClient class >> post: aUrlString body: aString contentType: aType [
 { #category : 'initialization' }
 HttpClient >> initialize [
 	readTimeout := 30000.
-	headers := OrderedCollection new
+	headers := OrderedCollection new.
+	maxBodyBytes := HttpBodyStream defaultMaxBodyBytes
 ]
 
 { #category : 'configuration' }
 HttpClient >> readTimeout: milliseconds [
 	"How long to wait for any part of the reply before raising TimedOut."
 	readTimeout := milliseconds
+]
+
+{ #category : 'configuration' }
+HttpClient >> maxBodyBytes: anInteger [
+	"How much of a reply's body this client will read before it raises.
+	 64 MB unless told otherwise; see the class comment."
+	maxBodyBytes := anInteger
+]
+
+{ #category : 'configuration' }
+HttpClient >> maxBodyBytes [
+	^maxBodyBytes
 ]
 
 { #category : 'configuration' }
@@ -141,7 +161,7 @@ HttpClient >> request: aMethod url: aUrlString body: aStringOrNil contentType: a
 	  stream := SocketStream on: socket.
 	  stream readTimeout: readTimeout.
 	  self write: aMethod url: url body: aStringOrNil contentType: aTypeOrNil on: stream.
-	  aBlock value: (HttpClientResponse readFrom: stream)]
+	  aBlock value: (HttpClientResponse readFrom: stream maxBodyBytes: maxBodyBytes)]
 		ensure: [socket close]
 ]
 

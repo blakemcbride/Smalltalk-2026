@@ -45,7 +45,10 @@ OllamaTest >> testSend [
 	self deny: (body booleanAt: 'stream').
 	self assert: ((body arrayAt: 'messages') objectAt: 1) asJsonString equals: '{"role":"system","content":"Be brief"}'.
 	self assert: ((body arrayAt: 'messages') objectAt: 2) asJsonString equals: '{"role":"user","content":"Why is the sky blue?"}'.
-	self assert: ((body objectAt: 'options') numberAt: 'temperature') equals: 0.1.
+	"1/10 and not 0.1: the reader answers the exact decimal, and a Fraction
+	 is equal to a Float only when the Float is exactly that value (Bugs3
+	 B36) -- which 0.1 is not."
+	self assert: ((body objectAt: 'options') numberAt: 'temperature') equals: 1/10.
 	self assert: ((body objectAt: 'options') integerAt: 'num_predict') equals: 64.
 	self should: [Ollama new send: 'no model'] raise: LLMError
 ]

@@ -539,6 +539,12 @@ OM_exchange_pointer(uint32_t field, st_oop p, st_oop value)
 void    OM_store_pointer(uint32_t field, st_oop p, st_oop value);
 void    OM_deallocate(st_oop p);
 
+/*
+ *  Hand out identity hashes above this one from now on.  The image loader
+ *  calls it with the highest hash the file carried; see om_mt.c.
+ */
+void    OM_continue_identity_hashes_after(uint32_t hash);
+
 st_oop  OM_instantiate_pointers(st_oop class_pointer, uint32_t size);
 /*  As above, but the indexed fields past `fixed` are weak.  */
 st_oop  OM_instantiate_weak(st_oop class_pointer, uint32_t size,
@@ -689,7 +695,20 @@ extern uint32_t st_om_image_ot_words;
  *  perfectly good to the interpreter, which scans, and invisible to the
  *  image, which hashes.  Primitive 75 answers this and nothing else may
  *  compute it differently.
+ *
+ *  Thirty bits of the allocation number, not fourteen.  The mask was
+ *  0x3FFF, the width of the 1983 oop the hash stands in for, and it made
+ *  every identity-hashed collection in the system quadratic past a few
+ *  thousand elements: a hundred thousand `Object new' had 16,384 distinct
+ *  hashes between them, and Object>>hash, Symbol>>hash, a Set of classes
+ *  or of Processes are all this hash (Bugs3 B33).  Thirty rather than
+ *  thirty-two so that a hash multiplied by a thirty-bit mixing constant
+ *  still fits a 62-bit SmallInteger -- 2^60 does, 2^62 does not -- and
+ *  the Blue Book memory keeps its fourteen, because there the hash IS the
+ *  16-bit oop.  The header field is what the snapshot stores, so a hash
+ *  survives a save and a reload unchanged, and swap_identities_unguarded
+ *  keeps it with the identity across a become:.
  */
-#define OM_identity_hash(p)     (OM_head(p)->hash & 0x3FFF)
+#define OM_identity_hash(p)     (OM_head(p)->hash & 0x3FFFFFFF)
 
 #endif  /*  ST_OM_MT_H  */

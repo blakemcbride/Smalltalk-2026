@@ -176,7 +176,7 @@ never matters.
 
 Mixed arithmetic works because of \emph{generality}: each number class knows a
 number saying how general it is, and when \ct{+} meets an argument it does not
-understand, it sends \ct{retryRelationalOp:coercing:} or friends, which
+understand, it sends \ct{retry:coercing:}, which
 converts the less general to the more general and tries again.
 
 \begin{st}

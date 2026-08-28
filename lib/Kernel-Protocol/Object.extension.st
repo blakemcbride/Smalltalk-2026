@@ -142,6 +142,20 @@ Object >> isInteger [
 ]
 
 { #category : '*Kernel-Protocol' }
+Object >> isFloat [
+	"Pharo's spelling of the question, and the one Number>>retry:coercing:
+	 asks to decide whether a comparison must be made exactly (Bugs3
+	 B36): an isKindOf: there would cost a class walk on every mixed
+	 comparison in the system."
+	^false
+]
+
+{ #category : '*Kernel-Protocol' }
+Object >> isFraction [
+	^false
+]
+
+{ #category : '*Kernel-Protocol' }
 Object >> isCollection [
 	^false
 ]
@@ -301,6 +315,12 @@ Object >> become: otherObject [
 	<primitive: 72>
 	(self isKindOf: SmallInteger) | (otherObject isKindOf: SmallInteger)
 		ifTrue: [^self error: 'become: needs two objects; a SmallInteger has no identity to exchange'].
+	"A Symbol's identity is its meaning (Bugs3 B21): the symbol table and
+	 every method dictionary are keyed by the object, and `#zzE become:
+	 #zzF' left two Symbols spelled zzE and a literal that was not the
+	 interned one.  The primitive refuses it as it refuses nil."
+	self isSymbol | otherObject isSymbol
+		ifTrue: [^self error: 'become: refused: a Symbol names itself for the whole image''s life; the symbol table and every method dictionary are keyed by its identity'].
 	^self error: 'become: refused: nil, true, false and the fixed classes '
 		, 'may only exchange bodies with their own class, and a pinned '
 		, 'object may not exchange at all'
@@ -364,7 +384,10 @@ Object >> basicIdentityHash [
 	 The fallback answers SELF because the only receiver that reaches it is
 	 a SmallInteger.  The primitive refuses exactly one thing -- a receiver
 	 that is not an object -- and for a real object it cannot fail at all,
-	 since the hash it answers is masked to fourteen bits and always fits.
+	 since the hash it answers is thirty bits wide and always fits a
+	 SmallInteger.  (It was fourteen bits, the width of a 1983 oop, and a
+	 hundred thousand fresh objects shared 16,384 hashes between them --
+	 Bugs3 B33; the width is the object memory's, in OM_identity_hash.)
 	 A SmallInteger has no object pointer to hash, and needs none: its
 	 identity IS its value, which is what the primitive's own C says.
 
@@ -503,4 +526,36 @@ Association >> storeOn: aStream [
 		ifTrue: [aStream nextPut: $ ].
 	aStream nextPutAll: stored.
 	aStream nextPut: $)
+]
+
+{ #category : '*Kernel-Protocol' }
+Object >> perform: selector withArguments: anArray [
+	"Send myself the message whose selector is selector and whose arguments
+	 are the elements of anArray.
+
+	 1983's body is `self primitiveFailed', which says `a primitive has
+	 failed' and nothing about why, and the primitive fails for three
+	 reasons now, two of them new.  It fails, as the Blue Book's does, when
+	 the method the selector names takes a different number of arguments
+	 (Bugs3 B5): `3 perform: #+' used to be shuffled onto the stack and sent
+	 anyway, and the interpreter's frame check then stopped the whole image.
+	 And it fails when the elements would not FIT (Bugs3 B1): they are
+	 spread onto the calling method's stack, in a frame the compiler sized
+	 for that method's own pushes; twelve of them overflowed the frame of
+	 the method that sent this, and eighteen segfaulted.  Squeak's fallback
+	 raises in the same three places.
+
+	 A selector nobody implements is not a failure: the primitive sends it
+	 and doesNotUnderstand: takes the arguments however many there are."
+	<primitive: 84>
+	anArray isArray
+		ifFalse: [^self error: 'perform:withArguments: takes an Array of arguments'].
+	selector isSymbol
+		ifFalse: [^self error: 'perform:withArguments: takes a Symbol as the selector'].
+	selector numArgs = anArray size
+		ifFalse: [^self error: 'perform: ' , selector printString , ' with '
+			, anArray size printString , ' arguments; it takes '
+			, selector numArgs printString].
+	^self error: 'perform:withArguments: cannot spread ' , anArray size printString
+		, ' arguments: the calling method''s frame has no room for them'
 ]

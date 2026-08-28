@@ -601,7 +601,23 @@ demo-image: $(BIN)
 	./st80 -bootstrap -profile profiles/st2026.profile -startup 'RestServer serve' -o demo.im
 	@echo "built demo.im -- now: ./st80 -serve demo.im demo/server.json"
 
-test: unit-test suite-test
+test: unit-test suite-test snapshot-test
+
+# A snapshot from a worker pool, resumed ----------------------------------------
+#
+# What tests/run_snapshot.sh checks is a process boundary -- an image written
+# by one st80 and read by another -- so it is a shell check and not a C one.
+# Under OM=mt only, for the reason the suites are.
+
+.PHONY: snapshot-test
+snapshot-test: $(VARIANT_BIN)
+ifeq ($(OM),mt)
+	@echo "==> a snapshot from a worker pool"
+	@sh tests/run_snapshot.sh $(VARIANT_BIN)
+else
+	@echo "==> a snapshot from a worker pool"
+	@echo "skipped: the bootstrap targets the 64-bit object memory"
+endif
 
 # The imported packages' own suites -------------------------------------------
 #

@@ -22,22 +22,41 @@ SequenceableCollection >> allButLast [
 
 { #category : '*Collections-Protocol' }
 SequenceableCollection >> allButFirst: n [
+	"All but my first n elements; nothing when n is my size or more,
+	 since there is nothing after the first n of three but five."
+	self checkCount: n.
 	^self copyFrom: n + 1 to: self size
 ]
 
 { #category : '*Collections-Protocol' }
 SequenceableCollection >> allButLast: n [
+	self checkCount: n.
 	^self copyFrom: 1 to: self size - n
 ]
 
 { #category : '*Collections-Protocol' }
 SequenceableCollection >> first: n [
+	"My first n elements.  More than I have is a subscript error, as it
+	 is in Pharo; fewer than none is refused by name."
+	self checkCount: n.
 	^self copyFrom: 1 to: n
 ]
 
 { #category : '*Collections-Protocol' }
 SequenceableCollection >> last: n [
+	self checkCount: n.
 	^self copyFrom: self size - n + 1 to: self size
+]
+
+{ #category : '*Collections-Protocol' }
+SequenceableCollection >> checkCount: n [
+	"Refuse a negative count, in words.
+
+	 `first: -1' asked copyFrom:to: for a copy of size -1, whose `species
+	 new: -1' failed its primitive, and the error said `a primitive has
+	 failed' -- true, and no help (Bugs3 B51).  A count is a number of
+	 elements, and there is no such thing as minus one of them."
+	n < 0 ifTrue: [^self error: 'a count of elements cannot be negative: ' , n printString]
 ]
 
 { #category : '*Collections-Protocol' }
@@ -390,10 +409,21 @@ SequenceableCollection >> sort: aBlock [
 	"Sort me IN PLACE by that block, and answer me.
 
 	 In place, where sorted: answers a copy -- the two exist side by side in
-	 Pharo and the difference is the whole reason both are there."
-	| ordered |
-	ordered := (self asSortedCollection: aBlock) asArray.
-	1 to: ordered size do: [:i | self at: i put: (ordered at: i)].
+	 Pharo and the difference is the whole reason both are there.
+
+	 A merge sort, and STABLE for it: elements the block ranks equal stay
+	 in the order they were in.  This went through asSortedCollection:,
+	 whose large-addition path is 1983's quicksort, so sorting pairs by
+	 their first element shuffled the second elements -- and did so
+	 differently for every size, which is the kind of fault that passes
+	 every small test (Bugs3 B51).  Stability holds when the block answers
+	 true for equal elements, as `<=' does and the default does; a strict
+	 `<' has said that equal elements may go either way, and they do.
+	 SortedCollection>>reSort sorts through here for the same reason."
+	| size |
+	size := self size.
+	size <= 1 ifTrue: [^self].
+	self mergeSortFrom: 1 to: size by: aBlock into: (Array new: size).
 	^self
 ]
 
@@ -495,12 +525,56 @@ SequenceableCollection >> hash [
 	 be allowed to hash differently, but a class's hash here is derived
 	 from its pointer, and a hash that moves when the collector moves a
 	 class is not a hash a Set can be built on.  They collide; collisions
-	 are cheap and wrong answers are not."
-	| h |
+	 are cheap and wrong answers are not.
+
+	 THIRTY-TWO ELEMENTS, THEN A SAMPLE OF SIXTEEN (Bugs3 B33).  As first
+	 written this walked every element, which is the right function for
+	 the keys a program actually makes -- rows, coordinates, key paths,
+	 digests, all of them short -- and the wrong cost for an Interval,
+	 which is equal to the Array of its elements and so must hash as one:
+	 `(1 to: 1000000) hash' walked a million elements and a Set of twenty
+	 thousand Intervals did not finish in two minutes.  So a collection of
+	 up to thirty-two elements hashes every one of them, exactly as
+	 before, and a longer one hashes its size and sixteen elements spaced
+	 evenly from its first to its last.  Two long collections that differ
+	 only at a position the sample misses collide, and a Dictionary keyed
+	 by such things is slow rather than wrong; a thirty-two-byte digest,
+	 a row of thirty columns and every literal array anybody writes are
+	 still hashed whole.  Sixteen rather than thirty-two because the
+	 sample is the whole cost of an Interval's hash, and a Set of twenty
+	 thousand Intervals has to fill in a fraction of a second; a longer
+	 sample bought nothing measurable for the arrays that reach it.
+
+	 The Bugs2 fix that made this walk every element was for the shape
+	 (0, i, 0) -- first and last alone cannot see the middle -- and the
+	 sample keeps that: a three-element Array hashes all three.
+
+	 The sample positions are 1 + (k * (size - 1) // 15) for k from 0 to
+	 15: the first element, the last, and fourteen between.  Interval>>hash
+	 computes the same elements arithmetically instead of sending at:,
+	 which costs it a bounds check and a size per element, and the two
+	 must stay one function: tests/unit/test_image.c asserts that an
+	 Interval and the Array of its elements hash alike on both sides of
+	 the threshold.
+
+	 A collection that holds ITSELF contributes nothing for that element
+	 rather than recursing into its own hash (Bugs3 B34)."
+	| h size each |
 	h := 2166136261.
-	self do: [:each |
-		h := ((h bitXor: (each hash bitAnd: 16rFFFFFFFF)) * 16777619)
-				bitAnd: 16rFFFFFFFF].
+	size := self size.
+	size <= 32
+		ifTrue: [
+			self do: [:element |
+				h := ((h bitXor: ((element == self ifTrue: [0] ifFalse: [element hash])
+							bitAnd: 16rFFFFFFFF)) * 16777619)
+						bitAnd: 16rFFFFFFFF]]
+		ifFalse: [
+			h := ((h bitXor: (size bitAnd: 16rFFFFFFFF)) * 16777619) bitAnd: 16rFFFFFFFF.
+			0 to: 15 do: [:k |
+				each := self at: 1 + (k * (size - 1) // 15).
+				h := ((h bitXor: ((each == self ifTrue: [0] ifFalse: [each hash])
+							bitAnd: 16rFFFFFFFF)) * 16777619)
+						bitAnd: 16rFFFFFFFF]].
 	^(h bitXor: (h bitShift: -16)) bitAnd: 16rFFFFFFF
 ]
 
@@ -520,4 +594,89 @@ SequenceableCollection >> replaceAll: oldObject with: newObject [
 	1 to: self size do: [:i |
 		(self at: i) = oldObject ifTrue: [self at: i put: newObject]].
 	^self
+]
+
+{ #category : '*Collections-Protocol' }
+SequenceableCollection >> copyFrom: start to: stop [
+	"The elements from start to stop, or nothing when stop is before
+	 start.
+
+	 1983 computes the new size as `stop - start + 1' and asks my species
+	 for that many, which for an empty range is fine and for an INVERTED
+	 one is a negative size, and `species new: -1' fails its primitive:
+	 `#() allButFirst' and `#(1 2 3) allButFirst: 5' both died with `a
+	 primitive has failed' (Bugs3 B51).  An empty answer is what an
+	 inverted range means, and it is what 1983's own OrderedCollection
+	 answers for the same question, so the two now agree.  A range that
+	 reaches outside me still fails, in replaceFrom:to:with:startingAt:,
+	 with the subscript that did."
+	| newSize |
+	stop < start ifTrue: [^self species new: 0].
+	newSize := stop - start + 1.
+	^(self species new: newSize)
+		replaceFrom: 1
+		to: newSize
+		with: self
+		startingAt: start
+]
+
+{ #category : '*Collections-Protocol' }
+SequenceableCollection >> copyFrom: start [
+	"The elements from start to my end.
+
+	 Pharo's, and without it `#(1 2 3) copyFrom: 2' found Object>>copyFrom:
+	 -- which copies the ARGUMENT'S instance variables into the receiver,
+	 and answered the whole array unchanged (Bugs3 B51).  For a sequence
+	 the one-argument form can only mean this."
+	^self copyFrom: start to: self size
+]
+
+{ #category : '*Collections-Protocol' }
+SequenceableCollection >> , aSequenceableCollection [
+	"A copy of me with that collection's elements after mine -- and a
+	 refusal when the argument is not a collection at all.
+
+	 1983 hands the argument to copyReplaceFrom:to:with:, which asks it
+	 for its size, and Object>>size answers 0 for a SmallInteger and for
+	 nil: `'abc' , 3' and `'abc' , nil' both answered 'abc', quietly
+	 (Bugs3 B51).  A collection of the wrong kind of element is still
+	 refused where it always was, by the store."
+	aSequenceableCollection isCollection
+		ifFalse: [^self error: 'cannot append a ' , aSequenceableCollection class name
+					, ' to a ' , self class name , ': it is not a collection'].
+	^self copyReplaceFrom: self size + 1
+		to: self size
+		with: aSequenceableCollection
+]
+
+{ #category : '*Collections-Protocol' }
+SequenceableCollection >> mergeSortFrom: first to: last by: aBlock into: scratch [
+	"Sort my elements from first to last in place, keeping those aBlock
+	 ranks equal in the order they were in; scratch is an Array at least
+	 last long that the merge copies through.
+
+	 The usual top-down merge sort.  Each half is sorted, and when the
+	 last of the left half may precede the first of the right there is
+	 nothing to merge -- which is what makes an already sorted collection
+	 cost one comparison per element.  The merge takes from the LEFT run
+	 whenever the block allows it, which is the whole of the stability
+	 argument: an element from the left half precedes every element of
+	 the right half that the block calls its equal, as it did before."
+	| middle i j k |
+	last - first < 1 ifTrue: [^self].
+	middle := first + last // 2.
+	self mergeSortFrom: first to: middle by: aBlock into: scratch.
+	self mergeSortFrom: middle + 1 to: last by: aBlock into: scratch.
+	(aBlock value: (self at: middle) value: (self at: middle + 1)) ifTrue: [^self].
+	first to: last do: [:n | scratch at: n put: (self at: n)].
+	i := first.
+	j := middle + 1.
+	k := first.
+	[i <= middle and: [j <= last]] whileTrue: [
+		(aBlock value: (scratch at: i) value: (scratch at: j))
+			ifTrue: [self at: k put: (scratch at: i). i := i + 1]
+			ifFalse: [self at: k put: (scratch at: j). j := j + 1].
+		k := k + 1].
+	[i <= middle] whileTrue: [self at: k put: (scratch at: i). i := i + 1. k := k + 1].
+	[j <= last] whileTrue: [self at: k put: (scratch at: j). j := j + 1. k := k + 1]
 ]

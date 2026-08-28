@@ -487,6 +487,105 @@ run_blocking(const char *name, const char *waiting)
     CHECK_EQ_INT((int) single_answer, (int) workers);
 }
 
+/*
+ *  ----------  Stopping a process that is running on another worker  ----------
+ *
+ *  Bugs3 B16, with B13 and B3 riding on it.  `terminate' of a process
+ *  running on another core did nothing: 1983's Process>>terminate, for a
+ *  process that is not the active one, unlinks it from its list and
+ *  clears suspendedContext, and a process on another core is on no list
+ *  and has its real stack in that core's registers.  The loop kept
+ *  counting and the worker it occupied was lost for the rest of the run.
+ *
+ *  Every driver forks a spinner at a lower priority -- lower so that a
+ *  driver coming back from a Delay is taken off the ready list before a
+ *  spinner is, or two spinners that never yield would own both workers
+ *  of a two-worker pool and the drivers would starve -- and then WATCHES
+ *  IT RUN: it reads the spinner's counter, busies itself for a
+ *  millisecond, and reads it again.  A counter that moved while this
+ *  process was running is a spinner running on another worker at that
+ *  moment, which is the case the fix is for and the one no single-worker
+ *  test can reach.  Then terminate, and the four things that must be
+ *  true afterwards: the counter stops, the spinner's ensure: block ran,
+ *  its suspendedContext is nil, and resuming it raises rather than
+ *  running it.
+ *
+ *  A driver that wakes on the worker whose spinner was preempted by the
+ *  wake sees its own spinner standing still -- there is no idle worker
+ *  to take it yet -- so it waits again; the next look almost always
+ *  finds it running, and forty looks make the odds of never seeing it
+ *  run on two workers one in a million million.  With two or more
+ *  workers at least one driver must have seen its spinner running;
+ *  with one, none can, and that is checked too.
+ */
+static void
+run_terminate_across_workers(void)
+{
+    char        source[4096];
+    unsigned    n = want_workers();
+    unsigned    workers;
+
+    if (n == 0) {
+        WORKER_start(0, idle_worker, NULL);
+        n = WORKER_count();
+        WORKER_stop();
+    }
+    CHECK(run_single(" Smalltalk at: #SharedTestDone put: 0."
+                     " Smalltalk at: #SharedTestNext put: 0."
+                     " Smalltalk at: #SharedTestSeenRunning put: 0."
+                     " Smalltalk at: #SharedTestLock put: Mutex new."
+                     " Smalltalk at: #SharedTestCounts put: (Array new: %u withAll: 0)."
+                     " Smalltalk at: #SharedTestEnsured put: (Array new: %u). ^0", n));
+    snprintf(source, sizeof source,
+        "| lock counts w p tries c1 c2 good |"
+        " lock := Smalltalk at: #SharedTestLock. counts := Smalltalk at: #SharedTestCounts."
+        " w := lock critical: [Smalltalk at: #SharedTestNext put: (Smalltalk at: #SharedTestNext) + 1]."
+        " p := [[[true] whileTrue: [counts at: w put: (counts at: w) + 1]]"
+        "        ensure: [(Smalltalk at: #SharedTestEnsured) at: w put: true]] forkAt: 3."
+        " tries := 0. c1 := 0. c2 := 0."
+        " [tries < 40 and: [c1 = c2]] whileTrue: ["
+        "    (Delay forMilliseconds: 5) wait."
+        "    c1 := counts at: w. 1 to: 20000 do: [:i | i]. c2 := counts at: w."
+        "    tries := tries + 1]."
+        " c1 = c2 ifFalse: [lock critical: ["
+        "    Smalltalk at: #SharedTestSeenRunning put: (Smalltalk at: #SharedTestSeenRunning) + 1]]."
+        " p terminate."
+        " c1 := counts at: w. (Delay forMilliseconds: 20) wait. c2 := counts at: w."
+        " good := c1 = c2 and: [p suspendedContext isNil"
+        "    and: [((Smalltalk at: #SharedTestEnsured) at: w) == true"
+        "    and: [[p resume. false] on: Error do: [:e | true]]]]."
+        " lock critical: [Smalltalk at: #SharedTestDone put: (Smalltalk at: #SharedTestDone) + 1]."
+        " [(Smalltalk at: #SharedTestDone) < %u] whileTrue: [(Delay forMilliseconds: 2) wait]."
+        " ^good ifTrue: [1] ifFalse: [0]", n);
+    kernel_method = compile_expression(source);
+    CHECK(kernel_method != ST_OOP_INVALID);
+    if (kernel_method == ST_OOP_INVALID)
+        return;
+    ST_store_seq(&reported, 0);
+    ST_store_seq(&wrong_answers, 0);
+    alarm(120);
+    CHECK_EQ_INT(WORKER_start(n, kernel_worker, NULL), 0);
+    workers = WORKER_count();
+    WORKER_stop();
+    alarm(0);
+    ST_interp_register();
+    kernel_method = ST_OOP_INVALID;
+
+    printf("  %u threads: terminate a spinning process from another worker\n",
+           workers);
+    CHECK_EQ_INT(ST_load_seq(&wrong_answers), 0);
+    /*  Every spinner stopped, unwound, terminated and unresumable.  */
+    CHECK_EQ_INT(ST_load_seq(&reported), (int) workers);
+    CHECK(run_single(" ^Smalltalk at: #SharedTestSeenRunning", workers));
+    CHECK(single_is_int);
+    printf("  %ld of %u spinners were seen running on another worker "
+           "when terminated\n", single_answer, workers);
+    if (workers >= 2)
+        CHECK(single_answer >= 1);
+    else
+        CHECK_EQ_INT((int) single_answer, 0);
+}
+
 int
 main(void)
 {
@@ -525,6 +624,7 @@ main(void)
                  "(Delay forMilliseconds: 2) wait");
     run_blocking("Delay wait, twenty times per forked process; drivers in Processor yield",
                  "Processor yield");
+    run_terminate_across_workers();
 
     ST_interp_unregister();
     OM_shutdown();

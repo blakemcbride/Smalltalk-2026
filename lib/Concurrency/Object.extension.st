@@ -67,5 +67,14 @@ Object >> withArgs: anArray executeMethod: aCompiledMethod [
 	 name; the compiler evaluates expressions through it so that two
 	 workers evaluating at once do not share one #DoIt slot."
 	<primitive: 188>
-	^self error: 'withArgs:executeMethod: needs an Array of the arguments the method takes'
+	anArray isArray
+		ifFalse: [^self error: 'withArgs:executeMethod: takes an Array of arguments'].
+	(aCompiledMethod isKindOf: CompiledMethod)
+		ifFalse: [^self error: 'withArgs:executeMethod: takes a CompiledMethod'].
+	aCompiledMethod numArgs = anArray size
+		ifFalse: [^self error: 'withArgs:executeMethod: needs an Array of the arguments the method takes'].
+	"The elements are spread onto the calling method's stack, in a frame
+	 the compiler sized for that method's own pushes (Bugs3 B1)."
+	^self error: 'withArgs:executeMethod: cannot spread ' , anArray size printString
+		, ' arguments: the calling method''s frame has no room for them'
 ]

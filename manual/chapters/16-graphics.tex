@@ -45,7 +45,7 @@ per pixel: 1 is black, 0 is white.
 \begin{st}
 | f |
 f := Form extent: 64 @ 64.
-f fillBlack.
+f black.
 f displayAt: 100 @ 100.            "draw it on the Display"
 \end{st}
 
@@ -53,8 +53,8 @@ f displayAt: 100 @ 100.            "draw it on the Display"
 convenience lives:
 
 \begin{st}
-aForm fillBlack.
-aForm fillWhite.
+aForm black.
+aForm white.
 aForm fill: aRectangle mask: Form gray.
 aForm reverse.                     "invert everything"
 aForm border: aRectangle width: 2.
@@ -136,8 +136,8 @@ p home.
 screen is an ordinary object and you can draw on it from a workspace:
 
 \begin{st}
-Display fillWhite.
-Display fillBlack: (100 @ 100 extent: 50 @ 50).
+Display white.
+Display black: (100 @ 100 extent: 50 @ 50).
 Display border: (10 @ 10 corner: 200 @ 100) width: 3.
 Display extent.
 ScheduledControllers restore.      "put the windows back"
