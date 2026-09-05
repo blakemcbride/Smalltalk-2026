@@ -672,8 +672,15 @@ extern uint32_t st_om_collections;
 extern uint32_t st_om_reclaimed;
 /*  How many weak references have been nilled, over the run.  */
 extern uint32_t st_om_weak_cleared;
-/*  Ephemerons whose key died and was nilled.  */
+/*  Ephemerons whose key died and that were queued for #mourn.  */
 extern uint32_t st_om_ephemerons_mourned;
+
+/*
+ *  Set live_objects and live_bytes from what the table actually holds.  For
+ *  the one caller that fills the table without going through the allocator:
+ *  the image loader.  See the comment on the definition.
+ */
+void    OM_recount_live(void);
 
 /*  Set once the fixed objects are in place, so the collector can start.  */
 int     OM_image_load(const char *path, char *errbuf, size_t errlen);

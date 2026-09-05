@@ -131,7 +131,7 @@ cr
 
 	"When displaying line stopped in endOfRun, primitive hasn't incremented
 				lastIndex when cr stop occurs, hence, "
-				lastIndex_ lastIndex + 1.
+				lastIndex _ lastIndex + 1.
 				^false!
 crossedX
 	"This condition will sometimes be reached 'legally' during printing, when, for instance the space that caused the line to wrap actually extends over the right  boundary.  This character is allowed to print, even though it is technically outside or straddling the clippingRectangle since it is in the normal case not visible and is in any case appropriately clipped by the scanner."

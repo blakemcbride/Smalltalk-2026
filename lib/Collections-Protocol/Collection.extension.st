@@ -349,6 +349,55 @@ Collection >> collect: collectBlock thenSelect: selectBlock [
 ]
 
 { #category : '*Collections-Protocol' }
+Collection >> reject: rejectBlock thenCollect: collectBlock [
+	"The other half of select:thenCollect:.  Written through it rather than
+	 beside it, so that a species that overrides one gets both."
+	^self select: [:each | (rejectBlock value: each) not]
+		thenCollect: collectBlock
+]
+
+{ #category : '*Collections-Protocol' }
+Collection >> collect: collectBlock thenDo: doBlock [
+	"Map, then run doBlock over each mapped value, and answer the RECEIVER.
+
+	 The three thenDo: methods answer self and build nothing, which is what
+	 separates them from their thenCollect: and thenSelect: siblings: the
+	 point of them is a pass that allocates no intermediate collection.
+	 Pharo answers the receiver from all three and its own tests check it --
+	 `self assert: result equals: self collection' is the assertion in every
+	 one -- so this is protocol and not an accident of do: answering self."
+	self do: [:each | doBlock value: (collectBlock value: each)].
+	^self
+]
+
+{ #category : '*Collections-Protocol' }
+Collection >> select: selectBlock thenDo: doBlock [
+	"Filter, then run doBlock over what passed.  Answers the receiver; see
+	 collect:thenDo:."
+	self do: [:each |
+		(selectBlock value: each) ifTrue: [doBlock value: each]].
+	^self
+]
+
+{ #category : '*Collections-Protocol' }
+Collection >> reject: rejectBlock thenDo: doBlock [
+	"Filter out, then run doBlock over what is left.  Answers the receiver;
+	 see collect:thenDo:."
+	^self select: [:each | (rejectBlock value: each) not] thenDo: doBlock
+]
+
+{ #category : '*Collections-Protocol' }
+Collection >> sumNumbers: aBlock [
+	"The sum of aBlock over my elements, and ZERO for an empty receiver.
+
+	 That is the whole difference from inject:into: written out by hand, and
+	 the reason Pharo has both this and sum:: sum: raises on an empty
+	 collection, because the sum of nothing has no unit to be -- and this
+	 one names the unit in its selector, so it can answer it."
+	^self inject: 0 into: [:sum :each | sum + (aBlock value: each)]
+]
+
+{ #category : '*Collections-Protocol' }
 Collection >> reduce: aBlock [
 	"Fold with no initial value, the first element being the seed.
 

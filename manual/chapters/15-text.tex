@@ -38,6 +38,11 @@ typed, something read from a file, something you built.
 #hello asString              "'hello'"
 \end{st}
 
+\ct{printString} does not put the hash back: \ct{#hello printString} is
+\ct|'hello'|, five characters, where Pharo answers \ct|'#hello'|.
+Appendix~\ref{app:differences} lists that among the places the two dialects
+part company.
+
 \section{String protocol}
 
 A String is a collection, so everything in Chapter~\ref{ch:collections}

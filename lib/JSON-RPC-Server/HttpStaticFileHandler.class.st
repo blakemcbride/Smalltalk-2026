@@ -68,10 +68,29 @@ HttpStaticFileHandler >> handle: aRequest [
 	"The body is read for a HEAD too, and thrown away by the connection.
 	 That is a file read nobody uses, and it is the price of a HEAD that
 	 answers the length a GET would have: the alternative is a second way of
-	 measuring a file, which is a second thing to be wrong."
-	^HttpResponse
+	 measuring a file, which is a second thing to be wrong.
+
+	 A FILE THAT WILL NOT OPEN IS 404, which is what the class comment has
+	 said since it was written and what the code did not do: the read
+	 raised, nothing here caught it, and HttpServer>>dispatch: turned it
+	 into HTTP 500 with a line in the log (Bugs4).  A 500 is the server
+	 saying something is wrong with the SERVER, and nothing is: the file
+	 exists and this process may not read it, which is a fact about the
+	 file system.  404 rather than 403 on purpose, and the class comment
+	 gives the reason -- `forbidden' tells a stranger that the name exists,
+	 and the whole point of the refusal is that they learn nothing.  The
+	 line in the log stays, because a file under the document root that
+	 cannot be read is usually a deployment that got its permissions wrong
+	 and the operator is the one who can fix it."
+	^[HttpResponse
 		bytes: (self contentsOf: full)
-		contentType: (HttpCodec mimeTypeForName: full)
+		contentType: (HttpCodec mimeTypeForName: full)]
+		on: Error
+		do: [:e |
+			e class == HttpError ifTrue: [e pass].
+			self reportOnStandardError: 'static: ', full, ' could not be read: ',
+				e class name, ': ', (e messageText ifNil: ['no reason given']).
+			HttpResponse notFound: 'not found: ', aRequest path]
 ]
 
 { #category : 'private' }

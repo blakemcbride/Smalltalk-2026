@@ -273,3 +273,59 @@ JSONWriterTest >> testPrintStringIsTheJson [
 		equals: '{"a":1}'.
 	self assert: (JSONParser parse: '[1]') printString equals: '[1]'
 ]
+
+{ #category : 'tests - strings' }
+JSONWriterTest >> testBytesThatAreNotUtf8AreRefused [
+	"Bugs4.  A String here is bytes, and every byte above 126 went out as
+	 itself with nothing asked about it -- so a String holding the single
+	 Latin-1 byte for e-acute became a document that is not UTF-8 and that
+	 no conforming reader accepts, silently.  RFC 8259 has one encoding and
+	 no field to declare another, so this is refused for the same reason a
+	 NaN is: writing it anyway produces a document nothing else can read."
+
+	| e9 |
+	e9 := String with: (Character value: 233).
+	self should: [JSONWriter write: e9] raise: JSONError.
+	self should: [JSONWriter write: (JSONObject new at: 'a' put: e9; yourself)] raise: JSONError.
+	"the NAME is checked as well as the value"
+	self should: [JSONWriter write: (JSONObject new at: e9 put: 1; yourself)] raise: JSONError.
+	self assert: ([JSONWriter write: e9. nil] on: JSONError do: [:err | err messageText])
+		equals: 'the byte E9 at position 1 of a String is not UTF-8, which is the only encoding JSON has'.
+	"A lead byte with no continuation after it, and a continuation alone."
+	self should: [JSONWriter write: (String with: (Character value: 195))] raise: JSONError.
+	self should: [JSONWriter write: (String with: (Character value: 169))] raise: JSONError.
+	"An OVERLONG form -- two bytes that decode to a character one byte
+	 holds -- is how a filter looking for a byte gets walked past; a
+	 SURROGATE half is a code point UTF-8 cannot encode; and F5 and up is
+	 past the last character there is.  A check that only counted
+	 continuation bytes would pass all three."
+	self should: [JSONWriter write: (String with: (Character value: 192) with: (Character value: 128))] raise: JSONError.
+	self should: [JSONWriter write: (String with: (Character value: 224) with: (Character value: 128) with: (Character value: 128))] raise: JSONError.
+	self should: [JSONWriter write: ((String with: (Character value: 237) with: (Character value: 160)), (String with: (Character value: 128)))] raise: JSONError.
+	self should: [JSONWriter write: ((String with: (Character value: 245) with: (Character value: 128)), (String with: (Character value: 128) with: (Character value: 128)))] raise: JSONError
+]
+
+{ #category : 'tests - strings' }
+JSONWriterTest >> testRealUtf8GoesOutAsItself [
+	"The other half of the rule: text that IS UTF-8 is written byte for
+	 byte and not escaped, which is what keeps a document not written in
+	 English the size it should be, and it round-trips through the parser."
+
+	| two three four |
+	two := String with: (Character value: 195) with: (Character value: 169).
+	three := String with: (Character value: 226) with: (Character value: 130)
+		with: (Character value: 172).
+	four := (String with: (Character value: 240) with: (Character value: 159)),
+		(String with: (Character value: 152) with: (Character value: 128)).
+	self assert: (JSONWriter write: 'caf', two) equals: '"caf', two, '"'.
+	self assert: (JSONWriter write: three) equals: '"', three, '"'.
+	self assert: (JSONWriter write: four) equals: '"', four, '"'.
+	self assert: (JSONParser parse: (JSONWriter write: 'caf', two, three, four))
+		equals: 'caf', two, three, four.
+	"DEL is ASCII and goes out as itself; the control characters below a
+	 space are still escaped."
+	self assert: (JSONWriter write: (String with: (Character value: 127)))
+		equals: '"', (String with: (Character value: 127)), '"'.
+	self assert: (JSONWriter write: (String with: (Character value: 1)))
+		equals: '"\u0001"'
+]

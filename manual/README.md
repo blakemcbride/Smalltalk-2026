@@ -1,6 +1,6 @@
 # Smalltalk-2026: A Manual
 
-A book-length introduction to the system and the language — 30 chapters and
+A book-length introduction to the system and the language — 31 chapters and
 5 appendices, in LaTeX, building to a PDF with `pdflatex` and nothing else.
 
 ```sh
@@ -29,7 +29,7 @@ Every expression in the book whose answer is printed is also a doctest in
 against an image built from this tree:
 
 ```
-st80: 389 doctests in 30 methods of 1 files: 389 passed, 0 wrong, 0 need something not here
+st80: 396 doctests in 30 methods of 1 files: 396 passed, 0 wrong, 0 need something not here
 ```
 
 A manual whose examples were typed rather than run is wrong somewhere and

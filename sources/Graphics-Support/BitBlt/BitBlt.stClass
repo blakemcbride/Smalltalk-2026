@@ -96,13 +96,13 @@ exampleAt: originPoint rule: rule mask:  mask
 	using the specifed rule and mask.  It is called from the method named exampleOne."
 
 	| s d border aBitBlt |
-	border_Form new extent: 32@32.
+	border _ Form new extent: 32@32.
 	border black.
 	border fill: (1@1 extent: 30@30) mask: Form white.
-	s_Form new extent: 32@32.
+	s _ Form new extent: 32@32.
 	s white.
 	s fill: (7@7 corner: 25@25) mask: Form black.
-	d_Form new extent: 32@32.
+	d _ Form new extent: 32@32.
 	d white.
 	d fill: (0@0 corner: 32@16) mask: Form black.
 

@@ -14,10 +14,12 @@
 # protecting, and the next regression silently spends it.  Edit the line in
 # the same commit that earns it.
 #
-# Every profile is at 100%.  Two of them get there with something excluded and
-# each says so in its own text: pharo-announcements excludes WeakAnnouncerTest,
-# and pharo-weak excludes the four Dictionary tests whose superclass lives in a
-# package it does not load.
+# Four profiles are at 100%; pharo-weak is one short, on purpose, and the row
+# below records both numbers so that the shortfall cannot grow.  Two profiles
+# reach their score with something excluded and each says so in its own text:
+# pharo-announcements excludes WeakAnnouncerTest, and pharo-weak excludes a
+# handful of classes it has no provider for.  pharo-weak no longer excludes the
+# four Dictionary tests -- see the tail of this file.
 #
 # pharo-weak was 12/32 until the profile was given the classes its subjects are
 # written against -- Pharo's WeakSet is a Pharo Set subclass and this profile
@@ -283,9 +285,57 @@
 # method loading nothing, a BOM.  Every row moved by seventy-seven;
 # database-live is 542.
 #
+# Bugs4, a fourth audit, moved every row again and by different amounts, which
+# is the first time that has happened.  Every row gains the forty-one tests
+# that go with st2026 -- twenty-three for what a hostile client sends and what
+# a server answers back (an accept loop that survives a failed accept, a
+# descriptor closed after every request, a form field whose digits are counted
+# before it is turned into a number, CR and LF refused in a client's headers, a
+# short body detected, a 1xx skipped, ambiguous framing refused), fourteen for
+# the numeric tower and the collections (floorLog: of an infinity, a
+# SortedCollection filled in ascending order, a Fraction that reduces, sorted
+# on an OrderedCollection), and four for a Delay across the millisecond clock's
+# wrap.  database-live, which is named only in this comment because it needs
+# an ODBC driver a build machine cannot be assumed to have, is 584.
+#
+# And pharo-weak gains five hundred and twelve more, because the four
+# Dictionary test classes it used to exclude are now in it, and their package
+# brings DictionaryTest's whole root with it.  That exclusion had been hiding
+# the one thing the profile exists for: WeakKeyDictionary and
+# WeakIdentityKeyDictionary were not weak at all -- every key was held strongly
+# and never reclaimed -- and the profile passed 524 of 524 without noticing,
+# because the only tests that would have said so were the excluded ones.  They
+# are weak now: ephemerons are allocated as ephemerons whatever built them, a
+# Finalizer process drains what the collector has fired and sends each one
+# #mourn, and a copy of a weak collection is still weak.
+#
+# ONE test is failing and is recorded failing, which this file has not had to
+# say before.  WeakKeyDictionaryTest>>testClearing collects, asserts on the
+# next line that the dictionary is still full -- "keys are gone but not yet
+# finalized" -- and on the line after that that it is empty.  Both hold only if
+# #mourn reaches a thousand associations in the gap between two consecutive
+# sends.  On Cog it does, because the interrupt check falls on a method return.
+# Here the process switch is looked at once per bytecode, so the finalizer has
+# the processor before the first of those two sends.  It is a statement about
+# where a preemption lands, not about weak keys, and the profile's own text
+# says so at length.  Recording 1077 and 1076 keeps the ratchet doing its job
+# in both directions: a second failure makes the passed number fall.
+#
+# One more in lib/Network-Tests, for the last of the Bugs4 hangs to be
+# found and the only one this file could not have caught.  A timed socket
+# wait forks a watchdog to end it, and a wait that readiness won left that
+# watchdog waiting out its whole timeout with the VM's timer armed for it.
+# The scheduler will not say `every process is blocked' while anything is
+# pending, so one abandoned watchdog held the deadlock verdict shut for as
+# long as its timeout -- the language-model client asks for three hundred
+# seconds and the runner gives up after three hundred, so a run that had
+# genuinely stopped reported NOTHING, which is the failure this file is
+# for and the one shape of it this file cannot see.  Every row moved by
+# one; database-live is 585.
+#
 # profile               run  passed
-st2026                  504  504
-pharo-announcements     535  535
-pharo-time              1125 1125
-pharo-weak              524  524
-pharo-collections       961  961
+st2026                  546  546
+pharo-announcements     577  577
+pharo-time              1167 1167
+pharo-weak              1078 1077
+pharo-collections       1003 1003

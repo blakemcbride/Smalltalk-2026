@@ -28,9 +28,9 @@ Object class class       "Metaclass"
 Every computation is one object asking another to do something:
 
 \begin{st}
-3 + 4                    "send #+ to 3, with 4 as the argument"
-anArray at: 1 put: 'x'   "send #at:put: to anArray"
-Object subclass: #Point  "send #subclass: to a class -- classes are objects"
+3 + 4                         "send #+ to 3, with 4 as the argument"
+(Array new: 3) at: 1 put: 'x' "send #at:put: to an Array"
+OrderedCollection new         "send #new to a class -- classes are objects"
 \end{st}
 
 Even arithmetic. \ct{3 + 4} looks up \ct|#+| in \ct{SmallInteger} and runs

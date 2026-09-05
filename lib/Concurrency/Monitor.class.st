@@ -92,8 +92,20 @@ Monitor >> waitForChange [
 
 	 The whole depth is given up, not one level: a waiter that entered
 	 critical: twice still has to let everyone else in while it sleeps.
-	 The depth comes back with the monitor."
+	 The depth comes back with the monitor.
+
+	 'Send only from inside critical:' was documented and unguarded, and
+	 Bugs4 PROC-4 is what that cost: sent from outside, this releases a Mutex
+	 the sender never took, and a Mutex release is an unconditional signal.
+	 Every process queued on the monitor's semaphore was let through, and the
+	 section that admits one process at a time admitted two hundred and five
+	 at once -- silently, and nowhere near the line that did it.  An
+	 unbalanced release cannot be undone once it has been spent, so the
+	 precondition is checked before anything is released rather than
+	 diagnosed afterwards."
 	| mine savedDepth |
+	self isHeldByActiveProcess ifFalse: [
+		^Error new signal: 'waitForChange must be sent from inside critical:'].
 	mine := Semaphore new.
 	waiters addLast: mine.
 	savedDepth := depth.

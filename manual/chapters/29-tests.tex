@@ -156,16 +156,26 @@ and holds the scores against \ct{tests/profiles.expected}:
 
 \begin{plain}
 # profile               run  passed
-st2026                  205  205
-pharo-announcements     236  236
-pharo-time              826  826
-pharo-weak              225  225
-pharo-collections       662  662
+st2026                  545  545
+pharo-announcements     576  576
+pharo-time              1166 1166
+pharo-weak              1077 1076
+pharo-collections       1002 1002
 \end{plain}
 
-Every row moves together whenever \ct{lib/} gains tests, because every profile
-there requires \ct{st2026} and so inherits its suites. A row that moved by a
-different amount from the others would be the interesting case.
+The numbers are whatever the last recorded run scored, and the file is the
+only copy of them that counts; what matters here is the shape. Every row
+moves together whenever \ct{lib/} gains tests, because every profile there
+requires \ct{st2026} and so inherits its suites; a row that moves by a
+different amount from the others has gained or lost tests of its own, and
+the file says which and why in prose beside the numbers.
+
+Two numbers per row, and they are not always equal. A test that cannot pass
+here is recorded failing rather than removed or excluded, with the reason
+written in the profile it belongs to --- \ct{pharo-weak} carries one, a test
+whose two assertions hold only if a finalizer takes the processor between two
+consecutive sends. Recording it keeps the ratchet working in both directions:
+a second failure makes the passing number fall.
 
 Both directions fail:
 
@@ -199,3 +209,12 @@ cd manual && make verify
 If the book and the system ever disagree, that command is the referee. It is
 the same mechanism the imported packages are held to, pointed at prose instead
 of at source.
+
+\begin{stnote}[What the comment at the right of a listing means]
+It is the doctest's expected value, written as Smalltalk source---what you
+would type to make that answer---and not what \ct{printString} answers for
+it. The two differ for a Symbol and for an Array: \ct{'hello' asSymbol} is
+the Symbol \ct{#hello}, whose \ct{printString} is \ct|'hello'|, and
+\ct{(1 to: 3) asArray} is \ct|#(1 2 3)|, whose \ct{printString} is
+\ct|'(1 2 3 )'|.
+\end{stnote}

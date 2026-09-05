@@ -105,3 +105,30 @@ Symbol >> valueWithArguments: anArray [
 	^(anArray first) perform: self
 		withArguments: (anArray copyFrom: 2 to: anArray size)
 ]
+
+{ #category : '*Collections-Protocol' }
+Symbol >> numArgs [
+	"How many arguments a message with me for a selector takes.
+
+	 1983 reads my first character to decide between a unary or binary
+	 selector and a keyword one, and reads it without looking first, so
+	 `#'' numArgs' raised SubscriptOutOfBounds on `self at: 1' (Bugs4
+	 COLL-3).  The empty Symbol exists -- `'' asSymbol' makes one, and a
+	 Tonel file or a JSON key can spell one by accident -- and anything
+	 that asks a selector how many arguments it takes wants a number, not
+	 a subscript error from three frames down.  Zero is the answer Pharo
+	 gives and the only one that means anything: a selector with no
+	 characters names no keywords, so it takes no keyword arguments.
+
+	 The rest is 1983's, unchanged: a leading letter means a unary or
+	 keyword selector and the arguments are the colons; a leading anything
+	 else is a binary selector and takes one."
+	| len n i |
+	len := self size.
+	len = 0 ifTrue: [^0].
+	n := (self at: 1) isLetter ifTrue: [0] ifFalse: [1].
+	i := 1.
+	[(i := i + 1) <= len] whileTrue: [
+		(self at: i) = $: ifTrue: [n := n + 1]].
+	^n
+]

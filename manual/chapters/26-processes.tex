@@ -181,11 +181,22 @@ Time now
 Date today
 \end{st}
 
+\ct{Time now} and \ct{Date today} answer the time where the machine is. The
+offset comes from the host's own zone database, asked for at the moment it
+is needed, so a rule that changes twice a year is right on both sides of the
+change.
+
+\ct{Time millisecondClockValue} is a monotonic count of milliseconds---it
+never goes backwards, and it does not wrap, so two readings may simply be
+subtracted however far apart they are. It counts from an arbitrary moment
+and says nothing about the date; \ct{Time now} is for that.
+
 \begin{stwarn}
-\ct{Time now} and \ct{Date today} are 1983's in the \ct{st2026} profile. The
+\ct{Time} and \ct{Date} are 1983's in the \ct{st2026} profile. The
 \ct{pharo-time} profile supersedes them with Pharo's Chronology package,
 which is richer---\ct{3 seconds}, \ct{1 day}, \ct{DateAndTime now}---and
-passes its own 633 tests. Which you have depends on the profile you built.
+passes its own 621 tests. Which you have depends on the profile you built.
+Both keep the same zone.
 \end{stwarn}
 
 \section{What a process actually is}

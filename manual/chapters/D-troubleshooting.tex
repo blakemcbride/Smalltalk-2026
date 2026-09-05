@@ -7,9 +7,12 @@
 \item[\ctp{fixed object 0 landed on pointer 0, expected 2}] You asked
   \ct{OM=bb} to bootstrap an image. It cannot---it exists to load the 1983
   Xerox image. Build with the default \ct{OM=mt}.
-\item[\ctp{SDL3: not found -- headless build}] No SDL3 development package.
-  Everything works except the window. Install \ct{SDL3-devel} or
-  \ct{libsdl3-dev} and rebuild.
+\item[\ctp{SDL3 not found.}] No SDL3 development package, and the build
+  stops rather than quietly handing you a system with no window. Install
+  \ct{SDL3-devel} or \ct{libsdl3-dev} and build again, or ask for
+  \ct|make HEADLESS=1| and get everything except the window. \ct{make deps}
+  reports on SDL3 and every other requirement at once, and runs on a machine
+  too bare to build anything.
 \item[Garbled glyphs on screen] A stale object file in the archive.
   \ct|make clean && make|.
 \item[The VM says the font and the image disagree] You ran \ct{make font} and
@@ -60,9 +63,11 @@ st80: N input events were dropped
 \section{Writing code}
 
 \begin{description}
-\item[\ctp{must be a boolean}] The receiver of an inlined \ct{ifTrue:},
+\item[\ctp{nil is not a Boolean, so it cannot decide a conditional}] A
+  \ct{NonBooleanReceiver}: the receiver of an inlined \ct{ifTrue:},
   \ct{and:} or \ct{whileTrue:} was not \ct{true} or \ct{false}---almost always
-  an uninitialised instance variable holding \ct{nil}.
+  an uninitialised instance variable holding \ct{nil}. The message names the
+  object that was there instead.
 \item[\ctp{doesNotUnderstand: \#ifTrue:}] The same thing where the send was
   not inlined.
 \item[A global is \ctp{nil} that should not be] Look in \ct{Undeclared}. A
@@ -209,7 +214,7 @@ st80: N input events were dropped
   written: Kiss makes a PDF through \ct{groff} and serves the file back,
   and this server does not yet serve files it made.
 \item[A service will not load: \ctp{... is undeclared}] A name in the
-  file that is neither a temporary, an instance variable nor a global. If
-  it is a block-local temporary, \ct{[:each | | row | ...]}, move it to the
-  method: the image's own compiler is 1983's and has none.
+  file that is neither a temporary, an instance variable, a class variable
+  nor a global. A misspelt class name is the usual one. The message names
+  the identifier; compare it with what \ct{Smalltalk} holds.
 \end{description}

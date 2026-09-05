@@ -94,9 +94,9 @@ The base library adds:
 | Class | Purpose |
 |---|---|
 | `Mutex` | Non-reentrant mutual exclusion. `aMutex critical: [ ... ]` |
-| `Monitor` | Reentrant lock with condition variables. `waitWhile:`, `signalAll` |
+| `Monitor` | Reentrant lock with condition variables. `waitUntil:`, `waitForChange`, `signal`, `signalAll` |
 | `SharedQueue` | Multi-producer, multi-consumer, blocking |
-| `Promise` | A value another process will supply. `aPromise wait` |
+| `Promise` | A value another process will supply. `aPromise value` |
 | `Processor>>#forkParallel:` | Fork onto the worker pool explicitly |
 
 `Semaphore` remains, with Blue Book semantics, now genuinely atomic.
@@ -550,7 +550,7 @@ delicate code to buy a fraction of that.
 | reference counting | ~15% |
 
 **Method lookup is 40–60% of the run, and there is no method cache** —
-primitive 89, `flushCache:`, is a no-op because there is nothing to flush.
+primitive 89, `flushCache`, is a no-op because there is nothing to flush.
 That is the next scaling work, and it is worth an order of magnitude more
 than per-worker ready queues.
 

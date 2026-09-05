@@ -78,6 +78,14 @@ typedef struct pollfd   net_pollfd;
 #define NET_INDEX_MASK      ((1u << NET_INDEX_BITS) - 1u)
 
 /*
+ *  The index must FIT, or two slots share a handle and a socket answers
+ *  for another.  Checked here rather than trusted, because raising
+ *  NET_MAX_SOCKETS is described in the header as "a recompile and nothing
+ *  else" and this is the one thing that stops being true past 4096.
+ */
+typedef char net_index_fits[(NET_MAX_SOCKETS <= (1 << NET_INDEX_BITS)) ? 1 : -1];
+
+/*
  *  One socket.  Every field is read and written under net_lock; the only
  *  things read without it are the atomic mirrors below, which exist so
  *  that the scheduler's idle loop can ask "is anybody waiting?" ten
@@ -549,8 +557,8 @@ static void
 io_main(void *arg)
 {
     /*
-     *  Static rather than on the stack: 1025 pollfds and their map are a
-     *  few tens of kilobytes, and there is one I/O thread.
+     *  Static rather than on the stack: NET_MAX_SOCKETS + 1 pollfds and
+     *  their map are a few tens of kilobytes, and there is one I/O thread.
      */
     static net_pollfd   fds[NET_MAX_SOCKETS + 1];
     static struct { uint32_t index; uint32_t generation; } map[NET_MAX_SOCKETS + 1];
@@ -1435,6 +1443,52 @@ NET_arm(int64_t handle, int mask)
     }
     start_io_thread_locked();
     ST_mutex_unlock(&net_lock);
+    if (changed)
+        NET_wake();
+    return 0;
+}
+
+/*
+ *  Give an interest back.  See NET_disarm in the header for why a timed
+ *  wait has to, and why calling it on an interest already spent is fine.
+ */
+int
+NET_disarm(int64_t handle, int mask)
+{
+    net_socket *s;
+    int         changed = 0;
+
+    if (!ready())
+        return -1;
+    ST_mutex_lock(&net_lock);
+    s = slot_for(handle);
+    if (!s) {
+        ST_mutex_unlock(&net_lock);
+        set_error_text("no such socket");
+        return -1;
+    }
+    if (tracing())
+        fprintf(stderr, "net: disarm handle %lld (slot %u) mask %d,"
+                        " was r%d w%d\n",
+                (long long) handle,
+                (unsigned) ((uint64_t) handle & NET_INDEX_MASK),
+                mask, s->want_read, s->want_write);
+    if ((mask & NET_ARM_READ) && s->want_read) {
+        s->want_read = 0;
+        ST_fetch_sub_relaxed(&net_armed, 1);
+        changed = 1;
+    }
+    if ((mask & NET_ARM_WRITE) && s->want_write) {
+        s->want_write = 0;
+        ST_fetch_sub_relaxed(&net_armed, 1);
+        changed = 1;
+    }
+    ST_mutex_unlock(&net_lock);
+    /*
+     *  Wake the poll thread so it rebuilds its set without this
+     *  descriptor; leaving it there would be harmless but would keep
+     *  waking the thread on a readiness nobody asked about.
+     */
     if (changed)
         NET_wake();
     return 0;

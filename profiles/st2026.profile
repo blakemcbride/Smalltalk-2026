@@ -2,8 +2,16 @@
 The Blue Book system plus our own library.
 
 lib/ is where this system diverges from 1983.  Nothing in sources/ is ever
-edited; every difference is a file here, so 'how far have we drifted' has a
-mechanical answer.
+edited for BEHAVIOUR; every difference is a file here, so 'how far have we
+drifted' has a mechanical answer.
+
+The one thing sources/ has been edited for is spelling.  Fifty-seven places
+wrote 1983's assignment arrow glued to the name before it -- `runs_ runs
+copyWith: 1' -- which 1983's parser reads as an assignment and the closures
+lexer reads as an identifier ending in an underscore, so those methods
+could not be recompiled from the source the system itself shows.  They are
+written `runs _ runs copyWith: 1' now.  Whitespace only, in both dialects,
+and no method's meaning moved.
 
 SharedQueue is excluded from the 1983 sources because lib/Concurrency
 replaces it.  The original guards an OrderedCollection with two Semaphores,
@@ -30,8 +38,8 @@ Profile {
 	#requires : [ 'bluebook' ],
 	#dialect  : 'closures',
 	#supersede : [ 'SharedQueue' ],
-	#packages : [ '../lib/Kernel', '../lib/Kernel-Exceptions', '../lib/Kernel-Protocol', '../lib/Kernel-Methods', '../lib/Kernel-Pragmas', '../lib/Collections-Protocol', '../lib/Streams-Protocol',
-	              '../lib/Strings-Protocol', '../lib/System', '../lib/Concurrency', '../lib/Concurrency-Tests', '../lib/SUnit', '../lib/SUnit-Tests',
+	#packages : [ '../lib/Kernel', '../lib/Kernel-Exceptions', '../lib/Kernel-Protocol', '../lib/Kernel-Methods', '../lib/Kernel-Pragmas', '../lib/Kernel-Reshape', '../lib/Collections-Protocol', '../lib/Streams-Protocol',
+	              '../lib/Strings-Protocol', '../lib/System', '../lib/Concurrency', '../lib/Concurrency-Tests', '../lib/Kernel-Finalization', '../lib/SUnit', '../lib/SUnit-Tests',
 	              '../lib/Graphics-Fixes', '../lib/Scope-Fixes', '../lib/Compiler-Fixes', '../lib/Files-Fixes',
 	              '../lib/Scroll-Wheel', '../lib/Keyboard-Map', '../lib/Clipboard', '../lib/Clipboard-Tests', '../lib/Browser-Sorting', '../lib/Confirm-Nag', '../lib/Library-Tests',
 	              '../lib/Database', '../lib/Database-Tests',

@@ -27,7 +27,7 @@ centerCursorInView
 	View|insetDisplayBox)."
 
 	| lowestSubView subViews |
-	subViews_ view subViews.
+	subViews _ view subViews.
 	subViews isEmpty
 		ifFalse:	[lowestSubView _ subViews at: 1.
 				subViews do:

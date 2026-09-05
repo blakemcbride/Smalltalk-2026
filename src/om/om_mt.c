@@ -7,6 +7,7 @@
  */
 
 #include "om_mt.h"
+#include "finalize.h"
 #include "worker.h"
 
 #include <stdio.h>
@@ -511,6 +512,7 @@ OM_init(void)
     ST_store_seq(&st_om_epoch, 0);
     live_objects      = 0;
     live_bytes        = 0;
+    OM_mourn_reset();
     ST_store_seq(&next_hash, 1);
     return 0;
 }
@@ -536,6 +538,7 @@ OM_shutdown(void)
     memset(magazines, 0, sizeof magazines);
     live_objects      = 0;
     live_bytes        = 0;
+    OM_mourn_reset();
 }
 
 int
@@ -1491,6 +1494,37 @@ OM_can_forward_identity(st_oop from, st_oop to)
     if (from <= ST_LAST_IMMORTAL_OOP)
         return 0;
     /*
+     *  And so does a Symbol, which is not a guaranteed pointer and is the
+     *  same fact anyway: a Symbol's identity IS its meaning.  The symbol
+     *  table holds one object per spelling and every method dictionary is
+     *  keyed by those objects, so forwarding one DESTROYS the spelling --
+     *  afterwards `#zzE' in a compiled literal frame names the object that
+     *  spells zzF, while `'zzE' asSymbol' finds nothing under zzE and
+     *  interns a second Symbol spelling it.  Two Symbols spelled zzE then
+     *  exist for the rest of the image's life, and the only symptom is a
+     *  lookup that finds the wrong method, much later (Bugs4 MEM-6).
+     *
+     *  Two-way become: has refused this since Bugs3 B21 and one-way is the
+     *  worse of the two -- a swap leaves both Symbols in existence and this
+     *  leaves the source naming nobody -- so refusing here is the same rule
+     *  reaching the case it had been left out of.  Pharo permits it; Pharo
+     *  also has no bootstrap whose C symbol table would then disagree with
+     *  the image's.  Nothing in the library forwards a Symbol:
+     *  elementsForwardIdentityTo: has one caller, MethodDictionary
+     *  class>>compactAllInstances, and it forwards method dictionaries.
+     *
+     *  The class of a guaranteed selector names Symbol.  There is no
+     *  guaranteed pointer for the class itself, in this bootstrap or in the
+     *  1983 image the bb build reads, so this is how it is asked -- and
+     *  asked only once the selector itself exists, since a bootstrap that
+     *  has not made it yet would be reading a table entry that is not
+     *  there.
+     */
+    if (OM_is_object(ST_SELECTOR_DOES_NOT_UNDERSTAND)
+     && OM_fetch_class(from)
+          == OM_fetch_class(ST_SELECTOR_DOES_NOT_UNDERSTAND))
+        return 0;
+    /*
      *  What C holds in a place with no setter -- the context a worker is
      *  executing in, the method it is executing, the display form -- cannot
      *  be rewritten from here, and forwarding out from under it would leave
@@ -1917,6 +1951,103 @@ ephemerons_reached(void)
     }
 }
 
+/*
+ *  Ephemerons whose key did NOT survive: queue them to be mourned, and give
+ *  them one more cycle of life so that the message can say something.
+ *
+ *  This used to nil the key and stop, which is half a mechanism.  The
+ *  reachability half was right -- the key was reclaimed, and so was
+ *  everything only the ephemeron named -- but the object that was supposed
+ *  to hear about it never did, so a WeakKeyDictionary kept every entry it
+ *  had ever been given, with a nil where its key used to be, for ever
+ *  (Bugs4 MEM-2).  The only thing that can take a WeakKeyAssociation out of
+ *  its dictionary is the association, in Smalltalk, sending removeKey: to
+ *  the container it remembers -- and it needs the KEY to say which entry.
+ *
+ *  So the key is not nilled.  The ephemeron and everything it names are
+ *  marked instead, which keeps the key addressable for exactly as long as
+ *  the queue holds the ephemeron, and the queue is a root until the
+ *  finalization process has taken it.  The next collection after that finds
+ *  nothing holding either and reclaims both.
+ *
+ *  Resurrecting one ephemeron can make another's key reachable -- two
+ *  associations in one dictionary, each keyed on something the other's
+ *  value names -- and that second one is then alive and must not be mourned
+ *  this cycle.  So each round re-runs the reachability fixed point and
+ *  looks again, until a round queues nothing.
+ */
+static void
+ephemerons_mourned(void)
+{
+    for (;;) {
+        uint32_t    i;
+        uint32_t    limit  = pending_top;
+        int         queued = 0;
+
+        /*
+         *  Everything the fixed point left is decided together, before any
+         *  of it is marked.  Two associations in one dictionary can be
+         *  keyed on things the other's value names -- a cycle that runs
+         *  through ephemeron slots and nothing else -- and the fixed point
+         *  has already said that the whole cluster is unreachable.  Taken
+         *  one at a time, the first one's resurrection would make the
+         *  second one's key reachable and spare it a cycle it does not
+         *  deserve; taken together they are what they are, which is dead.
+         */
+        for (i = 0; i < limit; ++i) {
+            st_oop      p = pending[i];
+            om_header  *head;
+            uint32_t    j;
+
+            if (p == ST_OOP_INVALID)
+                continue;
+            pending[i] = ST_OOP_INVALID;
+            /*
+             *  An ephemeron nothing reaches is not mourned: there is
+             *  nobody left to hear the message, and resurrecting it would
+             *  keep a dead dictionary's dead keys alive one cycle at a
+             *  time for ever.  It is simply swept.
+             */
+            if (ST_load_relaxed(OM_refcount_of(p)) == 0)
+                continue;
+            head   = OM_head(p);
+            queued = 1;
+            /*
+             *  Fired once, and then it is an ordinary object.
+             *
+             *  Nothing else could end it.  The queue holds the ephemeron
+             *  until the image has been told, and it is a root while it
+             *  does -- so the very next collection would find the same
+             *  ephemeron with the same dead key and queue it again, and
+             *  the one after that, for as long as anything referred to it.
+             *  A WeakKeyAssociation survives its own mourning for exactly
+             *  as long as it takes removeKey: to run, and that is enough
+             *  to be told twice.  Clearing the bit is what Spur does with
+             *  a fired ephemeron and says the same thing: this key has
+             *  been reported dead, and from here on it is held the way any
+             *  other instance variable is.
+             */
+            head->flags &= ~(uint32_t) ST_FMT_EPHEMERON;
+            OM_mourn_queue_add(p);
+            ++st_om_ephemerons_mourned;
+            for (j = 0; j < head->size; ++j)
+                mark_visit(ST_oop_load(&((st_oop *) (head + 1))[j]));
+        }
+        if (!queued)
+            break;
+        drain_mark_stack();
+        /*
+         *  What the resurrection reached may include ephemerons nothing
+         *  had walked before, set aside by the drain just now.  Those get
+         *  the reachability question asked of them, and whatever is still
+         *  standing after it goes round again.
+         */
+        ephemerons_reached();
+        if (pending_top == limit)
+            break;
+    }
+}
+
 static uint32_t
 collect_at_safepoint(void *unused)
 {
@@ -1963,9 +2094,19 @@ collect_at_safepoint(void *unused)
         mark_visit((st_oop) index);
     if (root_provider)
         root_provider(mark_visit);
+    /*
+     *  And the ephemerons already waiting to be mourned.  They are roots
+     *  until the finalization process has taken them: nothing in the image
+     *  refers to a mourned WeakKeyAssociation any more -- taking it out of
+     *  its dictionary is the whole point of #mourn -- so between the
+     *  collection that queued it and the send that tells it, the queue is
+     *  the only thing holding it, and its key with it.
+     */
+    OM_mourn_queue_visit(mark_visit);
 
     drain_mark_stack();
     ephemerons_reached();
+    ephemerons_mourned();
 
     /*
      *  Nil the weak references to things that did not survive.
@@ -2003,37 +2144,6 @@ collect_at_safepoint(void *unused)
             OM_increase_ref(ST_NIL);
             ++st_om_weak_cleared;
         }
-    }
-
-    /*
-     *  And the ephemerons whose key did not survive: nil the key.
-     *
-     *  Same moment and same reason as the weak pass above -- every count is
-     *  exact and nothing has been freed.  What is NOT done here is
-     *  finalization: Pharo would queue each of these and send it #mourn, so
-     *  a WeakKeyAssociation could take itself out of its dictionary.  This
-     *  system has no finalization process yet, so the association stays in
-     *  its dictionary with a nil key until something asks the dictionary to
-     *  tidy up.  The reachability half -- what an ephemeron keeps alive and
-     *  what it does not -- is the half that decides whether memory is
-     *  correct, and that half is here.
-     */
-    for (index = 0; index < pending_top; ++index) {
-        st_oop      p = pending[index];
-        om_header  *head;
-
-        if (p == ST_OOP_INVALID)
-            continue;
-        head = OM_head(p);
-        if (ST_load_relaxed(OM_refcount_of(p)) == 0)
-            continue;               /*  the ephemeron is itself dying  */
-        if (head->size == 0)
-            continue;
-        if (!OM_is_object(ST_oop_load(&((st_oop *) (head + 1))[0])))
-            continue;
-        ST_oop_store(&((st_oop *) (head + 1))[0], ST_NIL);
-        OM_increase_ref(ST_NIL);
-        ++st_om_ephemerons_mourned;
     }
 
     if (report)
@@ -2175,5 +2285,51 @@ collect_at_safepoint(void *unused)
 uint32_t
 OM_collect(void)
 {
-    return WORKER_at_safepoint(collect_at_safepoint, NULL);
+    uint32_t    reclaimed = WORKER_at_safepoint(collect_at_safepoint, NULL);
+
+    /*
+     *  The finalization process is woken here rather than inside the
+     *  safepoint, and the difference is not tidiness.  A queued semaphore
+     *  signal is delivered by a worker at a bytecode boundary; inside the
+     *  safepoint every worker is parked and no boundary is coming until
+     *  this function returns.  Signalling from in there would post to a
+     *  queue nobody is going to read for as long as it takes to get out of
+     *  the place that posted it.
+     */
+    OM_mourn_wake();
+    return reclaimed;
+}
+
+/*
+ *  Count what the table already holds.
+ *
+ *  live_objects and live_bytes are kept by the allocator and the sweep, and
+ *  a loaded image is neither: OM_init sets them to zero and OM_image_load
+ *  then puts a million objects in the table behind their backs.  The first
+ *  sweep decremented from zero and the GC log said "4294967182 live
+ *  objects" for the rest of the run (Bugs4 MEM-4).  Nothing decides
+ *  anything on these two -- they are a diagnostic and an answer to
+ *  Smalltalk core -- which is why it took an audit to notice, and is no
+ *  reason to leave a counter saying something that is not true.
+ */
+void
+OM_recount_live(void)
+{
+    uint32_t    index;
+    uint32_t    limit = (uint32_t) ST_load_relaxed(&st_om_table_limit);
+
+    live_objects = 0;
+    live_bytes   = 0;
+    for (index = 1; index < limit; ++index) {
+        om_header  *head = OM_table_get(index);
+
+        if (!head || (head->flags & ST_FMT_FREE))
+            continue;
+        ++live_objects;
+        live_bytes += (head->flags & ST_FMT_POINTERS)
+                        ? (uint64_t) head->size * sizeof(st_oop)
+                        : ((head->flags & ST_FMT_WORDS)
+                            ? (uint64_t) head->size * sizeof(uint16_t)
+                            : head->size);
+    }
 }

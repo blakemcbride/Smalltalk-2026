@@ -7,11 +7,25 @@ Shared between every request that user makes, which on this system means
 between workers; the last-access time is one word and a torn read is
 impossible, but the application's own data is a Dictionary and takes a Mutex
 for every access.
+
+AND ONE REQUEST AT A TIME PER SESSION.  critical: is a SECOND lock, held by
+the dispatcher for the whole of a request that carries this session's uuid,
+so that two requests bearing one _uuid run one after the other instead of at
+once on two workers.  Bugs4 found that they did not: `session at: #cart' read,
+changed and written back by two requests in parallel is the ordinary
+read-modify-write race, and every application that keeps anything in a
+session writes that shape.  The data lock alone cannot fix it -- it makes each
+access atomic and the SEQUENCE of accesses is what has to be.
+
+The two locks are separate and neither is reentrant, which is why they must
+be: a service running inside critical: reaches at: and at:put:, and one
+Mutex would deadlock the first time it did.  The order is always this lock
+first, then the data lock, and nothing takes them the other way round.
 "
 Class {
 	#name : 'RestUserData',
 	#superclass : 'Object',
-	#instVars : [ 'username', 'password', 'userId', 'uuid', 'lastAccess', 'data', 'lock' ],
+	#instVars : [ 'username', 'password', 'userId', 'uuid', 'lastAccess', 'data', 'lock', 'requestLock' ],
 	#category : 'Rest-Server'
 }
 
@@ -28,7 +42,15 @@ RestUserData >> setUsername: aName password: aPassword userId: anId [
 	uuid := RestUuid new.
 	lastAccess := Time totalSeconds.
 	data := Dictionary new.
-	lock := Mutex new
+	lock := Mutex new.
+	requestLock := Mutex new
+]
+
+{ #category : 'data' }
+RestUserData >> critical: aBlock [
+	"aBlock with this session held: one request at a time for this uuid.
+	 See the class comment for why this is not the data lock."
+	^requestLock critical: aBlock
 ]
 
 { #category : 'accessing' }

@@ -279,7 +279,7 @@ pcRange
 		ifFalse: [^1 to: 0].
 	(sourceMap == nil or: [sourceMap size = 0])
 		 ifTrue: [^1 to: 0].
-	pc_ context pc -
+	pc _ context pc -
 		((context == processHandle topContext and: [processHandle interrupted])
 			ifTrue: [1]
 			ifFalse: [2]).

@@ -189,6 +189,14 @@ void        SCHED_thaw(void);
 void        SCHED_signal_at_ms(st_oop semaphore, uint32_t target_ms);
 int         SCHED_timer_pending(void);
 st_oop      SCHED_timer_semaphore(void);
+
+/*
+ *  How long until the pending delay fires, in milliseconds; -1 when
+ *  nothing is armed.  For the deadlock verdict, which used to say only
+ *  that a timer was pending -- and "pending" told a reader nothing about
+ *  whether the wait was a millisecond or three minutes.
+ */
+int64_t     SCHED_timer_remaining_ms(void);
 void        SCHED_timer_stop(void);
 
 void        SCHED_set_input_semaphore(st_oop semaphore);

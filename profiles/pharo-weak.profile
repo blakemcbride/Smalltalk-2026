@@ -41,10 +41,45 @@ against.
   reference stayed alive in a stale stack slot.  Two WeakSet tests measured
   exactly that.  Contexts are marked precisely now.
 
-The four Dictionary tests are still excluded: they inherit from DictionaryTest,
-which lives in Collections-Unordered-Tests, and loading that here would run all
-469 of pharo-collections' tests a second time.  The classes are loaded; only
-the test package is not.
+The four Dictionary tests are here now, and so is the package their superclass
+lives in.  They were excluded because DictionaryTest is in
+Collections-Unordered-Tests, and loading it runs pharo-collections' tests a
+second time -- which is the price, and the reason it is worth paying is that
+until Bugs4 nothing in this profile touched a WEAK KEY.  WeakKeyDictionary and
+WeakIdentityKeyDictionary were not weak at all: their keys were held strongly
+and never reclaimed, and the profile passed 524 of 524 without noticing,
+because the only tests that would have said so were the four excluded ones.
+An exclusion that hides the one thing a profile is for is worse than a slow
+suite.
+
+Two of those tests are the proof of the repair.  WeakIdentityKeyDictionaryTest
+>>testNoNils says a dead key leaves no nil behind in the keys, and
+>>testFinalizeValuesWhenLastChainContinuesAtFront builds three objects whose
+hashes collide at the end of the table, drops the first, and asks that the
+other two still be findable -- which is the case a removal that does not fix
+the collision chain gets wrong.
+
+Collections-Abstract-Tests comes with Collections-Unordered-Tests because
+DictionaryTest roots on CollectionRootTest, and it brings one thing this
+profile did not have before: WeakSetTest asks for TIterateTest and had been
+built WITHOUT it, which the loader said every time and nobody read.  With the
+trait, twelve of its tests ran for the first time and all twelve failed --
+Collection had select:thenCollect: and collect:thenSelect: and none of
+collect:thenDo:, select:thenDo:, reject:thenDo:, reject:thenCollect: or
+sumNumbers:.  They are in lib/Collections-Protocol now.
+
+One test fails and is left failing, deliberately, because it is a statement
+about a scheduler rather than about weak keys.  WeakKeyDictionaryTest
+>>testClearing collects, then asserts on the next line that the dictionary is
+still full -- "keys are gone but not yet finalized" -- and on the line after
+that that it is empty.  Both are true only if #mourn is sent to a thousand
+associations in the gap between two consecutive sends.  On Cog it is: the
+interrupt check falls on a method return, so `dict size' has already answered
+1001 when the finalization process takes over.  Here SCHED_check_process_switch
+runs once per BYTECODE, so the finalization process gets the processor before
+`size' is sent and answers 1.  Nothing about the fix is wrong and nothing about
+the test is wrong; they disagree about where a preemption lands.  The other
+1035 pass.
 "
 Profile {
 	#name     : 'pharo-weak',
@@ -53,10 +88,7 @@ Profile {
 	#exclude  : [ 'ManifestCollectionsUnordered', 'HashTableSizesTest',
 	              'ManifestSystemTime', 'VirtualMachine',
 	              'OrderedDictionary', 'OrderedIdentityDictionary',
-	              'KeyedTree', 'KeyedTreeTest',
-	              'WeakKeyDictionaryTest', 'WeakValueDictionaryTest',
-	              'WeakIdentityKeyDictionaryTest',
-	              'WeakIdentityValueDictionaryTest' ],
+	              'KeyedTree', 'KeyedTreeTest' ],
 	#supersede : [ 'Set', 'Dictionary', 'IdentityDictionary', 'IdentitySet',
 	               'Bag', 'MethodDictionary', 'WeakArray', 'Date', 'Time',
 	               'WeakOrderedCollection' ],
@@ -68,5 +100,7 @@ Profile {
 	              '../lib/Chronology-Compat',
 	              '../pharo/Collections-Weak',
 	              '../lib/Collections-Weak-Compat',
+	              '../pharo/Collections-Abstract-Tests',
+	              '../pharo/Collections-Unordered-Tests',
 	              '../pharo/Collections-Weak-Tests' ]
 }

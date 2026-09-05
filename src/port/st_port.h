@@ -125,9 +125,10 @@ int     ST_tls_set(st_tls_key k, void *value);
 int64_t ST_time_monotonic_ns(void);
 
 /*
- *  The Smalltalk millisecond clock: free-running, monotonic, thirty bits.
+ *  The Smalltalk millisecond clock, in its two widths.  One counter, read
+ *  two ways, and the two agree modulo 2^30 by construction.
  *
- *  One function because there is one clock.  Primitive 99
+ *  One counter because there is one clock.  Primitive 99
  *  (Time>>millisecondClockInto:) read the monotonic counter and primitive
  *  135 (Squeak's millisecondClockValue) read milliseconds since 1901, and
  *  both called themselves the millisecond clock -- so the image computed a
@@ -136,13 +137,37 @@ int64_t ST_time_monotonic_ns(void);
  *  fired at once, which looks exactly like a delay that works until
  *  something measures it.
  *
- *  Thirty bits because the Blue Book's is a SmallInteger and must roll
- *  over where the image expects; monotonic because every caller is timing
- *  an interval -- millisecondsToRun:, millisecondsSince:, uptime -- and
- *  none wants a wall clock that an operator can wind backwards.  Dates
+ *  Monotonic because every caller is timing an interval --
+ *  millisecondsToRun:, millisecondsSince:, uptime, a socket deadline --
+ *  and none wants a wall clock that an operator can wind backwards.  Dates
  *  come from ST_time_smalltalk_ms and primitive 240 instead.
+ *
+ *  ST_time_ms_clock is the Blue Book's width: thirty bits, wrapping every
+ *  12.43 days, which is what primitive 99 stores into four bytes and what
+ *  primitive 136's target time is compared against.  ST_time_ms_wide is
+ *  the same count unmasked, and it is what primitive 135 now answers.
+ *
+ *  The second one exists because the first one wraps and the image did not
+ *  know it.  A Delay whose resumption time straddled the wrap was compared
+ *  `resumptionTime <= now' against a clock that had just gone back to
+ *  zero: never true again, so its waiter was never resumed, and the timing
+ *  process -- the highest priority process in the image -- re-armed, woke,
+ *  found nothing due and re-armed for ever.  On one worker that is the
+ *  whole image hung, every 12.43 days of machine uptime (Bugs4 CHRON-1).
+ *  Time millisecondsToRun: answered a negative number across the same
+ *  boundary, and every socket deadline in lib/Network was computed the
+ *  same unreduced way.
+ *
+ *  The repair could have been modular arithmetic in a dozen places in the
+ *  image, each of which had to remember; widening the clock instead
+ *  retires the question.  A SmallInteger here is 62 bits, so the wide
+ *  clock runs for 146 million years, and the only place the narrow one is
+ *  still needed is the four-byte word primitive 136 takes -- which
+ *  Delay>>armTimer masks at the moment of arming, where the modulus is
+ *  local and visible.
  */
 uint32_t ST_time_ms_clock(void);
+int64_t  ST_time_ms_wide(void);
 
 /*  Milliseconds since the Smalltalk-80 epoch (1 January 1901).  */
 int64_t ST_time_smalltalk_ms(void);

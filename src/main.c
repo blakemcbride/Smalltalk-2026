@@ -45,7 +45,8 @@ static int  eval_dialect = ST_DIALECT_BLUE_BOOK;
  *  to show what the method does is not a computation, and one that does not
  *  answer inside a couple of million bytecodes has hit something that does
  *  not terminate here.  Left at the default, fifteen hundred of them spend
- *  four seconds each discovering that.
+ *  four seconds each discovering that.  The -tests runner raises it, for
+ *  the opposite reason again: a profile's whole suite is one expression.
  */
 static uint64_t evaluate_budget = EVAL_BYTECODE_BUDGET;
 #include "compiler.h"
@@ -57,8 +58,13 @@ static uint64_t evaluate_budget = EVAL_BYTECODE_BUDGET;
 #include <stdlib.h>
 #include <math.h>
 #include <string.h>
+#include <stdarg.h>
+#include <errno.h>
 #ifndef ST_WINDOWS
 #include <signal.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/file.h>
 #endif
 
 /*
@@ -117,8 +123,11 @@ usage(const char *argv0)
     printf("                        resumes\n");
     printf("  -run <image> [n]      run the image, opening a window\n");
     printf("  -serve <image> [-workers n] [args...]\n");
-    printf("                        run the image on n native threads (four per\n");
-    printf("                        CPU by default), no window, until\n");
+    printf("                        run the image on n native threads (four\n");
+    printf("                        per CPU by default, and never more than\n");
+    printf("                        %u, which is what the worker table\n",
+           (unsigned) (ST_MAX_WORKERS - 1));
+    printf("                        holds), no window, until\n");
     printf("                        SIGINT, SIGTERM or Smalltalk quit; the args\n");
     printf("                        are what `Smalltalk arguments' answers.  The\n");
     printf("                        image's startup is what -bootstrap -startup\n");
@@ -177,6 +186,10 @@ print_version(void)
 #endif
 }
 
+static void name_changes_file_after(const char *image_path);
+static int  changes_file_of(const char *image_path, char *out,
+                            size_t out_len);
+
 static int
 load(const char *path)
 {
@@ -190,7 +203,60 @@ load(const char *path)
         fprintf(stderr, "st80: %s\n", err[0] ? err : "image load failed");
         return -1;
     }
+    name_changes_file_after(path);
     return 0;
+}
+
+/*
+ *  One process at a time may write an image's changes file (Bugs4 FILES-B).
+ *
+ *  Held for the life of the process, on a descriptor of our own that nothing
+ *  else closes.  flock and not fcntl for exactly that reason: a POSIX record
+ *  lock is released when the process closes ANY descriptor on the file, and
+ *  the image opens and closes its changes file constantly -- every
+ *  releaseExternalViews, every snapshot -- so a record lock would be gone
+ *  before the first method was compiled.  An flock belongs to the open file
+ *  description that took it and survives all of that.
+ *
+ *  Refusing is the point.  Two servers on one image do not fail loudly; they
+ *  interleave writes into one file with two notions of where it ends and
+ *  lose each other's source, which is discovered weeks later as methods that
+ *  cannot show their own text.  A second server is nearly always a mistake
+ *  -- an image is meant to be copied first -- and when it is not, copying is
+ *  a one-line answer that this message gives.
+ *
+ *  A changes file that cannot even be opened is not refused here: the image
+ *  will meet that itself, with the errno, at the place that needed it.
+ */
+#ifndef ST_WINDOWS
+static int  changes_lock_fd = -1;
+#endif
+
+static int
+hold_the_changes_file(const char *image_path)
+{
+#ifdef ST_WINDOWS
+    (void) image_path;
+    return 1;
+#else
+    char    path[1024];
+
+    if (changes_file_of(image_path, path, sizeof path) <= 0)
+        return 1;
+    changes_lock_fd = open(path, O_RDWR | O_CREAT, 0666);
+    if (changes_lock_fd < 0)
+        return 1;
+    if (flock(changes_lock_fd, LOCK_EX | LOCK_NB) == 0)
+        return 1;
+    fprintf(stderr,
+            "st80: %s is already open by another st80; two of them writing\n"
+            "st80: one changes file lose each other's method source.  Copy\n"
+            "st80: the image (cp %s other.im) and serve the copy.\n",
+            path, image_path);
+    close(changes_lock_fd);
+    changes_lock_fd = -1;
+    return 0;
+#endif
 }
 
 static int
@@ -443,6 +509,129 @@ store_named(st_oop object, const char *name, st_oop value)
         return 0;
     OM_store_pointer((uint32_t) i, object, value);
     return 1;
+}
+
+/*
+ *  An image's changes file is named after the image WE were given, not after
+ *  the one it was built as (Bugs4 FILES-B).
+ *
+ *  The changes file is SourceFiles at: 2, and it is a real FileStream on a
+ *  real PosixFile whose fileName went into the image when the bootstrap made
+ *  it -- `<the -o path>.changes'.  An image is a file; files get copied and
+ *  renamed and handed about; and every one of those copies came up writing
+ *  its source into the ORIGINAL's changes file.  `cp priv.im copy.im' and
+ *  then a compile in copy.im left no copy.im.changes at all and appended to
+ *  priv.im.changes -- so the copy's methods answered getSource out of a file
+ *  the copy does not own, and deleting the original deleted the copy's
+ *  source.  Worse for a server: two `-serve priv.im' processes each have
+ *  their own idea of where that one file ends, so each setToEnd wrote over
+ *  what the other had just appended.  A thousand methods compiled in each
+ *  left 751 and 181 whose getSource raised or answered another method's
+ *  text, against 2 for a single server.
+ *
+ *  The name is derived here instead, at load, from the path on the command
+ *  line, which is the only place that knows which file this actually is.
+ *  Nothing is done when the two agree, which is the ordinary case -- an
+ *  image served from where it was built -- so this changes nothing for
+ *  anyone but the copy, whose changes file follows it.
+ *
+ *  TWO SPELLINGS, because this system has two.  A bootstrap names the
+ *  changes file after the whole -o path, so `st80.image' goes with
+ *  `st80.image.changes'; SystemDictionary>>saveAs: names it after the
+ *  prefix, 1983's way, so `saved.im' goes with `saved.changes'.  An image
+ *  saved the second way and loaded here would otherwise be pointed at a
+ *  changes file that does not exist, and the source it had already written
+ *  would be orphaned beside it.  So the first spelling wins if that file is
+ *  there, the second is used if that one is, and the first is made if
+ *  neither is.
+ *
+ *  The stream is marked closed, so that the first use reopens the File by
+ *  its new name and re-reads its length rather than trusting the page and
+ *  the lastPageNumber the old file left in the image (Bugs3 B20's fault,
+ *  arrived at from the other direction).  The descriptor goes too: it is a
+ *  number from another process, which prim.c refuses to believe anyway.
+ */
+static int
+file_is_there(const char *path)
+{
+    struct stat st;
+
+    return stat(path, &st) == 0 && !S_ISDIR(st.st_mode);
+}
+
+/*  Where the changes file of the image at this path is, or should be.  */
+static int
+changes_file_of(const char *image_path, char *out, size_t out_len)
+{
+    char        other[1024];
+    size_t      len;
+    int         n;
+    int         m;
+
+    n = snprintf(out, out_len, "%s.changes", image_path);
+    if (n <= 0 || (size_t) n >= out_len)
+        return 0;
+    if (file_is_there(out))
+        return n;
+    len = strlen(image_path);
+    if (len <= 3 || strcmp(image_path + len - 3, ".im") != 0)
+        return n;
+    m = snprintf(other, sizeof other, "%.*s.changes", (int) (len - 3),
+                 image_path);
+    if (m <= 0 || (size_t) m >= sizeof other || (size_t) m >= out_len
+     || !file_is_there(other))
+        return n;
+    memcpy(out, other, (size_t) m + 1);
+    return m;
+}
+
+static void
+name_changes_file_after(const char *image_path)
+{
+    st_oop      files;
+    st_oop      stream;
+    st_oop      page;
+    st_oop      file;
+    st_oop      name;
+    st_oop      fresh;
+    char        want[1024];
+    char        have[1024];
+    int         n;
+    uint32_t    i;
+
+    if (!image_path || !*image_path)
+        return;
+    n = changes_file_of(image_path, want, sizeof want);
+    if (n <= 0)
+        return;                         /*  a name we cannot hold  */
+    files = image_global("SourceFiles");
+    if (!is_instance(files) || !OM_pointer_bit(files)
+     || OM_fetch_word_length(files) < 2)
+        return;
+    stream = OM_fetch_pointer(1, files);
+    /*
+     *  A changes stream that is not a file at all -- an image built without
+     *  -o has an in-memory ReadWriteStream there -- has no `page' and is
+     *  left alone.
+     */
+    if (!fetch_named(stream, "page", &page)
+     || !fetch_named(page, "file", &file)
+     || !fetch_named(file, "fileName", &name))
+        return;
+    have[0] = '\0';
+    if (is_instance(name) && !OM_pointer_bit(name))
+        OM_string_of(name, have, sizeof have);
+    if (strcmp(have, want) == 0)
+        return;                         /*  already its own  */
+    fresh = OM_instantiate_bytes(ST_CLASS_STRING, (uint32_t) n);
+    if (!OM_is_present(fresh))
+        return;
+    for (i = 0; i < (uint32_t) n; ++i)
+        OM_store_byte(i, fresh, (uint8_t) want[i]);
+    store_named(file, "fileName", fresh);
+    store_named(file, "fd", ST_NIL);
+    store_named(file, "lastPageNumber", ST_NIL);
+    store_named(stream, "closed", ST_TRUE);
 }
 
 static st_oop
@@ -752,6 +941,8 @@ do_run(const char *path, uint64_t max_cycles)
     const char *why = "the image stopped";
 
 
+    if (!hold_the_changes_file(path))
+        return 1;
     if (load(path) != 0)
         return 1;
     GFX_set_screen_hook(screen_follows_display);
@@ -1185,6 +1376,8 @@ do_serve(const char *path, unsigned workers, int argc, char **argv)
         if (workers > ST_MAX_WORKERS - 1)
             workers = ST_MAX_WORKERS - 1;
     }
+    if (!hold_the_changes_file(path))
+        return 1;
     if (load(path) != 0)
         return 1;
     SCHED_reset();
@@ -1788,9 +1981,30 @@ do_bootstrap(const char *const *sources, const int *dialects, unsigned count,
          *  next expression's compiler can see, so it reads as nil and the
          *  question goes to nobody.
          */
-        st_oop  passed = evaluate(
+        uint64_t    saved_budget = evaluate_budget;
+        st_oop      passed;
+
+        /*
+         *  A whole suite is not an expression, and the runaway guard has to
+         *  say so.
+         *
+         *  The default budget is sized for -eval, where two hundred million
+         *  bytecodes is a very long program and anything longer is a loop
+         *  that will not end.  A -tests run is a thousand tests, several of
+         *  them deliberately building collections of a thousand elements
+         *  and collecting between each one, and it crossed the -eval budget
+         *  the moment pharo-weak was given Pharo's own dictionary tests --
+         *  reported as "expression did not finish", which points at a
+         *  hanging test and was a suite that simply had more work in it
+         *  than one -eval is allowed.  The doctest runner lowers the budget
+         *  a hundredfold for the opposite reason, three lines up; this
+         *  raises it for this one evaluation and puts it back.
+         */
+        evaluate_budget = UINT64_C(20000000000);
+        passed = evaluate(
             "| r | r := TestCase allTests run. r report. ^r hasPassed",
             err, sizeof err);
+        evaluate_budget = saved_budget;
 
         if (passed == ST_OOP_INVALID) {
             fprintf(stderr, "st80: %s\n", err);
@@ -2188,6 +2402,108 @@ read_manifest(const char *path, path_list *l)
     return 1;
 }
 
+/*
+ *  A command line that asks for nothing, or asks with a word missing, is a
+ *  mistake and exits like one (Bugs4 REFLECTION-4).
+ *
+ *  `st80 -frobnicate', `st80 -serve' with no image, `st80 -inspect img.im'
+ *  with no oop -- each of these fell out of the bottom of the option loop,
+ *  where the last two lines were `print_version(); return 0;'.  So a
+ *  misspelled switch printed the banner and exited SUCCESS: a build script
+ *  that ran the wrong thing was told the right thing had happened, which is
+ *  the one failure mode a scripting interface must not have.  The
+ *  well-formed errors were already right -- `-serve nosuch.im' says "cannot
+ *  open" and exits 1 -- so what was missing was only the report for the
+ *  command that never got as far as running.
+ *
+ *  Two, because they are different mistakes: usage_error names the word
+ *  that is wrong, missing_argument names the word that is not there.  Both
+ *  go to standard error, both point at -help rather than reprinting it (the
+ *  full usage buries the sentence that matters), and both answer 2, which
+ *  keeps "I could not understand you" distinct from the 1 that means "I
+ *  understood you and it did not work".
+ */
+#define ST_EXIT_USAGE   2
+
+static int
+usage_error(const char *argv0, const char *fmt, ...)
+{
+    va_list ap;
+
+    fprintf(stderr, "st80: ");
+    va_start(ap, fmt);
+    vfprintf(stderr, fmt, ap);
+    va_end(ap);
+    fprintf(stderr, "\n");
+    fprintf(stderr, "st80: `%s -help' lists what there is\n", argv0);
+    return ST_EXIT_USAGE;
+}
+
+static int
+missing_argument(const char *argv0, const char *option, const char *what)
+{
+    return usage_error(argv0, "%s needs %s after it", option, what);
+}
+
+/*
+ *  A whole token as a count, or nothing.
+ *
+ *  strtoull on its own accepts a prefix and answers zero for a word that is
+ *  not a number at all, so `-run img.im -screenshot s.pbm' ran with a
+ *  bytecode limit of nought and no screenshot and said nothing about
+ *  either.  Answering whether the token WAS a number lets the caller tell
+ *  "no count given" from "that is not a count".
+ */
+static int
+count_argument(const char *text, uint64_t *out)
+{
+    char       *end;
+    uint64_t    value;
+
+    if (!text || !*text)
+        return 0;
+    errno = 0;
+    value = strtoull(text, &end, 0);
+    if (errno != 0 || end == text || *end != '\0')
+        return 0;
+    *out = value;
+    return 1;
+}
+
+/*
+ *  Can an image be written where -o points, before an image is built?
+ *
+ *  Asked here because everything downstream assumes it can (Bugs4
+ *  REFLECTION-6).  The bootstrap names the changes file after the -o path
+ *  and asks the image's own FileStream to open it; when that open fails the
+ *  error is signalled inside a bootstrap with no handler, the failed send
+ *  answers nil, and the sends after it walk up the file layer on that nil.
+ *  `-o' into an unwritable directory printed a NonBooleanReceiver cascade,
+ *  then six doesNotUnderstands, and only then the correct `cannot write
+ *  ....tmp' and exit 1.  Three screens of noise in front of the one true
+ *  sentence, all of it produced after the whole library had been compiled.
+ *
+ *  The same file the save itself will make -- OM_image_save writes
+ *  `<path>.tmp' and renames -- so this tests exactly the thing that has to
+ *  work, and removes it again so that a bootstrap which fails later leaves
+ *  nothing behind.
+ */
+static int
+image_path_is_writable(const char *out_path)
+{
+    char    probe[1100];
+    FILE   *f;
+
+    if (snprintf(probe, sizeof probe, "%s.tmp", out_path) >= (int) sizeof probe)
+        return 0;
+    f = fopen(probe, "wb");
+    if (!f)
+        return 0;
+    fclose(f);
+    remove(probe);
+    return 1;
+}
+
 int
 main(int argc, char **argv)
 {
@@ -2202,16 +2518,22 @@ main(int argc, char **argv)
             print_version();
             return 0;
         }
-        if (!strcmp(argv[i], "-syntax") && i + 1 < argc)
-            return do_syntax(argc - i - 1, argv + i + 1);
-        if (!strcmp(argv[i], "-primitives") && i + 1 < argc)
-            return do_primitives(argc - i - 1, argv + i + 1);
-        if (!strcmp(argv[i], "-census") && i + 1 < argc)
-            return do_census(argv[i + 1]);
-        if (!strcmp(argv[i], "-classes") && i + 1 < argc)
-            return do_classes(argv[i + 1]);
-        if (!strcmp(argv[i], "-methods") && i + 1 < argc)
-            return do_methods(argv[i + 1]);
+        if (!strcmp(argv[i], "-syntax"))
+            return i + 1 < argc ? do_syntax(argc - i - 1, argv + i + 1)
+                 : missing_argument(argv[0], "-syntax", "at least one .st file");
+        if (!strcmp(argv[i], "-primitives"))
+            return i + 1 < argc ? do_primitives(argc - i - 1, argv + i + 1)
+                 : missing_argument(argv[0], "-primitives",
+                                    "at least one .st file");
+        if (!strcmp(argv[i], "-census"))
+            return i + 1 < argc ? do_census(argv[i + 1])
+                 : missing_argument(argv[0], "-census", "an image");
+        if (!strcmp(argv[i], "-classes"))
+            return i + 1 < argc ? do_classes(argv[i + 1])
+                 : missing_argument(argv[0], "-classes", "an image");
+        if (!strcmp(argv[i], "-methods"))
+            return i + 1 < argc ? do_methods(argv[i + 1])
+                 : missing_argument(argv[0], "-methods", "an image");
         if (!strcmp(argv[i], "-bootstrap")) {
             path_list   sources;
 #ifdef ST_OM_BB
@@ -2248,7 +2570,30 @@ main(int argc, char **argv)
 
             memset(&sources, 0, sizeof sources);
             memset(&dialects, 0, sizeof dialects);
+            /*
+             *  Every one of these takes a word after it, and a word that is
+             *  not there used to be no error at all: `-bootstrap src -o'
+             *  fell past the option tests and was added to the source list
+             *  as a file called `-o', which failed later as "cannot open -o"
+             *  -- or, with -manifest, did not fail at all (Bugs4
+             *  REFLECTION-4).
+             */
             for (j = i + 1; j < argc; ++j) {
+                static const char *const wants_a_word[] = {
+                    "-o", "-eval", "-startup", "-doctests", "-screenshot",
+                    "-manifest", "-profile"
+                };
+                unsigned    w;
+
+                for (w = 0; w < sizeof wants_a_word / sizeof *wants_a_word;
+                     ++w) {
+                    if (!strcmp(argv[j], wants_a_word[w]) && j + 1 >= argc) {
+                        path_list_free(&sources);
+                        free(dialects.items);
+                        return missing_argument(argv[0], argv[j],
+                                                "a file or an expression");
+                    }
+                }
                 if (!strcmp(argv[j], "-o") && j + 1 < argc) {
                     out_path = argv[++j];
                 }  else if (!strcmp(argv[j], "-eval") && j + 1 < argc) {
@@ -2338,8 +2683,18 @@ main(int argc, char **argv)
                 }
             }
             if (sources.count == 0) {
-                fprintf(stderr, "st80: -bootstrap needs source files\n");
                 path_list_free(&sources);
+                free(dialects.items);
+                return missing_argument(argv[0], "-bootstrap",
+                                        "source files, a -profile or a"
+                                        " -manifest");
+            }
+            /*  Bugs4 REFLECTION-6; see image_path_is_writable.  */
+            if (out_path && !image_path_is_writable(out_path)) {
+                fprintf(stderr, "st80: cannot write %s: %s\n", out_path,
+                        strerror(errno));
+                path_list_free(&sources);
+                free(dialects.items);
                 return 1;
             }
             /*
@@ -2385,7 +2740,9 @@ main(int argc, char **argv)
             free(dialects.items);
             return status;
         }
-        if (!strcmp(argv[i], "-screenshot") && i + 1 < argc) {
+        if (!strcmp(argv[i], "-screenshot")) {
+            if (i + 1 >= argc)
+                return missing_argument(argv[0], "-screenshot", "a .pbm file");
             shot_path = argv[++i];
             continue;
         }
@@ -2393,35 +2750,90 @@ main(int argc, char **argv)
             wiggle = 1;
             continue;
         }
-        if (!strcmp(argv[i], "-inject") && i + 1 < argc) {
+        if (!strcmp(argv[i], "-inject")) {
+            if (i + 1 >= argc)
+                return missing_argument(argv[0], "-inject", "a script file");
             inject_script = argv[++i];
             continue;
         }
-        if (!strcmp(argv[i], "-run") && i + 1 < argc)
-            return do_run(argv[i + 1],
-                          (i + 2 < argc) ? strtoull(argv[i + 2], NULL, 0) : 0);
-        if (!strcmp(argv[i], "-serve") && i + 1 < argc) {
-            const char *image   = argv[i + 1];
-            unsigned    workers = 0;
-            int         j       = i + 2;
+        if (!strcmp(argv[i], "-run") || !strcmp(argv[i], "-trace2")
+         || !strcmp(argv[i], "-trace3")) {
+            uint64_t    limit = 0;
 
-            if (j + 1 < argc && !strcmp(argv[j], "-workers")) {
-                workers = (unsigned) strtoul(argv[j + 1], NULL, 0);
+            if (i + 1 >= argc)
+                return missing_argument(argv[0], argv[i], "an image");
+            if (i + 2 < argc && !count_argument(argv[i + 2], &limit))
+                return usage_error(argv[0],
+                                   "%s takes an image and a number, not `%s'",
+                                   argv[i], argv[i + 2]);
+            if (!strcmp(argv[i], "-run"))
+                return do_run(argv[i + 1], limit);
+            return do_trace(argv[i + 1],
+                            !strcmp(argv[i], "-trace2") ? ST_TRACE_BYTECODES
+                                                        : ST_TRACE_SENDS,
+                            limit);
+        }
+        if (!strcmp(argv[i], "-serve")) {
+            const char *image;
+            uint64_t    count   = 0;
+            unsigned    workers = 0;
+            int         j;
+
+            if (i + 1 >= argc)
+                return missing_argument(argv[0], "-serve", "an image");
+            image = argv[i + 1];
+            j = i + 2;
+            if (j < argc && !strcmp(argv[j], "-workers")) {
+                /*
+                 *  Its own message, because `-workers' with nothing after it
+                 *  used to be handed to the image as one of `Smalltalk
+                 *  arguments' -- the server came up on the default pool and
+                 *  ran a first argument nobody meant to write.
+                 */
+                if (j + 1 >= argc)
+                    return missing_argument(argv[0], "-workers", "a number");
+                if (!count_argument(argv[j + 1], &count))
+                    return usage_error(argv[0],
+                                       "-workers takes a number -- 0 for the"
+                                       " default pool -- not `%s'",
+                                       argv[j + 1]);
+                /*
+                 *  A number too big for the pool is not an error: do_serve
+                 *  says so and uses what it has, which is what it has always
+                 *  done and what a script asking for more cores than this
+                 *  build holds should get.  Bounded here only so that the
+                 *  cast to unsigned cannot wrap a very large number round
+                 *  into a small one.
+                 */
+                workers = (unsigned) (count > 65535 ? 65535 : count);
                 j += 2;
             }
             return do_serve(image, workers, argc - j, argv + j);
         }
-        if (!strcmp(argv[i], "-trace2") && i + 1 < argc)
-            return do_trace(argv[i + 1], ST_TRACE_BYTECODES,
-                            (i + 2 < argc) ? strtoull(argv[i + 2], NULL, 0) : 0);
-        if (!strcmp(argv[i], "-trace3") && i + 1 < argc)
-            return do_trace(argv[i + 1], ST_TRACE_SENDS,
-                            (i + 2 < argc) ? strtoull(argv[i + 2], NULL, 0) : 0);
-        if (!strcmp(argv[i], "-inspect") && i + 2 < argc)
+        if (!strcmp(argv[i], "-inspect")) {
+            if (i + 2 >= argc)
+                return missing_argument(argv[0], "-inspect",
+                                        "an image and an oop in hex");
             return do_inspect(argv[i + 1], argv[i + 2]);
-        if (!strcmp(argv[i], "-disasm") && i + 3 < argc)
+        }
+        if (!strcmp(argv[i], "-disasm")) {
+            if (i + 3 >= argc)
+                return missing_argument(argv[0], "-disasm",
+                                        "an image, a class and a selector");
             return do_disasm(argv[i + 1], argv[i + 2], argv[i + 3]);
+        }
+        return usage_error(argv[0], "I do not know the option `%s'", argv[i]);
     }
+    /*
+     *  Nothing at all on the command line is not a mistake; it is somebody
+     *  asking what this is, and the banner answers.  Getting here with
+     *  arguments means every one of them only set something up -- `st80
+     *  -wiggle', `st80 -screenshot s.pbm' -- and nothing was asked for, and
+     *  a command that does nothing must not report success.
+     */
+    if (argc > 1)
+        return usage_error(argv[0], "nothing to do: %s sets up a run and"
+                                    " no run was asked for", argv[1]);
     print_version();
     return 0;
 }

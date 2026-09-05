@@ -381,3 +381,57 @@ String >> subStrings [
 	"My words, split on spaces: substrings under its other spelling."
 	^self substrings
 ]
+
+{ #category : '*Strings-Protocol' }
+String >> asDate [
+	"The Date this text spells, or an error naming the text when it does
+	 not spell one.
+
+	 Written because a Date could not be stored and read back.  Pharo's
+	 Date>>storeOn: writes `'29 February 2024' asDate' and the port carries
+	 asDateAndTime, asDuration and asTime but not asDate, so in
+	 profiles/pharo-time every Date's storeString was an expression that
+	 did not evaluate (Bugs4 CHRON-8).  1983's Date>>storeOn: writes
+	 `(Date readFromString: '...')' instead and needed nothing, which is
+	 why nobody had noticed.
+
+	 Date class>>readFrom: -- lib/Kernel-Protocol's, which is the reader in
+	 both profiles because Pharo's Date has no readFrom: of its own -- takes
+	 all four forms and refuses what is not a date, so this adds a name and
+	 no policy.  It is `Date readFromString:' spelt the way the port spells
+	 its own asTime, which is `Time fromString:' and nothing else."
+	^Date readFromString: self
+]
+
+{ #category : '*Strings-Protocol' }
+String >> findString: subString startingAt: start [
+	"The index at or after start where subString first occurs in me, or 0.
+
+	 1983 opens the scan with `start to: self size - subString size + 1
+	 do:', so a start of 0 or less makes the first thing the loop does
+	 `self at: 0', and `'abc' findString: 'b' startingAt: 0' raised
+	 SubscriptOutOfBounds (Bugs4 COLL-5).  A start PAST my end answers 0
+	 cleanly, because the loop's upper bound is already below its lower
+	 one and the body never runs -- so the method already had an answer
+	 for a start outside the string, and gave it on one side only.
+
+	 A start before the beginning means the same thing a start of 1 means:
+	 search me from the beginning.  There is nothing before my first
+	 character for a match to be found in, so clamping loses nothing and
+	 turns the asymmetry into an answer.  ParagraphEditor sends this with
+	 an index it got from a selection, which is where a zero comes from in
+	 practice.
+
+	 The rest is 1983's, character for character."
+	| aCharacter index first |
+	subString isEmpty ifTrue: [^0].
+	aCharacter := subString first.
+	first := start max: 1.
+	first to: self size - subString size + 1 do: [:startIndex |
+		(self at: startIndex) = aCharacter ifTrue: [
+			index := 1.
+			[(self at: startIndex + index - 1) = (subString at: index)] whileTrue: [
+				index = subString size ifTrue: [^startIndex].
+				index := index + 1]]].
+	^0
+]

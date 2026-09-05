@@ -600,7 +600,15 @@ OM_image_load(const char *path, char *errbuf, size_t errlen)
     /*
      *  Counts were not stored.  One collection rebuilds them all from
      *  reachability, and reclaims anything the writer left unreferenced.
+     *
+     *  The live totals are not counts and are not rebuilt by it: they are
+     *  kept by the allocator and the sweep, and the loop above put every
+     *  object in the table without going through either.  Count them here,
+     *  before the collection, or the first sweep decrements from zero and
+     *  the GC log spends the rest of the run reporting four billion live
+     *  objects (Bugs4 MEM-4).
      */
+    OM_recount_live();
     OM_collect();
     return 0;
 }

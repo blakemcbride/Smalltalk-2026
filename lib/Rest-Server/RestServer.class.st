@@ -19,7 +19,8 @@ where server.json holds the same settings by name:
 
     { ""port"": 8080, ""backendDirectory"": ""backend"", ""documentRoot"": ""frontend"",
       ""database"": ""DSN=shop;UID=app;PWD=secret"", ""requireAuthentication"": true,
-      ""userInactiveSeconds"": 3600, ""connectionPoolSize"": 12,
+      ""userInactiveSeconds"": 3600, ""maxSessions"": 10000,
+      ""connectionPoolSize"": 12,
       ""allowWithoutAuthentication"": [ ""services.Catalog:list"" ] }
 
 WHAT IS SHARED, AND HOW.  Kiss's MainServlet keeps all of this in static
@@ -54,7 +55,7 @@ and a class that defines only one of the two is sent only that one.
 Class {
 	#name : 'RestServer',
 	#superclass : 'Object',
-	#instVars : [ 'port', 'bindAddress', 'backendDirectory', 'documentRoot', 'connectionString', 'requireAuthentication', 'userInactiveSeconds', 'keepAliveSeconds', 'maxRequestBytes', 'poolSize', 'environment', 'environmentLock', 'allowed', 'allowedLock', 'bootId', 'httpServer', 'loader', 'userCache', 'pool', 'name' ],
+	#instVars : [ 'port', 'bindAddress', 'backendDirectory', 'documentRoot', 'connectionString', 'requireAuthentication', 'userInactiveSeconds', 'maxSessions', 'keepAliveSeconds', 'maxRequestBytes', 'poolSize', 'environment', 'environmentLock', 'allowed', 'allowedLock', 'bootId', 'httpServer', 'loader', 'userCache', 'pool', 'name' ],
 	#category : 'Rest-Server'
 }
 
@@ -108,6 +109,7 @@ RestServer class >> fromConfig: aJsonObject [
 	(aJsonObject at: 'database') notNil ifTrue: [server database: (aJsonObject stringAt: 'database')].
 	(aJsonObject at: 'requireAuthentication') notNil ifTrue: [server requireAuthentication: (aJsonObject booleanAt: 'requireAuthentication')].
 	(aJsonObject at: 'userInactiveSeconds') notNil ifTrue: [server userInactiveSeconds: (aJsonObject integerAt: 'userInactiveSeconds')].
+	(aJsonObject at: 'maxSessions') notNil ifTrue: [server maxSessions: (aJsonObject integerAt: 'maxSessions')].
 	(aJsonObject at: 'keepAliveSeconds') notNil ifTrue: [server keepAliveSeconds: (aJsonObject numberAt: 'keepAliveSeconds')].
 	(aJsonObject at: 'maxRequestBytes') notNil ifTrue: [server maxRequestBytes: (aJsonObject integerAt: 'maxRequestBytes')].
 	(aJsonObject at: 'connectionPoolSize') notNil ifTrue: [server connectionPoolSize: (aJsonObject integerAt: 'connectionPoolSize')].
@@ -127,6 +129,7 @@ RestServer >> initialize [
 	backendDirectory := 'backend'.
 	requireAuthentication := nil.
 	userInactiveSeconds := 3600.
+	maxSessions := 10000.
 	keepAliveSeconds := 15.
 	maxRequestBytes := 64 * 1024 * 1024.
 	poolSize := 8.
@@ -176,6 +179,14 @@ RestServer >> requireAuthentication: aBoolean [
 { #category : 'configuration' }
 RestServer >> userInactiveSeconds: anInteger [
 	userInactiveSeconds := anInteger
+]
+
+{ #category : 'configuration' }
+RestServer >> maxSessions: anInteger [
+	"How many logged-in sessions may be held at once.  Ten thousand unless
+	 told otherwise; see RestUserCache, which refuses a login past it rather
+	 than growing without a bound a stranger controls."
+	maxSessions := anInteger
 ]
 
 { #category : 'configuration' }
@@ -245,7 +256,10 @@ RestServer >> backendDirectory [
 
 { #category : 'accessing' }
 RestServer >> userCache [
-	^userCache ifNil: [userCache := RestUserCache new inactiveSeconds: userInactiveSeconds; yourself]
+	^userCache ifNil: [userCache := RestUserCache new
+		inactiveSeconds: userInactiveSeconds;
+		maxUsers: maxSessions;
+		yourself]
 ]
 
 { #category : 'accessing' }

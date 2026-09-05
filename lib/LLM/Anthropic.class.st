@@ -139,11 +139,23 @@ Anthropic >> toolWireFor: anLLMTool [
 ]
 
 { #category : 'the wire' }
+Anthropic >> contentOf: aReply [
+	"The reply's content blocks.  A 200 without them is an LLMError and not
+	 a `nil do:' -- see LLM>>malformed:because:."
+	^(aReply arrayAt: 'content' ifAbsent: [nil])
+		ifNil: [self malformed: aReply because: 'it has no content array']
+]
+
+{ #category : 'the wire' }
 Anthropic >> textOf: aReply [
 	| out |
 	out := WriteStream on: (String new: 256).
-	(aReply arrayAt: 'content') do: [:block |
-		(self string: 'type' of: block) = 'text' ifTrue: [out nextPutAll: (block stringAt: 'text')]].
+	(self contentOf: aReply) do: [:block |
+		"A text block whose text is null is a block with no text, not a
+		 `nextPutAll: nil': stringAt: answers nil for an absent name AND
+		 for a JSON null, and both reach here from a real service."
+		(self string: 'type' of: block) = 'text' ifTrue: [
+			out nextPutAll: ((self string: 'text' of: block) ifNil: [''])]].
 	^out contents
 ]
 
@@ -151,15 +163,18 @@ Anthropic >> textOf: aReply [
 Anthropic >> toolCallsOf: aReply [
 	| calls |
 	calls := OrderedCollection new.
-	(aReply arrayAt: 'content') do: [:block |
+	(self contentOf: aReply) do: [:block |
 		(self string: 'type' of: block) = 'tool_use' ifTrue: [
-			calls add: (LLMToolCall id: (block stringAt: 'id') name: (block stringAt: 'name') arguments: (block objectAt: 'input'))]].
+			calls add: (LLMToolCall
+				id: ((self string: 'id' of: block) ifNil: [''])
+				name: ((self string: 'name' of: block) ifNil: [''])
+				arguments: ((block objectAt: 'input' ifAbsent: [nil]) ifNil: [JSONObject new]))]].
 	^calls
 ]
 
 { #category : 'the wire' }
 Anthropic >> assistantMessageOf: aReply [
-	^JSONObject new at: 'role' put: 'assistant'; at: 'content' put: (aReply arrayAt: 'content'); yourself
+	^JSONObject new at: 'role' put: 'assistant'; at: 'content' put: (self contentOf: aReply); yourself
 ]
 
 { #category : 'the wire' }
@@ -188,8 +203,8 @@ Anthropic >> streamedTextOf: aLine [
 	 content_block_delta's text_delta; message_delta carries the stop
 	 reason; message_stop is the end; error is an error."
 	| payload event type delta |
-	(aLine startsWith: 'data: ') ifFalse: [^''].
-	payload := (aLine copyFrom: 7 to: aLine size) trimmed.
+	payload := self sseDataOf: aLine.
+	payload isNil ifTrue: [^''].
 	(payload startsWith: '{') ifFalse: [^''].
 	event := JSONObject fromString: payload.
 	type := (self string: 'type' of: event) ifNil: [''].

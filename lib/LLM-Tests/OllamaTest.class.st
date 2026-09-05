@@ -121,3 +121,16 @@ OllamaTest >> testToHtml [
 	self assert: (Ollama toHtml: nil) equals: ''.
 	self assert: (Ollama toHtml: '') equals: ''
 ]
+
+{ #category : 'tests' }
+OllamaTest >> testAMalformedSuccessIsAnLLMError [
+	"Bugs4.  A 200 without the message or the embeddings the API documents
+	 reached a send to nil; every failure here is an LLMError now."
+	| ollama |
+	ollama := Ollama new model: 'm'; yourself.
+	self should: [ollama assistantMessageOf: JSONObject new] raise: LLMError.
+	self should: [ollama embeddingIn: JSONObject new] raise: LLMError.
+	self should: [ollama embeddingIn: (JSONObject fromString: '{"embeddings":[]}')] raise: LLMError.
+	"A reply with no message is no text, which is what it always was."
+	self assert: (ollama textOf: JSONObject new) equals: ''
+]

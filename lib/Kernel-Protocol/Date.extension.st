@@ -145,3 +145,139 @@ Date class >> notADate: aStream [
 	text size > 40 ifTrue: [text := (text copyFrom: 1 to: 40) , '...'].
 	^self error: 'not a date: ' , text printString
 ]
+
+"
+Date arithmetic outside 1901-2099, and in constant time.
+
+1983 counts the days between two Dates with `year - 1 // 4 - (aDate year //
+4)' -- every fourth year a leap year, no century term at all -- and builds
+a Date from a day count with a flat 1461-day four-year cycle from 1901.
+Neither knows about 1900 or 2100, and the two do not even agree with each
+other: over 527 dates in 1600-9999, 386 subtractDate: results, 305
+asSeconds and 299 fromDays: differed from the same arithmetic done by
+Python's datetime, and `(Date fromDays: 2958098) printString' -- 31
+December 9999 -- answered `1 November 9999' (Bugs4 CHRON-4).  Inside
+1901-2099 nothing differs, which is why it lasted: 1900 and 2100 are the
+two years the shortcut gets wrong, and the Blue Book's own century is
+between them.
+
+The five methods below replace the shortcut with a day-of-era count and its
+inverse -- Howard Hinnant's formulation, four hundred years to the era and
+146,097 days to the four hundred, with March as the first month so that the
+leap day falls at the end where it does not shift anything.  daysFrom1901-
+ToStartOfYear: is exact for every Gregorian year, proleptic in both
+directions, and every other method here is written in terms of it, so the
+three that disagreed cannot disagree again: subtractDate: is a difference
+of two of them, fromDays: and newDay:year: are its inverse, and asSeconds
+-- which 1983 already writes as a subtractDate: from 1 January 1901 -- is
+carried along with it unchanged.
+
+They are also O(1), which 1983's newDay:year: was not: it walks one year
+per iteration from the reference year, so `aDate addDays: (2 raisedTo: 40)'
+-- addDays: is newDay:year: with a bigger day count -- runs for three
+billion iterations and never finishes (Bugs4 CHRON-7).  The two whileTrue:
+loops in yearForDaysFrom1901: each run at most once: the era formula
+answers the year of a March-to-February year, which is the calendar year
+for ten months of the twelve, and the loops settle January and February.
+
+In profiles/pharo-time these four are shadowed by Pharo's own Date, whose
+arithmetic is on Julian day numbers and passed all 527.  They are written
+with `self day' and `self year' rather than the instance variables so that
+they still COMPILE there, where Date is Pharo's and has neither.
+"
+
+{ #category : '*Kernel-Protocol' }
+Date class >> daysFrom1901ToStartOfYear: yearInteger [
+	"The number of days from 1 January 1901 to 1 January yearInteger,
+	 negative for a year before 1901.
+
+	 The count is of days in a 400-year era beginning on 1 March, which is
+	 what makes it exact: with March first, the leap day is the last day of
+	 the year and adding it shifts nothing after it.  306 is the days from
+	 1 March to 1 January, 146,097 the days in an era, 719,468 the days
+	 from the era's zero to 1 January 1970, and 25,202 the days from 1
+	 January 1901 to 1 January 1970 -- the same number ST_EPOCH_OFFSET_SEC
+	 carries in the VM.
+
+	 // is floor division here, which is what makes the formula work for a
+	 year before the era's zero as well as after it."
+	| priorYear era yearOfEra |
+	priorYear := yearInteger - 1.
+	era := priorYear // 400.
+	yearOfEra := priorYear - (era * 400).
+	^era * 146097
+		+ (yearOfEra * 365 + (yearOfEra // 4) - (yearOfEra // 100) + 306)
+		- 719468 + 25202
+]
+
+{ #category : '*Kernel-Protocol' }
+Date class >> yearForDaysFrom1901: dayCount [
+	"The calendar year the dayCount'th day after 1 January 1901 falls in.
+
+	 The inverse of daysFrom1901ToStartOfYear:, and read back the same way:
+	 the era arithmetic answers the year of a year that begins in March, so
+	 it names the calendar year for March to December and the year before
+	 for January and February.  The two loops settle that, and each can run
+	 at most once -- they are a correction of one, not a search."
+	| z era dayOfEra yearOfEra year |
+	z := dayCount - 25202 + 719468.
+	era := z // 146097.
+	dayOfEra := z - (era * 146097).
+	yearOfEra := dayOfEra - (dayOfEra // 1460) + (dayOfEra // 36524)
+					- (dayOfEra // 146096) // 365.
+	year := yearOfEra + (era * 400) + 1.
+	[dayCount < (self daysFrom1901ToStartOfYear: year)]
+		whileTrue: [year := year - 1].
+	[dayCount >= (self daysFrom1901ToStartOfYear: year + 1)]
+		whileTrue: [year := year + 1].
+	^year
+]
+
+{ #category : '*Kernel-Protocol' }
+Date class >> newDay: dayCount year: referenceYear [
+	"The Date that is dayCount days after the beginning of referenceYear,
+	 where day 1 is 1 January.
+
+	 dayCount need not be inside the year and need not be positive: this is
+	 what addDays: and subtractDays: are written in terms of, so it is
+	 asked for day 400 and for day −5,000 as a matter of course.  1983
+	 walked to the right year one year at a time, adding or subtracting a
+	 year's days per iteration, which is fine for a week and does not
+	 finish for `addDays: (2 raisedTo: 40)' (Bugs4 CHRON-7).  Here the
+	 whole count is turned into a day number and turned back."
+	| absolute year |
+	absolute := (self daysFrom1901ToStartOfYear: referenceYear) + dayCount - 1.
+	year := self yearForDaysFrom1901: absolute.
+	^self new
+		day: absolute - (self daysFrom1901ToStartOfYear: year) + 1
+		year: year
+]
+
+{ #category : '*Kernel-Protocol' }
+Date class >> fromDays: dayCount [
+	"The Date that is dayCount days after 1 January 1901.
+
+	 1983 divides by 1461, the days in a four-year cycle, and takes every
+	 fourth year in it as a leap year.  That is exactly right from 1901 to
+	 2099 and wrong at either end of them: `Date fromDays: 2958098' is 31
+	 December 9999 and answered 1 November 9999 (Bugs4 CHRON-4).
+
+	 Written through newDay:year: so that one method decides which year a
+	 day number falls in; day 0 is 1 January 1901, which is day 1 of 1901."
+	^self newDay: dayCount truncated + 1 year: 1901
+]
+
+{ #category : '*Kernel-Protocol' }
+Date >> subtractDate: aDate [
+	"The number of days between the receiver and aDate.
+
+	 1983 counts the leap years between them as `year - 1 // 4 - (aDate
+	 year // 4)', which has no century term, so 1900 and 2100 are leap
+	 years to it: `(Date newDay: 1 month: #January year: 2101) subtractDate:
+	 (Date newDay: 1 month: #January year: 2099)' answered 731 for 730
+	 (Bugs4 CHRON-4).  A difference of two day numbers has nothing left to
+	 get wrong, and it carries Date>>asSeconds -- written in 1983 as a
+	 subtractDate: from 1 January 1901 -- with it."
+	^(Date daysFrom1901ToStartOfYear: self year) + self day
+		- ((Date daysFrom1901ToStartOfYear: aDate year) + aDate day)
+]

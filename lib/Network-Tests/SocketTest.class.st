@@ -117,6 +117,38 @@ SocketTest >> testALargeTransferArrivesIntact [
 ]
 
 { #category : 'tests' }
+SocketTest >> testATimedWaitLeavesNoWatchdogBehind [
+	"A timed wait that readiness wins must retire its watchdog.
+
+	 wait:on:timeout: forks a process that waits out the whole timeout and
+	 signals the semaphore if nothing else has.  When the data arrives
+	 first -- which is every successful timed read -- that process used to
+	 go on waiting for the full term, and its Delay went on sitting in
+	 SuspendedDelays with the VM's timer armed for it.
+
+	 The cost was not the process.  waits_pending() is true while a timer
+	 is armed, and the scheduler will not say `every process is blocked'
+	 while anything is pending, so one abandoned watchdog held the deadlock
+	 verdict shut for as long as its timeout: the language models' client
+	 asks for three hundred seconds, the suite runner gives up after three
+	 hundred, and a run that had genuinely stopped reported nothing at all
+	 rather than naming the fault.  Fifty-three of those were left behind
+	 by one suite.
+
+	 Asserting on the queue and not on a stopwatch, because the leak is a
+	 queue entry and the wait itself was always fast."
+
+	| queue before |
+	queue := Delay classPool at: #SuspendedDelays.
+	self connect.
+	client send: 'hello'.
+	before := queue size.
+	self assert: (accepted receiveInto: (String new: 16) timeout: 30000)
+		equals: 5.
+	self assert: queue size <= before
+]
+
+{ #category : 'tests' }
 SocketTest >> testCloseWakesAWaiter [
 	"A process waiting for data on a socket another process closes wakes
 	 up and finds the socket closed, rather than sleeping for ever."

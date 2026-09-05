@@ -71,7 +71,18 @@ Ollama >> embed: aString [
 	body := JSONObject new at: 'model' put: model; at: 'input' put: aString; yourself.
 	reply := self postJson: body to: url, '/api/embed'.
 	lastResponse := reply.
-	^self floatsOf: ((reply arrayAt: 'embeddings') arrayAt: 1)
+	^self floatsOf: (self embeddingIn: reply)
+]
+
+{ #category : 'private' }
+Ollama >> embeddingIn: aReply [
+	"embeddings[0], or an LLMError naming what is missing rather than a
+	 MessageNotUnderstood.  See LLM>>malformed:because:."
+	| list |
+	list := aReply arrayAt: 'embeddings' ifAbsent: [nil].
+	(list isNil or: [list isEmpty])
+		ifTrue: [^self malformed: aReply because: 'it has no embeddings'].
+	^list arrayAt: 1
 ]
 
 { #category : 'the wire' }
@@ -145,7 +156,8 @@ Ollama >> toolCallsOf: aReply [
 
 { #category : 'the wire' }
 Ollama >> assistantMessageOf: aReply [
-	^aReply objectAt: 'message'
+	^(aReply objectAt: 'message' ifAbsent: [nil])
+		ifNil: [self malformed: aReply because: 'it has no message']
 ]
 
 { #category : 'the wire' }

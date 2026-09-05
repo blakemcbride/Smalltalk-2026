@@ -18,7 +18,7 @@ example
 	"OpaqueForm makeStar bitEdit"!
 makeStar
 	| figure shape pen formRect |
-	formRect_ 0@0 extent: 50@50.
+	formRect _ 0@0 extent: 50@50.
 	pen _ Pen new.
 	pen defaultNib: 2.
 	Display fill: formRect mask: Form white.

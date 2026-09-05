@@ -173,12 +173,52 @@ ST_push(st_oop value)
     OM_store_pointer(st_vm.stack_pointer, st_vm.active_context, value);
 }
 
+/*
+ *  The floor of a frame's stack, and what happens when a bytecode reaches
+ *  it.
+ *
+ *  Field ST_CTX_TEMP_FRAME_START is where a context with no temporaries
+ *  begins its stack, so an empty stack leaves the pointer one below it --
+ *  that is what fetch_context_registers computes from a stored sp of zero.
+ *  The pointer is unsigned, so a pop past the floor does not quietly read a
+ *  temporary: it wraps to four billion and the next stack access
+ *  dereferences a field that far past the context.  No compiler writes a
+ *  method that takes off what it did not put on; a method whose bytes were
+ *  rewritten does, and the random-bytecode fuzz written for Bugs4 PRIM-3
+ *  wrote a great many.
+ *
+ *  So the pointer is clamped instead of wrapping, and the reason is written
+ *  down for the top of the dispatch loop to deliver as a CorruptMethod.
+ *  That is next_byte's arrangement, and it is here for next_byte's reason:
+ *  a pop happens in the middle of a bytecode, where nothing can be raised
+ *  and the interpreter's registers are not yet consistent.
+ *
+ *  The cost is one comparison against a compile-time constant on a register
+ *  the caller has just used -- the same shape as ST_push's frame check
+ *  above, which measured at nothing; it is reading a bound OUT OF THE
+ *  OBJECT per access that was expensive there, and this reads none.
+ */
+#define ST_STACK_FLOOR      ((uint32_t) (ST_CTX_TEMP_FRAME_START - 1))
+
+static void
+note_stack_underflow(void)
+{
+    if (!st_vm.corrupt_reason)
+        st_vm.corrupt_reason = "a bytecode that took a value off an empty "
+                               "stack";
+    st_vm.instruction_pointer = st_vm.method_end;
+}
+
 st_oop
 ST_pop(void)
 {
-    st_oop  value = OM_fetch_pointer(st_vm.stack_pointer,
-                                     st_vm.active_context);
+    st_oop  value;
 
+    if (st_vm.stack_pointer <= ST_STACK_FLOOR) {
+        note_stack_underflow();
+        return ST_NIL;
+    }
+    value = OM_fetch_pointer(st_vm.stack_pointer, st_vm.active_context);
     --st_vm.stack_pointer;
     return value;
 }
@@ -186,6 +226,11 @@ ST_pop(void)
 void
 ST_pop_n(uint32_t n)
 {
+    if (st_vm.stack_pointer - ST_STACK_FLOOR < n) {
+        note_stack_underflow();
+        st_vm.stack_pointer = ST_STACK_FLOOR;
+        return;
+    }
     st_vm.stack_pointer -= n;
 }
 
@@ -348,6 +393,93 @@ literal_at(uint32_t index)
 }
 
 /*
+ *  A literal a bytecode DEREFERENCES rather than merely pushes.
+ *
+ *  Bugs3 B11 bounded the literal INDEX and left the literal's TYPE trusted,
+ *  which is only half of the same fault.  push-literal-variable,
+ *  store-into-literal-variable and the two super sends all read field
+ *  ST_ASSOCIATION_VALUE of whatever the frame holds at the index, and the
+ *  frame is writable from the image: CompiledMethod>>literalAt:put: is
+ *  primitive 69, the reflective write the 1983 compiler itself needs and so
+ *  one that cannot be taken away.  Put a SmallInteger where the Association
+ *  behind `^Smalltalk' was and running the method segfaulted the VM, from C,
+ *  where no `on: Error do:' can see it; put a String there and the push
+ *  answered an oop fabricated out of the string's own characters -- silent
+ *  type confusion when it did not crash -- while the STORE wrote a pointer
+ *  over those characters and released a reference count on the fabrication
+ *  (Bugs4 PRIM-3; a 600-round random-bytecode fuzz reached it, most rounds
+ *  landing on the B11 index guard and this being what got past).
+ *
+ *  The test cannot ask for the class Association: 1983's pool variables are
+ *  Associations, a bootstrap global is an Association, and a later dialect
+ *  may bind a variable with something else again.  What the bytecode needs
+ *  is exactly what is checked -- a pointer object with the field it is about
+ *  to name.  Everything else is abandoned as a CorruptMethod, the same way
+ *  a bad index is, because the same thing is true of it: the bytes that come
+ *  next are the bytes that were wrong, and there is nothing to continue
+ *  into.
+ */
+static int
+literal_field_ok(st_oop lit, uint32_t field, const char *reason)
+{
+    if (!OM_is_object(lit) || !OM_pointer_bit(lit)
+     || OM_fetch_word_length(lit) <= field) {
+        corrupt_method(reason);
+        return 0;
+    }
+    return 1;
+}
+
+static int
+literal_variable_ok(st_oop lit)
+{
+    return literal_field_ok(lit, ST_ASSOCIATION_VALUE,
+                            "a literal variable that is not a binding");
+}
+
+/*
+ *  The selector of a send, which is a literal too and was trusted the same
+ *  way.  Method lookup hashes the selector -- OM_identity_hash reads the
+ *  object header -- so a literal replaced by a SmallInteger dereferenced a
+ *  tagged integer inside lookup_method and took the VM down before the
+ *  lookup could fail.  The random-bytecode fuzz found it as a SEGV in
+ *  OM_head from interp.c's send path.
+ *
+ *  Being an object is the whole test.  A selector that is an object but not
+ *  a Symbol simply is not in any method dictionary, so it arrives at
+ *  doesNotUnderstand: like any other unknown selector, which is a fair
+ *  answer for a method whose literal frame somebody rewrote.
+ */
+static st_oop
+selector_literal_at(uint32_t index)
+{
+    st_oop  lit = literal_at(index);
+
+    if (lit == ST_OOP_INVALID)
+        return ST_OOP_INVALID;
+    if (!OM_is_object(lit)) {
+        corrupt_method("a send whose selector literal is not an object");
+        return ST_OOP_INVALID;
+    }
+    return lit;
+}
+
+/*
+ *  A super send goes one step further than the others: it reads the class
+ *  literal's value AND that value's superclass field, then hands the answer
+ *  to lookup_method, which walks it as a class.  So both hops are checked,
+ *  and the second asks for enough fields to be a Behavior -- superclass,
+ *  method dictionary, format -- because lookup_method reads the method
+ *  dictionary out of the very first class it is given.
+ */
+static int
+super_class_ok(st_oop cls)
+{
+    return literal_field_ok(cls, ST_CLASS_FORMAT,
+                            "a super send whose class literal is not a class");
+}
+
+/*
  *  The same two questions for the other two things a bytecode indexes by
  *  a number it carries: an instance variable of the receiver, and a
  *  temporary of the home context.  Both bounds are cached registers
@@ -376,6 +508,74 @@ temporary_ok(uint32_t index)
         corrupt_method("a temporary index past the home context");
         return 0;
     }
+    return 1;
+}
+
+/*
+ *  Does the frame really hold the values a bytecode is about to take off
+ *  its stack?
+ *
+ *  ST_push has guarded the top of the stack since a Pharo test overflowed a
+ *  frame sized to its own estimate; nothing guarded the BOTTOM.  The stack
+ *  pointer is unsigned and the slot it names is a field index, so a
+ *  bytecode that consumes more than was pushed does not read a temporary by
+ *  mistake -- it wraps, and ST_stack_value dereferences field 4294967000-odd
+ *  of the context.  Two bytecodes carry a count big enough to do it from a
+ *  single rewritten byte: `push a new Array' (138) takes up to 127 values,
+ *  and the double extended send (132) takes an argument count of up to 255.
+ *  Both were found by the random-bytecode fuzz written to confirm the Bugs4
+ *  PRIM-3 fix -- 138 as a SEGV in ST_stack_value on the sanitizer build, and
+ *  a core dump on the shipping one.
+ *
+ *  The floor is ST_CTX_TEMP_FRAME_START, where a context with no
+ *  temporaries starts its stack, so a frame WITH temporaries can still have
+ *  one read as though it were a stack value.  That is a wrong answer inside
+ *  the object rather than a read outside it, and pinning the true floor
+ *  would mean carrying the temporary count in a register for a case that
+ *  only a rewritten method reaches.
+ */
+static int
+stack_depth_ok(uint32_t n)
+{
+    if (st_vm.stack_pointer + 1 < ST_CTX_TEMP_FRAME_START + n) {
+        corrupt_method("a bytecode that takes more values off the stack "
+                       "than its frame holds");
+        return 0;
+    }
+    return 1;
+}
+
+/*
+ *  The Array a closures-dialect method keeps a shared temporary in, by the
+ *  slot within it and the home-context temporary that holds it.
+ *
+ *  Both operands were trusted, which made 140/141/142 the last unguarded
+ *  operands in the dispatch loop after Bugs3 B11 and Bugs4 PRIM-3 had been
+ *  through it: the temporary index went straight into the home context with
+ *  no bound, and whatever came back was indexed as an Array with no shape
+ *  check at all.  A 600-round random-bytecode fuzz written to confirm the
+ *  PRIM-3 fix found this one instead -- ASAN caught `store into vector
+ *  temporary' reading 1024 bytes past a 168-byte context, and the shipping
+ *  binary dumped core.  The vector bytecodes are unreachable in the Blue
+ *  Book dialect and every closures method the compiler writes gets both
+ *  operands right; what gets them wrong is a method whose bytes were
+ *  rewritten afterwards, which is exactly what B11 was about.
+ */
+static int
+temp_vector_ok(uint32_t vector, uint32_t index, st_oop *found)
+{
+    st_oop  vec;
+
+    if (!temporary_ok(vector))
+        return 0;
+    vec = OM_fetch_pointer(ST_CTX_TEMP_FRAME_START + vector,
+                           st_vm.home_context);
+    if (!OM_is_object(vec) || !OM_pointer_bit(vec)
+     || OM_fetch_word_length(vec) <= index) {
+        corrupt_method("an index past the shared-temporary vector");
+        return 0;
+    }
+    *found = vec;
     return 1;
 }
 
@@ -623,6 +823,95 @@ ST_interp_dump_workers(void)
 }
 
 /*
+ *  Every Process in the image, and where it is waiting.
+ *
+ *  The verdict above says "every process is blocked" and then shows the
+ *  WORKERS, which between them name one process each -- and the process
+ *  that matters when nothing can run is by definition not the one a worker
+ *  is holding.  It is one of the others, on a Semaphore nobody is going to
+ *  signal, and until now nothing said which or where: the ready lists are
+ *  empty by the time the verdict fires, and a blocked process is reachable
+ *  only from the semaphore it waits on, which is reachable only from it.
+ *  So the object table is walked instead.
+ *
+ *  A walk of the whole heap, on the way out of a run that has already
+ *  stopped, on the thread that is stopping it.  It costs a millisecond and
+ *  it is the difference between a day's hunt and one look; the cost is
+ *  paid once, and only by an image that is about to exit anyway.
+ *
+ *  Processes are found by class rather than by shape, and the class is
+ *  taken from a Process this system already has in its hand rather than
+ *  from a name lookup, so this works in a bootstrap that has no globals
+ *  yet.  A subclass of Process would be missed, and there are none.
+ */
+void
+ST_interp_dump_processes(void)
+{
+    st_oop      process_class;
+    st_oop      p;
+    unsigned    shown = 0;
+
+    process_class = SCHED_active_process();
+    if (!OM_is_object(process_class))
+        return;
+    process_class = OM_fetch_class(process_class);
+    if (!OM_is_object(process_class))
+        return;
+
+    for (p = OM_first_object();
+         p != ST_OOP_INVALID && shown < 4096;
+         p = OM_next_object(p)) {
+        st_oop      list;
+        st_oop      ctx;
+        long        priority = -1;
+        unsigned    depth = 0;
+        char        where[64] = "no list";
+
+        if (!OM_is_object(p) || OM_fetch_class(p) != process_class)
+            continue;
+        if (OM_fetch_word_length(p) <= ST_PROCESS_MY_LIST)
+            continue;
+        ++shown;
+        list = OM_fetch_pointer(ST_PROCESS_MY_LIST, p);
+        ctx  = OM_fetch_pointer(ST_PROCESS_SUSPENDED_CONTEXT, p);
+        if (OM_is_int(OM_fetch_pointer(ST_PROCESS_PRIORITY, p)))
+            priority = (long) OM_int_value(OM_fetch_pointer(ST_PROCESS_PRIORITY, p));
+        if (OM_is_present(list)) {
+            /*
+             *  A Semaphore's excess count is the other half of the answer:
+             *  a waiter on a semaphore that already owes it a signal is a
+             *  different fault from a waiter on one that owes nothing.
+             */
+            if (OM_fetch_class(list) == ST_CLASS_SEMAPHORE
+             && OM_fetch_word_length(list) > ST_SEMAPHORE_EXCESS_SIGNALS
+             && OM_is_int(OM_fetch_pointer(ST_SEMAPHORE_EXCESS_SIGNALS, list)))
+                snprintf(where, sizeof where,
+                         "Semaphore %#llx, excess %lld",
+                         (unsigned long long) list,
+                         (long long) OM_int_value(
+                             OM_fetch_pointer(ST_SEMAPHORE_EXCESS_SIGNALS, list)));
+            else
+                ST_print_object(list, where, sizeof where);
+        }
+        fprintf(stderr, "       process %#llx at priority %ld waiting on %s%s\n",
+                (unsigned long long) p, priority, where,
+                OM_is_present(ctx) ? "" : " (terminated: no context)");
+        while (OM_is_present(ctx) && depth < BACKTRACE_LIMIT) {
+            st_oop  method   = OM_fetch_pointer(ST_CTX_METHOD, ctx);
+            st_oop  receiver = OM_fetch_pointer(ST_CTX_RECEIVER, ctx);
+            char    name[200];
+
+            if (!OM_is_present(method)
+             || !name_method(receiver, method, name, sizeof name))
+                snprintf(name, sizeof name, "?");
+            fprintf(stderr, "           %s %s\n", depth ? "from" : "in", name);
+            ctx = OM_fetch_pointer(ST_CTX_SENDER, ctx);
+            ++depth;
+        }
+    }
+}
+
+/*
  *  A token is an oop the network layer carries without knowing what it is;
  *  its visitor takes a user pointer and ours does not, so the visitor of
  *  the moment sits in a static.  The root walk runs on one thread, at a
@@ -747,16 +1036,27 @@ ST_interp_swap_forbidden(st_oop p)
      *  meaning anything the moment the object underneath them changes.
      *  Nothing sensible forwards either; refusing says so rather than
      *  leaving a worker reading freed memory.
+     *
+     *  And the PROCESS a worker is running, for a reason of the same shape
+     *  one step out.  A worker holds its process as an oop and writes to
+     *  its body without looking again -- suspendedContext when it parks it,
+     *  myList when it files it -- so a swap under a running process lands
+     *  those writes in the OTHER process's body, and the two then take each
+     *  other's places at whatever moment each next touches the scheduler.
+     *  Nothing crashes: the process simply stops being the one it was, some
+     *  way into a method, with no diagnostic and no way back (Bugs4 MEM-5).
+     *  A process this worker has already published as pending was refused
+     *  below from the start; the one it is actually EXECUTING was not.
      */
     for (i = 0; i < MAX_INTERPRETERS; ++i) {
         st_interp  *vm = (st_interp *) ST_load_acquire(&interpreters[i]);
 
         if (vm && (p == vm->active_context || p == vm->home_context
-                || p == vm->method))
+                || p == vm->method || p == vm->active_process))
             return 1;
     }
     if (p == st_vm.active_context || p == st_vm.home_context
-     || p == st_vm.method)
+     || p == st_vm.method || p == st_vm.active_process)
         return 1;
     /*
      *  Held by C in variables with no setter this can reach.  Each one has
@@ -1184,6 +1484,28 @@ max_call_depth(void)
         ST_store_relaxed(&st_max_call_depth, known);
     }
     return known;
+}
+
+/*
+ *  The ceiling, moved from C, answering what it was.
+ *
+ *  ST_MAX_CALL_DEPTH is read from the environment once and cached, which is
+ *  right for a process that runs one image and wrong for the test binary,
+ *  which runs hundreds of expressions in one process and needs the ceiling
+ *  low for exactly one of them.  The Bugs4 PROC-1 check is that one: a
+ *  retry loop that leaks about seven frames a turn onto the counter is only
+ *  visible below a ceiling those frames can reach, and under the default
+ *  two hundred thousand the leak is absorbed by the recounts the unwind
+ *  path makes anyway and three hundred thousand retries complete even
+ *  unfixed.  The caller puts the old value back.
+ */
+int
+ST_interp_set_max_call_depth(int depth)
+{
+    int was = max_call_depth();
+
+    ST_store_relaxed(&st_max_call_depth, depth < 0 ? 0 : depth);
+    return was;
 }
 
 /*
@@ -1697,6 +2019,27 @@ ST_restart_at(st_oop ctx)
     OM_store_pointer(ST_CTX_SENDER, st_vm.active_context, ST_NIL);
     OM_store_pointer(ST_CTX_IP, st_vm.active_context, ST_NIL);
     set_active_context(ctx);
+    /*
+     *  And the depth counter, exactly as the two jumps either side of this
+     *  one do.  A retry discards everything between the handler block and
+     *  the frame being restarted -- the signal, the handler search, the
+     *  handler activation, the retry itself, about seven frames -- and
+     *  nothing was taking them off st_vm.call_depth, which counts sends and
+     *  is decremented by returns that here do not happen.  So the counter
+     *  climbed by seven per retry while the real stack stood still, and a
+     *  perfectly shallow retry loop was told its "call stack went too deep"
+     *  after about twenty-eight thousand turns, catchable only as
+     *  RecursionDepthExceeded and impossible to explain from the stack it
+     *  was raised on (Bugs4 PROC-1; measured with ST_MAX_CALL_DEPTH=2000,
+     *  where it fired at retry 283 -- 2000/283 = 7.07).
+     *
+     *  A bare retry loop was fine, which is why it hid: with no outer
+     *  handler and no ensure:, the counter is put right by the process
+     *  switches that happen anyway.  Nesting the loop inside any other
+     *  on:do: or ensure: is what makes it reproducible.
+     */
+    st_vm.call_depth      = ST_stack_depth();   /*  see ST_return_to  */
+    st_vm.depth_signalled = 0;
 }
 
 void
@@ -2280,6 +2623,9 @@ ST_send_selector(st_oop selector, uint32_t argc)
     st_oop  receiver;
     st_oop  cls;
 
+    /*  Receiver and arguments both: a send reads argc + 1 slots.  */
+    if (!stack_depth_ok(argc + 1))
+        return;
     st_vm.message_selector = selector;
     st_vm.argument_count   = argc;
     receiver = ST_stack_value(argc);
@@ -2292,6 +2638,8 @@ send_to_class(st_oop selector, uint32_t argc, st_oop lookup_class)
 {
     st_oop  receiver;
 
+    if (!stack_depth_ok(argc + 1))
+        return;
     st_vm.message_selector = selector;
     st_vm.argument_count   = argc;
     receiver = ST_stack_value(argc);
@@ -2642,7 +2990,7 @@ ST_interp_run(uint64_t limit)
         case 92: case 93: case 94: case 95: {
             st_oop  lit = literal_at(code - 64);
 
-            if (lit != ST_OOP_INVALID)
+            if (lit != ST_OOP_INVALID && literal_variable_ok(lit))
                 ST_push(OM_fetch_pointer(ST_ASSOCIATION_VALUE, lit));
             break;
         }
@@ -2711,7 +3059,7 @@ ST_interp_run(uint64_t limit)
                     break;
                 if (kind == 2)
                     ST_push(lit);
-                else
+                else if (literal_variable_ok(lit))
                     ST_push(OM_fetch_pointer(ST_ASSOCIATION_VALUE, lit));
             }
             break;
@@ -2733,7 +3081,7 @@ ST_interp_run(uint64_t limit)
             } else if (kind == 3) {
                 st_oop  lit = literal_at(index);
 
-                if (lit != ST_OOP_INVALID)
+                if (lit != ST_OOP_INVALID && literal_variable_ok(lit))
                     OM_store_pointer(ST_ASSOCIATION_VALUE, lit, value);
             }
             break;
@@ -2741,7 +3089,7 @@ ST_interp_run(uint64_t limit)
 
         case 131: {         /*  single extended send  */
             uint8_t     desc = next_byte();
-            st_oop      sel  = literal_at(desc & 31);
+            st_oop      sel  = selector_literal_at(desc & 31);
 
             if (sel != ST_OOP_INVALID)
                 ST_send_selector(sel, (uint32_t) (desc >> 5));
@@ -2750,7 +3098,7 @@ ST_interp_run(uint64_t limit)
         case 132: {         /*  double extended send  */
             uint8_t     argc = next_byte();
             uint8_t     lit  = next_byte();
-            st_oop      sel  = literal_at(lit);
+            st_oop      sel  = selector_literal_at(lit);
 
             if (sel != ST_OOP_INVALID)
                 ST_send_selector(sel, argc);
@@ -2763,33 +3111,39 @@ ST_interp_run(uint64_t limit)
          */
         case 133: {         /*  single extended send to super  */
             uint8_t     desc = next_byte();
-            st_oop      sel  = literal_at(desc & 31);
+            st_oop      sel  = selector_literal_at(desc & 31);
             st_oop      cls;
+            st_oop      bound;
 
             if (sel == ST_OOP_INVALID)
                 break;
             cls = literal_at(st_vm.literal_limit - 1);
-            if (cls == ST_OOP_INVALID)
+            if (cls == ST_OOP_INVALID || !literal_variable_ok(cls))
+                break;
+            bound = OM_fetch_pointer(ST_ASSOCIATION_VALUE, cls);
+            if (!super_class_ok(bound))
                 break;
             send_to_class(sel, (uint32_t) (desc >> 5),
-                          OM_fetch_pointer(ST_CLASS_SUPERCLASS,
-                                           OM_fetch_pointer(ST_ASSOCIATION_VALUE, cls)));
+                          OM_fetch_pointer(ST_CLASS_SUPERCLASS, bound));
             break;
         }
         case 134: {         /*  double extended send to super  */
             uint8_t     argc = next_byte();
             uint8_t     lit  = next_byte();
-            st_oop      sel  = literal_at(lit);
+            st_oop      sel  = selector_literal_at(lit);
             st_oop      cls;
+            st_oop      bound;
 
             if (sel == ST_OOP_INVALID)
                 break;
             cls = literal_at(st_vm.literal_limit - 1);
-            if (cls == ST_OOP_INVALID)
+            if (cls == ST_OOP_INVALID || !literal_variable_ok(cls))
+                break;
+            bound = OM_fetch_pointer(ST_ASSOCIATION_VALUE, cls);
+            if (!super_class_ok(bound))
                 break;
             send_to_class(sel, argc,
-                          OM_fetch_pointer(ST_CLASS_SUPERCLASS,
-                                           OM_fetch_pointer(ST_ASSOCIATION_VALUE, cls)));
+                          OM_fetch_pointer(ST_CLASS_SUPERCLASS, bound));
             break;
         }
 
@@ -2825,6 +3179,8 @@ ST_interp_run(uint64_t limit)
             if (descriptor & 128) {
                 uint32_t    i;
 
+                if (!stack_depth_ok(size))
+                    break;
                 for (i = 0; i < size; ++i)
                     OM_store_pointer(i, array, ST_stack_value(size - 1 - i));
                 ST_pop_n(size);
@@ -2843,30 +3199,36 @@ ST_interp_run(uint64_t limit)
         case 140: {
             uint32_t    index = next_byte();
             uint32_t    vector = next_byte();
+            st_oop      vec;
 
-            ST_push(OM_fetch_pointer(index,
-                        OM_fetch_pointer(ST_CTX_TEMP_FRAME_START + vector,
-                                         st_vm.home_context)));
+            if (temp_vector_ok(vector, index, &vec))
+                ST_push(OM_fetch_pointer(index, vec));
             break;
         }
         case 141: {
             uint32_t    index = next_byte();
             uint32_t    vector = next_byte();
+            st_oop      vec;
 
-            OM_store_pointer(index,
-                OM_fetch_pointer(ST_CTX_TEMP_FRAME_START + vector,
-                                 st_vm.home_context),
-                ST_stack_top());
+            if (temp_vector_ok(vector, index, &vec))
+                OM_store_pointer(index, vec, ST_stack_top());
             break;
         }
         case 142: {
             uint32_t    index = next_byte();
             uint32_t    vector = next_byte();
+            st_oop      vec;
 
-            OM_store_pointer(index,
-                OM_fetch_pointer(ST_CTX_TEMP_FRAME_START + vector,
-                                 st_vm.home_context),
-                ST_pop());
+            /*
+             *  The pop happens whether or not the store does: the value is
+             *  this activation's to drop, and leaving it on a stack that is
+             *  about to be abandoned would only mean a deeper stack in the
+             *  frame nobody will run again.
+             */
+            st_oop      value = ST_pop();
+
+            if (temp_vector_ok(vector, index, &vec))
+                OM_store_pointer(index, vec, value);
             break;
         }
 
@@ -2896,6 +3258,13 @@ ST_interp_run(uint64_t limit)
                 st_vm.running = 0;
                 break;
             }
+            /*
+             *  Before the allocation, because the values it copies have to
+             *  be there: `copied' is four bits of one rewritten byte and
+             *  the copy loop reads that many slots below the top.
+             */
+            if (!stack_depth_ok(copied))
+                break;
             closure = OM_instantiate_pointers(closure_class,
                                               ST_CLOSURE_FIRST_COPIED + copied);
             if (!OM_is_object(closure)) {
@@ -2986,14 +3355,29 @@ ST_interp_run(uint64_t limit)
             if (code >= 208) {
                 uint32_t    argc = (uint32_t) (code - 208) / 16;
                 uint32_t    lit  = (uint32_t) (code - 208) % 16;
-                st_oop      sel  = literal_at(lit);
+                st_oop      sel  = selector_literal_at(lit);
 
                 if (sel != ST_OOP_INVALID)
                     ST_send_selector(sel, argc);
             }  else  {
-                fprintf(stderr, "st80: unused bytecode %u at cycle %llu\n",
-                        (unsigned) code, (unsigned long long) st_vm.cycle);
-                st_vm.running = 0;
+                /*
+                 *  One of the codes the Blue Book leaves unassigned and the
+                 *  closure set does not claim.  No compiler emits one, so
+                 *  meeting one means the method's bytes were rewritten --
+                 *  the Bugs3 B11 situation exactly, and it gets B11's
+                 *  answer: abandon the activation, name the method on
+                 *  stderr, raise #corruptMethod where `on: Error do:' can
+                 *  see it.  It used to stop the interpreter outright, which
+                 *  meant one bad byte in one method took the whole image
+                 *  and every other worker's process with it; the
+                 *  random-bytecode fuzz for PRIM-3 hit it on round 510268
+                 *  of the cycle count and the run ended there.
+                 */
+                char    reason[64];
+
+                snprintf(reason, sizeof reason,
+                         "unused bytecode %u", (unsigned) code);
+                corrupt_method(reason);
             }
             break;
         }

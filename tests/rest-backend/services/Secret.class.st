@@ -21,3 +21,22 @@ Secret >> remember [
 Secret >> recall [
 	outjson at: 'note' put: (self userData at: 'note')
 ]
+
+{ #category : 'services' }
+Secret >> bump [
+	"Read the counter, let another process run, and write it back: the
+	 read-modify-write every session store is made of.  Without the
+	 dispatcher's per-session lock eight of these at once lose every
+	 increment but one; with it they count to eight.  Bugs4."
+	| count |
+	count := (self userData at: 'count') ifNil: [0].
+	Processor yield.
+	(Delay forMilliseconds: 2) wait.
+	self userData at: 'count' put: count + 1.
+	outjson at: 'count' put: count + 1
+]
+
+{ #category : 'services' }
+Secret >> count [
+	outjson at: 'count' put: ((self userData at: 'count') ifNil: [0])
+]

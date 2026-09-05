@@ -120,9 +120,18 @@ printOn: aStream
 
 \section{What is not here}
 
-\ct{Stream>>collect:} and the other collection-protocol methods are not
-implemented on streams---\ct!(ReadStream on: #(1 2 3)) collect: [:x | x]! is
-a doesNotUnderstand. Read into a collection first, or use \ct{do:}.
+\ct{collect:} is the one piece of collection protocol a stream has, and it
+is eager: it drains the receiver and answers a \ct{ReadStream} on an
+\ct{Array} of the results.
+
+\begin{st}
+((ReadStream on: #(1 2 3)) collect: [:x | x * 2]) upToEnd   "#(2 4 6)"
+\end{st}
+
+\ct{select:}, \ct{reject:}, \ct{detect:}, \ct{inject:into:} and
+\ct{includes:} are not there at all, and \ct{size} on a \ct{ReadStream}
+answers zero rather than the size of what it reads---ask its \ct{contents}
+for that. Read into a collection first, or use \ct{do:}.
 
 \section{Files}
 

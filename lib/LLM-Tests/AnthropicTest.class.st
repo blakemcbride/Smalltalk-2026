@@ -174,3 +174,53 @@ AnthropicTest >> testAPictureGoesInline [
 	self assert: (data copyFrom: 2 to: 4) equals: 'PNG'.
 	self assert: data size > 500
 ]
+
+{ #category : 'tests' }
+AnthropicTest >> testTheSpaceAfterDataIsOptional [
+	"Bugs4.  The reader tested `startsWith: ''data: ''' and dropped
+	 everything else, so `data:{...}' -- which the server-sent-events
+	 grammar calls a data line, and which a proxy that normalises its
+	 output sends -- was silently no text at all: the stream ran to its
+	 end and answered nothing, with no error anywhere.  The rule in the
+	 specification is that the field name runs to the colon and ONE
+	 optional space after it is not part of the value."
+	| claude |
+	claude := Anthropic apiKey: 'k' model: 'm'.
+	self assert: (claude streamedTextOf:
+		'data:{"type":"content_block_delta","delta":{"type":"text_delta","text":"hi"}}')
+		equals: 'hi'.
+	self assert: (claude streamedTextOf:
+		'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"hi"}}')
+		equals: 'hi'.
+	self assert: (claude streamedTextOf: 'data:{"type":"message_stop"}') isNil.
+	self assert: (claude streamedTextOf: 'event: message_start') equals: ''.
+	self assert: (claude streamedTextOf: ': a comment') equals: ''.
+	self assert: (claude streamedTextOf: '') equals: ''.
+	self assert: (claude streamedTextOf: 'data:') equals: ''
+]
+
+{ #category : 'tests' }
+AnthropicTest >> testAMalformedSuccessIsAnLLMError [
+	"Bugs4.  A 200 in some other shape -- a gateway's own envelope in front
+	 of the service, a document that parsed but is not what the API
+	 documents -- reached `nil do:' in textOf: and became `MNU: do: (sent
+	 to nil)', a message about this package's insides that says nothing
+	 about the service.  Every failure here is an LLMError, and it carries
+	 the body so that a caller can look."
+	| claude |
+	claude := Anthropic apiKey: 'k' model: 'm'.
+	self should: [claude textOf: JSONObject new] raise: LLMError.
+	self should: [claude toolCallsOf: JSONObject new] raise: LLMError.
+	self should: [claude assistantMessageOf: JSONObject new] raise: LLMError.
+	self should: [claude textOf: (JSONObject fromString: '{"content":null}')] raise: LLMError.
+	self should: [self serving: (self chunked: '{"error":{"message":"nope"}}')
+		do: [:url | (self claudeAt: url) send: 'hi']] raise: LLMError.
+	"A text block with a null text is a block with no text, and not a
+	 `nextPutAll: nil'."
+	self assert: (claude textOf: (JSONObject fromString:
+		'{"content":[{"type":"text","text":null},{"type":"text","text":"ok"}]}'))
+		equals: 'ok'.
+	"and the message names the service and carries the body"
+	self assert: (([claude textOf: JSONObject new] on: LLMError do: [:e | e messageText])
+		includesSubstring: 'Anthropic')
+]

@@ -552,3 +552,169 @@ St80CollectionTest >> testDeepCopyStopsAtCode [
 	self deny: b first first == a first first.
 	self assert: b first first equals: 'x'
 ]
+
+{ #category : 'bugs4' }
+St80CollectionTest >> testSortedAnswersTheSameKindOfCollection [
+	"`sorted' and `sorted:' built the answer with `self species new: n' and
+	 filled it with at:put:, which only works for a kind whose `new: n' is
+	 already n elements long.  `(OrderedCollection withAll: #(3 1 2))
+	 sorted' answered `attempt to index non-existent element', a
+	 SortedCollection answered `you must use add:' and a LinkedList failed
+	 its primitive -- while the manual promises the same kind of
+	 collection (Bugs4 DOCS-1)."
+	| oc sc |
+	oc := OrderedCollection withAll: #(3 1 2).
+	self assert: oc sorted asArray equals: #(1 2 3).
+	self assert: oc sorted class equals: OrderedCollection.
+	self assert: (oc sorted: [:a :b | a > b]) asArray equals: #(3 2 1).
+	self assert: (oc sorted: [:a :b | a > b]) class equals: OrderedCollection.
+	self assert: oc asArray equals: #(3 1 2).
+	sc := SortedCollection withAll: #(3 1 2).
+	self assert: sc sorted asArray equals: #(1 2 3).
+	self assert: sc sorted class equals: SortedCollection.
+	self assert: (sc sorted: [:a :b | a > b]) asArray equals: #(3 2 1).
+	self assert: LinkedList new sorted class equals: LinkedList.
+	self assert: LinkedList new sorted isEmpty.
+	"The arrayed kinds answered before and must go on answering."
+	self assert: #(3 1 2) sorted equals: #(1 2 3).
+	self assert: 'cba' sorted equals: 'abc'.
+	self assert: (Interval from: 1 to: 5) sorted equals: #(1 2 3 4 5).
+	"with:collect: had the same shape and the same three failures."
+	self assert: (oc with: #(1 2 3) collect: [:a :b | a + b]) asArray equals: #(4 3 5).
+	self assert: (oc with: #(1 2 3) collect: [:a :b | a + b]) class equals: OrderedCollection.
+	self assert: (#(3 1 2) with: #(1 2 3) collect: [:a :b | a + b]) equals: #(4 3 5).
+	self assert: ('abc' with: 'abc' collect: [:a :b | a]) equals: 'abc'
+]
+
+{ #category : 'bugs4' }
+St80CollectionTest >> testOrderedCollectionInsertsAtEitherEnd [
+	"insert:before: always made room at the FRONT and shifted every
+	 element up to the slot, so an insert at the end copied the whole
+	 collection: ten thousand ascending adds to a SortedCollection took
+	 26.7 seconds where ten thousand descending took 0.18 (Bugs4 COLL-2).
+	 It appends, prepends, or shifts the nearer side now.  What is
+	 asserted here is that it still puts things where it always put them --
+	 the timings are in the audit; correctness is here."
+	| oc sc |
+	oc := OrderedCollection new.
+	#(1 2 3) do: [:e | oc addLast: e].
+	oc add: 99 beforeIndex: 1.
+	self assert: oc asArray equals: #(99 1 2 3).
+	oc := OrderedCollection withAll: #(1 2 3).
+	oc add: 99 beforeIndex: 2.
+	self assert: oc asArray equals: #(1 99 2 3).
+	oc := OrderedCollection withAll: #(1 2 3).
+	oc add: 99 beforeIndex: 4.
+	self assert: oc asArray equals: #(1 2 3 99).
+	oc := OrderedCollection withAll: #(1 2 3 4 5 6 7).
+	oc add: 99 before: 5.
+	self assert: oc asArray equals: #(1 2 3 4 99 5 6 7).
+	oc := OrderedCollection withAll: #(1 2 3 4 5 6 7).
+	oc add: 99 after: 5.
+	self assert: oc asArray equals: #(1 2 3 4 5 99 6 7).
+	"Insert in the middle, then work both ends: an insertion that left
+	 firstIndex or lastIndex wrong would show up here and nowhere else."
+	oc := OrderedCollection withAll: #(1 2 3 4 5 6 7).
+	oc add: 99 beforeIndex: 4.
+	oc removeFirst.
+	oc removeLast.
+	oc addFirst: 0.
+	oc addLast: 8.
+	self assert: oc asArray equals: #(0 2 3 99 4 5 6 8).
+	"Every insertion point of every size up to a few growths."
+	1 to: 10 do: [:n |
+		1 to: n + 1 do: [:at |
+			oc := OrderedCollection new.
+			1 to: n do: [:i | oc addLast: i].
+			oc add: 0 beforeIndex: at.
+			self assert: oc size equals: n + 1.
+			self assert: (oc at: at) equals: 0.
+			self assert: (oc copyWithout: 0) asArray equals: (1 to: n) asArray]].
+	"Ascending and descending both come out sorted, at a size that used
+	 to be quadratic."
+	sc := SortedCollection new.
+	1 to: 60 do: [:i | sc add: i].
+	self assert: sc asArray equals: (1 to: 60) asArray.
+	sc := SortedCollection new.
+	60 to: 1 by: -1 do: [:i | sc add: i].
+	self assert: sc asArray equals: (1 to: 60) asArray.
+	sc := SortedCollection sortBlock: [:a :b | a > b].
+	1 to: 60 do: [:i | sc add: i].
+	self assert: sc asArray equals: (1 to: 60) asArray reverse.
+	"The sizes at which the old code took half a minute are in
+	 tests/unit/test_image.c's test_bugs4_collections; a suite that runs
+	 under one bytecode budget for all of it is no place for them."
+]
+
+{ #category : 'bugs4' }
+St80CollectionTest >> testSymbolTableGrows [
+	"USTable had 512 buckets, fixed in C, and Symbol class>>intern: copies
+	 the whole bucket for each new symbol -- so interning slowed down as
+	 the image filled: 10,000 new symbols took 0.85 seconds and the next
+	 40,000 took 10.3 (Bugs4 COLL-1).  It grows and rehashes now.  What
+	 matters is that every symbol stays FINDABLE and IDENTICAL across the
+	 rehash, since a Symbol that is not identical to itself cannot be sent
+	 or looked up."
+	| before after names |
+	before := (Symbol classPool at: #USTable) size.
+	names := (1 to: 120) collect: [:i | 'bugs4sym' , i printString].
+	names do: [:each | each asSymbol].
+	after := (Symbol classPool at: #USTable) size.
+	self assert: after >= before.
+	names do: [:each |
+		self assert: (Symbol lookup: each) == each asSymbol].
+	self assert: (Symbol lookup: 'bugs4sym-not-there') isNil.
+	"The symbols the image was built with are still there, and so is the
+	 identity the compiler depends on.  Interning at the size that showed
+	 the quadratic is in tests/unit/test_image.c."
+	self assert: #printOn: == 'printOn:' asSymbol.
+	self assert: (Symbol lookup: 'printOn:') == #printOn:.
+	self assert: #+ == '+' asSymbol
+]
+
+{ #category : 'bugs4' }
+St80CollectionTest >> testEmptySymbolHasNoArguments [
+	"Symbol>>numArgs read `self at: 1' without looking, so `#'''' numArgs'
+	 raised SubscriptOutOfBounds where every dialect answers 0 (Bugs4
+	 COLL-3)."
+	self assert: '' asSymbol numArgs equals: 0.
+	self assert: #foo numArgs equals: 0.
+	self assert: #foo: numArgs equals: 1.
+	self assert: #foo:bar: numArgs equals: 2.
+	self assert: #+ numArgs equals: 1
+]
+
+{ #category : 'bugs4' }
+St80CollectionTest >> testCopyReplaceAllNeedsCollections [
+	"The replacement is measured with `size', and `Character>>size' is
+	 zero, so `'abc' copyReplaceAll: 'b' with: $z' found the b, put
+	 nothing in its place and answered 'ac' -- a String of the right kind
+	 with the wrong contents, and nothing said (Bugs4 COLL-4).  Refused
+	 on both sides rather than coerced on one: coercing the replacement
+	 alone would leave `copyReplaceAll: $b with: 'z'' silently answering
+	 the receiver unchanged."
+	self assert: ('abc' copyReplaceAll: 'b' with: 'zz') equals: 'azzc'.
+	self assert: ('abcabc' copyReplaceAll: 'b' with: 'X') equals: 'aXcaXc'.
+	self assert: ('abc' copyReplaceAll: 'b' with: '') equals: 'ac'.
+	self should: ['abc' copyReplaceAll: 'b' with: $z] raise: Error.
+	self should: ['abc' copyReplaceAll: $b with: 'z'] raise: Error.
+	self should: ['abc' copyReplaceAll: 'b' with: 3] raise: Error.
+	self assert: (#(1 2 3) copyReplaceAll: #(2) with: #(9 9)) equals: #(1 9 9 3)
+]
+
+{ #category : 'bugs4' }
+St80CollectionTest >> testFindStringClampsItsStart [
+	"A start PAST the end answered 0 cleanly, because the loop's upper
+	 bound was already below its lower one; a start of zero made the first
+	 thing the loop did `self at: 0' and raised (Bugs4 COLL-5).  One end
+	 of the string answered and the other raised."
+	self assert: ('abc' findString: 'b' startingAt: 0) equals: 2.
+	self assert: ('abc' findString: 'b' startingAt: -5) equals: 2.
+	self assert: ('abc' findString: 'b' startingAt: 1) equals: 2.
+	self assert: ('abc' findString: 'b' startingAt: 2) equals: 2.
+	self assert: ('abc' findString: 'b' startingAt: 3) equals: 0.
+	self assert: ('abc' findString: 'b' startingAt: 9) equals: 0.
+	self assert: ('abc' findString: '' startingAt: 0) equals: 0.
+	self assert: (#(1 2 3) indexOfSubCollection: #(2) startingAt: 0) equals: 2.
+	self assert: (#(1 2 3) indexOfSubCollection: #(2) startingAt: 9) equals: 0
+]

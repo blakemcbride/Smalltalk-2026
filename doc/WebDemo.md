@@ -266,7 +266,7 @@ missing is the hook itself.
 - `RestServer>>start`: if `<backendDirectory>/Init.class.st` exists, load it
   through the loader and send `Init class>>init: server` before the pool
   opens and `Init class>>init2: db` with a pooled connection after it
-  (committed after, rolled back if it raises — the `withConnection:` shape
+  (committed after, rolled back if it raises — the `withConnection:do:` shape
   the dispatcher already has). Absent file, nothing happens; the test back
   end has none and stays as it is.
 - The demo's `Init>>init2:` checks `db tableExists: 'users'` and, when it
@@ -558,12 +558,12 @@ could not:
   listens on `127.0.0.1` alone and connects by name; `test_socket.c`
   checks the count and the index; `doc/NETWORK.md` and chapter 19 say so.
 
-And one limitation to write into the manual (phase 6): **the image's own
-compiler has no block-local temporaries** — `[:each | | row | …]` is 1983
-syntax's absence, not a typo — so a service file, which that compiler
-reads, declares its temporaries at the method. The bootstrap's closures
-dialect accepts them, which is why the tests never noticed. Adding them to
-the in-image parser is a follow-on.
+And one limitation, since closed: **the image's own compiler had no
+block-local temporaries** — `[:each | | row | …]` is 1983 syntax's absence,
+not a typo — so a service file, which that compiler reads, had to declare
+its temporaries at the method. The bootstrap's closures dialect accepted
+them, which is why the tests never noticed. `lib/Compiler-Fixes` puts them
+into the in-image parser, and a service file may now declare them.
 - **The Kiss build machinery around the front end** (`make-frontend`, the
   WAR stamping of `app-mode` and `sameOriginBackend`, `SecurityHeadersFilter`'s
   CSP with the kernel's pinned hash): the copy is served as files, and the

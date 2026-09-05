@@ -109,8 +109,7 @@ Pragmas are attached to the compiled method and readable back:
 \begin{st}
 (Unwind class >> #annotated) pragmas size                        "3"
 (Unwind class >> #annotated) hasPragma: #shared:                 "true"
-((Unwind class >> #annotated) pragmaAt: #deprecated:) arguments first
-                                                     "'use #normal'"
+((Unwind class >> #annotated) pragmaAt: #deprecated:) arguments first  "'use #normal'"
 \end{st}
 
 The two primitive forms still mean something to the compiler; every other

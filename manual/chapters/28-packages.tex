@@ -234,22 +234,29 @@ Every bootstrap prints a report. It is worth understanding rather than
 scrolling past.
 
 \begin{plain}
-st80: 38 classes were given "new ^super new initialize": ...
-st80: 264 classes, 5123 methods, 3840 symbols
-st80: 80 undeclared globals, 4 lower-case (probable source bugs): ...
+st80: 151 classes were given "new ^super new initialize": ...
+st80: 380 classes, 7599 methods, 5581 symbols
+st80: 81 undeclared globals: Sensor Disk TextConstants ... and 69 more
 st80: 6 undeclared names resolved from a pool dictionary
-st80: 46 class initializers, 43 ran, 3 skipped, 0 unfinished
+st80: 53 class initializers, 50 ran, 3 skipped, 0 unfinished;
+      5691 of 5691 symbols in the library table
 \end{plain}
 
 \begin{description}
 \item[given \ct{new}] classes with an \ct{initialize} and no class-side
   \ct{new}, for which the loader wrote the 1983 idiom. Auditable by design.
-\item[undeclared globals] names referenced but never defined. Some are
-  expected---the 1983 library has a standing set. A \emph{lower-case} one is
-  almost always a typo in source.
+\item[undeclared globals] names referenced but never defined. Most are
+  expected: \ct{Sensor}, \ct{Display} and \ct{Transcript} are made when the
+  image is built, long after the code that names them is compiled. A
+  \emph{lower-case} one is a block argument used outside its block, and gets
+  a line of its own naming the methods that still read it.
 \item[class initializers] class-side \ct{initialize} methods. "Unfinished"
   is the one to worry about: an initialiser that started and did not return
   usually means something deadlocked.
+\item[symbols in the library table] every Symbol the bootstrap interned,
+  placed in the image's own symbol table. The two numbers have to be the
+  same: a Symbol missing from the table can be interned a second time, and
+  then two of it exist and \ct{==} is no longer the whole story.
 \end{description}
 
 \section{Vendoring somebody else's code}

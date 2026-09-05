@@ -44,9 +44,31 @@ Error >> defaultAction [
 	 return normally their ensure: blocks are already nil and do nothing.
 	 So the cleanup happens once, here, and execution carries on exactly as
 	 it did before -- which for an unhandled error is not ideal and is a
-	 separate argument from this one."
+	 separate argument from this one.
+
+	 THE REPORT IS ITSELF PROTECTED, because reporting runs image code and
+	 image code can fail.  reportAsText builds its line with `,', which is
+	 SequenceableCollection>>copyEmpty:, which sends #species -- so
+	 `Object removeSelector: #species' made the report of the resulting
+	 doesNotUnderstand raise another doesNotUnderstand, whose report raised
+	 another, for ever: one line of ordinary reflection and the image hung
+	 with a worker spinning in the handler search, no output and nothing to
+	 kill but the process (Bugs4 REFLECTION-7).  Every other core removal
+	 in that sweep came back as a clean MessageNotUnderstood, and this one
+	 differed only because #species is on the path the reporter itself
+	 takes.
+
+	 The fallback line is a literal and sends nothing but
+	 reportOnStandardError:, which is a primitive: whatever has been
+	 removed, that much can still be said.  Catching Error rather than the
+	 narrower class is deliberate -- the point is that NOTHING raised while
+	 describing an unhandled error may start the cycle again, not that
+	 #species in particular is missing."
 	self noteUnhandled.
-	self reportAsText.
+	[self reportAsText]
+		on: Error
+		do: [:inner | self reportOnStandardError:
+				'an error was raised that could not describe itself'].
 	self canOpenNotifier ifTrue: [^self openNotifier].
 	self unwindTo: nil.
 	^nil

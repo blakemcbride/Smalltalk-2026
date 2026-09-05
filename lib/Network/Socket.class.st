@@ -159,16 +159,57 @@ Socket class >> connectTo: hostString port: portInteger [
 	 connect learns of a refusal only from connectResult, later; so the
 	 loop is here, and command 20 says how many addresses there are."
 
-	| count last |
+	^self connectTo: hostString port: portInteger timeout: nil
+]
+
+{ #category : 'instance creation' }
+Socket class >> connectTo: hostString port: portInteger timeout: millisecondsOrNil [
+	"connectTo:port:, giving up with a TimedOut when the connection has not
+	 been made in milliseconds; nil is as long as the system takes.
+
+	 A DEADLINE, because the operating system's own is minutes.  A TCP
+	 connect to an address that is routed nowhere -- a firewall that drops
+	 rather than refuses, a host that is off -- gets no answer at all, and
+	 the kernel retransmits the SYN for something over two minutes before it
+	 gives up.  Bugs4 NET-8: an HttpClient's readTimeout: never applied to
+	 that, because nothing had been read; the process was parked in the
+	 wait below with no bound on it.  Nothing in the mechanism had to
+	 change, only the wait: the connect was already non-blocking and already
+	 finished by a wait for writable, and waitWritableTimeout: is the same
+	 wait with a watchdog on it.
+
+	 The deadline covers the WHOLE call and not each address, since the
+	 caller asked for a connection and not for n attempts: a name resolving
+	 to four dead addresses must not cost four times what was asked for.
+	 Whatever time is left goes to the next address, and running out is a
+	 TimedOut naming the host, which is what a caller can act on -- a
+	 NetError would say the network refused, and it did not; it said
+	 nothing."
+
+	| count last deadline |
 	count := self check: (self primCommand: 20 with: hostString with: portInteger with: nil).
+	deadline := millisecondsOrNil isNil
+		ifTrue: [nil]
+		ifFalse: [Time millisecondClockValue + millisecondsOrNil].
 	0 to: count - 1 do: [:i | | socket |
 		socket := self new.
 		[socket setHandle: (self check:
 			(self primCommand: 11 with: hostString with: portInteger with: i)).
-		 [socket connectResult] whileFalse: [socket waitWritable].
+		 [socket connectResult] whileFalse: [
+			deadline isNil
+				ifTrue: [socket waitWritable]
+				ifFalse: [ | left |
+					left := deadline - Time millisecondClockValue.
+					left <= 0 ifTrue: [
+						socket close.
+						^(TimedOut new) signal: 'no connection to ', hostString, ':',
+							portInteger printString, ' in ', millisecondsOrNil printString, ' ms'].
+					socket waitWritableTimeout: left]].
 		 ^socket]
 			on: NetError
 			do: [:e | socket close. last := e]].
+	last isNil ifTrue: [
+		^(NetError new) signal: 'no address for ', hostString].
 	^(NetError new) errno: last errno; signal: last messageText
 ]
 
@@ -261,6 +302,32 @@ Socket >> arm: maskInteger [
 ]
 
 { #category : 'waiting' }
+Socket >> disarm: maskInteger [
+	"Take back an interest asked for by arm: and not spent.
+
+	 An arm is one-shot and is normally spent by the delivery that wakes
+	 the waiter, so nothing else here disarms.  A TIMED wait is the one
+	 case where the waiter leaves without a delivery, and the interest it
+	 asked for would otherwise stay in the poll set with no process behind
+	 it for as long as the socket is open.
+
+	 That mattered more than a stale entry in a poll set.  The scheduler
+	 asks the network whether anything is armed before it will say that
+	 nothing can ever run again -- a listener with no client yet is a wait
+	 and not a deadlock -- so one interest left over answers yes for ever,
+	 and an image that really had stopped waited in silence rather than
+	 saying so.  With one worker there is no other backstop at all.
+
+	 Sent whether or not the wait timed out, because the waiter cannot
+	 tell: the delivery and the watchdog can land in either order.  The
+	 primitive clears only what is still set, so the spent case is a
+	 no-op."
+
+	self isOpen ifFalse: [^self].
+	self class primCommand: 26 with: handle with: maskInteger with: nil
+]
+
+{ #category : 'waiting' }
 Socket >> waitReadable [
 	"Arm for reading and wait for the signal.  The caller calls again
 	 afterwards, and treats a false answer as a reason to come back here."
@@ -304,14 +371,62 @@ Socket >> waitWritableTimeout: milliseconds [
 
 { #category : 'private' }
 Socket >> wait: maskInteger on: aSemaphore timeout: milliseconds [
-	| deadline done |
+	"Wait for readiness or for the timeout, whichever comes first, and
+	 answer whether readiness came first.
+
+	 THE WATCHDOG IS RETIRED, and that is not tidiness.  It used to be
+	 forked and forgotten: when readiness came first -- which is the
+	 ordinary case, every successful timed read -- the watchdog went on
+	 waiting on its Delay for the whole timeout it was given, and the Delay
+	 went on sitting in SuspendedDelays with the VM's timer armed for it.
+	 One HTTP client suite left 37 of them behind, one REST server suite
+	 411, and lib/LLM asks for a five-minute read timeout, so its suite
+	 left 53 Delays each pointing five minutes into the future.
+
+	 What that costs is not memory, it is the deadlock verdict.
+	 SCHED_suspend_active will not say `every process is blocked' while a
+	 timer is armed, because a delay outstanding is a wait and not a
+	 deadlock -- so an image that really had stopped sat in silence until
+	 the last abandoned watchdog expired.  A hang caught with gdb had the
+	 timer armed 205,584 ms ahead with every ready list empty: one of
+	 lib/LLM's 300,000 ms watchdogs, ninety-four seconds old, holding the
+	 diagnostic shut for another three and a half minutes.  The suite
+	 runner's own timeout is five minutes, so the run reported nothing at
+	 all and the real fault -- whatever had stopped the image -- was never
+	 named (Bugs4 CHRON-6, which is `1983 provides Delay>>disable and
+	 nothing sends it'; this is the caller that most needed to).
+
+	 Retired by SIGNALLING the watchdog's own semaphore rather than by
+	 `disable', and the difference is a race this code would lose.  The
+	 forked process may not have reached `watchdog wait' yet -- readiness
+	 on a loopback socket arrives in microseconds -- and disable acts on
+	 delayInProgress, a flag that wait has not set yet, so it would find
+	 nothing to do and the watchdog would then settle in for its full
+	 term.  A Semaphore COUNTS.  Signalled early the signal is banked, the
+	 watchdog's wait returns the instant it arrives, and Delay>>wait's own
+	 ensure: takes the Delay back out of the queue -- which is the path
+	 BlockClosure>>valueWithinMilliseconds:onTimeout: already takes and
+	 what Delay>>delaySemaphore exists for.
+
+	 Sent after `done := true', so the woken watchdog finds it set and
+	 signals nothing; sent unconditionally, because the waiter cannot tell
+	 which of the two woke it, and a Delay that has already fired is left
+	 with one signal on a semaphore nobody waits on again."
+	| deadline done watchdog |
 	self arm: maskInteger.
 	deadline := Time millisecondClockValue + milliseconds.
 	done := false.
-	[(Delay forMilliseconds: milliseconds) wait.
+	watchdog := Delay forMilliseconds: milliseconds.
+	[watchdog wait.
 	 done ifFalse: [aSemaphore signal]] fork.
 	aSemaphore wait.
 	done := true.
+	watchdog delaySemaphore signal.
+	"The interest goes back whichever of the two woke us -- see disarm:.
+	 Left armed, a wait that timed out kept the network saying that
+	 somebody was waiting on this socket, which is the answer the
+	 scheduler reads before deciding the image is deadlocked."
+	self disarm: maskInteger.
 	self checkOpen.
 	^Time millisecondClockValue < deadline
 ]

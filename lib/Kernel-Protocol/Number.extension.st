@@ -306,3 +306,15 @@ Number >> raisedTo: aNumber [
 	aNumber isInteger ifTrue: [^self raisedToInteger: aNumber].
 	^self asFloat primRaisedTo: aNumber asFloat
 ]
+
+{ #category : '*Kernel-Protocol' }
+Number >> isZero [
+	"Whether I am zero.
+
+	 The manual's Number tables list it (12-numbers.tex and appendix B)
+	 and nothing implemented it, so `3 isZero' was a doesNotUnderstand of
+	 a method the documentation promised (Bugs4 DOCS-4).  Pharo's body is
+	 this line.  Float and Fraction answer it directly, each for its own
+	 reason; see there."
+	^self = 0
+]

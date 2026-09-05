@@ -66,6 +66,31 @@ Process >> primTerminateActive [
 ]
 
 { #category : '*Concurrency' }
+Process >> priority: anInteger [
+	"Set my priority, refusing anything the scheduler cannot run me at.
+
+	 1983 checks the upper bound only -- `anInteger <= Processor
+	 highestPriority' -- so 0, -3 and 4.5 were all accepted, and each one
+	 makes a process that is not scheduled and not reported (Bugs4 PROC-5).
+	 The VM is where it stops being silent and starts being invisible:
+	 SCHED_sleep answers without doing anything when a process's priority is
+	 not a SmallInteger in range, because the priority is what indexes
+	 quiescentProcessLists, so `p priority: 0. p resume' leaves p on no list
+	 at all, running nowhere, for ever, with no error anywhere.
+
+	 One-relative because the array is: priority 1 is
+	 SystemRockBottomPriority and there is no zeroth list.  Pharo checks the
+	 same pair of bounds."
+	anInteger isInteger ifFalse: [
+		^self error: 'a process priority must be an Integer'].
+	anInteger < 1 ifTrue: [
+		^self error: 'priority too low'].
+	anInteger > Processor highestPriority ifTrue: [
+		^self error: 'priority too high'].
+	priority := anInteger
+]
+
+{ #category : '*Concurrency' }
 Process >> runUnwindBlocksFrom: aContext [
 	"Run every ensure: and ifCurtailed: block from aContext outwards to
 	 the bottom of its stack, innermost first, on the process sending

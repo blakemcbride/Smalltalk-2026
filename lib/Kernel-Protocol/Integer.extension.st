@@ -381,9 +381,18 @@ Integer >> lcm: anInteger [
 	 (Bugs3 B40); with gcd: fixed it would divide 4 by 4 and answer 0,
 	 which is the answer, and `0 lcm: 0' would then divide zero by zero.
 	 The multiple of zero and anything is zero, and saying so first is
-	 clearer than relying on the arithmetic to arrive there."
+	 clearer than relying on the arithmetic to arrive there.
+
+	 And the answer is taken as a magnitude.  1983's formula carries the
+	 sign of whichever operand it divided, so `-4 lcm: 6' answered -12
+	 (Bugs4 NUMBERS-4) -- the only method in the whole differential sweep
+	 against Python that disagreed with it, and it disagreed in 63 cases.
+	 A common multiple has no sign to speak of: -12 is a common multiple
+	 of -4 and 6, but so is 12 and so is -24, and `LEAST' can only mean
+	 least in magnitude or the question has no answer at all.  ANSI says
+	 non-negative, Python's math.lcm answers 12, and Pharo answers 12."
 	(self = 0 or: [anInteger = 0]) ifTrue: [^0].
-	^self // (self gcd: anInteger) * anInteger
+	^(self // (self gcd: anInteger) * anInteger) abs
 ]
 
 { #category : '*Kernel-Protocol' }
@@ -400,35 +409,297 @@ Integer >> printOn: aStream base: b [
 	 lib/Concurrency, which does not come through here, refuses the same
 	 way.
 
-	 The rest is 1983's LargeInteger digit loop, copied because nothing in
-	 sources/ is ever edited and there is no way to add a check in front of
-	 a method without owning the method."
-	| digits source dest i j pos t rem |
+	 THE BODY IS NO LONGER 1983'S.  Its loop divided the WHOLE magnitude by
+	 b to get one digit, a byte at a time in Smalltalk, and did that once
+	 per digit -- so printing a number of d digits did d times d/2.4 byte
+	 divisions with about seven message sends each.  `(10 raisedTo: 16000)
+	 printString' took 26.4 seconds and every doubling of the length
+	 multiplied it by four (Bugs4 NUMBERS-3).  printString is on the way
+	 out of the image to a person, a log or a socket, so it is one of the
+	 two places the bignum layer's quadratic time is visible from outside;
+	 Integer class>>valueOfDigits:radix:negated: is the other.
+
+	 The shape of the loop is the same and everything else about it
+	 changed.  The magnitude is unpacked ONCE into an Array of limbs of as
+	 many bytes as this build's SmallInteger can carry through a
+	 division -- four here, so the inner loop runs a quarter as often --
+	 and each pass divides by b raised to as many digits as fit beside a
+	 limb rather than by b itself, so there are a ninth as many passes in
+	 base ten.  Thirty-odd times fewer inner iterations, and every one of
+	 them is SmallInteger arithmetic over an Array rather than digitAt:put:
+	 into a LargeInteger.  See Integer class>>limbSetupForBase: for how the
+	 two numbers are chosen, which is done from SmallInteger maxVal rather
+	 than written down, because that is a property of the build.
+
+	 It is still O(d squared): a divide-and-conquer split would need a
+	 large-by-large division, and this image's is 1983's Smalltalk
+	 digitDiv:neg:, which would cost more than it saved.  What this buys is
+	 the constant, and the constant was the whole of the complaint.
+
+	 The most significant chunk is written without its leading zeros and
+	 every other chunk with them, which is what makes the pieces join up
+	 into one number.  It is written by hand rather than by sending
+	 printOn:base: to it: that would be a send to a SmallInteger, and a
+	 SmallInteger reaching THIS method -- which it does in any profile that
+	 does not load lib/Concurrency -- would recurse for ever."
+	| setup limbBits limbBase chunk chunkDigits limbBytes nLimbs limbs
+	  high rem t j chunks nChunks buf v i |
 	(b isInteger and: [b between: 2 and: 36])
 		ifFalse: [^self error: 'a number can be printed in a base from 2 to 36, not ' , b printString].
-	i := self digitLength.
-	digits := Array new: i * 8.
-	pos := 0.
-	dest := i <= 1
-		ifTrue: [self]
-		ifFalse: [LargePositiveInteger new: i].
-	source := self.
-	[i > 1] whileTrue: [
+	setup := Integer limbSetupForBase: b.
+	limbBits := setup at: 1.
+	limbBase := setup at: 2.
+	chunk := setup at: 3.
+	chunkDigits := setup at: 4.
+	limbBytes := limbBits // 8.
+	nLimbs := (self digitLength + limbBytes - 1) // limbBytes max: 1.
+	limbs := Array new: nLimbs.
+	1 to: nLimbs do: [:k |
+		v := 0.
+		limbBytes to: 1 by: -1 do: [:t2 |
+			v := (v bitShift: 8) + (self digitAt: (k - 1) * limbBytes + t2)].
+		limbs at: k put: v].
+	high := nLimbs.
+	[high > 0 and: [(limbs at: high) = 0]] whileTrue: [high := high - 1].
+	high = 0 ifTrue: [^aStream nextPut: $0].
+	chunks := OrderedCollection new: 16.
+	[high > 0] whileTrue: [
 		rem := 0.
-		j := i.
+		j := high.
 		[j > 0] whileTrue: [
-			t := (rem bitShift: 8) + (source digitAt: j).
-			dest digitAt: j put: t // b.
-			rem := t \\ b.
+			t := rem * limbBase + (limbs at: j).
+			limbs at: j put: t // chunk.
+			rem := t \\ chunk.
 			j := j - 1].
-		pos := pos + 1.
-		digits at: pos put: rem.
-		source := dest.
-		(source digitAt: i) = 0 ifTrue: [i := i - 1]].
-	(dest digitAt: 1) printOn: aStream base: b.
-	[pos > 0] whileTrue: [
-		aStream nextPut: (Character digitValue: (digits at: pos)).
-		pos := pos - 1]
+		chunks addLast: rem.
+		[high > 0 and: [(limbs at: high) = 0]] whileTrue: [high := high - 1]].
+	nChunks := chunks size.
+	buf := String new: chunkDigits.
+	v := chunks at: nChunks.
+	i := chunkDigits.
+	[v > 0] whileTrue: [
+		buf at: i put: (Character digitValue: v \\ b).
+		v := v // b.
+		i := i - 1].
+	aStream nextPutAll: (buf copyFrom: i + 1 to: chunkDigits).
+	nChunks - 1 to: 1 by: -1 do: [:k |
+		v := chunks at: k.
+		chunkDigits to: 1 by: -1 do: [:d |
+			buf at: d put: (Character digitValue: v \\ b).
+			v := v // b].
+		aStream nextPutAll: buf]
+]
+
+{ #category : '*Kernel-Protocol' }
+Integer class >> limbSetupForBase: b [
+	"How to take a magnitude apart for base b without ever leaving
+	 SmallInteger arithmetic: an Array of the limb width in BITS, the limb
+	 base, the power of b that is converted in one pass, and how many
+	 digits of b that power is.
+
+	 Both conversions between a magnitude and its digits -- printOn:base:
+	 and valueOfDigits:radix:negated: -- are a loop over limbs inside a
+	 loop over chunks of digits, and both want the same two numbers as
+	 large as they can be.  The constraint is one line: the working value
+	 is `limb + limbBase * (something below chunk)', so limbBase times
+	 chunk must fit a SmallInteger, or the arithmetic promotes to
+	 LargeInteger and the method is doing by hand what it was written to
+	 avoid.
+
+	 That product is a property of the BUILD, not of this file.  A 62-bit
+	 SmallInteger, which is what this system has, takes limbs of four
+	 bytes and nine decimal digits a pass; a 30-bit one would take two
+	 bytes and four digits.  Writing 4 and 9 down would be right here and
+	 silently wrong -- slow, not incorrect -- somewhere else, so they are
+	 worked out.  The candidates are whole numbers of bytes because the
+	 magnitude is read and written a byte at a time through digitAt:, and
+	 the best of them is the one with the largest digits-times-bits, which
+	 is the work each pass gets done.
+
+	 Nothing is cached.  The loop runs a few dozen times and the callers
+	 run it once each; a class variable holding it would be shared mutable
+	 state between workers for a value that is cheaper to compute than to
+	 lock.
+
+	 If no candidate fits -- a build whose SmallInteger cannot hold 256
+	 times the base -- the smallest is answered anyway.  The arithmetic
+	 then promotes to LargeInteger and is slow, which is what it was
+	 before; nothing gives a wrong answer."
+	| maxV limbBase chunk digits score bestBits bestChunk bestDigits |
+	maxV := SmallInteger maxVal + 1.
+	score := 0.
+	bestBits := 8.
+	bestChunk := b.
+	bestDigits := 1.
+	#(8 16 24 32) do: [:bits |
+		limbBase := 1 bitShift: bits.
+		limbBase * b <= maxV ifTrue: [
+			chunk := b.
+			digits := 1.
+			[chunk * b * limbBase <= maxV] whileTrue: [
+				chunk := chunk * b.
+				digits := digits + 1].
+			digits * bits > score ifTrue: [
+				score := digits * bits.
+				bestBits := bits.
+				bestChunk := chunk.
+				bestDigits := digits]]].
+	^Array with: bestBits with: (1 bitShift: bestBits) with: bestChunk with: bestDigits
+]
+
+{ #category : '*Kernel-Protocol' }
+Integer class >> readFrom: aStream radix: radix [
+	"The Integer at the front of that stream, written in that base.
+
+	 1983's loop is `value := value * radix + digit', once per digit, and
+	 every one of those multiplications is a LargeInteger multiplied by a
+	 SmallInteger through Integer>>digitMultiply:neg:, which walks the
+	 whole growing magnitude a byte at a time in Smalltalk and allocates a
+	 new LargeInteger for the answer.  Reading a number of d digits
+	 therefore cost d passes over d/2.4 bytes: `('1', (String new: 8000
+	 withAll: $0)) asNumber' took 59 seconds, the worst constant in the
+	 whole bignum layer (Bugs4 NUMBERS-3).  This is the path a number on a
+	 socket takes -- Number class>>readFrom: sends it, String>>asNumber
+	 and String>>asInteger reach it, and NUMBERS-2 is about a form field
+	 doing exactly that before anything has authenticated.
+
+	 The digits are gathered first and converted afterwards, by
+	 valueOfDigits:radix:negated:, which does the arithmetic in an Array
+	 of SmallInteger limbs.  Gathering them is one pass over the stream
+	 and one String; it is what lets the conversion see how long the
+	 number is before it starts, which is what a chunked conversion needs.
+
+	 The String is grown by doubling rather than written through a
+	 WriteStream, and a short run of digits is converted by
+	 valueOfDigits:radix:negated:'s own plain loop rather than by setting
+	 up limbs.  Both are there because SHORT numbers are what this method
+	 reads nearly every time -- Time class>>readFrom: reads three
+	 two-digit fields per call -- and a fixed cost of a couple of hundred
+	 sends to save nine tenths of the work on a number that has no work
+	 in it is a loss.  It was measured as one: test_image's `every minute
+	 of the day survives printString and readFromString:' check ran out
+	 of its twenty-million-bytecode budget when the setup was
+	 unconditional.
+
+	 Everything else is 1983's, deliberately: base ten by default, an
+	 optional leading minus, the first character that is not a digit of
+	 the radix pushed back on the stream, and ZERO rather than an error
+	 when there are no digits at all -- readFrom:ifFail: in this same file
+	 exists to tell those two apart, and Number class>>readFrom: relies on
+	 the pushback to find the decimal point.
+
+	 A String is taken as well as a stream, for the reason readFrom: takes
+	 one (Bugs3 B51): `Integer readFrom: '42'' is what ported code writes.
+	 B51 gave readFrom: and readFrom:ifFail: that courtesy and left this
+	 one, two lines below them, sending peekFor: to a String."
+	| stream neg buf count c dv |
+	stream := aStream isString ifTrue: [ReadStream on: aStream] ifFalse: [aStream].
+	neg := stream peekFor: $-.
+	buf := String new: 24.
+	count := 0.
+	[stream atEnd] whileFalse: [
+		c := stream next.
+		dv := c digitValue.
+		(dv < 0 or: [dv >= radix])
+			ifTrue: [
+				stream skip: -1.
+				^self valueOfDigits: (buf copyFrom: 1 to: count)
+					radix: radix negated: neg]
+			ifFalse: [
+				count = buf size ifTrue: [buf := buf , (String new: buf size)].
+				count := count + 1.
+				buf at: count put: c]].
+	^self valueOfDigits: (buf copyFrom: 1 to: count) radix: radix negated: neg
+]
+
+{ #category : '*Kernel-Protocol' }
+Integer class >> valueOfDigits: aString radix: b negated: neg [
+	"The Integer those digit characters spell in base b, negated when neg.
+	 Zero for no digits, which is what 1983's reader answers and what
+	 Number class>>readFrom: is written against.
+
+	 The mirror of Integer>>printOn:base:, and the reason is the same: the
+	 whole conversion happens in an Array of SmallInteger limbs, chunkDigits
+	 digits folded in per pass, so it costs a ninth as many passes over a
+	 quarter as many limbs as the digit-at-a-time loop it replaces.  It is
+	 still O(d squared) -- with a schoolbook multiply a divide-and-conquer
+	 split saves nothing worth the risk -- but the constant is thirty-odd
+	 times smaller, which is what the finding measured (Bugs4 NUMBERS-3).
+
+	 The limb array is sized from an upper bound on the answer's bit count:
+	 `b highBit' is at least the base-two logarithm of b for every b, so
+	 the estimate can be short of nothing, and two spare limbs cover the
+	 rounding and the final carry.  The invariant that keeps every value a
+	 SmallInteger is limbSetupForBase:'s: the carry stays below chunk, so
+	 the working value stays below limbBase times chunk.
+
+	 The answer is built at its exact byte length rather than padded and
+	 trimmed.  LargePositiveInteger>>truncated drops a high zero byte by
+	 COPYING the whole number and recurring, so handing it a magnitude
+	 with a dozen spare bytes would be a dozen copies; what it is asked
+	 for here is the other half of its job, normalising a magnitude that
+	 fits into a SmallInteger.
+
+	 Nine digits or fewer keep the plain loop.  Nine digits of base 36 is
+	 under 2^47, so on this build the whole thing stays a SmallInteger and
+	 costs nine multiplications; setting up limbs for it would cost more
+	 than the number is worth, and nearly every number anybody reads is
+	 this one.  On a build too narrow to hold it the loop promotes to
+	 LargeInteger and is exactly 1983's, which is to say correct and
+	 slow."
+	| setup limbBits limbBase chunk chunkDigits limbBytes limbs nLimbs used
+	  i end v carry t j scale result nBytes topBytes idx |
+	aString isEmpty ifTrue: [^0].
+	aString size <= 9 ifTrue: [
+		v := 0.
+		1 to: aString size do: [:k | v := v * b + (aString at: k) digitValue].
+		neg ifTrue: [^v negated truncated].
+		^v].
+	setup := self limbSetupForBase: b.
+	limbBits := setup at: 1.
+	limbBase := setup at: 2.
+	chunk := setup at: 3.
+	chunkDigits := setup at: 4.
+	limbBytes := limbBits // 8.
+	nLimbs := (aString size * b highBit // limbBits) + 2.
+	limbs := Array new: nLimbs.
+	1 to: nLimbs do: [:k | limbs at: k put: 0].
+	used := 0.
+	i := 1.
+	[i <= aString size] whileTrue: [
+		end := i + chunkDigits - 1 min: aString size.
+		v := 0.
+		i to: end do: [:k | v := v * b + (aString at: k) digitValue].
+		scale := end - i + 1 = chunkDigits
+			ifTrue: [chunk]
+			ifFalse: [b raisedTo: end - i + 1].
+		carry := v.
+		j := 1.
+		[j <= used] whileTrue: [
+			t := (limbs at: j) * scale + carry.
+			limbs at: j put: (t bitAnd: limbBase - 1).
+			carry := t bitShift: limbBits negated.
+			j := j + 1].
+		[carry > 0] whileTrue: [
+			used := used + 1.
+			limbs at: used put: (carry bitAnd: limbBase - 1).
+			carry := carry bitShift: limbBits negated].
+		i := end + 1].
+	used = 0 ifTrue: [^0].
+	v := limbs at: used.
+	topBytes := 0.
+	[v > 0] whileTrue: [
+		topBytes := topBytes + 1.
+		v := v bitShift: -8].
+	nBytes := (used - 1) * limbBytes + topBytes.
+	result := Integer new: nBytes neg: neg.
+	1 to: used do: [:k |
+		v := limbs at: k.
+		1 to: limbBytes do: [:t2 |
+			idx := (k - 1) * limbBytes + t2.
+			idx <= nBytes ifTrue: [result digitAt: idx put: (v bitAnd: 255)].
+			v := v bitShift: -8]].
+	^result truncated
 ]
 
 { #category : '*Kernel-Protocol' }
@@ -502,4 +773,183 @@ Integer class >> readFrom: aStreamOrString [
 			ifTrue: [ReadStream on: aStreamOrString]
 			ifFalse: [aStreamOrString])
 		radix: 10
+]
+
+{ #category : '*Kernel-Protocol' }
+Integer >> floorLog: radix [
+	"The floor of my logarithm in that base, EXACTLY, for a receiver of
+	 any size.
+
+	 Number>>floorLog: is `self asFloat floorLog: radix', and an Integer of
+	 2^1024 or more has no Float: asFloat overflows to an infinity, and
+	 Float>>floorLog: of an infinity used to recurse for ever squaring an
+	 Integer radix -- 10, 100, 10^4, 10^8 -- until the worker was doing a
+	 billion-bit multiply and never came back (Bugs4 NUMBERS-1).  Float
+	 refuses a non-finite receiver now, so that line would raise rather
+	 than hang; but `(2 raisedTo: 4000) floorLog: 10' has a perfectly good
+	 answer, 1204, and raising is not it.  This is the same fault and the
+	 same fix as Integer>>ln, Integer>>log and Integer>>sqrt (Bugs3 B39):
+	 an Integer answers its own question rather than handing it to a
+	 double that cannot hold it.
+
+	 Base two is highBit - 1 and nothing else, exactly, at any size.  For
+	 any other whole base the logarithm is estimated in Floats -- through
+	 Integer>>ln, which is itself exact enough at any size -- and then
+	 CORRECTED against exact powers, so the answer never depends on the
+	 estimate being right to the last bit.  The correction is a step or
+	 two: raisedTo: is repeated squaring and the candidate is bounded by
+	 my own bit count, so it can never build a number wildly larger than
+	 I am.
+
+	 A base written as a Float but standing for a whole number --
+	 `floorLog: 10.0' -- is taken as that whole number, so that it gets
+	 the exact path too rather than falling back to a double that cannot
+	 hold the receiver; a Fraction that stands for one is already an
+	 Integer, since Fraction reduces itself.  A non-positive receiver, or
+	 a base that is genuinely fractional, goes to Float>>floorLog: as it always
+	 did, including 1983's answer of zero for a receiver smaller than the
+	 base, which is what `self assumed positive' in its comment means."
+	| base estimate |
+	base := (radix isFloat and: [radix isFinite and: [radix fractionPart = 0.0]])
+		ifTrue: [radix truncated]
+		ifFalse: [radix].
+	(self > 0 and: [base isInteger and: [base > 1]])
+		ifFalse: [^self asFloat floorLog: radix].
+	base = 2 ifTrue: [^self highBit - 1].
+	estimate := (self ln / base ln) floor.
+	estimate < 0 ifTrue: [estimate := 0].
+	[estimate > 0 and: [(base raisedTo: estimate) > self]]
+		whileTrue: [estimate := estimate - 1].
+	[(base raisedTo: estimate + 1) <= self]
+		whileTrue: [estimate := estimate + 1].
+	^estimate
+]
+
+{ #category : '*Kernel-Protocol' }
+Integer >> digitMultiply: arg neg: ng [
+	"My magnitude times arg's, signed by ng.  The engine under every
+	 Integer multiplication that the SmallInteger primitive declines.
+
+	 1983 multiplies a BYTE at a time and splits each byte into two nibbles
+	 to do it, because the Blue Book's SmallInteger is thirteen bits and a
+	 byte times a byte plus a carry does not fit one:
+
+		high := (arg digitAt: j) * xh.
+		low  := (arg digitAt: j) * xl + ((high bitAnd: 15) bitShift: 4)
+		           + carry + (prod digitAt: k).
+
+	 -- seven sends and two digitAt:s per byte pair, with a digitAt:put:
+	 into a LargeInteger for every one of them.  It is O(m by n) and the
+	 constant is enormous: 3^5000 times 7^5000, a thousand bytes each, took
+	 1.79 seconds, and `10 raisedTo: 16000' -- which is fifteen squarings
+	 and multiplies -- took 11.3 (Bugs4 NUMBERS-3).  That is the whole
+	 bignum layer's floor: raisedTo:, printString before it was rewritten,
+	 Fraction arithmetic and every cryptographic modulus stand on it.
+
+	 This build's SmallInteger is not thirteen bits.  It is asked how many
+	 it has -- SmallInteger maxVal, not a number written down -- and while
+	 a product of two 24-bit limbs plus a carry and an accumulator fits it,
+	 the multiplication is done THREE BYTES at a time in an Array of
+	 SmallIntegers.  Nine times fewer inner iterations than a byte at a
+	 time, each of them plain SmallInteger arithmetic over an Array rather
+	 than nibble arithmetic through digitAt:put:.  Twenty-four bits is the
+	 largest byte-aligned limb whose square leaves room for the carry
+	 inside a 62-bit SmallInteger; on a build too narrow for even that, the
+	 arithmetic promotes to LargeInteger and is merely slow, which is what
+	 it was before.
+
+	 It is still SCHOOLBOOK -- O(m by n) -- and that is a decision.
+	 Karatsuba over 1983's byte multiply was measured on paper at three to
+	 four times for a thousand-byte operand, against nine here, and it puts
+	 a recursion with three sub-multiplies and four large additions under
+	 the most fundamental operation in the numeric tower.  This rewrite is
+	 provable by a different route: it computes exactly what schoolbook
+	 computes, and it was checked against Python over a wide range of
+	 lengths, signs and bit patterns before it was kept.
+
+	 Small operands keep 1983's loop, in smallDigitMultiply:neg: below.
+	 Unpacking to limbs and packing back is O(m + n), which is free beside
+	 a large multiplication and is not free beside an eight-byte one --
+	 and an eight-byte one is what SmallInteger>>* falls back to on
+	 overflow, which is the commonest arrival here of all."
+	| m n am bm ml nl out outLen carry t k high v topBytes nBytes prod idx |
+	m := self digitLength.
+	n := arg digitLength.
+	((arg digitAt: 1) = 0 and: [n = 1]) ifTrue: [^0].
+	m * n <= 64 ifTrue: [^self smallDigitMultiply: arg neg: ng].
+	ml := (m + 2) // 3.
+	nl := (n + 2) // 3.
+	am := Array new: ml.
+	1 to: ml do: [:x |
+		am at: x put: (((self digitAt: (x - 1) * 3 + 3) bitShift: 16)
+			+ ((self digitAt: (x - 1) * 3 + 2) bitShift: 8)
+			+ (self digitAt: (x - 1) * 3 + 1))].
+	bm := Array new: nl.
+	1 to: nl do: [:x |
+		bm at: x put: (((arg digitAt: (x - 1) * 3 + 3) bitShift: 16)
+			+ ((arg digitAt: (x - 1) * 3 + 2) bitShift: 8)
+			+ (arg digitAt: (x - 1) * 3 + 1))].
+	outLen := ml + nl.
+	out := Array new: outLen.
+	1 to: outLen do: [:x | out at: x put: 0].
+	1 to: ml do: [:i |
+		(am at: i) = 0 ifFalse: [
+			v := am at: i.
+			carry := 0.
+			1 to: nl do: [:j |
+				t := (out at: i + j - 1) + (v * (bm at: j)) + carry.
+				out at: i + j - 1 put: (t bitAnd: 16777215).
+				carry := t bitShift: -24].
+			k := i + nl.
+			[carry > 0] whileTrue: [
+				t := (out at: k) + carry.
+				out at: k put: (t bitAnd: 16777215).
+				carry := t bitShift: -24.
+				k := k + 1]]].
+	high := outLen.
+	[high > 0 and: [(out at: high) = 0]] whileTrue: [high := high - 1].
+	high = 0 ifTrue: [^0].
+	v := out at: high.
+	topBytes := 0.
+	[v > 0] whileTrue: [
+		topBytes := topBytes + 1.
+		v := v bitShift: -8].
+	nBytes := (high - 1) * 3 + topBytes.
+	prod := Integer new: nBytes neg: ng.
+	1 to: high do: [:x |
+		v := out at: x.
+		1 to: 3 do: [:t2 |
+			idx := (x - 1) * 3 + t2.
+			idx <= nBytes ifTrue: [prod digitAt: idx put: (v bitAnd: 255)].
+			v := v bitShift: -8]].
+	^prod truncated
+]
+
+{ #category : '*Kernel-Protocol' }
+Integer >> smallDigitMultiply: arg neg: ng [
+	"1983's digitMultiply:neg:, character for character, for operands
+	 small enough that unpacking them into limbs would cost more than it
+	 saves.  Copied rather than inherited because sources/ is never edited
+	 and there is no way to keep a method and add a case in front of it.
+	 See digitMultiply:neg: for why the other case exists."
+	| prod pl carry digit k xh xl low high |
+	((arg digitAt: 1) = 0 and: [arg digitLength = 1]) ifTrue: [^0].
+	pl := self digitLength + arg digitLength.
+	prod := Integer new: pl neg: ng.
+	1 to: self digitLength do: [:i |
+		(digit := self digitAt: i) ~= 0 ifTrue: [
+			k := i.
+			carry := 0.
+			xh := digit bitShift: -4.
+			xl := digit bitAnd: 15.
+			1 to: arg digitLength do: [:j |
+				high := (arg digitAt: j) * xh.
+				low := (arg digitAt: j) * xl
+					+ ((high bitAnd: 15) bitShift: 4) + carry + (prod digitAt: k).
+				carry := (high bitShift: -4) + (low bitShift: -8).
+				prod digitAt: k put: (low bitAnd: 255).
+				k := k + 1].
+			prod digitAt: k put: carry]].
+	(prod digitAt: pl) = 0 ifTrue: [^(prod growby: -1) truncated].
+	^prod truncated
 ]

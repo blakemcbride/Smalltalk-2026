@@ -145,15 +145,35 @@ HttpCodec class >> parseQuery: aString [
 
 { #category : 'dates' }
 HttpCodec class >> httpDate [
-	"Now, as RFC 7231 writes it: `Sun, 06 Nov 1994 08:49:37 GMT'."
-	^self httpDateFor: Date today at: Time now
+	"Now, as RFC 7231 writes it: `Sun, 06 Nov 1994 08:49:37 GMT'.
+
+	 In GMT, because the string says GMT and RFC 7231 allows nothing else.
+	 This asked `Date today' and `Time now', which are corrected for the
+	 host's time zone, and stamped the answer GMT -- so a server in
+	 Chicago sent every response five hours in the past under a label
+	 saying it had not.  (Before Bugs4 CHRON-3 those two answered
+	 California whatever the host, so the header was wrong by a different
+	 constant and not by the host's.)  Time utcSeconds is the same instant
+	 with nothing added to it."
+	| utc |
+	utc := Time utcSeconds.
+	^self
+		httpDateFor: (Date fromDays: utc // 86400)
+		at: (Time fromSeconds: utc \\ 86400)
 ]
 
 { #category : 'dates' }
 HttpCodec class >> httpDateFor: aDate at: aTime [
 	| out |
 	out := WriteStream on: (String new: 32).
-	out nextPutAll: (Days at: aDate weekdayIndex); nextPutAll: ', '.
+	"The day's own NAME, cut to three letters, and not `Days at: aDate
+	 weekdayIndex'.  weekdayIndex counts from Monday in 1983 and from
+	 Sunday in Pharo's Date, which supersedes it in profiles/pharo-time --
+	 so the same table named the right day in one profile and the day
+	 before in the other, and every Date header this server sent from a
+	 pharo-time build was one day out in its weekday and right in its
+	 date.  weekday answers `Friday' in both."
+	out nextPutAll: (aDate weekday copyFrom: 1 to: 3); nextPutAll: ', '.
 	out nextPutAll: (aDate dayOfMonth printString padLeftTo: 2 with: $0); space.
 	out nextPutAll: (Months at: aDate monthIndex); space.
 	out nextPutAll: aDate year printString; space.

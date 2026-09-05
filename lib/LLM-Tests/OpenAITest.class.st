@@ -113,3 +113,28 @@ OpenAITest >> testAPictureIsADataUrl [
 	self assert: ((image stringAt: 'url') startsWith: 'data:image/png;base64,iVBORw0KGgo').
 	self assert: (image stringAt: 'detail') equals: 'high'
 ]
+
+{ #category : 'tests' }
+OpenAITest >> testTheSpaceAfterDataIsOptionalAndAMalformedSuccessIsAnLLMError [
+	"Bugs4, both halves, on this service's shape.  `data:{...}' with no
+	 space was dropped, so a stream of them answered nothing at all; and a
+	 200 without choices reached `nil objectAt:' and became a
+	 MessageNotUnderstood rather than an LLMError naming the service."
+	| gpt |
+	gpt := OpenAI apiKey: 'k' model: 'm'.
+	self assert: (gpt streamedTextOf: 'data:{"choices":[{"delta":{"content":"hi"}}]}')
+		equals: 'hi'.
+	self assert: (gpt streamedTextOf: 'data: {"choices":[{"delta":{"content":"hi"}}]}')
+		equals: 'hi'.
+	self assert: (gpt streamedTextOf: 'data:[DONE]') isNil.
+	self assert: (gpt streamedTextOf: 'data: [DONE]') isNil.
+	self assert: (gpt streamedTextOf: ': OPENROUTER PROCESSING') equals: ''.
+	self should: [gpt textOf: JSONObject new] raise: LLMError.
+	self should: [gpt textOf: (JSONObject fromString: '{"choices":[]}')] raise: LLMError.
+	self should: [gpt textOf: (JSONObject fromString: '{"choices":[{}]}')] raise: LLMError.
+	self should: [gpt embeddingIn: JSONObject new] raise: LLMError.
+	self should: [gpt embeddingIn: (JSONObject fromString: '{"data":[{}]}')] raise: LLMError.
+	"stopReasonOf: is asked first, in complete:, and answers nil rather
+	 than raising about a field nobody asked for."
+	self assert: (gpt stopReasonOf: JSONObject new) isNil
+]

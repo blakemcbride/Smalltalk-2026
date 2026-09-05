@@ -343,6 +343,9 @@ ManualExamples >> readStreams [
 	"([:s | s next: 2] value: (ReadStream on: #(1 2 3))) >>> #(1 2)"
 	"([:s | s next. s atEnd] value: (ReadStream on: #(1))) >>> true"
 	"([:s | s next. s reset. s next] value: (ReadStream on: #(7 8))) >>> 7"
+	"collect: on a stream is eager: a ReadStream on an Array of the results"
+	"(((ReadStream on: #(1 2 3)) collect: [:x | x * 2]) upToEnd) >>> #(2 4 6)"
+	"(ReadStream on: #(1 2 3)) size >>> 0"
 	^self
 ]
 

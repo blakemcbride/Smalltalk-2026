@@ -482,6 +482,15 @@ void        ST_set_active_context(st_oop ctx);
 int         ST_stack_depth(void);
 
 /*
+ *  Move the runaway-recursion ceiling from C, answering what it was.
+ *  ST_MAX_CALL_DEPTH in the environment is the ordinary way to set it and
+ *  is read once per process; this exists for the unit tests, which run
+ *  hundreds of expressions in one process and need it low for one of them.
+ *  See the definition in interp.c.
+ */
+int         ST_interp_set_max_call_depth(int depth);
+
+/*
  *  How many more values the active context can take before ST_push would
  *  overflow it.  A primitive that spreads a run-time Array onto the stack
  *  -- perform:withArguments:, valueWithArguments:, withArgs:executeMethod:
@@ -540,6 +549,12 @@ unsigned    ST_method_argument_count(st_oop method);
 void        ST_execute_method(st_oop method, uint32_t argc);
 /*  Every registered interpreter's scheduling state, on standard error.  */
 void        ST_interp_dump_workers(void);
+/*
+ *  And every Process in the image with it: the one that matters when
+ *  nothing can run is the one no worker is holding.  Walks the object
+ *  table, so it belongs on a path that is already ending.
+ */
+void        ST_interp_dump_processes(void);
 /*  The primitive a frame's method declares, or 0.  Safe on a BlockContext. */
 unsigned    ST_context_primitive(st_oop ctx);
 int         ST_activate_closure(st_oop closure, uint32_t argc);

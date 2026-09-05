@@ -174,6 +174,35 @@ static int          timer_armed;
  *  has not happened yet.
  */
 static int          timer_delivering;
+/*
+ *  And the semaphore that delivery is carrying, as a ROOT for as long as
+ *  it is between timer_semaphore and the async queue.
+ *
+ *  Bugs4 MEM-6.  A collection does not merely mark: it zeroes every
+ *  reference count and rebuilds it, one for each heap reference and one for
+ *  each root the walk visits.  So a count held in C is worth nothing unless
+ *  a root stands behind it -- which is why provide_roots visits
+ *  SCHED_timer_semaphore in the first place.  timer_main used to clear
+ *  timer_semaphore and only THEN queue the signal, and for those few
+ *  microseconds the semaphore it was carrying was a root nowhere: not the
+ *  timer's, not yet the async queue's.  A collection landing in that window
+ *  recounted Delay's TimingSemaphore as one -- the class variable that
+ *  names it -- and the timer thread then gave up the count it thought it
+ *  still held, taking it to zero.  With no worker pool up the object memory
+ *  frees at zero rather than at the next safepoint, so the slot was handed
+ *  straight out again: TimingSemaphore came back as a MethodContext, its
+ *  `first link' was that context's sender, and the next Delay armed the
+ *  timer on it and then scheduled a context as a process.  The switch's
+ *  guard dropped that, which is the right thing to do with it, and the
+ *  image then sat with a socket armed, no timer, and every worker idle --
+ *  no deadlock verdict, because a pending socket wait is not a deadlock.
+ *  Roughly one profile run in fifteen; pharo-weak and pharo-collections
+ *  showed it because they collect most.
+ *
+ *  Read by SCHED_visit_async_roots, which provide_roots already calls, so
+ *  the root set does not grow another entry point.
+ */
+static st_atomic_ptr timer_delivering_semaphore = ST_NIL;
 static int          timer_stopping;
 static st_thread    timer_thread;
 static int          timer_started;
@@ -246,6 +275,36 @@ SCHED_timer_pending(void)
 }
 
 /*
+ *  How far off the pending delay is.
+ *
+ *  SCHED_timer_pending answers a yes or a no, and the verdict below printed
+ *  the yes; a reader then had no way to tell a wait of one millisecond from
+ *  one of three minutes, and the difference is the difference between "it
+ *  is about to happen" and "this run has stopped and is holding the
+ *  deadlock detector off until Tuesday".  One hunt was spent on exactly
+ *  that ambiguity, so the number is printed now.
+ *
+ *  Answers -1 when nothing is armed, and 0 for a deadline already past --
+ *  the timer thread has it and has not delivered it yet.
+ */
+int64_t
+SCHED_timer_remaining_ms(void)
+{
+    int64_t remaining;
+
+    if (ST_load_acquire(&timer_ready) != 2)
+        return -1;
+    ST_mutex_lock(&timer_lock);
+    if (!timer_armed) {
+        ST_mutex_unlock(&timer_lock);
+        return -1;
+    }
+    remaining = (timer_deadline_ns - ST_time_monotonic_ns()) / 1000000;
+    ST_mutex_unlock(&timer_lock);
+    return remaining > 0 ? remaining : 0;
+}
+
+/*
  *  The semaphore a pending delay will signal, as a root.
  *
  *  Held in C and reachable from nowhere in the image once the Delay has
@@ -305,16 +364,48 @@ timer_main(void *arg)
             st_oop  semaphore = timer_semaphore;
 
             timer_armed      = 0;
-            timer_semaphore  = ST_NIL;
             timer_delivering = 1;
+            /*
+             *  Named in the delivering slot BEFORE it stops being
+             *  timer_semaphore, so that the root walk finds it in one or
+             *  the other at every instant.  Both stores are under
+             *  timer_lock; the walk reads the slot without it, which is
+             *  why the slot is atomic and why the order is this way round.
+             */
+            ST_store_release(&timer_delivering_semaphore,
+                             (uintptr_t) semaphore);
+            timer_semaphore  = ST_NIL;
             /*
              *  Signalled with the lock dropped.  SCHED_asynchronous_signal
              *  takes the async lock, and holding two of this system's locks
              *  at once is how a lock order gets invented by accident.
              */
             ST_mutex_unlock(&timer_lock);
-            SCHED_asynchronous_signal(semaphore);
-            OM_decrease_ref(semaphore);
+            if (SCHED_asynchronous_signal(semaphore)) {
+                /*
+                 *  Queued, and the queue took a count of its own; giving
+                 *  this thread's up cannot reach zero, so the order of
+                 *  these two does not matter and the root goes first.
+                 */
+                ST_store_release(&timer_delivering_semaphore,
+                                 (uintptr_t) ST_NIL);
+                OM_decrease_ref(semaphore);
+            }  else  {
+                /*
+                 *  Nothing took it -- the queue was full -- so this thread
+                 *  holds the last count and the release may free it.  The
+                 *  count goes first, while the root is still there: a
+                 *  collection between the two would otherwise recount the
+                 *  semaphore without the root that stands for this count
+                 *  and leave it one short, which is the whole of MEM-6.
+                 *  This worker is not parked by a safepoint, so "between
+                 *  the two" is a real instant here in a way it never is on
+                 *  a worker.
+                 */
+                OM_decrease_ref(semaphore);
+                ST_store_release(&timer_delivering_semaphore,
+                                 (uintptr_t) ST_NIL);
+            }
             ST_mutex_lock(&timer_lock);
             /*
              *  Cleared here and not before.  A re-arm during the delivery
@@ -695,17 +786,44 @@ take_first_runnable(st_oop list)
                 return SCHED_remove_first_link(list);
             /*
              *  From the middle: counted first, as remove_link_from_list
-             *  asks, and published exactly as SCHED_remove_first_link
-             *  publishes what it takes.
+             *  asks, and published BEFORE the unlink, exactly as
+             *  SCHED_remove_first_link publishes what it takes.
+             *
+             *  Bugs4 MEM-1.  This used to publish afterwards, and the
+             *  handful of instructions between remove_link_from_list
+             *  clearing myList and `taken' naming the process were a
+             *  window in which the process was on no list and in nobody's
+             *  hands.  That is the one conclusion SCHED_primitive_detach
+             *  draws without holding a lock, and everything terminate,
+             *  suspend and signalException: do afterwards rests on it.  A
+             *  `p resume. p terminate' storm on thirty-two workers hit the
+             *  window in about four runs in five: the detach answered 0,
+             *  "it was nowhere", Process>>terminate wrote nil over the
+             *  suspendedContext of a process a third worker had already
+             *  nominated, and that worker's switch was handed a nil.
+             *
+             *  Only this path was wrong, and only under load, which is why
+             *  it took four audits: it runs solely while some other worker
+             *  is detaching -- with the table empty the fast path above
+             *  goes straight to SCHED_remove_first_link, which has had the
+             *  right order since it was written.  Fork with no terminate
+             *  names nothing and never reaches here; one worker and eight
+             *  reach it too rarely to see it.
+             *
+             *  The rule the tables at the top of this file state is
+             *  exactly this one: a process is written into the slot it is
+             *  moving TO before it is cleared from the one it is moving
+             *  FROM.  The list is the slot it is moving from, and myList
+             *  is how a reader without the lock sees that slot.
              */
             OM_increase_ref(link);
-            remove_link_from_list(link, list);
             {
                 st_hands   *h = my_hands();
 
                 if (h)
                     publish(&h->taken, link);
             }
+            remove_link_from_list(link, list);
             return link;
         }
         link = OM_fetch_pointer(ST_LINK_NEXT, link);
@@ -843,6 +961,13 @@ SCHED_reset(void)
     semaphore_stripes_init();
     async_lock_init();
     ready_lock_init();
+    /*  Whatever is queued is dropped, and its counts with it.  */
+    {
+        int     i;
+
+        for (i = 0; i < ST_load_relaxed(&async_count); ++i)
+            OM_decrease_ref(async_queue[i]);
+    }
     async_count            = 0;
     input_semaphore        = ST_NIL;
     new_process_waiting    = 0;
@@ -895,6 +1020,37 @@ int
 SCHED_is_empty_list(st_oop list)
 {
     return OM_fetch_pointer(ST_LIST_FIRST_LINK, list) == ST_NIL;
+}
+
+/*
+ *  One more signal nobody was waiting for.
+ *
+ *  Chapter 29 writes `excessSignals _ excessSignals+1', and Smalltalk's
+ *  arithmetic promotes to a LargeInteger when the count outgrows a
+ *  SmallInteger.  The VM's version could not: OM_int_oop of 2^62 wraps to
+ *  a NEGATIVE SmallInteger, and SCHED_primitive_wait reads `excess <= 0'
+ *  as nothing owed, so the very next waiter would sleep on a semaphore
+ *  holding four quintillion signals (Bugs4 PROC-6).
+ *
+ *  Saturating rather than promoting, and that is a decision.  Promotion
+ *  means allocating a LargeInteger, and both callers run under a
+ *  semaphore's stripe lock, where the rule stated above is that nothing
+ *  allocates, sends, or polls a safepoint; and the field would then hold
+ *  something SCHED_primitive_wait's OM_is_int test refuses, so every wait
+ *  on that semaphore would fail the primitive and fall back to 1983's
+ *  Smalltalk body -- the test-then-act version whose race the lock exists
+ *  to close.  A count that stops at 2^62-1 loses signals no run can reach;
+ *  a count that wraps loses the semaphore.
+ */
+static void
+remember_excess_signal(st_oop semaphore)
+{
+    st_oop  excess = OM_fetch_pointer(ST_SEMAPHORE_EXCESS_SIGNALS, semaphore);
+
+    if (!OM_is_int(excess) || OM_int_value(excess) >= ST_INT_MAX)
+        return;
+    OM_store_pointer(ST_SEMAPHORE_EXCESS_SIGNALS, semaphore,
+                     OM_int_oop(OM_int_value(excess) + 1));
 }
 
 st_oop
@@ -1017,8 +1173,24 @@ SCHED_add_last_link(st_oop link, st_oop list)
      *  from where it was, and a terminating process returns from the
      *  terminate it was never supposed to return from.
      */
-    if (OM_is_present(OM_fetch_pointer(ST_PROCESS_MY_LIST, link)))
+    if (OM_is_present(OM_fetch_pointer(ST_PROCESS_MY_LIST, link))) {
+        /*
+         *  And SAID, once.  This refusal is silent by design -- it is a
+         *  guard, and a guard that fires is a bug somewhere else -- but
+         *  what it leaves behind is a process on no list that nothing will
+         *  ever wake, which is indistinguishable afterwards from a lost
+         *  signal and was hunted as one.  A caller in SCHED_primitive_wait
+         *  reaches it having already parked and landed the process, so the
+         *  refusal is the moment the process becomes unreachable, and this
+         *  is the only place that knows it.
+         */
+        static int  told;
+
+        if (!told++)
+            fprintf(stderr, "st80: a process already on a list was queued "
+                            "again; it is left where it was\n");
         return;
+    }
     if (SCHED_is_empty_list(list))
         OM_store_pointer(ST_LIST_FIRST_LINK, list, link);
     else
@@ -1279,7 +1451,14 @@ SCHED_suspend_active(void)
      */
     store_active_for_suspension();
 
-    next = SCHED_wake_highest_priority();
+    /*
+     *  Nothing is taken while a nomination is already pending: a signal
+     *  earlier in the same bytecode can have nominated a process that
+     *  outranks this one, and this function's only way to hand back what
+     *  it takes is the ready list it came from.  The requeue below is the
+     *  guarantee; this is the ordinary case not paying for it.
+     */
+    next = new_process_waiting ? ST_NIL : SCHED_wake_highest_priority();
 
     /*
      *  Nothing ready HERE is not the same as nothing ready ANYWHERE.
@@ -1392,12 +1571,21 @@ SCHED_suspend_active(void)
             idle_hook();
         ST_sleep_ns(IDLE_WAIT_SLICE_NS);
         drain_async_signals();
-        next = SCHED_wake_highest_priority();
+        /*
+         *  And only if that drain did not NOMINATE.  A drain that did has
+         *  already chosen what runs next, and taking a second process off
+         *  a ready list here is taking one this function is then going to
+         *  have nowhere to put -- see the requeue below, which is what
+         *  catches it when it happens anyway.
+         */
+        if (!new_process_waiting)
+            next = SCHED_wake_highest_priority();
     }
     if (next == ST_NIL && !new_process_waiting) {
         /*  One last look: the timer may have fired as the loop gave up.  */
         drain_async_signals();
-        next = SCHED_wake_highest_priority();
+        if (!new_process_waiting)
+            next = SCHED_wake_highest_priority();
     }
     /*
      *  Asked to stop, and holding nothing: this worker's run is over.  A
@@ -1424,9 +1612,39 @@ SCHED_suspend_active(void)
      *
      *  Nothing more is needed here -- the nomination IS the answer, and
      *  returning lets check_process_switch act on it.
+     *
+     *  Except for whatever was taken on the way, which goes BACK on its
+     *  ready list.  Bugs4 SCHED-1.  The two drains above can nominate, and
+     *  the line after each of them used to take the highest-priority READY
+     *  process regardless -- so one drain that did both left this function
+     *  holding a process it then returned past and dropped.  One drain
+     *  doing both is not exotic: an HttpClient's timed read waits on a
+     *  Delay and on a socket at once, and a pass that delivered the timer's
+     *  signal to Delay's priority-8 timing process -- nominated, because it
+     *  outranks the process this worker was leaving -- and the socket's
+     *  signal to the priority-4 process waiting on it -- queued, because it
+     *  does not -- ended exactly this way.
+     *
+     *  What the dropped process became is worth naming, because it is
+     *  invisible: off its ready list, its `taken' slot overwritten by the
+     *  next take on this worker, and alive only through the removal's loan.
+     *  A live process with a good context, at a runnable priority, on no
+     *  list and in nobody's hands, that nothing will ever look at again.
+     *  Nothing reported it and nothing could: it is the state a suspended
+     *  process is in on purpose.  The image stopped the next time nothing
+     *  else could run, which was usually much later and somewhere else, and
+     *  in the run that found it the process dropped was the one running the
+     *  whole test suite -- about two runs in a hundred and thirty of
+     *  pharo-collections and pharo-weak, and the last of Bugs4's hangs.
      */
-    if (new_process_waiting)
+    if (new_process_waiting) {
+        if (OM_is_present(next)) {
+            SCHED_sleep(next);
+            /*  The list holds it now; this releases the removal's loan.  */
+            OM_decrease_ref(next);
+        }
         return;
+    }
 
     if (next == ST_NIL) {
         /*
@@ -1434,14 +1652,35 @@ SCHED_suspend_active(void)
          *  before -- a lost nomination looked exactly like this -- and the
          *  state that decides it is what a reader needs first.
          */
+        int64_t remaining = SCHED_timer_remaining_ms();
+
         fprintf(stderr, "st80: every process is blocked; nothing can run\n");
-        fprintf(stderr, "       timer pending %d, external waits %d, "
-                        "async signals queued %d, %d of %u workers idle\n",
+        /*
+         *  With the numbers, not just the flags.  "timer pending 1" was
+         *  true of a delay about to fire and of one three minutes out, and
+         *  a reader could not tell which -- so the remaining milliseconds
+         *  are here, and "no deadline" says plainly that the clock is not
+         *  what anybody is waiting for.  The external-wait hook answers a
+         *  count and not an identity; which socket it is comes from the
+         *  process list below, where the waiter's own frames name it.
+         */
+        fprintf(stderr, "       timer pending %d (%s",
                 SCHED_timer_pending(),
+                remaining < 0 ? "no deadline armed" : "fires in ");
+        if (remaining >= 0)
+            fprintf(stderr, "%lld ms", (long long) remaining);
+        fprintf(stderr, "), external waits %d, "
+                        "async signals queued %d, %d of %u workers idle\n",
                 external_wait_hook ? external_wait_hook() : 0,
                 ST_load_relaxed(&async_count),
                 ST_load_seq(&idle_workers), WORKER_count());
         ST_interp_dump_workers();
+        /*
+         *  And every process, not just the one each worker holds: when
+         *  nothing can run, the process that explains it is one no worker
+         *  is holding.
+         */
+        ST_interp_dump_processes();
         st_vm.running = 0;
         return;
     }
@@ -1605,14 +1844,8 @@ SCHED_synchronous_signal(st_oop semaphore)
      *  that is being detached, which its detacher will take off the list
      *  and which must not be handed this signal -- is an excess.
      */
-    if (!OM_is_present(woken)) {
-        st_oop  excess = OM_fetch_pointer(ST_SEMAPHORE_EXCESS_SIGNALS,
-                                          semaphore);
-
-        if (OM_is_int(excess))
-            OM_store_pointer(ST_SEMAPHORE_EXCESS_SIGNALS, semaphore,
-                             OM_int_oop(OM_int_value(excess) + 1));
-    }
+    if (!OM_is_present(woken))
+        remember_excess_signal(semaphore);
     stripe_unlock(lock);
     if (OM_is_present(woken)) {
         SCHED_resume(woken);
@@ -1633,6 +1866,17 @@ SCHED_asynchronous_signal(st_oop semaphore)
         int n = ST_load_relaxed(&async_count);
 
         if (n < ASYNC_QUEUE_MAX) {
+            /*
+             *  Counted, not merely rooted.  The queue has always been
+             *  visited by the root walk, which is what a collection needs;
+             *  what it did not have was a reference of its own, so between
+             *  collections the only thing keeping a queued semaphore alive
+             *  was whatever the CALLER still held -- and the timer thread
+             *  lets go of its hold on the next line (Bugs4 MEM-6).  The
+             *  drain releases this again once the signal has been
+             *  delivered.
+             */
+            OM_increase_ref(semaphore);
             async_queue[n] = semaphore;
             ST_store_release(&async_count, n + 1);
             queued = 1;
@@ -1676,6 +1920,17 @@ SCHED_visit_async_roots(om_visit_fn visit)
     for (i = 0; i < ST_load_relaxed(&async_count); ++i)
         visit(async_queue[i]);
     ST_mutex_unlock(&async_lock);
+    /*
+     *  And the one the timer is carrying between the two, which belongs to
+     *  neither the timer's slot nor the queue for the length of a delivery.
+     *  Visited here rather than beside SCHED_timer_semaphore in
+     *  provide_roots because it is the same kind of root as the queue --
+     *  something in flight -- and because one entry point is easier to keep
+     *  right than two.  Not under timer_lock: this runs at a safepoint,
+     *  which parks every WORKER and not the timer thread, so the lock would
+     *  buy nothing the release store has not already given.
+     */
+    visit((st_oop) ST_load_acquire(&timer_delivering_semaphore));
 }
 
 /*
@@ -1703,8 +1958,15 @@ drain_async_signals(void)
         ST_store_relaxed(&async_count, 0);
         ST_mutex_unlock(&async_lock);
 
-        for (i = 0; i < count; ++i)
+        for (i = 0; i < count; ++i) {
             SCHED_synchronous_signal(pending[i]);
+            /*
+             *  The count SCHED_asynchronous_signal took.  Released after
+             *  the signal and on a worker, where the queue is already
+             *  emptied and no collection can fall between the two.
+             */
+            OM_decrease_ref(pending[i]);
+        }
     }
 }
 
@@ -1799,6 +2061,25 @@ SCHED_check_process_switch(void)
         new_process_waiting = 0;
 
         /*
+         *  Park the running process's context in its Process object, then
+         *  make the incoming one's context active.  Everything the old
+         *  process needs to resume is in that one pointer.
+         */
+        /*
+         *  Unless this worker has already parked and handed the process on.
+         *  Parking again would write this thread's stale context over
+         *  whatever progress the worker that took it has since made -- and
+         *  so would storing the registers alone, since they are stored INTO
+         *  the context, which the worker that took the process is
+         *  executing.  Both stores are skipped, not just the second.
+         */
+        if (!disowned) {
+            ST_store_active_context();
+            OM_store_pointer(ST_PROCESS_SUSPENDED_CONTEXT,
+                             SCHED_active_process(), st_vm.active_context);
+        }
+
+        /*
          *  A nominee whose suspendedContext is not a context is never
          *  run.  Bugs3 B3: nil is the mark of a terminated process, and
          *  a terminated process can still arrive here -- taken off a
@@ -1812,6 +2093,18 @@ SCHED_check_process_switch(void)
          *  had parked that one already, looks for another.  Anything
          *  else in the field is a process somebody has broken, which is
          *  reported, once, and dropped the same way.
+         *
+         *  Read ONCE, here, and run below without a second look -- which
+         *  is the second half of Bugs4 MEM-1.  The park above used to come
+         *  after this test and the switch used to fetch the field again at
+         *  the bottom, so what the guard approved and what the interpreter
+         *  was handed were two reads of a field another worker can write.
+         *  A terminate landing between them gave set_active_context a nil,
+         *  and its fail-safe stops the image rather than a process: the
+         *  guard's promise was kept for a value that was no longer the one
+         *  being run.  Reading after the park also settles a switch to the
+         *  process this worker is already running, if one is ever built --
+         *  the park writes the field and this reads back what it wrote.
          */
         incoming = OM_fetch_pointer(ST_PROCESS_SUSPENDED_CONTEXT, new_process);
         if (!OM_is_object(incoming)
@@ -1832,77 +2125,57 @@ SCHED_check_process_switch(void)
                 return;
             continue;
         }
-        break;
-    }
-
-    /*
-     *  Park the running process's context in its Process object, then make
-     *  the incoming one's context active.  Everything the old process needs
-     *  to resume is in that one pointer.
-     */
-    /*
-     *  Unless this worker has already parked and handed the process on.
-     *  Parking again would write this thread's stale context over whatever
-     *  progress the worker that took it has since made -- and so would
-     *  storing the registers alone, since they are stored INTO the
-     *  context, which the worker that took the process is executing.
-     *  Both stores are skipped, not just the second.
-     */
-    if (!disowned) {
-        ST_store_active_context();
-        OM_store_pointer(ST_PROCESS_SUSPENDED_CONTEXT, SCHED_active_process(),
-                         st_vm.active_context);
-    }
-    disowned = 0;
-    /*
-     *  The image's field as well as this worker's, because a snapshot
-     *  carries the field and the image's own reflection reads it.  With
-     *  several workers running processes it holds whichever switched last,
-     *  which is the honest answer to a question that no longer has one --
-     *  and is why Processor>>activeProcess becomes a primitive that asks
-     *  the calling worker instead.
-     */
-    /*
-     *  A running process is held by its worker, and the count says so.
-     *
-     *  This used to release the nomination's count here, once the process
-     *  was active, on the strength of the field above: the image's
-     *  activeProcess variable holds one count, and with one worker it
-     *  always held the running process.  With N workers it holds whichever
-     *  switched last, and every other running process -- on no list, since
-     *  it is running -- had a count of zero.  The next switch on any
-     *  worker stored over the field, the count of the process it had held
-     *  went from one to nothing, and a process that was executing on some
-     *  core was freed and its slot handed out: the Delay timing process
-     *  came back as a MethodContext, with the semaphore it waited on
-     *  pointing at it.  The nomination's count is now kept as the active
-     *  count for as long as the process is active here, and the process
-     *  that was active gives its own up.  That is also what the collector
-     *  counts when it visits each worker's active process, so the two
-     *  agree.
-     */
-    {
-        st_oop  was = st_vm.active_process;
-        st_hands   *h = my_hands();
-
-        st_vm.active_process = new_process;
-        /*  Into `held' before out of `nominee', for the same reader.  */
-        if (h) {
-            publish(&h->held, new_process);
-            publish(&h->nominee, ST_OOP_INVALID);
-        }
-        new_process = ST_NIL;
+        disowned = 0;
         /*
-         *  One slot, written by every worker on every switch: exchanged,
-         *  not stored, so the process this evicts is released once and by
-         *  one worker.  See OM_exchange_pointer.
+         *  The image's field as well as this worker's, because a snapshot
+         *  carries the field and the image's own reflection reads it.
+         *  With several workers running processes it holds whichever
+         *  switched last, which is the honest answer to a question that no
+         *  longer has one -- and is why Processor>>activeProcess becomes a
+         *  primitive that asks the calling worker instead.
          */
-        OM_exchange_pointer(ST_SCHEDULER_ACTIVE_PROCESS, SCHED_scheduler(),
-                            st_vm.active_process);
-        ST_set_active_context(
-            OM_fetch_pointer(ST_PROCESS_SUSPENDED_CONTEXT,
-                             st_vm.active_process));
-        OM_decrease_ref(was);
+        /*
+         *  A running process is held by its worker, and the count says so.
+         *
+         *  This used to release the nomination's count here, once the
+         *  process was active, on the strength of the field above: the
+         *  image's activeProcess variable holds one count, and with one
+         *  worker it always held the running process.  With N workers it
+         *  holds whichever switched last, and every other running process
+         *  -- on no list, since it is running -- had a count of zero.  The
+         *  next switch on any worker stored over the field, the count of
+         *  the process it had held went from one to nothing, and a process
+         *  that was executing on some core was freed and its slot handed
+         *  out: the Delay timing process came back as a MethodContext,
+         *  with the semaphore it waited on pointing at it.  The
+         *  nomination's count is now kept as the active count for as long
+         *  as the process is active here, and the process that was active
+         *  gives its own up.  That is also what the collector counts when
+         *  it visits each worker's active process, so the two agree.
+         */
+        {
+            st_oop      was = st_vm.active_process;
+            st_hands   *h = my_hands();
+
+            st_vm.active_process = new_process;
+            /*  Into `held' before out of `nominee', for the same reader. */
+            if (h) {
+                publish(&h->held, new_process);
+                publish(&h->nominee, ST_OOP_INVALID);
+            }
+            new_process = ST_NIL;
+            /*
+             *  One slot, written by every worker on every switch:
+             *  exchanged, not stored, so the process this evicts is
+             *  released once and by one worker.  See OM_exchange_pointer.
+             */
+            OM_exchange_pointer(ST_SCHEDULER_ACTIVE_PROCESS, SCHED_scheduler(),
+                                st_vm.active_process);
+            /*  The context the guard above approved, not another look. */
+            ST_set_active_context(incoming);
+            OM_decrease_ref(was);
+        }
+        return;
     }
 }
 
@@ -2058,12 +2331,7 @@ SCHED_primitive_signal(void)
                                            : take_first_runnable(semaphore);
     /*  As in SCHED_synchronous_signal: nobody to wake is an excess.  */
     if (!OM_is_present(woken)) {
-        st_oop  excess = OM_fetch_pointer(ST_SEMAPHORE_EXCESS_SIGNALS,
-                                          semaphore);
-
-        if (OM_is_int(excess))
-            OM_store_pointer(ST_SEMAPHORE_EXCESS_SIGNALS, semaphore,
-                             OM_int_oop(OM_int_value(excess) + 1));
+        remember_excess_signal(semaphore);
         stripe_unlock(lock);
         return 1;
     }

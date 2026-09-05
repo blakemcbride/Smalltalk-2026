@@ -120,6 +120,44 @@ DbLiveTest >> testBoundParametersArriveAsThemselves [
 ]
 
 { #category : 'tests' }
+DbLiveTest >> testByteArrayParameterKeepsEveryByte [
+	"A BLOB is bytes, and every byte of it must arrive -- including the
+	 zeroes.
+
+	 Bugs4 FILES-1: odbc_bind_value bound every byte object with
+	 `strlen(text)', which is not the object's length but the distance to
+	 its first zero byte, so #(1 2 0 3 4 255) asByteArray reached the
+	 column as two bytes and a BLOB beginning with zero reached it empty --
+	 silently, with the insert reporting success.  SQLBindParameter honours
+	 the length it is handed; only the length handed in was wrong.  A
+	 ByteArray now goes by its own command, as the dates do, bound
+	 SQL_C_BINARY at the object's real byte length."
+
+	self withConnection:
+		[:connection |
+		| stored leading |
+		connection executeImmediate: 'DROP TABLE IF EXISTS blobtest'.
+		connection executeImmediate: 'CREATE TABLE blobtest (id INTEGER, v BLOB)'.
+		connection
+			execute: 'INSERT INTO blobtest VALUES (?, ?)'
+			with: (Array with: 1 with: (ByteArray withAll: #(1 2 0 3 4 255))).
+		connection
+			execute: 'INSERT INTO blobtest VALUES (?, ?)'
+			with: (Array with: 2 with: (ByteArray withAll: #(0 0 7))).
+		connection commit.
+		stored := (connection fetchOne: 'SELECT v FROM blobtest WHERE id = ?'
+			with: (Array with: 1)) at: 'v'.
+		leading := (connection fetchOne: 'SELECT v FROM blobtest WHERE id = ?'
+			with: (Array with: 2)) at: 'v'.
+		self assert: stored size equals: 6.
+		self assert: stored asArray equals: #(1 2 0 3 4 255).
+		self assert: leading size equals: 3.
+		self assert: leading asArray equals: #(0 0 7).
+		connection executeImmediate: 'DROP TABLE blobtest'.
+		connection commit]
+]
+
+{ #category : 'tests' }
 DbLiveTest >> testColumnNamesAreCaseInsensitive [
 	"SQL identifiers are not case sensitive, and a caller who wrote the name
 	 the way the schema does should not have to know how the driver folded

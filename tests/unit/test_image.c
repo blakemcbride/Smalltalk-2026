@@ -181,8 +181,13 @@
  *  signalException: reaching a process another worker is running; and
  *  St80ExceptionTest in lib/Library-Tests, for an ensure: block that used
  *  to run twice and a handler guard that is not a class.
+ *
+ *  153 -> 154 with the Bugs4 fixes: Finalizer, the process that drains the
+ *  ephemerons the collector has fired and sends each one #mourn.  Nothing
+ *  sent it before, so a WeakKeyDictionary held every key it had ever been
+ *  given -- weak in name and strong in fact.
  */
-#define LIB_CLASSES             153
+#define LIB_CLASSES             154
 /*
  *  This number is a ratchet and is meant to move: lib/ is where every
  *  divergence from the frozen 1983 sources lives, so it grows whenever a
@@ -503,8 +508,20 @@
  *  Compiler>>evaluate:in:to:notifying:ifFail: kept under its own selector
  *  so a Debugger's do-it works.  And the tests for all of it: MonitorTest,
  *  ProcessTest, St80ExceptionTest, and additions to nine suites.
+ *
+ *  2920 -> 3074 with the Bugs4 fixes, which are almost all lib/ overrides
+ *  of 1983 methods that were wrong rather than new protocol: a Delay whose
+ *  arithmetic survives the millisecond clock's wrap, a Date that counts
+ *  leap centuries, an OrderedCollection that appends instead of shifting
+ *  the whole collection to insert at the end, an Integer that prints and
+ *  parses in SmallInteger limbs rather than bytes, a recompile: that goes
+ *  through the same compiler as a compile:, a read: that answers nil at
+ *  the end of a file instead of raising, an accept loop that survives one
+ *  failed accept, and an HTTP client that will not put a caller's line
+ *  break on the wire.  With them the tests, in nine suites and one new
+ *  package.
  */
-#define LIB_METHODS             2920
+#define LIB_METHODS             3078
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -553,8 +570,9 @@
 /*
  *  31 -> 33: Clipboard and Clipboard-Tests.
  *  33 -> 34: Compiler-Fixes.
+ *  34 -> 35: Kernel-Finalization.
  */
-#define LIB_CATEGORIES          34
+#define LIB_CATEGORIES          35
 /*
  *  The image this test measures is the one profiles/st2026.profile builds,
  *  and it is built BY that profile rather than by a list kept alongside it.
@@ -2623,7 +2641,7 @@ test_sunit(void)
      *  client sends; and TonelReaderTest, TonelWriterTest and
      *  TonelSourceTest for the files that come back as they went out.
      */
-    check_integer("TestCase allTests tests size", 504);
+    check_integer("TestCase allTests tests size", 546);
 
     /*
      *  And the three buckets, from the outside as well as from within
@@ -2750,7 +2768,7 @@ test_browsing(void)
      *  2238539 -> 2482762 with the Bugs3 fixes: 293 methods and the comments
      *  that say what each was for.
      */
-    check_integer("(SourceFiles at: 1) contents size", 2482762);
+    check_integer("(SourceFiles at: 1) contents size", 2698670);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -6761,6 +6779,1640 @@ test_bugs3_tonel(void)
     test_dialect = saved;
 }
 
+/*
+ *  Bugs4 -- the fourth audit, prim.  One function per area, filled in by the
+ *  fix for each finding it names; empty until then.
+ */
+static void
+test_bugs4_prim(void)
+{
+    int saved_depth;
+
+    /*
+     *  PRIM-1.  instVarAt: and instVarAt:put: name a FIELD, and a byte or
+     *  word object has none; they used to bound the index with the header
+     *  size word -- the BYTE count for a byte object -- and then index with
+     *  an eight-byte pointer stride, so `'str' instVarAt: 1 put: Object new'
+     *  wrote past a three-byte String and corrupted the malloc heap with no
+     *  exception anywhere.  Refused now, and Object>>instVarAt:'s own
+     *  fallback reaches the indexed fields instead, which is bounded and
+     *  right: $a is byte one of the String, 0 is byte four of the Float.
+     */
+    check_string("^[('str' instVarAt: 1 put: Object new) printString] "
+                 "on: Error do: [:e | 'refused']", "refused");
+    check_integer("^('abcdefgh' instVarAt: 1) value", 97);
+    check_integer("^1.5 instVarAt: 4", 0);
+    /*  And a pointer object still reaches its fields, which is the point.  */
+    check_integer("^(3@4) instVarAt: 1", 3);
+    check_integer("^(Object->3) instVarAt: 2", 3);
+    check_integer("^(Array with: 5 with: 6) instVarAt: 2", 6);
+
+    /*
+     *  PRIM-1, the reflective pair.  68 and 69 read and write the leading
+     *  BYTES of a CompiledMethod as object pointers, which is right for a
+     *  method and for nothing else: `aString objectAt: 1 put: anObject'
+     *  stored an oop where characters live and released a reference count
+     *  on whatever those characters decoded to.  Only CompiledMethod
+     *  declares them, so restricting them to it takes nothing away -- the
+     *  method's own header still comes back as a SmallInteger.
+     */
+    check_string("Object compile: 'b4oa: i <primitive: 68> ^#failed'. "
+                 "^[(1.5 b4oa: 1) printString] "
+                 "ensure: [Object removeSelector: #b4oa:]", "failed");
+    check_string("Object compile: 'b4oa: i <primitive: 68> ^#failed'. "
+                 "^[((Object compiledMethodAt: #printString) b4oa: 1) class name] "
+                 "ensure: [Object removeSelector: #b4oa:]", "SmallInteger");
+
+    /*
+     *  PRIM-2.  blockCopy: used any receiver that was not a BlockContext as
+     *  the home of the new block, sized the block to that object's fields
+     *  and then wrote five context fields into it -- `nil blockCopy: 1'
+     *  wrote past nil.  Refused for anything that is not a context; the
+     *  compiler's own blockCopy: has thisContext as its receiver and is
+     *  unaffected, which the block below checks.
+     */
+    check_string("Object compile: 'b4bc: n <primitive: 80> ^#failed'. "
+                 "^[(nil b4bc: 1) printString] "
+                 "ensure: [Object removeSelector: #b4bc:]", "failed");
+    check_string("Object compile: 'b4bc: n <primitive: 80> ^#failed'. "
+                 "^[((3@4) b4bc: 1) printString] "
+                 "ensure: [Object removeSelector: #b4bc:]", "failed");
+    check_integer("^[:x | x + 1] value: 2", 3);
+
+    /*
+     *  PRIM-3.  Bugs3 B11 bounded the literal INDEX; the literal's TYPE was
+     *  still trusted, so replacing the Association behind `^Smalltalk' with
+     *  a SmallInteger -- through objectAt:put:, the reflective write the
+     *  1983 compiler needs and so cannot be refused -- made the push
+     *  dereference a tagged integer and segfaulted the VM where no handler
+     *  could see it.  A CorruptMethod now, as a bad index already was.
+     */
+    check_string("| c m r | c := Object subclass: #B4LitVar "
+                 "instanceVariableNames: '' classVariableNames: '' "
+                 "poolDictionaries: '' category: 'Bugs4'. "
+                 "c compile: 'foo ^Smalltalk'. "
+                 "m := c compiledMethodAt: #foo. "
+                 "m objectAt: 2 put: 1000000007. "
+                 "c addSelector: #foo withMethod: m. "
+                 "r := [c new foo] on: Error do: [:e | e class name]. "
+                 "c removeFromSystem. ^r", "CorruptMethod");
+    /*  The same for the class literal a super send reads.  */
+    check_string("| c m r | c := Object subclass: #B4LitSuper "
+                 "instanceVariableNames: '' classVariableNames: '' "
+                 "poolDictionaries: '' category: 'Bugs4'. "
+                 "c compile: 'zork ^super printString'. "
+                 "m := c compiledMethodAt: #zork. "
+                 "m objectAt: m numLiterals + 1 put: 1000000007. "
+                 "c addSelector: #zork withMethod: m. "
+                 "r := [c new zork] on: Error do: [:e | e class name]. "
+                 "c removeFromSystem. ^r", "CorruptMethod");
+
+    /*
+     *  What the 600-round random-bytecode fuzz written to confirm PRIM-3
+     *  found instead, all of it the same shape: an operand the dispatch loop
+     *  still trusted.  Each of these three crashed the shipping binary and
+     *  was a heap overflow or a SEGV under ASAN; each is a CorruptMethod
+     *  now.
+     *
+     *  126 is one of the codes nothing assigns.  It used to stop the
+     *  interpreter outright, so one bad byte in one method took the whole
+     *  image and every other worker's process with it.
+     */
+    check_string("| c m r | c := Object subclass: #B4Unused "
+                 "instanceVariableNames: '' classVariableNames: '' "
+                 "poolDictionaries: '' category: 'Bugs4'. "
+                 "c compile: 'bar ^1 + 2 + 3 + 4'. "
+                 "m := c compiledMethodAt: #bar. "
+                 "m at: m initialPC put: 126. "
+                 "c addSelector: #bar withMethod: m. "
+                 "r := [c new bar] on: Error do: [:e | e class name]. "
+                 "c removeFromSystem. ^r", "CorruptMethod");
+    /*
+     *  138 with the top bit set takes up to 127 values off the stack.  The
+     *  stack pointer is unsigned, so taking more than were put on wrapped it
+     *  to four billion and ST_stack_value dereferenced a field that far past
+     *  the context.
+     */
+    check_string("| c m r | c := Object subclass: #B4PushArray "
+                 "instanceVariableNames: '' classVariableNames: '' "
+                 "poolDictionaries: '' category: 'Bugs4'. "
+                 "c compile: 'bar ^1 + 2 + 3 + 4'. "
+                 "m := c compiledMethodAt: #bar. "
+                 "m at: m initialPC put: 138. "
+                 "m at: m initialPC + 1 put: 255. "
+                 "c addSelector: #bar withMethod: m. "
+                 "r := [c new bar] on: Error do: [:e | e class name]. "
+                 "c removeFromSystem. ^r", "CorruptMethod");
+    /*
+     *  140-142 index the Array a shared temporary lives in.  Both operands
+     *  were trusted: the temporary index went into the home context with no
+     *  bound (a read past a 168-byte context, which is how ASAN found it),
+     *  and whatever came back was indexed as an Array with no shape check.
+     *  Here the temporary is in range and holds a SmallInteger, which is
+     *  the second half of the guard.
+     */
+    check_string("| c m r | c := Object subclass: #B4Vector "
+                 "instanceVariableNames: '' classVariableNames: '' "
+                 "poolDictionaries: '' category: 'Bugs4'. "
+                 "c compile: 'bar | t | t := 3. ^t'. "
+                 "m := c compiledMethodAt: #bar. "
+                 "m at: m initialPC put: 140. "
+                 "m at: m initialPC + 1 put: 0. "
+                 "m at: m initialPC + 2 put: 0. "
+                 "c addSelector: #bar withMethod: m. "
+                 "r := [c new bar] on: Error do: [:e | e class name]. "
+                 "c removeFromSystem. ^r", "CorruptMethod");
+
+    /*
+     *  PRIM-4.  A String carries a length and a C string ends at its first
+     *  zero byte, so copying all the bytes and appending a terminator hands
+     *  open(2), connect(2) or getenv(3) a PREFIX of the name asked for --
+     *  and says nothing.  Refused now, and the refusal arrives as an
+     *  ordinary Smalltalk error: `open:' with an errno for a file, a
+     *  NetError for the environment.  The file must not appear under the
+     *  truncated name, which is what the second check is really about.
+     */
+    check_string("^[Smalltalk environmentAt: ('HO', (String with: "
+                 "(Character value: 0)), 'ME')] "
+                 "on: Error do: [:e | e class name]", "NetError");
+    check_boolean("^(Smalltalk environmentAt: 'PATH') isNil", 0);
+    check_string("^[FileStream fileNamed: ('bugs4-nul', (String with: "
+                 "(Character value: 0)), 'name')] "
+                 "on: Error do: [:e | 'refused']", "refused");
+    /*
+     *  The one that names the fault rather than the guard: a file that
+     *  really exists must NOT be reached by a name whose interior NUL
+     *  happens to fall after it.  Truncating answered its contents.
+     */
+    check_string("| name r | name := 'zz-bugs4-nul-test.txt'. "
+                 "(FileStream fileNamed: name) nextPutAll: 'x'; close. "
+                 "r := [(FileStream oldFileNamed: (name, (String with: "
+                 "(Character value: 0)), 'junk')) contentsOfEntireFile] "
+                 "on: Error do: [:e | 'refused']. "
+                 "Disk removeKey: name. ^r", "refused");
+
+    /*
+     *  PROC-1.  retry restarts a frame through ST_restart_at, which unlike
+     *  ST_return_to and ST_resume_at never put the depth counter right --
+     *  so the seven frames of signal, handler search, handler and retry
+     *  were discarded from the real stack and left on the counter, and a
+     *  retry loop nested inside any outer handler or ensure: was told its
+     *  call stack had gone too deep while it was thirty frames deep.
+     *
+     *  The ceiling is moved down for this one check because under the
+     *  default two hundred thousand the leak is absorbed by the recounts
+     *  the unwind path makes anyway -- three hundred thousand retries
+     *  complete even unfixed.  At two thousand it fired at retry 283,
+     *  which is 2000/7.07 and names the leak exactly.
+     */
+    saved_depth = ST_interp_set_max_call_depth(2000);
+    check_integer("| n | n := 0. "
+                  "^[[[n := n + 1. n < 5000 ifTrue: [Error signal: 'again']. n] "
+                  "on: Error do: [:e | e retry]] ensure: []] "
+                  "on: RecursionDepthExceeded do: [:e | e return: 0 - n]", 5000);
+    /*  And a runaway that really is one is still stopped.  */
+    check_string("| c r | c := Object subclass: #B4Runaway "
+                 "instanceVariableNames: '' classVariableNames: '' "
+                 "poolDictionaries: '' category: 'Bugs4'. "
+                 "c compile: 'go: n ^self go: n + 1'. "
+                 "r := [c new go: 1] on: RecursionDepthExceeded "
+                 "do: [:e | 'stopped']. c removeFromSystem. ^r", "stopped");
+    ST_interp_set_max_call_depth(saved_depth);
+
+    /*
+     *  REFLECTION-7.  Removing #species breaks String>>`,', which is what
+     *  Error>>reportAsText builds its line with -- so the report of the
+     *  resulting doesNotUnderstand raised another doesNotUnderstand, whose
+     *  report raised another, and the image hung with a worker spinning in
+     *  the handler search.  Error>>defaultAction protects the report now.
+     *  Handled, the removal degrades to the clean MessageNotUnderstood
+     *  every other core removal already gave.
+     */
+    check_boolean("| m r | m := Object compiledMethodAt: #species. "
+                  "Object removeSelectorUnchecked: #species. "
+                  "r := [#(1 2) collect: [:x | x]] "
+                  "on: MessageNotUnderstood do: [:e | e message selector]. "
+                  "Object addSelector: #species withMethod: m. "
+                  "^r == #species", 1);
+}
+
+/*
+ *  Bugs4 -- the fourth audit, graphics.  One function per area, filled in by the
+ *  fix for each finding it names; empty until then.
+ */
+static void
+test_bugs4_graphics(void)
+{
+    printf("---- Bugs4: graphics ----\n");
+
+    /*
+     *  GRAPHICS-1.  A Form whose bits are a byte object.
+     *
+     *  The 64-bit memory reports a byte object's `size' in bytes and a word
+     *  object's in words through the same accessor, and GFX_form_from_oop
+     *  took the answer as words either way; a String of sixteen bytes said
+     *  sixteen words, the extent check passed with room for half the blit,
+     *  and `f black' wrote sixteen bytes past the allocation.  The shipping
+     *  binary died in the next free with `free(): invalid size'.
+     *
+     *  Both halves are checked: a String big enough is blitted into and
+     *  answers ink, and one too small is refused rather than written past.
+     *  The collect afterwards is the point of the second -- the fault was
+     *  never in the blit, it was in what the allocator found later.
+     */
+    check_integer("| f | f := Form new extent: 16@16 offset: 0@0"
+                  " bits: (String new: 32). f black."
+                  " ^f bits inject: 0 into: [:a :c | a + c asInteger]",
+                  32 * 255);
+    check_string("| f r | f := Form new extent: 16@16 offset: 0@0"
+                 " bits: (String new: 16)."
+                 " r := [f black. 'wrote'] on: Error do: [:e | 'refused']."
+                 " Smalltalk garbageCollect. ^r", "refused");
+    /*
+     *  And the String-bits Form the system builds for itself still works:
+     *  Form class>>stringScanLineOfWidth: is 1983's, storeOn: blits into
+     *  one row at a time, and extent:fromCompactArray:offset: blits back
+     *  out of one.  A rejection of byte bits would have broken all three,
+     *  which is why the repair counts the bytes instead of refusing them.
+     */
+    check_integer("^(Form stringScanLineOfWidth: 32) bits size", 4);
+    check_boolean("| f s | f := Form extent: 16@16. f black."
+                  " s := WriteStream on: (String new: 900). f storeOn: s."
+                  " ^(Compiler evaluate: s contents) bits = f bits", 1);
+
+    /*
+     *  GRAPHICS-2.  Something that is not a Form in a form field.
+     *
+     *  Fields 0, 1 and 2 were fetched with nothing checking that the object
+     *  had them: a two-field Point in destForm read eight bytes past its
+     *  end, and nil -- no fields at all -- read past the smallest object in
+     *  the image.  The primitive must fail and leave it to the simulation,
+     *  which raises.  A pointer object in `bits' is the same family: it
+     *  stays inside its allocation and quietly writes 16-bit words over the
+     *  top of live object pointers, so the collector is what would have
+     *  found it.
+     */
+    check_string("^[(BitBlt destForm: 3@4 sourceForm: nil halftoneForm: nil"
+                 " combinationRule: 3 destOrigin: 0@0 sourceOrigin: 0@0"
+                 " extent: 16@16 clipRect: (0@0 corner: 16@16)) copyBits."
+                 " 'ran'] on: Error do: [:e | 'refused']", "refused");
+    check_string("^[(BitBlt destForm: nil sourceForm: nil halftoneForm: nil"
+                 " combinationRule: 3 destOrigin: 0@0 sourceOrigin: 0@0"
+                 " extent: 16@16 clipRect: (0@0 corner: 16@16)) copyBits."
+                 " 'ran'] on: Error do: [:e | 'refused']", "refused");
+    check_string("| f r | f := Form new extent: 16@16 offset: 0@0"
+                 " bits: (Array new: 64)."
+                 " r := [f black. 'wrote'] on: Error do: [:e | 'refused']."
+                 " Smalltalk garbageCollect. ^r", "refused");
+
+    /*
+     *  A clipping rectangle bigger than the destination form.
+     *
+     *  Chapter 18 intersects the blit with the clipRect and trusts the
+     *  clipRect to be inside the form, which in the Xerox system it always
+     *  was.  It is an instance variable here, and a destination x past the
+     *  form's width does not run off the bitmap -- the word index wraps onto
+     *  a later scan line of the same form, so the writes land inside and on
+     *  the wrong rows.  A four by four black patch asked for at x=20 in a
+     *  sixteen-wide form used to appear on row 1; now nothing is written.
+     */
+    check_string("| f b | f := Form extent: 16@16."
+                 " b := BitBlt destForm: f sourceForm: nil"
+                 " halftoneForm: Form black combinationRule: 3"
+                 " destOrigin: 20@0 sourceOrigin: 0@0 extent: 4@4"
+                 " clipRect: (0@0 corner: 100@100). b copyBits."
+                 " ^f bits asArray printString",
+                 "(0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 )");
+    /*  The same blit inside the form still draws, so the clamp clamps only
+     *  what was already wrong.  */
+    check_string("| f b | f := Form extent: 16@16."
+                 " b := BitBlt destForm: f sourceForm: nil"
+                 " halftoneForm: Form black combinationRule: 3"
+                 " destOrigin: 0@0 sourceOrigin: 0@0 extent: 4@4"
+                 " clipRect: (0@0 corner: 100@100). b copyBits."
+                 " ^f bits asArray printString",
+                 "(61440 61440 61440 61440 0 0 0 0 0 0 0 0 0 0 0 0 )");
+
+    /*
+     *  Point>>theta on the axes.
+     *
+     *  1983 answers the five-digit decimals an Alto's table gave -- 1.5708
+     *  and 4.71239 -- while every direction off the axes gets a full
+     *  precision arcTan, so the answer was wrong by 3.7e-6 in exactly the
+     *  two directions anyone asks about by name.
+     */
+    check_boolean("(0@1) theta = (Float pi / 2)", 1);
+    check_boolean("(0@ -1) theta = (Float pi * 3 / 2)", 1);
+    check_boolean("(1@0) theta = 0.0", 1);
+    check_string("^(1@1) theta printString", "0.7853981633974483");
+    check_string("^(-1@1) theta printString", "2.356194490192345");
+
+    /*
+     *  RunArray new:.  The class has named instance variables and no indexed
+     *  ones, so Behavior>>new: handed it to a primitive that failed and the
+     *  caller got `a primitive has failed'.  1983's own `new: size withAll:'
+     *  says what a RunArray of a given size is, and nil is what Array new:
+     *  fills with.
+     */
+    check_integer("^(RunArray new: 0) size", 0);
+    check_integer("^(RunArray new: 3) size", 3);
+    check_oop("^(RunArray new: 3) at: 2", ST_NIL, "nil");
+
+    /*
+     *  Pen>>direction:, which the manual has documented all along beside
+     *  go:, turn: and north while the image answered MessageNotUnderstood
+     *  (Bugs4 DOCS-4).  Normalised the way turn: normalises, so -90 and
+     *  north are the same heading.
+     */
+    check_integer("| p | p := Pen new. p direction: -90. ^p direction", 270);
+    check_integer("| p | p := Pen new. p direction: 450. ^p direction", 90);
+
+    /*
+     *  The interactive primitives, headless.  Each of these used to spin on
+     *  a mouse button that nothing in a `-serve' image can ever press: no
+     *  answer, no error, and the worker gone until the process was killed.
+     *  Bugs2 B11 did this for halt and confirm:; these are the graphics half.
+     */
+    check_string("^[Sensor waitButton. 'waited']"
+                 " on: Error do: [:e | 'signalled']", "signalled");
+    check_string("^[Sensor waitNoButton. 'waited']"
+                 " on: Error do: [:e | 'signalled']", "signalled");
+    check_string("^[Sensor waitClickButton. 'waited']"
+                 " on: Error do: [:e | 'signalled']", "signalled");
+    check_string("^[Rectangle fromUser. 'waited']"
+                 " on: Error do: [:e | 'signalled']", "signalled");
+    check_string("^[Form fromUser. 'waited']"
+                 " on: Error do: [:e | 'signalled']", "signalled");
+
+    /*
+     *  drawLoopX:Y: pre-clipped.
+     *
+     *  First that the arithmetic answers the right run of steps: a nib of
+     *  three stepping right from -50 across a clip of 0..19 is first visible
+     *  at step 48 (x = -2, the nib's right edge just inside) and last at
+     *  step 69 (x = 19).
+     */
+    check_string("| b | b := BitBlt destForm: (Form extent: 20@20)"
+                 " sourceForm: nil halftoneForm: nil combinationRule: 3"
+                 " destOrigin: 0@0 sourceOrigin: 0@0 extent: 1@1"
+                 " clipRect: (0@0 corner: 20@20)."
+                 " ^(b drawLoopBoundsFrom: -50 step: 1 nib: 3"
+                 "    clipAt: 0 extent: 20 count: 1000) printString",
+                 "(48 69 )");
+    /*
+     *  Then that skipping those steps draws the same pixels stepping through
+     *  them did.  A Bresenham loop's state is its potential, and the skip
+     *  computes where the potential would have been rather than walking it
+     *  there, so this is the check that matters: the same line drawn once
+     *  with its start far outside the form (the skip runs) and once
+     *  translated so the start is inside (it does not), compared pixel for
+     *  pixel over the region they share.
+     */
+    check_boolean("| n f g h | n := Form extent: 1@1. n black."
+                  " f := Form extent: 200@200."
+                  " f drawLine: n from: -300@ -150 to: 300@150"
+                  "   clippingBox: f boundingBox rule: Form over"
+                  "   mask: Form black."
+                  " g := Form extent: 700@400."
+                  " g drawLine: n from: 0@0 to: 600@300"
+                  "   clippingBox: g boundingBox rule: Form over"
+                  "   mask: Form black."
+                  " h := Form extent: 200@200."
+                  " h copy: h boundingBox from: 300@150 in: g rule: Form over."
+                  " ^f bits = h bits", 1);
+    check_boolean("| n f g h | n := Form extent: 3@3. n black."
+                  " f := Form extent: 200@200."
+                  " f drawLine: n from: 300@700 to: -300@ -700"
+                  "   clippingBox: f boundingBox rule: Form over"
+                  "   mask: Form black."
+                  " g := Form extent: 700@1500."
+                  " g drawLine: n from: 600@1400 to: 0@0"
+                  "   clippingBox: g boundingBox rule: Form over"
+                  "   mask: Form black."
+                  " h := Form extent: 200@200."
+                  " h copy: h boundingBox from: 300@700 in: g rule: Form over."
+                  " ^f bits = h bits", 1);
+    /*  A short line inside the clip is untouched by any of this: 31 rows of
+     *  a 64-wide form, one word of ink each.  */
+    check_integer("| n f | n := Form extent: 1@1. n black."
+                  " f := Form extent: 64@64."
+                  " f drawLine: n from: 0@0 to: 30@30"
+                  "   clippingBox: f boundingBox rule: Form over"
+                  "   mask: Form black."
+                  " ^f bits inject: 0 into: [:a :w | a + (w = 0 ifTrue: [0]"
+                  "   ifFalse: [1])]", 31);
+    /*
+     *  And the finding itself.  Without the pre-clip this is a billion
+     *  clipped blits and the suite stops here rather than failing -- which
+     *  is what it did to a worker.
+     */
+    printf("     (a line a billion pixels long, which used to take minutes)\n");
+    check_string("Pen new go: 1000000000. ^'returned'", "returned");
+    check_string("| n f | n := Form extent: 4@4. n black."
+                 " f := Form extent: 64@64."
+                 " f drawLine: n from: 0@0 to: 1000000000@1000000000"
+                 "   clippingBox: f boundingBox rule: Form over"
+                 "   mask: Form black. ^'returned'", "returned");
+}
+
+/*
+ *  Bugs4 -- the fourth audit, net.  One function per area, filled in by the
+ *  fix for each finding it names; empty until then.
+ *
+ *  The findings that need a LISTENER are in the SUnit suites, where a test
+ *  can make one on the loopback interface and close both ends in an
+ *  ensure: -- lib/HTTP-Client-Tests, lib/Rest-Server-Tests,
+ *  lib/JSON-RPC-Server-Tests, lib/Json-Tests, lib/LLM-Tests,
+ *  lib/Network-Tests.  What is here is what one expression can settle.
+ */
+static void
+test_bugs4_net(void)
+{
+    int saved = test_dialect;
+
+    test_dialect = ST_DIALECT_CLOSURES;
+
+    /*
+     *  NUMBERS-2: a multipart form field went through asNumber with no cap
+     *  on its digits, quadratically, BEFORE anything had been
+     *  authenticated -- four thousand nines cost twelve seconds of a
+     *  worker, in a body bounded only by maxRequestBytes at 64 MB.  The
+     *  caps are the JSON parser's own two numbers (Bugs3 B53), so the two
+     *  roads into this server refuse the same work.
+     */
+    check_integer("RestDispatcher maxFormNumberDigits", 256);
+    check_integer("JSONParser new maxDigits", 256);
+    check_integer("RestDispatcher maxFormNumberExponent", 4096);
+    check_boolean("(RestDispatcher new decodeFormValue: '42' named: 'n') = 42", 1);
+    check_boolean("(RestDispatcher new decodeFormValue: "
+                  "(String new: 4000 withAll: $9) named: 'n') isString", 1);
+    check_boolean("(RestDispatcher new decodeFormValue: '1e1000000000' "
+                  "named: 'n') isString", 1);
+
+    /*
+     *  NET-6: _class and _method are the client's text and reached the
+     *  operator's log raw, so a CR forged a log line and an ANSI escape
+     *  reached the terminal of whoever was tailing it.
+     */
+    check_string("RestDispatcher new forLog: 'services.Adder'",
+                 "services.Adder");
+    check_string("RestDispatcher new forLog: "
+                 "('a', (String with: (Character value: 13) with: "
+                 "(Character value: 10)), 'b')", "a\\x0d\\x0ab");
+    check_string("RestDispatcher new forLog: "
+                 "((String with: (Character value: 27)), '[2J')", "\\x1b[2J");
+
+    /*
+     *  NET-3: a CR or an LF in a header value, a header name, the method
+     *  or the request target writes headers of the caller's stranger's
+     *  choosing.  Bugs3 B54 made that an Error on the server side; this
+     *  is the client side, and the URL parser in front of it.
+     */
+    check_boolean("[HttpClient new headerAt: 'X-Evil' put: "
+                  "('a', (String with: (Character value: 13) with: "
+                  "(Character value: 10)), 'Injected: yes'). false] "
+                  "on: Error do: [:e | true]", 1);
+    check_boolean("[HttpUrl fromString: ('http://h/a', "
+                  "(String with: (Character value: 13) with: "
+                  "(Character value: 10)), 'X: y'). false] "
+                  "on: NetError do: [:e | true]", 1);
+    check_boolean("(HttpUrl fromString: 'http://h/a?b=c') path = '/a?b=c'", 1);
+
+    /*
+     *  NET-8, and the deadline on the whole exchange: three timeouts,
+     *  because one read's patience and a conversation's are different
+     *  questions and a peer that drips is never idle.
+     */
+    check_integer("HttpClient new connectTimeout", 30000);
+    check_integer("HttpClient new totalTimeout", 300000);
+    check_integer("(HttpClient new readTimeout: 1000; yourself) totalTimeout",
+                  10000);
+
+    /*
+     *  DOCS-4: the manual documents the class side of put:body:contentType:
+     *  and delete: and only the instance side existed.
+     */
+    check_boolean("HttpClient class includesSelector: #put:body:contentType:", 1);
+    check_boolean("HttpClient class includesSelector: #delete:", 1);
+
+    /*
+     *  The JSON edges.  Anything that is not a String and not a stream was
+     *  taken for a stream, so `parse: nil' was a MessageNotUnderstood about
+     *  this parser's insides; and a byte from 128 to 255 was written out as
+     *  itself with nothing asked about it, so a String holding one Latin-1
+     *  byte became a document no conforming reader accepts, silently.
+     */
+    check_boolean("[JSONParser parse: nil. false] on: JSONError do: [:e | true]", 1);
+    check_boolean("[JSONParser parse: 42. false] on: JSONError do: [:e | true]", 1);
+    check_boolean("[JSONWriter write: (String with: (Character value: 233)). "
+                  "false] on: JSONError do: [:e | true]", 1);
+    check_string("JSONWriter write: ('caf', (String with: (Character value: 195) "
+                 "with: (Character value: 169)))",
+                 "\"caf\xc3\xa9\"");
+
+    /*
+     *  The server-sent-events grammar: the space after the colon is
+     *  optional, and both readers required it, so `data:{...}' was
+     *  silently no text at all.
+     */
+    check_string("Anthropic new streamedTextOf: "
+                 "'data:{\"type\":\"content_block_delta\",\"delta\":"
+                 "{\"type\":\"text_delta\",\"text\":\"hi\"}}'", "hi");
+    check_string("OpenAI new streamedTextOf: "
+                 "'data:{\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}'", "hi");
+
+    /*
+     *  NET-2: the two questions TonelSource asks a service file on every
+     *  REST request open a descriptor on demand and nothing closed it, so
+     *  the server leaked one per request and died of EMFILE.
+     */
+    check_boolean("[:f | (TonelSource stampFrom: f) notNil "
+                  "and: [(f instVarAt: (PosixFile allInstVarNames indexOf: 'fd')) "
+                  "isNil]] value: (TonelSource fileFor: 'lib/Json/package.st')", 1);
+
+    test_dialect = saved;
+}
+
+/*
+ *  Bugs4 -- the fourth audit, files: the file layer, the changes file, the
+ *  image an image can save, and the command line that reaches all of them.
+ */
+static void
+test_bugs4_files(void)
+{
+    /*
+     *  FILES-A.  A write after setToEnd on a file whose data ends exactly
+     *  on a 512-byte page boundary was lost to an error whose message said
+     *  nothing had gone wrong -- `s6.txt read:, Success'.  1024 and 1536
+     *  reproduce it and 1023 does not, so all three are here: the boundary
+     *  is the whole of the case.
+     */
+    check_integer(
+        "| name f raw |"
+        " name := 'zz-bugs4-boundary.txt'."
+        " f := FileStream fileNamed: name."
+        " f nextPutAll: (String new: 1024 withAll: $b)."
+        " f position: 100. f next. f setToEnd."
+        " f nextPutAll: 'y'; close."
+        " raw := (FileStream oldFileNamed: name) contentsOfEntireFile."
+        " Disk removeKey: name."
+        " ^raw size", 1025);
+    check_boolean(
+        "| name f raw |"
+        " name := 'zz-bugs4-boundary.txt'."
+        " f := FileStream fileNamed: name."
+        " f nextPutAll: (String new: 1536 withAll: $c)."
+        " f position: 100. f next. f setToEnd."
+        " f nextPutAll: 'z'; close."
+        " raw := (FileStream oldFileNamed: name) contentsOfEntireFile."
+        " Disk removeKey: name."
+        " ^raw size = 1537 and: [raw last = $z]", 1);
+    check_integer(
+        "| name f raw |"
+        " name := 'zz-bugs4-boundary.txt'."
+        " f := FileStream fileNamed: name."
+        " f nextPutAll: (String new: 1023 withAll: $d)."
+        " f position: 100. f next. f setToEnd."
+        " f nextPutAll: 'w'; close."
+        " raw := (FileStream oldFileNamed: name) contentsOfEntireFile."
+        " Disk removeKey: name."
+        " ^raw size", 1024);
+
+    /*
+     *  FILES-3.  A source position of 4194304 does not fit in the 22 bits
+     *  the Blue Book trailer has for it, and used to be stored anyway: the
+     *  overflow landed in the file-index field, so the method said it lived
+     *  in a file that does not exist, 4 MB short of where its text is.  The
+     *  last position that DOES fit is still stored, because a guard that
+     *  refuses the legal case is a different bug.
+     */
+    check_string(
+        "| m |"
+        " Object compile: 'zzBugs4Trailer ^1'."
+        " m := Object compiledMethodAt: #zzBugs4Trailer."
+        " ^[m setSourcePosition: 4194303 inFile: 2. m fileIndex printString]"
+        "     on: Error do: [:e | 'refused ', (e messageText ifNil: [''])]",
+        "2");
+    check_string(
+        "| m |"
+        " m := Object compiledMethodAt: #zzBugs4Trailer."
+        " ^[m setSourcePosition: 4194304 inFile: 2. 'stored']"
+        "     on: Error do: [:e | 'refused']",
+        "refused");
+    check_string(
+        "| m p |"
+        " m := Object compiledMethodAt: #zzBugs4Trailer."
+        " [m setSourcePosition: 4194304 inFile: 2] on: Error do: [:e | nil]."
+        " p := ((m last bitAnd: 63) * 256 + (m at: m size - 1)) * 256"
+        "        + (m at: m size - 2)."
+        " ^m fileIndex printString , ' ' , p printString",
+        "2 4194303");
+    check_boolean("Object removeSelector: #zzBugs4Trailer."
+                  " ^Object includesSelector: #zzBugs4Trailer", 0);
+
+#ifndef ST_WINDOWS
+    /*
+     *  FILES-2.  Opening /dev/zero walked 512-byte pages looking for an end
+     *  that is not there and never came back; a server given that path once
+     *  per worker had no workers left.  It is refused now, and the refusal
+     *  says what kind of thing it refused.  /dev/null is the control: an
+     *  empty file that stat also calls empty still reads as empty.
+     */
+    check_string(
+        "^[FileStream oldFileNamed: '/dev/zero'. 'opened']"
+        "     on: Error do: [:e | e messageText copyFrom: 1 to: 21]",
+        "/dev/zero has no last");
+    check_integer(
+        "^[(FileStream oldFileNamed: '/dev/null') contentsOfEntireFile size]"
+        "     on: Error do: [:e | -1]", 0);
+#endif
+
+    /*
+     *  The rest of Bugs4's file findings are about what a SAVED image does,
+     *  and cannot be asked of the image this test builds in process: an
+     *  image that has never been written has no changes file of its own to
+     *  be named after, and the snapshot path writes one image and reads it
+     *  back.  So this drives the real binary, as the Bugs3 B20 check above
+     *  does, and for the same reason.  Skipped, saying so, when ./st80 is
+     *  not beside the test.
+     */
+    {
+        static const char *const startup =
+            "Compiler evaluate: (Smalltalk arguments isEmpty"
+            " ifTrue: ['nil'] ifFalse: [Smalltalk arguments first])";
+        char        dir[] = "/tmp/st80-bugs4-files-XXXXXX";
+        char        image[320];
+        char        copy[320];
+        char        command[4096];
+        int         built;
+
+        ++st_test_checks;
+        if (access("./st80", X_OK) != 0) {
+            printf("  (skipping the Bugs4 image and command-line checks:"
+                   " no ./st80)\n");
+            return;
+        }
+
+        /*
+         *  REFLECTION-4.  An unknown option, and an option whose argument
+         *  is missing, used to print the version banner and exit 0 -- a
+         *  script that ran the wrong command was told it had worked.
+         *  -version still exits 0, because that one really did work.
+         */
+        ++st_test_checks;
+        if (system("./st80 -frobnicate >/dev/null 2>&1") == 0
+         || system("./st80 -serve >/dev/null 2>&1") == 0
+         || system("./st80 -inspect somewhere.im >/dev/null 2>&1") == 0) {
+            ++st_test_failures;
+            printf("  FAIL a command line st80 cannot obey should exit"
+                   " non-zero\n");
+        }
+        ++st_test_checks;
+        if (system("./st80 -version >/dev/null 2>&1") != 0) {
+            ++st_test_failures;
+            printf("  FAIL -version should still exit 0\n");
+        }
+
+        if (!mkdtemp(dir)) {
+            ++st_test_failures;
+            printf("  FAIL cannot make a scratch directory for the Bugs4"
+                   " file checks\n");
+            return;
+        }
+        snprintf(image, sizeof image, "%s/b4.im", dir);
+        snprintf(copy, sizeof copy, "%s/copy.im", dir);
+        snprintf(command, sizeof command,
+                 "./st80 -bootstrap -profile " PROFILE " -startup \"%s\""
+                 " -o %s >/dev/null 2>&1", startup, image);
+        built = system(command) == 0;
+        if (!built) {
+            ++st_test_failures;
+            printf("  FAIL the Bugs4 file checks could not build an image\n");
+        }
+
+        /*
+         *  FILES-4 / MEM-3.  `Smalltalk snapshotAs: ... thenQuit: false' --
+         *  the save the manual documents -- created an empty .im, then died
+         *  resizing the pinned Display, so the file it left was 0 bytes
+         *  long.  It must write a real image, and the one-argument
+         *  snapshotAs: the manual also documents must exist and do the same.
+         *  -census proves the file is an image by loading it.
+         */
+        if (built) {
+            ++st_test_checks;
+            /*
+             *  Semicolons, not `&&': a -serve whose startup expression has
+             *  run out of work exits non-zero to say the image stopped on
+             *  its own, which is what every one of these does.  What is
+             *  being tested is the file it left, so that is what is asked.
+             */
+            snprintf(command, sizeof command,
+                     "./st80 -serve %s -workers 1"
+                     " \"Smalltalk snapshotAs: '%s/snapA' thenQuit: false\""
+                     " >/dev/null 2>&1;"
+                     " ./st80 -serve %s -workers 1"
+                     " \"Smalltalk snapshotAs: '%s/snapB'\" >/dev/null 2>&1;"
+                     " test -s %s/snapA.im && test -s %s/snapB.im"
+                     " && ./st80 -census %s/snapA.im >/dev/null 2>&1",
+                     image, dir, image, dir, dir, dir, dir);
+            if (system(command) != 0) {
+                ++st_test_failures;
+                printf("  FAIL snapshotAs: should write an image that loads,"
+                       " with and without thenQuit:\n");
+            }
+        }
+
+        /*
+         *  FILES-B.  A copied image used to go on writing into the changes
+         *  file of the image it was copied FROM, because the name went into
+         *  the image when the bootstrap made it.  The copy must make its
+         *  own, and must not touch the original's.
+         */
+        if (built) {
+            ++st_test_checks;
+            snprintf(command, sizeof command,
+                     "cp %s %s;"
+                     " ./st80 -serve %s -workers 1"
+                     " \"Object compile: 'zzB4copy ^42'\" >/dev/null 2>&1;"
+                     " grep -qF 'zzB4copy ^42' %s.changes"
+                     " && ! grep -qF 'zzB4copy' %s.changes",
+                     image, copy, copy, copy, image);
+            if (system(command) != 0) {
+                ++st_test_failures;
+                printf("  FAIL a copied image should write its own"
+                       " .changes, not the original's\n");
+            }
+        }
+
+        /*
+         *  And one process at a time may have it.  Two servers on one image
+         *  each had their own idea of where that file ended and wrote over
+         *  each other's method source; the second is refused instead.  The
+         *  first server holds the image for three seconds, which is long
+         *  enough for the second to be told so.
+         */
+        if (built) {
+            ++st_test_checks;
+            snprintf(command, sizeof command,
+                     "./st80 -serve %s -workers 1"
+                     " \"(Delay forSeconds: 3) wait\" >/dev/null 2>&1 &"
+                     " sleep 1;"
+                     " ./st80 -serve %s -workers 1 \"1+1\" >%s/second.log 2>&1;"
+                     " wait;"
+                     " grep -q 'already open by another st80' %s/second.log",
+                     image, image, dir, dir);
+            if (system(command) != 0) {
+                ++st_test_failures;
+                printf("  FAIL a second server on one image should be"
+                       " refused, not left to corrupt its source\n");
+            }
+        }
+
+        /*
+         *  Smalltalk condenseChanges -- 1983's one remedy for a changes
+         *  file that has grown too big, and the one the source-position
+         *  ceiling above tells the user about.  It writes every changed
+         *  method's source to ST80.temp, installs that as SourceFiles
+         *  at: 2, and renames it over the changes file.
+         *
+         *  The rename was the step that destroyed what it condensed.
+         *  PosixFileDirectory>>rename:newName: renamed on disk and left
+         *  the File saying the name it no longer had, so every later
+         *  read reopened a name that was gone: condenseChanges answered,
+         *  said nothing, and made every method's source unreadable.  The
+         *  check is that a method compiled at run time -- the only kind
+         *  that is IN the changes file, and so the only kind condensing
+         *  moves -- reads back afterwards, and that a method from
+         *  sources/, which condensing must not touch, still does too.
+         */
+        if (built) {
+            ++st_test_checks;
+            snprintf(command, sizeof command,
+                     "./st80 -serve %s -workers 1"
+                     " \"Object compile: 'condensed ^42'."
+                     " Smalltalk condenseChanges."
+                     " ((Object compiledMethodAt: #condensed) getSource"
+                     " asString, ' ', (Object compiledMethodAt: #printOn:)"
+                     " getSource asString size printString) displayNl\""
+                     " >%s/condense.log 2>&1;"
+                     " grep -q 'condensed \\^42 248' %s/condense.log",
+                     image, dir, dir);
+            if (system(command) != 0) {
+                ++st_test_failures;
+                printf("  FAIL condenseChanges must leave every method's"
+                       " source readable\n");
+            }
+        }
+
+        snprintf(command, sizeof command, "rm -rf %s", dir);
+        (void) system(command);
+    }
+}
+
+/*
+ *  Bugs4 -- the fourth audit, chron: dates, times, delays and the
+ *  millisecond clock.
+ *
+ *  Everything here is arithmetic and queue bookkeeping, because this
+ *  harness runs a single context under ST_interp_run with no scheduler:
+ *  a check that actually WAITED on a Delay would park on a semaphore
+ *  nothing can signal.  The waiting is checked where waiting can happen --
+ *  lib/Concurrency-Tests/DelayTest, which runs in a built image on real
+ *  workers -- and what is checked here is the arithmetic those waits stand
+ *  on, which is where every one of these faults actually lived.
+ */
+static void
+test_bugs4_chron(void)
+{
+    /*
+     *  CHRON-1: the millisecond clock does not wrap any more.
+     *
+     *  It used to be thirty bits, and every comparison against it in the
+     *  image was a plain one, so a Delay whose resumption time straddled a
+     *  wrap was never due again and the timing process spun for ever.  Two
+     *  things say the width changed: the clock is a SmallInteger rather
+     *  than the four-byte LargePositiveInteger primitive 99 fills, and a
+     *  clock value past 2^30 is a legal resumption time rather than an
+     *  error -- `Delay untilMilliseconds: Delay millisecondClockValue +
+     *  1000' is the documented way to build one, and on a machine up for a
+     *  fortnight that sum is past 2^30.
+     */
+    check_boolean("^Time millisecondClockValue class == SmallInteger", 1);
+    check_integer("^Delay checkedClockValue: 2000000000", 2000000000);
+    check_integer("^(Delay untilMilliseconds: 1073746824) resumptionTime",
+                  1073746824);
+    check_boolean("^(Time millisecondsToRun: [100 factorial]) >= 0", 1);
+
+    /*
+     *  CHRON-2: the snapshot hooks.
+     *
+     *  A Delay's resumption time is a reading of THIS machine's monotonic
+     *  clock, so it means nothing to the image that resumes the file.
+     *  preSnapshot puts it on the wall clock and postSnapshot puts it
+     *  back, and a round trip has to land where it started.
+     *
+     *  And the pair has to leave AccessProtect free: preSnapshot takes it
+     *  and postSnapshot releases it, so a postSnapshot that raised on the
+     *  way -- 1983's does, for a Delay that is not waiting -- would leave
+     *  the lock held and every later wait behind it.  The second pair
+     *  below is the check: if the first pair kept the lock, this
+     *  expression never finishes.
+     */
+    check_boolean("| d before | "
+                  "d := Delay untilMilliseconds: Time millisecondClockValue + 60000. "
+                  "d setResumption. before := d resumptionTime. "
+                  "d preSnapshot. d postSnapshot. "
+                  "^(d resumptionTime - before) abs <= 3000", 1);
+    check_integer("Delay preSnapshot. Delay postSnapshot. "
+                  "Delay preSnapshot. Delay postSnapshot. ^42", 42);
+
+    /*
+     *  CHRON-6: a Delay whose wait is over leaves the queue.
+     *
+     *  wait sends this from an ensure:, so a terminated waiter takes its
+     *  Delay with it instead of leaving it queued to its full term -- up
+     *  to six days -- and slowing every later wait through the sorted
+     *  insert.  Here the Delay is put in the queue by hand, because the
+     *  waiting half needs a scheduler.
+     */
+    check_integer("| queue delay before | "
+                  "queue := Delay classPool at: #SuspendedDelays. "
+                  "before := queue size. "
+                  "delay := Delay untilMilliseconds: Time millisecondClockValue + 100000. "
+                  "delay setResumption. queue add: delay. delay retire. "
+                  "^queue size - before", 0);
+
+    /*
+     *  CHRON-9: re-initializing Delay with processes already waiting is
+     *  refused rather than silently stranding them on a queue nothing
+     *  looks at any more.  The Delay is put back afterwards, because this
+     *  image goes on to be asked other things.
+     */
+    check_integer("| queue delay refused | "
+                  "queue := Delay classPool at: #SuspendedDelays. "
+                  "delay := Delay untilMilliseconds: 5000. queue add: delay. "
+                  "refused := [Delay initialize. 0] on: Error do: [:e | 1]. "
+                  "queue remove: delay ifAbsent: []. ^refused", 1);
+
+    /*
+     *  CHRON-3: one time zone, the host's, and one place it comes from.
+     *
+     *  1983's currentTime: carries the Alto's California constants, so the
+     *  image answered California time wherever it was built while the
+     *  pharo-time profile answered UTC.  What can be checked on any
+     *  machine is the shape of the answer rather than its value: the
+     *  offset is a real zone offset, and Time totalSeconds is exactly UTC
+     *  plus it -- which is what makes Time now, Date today and
+     *  Time totalSeconds one answer rather than three.
+     */
+    check_boolean("^Time localOffsetSeconds isInteger", 1);
+    check_boolean("^Time localOffsetSeconds between: -50400 and: 50400", 1);
+    check_boolean("| offset | offset := Time localOffsetSeconds. "
+                  "^(Time totalSeconds - Time utcSeconds - offset) abs <= 1", 1);
+    check_boolean("| seconds | seconds := Time totalSeconds. "
+                  "^(Time now asSeconds - (seconds \\\\ 86400)) abs <= 2", 1);
+
+    /*
+     *  CHRON-4: dates outside 1901-2099.
+     *
+     *  1983 counts leap years with no century term, so 1900 and 2100 were
+     *  leap years to subtractDate: and asSeconds, and fromDays: divided by
+     *  a flat 1461-day cycle.  The three disagreed with each other as well
+     *  as with the calendar.  384 of 552 subtractDate: results and 335
+     *  fromDays: over 1600-9999 differed from Python's datetime; all 552
+     *  agree now.
+     */
+    check_integer("^(Date newDay: 1 month: #January year: 2101) subtractDate: "
+                  "(Date newDay: 1 month: #January year: 2099)", 730);
+    check_integer("^(Date newDay: 1 month: #March year: 1900) subtractDate: "
+                  "(Date newDay: 1 month: #February year: 1900)", 28);
+    check_integer("^(Date newDay: 1 month: #March year: 2000) subtractDate: "
+                  "(Date newDay: 1 month: #February year: 2000)", 29);
+    check_string("^(Date fromDays: 2958098) printString", "31 December 9999");
+    check_string("^(Date fromDays: -109938) printString", "1 January 1600");
+    /*  asSeconds and fromDays: are subtractDate: read forwards and back.  */
+    check_integer("| base bad | base := Date newDay: 1 month: #January year: 1901. "
+                  "bad := 0. "
+                  "#(1600 1899 1900 1901 2000 2024 2100 2400 9999) do: [:year | "
+                  "  | day | day := Date newDay: 15 month: #July year: year. "
+                  "  day asSeconds = ((day subtractDate: base) * 86400) "
+                  "    ifFalse: [bad := bad + 1]. "
+                  "  (Date fromDays: (day subtractDate: base)) = day "
+                  "    ifFalse: [bad := bad + 1]]. ^bad", 0);
+
+    /*
+     *  CHRON-7: addDays: in constant time.  1983's walks one year per
+     *  iteration from the receiver's, so this one ran for three billion of
+     *  them and never finished.  Asked as a round trip, so it checks the
+     *  arithmetic as well as the finishing.
+     */
+    check_integer("| start | start := Date newDay: 1 month: #March year: 2024. "
+                  "^(start addDays: (2 raisedTo: 40)) subtractDate: start",
+                  1099511627776LL);
+
+    /*
+     *  CHRON-8: a Date's store string evaluates.  Pharo's Date>>storeOn:
+     *  writes `'29 February 2024' asDate' and the port had no asDate, so
+     *  in pharo-time every Date stored an expression that did not run.
+     */
+    check_string("^'29 February 2024' asDate printString", "29 February 2024");
+    check_string("^'5 April 1982' asDate printString", "5 April 1982");
+}
+
+/*
+ *  Bugs4 -- the fourth audit, proc.  Exceptions, processes, monitors.
+ *
+ *  MEM-1 is not here and cannot be: it needs thirty-two native threads
+ *  forking and terminating, which this file has no pool for.  Its two
+ *  gates are tests/unit/test_parallel_processes.c, which checks the
+ *  invariant the fix restores -- a process on its way off a ready list is
+ *  never in nobody's hands -- and tests/unit/test_serve_faults.c, which
+ *  runs the audit's own storm against the real binary.
+ */
+static void
+test_bugs4_proc(void)
+{
+    int saved = test_dialect;
+
+    test_dialect = ST_DIALECT_CLOSURES;
+
+    /*
+     *  PROC-2: retryUsing: keeps the handler armed for the replacement.
+     *
+     *  It used to be `handlerContext return: aBlock value', which runs
+     *  aBlock in the handler's own frame after unwindTo: has torn the
+     *  handler down, so a replacement that raised the class just caught
+     *  went unhandled -- the first line below reported ZeroDivide out of
+     *  the top of the image instead of counting to five.  A replacement
+     *  that does not raise never noticed, which is the second line.
+     */
+    check_integer("| n | n := 0. ^[1/0] on: ZeroDivide do: [:e | "
+                  "n := n + 1. n < 5 ifTrue: [e retryUsing: [1/0]] "
+                  "ifFalse: [e return: n]]", 5);
+    check_integer("^[1/0] on: ZeroDivide do: [:e | e retryUsing: [42]]", 42);
+    /*  And the replacement really is the protected block now.  */
+    check_string("^[1/0] on: ZeroDivide do: [:e | e retryUsing: ['second']]",
+                 "second");
+
+    /*
+     *  PROC-3: a forkParallel: task that ends without settling its promise
+     *  breaks it, so a waiter raises instead of waiting for ever.  The
+     *  ensure: is what reaches the terminate path, which raises nothing
+     *  for `on: Error do:' to catch.
+     */
+    check_string("| p | p := Promise new. "
+                 "^(p breakIfUnsettled: (Error new messageText: 'gone')) "
+                 "printString, ' ', p isBroken printString, ' ', "
+                 "(p breakIfUnsettled: (Error new messageText: 'again')) "
+                 "printString", "true true false");
+    check_string("| p | p := Promise new. p fulfill: 3. "
+                 "p breakIfUnsettled: (Error new messageText: 'gone'). "
+                 "^p value printString", "3");
+
+    /*
+     *  PROC-4: waitForChange from outside critical: released a Mutex the
+     *  sender never took, and an unbalanced release let two hundred and
+     *  five processes into a section that admits one.
+     */
+    check_string("| m | m := Monitor new. "
+                 "^[m waitForChange. 'no guard'] on: Error do: [:e | "
+                 "e messageText]",
+                 "waitForChange must be sent from inside critical:");
+
+    /*
+     *  PROC-5: 1983 checked only the upper bound, so 0, -3 and 4.5 all
+     *  made a process the scheduler silently never runs.
+     */
+    check_string("| p | p := [1] newProcess. "
+                 "^[p priority: 0. 'accepted'] on: Error do: [:e | "
+                 "e messageText]", "priority too low");
+    check_string("| p | p := [1] newProcess. "
+                 "^[p priority: 4.5. 'accepted'] on: Error do: [:e | "
+                 "e messageText]", "a process priority must be an Integer");
+    check_string("| p | p := [1] newProcess. "
+                 "^[p priority: 99. 'accepted'] on: Error do: [:e | "
+                 "e messageText]", "priority too high");
+    check_integer("| p | p := [1] newProcess. p priority: 3. ^p priority", 3);
+
+    /*
+     *  PROC-7: outer and resignalAs: were doesNotUnderstand.
+     *
+     *  outer runs the next handler out and comes BACK if it resumes, which
+     *  is the whole difference from pass; a handler that returns instead
+     *  unwinds to its own on:do: and never comes back, so the second line
+     *  answers the outer handler's value and not the inner one's.
+     */
+    check_string("^[[Warning signal: 'w'] on: Warning do: [:e | "
+                 "'inner saw ', e outer printString]] "
+                 "on: Warning do: [:e2 | e2 resume: 99]", "inner saw 99");
+    check_string("^[[Warning signal: 'w'] on: Warning do: [:e | "
+                 "'inner saw ', e outer printString]] "
+                 "on: Warning do: [:e2 | e2 return: 'outer returned']",
+                 "outer returned");
+    /*
+     *  resignalAs: searches from the SIGNAL again, so a handler that
+     *  declined the original -- it is between the signal and this handler
+     *  and names a class the original was not -- gets the replacement.
+     *  Searching from here instead would walk straight past it.
+     */
+    check_string("^[[[1/0] on: NotFound do: [:e | 'inner NotFound: ', "
+                 "e messageText]] on: ZeroDivide do: [:e | "
+                 "e resignalAs: (NotFound new messageText: 'swapped')]] "
+                 "on: Error do: [:e | 'top: ', e messageText]",
+                 "inner NotFound: swapped");
+    check_string("^[[1/0] on: ZeroDivide do: [:e | "
+                 "e resignalAs: (Error new messageText: 'replaced')]] "
+                 "on: Error do: [:e | 'outer got: ', e messageText]",
+                 "outer got: replaced");
+
+    test_dialect = saved;
+}
+
+/*
+ *  Bugs4 -- the fourth audit, reflection and the compile seam.
+ *
+ *  The thread through these is one sentence that was not true: that every
+ *  run-time definition of a method goes through primitive 228.  Two did
+ *  not -- recompile:from: and compileUnchecked: -- so adding an instance
+ *  variable to a class quietly recompiled every method of it and of its
+ *  subclasses with 1983's code generator, and every capturing block in all
+ *  of them changed meaning with nothing said (REFLECTION-1).  Seventeen
+ *  shipped methods could not go through the seam at all, because their
+ *  stored source writes the assignment arrow glued to the name and the
+ *  closure dialect reads `runs_' as a name (REFLECTION-2).  And the
+ *  instance migration a reshape ends with was a sequence of stores where
+ *  it had to be one act (REFLECTION-3).
+ */
+static void
+test_bugs4_reflection(void)
+{
+    int     saved = test_dialect;
+
+    test_dialect = ST_DIALECT_CLOSURES;
+
+    /*
+     *  REFLECTION-1: recompiling does not change what a block means.
+     *
+     *  `(1 to: 3) collect: [:i | [i]]' answers three blocks that answer 1,
+     *  2 and 3 when the method is compiled through the seam and 3, 3, 3
+     *  when 1983's generate: made it -- Chapter 27's BlockContext reads the
+     *  variable as it is NOW.  So this expression is the whole test: it
+     *  says which compiler ran, and it says it in the answer rather than in
+     *  the bytecodes.
+     */
+    check_string("Object subclass: #B4Ctr instanceVariableNames: ''"
+                 " classVariableNames: '' poolDictionaries: ''"
+                 " category: 'Bugs4'."
+                 " (Smalltalk at: #B4Ctr) compile:"
+                 " 'blocks ^(1 to: 3) collect: [:i | [i]]'."
+                 " ^((Smalltalk at: #B4Ctr) new blocks collect: [:b | b value])"
+                 " printString", "(1 2 3 )");
+    check_string("(Smalltalk at: #B4Ctr) recompile: #blocks."
+                 " ^((Smalltalk at: #B4Ctr) new blocks collect: [:b | b value])"
+                 " printString", "(1 2 3 )");
+    check_string("(Smalltalk at: #B4Ctr) compileAll."
+                 " ^((Smalltalk at: #B4Ctr) new blocks collect: [:b | b value])"
+                 " printString", "(1 2 3 )");
+    /*
+     *  The third door, and the one the audit found: adding an instance
+     *  variable reaches recompile:from: through compileAllFrom:, for this
+     *  class and for every subclass of it.
+     */
+    check_string("Object subclass: #B4Sub instanceVariableNames: ''"
+                 " classVariableNames: '' poolDictionaries: ''"
+                 " category: 'Bugs4'."
+                 " (Smalltalk at: #B4Ctr) subclass: #B4Sub"
+                 " instanceVariableNames: '' classVariableNames: ''"
+                 " poolDictionaries: '' category: 'Bugs4'."
+                 " Object subclass: #B4Ctr instanceVariableNames: 'x'"
+                 " classVariableNames: '' poolDictionaries: ''"
+                 " category: 'Bugs4'."
+                 " ^(((Smalltalk at: #B4Ctr) new blocks collect: [:b | b value])"
+                 " printString) , (((Smalltalk at: #B4Sub) new blocks"
+                 " collect: [:b | b value]) printString)",
+                 "(1 2 3 )(1 2 3 )");
+    /*
+     *  And compileUnchecked:, which the multiple-inheritance machinery
+     *  uses and nothing else reaches.  It records its source now, because
+     *  a method with none is recovered by decompiling and the decompiler
+     *  reads 1983's block bytecodes only -- so the reshape above would
+     *  have raised `unusedBytecode' in the middle of itself.
+     */
+    check_string("(Smalltalk at: #B4Ctr) compileUnchecked:"
+                 " 'ublocks ^(1 to: 3) collect: [:i | [i]]'."
+                 " ^((Smalltalk at: #B4Ctr) new ublocks collect: [:b | b value])"
+                 " printString", "(1 2 3 )");
+    check_string("Object subclass: #B4Ctr instanceVariableNames: 'x y'"
+                 " classVariableNames: '' poolDictionaries: ''"
+                 " category: 'Bugs4'."
+                 " ^((Smalltalk at: #B4Ctr) new ublocks collect: [:b | b value])"
+                 " printString", "(1 2 3 )");
+
+    /*
+     *  REFLECTION-2: every one of the seventeen recompiles from the source
+     *  the system shows for it, under its own selector.
+     *
+     *  They stored `runs_ runs copyWith: 1'.  The closure dialect takes
+     *  `runs_' as a name, so recompiling from the stored text either
+     *  refused it (a Browser accept) or, with nobody to refuse it to,
+     *  declared `runs_' in Undeclared and installed a method that assigns
+     *  nothing.  The stored source now writes the arrow with a space
+     *  around it, which both dialects read as the arrow.  Answering the
+     *  empty string is answering "none of them failed"; a failure names
+     *  itself, which is what makes this readable when it breaks.
+     */
+    check_string("| names bad | names := #(#RunArray #addLast: #RunArray"
+                 " #addFirst: #InstructionStream #interpretNextInstructionFor:"
+                 " #ScrollController #controlTerminate #ParagraphEditor"
+                 " #recomputeSelection #SystemTracer"
+                 " #new:class:length:trace:write: #SystemTracer"
+                 " #printDanglingRefs #SystemTracer #sizeInWordsOf: #Form"
+                 " #rotate2: #Parser"
+                 " #parse:class:noPattern:context:notifying:ifFail: #Behavior"
+                 " #whichSelectorsReferTo:special:byte: #Metaclass #obsolete"
+                 " #StrikeFont #familySizeFace #Debugger #pcRange"
+                 " #DisplayScanner #cr #CharacterBlockScanner"
+                 " #buildCharacterBlockIn: #BinaryChoiceController"
+                 " #centerCursorInView)."
+                 " bad := WriteStream on: (String new: 40)."
+                 " 1 to: names size by: 2 do: [:i | | cls sel ans |"
+                 " cls := Smalltalk at: (names at: i). sel := names at: i + 1."
+                 " ans := Compiler compileSource:"
+                 " (cls compiledMethodAt: sel) getSource asString for: cls"
+                 " noPattern: false declaringUndeclared: false."
+                 " ((ans at: 1) notNil and: [(ans at: 2) == sel]) ifFalse:"
+                 " [bad nextPutAll: cls name; nextPutAll: '>>';"
+                 " nextPutAll: sel; space]]. ^bad contents", "");
+    /*
+     *  Six more on the class side, which allBehaviorsDo: does not reach --
+     *  it walks Object and its subclasses, and a metaclass is not one.  The
+     *  audit's census of 6,215 methods missed them for that reason and they
+     *  were broken in exactly the same way, FormEditor class>>initialize
+     *  worst of all: twenty-one class variables assigned as `SelectKey_$a'.
+     */
+    check_string("| names bad | names := #(#BitBlt #exampleAt:rule:mask:"
+                 " #LinearFit #example #Spline #example #OpaqueForm #makeStar"
+                 " #DisplayTextView #example3 #FormEditor #initialize)."
+                 " bad := WriteStream on: (String new: 40)."
+                 " 1 to: names size by: 2 do: [:i | | cls sel ans |"
+                 " cls := (Smalltalk at: (names at: i)) class."
+                 " sel := names at: i + 1."
+                 " ans := Compiler compileSource:"
+                 " (cls compiledMethodAt: sel) getSource asString for: cls"
+                 " noPattern: false declaringUndeclared: false."
+                 " ((ans at: 1) notNil and: [(ans at: 2) == sel]) ifFalse:"
+                 " [bad nextPutAll: cls name; nextPutAll: '>>';"
+                 " nextPutAll: sel; space]]. ^bad contents", "");
+
+    /*
+     *  REFLECTION-3: a reshape moves every field of every instance, named
+     *  and indexed, and it does it through primitive 234.
+     *
+     *  What the primitive buys cannot be seen from one thread -- it is that
+     *  the copy and the become: happen with every worker parked, so a store
+     *  from another one cannot land between them and be left in the body
+     *  the become: discards.  What CAN be checked here is that it is taken
+     *  rather than quietly refused, which is the way this fix failed first:
+     *  allInstances answers an OrderedCollection, the primitive reads raw
+     *  slots and refused it, and every reshape fell through to the 1983
+     *  loop the fix exists to replace, silently and with every test still
+     *  passing.  So: the answer is not nil.
+     */
+    check_boolean("| c olds news | Object subclass: #B4Cell"
+                  " instanceVariableNames: 'a b' classVariableNames: ''"
+                  " poolDictionaries: '' category: 'Bugs4'."
+                  " c := (Smalltalk at: #B4Cell) basicNew."
+                  " c instVarAt: 1 put: 7; instVarAt: 2 put: 8."
+                  " olds := Array with: c."
+                  " news := Array with: (Smalltalk at: #B4Cell) basicNew."
+                  " ^((Smalltalk at: #B4Cell) primMigrate: olds to: news"
+                  " permuting: #(1 2) oldNamed: 2) notNil", 1);
+    /*  And an OrderedCollection is refused, which is what that cost.  */
+    check_boolean("| c olds news | c := (Smalltalk at: #B4Cell) basicNew."
+                  " olds := OrderedCollection with: c."
+                  " news := OrderedCollection with: (Smalltalk at: #B4Cell)"
+                  " basicNew."
+                  " ^((Smalltalk at: #B4Cell) primMigrate: olds to: news"
+                  " permuting: #(1 2) oldNamed: 2) isNil", 1);
+    /*
+     *  The permutation itself, through updateInstancesFrom:: a named field
+     *  put in front of the others moves the ones behind it, and the indexed
+     *  part moves with them -- pointers and bytes both, since they are read
+     *  differently.
+     */
+    check_string("| v | Object variableSubclass: #B4V"
+                 " instanceVariableNames: 'a' classVariableNames: ''"
+                 " poolDictionaries: '' category: 'Bugs4'."
+                 " v := (Smalltalk at: #B4V) new: 3."
+                 " v instVarAt: 1 put: 99."
+                 " 1 to: 3 do: [:i | v basicAt: i put: i * 10]."
+                 " Object variableSubclass: #B4V instanceVariableNames: 'z a'"
+                 " classVariableNames: '' poolDictionaries: ''"
+                 " category: 'Bugs4'."
+                 " ^(Array with: (v instVarAt: 1) with: (v instVarAt: 2)"
+                 " with: ((1 to: v basicSize) collect: [:i | v basicAt: i]))"
+                 " printString", "(nil 99 (10 20 30 ) )");
+    check_string("| b | Object variableByteSubclass: #B4B"
+                 " instanceVariableNames: '' classVariableNames: ''"
+                 " poolDictionaries: '' category: 'Bugs4'."
+                 " b := (Smalltalk at: #B4B) new: 4."
+                 " 1 to: 4 do: [:i | b basicAt: i put: i + 60]."
+                 " Object variableByteSubclass: #B4B"
+                 " instanceVariableNames: '' classVariableNames: 'B4K'"
+                 " poolDictionaries: '' category: 'Bugs4'."
+                 " ^((1 to: b basicSize) collect: [:i | b basicAt: i])"
+                 " printString", "(61 62 63 64 )");
+
+    check_boolean("(Smalltalk at: #B4Sub) removeFromSystem."
+                  " (Smalltalk at: #B4Ctr) removeFromSystem."
+                  " (Smalltalk at: #B4Cell) removeFromSystem."
+                  " (Smalltalk at: #B4V) removeFromSystem."
+                  " (Smalltalk at: #B4B) removeFromSystem."
+                  " ^Smalltalk includesKey: #B4Ctr", 0);
+
+    test_dialect = saved;
+}
+
+/*
+ *  Bugs4 -- the fourth audit, collections, strings, symbols and the numeric
+ *  tower.  Four of the findings here are about TIME rather than about
+ *  answers, and time is why they are in C: `-tests' runs every SUnit suite
+ *  as ONE expression under main.c's EVAL_BYTECODE_BUDGET, so a check that
+ *  interns forty thousand symbols does not belong in lib/Library-Tests --
+ *  it would spend the whole suite's budget and take the other nine hundred
+ *  tests with it.  Here each check gets a budget of its own.
+ *
+ *  What each of them asserts is a SHAPE, not a stopwatch: the quadratic
+ *  cases are given a size at which the old code took tens of seconds, and
+ *  they answer.  A regression to the old code turns each into "did not
+ *  finish", which is what this file prints when an expression runs out of
+ *  bytecodes -- so the test fails, loudly, without ever timing anything.
+ */
+static void
+test_bugs4_collections(void)
+{
+    int saved = test_dialect;
+
+    test_dialect = ST_DIALECT_CLOSURES;
+
+    /*
+     *  COLL-1.  Symbol interning was O(n squared): USTable had 512 buckets,
+     *  fixed in C, and each new symbol copied its whole bucket.  Forty
+     *  thousand new symbols took 10.3 seconds against 0.85 for the first
+     *  ten thousand -- twelve times the work for four times the symbols.
+     *  The table grows and rehashes now.
+     *
+     *  Every symbol has to stay findable and IDENTICAL across a rehash: a
+     *  Symbol that is not identical to itself cannot be sent, and the C
+     *  compiler looks names up in this same table through
+     *  live_symbol_table (src/boot/bootstrap.c), which is why the last two
+     *  checks compile a method whose selector was interned by the image
+     *  after the table moved.
+     */
+    check_boolean("| all | 1 to: 5000 do: [:i | ('b4s', i printString) asSymbol]. "
+                  "all := (Symbol classPool at: #USTable) size > 512. "
+                  "1 to: 5000 by: 7 do: [:i | | s | s := 'b4s', i printString. "
+                  "  (s asSymbol == (Symbol lookup: s)) ifFalse: [all := false]]. "
+                  "^all and: [(Symbol lookup: 'b4s-nothing') isNil "
+                  "  and: [#printOn: == 'printOn:' asSymbol]]", 1);
+    check_integer("| c | 1 to: 4000 do: [:i | ('b4u', i printString) asSymbol]. "
+                  "c := Object subclass: #Bugs4Grew instanceVariableNames: '' "
+                  "  classVariableNames: '' poolDictionaries: '' category: 'Bugs4'. "
+                  "c compile: 'b4u1234 ^42'. "
+                  "^[(c new perform: ('b4u', '1234') asSymbol)] "
+                  "  ensure: [c removeFromSystem]", 42);
+
+    /*
+     *  COLL-2.  SortedCollection>>add: found the slot in O(log n) and then
+     *  inserted it with OrderedCollection>>insert:before:, which always
+     *  made room at the FRONT and shifted everything up to the slot -- so
+     *  an append copied the whole collection.  Ten thousand ASCENDING adds
+     *  took 26.7 seconds where ten thousand descending took 0.18: the best
+     *  case was the worst case.  Both are linear now, and so is
+     *  add:beforeIndex: at the front, which had the same asymmetry the
+     *  other way round.
+     *
+     *  Fifteen thousand, not ten: at ten thousand the old code might still
+     *  have crept in under the budget, and a trip-wire that can be stepped
+     *  over is not one.
+     */
+    check_integer("| s | s := SortedCollection new. "
+                  "1 to: 15000 do: [:i | s add: i]. "
+                  "^(s first * 100000) + s last", 115000);
+    check_integer("| s | s := SortedCollection new. "
+                  "15000 to: 1 by: -1 do: [:i | s add: i]. "
+                  "^(s first * 100000) + s last", 115000);
+    check_integer("| s | s := OrderedCollection new. "
+                  "1 to: 15000 do: [:i | s add: i beforeIndex: 1]. "
+                  "^(s first * 100000) + s last", 1500000001);
+    /*
+     *  And it still puts things where it always put them.  Every insertion
+     *  point of every size to past two growths, checked by taking the
+     *  inserted element back out again.
+     */
+    check_boolean("| ok | ok := true. 1 to: 40 do: [:n | 1 to: n + 1 do: [:at | "
+                  "  | c | c := OrderedCollection new. "
+                  "  1 to: n do: [:i | c addLast: i]. "
+                  "  c add: 0 beforeIndex: at. "
+                  "  ((c at: at) = 0 and: [(c copyWithout: 0) asArray = (1 to: n) asArray]) "
+                  "    ifFalse: [ok := false]]]. ^ok", 1);
+
+    /*
+     *  NUMBERS-3.  printOn:base: divided the whole magnitude by the base
+     *  once per digit and readFrom:radix: multiplied it by the base once
+     *  per digit, both a byte at a time in Smalltalk: sixteen thousand
+     *  digits took 15 seconds to print and eight thousand took 59 to read.
+     *  Both work a chunk of digits at a time in an Array of SmallInteger
+     *  limbs now, and digitMultiply:neg: three bytes at a time rather than
+     *  a nibble.
+     *
+     *  The round trip is the assertion: a number of this length that
+     *  prints and reads back to itself has not lost a digit anywhere.  The
+     *  multiplication is checked by an identity instead, because there is
+     *  nothing to compare a product against but arithmetic: (10^k - 1)
+     *  squared plus twice it plus one is 10^2k, and a dropped carry
+     *  anywhere in the middle breaks it.
+     */
+    check_integer("| n s | n := 3 raisedTo: 6000. s := n printString. "
+                  "^s size + (s asNumber = n ifTrue: [7] ifFalse: [0])", 2870);
+    check_integer("| n | n := ('1', (String new: 4000 withAll: $0)) asNumber. "
+                  "^(n = (10 raisedTo: 4000) ifTrue: [1] ifFalse: [0]) "
+                  "  + n printString size", 4002);
+    check_boolean("| a | a := (10 raisedTo: 2000) - 1. "
+                  "^((a * a) + (2 * a) + 1) = (10 raisedTo: 4000)", 1);
+
+    /*
+     *  NUMBERS-1.  `Float infinity floorLog: 10' recursed on a radix it
+     *  squared each level and never came back; an Integer past the double
+     *  range reached that same method through asFloat and did the same.
+     *  Both are answered or refused at once now, and the Integer answer is
+     *  exact at any size rather than a double's guess.
+     */
+    check_integer("^(2 raisedTo: 8000) floorLog: 10", 2408);
+    check_integer("^(2 raisedTo: 8000) floorLog: 2", 8000);
+    check_integer("^[Float infinity floorLog: 10] on: Error do: [:e | -1]", -1);
+    check_integer("^[Float nan floorLog: 10] on: Error do: [:e | -1]", -1);
+
+    /*
+     *  The low edges, one check each.  Each is the audit's own line.
+     */
+    check_integer("^-4 lcm: 6", 12);
+    check_boolean("^(Fraction numerator: 2 denominator: 4) = (1/2)", 1);
+    check_integer("^[Fraction numerator: 3 denominator: (1/2)] "
+                  "on: ZeroDivide do: [:e | 7]", 7);
+    check_integer("^'' asSymbol numArgs", 0);
+    check_integer("^['abc' copyReplaceAll: 'b' with: $z] on: Error do: [:e | 5]", 5);
+    check_integer("^'abc' findString: 'b' startingAt: 0", 2);
+    check_string("^(OrderedCollection withAll: #(3 1 2)) sorted printString",
+                 "an OrderedCollection(1 2 3 )");
+    check_string("^((OrderedCollection withAll: #(3 1 2)) sorted: [:a :b | a > b]) "
+                 "printString", "an OrderedCollection(3 2 1 )");
+    check_string("^(SortedCollection withAll: #(3 1 2)) sorted printString",
+                 "a SortedCollection(1 2 3 )");
+    check_boolean("^LinkedList new sorted class == LinkedList", 1);
+    check_boolean("^3 isZero not and: [0 isZero and: [0.0 isZero "
+                  "and: [Float nan isZero not]]]", 1);
+
+    test_dialect = saved;
+}
+
+/*
+ *  Bugs4 -- the fourth audit, om.
+ *
+ *  MEM-2 is the big one and it was two faults wearing one symptom.  A
+ *  WeakKeyDictionary held every key it had ever been given, for ever, and
+ *  nothing in any suite said so.
+ *
+ *  The first fault: `new' allocated an ordinary object for an ephemeron
+ *  class.  Only `new:' read the ephemeron bit, and an ephemeron is defined
+ *  by its first NAMED field, so every ephemeron worth having has no indexed
+ *  part and goes through `new'.  The class said so, Behavior>>isEphemeron
+ *  agreed with it, the collector was ready for it, and the instances were
+ *  plain objects with a strong first field.
+ *
+ *  The second: nothing sent #mourn.  The collector nilled the dead key and
+ *  stopped, which is the reachability answer and no use to anybody -- what
+ *  takes a WeakKeyAssociation out of its dictionary is the association, in
+ *  Smalltalk, sending `container removeKey: key', and it needs the key to
+ *  say which entry.  So the collector now queues the ephemeron with its key
+ *  intact and Finalizer's process sends the message.
+ *
+ *  Pharo's own WeakKeyDictionary is not in this image -- it comes with the
+ *  pharo-weak profile, where its four test classes are off the #exclude list
+ *  now -- so what is checked here is the mechanism underneath it, on an
+ *  ephemeron class made on the spot.
+ */
+static void
+test_bugs4_om(void)
+{
+    test_dialect = ST_DIALECT_CLOSURES;
+
+    /*
+     *  The class is an ephemeron and, since MEM-2, so are its instances.
+     *
+     *  Both methods are compiled here, before any instance exists, because
+     *  the first collection after one does fires it -- and an ephemeron
+     *  whose class has no #mourn yet reports a doesNotUnderstand on stderr
+     *  from the finalization process, which is correct behaviour and pure
+     *  noise in a test log.
+     */
+    check_boolean("Finalizer drainSignalling: nil."
+                  " Smalltalk at: #Bugs4Mourned put: 0."
+                  " Object ephemeronSubclass: #Bugs4Eph"
+                  " instanceVariableNames: 'key note' classVariableNames: ''"
+                  " poolDictionaries: '' category: 'Bugs4'."
+                  " (Smalltalk at: #Bugs4Eph) compile:"
+                  "   'fill key := Object new'"
+                  "   classified: 'testing' notifying: nil."
+                  " (Smalltalk at: #Bugs4Eph) compile:"
+                  "   'mourn Smalltalk at: #Bugs4Mourned put:"
+                  "      (Smalltalk at: #Bugs4Mourned) + (key isNil"
+                  "        ifTrue: [100] ifFalse: [1])'"
+                  "   classified: 'finalization' notifying: nil."
+                  " ^(Smalltalk at: #Bugs4Eph) isEphemeron", 1);
+
+    /*
+     *  The proof that the INSTANCE is one: its first field is the key, and
+     *  an object only the key field names does not survive a collection.
+     *  Before the fix both stayed alive for ever, which is what a plain
+     *  object does and is exactly the leak.
+     *
+     *  The key is made inside a method that has returned, for the reason
+     *  test_weak_references gives: a doIt's own stack slot above its stack
+     *  pointer would otherwise still name it.
+     */
+    check_integer("| e | e := (Smalltalk at: #Bugs4Eph) new. e fill."
+                  " ^(e instVarAt: 1) isNil ifTrue: [0] ifFalse: [1]", 1);
+
+    /*
+     *  And #mourn is sent, with the key still there.
+     *
+     *  Both halves matter.  A count of one says the finalization process
+     *  ran at all; the key being readable INSIDE mourn says the collector
+     *  handed the ephemeron over intact rather than emptied, which is the
+     *  only reason `container removeKey: key' can find anything -- a nil
+     *  there scores a hundred and fails this loudly.
+     *
+     *  Drained here rather than waited for, through the form that arms the
+     *  collector to signal NOBODY.  This harness runs its doIts on a bare
+     *  context with no Process behind it, so the finalization process
+     *  waking in the middle of one has nothing to park what it interrupted
+     *  and the whole run ends on `every process is blocked'.  The process
+     *  itself is exercised where there is a scheduler to run it: the
+     *  pharo-weak profile, whose WeakKeyDictionary tests are on now.
+     */
+    check_integer("Smalltalk garbageCollect."
+                  " Finalizer drainSignalling: nil."
+                  " Smalltalk at: #Bugs4Mourned put: 0."
+                  " Smalltalk at: #Bugs4Keeper put:"
+                  "   (Smalltalk at: #Bugs4Eph) new."
+                  " (Smalltalk at: #Bugs4Keeper) fill."
+                  " Smalltalk garbageCollect."
+                  " Finalizer drainSignalling: nil."
+                  " ^Smalltalk at: #Bugs4Mourned", 1);
+
+    /*
+     *  Mourned once and not once per collection.  The queue holds the
+     *  ephemeron until the message has been sent, and the queue is a root
+     *  while it does -- so without clearing the ephemeron bit as the
+     *  collector fires it, every later collection would find the same dead
+     *  key and report it again.
+     */
+    check_integer("Smalltalk garbageCollect."
+                  " Finalizer drainSignalling: nil."
+                  " Smalltalk at: #Bugs4Mourned put: 0."
+                  " Smalltalk at: #Bugs4Keeper put:"
+                  "   (Smalltalk at: #Bugs4Eph) new."
+                  " (Smalltalk at: #Bugs4Keeper) fill."
+                  " Smalltalk garbageCollect. Finalizer drainSignalling: nil."
+                  " Smalltalk garbageCollect. Finalizer drainSignalling: nil."
+                  " Smalltalk garbageCollect. Finalizer drainSignalling: nil."
+                  " ^Smalltalk at: #Bugs4Mourned", 1);
+
+    /*
+     *  And an ephemeron NOTHING reaches is not mourned at all: there is
+     *  nobody left to hear the message, and resurrecting it to send one
+     *  would keep a dead dictionary's dead keys alive a cycle at a time for
+     *  as long as the image ran.  It is swept with its key.
+     */
+    check_integer("Smalltalk garbageCollect."
+                  " Finalizer drainSignalling: nil."
+                  " Smalltalk at: #Bugs4Mourned put: 0."
+                  " Smalltalk at: #Bugs4Keeper put: nil."
+                  " (Smalltalk at: #Bugs4Eph) new fill."
+                  " Smalltalk garbageCollect. Finalizer drainSignalling: nil."
+                  " ^Smalltalk at: #Bugs4Mourned", 0);
+
+    /*  The finalization process exists and is waiting, not finished.  */
+    check_class("Finalizer process", "Process");
+    check_boolean("(Finalizer primNextMournedObjectSignalling: nil) isNil", 1);
+
+    /*
+     *  A shallowCopy keeps the shape its class asks for.  It used to
+     *  allocate an ordinary pointer object whatever the receiver was, so
+     *  `aWeakArray copy' answered something strong in every slot -- and
+     *  WeakKeyDictionary>>postCopy copies every association, which turned a
+     *  copied weak dictionary into one that holds its keys for ever.
+     */
+    check_integer("| w | w := (WeakArray new: 3) copy."
+                  " Unwind fillWeakly: w. Smalltalk garbageCollect."
+                  " ^w livingCount", 0);
+
+    /*
+     *  MEM-6: becomeForward: of a Symbol is refused.  Two-way become: has
+     *  refused it since Bugs3 B21 and one-way is the worse of the two: it
+     *  leaves the source Symbol naming nobody, so every compiled literal
+     *  that held it now spells something else while asSymbol interns a
+     *  second Symbol under the old spelling.
+     */
+    check_string("[#bugs4Sym becomeForward: #bugs4Other. 'allowed']"
+                 " on: Error do: [:e | 'refused']", "refused");
+    check_boolean("'bugs4Sym' asSymbol == #bugs4Sym", 1);
+
+    /*
+     *  MEM-5 -- become: of a process a worker is RUNNING -- is not checked
+     *  here, and the omission is deliberate rather than an oversight.  The
+     *  guard walks each registered interpreter's active process, and this
+     *  harness evaluates its doIts on a bare interpreter that has never
+     *  been through the scheduler: there is no worker holding a process for
+     *  the guard to find, so a become: here would be answering a different
+     *  question.  It takes a second worker to ask, which is
+     *  `./st80 -serve ... -workers 4', a forked spinner, and become:.
+     */
+
+    /*
+     *  And a class whose methodDict has been replaced with a String.
+     *  instVarAt:put: stores any object into any named field and methodDict
+     *  is an ordinary named field, so nothing refuses the store -- while the
+     *  method lookup read the answer of OM_method_dict_capacity as a count
+     *  of OOPS and OM_fetch_word_length answers a byte object's length in
+     *  BYTES.  The send has to end at doesNotUnderstand:, which is where a
+     *  class somebody has taken apart belongs, rather than in memory past
+     *  the end of the string.
+     */
+    check_string("| cls held answer | Object subclass: #Bugs4MD"
+                 " instanceVariableNames: '' classVariableNames: ''"
+                 " poolDictionaries: '' category: 'Bugs4'."
+                 " cls := Smalltalk at: #Bugs4MD."
+                 " held := cls instVarAt: 2."
+                 " cls instVarAt: 2 put: (String new: 400)."
+                 " answer := [cls new bugs4NoSuchSelector. 'ran']"
+                 "   on: MessageNotUnderstood do: [:e | 'dnu']."
+                 " cls instVarAt: 2 put: held."
+                 " ^answer", "dnu");
+
+    test_dialect = ST_DIALECT_BLUE_BOOK;
+}
+
+/*
+ *  Bugs4 -- the fourth audit, docs.  One function per area, filled in by the
+ *  fix for each finding it names; empty until then.
+ */
+static void
+test_bugs4_docs(void)
+{
+}
+
 int
 main(void)
 {
@@ -6860,6 +8512,16 @@ main(void)
     test_bugs3_streams();
     test_bugs3_web();
     test_bugs3_tonel();
+    test_bugs4_prim();
+    test_bugs4_graphics();
+    test_bugs4_net();
+    test_bugs4_files();
+    test_bugs4_chron();
+    test_bugs4_proc();
+    test_bugs4_reflection();
+    test_bugs4_collections();
+    test_bugs4_om();
+    test_bugs4_docs();
 
     OM_shutdown();
     return ST_TEST_END();

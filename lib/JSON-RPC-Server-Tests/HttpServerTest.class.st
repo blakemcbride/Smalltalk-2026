@@ -454,3 +454,68 @@ HttpServerTest >> testAFileOutsideTheDocumentRootIsRefused [
 	self deny: ((HttpStaticFileHandler on: 'lib/Json') isWithinDocumentRoot: 'lib/Json-Tests/package.st').
 	self assert: ((HttpStaticFileHandler on: 'lib/Json') isWithinDocumentRoot: 'lib/Json/package.st')
 ]
+
+{ #category : 'tests' }
+HttpServerTest >> testAFailedAcceptDoesNotEndTheAcceptLoop [
+	"Bugs4 NET-1.  The whole accept loop sat inside `on: NetError do: [:e |
+	 running := false]', so the FIRST accept that answered an error ended
+	 the server's ability to accept anything, for ever, with nothing
+	 logged: the listen socket stayed open, so a client's connect was taken
+	 by the kernel's backlog and then hung rather than being refused, and
+	 the process went on looking alive.  Holding 1,024 idle connections --
+	 exactly the VM's socket table -- did it, and so did one transient
+	 EMFILE, which the descriptor leak in NET-2 reached on ordinary
+	 traffic.
+
+	 A failed accept whose listener is still open is one connection lost.
+	 A failed accept whose listener is gone is stop, and only that ends the
+	 loop."
+	self startServerWithHandler.
+	server acceptFailed: ((NetError new) errno: 24; messageText: 'accept: Too many open files'; yourself).
+	self assert: server isRunning.
+	self assert: ((self get: '/hello') at: 3) equals: 'hello'.
+	"Ten more of them, as a table that is full would give."
+	1 to: 10 do: [:i |
+		server acceptFailed: ((NetError new) messageText: 'no free socket slot'; yourself)].
+	self assert: server isRunning.
+	self assert: ((self get: '/hello') at: 3) equals: 'hello'.
+	"A listener that is really gone ends it, message or no message."
+	server stop.
+	server acceptFailed: NetError new.
+	self deny: server isRunning
+]
+
+{ #category : 'private' }
+HttpServerTest >> startServerWithHandler [
+	server at: '/hello' put: [:request | HttpResponse text: 'hello'].
+	server start.
+	^server port
+]
+
+{ #category : 'tests' }
+HttpServerTest >> testAFileThatCannotBeReadIsNotA500 [
+	"Bugs4.  The class comment has always said that what the file system
+	 refuses to open is 404 -- `forbidden' would tell a stranger that the
+	 name exists -- and the code did not do it: the read raised, nothing
+	 here caught it, and dispatch: turned it into HTTP 500, which is the
+	 server saying something is wrong with the SERVER when nothing is.
+
+	 /proc/self is the portable-enough place to find a name a directory
+	 lists and a read cannot have: on a machine without one the ordinary
+	 404 is still checked, which is the same decision on the other path."
+	| handler |
+	handler := HttpStaticFileHandler on: '/proc/self'.
+	(Disk isDirectoryNamed: '/proc/self') ifTrue: [
+		self assert: (handler handle: (self requestFor: '/mem')) status equals: 404].
+	self assert: (handler handle: (self requestFor: '/no-such-entry-at-all')) status
+		equals: 404.
+	"and a method nothing here serves is still 405, not 404"
+	self assert: (handler handle: (HttpRequest fromString:
+		'PUT /mem HTTP/1.1', self crlf, 'Host: x', self crlf, self crlf)) status
+		equals: 405
+]
+
+{ #category : 'private' }
+HttpServerTest >> requestFor: aPath [
+	^HttpRequest fromString: 'GET ', aPath, ' HTTP/1.1', self crlf, 'Host: x', self crlf, self crlf
+]

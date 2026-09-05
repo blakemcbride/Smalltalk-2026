@@ -60,7 +60,7 @@ buildCharacterBlockIn: aParagraph
 					characterPoint x > rightMargin
 						ifTrue:	[characterPoint x: rightMargin]].
 	destX _ leftMargin _ aParagraph leftMarginForDisplayForLine: lineIndex.
-	nextLeftMargin_ aParagraph leftMarginForDisplayForLine: lineIndex+1.
+	nextLeftMargin _ aParagraph leftMarginForDisplayForLine: lineIndex+1.
 	lastIndex _ line first.
 
 	self setStopConditions.		"also sets font"

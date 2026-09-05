@@ -42,7 +42,7 @@ Account class >> newWithBalance: anAmount
     ^self new deposit: anAmount; yourself
 
 Point class >> x: anX y: aY
-    ^self new setX: anX y: aY
+    ^self new setX: anX setY: aY
 \end{st}
 
 A well-named class-side constructor is better than making callers send

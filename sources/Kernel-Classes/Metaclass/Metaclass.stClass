@@ -252,7 +252,7 @@ obsolete
 	"Invalidate and recycle local messages.  Remove the receiver from its superclass'
 	subclass list."
 
-	thisClass_ nil.
+	thisClass _ nil.
 	super obsolete!
 subclassOf: superMeta
 	"Change the receiver to be a subclass of the argument, superMeta, a metaclass.

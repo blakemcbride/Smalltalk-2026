@@ -26,7 +26,7 @@ for whoever revisits it.
 
 ## What it measures, and why that way
 
-Three kernels, because they measure different things:
+Four kernels, because they measure different things:
 
 | | |
 |---|---|

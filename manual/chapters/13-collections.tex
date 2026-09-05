@@ -181,15 +181,15 @@ the next element and answers the new accumulator.
 \end{center}
 
 \begin{stnote}[One design decision worth knowing]
-The forty-years-of-protocol methods this system adds---\ct{sorted:},
-\ct{flatCollect:}, \ct{count:} and the rest---answer an \ct{Array} where Pharo
-would answer \ct{self species}, except for \ct{sorted} and \ct{sorted:} on a
-sequenceable collection, where order is the point and the species is obvious.
-A sorted Set is not a Set and a flattened Bag is not a Bag, so \ct{species} is
-already the wrong answer for two of the three interesting receivers. The
-methods that \emph{preserve} shape---\ct{select:}, \ct{reject:},
-\ct{collect:}, \ct{copyWithout:}---go on using \ct{species}, because there the
-1983 answer was already right.
+Of the forty-years-of-protocol methods this system adds, \ct{sorted} and
+\ct{sorted:} are the two that do not always answer the kind of collection
+they were sent to, and the reason is that sometimes there is no such kind: a
+sorted Set is not a Set, so an \ct{Array} is the best that can be said about
+it. Send them to a sequenceable collection and the species is obvious and is
+what you get---\ct{'hello' sorted} is \ct{'ehllo'} and not an \ct{Array} of
+five Characters. Everything that preserves shape---\ct{select:},
+\ct{reject:}, \ct{collect:}, \ct{flatCollect:}, \ct{copyWithout:}---goes on
+using \ct{species}, because there the 1983 answer was already right.
 \end{stnote}
 
 \section{Dictionaries}

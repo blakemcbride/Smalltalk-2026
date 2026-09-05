@@ -83,3 +83,113 @@ Fraction >> hash [
 Fraction >> isFraction [
 	^true
 ]
+
+{ #category : '*Kernel-Protocol' }
+Fraction >> setNumerator: n denominator: d [
+	"Become the ratio n/d, in lowest terms and with the sign in the
+	 numerator.
+
+	 1983 stores whatever it is handed.  `/' reduces afterwards and every
+	 arithmetic method sends `reduced', so a Fraction that came out of
+	 arithmetic was always in lowest terms and the fault never showed
+	 there; a Fraction built BY NAME was not.  `Fraction numerator: 2
+	 denominator: 4' answered (2/4), and Fraction>>= compares the two
+	 fields rather than the value, so it was not equal to (1/2) -- while
+	 Fraction>>hash is `numerator bitXor: denominator', which for 2/4 and
+	 for 1/2 is 6 either way.  Two objects that hash alike and answer
+	 false to = are two objects a Set holds both of and a Dictionary
+	 cannot find by the other (Bugs4 NUMBERS-5).  Reducing here is what
+	 Pharo does, and it makes = mean what it says for every Fraction
+	 however it was made.
+
+	 The zero test now runs AFTER the coercion rather than before it.
+	 1983 asks `d = 0' of the argument as given and only then truncates
+	 it, so a denominator of (1/2) passed the test -- (1/2) is not zero --
+	 and then truncated to zero, leaving a Fraction (3/0) that raised
+	 somewhere else entirely, in whatever later asked it for a value
+	 (Bugs4 NUMBERS-6).  A denominator that truncates to nothing is a
+	 denominator of zero, whatever it was written as, and it signals
+	 ZeroDivide because that is what `1/0' signals in this image and a
+	 caller cannot write one handler for two names.
+
+	 The reduction leaves a Fraction even when the denominator comes to
+	 one: `Fraction numerator: 4 denominator: 2' is (2/1), not the Integer
+	 2, which is Pharo's answer too.  A constructor named for a class
+	 answers that class; `reduced' is the method that collapses a whole
+	 ratio to an Integer, and with this one reducing there is nothing else
+	 left for it to do."
+	| num den gcd |
+	num := n truncated.
+	den := d truncated.
+	den = 0 ifTrue: [^ZeroDivide new signal: 'denominator cannot be zero'].
+	den < 0 ifTrue: [
+		num := num negated.
+		den := den negated].
+	gcd := num gcd: den.
+	gcd = 1
+		ifTrue: [
+			numerator := num.
+			denominator := den]
+		ifFalse: [
+			numerator := num // gcd.
+			denominator := den // gcd]
+]
+
+{ #category : '*Kernel-Protocol' }
+Fraction class >> coprimeNumerator: n denominator: d [
+	"The ratio n/d for a caller that has already PROVED the two share no
+	 factor, and that positive d.
+
+	 numerator:denominator: reduces, and reducing is a gcd -- Euclid on two
+	 numbers of several hundred digits, in an image whose large integers
+	 are divided a byte at a time.  JSONParser>>fractionFrom:k: knows the
+	 denominator is a power of ten and divides the 2s and 5s out by hand
+	 for exactly that reason: its comment measured 130 of the 162
+	 milliseconds a 256-digit fraction cost, and nine seconds of the nine
+	 and a half a four-thousand-digit one cost.  Making the constructor
+	 reduce would have handed that back, so the caller that has done the
+	 work by other means says so here and the gcd is not repeated.
+
+	 Nothing else should use this.  A ratio built through it that is NOT
+	 in lowest terms is the fault NUMBERS-5 describes, put back by hand."
+	^self new setCoprimeNumerator: n denominator: d
+]
+
+{ #category : '*Kernel-Protocol' }
+Fraction >> setCoprimeNumerator: n denominator: d [
+	"Store the two as given.  See Fraction class>>coprimeNumerator:
+	 denominator: for what the caller is promising."
+	d = 0 ifTrue: [^ZeroDivide new signal: 'denominator cannot be zero'].
+	numerator := n.
+	denominator := d
+]
+
+{ #category : '*Kernel-Protocol' }
+Fraction >> reduced [
+	"Me as an Integer when my denominator is one, and otherwise myself.
+
+	 1983 divides both fields by their gcd and builds a new Fraction, which
+	 is what kept every arithmetic method correct while the constructor
+	 stored whatever it was given.  setNumerator:denominator: now reduces,
+	 so by the time anything can send this the gcd is already one, and
+	 computing it again would be the second of two Euclids on every add
+	 and every multiply -- the expensive half of Fraction arithmetic, paid
+	 twice.
+
+	 What is left is the part 1983 did here that the constructor
+	 deliberately does not do: collapse a whole ratio to an Integer.  A
+	 zero numerator is the same case, since a reduced 0/d is 0/1."
+	denominator = 1 ifTrue: [^numerator].
+	^self
+]
+
+{ #category : '*Kernel-Protocol' }
+Fraction >> isZero [
+	"Whether I am zero.
+
+	 I am reduced, so a zero value is a zero numerator and nothing else
+	 need be looked at.  Number>>isZero sends `= 0', which coerces the
+	 Integer up to a Fraction and compares two fields to learn what one
+	 field already says."
+	^numerator = 0
+]

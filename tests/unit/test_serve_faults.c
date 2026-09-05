@@ -340,6 +340,49 @@ main(void)
         }
     }
 
+    /*
+     *  Bugs4 MEM-1: a fork-and-terminate storm on thirty-two workers.
+     *
+     *  Ordinary concurrent code -- fork a process, stop it, do it again --
+     *  stopped the whole image in about four runs in five.  A process was
+     *  taken from the MIDDLE of a ready list, which is the path used only
+     *  while some other worker is detaching, and take_first_runnable
+     *  unlinked it before it said whose hands it was in; the detacher
+     *  looking in that gap answered "it was nowhere", Process>>terminate
+     *  wrote nil over the suspendedContext of a process a third worker had
+     *  already nominated, and that worker's switch was handed a nil to run.
+     *
+     *  Neither worker count either side of thirty-two shows it: one and
+     *  eight never enter the middle path often enough, and fork with no
+     *  terminate never names anything, so the walk is never taken.  Run
+     *  three times, because eighty percent per run is not a gate.
+     */
+    {
+        const char *storm =
+            "| done | done := Semaphore new. "
+            "1 to: 32 do: [:i | [1 to: 8000 do: [:j | | p | "
+            "p := [[true] whileTrue: [Processor yield]] newProcess. "
+            "p resume. p terminate]. done signal] fork]. "
+            "1 to: 32 do: [:i | done wait]. 'storm ok'\n3 + 4\n";
+        int         attempt;
+
+        for (attempt = 0; attempt < 3; ++attempt) {
+            status = serve(storm, 32, out, sizeof out);
+            ++st_test_checks;
+            if (status < 0) {
+                ++st_test_failures;
+                printf("  FAIL MEM-1: could not run the server\n");
+                break;
+            }
+            expect(out, "'storm ok'", "MEM-1 fork/terminate storm");
+            expect(out, "3 + 4 ==> 7", "MEM-1 the pool survived");
+            expect_absent(out, "is not a context",
+                          "MEM-1 nothing ran a nil context");
+            expect_absent(out, "suspended context is not a context",
+                          "MEM-1 nothing was dropped");
+        }
+    }
+
     /*  B58: a startup that does not compile writes no image, exit 1.  */
     unlink(BADIMAGE);
     snprintf(command, sizeof command,

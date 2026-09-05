@@ -212,9 +212,36 @@ Exception >> retry [
 
 { #category : 'handling' }
 Exception >> retryUsing: aBlock [
+	"Run aBlock in place of the protected block, with this handler still
+	 armed for whatever aBlock raises.
+
+	 That last clause is the whole of it, and it is what ANSI asks for:
+	 retryUsing: is retry with a substitution, not a return with a value
+	 computed on the way.  The body used to be
+
+	     self unwindTo: handlerContext.
+	     ^handlerContext return: aBlock value
+
+	 which evaluates aBlock in the frame of whoever sent retryUsing: -- the
+	 handler block -- and does it AFTER unwindTo: has run the unwind actions
+	 between the signal and the handler and while runHandler still has the
+	 frame switched off.  So the replacement ran outside the very handler it
+	 was meant to be protected by, and
+
+	     [1/0] on: ZeroDivide do: [:e | e retryUsing: [1/0]]
+
+	 reported ZeroDivide out of the top of the image instead of looping
+	 (Bugs4 PROC-2).  A replacement that does not raise never noticed.
+
+	 An on:do: activation's receiver IS its protected block, so the
+	 substitution is one field, and the rest is retry: unwind to the handler,
+	 put it back in service, and restart the frame."
 	handlerContext isNil ifTrue: [^self return: nil].
+	"Same reason as return: and retry: restarting discards the frames in
+	 between, and their ensure: blocks have to run before they go."
 	self unwindTo: handlerContext.
-	^handlerContext return: aBlock value
+	handlerContext handlerIsActive: true.
+	^handlerContext restartWithReceiver: aBlock
 ]
 
 { #category : 'handling' }
@@ -227,6 +254,81 @@ Exception >> pass [
 	outer isNil ifTrue: [^self return: self defaultAction].
 	handlerContext := outer.
 	^self return: self runHandler
+]
+
+{ #category : 'handling' }
+Exception >> outer [
+	"Run the handler enclosing the one now running, and come back here if it
+	 resumes.
+
+	 outer and pass find the same handler and run it the same way; they
+	 differ in one thing, which is where a resumption lands.  pass hands the
+	 exception over for good -- if the outer handler resumes, execution
+	 carries on from where the exception was SIGNALLED and this handler is
+	 finished with.  outer keeps this handler's place: the resumption value
+	 comes back as the value of this send, and the handler that sent outer
+	 goes on to decide what to do with it.  That is what makes outer the one
+	 to use for 'let whoever is above me have a say, then I will act on the
+	 answer'.
+
+	 Which is one field.  A resumption goes to signalContext -- see resume:
+	 -- so outer points signalContext at its own activation for the
+	 duration and puts back what was there if it gets control again.  A
+	 handler that RETURNS rather than resumes unwinds to its own on:do: and
+	 never comes back here, which is exactly what pass does, and why the two
+	 restores below are on the resumption path only.
+
+	 A non-resumable exception has nowhere to come back to, so it is passed
+	 outright.  Named in doc/PLAN-PHARO.md and missing until Bugs4 PROC-7."
+	| savedSignal savedHandler found result |
+	self isResumable ifFalse: [^self pass].
+	found := handlerContext isNil
+		ifTrue: [nil]
+		ifFalse: [self findHandlerFrom: handlerContext sender].
+	found isNil ifTrue: [^self defaultAction].
+	savedSignal := signalContext.
+	savedHandler := handlerContext.
+	signalContext := thisContext.
+	handlerContext := found.
+	result := self runHandler.
+	signalContext := savedSignal.
+	handlerContext := savedHandler.
+	^result
+]
+
+{ #category : 'handling' }
+Exception >> resignalAs: replacementException [
+	"Raise replacementException in place of me, searching for its handler
+	 from where I was signalled rather than from here.
+
+	 That start point is the whole of it, and it is what neither pass nor
+	 signal can say.  A handler that declined ME -- its on:do: names a class
+	 mine is not a kind of -- sits between the signal and this handler, and
+	 the replacement may be exactly what it was written for; searching from
+	 here would walk straight past it.  So a driver that catches a low-level
+	 fault and re-raises it as the failure its callers actually understand
+	 uses this, and the caller's own on:do:, two frames below, sees it.
+
+	 The handler now running stays out of service, which is ANSI's rule that
+	 a handler is disabled while it is executing and is also what keeps
+	 `e resignalAs: e class new' from going round for ever.  If the
+	 replacement's handler resumes, the resumption goes where the ORIGINAL
+	 signal was sent, since that is the send still waiting for an answer.
+
+	 Named in doc/PLAN-PHARO.md and missing until Bugs4 PROC-7."
+	| ctx |
+	ctx := signalContext.
+	ctx isNil ifTrue: [ctx := thisContext sender].
+	replacementException signalContext: ctx.
+	^replacementException signalFrom: ctx
+]
+
+{ #category : 'private' }
+Exception >> signalContext: aContext [
+	"Where the search for my handler starts, and where a resumption goes.
+	 Written by resignalAs:, which raises one exception from another's
+	 signal point; signal and signal: set it for the ordinary case."
+	signalContext := aContext
 ]
 
 { #category : 'handling' }

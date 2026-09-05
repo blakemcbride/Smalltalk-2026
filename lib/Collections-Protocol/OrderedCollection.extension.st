@@ -108,18 +108,86 @@ OrderedCollection >> add: newObject beforeIndex: anIndex [
 
 { #category : '*Collections-Protocol' }
 OrderedCollection >> add: newObject beforeIndexBasic: anIndex [
-	"The insertion itself: grow by one at the end, then shift the tail up.
+	"The insertion itself, at a one-based index over my ELEMENTS despite
+	 what the selector says.
 
-	 Written on addLast: and at:put: rather than on firstIndex and lastIndex
-	 so that it stays correct however the collection grows -- addLast: is
-	 the one method that knows what to do when there is no room left."
-	| index |
-	self addLast: self last.
-	index := self size - 1.
-	[index > anIndex] whileTrue: [
-		self at: index put: (self at: index - 1).
-		index := index - 1].
-	self at: anIndex put: newObject
+	 This grew the collection by one at the end and shifted the tail up,
+	 which is right for an insert near the end and O(my size) for one near
+	 the front: `add: x beforeIndex: 1' in a loop was quadratic while
+	 addFirst: in the same loop is linear (Bugs4 COLL-2 names the same
+	 asymmetry, in the other direction, in insert:before:).  insert:
+	 before: now shifts whichever end is nearer, so both ends of this
+	 method are fast and there is one piece of shifting code rather than
+	 two."
+	^self insert: newObject before: firstIndex + anIndex - 1
+]
+
+{ #category : '*Collections-Protocol' }
+OrderedCollection >> insert: anObject before: spot [
+	"Put anObject where the BASIC index spot is now, moving what is there
+	 and everything on one side of it out of the way.  Answers anObject.
+
+	 1983 always moves the FRONT: it makes room at the low end -- sliding
+	 the whole collection to the top of its Array when there is none --
+	 and then shifts every element from my first up to the slot down by
+	 one.  For an insert at the very front that is two writes; for an
+	 insert at the END it is a copy of the entire collection, every time.
+
+	 SortedCollection>>add: is what makes that matter.  It binary-searches
+	 for the slot in O(log n) and then comes here, so feeding a
+	 SortedCollection data that is already ascending -- the most natural
+	 thing anybody does to one -- put every element at the end and copied
+	 the collection to get it there: ten thousand ascending adds took 26.7
+	 seconds where the same ten thousand descending took 0.18 (Bugs4
+	 COLL-2).  The best case was the worst case.  Delay>>wait inserts into
+	 SuspendedDelays this way, and delays mostly arrive in order, so a
+	 server with thousands of timed waits paid it too (CHRON-5).
+
+	 Three cases now.  A slot past my last element is an append; a slot at
+	 or before my first goes on the front.  Anything in between shifts
+	 whichever side is nearer, so no insertion ever moves more than half
+	 the collection.  The two shifting arms are 1983's own front-shift and
+	 its mirror; each takes the distance to the slot from firstIndex
+	 BEFORE making room, because makeRoomAtFirst and makeRoomAtLast both
+	 slide the elements inside the Array and grow may replace the object
+	 entirely with become:.
+
+	 The two ends are 1983's addFirst: and addLast: written out rather than
+	 sent, because SortedCollection is an OrderedCollection and refuses
+	 both by name -- where an element goes is its sortBlock's decision --
+	 and it is SortedCollection>>add: that arrives here most.  Its own add:
+	 reaches OrderedCollection's addLast: with a super send for the same
+	 reason."
+	| delta spotIndex index |
+	spot > lastIndex ifTrue: [
+		lastIndex = self basicSize ifTrue: [self makeRoomAtLast].
+		lastIndex := lastIndex + 1.
+		self basicAt: lastIndex put: anObject.
+		^anObject].
+	spot <= firstIndex ifTrue: [
+		firstIndex = 1 ifTrue: [self makeRoomAtFirst].
+		firstIndex := firstIndex - 1.
+		self basicAt: firstIndex put: anObject.
+		^anObject].
+	delta := spot - firstIndex.
+	delta <= (lastIndex - spot)
+		ifTrue: [
+			firstIndex = 1 ifTrue: [self makeRoomAtFirst].
+			spotIndex := firstIndex + delta.
+			index := firstIndex := firstIndex - 1.
+			[index < (spotIndex - 1)] whileTrue: [
+				self basicAt: index put: (self basicAt: index + 1).
+				index := index + 1].
+			self basicAt: index put: anObject]
+		ifFalse: [
+			lastIndex = self basicSize ifTrue: [self makeRoomAtLast].
+			spotIndex := firstIndex + delta.
+			index := lastIndex := lastIndex + 1.
+			[index > spotIndex] whileTrue: [
+				self basicAt: index put: (self basicAt: index - 1).
+				index := index - 1].
+			self basicAt: spotIndex put: anObject].
+	^anObject
 ]
 
 { #category : '*Collections-Protocol' }

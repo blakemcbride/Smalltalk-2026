@@ -16,7 +16,9 @@
 #include "st_socket.h"
 #include "st_crypto.h"
 #include "image_compile.h"
+#include "migrate.h"
 #include "bootstrap.h"
+#include "finalize.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -25,6 +27,8 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <math.h>
+/*  time.h for primitive 219: localtime_r and the host's zone database.  */
+#include <time.h>
 
 /*
  *  <dirent.h> and <unistd.h> are POSIX and Windows has neither.  Everything
@@ -638,7 +642,20 @@ primitive_new(void)
     shape = shape_of_class(cls);
     if (shape.indexable)
         return 0;               /*  an indexable class needs new:  */
-    instance = OM_instantiate_pointers(cls, shape.fixed);
+    /*
+     *  An ephemeron with no indexed part -- which is every ephemeron worth
+     *  having, since what makes one is its first NAMED field.  This read
+     *  the format word for the ephemeron bit and then allocated an ordinary
+     *  object anyway; new: honoured the bit and new did not.  Pharo's
+     *  WeakKeyAssociation has three named fields and nothing indexed, so
+     *  every association a WeakKeyDictionary made was a plain object, its
+     *  key traced strongly, and the dictionary kept every entry it was ever
+     *  given.  The class said `#type : 'ephemeron'', Behavior>>isEphemeron
+     *  agreed, and the instances were not (Bugs4 MEM-2).
+     */
+    instance = shape.ephemeron
+                 ? OM_instantiate_ephemeron(cls, shape.fixed)
+                 : OM_instantiate_pointers(cls, shape.fixed);
     if (!OM_is_object(instance))
         return 0;
     ST_pop_n(1);
@@ -799,7 +816,40 @@ primitive_elements_forward_identity(void)
     return 1;
 }
 
-/*  ----------  Instance variable access, primitives 73 and 74  ----------  */
+/*  ----------  Instance variable access, primitives 73 and 74  ----------
+ *
+ *  These name a FIELD of the receiver, and a field holds an object pointer.
+ *  A String, Symbol, ByteArray, Float, LargeInteger or CompiledMethod holds
+ *  bytes and a Bitmap holds sixteen-bit words; none of them has a field, and
+ *  OM_fetch_pointer/OM_store_pointer stride by sizeof(st_oop) whatever the
+ *  payload underneath happens to be.
+ *
+ *  The bound was OM_fetch_word_length, which in the mt memory is the header
+ *  size word -- the BYTE count for a byte object.  So `'str' instVarAt: 1
+ *  put: Object new' passed a bound of 3 and then wrote eight bytes into a
+ *  three-byte payload, past the end of the malloc block: one line of
+ *  ordinary Smalltalk corrupting the C heap, silently on the shipping
+ *  binary and with no exception a handler could see (Bugs4 PRIM-1, found by
+ *  ASAN).  The read side was as wrong without the overflow -- `1.5
+ *  instVarAt: 4' handed the image an oop fabricated out of the float's
+ *  mantissa, and `'abcdefgh' instVarAt: 1' answered the string's own bytes
+ *  read as a tagged word -- and the write side additionally released a
+ *  reference count on that fabrication, which is a double free waiting for
+ *  the object table to hand the number out again.
+ *
+ *  Refusing a byte or word receiver IS the fix, because the fallback is
+ *  already right: Object>>instVarAt: answers `self basicAt: index - self
+ *  class instSize', which reaches the indexed fields with the stride their
+ *  shape says and raises an ordinary index error when the receiver has
+ *  none.  It is also what the Blue Book says the message means -- "a fixed
+ *  variable" -- and a byte object has no fixed variables to name.
+ */
+
+static int
+inst_var_receiver_ok(st_oop object)
+{
+    return OM_is_object(object) && OM_pointer_bit(object);
+}
 
 static int
 primitive_inst_var_at(void)
@@ -807,7 +857,7 @@ primitive_inst_var_at(void)
     st_oop  object = ST_stack_value(1);
     st_int  index;
 
-    if (!OM_is_object(object) || !integer_arg(0, &index))
+    if (!inst_var_receiver_ok(object) || !integer_arg(0, &index))
         return 0;
     if (index < 1 || (uint32_t) index > OM_fetch_word_length(object))
         return 0;
@@ -823,7 +873,7 @@ primitive_inst_var_at_put(void)
     st_oop  value  = ST_stack_value(0);
     st_int  index;
 
-    if (!OM_is_object(object) || !integer_arg(1, &index))
+    if (!inst_var_receiver_ok(object) || !integer_arg(1, &index))
         return 0;
     if (index < 1 || (uint32_t) index > OM_fetch_word_length(object))
         return 0;
@@ -840,6 +890,7 @@ primitive_block_copy(void)
 {
     st_oop      context = ST_stack_value(1);
     st_int      argc;
+    st_oop      cls;
     st_oop      home;
     st_oop      block;
     uint32_t    size;
@@ -847,10 +898,41 @@ primitive_block_copy(void)
 
     if (!integer_arg(0, &argc) || !OM_is_object(context))
         return 0;
-    if (OM_fetch_class(context) == ST_CLASS_BLOCK_CONTEXT)
+    cls = OM_fetch_class(context);
+    /*
+     *  Only a context can be a block's home.  The primitive read the
+     *  receiver's class to decide whether to take its home field or to use
+     *  it as the home itself, and the "or use it" branch had no floor under
+     *  it: any receiver at all became the home, was measured with
+     *  OM_fetch_word_length, and then had five context fields written into
+     *  it.  `nil blockCopy: 1' -- reachable from ordinary code the moment a
+     *  method declares <primitive: 80> -- sized the new block to nil's zero
+     *  fields and wrote initial ip, ip, sp, argument count and home past the
+     *  end of nil itself (Bugs4 PRIM-2; on the shipping binary a corrupt
+     *  fields report and a core dump, taking every worker with it).
+     *
+     *  The compiler emits blockCopy: with `thisContext' as the receiver and
+     *  nothing else ever legitimately sends it, so refusing anything that is
+     *  not a MethodContext or a BlockContext takes nothing away.  The
+     *  fallback ContextPart>>blockCopy: builds the BlockContext in the
+     *  image, and on a non-context receiver that raises rather than writes.
+     */
+    if (cls != ST_CLASS_BLOCK_CONTEXT && cls != ST_CLASS_METHOD_CONTEXT)
+        return 0;
+    if (cls == ST_CLASS_BLOCK_CONTEXT)
         home = OM_fetch_pointer(ST_CTX_HOME, context);
     else
         home = context;
+    /*
+     *  A BlockContext's home field is written by this primitive and by
+     *  nothing else, but it is reachable through instVarAt:put: on a
+     *  pointer object, so the home taken out of one is not trusted either:
+     *  it must itself be a context, or the block being built is sized from
+     *  an object that is not one.
+     */
+    if (!OM_is_object(home) || !OM_pointer_bit(home)
+     || OM_fetch_word_length(home) <= ST_CTX_HOME)
+        return 0;
     size  = OM_fetch_word_length(home);
     block = OM_instantiate_pointers(ST_CLASS_BLOCK_CONTEXT, size);
     if (!OM_is_object(block))
@@ -1908,6 +1990,26 @@ string_from_c(const char *text, size_t n)
     return s;
 }
 
+/*
+ *  A Smalltalk byte object as a C string, or refused.
+ *
+ *  Refused when it contains a NUL, and that is the whole of Bugs4 PRIM-4.
+ *  Smalltalk Strings carry a length; C strings end at the first zero byte.
+ *  Copying all the bytes and appending a terminator, as this used to do,
+ *  hands open(2) or connect(2) or getenv(3) a name that STOPS at the
+ *  interior NUL -- so `FileStream fileNamed: (\'AAA\', nulChar asString,
+ *  \'BBB\')' answered a stream and wrote a file called AAA, and the caller
+ *  was told nothing.  Every argument that reaches the outside world through
+ *  a C string has the same shape: a path, a host name, an environment
+ *  variable's name, a connection string.  Silently operating on a prefix of
+ *  what was asked for is the worst of the three possible answers -- the
+ *  other two being the whole name, which C cannot express, and a refusal.
+ *
+ *  A refusal it is.  Returning zero fails the primitive, and every caller
+ *  here already treats that as failure and falls back to the image, where
+ *  the file or socket error is raised in Smalltalk and can be handled;
+ *  nothing is silently renamed and nothing crashes.
+ */
 static int
 c_from_string(st_oop s, char *out, size_t max)
 {
@@ -1919,8 +2021,13 @@ c_from_string(st_oop s, char *out, size_t max)
     n = OM_fetch_byte_length(s);
     if (n >= max)
         return 0;
-    for (i = 0; i < n; ++i)
-        out[i] = (char) OM_fetch_byte(i, s);
+    for (i = 0; i < n; ++i) {
+        uint8_t     byte = OM_fetch_byte(i, s);
+
+        if (byte == 0)
+            return 0;
+        out[i] = (char) byte;
+    }
     out[n] = '\0';
     return 1;
 }
@@ -2056,8 +2163,23 @@ primitive_file_command(void)
     case 4: {                                   /*  open  */
         char    path[1024];
 
-        if (!c_from_string(name, path, sizeof path))
-            return 0;
+        /*
+         *  A name C cannot carry -- longer than the buffer, or holding a
+         *  NUL, which c_from_string now refuses rather than truncating
+         *  (Bugs4 PRIM-4) -- is answered FALSE rather than failing the
+         *  primitive.  False is this primitive's own way of saying a
+         *  command did not work, and doCommand:name:page:error: turns it
+         *  into `open:' with the last error attached; failing instead ran
+         *  off the end of doPrimCommand:, which has no fallback body and so
+         *  answered the receiver, and the caller's `ifFalse:' then raised
+         *  NonBooleanReceiver naming the path.  The refusal is right; the
+         *  way it was reported was not.
+         */
+        if (!c_from_string(name, path, sizeof path)) {
+            posix_errno = EINVAL;
+            answer = ST_FALSE;
+            break;
+        }
         /*
          *  CREATING, because by the time the image opens a file it has
          *  already decided the file should exist: FileStream newFileNamed:
@@ -2163,10 +2285,26 @@ primitive_file_command(void)
             n = 1;
         got = st_file_pread(fd, bytes, sizeof bytes,
                             (int64_t) (n - 1) * POSIX_PAGE_SIZE);
+        /*
+         *  A read that FAILED is not a read that found nothing.
+         *
+         *  This answered false for both, which cost nothing while the image
+         *  raised on false anyway -- 1983's PosixFile>>read: passed an error
+         *  string and every false became `read:, Success'.  Once false was
+         *  given its real meaning (Bugs4 FILES-A: the ordinary end of a file
+         *  answers nil), the two outcomes had to be told apart here, because
+         *  nothing above can tell them apart afterwards: a file the kernel
+         *  lists and will not let you read came back as a file with no bytes
+         *  in it.  /proc/self/mem is the everyday one -- open succeeds, stat
+         *  says zero, and the first pread is EIO -- and the static file
+         *  handler served it as an empty 200 instead of refusing it.
+         *
+         *  Failing the primitive puts errno in front of the image, which is
+         *  where read: takes the words it raises with.
+         */
         if (got < 0) {
             posix_errno = errno;
-            answer = ST_FALSE;
-            break;
+            return 0;
         }
         /*
          *  Page one always exists, even in an empty file.
@@ -3021,13 +3159,40 @@ method_word_slots(st_oop method)
             : OM_fetch_byte_length(method) / (uint32_t) sizeof(st_oop);
 }
 
+/*
+ *  A CompiledMethod is the one object in the system whose leading BYTES are
+ *  read and written as object pointers -- that is what its header and
+ *  literal frame are -- so these two are the one place where reading a byte
+ *  object with a pointer stride is correct.  It is correct for nothing else.
+ *
+ *  The receiver was checked only for being present.  `1.5 objectAt: 1'
+ *  therefore answered a word of the float's bits read as an oop, and
+ *  `aString objectAt: 1 put: anObject' wrote an oop where characters live
+ *  AND released a reference count on whatever those characters decoded to --
+ *  a free of an object nobody freed, waiting for the object table to hand
+ *  the number out again (Bugs4 PRIM-1; the read is bounded by
+ *  method_word_slots so it never left the allocation, which is why only the
+ *  write is a memory fault).
+ *
+ *  CompiledMethod is the only class in the image that declares primitives 68
+ *  and 69, and its fallback is `self primitiveFailed', so restricting them
+ *  to it costs nothing any sender has: the reflective write the 1983
+ *  compiler needs stays, and everything else raises.
+ */
+static int
+object_at_receiver_ok(st_oop method)
+{
+    return OM_is_present(method)
+        && OM_fetch_class(method) == ST_CLASS_COMPILED_METHOD;
+}
+
 static int
 primitive_object_at(void)
 {
     st_oop      method = ST_stack_value(1);
     st_int      index;
 
-    if (!OM_is_present(method) || !integer_arg(0, &index))
+    if (!object_at_receiver_ok(method) || !integer_arg(0, &index))
         return 0;
     if (index < 1 || (uint32_t) index > method_word_slots(method))
         return 0;
@@ -3043,7 +3208,7 @@ primitive_object_at_put(void)
     st_oop      value  = ST_stack_value(0);
     st_int      index;
 
-    if (!OM_is_present(method) || !integer_arg(1, &index))
+    if (!object_at_receiver_ok(method) || !integer_arg(1, &index))
         return 0;
     if (index < 1 || (uint32_t) index > method_word_slots(method))
         return 0;
@@ -3667,9 +3832,27 @@ primitive_shallow_copy(void)
     if (!OM_is_object(receiver))
         return 0;               /*  a SmallInteger is already its own copy */
     if (OM_pointer_bit(receiver)) {
-        uint32_t    n = OM_fetch_word_length(receiver);
+        uint32_t    n     = OM_fetch_word_length(receiver);
+        om_shape    shape = shape_of_class(OM_fetch_class(receiver));
 
-        copy = OM_instantiate_pointers(OM_fetch_class(receiver), n);
+        /*
+         *  In the shape its class asks for, not always an ordinary object.
+         *  A copy used to be allocated with OM_instantiate_pointers
+         *  whatever the receiver was, so `aWeakArray copy' answered an
+         *  Array that happened to have WeakArray as its class -- strong in
+         *  every slot -- and WeakKeyDictionary>>postCopy, which copies
+         *  every association, turned a copied weak dictionary into one
+         *  that holds its keys for ever.  The whole point of the class was
+         *  lost in the one message that is supposed to preserve it
+         *  (Bugs4 MEM-2).
+         */
+        if (shape.ephemeron)
+            copy = OM_instantiate_ephemeron(OM_fetch_class(receiver), n);
+        else if (shape.weak)
+            copy = OM_instantiate_weak(OM_fetch_class(receiver), n,
+                                       shape.fixed < n ? shape.fixed : n);
+        else
+            copy = OM_instantiate_pointers(OM_fetch_class(receiver), n);
         if (!OM_is_object(copy))
             return 0;
         for (i = 0; i < n; ++i)
@@ -3935,11 +4118,72 @@ primitive_relinquish_processor(void)
  *  135 does NOT.  It is the same free-running counter primitive 99 answers
  *  -- see ST_time_ms_clock for why the two had to be made one, and what
  *  eight hours of disagreement between them did to every Delay.
+ *
+ *  Answered UNMASKED, where primitive 99 still stores the low thirty bits
+ *  into its four bytes.  The Blue Book's clock wraps every 12.43 days and
+ *  the image compared against it with `<=', so a Delay that straddled a
+ *  wrap was never due again and the timing process spun for ever (Bugs4
+ *  CHRON-1).  Sixty-two bits of SmallInteger is 146 million years, so
+ *  every image-side comparison -- Delay's queue, millisecondsToRun:, a
+ *  socket deadline -- is a plain one again, and the only place the modulus
+ *  survives is Delay>>armTimer, which masks the target it hands primitive
+ *  136.  See ST_time_ms_wide.
  */
 static int
 primitive_millisecond_clock(void)
 {
-    return answer_positive(ST_time_ms_clock(), 1);
+    return answer_positive((uint64_t) ST_time_ms_wide(), 1);
+}
+
+/*
+ *  219 -- this system's own: the host's offset from UTC, in seconds.
+ *
+ *  Positive east of Greenwich, the way tm_gmtoff and Pharo's
+ *  LocalTimeZone>>primOffset both count it, and it is asked at the moment
+ *  it is needed rather than cached, because it changes twice a year.
+ *
+ *  1983 had no such primitive and did not need one: Time class>>currentTime:
+ *  carries `m570 _ 16505. m571 _ 305', the Alto's California constants --
+ *  eight hours west, daylight saving from the last Sunday in April to the
+ *  last Sunday in October.  An image built anywhere else answered
+ *  California time and said nothing, and the pharo-time profile, whose
+ *  LocalTimeZone stub answered a flat zero, answered UTC instead: the two
+ *  profiles in one build disagreed by seven hours (Bugs4 CHRON-3).
+ *
+ *  localtime_r is what knows the answer, because it reads the host's zone
+ *  database -- the real rule for the real place, not a rule from 1983 --
+ *  and it is asked about NOW, so a date months away is offset by today's
+ *  rule.  That is the same approximation Pharo's own primitive makes.
+ */
+static int
+primitive_local_utc_offset(void)
+{
+    time_t      now = time(NULL);
+    long        offset;
+#ifdef ST_WINDOWS
+    struct tm   local;
+    struct tm   utc;
+
+    if (localtime_s(&local, &now) != 0 || gmtime_s(&utc, &now) != 0)
+        return 0;
+    /*
+     *  Windows has no tm_gmtoff, so the difference is taken between the two
+     *  broken-down times.  mktime interprets a struct tm as LOCAL time, so
+     *  applying it to the UTC one answers the instant that clock reading
+     *  would have been locally, and the gap between that and now is the
+     *  offset.  isdst is cleared so mktime does not apply the correction a
+     *  second time.
+     */
+    utc.tm_isdst = 0;
+    offset = (long) (now - mktime(&utc));
+#else
+    struct tm   local;
+
+    if (localtime_r(&now, &local) == NULL)
+        return 0;
+    offset = local.tm_gmtoff;
+#endif
+    return answer_integer((st_int) offset, 1);
 }
 
 /*
@@ -4624,7 +4868,8 @@ enum {
     NET_CMD_TLS_START       = 22,   /*  handle, host name          */
     NET_CMD_TLS_HANDSHAKE   = 23,   /*  handle                     */
     NET_CMD_IS_TLS          = 24,   /*  handle                     */
-    NET_CMD_ENVIRONMENT     = 25    /*  name                       */
+    NET_CMD_ENVIRONMENT     = 25,   /*  name                       */
+    NET_CMD_DISARM          = 26    /*  handle, mask               */
 };
 
 #define NET_SCRATCH_BYTES   65536
@@ -4932,6 +5177,15 @@ primitive_net_command(void)
                           ? ST_TRUE : ST_NIL);
     }
 
+    case NET_CMD_DISARM: {
+        int64_t handle = net_handle_arg(a);
+
+        if (handle < 0 || !OM_is_int(b))
+            return 0;
+        return net_answer(NET_disarm(handle, (int) OM_int_value(b)) == 0
+                          ? ST_TRUE : ST_NIL);
+    }
+
     case NET_CMD_CONNECT: {
         char        host[256];
         int64_t     handle;
@@ -5152,7 +5406,16 @@ enum {
     ODBC_IMPORTED_KEYS      = 27,
     ODBC_BIND_DATE          = 28,
     ODBC_BIND_TIME          = 29,
-    ODBC_BIND_TIMESTAMP     = 30
+    ODBC_BIND_TIMESTAMP     = 30,
+    /*
+     *  A ByteArray parameter has its own command for the reason the dates
+     *  have theirs: the primitive cannot tell a ByteArray from a String
+     *  once it is here.  Both are byte objects, and ByteArray is not one of
+     *  the guaranteed object pointers, so the class cannot be named in C
+     *  without a lookup that would have to survive a snapshot.  The caller
+     *  knows, and says so by which command it sends (Bugs4 FILES-1).
+     */
+    ODBC_BIND_BYTES         = 31
 };
 
 /*
@@ -5182,6 +5445,19 @@ odbc_string(st_oop s, int *ok)
     if (!OM_is_object(s) || OM_pointer_bit(s))
         return NULL;
     n = OM_fetch_byte_length(s);
+    /*
+     *  A NUL inside is refused rather than truncated, for c_from_string's
+     *  reason (Bugs4 PRIM-4): what comes through here is a connection
+     *  string, a SQL statement or a catalogue pattern, and a driver handed
+     *  the prefix would connect somewhere else or run a different
+     *  statement, with nothing said.  The bound PARAMETERS do not come
+     *  through here -- they carry their length to SQLBindParameter and may
+     *  hold any byte, which is Bugs4 FILES-1 in odbc_bind_value.
+     */
+    for (i = 0; i < n; ++i) {
+        if (OM_fetch_byte(i, s) == 0)
+            return NULL;
+    }
     text = malloc((size_t) n + 1);
     if (!text)
         return NULL;
@@ -5190,6 +5466,48 @@ odbc_string(st_oop s, int *ok)
     text[n] = '\0';
     *ok = 1;
     return text;
+}
+
+/*
+ *  A Smalltalk byte object as a buffer of its REAL length, on the C heap.
+ *
+ *  This is what a bound PARAMETER goes through, and the difference from
+ *  odbc_string is the whole of Bugs4 FILES-1.  odbc_bind_value used to bind
+ *  every byte object with `strlen(text)', which is not the object's length:
+ *  it is the distance to the first zero byte.  A String with an embedded NUL
+ *  lost everything from the NUL on and a ByteArray BLOB was cut at its first
+ *  0x00 -- a six-byte BLOB #(1 2 0 3 4 255) went into SQLite as two bytes,
+ *  and one beginning with zero went in empty.  SQLBindParameter is handed a
+ *  length and honours it; only the length handed in was wrong.
+ *
+ *  A NUL is not refused here, unlike odbc_string.  A parameter is data, and
+ *  data may hold any byte; a connection string or a SQL statement is not,
+ *  and truncating one of those silently connects somewhere else.
+ *
+ *  The buffer is one byte longer than the object and zero-terminated, so
+ *  that a zero-length object still answers a real pointer -- ODBC wants a
+ *  buffer address even for an empty parameter -- and so that the text path
+ *  can hand it to anything that reads a C string as well as its length.
+ */
+static void *
+odbc_bytes(st_oop s, size_t *length)
+{
+    uint32_t    n;
+    uint32_t    i;
+    char       *bytes;
+
+    *length = 0;
+    if (!OM_is_object(s) || OM_pointer_bit(s))
+        return NULL;
+    n = OM_fetch_byte_length(s);
+    bytes = malloc((size_t) n + 1);
+    if (!bytes)
+        return NULL;
+    for (i = 0; i < n; ++i)
+        bytes[i] = (char) OM_fetch_byte(i, s);
+    bytes[n] = '\0';
+    *length = (size_t) n;
+    return bytes;
 }
 
 /*
@@ -5324,16 +5642,15 @@ odbc_bind_value(int statement, int index, st_oop value)
          *  turning.  Bound as characters, which every database converts
          *  from.
          */
-        char   *text;
-        int     ok;
+        void   *bytes;
+        size_t  length;
         int     result;
 
-        text = odbc_string(value, &ok);
-        if (!ok)
+        bytes = odbc_bytes(value, &length);
+        if (!bytes)
             return -1;
-        result = ST_odbc_bind_string(statement, index, text ? text : "",
-                                     text ? strlen(text) : 0);
-        free(text);
+        result = ST_odbc_bind_string(statement, index, bytes, length);
+        free(bytes);
         return result;
     }
     return -1;
@@ -5528,6 +5845,25 @@ primitive_odbc_command(void)
                                              OM_is_int(c)
                                              ? (int) OM_int_value(c) : 0) == 0
                            ? ST_TRUE : ST_FALSE);
+
+    /*
+     *  A ByteArray, bound as SQL_C_BINARY and at its real length.  Sent as
+     *  its own command because the primitive cannot tell a ByteArray from a
+     *  String; see the enum above and Bugs4 FILES-1.
+     */
+    case ODBC_BIND_BYTES: {
+        void   *bytes;
+        size_t  length;
+        int     result;
+
+        bytes = odbc_bytes(c, &length);
+        if (!bytes)
+            return 0;
+        result = ST_odbc_bind_bytes(odbc_int_arg(a), odbc_int_arg(b),
+                                    bytes, length);
+        free(bytes);
+        return odbc_answer(result == 0 ? ST_TRUE : ST_FALSE);
+    }
 
     case ODBC_BIND_DATE:
         return odbc_answer(ST_odbc_bind_date(odbc_int_arg(a), odbc_int_arg(b),
@@ -5788,6 +6124,12 @@ ST_primitive_dispatch(unsigned index)
     case 252: return primitive_remove_ready_process();
     case 253: return primitive_first_ready_process_at();
     case 231: return SCHED_primitive_detach();
+    /*
+     *  236: the mourn queue, in src/om/finalize.c with the queue it
+     *  drains -- the same arrangement as 231 and 232, which are in
+     *  the scheduler with the lists they touch.
+     */
+    case 236: return OM_primitive_next_mourned();
     case 232: return SCHED_primitive_terminate_active();
     case 250: return primitive_full_collect();
     case 247: return primitive_context_resume();
@@ -5843,6 +6185,7 @@ ST_primitive_dispatch(unsigned index)
     case 233: return primitive_float_log10();
     case 229: return primitive_float_raised_to();
     case 228: return primitive_compile_method();
+    case 234: return ST_prim_migrate_instances();
     /*  Told apart by arity; see primitive_last_error.  */
     case 132: return st_vm.argument_count == 0
                      ? primitive_last_error()
@@ -5877,6 +6220,7 @@ ST_primitive_dispatch(unsigned index)
     case 230: return primitive_relinquish_processor();
     case 242: return primitive_wheel_delta();
     case 210: return primitive_clipboard();
+    case 219: return primitive_local_utc_offset();
     case 240: return primitive_utc_microsecond_clock();
 
     case 110: return primitive_equivalent();
@@ -5997,9 +6341,13 @@ static const primitive_entry primitive_table[] = {
     { 233, ST_PRIM_PRESENT,  "Float log -- log10; ours, no Blue Book number" },
     { 229, ST_PRIM_PRESENT,  "Float raisedTo: -- ours; no Blue Book number" },
     { 228, ST_PRIM_PRESENT,  "Compiler class compile -- ours"    },
+    { 234, ST_PRIM_PRESENT,  "Behavior migrate instances -- ours" },
     { 132, ST_PRIM_PRESENT,  "Object instVarsInclude:"          },
     { 100, ST_PRIM_PRESENT,  "signal a semaphore at a time"     },
-    { 135, ST_PRIM_PRESENT,  "millisecond clock"                },
+    { 135, ST_PRIM_PRESENT,  "millisecond clock -- unmasked; see "
+                             "ST_time_ms_wide"                  },
+    { 219, ST_PRIM_PRESENT,  "the host's offset from UTC in seconds -- "
+                             "ours; no Blue Book number"        },
     { 254, ST_PRIM_PRESENT,  "FileStream class nativeLineEnd -- ours" },
     { 129, ST_PRIM_PRESENT,  "Odbc primCommand:with:with:with: -- ours" },
     { 208, ST_PRIM_PRESENT,  "Socket primCommand:with:with:with: -- ours" },
@@ -6054,7 +6402,9 @@ static const primitive_entry primitive_table[] = {
     { 252, ST_PRIM_PRESENT,  "Processor primRemoveReadyProcess: -- ours" },
     { 253, ST_PRIM_PRESENT,  "Processor primFirstReadyProcessAt: -- ours" },
     { 250, ST_PRIM_PRESENT,  "SystemDictionary garbageCollect -- this "
-                             "system's own"                     }
+                             "system's own"                     },
+    { 236, ST_PRIM_PRESENT,  "Finalizer class primNextMournedObject"
+                             "Signalling: -- this system's own" }
 };
 
 st_primitive_status

@@ -28,8 +28,12 @@
 #include "interp.h"
 
 #include <string.h>
+#include <limits.h>
 
 #define ALL_ONES        0xFFFFu
+
+/*  The largest coordinate a blit may name; see GFX_blit_from_oop below.  */
+#define GFX_COORD_LIMIT 1073741824      /*  2^30  */
 
 /*  RightMasks at: n+1 is n low bits set.  */
 static const uint16_t right_masks[17] = {
@@ -76,6 +80,45 @@ rotate16(uint16_t v, int by)
     return (uint16_t) ((v << by) | (v >> (16 - by)));
 }
 
+/*
+ *  How many 16-bit words a bitmap object really holds.
+ *
+ *  A Form's bits are addressed here as an array of 16-bit words, and every
+ *  bound in the blit loop is a word index, so this number is the only thing
+ *  standing between a wrong extent and the rest of the heap.  It is not
+ *  OM_fetch_word_length: in the 64-bit memory that accessor answers the
+ *  object's `size' field, which counts WORDS for a words-format object and
+ *  BYTES for a byte-format one -- the two are the same accessor because a
+ *  byte object and a word object are told apart by the format flags, not by
+ *  the field.  So a String of sixteen bytes reported sixteen words, twice
+ *  what it has, and `Form new extent: 16@16 offset: 0@0 bits: (String new:
+ *  16)' then passed the extent check below with room for half the blit.
+ *  `f black' wrote sixteen bytes past the allocation and the next malloc or
+ *  collection died with `free(): invalid size', taking every worker with it
+ *  (Bugs4 GRAPHICS-1).
+ *
+ *  A String is not a hostile argument here.  `Form class>>stringScanLineOfWidth:'
+ *  is 1983's own, it builds `String new: width+15//16*2', and Form>>storeOn:
+ *  and Form class>>extent:fromCompactArray:offset: both blit through such a
+ *  form -- a String is how a scan line is run-length encoded for storage.
+ *  So the answer is to count the bytes correctly, not to refuse them: an odd
+ *  final byte is simply not addressable as a word and is dropped.
+ *
+ *  The Blue Book memory needs none of this.  There `size' is the chunk
+ *  length in 16-bit words for every format, which is exactly what a bitmap
+ *  wants, and a byte object's odd bit is the only correction -- one that
+ *  rounds the same way this does.
+ */
+static uint32_t
+bitmap_word_length(st_oop bits)
+{
+#if defined(ST_OM_MT)
+    if (OM_head(bits)->flags & ST_FMT_BYTES)
+        return OM_fetch_byte_length(bits) / 2;
+#endif
+    return OM_fetch_word_length(bits);
+}
+
 int
 GFX_form_from_oop(st_oop form, gfx_form *out)
 {
@@ -85,22 +128,77 @@ GFX_form_from_oop(st_oop form, gfx_form *out)
 
     if (!OM_is_object(form))
         return 0;
+    /*
+     *  A Form is four named fields -- bits, width, height, offset -- and
+     *  three of them are read below.  Nothing between the image and here
+     *  guarantees that the object in destForm actually is one: `BitBlt
+     *  destForm: 3@4 ...' puts a two-field Point there, and fetching field 2
+     *  of it read eight bytes past the end of the object (Bugs4 GRAPHICS-2).
+     *  On the shipping binary the word past a Point usually failed to
+     *  validate as an oop and the primitive failed safe, which is why this
+     *  went unnoticed; under ASAN it is a plain heap-buffer-overflow, and
+     *  the same fetch on nil -- a pointer object with no fields at all --
+     *  reads past the smallest object in the image.
+     *
+     *  Refusing anything that is not shaped like a Form is the whole fix,
+     *  and it costs nothing real: the primitive fails and the Smalltalk
+     *  simulation in BitBlt takes over, which is what a wrong argument is
+     *  supposed to get.
+     */
+    if (!OM_pointer_bit(form) || OM_fetch_word_length(form) < ST_FORM_OFFSET + 1)
+        return 0;
     bits   = OM_fetch_pointer(ST_FORM_BITS, form);
     width  = OM_fetch_pointer(ST_FORM_WIDTH, form);
     height = OM_fetch_pointer(ST_FORM_HEIGHT, form);
     if (!OM_is_object(bits) || !OM_is_int(width) || !OM_is_int(height))
         return 0;
+    /*
+     *  And the bits have to be raw storage.  A pointer object here would be
+     *  read -- and, as a destination, WRITTEN -- as 16-bit words over the
+     *  top of its object pointers, which stays inside the allocation and so
+     *  is invisible until the collector walks the half-overwritten oops.
+     *  There is no such Form in the image; there is nothing stopping anyone
+     *  writing `bits: (Array new: 64)' either.
+     */
+    if (OM_pointer_bit(bits))
+        return 0;
+    /*
+     *  The extent is a pair of SmallIntegers, and a SmallInteger here is
+     *  sixty-two bits wide -- so `width' is not an int until it has been
+     *  looked at.  Truncating first was wrong twice over: `Form new extent:
+     *  4294967301@4' became a form four pixels wide, and `extent:
+     *  2147483647@100' overflowed `width + 15' into a NEGATIVE raster that
+     *  the size check below then compared as unsigned and let through, and
+     *  `extent: 1048576@65536' overflowed the check's own multiply.  Both
+     *  are signed overflow, which is undefined behaviour and which the
+     *  UBSan build reports; neither wrote out of bounds, because word_at and
+     *  word_put hold the line, but a form is nonsense long before that and
+     *  should be refused where it is described.
+     *
+     *  The product is taken in 64 bits so it cannot wrap, and a raster too
+     *  wide to be an int is refused rather than truncated.
+     */
+    {
+        st_int      w = OM_int_value(width);
+        st_int      h = OM_int_value(height);
+        int64_t     raster;
+
+        if (w <= 0 || h <= 0 || w > INT_MAX || h > INT_MAX)
+            return 0;
+        /*  Scan lines are word aligned, so a 17-pixel form is two words
+         *  wide.  */
+        raster = ((int64_t) w + 15) / 16;
+        if (raster > INT_MAX)
+            return 0;
+        if (raster * (int64_t) h > (int64_t) bitmap_word_length(bits))
+            return 0;           /*  the bitmap is too small for its extent  */
+        out->width  = (int) w;
+        out->height = (int) h;
+        out->raster = (int) raster;
+    }
     out->oop    = form;
     out->bits   = OM_word_base(bits);
-    out->words  = OM_fetch_word_length(bits);
-    out->width  = (int) OM_int_value(width);
-    out->height = (int) OM_int_value(height);
-    /*  Scan lines are word aligned, so a 17-pixel form is two words wide.  */
-    out->raster = (out->width + 15) / 16;
-    if (out->width <= 0 || out->height <= 0)
-        return 0;
-    if ((uint32_t) (out->raster * out->height) > out->words)
-        return 0;               /*  the bitmap is too small for its extent  */
+    out->words  = bitmap_word_length(bits);
     return 1;
 }
 
@@ -156,8 +254,46 @@ blit_logging(void)
 static void
 clip_range(gfx_blit *b)
 {
-    int clip_right  = b->clip_x + b->clip_w;
-    int clip_bottom = b->clip_y + b->clip_h;
+    int clip_right;
+    int clip_bottom;
+
+    /*
+     *  First the clipping rectangle itself, against the destination form.
+     *
+     *  Chapter 18 does not do this, because in the Xerox system a clipRect
+     *  always came from a view and was always inside its form; the book's
+     *  clipRange only intersects the blit with the clipRect and trusts the
+     *  rest.  Here the clipRect is an instance variable anyone can set, and
+     *  a clipRect wider than the form does not run off the end of the
+     *  bitmap -- word_put below sees to that -- it WRAPS: a dest x past the
+     *  form's width still computes `dy * raster + dx / 16', which is a word
+     *  belonging to some later scan line of the same bitmap.  So the writes
+     *  land inside the form, on the wrong rows, and the picture is quietly
+     *  garbled with nothing out of bounds to catch (Bugs4, section 11).
+     *
+     *  Squeak's BitBlt clips the clipRect the same way and for the same
+     *  reason.  Nothing the image itself does is affected: a clipRect
+     *  already inside the form is unchanged by all four of these.
+     */
+    if (b->clip_x < 0) {
+        b->clip_w += b->clip_x;
+        b->clip_x  = 0;
+    }
+    if (b->clip_y < 0) {
+        b->clip_h += b->clip_y;
+        b->clip_y  = 0;
+    }
+    if (b->clip_x + b->clip_w > b->dest.width)
+        b->clip_w = b->dest.width - b->clip_x;
+    if (b->clip_y + b->clip_h > b->dest.height)
+        b->clip_h = b->dest.height - b->clip_y;
+    if (b->clip_w < 0)
+        b->clip_w = 0;
+    if (b->clip_h < 0)
+        b->clip_h = 0;
+
+    clip_right  = b->clip_x + b->clip_w;
+    clip_bottom = b->clip_y + b->clip_h;
 
     if (b->dest_x >= b->clip_x) {
         b->sx = b->source_x;
@@ -422,10 +558,30 @@ GFX_blit_from_oop(st_oop bitblt, gfx_blit *b)
     targets[8] = &b->clip_w;   targets[9] = &b->clip_h;
     for (i = 0; i < 10; ++i) {
         st_oop  value = OM_fetch_pointer(integer_fields[i], bitblt);
+        st_int  v;
 
         if (!OM_is_int(value))
             return 0;
-        *targets[i] = (int) OM_int_value(value);
+        v = OM_int_value(value);
+        /*
+         *  A SmallInteger is sixty-two bits and these are ints, so the cast
+         *  alone is not a check: `destOrigin: 4294967296@0' truncated to
+         *  zero and blitted somewhere the caller did not ask for, and
+         *  `destOrigin: 2147483647@0 extent: 2147483647@1' overflowed
+         *  `dx + w' in clip_range -- signed overflow, which the UBSan build
+         *  reports, and after which the clipping arithmetic is meaningless.
+         *
+         *  A billion is the bound because clip_range adds and subtracts
+         *  these in pairs and nothing else, so two of them must still be an
+         *  int; and because a blit whose coordinates are past a billion
+         *  pixels is not a picture of anything.  Refusing it fails the
+         *  primitive, and copyBits' own fallback then raises only if the
+         *  rectangle it was asked for meets the clipping rectangle -- which,
+         *  at these coordinates, it cannot.
+         */
+        if (v < -GFX_COORD_LIMIT || v > GFX_COORD_LIMIT)
+            return 0;
+        *targets[i] = (int) v;
     }
     return 1;
 }

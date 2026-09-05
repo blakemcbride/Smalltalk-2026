@@ -87,12 +87,30 @@ TonelSource class >> fileFor: pathString [
 
 { #category : 'private' }
 TonelSource class >> stampFrom: aFile [
-	"The file's time and size, as an Array, or nil when it cannot be asked."
+	"The file's time and size, as an Array, or nil when it cannot be asked.
+
+	 THE FILE IS CLOSED AFTERWARDS, and that is not housekeeping.  A File
+	 from fileFor: has never been opened -- 1983's directory answers a
+	 partly initialised File and opens nothing -- and primitive 130 opens
+	 one ON DEMAND for the two commands asked here, caching the descriptor
+	 in the File's own fd field.  Nothing finalizes a File, so dropping it
+	 dropped an open descriptor with it, one per call.
+
+	 The REST server asks this question once per request, through
+	 RestServiceLoader>>classFor: -> reloadIfChanged:, so the descriptors
+	 climbed by one per request and never came back down: Bugs4 NET-2
+	 counted 408 open where 6 had been after 400 calls, which on a host
+	 with the usual `ulimit -n 1024' is a server that stops after about a
+	 thousand requests -- and stops for good, because the accept loop dies
+	 with the first EMFILE (NET-1).  Two questions about a name should cost
+	 no descriptor at all once they are answered."
 	| time size |
-	time := aFile modificationTime.
-	size := aFile sizeOnDisk.
-	(time isKindOf: Integer) ifFalse: [^nil].
-	^Array with: time with: size
+	^[time := aFile modificationTime.
+	  size := aFile sizeOnDisk.
+	  (time isKindOf: Integer)
+		ifTrue: [Array with: time with: size]
+		ifFalse: [nil]]
+		ensure: [aFile close]
 ]
 
 { #category : 'private' }

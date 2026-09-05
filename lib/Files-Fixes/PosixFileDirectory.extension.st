@@ -20,6 +20,18 @@ against /home/blake/notes, and every pattern that did not begin with `*'
 found nothing.  The pattern is the half of the designator it was cut from,
 so it is matched against the half of the name it was cut from, and the
 answer is written back out whole.
+
+Renaming is the same concern from the other end.  A file that has been
+renamed answers to the new name and to nothing else, so the File must be
+told: the Alto directory's rename:newName: ends `file fileName: newName'
+and the POSIX one, which was written from the primitive up rather than
+from the Alto across, renamed on disk and left the File saying the name
+that no longer exists.  Every later read reopened by that name and got
+nothing.  Smalltalk condenseChanges is where it showed -- it writes the
+changed sources to ST80.temp, installs that as SourceFiles at: 2 and
+renames it over the changes file, and the rename was the step that made
+every method's source unreadable, so the one remedy 1983 offers for a
+changes file that has grown too big destroyed what it was condensing.
 "
 Extension { #name : 'PosixFileDirectory' }
 
@@ -158,4 +170,23 @@ PosixFileDirectory >> findKey: aFileName [
 			file doCommand: 3 name: nil page: nil error: 'file not found'.
 			file close.
 			file]
+]
+
+{ #category : '*Files-Fixes' }
+PosixFileDirectory >> rename: aFile newName: newFileName [
+	"Rename aFile to newFileName, and tell aFile its new name.
+
+	 Command 2 of primitive 131 renames on disk.  That is half the job: a
+	 File carries the name it opens itself by, and a File still saying the
+	 old name after the rename opens nothing -- the name is gone from the
+	 file system.  1983's Alto directory sets it (`file fileName: newName',
+	 AltoFileDirectory>>rename:newName:); this one did not.
+
+	 The name written into the File is the one the file must be OPENED by,
+	 which is the pathFor: form, for the same reason initFileName: uses it:
+	 a name a directory hands out is a designator, and a designator that
+	 has to be prefixed before it works is not one."
+
+	self doPrimitive: 2 arg1: (self pathFor: newFileName) arg2: aFile.
+	aFile fileName: (self pathFor: newFileName)
 ]

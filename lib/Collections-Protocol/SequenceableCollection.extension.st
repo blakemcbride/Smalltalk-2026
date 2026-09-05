@@ -63,15 +63,22 @@ SequenceableCollection >> checkCount: n [
 SequenceableCollection >> with: aCollection collect: aBlock [
 	"Element by element, in step.  Signals if the two are different
 	 lengths, because quietly stopping at the shorter one is how a
-	 mismatch turns into a wrong answer instead of an error."
-	| result |
+	 mismatch turns into a wrong answer instead of an error.
+
+	 The answers are gathered in an Array and handed to
+	 speciesFilledWith:, which knows which kinds can be filled by index
+	 and which have to be filled with add:.  Filling `self species new:
+	 self size' directly is what raised `attempt to index non-existent
+	 element' for every OrderedCollection receiver -- the same fault as
+	 sorted: and fixed in the same place (Bugs4 DOCS-1)."
+	| answers |
 	aCollection size = self size
 		ifFalse: [^self error: 'collections are not the same size'].
-	result := self species new: self size.
+	answers := Array new: self size.
 	1 to: self size do: [:i |
-		result at: i put: (aBlock value: (self at: i)
-		                          value: (aCollection at: i))].
-	^result
+		answers at: i put: (aBlock value: (self at: i)
+		                           value: (aCollection at: i))].
+	^self speciesFilledWith: answers
 ]
 
 { #category : '*Collections-Protocol' }
@@ -100,11 +107,60 @@ SequenceableCollection >> sorted: aBlock [
 	 Set and there is nothing better it could answer.  Here there is:
 	 order is what a sequenceable collection is for, so sorting one has
 	 an obvious answer and the species is it.  Pharo's own doctest for
-	 this method is what said so."
-	| ordered result |
-	ordered := (self asSortedCollection: aBlock) asArray.
-	result := self species new: ordered size.
-	1 to: ordered size do: [:i | result at: i put: (ordered at: i)].
+	 this method is what said so, and the manual repeats it: chapter 13
+	 and appendix C both promise `the same kind of collection'.
+
+	 It was promised and not delivered for the growable kinds.  This built
+	 `self species new: ordered size' and filled it with at:put:, which is
+	 right for an Array and for a String and wrong for everything else:
+	 `OrderedCollection new: 3' is an EMPTY collection with room for
+	 three, so the first at:put: was out of range and `(OrderedCollection
+	 withAll: #(3 1 2)) sorted' answered nothing but `attempt to index
+	 non-existent element in an ordered collection' -- on the most-used
+	 growable collection there is (Bugs4 DOCS-1).  A SortedCollection
+	 raised `you must use add:' and a LinkedList failed its primitive in
+	 `new: 0'.  speciesFilledWith: is where the three kinds are told
+	 apart."
+	^self speciesFilledWith: (self asSortedCollection: aBlock) asArray
+]
+
+{ #category : '*Collections-Protocol' }
+SequenceableCollection >> speciesFilledWith: aSequence [
+	"A collection of my species holding those elements, in that order.
+
+	 `self species new: n' followed by at:put: is the 1983 idiom and it
+	 only works for a kind whose `new: n' answers a collection that is
+	 ALREADY n elements long -- an Array, a String, a ByteArray.  For
+	 OrderedCollection and SortedCollection `new: n' is a capacity hint
+	 and the answer is empty; for LinkedList, which is not indexable at
+	 all, `new: n' fails its primitive.  sorted: and with:collect: are the
+	 two methods here that had that shape and no override to rescue them,
+	 and each failed for all three kinds (Bugs4 DOCS-1); copyFrom:to: and
+	 reverse have the shape too and OrderedCollection overrides both, so
+	 they answered all along.
+
+	 So the species is asked rather than assumed: a fixed-size class is
+	 not sent `new:' at all, and a variable one is sent it and then asked
+	 how long the answer came out.  A collection that came out the right
+	 length is filled by index, which preserves the order exactly and is
+	 what an arrayed kind wants; anything else is filled with add:, which
+	 is the only protocol a growable kind has and which appends in order
+	 for an OrderedCollection.
+
+	 A SortedCollection re-sorts what it is given by its OWN sort block,
+	 which is right for it -- a SortedCollection is sorted, that is what
+	 it is -- but wrong for `sorted: aBlock', which asks for a different
+	 order.  SortedCollection>>sorted: therefore does not come through
+	 here; see there."
+	| species result |
+	species := self species.
+	species isVariable ifTrue: [
+		result := species new: aSequence size.
+		result size = aSequence size ifTrue: [
+			1 to: aSequence size do: [:i | result at: i put: (aSequence at: i)].
+			^result]].
+	result := species new.
+	aSequence do: [:each | result add: each].
 	^result
 ]
 
@@ -679,4 +735,78 @@ SequenceableCollection >> mergeSortFrom: first to: last by: aBlock into: scratch
 		k := k + 1].
 	[i <= middle] whileTrue: [self at: k put: (scratch at: i). i := i + 1. k := k + 1].
 	[j <= last] whileTrue: [self at: k put: (scratch at: j). j := j + 1. k := k + 1]
+]
+
+{ #category : '*Collections-Protocol' }
+SequenceableCollection >> indexOfSubCollection: aSubCollection startingAt: anIndex ifAbsent: exceptionBlock [
+	"Where aSubCollection first occurs in me at or after anIndex, or the
+	 block's value.
+
+	 The same clamp String>>findString:startingAt: needed and for the same
+	 reason (Bugs4 COLL-5): 1983 writes `anIndex to: self size -
+	 aSubCollection size + 1 do:', so an index past my end answers the
+	 block cleanly -- the loop never runs -- while an index of zero or
+	 less made the first thing the loop did `self at: 0'.  One end of the
+	 range was outside me and answered; the other was outside me and
+	 raised.  Before my beginning means from my beginning.
+
+	 The rest is 1983's, including its habit of comparing the whole
+	 subcollection rather than stopping at the first mismatch."
+	| firstElement eq |
+	aSubCollection size = 0 ifTrue: [^exceptionBlock value].
+	firstElement := aSubCollection at: 1.
+	(anIndex max: 1) to: self size - aSubCollection size + 1 do: [:i |
+		eq := true.
+		(self at: i) = firstElement ifTrue: [
+			1 to: aSubCollection size do: [:index |
+				(self at: i + index - 1) = (aSubCollection at: index)
+					ifFalse: [eq := false]].
+			eq ifTrue: [^i]]].
+	^exceptionBlock value
+]
+
+{ #category : '*Collections-Protocol' }
+SequenceableCollection >> copyReplaceAll: oldSubCollection with: newSubCollection [
+	"A copy of me with every run of oldSubCollection replaced by
+	 newSubCollection.
+
+	 Both arguments must be COLLECTIONS, and that is the whole of the
+	 change.  1983 measures the replacement with `size' and copies it in
+	 with replaceFrom:to:with:startingAt:, and `Character>>size' is zero
+	 -- a Character is not a collection and answers the basicSize every
+	 Object answers -- so `'abc' copyReplaceAll: 'b' with: $z' found the
+	 `b', replaced it with nothing, and answered 'ac' (Bugs4 COLL-4).  A
+	 method that DELETES what it was asked to substitute, and says
+	 nothing, is the worst shape a papercut can take: the answer is a
+	 String of the right kind and the wrong contents, and it flows on into
+	 whatever asked for it.
+
+	 The argument is refused rather than wrapped up as a one-element
+	 sequence, and the decision is symmetric on purpose.  Wrapping the
+	 REPLACEMENT would fix the line above and leave `'abc' copyReplaceAll:
+	 $b with: 'z'' answering 'abc' unchanged, since indexOfSubCollection:
+	 startingAt: reads the pattern's size the same way and finds a run of
+	 zero characters; a coercion applied to one argument of a pair is how
+	 the confusion got here.  1983 coerces nowhere else in this protocol
+	 either.  So both are checked, in a sentence that names what was
+	 passed, and `String with: $z' is one message away for a caller that
+	 meant a one-character String.
+
+	 Text is a Collection, so the Parser's copyReplaceAll:with: over Texts
+	 is unaffected."
+	| answer startSearch currentIndex |
+	oldSubCollection isCollection
+		ifFalse: [^self error: 'copyReplaceAll: needs a collection to look for, not ' , oldSubCollection class name].
+	newSubCollection isCollection
+		ifFalse: [^self error: 'copyReplaceAll:with: needs a collection to put in, not ' , newSubCollection class name].
+	answer := self.
+	startSearch := 1.
+	[(currentIndex := answer indexOfSubCollection: oldSubCollection startingAt: startSearch) > 0]
+		whileTrue: [
+			answer := answer
+				copyReplaceFrom: currentIndex
+				to: currentIndex + oldSubCollection size - 1
+				with: newSubCollection.
+			startSearch := currentIndex + newSubCollection size].
+	^answer
 ]

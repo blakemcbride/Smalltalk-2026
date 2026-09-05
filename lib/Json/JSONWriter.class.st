@@ -21,6 +21,10 @@ exponent is an optional sign and digits.  A Float that is not finite is
 refused, because JSON has no spelling for infinity or for a NaN and every
 library that writes one anyway produces a document nothing else will read.
 
+STRINGS ARE UTF-8, and are refused when they are not, for the same reason
+and with the same argument.  A String here is bytes; RFC 8259 has one
+encoding and no field to declare another.  See writeString:.
+
 ONE WRITER IS ONE DOCUMENT, like the parser: my state is a stream, an
 indent and a level, and asJsonString makes one of me per call.
 
@@ -163,23 +167,97 @@ JSONWriter >> writeString: aString [
 	 A byte above 126 goes out as itself, which is what makes the output
 	 UTF-8 when the input was: the parser turned escapes into UTF-8 bytes on
 	 the way in, and turning them back into escapes here would double the
-	 size of every document not written in English to no purpose."
+	 size of every document not written in English to no purpose.
 
-	| code |
+	 WHEN THE INPUT WAS, and that was taken on trust.  A String in this
+	 image is bytes, and a byte from 128 to 255 was written out as itself
+	 with nothing asked about it, so a String holding the single Latin-1
+	 byte for `e-acute' -- 0xE9, which any C library or file read as
+	 Latin-1 produces -- became a JSON document that is not UTF-8 and that
+	 no conforming reader will accept, silently (Bugs4).  RFC 8259 says a
+	 document exchanged between systems is UTF-8; there is no encoding
+	 field and no way to say otherwise.  So each sequence is checked as it
+	 is written, which costs nothing for ASCII and one comparison per byte
+	 for the rest, and bytes that are not a sequence are refused with the
+	 same argument the non-finite Floats above are refused with: writing
+	 them anyway produces a document nothing else will read.  A String that
+	 really holds bytes rather than text belongs in a JSON document base64,
+	 which is what lib/Crypto's Base64 is for."
+
+	| i size character code |
 	stream nextPut: $".
-	aString do: [:character |
+	i := 1.
+	size := aString size.
+	[i <= size] whileTrue: [
+		character := aString at: i.
 		code := character asInteger.
-		character = $" ifTrue: [stream nextPutAll: '\"'] ifFalse: [
-		character = $\ ifTrue: [stream nextPutAll: '\\'] ifFalse: [
-		code = 8 ifTrue: [stream nextPutAll: '\b'] ifFalse: [
-		code = 9 ifTrue: [stream nextPutAll: '\t'] ifFalse: [
-		code = 10 ifTrue: [stream nextPutAll: '\n'] ifFalse: [
-		code = 12 ifTrue: [stream nextPutAll: '\f'] ifFalse: [
-		code = 13 ifTrue: [stream nextPutAll: '\r'] ifFalse: [
-		code < 32
-			ifTrue: [self writeUnicodeEscape: code]
-			ifFalse: [stream nextPut: character]]]]]]]]].
+		code > 127
+			ifTrue: [i := self writeUtf8: aString at: i]
+			ifFalse: [
+				i := i + 1.
+				character = $" ifTrue: [stream nextPutAll: '\"'] ifFalse: [
+				character = $\ ifTrue: [stream nextPutAll: '\\'] ifFalse: [
+				code = 8 ifTrue: [stream nextPutAll: '\b'] ifFalse: [
+				code = 9 ifTrue: [stream nextPutAll: '\t'] ifFalse: [
+				code = 10 ifTrue: [stream nextPutAll: '\n'] ifFalse: [
+				code = 12 ifTrue: [stream nextPutAll: '\f'] ifFalse: [
+				code = 13 ifTrue: [stream nextPutAll: '\r'] ifFalse: [
+				code < 32
+					ifTrue: [self writeUnicodeEscape: code]
+					ifFalse: [stream nextPut: character]]]]]]]]]].
 	stream nextPut: $"
+]
+
+{ #category : 'private' }
+JSONWriter >> writeUtf8: aString at: anIndex [
+	"The one UTF-8 sequence beginning at anIndex, written as the bytes it
+	 is; answer the index after it.  Raise if the bytes there are not a
+	 sequence.
+
+	 RFC 3629's grammar and not `a lead byte plus n continuations': the
+	 ranges below are what exclude the three things a naive check lets
+	 through, each of which is a real security hazard rather than a
+	 pedantry.  An OVERLONG form -- C0 80 for a NUL, which is two bytes
+	 that decode to a character one byte can hold -- is how a filter that
+	 looks for a byte gets past.  A SURROGATE half, ED A0 80, is a code
+	 point UTF-8 has no encoding for and UTF-16 readers turn into
+	 something else.  And anything above U+10FFFF, F5 and up, is not a
+	 character at all."
+
+	| lead length second i code |
+	lead := (aString at: anIndex) asInteger.
+	lead < 194 ifTrue: [^self notUtf8At: anIndex in: aString].
+	lead < 224 ifTrue: [length := 2] ifFalse: [
+	lead < 240 ifTrue: [length := 3] ifFalse: [
+	lead < 245 ifTrue: [length := 4] ifFalse: [
+		^self notUtf8At: anIndex in: aString]]].
+	anIndex + length - 1 > aString size ifTrue: [^self notUtf8At: anIndex in: aString].
+	second := (aString at: anIndex + 1) asInteger.
+	"The second byte's range is narrower than 80..BF for four lead bytes,
+	 and that narrowing is the whole of the overlong and surrogate rules."
+	(lead = 224 and: [second < 160]) ifTrue: [^self notUtf8At: anIndex in: aString].
+	(lead = 237 and: [second > 159]) ifTrue: [^self notUtf8At: anIndex in: aString].
+	(lead = 240 and: [second < 144]) ifTrue: [^self notUtf8At: anIndex in: aString].
+	(lead = 244 and: [second > 143]) ifTrue: [^self notUtf8At: anIndex in: aString].
+	i := anIndex + 1.
+	[i < (anIndex + length)] whileTrue: [
+		code := (aString at: i) asInteger.
+		(code < 128 or: [code > 191]) ifTrue: [^self notUtf8At: anIndex in: aString].
+		i := i + 1].
+	stream nextPutAll: (aString copyFrom: anIndex to: anIndex + length - 1).
+	^anIndex + length
+]
+
+{ #category : 'private' }
+JSONWriter >> notUtf8At: anIndex in: aString [
+	"The refusal, naming the byte and where it is -- which is what somebody
+	 holding a String that came out of a file needs in order to find out
+	 what encoding the file was in."
+	| code |
+	code := (aString at: anIndex) asInteger.
+	^JSONError signal: 'the byte ', (code printString: 16), ' at position ',
+		anIndex printString,
+		' of a String is not UTF-8, which is the only encoding JSON has'
 ]
 
 { #category : 'private' }

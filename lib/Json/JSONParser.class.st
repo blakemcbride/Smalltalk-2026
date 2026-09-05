@@ -336,10 +336,16 @@ JSONParser >> reduce: anInteger over: k [
 	 factor but 2 and 5, so the only thing it can share with the numerator
 	 is 2s and 5s, and at most k of each; dividing those out by hand leaves
 	 a numerator and a denominator with no common factor, which is what
-	 reduced would have answered and what Fraction numerator:denominator:
-	 expects to be given, since it does not reduce.  Each division shrinks
-	 the number, and in the ordinary case -- an odd numerator, or one not
-	 divisible by five -- each loop stops on its first test."
+	 reduced would have answered.  Fraction numerator:denominator: reduces
+	 for itself now (Bugs4 NUMBERS-5), so the answer is built through
+	 Fraction class>>coprimeNumerator:denominator:, which is the same
+	 constructor with the gcd left out for a caller that has proved it
+	 unnecessary -- otherwise this method's whole saving would be handed
+	 straight back to Euclid.
+
+	 Each division shrinks the number, and in the ordinary case -- an odd
+	 numerator, or one not divisible by five -- each loop stops on its
+	 first test."
 
 	| n twos fives denominator |
 	n := anInteger.
@@ -349,7 +355,7 @@ JSONParser >> reduce: anInteger over: k [
 	[fives < k and: [n \\ 5 = 0]] whileTrue: [n := n // 5. fives := fives + 1].
 	denominator := (2 raisedTo: k - twos) * (5 raisedTo: k - fives).
 	denominator = 1 ifTrue: [^n].
-	^Fraction numerator: n denominator: denominator
+	^Fraction coprimeNumerator: n denominator: denominator
 ]
 
 { #category : 'private' }
@@ -575,12 +581,25 @@ JSONParser >> leave [
 
 { #category : 'private' }
 JSONParser >> setStream: aStringOrStream [
-	"A String is wrapped; anything else is taken to be a stream already,
-	 which is what lets a file be parsed without being read into memory."
+	"A String is wrapped; anything else must already be a stream, which is
+	 what lets a file be parsed without being read into memory.
 
-	stream := aStringOrStream isString
-		ifTrue: [ReadStream on: aStringOrStream]
-		ifFalse: [aStringOrStream]
+	 ANYTHING ELSE IS REFUSED HERE.  It used to be taken for a stream on
+	 the strength of not being a String, so `JSONParser parse: nil' and
+	 `parse: 42' and `parse: #[1 2 3]' each got as far as the first `atEnd'
+	 and raised a MessageNotUnderstood -- a message about this parser's
+	 insides, from a caller who passed the wrong thing, where every other
+	 refusal in this package is a JSONError saying what was wrong (Bugs4).
+	 The test is for the two messages a parse actually sends, so a stream
+	 of any class this image has or acquires still passes."
+
+	aStringOrStream isString
+		ifTrue: [stream := ReadStream on: aStringOrStream]
+		ifFalse: [
+			((aStringOrStream respondsTo: #atEnd) and: [aStringOrStream respondsTo: #next])
+				ifFalse: [^JSONError signal: 'JSON is read from a String or a Stream, not ',
+					aStringOrStream class name article, ' ', aStringOrStream class name].
+			stream := aStringOrStream]
 ]
 
 { #category : 'private' }

@@ -27,7 +27,7 @@ example
 				[splineCurve add: Sensor waitButton.
 				 Sensor waitNoButton.
 				 aForm displayOn: Display at: splineCurve last]
-			ifFalse: [flag_false]].
+			ifFalse: [flag _ false]].
 	splineCurve computeCurve.
 	splineCurve isEmpty
 		ifFalse: [splineCurve displayOn: Display.

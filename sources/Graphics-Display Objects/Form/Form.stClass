@@ -604,7 +604,7 @@ rotate2: direction
 	temp _ Form extent: self extent.
 	mask white.   "set up the first mask"
 	mask black: (0@0 extent: mask extent//2).
-	quad_ self width // 2.
+	quad _ self width // 2.
 	[quad >= 1] whileTrue:
 		[delta _ direction=1 ifTrue: [quad@0] ifFalse: [0@quad].
 		temp copy: all from: 0@0 in: mask rule: 3.  "First exchange left and right halves"
@@ -622,7 +622,7 @@ rotate2: direction
 		mask copy: all from: (quad//2)@(quad//2) in: mask rule: 1. "Now refine the mask"
 		mask copy: all from: quad negated@0 in: mask rule: 7.
 		mask copy: all from: 0@quad negated in: mask rule: 7.
-		quad_ quad//2]
+		quad _ quad//2]
 "
  [Sensor redButtonPressed] whileFalse:
 	[((Form fromDisplay: (Rectangle new origin: Sensor cursorPoint extent: 128@128))
@@ -678,7 +678,7 @@ rotateBy: angle
 "
 	| f |
 	[Sensor redButtonPressed] whileFalse:
-		[f_ Form fromDisplay: (Sensor cursorPoint extent: 100@15).
+		[f _ Form fromDisplay: (Sensor cursorPoint extent: 100@15).
 		(f rotateBy: 0) displayAt: 100@100.
 		(f rotateBy: 1) displayAt: 85@100.
 		(f rotateBy: 2) displayAt: 0@85.
@@ -846,11 +846,11 @@ storeOn: aStream
 	aStream nextPut: $); crtab: 1.
 	aStream nextPutAll: 'offset: '; print: self offset; nextPut: $)
 "
- | s | s_ WriteStream on: (String new: 2000).
+ | s | s _ WriteStream on: (String new: 2000).
 Form fromUser storeOn: s.
 (Compiler evaluate: s contents) displayAt: 0@0.
 
- | f | f_ Disk file: 'screen.form'.
+ | f | f _ Disk file: 'screen.form'.
 Display storeOn: f.
 f close. f size
 "!

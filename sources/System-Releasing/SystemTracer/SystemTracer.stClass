@@ -54,7 +54,7 @@ writeCloneWithout: aSet
 	If all goes well, it will produce a file called clone.im which is a valid image file"
 
 	| tracer |
-	tracer_ self new.
+	tracer _ self new.
 	tracer doitWithout: aSet.
 	tracer == nil
 		ifTrue:
@@ -243,9 +243,9 @@ initDict
 	writeDict at: Process put: #writeProcess:!
 new: obj class: class length: length trace: traceBlock write: writeBlock
 	| oop objpos endpos |
-	oop_ self oopOf: obj.
+	oop _ self oopOf: obj.
 	(refcts at: oop)=NoRefs ifTrue: "create a new ot entry"
-		[map at: oop put: (maxOop_ maxOop+1).
+		[map at: oop put: (maxOop _ maxOop+1).
 		refcts at: oop put: 1.
 		ot nextWordPut: oop.  "save oop; fill in refct in pass2"
 		ot nextPut: bank +
@@ -262,10 +262,10 @@ new: obj class: class length: length trace: traceBlock write: writeBlock
 			ifFalse:
 				[(map at: oop)>specialObjects size
 					ifTrue: [self error: 'double write!!']].
-	objpos_ file position.
+	objpos _ file position.
 	file skip: length+2*2.
 	traceBlock notNil ifTrue: [self trace: class.  traceBlock value].
-	endpos_ file position.  file position: objpos.
+	endpos _ file position.  file position: objpos.
 	self writeBitField: length+2.  self writePointerField: class.  writeBlock value.
 	file position: endpos!
 preserve: refs
@@ -394,7 +394,7 @@ refctOf: obj
 	^refcts at: (self oopOf: obj)!
 sizeInWordsOf: anObject
 	| class |
-	class_ anObject class.
+	class _ anObject class.
 	class isBytes ifTrue: [^anObject size+1//2].
 	class isVariable ifTrue: [^class instSize+anObject basicSize].
 	^class instSize!
@@ -446,7 +446,7 @@ printDanglingRefs   "SystemTracer new printDanglingRefs."
 			[:name | Transcript print: class; space; nextPutAll: name; cr; endEntry.
 			class removeCategory: name].
 		].
-	f_ Disk file: 'dangling.st'.
+	f _ Disk file: 'dangling.st'.
 	clamped do:
 		[:name |
 		dangling _ self allCallsOn: (Smalltalk associationAt: name) clampedBy: clamped.

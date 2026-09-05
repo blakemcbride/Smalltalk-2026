@@ -204,18 +204,38 @@ a \ct{Socket}, a server is a \ct{ServerSocket}, and a \ct{SocketStream}
 reads either by the line:
 
 \begin{st}
-socket := Socket connectTo: 'example.com' port: 80.
-stream := SocketStream on: socket.
-stream nextPutAll: 'GET / HTTP/1.0'; cr; cr; flush.
-[stream atEnd] whileFalse: [Transcript show: stream nextLine; cr].
-socket close
+Smalltalk at: #Crlf put: (String with: Character cr with: Character lf).
+Smalltalk at: #Sock put: (Socket connectTo: 'example.com' port: 80).
+Smalltalk at: #Strm put: (SocketStream on: Sock).
+Strm nextPutAll: 'GET / HTTP/1.0', Crlf, 'Host: example.com', Crlf, Crlf; flush.
+[Strm atEnd] whileFalse: [Transcript show: Strm nextLine; cr].
+Sock close
 \end{st}
 
+The two spellings there are HTTP's and not this library's. A line of an HTTP
+message ends CR LF, and \ct{cr} on a \ct{SocketStream} puts a carriage return
+and nothing else, so the line ending is written out; and a request without a
+\ct{Host} header is refused by anything behind a modern front end, HTTP/1.0
+or not.
+
+A server is the same three classes the other way round. Take a port the
+system picks, answer one connection on a forked process, and speak to it
+from the same workspace:
+
 \begin{st}
-listener := ServerSocket listenOn: 0.        "0: the system picks; localPort says which"
-[[:c | [c send: (c receiveUpTo: 100)] ensure: [c close]] value: listener accept.
- true] whileTrue: []
+Smalltalk at: #Listener put: (ServerSocket listenOn: 0).
+Smalltalk at: #Peer put: nil.
+Listener localPort.                      "the port the system picked"
+[Peer := Listener accept. Peer send: (Peer receiveUpTo: 100). Peer close] fork.
+Smalltalk at: #Client put: (Socket connectTo: '127.0.0.1' port: Listener localPort).
+Client send: 'ping'.
+Client receiveUpTo: 100.                 "'ping'"
+Client close.
+Listener close
 \end{st}
+
+A real server puts the accept in a loop and forks the reply, which is what
+\ct{HttpServer} does with the same three classes.
 
 \ct{connectTo:port:} waits until the connection is made and raises
 \ct{NetError}, carrying the system's own words, if the host cannot be reached
@@ -487,7 +507,10 @@ HttpClient new readTimeout: 60000; headerAt: 'Authorization' put: token; get: ur
 The reply is an \ct{HttpClientResponse}: \ct{status}, \ct{isSuccess},
 \ct{headerAt:}, \ct{body}, \ct{json}. A 404 is a reply and not an error;
 a host that refuses is a \ct{NetError}; a reply that takes longer than the
-timeout---thirty seconds unless told---is a \ct{TimedOut}. An \ct{https}
+timeout---thirty seconds unless told---is a \ct{TimedOut}, and so is a host
+that answers nothing at all, since \ct{connectTimeout:} bounds the
+connection itself and defaults to the same thirty seconds rather than to
+the operating system's several minutes. An \ct{https}
 URL is answered with TLS, the certificate checked against the system's
 store and its name against the host, and refused with OpenSSL's reason when
 either is wrong (Chapter~\ref{ch:llm}). Every request opens a connection
@@ -544,7 +567,8 @@ make demo-image
 ./st80 -serve demo.im demo/server.json
 \end{plain}
   Three lines say it is up: \ct{st80: serving demo.im on N workers} (four
-  per CPU unless \ct{-workers n} was given), then on the first start only
+  per CPU, and never more than 63, unless \ct{-workers n} was given), then
+  on the first start only
   \ct{demo: made the tables from demo/schema.sqlite}, then
   \ct{rest: listening on port 8080}. The first start made
   \ct{demo/DB.sqlite}---the driver creates the file on connection---and
@@ -657,8 +681,9 @@ Section~\ref{sec:origins} admits it on its own:
 What runs under \ct{./st80 -serve demo.im}, in the operating system's
 terms. One thread waits---in \ct{poll()}, over the listening socket and
 every kept-alive connection---and each arrival goes on a queue. A pool of
-worker threads, four per CPU unless \ct{-workers} says otherwise, each
-takes the next queued request and runs it to its reply. A request that has
+worker threads---four per CPU, and never more than 63, unless
+\ct{-workers} says otherwise---each takes the next queued request and runs
+it to its reply. A request that has
 to wait for anything but the database---the rest of a slow upload, a lock
 another worker holds, a model's answer---gives its worker back and is
 resumed by the next free one when the wait ends; a database call holds its

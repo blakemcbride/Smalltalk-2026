@@ -10,7 +10,8 @@ request line.
 
 No more than that: no user and password, no fragment, no percent-decoding
 -- the path is sent as it was given, which is what a caller who wrote it
-wants.  A URL with no `://', or no host, is refused with a NetError.
+wants.  A URL with no `://', or no host, is refused with a NetError, and so
+is one holding a space or a control character: see setFromString:.
 isSecure says whether the scheme is https, which the client answers with
 TLS when the build has it and refuses by name when it does not.
 "
@@ -28,7 +29,19 @@ HttpUrl class >> fromString: aString [
 
 { #category : 'private' }
 HttpUrl >> setFromString: aString [
+	"A URL holds no control character and no space, and this is where that
+	 is settled rather than at each of the three places a part of it goes on
+	 the wire.  The request line is `METHOD target HTTP/1.1' and the Host
+	 header is the authority: a CR or an LF anywhere in the text writes
+	 headers of the caller's stranger's choosing, and a space in the target
+	 writes a second request line (Bugs4 NET-3).  A URL that really wants
+	 one of those characters spells it percent-escaped, which is what the
+	 escapes are for; nothing here decodes, so an escape stays an escape all
+	 the way to the wire."
 	| i rest slash hostPort colon close portText |
+	(aString anySatisfy: [:c | c asInteger <= 32 or: [c asInteger = 127]])
+		ifTrue: [^NetError new signal:
+			'a URL with a space or a control character in it: ', aString printString].
 	i := 0.
 	1 to: aString size - 2 do: [:k |
 		(i = 0 and: [(aString copyFrom: k to: k + 2) = '://']) ifTrue: [i := k]].

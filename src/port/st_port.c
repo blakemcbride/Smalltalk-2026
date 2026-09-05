@@ -597,7 +597,22 @@ ST_sleep_ns(int64_t ns)
 uint32_t
 ST_time_ms_clock(void)
 {
-    return (uint32_t) ((ST_time_monotonic_ns() / 1000000) & 0x3FFFFFFF);
+    return (uint32_t) (ST_time_ms_wide() & 0x3FFFFFFF);
+}
+
+/*
+ *  The same count without the mask, which is what primitive 135 answers.
+ *
+ *  Written in terms of the same nanosecond read as the narrow one, and the
+ *  narrow one written in terms of THIS, so that the two cannot drift: an
+ *  image that computes a resumption time on the wide clock and a VM that
+ *  compares the arming target against the narrow one have to be reading
+ *  one counter, or the disagreement is the eight-hour one all over again.
+ */
+int64_t
+ST_time_ms_wide(void)
+{
+    return ST_time_monotonic_ns() / 1000000;
 }
 
 /*  ----------  Files  ----------  */

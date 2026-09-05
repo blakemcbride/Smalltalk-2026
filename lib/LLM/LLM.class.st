@@ -45,11 +45,16 @@ text to the block in one piece.
 
 WHAT RAISES.  A reply that is not 2xx is an LLMError carrying the status
 and the body, which is the service's own explanation -- a bad key is 401
-with a sentence.  A service that cannot be reached is a NetError; one that
-takes longer than timeoutSeconds -- five minutes unless told -- is a
-TimedOut.  The whole of the last reply, when it was not streamed, is
-lastResponse, for what a caller wants that this does not surface: token
-counts, the model that actually answered.  lastStopReason is why the model
+with a sentence.  A 2xx reply that is not the shape the service documents
+is an LLMError too, carrying the body: it used to be a
+MessageNotUnderstood from wherever the subclass reached into it, which
+said nothing about the service (Bugs4).  A service that cannot be reached
+is a NetError; one that does not answer the connection at all is a
+TimedOut after HttpClient's thirty seconds rather than the operating
+system's two minutes; one that takes longer than timeoutSeconds -- five
+minutes unless told -- is a TimedOut.  The whole of the last reply, when
+it was not streamed, is lastResponse, for what a caller wants that this
+does not surface: token counts, the model that actually answered.  lastStopReason is why the model
 stopped, in the service's word -- `end_turn', `stop', `refusal' -- for
 either kind of call.
 
@@ -315,6 +320,32 @@ LLM >> toolWireFor: anLLMTool [
 ]
 
 { #category : 'the wire' }
+LLM >> sseDataOf: aLine [
+	"The payload of a server-sent-event `data' line, or nil for a line that
+	 is not one.
+
+	 THE SPACE AFTER THE COLON IS OPTIONAL, which is the whole of this
+	 method.  Both services' readers tested `startsWith: ''data: ''' and
+	 dropped everything else, so `data:{...}' -- which is what the SSE
+	 grammar calls a data line and what a service or a proxy that
+	 normalises its output may send -- was silently no text at all: the
+	 stream ran to its end and answered nothing, with no error anywhere
+	 (Bugs4).  The rule in the specification is that the field name runs to
+	 the colon and ONE optional space after it is not part of the value.
+	 A line with no colon at all is a field with an empty value, and a line
+	 beginning with a colon is a comment -- OpenRouter's keep-alive is
+	 `: OPENROUTER PROCESSING' -- and neither is data."
+
+	| colon |
+	colon := aLine indexOf: $:.
+	colon < 2 ifTrue: [^nil].
+	(aLine copyFrom: 1 to: colon - 1) = 'data' ifFalse: [^nil].
+	^(colon < aLine size and: [(aLine at: colon + 1) = $ ])
+		ifTrue: [aLine copyFrom: colon + 2 to: aLine size]
+		ifFalse: [aLine copyFrom: colon + 1 to: aLine size]
+]
+
+{ #category : 'the wire' }
 LLM >> streamedTextOf: aLine [
 	"The text one line of a streamed reply carries: '' for a line with
 	 none, nil for the line that ends the stream, and an LLMError for a
@@ -427,6 +458,33 @@ LLM >> checked: aReply [
 LLM >> failed: statusInteger body: aString [
 	^(LLMError new) status: statusInteger; body: aString;
 		signal: self class name, ' answered ', statusInteger printString, ': ', aString
+]
+
+{ #category : 'http' }
+LLM >> malformed: aReply because: aReason [
+	"A reply this service answered 2xx with, that is not the shape its API
+	 documents.
+
+	 EVERY FAILURE HERE IS AN LLMError, and a 200 was the one that was not.
+	 The subclasses read a reply by reaching into it -- content, choices,
+	 message -- and a document missing one of those, or carrying a null
+	 where a value belongs, reached the send after it: Bugs4 found `MNU:
+	 do: (sent to nil)' from a reply with no `content', which tells the
+	 caller nothing about the service and sends them reading this package
+	 instead.  It happens for real: a proxy or a gateway in front of the
+	 service answers 200 with its own envelope, and a truncated document
+	 can still parse.
+
+	 The body is carried on the exception, whole, for a caller who wants to
+	 look; the MESSAGE carries the first two hundred characters of it,
+	 because the point of the message is to be read in a log line."
+	| text |
+	text := [aReply asJsonString] on: Error do: [:e | aReply printString].
+	text size > 200 ifTrue: [text := (text copyFrom: 1 to: 200), '...'].
+	^(LLMError new) status: lastStatus; body: text;
+		signal: self class name, ' answered ',
+			(lastStatus ifNil: ['a success']) printString,
+			' with a reply this client cannot read (', aReason, '): ', text
 ]
 
 { #category : 'http' }

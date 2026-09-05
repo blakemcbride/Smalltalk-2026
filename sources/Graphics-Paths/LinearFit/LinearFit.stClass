@@ -27,7 +27,7 @@ example
 		 Sensor redButtonPressed
 			ifTrue: [aLinearFit add: Sensor waitButton. Sensor waitNoButton.
 					aForm displayOn: Display at: aLinearFit last]
-			ifFalse: [flag_false]].
+			ifFalse: [flag _ false]].
 	aLinearFit displayOn: Display
 
 	"LinearFit example."!

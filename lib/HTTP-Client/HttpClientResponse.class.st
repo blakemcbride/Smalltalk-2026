@@ -46,6 +46,31 @@ HttpClientResponse >> readFrom: aStream [
 
 { #category : 'reading' }
 HttpClientResponse >> readFrom: aStream maxBodyBytes: anInteger [
+	"The reply, past any interim ones.
+
+	 A 1xx IS NOT AN ANSWER, it is a note that the answer is coming, and
+	 this read used to take the first status line it saw as final.  `103
+	 Early Hints' is sent unsolicited by real content delivery networks
+	 ahead of the 200, and `100 Continue' by any server that saw an Expect
+	 header, so Bugs4 NET-5 got status 103 and an empty body from an
+	 ordinary fetch and never read the reply at all.  RFC 7230 says a
+	 client must be able to parse and discard any number of them, so the
+	 loop is here; the bound is on how many, because a peer that sends
+	 nothing but interim responses is a peer holding this process open."
+	| interim |
+	interim := 0.
+	[self readOneFrom: aStream maxBodyBytes: anInteger.
+	 status < 100 or: [status > 199]] whileFalse: [
+		(interim := interim + 1) > 8 ifTrue: [
+			^NetError new signal: 'the reply is nothing but interim responses']].
+	^self
+]
+
+{ #category : 'private' }
+HttpClientResponse >> readOneFrom: aStream maxBodyBytes: anInteger [
+	"One status line, its headers, and the stream its body would be read
+	 from.  An interim reply has no body, which HttpBodyStream already
+	 knows from the status."
 	| line space rest |
 	line := aStream nextLine.
 	(line startsWith: 'HTTP/') ifFalse: [^NetError new signal: 'not an HTTP reply: ', line printString].
@@ -64,13 +89,33 @@ HttpClientResponse >> readFrom: aStream maxBodyBytes: anInteger [
 
 { #category : 'private' }
 HttpClientResponse >> readHeadersFrom: aStream [
-	| line colon |
+	"The headers, by lowercase name.
+
+	 A SECOND HEADER OF THE SAME NAME IS REFUSED where it changes where the
+	 body ends -- Content-Length and Transfer-Encoding -- rather than
+	 quietly kept last-wins as every header was.  RFC 7230 requires exactly
+	 that, and the reason is request smuggling: two Content-Lengths mean
+	 this client and whatever is between it and the origin can disagree
+	 about where one reply stops and the next begins, and the disagreement
+	 is the attack.  Bugs4 NET-9.  A repeated Content-Length of the SAME
+	 value is allowed, because that is one framing written twice and there
+	 is nothing to disagree about; anything else is a peer this client
+	 cannot safely read.  Other repeated headers are still last-wins: they
+	 say nothing about framing."
+	| line colon name value old |
 	headers := Dictionary new.
 	[(line := aStream nextLine) isEmpty] whileFalse: [
 		colon := line indexOf: $:.
 		colon > 1 ifTrue: [
-			headers at: (line copyFrom: 1 to: colon - 1) trimmed asLowercase
-				put: (line copyFrom: colon + 1 to: line size) trimmed]]
+			name := (line copyFrom: 1 to: colon - 1) trimmed asLowercase.
+			value := (line copyFrom: colon + 1 to: line size) trimmed.
+			old := headers at: name ifAbsent: [nil].
+			(old notNil
+			 and: [(name = 'content-length' or: [name = 'transfer-encoding'])
+			 and: [old ~= value]])
+				ifTrue: [^NetError new signal: 'the reply frames its body two ways: ',
+					name, ' is both ', old printString, ' and ', value printString].
+			headers at: name put: value]]
 ]
 
 { #category : 'accessing' }

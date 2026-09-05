@@ -18,6 +18,7 @@
 
 #include "om.h"
 #include "census.h"
+#include "finalize.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -224,9 +225,16 @@ test_ephemerons(void)
     OM_set_root_provider(provide_root);
 
     /*
-     *  One: the key is held only by the ephemeron.  Nothing survives -- not
-     *  the key, and not the value that only the ephemeron names.  This is
-     *  the whole difference from an ordinary object, which would keep both.
+     *  One: the key is held only by the ephemeron.  The ephemeron is queued
+     *  to be mourned, and IS NOT emptied: the key and the value it names
+     *  live one more cycle, held by the queue and by nothing else.
+     *
+     *  This used to nil the key here and reclaim both in the same sweep,
+     *  which is the reachability answer and no use to anybody.  What has to
+     *  take a WeakKeyAssociation out of its dictionary is the association,
+     *  in Smalltalk, sending `container removeKey: key' -- and it needs the
+     *  key to say which entry (Bugs4 MEM-2).  So the collector hands it
+     *  over intact and the finalization process sends #mourn.
      */
     eph   = OM_instantiate_ephemeron(ST_CLASS_ARRAY, 2);
     key   = OM_instantiate_pointers(ST_CLASS_ARRAY, 1);
@@ -236,10 +244,59 @@ test_ephemerons(void)
     OM_store_pointer(0, root_object, eph);
     OM_collect();
     CHECK(OM_is_object(eph));           /*  the ephemeron itself is rooted  */
+    CHECK_EQ_INT((int) OM_mourn_pending(), 1);
+    CHECK(OM_is_object(key));
+    CHECK(OM_is_object(value));
+    CHECK_EQ_INT((int) (OM_fetch_pointer(0, eph) == key), 1);
+
+    /*
+     *  A second collection with the queue still holding it changes nothing
+     *  -- the queue is a root, and it must not queue the same ephemeron
+     *  twice, or the image would be told about one death two, three, four
+     *  times over.
+     */
+    OM_collect();
+    CHECK_EQ_INT((int) OM_mourn_pending(), 1);
+    CHECK(OM_is_object(key));
+
+    /*  The finalization process takes it; that is the whole protocol.  */
+    CHECK_EQ_INT((int) (OM_take_mourned() == eph), 1);
+    CHECK_EQ_INT((int) OM_mourn_pending(), 0);
+    CHECK_EQ_INT((int) (OM_take_mourned() == ST_NIL), 1);
+
+    /*
+     *  A fired ephemeron is an ordinary object.  It still holds its key --
+     *  the collector cleared the bit rather than the field -- so with the
+     *  root still on it, everything survives.  That is what stops the same
+     *  death being reported at every collection from here to the end of
+     *  the run; the pending count above, unchanged by a second collection,
+     *  is the same fact from the other side.
+     */
+    OM_collect();
+    CHECK(OM_is_object(eph));
+    CHECK(OM_is_object(key));
+    CHECK(OM_is_object(value));
+    CHECK_EQ_INT((int) OM_mourn_pending(), 0);
+
+    /*  Drop the root and all three go.  */
+    OM_store_pointer(0, root_object, ST_NIL);
+    OM_collect();
+    CHECK(!OM_is_object(eph));
     CHECK(!OM_is_object(key));
     CHECK(!OM_is_object(value));
-    /*  And the dead key was nilled rather than left dangling.  */
-    CHECK_EQ_INT((int) (OM_fetch_pointer(0, eph) == ST_NIL), 1);
+    CHECK_EQ_INT((int) OM_mourn_pending(), 0);
+
+    /*
+     *  An ephemeron nothing reaches at all is not queued: there is nobody
+     *  left to hear the message.  It is swept with its key.
+     */
+    eph   = OM_instantiate_ephemeron(ST_CLASS_ARRAY, 2);
+    key   = OM_instantiate_pointers(ST_CLASS_ARRAY, 1);
+    OM_store_pointer(0, eph, key);
+    OM_collect();
+    CHECK(!OM_is_object(eph));
+    CHECK(!OM_is_object(key));
+    CHECK_EQ_INT((int) OM_mourn_pending(), 0);
 
     /*
      *  Two: the key is held elsewhere.  Now the whole ephemeron is strong,
@@ -292,6 +349,14 @@ test_ephemerons(void)
     OM_store_pointer(0, root_object, ST_NIL);
     OM_store_pointer(1, root_object, ST_NIL);
     OM_store_pointer(2, root_object, ST_NIL);
+    OM_collect();
+    /*
+     *  Everything made above is unreachable now, so every ephemeron among
+     *  it has been mourned or swept and the queue is drained here rather
+     *  than left for whatever test runs next.
+     */
+    while (OM_take_mourned() != ST_NIL)
+        ;
     OM_set_root_provider(NULL);
 }
 
@@ -362,6 +427,21 @@ test_image_round_trip(void)
     CHECK_EQ_INT(OM_fetch_pointer(2, array), ST_TRUE);
     OM_string_of(OM_fetch_pointer(0, array), buf, sizeof buf);
     CHECK_EQ_STR(buf, "world");
+
+    /*
+     *  And the live totals mean something afterwards.
+     *
+     *  They are kept by the allocator and by the sweep, and the loader is
+     *  neither: it fills the object table directly.  OM_init had set both to
+     *  zero, so the collection at the end of the load decremented from zero
+     *  and every count for the rest of the run was near 2^32 -- the GC log
+     *  said "4294967182 live objects" and Smalltalk core, which is
+     *  live_bytes over two, answered nonsense with it (Bugs4 MEM-4).  A
+     *  loaded image has more than nothing in it and less than four billion
+     *  words, which is all this has to say to catch that.
+     */
+    CHECK(OM_core_left() > 0);
+    CHECK(OM_core_left() < 0x40000000u);
 
     OM_set_root_provider(NULL);
     remove(path);

@@ -34,7 +34,10 @@ request and written by whoever configures the server; a Mutex guards both,
 the reads too.
 
 STOPPING.  stop closes the listener, which wakes the accept loop with a
-NetError that ends it; connections in flight finish their request and close.
+NetError; the loop sees a listener that is gone and ends; connections in
+flight finish their request and close.  A NetError from an accept whose
+listener is still open is NOT the end -- it is one connection lost, logged,
+and the loop goes round again after a back-off.  See acceptLoop.
 
 ORIGINS.  A page served from this host on another port -- Kiss's
 development layout, the front end on 8000 and this server on 8001 -- is
@@ -189,10 +192,67 @@ HttpServer >> stop [
 
 { #category : 'private' }
 HttpServer >> acceptLoop [
-	"Accept until the listener is closed, which accept reports as NetError."
-	[[running] whileTrue: [self serve: listener accept]]
-		on: NetError
-		do: [:e | running := false]
+	"Accept until the listener is closed, which accept reports as NetError.
+
+	 ONE FAILED ACCEPT IS NOT THE END OF THE LOOP, and it used to be.  The
+	 whole loop sat inside `on: NetError do: [:e | running := false]', so
+	 the FIRST accept that answered an error ended the server's ability to
+	 accept anything ever again -- silently, with the listen socket still
+	 open, so a client's connect was accepted by the kernel's backlog and
+	 then hung for ever rather than being refused, and the process went on
+	 looking alive.  Bugs4 NET-1 held 1,024 idle connections, which is
+	 exactly the VM's socket table (NET_MAX_SOCKETS), and every request
+	 after that timed out -- including every request made after all 1,024
+	 had been closed again.  A transient EMFILE from the operating system
+	 did the same thing for the same reason, and the descriptor leak in
+	 TonelSource>>stampFrom: (NET-2) reached it on ordinary traffic with no
+	 attacker at all.
+
+	 So a per-accept failure is one connection lost and a line in the log,
+	 and the loop ends only when the listener is really gone -- which is
+	 how stop stops it: close wakes this process, and acceptFailed: sees
+	 the closed listener and lets the loop end.
+
+	 THE BACK-OFF is what makes retrying safe.  An accept that fails
+	 because there is no room for another socket fails again at once, so a
+	 bare retry would be a worker spinning at 100% writing a log line per
+	 pass -- a denial of service answering a denial of service.  It doubles
+	 from 10 ms to a second and is forgotten the moment an accept
+	 succeeds, so a server whose table has filled starts serving again
+	 within a second of a connection closing and costs nothing while it
+	 waits.
+
+	 The socket still reaches its process as serve:'s ARGUMENT and not as
+	 this loop's temporary -- see the class comment; whileTrue: is inlined,
+	 so `socket' below is one variable for every iteration and would be the
+	 next connection by the time a forked process read it."
+	| backoff socket |
+	backoff := 0.
+	[running] whileTrue: [
+		socket := [listener isNil ifTrue: [nil] ifFalse: [listener accept]]
+			on: NetError
+			do: [:e | self acceptFailed: e. nil].
+		socket isNil
+			ifTrue: [
+				running ifTrue: [
+					backoff := backoff = 0 ifTrue: [10] ifFalse: [(backoff * 2) min: 1000].
+					(Delay forMilliseconds: backoff) wait]]
+			ifFalse: [
+				backoff := 0.
+				self serve: socket]]
+]
+
+{ #category : 'private' }
+HttpServer >> acceptFailed: anError [
+	"One accept that did not answer a socket.  A listener that is gone ends
+	 the loop -- that is stop, and the NetError is how close tells this
+	 process about it.  Anything else is the network refusing one
+	 connection: the peer reset it before it was accepted, or there is no
+	 room for another socket right now, neither of which says anything
+	 about the next one."
+	(running not or: [listener isNil or: [listener isOpen not]])
+		ifTrue: [running := false. ^self].
+	self log: 'accept failed: ', (anError messageText ifNil: ['no reason given'])
 ]
 
 { #category : 'private' }

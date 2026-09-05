@@ -1052,7 +1052,7 @@ whichSelectorsReferTo: literal special: specialFlag byte: specialByte
 	"Answer a collection of selectors whose methods access the argument as a literal."
 
 	| who method methodArray index arraySize |
-	who_ OrderedCollection new.
+	who _ OrderedCollection new.
 	methodArray _ methodDict methodArray.
 	arraySize _ methodArray size.
 	index _ 0.

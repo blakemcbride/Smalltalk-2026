@@ -73,7 +73,19 @@ OpenAI >> embed: aString [
 	body := JSONObject new at: 'input' put: aString; at: 'model' put: model; yourself.
 	reply := self postJson: body to: self embeddingsUrl.
 	lastResponse := reply.
-	^self floatsOf: (((reply arrayAt: 'data') objectAt: 1) arrayAt: 'embedding')
+	^self floatsOf: (self embeddingIn: reply)
+]
+
+{ #category : 'private' }
+OpenAI >> embeddingIn: aReply [
+	"data[0].embedding, or an LLMError naming what is missing rather than
+	 a MessageNotUnderstood.  See LLM>>malformed:because:."
+	| data vector |
+	data := aReply arrayAt: 'data' ifAbsent: [nil].
+	(data isNil or: [data isEmpty])
+		ifTrue: [^self malformed: aReply because: 'it has no embedding data'].
+	vector := (data objectAt: 1) arrayAt: 'embedding' ifAbsent: [nil].
+	^vector ifNil: [self malformed: aReply because: 'its first datum has no embedding']
 ]
 
 { #category : 'the wire' }
@@ -145,7 +157,18 @@ OpenAI >> toolWireFor: anLLMTool [
 
 { #category : 'the wire' }
 OpenAI >> messageOf: aReply [
-	^((aReply arrayAt: 'choices') objectAt: 1) objectAt: 'message'
+	"choices[0].message, or an LLMError when the reply has no such thing.
+
+	 A 200 in some other shape -- a gateway's own envelope, an error object
+	 where the choices belong -- used to reach `nil objectAt:' and become a
+	 MessageNotUnderstood about this package's insides rather than an
+	 LLMError about the service.  See LLM>>malformed:because:."
+	| choices message |
+	choices := aReply arrayAt: 'choices' ifAbsent: [nil].
+	(choices isNil or: [choices isEmpty])
+		ifTrue: [^self malformed: aReply because: 'it has no choices'].
+	message := (choices objectAt: 1) objectAt: 'message' ifAbsent: [nil].
+	^message ifNil: [self malformed: aReply because: 'its first choice has no message']
 ]
 
 { #category : 'the wire' }
@@ -187,7 +210,14 @@ OpenAI >> toolResultMessagesFor: calls results: strings [
 
 { #category : 'the wire' }
 OpenAI >> stopReasonOf: aReply [
-	^self string: 'finish_reason' of: ((aReply arrayAt: 'choices') objectAt: 1)
+	"nil rather than a refusal for a reply with no choices in it: this is
+	 asked FIRST, in complete:, and a malformed reply says more when
+	 messageOf: names what is missing than when this one raises about a
+	 field nobody asked for."
+	| choices |
+	choices := aReply arrayAt: 'choices' ifAbsent: [nil].
+	(choices isNil or: [choices isEmpty]) ifTrue: [^nil].
+	^self string: 'finish_reason' of: (choices objectAt: 1)
 ]
 
 { #category : 'the wire' }
@@ -197,8 +227,9 @@ OpenAI >> streamedTextOf: aLine [
 	 warm -- carries nothing.  A chunk with no choices is the trailing
 	 usage; one with `error' is an error."
 	| payload chunk choices delta |
-	(aLine startsWith: 'data: ') ifFalse: [^''].
-	payload := (aLine copyFrom: 7 to: aLine size) trimmed.
+	payload := self sseDataOf: aLine.
+	payload isNil ifTrue: [^''].
+	payload := payload trimmed.
 	payload = '[DONE]' ifTrue: [^nil].
 	(payload startsWith: '{') ifFalse: [^''].
 	chunk := JSONObject fromString: payload.

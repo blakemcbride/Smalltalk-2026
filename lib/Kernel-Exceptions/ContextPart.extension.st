@@ -64,6 +64,28 @@ ContextPart >> restartAndJump [
 ]
 
 { #category : '*Kernel-Exceptions' }
+ContextPart >> restartWithReceiver: anObject [
+	"restartAndJump, but running anObject in place of the receiver this
+	 activation was made with.
+
+	 Field six is a MethodContext's receiver: InstructionStream declares
+	 sender and pc, ContextPart adds stackp, and MethodContext adds method,
+	 receiverMap and receiver.  Exception>>retryUsing: is the caller and the
+	 reason -- an on:do: activation's receiver is its protected block, so
+	 swapping that field and restarting the frame is retry with a different
+	 block, which is what ANSI asks retryUsing: to be.
+
+	 A frame marked by on:do: is always a method activation, since on:do: is
+	 a method and findNextHandlerContext answers nothing else; anything else
+	 is refused rather than written, because field six of a BlockContext is
+	 its home and overwriting that loses the frame a ^ returns from."
+	(self isKindOf: MethodContext) ifFalse: [
+		^self error: 'only a method activation can be restarted with a new receiver'].
+	self instVarAt: 6 put: anObject.
+	^self restartAndJump
+]
+
+{ #category : '*Kernel-Exceptions' }
 ContextPart >> cannotReturn: aResult [
 	"The VM sends this when a block tries to return from a method that has
 	 already returned.  Until now nothing implemented it, so the VM stopped

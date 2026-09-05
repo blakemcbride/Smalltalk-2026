@@ -57,10 +57,15 @@ is the interesting part of exception handling; catching is the easy part.
   \ctp{x}\\
 \ctp{e return} & the same, answering \ctp{nil}\\
 \ctp{e retry} & run the protected block again, from the beginning\\
-\ctp{e retryUsing: aBlock} & run a different block instead\\
+\ctp{e retryUsing: aBlock} & the same, with a different block: \ctp{aBlock}
+  becomes the protected one and the handler stays in place for it\\
 \ctp{e resume: x} & carry on from where \ctp{signal} was sent, which answers
   \ctp{x}. Only for resumable exceptions\\
 \ctp{e pass} & decline: look for an outer handler\\
+\ctp{e outer} & run the enclosing handler and, if it resumes, carry on
+  here with its value\\
+\ctp{e resignalAs: another} & look again from the point of the signal, for
+  \ctp{another} instead of this one\\
 \ctp{e signal} & re-signal this exception\\
 \bottomrule
 \end{tabular}

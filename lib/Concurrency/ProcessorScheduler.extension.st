@@ -85,12 +85,24 @@ ProcessorScheduler >> forkParallel: aBlock [
 	 in the process that asks for it, which is the one able to act.
 
 	 Where it RUNS is the scheduler's business.  This says the work may
-	 proceed independently, not which native thread takes it."
+	 proceed independently, not which native thread takes it.
+
+	 The ensure: is not belt and braces.  `on: Error do:' settles the promise
+	 for a task that RAISES; a task that is TERMINATED raises nothing, and
+	 Bugs4 PROC-3 is what that cost: the promise stayed pending for ever, and
+	 Promise>>value -- and parallelCollect:, which asks every promise -- waited
+	 on a process that no longer existed, with no timeout and no diagnostic.
+	 terminate runs the unwind blocks of the process it ends, so an ensure:
+	 here is reached on that path as well as on a non-local return out of the
+	 block, and breakIfUnsettled: says nothing when the two lines above have
+	 already had their say."
 	| promise |
 	promise := Promise new.
-	[[promise fulfill: aBlock value]
+	[[[promise fulfill: aBlock value]
 		on: Error
-		do: [:e | promise signalError: e]] fork.
+		do: [:e | promise signalError: e]]
+			ensure: [promise breakIfUnsettled: (Error new messageText:
+				'the process computing this Promise ended without settling it')]] fork.
 	^promise
 ]
 

@@ -181,25 +181,27 @@ the encoding. See [`doc/LanguageExtensions.md`](doc/LanguageExtensions.md).
 
 **Pharo's own code, on Pharo's own tests.** Packages are imported in Tonel
 format and held to their upstream suites, ratcheted in both directions —
-a score may not fall, and may not rise without being recorded:
+a score may not fall, and may not rise without being recorded. A test that
+cannot pass here is recorded failing rather than dropped, with its reason in
+the profile beside it:
 
 | Profile | Tests |
 |---|---|
-| `st2026` | 410 / 410 |
-| `pharo-announcements` | 441 / 441 |
-| `pharo-time` | 1031 / 1031 |
-| `pharo-weak` | 430 / 430 |
-| `pharo-collections` | 867 / 867 |
+| `st2026` | 545 / 545 |
+| `pharo-announcements` | 576 / 576 |
+| `pharo-time` | 1166 / 1166 |
+| `pharo-weak` | 1077 / 1076 |
+| `pharo-collections` | 1002 / 1002 |
 
-**1,177 of those are Pharo's own tests**, run unmodified against this system.
+**1,689 of those are Pharo's own tests**, run unmodified against this system.
 The rest are ours: the exceptions and concurrency classes 1983 has no
 equivalent of, a suite for the 1983 library itself — the numeric tower, the
 collections, strings and streams — the database, JSON, sockets, Tonel, the
 HTTP and REST servers, the HTTP client and TLS, the password hashing, the
 demo application, the clipboard, and the language models. Every profile
-requiring `st2026` inherits all of them, which is why the same 410 appear in
+requiring `st2026` inherits all of them, which is why the same 545 appear in
 every row; three more profiles need a database, the internet, or API keys, and
-are run on purpose. The composed image is 369 classes and 6,960 methods.
+are run on purpose. The composed image is 380 classes and 7,599 methods.
 Where this is going is [`doc/PLAN-TO-PHARO.md`](doc/PLAN-TO-PHARO.md).
 
 **SQL, on every core at once.** `lib/Database` reaches PostgreSQL, MySQL,

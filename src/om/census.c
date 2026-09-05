@@ -112,6 +112,28 @@ OM_method_dict_capacity(st_oop dict)
 
     if (!OM_is_object(dict))
         return 0;
+    /*
+     *  And a POINTER object.  Every caller of this reads the answer as a
+     *  count of oops -- the lookup walks slots ST_MD_FIRST_KEY upward and
+     *  compares each against a selector -- while OM_fetch_word_length of a
+     *  byte object answers its length in BYTES.  So a class whose
+     *  methodDict had been replaced with a String reported a capacity of
+     *  nearly the string's length and the lookup then read oops off the end
+     *  of the string's allocation.
+     *
+     *  That is not a hypothetical: instVarAt:put: stores any object into
+     *  any named field, and methodDict is an ordinary named field of
+     *  Behavior.  The shape check on primitives 73 and 74 is about the
+     *  INDEX being in range, not about what the field is going to be used
+     *  for, so nothing between `Object instVarAt: 2 put: ''oops''' and the
+     *  next send to an Object said no.  One bit, tested on a header that is
+     *  being loaded anyway.  A dictionary that is not a pointer object has
+     *  no slots, which is what answering zero says -- the lookup then finds
+     *  nothing and the send goes to doesNotUnderstand:, which is the right
+     *  end for a class somebody has taken apart.
+     */
+    if (!OM_pointer_bit(dict))
+        return 0;
     len = OM_fetch_word_length(dict);
     if (len < ST_MD_FIRST_KEY)
         return 0;

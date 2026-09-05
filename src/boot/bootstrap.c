@@ -245,6 +245,22 @@ static int          string_hash_kind;   /*  see BOOT_string_hash  */
 static st_oop       symbol_table;
 
 /*
+ *  The ASSOCIATION whose value is that table, when there is one.
+ *
+ *  The table used to be remembered as an object pointer and nothing else,
+ *  which was correct only while it could never be replaced.  It can be now:
+ *  Symbol class>>basicIntern: grows USTable and rehashes into a NEW Array
+ *  when its buckets get long (Bugs4 COLL-1), and a C side holding the old
+ *  Array would look a name up in a table the image has stopped using --
+ *  miss, make a second Symbol with the same characters, and install a
+ *  method under a selector nothing can send.  That is the very failure the
+ *  table exists to prevent.  So the association is kept instead and the
+ *  value read out of it each time; the association object itself is the one
+ *  thing about USTable that never changes.
+ */
+static st_oop       symbol_table_assoc = ST_OOP_INVALID;
+
+/*
  *  Every Symbol this side has made, and an index over them.
  *
  *  The array alone was scanned linearly on every intern, comparing the text
@@ -388,9 +404,6 @@ static st_oop       globals_values;
 static unsigned     global_count;
 #define GLOBALS_FIRST 1024
 
-/*  How many buckets the library's symbol table has.  */
-#define USTABLE_BUCKETS 512
-
 static st_bootstrap_result *result;
 
 /*
@@ -520,6 +533,7 @@ ensure_symbol_table(void)
                 "USTable");
     if (assoc == ST_OOP_INVALID)
         return;
+    symbol_table_assoc = assoc;
     symbol_table = OM_fetch_pointer(ST_ASSOCIATION_VALUE, assoc);
     if (!OM_is_object(symbol_table))
         return;
@@ -572,6 +586,38 @@ ensure_symbol_table(void)
     symbol_table_ready = 1;
 }
 
+/*
+ *  The symbol table as the IMAGE has it right now, and how many buckets it
+ *  has.
+ *
+ *  Not a cached pointer and not USTABLE_BUCKETS.  Symbol class>>basicIntern:
+ *  grows USTable when its buckets get long and rehashes every symbol into a
+ *  bigger Array (Bugs4 COLL-1: interning was quadratic because 512 buckets
+ *  never grew and each new symbol copied its whole bucket).  Both the object
+ *  and the bucket count therefore change under this side while it is
+ *  running, and both have to be read rather than remembered -- a stale
+ *  modulus is worse than a stale pointer, since it silently sends every
+ *  lookup to the wrong bucket.
+ *
+ *  Growing is done with the image's Symbol lock held, and every caller here
+ *  holds it too (IMGC_compile and primitive 227 both say so in as many
+ *  words), so the read is never of a half-built table.
+ */
+static st_oop
+live_symbol_table(uint32_t *buckets)
+{
+    st_oop  table;
+
+    if (OM_is_present(symbol_table_assoc)) {
+        table = OM_fetch_pointer(ST_ASSOCIATION_VALUE, symbol_table_assoc);
+        if (OM_is_object(table))
+            symbol_table = table;
+    }
+    *buckets = OM_is_present(symbol_table)
+                   ? OM_fetch_word_length(symbol_table) : 0;
+    return symbol_table;
+}
+
 st_oop
 BOOT_intern_symbol(const char *text, void *user)
 {
@@ -614,12 +660,19 @@ BOOT_intern_symbol(const char *text, void *user)
      *  identity, so they are not even equal: a category the image stored
      *  could not be found by a name the compiler read.
      */
-    if (symbol_table_ready && OM_is_present(symbol_table)) {
-        uint32_t    index = BOOT_string_hash_of_text(text, n) % USTABLE_BUCKETS;
-        st_oop      bucket = OM_fetch_pointer(index, symbol_table);
-        uint32_t    count = OM_is_present(bucket)
-                                ? OM_fetch_word_length(bucket) : 0;
+    if (symbol_table_ready) {
+        uint32_t    buckets;
+        st_oop      table  = live_symbol_table(&buckets);
+        uint32_t    index;
+        st_oop      bucket;
+        uint32_t    count;
         uint32_t    b;
+
+        if (buckets == 0)
+            goto make_it;
+        index  = BOOT_string_hash_of_text(text, n) % buckets;
+        bucket = OM_fetch_pointer(index, table);
+        count  = OM_is_present(bucket) ? OM_fetch_word_length(bucket) : 0;
 
         for (b = 0; b < count; ++b) {
             st_oop      candidate = OM_fetch_pointer(b, bucket);
@@ -641,6 +694,7 @@ BOOT_intern_symbol(const char *text, void *user)
         }
     }
 
+make_it:
     s = OM_instantiate_bytes(BOOT_global("Symbol"), (uint32_t) n);
     if (!OM_is_object(s))
         return ST_NIL;
@@ -4063,6 +4117,7 @@ BOOT_provide_roots(om_visit_fn visit)
     visit(smalltalk);
     visit(globals_values);
     visit(symbol_table);
+    visit(symbol_table_assoc);
     for (i = 0; i < symbol_count; ++i)
         visit(symbols[i]);
     for (i = 0; i < class_count; ++i) {
@@ -4243,6 +4298,17 @@ run_method_on(st_oop method, st_oop receiver, uint64_t budget)
  *  the compiler put in the literal frames stay the identical objects and
  *  #foo == 'foo' asSymbol holds.
  */
+/*
+ *  How many buckets the library's symbol table is SEEDED with.
+ *
+ *  The seed count only, not the count: Symbol class>>basicIntern: grows
+ *  USTable and rehashes when its buckets get long, and 512 buckets for the
+ *  five and a half thousand symbols a fresh image holds is eleven deep --
+ *  so the first symbol the image interns for itself grows it (Bugs4
+ *  COLL-1).  Nothing on this side may take a modulus from this number;
+ *  live_symbol_table answers the Array's own length, which is the only
+ *  thing that stays true.
+ */
 #define USTABLE_BUCKETS 512
 
 
@@ -4366,16 +4432,20 @@ static int
 place_in_symbol_table(st_oop sym)
 {
     uint32_t    index;
+    st_oop      table;
+    uint32_t    buckets;
     st_oop      bucket;
     uint32_t    n;
     st_oop      grown;
     uint32_t    k;
 
-    if (!symbol_table_ready || !OM_is_present(symbol_table)
-     || !OM_is_present(sym))
+    if (!symbol_table_ready || !OM_is_present(sym))
         return 0;
-    index  = BOOT_string_hash(sym) % USTABLE_BUCKETS;
-    bucket = OM_fetch_pointer(index, symbol_table);
+    table = live_symbol_table(&buckets);
+    if (buckets == 0)
+        return 0;
+    index  = BOOT_string_hash(sym) % buckets;
+    bucket = OM_fetch_pointer(index, table);
     n      = OM_is_present(bucket) ? OM_fetch_word_length(bucket) : 0;
     for (k = 0; k < n; ++k) {
         if (OM_fetch_pointer(k, bucket) == sym)
@@ -4387,7 +4457,7 @@ place_in_symbol_table(st_oop sym)
     for (k = 0; k < n; ++k)
         OM_store_pointer(k, grown, OM_fetch_pointer(k, bucket));
     OM_store_pointer(n, grown, sym);
-    OM_store_pointer(index, symbol_table, grown);
+    OM_store_pointer(index, table, grown);
     return 1;
 }
 
@@ -4430,8 +4500,10 @@ seed_symbol_table(st_boot_init_report *out)
     if (assoc != ST_OOP_INVALID)
         OM_store_pointer(ST_ASSOCIATION_VALUE, assoc, single);
     assoc = class_variable_association(symbol, "USTable", 0);
-    if (assoc != ST_OOP_INVALID)
+    if (assoc != ST_OOP_INVALID) {
         OM_store_pointer(ST_ASSOCIATION_VALUE, assoc, table);
+        symbol_table_assoc = assoc;
+    }
     symbol_table = table;
 
     /*  Now hand every symbol we interned to the library's own intern:.  */

@@ -69,9 +69,25 @@ extern "C" {
 /*
  *  How many at once.  The pollfd array is this plus one, so raising it is
  *  a recompile and nothing else.  A handle is (generation << 12) | index,
- *  which is why the index has twelve bits.
+ *  which is why the index has twelve bits -- and why 4096 is the ceiling
+ *  this number may be raised to without changing what a handle is.
+ *
+ *  It was 1024, and that was the whole of the table AND of the loopback
+ *  denial of service Bugs4 NET-1 found: a thousand idle connections filled
+ *  it, and the accept loop above then died of the first refusal.  The loop
+ *  no longer dies (HttpServer>>acceptLoop), but a `-serve' pool that
+ *  defaults to four workers per CPU is sized for a machine that can hold
+ *  more than a thousand connections open, so the table is now the full
+ *  width of the index.  The cost is a linear scan of this length per poll
+ *  pass and 4096 mutexes for the TLS slots -- microseconds and a couple of
+ *  hundred kilobytes, against a poll() syscall.
+ *
+ *  It is not the only ceiling: a host with the usual `ulimit -n 1024' runs
+ *  out of DESCRIPTORS first, and the failure then reads as EMFILE from the
+ *  operating system instead of "no free socket slot" from here.  Both are
+ *  now one accept refused rather than a server that has stopped.
  */
-#define NET_MAX_SOCKETS     1024
+#define NET_MAX_SOCKETS     4096
 
 /*
  *  Answers from calls that can be asked too early.  Distinct from -1,
@@ -198,6 +214,28 @@ int         NET_set_tokens(int64_t handle, uintptr_t read_token,
  *  returns at once, which is correct.
  */
 int         NET_arm(int64_t handle, int mask);
+
+/*
+ *  Take back an interest nobody is waiting for any more.
+ *
+ *  The arm above is one-shot and is normally spent by the delivery that
+ *  wakes the waiter.  A TIMED wait is the case where it is not: the
+ *  watchdog signals the Semaphore, the waiter gives up and walks away, and
+ *  the interest stays in the poll set with no process behind it for as long
+ *  as the socket is open.
+ *
+ *  That is not only a slot in the poll set.  NET_waits_pending is what the
+ *  scheduler asks before it will say the image is deadlocked, and one arm
+ *  left over makes the answer yes for ever -- so a single-worker image that
+ *  really has stopped waits in silence instead of saying so, which is a
+ *  hang with no diagnosis rather than a message and an exit.
+ *
+ *  Idempotent by design: clearing an interest already spent by a delivery
+ *  is a no-op, so a caller that cannot tell which of the two happened --
+ *  and the timed wait cannot, that is the race it is written around -- may
+ *  simply always call it.
+ */
+int         NET_disarm(int64_t handle, int mask);
 
 /*
  *  How many sockets are armed -- somebody is parked waiting for one.  The

@@ -37,6 +37,19 @@ service runs and committed after it returns; anything the service raises
 rolls it back.  A service may closeConnection: itself, and then nothing more
 is done to it.
 
+ONE REQUEST AT A TIME PER SESSION.  Requests run on whichever workers are
+idle, so two carrying one _uuid ran at once and raced whatever the
+application kept in the session; forSession:do: holds that session's lock
+for the whole request, the login check included.  Requests with no session,
+and requests of different sessions, are as parallel as they ever were.
+
+THE REPLY IS ALWAYS WRITABLE.  Some values fail only when the reply is
+encoded -- a NaN, a structure containing itself -- and that failure happens
+inside the trap that is meant to turn a failure into an error envelope, so
+the envelope failed too and the client got HTTP 500 instead of JSON.  Both
+success: and failure: encode inside a handler now and fall back to an
+envelope holding nothing but the framework's four names.
+
 WHAT IS LOGGED.  A RestUserError is the user's news and is not logged; a
 RestLogError is a line; a RestServerError and every other Error is a line
 naming the class, the method and the fault.  Nothing about a fault reaches
@@ -105,7 +118,63 @@ RestDispatcher >> decodeFormValue: aString named: aName [
 	aString = 'null' ifTrue: [^nil].
 	aString first = ${ ifTrue: [^[JSONObject fromString: aString] on: JSONError do: [:e | aString]].
 	aString first = $[ ifTrue: [^[JSONArray fromString: aString] on: JSONError do: [:e | aString]].
+	^self numberFrom: aString
+]
+
+{ #category : 'private - envelope' }
+RestDispatcher >> numberFrom: aString [
+	"aString read as a number, when reading it is work this server is
+	 willing to do; aString itself when it is not.
+
+	 BOUNDED, AND BEFORE ANY AUTHENTICATION HAPPENS.  Bugs3 B53 capped the
+	 JSON parser's numbers because a REST request carries its session token
+	 inside the document and so has to be parsed before there is anything to
+	 authenticate.  The multipart-form path arrives at the same place by a
+	 different road -- handle: -> injsonFrom: -> decodeFormValue:, all of it
+	 in front of dispatch: and its login check -- and it had no cap at all:
+	 Bugs4 NUMBERS-2 sent one field of four thousand nines and spent twelve
+	 SECONDS of a worker on it, unauthenticated, in a body bounded only by
+	 maxRequestBytes at 64 MB.  1983 multiplies large integers a byte at a
+	 time in Smalltalk, so the cost is quadratic in the digits.
+
+	 The caps are the parser's, deliberately the same two numbers: 256
+	 digits, which is past every number that is really a number -- a 64-bit
+	 integer is 19 digits and the widest SQL DECIMAL is 38 -- and an
+	 exponent of 4096, because `1e1000000000' is eleven characters asking
+	 for a billion digits and refusing it is the only way not to answer.
+	 The exponent's own text is read only once the digit cap has passed, so
+	 reading it is bounded too.
+
+	 A value over either cap is left as the String it arrived as, which is
+	 what every other unrecognised form value already becomes."
+	| digits exponentAt exponent |
+	digits := 0.
+	exponentAt := 0.
+	1 to: aString size do: [:i | | c |
+		c := aString at: i.
+		c isDigit ifTrue: [digits := digits + 1].
+		(exponentAt = 0 and: [c = $e or: [c = $E]]) ifTrue: [exponentAt := i]].
+	digits > self class maxFormNumberDigits ifTrue: [^aString].
+	exponentAt > 0 ifTrue: [
+		exponent := [(aString copyFrom: exponentAt + 1 to: aString size) asNumber]
+			on: Error do: [:e | nil].
+		(exponent isNil or: [exponent abs > self class maxFormNumberExponent])
+			ifTrue: [^aString]].
 	^[aString asNumber] on: Error do: [:e | aString]
+]
+
+{ #category : 'private - envelope' }
+RestDispatcher class >> maxFormNumberDigits [
+	"How many digits a form field may be written with before this server
+	 stops reading it as a number.  JSONParser's maxDigits; see numberFrom:."
+	^256
+]
+
+{ #category : 'private - envelope' }
+RestDispatcher class >> maxFormNumberExponent [
+	"How large a form field's exponent may be.  JSONParser's; see
+	 numberFrom:."
+	^4096
 ]
 
 { #category : 'private' }
@@ -121,14 +190,39 @@ RestDispatcher >> dispatch: injson into: outjson from: anHttpRequest [
 	className isEmpty ifTrue: [^self core: methodName request: request].
 	"Authentication."
 	user := server userCache findUser: (injson at: '_uuid').
-	(server requiresAuthentication and: [(server allowsWithoutAuthentication: className method: methodName) not])
-		ifTrue: [
-			[self checkLogin: user request: request]
-				on: RestError
-				do: [:e | ^self failure: e messageText code: e errorCode in: outjson]].
-	user notNil ifTrue: [user touch].
-	request userData: user.
-	^self serve: className method: methodName request: request
+	^self forSession: user do: [
+		(server requiresAuthentication and: [(server allowsWithoutAuthentication: className method: methodName) not])
+			ifTrue: [
+				[self checkLogin: user request: request]
+					on: RestError
+					do: [:e | ^self failure: e messageText code: e errorCode in: outjson]].
+		user notNil ifTrue: [user touch].
+		request userData: user.
+		self serve: className method: methodName request: request]
+]
+
+{ #category : 'private' }
+RestDispatcher >> forSession: userOrNil do: aBlock [
+	"aBlock, and while it runs no other request bearing this session's uuid
+	 runs anywhere in the pool.
+
+	 ONE REQUEST AT A TIME PER SESSION.  Two requests carrying one _uuid ran
+	 in parallel on two workers and raced whatever the application kept in
+	 the RestUserData -- read, change, write back is the shape every session
+	 store has, and RestUserData's own Mutex makes each access atomic
+	 without making the sequence so.  Bugs4 found no lock here at all.  The
+	 session id is an unguessable CSPRNG uuid, so this is a race between one
+	 user's own tabs rather than a way in, but a browser opening four
+	 screens at once is exactly what produces it.
+
+	 A request with no session -- nothing to serialize on -- runs as it
+	 always did.  A session that has one is held for the whole request,
+	 database work included; the lock is taken BEFORE any pooled connection
+	 and nothing takes them the other way round, so there is one order and
+	 no cycle."
+	^userOrNil isNil
+		ifTrue: [aBlock value]
+		ifFalse: [userOrNil critical: aBlock]
 ]
 
 { #category : 'private - core' }
@@ -150,10 +244,14 @@ RestDispatcher >> core: methodName request: request [
 	methodName = 'Logout' ifTrue: [
 		^[ | user |
 			user := server userCache findUser: (injson at: '_uuid').
-			self checkLogin: user request: request.
-			server userCache removeUser: user uuid.
-			outjson at: 'success' put: true.
-			self success: request]
+			"Behind the same session lock as any other request: a logout
+			 racing the request it is meant to follow would otherwise take
+			 the session out from under it.  See forSession:do:."
+			self forSession: user do: [
+				self checkLogin: user request: request.
+				server userCache removeUser: user uuid.
+				outjson at: 'success' put: true.
+				self success: request]]
 			on: RestError
 			do: [:e | self failure: e messageText code: e errorCode in: outjson]].
 	^self failure: 'Incorrect internal method call.' code: -1 in: outjson
@@ -267,32 +365,122 @@ RestDispatcher >> selectorFor: methodName on: aClass [
 
 { #category : 'private - serving' }
 RestDispatcher >> log: anError in: className method: methodName [
-	| level |
+	| level where |
 	level := (anError isKindOf: RestError) ifTrue: [anError logLevel] ifFalse: [#error].
 	level == #none ifTrue: [^self].
+	where := (self forLog: className), '.', (self forLog: methodName).
 	level == #warn
-		ifTrue: [RestLog warn: className, '.', methodName, ': ', anError messageText]
-		ifFalse: [RestLog error: className, '.', methodName, ': ', anError class name, ': ', anError messageText]
+		ifTrue: [RestLog warn: where, ': ', (self forLog: anError messageText)]
+		ifFalse: [RestLog error: where, ': ', anError class name, ': ', (self forLog: anError messageText)]
+]
+
+{ #category : 'private - serving' }
+RestDispatcher >> forLog: aStringOrNil [
+	"Text fit to be written to the operator's log.
+
+	 _class and _method are whatever a client put in the request document,
+	 and this line is the one place they reach the log verbatim.  Bugs4
+	 NET-6: a CR or an LF forges a whole log line -- a stranger writes
+	 `rest: ERROR Login.check: authorised' into the record of a server they
+	 have not logged in to -- and an ANSI escape does what the escape says
+	 to the terminal of whoever is tailing it, ESC[2J being `clear the
+	 screen'.  Neither is a fault in what the server does with the name;
+	 the JSON reply escapes it correctly and the class is never interned
+	 (B55).  It is a fault in what the LOG does with it.
+
+	 Every byte outside printable ASCII becomes \xHH, which keeps the line
+	 one line, keeps it readable, and keeps what the client actually sent
+	 visible rather than dropped -- the point of logging the name at all is
+	 to see what was asked for.  It is bounded at 200 characters for the
+	 same reason a header is: the field is the client's and the log is not."
+	| out text cut |
+	aStringOrNil isNil ifTrue: [^'<nil>'].
+	text := aStringOrNil isString
+		ifTrue: [aStringOrNil]
+		ifFalse: [aStringOrNil printString].
+	cut := text size > 200.
+	cut ifTrue: [text := text copyFrom: 1 to: 200].
+	out := WriteStream on: (String new: text size + 16).
+	text do: [:c | | code |
+		code := c asInteger.
+		(code < 32 or: [code > 126])
+			ifTrue: [
+				out nextPutAll: '\x';
+					nextPut: ('0123456789abcdef' at: (code bitShift: -4) + 1);
+					nextPut: ('0123456789abcdef' at: (code bitAnd: 15) + 1)]
+			ifFalse: [out nextPut: c]].
+	cut ifTrue: [out nextPutAll: '...'].
+	^out contents
 ]
 
 { #category : 'private - replies' }
 RestDispatcher >> success: request [
-	| outjson |
+	"The success reply -- unless the service's own values cannot be written,
+	 in which case it is a failure reply, because a document nothing can
+	 read is not an answer.  See lastResortEnvelope:code:after:: encoding is
+	 the last thing that happens to a reply and the first place some values
+	 fail, so it is the one place that has to have a second answer ready."
+	| outjson text |
 	outjson := request outjson.
 	outjson at: '_Success' put: true.
 	outjson at: '_ErrorCode' put: 0.
 	outjson at: '_BootId' put: server bootId.
+	text := [outjson asJsonString]
+		on: Error
+		do: [:e | ^HttpResponse json:
+			(self lastResortEnvelope: 'The reply could not be written as JSON.'
+				code: -1 after: e)].
 	request isBinaryReturn ifTrue: [
-		^HttpResponse bytes: outjson asJsonString, (String with: (Character value: 3)), request binaryData
+		^HttpResponse bytes: text, (String with: (Character value: 3)), request binaryData
 			contentType: 'application/octet-stream'].
-	^HttpResponse json: outjson asJsonString
+	^HttpResponse json: text
 ]
 
 { #category : 'private - replies' }
 RestDispatcher >> failure: aMessage code: anInteger in: outjson [
+	"The error reply.  What the service had already put in outjson is kept,
+	 because a service that reports its own failure often says something
+	 useful beside the message -- but only if the whole of it can still be
+	 written."
+	| text |
 	outjson at: '_Success' put: false.
 	outjson at: '_ErrorCode' put: anInteger.
 	outjson at: '_ErrorMessage' put: (aMessage ifNil: ['unspecified']).
 	anInteger = 2 ifTrue: [outjson at: '_BootId' put: server bootId].
-	^HttpResponse json: outjson asJsonString
+	text := [outjson asJsonString]
+		on: Error
+		do: [:e | self lastResortEnvelope: aMessage code: anInteger after: e].
+	^HttpResponse json: text
+]
+
+{ #category : 'private - replies' }
+RestDispatcher >> lastResortEnvelope: aMessage code: anInteger after: anError [
+	"The error envelope with NOTHING of the service's own in it.
+
+	 A DOUBLE FAULT, and this is the only thing to do about it.  Some values
+	 fail only at serialization: a Float that is a NaN or an infinity, which
+	 JSON has no spelling for; a structure that contains itself, which the
+	 writer's depth limit stops; a String holding bytes that are not UTF-8.
+	 serve: encodes outjson inside success:, so the failure happens INSIDE
+	 the per-request `on: Error do:' and reaches failure: -- which put its
+	 four names into the same still-broken outjson and encoded it again.
+	 The second failure had no handler left, so Bugs4 NET-7 got HTTP 500
+	 from HttpServer's outer trap rather than the `_Success: false' envelope
+	 every other failure produces, and the front end, which reads _Success
+	 and not the status, saw nothing it understood.
+
+	 So the fallback drops the service's values -- they are what could not
+	 be written -- and keeps the framework's four, which are a boolean, a
+	 SmallInteger, a uuid and a message this method makes printable itself.
+	 That envelope cannot fail to encode, which is the whole point of
+	 having one."
+	| out |
+	RestLog error: 'the reply could not be written: ', anError class name,
+		': ', (self forLog: anError messageText).
+	out := JSONObject new.
+	out at: '_Success' put: false.
+	out at: '_ErrorCode' put: anInteger.
+	out at: '_ErrorMessage' put: (self forLog: (aMessage ifNil: ['unspecified'])).
+	anInteger = 2 ifTrue: [out at: '_BootId' put: server bootId].
+	^out asJsonString
 ]

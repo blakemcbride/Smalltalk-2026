@@ -608,3 +608,58 @@ Float >> isLiteral [
 	 general form, which stores each element with storeOn:.  Bugs3 B32."
 	^self isFinite
 ]
+
+{ #category : '*Kernel-Protocol' }
+Float >> floorLog: radix [
+	"The floor of my logarithm in that base.
+
+	 1983's body is a binary recursion -- answer 0 below the radix, 1 below
+	 its square, otherwise recurse on the radix SQUARED and correct -- and
+	 it has no termination condition other than the receiver eventually
+	 being smaller than the growing radix.  An infinity is smaller than
+	 nothing, so `Float infinity floorLog: 10' squared an Integer radix
+	 for ever: 10, 100, 10^4, 10^8, and by the thirtieth level a multiply
+	 of a number with a billion bits.  The worker never returned, and with
+	 `-workers 1' nothing else in the image ran again (Bugs4 NUMBERS-1).
+	 A NaN did the same, because a NaN is not less than anything either.
+
+	 There is no integer that is the floor of the logarithm of an infinity
+	 or of a NaN, so both are refused by name.  The same runaway is
+	 reachable from the other side: a radix of 1 recurses on 1 for ever
+	 (1 squared is 1), a radix of 0 on 0, and a negative radix squares to
+	 a positive one and quietly answers the logarithm in a DIFFERENT base
+	 -- `1000 floorLog: -2' answered 9, which is the logarithm base 4.
+	 Those raised RecursionDepthExceeded rather than hanging, which is
+	 less bad and still not an answer, so a base that cannot have a
+	 logarithm is refused here too.  `radix > 1' is what does it, and it
+	 refuses a NaN radix as well, since a NaN is not greater than one.
+
+	 A receiver of zero or less keeps 1983's answer, which is 0, because
+	 the first line of the method it replaces answers 0 for anything below
+	 the radix and the comment says `self assumed positive'.  Changing
+	 that is a different decision from stopping a hang and is not made
+	 here; Integer>>floorLog: routes such a receiver back to this method
+	 so that the two agree."
+	| x |
+	self isFinite ifFalse: [
+		^self error: (self isNaN
+			ifTrue: ['a NaN has no floorLog:']
+			ifFalse: ['an infinity has no floorLog:'])].
+	(radix isNumber and: [radix > 1])
+		ifFalse: [^self error: 'floorLog: needs a base greater than one, not ' , radix printString].
+	self < radix ifTrue: [^0].
+	self < radix squared ifTrue: [^1].
+	x := 2 * (self floorLog: radix squared).
+	^x + (self / (radix raisedTo: x) floorLog: radix)
+]
+
+{ #category : '*Kernel-Protocol' }
+Float >> isZero [
+	"Whether I am zero.  Negative zero is zero; a NaN is not.
+
+	 Number>>isZero would send `= 0', which coerces an Integer against a
+	 Float through the exact-comparison machinery of Number>>compare:
+	 exactlyWith:.  That answers the same thing and does it the long way
+	 round for the one comparison a double can make by itself."
+	^self = 0.0
+]

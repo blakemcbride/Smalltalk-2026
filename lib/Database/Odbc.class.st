@@ -238,10 +238,22 @@ Odbc class >> statement: statement bind: index to: aValue [
 	 a LargeNegativeInteger, so that is the whole bottom of the range a
 	 BIGINT column has.  printString is what the primitive's own comment
 	 says the caller does, and it is what DbCommand already does for a
-	 Fraction: digits, which every database converts from exactly."
+	 Fraction: digits, which every database converts from exactly.
+
+	 A BYTEARRAY GOES BY ITS OWN COMMAND, as the dates do, and for the same
+	 reason: once inside the primitive a ByteArray and a String are both
+	 byte objects and ByteArray is not one of the guaranteed object
+	 pointers, so C cannot tell them apart.  Bound as characters it also
+	 went to the driver at strlen of its bytes -- Bugs4 FILES-1:
+	 #(1 2 0 3 4 255) asByteArray reached a SQLite BLOB column as two
+	 bytes, and one beginning with zero reached it empty.  Command 31 binds
+	 SQL_C_BINARY at the object's real length."
 
 	| bound |
 	bound := aValue.
+	(aValue isKindOf: ByteArray) ifTrue: [
+		^self checkStatus: (self primCommand: 31 with: statement with: index with: aValue)
+			saying: 'parameter ', index printString, ' would not bind as ', aValue class name].
 	(aValue isKindOf: Integer) ifTrue: [
 		(aValue > self maxParameterInteger or: [aValue < self minParameterInteger])
 			ifTrue: [^DbError signal: 'parameter ', index printString,

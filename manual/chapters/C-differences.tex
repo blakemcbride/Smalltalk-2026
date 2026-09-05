@@ -18,6 +18,8 @@ closures, \ctp{ensure:}, exceptions & present, in the \ctp{closures} dialect\\
 traits & present; flattened at load time, \ctp{+} composition only\\
 \ctp{1.23s2} & \textbf{not implemented.} It parses as \ctp{1.23 s2}, a unary
   send, and answers \ctp{nil}\\
+\ct|1e3| & a \ctp{Float}, \ctp{1000.0}, not the \ctp{SmallInteger} \ctp{1000}.
+  An exponent makes a literal a Float whatever the mantissa looks like\\
 \ct|#(true false nil)| & the three objects, as in Pharo\\
 \ctp{new} sends \ctp{initialize} & synthesised for loaded packages and
   reported; \emph{not} automatic for a class you type into a Browser\\
@@ -34,14 +36,16 @@ traits & present; flattened at load time, \ctp{+} composition only\\
 \ct|#foo printString| & \ct|'foo'|, not \ct|'#foo'|\\
 \ct|#(1 2) printString| & \ct|'(1 2 )'|\\
 \ctp{(3/4) printString} & \ct|'(3/4)'|\\
-\ct|$a value| & \ct|$a|. Use \ctp{asciiValue} or \ctp{asInteger}\\
 \ctp{e description} & the class's fixed sentence, \emph{not} the message text.
   Use \ctp{messageText}\\
-\ctp{255 printString: 16} & not implemented; nor is \ctp{radix:}\\
-\ctp{aStream collect:} & not implemented on streams\\
-\ctp{sorted:} \ctp{flatCollect:} \ctp{count:} & answer an \ctp{Array} rather
-  than \ctp{self species}, except \ctp{sorted}/\ctp{sorted:} on a sequenceable
-  collection\\
+\ctp{255 printStringBase: 16} & not implemented. The spellings here are
+  \ctp{printString:}, which answers \ct|'FF'|, and \ctp{radix:}, which
+  answers \ct|'16rFF'| and so reads back as the same number\\
+\ctp{aStream collect:} & eager: a \ctp{ReadStream} on an \ctp{Array}, not a
+  lazy stream over \ctp{self species}\\
+\ctp{sorted} \ctp{sorted:} & answer an \ctp{Array} rather than
+  \ctp{self species}, except on a sequenceable collection, where the species
+  is the answer\\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -89,6 +93,9 @@ blocks & full closures. They capture variables, outlive their method, and may
 exceptions & new: \ctp{signal}, \ctp{on:do:}, \ctp{retry}, \ctp{resume:},
   \ctp{pass}. \ctp{Object>>error:} now signals a catchable \ctp{Error}\\
 \ct|{ }| \ct|#[ ]| & new literal forms\\
+\ct|1e3| & a \ctp{Float}, \ctp{1000.0}, where the Blue Book grammar reads it
+  as the Integer \ctp{1000}. An exponent makes a literal a Float whatever the
+  mantissa looks like\\
 pragmas & generalised from \ctp{<primitive: N>}\\
 traits & new\\
 \ctp{:=} & preferred over \ctp{\_}; both are accepted\\

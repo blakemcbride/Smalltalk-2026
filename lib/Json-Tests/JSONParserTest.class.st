@@ -389,3 +389,22 @@ JSONParserTest >> testTheErrorSaysWhere [
 		on: JSONError do: [:error | error messageText].
 	self assert: (message includesSubstring: 'at character 12')
 ]
+
+{ #category : 'tests - errors' }
+JSONParserTest >> testWhatIsNotTextIsAJSONError [
+	"Bugs4.  Anything that was not a String was taken for a stream on the
+	 strength of it, so nil, an Integer and a ByteArray each got as far as
+	 the first `atEnd' and raised a MessageNotUnderstood -- a message about
+	 this parser's insides, from a caller who passed the wrong thing, where
+	 every other refusal here is a JSONError that says what was wrong."
+
+	self should: [JSONParser parse: nil] raise: JSONError.
+	self should: [JSONParser parse: 42] raise: JSONError.
+	self should: [JSONParser parse: #[1 2 3]] raise: JSONError.
+	self should: [JSONObject fromString: 3] raise: JSONError.
+	self assert: ([JSONParser parse: nil. nil] on: JSONError do: [:e | e messageText])
+		equals: 'JSON is read from a String or a Stream, not an UndefinedObject'.
+	"A real stream is still a stream, and so is a String."
+	self assert: (JSONParser parse: (ReadStream on: '[1]')) equals: (JSONArray with: 1).
+	self assert: (JSONParser parse: '[1]') equals: (JSONArray with: 1)
+]

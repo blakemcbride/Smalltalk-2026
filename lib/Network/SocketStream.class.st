@@ -22,11 +22,17 @@ between requests is waiting on a client that may never speak again, and a
 process that waits for ever holds the socket and its buffers for ever.  When
 the time runs out the read raises TimedOut, and the connection is the caller's
 to close.
+
+deadlineIn: bounds the whole of what is left to read, which is a different
+question: a peer sending one byte every five seconds is never idle, so it
+meets a thirty-second read timeout for ever.  Both are optional and both
+raise TimedOut, and every read here goes through fill, which is where the
+two are compared.
 "
 Class {
 	#name : 'SocketStream',
 	#superclass : 'Stream',
-	#instVars : [ 'socket', 'inBuffer', 'inPosition', 'inLimit', 'outBuffer', 'outPosition', 'atEnd', 'readTimeout' ],
+	#instVars : [ 'socket', 'inBuffer', 'inPosition', 'inLimit', 'outBuffer', 'outPosition', 'atEnd', 'readTimeout', 'deadline' ],
 	#category : 'Network'
 }
 
@@ -44,7 +50,8 @@ SocketStream >> setSocket: aSocket [
 	outBuffer := String new: 65536.
 	outPosition := 0.
 	atEnd := false.
-	readTimeout := nil
+	readTimeout := nil.
+	deadline := nil
 ]
 
 { #category : 'accessing' }
@@ -59,18 +66,48 @@ SocketStream >> readTimeout: millisecondsOrNil [
 	readTimeout := millisecondsOrNil
 ]
 
+{ #category : 'accessing' }
+SocketStream >> deadlineIn: millisecondsOrNil [
+	"How long everything still to be read from this stream may take,
+	 counted from now; nil for no such limit.
+
+	 SEPARATE FROM readTimeout:, and both are needed.  readTimeout: bounds
+	 one read, which bounds a peer that says NOTHING -- and a peer that
+	 says one byte every five seconds is never silent, meets a
+	 thirty-second read timeout for ever, and is served until it has sent
+	 whatever the caller's size limit is.  Bugs4 found that a slow drip
+	 defeated the HTTP client's timeout completely.  One read's patience
+	 and the whole conversation's are different questions and this stream
+	 is asked both."
+	deadline := millisecondsOrNil isNil
+		ifTrue: [nil]
+		ifFalse: [Time millisecondClockValue + millisecondsOrNil]
+]
+
 { #category : 'private' }
 SocketStream >> fill [
 	"Read more from the socket into the buffer.  Answer whether anything
-	 came: false means end of stream, and atEnd is set."
+	 came: false means end of stream, and atEnd is set.
 
-	| count |
+	 The wait is the shorter of what is left of one read's patience and
+	 what is left of the whole stream's -- see deadlineIn: -- so a deadline
+	 that has passed raises here rather than at the next read that happens
+	 to be slow."
+
+	| count wait left |
 	atEnd ifTrue: [^false].
-	count := readTimeout isNil
+	wait := readTimeout.
+	deadline isNil ifFalse: [
+		left := deadline - Time millisecondClockValue.
+		left <= 0 ifTrue: [
+			^(TimedOut new) tag: socket;
+				signal: 'the reply was not finished before its deadline'].
+		wait := wait isNil ifTrue: [left] ifFalse: [wait min: left]].
+	count := wait isNil
 		ifTrue: [socket receiveInto: inBuffer]
-		ifFalse: [socket receiveInto: inBuffer timeout: readTimeout].
+		ifFalse: [socket receiveInto: inBuffer timeout: wait].
 	count isNil ifTrue: [
-		^(TimedOut new) tag: socket; signal: 'no data arrived in ', readTimeout printString, ' ms'].
+		^(TimedOut new) tag: socket; signal: 'no data arrived in ', wait printString, ' ms'].
 	count = 0 ifTrue: [atEnd := true. ^false].
 	inPosition := 1.
 	inLimit := count.
@@ -206,17 +243,16 @@ SocketStream >> close [
 { #category : 'accessing' }
 SocketStream >> contents [
 	"Everything up to end of stream.  What a client reading a whole reply
-	 wants; a server does not send this."
-	| out buffer count |
+	 wants; a server does not send this.
+
+	 Through fill like every other read here, and not straight to the
+	 socket: reading straight from it went past readTimeout: and past the
+	 deadline both, so the one method that reads without a bound was the
+	 one that reads without a bound on the SIZE either."
+	| out |
 	out := WriteStream on: (String new: 1024).
-	self available > 0 ifTrue: [
+	[self available = 0 and: [self fill not]] whileFalse: [
 		out nextPutAll: (inBuffer copyFrom: inPosition to: inLimit).
 		inPosition := inLimit + 1].
-	buffer := String new: 65536.
-	[atEnd] whileFalse: [
-		count := socket receiveInto: buffer.
-		count = 0
-			ifTrue: [atEnd := true]
-			ifFalse: [out nextPutAll: (buffer copyFrom: 1 to: count)]].
 	^out contents
 ]

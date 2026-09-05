@@ -121,6 +121,29 @@ SortedCollection >> add: newObject after: oldObject [
 ]
 
 { #category : '*Collections-Protocol' }
+SortedCollection >> add: newObject beforeIndex: anIndex [
+	"See addFirst:.
+
+	 Refused here BY NAME, where it used to be refused by accident.  The
+	 index adders are OrderedCollection's, added by this system rather
+	 than 1983's, and they used to reach addLast: on their way to doing
+	 the work -- so the refusal above caught them without ever being
+	 asked to.  Then insert:before: was rewritten to shift the nearer end
+	 rather than always the front (Bugs4 COLL-2) and stopped sending
+	 addLast: at all, and `add: 9 beforeIndex: 1' on a sorted collection
+	 quietly put a 9 at the front of it.  A rule that holds because of
+	 how something is implemented holds until somebody implements it
+	 differently."
+	self shouldNotImplement
+]
+
+{ #category : '*Collections-Protocol' }
+SortedCollection >> add: newObject afterIndex: anIndex [
+	"See add:beforeIndex:."
+	self shouldNotImplement
+]
+
+{ #category : '*Collections-Protocol' }
 SortedCollection >> addAll: aCollection [
 	"1983's, guarded against being given myself.
 
@@ -197,4 +220,19 @@ SortedCollection >> copyWithout: oldElement [
 	 block.  1983's OrderedCollection version goes through `self species
 	 new:'; reject: goes through copyEmpty, which is the whole difference."
 	^self reject: [:each | each = oldElement]
+]
+
+{ #category : '*Collections-Protocol' }
+SortedCollection >> sorted: aBlock [
+	"A SortedCollection of my elements ordered by that block.
+
+	 SequenceableCollection>>sorted: builds the answer out of the
+	 receiver's species, and `SortedCollection new' has the DEFAULT sort
+	 block -- so a collection filled with add: would be re-sorted by `<='
+	 and `sorted: [:a :b | a > b]' would answer an ASCENDING collection,
+	 which is the same fault the copies in this file were fixed for (Bugs3
+	 B45) arriving by another road.  Sorting by a block means the answer
+	 is ordered by that block; the only SortedCollection that is, is one
+	 whose sortBlock IS that block."
+	^(SortedCollection sortBlock: aBlock) addAll: self; yourself
 ]

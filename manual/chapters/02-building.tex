@@ -6,10 +6,13 @@ work on your machine the reason is in this chapter.}
 
 \section{What you need}
 
-A C11 compiler and \ct{make}. That is the whole hard requirement. SDL3 is
-optional---without it the graphics layer builds as a headless stub and
-everything except the window still works, which is exactly what the test
-suites use. ODBC and OpenSSL are optional in the same way: without the
+A C11 compiler, \ct{make}, and SDL3 with its headers. Everything else is in
+the tree. A machine that is \emph{meant} to have no display says so and
+builds without SDL3: the graphics layer becomes a stub, \ct{-bootstrap},
+\ct{-eval}, \ct{-doctests} and \ct{make test} all still work, and
+\ct{./st80 -run} refuses to open a window and says why. That is the build
+the test suites use and the one a server wants. ODBC and OpenSSL are
+optional in a softer way, needing no flag when they are absent: without the
 first there is no database (Chapter~\ref{ch:database}), without the second
 no \ct{https} (Chapter~\ref{ch:llm}), and \ct{make deps} reports on all
 three at once.
@@ -20,15 +23,22 @@ cd Smalltalk-2026
 make
 \end{sh}
 
-The last line of a successful build tells you whether you got a window:
+\ct{make} stops before it compiles anything if the compiler, the C library
+or SDL3 is not there, and the message that stops it carries the command that
+installs the missing piece. For SDL3 that is \ct{sudo dnf install SDL3-devel}
+on Fedora and \ct{sudo apt install libsdl3-dev} on Debian and Ubuntu. To
+build with no display instead, ask for it:
 
-\begin{plain}
-SDL3: found -- graphics enabled
-\end{plain}
+\begin{sh}
+make HEADLESS=1
+\end{sh}
 
-If it says \ct{not found -- headless build} and you wanted a window, install
-SDL3's development package and build again. On Fedora that is
-\ct{sudo dnf install SDL3-devel}; on Debian and Ubuntu, \ct{libsdl3-dev}.
+\ct{make deps} answers what this machine has and what it is missing, one
+line per requirement, and runs on a machine too bare to build anything:
+
+\begin{sh}
+make deps
+\end{sh}
 
 You do \emph{not} need a font, and you do not need Python. The typeface is
 rasterised into a checked-in C file; the generator that produced it is only
@@ -228,7 +238,8 @@ one. The ones worth knowing on day one:
 \toprule
 \ctp{-bootstrap ... -eval expr} & build an image and evaluate\\
 \ctp{-bootstrap ... -o image} & build an image and write it\\
-\ctp{-run image [n]} & run an image with \ctp{n} workers\\
+\ctp{-run image [n]} & run an image, opening a window. \ctp{n} is a bytecode
+  limit\\
 \ctp{-syntax f.st...} & compile every method in a file and report failures\\
 \ctp{-census image} & summarise an image's object memory\\
 \ctp{-classes}, \ctp{-methods} & list what is in an image\\

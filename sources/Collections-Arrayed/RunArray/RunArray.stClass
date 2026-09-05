@@ -64,8 +64,8 @@ addFirst: value
 
 	(runs size=0 or: [values first ~= value])
 	  ifTrue:
-		[runs_ (Array with: 1) , runs.
-		values_ (Array with: value) , values]
+		[runs _ (Array with: 1) , runs.
+		values _ (Array with: value) , values]
 	  ifFalse:
 		[runs at: 1 put: runs first+1]!
 addLast: value
@@ -73,8 +73,8 @@ addLast: value
 
 	(runs size=0 or: [values last ~= value])
 	  ifTrue:
-		[runs_ runs copyWith: 1.
-		values_ values copyWith: value]
+		[runs _ runs copyWith: 1.
+		values _ values copyWith: value]
 	  ifFalse:
 		[runs at: runs size put: runs last+1]!
 "-----------------------------------"!

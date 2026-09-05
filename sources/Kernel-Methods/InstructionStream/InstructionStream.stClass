@@ -44,11 +44,11 @@ interpretNextInstructionFor: client
 	the next instruction."
 
 	| byte type offset method |
-	method_ self method.
-	byte_ method at: pc.
-	type_ byte // 16.
-	offset_ byte \\ 16.
-	pc_ pc+1.
+	method _ self method.
+	byte _ method at: pc.
+	type _ byte // 16.
+	offset _ byte \\ 16.
+	pc _ pc+1.
 	type=0 ifTrue: [^client pushReceiverVariable: offset].
 	type=1 ifTrue: [^client pushTemporaryVariable: offset].
 	type=2 ifTrue: [^client pushConstant: (method literalAt: offset+1)].
@@ -75,7 +75,7 @@ interpretNextInstructionFor: client
 			^client jump: offset-8+1 if: false].
 	type=10
 		ifTrue:  "long jumps"
-			[byte_ method at: pc.  pc_ pc+1.
+			[byte _ method at: pc.  pc _ pc+1.
 			offset<8 ifTrue: [^client jump: offset-4*256 + byte].
 			^client jump: (offset bitAnd: 3)*256 + byte if: offset<12].
 	type=11

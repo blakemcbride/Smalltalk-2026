@@ -625,7 +625,7 @@ recomputeSelection
 	self deselect.
 	startBlock _ paragraph characterBlockForIndex: startBlock stringIndex.
 	stopBlock _ paragraph characterBlockForIndex: stopBlock stringIndex.
-	selectionShowing_ false!
+	selectionShowing _ false!
 reverseSelection
 	"Reverse the valence of the current selection highlighting."
 

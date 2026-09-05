@@ -448,3 +448,179 @@ RestServerTest >> testBogusNamesInternNoSymbols [
 	self assert: (Symbol lookup: 'zzNoSuchSymbolHasEverBeenMadeZz') isNil.
 	self assert: Symbol allInstances size equals: before
 ]
+
+{ #category : 'tests' }
+RestServerTest >> testALongNumberInAFormIsNotRead [
+	"Bugs4 NUMBERS-2, and the other half of Bugs3 B53.  Every non-string
+	 multipart form field went through asNumber, which reads arbitrarily
+	 long digit strings quadratically -- four thousand nines cost twelve
+	 SECONDS of a worker -- and injsonFrom: runs BEFORE dispatch: reaches
+	 the login check, so an unauthenticated client could pin a worker for
+	 as long as it liked in a body bounded only by maxRequestBytes at
+	 64 MB.  The caps are the JSON parser's own two numbers, 256 digits
+	 and an exponent of 4096; a field over either stays the String it
+	 arrived as, which is what every unrecognised form value already
+	 becomes."
+	| dispatcher started |
+	dispatcher := RestDispatcher on: server.
+	self assert: (dispatcher decodeFormValue: '42' named: 'n') equals: 42.
+	self assert: (dispatcher decodeFormValue: '-1.5' named: 'n') equals: -1.5.
+	self assert: (dispatcher decodeFormValue: '1e3' named: 'n') equals: 1000.0.
+	self assert: RestDispatcher maxFormNumberDigits equals: JSONParser new maxDigits.
+	self assert: RestDispatcher maxFormNumberExponent equals: 4096.
+	"At the cap and one past it.  The number AT the cap is read, and
+	 reading it is the most work this server will do for one field."
+	self assert: (dispatcher decodeFormValue:
+		(String new: RestDispatcher maxFormNumberDigits withAll: $9) named: 'n') isNumber.
+	self assert: (dispatcher decodeFormValue:
+		(String new: RestDispatcher maxFormNumberDigits + 1 withAll: $9) named: 'n')
+		equals: (String new: RestDispatcher maxFormNumberDigits + 1 withAll: $9).
+	self assert: (dispatcher decodeFormValue: '1e1000000000' named: 'n')
+		equals: '1e1000000000'.
+	self assert: (dispatcher decodeFormValue: '1e-999999' named: 'n') equals: '1e-999999'.
+	"and the cost of refusing is not the cost of doing it"
+	started := Time millisecondClockValue.
+	dispatcher decodeFormValue: (String new: 4000 withAll: $9) named: 'n'.
+	self assert: Time millisecondClockValue - started < 2000
+]
+
+{ #category : 'tests' }
+RestServerTest >> testTheLogTakesNoControlCharactersFromTheClient [
+	"Bugs4 NET-6.  _class and _method are whatever a stranger put in the
+	 request, and the log line interpolated them raw: a CR forges a whole
+	 line into the operator's record, and an ANSI escape does what it says
+	 to the terminal of whoever is tailing it.  Everything outside
+	 printable ASCII becomes an escape, which keeps the line one line and
+	 keeps what was actually sent readable."
+	| dispatcher esc |
+	dispatcher := RestDispatcher on: server.
+	esc := String with: (Character value: 27).
+	self assert: (dispatcher forLog: 'services.Adder') equals: 'services.Adder'.
+	self assert: (dispatcher forLog: 'a', (String with: (Character value: 13) with: (Character value: 10)), 'b')
+		equals: 'a\x0d\x0ab'.
+	self assert: (dispatcher forLog: esc, '[2J') equals: '\x1b[2J'.
+	self assert: (dispatcher forLog: (String with: (Character value: 233)))
+		equals: '\xe9'.
+	self assert: (dispatcher forLog: nil) equals: '<nil>'.
+	"and it is bounded, because the field is the client's and the log is not"
+	self assert: (dispatcher forLog: (String new: 400 withAll: $a)) size equals: 203
+]
+
+{ #category : 'tests' }
+RestServerTest >> testAReplyThatCannotBeWrittenIsStillAnEnvelope [
+	"Bugs4 NET-7.  Some values fail only when the reply is encoded -- a
+	 Float that is a NaN or an infinity, which JSON has no spelling for --
+	 and that failure happened INSIDE the trap meant to turn a failure into
+	 an error envelope, so failure: re-encoded the same broken document and
+	 raised again.  The second failure had no handler left and the client
+	 got HTTP 500 with no JSON at all, where the front end reads _Success
+	 and not the status.  The fallback carries the framework's four names
+	 and nothing of the service's, since the service's values are what
+	 could not be written."
+	| reply raw |
+	server start.
+	raw := self postRaw: (JSONObject new at: '_class' put: 'services.Failing';
+		at: '_method' put: 'unwritable'; yourself) asJsonString
+		contentType: 'application/json'.
+	self assert: (raw at: 1) equals: 'HTTP/1.1 200 OK'.
+	reply := JSONObject fromString: (raw at: 3).
+	self deny: (reply booleanAt: '_Success').
+	self assert: (reply integerAt: '_ErrorCode') equals: -1.
+	self assert: (reply stringAt: '_ErrorMessage') notNil.
+	self deny: (reply includesKey: 'value').
+	"A structure that contains itself fails in the same place, which is
+	 checked without a server because a document 512 levels deep is the
+	 most expensive thing in this suite to write."
+	self should: [ | inner |
+		inner := JSONObject new.
+		inner at: 'self' put: inner.
+		inner asJsonString] raise: JSONError.
+	"and the server is still serving afterwards"
+	self assert: ((self call: 'services.Adder' method: 'addNumbers'
+		with: [:j | j at: 'num1' put: 1; at: 'num2' put: 2]) integerAt: 'num3') equals: 3
+]
+
+{ #category : 'tests' }
+RestServerTest >> testOneRequestAtATimePerSession [
+	"Bugs4.  Two requests carrying one _uuid ran in parallel on two
+	 workers and raced whatever the application kept in the session:
+	 read, change, write back is the shape every session store has, and
+	 RestUserData's own Mutex makes each ACCESS atomic without making the
+	 sequence so.  services.Secret's bump reads the counter, yields, and
+	 writes it back, which loses every increment but one without the
+	 session lock and none with it.  Four at once and not forty: the race
+	 is lost on the first pair, and every request here is spent out of the
+	 bytecode budget the whole -tests run shares."
+	| uuid promises |
+	server requireAuthentication: true.
+	server start.
+	uuid := self login.
+	promises := (1 to: 4) collect: [:i |
+		Processor forkParallel: [
+			(self call: 'services.Secret' method: 'bump' with: [:j | j at: '_uuid' put: uuid])
+				booleanAt: '_Success']].
+	promises do: [:p | self assert: p value].
+	self assert: ((self call: 'services.Secret' method: 'count' with: [:j | j at: '_uuid' put: uuid])
+		integerAt: 'count') equals: 4
+]
+
+{ #category : 'tests' }
+RestServerTest >> testTheSessionTableHasACeiling [
+	"Bugs4.  Sessions left the table only by a logout or by the purge that
+	 runs once a minute, so a client logging in over and over grew it by
+	 one entry a call for as long as it liked -- and on a server with no
+	 authentication required that is a request carrying no credentials at
+	 all.  The ceiling first sweeps the idle ones, which is the purge
+	 brought forward; only a table still full after that refuses, and it
+	 refuses the NEW login rather than evicting somebody else's session,
+	 because evicting is how a flood logs the real users out."
+	| cache |
+	cache := RestUserCache new.
+	self assert: cache maxUsers equals: 10000.
+	cache maxUsers: 3.
+	1 to: 3 do: [:i | self assert: (cache newUser: 'u', i printString password: 'p' userId: i) notNil].
+	self assert: cache size equals: 3.
+	self should: [cache newUser: 'over' password: 'p' userId: 4] raise: RestError.
+	self assert: cache size equals: 3.
+	"An idle session is swept to make room rather than refusing."
+	cache inactiveSeconds: -1.
+	self assert: (cache newUser: 'fresh' password: 'p' userId: 5) notNil.
+	self assert: cache size equals: 1.
+	"and the server passes its own setting through"
+	self assert: (RestServer new maxSessions: 7; yourself) userCache maxUsers equals: 7
+]
+
+{ #category : 'tests' }
+RestServerTest >> testCheckingAServicesTimestampCostsNoDescriptor [
+	"Bugs4 NET-2.  classFor: asks reloadIfChanged: on every request, which
+	 asks TonelSource stampFrom:, which asks the file its modification
+	 time and its size.  Primitive 130 opens a descriptor on demand for
+	 both and caches it in the File; nothing finalizes a File, so the
+	 server leaked one descriptor per REQUEST and died of EMFILE after
+	 about a thousand of them on a host with the usual `ulimit -n 1024' --
+	 and the accept loop died with it (NET-1).  The descriptor is the
+	 File's own fd field, which is what this reads: it held a number after
+	 the question was asked and holds nil now.  Tested here rather than in
+	 lib/Tonel-Tests because the server is what asks, once per request,
+	 for ever."
+	| fd file |
+	fd := PosixFile allInstVarNames indexOf: 'fd'.
+	self assert: fd > 0.
+	file := TonelSource fileFor: 'tests/rest-backend/services/Adder.class.st'.
+	self assert: (TonelSource stampFrom: file) notNil.
+	self assert: (file instVarAt: fd) isNil.
+	"and the answer is still the file's time and its size"
+	file := TonelSource fileFor: 'tests/rest-backend/services/Adder.class.st'.
+	self assert: ((TonelSource stampFrom: file) at: 1) isNumber.
+	self assert: ((TonelSource stampFrom: file) at: 2) isNumber.
+	self assert: (TonelSource fileFor: 'tests/rest-backend/services/NoSuch.class.st') isNil.
+	"and a request through the server -- which asks this question on the
+	 way to every service -- leaves the server serving.  One and not a
+	 thousand: what a thousand would prove is that this machine's
+	 descriptor limit is higher than a thousand, and the assertion above
+	 proves the thing itself."
+	server start.
+	self assert: ((self call: 'services.Adder' method: 'addNumbers'
+		with: [:j | j at: 'num1' put: 3; at: 'num2' put: 4]) integerAt: 'num3')
+		equals: 7
+]

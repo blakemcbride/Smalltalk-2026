@@ -21,7 +21,11 @@
  *        because a scaling failure that cannot be attributed will be
  *        guessed at
  *
- *  Three kernels, because they measure different things:
+ *  Four kernels, because they measure different things:
+ *
+ *      arithmetic   SmallInteger sends and nothing else, the cheapest work
+ *                   the interpreter can be given.  It is the control: a
+ *                   figure the other three are read against.
  *
  *      mandelbrot   heavy arithmetic, almost no allocation.  The ceiling.
  *                   Fixed point rather than Float on purpose -- a Float

@@ -138,3 +138,32 @@ SocketStreamTest >> testCloseFlushes [
 	out close.
 	self assert: in contents equals: 'last words'
 ]
+
+{ #category : 'tests' }
+SocketStreamTest >> testTheWholeReadHasADeadlineOfItsOwn [
+	"Bugs4.  readTimeout: bounds ONE read, which bounds a peer that says
+	 nothing -- and a peer that says one byte at a time, slowly, is never
+	 silent: every read meets its timeout and the conversation has no
+	 bound at all.  deadlineIn: is the bound on what is left to read, and
+	 the two are compared in fill, where every read here goes."
+	| listener stop |
+	stop := false.
+	listener := ServerSocket listenOn: 0 address: '127.0.0.1' backlog: 4.
+	[[[:l | | c |
+		c := l accept.
+		[[stop] whileFalse: [c send: 'x'. (Delay forMilliseconds: 20) wait]]
+			on: Error do: [:e | nil].
+		c close] value: listener] on: Error do: [:e | nil]] fork.
+	[ | socket in |
+	  socket := Socket connectTo: '127.0.0.1' port: listener localPort.
+	  [in := SocketStream on: socket.
+	   in readTimeout: 5000.
+	   in deadlineIn: 200.
+	   "Ten thousand bytes at ten a second is a quarter of an hour; the
+	    deadline ends it in four hundred milliseconds."
+	   self should: [in next: 10000] raise: TimedOut.
+	   "A deadline of nil is no deadline, which is what every other user
+	    of this class still has."
+	   in deadlineIn: nil] ensure: [stop := true. socket close]]
+		ensure: [listener close]
+]
