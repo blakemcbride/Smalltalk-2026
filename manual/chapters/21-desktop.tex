@@ -182,9 +182,8 @@ whole image to that name with \ct{.im} on the end. Unless the name is
 \ct{snapshot}, the changes file is copied to match first, so \ct{work.im}
 arrives beside \ct{work.changes}. Then the system carries on running.
 
-Answer the prompt with nothing at all and the save is cancelled. That is the
-only way out of it, and it is worth knowing, because there is no button that
-says cancel.
+The save is cancelled by \ct{cancel} on the prompt's own menu, by the
+\ct{Esc} key, or by answering with nothing at all (\S\ref{sec:prompts}).
 
 \begin{st}
 ./st80 -run work.im
@@ -209,9 +208,9 @@ file and what is not.
 \end{center}
 
 Releasing the button outside the menu chooses nothing, which is the same as
-\ct{Continue}. An empty answer to the name prompt cancels the quit as well as
-the save, so a slip at that prompt leaves you where you were rather than
-exiting unsaved.
+\ct{Continue}. Giving the name prompt up cancels the quit as well as the
+save, so a slip at that prompt leaves you where you were rather than exiting
+unsaved.
 
 \end{description}
 
@@ -235,6 +234,39 @@ The right button, anywhere over a window:
 
 \ct{close} asks the model first, so a Browser with unaccepted edits will
 interrupt and ask whether you meant it.
+
+\section{Prompts}
+\label{sec:prompts}
+
+Some commands ask for a line of text before they do anything: \ct{save} wants
+a name for the image, the File List's \ct{new} and \ct{rename} want a name for
+a file. The question appears in a small pane with a one-line field under it,
+wherever the pointer is.
+
+A prompt holds control until it is answered. Nothing else on the screen
+responds while one is up, and moving the pointer away does not dismiss it, so
+there is always exactly one thing to do next. Three gestures do it:
+
+\begin{center}
+\small
+\begin{tabular}{@{}lp{0.62\textwidth}@{}}
+\toprule
+\ctp{Return} & answer with what is typed\\
+\ctp{accept} & the same, from the middle-button menu\\
+\ctp{cancel} & give up. \ctp{Esc} is the same thing from the keyboard\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Giving up answers with nothing, and nothing is what every command that prompts
+reads as \emph{never mind}: \ct{save} does not write, \ct{new} does not make a
+file, \ct{rename} leaves the name alone. Answering an empty field with
+\ct{Return} says the same thing, so a prompt you have thought better of can be
+left either way.
+
+The field starts out holding whatever the command offers---\ct{snapshot} for
+\ct{save}, the current name for \ct{rename}---and that text is selected, so
+typing replaces it and \ct{Return} on its own accepts it.
 
 \section{The text editor}
 \label{sec:texteditor}

@@ -520,8 +520,16 @@
  *  failed accept, and an HTTP client that will not put a caller's line
  *  break on the wire.  With them the tests, in nine suites and one new
  *  package.
+ *
+ *  3078 -> 3080 with lib/Prompt-Cancel, which is two.  A FillInTheBlank
+ *  holds control until its model answers actionTaken and only accept ever
+ *  set it, while the type-in pane's menu is the code pane's and offers a
+ *  `cancel' that restores the text and goes on editing -- the word for the
+ *  way out, on the item that is not it.  FillInTheBlankController>>cancel
+ *  empties the answer and ends the prompt, and selectCurrentTypeIn: gives
+ *  the escape key the same meaning.
  */
-#define LIB_METHODS             3078
+#define LIB_METHODS             3080
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -2768,7 +2776,7 @@ test_browsing(void)
      *  2238539 -> 2482762 with the Bugs3 fixes: 293 methods and the comments
      *  that say what each was for.
      */
-    check_integer("(SourceFiles at: 1) contents size", 2698670);
+    check_integer("(SourceFiles at: 1) contents size", 2699628);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
