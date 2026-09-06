@@ -2,6 +2,8 @@
 
 if [ -z "$1" ]; then
     image="st2026.image"
+elif [[ "$1" == *.im || "$1" == *.image ]]; then
+    image="$1"
 else
     image="$1.im"
 fi
