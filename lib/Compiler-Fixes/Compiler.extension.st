@@ -162,13 +162,23 @@ Compiler class >> reportFailure: answer of: code to: requestor [
 	 nobody to tell, a SyntaxErrorNotification is signalled.  What is new is
 	 that the position is a real one: the C compiler answers the character
 	 the token started at, so the selection lands on the offending token
-	 rather than at the start of the method."
+	 rather than at the start of the method.
+
+	 The two arms count from different places, and that is why the offset is
+	 added to one of them and not the other.  The C compiler counts from the
+	 start of the text it was given, which is the SELECTION; an editor's
+	 insertAndSelect:at: counts from the start of the pane.  A notification
+	 carries the selection as its errorCode, so its position belongs to
+	 that."
 
 	| message position source |
 	message := answer at: 3.
 	position := (answer at: 5) max: 1.
 	Cursor normal show.
-	requestor isNil ifFalse: [^requestor insertAndSelect: message at: position].
+	requestor isNil ifFalse: [
+		^requestor
+			insertAndSelect: message
+			at: position + (self sourceOffsetOf: code)].
 	source := self sourceTextOf: code.
 	^SyntaxErrorNotification new
 		errorPosition: position;
@@ -183,11 +193,52 @@ Compiler class >> sourceTextOf: textOrStream [
 	"The text, whatever it arrived as.
 
 	 compile: and evaluate: take a String, a Text, or a stream on either,
-	 because 1983's from:class:context:notifying: took all three."
+	 because 1983's from:class:context:notifying: took all three.
+
+	 A READ STREAM IS READ FROM WHERE IT STANDS, and `contents' is not that.
+	 PositionableStream>>contents answers `collection copyFrom: 1 to:
+	 readLimit' -- from the beginning, whatever the position -- and
+	 ParagraphEditor>>selectionAsStream hands over a ReadStream on the WHOLE
+	 pane bounded to the selection: `on: text from: startBlock stringIndex
+	 to: stopBlock stringIndex - 1', which sets position and readLimit and
+	 copies nothing.  So `contents' answered the pane from its first
+	 character down to the end of the selection, and a do it in a Workspace
+	 compiled and ran everything above the selection as well.  On a pane
+	 whose earlier lines still parse that is silent -- selecting the third
+	 line of a workspace ran the first two again -- and on a pane holding
+	 anything else, such as the answer `print it' leaves behind, the do it
+	 failed with a complaint about a line the user had not selected.
+
+	 1983 did not have this: its Parser read the stream, so it began where
+	 the stream stood.  The C compiler takes a String, and this is the
+	 method that makes one.
+
+	 Non-destructive, because a failed compile asks for the same text again
+	 to report where it went wrong."
+
+	| all from |
 	textOrStream isString ifTrue: [^textOrStream].
+	(textOrStream isKindOf: ReadStream) ifTrue: [
+		all := textOrStream contents asString.
+		from := textOrStream position + 1.
+		from > all size ifTrue: [^''].
+		^all copyFrom: (from max: 1) to: all size].
 	(textOrStream respondsTo: #contents)
 		ifTrue: [^textOrStream contents asString].
 	^textOrStream asString
+]
+
+{ #category : '*Compiler-Fixes' }
+Compiler class >> sourceOffsetOf: textOrStream [
+	"How many characters stand before what sourceTextOf: answers.
+
+	 Which is what turns a position the C compiler counted inside the
+	 selection into a position in the pane the requestor is holding.  Zero
+	 for anything that is not a read stream, since then the text IS the
+	 whole of what was given."
+
+	(textOrStream isKindOf: ReadStream) ifTrue: [^textOrStream position max: 0].
+	^0
 ]
 
 { #category : '*Compiler-Fixes' }

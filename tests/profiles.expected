@@ -333,9 +333,14 @@
 # for and the one shape of it this file cannot see.  Every row moved by
 # one; database-live is 585.
 #
+# Every row moved by six with St80CompilerTest, which asks what a `do it' is
+# given.  Six in one profile and six in all of them because the other four
+# require st2026 and inherit its suites, which is why these rows move
+# together whenever lib/Library-Tests does.
+#
 # profile               run  passed
-st2026                  546  546
-pharo-announcements     577  577
-pharo-time              1167 1167
-pharo-weak              1078 1077
-pharo-collections       1003 1003
+st2026                  552  552
+pharo-announcements     583  583
+pharo-time              1173 1173
+pharo-weak              1084 1083
+pharo-collections       1009 1009

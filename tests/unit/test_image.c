@@ -186,8 +186,11 @@
  *  ephemerons the collector has fired and sends each one #mourn.  Nothing
  *  sent it before, so a WeakKeyDictionary held every key it had ever been
  *  given -- weak in name and strong in fact.
+ *
+ *  154 -> 155 with St80CompilerTest, which asks what a `do it' is given: a
+ *  ReadStream positioned at the selection, and nothing above it.
  */
-#define LIB_CLASSES             154
+#define LIB_CLASSES             155
 /*
  *  This number is a ratchet and is meant to move: lib/ is where every
  *  divergence from the frozen 1983 sources lives, so it grows whenever a
@@ -528,8 +531,18 @@
  *  way out, on the item that is not it.  FillInTheBlankController>>cancel
  *  empties the answer and ends the prompt, and selectCurrentTypeIn: gives
  *  the escape key the same meaning.
+ *
+ *  3080 -> 3089 with Compiler class>>sourceOffsetOf: and St80CompilerTest.
+ *  A do it in a text pane compiled the pane from its first character down
+ *  to the end of the selection, because the selection arrives as a
+ *  ReadStream whose position says where it starts and `contents' answers
+ *  from 1 whatever the position.  sourceTextOf: reads from the position
+ *  now, and the new method says how far in that was -- which is what turns
+ *  the C compiler's position inside the selection into a position in the
+ *  pane the complaint is written into.  Seven of the nine are the tests,
+ *  and the ninth is the `new' the loader synthesizes for the test class.
  */
-#define LIB_METHODS             3080
+#define LIB_METHODS             3089
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -725,8 +738,10 @@ build_once(void)
      *
      *  147 -> 151 with the Bugs3 fixes: CorruptMethod, MonitorTest,
      *  ProcessTest and St80ExceptionTest, none of which defines one.
+     *
+     *  151 -> 152 with St80CompilerTest, which does not define one either.
      */
-    CHECK_EQ_INT(res.news_synthesized, 151);
+    CHECK_EQ_INT(res.news_synthesized, 152);
     built = 1;
     return 1;
 }
@@ -2572,7 +2587,8 @@ test_sunit(void)
                  "HttpServerTest JSONArrayTest JSONObjectTest JSONParserTest "
                  "JSONWriterTest LLMConversationTest LLMTestCase MonitorTest OllamaTest OpenAITest OpenRouterTest "
                  "PasswordHashTest ProcessTest QdrantTest RestServerTest SocketStreamTest SocketTest "
-                 "St80CollectionTest St80ExceptionTest St80FileTest St80NumberTest St80ReflectionTest "
+                 "St80CollectionTest St80CompilerTest St80ExceptionTest St80FileTest "
+                 "St80NumberTest St80ReflectionTest "
                  "St80TextTest SUnitBrokenTest SUnitReportingTest SUnitTest "
                  "TonelReaderTest TonelSourceTest TonelWriterTest WebDemoTest )");
     /*
@@ -2648,8 +2664,13 @@ test_sunit(void)
      *  JSONParserTest, HttpClientTest and RestServerTest for what a hostile
      *  client sends; and TonelReaderTest, TonelWriterTest and
      *  TonelSourceTest for the files that come back as they went out.
+     *
+     *  546 -> 552 with St80CompilerTest's six: they ask
+     *  what sourceTextOf: and sourceOffsetOf: make of a stream standing
+     *  partway through its collection, and what a do it on such a stream
+     *  answers and where it says a mistake is.
      */
-    check_integer("TestCase allTests tests size", 546);
+    check_integer("TestCase allTests tests size", 552);
 
     /*
      *  And the three buckets, from the outside as well as from within
@@ -2776,7 +2797,7 @@ test_browsing(void)
      *  2238539 -> 2482762 with the Bugs3 fixes: 293 methods and the comments
      *  that say what each was for.
      */
-    check_integer("(SourceFiles at: 1) contents size", 2699628);
+    check_integer("(SourceFiles at: 1) contents size", 2705136);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
