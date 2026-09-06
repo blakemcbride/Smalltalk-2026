@@ -7,7 +7,7 @@
 \small
 \begin{tabular}{@{}lp{0.60\textwidth}@{}}
 \toprule
-\ctp{make} & build \ctp{./st80}\\
+\ctp{make} & build \ctp{./st2026}\\
 \ctp{make test} & unit suites, then every profile's own SUnit suites\\
 \ctp{make unit-test} & just the unit suites\\
 \ctp{make suite-test} & just the imported packages' suites\\
@@ -35,7 +35,7 @@
 \end{tabular}
 \end{center}
 
-\section{\texttt{st80}}
+\section{\texttt{st2026}}
 
 \begin{center}
 \small
@@ -76,7 +76,7 @@
 \section{What it answers the shell}
 
 Zero when the thing asked for was done, and when nothing was asked for:
-\ct{-version}, \ct{-help} and a bare \ct{./st80} print and succeed.
+\ct{-version}, \ct{-help} and a bare \ct{./st2026} print and succeed.
 
 One when the work was attempted and failed---an image that cannot be opened,
 a bootstrap that will not compile, \ct{-tests} with a test that did not pass,
@@ -141,8 +141,8 @@ answers go down its socket and its diagnostics go to the log---but it
 surprises anyone who redirects:
 
 \begin{lstlisting}
-./st80 -serve app.im 'expr'  > out.txt     # catches nothing
-./st80 -serve app.im 'expr' 2> out.txt     # catches it
+./st2026 -serve app.im 'expr'  > out.txt     # catches nothing
+./st2026 -serve app.im 'expr' 2> out.txt     # catches it
 \end{lstlisting}
 
 \ct{Transcript show:} goes there too when there is no Transcript window to

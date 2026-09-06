@@ -118,7 +118,7 @@ TSAN, clean.
 From P1 onward every imported package is shared mutable state, and the audit is what keeps
 P1 true. It has to be mechanical or it will not be done.
 
-- `st80 -audit <Class|Package>` — walk method dictionaries, decode bytecodes, report every
+- `st2026 -audit <Class|Package>` — walk method dictionaries, decode bytecodes, report every
   literal-variable store with its class and selector. The compiler already knows these
   exactly: a store to a global or class variable is bytecode 129/130 with a
   `storeLiteralVariable` descriptor.

@@ -12,8 +12,8 @@ root, a session cache, and a pool of database connections.
 
 or, for a server image,
 
-    ./st80 -bootstrap -profile profiles/st2026.profile -startup 'RestServer serve' -o server.im
-    ./st80 -serve server.im -workers 8 server.json
+    ./st2026 -bootstrap -profile profiles/st2026.profile -startup 'RestServer serve' -o server.im
+    ./st2026 -serve server.im -workers 8 server.json
 
 where server.json holds the same settings by name:
 

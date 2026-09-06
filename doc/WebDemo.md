@@ -109,8 +109,8 @@ browser goes to `http://localhost:8080`. Pages and `/rest` are one origin;
 CORS never enters into it. Running:
 
 ```
-make demo-image      # ./st80 -bootstrap -profile profiles/st2026.profile -startup 'RestServer serve' -o demo.im
-./st80 -serve demo.im -workers 8 demo/server.json
+make demo-image      # ./st2026 -bootstrap -profile profiles/st2026.profile -startup 'RestServer serve' -o demo.im
+./st2026 -serve demo.im -workers 8 demo/server.json
 ```
 
 Or, green, from a workspace: `RestServer fromConfigFile: 'demo/server.json'`
@@ -316,7 +316,7 @@ free, runs to completion, and the worker goes back to the pool. That is
 Tomcat's NIO connector and Kiss's `QueueManager`, and it is what `-serve`
 does, in these threads:
 
-| the description | what runs under `st80 -serve demo.im -workers 8` |
+| the description | what runs under `st2026 -serve demo.im -workers 8` |
 |---|---|
 | one thread waits for connections, queues each, loops back | the I/O thread, in `poll()` over the listening socket *and* every kept-alive connection; each arrival goes on the ready queue |
 | a pool sized by the developer | `-workers n`; default four per CPU (Blake, 2026-08-26; was CPUs − 1) |
@@ -417,7 +417,7 @@ that it can be edited on the running server):
   it changes);
   `Login` with no database admits anybody (the dispatcher's rule).
 - `WebDemoLiveTest` (`database-live` profile, **outside** the ratchet as
-  that profile's comment demands): its own `st80-web-demo-test.db` filled
+  that profile's comment demands): its own `st2026-web-demo-test.db` filled
   by `Init`; `Login` as `smalltalk`/`password` against the hash copied verbatim
   from Kiss — the compatibility test; a wrong password refused; the phone
   CRUD round trip through `_uuid`; `Users addRecord` then a login as that
@@ -521,7 +521,7 @@ non-database waits (§3.5).
 
 ### Found on the way (phase 3)
 
-Driving the demo under a real `st80 -serve demo.im` — a loaded image, not
+Driving the demo under a real `st2026 -serve demo.im` — a loaded image, not
 the bootstrap process every test runs in — found two things the suites
 could not:
 
@@ -577,7 +577,7 @@ into the in-image parser, and a service file may now declare them.
 `make ASAN=1 unit-test` (phase 1 touches C); `make TSAN=1 unit-test`, zero
 warnings (phases 1, 2, 4 and 5 touch C or the server's request and start paths, which
 `test_parallel_rest` runs; start it early, it takes thirty minutes); `cd manual && python3 check.py && make && make verify`
-(phase 6); `./st80 -bootstrap -profile profiles/database-live.profile
+(phase 6); `./st2026 -bootstrap -profile profiles/database-live.profile
 -tests` on this machine for the live half of phase 3; and the browser
 walk-through of §4. Remember that `make` does not relink
 `build/mt/tests/*` after a C change — `make test` before trusting a gate.

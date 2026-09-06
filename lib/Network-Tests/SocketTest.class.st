@@ -4,7 +4,7 @@ Sockets over the loopback interface, on port 0.
 Every test here makes its own listener on a port the system picks, connects to
 it from the same image, and closes both ends in an ensure:, so the suite needs
 no network, no fixed port, and nothing another test left behind.  These run
-under `st80 -bootstrap -tests', where there is one interpreter and every
+under `st2026 -bootstrap -tests', where there is one interpreter and every
 process is green; the arm-wait-retry contract is the same there as on thirty
 workers, because the VM's network thread is the same thread in both.
 

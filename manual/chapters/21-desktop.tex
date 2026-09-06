@@ -186,7 +186,7 @@ The save is cancelled by \ct{cancel} on the prompt's own menu, by the
 \ct{Esc} key, or by answering with nothing at all (\S\ref{sec:prompts}).
 
 \begin{st}
-./st80 -run work.im
+./st2026 -run work.im
 \end{st}
 
 is how you come back to it. Chapter~\ref{ch:keeping} is about what is in that
@@ -416,9 +416,9 @@ For tests and screenshots, input can be injected from the command line rather
 than typed:
 
 \begin{sh}
-./st80 -inject "m 320 240; w 20; d 129; w 40; m 320 271; w 40; u 129; w 60;
+./st2026 -inject "m 320 240; w 20; d 129; w 40; m 320 271; w 40; u 129; w 60;
                 m 60 60; w 20; d 130; w 20; m 900 1400; w 20; u 130; w 200" \
-       -screenshot /tmp/browser.pbm -run st80.image
+       -screenshot /tmp/browser.pbm -run st2026.image
 \end{sh}
 
 \ct{m X Y} moves the pointer, \ct{d} and \ct{u} press and release a button

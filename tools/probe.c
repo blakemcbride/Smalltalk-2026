@@ -1,7 +1,7 @@
 /*
  *  tools/probe.c -- the Makefile's link check, and nothing else.
  *
- *  It is not part of st80 and is never linked into it.  `make' compiles
+ *  It is not part of st2026 and is never linked into it.  `make' compiles
  *  this one file against the whole external surface the real build uses --
  *  pthreads, libm, and SDL3 when SDL3 is configured in -- before it
  *  compiles a single object of its own.  One invocation, about 40ms, and a

@@ -144,7 +144,7 @@ Finalizer class >> drainSignalling: aSemaphoreOrNil [
 			on: Error
 			do: [:e |
 				self reportOnStandardError:
-					'st80: ', e class name, ' mourning ',
+					'st2026: ', e class name, ' mourning ',
 					each class name, ': ',
 					(e messageText ifNil: ['<no message>'])]].
 	^count

@@ -80,7 +80,7 @@ TextCollector >> endEntry [
 	 With no dependents the text goes to STANDARD ERROR instead of being
 	 dropped.  A headless image has no Transcript window, so `self changed:
 	 #appendEntry' reached nobody and every entry was built, locked, and
-	 thrown away.  `st80 -serve' asked to evaluate a show: followed by a
+	 thrown away.  `st2026 -serve' asked to evaluate a show: followed by a
 	 literal answered the literal and put nothing on stdout, nothing on
 	 stderr, and said nothing about it.
 

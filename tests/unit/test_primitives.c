@@ -7,7 +7,7 @@
  *  The port's central question -- will a body of Smalltalk source run here --
  *  is unbounded when asked as a question and finite when asked as a list:
  *  source names primitives by number, the numbers are enumerable, and what
- *  is left after the ones this VM answers is the work.  "st80 -primitives"
+ *  is left after the ones this VM answers is the work.  "st2026 -primitives"
  *  produces that list; this checks it says true things.
  *
  *  Two of the checks below are worth more than the others.  ST_PRIM_TAG

@@ -23,8 +23,8 @@ brew install sdl3 pkg-config
 
 cd /path/to/Smalltalk-2026
 make
-./st80 -bootstrap -profile profiles/st2026.profile -o st80.image
-./st80 -run st80.image
+./st2026 -bootstrap -profile profiles/st2026.profile -o st2026.image
+./st2026 -run st2026.image
 ```
 
 If `make` stops, it stops before compiling anything and tells you the command
@@ -66,7 +66,7 @@ a struct.
 brew install sdl3 pkg-config
 ```
 
-st80 draws its display through SDL3 and finds it with `pkg-config`.
+st2026 draws its display through SDL3 and finds it with `pkg-config`.
 Homebrew's `sdl3` installs `sdl3.pc` beside the library and Homebrew's
 `pkg-config` knows where to look, so the two together are all it takes.
 
@@ -103,7 +103,7 @@ the values are whatever your machine says:
 
 ```
 $ make deps
-st80 external requirements, as this machine answers for them:
+st2026 external requirements, as this machine answers for them:
 
   C compiler   cc                         Apple clang version ...
   pkg-config   pkg-config                 2.3.0
@@ -121,7 +121,7 @@ the same rule so they cannot drift apart.
 
 If the machine is meant to have no display — a build server, a CI runner —
 say so and the graphics layer compiles to a stub. `-bootstrap`, `-eval` and
-`-doctests` all still work, the whole test suite runs, and `./st80 -run`
+`-doctests` all still work, the whole test suite runs, and `./st2026 -run`
 refuses to open a window and says why.
 
 ```sh
@@ -136,7 +136,7 @@ It gets its own build directory for the same reason.
 ## 3. Build
 
 ```sh
-make                    # build ./st80
+make                    # build ./st2026
 make test               # unit suites, then every profile's own SUnit suites
 make bench              # the parallel scaling benchmark
 make deps               # what this machine has, and what it is missing
@@ -169,19 +169,19 @@ The binary is a virtual machine with a compiler in it. It has no image until
 you build one:
 
 ```sh
-./st80 -bootstrap -profile profiles/st2026.profile -o st80.image
-./st80 -run st80.image
+./st2026 -bootstrap -profile profiles/st2026.profile -o st2026.image
+./st2026 -run st2026.image
 ```
 
 That is 264 classes and 5,123 methods — the 1983 class library plus closures,
 exceptions, concurrency and SUnit. Or evaluate something without a window:
 
 ```sh
-$ ./st80 -bootstrap -profile profiles/st2026.profile -eval '(1 to: 10) inject: 0 into: [:a :b | a + b]'
+$ ./st2026 -bootstrap -profile profiles/st2026.profile -eval '(1 to: 10) inject: 0 into: [:a :b | a + b]'
 55
 ```
 
-`./st80 -version` will say `platform : macOS`, which is the one place the
+`./st2026 -version` will say `platform : macOS`, which is the one place the
 binary tells you which branch it took.
 
 **Use a profile, not `-manifest sources/MANIFEST`.** The manifest is the 226
@@ -211,12 +211,12 @@ the same units and comes out sensible; it is the last hop to the panel that
 is not ours. If it reads soft, an explicit integer scale is the lever:
 
 ```sh
-ST_DISPLAY_SCALE=2 ./st80 -run st80.image
+ST_DISPLAY_SCALE=2 ./st2026 -run st2026.image
 ```
 
 The rest of the display settings are environment variables — `ST_DISPLAY_THEME`
 (`paper`, `classic`, `dark`), `ST_DISPLAY_WINDOW=WxH`, `ST_DISPLAY_PRESENTATION`
-(`integer`, `letterbox`, `stretch`). `./st80 -help` lists them all.
+(`integer`, `letterbox`, `stretch`). `./st2026 -help` lists them all.
 
 ### Two habits of the interface
 
@@ -387,7 +387,7 @@ meet, and when they do, this is the shape they have to meet in.
   Mac, and the Retina behaviour, all of which are reasoned from documented
   behaviour rather than observed.
 - Both sanitizers.
-- The socket layer and `st80 -serve`. `src/net/st_socket.c`'s POSIX half is
+- The socket layer and `st2026 -serve`. `src/net/st_socket.c`'s POSIX half is
   what a Mac would run — `poll`, `pipe` where `pipe2` is missing,
   `getentropy` — and those are the branches Linux with `__linux__` undefined
   compiled, not a Mac; the server has never listened on one.

@@ -51,7 +51,7 @@ extern "C" {
  */
 /*
  *  Every source file under a directory, recursively and in sorted order.
- *  What `st80 -bootstrap sources/' needs, and what Phase 5's exit
+ *  What `st2026 -bootstrap sources/' needs, and what Phase 5's exit
  *  criterion is written in terms of.
  */
 int PROFILE_expand_tree(const char *dir, st_names *out, char *error,

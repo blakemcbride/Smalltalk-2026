@@ -2695,7 +2695,7 @@ primitive_snapshot(void)
         SCHED_freeze();
         if (!SCHED_wait_frozen(INT64_C(10) * 1000000000)) {
             SCHED_thaw();
-            fprintf(stderr, "st80: snapshot to %s refused: a worker did not "
+            fprintf(stderr, "st2026: snapshot to %s refused: a worker did not "
                             "park its process within ten seconds\n",
                     snapshot_path);
             return 0;
@@ -2715,12 +2715,12 @@ primitive_snapshot(void)
     }
     if (OM_image_save(snapshot_path, err, sizeof err) != 0) {
         SCHED_thaw();
-        fprintf(stderr, "st80: snapshot to %s failed: %s\n",
+        fprintf(stderr, "st2026: snapshot to %s failed: %s\n",
                 snapshot_path, err);
         return 0;
     }
     SCHED_thaw();
-    fprintf(stderr, "st80: wrote %s\n", snapshot_path);
+    fprintf(stderr, "st2026: wrote %s\n", snapshot_path);
     ST_pop_n(1);
     ST_push(ST_NIL);                    /*  "just written", not "resumed"  */
     return 1;
@@ -3468,7 +3468,7 @@ primitive_class(void)
 /*
  *  ----------  What Pharo's Kernel asks for  ----------
  *
- *  Every one of these was named by "st80 -primitives" over Pharo's Kernel.
+ *  Every one of these was named by "st2026 -primitives" over Pharo's Kernel.
  *  That is what the report is for: it turned an unbounded question into a
  *  list, and a list can be worked down.
  *
@@ -4892,7 +4892,7 @@ ST_net_init(void)
          */
         SCHED_async_init();
         if (NET_init(SCHED_signal_token) != 0) {
-            fprintf(stderr, "st80: cannot initialise the network: %s\n",
+            fprintf(stderr, "st2026: cannot initialise the network: %s\n",
                     NET_last_error());
             ST_store_release(&net_prim_state, 0);
             return -1;
@@ -6465,7 +6465,7 @@ ST_must_be_boolean(st_oop value)
 
     ST_print_object(value, buf, sizeof buf);
     if (ST_errors_reported())
-        fprintf(stderr, "st80: %s is not a boolean at cycle %llu\n", buf,
+        fprintf(stderr, "st2026: %s is not a boolean at cycle %llu\n", buf,
                 (unsigned long long) st_vm.cycle);
     ST_report_backtrace();
     st_vm.running = 0;

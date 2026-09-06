@@ -1,13 +1,13 @@
 build/
-st80
+st2026
 *.o
 *.a
 *.d
 
-# The MSVC build's leavings.  st80 above does not cover st80.exe, and
+# The MSVC build's leavings.  st2026 above does not cover st2026.exe, and
 # *.o does not cover *.obj.  *.pdb is the debug database; *.ilk is the
 # incremental-link record.  See Windows.md.
-st80.exe
+st2026.exe
 *.obj
 *.pdb
 *.ilk
@@ -55,24 +55,24 @@ manual/__pycache__/
 # The fixture lib/Database-Live-Tests makes and empties.  It is a build
 # product of running that suite -- the tests recreate its tables on every
 # setUp -- and SQLite's rollback journal beside it is one too.
-st80-dblive-test.db
-st80-dblive-test.db-journal
-st80-odbc-parallel-test.db
-st80-odbc-parallel-test.db-journal
-st80-rest-live-test.db
-st80-web-demo-test.db
-st80-web-demo-test.db-journal
+st2026-dblive-test.db
+st2026-dblive-test.db-journal
+st2026-odbc-parallel-test.db
+st2026-odbc-parallel-test.db-journal
+st2026-rest-live-test.db
+st2026-web-demo-test.db
+st2026-web-demo-test.db-journal
 
 # The empty file tests/unit/test_parallel_shared opens and closes on every
 # worker.  It used to open README.md, and closing a stream that was never
 # given a mode truncates it -- see File class>>initialize in lib/Files-Fixes.
-st80-parallel-file-test.txt
+st2026-parallel-file-test.txt
 
 # The demo application's database, made by the SQLite ODBC driver on the
 # first start and filled from demo/schema.sqlite by demo/backend/Init.
 demo/DB.sqlite
 demo/DB.sqlite-journal
-st80-rest-live-test.db-journal
+st2026-rest-live-test.db-journal
 
 # Code-RAG local index files (written by bld; machine-local, not part of the project)
 .mcp.json

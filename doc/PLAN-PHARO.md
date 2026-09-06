@@ -209,7 +209,7 @@ initialisation sites.
 *Do not add scaled decimals.* `1.23s2` already parses as `1.23 s2`, a unary send — the only
 one of the six with an existing meaning to take away.
 
-**Gate:** `./st80 -syntax sources/...` reports the same failure count as today; `make test`
+**Gate:** `./st2026 -syntax sources/...` reports the same failure count as today; `make test`
 under both `OM=bb` and `OM=mt` green; trace2 byte-identical; new unit tests for each form.
 
 ### B — Block re-entrancy *(done; scope corrected in contact)*
@@ -593,7 +593,7 @@ in contact.
   Real trait reflection and update propagation remain out of scope: a trait is not an object
   in the image, and changing one does not re-flatten the classes that took it.
 - **The primitive set — the tool is done; the Pharo corpus it is aimed at is not here yet.**
-  `st80 -primitives <files|-profile p>` compiles every method in a body of source and reports
+  `st2026 -primitives <files|-profile p>` compiles every method in a body of source and reports
   every primitive it asks the VM for, against what this VM does with it. It reads both source
   formats, because it goes through the same reader everything else does.
 
@@ -1059,7 +1059,7 @@ wrong about the image it built. It built the wrong image.
 It now calls `PROFILE_expand` on `st2026.profile`, which answers the files and their dialects
 together, so the Blue Book / closures split is no longer a hand-maintained index into a
 hand-maintained array either. **Zero hand-written `lib/` paths remain**, and the test and
-`st80 -bootstrap -profile profiles/st2026.profile` now report the same 263 classes, 5042
+`st2026 -bootstrap -profile profiles/st2026.profile` now report the same 263 classes, 5042
 methods and 3789 symbols. Parity is structural rather than remembered; the drift cannot
 recur, because there is no second list to drift from.
 
@@ -1137,7 +1137,7 @@ is small enough that writing it is cheaper than the provenance decision. `TestCa
 `TestSuite`, `TestResult`, `TestFailure` in `lib/SUnit/`, with `lib/SUnit-Tests/` testing
 them — including a fixture whose tests **fail and blow up on purpose**, because a runner that
 quietly reports every failure as a pass is worse than no runner, and nothing but a deliberate
-failure catches that. `st80 -bootstrap … -tests` runs every test in the image and exits
+failure catches that. `st2026 -bootstrap … -tests` runs every test in the image and exits
 non-zero if any did not pass, which is what makes the ratchet a number a build script can
 read.
 
@@ -1446,7 +1446,7 @@ audit finite: **immutable** (written once at build) and **thread-confined** (onl
 touched by one worker). If everything lands in *serialize*, the audit has failed and the
 system will not scale.
 
-Build **`st80 -audit <Class|Package>`**: walk method dictionaries, decode bytecodes, report
+Build **`st2026 -audit <Class|Package>`**: walk method dictionaries, decode bytecodes, report
 every literal-variable store with its class and selector. The compiler already knows these
 exactly — a store to a global or class variable is bytecode 129/130 with a
 `storeLiteralVariable` descriptor. That converts "grep and hope" into a complete list;
@@ -1489,7 +1489,7 @@ make clean && make OM=bb && make OM=bb test        # trace2/trace3 oracle
 make clean && make OM=mt && make OM=mt test        # the real system
 make clean && make OM=mt ASAN=1 test
 make clean && make OM=mt TSAN=1 test
-./st80 -bootstrap -manifest sources/MANIFEST -o st80.image && ./st80 -run st80.image
+./st2026 -bootstrap -manifest sources/MANIFEST -o st2026.image && ./st2026 -run st2026.image
 ```
 
 Specific oracles, in decreasing order of how much they are worth:

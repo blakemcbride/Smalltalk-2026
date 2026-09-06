@@ -60,15 +60,15 @@ static const char *startup_text =
     "    value: (ReadStream on: (Smalltalk arguments isEmpty ifTrue: [''] "
     "ifFalse: [Smalltalk arguments first]))\n";
 
-static const char *st80;
+static const char *st2026;
 
 static const char *
 find_binary(void)
 {
-    if (access("build/mt/st80", X_OK) == 0)
-        return "build/mt/st80";
-    if (access("./st80", X_OK) == 0)
-        return "./st80";
+    if (access("build/mt/st2026", X_OK) == 0)
+        return "build/mt/st2026";
+    if (access("./st2026", X_OK) == 0)
+        return "./st2026";
     return NULL;
 }
 
@@ -137,7 +137,7 @@ serve(const char *batch, unsigned workers, char *out, size_t len)
         return -1;
     snprintf(command, sizeof command,
              "timeout -k 2 60 %s -serve %s -workers %u \"$(cat %s)\" 2>&1",
-             st80, IMAGE, workers, BATCH);
+             st2026, IMAGE, workers, BATCH);
     return run(command, out, len);
 }
 
@@ -192,9 +192,9 @@ main(void)
 
     ST_TEST_BEGIN("serve-faults");
 
-    st80 = find_binary();
-    if (!st80) {
-        printf("skipped: no st80 binary to drive\n");
+    st2026 = find_binary();
+    if (!st2026) {
+        printf("skipped: no st2026 binary to drive\n");
         return ST_TEST_END();
     }
     if (write_file(STARTUP, startup_text) != 0) {
@@ -203,7 +203,7 @@ main(void)
     }
     snprintf(command, sizeof command,
              "%s -bootstrap -profile profiles/st2026.profile "
-             "-startup \"$(cat %s)\" -o %s 2>&1", st80, STARTUP, IMAGE);
+             "-startup \"$(cat %s)\" -o %s 2>&1", st2026, STARTUP, IMAGE);
     status = run(command, out, sizeof out);
     ++st_test_checks;
     if (status != 0) {
@@ -387,7 +387,7 @@ main(void)
     unlink(BADIMAGE);
     snprintf(command, sizeof command,
              "%s -bootstrap -profile profiles/st2026.profile "
-             "-startup '3 +' -o %s 2>&1", st80, BADIMAGE);
+             "-startup '3 +' -o %s 2>&1", st2026, BADIMAGE);
     status = run(command, out, sizeof out);
     ++st_test_checks;
     if (status == 0 || access(BADIMAGE, F_OK) == 0) {
@@ -402,7 +402,7 @@ main(void)
     /*  B58: -eval exits 1 after an unhandled error, 0 after a handled one.  */
     snprintf(command, sizeof command,
              "%s -bootstrap -profile profiles/st2026.profile "
-             "-eval '3 zork' 2>&1", st80);
+             "-eval '3 zork' 2>&1", st2026);
     status = run(command, out, sizeof out);
     ++st_test_checks;
     if (status != 1) {
@@ -412,7 +412,7 @@ main(void)
     expect(out, "went unhandled", "B58 -eval unhandled");
     snprintf(command, sizeof command,
              "%s -bootstrap -profile profiles/st2026.profile "
-             "-eval '[3 zork] on: Error do: [:e | 5]' 2>&1", st80);
+             "-eval '[3 zork] on: Error do: [:e | 5]' 2>&1", st2026);
     status = run(command, out, sizeof out);
     ++st_test_checks;
     if (status != 0) {

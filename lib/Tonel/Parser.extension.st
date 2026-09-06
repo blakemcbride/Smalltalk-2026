@@ -11,7 +11,7 @@ What that did, before this file: TonelReader answered no `editor' at all,
 so the Parser sent it doesNotUnderstand:, and what an unhandled
 doesNotUnderstand: answers is not the same everywhere.  In the bootstrap
 process it answered nil, the selector was interned, and every test
-passed.  In an image written to disk and read back by `st80 -serve' it
+passed.  In an image written to disk and read back by `st2026 -serve' it
 answered something else, the Parser took that for an editor, sent it
 selectFrom:to:, and TonelReader raised `password: p matches: s is
 undeclared' -- for a method that sent a selector defined ten lines later

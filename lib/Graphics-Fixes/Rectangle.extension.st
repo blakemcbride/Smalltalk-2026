@@ -35,7 +35,7 @@ Rectangle class >> fromUser: gridPoint [
 
 	 The 1983 body is below unchanged; what is new is the first line.  Its
 	 two loops wait on `Sensor redButtonPressed', and headless that is a
-	 button nothing can press: `st80 -serve img 'Rectangle fromUser'' spun
+	 button nothing can press: `st2026 -serve img 'Rectangle fromUser'' spun
 	 until the process was killed, and `Form fromUser' -- which is
 	 `Rectangle fromUser:' followed by `fromDisplay:' -- did the same
 	 (Bugs4, section 11).  Unlike Sensor waitButton this one never sends a

@@ -196,11 +196,11 @@ load(const char *path)
     char    err[256];
 
     if (OM_init() != 0) {
-        fprintf(stderr, "st80: cannot allocate object memory\n");
+        fprintf(stderr, "st2026: cannot allocate object memory\n");
         return -1;
     }
     if (OM_image_load(path, err, sizeof err) != 0) {
-        fprintf(stderr, "st80: %s\n", err[0] ? err : "image load failed");
+        fprintf(stderr, "st2026: %s\n", err[0] ? err : "image load failed");
         return -1;
     }
     name_changes_file_after(path);
@@ -249,9 +249,9 @@ hold_the_changes_file(const char *image_path)
     if (flock(changes_lock_fd, LOCK_EX | LOCK_NB) == 0)
         return 1;
     fprintf(stderr,
-            "st80: %s is already open by another st80; two of them writing\n"
-            "st80: one changes file lose each other's method source.  Copy\n"
-            "st80: the image (cp %s other.im) and serve the copy.\n",
+            "st2026: %s is already open by another st2026; two of them writing\n"
+            "st2026: one changes file lose each other's method source.  Copy\n"
+            "st2026: the image (cp %s other.im) and serve the copy.\n",
             path, image_path);
     close(changes_lock_fd);
     changes_lock_fd = -1;
@@ -351,7 +351,7 @@ do_trace(const char *path, st_trace_mode mode, uint64_t limit)
     if (load(path) != 0)
         return 1;
     if (ST_interp_init(err, sizeof err) != 0) {
-        fprintf(stderr, "st80: %s\n", err);
+        fprintf(stderr, "st2026: %s\n", err);
         return 1;
     }
     printf("Copyright (c) 1983 Xerox Corp.  All rights reserved.\n\n");
@@ -536,8 +536,8 @@ store_named(st_oop object, const char *name, st_oop value)
  *  anyone but the copy, whose changes file follows it.
  *
  *  TWO SPELLINGS, because this system has two.  A bootstrap names the
- *  changes file after the whole -o path, so `st80.image' goes with
- *  `st80.image.changes'; SystemDictionary>>saveAs: names it after the
+ *  changes file after the whole -o path, so `st2026.image' goes with
+ *  `st2026.image.changes'; SystemDictionary>>saveAs: names it after the
  *  prefix, 1983's way, so `saved.im' goes with `saved.changes'.  An image
  *  saved the second way and loaded here would otherwise be pointed at a
  *  changes file that does not exist, and the source it had already written
@@ -675,7 +675,7 @@ static int
 screen_refused(const char *why)
 {
     if (getenv("ST_DISPLAY_TRACE"))
-        fprintf(stderr, "st80: the screen was not resized: %s\n", why);
+        fprintf(stderr, "st2026: the screen was not resized: %s\n", why);
     return 0;
 }
 
@@ -733,12 +733,12 @@ report_font_age(const char *path)
         return;                         /*  this VM's face  */
 
     fprintf(stderr,
-            "st80: this image's font is %d rows tall; this VM's is %d.\n"
-            "st80: the face is built into the image, and the line grids of "
+            "st2026: this image's font is %d rows tall; this VM's is %d.\n"
+            "st2026: the face is built into the image, and the line grids of "
             "its lists and menus\n"
-            "st80: were computed from it, so it cannot be swapped from here."
+            "st2026: were computed from it, so it cannot be swapped from here."
             "  Rebuild to use the new one:\n"
-            "st80:     st80 -bootstrap -manifest sources/MANIFEST -o %s\n",
+            "st2026:     st2026 -bootstrap -manifest sources/MANIFEST -o %s\n",
             strike.height, ST_FONT_HEIGHT, path);
 }
 
@@ -851,9 +851,9 @@ inject_reject(const char *what)
     if (said >= 8)
         return;
     if (++said == 1)
-        fprintf(stderr, "st80: -inject takes the script itself, not the name "
+        fprintf(stderr, "st2026: -inject takes the script itself, not the name "
                         "of a file holding one\n");
-    fprintf(stderr, "st80: -inject: ignoring %s\n", what);
+    fprintf(stderr, "st2026: -inject: ignoring %s\n", what);
 }
 
 static void
@@ -949,7 +949,7 @@ do_run(const char *path, uint64_t max_cycles)
     report_font_age(path);
     SCHED_reset();
     if (ST_interp_init(err, sizeof err) != 0) {
-        fprintf(stderr, "st80: %s\n", err);
+        fprintf(stderr, "st2026: %s\n", err);
         return 1;
     }
     run_thread = ST_thread_self();
@@ -999,7 +999,7 @@ do_run(const char *path, uint64_t max_cycles)
             if (GFX_form_from_oop(GFX_display_form(), &form)) {
                 if (GFX_open("Smalltalk-2026", form.width, form.height,
                              err, sizeof err) != 0) {
-                    fprintf(stderr, "st80: %s\n", err);
+                    fprintf(stderr, "st2026: %s\n", err);
                     return 1;
                 }
                 {
@@ -1010,7 +1010,7 @@ do_run(const char *path, uint64_t max_cycles)
                     GFX_window_size(&ww, &wh);
                     char    geom[256];
 
-                    fprintf(stderr, "st80: display %dx%d at %dx in a %dx%d "
+                    fprintf(stderr, "st2026: display %dx%d at %dx in a %dx%d "
                                     "window, %s\n",
                             form.width, form.height, GFX_scale(), ww, wh,
                             GFX_presentation());
@@ -1021,7 +1021,7 @@ do_run(const char *path, uint64_t max_cycles)
                      *  trip of screenshots into one line of a paste.
                      */
                     GFX_geometry(geom, sizeof geom);
-                    fprintf(stderr, "st80: %s\n", geom);
+                    fprintf(stderr, "st2026: %s\n", geom);
                 }
             }
         }
@@ -1042,18 +1042,18 @@ do_run(const char *path, uint64_t max_cycles)
 
         GFX_draw_counts(&damages, &presents);
         if (getenv("ST_DISPLAY_TRACE"))
-            fprintf(stderr, "st80: %lu draws to the display, %lu presented\n",
+            fprintf(stderr, "st2026: %lu draws to the display, %lu presented\n",
                     damages, presents);
     }
     if (GFX_events_dropped())
-        fprintf(stderr, "st80: %u input events were dropped -- the image "
+        fprintf(stderr, "st2026: %u input events were dropped -- the image "
                         "rebuilds its button state from this stream, so it "
                         "may have been left wrong\n",
                 GFX_events_dropped());
     if (ST_quit_requested)
         why = "the image quit";
-    fprintf(stderr, "st80: %s\n", why);
-    fprintf(stderr, "st80: stopped after %llu bytecodes; "
+    fprintf(stderr, "st2026: %s\n", why);
+    fprintf(stderr, "st2026: stopped after %llu bytecodes; "
                     "%u collections reclaimed %u objects; "
                     "%u words and %u table entries free\n",
             (unsigned long long) total, st_om_collections, st_om_reclaimed,
@@ -1194,7 +1194,7 @@ do_run(const char *path, uint64_t max_cycles)
 /*
  *  ----------  Serving  ----------
  *
- *  `st80 -serve <image> [-workers n] [args...]': run the image on a pool of
+ *  `st2026 -serve <image> [-workers n] [args...]': run the image on a pool of
  *  native threads, with no window, until asked to stop.
  *
  *  This is the run mode the worker pool was built for and the first one
@@ -1237,7 +1237,7 @@ serve_worker(st_worker *self, void *user)
          *  same thread, and the root walk would read both.
          */
         if (ST_interp_init(err, sizeof err) != 0) {
-            fprintf(stderr, "st80: %s\n", err);
+            fprintf(stderr, "st2026: %s\n", err);
             serve_status = 1;
             SCHED_request_stop();
             ST_store_release(&serve_ready, 1);
@@ -1353,7 +1353,7 @@ do_serve(const char *path, unsigned workers, int argc, char **argv)
      *  some modes; sixty-three leaves the room.
      */
     if (workers > ST_MAX_WORKERS - 1) {
-        fprintf(stderr, "st80: -workers %u is more than this build holds; "
+        fprintf(stderr, "st2026: -workers %u is more than this build holds; "
                         "using %u\n", workers, ST_MAX_WORKERS - 1);
         workers = ST_MAX_WORKERS - 1;
     }
@@ -1389,10 +1389,10 @@ do_serve(const char *path, unsigned workers, int argc, char **argv)
     serve_status = 0;
 
     if (WORKER_start(workers, serve_worker, NULL) != 0) {
-        fprintf(stderr, "st80: cannot start the worker pool\n");
+        fprintf(stderr, "st2026: cannot start the worker pool\n");
         return 1;
     }
-    fprintf(stderr, "st80: serving %s on %u worker%s\n", path, WORKER_count(),
+    fprintf(stderr, "st2026: serving %s on %u worker%s\n", path, WORKER_count(),
             WORKER_count() == 1 ? "" : "s");
     /*
      *  WORKER_stop is the join.  Then the network, which the workers armed
@@ -1402,7 +1402,7 @@ do_serve(const char *path, unsigned workers, int argc, char **argv)
     WORKER_stop();
     NET_shutdown();
     SCHED_timer_stop();
-    fprintf(stderr, "st80: %s\n",
+    fprintf(stderr, "st2026: %s\n",
             ST_quit_requested ? "the image quit"
             : serve_status == 0 ? "stopped as asked"
             : "the image stopped on its own");
@@ -1619,7 +1619,7 @@ do_disasm(const char *path, const char *class_name, const char *selector)
         }
     }
     if (!OM_is_present(cls)) {
-        fprintf(stderr, "st80: no class named %s\n", name);
+        fprintf(stderr, "st2026: no class named %s\n", name);
         return 1;
     }
     if (meta)
@@ -1651,7 +1651,7 @@ do_disasm(const char *path, const char *class_name, const char *selector)
         }
     }
     if (!OM_is_present(method)) {
-        fprintf(stderr, "st80: %s does not understand #%s\n",
+        fprintf(stderr, "st2026: %s does not understand #%s\n",
                 class_name, selector);
         return 1;
     }
@@ -1718,7 +1718,7 @@ write_screenshot(void)
         return;
     f = fopen(shot_path, "wb");
     if (!f) {
-        fprintf(stderr, "st80: cannot write %s\n", shot_path);
+        fprintf(stderr, "st2026: cannot write %s\n", shot_path);
         return;
     }
     fprintf(f, "P1\n%d %d\n", form.width, form.height);
@@ -1733,7 +1733,7 @@ write_screenshot(void)
         }
     }
     fclose(f);
-    fprintf(stderr, "st80: wrote %s, %ld of %d pixels are ink\n",
+    fprintf(stderr, "st2026: wrote %s, %ld of %d pixels are ink\n",
             shot_path, ink, form.width * form.height);
 }
 
@@ -1756,18 +1756,18 @@ do_bootstrap(const char *const *sources, const int *dialects, unsigned count,
     char                err[512];
 
     if (BOOT_build_dialects(sources, dialects, count, &result) != 0) {
-        fprintf(stderr, "st80: bootstrap failed: %s\n", result.error);
+        fprintf(stderr, "st2026: bootstrap failed: %s\n", result.error);
         return 1;
     }
-    fprintf(stderr, "st80: %u classes, %u methods, %u symbols\n",
+    fprintf(stderr, "st2026: %u classes, %u methods, %u symbols\n",
             result.classes_created, result.methods_compiled,
             result.symbols_interned);
     if (result.classes_rejected)
-        fprintf(stderr, "st80: %u class definitions this system cannot build "
+        fprintf(stderr, "st2026: %u class definitions this system cannot build "
                         "were skipped (named above)\n",
                 result.classes_rejected);
     if (result.traits_rejected)
-        fprintf(stderr, "st80: %u classes were built without the traits they "
+        fprintf(stderr, "st2026: %u classes were built without the traits they "
                         "asked for (named above)\n",
                 result.traits_rejected);
     {
@@ -1793,7 +1793,7 @@ do_bootstrap(const char *const *sources, const int *dialects, unsigned count,
         unsigned    i;
 
         if (n) {
-            fprintf(stderr, "st80: %u undeclared global%s:", n,
+            fprintf(stderr, "st2026: %u undeclared global%s:", n,
                     n == 1 ? "" : "s");
             {
                 unsigned limit = getenv("ST_BOOT_LOG") ? n : 12;
@@ -1806,7 +1806,7 @@ do_bootstrap(const char *const *sources, const int *dialects, unsigned count,
             fprintf(stderr, "\n");
         }
         if (unfixed) {
-            fprintf(stderr, "st80: %u lower-case name%s nothing defines %s "
+            fprintf(stderr, "st2026: %u lower-case name%s nothing defines %s "
                             "still read by a loaded method -- a block "
                             "argument used outside its block:\n",
                     unfixed, unfixed == 1 ? "" : "s",
@@ -1823,7 +1823,7 @@ do_bootstrap(const char *const *sources, const int *dialects, unsigned count,
      *  to do with what they are initialising.
      */
     if (!BOOT_install_display(640, 480))
-        fprintf(stderr, "st80: no display installed\n");
+        fprintf(stderr, "st2026: no display installed\n");
 
     {
         st_boot_init_report init;
@@ -1835,7 +1835,7 @@ do_bootstrap(const char *const *sources, const int *dialects, unsigned count,
             BOOT_set_changes_file(changes);
         }
         BOOT_run_initializers(&init);
-        fprintf(stderr, "st80: %u class initializers, %u ran, %u skipped,"
+        fprintf(stderr, "st2026: %u class initializers, %u ran, %u skipped,"
                         " %u unfinished",
                 init.defined, init.ran, init.skipped, init.unfinished);
         if (init.unfinished)
@@ -1871,7 +1871,7 @@ do_bootstrap(const char *const *sources, const int *dialects, unsigned count,
          *  image with no process to resume is not an image, and a script
          *  that asked for one must be told.
          */
-        fprintf(stderr, "st80: no startup process installed; no image "
+        fprintf(stderr, "st2026: no startup process installed; no image "
                         "is written\n");
         return 1;
     }
@@ -1887,7 +1887,7 @@ do_bootstrap(const char *const *sources, const int *dialects, unsigned count,
     /*
      *  Pharo's own examples, run against this image.
      *
-     *  They answer the question the port actually cares about.  "st80
+     *  They answer the question the port actually cares about.  "st2026
      *  -syntax" says whether Pharo's source parses here; this says whether
      *  it MEANS here what it means there, and it says so in a number that
      *  nobody had to write by hand -- the examples came with the methods.
@@ -1916,7 +1916,7 @@ do_bootstrap(const char *const *sources, const int *dialects, unsigned count,
 
             if (!DOCTEST_scan(doctest_paths->items[i], &list,
                               scan_error, sizeof scan_error))
-                fprintf(stderr, "st80: %s: %s\n",
+                fprintf(stderr, "st2026: %s: %s\n",
                         doctest_paths->items[i], scan_error);
         }
         for (i = 0; i < list.count; ++i) {
@@ -1951,12 +1951,12 @@ do_bootstrap(const char *const *sources, const int *dialects, unsigned count,
              */
             if (value != ST_OOP_INVALID && value != raised && shown < 12) {
                 ++shown;
-                fprintf(stderr, "st80:   wrong: %s  (%s:%u, %s)\n",
+                fprintf(stderr, "st2026:   wrong: %s  (%s:%u, %s)\n",
                         list.items[i].expression, list.items[i].file,
                         list.items[i].line, list.items[i].where);
             }
         }
-        fprintf(stderr, "st80: %u doctests in %u methods of %u files: "
+        fprintf(stderr, "st2026: %u doctests in %u methods of %u files: "
                         "%u passed, %u wrong, %u need something not here\n",
                 list.count, list.methods, list.files,
                 passed, wrong, unrunnable);
@@ -2007,7 +2007,7 @@ do_bootstrap(const char *const *sources, const int *dialects, unsigned count,
         evaluate_budget = saved_budget;
 
         if (passed == ST_OOP_INVALID) {
-            fprintf(stderr, "st80: %s\n", err);
+            fprintf(stderr, "st2026: %s\n", err);
             return 1;
         }
         if (passed != ST_TRUE)
@@ -2019,7 +2019,7 @@ do_bootstrap(const char *const *sources, const int *dialects, unsigned count,
         char    text[256];
 
         if (value == ST_OOP_INVALID) {
-            fprintf(stderr, "st80: %s\n", err);
+            fprintf(stderr, "st2026: %s\n", err);
             return 1;
         }
         /*
@@ -2053,7 +2053,7 @@ do_bootstrap(const char *const *sources, const int *dialects, unsigned count,
          *  unhandled Error reaches; a handled one never gets there.
          */
         if (st_vm.unhandled_errors) {
-            fprintf(stderr, "st80: %u error%s went unhandled while "
+            fprintf(stderr, "st2026: %u error%s went unhandled while "
                             "evaluating the expression\n",
                     st_vm.unhandled_errors,
                     st_vm.unhandled_errors == 1 ? "" : "s");
@@ -2093,13 +2093,13 @@ do_bootstrap(const char *const *sources, const int *dialects, unsigned count,
          */
         if (evaluate("Smalltalk releaseExternalViews", err, sizeof err)
             == ST_OOP_INVALID)
-            fprintf(stderr, "st80: could not close the image's files before "
+            fprintf(stderr, "st2026: could not close the image's files before "
                             "saving: %s\n", err);
         if (OM_image_save(out_path, err, sizeof err) != 0) {
-            fprintf(stderr, "st80: %s\n", err);
+            fprintf(stderr, "st2026: %s\n", err);
             return 1;
         }
-        fprintf(stderr, "st80: wrote %s\n", out_path);
+        fprintf(stderr, "st2026: wrote %s\n", out_path);
 #else
         /*
          *  A bootstrapped image is written in the native format, which
@@ -2108,7 +2108,7 @@ do_bootstrap(const char *const *sources, const int *dialects, unsigned count,
          *  against an interpreter already proven on the Xerox traces -- but
          *  it has nothing to write the result into.
          */
-        fprintf(stderr, "st80: -o needs the 64-bit object memory "
+        fprintf(stderr, "st2026: -o needs the 64-bit object memory "
                         "(build with OM=mt)\n");
         return 1;
 #endif
@@ -2126,7 +2126,7 @@ do_inspect(const char *path, const char *oop_text)
     char        name[256];
 
     if (sscanf(oop_text, "%x", &raw) != 1) {
-        fprintf(stderr, "st80: '%s' is not a hex object pointer\n", oop_text);
+        fprintf(stderr, "st2026: '%s' is not a hex object pointer\n", oop_text);
         return 1;
     }
     if (load(path) != 0)
@@ -2267,7 +2267,7 @@ survey_arguments(st_survey *survey, int argc, char **argv)
         }
         if (!PROFILE_expand(argv[++i], &expanded, &expanded_dialects,
                             err, sizeof err)) {
-            fprintf(stderr, "st80: %s\n", err);
+            fprintf(stderr, "st2026: %s\n", err);
             return 0;
         }
         for (k = 0; k < expanded.count; ++k)
@@ -2385,7 +2385,7 @@ read_manifest(const char *path, path_list *l)
     char    line[1024];
 
     if (!f) {
-        fprintf(stderr, "st80: cannot open manifest %s\n", path);
+        fprintf(stderr, "st2026: cannot open manifest %s\n", path);
         return 0;
     }
     while (fgets(line, sizeof line, f)) {
@@ -2406,7 +2406,7 @@ read_manifest(const char *path, path_list *l)
  *  A command line that asks for nothing, or asks with a word missing, is a
  *  mistake and exits like one (Bugs4 REFLECTION-4).
  *
- *  `st80 -frobnicate', `st80 -serve' with no image, `st80 -inspect img.im'
+ *  `st2026 -frobnicate', `st2026 -serve' with no image, `st2026 -inspect img.im'
  *  with no oop -- each of these fell out of the bottom of the option loop,
  *  where the last two lines were `print_version(); return 0;'.  So a
  *  misspelled switch printed the banner and exited SUCCESS: a build script
@@ -2430,12 +2430,12 @@ usage_error(const char *argv0, const char *fmt, ...)
 {
     va_list ap;
 
-    fprintf(stderr, "st80: ");
+    fprintf(stderr, "st2026: ");
     va_start(ap, fmt);
     vfprintf(stderr, fmt, ap);
     va_end(ap);
     fprintf(stderr, "\n");
-    fprintf(stderr, "st80: `%s -help' lists what there is\n", argv0);
+    fprintf(stderr, "st2026: `%s -help' lists what there is\n", argv0);
     return ST_EXIT_USAGE;
 }
 
@@ -2550,11 +2550,11 @@ main(int argc, char **argv)
              *  validation harness and cannot build images at all.
              */
             fprintf(stderr,
-                "st80: this binary was built with the 16-bit Blue Book object"
+                "st2026: this binary was built with the 16-bit Blue Book object"
                 " memory, which\n"
-                "st80: loads the 1983 Xerox image and cannot bootstrap a new"
+                "st2026: loads the 1983 Xerox image and cannot bootstrap a new"
                 " one.  Rebuild:\n"
-                "st80:     make OM=mt\n");
+                "st2026:     make OM=mt\n");
             return 1;
 #endif
             const char *out_path = NULL;
@@ -2625,7 +2625,7 @@ main(int argc, char **argv)
 
                     if (!PROFILE_expand(argv[++j], &expanded,
                                         &expanded_dialects, err, sizeof err)) {
-                        fprintf(stderr, "st80: %s\n", err);
+                        fprintf(stderr, "st2026: %s\n", err);
                         path_list_free(&sources);
                         return 1;
                     }
@@ -2635,7 +2635,7 @@ main(int argc, char **argv)
                                               expanded_dialects
                                                 ? expanded_dialects[k]
                                                 : ST_DIALECT_BLUE_BOOK)) {
-                            fprintf(stderr, "st80: out of memory\n");
+                            fprintf(stderr, "st2026: out of memory\n");
                             SRC_names_free(&expanded);
                             free(expanded_dialects);
                             path_list_free(&sources);
@@ -2648,7 +2648,7 @@ main(int argc, char **argv)
                     /*
                      *  A bare directory means every source under it, which
                      *  is what Phase 5's exit criterion asks for:
-                     *  `st80 -bootstrap sources/ -o st80.image'.  Before
+                     *  `st2026 -bootstrap sources/ -o st2026.image'.  Before
                      *  this the path was handed to the reader as a file and
                      *  failed with "short read on sources/".
                      */
@@ -2658,7 +2658,7 @@ main(int argc, char **argv)
 
                     memset(&tree, 0, sizeof tree);
                     if (!PROFILE_expand_tree(argv[j], &tree, err, sizeof err)) {
-                        fprintf(stderr, "st80: %s\n", err);
+                        fprintf(stderr, "st2026: %s\n", err);
                         SRC_names_free(&tree);
                         path_list_free(&sources);
                         return 1;
@@ -2667,7 +2667,7 @@ main(int argc, char **argv)
                         if (!path_list_add(&sources, tree.items[k])
                          || !dialect_list_add(&dialects,
                                                ST_DIALECT_BLUE_BOOK)) {
-                            fprintf(stderr, "st80: out of memory\n");
+                            fprintf(stderr, "st2026: out of memory\n");
                             SRC_names_free(&tree);
                             path_list_free(&sources);
                             return 1;
@@ -2677,7 +2677,7 @@ main(int argc, char **argv)
                 }  else if (!path_list_add(&sources, argv[j])
                          || !dialect_list_add(&dialects,
                                                ST_DIALECT_BLUE_BOOK)) {
-                    fprintf(stderr, "st80: out of memory\n");
+                    fprintf(stderr, "st2026: out of memory\n");
                     path_list_free(&sources);
                     return 1;
                 }
@@ -2691,7 +2691,7 @@ main(int argc, char **argv)
             }
             /*  Bugs4 REFLECTION-6; see image_path_is_writable.  */
             if (out_path && !image_path_is_writable(out_path)) {
-                fprintf(stderr, "st80: cannot write %s: %s\n", out_path,
+                fprintf(stderr, "st2026: cannot write %s: %s\n", out_path,
                         strerror(errno));
                 path_list_free(&sources);
                 free(dialects.items);
@@ -2827,8 +2827,8 @@ main(int argc, char **argv)
     /*
      *  Nothing at all on the command line is not a mistake; it is somebody
      *  asking what this is, and the banner answers.  Getting here with
-     *  arguments means every one of them only set something up -- `st80
-     *  -wiggle', `st80 -screenshot s.pbm' -- and nothing was asked for, and
+     *  arguments means every one of them only set something up -- `st2026
+     *  -wiggle', `st2026 -screenshot s.pbm' -- and nothing was asked for, and
      *  a command that does nothing must not report success.
      */
     if (argc > 1)

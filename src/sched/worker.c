@@ -387,7 +387,7 @@ WORKER_at_safepoint(uint32_t (*fn)(void *user), void *user)
     done = ST_time_monotonic_ns();
     if (getenv("ST_SAFEPOINT_LOG")
      && (done - asked) > INT64_C(2000000))
-        fprintf(stderr, "st80: safepoint %.2f ms = %.2f waiting for %u "
+        fprintf(stderr, "st2026: safepoint %.2f ms = %.2f waiting for %u "
                         "worker(s) + %.2f doing the work\n",
                 (double) (done - asked) / 1e6,
                 (double) (got - asked) / 1e6,

@@ -152,7 +152,7 @@
 #
 # lib/Tonel-Tests adds two, for a fault the demo found on the server that no
 # test had: a method sending a selector defined later in its own file loaded
-# in every test and failed under `st80 -serve', because 1983's Parser puts a
+# in every test and failed under `st2026 -serve', because 1983's Parser puts a
 # new selector to the editor's user and TonelReader had no `editor' -- so
 # the outcome was whatever an unhandled doesNotUnderstand: answered, nil in
 # the bootstrap process and not nil in a loaded image.  A new selector is

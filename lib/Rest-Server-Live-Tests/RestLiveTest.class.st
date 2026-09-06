@@ -16,7 +16,7 @@ Class {
 
 { #category : 'fixture' }
 RestLiveTest class >> databaseFile [
-	^'st80-rest-live-test.db'
+	^'st2026-rest-live-test.db'
 ]
 
 { #category : 'running' }

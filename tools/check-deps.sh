@@ -1,6 +1,6 @@
 #!/bin/sh
 #
-#  What st80 needs from the machine, and whether it is there.
+#  What st2026 needs from the machine, and whether it is there.
 #
 #  Two callers, two jobs:
 #
@@ -134,7 +134,7 @@ esac
 #  The report.
 #  ---------------------------------------------------------------------
 
-tmp=$(mktemp -d 2>/dev/null || mktemp -d -t st80deps) || exit 1
+tmp=$(mktemp -d 2>/dev/null || mktemp -d -t st2026deps) || exit 1
 trap 'rm -rf "$tmp"' EXIT INT TERM HUP
 
 status=0
@@ -171,7 +171,7 @@ else
     exit 1
 fi
 
-echo "st80 external requirements, as this machine answers for them:"
+echo "st2026 external requirements, as this machine answers for them:"
 echo
 
 note 'C compiler' "$CC" "$cc_version"
@@ -249,8 +249,8 @@ fi
 #  ODBC is OPTIONAL and its absence is not counted against the build.
 #
 #  `want' is deliberately not called here.  Everything above it is something
-#  st80 cannot run without, so a missing one has to be a failure; a database
-#  is something st80 can run perfectly well without, and reporting its
+#  st2026 cannot run without, so a missing one has to be a failure; a database
+#  is something st2026 can run perfectly well without, and reporting its
 #  absence as a fault would teach a reader to ignore this report -- which is
 #  the only thing that could make the required entries stop working.
 #
@@ -318,7 +318,7 @@ if [ "$status" -eq 0 ]; then
     if [ -n "$HEADLESS" ]; then
         echo "Everything a headless build needs is here.  Drop HEADLESS=1 for a window."
     else
-        echo 'Everything st80 needs is here.'
+        echo 'Everything st2026 needs is here.'
     fi
     exit 0
 fi

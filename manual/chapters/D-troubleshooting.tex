@@ -46,7 +46,7 @@
   events that cannot be reconstructed are the ones that are never dropped.
   If you ever see
 \begin{plain}
-st80: N input events were dropped
+st2026: N input events were dropped
 \end{plain}
   at exit, the image's button state may have been left wrong, and that
   message is worth reporting.
@@ -165,7 +165,7 @@ st80: N input events were dropped
 \ctp{ST\_DISPLAY\_TRACE=1} & why a resize was refused; draw and present counts\\
 \ctp{ST\_EVAL\_TRACE=1} & every bytecode an \ctp{-eval} runs\\
 \ctp{ST\_BOTTOM\_LOG=1} & a return off the bottom of a stack\\
-\ctp{./st80 -disasm} & what the compiler actually emitted\\
+\ctp{./st2026 -disasm} & what the compiler actually emitted\\
 \ctp{make ASAN=1 test} & memory errors\\
 \ctp{make TSAN=1 test} & data races\\
 \bottomrule
@@ -180,7 +180,7 @@ st80: N input events were dropped
   \ct{[SQLITE3]}. It is \ct{sqliteodbc} on Fedora and \ct{libsqliteodbc} on
   Debian. The demo reaches SQLite through ODBC like every database here.
 \item[An https URL answers \emph{this build has no TLS}] OpenSSL was not
-  found when \ct{st80} was built, or \ct{NOTLS=1} was asked for. \ct{make deps}
+  found when \ct{st2026} was built, or \ct{NOTLS=1} was asked for. \ct{make deps}
   says which; install \ct{openssl-devel} (Fedora) or \ct{libssl-dev}
   (Debian) and build again. \ct{Socket isTlsAvailable} answers for an image.
 \item[\emph{certificate verify failed}] The server's certificate is not one
@@ -190,7 +190,7 @@ st80: N input events were dropped
   way to say ``trust it anyway'', on purpose. A private authority goes in
   the store, or in \ct{SSL_CERT_FILE} in the environment.
 \item[An LLMError says \emph{answered 401}] The key was refused. It is read
-  from the environment \ct{st80} was started in---\ct{Smalltalk environmentAt:}
+  from the environment \ct{st2026} was started in---\ct{Smalltalk environmentAt:}
   shows what the image sees---and given with \ct{apiKey:}.
 \item[A model \emph{asked for tools twenty times in a row}] Every answer was
   another tool call: the tool's result is not what the model needs, or the
@@ -207,7 +207,7 @@ st80: N input events were dropped
   serves files and no more. The demo needs a \ct{RestServer}---from a
   workspace \ct{Smalltalk at: #Demo put: (RestServer fromConfigFile: 'demo/server.json')}
   and then \ct{Demo start}, or
-  \ct{./st80 -serve demo.im demo/server.json}. The same
+  \ct{./st2026 -serve demo.im demo/server.json}. The same
   message means the same thing under \ct{-serve}: the server is not
   running, or is on another port than the page expects.
 \item[Report and Export answer \emph{No such method}] They are not

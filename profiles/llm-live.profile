@@ -5,7 +5,7 @@ Ollama on localhost.  Each test fails, naming its key, when the key is not
 there; the profile is run on purpose, and a suite that passed while asking
 nobody would teach its reader to ignore it.
 
-    ANTHROPIC_API_KEY=... ./st80 -bootstrap -profile profiles/llm-live.profile -tests
+    ANTHROPIC_API_KEY=... ./st2026 -bootstrap -profile profiles/llm-live.profile -tests
 
 Not in tests/profiles.expected, for the reason database-live is not.
 "

@@ -29,7 +29,7 @@ Every expression in the book whose answer is printed is also a doctest in
 against an image built from this tree:
 
 ```
-st80: 396 doctests in 30 methods of 1 files: 396 passed, 0 wrong, 0 need something not here
+st2026: 396 doctests in 30 methods of 1 files: 396 passed, 0 wrong, 0 need something not here
 ```
 
 A manual whose examples were typed rather than run is wrong somewhere and

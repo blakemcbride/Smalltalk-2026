@@ -11,7 +11,7 @@ catch numbers that look like success and are not.
 So they live in their own package and their own profile, and are run
 deliberately:
 
-    ./st80 -bootstrap -profile profiles/database-live.profile -tests
+    ./st2026 -bootstrap -profile profiles/database-live.profile -tests
 
 They use SQLite through ODBC, because it is the one database that needs no
 server -- the whole fixture is a file this test makes and deletes.  On
@@ -37,7 +37,7 @@ DbLiveTest class >> databaseFile [
 	"A file of our own, beside the image.  Not in /tmp: this system runs on
 	 Windows too, where /tmp is not a place."
 
-	^'st80-dblive-test.db'
+	^'st2026-dblive-test.db'
 ]
 
 { #category : 'fixture' }

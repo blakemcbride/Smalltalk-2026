@@ -299,8 +299,8 @@ has, are not here yet.
 ## Running it
 
 ```
-./st80 -bootstrap -profile profiles/st2026.profile -startup 'RestServer serve' -o server.im
-./st80 -serve server.im -workers 8 server.json
+./st2026 -bootstrap -profile profiles/st2026.profile -startup 'RestServer serve' -o server.im
+./st2026 -serve server.im -workers 8 server.json
 ```
 
 `server.json`:
@@ -411,7 +411,7 @@ Smalltalk (`demo/backend`, category `Web-Demo`), Kiss's own front end copied
 whole (`demo/frontend`, one line stamped and the name on its pages changed,
 `PROVENANCE.md` beside it), one
 `RestServer` serving both from one port. `make demo-image`, then
-`./st80 -serve demo.im demo/server.json`, then `http://localhost:8080` and
+`./st2026 -serve demo.im demo/server.json`, then `http://localhost:8080` and
 `smalltalk` / `password`. The first start makes the database from Kiss's
 `schema.sqlite` through the `Init` hook, and the user's stored password is
 the PBKDF2 hash Java made, verified byte for byte by `lib/Crypto`.

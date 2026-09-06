@@ -5,7 +5,7 @@ model list, an answer, an answer as it comes, a conversation that
 remembers, a tool the model must call, an embedding.
 
     ANTHROPIC_API_KEY=... OPENAI_API_KEY=... OPENROUTER_API_KEY=... \
-        ./st80 -bootstrap -profile profiles/llm-live.profile -tests
+        ./st2026 -bootstrap -profile profiles/llm-live.profile -tests
 
 A test whose key is not in the environment FAILS, saying which key: this
 profile is run on purpose, and a suite that passed while asking nobody

@@ -455,7 +455,7 @@ boot_note(const char *fmt, ...)
     va_list ap;
 
     va_start(ap, fmt);
-    fprintf(stderr, "st80: ");
+    fprintf(stderr, "st2026: ");
     vfprintf(stderr, fmt, ap);
     fprintf(stderr, "\n");
     va_end(ap);
@@ -3653,7 +3653,7 @@ report_gaps(const supersede_scan *scan, int known, const char *heading)
         if (g->known != known)
             continue;
         if (shown++ == 0)
-            fprintf(stderr, "st80: %s\n", heading);
+            fprintf(stderr, "st2026: %s\n", heading);
         /*
          *  Named one per line rather than tallied.  A count answers "how
          *  bad", which is what one asks after already knowing which -- and
@@ -3705,7 +3705,7 @@ check_supersessions(void)
          *  protocol went unchecked, which is worth one line and no more.
          */
         if (!SRC_read(dropped->items[i], &sink, scan, error, sizeof error))
-            fprintf(stderr, "st80: cannot re-read superseded %s: %s\n",
+            fprintf(stderr, "st2026: cannot re-read superseded %s: %s\n",
                     dropped->items[i], error);
     }
     report_gaps(scan, 2,
@@ -3719,7 +3719,7 @@ check_supersessions(void)
                 "(the old implementation's own scaffolding):");
     if (scan->found)
         fprintf(stderr,
-                "st80: %u selector%s lost to supersession across %u file%s\n",
+                "st2026: %u selector%s lost to supersession across %u file%s\n",
                 scan->found, scan->found == 1 ? "" : "s",
                 dropped->count, dropped->count == 1 ? "" : "s");
     free(scan);
@@ -5747,7 +5747,7 @@ BOOT_install_scheduler(const char *startup_source)
     char        source[2048];
 
     if (!OM_is_present(scheduler) || !OM_is_present(process_class)) {
-        fprintf(stderr, "st80: no scheduler: Processor=%d Process=%d\n",
+        fprintf(stderr, "st2026: no scheduler: Processor=%d Process=%d\n",
                 (int) OM_is_present(scheduler),
                 (int) OM_is_present(process_class));
         return 1;
@@ -5776,7 +5776,7 @@ BOOT_install_scheduler(const char *startup_source)
          *  nothing printed.
          */
         boot_fail("cannot compile the startup: %s", res.error);
-        fprintf(stderr, "st80: cannot compile the startup: %s\n", res.error);
+        fprintf(stderr, "st2026: cannot compile the startup: %s\n", res.error);
         return 0;
     }
     OM_increase_ref(res.method);

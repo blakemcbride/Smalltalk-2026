@@ -228,7 +228,7 @@ queue_word(unsigned type, unsigned value)
     if (input_traced()
      && (next == event_head
       || (type != ST_EVENT_XLOCATION && type != ST_EVENT_YLOCATION)))
-        fprintf(stderr, "st80: %8.3f queued %s %u%s\n",
+        fprintf(stderr, "st2026: %8.3f queued %s %u%s\n",
                 (double) ST_time_monotonic_ns() / 1e9, event_type_name(type),
                 value, next == event_head ? " -- DROPPED, queue full" : "");
     if (next == event_head)
@@ -333,7 +333,7 @@ GFX_next_event_word(uint16_t *word)
         unsigned    type = (unsigned) (*word >> ST_EVENT_TYPE_SHIFT);
 
         if (type != ST_EVENT_XLOCATION && type != ST_EVENT_YLOCATION)
-            fprintf(stderr, "st80: %8.3f drained %s %u\n",
+            fprintf(stderr, "st2026: %8.3f drained %s %u\n",
                     (double) ST_time_monotonic_ns() / 1e9, event_type_name(type),
                     (unsigned) (*word & ST_EVENT_VALUE_MASK));
     }
@@ -384,7 +384,7 @@ warp_locally(int x, int y)
         if (y >= form.height)   y = form.height - 1;
     }
     if (input_traced())
-        fprintf(stderr, "st80: %8.3f warped to %d,%d%s\n",
+        fprintf(stderr, "st2026: %8.3f warped to %d,%d%s\n",
                 (double) ST_time_monotonic_ns() / 1e9, x, y,
                 (x == mouse_x && y == mouse_y) ? " (already there)" : "");
     queue_motion(x, y);
@@ -684,7 +684,7 @@ choose_theme(void)
         pixel_ink   = 0xFFD7D3C8u;
         pixel_paper = 0xFF1B1D22u;
     }  else {
-        fprintf(stderr, "st80: unknown ST_DISPLAY_THEME '%s'; "
+        fprintf(stderr, "st2026: unknown ST_DISPLAY_THEME '%s'; "
                         "known are paper, classic, dark\n", name);
     }
 }
@@ -862,7 +862,7 @@ choose_presentation(int width, int height)
             return SDL_LOGICAL_PRESENTATION_STRETCH;
         }
         if (strcmp(forced, "integer") != 0)
-            fprintf(stderr, "st80: unknown ST_DISPLAY_PRESENTATION '%s'; "
+            fprintf(stderr, "st2026: unknown ST_DISPLAY_PRESENTATION '%s'; "
                             "known are integer, letterbox, stretch\n", forced);
         presentation_note = "integer (forced)";
         return SDL_LOGICAL_PRESENTATION_INTEGER_SCALE;
@@ -1445,7 +1445,7 @@ GFX_set_cursor(st_oop form)
         SDL_DestroyCursor(sdl_cursor);
     sdl_cursor = made;
     if (getenv("ST_DISPLAY_TRACE"))
-        fprintf(stderr, "st80: cursor shape changed, hot spot %d,%d\n",
+        fprintf(stderr, "st2026: cursor shape changed, hot spot %d,%d\n",
                 hot_x, hot_y);
     memcpy(cursor_bits, shape.bits, sizeof cursor_bits);
     cursor_hot_x = hot_x;

@@ -18,7 +18,7 @@ Class {
 
 { #category : 'fixture' }
 WebDemoLiveTest class >> databaseFile [
-	^'st80-web-demo-test.db'
+	^'st2026-web-demo-test.db'
 ]
 
 { #category : 'fixture' }

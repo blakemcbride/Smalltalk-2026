@@ -4,7 +4,7 @@ button.
 
 Both are 1983's, and both are a spin on the mouse state with no exit but
 the mouse: `[self anyButtonPressed] whileFalse'.  In a headless image there
-is no mouse, so `st80 -serve img 'Sensor waitButton'' never answered, never
+is no mouse, so `st2026 -serve img 'Sensor waitButton'' never answered, never
 raised, and never finished; the worker stayed in that loop until the
 process was killed, and with one worker configured that was the whole
 server (Bugs4, section 11).  Line, Circle, Curve, Spline and LinearFit all

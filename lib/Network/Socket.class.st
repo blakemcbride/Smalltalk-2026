@@ -232,7 +232,7 @@ Socket class >> randomBytes: anInteger [
 
 { #category : 'services' }
 Socket class >> arguments [
-	"The words after `st80 -serve <image> [-workers n]', as an Array of
+	"The words after `st2026 -serve <image> [-workers n]', as an Array of
 	 Strings; empty in every other run mode.  Smalltalk arguments is the
 	 spelling to use."
 

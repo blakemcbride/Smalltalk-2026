@@ -15,7 +15,7 @@ root:
 
 ```
 make demo-image                                 # bootstraps demo.im with `RestServer serve' as its startup
-./st80 -serve demo.im demo/server.json          # four workers per CPU by default; -workers n to say
+./st2026 -serve demo.im demo/server.json          # four workers per CPU by default; -workers n to say
 ```
 
 Open `http://localhost:8080` and log in as **smalltalk** with the password
@@ -71,7 +71,7 @@ admits the second port's origin — same host, any port — on its own.
 
 ## The threads
 
-In the operating system's terms, what runs under `./st80 -serve demo.im`:
+In the operating system's terms, what runs under `./st2026 -serve demo.im`:
 one thread waits — in `poll()`, over the listening socket and every
 kept-alive connection — and each arrival goes on a queue; a pool of worker
 threads, four per CPU unless `-workers` says otherwise, each takes the next

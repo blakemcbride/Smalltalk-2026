@@ -9,7 +9,7 @@ without a key -- a 401 over a good certificate is the whole point -- and
 badssl.com for the certificates that must be refused: another name,
 expired, self-signed.
 
-    ./st80 -bootstrap -profile profiles/internet-live.profile -tests
+    ./st2026 -bootstrap -profile profiles/internet-live.profile -tests
 
 There is no line for this profile in tests/profiles.expected, and there
 must not be one: a suite that cannot run where it is checked reports a

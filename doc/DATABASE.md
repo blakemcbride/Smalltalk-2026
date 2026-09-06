@@ -308,7 +308,7 @@ what testing the text says directly.
 only test here that runs the database from real worker threads. It skips
 cleanly without ODBC or without a driver.
 
-It exists because writing this document exposed a gap: `st80 -tests` starts no
+It exists because writing this document exposed a gap: `st2026 -tests` starts no
 worker pool, so the tests below fork *green* processes, `WORKER_enter_native`
 returns immediately with no worker to park, and the parking path — the entire
 reason a query does not stall every core — was never once taken.
@@ -332,7 +332,7 @@ that *looks* like the test.
 run deliberately:
 
 ```
-./st80 -bootstrap -profile profiles/database-live.profile -tests
+./st2026 -bootstrap -profile profiles/database-live.profile -tests
 ```
 
 They cover every line of the primitive, which no amount of testing the generator

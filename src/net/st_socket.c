@@ -669,7 +669,7 @@ start_io_thread_locked(void)
     if (io_started)
         return;
     if (ST_thread_create(&io_thread, io_main, NULL) != 0) {
-        fprintf(stderr, "st80: cannot start the network I/O thread\n");
+        fprintf(stderr, "st2026: cannot start the network I/O thread\n");
         return;
     }
     io_started = 1;

@@ -1,15 +1,15 @@
 \chapter{The Command-Line Toolbox}
 \label{ch:toolbox}
 
-\standfirst{Nine things \ct{st80} can tell you about an image or a source tree
+\standfirst{Nine things \ct{st2026} can tell you about an image or a source tree
 without opening a window. Most of them exist because a question came up during
 development and grepping was not good enough.}
 
 \section{\texttt{-syntax}: does it compile?}
 
 \begin{sh}
-./st80 -syntax lib/MyStuff/*.st
-./st80 -syntax -profile profiles/mystuff.profile
+./st2026 -syntax lib/MyStuff/*.st
+./st2026 -syntax -profile profiles/mystuff.profile
 \end{sh}
 
 Compiles every method in the named files and reports failures, without
@@ -25,7 +25,7 @@ in the workflow below for exactly that reason.
 \section{\texttt{-primitives}: what does this source ask of the VM?}
 
 \begin{sh}
-./st80 -primitives pharo/Collections-Unordered/*.st
+./st2026 -primitives pharo/Collections-Unordered/*.st
 \end{sh}
 
 Lists every primitive number the source declares. This turns "will this port
@@ -35,7 +35,7 @@ names either exist here or they do not.
 \section{\texttt{-census}: what is in this image?}
 
 \begin{sh}
-./st80 -census st80.image
+./st2026 -census st2026.image
 \end{sh}
 
 \begin{plain}
@@ -57,8 +57,8 @@ retaining far more than it should.
 \section{\texttt{-classes} and \texttt{-methods}}
 
 \begin{sh}
-./st80 -classes st80.image | grep -i collection
-./st80 -methods st80.image | grep 'inject:into:'
+./st2026 -classes st2026.image | grep -i collection
+./st2026 -methods st2026.image | grep 'inject:into:'
 \end{sh}
 
 Every class and every method, in the format of the Xerox reference dumps.
@@ -69,7 +69,7 @@ both exactly. As a day-to-day tool it is grep over the whole system.
 \section{\texttt{-disasm}: what did the compiler emit?}
 
 \begin{sh}
-./st80 -disasm st80.image OrderedCollection add:
+./st2026 -disasm st2026.image OrderedCollection add:
 \end{sh}
 
 \begin{plain}
@@ -88,7 +88,7 @@ a send is going through the special-selector fast path.
 \section{\texttt{-inspect}: one object, by pointer}
 
 \begin{sh}
-./st80 -inspect st80.image 1a4c
+./st2026 -inspect st2026.image 1a4c
 \end{sh}
 
 Describes one object, given its oop in hex. Mostly useful with \ct{-census}
@@ -98,7 +98,7 @@ and \ct{-trace2} output, which name objects that way.
 
 \begin{sh}
 make OM=bb
-./st80 -trace2 oracle/VirtualImage 611
+./st2026 -trace2 oracle/VirtualImage 611
 \end{sh}
 
 The Xerox execution traces, byte for byte. These need the 1983 image, which
@@ -110,8 +110,8 @@ If you change the interpreter, this is the test that matters.
 \section{\texttt{-inject} and \texttt{-screenshot}: driving the interface}
 
 \begin{sh}
-./st80 -inject "m 320 240; w 20; d 129; w 40; u 129; w 60" \
-       -screenshot /tmp/shot.pbm -run st80.image
+./st2026 -inject "m 320 240; w 20; d 129; w 40; u 129; w 60" \
+       -screenshot /tmp/shot.pbm -run st2026.image
 \end{sh}
 
 \begin{center}
@@ -140,13 +140,13 @@ use daily.
 
 \begin{sh}
 # fast: does it compile?
-./st80 -syntax lib/MyStuff/*.st
+./st2026 -syntax lib/MyStuff/*.st
 
 # does it work?
-./st80 -bootstrap -profile profiles/mystuff.profile -tests
+./st2026 -bootstrap -profile profiles/mystuff.profile -tests
 
 # do the documented examples still hold?
-./st80 -bootstrap -profile profiles/mystuff.profile \
+./st2026 -bootstrap -profile profiles/mystuff.profile \
        -doctests lib/MyStuff/Account.class.st
 
 # does the whole system still work?

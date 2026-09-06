@@ -157,7 +157,7 @@ ST_push(st_oop value)
          *  ends the run, and the method is the whole of the diagnosis.  */
         if (!name_method(st_vm.receiver, st_vm.method, name, sizeof name))
             snprintf(name, sizeof name, "?");
-        fprintf(stderr, "st80: a method overflowed its frame at %u slots "
+        fprintf(stderr, "st2026: a method overflowed its frame at %u slots "
                         "(the context holds %u); its declared frame is too "
                         "small: %s\n",
                 next, (unsigned) st_vm.stack_limit, name);
@@ -711,7 +711,7 @@ set_active_context(st_oop ctx)
 
         if (!name_method(st_vm.receiver, st_vm.method, name, sizeof name))
             snprintf(name, sizeof name, "?");
-        fprintf(stderr, "st80: asked to run %s (oop %#llx) as a context, "
+        fprintf(stderr, "st2026: asked to run %s (oop %#llx) as a context, "
                         "from %s\n",
                 OM_is_int(ctx) ? "a SmallInteger"
                 : !OM_is_object(ctx) ? "something that is not an object"
@@ -1651,7 +1651,7 @@ activate_new_method(void)
         if (send_out_of_memory())
             return;
 #ifdef ST_OM_MT
-        fprintf(stderr, "st80: out of memory activating a method: "
+        fprintf(stderr, "st2026: out of memory activating a method: "
                         "%u words and %u object table entries free "
                         "(the table holds %u of at most %u; ST_MAX_OBJECTS "
                         "raises the ceiling)\n",
@@ -1659,7 +1659,7 @@ activate_new_method(void)
                 st_om_table_size, st_om_table_max);
 #else
         /*  The Blue Book memory's table is Chapter 27's and does not grow. */
-        fprintf(stderr, "st80: out of memory activating a method: "
+        fprintf(stderr, "st2026: out of memory activating a method: "
                         "%u words and %u object table entries free\n",
                 OM_core_left(), OM_oops_left());
 #endif
@@ -1916,7 +1916,7 @@ do_return(st_oop result, st_oop to_context, int from_block)
     if (sender == ST_NIL || !OM_is_object(sender)) {
         /*  The bottom of the world: keep the answer and stop.  */
         if (getenv("ST_BOTTOM_LOG")) {
-            fprintf(stderr, "st80: returned off the bottom at cycle %llu\n",
+            fprintf(stderr, "st2026: returned off the bottom at cycle %llu\n",
                     (unsigned long long) st_vm.cycle);
             ST_report_backtrace();
         }
@@ -2292,7 +2292,7 @@ static void
 abandon_active_process(const char *why)
 {
     if (errors_reported)
-        fprintf(stderr, "st80: %s; the process is ended\n", why);
+        fprintf(stderr, "st2026: %s; the process is ended\n", why);
     ST_report_backtrace();
     ST_pop_n(st_vm.argument_count + 1);
     ST_push(ST_NIL);
@@ -2338,7 +2338,7 @@ corrupt_method(const char *reason)
     if (!name_method(receiver, st_vm.method, name, sizeof name))
         snprintf(name, sizeof name, "?");
     if (errors_reported)
-        fprintf(stderr, "st80: cannot run %s: %s; the activation is "
+        fprintf(stderr, "st2026: cannot run %s: %s; the activation is "
                         "abandoned\n", name, reason);
     if (!OM_is_object(ctx)) {
         st_vm.running = 0;
@@ -2724,7 +2724,7 @@ run_method_found(st_oop receiver, st_oop method)
         char    selector[128];
 
         OM_string_of(st_vm.message_selector, selector, sizeof selector);
-        fprintf(stderr, "st80: %u arguments sent to #%s, which expects %u, "
+        fprintf(stderr, "st2026: %u arguments sent to #%s, which expects %u, "
                         "at cycle %llu\n",
                 st_vm.argument_count, selector,
                 method_argument_count(method),
@@ -3253,7 +3253,7 @@ ST_interp_run(uint64_t limit)
             uint32_t    i;
 
             if (!OM_is_present(closure_class)) {
-                fprintf(stderr, "st80: a closure was built with no "
+                fprintf(stderr, "st2026: a closure was built with no "
                                 "BlockClosure loaded\n");
                 st_vm.running = 0;
                 break;

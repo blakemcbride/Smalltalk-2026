@@ -246,7 +246,7 @@ Object >> halt [
 	 1983 opens a NotifierView and the process then waits on the input
 	 semaphore for a click that a headless image will never produce.
 	 `[self halt] on: Error do: [...]' did not catch it, because nothing was
-	 signalled -- the process simply stopped, and `st80 -serve' printed
+	 signalled -- the process simply stopped, and `st2026 -serve' printed
 	 `every process is blocked; nothing can run' and exited.  halt is the
 	 single most likely thing to be left in code by accident, so of the five
 	 methods that did this it is the one that matters most.

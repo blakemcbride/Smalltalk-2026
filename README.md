@@ -84,7 +84,7 @@ brew install sdl3 pkg-config                # macOS
 ```
 
 ```sh
-make                    # build ./st80
+make                    # build ./st2026
 make test               # unit suites, then every profile's own SUnit suites
 make deps               # what this machine has, and what it is missing
 make help               # targets and variables
@@ -95,7 +95,7 @@ SDL3 is not there, and the message carries the command that installs it —
 `make deps` reports on all of them at once, and runs on a machine too bare to
 build. If a machine is *meant* to have no display, say so and the graphics
 layer becomes a stub: `-bootstrap`, `-eval`, `-doctests` and `make test` all
-still work, and `./st80 -run` refuses to open a window and says why.
+still work, and `./st2026 -run` refuses to open a window and says why.
 
 ```sh
 make HEADLESS=1
@@ -125,14 +125,14 @@ make NOTLS=1
 Bootstrap an image from source and run its desktop:
 
 ```sh
-./st80 -bootstrap -profile profiles/st2026.profile -o st80.image
-./st80 -run st80.image
+./st2026 -bootstrap -profile profiles/st2026.profile -o st2026.image
+./st2026 -run st2026.image
 ```
 
 Or evaluate something without a window:
 
 ```sh
-$ ./st80 -bootstrap -profile profiles/st2026.profile -eval '(1 to: 10) inject: 0 into: [:a :b | a + b]'
+$ ./st2026 -bootstrap -profile profiles/st2026.profile -eval '(1 to: 10) inject: 0 into: [:a :b | a + b]'
 55
 ```
 
@@ -144,7 +144,7 @@ appear. That build is the museum piece, and it is what `profiles/bluebook.profil
 is for:
 
 ```sh
-./st80 -bootstrap -profile profiles/bluebook.profile -o bluebook.image   # 1983, exactly
+./st2026 -bootstrap -profile profiles/bluebook.profile -o bluebook.image   # 1983, exactly
 ```
 
 `profiles/` says what each one composes, and `#requires` chains them:
@@ -232,7 +232,7 @@ safe to use from more than one process at once — 31 threads share one in
 [`doc/JSON.md`](doc/JSON.md) has the rest, including why not one line could be
 copied.
 
-**A web server, one request per core.** `st80 -serve image` runs an image on a
+**A web server, one request per core.** `st2026 -serve image` runs an image on a
 pool of native threads with no window — the first run mode that does — and
 `lib/Rest-Server` puts a Kiss-style JSON-RPC server on it: `POST /rest` with
 `_class` and `_method`, sessions by uuid, one database transaction per request,
@@ -270,7 +270,7 @@ the demo Kiss ships as a running program — a login, a phone list, a users
 screen, an upload, an Ollama chat — with its back end rewritten as Tonel
 services under `demo/backend` and Kiss's own front end copied whole under
 `demo/frontend`, one `RestServer` serving both from one port: `make
-demo-image`, `./st80 -serve demo.im demo/server.json`,
+demo-image`, `./st2026 -serve demo.im demo/server.json`,
 `http://localhost:8080`, `smalltalk` / `password`. The database is made on the
 first start from Kiss's own schema, and its stored password is the PBKDF2 hash
 Java made, checked byte for byte by `lib/Crypto`. Edit a service while it
@@ -352,7 +352,7 @@ tools/          make_font.py — rasterises an outline face into the strike
 | [`doc/LanguageExtensions.md`](doc/LanguageExtensions.md) | every post-1983 syntax, and where each stands |
 | [`doc/DATABASE.md`](doc/DATABASE.md) | SQL through ODBC, the join graph, and why a query does not stop the world |
 | [`doc/JSON.md`](doc/JSON.md) | RFC 8259, why the numbers stay exact, and why not one line could be ported |
-| [`doc/NETWORK.md`](doc/NETWORK.md) | sockets on which no worker blocks, the I/O thread, and `st80 -serve` |
+| [`doc/NETWORK.md`](doc/NETWORK.md) | sockets on which no worker blocks, the I/O thread, and `st2026 -serve` |
 | [`doc/REST-SERVER.md`](doc/REST-SERVER.md) | Kiss's protocol on every core; services as Tonel files loaded on first use |
 | [`doc/HTTP-CLIENT.md`](doc/HTTP-CLIENT.md) | the other direction: https, and a reply read as it comes |
 | [`doc/LLM.md`](doc/LLM.md) | Anthropic, OpenAI, OpenRouter and Ollama asked one way; tools, conversations, embeddings, Qdrant |

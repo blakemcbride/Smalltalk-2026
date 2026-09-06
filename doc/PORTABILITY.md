@@ -89,7 +89,7 @@ Verified here, on Fedora 44 with gcc 16.1.1:
 
 **Windows: verified, and it turned up plenty.** `Makefile.msvc` and the Win32
 half of the portability shim now compile, link and run under MSVC 14.50 —
-`st80.exe` bootstraps an image and opens its desktop. Getting there took an
+`st2026.exe` bootstraps an image and opens its desktop. Getting there took an
 object list eight files stale, `/experimental:c11atomics`, a `<dirent.h>` the
 file primitives assumed, five `_Atomic` qualifiers discarded silently on the
 way to `free`, a `uint16_t` that truncated a word count, path splitting that

@@ -168,7 +168,7 @@ wrong answer first, and the way it was wrong is the most useful thing in this se
 `ST_COLLECT_LOG=1` times the phases of a collection. It said:
 
 ```
-st80: collect 15134 entries, 14260 live: zero 0.0 ms, mark 0.4 ms, sweep 0.0 ms, freed 871
+st2026: collect 15134 entries, 14260 live: zero 0.0 ms, mark 0.4 ms, sweep 0.0 ms, freed 871
 ```
 
 0.4 ms of work against a 74 ms pause — 180 times the work — so the cost had to be
@@ -180,7 +180,7 @@ That was wrong, and one number gave it away: **`intervals` at ONE worker paused 
 time-spent-in-the-collector settled it:
 
 ```
-st80: safepoint 87.39 ms = 0.00 waiting for 0 worker(s) + 87.39 doing the work
+st2026: safepoint 87.39 ms = 0.00 waiting for 0 worker(s) + 87.39 doing the work
 ```
 
 Zero waiting. All of it inside the collector. The 15,134-entry log line was real, but it
@@ -188,7 +188,7 @@ came from the **bootstrap**, before the benchmark had allocated anything. The co
 that mattered happened mid-run and looked like this:
 
 ```
-st80: collect 2989815 entries, 14638 live: zero 20.0 ms, mark 19.4 ms, sweep 18.9 ms
+st2026: collect 2989815 entries, 14638 live: zero 20.0 ms, mark 19.4 ms, sweep 18.9 ms
 ```
 
 **Three million slots walked three times to find fourteen thousand objects.** The lesson

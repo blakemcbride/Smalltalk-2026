@@ -2265,7 +2265,7 @@ collect_at_safepoint(void *unused)
                 st_om_collections, reclaimed, live_objects);
     if (report) {
         t3 = ST_time_monotonic_ns();
-        fprintf(stderr, "st80: collect %u entries (now %u), %llu live: "
+        fprintf(stderr, "st2026: collect %u entries (now %u), %llu live: "
                         "zero %.1f ms, mark %.1f ms, sweep %.1f ms, "
                         "freed %u\n",
                 (unsigned) walked,

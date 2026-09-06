@@ -467,8 +467,9 @@ in \ct{-run} serves requests green, one interpreter switching between them.
 For a server that uses every core:
 
 \begin{plain}
-./st80 -bootstrap -profile profiles/st2026.profile -startup 'RestServer serve' -o server.im
-./st80 -serve server.im -workers 8 server.json
+./st2026 -bootstrap -profile profiles/st2026.profile \
+        -startup 'RestServer serve' -o server.im
+./st2026 -serve server.im -workers 8 server.json
 \end{plain}
 
 \ct{-serve} loads the image, starts the worker pool, and resumes the image's
@@ -544,7 +545,7 @@ here, under \ct{demo/}: the back end in Smalltalk under \ct{demo/backend}
 \subsection{Step by step}
 
 Everything below is typed at a shell in the repository root, on a machine
-where \ct{make} has already built \ct{./st80} (Chapter~\ref{ch:building}).
+where \ct{make} has already built \ct{./st2026} (Chapter~\ref{ch:building}).
 
 \begin{enumerate}
 \item \textbf{Have the SQLite ODBC driver.} The demo keeps its data in
@@ -560,13 +561,13 @@ make demo-image
 \end{plain}
   This bootstraps an image whose startup is \ct{RestServer serve} and
   writes it to \ct{demo.im}. The last line printed is
-  \ct{built demo.im -- now: ./st80 -serve demo.im demo/server.json}.
+  \ct{built demo.im -- now: ./st2026 -serve demo.im demo/server.json}.
 
 \item \textbf{Start the server.}
 \begin{plain}
-./st80 -serve demo.im demo/server.json
+./st2026 -serve demo.im demo/server.json
 \end{plain}
-  Three lines say it is up: \ct{st80: serving demo.im on N workers} (four
+  Three lines say it is up: \ct{st2026: serving demo.im on N workers} (four
   per CPU, and never more than 63, unless \ct{-workers n} was given), then
   on the first start only
   \ct{demo: made the tables from demo/schema.sqlite}, then
@@ -602,7 +603,7 @@ make demo-image
   next request read it again. Put it back the same way.
 
 \item \textbf{Stop the server} with Ctrl-C in its terminal. It prints
-  \ct{st80: stopped as asked} and exits 0.
+  \ct{st2026: stopped as asked} and exits 0.
 
 \item \textbf{Start over}, when wanted, by deleting \ct{demo/DB.sqlite};
   the next start makes it again.
@@ -678,7 +679,7 @@ Section~\ref{sec:origins} admits it on its own:
 
 \subsection{The threads}
 
-What runs under \ct{./st80 -serve demo.im}, in the operating system's
+What runs under \ct{./st2026 -serve demo.im}, in the operating system's
 terms. One thread waits---in \ct{poll()}, over the listening socket and
 every kept-alive connection---and each arrival goes on a queue. A pool of
 worker threads---four per CPU, and never more than 63, unless

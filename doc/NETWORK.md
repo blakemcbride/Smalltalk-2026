@@ -23,7 +23,7 @@ the gate.
 it.
 
 A server here is one green `Process` per connection on a fixed pool of native
-workers — `st80 -serve` starts N of them, four per core by default. If a worker
+workers — `st2026 -serve` starts N of them, four per core by default. If a worker
 sat in `recv()` waiting for a browser to send its next request, eight idle
 browsers on eight workers would stop the server, and a keep-alive connection
 is idle nearly all of its life. So no worker ever waits in a socket call.
@@ -196,10 +196,10 @@ thing is `lib/HTTP-Client-Live-Tests`, on the internet.
 arguments: an environment variable, which is where an API key belongs and
 the one place `Smalltalk environmentAt:` reads one from.
 
-## `st80 -serve`
+## `st2026 -serve`
 
 ```
-st80 -serve <image> [-workers n] [args...]
+st2026 -serve <image> [-workers n] [args...]
 ```
 
 Runs the image on a pool of native threads, no window, until `SIGINT`,
@@ -214,8 +214,8 @@ through the bootstrap's own tables, which a loaded image does not have. The
 startup is given to `-bootstrap` and saved in the image:
 
 ```
-./st80 -bootstrap -profile profiles/st2026.profile -startup 'RestServer serve' -o server.im
-./st80 -serve server.im -workers 8 server.json
+./st2026 -bootstrap -profile profiles/st2026.profile -startup 'RestServer serve' -o server.im
+./st2026 -serve server.im -workers 8 server.json
 ```
 
 This is the first run mode that starts the worker pool. Before it, only the

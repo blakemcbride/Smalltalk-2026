@@ -10,7 +10,7 @@ A C11 compiler, \ct{make}, and SDL3 with its headers. Everything else is in
 the tree. A machine that is \emph{meant} to have no display says so and
 builds without SDL3: the graphics layer becomes a stub, \ct{-bootstrap},
 \ct{-eval}, \ct{-doctests} and \ct{make test} all still work, and
-\ct{./st80 -run} refuses to open a window and says why. That is the build
+\ct{./st2026 -run} refuses to open a window and says why. That is the build
 the test suites use and the one a server wants. ODBC and OpenSSL are
 optional in a softer way, needing no flag when they are absent: without the
 first there is no database (Chapter~\ref{ch:database}), without the second
@@ -110,7 +110,7 @@ The fastest way to ask the system a question is to build an image in memory,
 evaluate something, and exit:
 
 \begin{sh}
-./st80 -bootstrap -profile profiles/st2026.profile -eval '3 + 4'
+./st2026 -bootstrap -profile profiles/st2026.profile -eval '3 + 4'
 \end{sh}
 
 \begin{plain}
@@ -141,7 +141,7 @@ out nextPutAll: 10 factorial printString.
 single quotes:
 
 \begin{sh}
-./st80 -bootstrap -profile profiles/st2026.profile -eval "$(cat program.st)"
+./st2026 -bootstrap -profile profiles/st2026.profile -eval "$(cat program.st)"
 \end{sh}
 
 \begin{plain}
@@ -157,7 +157,7 @@ and repeated strings are \emph{not} shared, because two occurrences of
 string beside each will hit it and be told so:
 
 \begin{plain}
-st80: more than 63 literals referenced; split this method
+st2026: more than 63 literals referenced; split this method
 \end{plain}
 
 Loop over a collection of cases rather than writing them out.
@@ -170,12 +170,12 @@ wanted, and the system supplies the \ct|^| for you.
 \section{Building an image and running the desktop}
 
 \begin{sh}
-./st80 -bootstrap -profile profiles/st2026.profile -o st80.image
-./st80 -run st80.image
+./st2026 -bootstrap -profile profiles/st2026.profile -o st2026.image
+./st2026 -run st2026.image
 \end{sh}
 
-The first command writes a bootable image---about 11\,MB---and an empty
-\ct{st80.image.changes} beside it. The second opens a window on it.
+The first command writes a bootable image---about 11\,MB---and beside it
+an empty \ct{st2026.image.changes}. The second opens a window on it.
 
 \begin{stwarn}[Which profile?]
 \ct{-manifest sources/MANIFEST} builds the pure 1983 system: no exceptions,
@@ -189,7 +189,7 @@ The window opens on a grey halftone desktop with nothing on it. That is
 correct, and Chapter~\ref{ch:tenminutes} is about what to do next.
 
 \begin{sh}
-./st80 -run st80.image 2000000
+./st2026 -run st2026.image 2000000
 \end{sh}
 
 The optional number is a \emph{bytecode limit}: run this many and stop. It is
@@ -227,9 +227,9 @@ about the design.
 \end{tabular}
 \end{center}
 
-\section{Everything \texttt{st80} can do}
+\section{Everything \texttt{st2026} can do}
 
-\ct{./st80 -help} prints the full list; Appendix~\ref{app:cli} explains each
+\ct{./st2026 -help} prints the full list; Appendix~\ref{app:cli} explains each
 one. The ones worth knowing on day one:
 
 \begin{center}

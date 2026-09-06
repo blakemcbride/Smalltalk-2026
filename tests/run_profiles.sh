@@ -30,15 +30,15 @@
 #  fails here, with no expected count, because the only correct number is
 #  zero.
 #
-#  Usage: run_profiles.sh <path-to-st80> [expectations-file]
+#  Usage: run_profiles.sh <path-to-st2026> [expectations-file]
 #
 set -u
 
-ST80=${1:?usage: run_profiles.sh <st80> [expected]}
+ST2026=${1:?usage: run_profiles.sh <st2026> [expected]}
 EXPECTED=${2:-tests/profiles.expected}
 
-if [ ! -x "$ST80" ]; then
-    echo "run_profiles: $ST80 is not executable" >&2
+if [ ! -x "$ST2026" ]; then
+    echo "run_profiles: $ST2026 is not executable" >&2
     exit 1
 fi
 if [ ! -f "$EXPECTED" ]; then
@@ -67,7 +67,7 @@ while read -r name want_run want_passed rest; do
     #  -tests exits non-zero when anything failed, which is not the question
     #  here -- the question is whether the SCORE moved -- so the exit code is
     #  deliberately ignored and the summary line is parsed instead.
-    out=$("$ST80" -bootstrap -profile "$profile" -tests 2>&1)
+    out=$("$ST2026" -bootstrap -profile "$profile" -tests 2>&1)
     line=$(printf '%s\n' "$out" | grep -E '^[0-9]+ run, ' | tail -1)
 
     #  A HOLE is protocol a supersession dropped that something still sends
@@ -82,8 +82,8 @@ while read -r name want_run want_passed rest; do
     #  here.  Both are ordinary and neither is a fault.
     if printf '%s\n' "$out" | grep -q 'these are holes'; then
         echo "  FAIL $name: superseded protocol that something sends and nothing answers"
-        printf '%s\n' "$out" | sed -n '/these are holes/,/^st80: superseded protocol whose\|^st80: superseded protocol that nothing\|^st80: [0-9]* selector/p' \
-            | grep -v '^st80:' | sed 's/^/      /'
+        printf '%s\n' "$out" | sed -n '/these are holes/,/^st2026: superseded protocol whose\|^st2026: superseded protocol that nothing\|^st2026: [0-9]* selector/p' \
+            | grep -v '^st2026:' | sed 's/^/      /'
         status=1
     fi
 

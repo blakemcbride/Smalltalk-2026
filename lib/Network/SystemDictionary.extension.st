@@ -1,5 +1,5 @@
 "
-Smalltalk arguments: the words after `st80 -serve <image> [-workers n]';
+Smalltalk arguments: the words after `st2026 -serve <image> [-workers n]';
 Smalltalk environmentAt: an environment variable's value, or nil.
 "
 Extension { #name : 'SystemDictionary' }

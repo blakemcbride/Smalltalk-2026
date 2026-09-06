@@ -6,7 +6,7 @@ is a manual that is wrong somewhere and cannot tell you where, so each one
 is a doctest here and `make verify' in this directory runs the lot against
 a live image:
 
-    ./st80 -bootstrap -profile profiles/st2026.profile \
+    ./st2026 -bootstrap -profile profiles/st2026.profile \
            -doctests manual/examples/ManualExamples.class.st
 
 The notation is Pharo's own: `expression >>> expected value' inside a method

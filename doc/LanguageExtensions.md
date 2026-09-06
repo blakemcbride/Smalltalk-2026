@@ -57,7 +57,7 @@ as arguably a bug on the grounds that a Blue Book compiler ought to reject
 it is the one left alone:
 
 ```
-$ ./st80 -bootstrap -manifest sources/MANIFEST -eval '^3factorial'
+$ ./st2026 -bootstrap -manifest sources/MANIFEST -eval '^3factorial'
 6
 ```
 

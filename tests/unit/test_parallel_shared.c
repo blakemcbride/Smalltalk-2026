@@ -280,10 +280,10 @@ static const kernel kernels[] = {
      *  initialize in lib/Files-Fixes.
      */
     "| d f | d := PosixFileDirectory new. Smalltalk at: #SharedTestDisk put: d."
-    " f := d textFile: 'st80-parallel-file-test.txt'. f isNil ifTrue: [^-1]."
+    " f := d textFile: 'st2026-parallel-file-test.txt'. f isNil ifTrue: [^-1]."
     " f close. ^0",
     "| d good | d := Smalltalk at: #SharedTestDisk. good := 0."
-    " 1 to: 50 do: [:i | | f | f := d textFile: 'st80-parallel-file-test.txt'."
+    " 1 to: 50 do: [:i | | f | f := d textFile: 'st2026-parallel-file-test.txt'."
     "   f isNil ifFalse: [f close. good := good + 1]]. ^good",
     50, NULL, 0 },
 };

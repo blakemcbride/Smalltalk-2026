@@ -7,7 +7,7 @@
  *  This is the only test that exercises what doc/DATABASE.md claims, and it
  *  exists because discovering that was uncomfortable.  lib/Database-Live-Tests
  *  runs 129 tests through a real driver and proves a great deal -- but a
- *  `st80 -tests' run starts no worker pool, so its forked processes are green
+ *  `st2026 -tests' run starts no worker pool, so its forked processes are green
  *  and WORKER_enter_native answers immediately, current_worker being NULL.
  *  The parking path, which is the entire reason a query does not stall every
  *  core, was never once taken.
@@ -74,7 +74,7 @@
  *  either one alone produces a green test that tests nothing.
  */
 #define SAFEPOINT_CEILING   200000
-#define DATABASE_FILE       "st80-odbc-parallel-test.db"
+#define DATABASE_FILE       "st2026-odbc-parallel-test.db"
 
 /*
  *  Whether a database is reachable at all.  Decided once, before any thread

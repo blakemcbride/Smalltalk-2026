@@ -87,7 +87,7 @@ static int expand_one(expansion *e, const char *path, unsigned depth);
  *  the profile lived in ".", and then looked there for the profile it
  *  requires:
  *
- *      st80: cannot open ./bluebook.profile
+ *      st2026: cannot open ./bluebook.profile
  *
  *  naming a file nobody wrote, in a directory nobody named, for a request
  *  that was spelled the way the platform spells paths and the way tab
@@ -651,8 +651,8 @@ is_directory(const char *path)
 /*
  *  ----------  A directory of sources, walked  ----------
  *
- *  Phase 5's exit criterion is spelled `st80 -bootstrap sources/ -o
- *  st80.image', and until now only `-manifest sources/MANIFEST' worked --
+ *  Phase 5's exit criterion is spelled `st2026 -bootstrap sources/ -o
+ *  st2026.image', and until now only `-manifest sources/MANIFEST' worked --
  *  a bare directory was handed to the reader as if it were a file, which
  *  failed with "short read on sources/".
  *

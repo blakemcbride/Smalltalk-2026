@@ -456,7 +456,7 @@ SCHED_signal_at_ms(st_oop semaphore, uint32_t target_ms)
     if (!timer_started) {
         timer_started = 1;
         if (ST_thread_create(&timer_thread, timer_main, NULL) != 0) {
-            fprintf(stderr, "st80: cannot start the delay timer\n");
+            fprintf(stderr, "st2026: cannot start the delay timer\n");
             timer_started = 0;
         }
     }
@@ -1187,7 +1187,7 @@ SCHED_add_last_link(st_oop link, st_oop list)
         static int  told;
 
         if (!told++)
-            fprintf(stderr, "st80: a process already on a list was queued "
+            fprintf(stderr, "st2026: a process already on a list was queued "
                             "again; it is left where it was\n");
         return;
     }
@@ -1261,7 +1261,7 @@ SCHED_transfer_to(st_oop process)
      */
     if (OM_is_present(process)
      && OM_is_present(OM_fetch_pointer(ST_PROCESS_MY_LIST, process))) {
-        fprintf(stderr, "st80: a process still on a list was nominated to "
+        fprintf(stderr, "st2026: a process still on a list was nominated to "
                         "run; the scheduler's invariant is broken\n");
         ST_report_backtrace();
         abort();
@@ -1654,7 +1654,7 @@ SCHED_suspend_active(void)
          */
         int64_t remaining = SCHED_timer_remaining_ms();
 
-        fprintf(stderr, "st80: every process is blocked; nothing can run\n");
+        fprintf(stderr, "st2026: every process is blocked; nothing can run\n");
         /*
          *  With the numbers, not just the flags.  "timer pending 1" was
          *  true of a delay about to fire and of one three minutes out, and
@@ -1692,7 +1692,7 @@ SCHED_suspend_active(void)
 /*
  *  Join the scheduler with no process of one's own.
  *
- *  A worker started by `st80 -serve' other than the first has nothing to
+ *  A worker started by `st2026 -serve' other than the first has nothing to
  *  run: the image's startup process belongs to worker 0, and everything
  *  else is forked later.  The parallel tests give such a worker a compiled
  *  `Semaphore new wait' to park in, but a run mode has no compiler to hand
@@ -2113,7 +2113,7 @@ SCHED_check_process_switch(void)
             st_oop  dead = new_process;
 
             if (incoming != ST_NIL)
-                fprintf(stderr, "st80: a process whose suspended context is "
+                fprintf(stderr, "st2026: a process whose suspended context is "
                                 "not a context was scheduled; it is dropped\n");
             new_process = ST_NIL;
             land(dead);

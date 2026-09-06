@@ -63,7 +63,7 @@ each test method, so instance variables cannot leak between tests.
 From the command line, over a whole profile:
 
 \begin{sh}
-./st80 -bootstrap -profile profiles/mystuff.profile -tests
+./st2026 -bootstrap -profile profiles/mystuff.profile -tests
 \end{sh}
 
 \begin{plain}
@@ -113,11 +113,11 @@ and running them answers the question a port actually cares about---not "does
 this source parse here" but "does it \emph{mean} here what it means there".
 
 \begin{sh}
-./st80 -bootstrap -profile profiles/st2026.profile -doctests lib/MyStuff/Account.class.st
+./st2026 -bootstrap -profile profiles/st2026.profile -doctests lib/MyStuff/Account.class.st
 \end{sh}
 
 \begin{plain}
-st80: 10 doctests in 3 methods of 1 files: 10 passed, 0 wrong,
+st2026: 10 doctests in 3 methods of 1 files: 10 passed, 0 wrong,
       0 need something not here
 \end{plain}
 

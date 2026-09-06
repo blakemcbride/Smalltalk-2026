@@ -1,4 +1,4 @@
 #
 make clean
 make
-./st80 -bootstrap -profile profiles/st2026.profile -o st80.image
+./st2026 -bootstrap -profile profiles/st2026.profile -o st2026.image

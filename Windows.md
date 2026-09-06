@@ -20,8 +20,8 @@ In an **x64 Native Tools Command Prompt for VS 2022**:
 cd \path\to\Smalltalk-2026
 nmake /f Makefile.msvc SDL3=C:\SDL3-3.2.20
 copy C:\SDL3-3.2.20\lib\x64\SDL3.dll .
-st80.exe -bootstrap -profile profiles/st2026.profile -o st80.image
-st80.exe -run st80.image
+st2026.exe -bootstrap -profile profiles/st2026.profile -o st2026.image
+st2026.exe -run st2026.image
 ```
 
 Backslashes work too — `profiles\st2026.profile` is the same thing.
@@ -80,7 +80,7 @@ rejects.
 
 ## 2. SDL3
 
-st80 draws its display through SDL3 and needs the development package —
+st2026 draws its display through SDL3 and needs the development package —
 headers and an import library, not just the runtime DLL.
 
 Take **`SDL3-devel-<version>-VC.zip`** from
@@ -101,7 +101,7 @@ yourself both use a flat `lib\`, so name the import library directly:
 nmake /f Makefile.msvc SDL3=C:\vcpkg\installed\x64-windows SDL3LIB=C:\vcpkg\installed\x64-windows\lib\SDL3.lib
 ```
 
-**`SDL3.dll` must be findable at run time.** Copy it next to `st80.exe`, or
+**`SDL3.dll` must be findable at run time.** Copy it next to `st2026.exe`, or
 put its directory on `PATH`. This is the one that bites: the link succeeds,
 and then the program refuses to start with *"The code execution cannot
 proceed because SDL3.dll was not found"* — or, if you copied the 32-bit one,
@@ -115,7 +115,7 @@ itself and there is no `SDL3main.lib` to hunt for.
 
 If the machine is meant to have no display, say so and the graphics layer
 compiles to a stub. `-bootstrap`, `-eval` and `-doctests` all still work,
-the test suites still run, and `st80.exe -run` refuses to open a window and
+the test suites still run, and `st2026.exe -run` refuses to open a window and
 says why.
 
 ```bat
@@ -128,7 +128,7 @@ anything.
 
 Without `SDL3=` and without `HEADLESS=1` the build stops before it compiles
 anything and tells you both. It used to build the stub silently, so a
-mistyped path and a missing library produced the same result: an `st80.exe`
+mistyped path and a missing library produced the same result: an `st2026.exe`
 that opened no window, and only said why a day later.
 
 ## 3. Build
@@ -137,7 +137,7 @@ that opened no window, and only said why a day later.
 nmake /f Makefile.msvc SDL3=C:\SDL3-3.2.20
 ```
 
-Objects go to `build\<om>-msvc\`; the binary is `st80.exe` in the top of the
+Objects go to `build\<om>-msvc\`; the binary is `st2026.exe` in the top of the
 tree.
 
 | Variable | Meaning |
@@ -152,7 +152,7 @@ tree.
 Each `OM` gets its own build directory, so an `mt` object can never be
 linked against a `bb` one.
 
-`nmake /f Makefile.msvc clean` removes `build\`, `st80.exe`, and the `.pdb`
+`nmake /f Makefile.msvc clean` removes `build\`, `st2026.exe`, and the `.pdb`
 and `.ilk` beside it. It needs no SDL3 and no `HEADLESS=1`, which took a
 second attempt to be true: the SDL3 check was a parse-time `!ERROR`, and
 nmake evaluates the whole file before it knows what you asked of it, so
@@ -170,8 +170,8 @@ The binary is a virtual machine with a compiler in it. It has no image until
 you build one:
 
 ```bat
-st80.exe -bootstrap -profile profiles/st2026.profile -o st80.image
-st80.exe -run st80.image
+st2026.exe -bootstrap -profile profiles/st2026.profile -o st2026.image
+st2026.exe -run st2026.image
 ```
 
 That is 264 classes and 5,123 methods — the 1983 class library plus
@@ -179,7 +179,7 @@ closures, exceptions, concurrency and SUnit. Or evaluate something without a
 window:
 
 ```bat
-st80.exe -bootstrap -profile profiles/st2026.profile -eval "(1 to: 10) inject: 0 into: [:a :b | a + b]"
+st2026.exe -bootstrap -profile profiles/st2026.profile -eval "(1 to: 10) inject: 0 into: [:a :b | a + b]"
 ```
 
 Double quotes, not single: `cmd` does not treat `'` as a quote, so a
@@ -202,14 +202,14 @@ platform. It had a Win32 directory walk — `FindFirstFileA` where POSIX gets
 `opendir` — but `directory_of` was `strrchr(path, '/')` regardless. So
 
 ```bat
-st80.exe -bootstrap -profile profiles\st2026.profile -o st80.image
+st2026.exe -bootstrap -profile profiles\st2026.profile -o st2026.image
 ```
 
 found no separator at all, concluded the profile lived in `.`, and looked
 there for the profile that one requires:
 
 ```
-st80: cannot open ./bluebook.profile
+st2026: cannot open ./bluebook.profile
 ```
 
 — a file nobody wrote, in a directory nobody named, for a command spelled
@@ -234,10 +234,10 @@ The display settings are environment variables; `set` them before running.
 set ST_DISPLAY_THEME=dark
 set ST_DISPLAY_SCALE=2
 set ST_DISPLAY_WINDOW=1600x1200
-st80.exe -run st80.image
+st2026.exe -run st2026.image
 ```
 
-`st80.exe -help` lists the rest.
+`st2026.exe -help` lists the rest.
 
 ### Two habits of the interface
 
@@ -267,17 +267,17 @@ See [`doc/LICENSING.md`](doc/LICENSING.md).
 bootstraps each profile and runs Pharo's tests inside it, holding the score
 to `tests/profiles.expected`. It is `tests/run_profiles.sh`, a POSIX shell
 script, and it has no nmake equivalent. Run it from Git Bash, MSYS2 or WSL
-against the `st80.exe` you just built:
+against the `st2026.exe` you just built:
 
 ```sh
-sh tests/run_profiles.sh ./st80.exe tests/profiles.expected
+sh tests/run_profiles.sh ./st2026.exe tests/profiles.expected
 ```
 
 Or run one profile by hand, which is all the script does with a comparison
 around it:
 
 ```bat
-st80.exe -bootstrap -profile profiles/pharo-collections.profile -tests
+st2026.exe -bootstrap -profile profiles/pharo-collections.profile -tests
 ```
 
 ## Two other ways to build on Windows
@@ -295,8 +295,8 @@ get that build, unmodified, including `make test`, `make deps` and
 sudo apt install build-essential libsdl3-dev pkg-config
 make
 make test
-./st80 -bootstrap -profile profiles/st2026.profile -o st80.image
-./st80 -run st80.image
+./st2026 -bootstrap -profile profiles/st2026.profile -o st2026.image
+./st2026 -run st2026.image
 ```
 
 The window comes up through WSLg, which is present by default on Windows 11
@@ -317,10 +317,10 @@ CONDITION_VARIABLE, fibre-local storage. In principle `make` then works as
 it does on Linux and you get the targets `Makefile.msvc` has no answer for.
 
 **Untried, with one thing to watch.** The GNU makefile has no notion of an
-`.exe` suffix anywhere in it: it links to `build/mt/st80` and copies that to
-`./st80`. MinGW's gcc appends `.exe` to an output name that has none, so the
+`.exe` suffix anywhere in it: it links to `build/mt/st2026` and copies that to
+`./st2026`. MinGW's gcc appends `.exe` to an output name that has none, so the
 file make asked for is not the file that appears. MSYS2's runtime makes
-`stat("st80")` find `st80.exe`, which is very likely enough to paper over
+`stat("st2026")` find `st2026.exe`, which is very likely enough to paper over
 it — but "very likely" is not a build instruction, and nobody has run it.
 If it relinks on every invocation, or the final copy fails, that is what you
 are looking at.
@@ -410,7 +410,7 @@ though someone ran it.
 
 **Confirmed on Windows, by MSVC 14.50 under Visual Studio 18:**
 
-- **`st80.exe` builds, links and runs.** `st80.exe -version` answers on
+- **`st2026.exe` builds, links and runs.** `st2026.exe -version` answers on
   Windows, reports `mt (64-bit threaded)`, counts the CPUs, and prints
   `platform : Windows`.
 - **`SDL3.dll` beside the binary is what it takes.** Copied from the
@@ -503,7 +503,7 @@ now named outright, after `/link` because `cl` has no `/SUBSYSTEM` of its own.
 
 **Still not checked:**
 
-- **The Winsock half of `src/net/st_socket.c` and `st80 -serve`.** The
+- **The Winsock half of `src/net/st_socket.c` and `st2026 -serve`.** The
   socket layer is POSIX on one side of `ST_WINDOWS` and Winsock on the other
   — `WSAPoll`, a loopback UDP socket for the wake channel, `BCryptGenRandom`,
   `SO_EXCLUSIVEADDRUSE` — and `Makefile.msvc` links `ws2_32.lib bcrypt.lib`

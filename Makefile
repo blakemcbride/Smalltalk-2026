@@ -1,7 +1,7 @@
 # Smalltalk-2026 -- a parallel Smalltalk-80 in C
 #
 # Targets:
-#   all        (default) build the st80 binary
+#   all        (default) build the st2026 binary
 #   test       build and run the unit tests
 #   deps       report on SDL3 and the other external requirements
 #   clean      remove build artifacts
@@ -64,7 +64,7 @@ endif
 #  nothing for SDL3, ST_HAVE_SDL3 went undefined, src/gfx/display.c compiled
 #  its headless stub, and `make' printed not one word about any of it -- so
 #  a package nobody installed on Monday surfaced on Tuesday, two layers
-#  down, as `./st80 -run' opening no window and answering "built without
+#  down, as `./st2026 -run' opening no window and answering "built without
 #  SDL3".  That names the symptom, in another tool, on another day.  A
 #  missing compiler or C library was worse still: the first gcc line of the
 #  build failed on its own terms and left the reader to work backwards from
@@ -321,7 +321,7 @@ define ERR_NO_SDL3
 
 $(SDL3_HEADLINE)
 
-st80 draws its display through SDL3.
+st2026 draws its display through SDL3.
 $(SDL3_WHY)
 
 Install it with its headers -- the runtime package alone is not enough:
@@ -329,7 +329,7 @@ Install it with its headers -- the runtime package alone is not enough:
     $(HINT_SDL3)
 
 Or ask for a build with no display.  The graphics layer becomes a stub:
--bootstrap, -eval, -doctests and `make test' all work, and `./st80 -run'
+-bootstrap, -eval, -doctests and `make test' all work, and `./st2026 -run'
 refuses to open a window and says why.
 
     make HEADLESS=1
@@ -342,7 +342,7 @@ define ERR_NO_LINK
 
 Required libraries are missing.
 
-$(firstword $(CC)) runs, but tools/probe.c will not link against what st80
+$(firstword $(CC)) runs, but tools/probe.c will not link against what st2026
 needs.  The verdict comes first because the flags after it are whatever
 this machine's pkg-config handed over, and nothing can be lined up behind
 that:
@@ -482,10 +482,10 @@ MAIN_SRC  := src/main.c
 MAIN_OBJ  := $(patsubst %.c,$(OBJ_DIR)/%.o,$(MAIN_SRC))
 
 # The binary lives in the variant's build directory and is copied to the top
-# level.  With a single shared path, switching OM= left a newer st80 sitting
+# level.  With a single shared path, switching OM= left a newer st2026 sitting
 # there and make reported nothing to do, silently running the other memory.
-VARIANT_BIN := $(BUILD_DIR)/st80
-BIN         := st80
+VARIANT_BIN := $(BUILD_DIR)/st2026
+BIN         := st2026
 
 .PHONY: all clean test unit-test help deps
 .NOTPARALLEL:
@@ -519,8 +519,8 @@ $(VARIANT_BIN): $(MAIN_OBJ) $(LIB_AR)
 #
 #  The convenience copy at the top of the tree.
 #
-#  Forced, not timestamp-driven.  ./st80 is whichever variant was built last,
-#  and after "make OM=bb" it is NEWER than build/mt/st80 -- so a following
+#  Forced, not timestamp-driven.  ./st2026 is whichever variant was built last,
+#  and after "make OM=bb" it is NEWER than build/mt/st2026 -- so a following
 #  "make OM=mt" answers "nothing to be done" and leaves the Blue Book binary
 #  sitting there under a name that now means something else.  Every command
 #  then fails in a way that has nothing to do with the change being made.
@@ -530,17 +530,17 @@ $(VARIANT_BIN): $(MAIN_OBJ) $(LIB_AR)
 #  A SANITIZER build is not copied, and that is not tidiness.  A TSAN binary
 #  interprets 50 times slower than a plain one -- 5 million bytecodes in 33
 #  seconds against 0.56 -- and nothing about the file at the top level says
-#  which it is, so `make OM=mt TSAN=1' followed by `./st80 -run' looks
+#  which it is, so `make OM=mt TSAN=1' followed by `./st2026 -run' looks
 #  exactly like a system that has become desperately slow.  The test targets
 #  run $(VARIANT_BIN) out of the build directory and never wanted the copy;
-#  only a person typing ./st80 does.
+#  only a person typing ./st2026 does.
 #
 .PHONY: $(BIN)
 $(BIN): $(VARIANT_BIN)
 ifeq ($(strip $(TSAN)$(ASAN)),)
 	@cp -f $< $@
 else
-	@echo "  $(BUILD_VARIANT) build left in $(VARIANT_BIN); ./st80 untouched"
+	@echo "  $(BUILD_VARIANT) build left in $(VARIANT_BIN); ./st2026 untouched"
 endif
 
 # Unit tests ----------------------------------------------------------------
@@ -598,15 +598,15 @@ bench: $(BENCH_BIN)
 # resolves globals through tables a loaded image does not have.
 .PHONY: demo-image
 demo-image: $(BIN)
-	./st80 -bootstrap -profile profiles/st2026.profile -startup 'RestServer serve' -o demo.im
-	@echo "built demo.im -- now: ./st80 -serve demo.im demo/server.json"
+	./st2026 -bootstrap -profile profiles/st2026.profile -startup 'RestServer serve' -o demo.im
+	@echo "built demo.im -- now: ./st2026 -serve demo.im demo/server.json"
 
 test: unit-test suite-test snapshot-test
 
 # A snapshot from a worker pool, resumed ----------------------------------------
 #
 # What tests/run_snapshot.sh checks is a process boundary -- an image written
-# by one st80 and read by another -- so it is a shell check and not a C one.
+# by one st2026 and read by another -- so it is a shell check and not a C one.
 # Under OM=mt only, for the reason the suites are.
 
 .PHONY: snapshot-test
@@ -680,7 +680,7 @@ deps:
 
 help:
 	@echo "Targets:"
-	@echo "  all          (default) build the st80 binary"
+	@echo "  all          (default) build the st2026 binary"
 	@echo "  test         build and run the unit tests and the package suites"
 	@echo "  unit-test    just the unit tests"
 	@echo "  suite-test   just the imported packages' own SUnit suites"

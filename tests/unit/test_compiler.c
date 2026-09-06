@@ -851,7 +851,7 @@ primitive_as(const char *source, int dialect, int *encodable)
 /*
  *  Two characters that changed meaning after 1983, and one pragma form.
  *
- *  Each of these was found by pointing st80 -syntax at Pharo's own source
+ *  Each of these was found by pointing st2026 -syntax at Pharo's own source
  *  rather than by reading a grammar, which is why they are exactly the
  *  three that occur in practice and not a survey of everything that could
  *  differ.
@@ -989,7 +989,7 @@ test_inlined_or_real_is_decided_by_lookahead(void)
 /*
  *  The rest of what reading Pharo's 91,210 methods turned up.
  *
- *  Every one of these was found by pointing st80 -syntax at the real thing
+ *  Every one of these was found by pointing st2026 -syntax at the real thing
  *  and reading the ranked list, which is why they are the constructs that
  *  actually occur rather than a survey of the grammar.
  */

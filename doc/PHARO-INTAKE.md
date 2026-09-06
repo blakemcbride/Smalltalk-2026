@@ -11,7 +11,7 @@ Nothing is vendored yet; this is measurement, taken in place.
 
 ## The numbers
 
-Taken with `st80 -syntax`, which compiles every method and throws the result away.
+Taken with `st2026 -syntax`, which compiles every method and throws the result away.
 
 | | files | methods | compiled | failed |
 |---|---|---|---|---|
@@ -23,7 +23,7 @@ Taken with `st80 -syntax`, which compiles every method and throws the result awa
 | Collections-Strings | 13 | 430 | 427 | 3 |
 | AST-Core | 92 | 1,507 | 1,506 | 1 |
 
-And `st80 -doctests` runs Pharo's **own examples** against this image:
+And `st2026 -doctests` runs Pharo's **own examples** against this image:
 
 ```
 1,426 doctests in 4,790 methods of 106 files:
@@ -61,7 +61,7 @@ Pharo prints shortest-round-trip, and `2 raisedTo: 1/12` is off by 2·10⁻⁷ b
 `ln` and `exp` fall back to the 1983 image's Taylor series — primitives 58 and 59 are
 on the list below.
 
-And `st80 -primitives` on Kernel: **115 distinct primitives, 66 implemented here,
+And `st2026 -primitives` on Kernel: **115 distinct primitives, 66 implemented here,
 49 to implement** — the finite checklist Phase F5 existed to produce, worked down
 from 48/45. (The total grew because more of Pharo's Kernel now compiles, so more of
 what it asks for is visible.)

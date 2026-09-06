@@ -2797,7 +2797,11 @@ test_browsing(void)
      *  2238539 -> 2482762 with the Bugs3 fixes: 293 methods and the comments
      *  that say what each was for.
      */
-    check_integer("(SourceFiles at: 1) contents size", 2705136);
+    /*
+     *  2705136 -> 2705152: eight comments in lib/ name the binary, and the
+     *  binary is st2026.  Two bytes each.
+     */
+    check_integer("(SourceFiles at: 1) contents size", 2705152);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -5720,7 +5724,7 @@ test_bugs3_hashing(void)
  *  The sessions run under -serve with a startup that evaluates the
  *  argument, which exits when the expression has been evaluated; -run
  *  keeps the display loop going and never comes back.  Skipped, saying so,
- *  when ./st80 is not beside the test -- the Makefile copies it there
+ *  when ./st2026 is not beside the test -- the Makefile copies it there
  *  after every build, so that is a build that was not made rather than a
  *  fault to hide.
  */
@@ -5730,7 +5734,7 @@ check_changes_file_survives_a_restart(void)
     static const char *const startup =
         "Compiler evaluate: (Smalltalk arguments isEmpty"
         " ifTrue: ['nil'] ifFalse: [Smalltalk arguments first])";
-    char        dir[] = "/tmp/st80-bugs3-b20-XXXXXX";
+    char        dir[] = "/tmp/st2026-bugs3-b20-XXXXXX";
     char        image[256];
     char        changes[256];
     char        command[2048];
@@ -5740,8 +5744,8 @@ check_changes_file_survives_a_restart(void)
     int         ok;
 
     ++st_test_checks;
-    if (access("./st80", X_OK) != 0) {
-        printf("  (skipping the changes-file restart check: no ./st80)\n");
+    if (access("./st2026", X_OK) != 0) {
+        printf("  (skipping the changes-file restart check: no ./st2026)\n");
         return;
     }
     if (!mkdtemp(dir)) {
@@ -5752,18 +5756,18 @@ check_changes_file_survives_a_restart(void)
     snprintf(image, sizeof image, "%s/b20.im", dir);
     snprintf(changes, sizeof changes, "%s/b20.im.changes", dir);
     snprintf(command, sizeof command,
-             "./st80 -bootstrap -profile " PROFILE " -startup \"%s\""
+             "./st2026 -bootstrap -profile " PROFILE " -startup \"%s\""
              " -eval \"Object compile: 'zzBootA ^ 42' classified: 'b20'\""
              " -o %s >/dev/null 2>&1", startup, image);
     ok = system(command) == 0;
     if (ok) {
         snprintf(command, sizeof command,
-                 "./st80 -serve %s -workers 1"
+                 "./st2026 -serve %s -workers 1"
                  " \"Object compile: 'zzBootB ^ 43' classified: 'b20'\""
                  " >/dev/null 2>&1", image);
         (void) system(command);
         snprintf(command, sizeof command,
-                 "./st80 -serve %s -workers 1"
+                 "./st2026 -serve %s -workers 1"
                  " \"Object compile: 'zzBootC ^ 44' classified: 'b20'\""
                  " >/dev/null 2>&1", image);
         (void) system(command);
@@ -6039,7 +6043,7 @@ test_bugs3_collections(void)
      *  page number, which is the mechanism the restart fix relies on.
      */
     {
-        char    dir[] = "/tmp/st80-bugs3-b20i-XXXXXX";
+        char    dir[] = "/tmp/st2026-bugs3-b20i-XXXXXX";
 
         if (mkdtemp(dir)) {
             char    expression[512];
@@ -7462,23 +7466,23 @@ test_bugs4_files(void)
      *  image that has never been written has no changes file of its own to
      *  be named after, and the snapshot path writes one image and reads it
      *  back.  So this drives the real binary, as the Bugs3 B20 check above
-     *  does, and for the same reason.  Skipped, saying so, when ./st80 is
+     *  does, and for the same reason.  Skipped, saying so, when ./st2026 is
      *  not beside the test.
      */
     {
         static const char *const startup =
             "Compiler evaluate: (Smalltalk arguments isEmpty"
             " ifTrue: ['nil'] ifFalse: [Smalltalk arguments first])";
-        char        dir[] = "/tmp/st80-bugs4-files-XXXXXX";
+        char        dir[] = "/tmp/st2026-bugs4-files-XXXXXX";
         char        image[320];
         char        copy[320];
         char        command[4096];
         int         built;
 
         ++st_test_checks;
-        if (access("./st80", X_OK) != 0) {
+        if (access("./st2026", X_OK) != 0) {
             printf("  (skipping the Bugs4 image and command-line checks:"
-                   " no ./st80)\n");
+                   " no ./st2026)\n");
             return;
         }
 
@@ -7489,15 +7493,15 @@ test_bugs4_files(void)
          *  -version still exits 0, because that one really did work.
          */
         ++st_test_checks;
-        if (system("./st80 -frobnicate >/dev/null 2>&1") == 0
-         || system("./st80 -serve >/dev/null 2>&1") == 0
-         || system("./st80 -inspect somewhere.im >/dev/null 2>&1") == 0) {
+        if (system("./st2026 -frobnicate >/dev/null 2>&1") == 0
+         || system("./st2026 -serve >/dev/null 2>&1") == 0
+         || system("./st2026 -inspect somewhere.im >/dev/null 2>&1") == 0) {
             ++st_test_failures;
-            printf("  FAIL a command line st80 cannot obey should exit"
+            printf("  FAIL a command line st2026 cannot obey should exit"
                    " non-zero\n");
         }
         ++st_test_checks;
-        if (system("./st80 -version >/dev/null 2>&1") != 0) {
+        if (system("./st2026 -version >/dev/null 2>&1") != 0) {
             ++st_test_failures;
             printf("  FAIL -version should still exit 0\n");
         }
@@ -7511,7 +7515,7 @@ test_bugs4_files(void)
         snprintf(image, sizeof image, "%s/b4.im", dir);
         snprintf(copy, sizeof copy, "%s/copy.im", dir);
         snprintf(command, sizeof command,
-                 "./st80 -bootstrap -profile " PROFILE " -startup \"%s\""
+                 "./st2026 -bootstrap -profile " PROFILE " -startup \"%s\""
                  " -o %s >/dev/null 2>&1", startup, image);
         built = system(command) == 0;
         if (!built) {
@@ -7536,13 +7540,13 @@ test_bugs4_files(void)
              *  being tested is the file it left, so that is what is asked.
              */
             snprintf(command, sizeof command,
-                     "./st80 -serve %s -workers 1"
+                     "./st2026 -serve %s -workers 1"
                      " \"Smalltalk snapshotAs: '%s/snapA' thenQuit: false\""
                      " >/dev/null 2>&1;"
-                     " ./st80 -serve %s -workers 1"
+                     " ./st2026 -serve %s -workers 1"
                      " \"Smalltalk snapshotAs: '%s/snapB'\" >/dev/null 2>&1;"
                      " test -s %s/snapA.im && test -s %s/snapB.im"
-                     " && ./st80 -census %s/snapA.im >/dev/null 2>&1",
+                     " && ./st2026 -census %s/snapA.im >/dev/null 2>&1",
                      image, dir, image, dir, dir, dir, dir);
             if (system(command) != 0) {
                 ++st_test_failures;
@@ -7561,7 +7565,7 @@ test_bugs4_files(void)
             ++st_test_checks;
             snprintf(command, sizeof command,
                      "cp %s %s;"
-                     " ./st80 -serve %s -workers 1"
+                     " ./st2026 -serve %s -workers 1"
                      " \"Object compile: 'zzB4copy ^42'\" >/dev/null 2>&1;"
                      " grep -qF 'zzB4copy ^42' %s.changes"
                      " && ! grep -qF 'zzB4copy' %s.changes",
@@ -7583,12 +7587,12 @@ test_bugs4_files(void)
         if (built) {
             ++st_test_checks;
             snprintf(command, sizeof command,
-                     "./st80 -serve %s -workers 1"
+                     "./st2026 -serve %s -workers 1"
                      " \"(Delay forSeconds: 3) wait\" >/dev/null 2>&1 &"
                      " sleep 1;"
-                     " ./st80 -serve %s -workers 1 \"1+1\" >%s/second.log 2>&1;"
+                     " ./st2026 -serve %s -workers 1 \"1+1\" >%s/second.log 2>&1;"
                      " wait;"
-                     " grep -q 'already open by another st80' %s/second.log",
+                     " grep -q 'already open by another st2026' %s/second.log",
                      image, image, dir, dir);
             if (system(command) != 0) {
                 ++st_test_failures;
@@ -7617,7 +7621,7 @@ test_bugs4_files(void)
         if (built) {
             ++st_test_checks;
             snprintf(command, sizeof command,
-                     "./st80 -serve %s -workers 1"
+                     "./st2026 -serve %s -workers 1"
                      " \"Object compile: 'condensed ^42'."
                      " Smalltalk condenseChanges."
                      " ((Object compiledMethodAt: #condensed) getSource"
@@ -8406,7 +8410,7 @@ test_bugs4_om(void)
      *  been through the scheduler: there is no worker holding a process for
      *  the guard to find, so a become: here would be answering a different
      *  question.  It takes a second worker to ask, which is
-     *  `./st80 -serve ... -workers 4', a forked spinner, and become:.
+     *  `./st2026 -serve ... -workers 4', a forked spinner, and become:.
      */
 
     /*

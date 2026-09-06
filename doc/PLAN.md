@@ -338,7 +338,7 @@ This is the piece **no public project has done for Blue Book format** — Pharo'
 `markbush/Smalltalk-80-CompilerLib` (MIT, Swift) is a validated reference algorithm
 worth reading.
 
-**Exit:** `st80 -bootstrap sources/ -o st80.image` produces a working image, and
+**Exit:** `st2026 -bootstrap sources/ -o st2026.image` produces a working image, and
 the self-hosting check passes — the image's own `Compiler` classes, running inside
 the VM, emit the same bytecodes as the C compiler.
 
@@ -351,8 +351,8 @@ sorted, so the phase is met as written rather than as approximated.
 
 | | |
 |---|---|
-| the command in the criterion | `st80 -bootstrap sources/ -o st80.image` writes an image |
-| equivalence | `st80 -bootstrap sources/ kernel/Bootstrap.st` produces a **method dictionary identical** to the manifest route's |
+| the command in the criterion | `st2026 -bootstrap sources/ -o st2026.image` writes an image |
+| equivalence | `st2026 -bootstrap sources/ kernel/Bootstrap.st` produces a **method dictionary identical** to the manifest route's |
 | self-hosting | `test_self_hosting` compiles methods with the C compiler and with the image's own 1983 `Compiler`, and compares bytecodes |
 | the whole suite | `OM=mt` 13 suites, `OM=bb` 8 suites, `trace2` 611 lines and `trace3` 482 byte-for-byte |
 

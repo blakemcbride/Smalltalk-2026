@@ -44,7 +44,7 @@ OM = mt
 # told, and an unset SDL3 is indistinguishable from a machine that has
 # none.  It used to build the headless stub without a word either way, so
 # a mistyped path and a missing library produced the same silent result:
-# an st80.exe that opens no window and only says why when you run it.
+# an st2026.exe that opens no window and only says why when you run it.
 # Now it stops, and HEADLESS=1 is how you say you meant it.
 #
 # It stops in a RULE and not at !ERROR, which is the whole of the fix below.
@@ -92,7 +92,7 @@ ATOMICS =
 #  vc140.pdb in the top of the tree.  It is given a filename rather than
 #  a directory: a /Fd argument ending in a backslash is a directory to
 #  cl and a line continuation to nmake, and only one of them can be
-#  right.  The linker's own st80.pdb still lands beside st80.exe, and
+#  right.  The linker's own st2026.pdb still lands beside st2026.exe, and
 #  `clean' takes that one.
 #
 #  _CRT_NONSTDC_NO_WARNINGS is for strdup, which three files under src/
@@ -116,7 +116,7 @@ CFLAGS   = /nologo /std:c11 $(ATOMICS) /W4 /O2 /MD /Zi /Fd$(PDB) \
 LDFLAGS  = /nologo
 
 #
-#  /SUBSYSTEM:CONSOLE, said rather than assumed.  st80 is a console
+#  /SUBSYSTEM:CONSOLE, said rather than assumed.  st2026 is a console
 #  program that also opens a window, and SDL3's SDL_main.h supplies a
 #  main() for the console subsystem and a WinMain() for the windowed
 #  one.  With neither named the linker guesses -- correctly, and with
@@ -169,7 +169,7 @@ SDLLIBS =
 
 CPPFLAGS = $(INCLUDES) $(OMDEF) $(SDLDEF)
 BUILD    = build\$(OM)-msvc
-PDB      = $(BUILD)\st80.pdb
+PDB      = $(BUILD)\st2026.pdb
 
 #
 #  Every .c under src/ except main.c and the object memory the build did not
@@ -200,7 +200,7 @@ OM_OBJ = $(BUILD)\om_mt.obj $(BUILD)\image_mt.obj
 !ENDIF
 
 OBJ = $(CORE_OBJ) $(OM_OBJ)
-BIN = st80.exe
+BIN = st2026.exe
 
 all: sdl3_ok $(BIN)
 
@@ -214,7 +214,7 @@ sdl3_ok:
 !IF !defined(SDL3) && !defined(HEADLESS)
 	@echo SDL3 not set.
 	@echo.
-	@echo st80 draws its display through SDL3.  Point SDL3= at a development
+	@echo st2026 draws its display through SDL3.  Point SDL3= at a development
 	@echo package -- the directory holding include\ and lib\ -- as in:
 	@echo.
 	@echo     nmake /f Makefile.msvc SDL3=C:\SDL3-3.4.14
@@ -222,7 +222,7 @@ sdl3_ok:
 	@echo Get one from https://libsdl.org/
 	@echo.
 	@echo Or ask for a build with no display.  -bootstrap, -eval and -doctests
-	@echo all still work, and st80.exe -run will refuse to open a window and
+	@echo all still work, and st2026.exe -run will refuse to open a window and
 	@echo say why:
 	@echo.
 	@echo     nmake /f Makefile.msvc HEADLESS=1
@@ -316,5 +316,5 @@ test: sdl3_ok $(BIN)
 clean:
 	@if exist build rmdir /s /q build
 	@if exist $(BIN) del $(BIN)
-	@if exist st80.pdb del st80.pdb
-	@if exist st80.ilk del st80.ilk
+	@if exist st2026.pdb del st2026.pdb
+	@if exist st2026.ilk del st2026.ilk

@@ -1,6 +1,6 @@
 # The window, and what the 1983 interface expects of you
 
-Two things about running `./st80 -run st80.image` surprise everyone, and neither is a
+Two things about running `./st2026 -run st2026.image` surprise everyone, and neither is a
 fault. This file is here so they are surprising once.
 
 ## The screen is the window
@@ -133,7 +133,7 @@ Worked example, because it cost several rounds to find. A Windows guest under
     render target 640x480, density 1.00, display scale 1.00
 
 Every number equal, integer presentation, nearest-neighbour texture: no
-resample is arithmetically possible inside st80. The screenshot nevertheless
+resample is arithmetically possible inside st2026. The screenshot nevertheless
 showed banding. Measuring it settled where from:
 
 - Autocorrelation along a row: -1.00 at lag 1, +1.00 at lag 2. The
@@ -153,7 +153,7 @@ reproduces null spacing 480, 478, 480.
 
 **The rule.** If the halftone bands, check `ST_DISPLAY_TRACE=1` first. If the
 form, the window, the pixels and the render target are all equal and the
-presentation is integer, st80 has handed over an exact image and something
+presentation is integer, st2026 has handed over an exact image and something
 downstream — a VM display, a compositor scaling a non-1:1 window, a monitor
 not running at its native resolution — is resampling it. The fix is there:
 make that stage 1:1, usually by matching the guest or window size to the
@@ -241,7 +241,7 @@ Pillow and the font installed:
 ```sh
 make font                                    # Inter at 18, lead 3
 make font FONT=/path/to/Face.ttf SIZE=15 LEAD=2
-make && ./st80 -bootstrap -profile profiles/st2026.profile -o st80.image
+make && ./st2026 -bootstrap -profile profiles/st2026.profile -o st2026.image
 ```
 
 The image must be rebuilt afterwards, for the reason below.
@@ -363,9 +363,9 @@ broken.
 Scripted, the whole gesture is:
 
 ```sh
-./st80 -inject "m 320 240; w 20; d 129; w 40; m 320 271; w 40; u 129; w 60;
+./st2026 -inject "m 320 240; w 20; d 129; w 40; m 320 271; w 40; u 129; w 60;
                 m 60 60; w 20; d 130; w 20; m 900 1400; w 20; u 130; w 200" \
-       -screenshot /tmp/browser.pbm -run st80.image
+       -screenshot /tmp/browser.pbm -run st2026.image
 ```
 
 `m X Y` moves, `d`/`u` press and release a button (128 blue, 129 yellow, 130 red), `k`

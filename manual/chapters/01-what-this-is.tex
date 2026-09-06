@@ -51,8 +51,8 @@ guarantee you lose in exchange for them.
 One qualification, stated here rather than left to be discovered: the worker
 pool is started by \ct{make bench}, by the parallel test suites, which run
 at up to 31 native threads under ThreadSanitizer, and by
-\ct{./st80 -serve image}, the headless server mode of
-Chapter~\ref{ch:serving}. It is not yet started by \ct{./st80 -run image},
+\ct{./st2026 -serve image}, the headless server mode of
+Chapter~\ref{ch:serving}. It is not yet started by \ct{./st2026 -run image},
 so the windowed desktop runs the interpreter on one thread today. The
 contract in Chapter~\ref{ch:contract} applies to what you write regardless,
 and Chapter~\ref{ch:building} says where the line is.
@@ -125,7 +125,7 @@ Being straight about this early will save you an afternoon.
   lives in directories of Tonel files, and which ones compose an image is
   stated in a profile. Chapter~\ref{ch:packages} is that story, and it is
   simpler than the one it replaces.
-\item[A REPL you can leave running.] There is no \ct{st80} shell that keeps
+\item[A REPL you can leave running.] There is no \ct{st2026} shell that keeps
   an image warm between expressions. You either evaluate one program with
   \ct{-eval}, or you run the windowed image and work inside it.
 \item[Same-priority atomicity.] Smalltalk-80 guarantees that a process is

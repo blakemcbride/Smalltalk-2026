@@ -2,7 +2,7 @@
 #
 #  A snapshot taken on a worker pool, and the image it writes, resumed.
 #
-#  Bugs3 B9.  A snapshot from `st80 -serve' on two workers wrote an image
+#  Bugs3 B9.  A snapshot from `st2026 -serve' on two workers wrote an image
 #  that could not be resumed: primitive 97 parked the registers into THIS
 #  worker's process, and a reload resumed from the scheduler's activeProcess
 #  field, which with several workers names whichever process any worker
@@ -19,16 +19,16 @@
 #  came back with it, and must not report that every process is blocked.
 #
 #  A shell check rather than a C one because what is being tested is a
-#  process boundary: the file has to be written by one st80 and read by
-#  another.  Usage: run_snapshot.sh <path-to-st80>
+#  process boundary: the file has to be written by one st2026 and read by
+#  another.  Usage: run_snapshot.sh <path-to-st2026>
 #
 set -u
 
-ST80=${1:?usage: run_snapshot.sh <st80>}
+ST2026=${1:?usage: run_snapshot.sh <st2026>}
 DIR=build/snapshot-test
 
-if [ ! -x "$ST80" ]; then
-    echo "run_snapshot: $ST80 is not executable" >&2
+if [ ! -x "$ST2026" ]; then
+    echo "run_snapshot: $ST2026 is not executable" >&2
     exit 1
 fi
 mkdir -p "$DIR"
@@ -42,7 +42,7 @@ STARTUP='[:strm | [strm atEnd] whileFalse: [[:line | line isEmpty ifTrue: [] ifF
   value: (strm upTo: Character lf)]]
     value: (ReadStream on: (Smalltalk arguments isEmpty ifTrue: ['"'"''"'"'] ifFalse: [Smalltalk arguments first]))'
 
-if ! "$ST80" -bootstrap -profile profiles/st2026.profile -startup "$STARTUP" \
+if ! "$ST2026" -bootstrap -profile profiles/st2026.profile -startup "$STARTUP" \
         -o "$DIR/base.im" > "$DIR/bootstrap.log" 2>&1; then
     echo "run_snapshot: the bootstrap failed; see $DIR/bootstrap.log" >&2
     exit 1
@@ -68,7 +68,7 @@ c1 := spin at: 1.
 PROG
 
 status=0
-timeout -k 2 60 "$ST80" -serve "$DIR/base.im" -workers 2 \
+timeout -k 2 60 "$ST2026" -serve "$DIR/base.im" -workers 2 \
     "Compiler evaluate: (FileStream oldFileNamed: '$DIR/prog.st') contentsOfEntireFile" \
     > "$DIR/first.log" 2>&1
 if ! grep -q 'snapshot written' "$DIR/first.log" \
@@ -78,7 +78,7 @@ if ! grep -q 'snapshot written' "$DIR/first.log" \
     status=1
 fi
 
-timeout -k 2 60 "$ST80" -serve "$DIR/snap.im" -workers 2 > "$DIR/second.log" 2>&1
+timeout -k 2 60 "$ST2026" -serve "$DIR/snap.im" -workers 2 > "$DIR/second.log" 2>&1
 if ! grep -q 'snapshot resumed' "$DIR/second.log" \
    || ! grep -q 'spinner counting' "$DIR/second.log" \
    || grep -q 'every process is blocked' "$DIR/second.log"; then

@@ -7,7 +7,7 @@ reason in the NetError.  Separate from st2026 because a machine building
 this system cannot be assumed to be on the internet, and a suite that
 cannot run where it is checked would report a perfect score for ever.
 
-    ./st80 -bootstrap -profile profiles/internet-live.profile -tests
+    ./st2026 -bootstrap -profile profiles/internet-live.profile -tests
 "
 Class {
 	#name : 'HttpClientLiveTest',

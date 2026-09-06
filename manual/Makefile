@@ -22,7 +22,7 @@ SOURCES  := $(DOC).tex preamble.tex $(wildcard chapters/*.tex)
 #  relative to the profile file, but the 1983 MANIFEST's entries are relative
 #  to the tree root, so a bootstrap started anywhere else cannot find them.
 ROOT     := ..
-ST80     ?= ./st80
+ST2026     ?= ./st2026
 PROFILE  ?= profiles/st2026.profile
 EXAMPLES := examples/ManualExamples.class.st
 
@@ -38,8 +38,8 @@ $(DOC).pdf: $(SOURCES)
 
 #  Check every example in the book against a live image.  Fails loudly.
 verify: $(EXAMPLES)
-	@test -x $(ROOT)/$(ST80) || { echo "verify: $(ST80) is not built -- run make in $(ROOT)" >&2; exit 1; }
-	cd $(ROOT) && $(ST80) -bootstrap -profile $(PROFILE) \
+	@test -x $(ROOT)/$(ST2026) || { echo "verify: $(ST2026) is not built -- run make in $(ROOT)" >&2; exit 1; }
+	cd $(ROOT) && $(ST2026) -bootstrap -profile $(PROFILE) \
 		-doctests manual/$(EXAMPLES)
 
 clean:

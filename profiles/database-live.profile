@@ -7,7 +7,7 @@ somewhere to write a file.  `make test' must run everywhere, so it runs the
 offline suites -- the SQL generator, the join graph, the exact decimals --
 and this profile runs the half that needs a database.
 
-    ./st80 -bootstrap -profile profiles/database-live.profile -tests
+    ./st2026 -bootstrap -profile profiles/database-live.profile -tests
 
 SQLite through ODBC, because it is the one database that needs no server: the
 whole fixture is a file the test makes and deletes.  On Fedora that is
