@@ -72,7 +72,7 @@ Number class >> readFrom: aStream [
 	 A String is taken as well as a stream, because `Number readFrom: '42''
 	 is what ported code writes and Pharo answers it; 1983 sent atEnd to
 	 the String (Bugs3 B51)."
-	| value radix fraction digits start negative sawPoint answer |
+	| value radix fraction digits start negative signed sawPoint answer exponent bits |
 	aStream isString ifTrue: [^self readFrom: (ReadStream on: aStream)].
 	radix := 10.
 	sawPoint := false.
@@ -86,8 +86,18 @@ Number class >> readFrom: aStream [
 	 longer stops before it has started.
 	"
 	[aStream atEnd not and: [aStream peek isSeparator]] whileTrue: [aStream next].
+	"
+	 The sign is read HERE, before the digits, and applied once at the
+	 end.  It was taken from `value negative' after the integer part was
+	 read, and -0 reads as 0: `'-0.5' asNumber' answered 0.5, and so did
+	 every negative number between -1 and 0, and `x printString asNumber'
+	 changed x's sign for all of them -- a form field reaching
+	 RestDispatcher>>numberFrom: included (Bugs5 KERN-3).  Everything
+	 below works on the magnitude.
+	"
+	negative := aStream peekFor: $-.
+	signed := [:magnitude | negative ifTrue: [magnitude negated] ifFalse: [magnitude]].
 	value := Integer readFrom: aStream.
-	negative := value negative.
 	(aStream peekFor: $r)
 		ifTrue: [
 			"
@@ -102,10 +112,11 @@ Number class >> readFrom: aStream [
 			(aStream atEnd
 				or: [(aStream peek digitValue between: 0 and: value - 1) not
 					and: [aStream peek ~= $-]])
-				ifTrue: [aStream skip: -1. ^value].
+				ifTrue: [aStream skip: -1. ^signed value: value].
 			(radix := value) < 2 ifTrue: [^self error: 'INVALID RADIX'].
-			value := Integer readFrom: aStream radix: radix.
-			negative := value negative].
+			"16r-0.8: the sign may come after the radix instead."
+			(aStream peekFor: $-) ifTrue: [negative := negative not].
+			value := Integer readFrom: aStream radix: radix].
 	(aStream peekFor: $.)
 		ifTrue: [
 			(aStream atEnd not
@@ -115,9 +126,7 @@ Number class >> readFrom: aStream [
 					fraction := Integer readFrom: aStream radix: radix.
 					digits := aStream position - start.
 					"Exact: one Fraction, one rounding, at the end."
-					value := negative
-						ifTrue: [value - (fraction / (radix raisedTo: digits))]
-						ifFalse: [value + (fraction / (radix raisedTo: digits))].
+					value := value + (fraction / (radix raisedTo: digits)).
 					"
 					 NOT converted here.  An exponent may follow, and
 					 applying it to a Float that has already been rounded
@@ -128,12 +137,34 @@ Number class >> readFrom: aStream [
 					sawPoint := true]
 				ifFalse: [
 					aStream skip: -1.
-					^value]].
+					^signed value: value]].
 	(aStream peekFor: $e)
 		ifTrue: [
-			value := value * (radix raisedTo: (Integer readFrom: aStream)).
+			"
+			 The size of the answer is estimated, in bits, BEFORE the power
+			 is computed.  `value * (radix raisedTo: exponent)' with no
+			 bound let `1e100000' spend 36 seconds on the power and 19 more
+			 printing it into the error, and `1e999999999' never finish --
+			 eleven bytes, and the HTTP client sends asNumber to a server's
+			 status code (Bugs5 KERN-4).  A Float holds about 2^1024 down to
+			 2^-1074, so an estimate past 1100 bits either way is decided
+			 without the arithmetic: too large is the error below, too small
+			 is the zero IEEE 754 rounds it to.  Everything nearer is still
+			 done exactly, and its size is bounded by the length of the text.
+			"
+			exponent := Integer readFrom: aStream.
+			value = 0 ifFalse: [
+				bits := (value isInteger
+							ifTrue: [value highBit]
+							ifFalse: [value numerator highBit - value denominator highBit])
+						+ (exponent * (radix ln / 2 ln)).
+				bits > 1100 ifTrue: [
+					^self error: 'this number is too large for a Float'].
+				bits < -1100 ifTrue: [
+					^negative ifTrue: [-0.0] ifFalse: [0.0]].
+				value := value * (radix raisedTo: exponent)].
 			sawPoint := true].
-	sawPoint ifFalse: [^value].
+	sawPoint ifFalse: [^signed value: value].
 	"
 	 The exponent is applied EXACTLY -- value is still an Integer or a
 	 Fraction here -- so an exponent that no Float can hold is visible as
@@ -147,7 +178,10 @@ Number class >> readFrom: aStream [
 	"
 	answer := value asFloat.
 	answer isFinite ifFalse: [
-		^self error: 'this number is too large for a Float: ' , value printString].
+		"Not printed: hundreds of digits say less than the sentence."
+		^self error: 'this number is too large for a Float'].
+	"Times -1, not negated: `0.0 negated' is 0.0, and '-0.0' is -0.0."
+	negative ifTrue: [answer := answer * -1].
 	^answer
 ]
 

@@ -2849,9 +2849,11 @@ test_browsing(void)
      *  Process>>signalFrameFor:over:.  2712882 -> 2714748 with Bugs5
      *  OM-6, in Monitor.  2714748 -> 2718331 with Bugs5 KERN-1 and
      *  KERN-2, in Exception, Semaphore and ContextPart.  2718331 ->
-     *  2719521 with Bugs5 FILES-1, in FileStream.
+     *  2719521 with Bugs5 FILES-1, in FileStream.  2719521 -> 2720214
+     *  with Bugs5 KERN-3, in Number class>>readFrom:, and 2720214 ->
+     *  2721326 with Bugs5 KERN-4 in the same method.
      */
-    check_integer("(SourceFiles at: 1) contents size", 2719521);
+    check_integer("(SourceFiles at: 1) contents size", 2721326);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -4470,6 +4472,30 @@ test_bugs2(void)
     check_boolean("'abc' asNumber isNil", 1);
     check_integer("'12abc' asNumber", 12);
     check_integer("'0' asNumber", 0);
+    /*
+     *  Bugs5 KERN-3: the sign was taken from the integer part after it was
+     *  read, and -0 is 0, so every negative number between -1 and 0 read
+     *  as positive -- and `x printString asNumber' changed its sign.
+     */
+    check_string("(#('-0.5' '-0.0001' '-0.25e1' '16r-0.8' '-16r0.8' '-0.0' "
+                 "'-12.' '-12.5') collect: [:s | s asNumber]) printString",
+                 "(-0.5 -0.0001 -2.5 -0.5 -0.5 -0.0 -12 -12.5 )");
+    check_integer("^(1 to: 200) inject: 0 into: [:a :i | | x |"
+                  " x := (i - 100) / 97.0."
+                  " (x printString asNumber = x) ifTrue: [a] ifFalse: [a + 1]]",
+                  0);
+    /*
+     *  Bugs5 KERN-4: an exponent is bounded before the power is computed.
+     *  `'1e100000' asNumber' took 55 seconds and `'1e999999999'' never
+     *  finished; far too large is the error, far too small is zero, and
+     *  the edges of the Float range are still exact.
+     */
+    check_string("(#('1e999999999' '1e309' '1e-99999999' '-1e-400' "
+                 "'1.7976931348623157e308' '4.9e-324') collect: [:s |"
+                 " [s asNumber printString] on: Error do: [:e | 'big']])"
+                 " printString",
+                 "('big' 'big' '0.0' '-0.0' '1.7976931348623157e308' "
+                 "'4.94065645841247e-324' )");
     check_boolean("(ReadStream on: #(1 2 3)) skip: 10; atEnd", 1);
     check_boolean("| s | s := ReadStream on: #(1 2 3). s skip: -10. "
                   "^s position = 0", 1);
