@@ -352,3 +352,27 @@ Number >> isZero [
 	 reason; see there."
 	^self = 0
 ]
+
+{ #category : '*Kernel-Protocol' }
+Number >> to: stop by: step do: aBlock [
+	"Evaluate aBlock for each number from me to stop, counting by step.
+
+	 1983's, refusing a step of zero, as Interval class>>from:to:by: has
+	 since Bugs1 B14.  With a zero step the counter never moves and never
+	 passes stop, so `1 to: 10 by: 0 do: [...]' -- or a step held in a
+	 variable that happens to be 0, or 0.0, or sent by perform: -- ran the
+	 block for ever, while `(1 to: 10 by: 0) do:' raised (Bugs5 KERN-7).
+	 Neither compiler inlines to:by:do:, so this is every path."
+	| nextValue |
+	step = 0 ifTrue: [^self error: 'to:by:do: cannot count by a step of zero'].
+	nextValue := self.
+	step < 0
+		ifTrue: [
+			[stop <= nextValue] whileTrue: [
+				aBlock value: nextValue.
+				nextValue := nextValue + step]]
+		ifFalse: [
+			[stop >= nextValue] whileTrue: [
+				aBlock value: nextValue.
+				nextValue := nextValue + step]]
+]

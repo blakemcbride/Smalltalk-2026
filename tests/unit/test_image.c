@@ -562,8 +562,11 @@
  *  3101 -> 3103 with Bugs5 FILES-1: FileStream>>writing and >>close, so
  *  that only a write gives a stream its mode and a stream only read is
  *  not shortened when it closes.
+ *
+ *  3103 -> 3104 with Bugs5 KERN-7: Number>>to:by:do:, refusing a step of
+ *  zero instead of looping for ever.
  */
-#define LIB_METHODS             3103
+#define LIB_METHODS             3104
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -2851,9 +2854,10 @@ test_browsing(void)
      *  KERN-2, in Exception, Semaphore and ContextPart.  2718331 ->
      *  2719521 with Bugs5 FILES-1, in FileStream.  2719521 -> 2720214
      *  with Bugs5 KERN-3, in Number class>>readFrom:, and 2720214 ->
-     *  2721326 with Bugs5 KERN-4 in the same method.
+     *  2721326 with Bugs5 KERN-4 in the same method, and 2721326 ->
+     *  2722189 with Bugs5 KERN-7, Number>>to:by:do:.
      */
-    check_integer("(SourceFiles at: 1) contents size", 2721326);
+    check_integer("(SourceFiles at: 1) contents size", 2722189);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -4472,6 +4476,20 @@ test_bugs2(void)
     check_boolean("'abc' asNumber isNil", 1);
     check_integer("'12abc' asNumber", 12);
     check_integer("'0' asNumber", 0);
+    /*
+     *  Bugs5 KERN-7: to:by:do: with a step of zero is refused, as an
+     *  Interval with one has been since Bugs1 B14.  It ran its block for
+     *  ever -- with a 0 or 0.0 in a variable, or sent by perform:.
+     */
+    check_string("| s r | s := 0. r := OrderedCollection new."
+                 " r add: ([1 to: 10 by: s do: [:i | ]. #ran]"
+                 " on: Error do: [:e | #refused])."
+                 " r add: ([1 to: 10 by: 0.0 do: [:i | ]. #ran]"
+                 " on: Error do: [:e | #refused])."
+                 " s := OrderedCollection new."
+                 " 10 to: 1 by: -4 do: [:i | s add: i]."
+                 " ^r asArray printString , ' ' , s asArray printString",
+                 "(refused refused ) (10 6 2 )");
     /*
      *  Bugs5 INTERP-1: an index of 2^31 or more is out of bounds.  The test
      *  compared `(int) index', which is negative there, so it passed and
