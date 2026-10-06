@@ -741,7 +741,17 @@ table_alloc_locked(void)
          *  drops the table lock, collects, and retries once.  Crossing the
          *  threshold borrows that path rather than adding a second one.
          */
-        if (next >= gc_threshold || next >= st_om_table_size)
+        /*
+         *  And never at or past the ceiling, even where the table is bigger
+         *  than it.  Released once, the reserve grows the table to ceiling
+         *  + 64K; re-armed, the ceiling drops back but the table stays that
+         *  size, and a test against the size alone let the next runaway
+         *  eat the reserve's 64K before anything noticed -- so releasing it
+         *  added nothing and #outOfMemory could not be sent: the second
+         *  out-of-memory in an image stopped it (Bugs5 OM-8).
+         */
+        if (next >= gc_threshold || next >= st_om_table_size
+         || next >= st_om_table_max)
             return 0;
         return next;
     }

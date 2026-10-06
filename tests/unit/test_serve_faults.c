@@ -702,6 +702,42 @@ main(void)
         }
     }
 
+    /*
+     *  Bugs5 OM-8: an image survives a second out-of-memory.
+     *
+     *  The first releases the 64K reserve and the table grows into it;
+     *  re-armed, the ceiling dropped back but the allocator tested only
+     *  the table's size, so the next runaway ate the reserve before anyone
+     *  noticed and releasing it then gave nothing to signal with.  Two
+     *  runaways in one image, each caught, the second with the reserve
+     *  re-armed.  Four million objects, because the table starts at that
+     *  size and a lower ceiling stops an image of either build before its
+     *  first OutOfMemory; about a minute, so not under a sanitizer.
+     */
+#if !(defined(__SANITIZE_THREAD__) || defined(__SANITIZE_ADDRESS__) \
+   || (defined(__has_feature) && (__has_feature(thread_sanitizer) \
+                               || __has_feature(address_sanitizer))))
+    if (write_file(BATCH,
+            "| a r1 r2 | r1 := [a := OrderedCollection new. [a add: (Array "
+            "new: 1)] repeat] on: OutOfMemory do: [:e | e return: a size]. "
+            "a := nil. Smalltalk garbageCollect. r2 := [a := OrderedCollection "
+            "new. [a add: (Array new: 1)] repeat] on: OutOfMemory do: [:e | e "
+            "return: a size]. a := nil. (r1 > 100000 and: [r2 > 100000]) "
+            "ifTrue: ['survived twice'] ifFalse: [{r1. r2}]\n") == 0) {
+        snprintf(command, sizeof command,
+                 "ST_MAX_OBJECTS=4194304 timeout -k 2 180 %s -serve %s "
+                 "-workers 4 \"$(cat %s)\" 2>&1", st2026, IMAGE, BATCH);
+        status = run(command, out, sizeof out);
+        ++st_test_checks;
+        if (status < 0) {
+            ++st_test_failures;
+            printf("  FAIL OM-8: could not run the server\n");
+        } else {
+            expect(out, "==> 'survived twice'", "OM-8 second out-of-memory");
+        }
+    }
+#endif
+
     /*  B58: a startup that does not compile writes no image, exit 1.  */
     unlink(BADIMAGE);
     snprintf(command, sizeof command,

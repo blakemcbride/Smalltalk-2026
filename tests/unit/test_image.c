@@ -7218,6 +7218,21 @@ test_bugs4_graphics(void)
                   " ^(Compiler evaluate: s contents) bits = f bits", 1);
 
     /*
+     *  Bugs5 GUI-1.  A Form whose bits are a CompiledMethod.  The pointer
+     *  bit says raw, but a method's header and literals are object
+     *  pointers to the collector; `f black' turned three literals into
+     *  sixty-three SmallIntegers and the method stopped running.  Refused,
+     *  the method is untouched and still answers.
+     */
+    check_string("| m f r | Object compile: 'zzGui1 ^#(1 2 3) , #(4 5)'"
+                 " classified: 'testing' notifying: nil."
+                 " m := Object compiledMethodAt: #zzGui1."
+                 " f := Form new extent: 16@8 offset: 0@0 bits: m."
+                 " r := [f black. 'wrote'] on: Error do: [:e | 'refused']."
+                 " ^r , ' ' , m numLiterals printString , ' ' ,"
+                 " 3 zzGui1 size printString", "refused 3 5");
+
+    /*
      *  GRAPHICS-2.  Something that is not a Form in a form field.
      *
      *  Fields 0, 1 and 2 were fetched with nothing checking that the object

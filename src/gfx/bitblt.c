@@ -163,6 +163,17 @@ GFX_form_from_oop(st_oop form, gfx_form *out)
     if (OM_pointer_bit(bits))
         return 0;
     /*
+     *  Nor a CompiledMethod, which the pointer bit calls raw and is not:
+     *  its leading words are the header and the literal frame, and the
+     *  collector and becomeForward: walk them as object pointers.  `Form
+     *  new extent: 16@8 offset: 0@0 bits: aMethod' passed the test above,
+     *  and `black' turned three literals into sixty-three SmallIntegers --
+     *  aimed at Object>>printString, every printString in the image after
+     *  it (Bugs5 GUI-1).  The exact class, as the collector asks it.
+     */
+    if (OM_fetch_class(bits) == ST_CLASS_COMPILED_METHOD)
+        return 0;
+    /*
      *  The extent is a pair of SmallIntegers, and a SmallInteger here is
      *  sixty-two bits wide -- so `width' is not an int until it has been
      *  looked at.  Truncating first was wrong twice over: `Form new extent:
