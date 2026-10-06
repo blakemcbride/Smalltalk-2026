@@ -2956,6 +2956,35 @@ test_compile_inspect_debug(void)
                   " notifying: nil. ^(3 twice: 21)", 42);
 
     /*
+     *  Bugs5 COMP-4: a cascade on super sends every part to super.  Each
+     *  part after the first was compiled as an ordinary send, so `super
+     *  zzC4; zzC4' answered the subclass's value; a cascade whose receiver
+     *  is `super something' is to that answer, not to super.
+     */
+    check_string("Object compile: 'zzC4 ^1' classified: 'testing'."
+                 " Object compile: 'zzC4b ^self' classified: 'testing'."
+                 " Point compile: 'zzC4 ^2' classified: 'testing'."
+                 " Point compile: 'zzC4c ^super zzC4; zzC4' classified: 'testing'."
+                 " Point compile: 'zzC4d ^super yourself; zzC4b; zzC4'"
+                 " classified: 'testing'."
+                 " Point compile: 'zzC4e ^super zzC4b yourself; zzC4'"
+                 " classified: 'testing'."
+                 " ^{(3@4) zzC4c. (3@4) zzC4d. (3@4) zzC4e} printString",
+                 "(1 1 2 )");
+    /*
+     *  Bugs5 COMP-5: a cascade needs a message on both sides of every
+     *  semicolon.  `3 + 4 ;' answered 3, `3 ; + 4' answered 7 and
+     *  `3 + 4 ; ; - 1' answered 2, where the 1983 Parser refuses all three.
+     */
+    check_string("| r | r := OrderedCollection new."
+                 " #('zzC5 ^3 + 4 ;' 'zzC5 ^3 ; + 4' 'zzC5 ^3 + 4 ; ; - 1') do: [:src |"
+                 " r add: ([Object compile: src classified: 'testing'. #compiled]"
+                 " on: Error do: [:e | #refused])]."
+                 " Object compile: 'zzC5 ^3 + 4; * 10' classified: 'testing'."
+                 " r add: 0 zzC5. ^r asArray printString",
+                 "(refused refused refused 30 )");
+
+    /*
      *  Bugs5 COMP-1: true, false and nil in a pragma are literals.  The
      *  parser took any bare word as primitive:error:'s temporary and left
      *  oop 0 in the argument, so `pragmas' crashed and an image holding one

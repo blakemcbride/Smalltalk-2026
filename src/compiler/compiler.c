@@ -3241,8 +3241,16 @@ compile_keyword_message(st_compiler *c, int receiver_is_super)
  *  The mark is taken after the receiver, not before: the receiver's code is
  *  correct and stays, and only the messages are reconsidered.
  */
+/*
+ *  to_super says the cascade's receiver is `super' itself, and then every
+ *  part is a super send, as Pharo compiles it.  Each part used to be
+ *  compiled as an ordinary send, so `^super foo; foo' sent the first foo to
+ *  super only because it was compiled before the cascade was seen, and the
+ *  second to self: answering the subclass's value with nothing said (Bugs5
+ *  COMP-4).
+ */
 static void
-compile_cascade(st_compiler *c)
+compile_cascade(st_compiler *c, int to_super)
 {
     compiler_mark   after_receiver = c->receiver_mark;
 
@@ -3252,7 +3260,7 @@ compile_cascade(st_compiler *c)
     /*  Redo the first message, this time keeping the receiver.  */
     rewind_to(c, &after_receiver);
     emit(c, 136);                       /*  duplicate the receiver  */
-    compile_keyword_message(c, 0);
+    compile_keyword_message(c, to_super);
     if (c->failed)
         return;
 
@@ -3260,16 +3268,27 @@ compile_cascade(st_compiler *c)
         compiler_mark   before_message;
 
         advance(c);
+        /*
+         *  A message, and nothing else, follows a semicolon.  Nothing
+         *  checked, so `3 + 4 ;' compiled as a cascade whose last part was
+         *  empty and answered 3, and `3 + 4 ; ; - 1' answered 2 (Bugs5
+         *  COMP-5); the 1983 Parser refuses both.
+         */
+        if (!at(c, ST_TOK_IDENTIFIER) && !at(c, ST_TOK_BINARY)
+         && !at(c, ST_TOK_KEYWORD)) {
+            fail(c, "a cascade needs a message after ';'");
+            return;
+        }
         emit(c, 135);                   /*  drop the previous answer  */
         mark(c, &before_message);
         emit(c, 136);
-        compile_keyword_message(c, 0);
+        compile_keyword_message(c, to_super);
         if (c->failed)
             return;
         if (!at(c, ST_TOK_SEMICOLON)) {
             /*  That was the last, so it should have consumed the receiver. */
             rewind_to(c, &before_message);
-            compile_keyword_message(c, 0);
+            compile_keyword_message(c, to_super);
             return;
         }
     }
@@ -3395,13 +3414,31 @@ compile_expression_body(st_compiler *c)
         }
         /*
          *  A cascade with no message at all before the semicolon is not
-         *  legal, so the receiver mark only has to be sound when a message
-         *  was sent -- which is exactly when the message levels set it.
+         *  legal -- refused below -- so the receiver mark only has to be
+         *  sound when a message was sent, which is exactly when the message
+         *  levels set it.
          */
         mark(c, &after_receiver);
         c->receiver_mark = after_receiver;
         compile_keyword_message(c, is_super);
-        compile_cascade(c);
+        /*
+         *  And a message before the first one: `3 ; + 4' had sent nothing
+         *  to 3 and cascaded + 4 onto it, answering 7, and `self ; yourself'
+         *  answered nil (Bugs5 COMP-5).  A message always emits a send, so
+         *  nothing emitted since the receiver means there was none.
+         */
+        if (at(c, ST_TOK_SEMICOLON)
+         && c->out->length == after_receiver.length) {
+            fail(c, "a cascade needs a message before ';'");
+            return;
+        }
+        /*
+         *  The cascade goes to super only if its receiver is the bare
+         *  `super': in `super foo bar; baz' it is the answer of `super foo',
+         *  and the mark the message levels left says which.
+         */
+        compile_cascade(c, is_super
+                        && c->receiver_mark.length == after_receiver.length);
     }
 }
 
