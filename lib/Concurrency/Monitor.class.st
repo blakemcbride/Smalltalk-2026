@@ -62,19 +62,34 @@ Monitor >> critical: aBlock [
 	"Evaluate aBlock holding the monitor.  Reentrant: from inside
 	 critical: this goes one level deeper and lets go when that level
 	 does; the monitor is released when the outermost block ends, however
-	 it ends."
+	 it ends.
+
+	 The outermost level is Mutex>>critical:, and its ensure: releases the
+	 mutex only if this process holds it, which is the whole of Bugs5
+	 OM-6.  It was `mutex acquire ... ensure: [mutex release]', and
+	 waitForChange gives the mutex up in the middle: a process terminated
+	 while it waited -- or unwound by a timeout -- released a second time
+	 a mutex it no longer held, and the semaphore under it counted 2 from
+	 then on.  Killing one consumer blocked in SharedQueue>>next let two
+	 processes into the queue at once for the rest of the image's life.
+	 Mutex>>critical: also closes the window between taking the mutex and
+	 entering the ensure: (OM-5).
+
+	 For the same reason the inner ensure: clears owner and depth only if
+	 they are still this process's: a waiter unwound out of waitForChange
+	 must not wipe the record of whoever holds the monitor now."
 	| me |
 	me := Processor activeProcess.
 	(me notNil and: [owner == me]) ifTrue: [
 		depth := depth + 1.
 		^aBlock ensure: [depth := depth - 1]].
-	mutex acquire.
-	owner := me.
-	depth := 1.
-	^aBlock ensure: [
-		depth := 0.
-		owner := nil.
-		mutex release]
+	^mutex critical: [
+		owner := me.
+		depth := 1.
+		aBlock ensure: [
+			owner == me ifTrue: [
+				depth := 0.
+				owner := nil]]]
 ]
 
 { #category : 'waiting' }
@@ -112,10 +127,36 @@ Monitor >> waitForChange [
 	depth := 0.
 	owner := nil.
 	mutex release.
-	mine wait.
+	"Curtailed here -- terminated, or unwound by a timeout -- this process
+	 holds nothing, and Mutex>>critical: outside will not release what it
+	 does not hold.  What is left is the waiters list (abandonWait:)."
+	[mine wait] ifCurtailed: [self abandonWait: mine].
 	mutex acquire.
 	owner := Processor activeProcess.
 	depth := savedDepth
+]
+
+{ #category : 'private' }
+Monitor >> abandonWait: mine [
+	"A waiter is leaving waitForChange without its wakeup having been
+	 used.  Take its Semaphore off the list, or a later signal spends
+	 itself on a process that is gone and the one still waiting sleeps
+	 on.  If it is not on the list, a signal already chose it: pass that
+	 wakeup on to the next waiter instead of losing it.
+
+	 Under the mutex, which guards the list -- taken here unless the
+	 process running this already holds it, as a terminator inside the
+	 same monitor does."
+	mutex owner == Processor activeProcess
+		ifTrue: [self dropWaiter: mine]
+		ifFalse: [mutex critical: [self dropWaiter: mine]]
+]
+
+{ #category : 'private' }
+Monitor >> dropWaiter: mine [
+	(waiters includes: mine)
+		ifTrue: [waiters remove: mine]
+		ifFalse: [self signal]
 ]
 
 { #category : 'waiting' }

@@ -372,6 +372,18 @@ OM_fetch_byte_length(st_oop p)
     return OM_head(p)->size;
 }
 
+/*
+ *  Whether a non-pointer object's fields are 16-bit words.  Its size --
+ *  and so OM_fetch_byte_length, which answers size -- then counts words,
+ *  not bytes, and a copy made with OM_instantiate_bytes of that size is
+ *  half the object (Bugs5 OM-4).  Anything that copies a body has to ask.
+ */
+static inline unsigned
+OM_words_bit(st_oop p)
+{
+    return (OM_head(p)->flags & ST_FMT_WORDS) != 0;
+}
+
 /*  Total footprint in words, for reporting parity with the Blue Book.  */
 static inline uint32_t
 OM_size_bits(st_oop p)

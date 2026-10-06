@@ -280,6 +280,20 @@ OM_fetch_byte_length(st_oop p)
     return (uint32_t) OM_fetch_word_length(p) * 2 - OM_odd_bit(p);
 }
 
+/*
+ *  Whether a non-pointer object's fields are 16-bit words.  Never, here:
+ *  the Blue Book header has no such bit, and a word object of n words and
+ *  a byte object of 2n bytes are the same chunk, so a byte-by-byte copy of
+ *  OM_fetch_byte_length bytes is already exact.  The mt memory keeps the
+ *  distinction and counts a word object's size in words (Bugs5 OM-4).
+ */
+static inline unsigned
+OM_words_bit(st_oop p)
+{
+    (void) p;
+    return 0;
+}
+
 /*  ----------  Fields  ----------  */
 
 static inline st_oop

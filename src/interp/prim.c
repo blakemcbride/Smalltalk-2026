@@ -3843,6 +3843,21 @@ primitive_shallow_copy(void)
             return 0;
         for (i = 0; i < n; ++i)
             OM_store_pointer(i, copy, OM_fetch_pointer(i, receiver));
+    }  else if (OM_words_bit(receiver))  {
+        /*
+         *  A word object's length is in words.  It was copied as that many
+         *  BYTES into a byte object: half the body, a different format,
+         *  and basicAt:put: on the copy still indexing the whole length --
+         *  past the end of its allocation, until malloc noticed (Bugs5
+         *  OM-4).
+         */
+        uint32_t    n = OM_fetch_word_length(receiver);
+
+        copy = OM_instantiate_words(OM_fetch_class(receiver), n);
+        if (!OM_is_object(copy))
+            return 0;
+        for (i = 0; i < n; ++i)
+            OM_store_word(i, copy, OM_fetch_word(i, receiver));
     }  else  {
         uint32_t    n = OM_fetch_byte_length(receiver);
 
@@ -4013,6 +4028,15 @@ primitive_copy_from(void)
             return 0;
         for (i = 0; i < shape.fixed + want; ++i)
             OM_store_pointer(i, copy, OM_fetch_pointer(i, receiver));
+    }  else if (OM_words_bit(receiver))  {
+        /*  In words, for the reason primitive_shallow_copy gives.  */
+        if (want > OM_fetch_word_length(receiver))
+            return 0;
+        copy = OM_instantiate_words(OM_fetch_class(receiver), want);
+        if (!OM_is_object(copy))
+            return 0;
+        for (i = 0; i < want; ++i)
+            OM_store_word(i, copy, OM_fetch_word(i, receiver));
     }  else  {
         if (want > OM_fetch_byte_length(receiver))
             return 0;

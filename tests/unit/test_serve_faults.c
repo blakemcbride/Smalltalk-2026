@@ -48,6 +48,8 @@
 #define FORWARD     "build/mt/tests/bugs5-serve-forward.st"
 #define TERMLOCK    "build/mt/tests/bugs5-serve-terminate.st"
 #define RESUMED     "build/mt/tests/bugs5-serve-resumed.st"
+#define MONITOR     "build/mt/tests/bugs5-serve-monitor.st"
+#define WORDS       "build/mt/tests/bugs5-serve-words.st"
 
 /*
  *  The harness from the Bugs3 appendix, verbatim: each line of the first
@@ -572,6 +574,100 @@ main(void)
                 break;
             }
             expect(out, "==> 'resumed ok'", "signalException: resumed");
+        }
+    }
+
+    /*
+     *  Bugs5 OM-6: terminating a waiter released its Monitor twice.
+     *
+     *  waitForChange gives the mutex up and waits; terminated there, the
+     *  ensure: of the critical: around it released the mutex again, and
+     *  from then on the monitor admitted two processes, then more.  Ten of
+     *  twenty consumers blocked in SharedQueue>>next are terminated; the
+     *  other ten must each get one of ten items, and afterwards the
+     *  queue's own monitor must admit one process at a time.  The old
+     *  code let sixty in at once.
+     */
+    if (write_file(MONITOR,
+            "| q procs got inside most m mtx |\n"
+            "q := SharedQueue new. got := 0. inside := 0. most := 0. "
+            "mtx := Semaphore forMutualExclusion.\n"
+            "procs := (1 to: 20) collect: [:i | [q next. mtx critical: "
+            "[got := got + 1]] fork].\n"
+            "(Delay forMilliseconds: 50) wait.\n"
+            "1 to: 20 by: 2 do: [:i | (procs at: i) terminate].\n"
+            "1 to: 10 do: [:i | q nextPut: i].\n"
+            "(Delay forMilliseconds: 300) wait.\n"
+            "m := q instVarAt: 1.\n"
+            "(1 to: 8) do: [:k | [1 to: 2000 do: [:j | m critical: "
+            "[inside := inside + 1. most := most max: inside. "
+            "inside := inside - 1]]] fork].\n"
+            "(Delay forMilliseconds: 300) wait.\n"
+            "^(got = 10 and: [q size = 0 and: [most = 1]]) "
+            "ifTrue: ['monitor ok'] ifFalse: [{got. q size. most}]\n") == 0) {
+        char        batch[512];
+        unsigned    workers[] = { 8, 1 };
+        int         run_index;
+
+        snprintf(batch, sizeof batch,
+                 "Compiler evaluate: (FileStream oldFileNamed: '%s') "
+                 "contentsOfEntireFile\n", MONITOR);
+        for (run_index = 0; run_index < 2; ++run_index) {
+            status = serve(batch, workers[run_index], out, sizeof out);
+            ++st_test_checks;
+            if (status < 0) {
+                ++st_test_failures;
+                printf("  FAIL OM-6: could not run the server\n");
+                break;
+            }
+            expect(out, "==> 'monitor ok'", "OM-6 terminated waiter");
+        }
+    }
+
+    /*
+     *  Bugs5 OM-4: a word object's length is in words.  shallowCopy (148),
+     *  the first-n copy (168) and class migration all asked
+     *  OM_fetch_byte_length of one, got the word count, and copied that
+     *  many BYTES -- into a byte object, for the two primitives, which
+     *  basicAt:put: then wrote past the end of: two thousand copies of a
+     *  thousand-word object, each written in full, ended in `malloc():
+     *  corrupted top size'.  Each copy must come back whole, and the
+     *  loop must leave a heap that still answers the next line.
+     */
+    if (write_file(WORDS,
+            "| base cls w c k ok |\n"
+            "base := Object subclass: #Bugs5WordBase instanceVariableNames: "
+            "'' classVariableNames: '' poolDictionaries: '' "
+            "category: 'Bugs5'.\n"
+            "cls := base variableWordSubclass: #Bugs5Words "
+            "instanceVariableNames: '' classVariableNames: '' "
+            "poolDictionaries: '' category: 'Bugs5'.\n"
+            "cls compile: 'keep: n <primitive: 168> ^nil' "
+            "classified: 'probe'.\n"
+            "w := cls new: 1000.\n"
+            "1 to: 1000 do: [:i | w basicAt: i put: i].\n"
+            "ok := [:x :n | x basicSize = n and: [(1 to: n) inject: true "
+            "into: [:a :i | a and: [(x basicAt: i) = i]]]].\n"
+            "c := w shallowCopy. k := w keep: 700.\n"
+            "1 to: 2000 do: [:j | | d | d := w shallowCopy. "
+            "1 to: 1000 do: [:i | d basicAt: i put: 16r4141]].\n"
+            "base addInstVarName: 'zz'.\n"
+            "^((ok value: c value: 1000) and: [(ok value: k value: 700) "
+            "and: [ok value: w value: 1000]]) "
+            "ifTrue: ['words whole'] ifFalse: ['halved']\n") == 0) {
+        char        batch[512];
+
+        snprintf(batch, sizeof batch,
+                 "Compiler evaluate: (FileStream oldFileNamed: '%s') "
+                 "contentsOfEntireFile\n3 + 4\n", WORDS);
+        status = serve(batch, 2, out, sizeof out);
+        ++st_test_checks;
+        if (status < 0) {
+            ++st_test_failures;
+            printf("  FAIL OM-4: could not run the server\n");
+        } else {
+            expect(out, "==> 'words whole'", "OM-4 word object copies");
+            expect(out, "3 + 4 ==> 7", "OM-4 the heap survived");
         }
     }
 

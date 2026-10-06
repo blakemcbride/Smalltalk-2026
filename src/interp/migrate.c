@@ -105,8 +105,16 @@ copy_across(const migrate_args *a, st_oop old, st_oop fresh)
     uint32_t    i;
 
     if (!OM_pointer_bit(old)) {
-        uint32_t    have = OM_fetch_byte_length(old);
-        uint32_t    room = OM_fetch_byte_length(fresh);
+        /*
+         *  In bytes, counted as bytes.  A word object's length is in
+         *  words, so asking OM_fetch_byte_length of one copied half of it
+         *  (Bugs5 OM-4); a 16-bit word is two bytes whichever side holds
+         *  them, and the body is copied byte for byte.
+         */
+        uint32_t    have = OM_fetch_byte_length(old)
+                         * (OM_words_bit(old) ? 2u : 1u);
+        uint32_t    room = OM_fetch_byte_length(fresh)
+                         * (OM_words_bit(fresh) ? 2u : 1u);
         uint32_t    n = have < room ? have : room;
 
         for (i = 0; i < n; ++i)

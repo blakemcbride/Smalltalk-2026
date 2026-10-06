@@ -550,8 +550,12 @@
  *  3095 -> 3096 with Process>>signalFrameFor:over:, the frame
  *  signalException: splices in, which returns into the interrupted
  *  context instead of ending the process when a handler resumes.
+ *
+ *  3096 -> 3098 with Bugs5 OM-6: Monitor>>abandonWait: and >>dropWaiter:,
+ *  which take a terminated waiter off the list, or pass on the wakeup it
+ *  was given.
  */
-#define LIB_METHODS             3096
+#define LIB_METHODS             3098
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -2834,9 +2838,10 @@ test_browsing(void)
     /*
      *  2705152 -> 2711414 with Bugs5 OM-5: six methods and their comments
      *  in Mutex and Process.  2711414 -> 2712882 with
-     *  Process>>signalFrameFor:over:.
+     *  Process>>signalFrameFor:over:.  2712882 -> 2714748 with Bugs5
+     *  OM-6, in Monitor.
      */
-    check_integer("(SourceFiles at: 1) contents size", 2712882);
+    check_integer("(SourceFiles at: 1) contents size", 2714748);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -8476,6 +8481,7 @@ test_bugs4_om(void)
               "^(h at: 1) == a", ST_TRUE, "true");
     check_string("['abc' copy elementsForwardIdentityTo: 'abc' copy. "
                  "'allowed'] on: Error do: [:e | 'refused']", "refused");
+
 
     /*
      *  MEM-5 -- become: of a process a worker is RUNNING -- is not checked
