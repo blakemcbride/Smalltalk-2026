@@ -1403,14 +1403,29 @@ OM_set_swap_guard(om_root_pin_fn pinned)
     swap_pinned = pinned;
 }
 
-static st_oop   forward_from;
-static st_oop   forward_to;
+/*
+ *  The pair travels to the safepoint through its `user' argument, as the
+ *  swap path's does, and is never a static.
+ *
+ *  It was a pair of statics, written before the safepoint and cleared after
+ *  it, and two workers forwarding at once overwrote each other's: one
+ *  safepoint did the other's forward, or A's `from' with B's `to', and the
+ *  clear turned the second into a sweep for ST_OOP_INVALID that found
+ *  nothing -- both answering success.  MethodDictionary>>grow forwards, so
+ *  any two concurrent compiles could lose a method dictionary that way.
+ *  Eight processes doing thirty `a becomeForward: b' each lost 127 of the
+ *  240 (Bugs5 OM-3); one worker lost none.
+ */
+struct forward_args {
+    st_oop  from;
+    st_oop  to;
+};
 
 static void
-forward_slot(st_oop *slot)
+forward_slot(st_oop *slot, const struct forward_args *args)
 {
-    if (ST_oop_load(slot) == forward_from)
-        ST_oop_store(slot, forward_to);
+    if (ST_oop_load(slot) == args->from)
+        ST_oop_store(slot, args->to);
 }
 
 /*
@@ -1423,13 +1438,12 @@ forward_slot(st_oop *slot)
  *  that follows, which is exact where per-slot arithmetic across a sweep of
  *  this shape would be a long list of chances to be one out.
  */
-static uint32_t
-forward_at_safepoint(void *unused)
+static void
+forward_one(const struct forward_args *args)
 {
     uint32_t    index;
     uint32_t    limit;
 
-    (void) unused;
     /*
      *  Fold in every worker's deferred count deltas first, for the same
      *  reason the collector does: every worker is parked, and the table is
@@ -1443,8 +1457,8 @@ forward_at_safepoint(void *unused)
 
         if (!head || (head->flags & ST_FMT_FREE))
             continue;
-        if (head->class_oop == forward_from)
-            head->class_oop = forward_to;
+        if (head->class_oop == args->from)
+            head->class_oop = args->to;
         /*
          *  A CompiledMethod is a byte object whose leading words are the
          *  header and the literal frame, and those ARE pointers.  Same
@@ -1461,7 +1475,7 @@ forward_at_safepoint(void *unused)
             literals = (uint32_t)
                 ((ST_oop_load(&((st_oop *) (head + 1))[0]) >> 1) & 63);
             for (i = 1; i <= literals && i < slots; ++i)
-                forward_slot(&((st_oop *) (head + 1))[i]);
+                forward_slot(&((st_oop *) (head + 1))[i], args);
             continue;
         }
         if (!(head->flags & ST_FMT_POINTERS))
@@ -1474,13 +1488,93 @@ forward_at_safepoint(void *unused)
          *  dead object rather than nil.
          */
         for (i = 0; i < head->size; ++i)
-            forward_slot(&((st_oop *) (head + 1))[i]);
+            forward_slot(&((st_oop *) (head + 1))[i], args);
     }
     for (index = 0; index < ST_VM_STATE_SLOTS; ++index)
-        forward_slot(&st_om_vm_state[index]);
+        forward_slot(&st_om_vm_state[index], args);
     if (root_forwarder)
-        root_forwarder(forward_from, forward_to);
+        root_forwarder(args->from, args->to);
+}
+
+/*
+ *  Every pair of a bulk forward, under ONE safepoint.
+ *
+ *  Each pair is checked before any pair moves, and checked here, with every
+ *  worker stopped, for the reason swap_identities_locked gives: whether
+ *  `from' is pinned is a fact about what the other workers are executing,
+ *  and it is true only while they are parked.  Asked only outside, a worker
+ *  could start executing the method being forwarded between the answer and
+ *  the sweep.
+ *
+ *  And one safepoint for all of them, because a safepoint per pair was the
+ *  same mistake one level up: primitive 249 checked every pair outside and
+ *  then forwarded them one safepoint at a time, so a pair refused at the
+ *  third safepoint left the first two forwarded -- the half-done bulk
+ *  become its own comment said it prevented.  Nothing runs between the
+ *  sweeps now, so what the checks answered is still true when the last one
+ *  is done.
+ */
+struct forward_batch {
+    st_oop          from_array;     /*  ST_OOP_INVALID: use from/to  */
+    st_oop          to_array;
+    const st_oop   *from;
+    const st_oop   *to;
+    uint32_t        n;
+};
+
+static uint32_t
+forward_pairs(const st_oop *from, const st_oop *to, uint32_t n)
+{
+    uint32_t    i;
+
+    for (i = 0; i < n; ++i) {
+        if (!OM_can_forward_identity(from[i], to[i]))
+            return 0;
+    }
+    for (i = 0; i < n; ++i) {
+        struct forward_args args;
+
+        args.from = from[i];
+        args.to   = to[i];
+        if (args.from != args.to)
+            forward_one(&args);
+    }
     return 1;
+}
+
+static uint32_t
+forward_at_safepoint(void *user)
+{
+    const struct forward_batch *batch = user;
+    st_oop                     *pairs;
+    uint32_t                    n;
+    uint32_t                    i;
+    uint32_t                    result;
+
+    if (batch->from_array == ST_OOP_INVALID)
+        return forward_pairs(batch->from, batch->to, batch->n);
+    /*
+     *  The elements are read here, with every worker stopped, and copied
+     *  out before the first sweep.  Read before the safepoint, another
+     *  worker could replace one -- and free it -- between the read and the
+     *  forward; read during the sweeps, the arrays would already have been
+     *  rewritten, since they are among the objects that hold each `from'.
+     */
+    n = OM_fetch_word_length(batch->from_array);
+    if (n != OM_fetch_word_length(batch->to_array))
+        return 0;
+    if (n == 0)
+        return 1;
+    pairs = malloc((size_t) n * 2 * sizeof(st_oop));
+    if (!pairs)
+        return 0;
+    for (i = 0; i < n; ++i) {
+        pairs[i]     = OM_fetch_pointer(i, batch->from_array);
+        pairs[n + i] = OM_fetch_pointer(i, batch->to_array);
+    }
+    result = forward_pairs(pairs, pairs + n, n);
+    free(pairs);
+    return result;
 }
 
 int
@@ -1584,32 +1678,55 @@ OM_can_swap_identities(st_oop a, st_oop b)
     return 1;
 }
 
-int
-OM_forward_identity(st_oop from, st_oop to)
+/*
+ *  Both doors share this: one safepoint, then one collection.
+ */
+static int
+forward_batch_and_collect(struct forward_batch *batch)
 {
-    /*
-     *  Asked again here, and asked BEFORE anything moves, so a refusal is a
-     *  refusal and not a half-done forward.  A bulk caller asks the same
-     *  question of every pair first; this is what makes a single one safe
-     *  on its own as well.
-     */
-    if (!OM_can_forward_identity(from, to))
+    if (!WORKER_at_safepoint(forward_at_safepoint, batch))
         return 0;
-    if (from == to)
-        return 1;
-    forward_from = from;
-    forward_to   = to;
-    if (!WORKER_at_safepoint(forward_at_safepoint, NULL))
-        return 0;
-    forward_from = ST_OOP_INVALID;
-    forward_to   = ST_OOP_INVALID;
     /*
      *  Every count in the image is now wrong by however many references
      *  moved, so rebuild them all.  This is also what frees the forwarded
-     *  object: after the sweep nothing points at it.
+     *  objects: after the sweeps nothing points at them.
      */
     OM_collect();
     return 1;
+}
+
+int
+OM_forward_elements(st_oop from_array, st_oop to_array)
+{
+    struct forward_batch    batch;
+
+    if (!OM_is_object(from_array) || !OM_is_object(to_array))
+        return 0;
+    if (!OM_pointer_bit(from_array) || !OM_pointer_bit(to_array))
+        return 0;
+    batch.from_array = from_array;
+    batch.to_array   = to_array;
+    batch.from       = NULL;
+    batch.to         = NULL;
+    batch.n          = 0;
+    return forward_batch_and_collect(&batch);
+}
+
+int
+OM_forward_identity(st_oop from, st_oop to)
+{
+    struct forward_batch    batch;
+
+    if (!OM_is_object(from) || !OM_is_object(to))
+        return 0;
+    if (from == to)
+        return 1;
+    batch.from_array = ST_OOP_INVALID;
+    batch.to_array   = ST_OOP_INVALID;
+    batch.from       = &from;
+    batch.to         = &to;
+    batch.n          = 1;
+    return forward_batch_and_collect(&batch);
 }
 
 /*  ----------  Reference counting  ----------  */

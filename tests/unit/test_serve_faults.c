@@ -45,6 +45,7 @@
 #define RACE        "build/mt/tests/bugs3-serve-race.st"
 #define BADIMAGE    "build/mt/tests/bugs3-serve-bad.im"
 #define SHARED      "build/mt/tests/bugs5-serve-shared.st"
+#define FORWARD     "build/mt/tests/bugs5-serve-forward.st"
 
 /*
  *  The harness from the Bugs3 appendix, verbatim: each line of the first
@@ -425,6 +426,47 @@ main(void)
             }
             expect(out, "==> 'shared slot ok'", "OM-1 shared slot");
             expect(out, "3 + 4 ==> 7", "OM-1 the pool survived");
+        }
+    }
+
+    /*
+     *  Bugs5 OM-3: eight workers forwarding at once.
+     *
+     *  OM_forward_identity handed its pair to the safepoint through two
+     *  statics, so concurrent becomeForward:s overwrote each other's -- one
+     *  safepoint did another's forward, or one worker's `from' with
+     *  another's `to', and the clear afterwards turned the loser into a
+     *  sweep that found nothing.  Both answered success.  The audit's probe
+     *  lost 127 of 240 forwards; the check is that the holder of every `a'
+     *  now holds its own `b'.
+     */
+    if (write_file(FORWARD,
+            "| lost done mtx |\n"
+            "lost := 0. done := Semaphore new. "
+            "mtx := Semaphore forMutualExclusion.\n"
+            "1 to: 8 do: [:k | Processor forkParallel: [1 to: 30 do: "
+            "[:i | | a b holder |\n"
+            "  a := Array with: k with: i. b := Array with: #to with: k "
+            "with: i.\n"
+            "  holder := Array with: a. a becomeForward: b.\n"
+            "  (holder at: 1) == b ifFalse: [mtx critical: "
+            "[lost := lost + 1]]].\n"
+            "  done signal]].\n"
+            "8 timesRepeat: [done wait].\n"
+            "^'lost forwards: ', lost printString\n") == 0) {
+        char        batch[512];
+
+        snprintf(batch, sizeof batch,
+                 "Compiler evaluate: (FileStream oldFileNamed: '%s') "
+                 "contentsOfEntireFile\n3 + 4\n", FORWARD);
+        status = serve(batch, 8, out, sizeof out);
+        ++st_test_checks;
+        if (status < 0) {
+            ++st_test_failures;
+            printf("  FAIL OM-3: could not run the server\n");
+        } else {
+            expect(out, "==> 'lost forwards: 0'", "OM-3 concurrent forwards");
+            expect(out, "3 + 4 ==> 7", "OM-3 the pool survived");
         }
     }
 

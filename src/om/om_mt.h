@@ -592,13 +592,20 @@ void    OM_swap_identities_at_boot(st_oop a, st_oop b);
  *  registers.
  */
 /*
- *  Whether that forward would be accepted, asked without doing it.  A bulk
- *  become checks every pair with this before moving any of them: forwarding
- *  three of five and then refusing leaves an image in a state no caller
- *  asked for and none can undo.
+ *  Whether that forward would be accepted, asked without doing it.  The
+ *  answer about pinning is true only at a safepoint, so the forwards ask it
+ *  again there; this is the early refusal for everything else.
  */
 int     OM_can_forward_identity(st_oop from, st_oop to);
 int     OM_forward_identity(st_oop from, st_oop to);
+/*
+ *  Every element of one pointer object forwarded to the element at the same
+ *  index of the other, all or none: every pair is read and checked at one
+ *  safepoint before any of them moves.  Answers 0, changing nothing, if
+ *  either is not a pointer object, the sizes differ, or any pair would be
+ *  refused.  Primitive 249.
+ */
+int     OM_forward_elements(st_oop from_array, st_oop to_array);
 
 /*
  *  Store `value` in a field only if it currently holds `expected`, and say

@@ -431,6 +431,7 @@ st_oop      OM_instantiate_ephemeron(st_oop class_pointer, uint32_t size);
 
 int         OM_can_forward_identity(st_oop from, st_oop to);
 int         OM_forward_identity(st_oop from, st_oop to);
+int         OM_forward_elements(st_oop from_array, st_oop to_array);
 
 /*  Returns the number of objects reclaimed.  */
 uint32_t    OM_collect(void);

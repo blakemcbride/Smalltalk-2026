@@ -781,37 +781,23 @@ primitive_elements_forward_identity(void)
 {
     st_oop      from_array = ST_stack_value(1);
     st_oop      to_array   = ST_stack_value(0);
-    uint32_t    size;
-    uint32_t    i;
 
     if (!OM_is_object(from_array) || !OM_is_object(to_array))
         return 0;
     if (OM_fetch_class(from_array) != OM_fetch_class(to_array))
         return 0;
-    size = OM_fetch_word_length(from_array);
-    if (size != OM_fetch_word_length(to_array))
+    /*
+     *  Every pair is read, checked and forwarded at ONE safepoint, all or
+     *  none (see OM_forward_elements), and it is the only way that holds.
+     *  This used to check every pair here and then forward them one
+     *  safepoint at a time: whether an object is pinned changes between
+     *  safepoints, so the third forward could be refused after the first
+     *  two had moved -- the half-done bulk become the check was meant to
+     *  prevent.  The single sweep per pair stays: the caller that matters
+     *  passes one pair.
+     */
+    if (!OM_forward_elements(from_array, to_array))
         return 0;
-    /*
-     *  Every pair is checked before any pair moves.  A bulk become that
-     *  forwarded three of five and then failed would leave the image in a
-     *  state no caller asked for and none can undo.
-     */
-    for (i = 0; i < size; ++i) {
-        if (!OM_can_forward_identity(OM_fetch_pointer(i, from_array),
-                                     OM_fetch_pointer(i, to_array)))
-            return 0;
-    }
-    /*
-     *  One sweep of the object table per pair.  The bulk form exists
-     *  because Pharo's does; the caller that matters passes one pair, and
-     *  folding n pairs into a single sweep would be an optimisation for a
-     *  case nothing in this system has yet.
-     */
-    for (i = 0; i < size; ++i) {
-        if (!OM_forward_identity(OM_fetch_pointer(i, from_array),
-                                 OM_fetch_pointer(i, to_array)))
-            return 0;
-    }
     ST_pop_n(1);
     return 1;
 }

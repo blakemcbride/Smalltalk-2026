@@ -8441,6 +8441,29 @@ test_bugs4_om(void)
     check_boolean("'bugs4Sym' asSymbol == #bugs4Sym", 1);
 
     /*
+     *  Primitive 249, all or none.  It checked every pair and then
+     *  forwarded them one safepoint at a time, so a pair refused at a
+     *  later safepoint left the earlier ones forwarded; every pair is now
+     *  read, checked and forwarded at one.  Here the Symbol is refused
+     *  and the Array beside it must not move either.  And it read a String
+     *  as an array of oops, past its end (Bugs5 INTERP-9): both sides must
+     *  be pointer objects.
+     */
+    check_oop("| a b c d h | a := Array with: 1. b := Array with: 2. "
+              "c := Array with: 3. d := Array with: 4. "
+              "h := Array with: a with: c. "
+              "(Array with: a with: c) elementsForwardIdentityTo: "
+              "(Array with: b with: d). "
+              "^(h at: 1) == b and: [(h at: 2) == d]", ST_TRUE, "true");
+    check_oop("| a b h | a := Array with: 1. b := Array with: 2. "
+              "h := Array with: a. "
+              "[(Array with: a with: #bugs5Sym) elementsForwardIdentityTo: "
+              "(Array with: b with: #bugs5Other)] on: Error do: [:e | nil]. "
+              "^(h at: 1) == a", ST_TRUE, "true");
+    check_string("['abc' copy elementsForwardIdentityTo: 'abc' copy. "
+                 "'allowed'] on: Error do: [:e | 'refused']", "refused");
+
+    /*
      *  MEM-5 -- become: of a process a worker is RUNNING -- is not checked
      *  here, and the omission is deliberate rather than an oversight.  The
      *  guard walks each registered interpreter's active process, and this

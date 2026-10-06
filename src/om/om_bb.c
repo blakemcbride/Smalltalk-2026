@@ -730,6 +730,14 @@ OM_forward_identity(st_oop from, st_oop to)
     return 0;
 }
 
+int
+OM_forward_elements(st_oop from_array, st_oop to_array)
+{
+    (void) from_array;
+    (void) to_array;
+    return 0;
+}
+
 void
 OM_deallocate(st_oop p)
 {
