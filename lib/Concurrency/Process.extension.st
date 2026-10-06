@@ -45,7 +45,9 @@ Process >> primDetach: takeFromSemaphore [
 	     0  nowhere -- already suspended, terminated, or never resumed
 	     1  running on a worker, or nominated to run; it has let go
 	     2  waiting for the processor, on a ready list
-	     3  waiting on a Semaphore, and taken off it
+	     3  waiting on a Semaphore, and taken off it -- answered as that
+	        Semaphore, not as 3, so terminate can put a process that was
+	        inside an unwind block back into the same wait
 	     4  waiting on a Semaphore and LEFT there, takeFromSemaphore
 	        being false
 
@@ -112,16 +114,89 @@ Process >> terminate [
 	 For any other, wherever it is -- a ready list, a Semaphore, another
 	 worker's core -- stop it there, take its stack, and unwind that.
 	 The stack is taken BEFORE its blocks are run, so a block that fails
-	 leaves a process that is terminated rather than one that is not."
-	| context |
+	 leaves a process that is terminated rather than one that is not.
+
+	 Two exceptions, both Bugs5 OM-5.  A process stopped in Mutex>>waitFor:
+	 just after its wait holds the lock before owner says so, and is
+	 recorded first, so the ensure: in critical: gives it back.  And a
+	 process stopped INSIDE an unwind block is not unwound from outside at
+	 all: runUnwindBlock disarms a frame before running its block, so the
+	 unwind below would skip it and abandon the rest of the block -- the
+	 rest of a critical: that was releasing a lock, say.  That process is
+	 let finish the block itself and terminates when it returns; see
+	 finishUnwindBlock:waitingOn:.  A process that terminates ITSELF from
+	 an unwind block asked to stop there, and does."
+	| where context unwinding |
 	Processor activeProcess == self ifTrue: [
 		self runUnwindBlocksFrom: thisContext.
 		^self primTerminateActive].
-	self primDetach: true.
+	where := self primDetach: true.
 	context := suspendedContext.
 	context isNil ifTrue: [^self].
+	self noteMutexOwnerIn: context waiting: where isInteger not.
+	unwinding := self unwindBlockInProgressFrom: context.
+	unwinding notNil ifTrue: [^self finishUnwindBlock: unwinding waitingOn: where].
 	suspendedContext := nil.
 	self runUnwindBlocksFrom: context
+]
+
+{ #category : '*Concurrency' }
+Process >> noteMutexOwnerIn: aContext waiting: wasWaiting [
+	"If I was stopped in Mutex>>waitFor:, let the Mutex record me as its
+	 owner if the wait had already handed me the lock."
+	aContext method == (Mutex compiledMethodAt: #waitFor:) ifTrue: [
+		aContext receiver noteOwner: self stoppedIn: aContext waiting: wasWaiting]
+]
+
+{ #category : '*Concurrency' }
+Process >> unwindBlockInProgressFrom: aContext [
+	"The OUTERMOST frame on my stack, from aContext down, that is running
+	 an ensure: or ifCurtailed: block -- or nil.
+
+	 Outermost, because everything above it is part of finishing that
+	 block: an unwind block that itself runs an ensure: is still running
+	 its own when the inner one is done."
+	| method ctx found |
+	method := ContextPart compiledMethodAt: #runUnwindBlock.
+	ctx := aContext.
+	[ctx isNil] whileFalse: [
+		ctx method == method ifTrue: [found := ctx].
+		ctx := ctx sender].
+	^found
+]
+
+{ #category : '*Concurrency' }
+Process >> spliceTerminateUnder: aContext [
+	"Make aContext return into a frame that terminates the process
+	 running it, and that frame return to where aContext would have."
+	| frame |
+	"asContext, not newProcess: newProcess wraps the block in one that
+	 ends its process, and this frame has to return to the next."
+	frame := [Processor activeProcess terminate] asContext.
+	"Field one of any context is its sender."
+	frame instVarAt: 1 put: aContext sender.
+	aContext instVarAt: 1 put: frame
+]
+
+{ #category : '*Concurrency' }
+Process >> finishUnwindBlock: aContext waitingOn: where [
+	"I was stopped inside an unwind block, with aContext running it.  Let
+	 me run on until that block is done and then terminate myself, which
+	 runs the unwind blocks outside it.
+
+	 If the stop took me off a Semaphore (where is that Semaphore), I am
+	 put back into the same wait rather than let past it: an unwind block
+	 waiting for a Mutex must still wait for it.  The frame doing the
+	 waiting answers what the interrupted wait would have, so the
+	 Semaphore the primitive left as its result is popped first."
+	| frame |
+	self spliceTerminateUnder: aContext.
+	where isInteger ifFalse: [
+		frame := [where wait] asContext.
+		suspendedContext pop.
+		frame instVarAt: 1 put: suspendedContext.
+		suspendedContext := frame].
+	self resume
 ]
 
 { #category : '*Concurrency' }
@@ -182,10 +257,43 @@ Process >> signalException: anException [
 	self == Processor activeProcess ifTrue: [^anException signal].
 	where := self primDetach: true.
 	suspendedContext isNil ifTrue: [^self].
-	frame := [anException signal] newProcess suspendedContext.
+	"Stopped in Mutex>>waitFor: with the lock already handed over: record
+	 the owner, or the unwind the signal may start leaves it held (Bugs5
+	 OM-5)."
+	self noteMutexOwnerIn: suspendedContext waiting: where isInteger not.
+	frame := self signalFrameFor: anException over: suspendedContext.
 	"Field one of any context is its sender; splicing it in is what makes
 	 the signal appear to happen inside this process rather than beside it."
 	frame instVarAt: 1 put: suspendedContext.
 	suspendedContext := frame.
 	where = 0 ifFalse: [self resume]
+]
+
+{ #category : '*Concurrency' }
+Process >> signalFrameFor: anException over: aContext [
+	"A context that signals anException and, if a handler resumes it,
+	 returns into aContext leaving aContext exactly as it was stopped.
+
+	 It was `[anException signal] newProcess suspendedContext', and
+	 newProcess wraps its block in one that ends the process when the
+	 block finishes -- so a handler that resumed the exception, a
+	 Notification or a Warning, ended the process instead of letting it
+	 go on.  asContext is the block's own context, which returns to its
+	 sender.
+
+	 And what it returns is aContext's own top of stack, popped just
+	 before.  aContext was stopped between two bytecodes, not at a send
+	 that expects an answer, so whatever a return pushes onto it is one
+	 value too many: stopped between pushing the receiver and the
+	 argument of `a + b', it would go on to add b to the resumption value
+	 instead of to a.  Popping the top and handing it back puts the same
+	 value in the same slot.  A process taken out of a Semaphore wait is
+	 the same case: its top is the Semaphore the wait primitive left as
+	 its answer, and the wait answers that.  Only a context with nothing
+	 at all in its frame -- no temporaries and an empty stack -- has no
+	 top to hand back; it gets one nil more, which is what Squeak's
+	 signalException: does to every context it interrupts."
+	(aContext instVarAt: 3) > 0 ifFalse: [
+		^[anException signal. nil] asContext].
+	^[anException signal. aContext pop] asContext
 ]

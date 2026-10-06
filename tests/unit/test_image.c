@@ -541,8 +541,17 @@
  *  the C compiler's position inside the selection into a position in the
  *  pane the complaint is written into.  Seven of the nine are the tests,
  *  and the ninth is the `new' the loader synthesizes for the test class.
+ *
+ *  3089 -> 3095 with Bugs5 OM-5: Mutex>>waitFor: and
+ *  >>noteOwner:stoppedIn:waiting:, so a process stopped between its wait
+ *  and recording itself as owner is recognised, and four Process methods
+ *  that let a process terminated inside an unwind block finish it.
+ *
+ *  3095 -> 3096 with Process>>signalFrameFor:over:, the frame
+ *  signalException: splices in, which returns into the interrupted
+ *  context instead of ending the process when a handler resumes.
  */
-#define LIB_METHODS             3089
+#define LIB_METHODS             3096
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -2822,7 +2831,12 @@ test_browsing(void)
      *  2705136 -> 2705152: eight comments in lib/ name the binary, and the
      *  binary is st2026.  Two bytes each.
      */
-    check_integer("(SourceFiles at: 1) contents size", 2705152);
+    /*
+     *  2705152 -> 2711414 with Bugs5 OM-5: six methods and their comments
+     *  in Mutex and Process.  2711414 -> 2712882 with
+     *  Process>>signalFrameFor:over:.
+     */
+    check_integer("(SourceFiles at: 1) contents size", 2712882);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.

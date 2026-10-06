@@ -46,6 +46,8 @@
 #define BADIMAGE    "build/mt/tests/bugs3-serve-bad.im"
 #define SHARED      "build/mt/tests/bugs5-serve-shared.st"
 #define FORWARD     "build/mt/tests/bugs5-serve-forward.st"
+#define TERMLOCK    "build/mt/tests/bugs5-serve-terminate.st"
+#define RESUMED     "build/mt/tests/bugs5-serve-resumed.st"
 
 /*
  *  The harness from the Bugs3 appendix, verbatim: each line of the first
@@ -467,6 +469,109 @@ main(void)
         } else {
             expect(out, "==> 'lost forwards: 0'", "OM-3 concurrent forwards");
             expect(out, "3 + 4 ==> 7", "OM-3 the pool survived");
+        }
+    }
+
+    /*
+     *  Bugs5 OM-5: terminate at the wrong instant leaves a Mutex locked.
+     *
+     *  critical: was `self acquire. ^aBlock ensure: [self release]', so a
+     *  process terminated after its wait returned but before ensure: was
+     *  entered kept the lock with nothing to give it back; and terminate
+     *  skipped an unwind block already running, because runUnwindBlock
+     *  disarms the frame first.  Forty processes looping on one Mutex,
+     *  one terminated every 5 ms, then one more critical: that must run
+     *  -- the old code locked it two runs in three on eight workers and
+     *  every run on one.  The loops yield because one worker does not
+     *  time-slice equal priorities, and a loop that never blocks would
+     *  starve the process doing the terminating.  The second line is the
+     *  unwind block: terminated while waiting inside it, the process must
+     *  still finish it when the gate opens, and the outer ensure: after.
+     *  It waits until the process is in the block: a yield does not get it
+     *  there on eight workers, and terminated before it, the block runs on
+     *  the terminator -- which then waits on the gate it was to open.
+     */
+    if (write_file(TERMLOCK,
+            "| lock procs x |\n"
+            "lock := Mutex new. x := 0.\n"
+            "procs := (1 to: 40) collect: [:i | [[true] whileTrue: "
+            "[lock critical: [x := x + 1]. Processor yield]] fork].\n"
+            "1 to: 40 do: [:i | (Delay forMilliseconds: 5) wait. "
+            "(procs at: i) terminate].\n"
+            "[lock critical: [x := -1]] fork.\n"
+            "(Delay forMilliseconds: 1000) wait.\n"
+            "^x = -1 ifTrue: ['terminate lock ok'] ifFalse: "
+            "['LOCKED ', lock printString]\n") == 0) {
+        char        batch[1024];
+        unsigned    workers[] = { 8, 1 };
+        int         run_index;
+
+        snprintf(batch, sizeof batch,
+                 "Compiler evaluate: (FileStream oldFileNamed: '%s') "
+                 "contentsOfEntireFile\n"
+                 "| gate log p | gate := Semaphore new. "
+                 "log := OrderedCollection new. "
+                 "p := [[[log add: 1] ensure: [log add: 2. gate wait. "
+                 "log add: 3]] ensure: [log add: 4]. log add: 5] fork. "
+                 "[log size < 2] whileTrue: [Processor yield]. "
+                 "(Delay forMilliseconds: 20) wait. "
+                 "p terminate. gate signal. "
+                 "(Delay forMilliseconds: 100) wait. log asArray\n", TERMLOCK);
+        for (run_index = 0; run_index < 4; ++run_index) {
+            status = serve(batch, workers[run_index & 1], out, sizeof out);
+            ++st_test_checks;
+            if (status < 0) {
+                ++st_test_failures;
+                printf("  FAIL OM-5: could not run the server\n");
+                break;
+            }
+            expect(out, "==> 'terminate lock ok'", "OM-5 terminate in critical:");
+            expect(out, "==> (1 2 3 4 )", "OM-5 terminate in an unwind block");
+        }
+    }
+
+    /*
+     *  signalException: and a handler that resumes.
+     *
+     *  The frame it spliced in came from newProcess, which wraps the block
+     *  in one that ends the process, so resuming the exception ended the
+     *  process: `done' stayed nil.  And a return into a context stopped
+     *  between two bytecodes pushes one value too many, so a resumption
+     *  in the middle of `s + (1 + 2)' would have added the wrong thing.
+     *  The sum is exact only if every interruption left the loop as it
+     *  found it.  At most one signal can miss -- sent as the process
+     *  finishes -- so the count is checked against that.
+     */
+    if (write_file(RESUMED,
+            "| p done count i |\n"
+            "count := 0. done := nil.\n"
+            "p := [[| s | s := 0. [(s := s + (1 + 2)) < 300000] whileTrue: "
+            "[Processor yield]. done := s]\n"
+            "  on: Warning do: [:e | count := count + 1. e resume: 99]] "
+            "fork.\n"
+            "i := 0.\n"
+            "[i < 20 and: [done isNil]] whileTrue: [(Delay forMilliseconds: "
+            "2) wait. p signalException: Warning new. i := i + 1].\n"
+            "[done isNil and: [p suspendedContext notNil]] whileTrue: "
+            "[(Delay forMilliseconds: 10) wait].\n"
+            "^(done = 300000 and: [count > 0 and: [count >= (i - 1)]]) "
+            "ifTrue: ['resumed ok'] ifFalse: [{done. count. i}]\n") == 0) {
+        char        batch[512];
+        unsigned    workers[] = { 8, 1 };
+        int         run_index;
+
+        snprintf(batch, sizeof batch,
+                 "Compiler evaluate: (FileStream oldFileNamed: '%s') "
+                 "contentsOfEntireFile\n", RESUMED);
+        for (run_index = 0; run_index < 2; ++run_index) {
+            status = serve(batch, workers[run_index], out, sizeof out);
+            ++st_test_checks;
+            if (status < 0) {
+                ++st_test_failures;
+                printf("  FAIL resumed signal: could not run the server\n");
+                break;
+            }
+            expect(out, "==> 'resumed ok'", "signalException: resumed");
         }
     }
 

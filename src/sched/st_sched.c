@@ -2577,7 +2577,11 @@ SCHED_primitive_terminate_active(void)
  *      1   it was running on a worker, or about to be; that worker has
  *          parked it and let go
  *      2   it was waiting for the processor on a ready list
- *      3   it was waiting on a Semaphore and was taken off it
+ *      3   it was waiting on a Semaphore and was taken off it -- and
+ *          the answer is then that Semaphore rather than 3, because
+ *          terminate puts a process that was inside an unwind block back
+ *          into the same wait (Bugs5 OM-5), and once it is off the list
+ *          nothing else remembers which one it was
  *      4   it was waiting on a Semaphore and was LEFT there, because the
  *          argument was false -- suspend keeps 1983's refusal to take a
  *          process out of a wait it would later continue past
@@ -2615,6 +2619,7 @@ SCHED_primitive_detach(void)
     st_oop  process = ST_stack_value(1);
     int     where   = 0;
     int     seen_in_hands = 0;
+    st_oop  taken_off = ST_NIL;     /*  counted while held here  */
 
     if (!OM_is_object(process) || !OM_pointer_bit(process)
      || OM_fetch_word_length(process) <= ST_PROCESS_MY_LIST)
@@ -2664,12 +2669,30 @@ SCHED_primitive_detach(void)
                 st_mutex   *lock = stripe_for(list);
                 int         removed;
 
+                /*
+                 *  Counted before the process lets go of it: its myList
+                 *  may be the only reference to an anonymous Semaphore,
+                 *  and the answer below hands this one back.
+                 */
+                OM_increase_ref(list);
                 stripe_lock(lock);
                 removed = OM_fetch_pointer(ST_PROCESS_MY_LIST, process) == list
                        && remove_link_from_list(process, list);
                 stripe_unlock(lock);
+                if (!removed)
+                    OM_decrease_ref(list);
+                /*
+                 *  3 even if it was seen in a worker's hands first: it
+                 *  went on to block in the wait, and the wait did not
+                 *  complete.  terminate asks exactly that -- a process
+                 *  taken out of `semaphore wait' inside Mutex>>critical:
+                 *  never got the lock, and one stopped just after it did
+                 *  (Bugs5 OM-5) -- and answering 1 here made the first
+                 *  look like the second.
+                 */
                 if (removed) {
-                    where = seen_in_hands ? 1 : 3;
+                    where = 3;
+                    taken_off = list;
                     break;
                 }
                 continue;
@@ -2698,7 +2721,11 @@ SCHED_primitive_detach(void)
     }
     unname_process(process);
     ST_pop_n(2);
-    ST_push(OM_int_oop(where));
+    if (where == 3) {
+        ST_push(taken_off);
+        OM_decrease_ref(taken_off);
+    } else
+        ST_push(OM_int_oop(where));
     return 1;
 }
 
