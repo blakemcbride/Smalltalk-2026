@@ -558,8 +558,12 @@
  *  3098 -> 3101 with Bugs5 KERN-2: Semaphore>>critical:, which in 1983 had
  *  no ensure: at all, Semaphore>>waitAndMark:, and
  *  ContextPart>>isPastFirstSend, which both locks' terminate paths ask.
+ *
+ *  3101 -> 3103 with Bugs5 FILES-1: FileStream>>writing and >>close, so
+ *  that only a write gives a stream its mode and a stream only read is
+ *  not shortened when it closes.
  */
-#define LIB_METHODS             3101
+#define LIB_METHODS             3103
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -2844,9 +2848,10 @@ test_browsing(void)
      *  in Mutex and Process.  2711414 -> 2712882 with
      *  Process>>signalFrameFor:over:.  2712882 -> 2714748 with Bugs5
      *  OM-6, in Monitor.  2714748 -> 2718331 with Bugs5 KERN-1 and
-     *  KERN-2, in Exception, Semaphore and ContextPart.
+     *  KERN-2, in Exception, Semaphore and ContextPart.  2718331 ->
+     *  2719521 with Bugs5 FILES-1, in FileStream.
      */
-    check_integer("(SourceFiles at: 1) contents size", 2718331);
+    check_integer("(SourceFiles at: 1) contents size", 2719521);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -3700,6 +3705,29 @@ test_file_out_has_no_page_padding(void)
         " size := (FileStream oldFileNamed: name) size."
         " Disk removeKey: name."
         " ^size = raw size", 1);
+
+    /*
+     *  Bugs5 FILES-1: reading part of a file and closing the stream leaves
+     *  the file as it was.  FileStream>>writing gave a stream with no mode
+     *  readWriteShorten the first time anybody asked, close asks, and close
+     *  then cut the file off at the read position -- 33 bytes became 5.  A
+     *  write through the default mode still shortens, which is how a
+     *  shorter text saved over a longer one comes out the right length.
+     */
+    check_string(
+        "| name f a b c |"
+        " name := 'zz-files1-test.txt'."
+        " f := FileStream newFileNamed: name."
+        " f nextPutAll: 'hello world, this is a test file'. f close."
+        " f := FileStream oldFileNamed: name. f next: 5. f close."
+        " a := (FileStream oldFileNamed: name) size."
+        " f := FileStream oldFileNamed: name. f upTo: $,. f position: 100."
+        " f close."
+        " b := (FileStream oldFileNamed: name) size."
+        " f := FileStream oldFileNamed: name. f nextPutAll: 'HELLO'. f close."
+        " c := (FileStream oldFileNamed: name) contentsOfEntireFile."
+        " Disk removeKey: name."
+        " ^a printString, ' ', b printString, ' ', c", "32 32 HELLO");
 }
 
 /*

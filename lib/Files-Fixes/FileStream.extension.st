@@ -8,6 +8,14 @@ backwards raised where the other clamped, and position: past it was taken
 by one and refused by the other.  Each of the three is answered below in
 the ReadStream's way, with one deliberate difference kept for a stream
 that can write: positioning a writer past its end is how a file grows.
+
+And a stream that was only read leaves its file as it found it.  1983's
+writing gave a stream with no mode the default readWriteShorten the first
+time anybody asked, and close asks; so once Shorten was made a real bit (see
+File class>>initialize), opening an old file, reading part of it and closing
+it cut the file off at the read position (Bugs5 FILES-1).  writing and close
+are answered below so that only a write sets the mode, which nextPut: and
+nextPutAll: already do for themselves.
 "
 Extension { #name : 'FileStream' }
 
@@ -99,9 +107,42 @@ FileStream >> isReadOnly [
 	"Whether I have been told readOnly and not since told otherwise.
 
 	 Asked of rwmode directly rather than as `self writing not', because
-	 writing has a side effect 1983 relies on: a stream whose mode was
-	 never set becomes readWriteShorten the first time anybody asks, and
-	 close then shortens the file to wherever the position is.  A
-	 question about the mode must not set it."
+	 writing answers true for a stream whose mode was never set -- it may
+	 still be written -- and that is not the question here."
 	^rwmode notNil and: [(rwmode bitAnd: Write) = 0]
+]
+
+{ #category : '*Files-Fixes' }
+FileStream >> writing [
+	"Whether I may be written.  A stream that was never told a mode may.
+
+	 Without setting the mode.  1983's version made readWriteShorten the
+	 mode of any stream that asked, and close asks; once Shorten was a
+	 real bit, `(FileStream oldFileNamed: f) next: 5; close' left f five
+	 bytes long (Bugs5 FILES-1).  nextPut: and nextPutAll: set the default
+	 mode themselves before they write, so a stream that has written has a
+	 mode and one that has not does not."
+	rwmode == nil ifTrue: [^true].
+	^(rwmode bitAnd: Write) = Write
+]
+
+{ #category : '*Files-Fixes' }
+FileStream >> close [
+	"Set my file's status to closed -- flushing, or shortening it to my
+	 position if my mode says so, only if I was written.
+
+	 A stream with no mode was never written (see writing), so there is
+	 nothing to flush and nothing to cut off.  Otherwise this is 1983's
+	 close: a write through the default mode still shortens the file to
+	 where the writing stopped, which is what saving a shorter text over
+	 a longer file needs."
+	closed ifFalse: [
+		(rwmode notNil and: [self writing]) ifTrue: [
+			(rwmode bitAnd: Shorten) = Shorten
+				ifTrue: [self shorten]
+				ifFalse: [self flush]].
+		closed := true.
+		readLimit := writeLimit := 0.
+		self file close.
+		FileDirectory removeExternalReference: self]
 ]

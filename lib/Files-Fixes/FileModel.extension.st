@@ -52,8 +52,9 @@ FileModel >> lineEndingOfFile [
 	 a line feed if it has none.  Read from the file rather than remembered
 	 from the display, so that the file itself is what decides.
 
-	 readOnly before the first character, because a FileStream that is asked
-	 to close without ever having been given a mode gives itself one:
+	 readOnly before the first character, because a FileStream that was
+	 asked to close without ever having been given a mode gave itself one
+	 (FileStream>>writing no longer does, since Bugs5 FILES-1):
 	 FileStream>>writing answers `rwmode == nil ifTrue: [self
 	 readWriteShorten. ^true]', and close then shortens the file at wherever
 	 reading stopped.  Without it this method truncated the file it was only
