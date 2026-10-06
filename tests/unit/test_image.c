@@ -1459,6 +1459,27 @@ test_weak_references(void)
                   "Unwind fillWeakly: w. a at: 1 put: (w at: 1). "
                   "Smalltalk garbageCollect. ^w livingCount", 1);
 
+    /*
+     *  A weak slot that survives a collection still holds a count.  The
+     *  walk leaves weak slots out, and the collector used not to add their
+     *  counts back, so overwriting the slot afterwards -- or dropping the
+     *  WeakArray -- released a count belonging to the temporary x, x was
+     *  freed under it, and the next object made was given x's entry
+     *  (Bugs5 OM-2).  Two collections, so a count added twice would show
+     *  as a leak rather than pass.
+     */
+    check_oop("| x w y | x := 'hello' copy. w := WeakArray new: 1. "
+              "w at: 1 put: x. Smalltalk garbageCollect. "
+              "w at: 1 put: nil. y := 'GARBAGE' copy. "
+              "^(x == y) not and: [x = 'hello']", ST_TRUE, "true");
+    check_oop("| x w y | x := 'hello' copy. w := WeakArray new: 1. "
+              "w at: 1 put: x. Smalltalk garbageCollect. "
+              "w := nil. y := 'GARBAGE' copy. "
+              "^(x == y) not and: [x = 'hello']", ST_TRUE, "true");
+    check_integer("| w | w := WeakArray new: 1. Unwind fillWeakly: w. "
+                  "Smalltalk garbageCollect. Smalltalk garbageCollect. "
+                  "^w livingCount", 0);
+
     /*  The named fields of a weak class stay strong; only indexed ones go. */
     check_oop("(WeakArray new: 2) class == WeakArray", ST_TRUE, "true");
 

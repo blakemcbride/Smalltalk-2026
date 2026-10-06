@@ -2139,12 +2139,27 @@ collect_at_safepoint(void *unused)
     ephemerons_mourned();
 
     /*
-     *  Nil the weak references to things that did not survive.
+     *  Nil the weak references to things that did not survive, and COUNT
+     *  the ones to things that did.
      *
      *  Between the walk and the sweep, which is the only moment both facts
      *  are available: every count is exact, and nothing has been freed yet,
      *  so a dead target can still be recognised by its zero count rather
      *  than by reading memory that has been handed back.
+     *
+     *  The counting is not optional.  Outside a collection a weak slot is
+     *  an ordinary counted slot: at:put: counts the value it stores and
+     *  releases the one it replaces, and OM_deallocate releases every field
+     *  of a dying WeakArray.  Only the walk leaves weak slots out, because
+     *  that is what lets their targets die.  A survivor's count therefore
+     *  came out one short for every weak slot holding it, and the next
+     *  overwrite of that slot, or the death of the WeakArray, took a count
+     *  that belonged to a strong reference -- `w at: 1 put: x. Smalltalk
+     *  garbageCollect. w at: 1 put: nil` freed x while a temporary still
+     *  held it, and the next allocation was given x's entry (Bugs5 OM-2).
+     *  Adding the count back here makes the collector agree with every
+     *  other path, and an image load agrees too: it zeroes the counts and
+     *  rebuilds them with this function.
      */
     for (index = 1; index < (uint32_t) ST_load_relaxed(&st_om_table_limit);
          ++index) {
@@ -2167,9 +2182,12 @@ collect_at_safepoint(void *unused)
             if (!OM_is_object(target))
                 continue;
             th = OM_head(target);
-            if (!th || (th->flags & ST_FMT_FREE)
-             || ST_load_relaxed(OM_refcount_of(target)) != 0)
+            if (!th || (th->flags & ST_FMT_FREE))
                 continue;
+            if (ST_load_relaxed(OM_refcount_of(target)) != 0) {
+                OM_increase_ref(target);
+                continue;
+            }
             ST_oop_store(&slots[i], ST_NIL);
             OM_increase_ref(ST_NIL);
             ++st_om_weak_cleared;
