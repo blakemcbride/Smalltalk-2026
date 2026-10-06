@@ -4473,6 +4473,19 @@ test_bugs2(void)
     check_integer("'12abc' asNumber", 12);
     check_integer("'0' asNumber", 0);
     /*
+     *  Bugs5 INTERP-1: an index of 2^31 or more is out of bounds.  The test
+     *  compared `(int) index', which is negative there, so it passed and
+     *  at:, at:put:, basicAt: and String at: touched memory gigabytes past
+     *  the object -- a segmentation fault from ordinary code.
+     */
+    check_string("| r | r := OrderedCollection new."
+                 " #(2147483648 4294967295) do: [:i |"
+                 " r add: ([#(1 2 3) at: i] on: Error do: [:e | #refused]);"
+                 " add: ([#(1 2 3) copy at: i put: 5] on: Error do: [:e | #refused]);"
+                 " add: ([(String new: 3) at: i] on: Error do: [:e | #refused]);"
+                 " add: ([#(1 2 3) basicAt: i] on: Error do: [:e | #refused])]."
+                 " ^(r allSatisfy: [:x | x == #refused]) printString", "true");
+    /*
      *  Bugs5 KERN-3: the sign was taken from the integer part after it was
      *  read, and -0 is 0, so every negative number between -1 and 0 read
      *  as positive -- and `x printString asNumber' changed its sign.

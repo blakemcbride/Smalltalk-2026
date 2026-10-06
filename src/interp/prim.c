@@ -467,17 +467,25 @@ shape_of_class(st_oop cls)
  *  The indexable fields start after the named instance variables, so an
  *  index is only valid within what is left.
  */
-static int
+/*
+ *  Unsigned, and compared unsigned.  It answered int and the callers
+ *  tested `(int) index > length': an index of 2^31 or more -- which
+ *  positive_16bit_value accepts up to 2^32 - 1 -- cast to a negative int,
+ *  passed, and `#(1 2 3) at: 2147483648' read eight gigabytes past the
+ *  array; and an object of 2^31 elements or more had a negative length,
+ *  so even `at: 1' failed (Bugs5 INTERP-1).
+ */
+static uint32_t
 indexable_length(st_oop object, const om_shape *shape)
 {
     if (shape->pointers) {
         uint32_t    length = OM_fetch_word_length(object);
 
-        return (length < shape->fixed) ? 0 : (int) (length - shape->fixed);
+        return (length < shape->fixed) ? 0 : length - shape->fixed;
     }
     if (shape->words)
-        return (int) OM_fetch_word_length(object);
-    return (int) OM_fetch_byte_length(object);
+        return OM_fetch_word_length(object);
+    return OM_fetch_byte_length(object);
 }
 
 static int
@@ -486,14 +494,14 @@ primitive_at(void)
     st_oop      object = ST_stack_value(1);
     uint32_t    index;
     om_shape    shape;
-    int         length;
+    uint32_t    length;
 
     if (!OM_is_object(object)
      || !positive_16bit_value(ST_stack_value(0), &index))
         return 0;
     shape  = shape_of_class(OM_fetch_class(object));
     length = indexable_length(object, &shape);
-    if (index < 1 || (int) index > length)
+    if (index < 1 || index > length)
         return 0;
     if (shape.pointers) {
         st_oop  value = OM_fetch_pointer(shape.fixed + index - 1, object);
@@ -514,14 +522,14 @@ primitive_at_put(void)
     st_oop      value  = ST_stack_value(0);
     uint32_t    index;
     om_shape    shape;
-    int         length;
+    uint32_t    length;
 
     if (!OM_is_object(object)
      || !positive_16bit_value(ST_stack_value(1), &index))
         return 0;
     shape  = shape_of_class(OM_fetch_class(object));
     length = indexable_length(object, &shape);
-    if (index < 1 || (int) index > length)
+    if (index < 1 || index > length)
         return 0;
     if (shape.pointers) {
         OM_store_pointer(shape.fixed + index - 1, object, value);
@@ -566,14 +574,14 @@ primitive_string_at(void)
     st_oop      object = ST_stack_value(1);
     uint32_t    index;
     om_shape    shape;
-    int         length;
+    uint32_t    length;
 
     if (!OM_is_object(object)
      || !positive_16bit_value(ST_stack_value(0), &index))
         return 0;
     shape  = shape_of_class(OM_fetch_class(object));
     length = indexable_length(object, &shape);
-    if (shape.pointers || shape.words || index < 1 || (int) index > length)
+    if (shape.pointers || shape.words || index < 1 || index > length)
         return 0;
     {
         uint8_t     byte = OM_fetch_byte(index - 1, object);
@@ -594,7 +602,7 @@ primitive_string_at_put(void)
     st_oop      value  = ST_stack_value(0);
     uint32_t    index;
     om_shape    shape;
-    int         length;
+    uint32_t    length;
     st_oop      code;
 
     if (!OM_is_object(object)
@@ -602,7 +610,7 @@ primitive_string_at_put(void)
         return 0;
     shape  = shape_of_class(OM_fetch_class(object));
     length = indexable_length(object, &shape);
-    if (shape.pointers || shape.words || index < 1 || (int) index > length)
+    if (shape.pointers || shape.words || index < 1 || index > length)
         return 0;
     /*  The argument must be a Character; its value is its only field.  */
     if (!OM_is_object(value) || OM_fetch_class(value) != ST_CLASS_CHARACTER)
@@ -625,7 +633,7 @@ primitive_size(void)
     if (!OM_is_object(object))
         return 0;
     shape = shape_of_class(OM_fetch_class(object));
-    return answer_positive_16bit((uint32_t) indexable_length(object, &shape), 1);
+    return answer_positive_16bit(indexable_length(object, &shape), 1);
 }
 
 /*  ----------  Instantiation, primitives 70 and 71  ----------  */
