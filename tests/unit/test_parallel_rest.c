@@ -305,6 +305,23 @@ client_main(void *arg)
         client_close(fd);
         return;
     }
+    /*
+     *  A reply that never comes is a failure, not a hang.  Without a
+     *  timeout a server that drops a reply leaves this thread in recv()
+     *  with the main thread joining it, and nothing in the test can end
+     *  that -- the alarm is no help once it has been disarmed.  A minute
+     *  between bytes is generous even under ThreadSanitizer.
+     */
+    {
+#ifdef ST_WINDOWS
+        DWORD           timeout = 60000;
+#else
+        struct timeval  timeout = { 60, 0 };
+#endif
+
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, (const char *) &timeout,
+                   sizeof timeout);
+    }
     for (r = 0; r < REQUESTS_PER_CLIENT; ++r) {
         char    json[256];
         char    request[512];
@@ -364,8 +381,21 @@ request_release_loop(void *unused)
 
 /*
  *  Worker 0 starts the server; every driver waits until the service has
- *  counted every request.  RestGateCount is what services/Adder.class.st's
- *  whoAmI increments when it finds the global.
+ *  counted every request AND the server has closed every connection.
+ *  RestGateCount is what services/Adder.class.st's whoAmI increments when
+ *  it finds the global.
+ *
+ *  The count alone is not enough, and waiting on it alone hung the gate.
+ *  whoAmI counts the request while it is still being served: the reply has
+ *  not been encoded, let alone written.  The last increment lets every
+ *  driver return, the pool stops, and the process that was about to write
+ *  the last reply is abandoned with its socket open -- so the client that
+ *  sent it waits in recv() for ever.  The fast build loses that race almost
+ *  never; under ThreadSanitizer, fifty times slower, it lost it and sat
+ *  for fifty minutes.  Every client's last request says Connection: close,
+ *  and HttpConnection>>run reports a connection closed only after its
+ *  socket is, so a connection count of zero after the full request count
+ *  means every reply has been written.
  */
 static const char *const setup_source =
     " Smalltalk at: #RestGateLock put: Mutex new."
@@ -376,7 +406,9 @@ static const char *const setup_source =
     " ^(Smalltalk at: #RestGateServer) port";
 
 static const char *const driver_source =
-    "[(Smalltalk at: #RestGateCount) < %d] whileTrue: [(Delay forMilliseconds: 5) wait]. ^0";
+    "[(Smalltalk at: #RestGateCount) < %d"
+    "   or: [(Smalltalk at: #RestGateServer) httpServer connectionCount > 0]]"
+    "  whileTrue: [(Delay forMilliseconds: 5) wait]. ^0";
 
 static void
 run_gate(unsigned workers)
@@ -439,11 +471,15 @@ run_gate(unsigned workers)
     ST_store_seq(&stop_asking, 1);
     ST_thread_join(asker);
     WORKER_stop();
+    /*
+     *  The alarm stays armed until the clients are joined too: the hang
+     *  this gate once had was here, after the pool had stopped.
+     */
+    for (i = 0; i < clients; ++i)
+        ST_thread_join(client_threads[i]);
 #ifndef ST_WINDOWS
     alarm(0);
 #endif
-    for (i = 0; i < clients; ++i)
-        ST_thread_join(client_threads[i]);
     ST_interp_register();
     driver_method = ST_OOP_INVALID;
 

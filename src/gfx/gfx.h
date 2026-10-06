@@ -208,6 +208,12 @@ int     GFX_is_open(void);
 
 int     GFX_event_pending(void);
 int     GFX_next_event_word(uint16_t *word);
+/*
+ *  The i'th word still queued, without taking it; 0 past the end.  For the
+ *  tests: taking a word from C leaves the input semaphore holding a signal
+ *  for a word the image will never find.
+ */
+int     GFX_peek_event_word(unsigned i, uint16_t *word);
 void    GFX_mouse_point(int *x, int *y);
 int     GFX_button_state(void);
 

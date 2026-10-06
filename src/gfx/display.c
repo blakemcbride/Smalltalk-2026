@@ -340,6 +340,16 @@ GFX_next_event_word(uint16_t *word)
     return 1;
 }
 
+int
+GFX_peek_event_word(unsigned i, uint16_t *word)
+{
+    flush_motion();
+    if (i >= (event_tail + EVENT_QUEUE_SIZE - event_head) % EVENT_QUEUE_SIZE)
+        return 0;
+    *word = event_queue[(event_head + i) % EVENT_QUEUE_SIZE];
+    return 1;
+}
+
 void
 GFX_mouse_point(int *x, int *y)
 {

@@ -3772,22 +3772,34 @@ test_input(void)
      *  Positions now coalesce and transitions never do, so what is checked
      *  here is both halves of that: nothing was dropped, and the two edges
      *  came out of the far end.
+     *
+     *  The ring is LOOKED at here, never emptied from C.  Every word queued
+     *  has already signalled the input semaphore, so a word taken behind the
+     *  image's back leaves a signal for a word that is not there: the input
+     *  process wakes, primitive 94 fails on the empty ring, and the 1983
+     *  loop goes on with the InputState where the word should be -- six
+     *  rounds of `bitShift:' and `bitAnd:' not understood and `Bad event
+     *  type', printed under the next section's heading, which is where this
+     *  check used to leave them.  The image drains the ring instead, as it
+     *  does on a desktop, and that is checked too: the release it reads
+     *  leaves no button held.
      */
     {
         unsigned    before = GFX_events_dropped();
         unsigned    ons = 0, offs = 0, locations = 0;
         uint16_t    word;
-        int         i;
+        unsigned    i;
 
-        while (GFX_next_event_word(&word))
-            ;                           /*  start from a drained ring  */
+        for (i = 0; i < 100 && GFX_event_pending(); ++i)
+            evaluate("Processor yield. ^1");    /*  start from a drained ring  */
+        CHECK(!GFX_event_pending());
         GFX_inject_button(130, 1);
         for (i = 0; i < 2000; ++i)
-            GFX_inject_mouse(200 + (i % 400), 300 + (i % 200));
+            GFX_inject_mouse(200 + (int) (i % 400), 300 + (int) (i % 200));
         GFX_inject_button(130, 0);
 
         CHECK_EQ_INT((int) (GFX_events_dropped() - before), 0);
-        while (GFX_next_event_word(&word)) {
+        for (i = 0; GFX_peek_event_word(i, &word); ++i) {
             unsigned    type  = (unsigned) (word >> ST_EVENT_TYPE_SHIFT);
             unsigned    value = (unsigned) (word & ST_EVENT_VALUE_MASK);
 
@@ -3806,6 +3818,11 @@ test_input(void)
          *  closing transition flushed in front of itself.
          */
         CHECK(locations <= 8);
+
+        for (i = 0; i < 100 && GFX_event_pending(); ++i)
+            evaluate("Processor yield. ^1");
+        CHECK(!GFX_event_pending());
+        check_oop("Processor yield. ^Sensor noButtonPressed", ST_TRUE, "true");
     }
 }
 

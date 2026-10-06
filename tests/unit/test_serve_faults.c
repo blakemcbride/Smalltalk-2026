@@ -44,6 +44,7 @@
 #define STARTUP     "build/mt/tests/bugs3-serve-startup.st"
 #define RACE        "build/mt/tests/bugs3-serve-race.st"
 #define BADIMAGE    "build/mt/tests/bugs3-serve-bad.im"
+#define SHARED      "build/mt/tests/bugs5-serve-shared.st"
 
 /*
  *  The harness from the Bugs3 appendix, verbatim: each line of the first
@@ -383,6 +384,50 @@ main(void)
         }
     }
 
+    /*
+     *  Bugs5 OM-1: eight workers storing into one shared slot.
+     *
+     *  OM_store_pointer read the old value, stored the new one and released
+     *  the old one as three steps.  Two workers that read the same old
+     *  value both released it, so each of the four strings stored round
+     *  robin into one Array slot lost a count whenever the race was won,
+     *  reached zero while `keep' still held it, and was freed; the churn
+     *  after the loop then handed its table entry to something else.  Two
+     *  runs in three printed a context where a string had been.  The check
+     *  is that all four are still twenty-character strings.  Three runs,
+     *  as for MEM-1, because two in three per run is not a gate.
+     */
+    if (write_file(SHARED,
+            "| keep slot done bad |\n"
+            "keep := (1 to: 4) collect: [:i | String new: 20 withAll: "
+            "(Character value: 96 + i)].\n"
+            "slot := Array new: 1. done := Semaphore new.\n"
+            "1 to: 8 do: [:w | Processor forkParallel: [1 to: 300000 do: "
+            "[:i | slot at: 1 put: (keep at: i \\\\ 4 + 1)]. done signal]].\n"
+            "8 timesRepeat: [done wait].\n"
+            "1 to: 20000 do: [:i | Array with: i with: i printString].\n"
+            "bad := keep reject: [:s | s isString and: [s size = 20]].\n"
+            "^bad isEmpty ifTrue: ['shared slot ok'] ifFalse: "
+            "[bad printString]\n") == 0) {
+        char        batch[512];
+        int         attempt;
+
+        snprintf(batch, sizeof batch,
+                 "Compiler evaluate: (FileStream oldFileNamed: '%s') "
+                 "contentsOfEntireFile\n3 + 4\n", SHARED);
+        for (attempt = 0; attempt < 3; ++attempt) {
+            status = serve(batch, 8, out, sizeof out);
+            ++st_test_checks;
+            if (status < 0) {
+                ++st_test_failures;
+                printf("  FAIL OM-1: could not run the server\n");
+                break;
+            }
+            expect(out, "==> 'shared slot ok'", "OM-1 shared slot");
+            expect(out, "3 + 4 ==> 7", "OM-1 the pool survived");
+        }
+    }
+
     /*  B58: a startup that does not compile writes no image, exit 1.  */
     unlink(BADIMAGE);
     snprintf(command, sizeof command,
@@ -426,6 +471,7 @@ main(void)
     unlink(BATCH);
     unlink(STARTUP);
     unlink(RACE);
+    unlink(SHARED);
     return ST_TEST_END();
 }
 

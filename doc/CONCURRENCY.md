@@ -260,8 +260,11 @@ The REST server's gates found three more of the same family, months later:
   released it, and the value stored between was never released. The Delay
   timing process, which every worker runs in turn, lost a count that way
   about once a minute on 31 workers and was freed while linked on a
-  semaphore. The slot is exchanged atomically now (`OM_exchange_pointer`);
-  a slot that more than one worker writes must be.
+  semaphore. The slot was then exchanged atomically (`OM_exchange_pointer`)
+  — and only that slot, which left every other shared slot with the same
+  race: eight workers storing into one Array slot freed a String still held
+  elsewhere (Bugs5 OM-1). `OM_store_pointer` itself exchanges now, so every
+  counted store releases each old value exactly once.
 - **A run that ends with a nominee.** `SCHED_check_process_switch` runs
   before the loop looks at `running`, so a worker whose process had just
   returned off the bottom could still drain, nominate and switch, then go

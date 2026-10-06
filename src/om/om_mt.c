@@ -1671,14 +1671,44 @@ OM_decrease_ref_object(st_oop p)
     retire(p);
 }
 
+/*
+ *  The old value is taken by an atomic exchange, not read and then
+ *  overwritten, so that each old value is released by exactly one storer.
+ *
+ *  Read, store, release as three steps is right for a slot one thread owns
+ *  and wrong for any slot several workers write -- an instance variable of
+ *  a shared object, a global, a class variable.  Two workers that read the
+ *  same old value X both release it, so X loses a count every time the race
+ *  is won; when the count reaches zero X is retired and freed while the
+ *  heap still refers to it.  The clamp in OM_decrease_ref_object does not
+ *  help: it catches a count about to go below zero, not one that reaches
+ *  zero early.  Eight workers storing four strings into one Array slot
+ *  300,000 times freed one of the strings two runs in three, and the next
+ *  allocation handed its table entry to a context -- the array then printed
+ *  `UndefinedObject>>unboundMethod' where a string had been.  Bugs5 OM-1.
+ *
+ *  This is the race OM_exchange_pointer was written for, and for a while it
+ *  was fixed only there, for the scheduler's activeProcess slot, on the
+ *  theory that ordinary slots were the program's business.  The ORDER of
+ *  stores is the program's business; the counts are not, because a wrong
+ *  count is a freed live object and doc/CONCURRENCY.md promises memory
+ *  safety at the bytecode level whatever the program does.
+ *
+ *  The exchange is a locked instruction where the store was a plain one,
+ *  and every push comes through here, so it was measured on the four
+ *  kernels of tests/bench/bench_parallel.c, one worker, ms, two runs each:
+ *
+ *      arithmetic  217.6 213.3 -> 215.5 219.2
+ *      mandelbrot  462.6 457.5 -> 463.8 474.9
+ *      intervals   150.2 149.3 -> 149.9 154.8
+ *      collections 239.3 244.2 -> 246.9 244.2
+ *
+ *  -- inside the run-to-run noise, at eight workers as well.
+ */
 void
 OM_store_pointer(uint32_t field, st_oop p, st_oop value)
 {
-    st_oop  old = OM_fetch_pointer(field, p);
-
-    OM_increase_ref(value);
-    ST_oop_store(&((st_oop *) OM_body(p))[field], value);
-    OM_decrease_ref(old);
+    OM_exchange_pointer(field, p, value);
 }
 
 int

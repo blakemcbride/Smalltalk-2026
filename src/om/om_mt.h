@@ -515,16 +515,19 @@ OM_decrease_ref(st_oop p)
  *  A counted store whose old value is released exactly once, however many
  *  workers store into the same slot at once.
  *
- *  OM_store_pointer reads the old value, stores the new one and releases
- *  the old one as three steps, which is right for a slot one thread owns
- *  and wrong for one they all write: two workers that read the same old
- *  value both release it, and the value one of them stored in between is
- *  never released at all.  The scheduler's activeProcess slot is written by
- *  every worker on every switch, and the Delay timing process -- the one
- *  process every worker runs in turn -- lost a count that way about once a
- *  minute under thirty-one workers, and was freed while it was linked on a
- *  semaphore.  Here the slot is exchanged atomically, so each old value
- *  belongs to one storer.
+ *  Reading the old value, storing the new one and releasing the old one as
+ *  three steps is right for a slot one thread owns and wrong for one they
+ *  all write: two workers that read the same old value both release it,
+ *  and the value one of them stored in between is never released at all.
+ *  The scheduler's activeProcess slot is written by every worker on every
+ *  switch, and the Delay timing process -- the one process every worker
+ *  runs in turn -- lost a count that way about once a minute under
+ *  thirty-one workers, and was freed while it was linked on a semaphore.
+ *  Here the slot is exchanged atomically, so each old value belongs to one
+ *  storer.
+ *
+ *  OM_store_pointer is this, for every slot: any slot of a shared object is
+ *  written by several workers, not only activeProcess.  See om_mt.c.
  */
 static inline void
 OM_exchange_pointer(uint32_t field, st_oop p, st_oop value)
