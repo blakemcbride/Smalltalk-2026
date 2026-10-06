@@ -2007,6 +2007,22 @@ apply_pragma(st_compiler *c, const char *selector,
         return;
     }
     /*
+     *  A bare name means something only as primitive:error:'s temporary,
+     *  handled above.  Anywhere else it is not a value at all, and kept it
+     *  would be a pragma argument that is not an object (Bugs5 COMP-1).
+     */
+    {
+        unsigned    i;
+
+        for (i = 0; i < argc; ++i) {
+            if (args[i].is_identifier) {
+                fail(c, "pragma <%s> takes literals, and '%s' is a name",
+                     selector, args[i].text);
+                return;
+            }
+        }
+    }
+    /*
      *  Any other pragma means nothing to the compiler and something to the
      *  image, so it is kept rather than dropped.  <shared: #serialize> is
      *  the one the parallel-safety audit is going to want; <test> and
@@ -2068,10 +2084,22 @@ parse_pragma(st_compiler *c)
              *  in either dialect writes a bare name in a pragma, so taking
              *  one here costs nothing and is what lets Pharo's Kernel --
              *  where nine methods use it -- compile at all.
+             *
+             *  Except true, false and nil, which are literals and go to
+             *  pragma_literal.  This arm used to take them too, with the
+             *  value left at the 0 memset wrote, and apply_pragma copied
+             *  that 0 into the method's pragma list: `<menu: true>' made
+             *  `pragmas' dereference oop 0 and a saved image that held one
+             *  refused to load (Bugs5 COMP-1).  apply_pragma now refuses a
+             *  bare name anywhere but primitive:error:.
              */
-            if (at(c, ST_TOK_IDENTIFIER)) {
+            if (at(c, ST_TOK_IDENTIFIER)
+             && strcmp(c->token.text, "true") != 0
+             && strcmp(c->token.text, "false") != 0
+             && strcmp(c->token.text, "nil") != 0) {
                 memset(&args[argc], 0, sizeof args[argc]);
                 args[argc].is_identifier = 1;
+                args[argc].value = ST_NIL;
                 snprintf(args[argc].text, sizeof args[argc].text, "%s",
                          c->token.text);
                 advance(c);

@@ -2949,6 +2949,21 @@ test_compile_inspect_debug(void)
     check_integer("Object compile: 'twice: n ^n * 2' classified: 'testing'"
                   " notifying: nil. ^(3 twice: 21)", 42);
 
+    /*
+     *  Bugs5 COMP-1: true, false and nil in a pragma are literals.  The
+     *  parser took any bare word as primitive:error:'s temporary and left
+     *  oop 0 in the argument, so `pragmas' crashed and an image holding one
+     *  would not load.  Any other bare name is refused.
+     */
+    check_string("Object compile: 'zzPragmaProbe <menu: true> <a: nil b: false> ^6'"
+                 " classified: 'testing'."
+                 " ^(Object compiledMethodAt: #zzPragmaProbe) pragmas printString",
+                 "(<menu: true> <a:b: nil false> )");
+    check_string("^[Object compile: 'zzPragmaProbe2 <menu: foo> ^6'"
+                 " classified: 'testing'. 'compiled'] on: Error do: [:e |"
+                 " e messageText]",
+                 "pragma <menu:> takes literals, and 'foo' is a name");
+
     /*  It is a real method: the Browser can find it and read it back.  */
     check_integer("Object compile: 'answerFortyTwo ^42' classified: 'testing'"
                   " notifying: nil."
