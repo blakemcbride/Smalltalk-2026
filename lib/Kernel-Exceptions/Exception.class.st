@@ -106,7 +106,6 @@ Exception >> findHandlerFrom: aContext [
 	| ctx guard willing |
 	ctx := aContext findNextHandlerContext.
 	[ctx isNil] whileFalse: [
-		guard := ctx tempAt: 1.
 		"A nil guard cannot handle anything, and asking it whether it does
 		 is how the system HANGS.
 
@@ -132,11 +131,30 @@ Exception >> findHandlerFrom: aContext [
 		 thing for the same reason while the handler block runs.  The
 		 wrong-guard error itself is Object>>handles:, in this package's
 		 Object extension, which says what was wrong in one sentence."
-		(guard notNil and: [ctx handlerIsActive]) ifTrue: [
-			ctx handlerIsActive: false.
-			willing := guard handles: self.
-			ctx handlerIsActive: true.
-			willing ifTrue: [^ctx]].
+		ctx method == (Exception compiledMethodAt: #runHandler)
+			ifTrue: [
+				"A handler running, and this signal raised inside it: go on
+				 from that handler's own on:do:.  Every on:do: between it and
+				 the signal it is handling belongs to the protected block,
+				 which is not running -- a signal from a handler is the
+				 handler's, and ANSI and Pharo both resume the search below
+				 its handler context.  This walked them, so
+				     [[Error signal] on: ZeroDivide do: [:e | #inner]]
+				         on: Error do: [:e | 1/0]
+				 ran the INNER handler, which then returned normally from
+				 the middle of the protected block and abandoned the outer
+				 one (Bugs5 KERN-1).  runHandler carries the handler mark so
+				 that the walk stops at it; its third temporary is nil, so
+				 nothing else takes it for an on:do:."
+				ctx := ctx receiver handlerContext.
+				ctx isNil ifTrue: [^nil]]
+			ifFalse: [
+				guard := ctx tempAt: 1.
+				(guard notNil and: [ctx handlerIsActive]) ifTrue: [
+					ctx handlerIsActive: false.
+					willing := guard handles: self.
+					ctx handlerIsActive: true.
+					willing ifTrue: [^ctx]]].
 		ctx := ctx findNextHandlerContext].
 	^nil
 ]
@@ -144,8 +162,15 @@ Exception >> findHandlerFrom: aContext [
 { #category : 'private' }
 Exception >> runHandler [
 	"Run the handler with itself turned off, so that anything IT signals
-	 goes to the next handler out rather than back to this one."
-	| block result |
+	 goes to the next handler out rather than back to this one.
+
+	 Marked as on:do: is, so that findHandlerFrom:'s walk stops here and
+	 can skip from a running handler to its own on:do: (Bugs5 KERN-1).
+	 The mark is a tag and always fails into this body; the third
+	 temporary, which on:do: keeps true while it is listening, is never
+	 written here, so nothing reads this frame as a handler."
+	| block result notAHandler |
+	<primitive: 199>
 	block := handlerContext tempAt: 2.
 	handlerContext handlerIsActive: false.
 	result := block numArgs = 0
@@ -181,9 +206,23 @@ Exception >> unwindTo: aContext [
 	"Run every unwind action between the signal and aContext, innermost
 	 first -- there may be several nested, and each one's ensure: block
 	 has to run before the frames outside it are discarded."
-	| unwind |
-	signalContext isNil ifTrue: [^self].
-	unwind := signalContext findNextUnwindUpTo: aContext.
+	| unwind ctx |
+	"From HERE, not from the signal.  The handler block and whatever it
+	 called sit above signalContext on the stack -- a handler is entered
+	 from inside signal -- and they are discarded too.  Walked from
+	 signalContext, an ensure: inside the handler was never run: `m
+	 critical: [e return: 1]' in a handler left the Mutex locked for ever,
+	 and the same for retry, retryUsing:, resume: and pass (Bugs5 KERN-2).
+
+	 Only if aContext is on this stack.  An exception kept and returned
+	 from later names a handler that has gone, and a walk looking for it
+	 would run every unwind block to the bottom of the process; the jump
+	 after this refuses that context anyway."
+	ctx := thisContext.
+	[ctx == aContext] whileFalse: [
+		ctx := ctx sender.
+		ctx isNil ifTrue: [^self]].
+	unwind := thisContext findNextUnwindUpTo: aContext.
 	[unwind isNil] whileFalse: [
 		unwind runUnwindBlock.
 		unwind := unwind findNextUnwindUpTo: aContext]
@@ -346,6 +385,9 @@ Exception >> resume: aValue [
 		^Error new signal: 'this exception is not resumable'].
 	signalContext isNil ifTrue: [
 		^Error new signal: 'this exception has no context to resume'].
+	"The handler's own frames are above signalContext and are discarded
+	 by the jump, so their ensure: blocks run first (Bugs5 KERN-2)."
+	self unwindTo: signalContext.
 	"The frame stays and may catch again, so put it back in service."
 	handlerContext isNil ifFalse: [handlerContext handlerIsActive: true].
 	"Primitive 247 refuses a context that has already returned, and there

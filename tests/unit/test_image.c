@@ -554,8 +554,12 @@
  *  3096 -> 3098 with Bugs5 OM-6: Monitor>>abandonWait: and >>dropWaiter:,
  *  which take a terminated waiter off the list, or pass on the wakeup it
  *  was given.
+ *
+ *  3098 -> 3101 with Bugs5 KERN-2: Semaphore>>critical:, which in 1983 had
+ *  no ensure: at all, Semaphore>>waitAndMark:, and
+ *  ContextPart>>isPastFirstSend, which both locks' terminate paths ask.
  */
-#define LIB_METHODS             3098
+#define LIB_METHODS             3101
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -2839,9 +2843,10 @@ test_browsing(void)
      *  2705152 -> 2711414 with Bugs5 OM-5: six methods and their comments
      *  in Mutex and Process.  2711414 -> 2712882 with
      *  Process>>signalFrameFor:over:.  2712882 -> 2714748 with Bugs5
-     *  OM-6, in Monitor.
+     *  OM-6, in Monitor.  2714748 -> 2718331 with Bugs5 KERN-1 and
+     *  KERN-2, in Exception, Semaphore and ContextPart.
      */
-    check_integer("(SourceFiles at: 1) contents size", 2714748);
+    check_integer("(SourceFiles at: 1) contents size", 2718331);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -7883,6 +7888,41 @@ test_bugs4_proc(void)
     /*  And the replacement really is the protected block now.  */
     check_string("^[1/0] on: ZeroDivide do: [:e | e retryUsing: ['second']]",
                  "second");
+
+    /*
+     *  Bugs5 KERN-1: a signal raised inside a handler is the handler's, and
+     *  the search for its handler starts below the handler's own on:do:.
+     *  It walked the on:do:s inside the protected block, so the inner
+     *  ZeroDivide handler took the 1/0 and returned from the middle of the
+     *  protected block, abandoning the outer handler.
+     */
+    check_string("^[[[Error signal: 'a'] on: ZeroDivide do: [:e | 'zd-inner']] "
+                 "on: Error do: [:e | 1/0]] on: ZeroDivide do: [:e | 'zd-outer']",
+                 "zd-outer");
+    check_string("| log | log := OrderedCollection new. "
+                 "[[[log add: #work. Error signal: 'x'. #done] "
+                 "on: ZeroDivide do: [:e | log add: #inner. #inner]] "
+                 "on: Error do: [:e | log add: #outer. 1/0. #outer]] "
+                 "on: ZeroDivide do: [:e | log add: #zd. #zd]. "
+                 "^(log includes: #inner) ifTrue: ['inner ran'] "
+                 "ifFalse: ['skipped']", "skipped");
+    /*
+     *  Bugs5 KERN-2: the handler block's own ensure: blocks run when it
+     *  leaves by return:, resume:, retry, retryUsing: or pass.  The unwind
+     *  walked from the signal, and the handler's frames are above it.
+     */
+    check_string("| log | log := OrderedCollection new. "
+                 "[Error signal: 'a'] on: Error do: [:e | "
+                 "[e return: 3] ensure: [log add: #r]]. "
+                 "[Warning signal: 'a'] on: Warning do: [:e | "
+                 "[e resume: 3] ensure: [log add: #s]]. "
+                 "[log size < 3 ifTrue: [Error signal: 'a']] on: Error do: [:e | "
+                 "[e retry] ensure: [log add: #t]]. "
+                 "[Error signal: 'a'] on: Error do: [:e | "
+                 "[e retryUsing: [5]] ensure: [log add: #u]]. "
+                 "[[Error signal: 'a'] on: Error do: [:e | "
+                 "[e pass] ensure: [log add: #p]]] on: Error do: [:e | 9]. "
+                 "^String withAll: (log collect: [:x | x first])", "rstup");
 
     /*
      *  PROC-3: a forkParallel: task that ends without settling its promise

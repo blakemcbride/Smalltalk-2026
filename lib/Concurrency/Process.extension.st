@@ -143,9 +143,14 @@ Process >> terminate [
 { #category : '*Concurrency' }
 Process >> noteMutexOwnerIn: aContext waiting: wasWaiting [
 	"If I was stopped in Mutex>>waitFor:, let the Mutex record me as its
-	 owner if the wait had already handed me the lock."
+	 owner if the wait had already handed me the lock.  If in
+	 Semaphore>>waitAndMark:, the same for Semaphore>>critical:'s cell."
 	aContext method == (Mutex compiledMethodAt: #waitFor:) ifTrue: [
-		aContext receiver noteOwner: self stoppedIn: aContext waiting: wasWaiting]
+		^aContext receiver noteOwner: self stoppedIn: aContext waiting: wasWaiting].
+	(wasWaiting not
+	 and: [aContext method == (Semaphore compiledMethodAt: #waitAndMark:)
+	 and: [aContext isPastFirstSend]])
+		ifTrue: [(aContext tempAt: 1) at: 1 put: true]
 ]
 
 { #category : '*Concurrency' }

@@ -671,6 +671,37 @@ main(void)
         }
     }
 
+    /*
+     *  Bugs5 KERN-2: a critical: inside a handler that leaves by return:
+     *  released nothing -- the handler's ensure: blocks never ran -- so
+     *  the next critical: waited for ever.  The 1983 Semaphore>>critical:
+     *  had no ensure: at all and is checked beside Mutex.
+     */
+    {
+        static const char batch[] =
+            "| m flag | flag := false. m := Mutex new. [Error signal: 'a'] "
+            "on: Error do: [:e | m critical: [e return: 1]]. [m critical: "
+            "[flag := true]] fork. (Delay forMilliseconds: 300) wait. "
+            "flag ifTrue: ['mutex released'] ifFalse: ['mutex held']\n"
+            "| m flag | flag := false. m := Semaphore forMutualExclusion. "
+            "[Error signal: 'a'] on: Error do: [:e | m critical: "
+            "[e return: 1]]. [m critical: [flag := true]] fork. "
+            "(Delay forMilliseconds: 300) wait. (flag and: "
+            "[(m instVarAt: 3) = 1]) ifTrue: ['semaphore released'] "
+            "ifFalse: ['semaphore held']\n";
+
+        status = serve(batch, 4, out, sizeof out);
+        ++st_test_checks;
+        if (status < 0) {
+            ++st_test_failures;
+            printf("  FAIL KERN-2: could not run the server\n");
+        } else {
+            expect(out, "==> 'mutex released'", "KERN-2 Mutex in a handler");
+            expect(out, "==> 'semaphore released'",
+                   "KERN-2 Semaphore in a handler");
+        }
+    }
+
     /*  B58: a startup that does not compile writes no image, exit 1.  */
     unlink(BADIMAGE);
     snprintf(command, sizeof command,

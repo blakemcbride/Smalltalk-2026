@@ -172,3 +172,22 @@ ContextPart >> runUnwindBlock [
 	self tempAt: 1 put: nil.
 	^block value
 ]
+
+{ #category : '*Kernel-Exceptions' }
+ContextPart >> isPastFirstSend [
+	"Whether my pc is beyond my method's first send -- the question
+	 Mutex>>waitFor: and Semaphore>>waitAndMark: are written so that it
+	 can be asked: each sends wait and nothing before it, so a process
+	 stopped there with its pc past that send, and not taken off the
+	 semaphore, has been given it.  A short send is one byte, 131 and 133
+	 two, 132 three."
+	| stream byte |
+	pc isNil ifTrue: [^false].
+	stream := InstructionStream on: self method.
+	(stream scanFor: [:b | b >= 208 or: [b between: 131 and: 134]])
+		ifFalse: [^false].
+	byte := self method at: stream pc.
+	^pc >= (stream pc + (byte >= 208
+		ifTrue: [1]
+		ifFalse: [byte = 132 ifTrue: [3] ifFalse: [2]]))
+]

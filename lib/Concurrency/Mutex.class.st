@@ -130,19 +130,9 @@ Mutex >> noteOwner: aProcess stoppedIn: aContext waiting: wasWaiting [
 	 wasWaiting is whether the stop took it OFF the semaphore -- then the
 	 wait never completed, the pc is past the send all the same, and the
 	 lock belongs to somebody else."
-	| stream sendEnd |
 	wasWaiting ifTrue: [^self].
 	aContext method == (Mutex compiledMethodAt: #waitFor:) ifFalse: [^self].
-	aContext pc isNil ifTrue: [^self].
-	"The pc just past the method's one send.  waitFor: sends nothing but
-	 wait, so the first send found is it."
-	stream := InstructionStream on: aContext method.
-	(stream scanFor: [:byte | byte >= 208 or: [byte between: 131 and: 134]])
-		ifFalse: [^self].
-	sendEnd := stream pc + ((aContext method at: stream pc) >= 208
-		ifTrue: [1]
-		ifFalse: [(aContext method at: stream pc) = 132 ifTrue: [3] ifFalse: [2]]).
-	aContext pc >= sendEnd ifTrue: [owner := aProcess]
+	aContext isPastFirstSend ifTrue: [owner := aProcess]
 ]
 
 { #category : 'locking' }
