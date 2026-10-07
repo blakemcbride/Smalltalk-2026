@@ -1017,9 +1017,9 @@ Integer >> floorLog: radix [
 	 the exact path too rather than falling back to a double that cannot
 	 hold the receiver; a Fraction that stands for one is already an
 	 Integer, since Fraction reduces itself.  A non-positive receiver, or
-	 a base that is genuinely fractional, goes to Float>>floorLog: as it always
-	 did, including 1983's answer of zero for a receiver smaller than the
-	 base, which is what `self assumed positive' in its comment means."
+	 a base that is genuinely fractional, goes to Float>>floorLog: as it
+	 always did -- which refuses a receiver of zero or less now rather than
+	 answering 1983's 0 for it (Bugs5 KERN-12)."
 	| base estimate |
 	base := (radix isFloat and: [radix isFinite and: [radix fractionPart = 0.0]])
 		ifTrue: [radix truncated]

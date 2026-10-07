@@ -1416,10 +1416,22 @@ integer_literal(st_compiler *c)
             fail(c, "integer literal too large for this compile context");
             return ST_NIL;
         }
-        return c->ctx->make_large_integer_digits(LEX_text(&c->token),
-                                                 c->token.integer_radix,
-                                                 c->token.integer < 0,
-                                                 c->ctx->user);
+        st_oop  big = c->ctx->make_large_integer_digits(
+                          LEX_text(&c->token), c->token.integer_radix,
+                          c->token.integer < 0, c->ctx->user);
+
+        /*
+         *  Nil is the builder saying it could not, never a value: no
+         *  integer literal is nil.  It was compiled as the literal all the
+         *  same, so a literal of 1,234 digits or more -- past the fixed
+         *  buffer the builder had then -- evaluated to nil with no error
+         *  (found alongside Bugs5 KERN-6).  The buffer is gone, and what
+         *  can still fail (memory) fails the compile here, by name.
+         */
+        if (big == ST_NIL)
+            fail(c, "integer literal of %u digits could not be built",
+                 (unsigned) strlen(LEX_text(&c->token)));
+        return big;
     }
     if (OM_int_fits((st_int) c->token.integer))
         return OM_int_oop((st_int) c->token.integer);

@@ -33,9 +33,8 @@ Login class >> login: username password: password outjson: outjson request: requ
 	rec := request db
 		fetchOne: 'select user_id, user_password from users where user_name = ? and user_active = ''Y'''
 		with: (Array with: username).
-	rec isNil ifTrue: [^nil].
-	stored := rec stringAt: 'user_password'.
-	stored isNil ifTrue: [^nil].
+	stored := rec isNil ifTrue: [nil] ifFalse: [rec stringAt: 'user_password'].
+	stored isNil ifTrue: [self spendAVerifyOn: password. ^nil].
 	(self password: password matches: stored) ifFalse: [^nil].
 	"ud at: 'abc' put: 5      -- anything to keep beside the user on the back end"
 	"outjson at: 'user_type' put: 'xxx'      -- anything to send back to the front end"
@@ -54,6 +53,27 @@ Login class >> checkLogin: aUser request: request [
 	stored := rec stringAt: 'user_password'.
 	stored isNil ifTrue: [^false].
 	^self password: aUser password matches: stored
+]
+
+{ #category : 'private' }
+Login class >> spendAVerifyOn: entered [
+	"Spend what checking entered against a real stored hash would have, and
+	 throw the answer away: the login of a user who is not there.
+
+	 A NAME THAT IS NOT THERE MUST COST WHAT ONE THAT IS COSTS.  The login
+	 answered nil the moment the row was missing, and a name that had a
+	 row paid for PBKDF2 first -- two hundred milliseconds of it at the
+	 iterations PasswordHash uses -- so the time an `Invalid login' took
+	 said which user names exist, to anybody who asked a few times (Bugs5
+	 NET-15).  The reply was already the same in every case, as the class
+	 comment says; now the time is too.  The derivation is the one verify:
+	 runs, at PasswordHash's own iterations, over a fixed salt: there is
+	 nothing to keep, so nothing shared between workers and no random
+	 bytes spent.  A row stored in one of the two old forms is cheaper to
+	 check than this, which says only that the account is old."
+	Crypto pbkdf2: (entered isString ifTrue: [entered] ifFalse: [''])
+		salt: 'st2026 no such user'
+		iterations: PasswordHash iterations
 ]
 
 { #category : 'private' }

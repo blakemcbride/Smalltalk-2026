@@ -206,3 +206,99 @@ Fraction >> isZero [
 	 field already says."
 	^numerator = 0
 ]
+
+"
+Logarithms, roots and floorLog: for a Fraction of any size.
+
+Number>>ln, log and sqrt are `self asFloat ...', and a Fraction whose value
+is past 1e308, or under the smallest normal double, has no Float to ask:
+`((10 raisedTo: 400) / 3) sqrt' answered inf for a number whose root is
+5.8e199, `(1/(10 raisedTo: 400)) ln' raised `ln is defined only for positive
+numbers' because asFloat was 0.0, and `log' did both (Bugs5 KERN-13).  Bugs2
+B39 fixed exactly this for Integer -- Integer>>ln, log and sqrt answer at any
+size -- and Fraction was left going the old way.
+
+A Fraction whose terms differ by fewer than a thousand bits has a normal
+Float, correctly rounded, and goes the way it always went: that is the
+precise path and nearly every Fraction takes it.  Outside that, ln is the
+difference of the two terms' logarithms, each of which Integer answers at
+any size, and sqrt takes an even power of two out of the ratio, roots what is
+left as a normal Float, and puts half the power back with timesTwoPower:,
+which is how Integer>>sqrt does it.  A receiver of zero or less still goes to
+the Float, which refuses it as before.
+"
+
+{ #category : '*Kernel-Protocol' }
+Fraction >> hasNormalFloat [
+	"Whether asFloat is a normal double, near enough to be the precise
+	 way to ask me a transcendental question.  The bound is on the terms'
+	 bit counts, so it costs no division; a thousand bits is well inside
+	 the double's 1022 either way."
+	^(numerator highBit - denominator highBit) abs < 1000
+]
+
+{ #category : '*Kernel-Protocol' }
+Fraction >> ln [
+	"My natural logarithm, for a Fraction of any size.  See above."
+	(self > 0 and: [self hasNormalFloat not]) ifFalse: [^self asFloat ln].
+	^numerator ln - denominator ln
+]
+
+{ #category : '*Kernel-Protocol' }
+Fraction >> log [
+	"My base-ten logarithm, for a Fraction of any size.  See above; the
+	 constant is ln 10, as in Integer>>log."
+	(self > 0 and: [self hasNormalFloat not]) ifFalse: [^self asFloat log].
+	^self ln / 2.302585092994046
+]
+
+{ #category : '*Kernel-Protocol' }
+Fraction >> sqrt [
+	"My square root as a Float, for a Fraction of any size.  See above.
+
+	 sqrt (n / d) is 2^k sqrt (n / (d * 2^(2k))), with k half the
+	 difference of the terms' bit counts, so that what is rooted is
+	 within a factor of four of one.  The ratio is converted with
+	 floatOfNumerator:denominator:, which rounds once and needs no
+	 reduced terms -- reducing a Fraction of a thousand-bit numerator is
+	 the cost Bugs5 NET-2 took out of the number reader."
+	| k |
+	(self > 0 and: [self hasNormalFloat not]) ifFalse: [^self asFloat sqrt].
+	k := numerator highBit - denominator highBit // 2.
+	^(k > 0
+		ifTrue: [Fraction floatOfNumerator: numerator
+					denominator: (denominator bitShift: 2 * k)]
+		ifFalse: [Fraction floatOfNumerator: (numerator bitShift: -2 * k)
+					denominator: denominator]) sqrt timesTwoPower: k
+]
+
+{ #category : '*Kernel-Protocol' }
+Fraction >> floorLog: radix [
+	"The floor of my logarithm in that base, exactly.
+
+	 Number>>floorLog: is `self asFloat floorLog: radix', and below one
+	 that reached 1983's `self < radix ifTrue: [^0]': `(1/1000) floorLog:
+	 10' answered 0 for -3 (Bugs5 KERN-12).  A Fraction is exact, so the
+	 answer is too: an estimate from the logarithms -- Fraction>>ln, good
+	 at any size -- CORRECTED against exact powers of the base, as
+	 Integer>>floorLog: does.  `10 raisedTo: -3' is the Fraction 1/1000,
+	 so the comparisons are between exact numbers on both sides of one.
+
+	 A whole base, an Integer or a Float that stands for one, is corrected
+	 exactly at any size.  A fractional base is corrected through its own
+	 exact Fraction while the exponent stays within a double's range of
+	 powers; past that the estimate stands, since raising a base that
+	 near one to such a power is the cost and not the answer.  Anything
+	 that has no logarithm -- a receiver of zero or less, a base of one or
+	 less, a NaN -- goes to Float>>floorLog:, which refuses it by name."
+	| base estimate |
+	(self > 0 and: [radix isNumber and: [radix > 1 and: [
+		radix isFloat not or: [radix isFinite]]]])
+			ifFalse: [^self asFloat floorLog: radix].
+	base := radix isFloat ifTrue: [radix asExactFraction] ifFalse: [radix].
+	estimate := (self ln / base ln) floor.
+	(base isInteger or: [estimate abs < 1100]) ifFalse: [^estimate].
+	[(base raisedTo: estimate) > self] whileTrue: [estimate := estimate - 1].
+	[(base raisedTo: estimate + 1) <= self] whileTrue: [estimate := estimate + 1].
+	^estimate
+]

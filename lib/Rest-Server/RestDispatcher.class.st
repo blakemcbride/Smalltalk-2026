@@ -407,25 +407,21 @@ RestDispatcher >> forLog: aStringOrNil [
 	 one line, keeps it readable, and keeps what the client actually sent
 	 visible rather than dropped -- the point of logging the name at all is
 	 to see what was asked for.  It is bounded at 200 characters for the
-	 same reason a header is: the field is the client's and the log is not."
-	| out text cut |
+	 same reason a header is: the field is the client's and the log is not.
+
+	 The escaping itself is HttpCodec class>>printableForLog:, which RestLog
+	 now applies to every line (Bugs5 NET-13); it is applied here as well
+	 so that this answers what the log will show, and escaping twice is
+	 harmless, since an escape is printable ASCII."
+	| text cut |
 	aStringOrNil isNil ifTrue: [^'<nil>'].
 	text := aStringOrNil isString
 		ifTrue: [aStringOrNil]
 		ifFalse: [aStringOrNil printString].
 	cut := text size > 200.
 	cut ifTrue: [text := text copyFrom: 1 to: 200].
-	out := WriteStream on: (String new: text size + 16).
-	text do: [:c | | code |
-		code := c asInteger.
-		(code < 32 or: [code > 126])
-			ifTrue: [
-				out nextPutAll: '\x';
-					nextPut: ('0123456789abcdef' at: (code bitShift: -4) + 1);
-					nextPut: ('0123456789abcdef' at: (code bitAnd: 15) + 1)]
-			ifFalse: [out nextPut: c]].
-	cut ifTrue: [out nextPutAll: '...'].
-	^out contents
+	text := HttpCodec printableForLog: text.
+	^cut ifTrue: [text, '...'] ifFalse: [text]
 ]
 
 { #category : 'private - replies' }

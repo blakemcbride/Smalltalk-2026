@@ -418,8 +418,8 @@ that it can be edited on the running server):
   it changes);
   `Login` with no database admits anybody (the dispatcher's rule).
 - `WebDemoLiveTest` (`database-live` profile, **outside** the ratchet as
-  that profile's comment demands): its own `st2026-web-demo-test.db` filled
-  by `Init`; `Login` as `smalltalk`/`password` against the hash copied verbatim
+  that profile's comment demands): a database of its own per test (a name
+  no other run uses, removed in `tearDown`) filled by `Init`; `Login` as `smalltalk`/`password` against the hash copied verbatim
   from Kiss — the compatibility test; a wrong password refused; the phone
   CRUD round trip through `_uuid`; `Users addRecord` then a login as that
   user; a service file edited and the next call answering the new code.

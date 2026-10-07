@@ -178,11 +178,13 @@ Behavior >> compileUnchecked: code [
 
 	 THE SOURCE IS RECORDED, which 1983's did not do, and the reason is the
 	 routing above.  A method with no source is recovered by DECOMPILING it,
-	 and the decompiler is 1983's: it reads 1983's block bytecodes and
-	 answers `unusedBytecode' on a closure.  So a method installed here and
-	 then reached by recompile:from: -- which is every method of a class
-	 somebody adds an instance variable to -- used to come back as text and
-	 now would not, and the reshape would raise in the middle.  Behavior>>
+	 and decompiled text has lost its names -- every variable comes back as
+	 t1, t2 -- and its comments.  So a method installed here and then
+	 reached by recompile:from: -- which is every method of a class
+	 somebody adds an instance variable to -- would come back as text
+	 nobody wrote.  (It used to be worse: the decompiler could not read a
+	 closure at all, and the reshape raised in the middle.  See
+	 Decompiler.extension.st.)  Behavior>>
 	 putSource:inFile: is 1983's own method for precisely this case, a
 	 Behavior with no organization to classify into, and nothing called it
 	 until now."

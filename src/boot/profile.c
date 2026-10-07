@@ -399,6 +399,76 @@ add_directory(expansion *e, const char *dir, int dialect)
     return ok;
 }
 
+/*
+ *  Fold away the `.' and `name/..' steps in a relative or absolute path,
+ *  in place, without asking the file system.
+ *
+ *  For manifest lines only (Bugs5 COMP-9).  A file's path is not just how
+ *  it is opened: the bootstrap records it in the image, so
+ *  `profiles/../sources/Kernel-Objects/...' and `sources/Kernel-Objects/...'
+ *  make two different images of the same source.  Resolving a manifest's
+ *  lines against the manifest therefore has to land on the spelling they
+ *  had before, or the bluebook image stops being byte for byte what the
+ *  1983 manifest has always produced.  Lexical folding can disagree with
+ *  the file system across a symbolic link to a directory; a manifest that
+ *  reaches its sources through one is not something this tree has.
+ *  A leading `..' that has nothing to cancel is kept.
+ */
+static int
+is_separator(char c)
+{
+#if defined(_WIN32)
+    if (c == '\\')
+        return 1;
+#endif
+    return c == '/';
+}
+
+static void
+fold_dots(char *path)
+{
+    char       *out = path;
+    const char *in = path;
+    char       *start;
+    unsigned    kept = 0;          /*  components in `out' that `..' may cancel  */
+
+    if (is_separator(*in))
+        *out++ = *in++;
+    start = out;
+    while (*in) {
+        const char *end = in;
+        size_t      n;
+
+        while (*end && !is_separator(*end))
+            ++end;
+        n = (size_t) (end - in);
+        if (n == 0 || (n == 1 && in[0] == '.')) {
+            /*  an empty step or `.': nothing  */
+        }  else if (n == 2 && in[0] == '.' && in[1] == '.' && kept) {
+            /*  drop the last component written, and its separator  */
+            --out;
+            while (out > start && !is_separator(out[-1]))
+                --out;
+            if (out > start)
+                --out;
+            --kept;
+        }  else if (n == 2 && in[0] == '.' && in[1] == '.' && start > path) {
+            /*  `/..' is `/'  */
+        }  else  {
+            if (out > start)
+                *out++ = '/';
+            memmove(out, in, n);
+            out += n;
+            if (!(n == 2 && in[0] == '.' && in[1] == '.'))
+                ++kept;
+        }
+        in = *end ? end + 1 : end;
+    }
+    if (out == start && start == path)
+        *out++ = '.';
+    *out = '\0';
+}
+
 /*  ----------  Manifests  ----------  */
 
 static int
@@ -406,20 +476,48 @@ add_manifest(expansion *e, const char *path, int dialect)
 {
     FILE   *f = fopen(path, "r");
     char    line[1024];
+    char    here[1024];
+    char    root[1024];
 
     if (!f) {
         snprintf(e->error, e->error_len, "cannot open manifest %s", path);
         return 0;
     }
+    /*
+     *  What a manifest's lines are relative to.
+     *
+     *  They were opened as written, which is to say relative to the
+     *  current directory, so a profile found by any other path -- `cd pf
+     *  && st2026 -bootstrap -profile ../profiles/st2026.profile' -- found
+     *  the manifest beside it and then could not open a single file it
+     *  named (Bugs5 COMP-9), and since bluebook names the manifest and
+     *  every profile requires bluebook, no profile worked from anywhere
+     *  but the repository root.
+     *
+     *  A manifest names its files the way `sources/MANIFEST' always has:
+     *  from the directory the manifest's own directory sits in, each line
+     *  starting `sources/'.  So the root is the manifest's grandparent,
+     *  and fold_dots brings `profiles/../sources/...' back to the
+     *  `sources/...' it always was when the build runs from the root.
+     */
+    directory_of(path, here, sizeof here);
+    directory_of(here, root, sizeof root);
     while (fgets(line, sizeof line, f)) {
         size_t  n = strlen(line);
         char    name[256];
+        char    file[1024];
 
         while (n && (line[n - 1] == '\n' || line[n - 1] == '\r'))
             line[--n] = '\0';
         if (!n)
             continue;
-        class_name_of(line, name, sizeof name);
+        if (!resolve(root, line, file, sizeof file)) {
+            snprintf(e->error, e->error_len, "%s: path too long", path);
+            fclose(f);
+            return 0;
+        }
+        fold_dots(file);
+        class_name_of(file, name, sizeof name);
         /*
          *  Manifests are inherited content, so both lists apply in
          *  full -- the 1983 SharedQueue arrives through sources/MANIFEST
@@ -429,11 +527,11 @@ add_manifest(expansion *e, const char *path, int dialect)
         if (names_contain(&e->exclude, name))
             continue;
         if (names_contain(&e->supersede, name)
-         && file_defines_its_class(line)) {
-            SRC_names_add(&e->superseded_paths, line);
+         && file_defines_its_class(file)) {
+            SRC_names_add(&e->superseded_paths, file);
             continue;
         }
-        add_file(e, line, dialect);
+        add_file(e, file, dialect);
     }
     fclose(f);
     return 1;

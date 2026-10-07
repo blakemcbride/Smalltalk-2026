@@ -50,6 +50,13 @@ void        OM_mourn_queue_visit(om_visit_fn visit);
 uint32_t    OM_mourn_pending(void);
 
 /*
+ *  Copy up to `max' of the waiting ephemerons into `out' and answer how
+ *  many were copied.  For the image writer, which has to put back the
+ *  ephemeron bit the collector cleared on each of them (Bugs5 OM-9).
+ */
+uint32_t    OM_mourn_queued(st_oop *out, uint32_t max);
+
+/*
  *  Take the oldest queued ephemeron, or ST_NIL when there is none.  The
  *  primitive behind Finalizer>>primNextMournedObjectSignalling:.
  */

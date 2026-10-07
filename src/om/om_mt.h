@@ -673,6 +673,15 @@ void        OM_set_root_forwarder(om_root_forwarder forwarder,
  */
 void        OM_set_swap_guard(om_root_pin_fn pinned);
 uint32_t    OM_collect(void);
+/*
+ *  Collect, and then run `fn' in the SAME safepoint, with every worker
+ *  still parked; answers what `fn' answered.  The image writer's, so that
+ *  nothing moves between the collection and the last byte written (Bugs5
+ *  OM-14).
+ */
+/*  The loader's: every FREE entry onto the free chain.  No workers yet.  */
+void        OM_rebuild_free_chain(void);
+uint32_t    OM_collect_then(uint32_t (*fn)(void *user), void *user);
 
 /*
  *  Publish this worker's epoch, release what that makes safe, and advance
@@ -680,6 +689,27 @@ uint32_t    OM_collect(void);
  *  1024 bytecodes; see the reclamation note in om_mt.c.
  */
 void        OM_epoch_step(void);
+
+/*
+ *  Step out of the epoch and back into it, around a stretch in which this
+ *  worker promises not to touch the object memory -- an idle sleep, a
+ *  native region.  The epoch advances past a worker that is out without
+ *  waiting for it to publish, which an idle worker never would (Bugs5
+ *  OM-10); coming back publishes the current epoch before anything is
+ *  touched.  Not nested, and a no-op off a worker thread.
+ */
+/*
+ *  Answer whether an allocation on this thread has been refused at the
+ *  table's ceiling since the last call, and forget it.  The interpreter
+ *  asks after a primitive fails, so that `Array new: 1' at the ceiling is
+ *  an OutOfMemory like a send that could not get a context, rather than a
+ *  primitive failure whose error handling needs the room there is not
+ *  (Bugs5 OM-8, found alongside).
+ */
+int         OM_take_table_refused(void);
+
+void        OM_epoch_quiesce(void);
+void        OM_epoch_resume(void);
 
 /*
  *  The next live instance of a class after `after`, or ST_OOP_INVALID.

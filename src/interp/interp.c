@@ -2900,8 +2900,29 @@ run_method_found(st_oop receiver, st_oop method)
     if (st_vm.primitive_index > 0) {
         ST_trace_primitive(st_vm.primitive_index);
         st_vm.success = 1;
+#ifdef ST_OM_MT
+        (void) OM_take_table_refused();
+#endif
         if (ST_primitive_dispatch(st_vm.primitive_index))
             return;                     /*  the primitive answered  */
+#ifdef ST_OM_MT
+        /*
+         *  Failed because the object table is at its ceiling: that is an
+         *  OutOfMemory, delivered exactly as activate_new_method delivers
+         *  one -- the reserve released and #outOfMemory sent in place of
+         *  this send.  Running the fallback body instead raised `a
+         *  primitive has failed' from a full table, and handling THAT
+         *  error needs objects too: each attempt collected, found nothing,
+         *  failed again, and the image spent its time in collections that
+         *  reclaimed nothing instead of telling the program.  Only a
+         *  runaway whose contexts were being recycled showed it -- with
+         *  every context fresh, activation ran out first and took the
+         *  path below (Bugs5 OM-8, found alongside, once OM-10 let the
+         *  epoch recycle contexts with idle workers in the pool).
+         */
+        if (OM_take_table_refused() && send_out_of_memory())
+            return;
+#endif
         /*  Otherwise fall through and run the method's Smalltalk body.  */
     }
     activate_new_method();
@@ -2926,12 +2947,13 @@ execute_new_method(st_oop receiver, st_oop selector, st_oop lookup_class,
 {
     st_oop      found;
     st_oop      method;
-    st_oop      args[8];
+    st_oop      args[ST_TRACE_MAX_ARGS];
     uint32_t    i;
 
     method = lookup_method(selector, lookup_class, &found);
 
-    for (i = 0; i < st_vm.argument_count && i < 8; ++i)
+    /*  Only what the trace will print; it reads no further (INTERP-11).  */
+    for (i = 0; i < st_vm.argument_count && i < ST_TRACE_MAX_ARGS; ++i)
         args[i] = ST_stack_value(st_vm.argument_count - 1 - i);
 
     if (traced)

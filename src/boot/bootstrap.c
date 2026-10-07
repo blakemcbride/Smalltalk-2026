@@ -800,57 +800,97 @@ BOOT_make_large_integer(int64_t value, void *user)
 /*
  *  A LargeInteger from the literal's own digits.
  *
- *  Multiply-accumulate in base 256, which is how 1983 stores them: the bytes
- *  are the unsigned magnitude, little end first, and the sign is the class.
- *  This exists because int64_t is not wide enough to carry a literal, and
- *  silently wrapping one is how `18446744073709551616' came to answer 0.
+ *  Multiply-accumulate, and then stored in base 256, which is how 1983
+ *  stores them: the bytes are the unsigned magnitude, little end first, and
+ *  the sign is the class.  This exists because int64_t is not wide enough to
+ *  carry a literal, and silently wrapping one is how `18446744073709551616'
+ *  came to answer 0.
+ *
+ *  The accumulator is sized from the literal rather than fixed.  It was 512
+ *  bytes on the stack, and a literal that needed more -- 1,234 decimal
+ *  digits and up -- answered nil, which integer_literal handed on as the
+ *  literal's value: `1111...1' of 1,300 digits evaluated to nil, under -eval
+ *  and under `Compiler evaluate:' alike, with nothing said (found alongside
+ *  Bugs5 KERN-6).  Number class>>readFrom: of the same text answered the
+ *  right number, so the one reader that disagreed was the compiler's.  A
+ *  digit is at most log2 36 = 5.2 bits, so one 32-bit limb per digit is
+ *  more than enough room and no literal can run out of it.
+ *
+ *  The limbs are 32 bits wide and each pass takes as many digits as keep
+ *  radix^k within 32 bits -- nine decimal digits a pass instead of one, on
+ *  a quarter as many limbs -- because this is quadratic in the length of
+ *  the literal and a ten-thousand-digit one is not absurd in a test.
+ *
+ *  Nil still means failure -- out of memory, or a radix past 36 -- and
+ *  integer_literal now says so instead of compiling it as the value.
  */
 st_oop
 BOOT_make_large_integer_digits(const char *digits, unsigned radix,
                                int negative, void *user)
 {
-    uint8_t     bytes[512];
-    unsigned    used = 1;
-    unsigned    i;
+    size_t      n = strlen(digits);
+    uint32_t   *limbs;
+    size_t      used = 1;
+    size_t      bytes;
+    size_t      i;
     st_oop      big;
 
     (void) user;
     if (radix < 2 || radix > 36)
         return ST_NIL;
-    bytes[0] = 0;
-    for (; *digits; ++digits) {
-        unsigned    carry;
-        int         d;
+    limbs = (uint32_t *) calloc(n + 1, sizeof *limbs);
+    if (!limbs)
+        return ST_NIL;
+    while (*digits) {
+        uint64_t    multiplier = 1;
+        uint64_t    carry = 0;
+        int         taken = 0;
 
-        if (*digits >= '0' && *digits <= '9')       d = *digits - '0';
-        else if (*digits >= 'A' && *digits <= 'Z')  d = *digits - 'A' + 10;
-        else if (*digits >= 'a' && *digits <= 'z')  d = *digits - 'a' + 10;
-        else                                        break;
-        if ((unsigned) d >= radix)
-            break;
-        carry = (unsigned) d;
-        for (i = 0; i < used; ++i) {
-            unsigned    v = (unsigned) bytes[i] * radix + carry;
+        /*  As many digits as fit: radix^k * (2^32 - 1) + carry < 2^64.  */
+        while (*digits && multiplier * radix <= 0xFFFFFFFFu) {
+            int     d;
 
-            bytes[i] = (uint8_t) (v & 0xFF);
-            carry    = v >> 8;
+            if (*digits >= '0' && *digits <= '9')       d = *digits - '0';
+            else if (*digits >= 'A' && *digits <= 'Z')  d = *digits - 'A' + 10;
+            else if (*digits >= 'a' && *digits <= 'z')  d = *digits - 'a' + 10;
+            else                                        d = -1;
+            if (d < 0 || (unsigned) d >= radix)
+                break;
+            multiplier *= radix;
+            carry = carry * radix + (unsigned) d;
+            ++digits;
+            ++taken;
         }
-        while (carry) {
-            if (used >= sizeof bytes)
-                return ST_NIL;          /*  refuse rather than truncate  */
-            bytes[used++] = (uint8_t) (carry & 0xFF);
-            carry >>= 8;
+        if (taken == 0)
+            break;
+        for (i = 0; i < used; ++i) {
+            uint64_t    v = (uint64_t) limbs[i] * multiplier + carry;
+
+            limbs[i] = (uint32_t) v;
+            carry    = v >> 32;
+        }
+        while (carry && used <= n) {
+            limbs[used++] = (uint32_t) carry;
+            carry >>= 32;
         }
     }
-    while (used > 1 && bytes[used - 1] == 0)
+    while (used > 1 && limbs[used - 1] == 0)
         --used;
+    bytes = used * 4;
+    while (bytes > 1 && ((limbs[(bytes - 1) / 4] >> (((bytes - 1) % 4) * 8))
+                         & 0xFF) == 0)
+        --bytes;
     big = OM_instantiate_bytes(BOOT_global(negative ? "LargeNegativeInteger"
                                                     : "LargePositiveInteger"),
-                               used);
-    if (!OM_is_object(big))
-        return ST_NIL;
-    for (i = 0; i < used; ++i)
-        OM_store_byte(i, big, bytes[i]);
+                               (unsigned) bytes);
+    if (OM_is_object(big)) {
+        for (i = 0; i < bytes; ++i)
+            OM_store_byte((unsigned) i, big,
+                          (uint8_t) (limbs[i / 4] >> ((i % 4) * 8)));
+    } else {
+        big = ST_NIL;
+    }
+    free(limbs);
     return big;
 }
 

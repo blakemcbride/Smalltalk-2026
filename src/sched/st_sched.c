@@ -1363,6 +1363,29 @@ SCHED_wake_highest_priority(void)
 #define ALL_IDLE_CONFIRMATIONS  100
 
 /*
+ *  One idle slice, asleep, and out of the reclamation epoch while it is.
+ *
+ *  An idle worker never reaches the interpreter's bytecode boundary, so it
+ *  never published the epoch, and the epoch advances only when every
+ *  worker has: thirty-one idle workers held the one busy worker's retired
+ *  objects for the stop-the-world collector to find (Bugs5 OM-10).  Only
+ *  the SLEEP is marked: the signal drains and ready-list looks between
+ *  slices do touch the object memory, and they do it back inside the
+ *  epoch, which OM_epoch_resume rejoins before returning.
+ */
+static void
+idle_sleep(void)
+{
+#ifdef ST_OM_MT
+    OM_epoch_quiesce();
+    ST_sleep_ns(IDLE_WAIT_SLICE_NS);
+    OM_epoch_resume();
+#else
+    ST_sleep_ns(IDLE_WAIT_SLICE_NS);
+#endif
+}
+
+/*
  *  How many workers are sitting in the wait below with nothing to run.
  *
  *  This is the honest test for deadlock, and a timeout is not.  A worker
@@ -1528,7 +1551,7 @@ SCHED_suspend_active(void)
             WORKER_poll();
             if (idle_hook)
                 idle_hook();
-            ST_sleep_ns(IDLE_WAIT_SLICE_NS);
+            idle_sleep();
             drain_async_signals();
             /*
              *  The drain above can NOMINATE rather than enqueue.  A signal
@@ -1571,7 +1594,7 @@ SCHED_suspend_active(void)
         WORKER_poll();
         if (idle_hook)
             idle_hook();
-        ST_sleep_ns(IDLE_WAIT_SLICE_NS);
+        idle_sleep();
         drain_async_signals();
         /*
          *  And only if that drain did not NOMINATE.  A drain that did has

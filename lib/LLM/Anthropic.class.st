@@ -206,7 +206,7 @@ Anthropic >> streamedTextOf: aLine [
 	payload := self sseDataOf: aLine.
 	payload isNil ifTrue: [^''].
 	(payload startsWith: '{') ifFalse: [^''].
-	event := JSONObject fromString: payload.
+	event := self documentFrom: payload.
 	type := (self string: 'type' of: event) ifNil: [''].
 	type = 'error' ifTrue: [
 		^(LLMError new) body: payload; signal: 'Anthropic: ', (event objectAt: 'error') asJsonString].

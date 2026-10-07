@@ -276,11 +276,24 @@ ST_trace_send(st_oop receiver, st_oop selector, uint32_t argc,
      *  being interleaved.  That is what the reference traces show.
      */
     used += (size_t) snprintf(line + used, sizeof line - used, " %s", sel);
-    for (i = 0; i < argc && used < sizeof line; ++i) {
+    /*
+     *  No more than ST_TRACE_MAX_ARGS, because that is all the caller is
+     *  obliged to have gathered: execute_new_method copies the arguments
+     *  into an eight-entry array and used to pass the send's own count, so
+     *  a nine-argument send under ST_EVAL_TRACE=s read past the array --
+     *  AddressSanitizer's stack-buffer-overflow, and an arbitrary word
+     *  printed as an object without it (Bugs5 INTERP-11).  The bound is
+     *  here, where the array is read, so that no caller can get it wrong;
+     *  the rest are said to exist rather than silently dropped.
+     */
+    for (i = 0; i < argc && i < ST_TRACE_MAX_ARGS && used < sizeof line;
+         ++i) {
         ST_print_object(args[i], piece, sizeof piece);
         used += (size_t) snprintf(line + used, sizeof line - used,
                                   " %s", piece);
     }
+    if (argc > ST_TRACE_MAX_ARGS && used < sizeof line)
+        used += (size_t) snprintf(line + used, sizeof line - used, " ...");
 
     if (trace_mode == ST_TRACE_BYTECODES) {
         fprintf(trace_out, "[cycle=%llu]  %s\n",

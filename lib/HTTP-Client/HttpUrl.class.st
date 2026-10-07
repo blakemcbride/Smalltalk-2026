@@ -8,7 +8,8 @@ request line.
     ... path    '/api/tags'
     ... hostHeader    'localhost:11434'
 
-No more than that: no user and password, no fragment, no percent-decoding
+No more than that: no user and password, no fragment (it is dropped, since
+it is never sent), no percent-decoding
 -- the path is sent as it was given, which is what a caller who wrote it
 wants.  A URL with no `://', or no host, is refused with a NetError, and so
 is one holding a space or a control character: see setFromString:.
@@ -48,9 +49,18 @@ HttpUrl >> setFromString: aString [
 	i = 0 ifTrue: [^NetError new signal: 'not a URL: ', aString printString].
 	scheme := (aString copyFrom: 1 to: i - 1) asLowercase.
 	rest := aString copyFrom: i + 3 to: aString size.
-	slash := rest indexOf: $/.
+	"THE AUTHORITY ENDS AT THE FIRST `/', `?' OR `#', as RFC 3986 says,
+	 and not at the first slash alone: `http://127.0.0.1?x=1' had the host
+	 `127.0.0.1?x=1', which the resolver could not find.  The query of a
+	 URL with no path goes after a path of `/'.  THE FRAGMENT IS DROPPED:
+	 it names a place in the document for whoever displays it, RFC 7230
+	 says it is never sent, and it went out on the request line, where a
+	 server may refuse it or route by it (Bugs5 NET-11)."
+	slash := rest findFirst: [:c | c = $/ or: [c = $? or: [c = $#]]].
 	hostPort := slash = 0 ifTrue: [rest] ifFalse: [rest copyFrom: 1 to: slash - 1].
 	path := slash = 0 ifTrue: ['/'] ifFalse: [rest copyFrom: slash to: rest size].
+	(path indexOf: $#) > 0 ifTrue: [path := path copyFrom: 1 to: (path indexOf: $#) - 1].
+	(path isEmpty or: [path first ~= $/]) ifTrue: [path := '/', path].
 	portText := nil.
 	(hostPort notEmpty and: [hostPort first = $[])
 		ifTrue: [
@@ -79,9 +89,18 @@ HttpUrl >> setFromString: aString [
 { #category : 'private' }
 HttpUrl >> portFrom: aString [
 	"The port text as an Integer, or nil for text that is not all digits:
-	 asNumber answers 0 for `notaport', which is a port nobody meant."
+	 asNumber answers 0 for `notaport', which is a port nobody meant.
+
+	 NIL, TOO, FOR A NUMBER NO PORT CAN BE.  A port is sixteen bits, and
+	 `:98304' went to the resolver as it was and reached port 32768 --
+	 past any allow-list a caller had checked this number against (Bugs5
+	 NET-12).  Socket refuses the same numbers by name; this refuses them
+	 where the URL is read, so the URL is never a valid-looking one."
+	| n |
 	(aString isEmpty or: [(aString allSatisfy: [:c | c isDigit]) not]) ifTrue: [^nil].
-	^aString asNumber
+	n := aString asNumber.
+	(n between: 1 and: 65535) ifFalse: [^nil].
+	^n
 ]
 
 { #category : 'accessing' }
@@ -92,6 +111,19 @@ HttpUrl >> scheme [
 { #category : 'accessing' }
 HttpUrl >> host [
 	^host
+]
+
+{ #category : 'accessing' }
+HttpUrl >> connectHost [
+	"The host as the resolver wants it: an IPv6 literal without its
+	 brackets.  host keeps them, because the Host header and the printed
+	 URL need them -- `::1:8080' is not a host and a port -- and the
+	 resolver does not: `[::1]' is `Name or service not known'.  They were
+	 stripped only on the way to TLS, so an http URL to an IPv6 literal
+	 could not be fetched at all (Bugs5 NET-11)."
+	^(host size > 2 and: [host first = $[ and: [host last = $]]])
+		ifTrue: [host copyFrom: 2 to: host size - 1]
+		ifFalse: [host]
 ]
 
 { #category : 'accessing' }

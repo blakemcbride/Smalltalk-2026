@@ -399,18 +399,30 @@ Odbc class >> numberFromDigits: aString [
 	 So the digits are read as an Integer and scaled by a power of ten,
 	 which answers a Fraction -- exact, and the one respect in which this
 	 port is better than the Java it comes from, which hands the same text
-	 to BigDecimal and then has to remember never to ask it for a double."
+	 to BigDecimal and then has to remember never to ask it for a double.
 
-	| stream negative whole fraction scale character |
+	 Everything in the text is read or refused (Bugs5 FILES-12).  This
+	 read digits until something else came and answered what it had, so
+	 '1e5' was 1 and PostgreSQL's numeric 'NaN' was 0 -- a wrong number,
+	 with nothing to say so.  An exponent is read now, exactly, since a
+	 driver may print one; trailing blanks are allowed, since a CHAR
+	 column pads with them; anything else left over, and text with no
+	 digits in it, raise DbError.  An exponent beyond a thousand is
+	 refused too: no database's DECIMAL prints one, and reading
+	 '1e999999999' exactly would build a number of a billion digits."
+
+	| stream negative whole fraction scale character digits exponent eNegative |
 	stream := ReadStream on: aString.
 	negative := false.
 	[stream atEnd not and: [stream peek = $ ]] whileTrue: [stream next].
 	stream atEnd ifTrue: [^0].
 	stream peek = $- ifTrue: [negative := true. stream next].
-	stream peek = $+ ifTrue: [stream next].
+	(stream atEnd not and: [stream peek = $+]) ifTrue: [stream next].
 	whole := 0.
+	digits := 0.
 	[stream atEnd not and: [stream peek isDigit]] whileTrue:
-		[whole := whole * 10 + stream next digitValue].
+		[whole := whole * 10 + stream next digitValue.
+		 digits := digits + 1].
 	fraction := 0.
 	scale := 1.
 	(stream atEnd not and: [stream peek = $.]) ifTrue:
@@ -418,7 +430,27 @@ Odbc class >> numberFromDigits: aString [
 		 [stream atEnd not and: [stream peek isDigit]] whileTrue:
 			[character := stream next.
 			 fraction := fraction * 10 + character digitValue.
-			 scale := scale * 10]].
+			 scale := scale * 10.
+			 digits := digits + 1]].
+	digits = 0 ifTrue: [^DbError signal: 'not a number: ' , aString printString].
 	whole := whole + (fraction / scale).
+	(stream atEnd not and: [stream peek = $e or: [stream peek = $E]]) ifTrue:
+		[stream next.
+		 eNegative := false.
+		 (stream atEnd not and: [stream peek = $- or: [stream peek = $+]])
+			ifTrue: [eNegative := stream next = $-].
+		 exponent := 0.
+		 digits := 0.
+		 [stream atEnd not and: [stream peek isDigit]] whileTrue:
+			[exponent := exponent * 10 + stream next digitValue.
+			 digits := digits + 1.
+			 exponent > 1000 ifTrue:
+				[^DbError signal: 'exponent out of range: ' , aString printString]].
+		 digits = 0 ifTrue: [^DbError signal: 'not a number: ' , aString printString].
+		 whole := eNegative
+			ifTrue: [whole / (10 raisedTo: exponent)]
+			ifFalse: [whole * (10 raisedTo: exponent)]].
+	[stream atEnd not and: [stream peek = $ ]] whileTrue: [stream next].
+	stream atEnd ifFalse: [^DbError signal: 'not a number: ' , aString printString].
 	^negative ifTrue: [whole negated] ifFalse: [whole]
 ]

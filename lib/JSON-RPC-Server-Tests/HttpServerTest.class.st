@@ -5,7 +5,8 @@ and not a client library's idea of it.
 
 Each test starts its own server on a port the system picks and stops it in an
 ensure:.  The static files come from the directory the tests run in, through
-a page this test writes and removes.
+a page this test writes and removes, under a name drawn for each test so
+that two runs from one tree do not share it (Bugs5 DOCS-6).
 "
 Class {
 	#name : 'HttpServerTest',
@@ -16,7 +17,9 @@ Class {
 
 { #category : 'running' }
 HttpServerTest >> setUp [
-	page := 'http-server-test-page.html'.
+	"Not one fixed name: two runs from one tree at once served and removed
+	 each other's page (Bugs5 DOCS-6)."
+	page := self unusedName: 'http-server-test-page-' suffix: '.html' in: Disk.
 	server := HttpServer new port: 0; bindAddress: '127.0.0.1'; name: 'test'; yourself
 ]
 

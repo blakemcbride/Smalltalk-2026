@@ -77,13 +77,29 @@ PositionableStream >> nextLine [
 
 	 Answers nil at the end rather than an empty String, so that
 	 `[stream nextLine] whileNotNil:' terminates; an empty LINE still
-	 answers an empty String, and those two have to be told apart."
-	| line |
+	 answers an empty String, and those two have to be told apart.
+
+	 The three conventions are LF, CR LF and a CR on its own, and the
+	 last is this system's own: Smalltalk-80 separates lines with
+	 Character cr, the 1983 sources are written with it, and WriteStream>>cr
+	 writes it.  This was `self upTo: Character lf' with a trailing CR
+	 trimmed, which reads the first two and not the third -- text the
+	 image wrote itself came back as ONE line, `line1' CR `line2' as eleven
+	 characters (Bugs5 KERN-14).  A line ends at an LF or at a CR, and a CR
+	 takes the LF straight after it along, so CR LF is still one ending
+	 and not an empty line between two."
+	| line c |
 	self atEnd ifTrue: [^nil].
-	line := self upTo: Character lf.
-	^(line isEmpty not and: [line last = Character cr])
-		ifTrue: [line copyFrom: 1 to: line size - 1]
-		ifFalse: [line]
+	"collection species, for the reason given at next: above."
+	line := WriteStream on: (collection species new: 0).
+	[self atEnd] whileFalse: [
+		c := self next.
+		c = Character lf ifTrue: [^line contents].
+		c = Character cr ifTrue: [
+			self peekFor: Character lf.
+			^line contents].
+		line nextPut: c].
+	^line contents
 ]
 
 { #category : '*Streams-Protocol' }

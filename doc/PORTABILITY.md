@@ -61,7 +61,8 @@ and these primitives carry image pages, `_filelengthi64`, `_chsize_s`, and
 documented main-thread-only, and on macOS "main thread" means the one that
 entered `main()` — Cocoa's run loop is bound to it and cannot be moved.
 `src/main.c` includes `<SDL3/SDL_main.h>` so SDL can stand that up, and
-thread 0 is a dedicated pump that never executes Smalltalk. See
+thread 0 is the only thread that calls SDL video — under `-run` it runs the
+interpreter in slices and pumps between them. See
 `doc/CONCURRENCY.md`.
 
 **SDL3 is optional.** Without it `src/gfx/display.c` compiles to a headless

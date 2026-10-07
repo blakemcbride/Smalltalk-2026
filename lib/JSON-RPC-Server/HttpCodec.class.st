@@ -209,6 +209,36 @@ HttpCodec class >> reasonFor: status [
 	^'Unknown'
 ]
 
+{ #category : 'logging' }
+HttpCodec class >> printableForLog: aString [
+	"aString with every byte outside printable ASCII written as \xHH: text
+	 fit for the operator's log, one line of it, whoever wrote it.
+
+	 A server's log line is made of what clients sent as often as not --
+	 a path, a file name, an error's message quoting either -- and a CR or
+	 an LF in one forges a whole line into the operator's record, while an
+	 ANSI escape does what the escape says to the terminal of whoever is
+	 tailing it, ESC[2J being `clear the screen'.  Bugs4 NET-6 escaped the
+	 two fields RestDispatcher logs and nothing else: a demo upload named
+	 `a.txt', CR, `2026 info: rest: admin logged in', ESC `[2J' reached the
+	 log raw through RestLog (Bugs5 NET-13).  So the escaping is done where
+	 the line is written -- RestLog class>>write:text: and HttpServer>>log:
+	 -- rather than by each caller that remembers to.  An escape stays
+	 visible rather than being dropped, because the point of logging what
+	 a client sent is to see what it sent."
+	| out |
+	out := WriteStream on: (String new: aString size + 16).
+	aString do: [:c | | code |
+		code := c asInteger.
+		(code < 32 or: [code > 126])
+			ifTrue: [
+				out nextPutAll: '\x';
+					nextPut: ('0123456789abcdef' at: (code bitShift: -4) + 1);
+					nextPut: ('0123456789abcdef' at: (code bitAnd: 15) + 1)]
+			ifFalse: [out nextPut: c]].
+	^out contents
+]
+
 { #category : 'origins' }
 HttpCodec class >> hostOf: aString [
 	"The host an Origin or Host header names, lowercased: what is left of

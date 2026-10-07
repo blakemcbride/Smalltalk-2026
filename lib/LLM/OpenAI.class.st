@@ -186,7 +186,7 @@ OpenAI >> toolCallsOf: aReply [
 		function := each objectAt: 'function'.
 		text := (self string: 'arguments' of: function) ifNil: [''].
 		calls add: (LLMToolCall id: (each stringAt: 'id') name: (function stringAt: 'name')
-			arguments: (text trimmed isEmpty ifTrue: [JSONObject new] ifFalse: [JSONObject fromString: text]))].
+			arguments: (text trimmed isEmpty ifTrue: [JSONObject new] ifFalse: [self documentFrom: text]))].
 	^calls
 ]
 
@@ -232,7 +232,7 @@ OpenAI >> streamedTextOf: aLine [
 	payload := payload trimmed.
 	payload = '[DONE]' ifTrue: [^nil].
 	(payload startsWith: '{') ifFalse: [^''].
-	chunk := JSONObject fromString: payload.
+	chunk := self documentFrom: payload.
 	(chunk includesKey: 'error') ifTrue: [
 		^(LLMError new) body: payload; signal: self class name, ': ', (chunk at: 'error') asJsonString].
 	choices := chunk at: 'choices' ifAbsent: [nil].

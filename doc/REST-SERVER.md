@@ -321,7 +321,9 @@ has, are not here yet.
 Every name in the file is also in `request environment`, so a service reads
 its own settings from the same place. `RestServer class>>serve` starts the
 server and stays up until `SIGINT` or `SIGTERM`, then stops it and quits with
-exit code 0. The log is standard error, one line per event, timestamped.
+exit code 0. The log is standard error, one line per event, timestamped;
+any byte from a client that is not printable ASCII is written as `\xHH`, so
+a request cannot forge a line of its own.
 
 ## Testing
 

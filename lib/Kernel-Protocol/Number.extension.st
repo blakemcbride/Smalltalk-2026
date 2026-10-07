@@ -72,10 +72,11 @@ Number class >> readFrom: aStream [
 	 A String is taken as well as a stream, because `Number readFrom: '42''
 	 is what ported code writes and Pharo answers it; 1983 sent atEnd to
 	 the String (Bugs3 B51)."
-	| value radix fraction digits start negative signed sawPoint answer exponent bits scale |
+	| value radix fraction digits start negative signed sawPoint answer exponent bits scale exponentFollows |
 	aStream isString ifTrue: [^self readFrom: (ReadStream on: aStream)].
 	radix := 10.
 	sawPoint := false.
+	exponentFollows := false.
 	"
 	 Leading separators are skipped, which 1983 does not do: it hands the
 	 stream straight to Integer class>>readFrom:radix:, whose own comment
@@ -147,7 +148,25 @@ Number class >> readFrom: aStream [
 				ifFalse: [
 					aStream skip: -1.
 					^signed value: value]].
-	(aStream peekFor: $e)
+	"
+	 An e is an exponent marker only when an exponent follows it: a digit,
+	 or a minus and then a digit.  Anything else and the e is given back
+	 and the number is the one before it, as the r and the period above
+	 are given back.  1983 took the e unconditionally and read the empty
+	 exponent as 0, so `'12e' asNumber' was 12.0, `'5east' asNumber' 5.0
+	 and `'1e+5' asNumber' 1.0 -- a Float where the text held an Integer,
+	 and the stream left past a letter that belonged to whatever came next
+	 (Bugs5 KERN-10).  The plus is not an exponent sign here any more than
+	 it is in the compiler's grammar, which has an optional minus and
+	 nothing else.
+	"
+	(aStream atEnd not and: [aStream peek = $e]) ifTrue: [
+		start := aStream position.
+		aStream next.
+		(aStream atEnd not and: [aStream peek = $-]) ifTrue: [aStream next].
+		exponentFollows := aStream atEnd not and: [aStream peek isDigit].
+		aStream position: start].
+	(exponentFollows and: [aStream peekFor: $e])
 		ifTrue: [
 			"
 			 The size of the answer is estimated, in bits, BEFORE the power
@@ -351,9 +370,53 @@ Number >> raisedTo: aNumber [
 	 An INTEGER exponent still goes to raisedToInteger:, which is exact by
 	 repeated squaring and keeps the receiver's kind: `2 raisedTo: 10' is
 	 the Integer 1024 and `(1/2) raisedTo: 2' is the Fraction 1/4.  Coercing
-	 those to Float would be a wrong answer, not a rounder one."
+	 those to Float would be a wrong answer, not a rounder one.
+
+	 A positive receiver with no normal Float -- an Integer past 1e308, a
+	 Fraction past it or under 2.2e-308 -- has its power of two taken out
+	 first.  asFloat of such a receiver is an infinity or a zero, and pow
+	 of that is an infinity or a zero whatever the exponent: `(2 raisedTo:
+	 2000) raisedTo: 1/2' answered inf for 1.07e301, a number a Float
+	 holds (Bugs5 KERN-13, the raisedTo: half of what Bugs2 B39 fixed for
+	 ln and sqrt).  With me = m * 2^k, m within a factor of two of one,
+	 my power is m^y * 2^(k*y), and k*y is done EXACTLY -- the exponent as
+	 a Fraction -- so that its whole part goes to timesTwoPower: and only
+	 its fractional part to pow.  `(aNumber * self ln) exp', the obvious
+	 way, is off by hundreds of ulps here: ln of 2^2000 is 1386, and its
+	 last bit is 2^-42 of the answer's exponent.
+
+	 With m in [1, 2) and |k| near a thousand or more, an exponent past 64
+	 either way puts the answer past 2^64000 or under its reciprocal --
+	 an infinity or a zero, and which one is the sign of k times the sign
+	 of the exponent -- so that is answered without building k*y, and n
+	 is clamped where it cannot change the double it scales.  A NaN or
+	 infinite exponent goes the obvious way, where it does no harm."
+	| base k m y ky n |
 	aNumber isInteger ifTrue: [^self raisedToInteger: aNumber].
-	^self asFloat primRaisedTo: aNumber asFloat
+	base := self asFloat.
+	(self > 0 and: [base isFinite not or: [base < 2.2250738585072014e-308]])
+		ifFalse: [^base primRaisedTo: aNumber asFloat].
+	(aNumber isFloat and: [aNumber isFinite not])
+		ifTrue: [^(aNumber * self ln) exp].
+	self isInteger
+		ifTrue: [
+			k := self highBit - 1.
+			m := Fraction floatOfNumerator: self denominator: (1 bitShift: k)]
+		ifFalse: [
+			k := self numerator highBit - self denominator highBit.
+			m := k >= 0
+				ifTrue: [Fraction floatOfNumerator: self numerator
+							denominator: (self denominator bitShift: k)]
+				ifFalse: [Fraction floatOfNumerator: (self numerator bitShift: k negated)
+							denominator: self denominator].
+			m < 1.0 ifTrue: [m := m * 2.0. k := k - 1]].
+	aNumber abs > 64 ifTrue: [
+		^(aNumber > 0) = (k > 0) ifTrue: [Float infinity] ifFalse: [0.0]].
+	y := aNumber isFloat ifTrue: [aNumber asExactFraction] ifFalse: [aNumber].
+	ky := k * y.
+	n := ky floor.
+	^((m primRaisedTo: aNumber asFloat) * (2.0 primRaisedTo: (ky - n) asFloat))
+		timesTwoPower: ((n max: -1300) min: 1300)
 ]
 
 { #category : '*Kernel-Protocol' }

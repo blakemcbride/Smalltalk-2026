@@ -52,27 +52,30 @@ manual/*.toc
 manual/chapters/*.aux
 manual/__pycache__/
 
-# The fixture lib/Database-Live-Tests makes and empties.  It is a build
-# product of running that suite -- the tests recreate its tables on every
-# setUp -- and SQLite's rollback journal beside it is one too.
-st2026-dblive-test.db
-st2026-dblive-test.db-journal
-st2026-odbc-parallel-test.db
-st2026-odbc-parallel-test.db-journal
-st2026-rest-live-test.db
-st2026-web-demo-test.db
-st2026-web-demo-test.db-journal
+# The databases the live suites make, one per test and removed by its
+# tearDown, and SQLite's rollback journal beside each.  Each is named for
+# its test (Bugs5 DOCS-6), so these are what a run stopped part-way leaves,
+# with the fixed names of runs before that.
+st2026-*-test*.db
+st2026-*-test*.db-journal
 
-# The empty file tests/unit/test_parallel_shared opens and closes on every
-# worker.  It used to open README.md, and closing a stream that was never
-# given a mode truncates it -- see File class>>initialize in lib/Files-Fixes.
+# The same for the file fixtures of the Tonel, HTTP server and REST suites.
+TonelTestSample*.class.st
+TonelTestS*.extension.st
+http-server-test-page-*.html
+tests/rest-backend/services/Scratch*.class.st
+
+# The empty file tests/unit/test_parallel_shared opened and closed on every
+# worker, as runs before Bugs5 DOCS-6 named it; it is in the build's test
+# directory now, named for the run.  It used to open README.md, and closing
+# a stream that was never given a mode truncates it -- see File class>>
+# initialize in lib/Files-Fixes.
 st2026-parallel-file-test.txt
 
 # The demo application's database, made by the SQLite ODBC driver on the
 # first start and filled from demo/schema.sqlite by demo/backend/Init.
 demo/DB.sqlite
 demo/DB.sqlite-journal
-st2026-rest-live-test.db-journal
 
 # Code-RAG local index files (written by bld; machine-local, not part of the project)
 .mcp.json

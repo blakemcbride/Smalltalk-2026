@@ -195,5 +195,11 @@ Qdrant >> request: aMethod path: aPath body: aJSONObjectOrNil [
 	reply isSuccess ifFalse: [
 		^(LLMError new) status: reply status; body: reply body;
 			signal: 'Qdrant answered ', reply status printString, ': ', reply body].
-	^reply json
+	"A 2xx that is not JSON is an LLMError like every other failure here,
+	 not the parser's JSONError (Bugs5 NET-14; see LLM>>documentFrom:)."
+	^[reply json]
+		on: JSONError
+		do: [:e | e return: ((LLMError new) status: reply status; body: reply body;
+			signal: 'Qdrant answered ', reply status printString,
+				' with a reply that is not JSON: ', e messageText)]
 ]

@@ -16,7 +16,6 @@ Class {
 
 { #category : 'running' }
 RestServerTest >> setUp [
-	scratch := 'tests/rest-backend/services/Scratch.class.st'.
 	server := RestServer new
 		port: 0;
 		bindAddress: '127.0.0.1';
@@ -27,12 +26,15 @@ RestServerTest >> setUp [
 
 { #category : 'running' }
 RestServerTest >> tearDown [
+	| services |
 	server notNil ifTrue: [server stop].
-	(Smalltalk includesKey: #Scratch) ifTrue: [
-		TonelSource forget: (Smalltalk at: #Scratch).
-		(Smalltalk at: #Scratch) removeFromSystem].
-	((Disk directoryNamed: 'tests/rest-backend/services') includesKey: 'Scratch.class.st')
-		ifTrue: [(Disk directoryNamed: 'tests/rest-backend/services') removeKey: 'Scratch.class.st']
+	scratch isNil ifTrue: [^self].
+	(Smalltalk includesKey: scratch asSymbol) ifTrue: [
+		TonelSource forget: (Smalltalk at: scratch asSymbol).
+		(Smalltalk at: scratch asSymbol) removeFromSystem].
+	services := Disk directoryNamed: 'tests/rest-backend/services'.
+	(services includesKey: scratch, '.class.st')
+		ifTrue: [services removeKey: scratch, '.class.st']
 ]
 
 { #category : 'private' }
@@ -306,20 +308,31 @@ RestServerTest >> testEditingAServiceReloadsIt [
 	| reply |
 	self writeScratchAnswering: 1.
 	server start.
-	reply := self call: 'services.Scratch' method: 'answer'.
+	reply := self call: 'services.', scratch method: 'answer'.
 	self assert: (reply integerAt: 'answer') equals: 1.
 	self writeScratchAnswering: 22.
-	reply := self call: 'services.Scratch' method: 'answer'.
+	reply := self call: 'services.', scratch method: 'answer'.
 	self assert: (reply integerAt: 'answer') equals: 22
 ]
 
 { #category : 'private' }
 RestServerTest >> writeScratchAnswering: anInteger [
-	| stream cr |
+	"A service in the suite's own back end, under a class name drawn for this
+	 test.  It was Scratch.class.st for every run, and two runs from one tree
+	 at once rewrote and removed each other's service in the middle of the
+	 test (Bugs5 DOCS-6).  The back end itself is shared and read-only to
+	 the tests -- this image has no primitive that makes a directory to copy
+	 it into -- so the name is what separates them; a service's file must
+	 be named as its class, so the class is named the same way."
+	| stream cr services |
 	cr := String with: Character cr.
-	stream := (Disk directoryNamed: 'tests/rest-backend/services') textFile: 'Scratch.class.st'.
-	[stream nextPutAll: 'Class { #name : ''Scratch'', #superclass : ''RestService'', #category : ''services'' }', cr,
-		'Scratch >> answer [', cr, '	outjson at: ''answer'' put: ', anInteger printString, cr, ']', cr; shorten]
+	services := Disk directoryNamed: 'tests/rest-backend/services'.
+	scratch isNil ifTrue: [
+		scratch := self unusedName: 'Scratch' suffix: '.class.st' in: services.
+		scratch := scratch copyFrom: 1 to: scratch size - '.class.st' size].
+	stream := services textFile: scratch, '.class.st'.
+	[stream nextPutAll: 'Class { #name : ''', scratch, ''', #superclass : ''RestService'', #category : ''services'' }', cr,
+		scratch, ' >> answer [', cr, '	outjson at: ''answer'' put: ', anInteger printString, cr, ']', cr; shorten]
 		ensure: [stream close]
 ]
 
@@ -661,4 +674,71 @@ RestServerTest >> testCheckingAServicesTimestampCostsNoDescriptor [
 	self assert: ((self call: 'services.Adder' method: 'addNumbers'
 		with: [:j | j at: 'num1' put: 3; at: 'num2' put: 4]) integerAt: 'num3')
 		equals: 7
+]
+
+{ #category : 'tests' }
+RestServerTest >> testAUuidThatIsNotAStringIsNoSession [
+	"Bugs5 NET-14.  _uuid is the client's, and a number or a true in it
+	 reached isEmpty: an HTTP 500 from a dispatcher that promises always
+	 200 and always JSON.  It names no session, as a missing one does."
+	| reply |
+	server requireAuthentication: true.
+	server start.
+	#(5 true 2.5) do: [:bogus |
+		reply := self call: 'services.Adder' method: 'addNumbers'
+			with: [:j | j at: '_uuid' put: bogus; at: 'num1' put: 1; at: 'num2' put: 2].
+		self deny: (reply booleanAt: '_Success').
+		self assert: (reply integerAt: '_ErrorCode') equals: 2.
+		reply := self call: '' method: 'Logout' with: [:j | j at: '_uuid' put: bogus].
+		self deny: (reply booleanAt: '_Success')].
+	self assert: (server userCache findUser: 5) isNil.
+	self assert: (server userCache findUser: '') isNil.
+	self assert: (server userCache findUser: nil) isNil
+]
+
+{ #category : 'tests' }
+RestServerTest >> testEveryLogLineIsOneLine [
+	"Bugs5 NET-13.  Bugs4 NET-6 escaped the two fields the dispatcher
+	 logs; every other line, the demo's upload line with the client's file
+	 name in it among them, went to the log raw.  The escaping is where
+	 every line is written now: HttpCodec class>>printableForLog:, which
+	 RestLog and HttpServer>>log: both apply.  (What reaches standard
+	 error is checked from outside, in test_serve_faults.)"
+	| esc |
+	esc := String with: (Character value: 27).
+	self assert: (HttpCodec printableForLog: 'a.txt', (String with: (Character value: 13)), '2026 info: x', esc, '[2J')
+		equals: 'a.txt\x0d2026 info: x\x1b[2J'.
+	self assert: (HttpCodec printableForLog: 'plain text, ok') equals: 'plain text, ok'.
+	self assert: (HttpCodec printableForLog: (String with: (Character value: 127) with: (Character value: 9)))
+		equals: '\x7f\x09'
+]
+
+{ #category : 'tests' }
+RestServerTest >> testManyUploadsAreCountedInLinearTime [
+	"Bugs5 NET-15.  uploadFileCount asks partNamed: for _file-0, _file-1
+	 ... and partNamed: walked the parts each time: 1,000 uploads took 6.5
+	 seconds and 4,000 took 81.  By a dictionary built once, 2,000 are
+	 counted in a few milliseconds; the bound here is generous enough for
+	 a sanitizer build and far short of the quadratic walk."
+	| crlf out body http request ms |
+	crlf := self crlf.
+	out := WriteStream on: (String new: 200000).
+	0 to: 1999 do: [:i |
+		out nextPutAll: '--B'; nextPutAll: crlf;
+			nextPutAll: 'Content-Disposition: form-data; name="_file-'; print: i;
+			nextPutAll: '"; filename="f'; print: i; nextPutAll: '.txt"'; nextPutAll: crlf; nextPutAll: crlf;
+			nextPutAll: 'x'; nextPutAll: crlf].
+	out nextPutAll: '--B--'; nextPutAll: crlf.
+	body := out contents.
+	http := HttpRequest fromString: 'POST /rest HTTP/1.1', crlf,
+		'Content-Type: multipart/form-data; boundary=B', crlf,
+		'Content-Length: ', body size printString, crlf, crlf, body.
+	self assert: http parts size equals: 2000.
+	request := RestRequest server: server httpRequest: http injson: JSONObject new outjson: JSONObject new.
+	ms := Time millisecondsToRun: [self assert: request uploadFileCount equals: 2000].
+	self assert: ms < 4000.
+	self assert: (request uploadFileName: 1999) equals: 'f1999.txt'.
+	"the first part of a name is the one answered, as it was"
+	self assert: (http partNamed: '_file-0') fileName equals: 'f0.txt'.
+	self assert: (http partNamed: '_file-2000') isNil
 ]

@@ -35,6 +35,15 @@ extern "C" {
 int     ST_primitive_dispatch(unsigned index);
 
 /*
+ *  The descriptor that holds this process's lock on its image's changes
+ *  file, or -1 (Bugs4 FILES-B).  The driver takes it at start; it lives
+ *  here because primitive 131's replace command has to move it onto the
+ *  new file when condenseChanges puts one in the old one's place (Bugs5
+ *  FILES-9).  POSIX only; on Windows it stays -1.
+ */
+extern int  ST_changes_lock_fd;
+
+/*
  *  Run the primitive implied by a special-selector bytecode (176 to 207).
  *  Returns 1 if it answered, in which case no send takes place.
  */

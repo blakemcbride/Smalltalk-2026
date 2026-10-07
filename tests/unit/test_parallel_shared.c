@@ -278,12 +278,19 @@ static const kernel kernels[] = {
      *  matched and close flushed instead; the moment Shorten became the bit
      *  it is meant to be, this suite emptied README.md.  See File class>>
      *  initialize in lib/Files-Fixes.
+     *
+     *  And a file of THIS RUN's own.  It was st2026-parallel-file-test.txt
+     *  at the top of the tree, which two runs from one tree at once both
+     *  opened and truncated (Bugs5 DOCS-6); main() names it with
+     *  st_test_path, puts the name in SharedTestFile, and removes the file
+     *  at the end.
      */
     "| d f | d := PosixFileDirectory new. Smalltalk at: #SharedTestDisk put: d."
-    " f := d textFile: 'st2026-parallel-file-test.txt'. f isNil ifTrue: [^-1]."
+    " f := d textFile: (Smalltalk at: #SharedTestFile). f isNil ifTrue: [^-1]."
     " f close. ^0",
-    "| d good | d := Smalltalk at: #SharedTestDisk. good := 0."
-    " 1 to: 50 do: [:i | | f | f := d textFile: 'st2026-parallel-file-test.txt'."
+    "| d name good | d := Smalltalk at: #SharedTestDisk."
+    " name := Smalltalk at: #SharedTestFile. good := 0."
+    " 1 to: 50 do: [:i | | f | f := d textFile: name."
     "   f isNil ifFalse: [f close. good := good + 1]]. ^good",
     50, NULL, 0 },
 };
@@ -592,6 +599,8 @@ main(void)
     st_bootstrap_result  boot;
     st_boot_init_report  init;
     char            profile_error[256];
+    const char     *shared_file;
+    char            shared_file_setup[1024];
     unsigned        i;
 
     ST_TEST_BEGIN("the 1983 library's shared state, in parallel");
@@ -617,8 +626,22 @@ main(void)
     ST_interp_install_roots(provide_test_roots);
     ST_interp_register();
 
+    /*
+     *  The file the FileDirectory kernel opens, named for this run (Bugs5
+     *  DOCS-6).  Handed to the image as a global rather than written into
+     *  the kernel's text, whose only substitution is the pool size.  The
+     *  name is the build's test directory, the pid and letters, so it has
+     *  no quote in it to end the literal and no % for run_single's format.
+     */
+    shared_file = st_test_path("parallel-file-test.txt");
+    snprintf(shared_file_setup, sizeof shared_file_setup,
+             "Smalltalk at: #SharedTestFile put: '%s'. ^0", shared_file);
+    CHECK(run_single(shared_file_setup, 0));
+    CHECK(single_is_int && single_answer == 0);
+
     for (i = 0; i < sizeof kernels / sizeof kernels[0]; ++i)
         run_kernel(&kernels[i]);
+    remove(shared_file);
 
     run_blocking("Delay wait, twenty times per forked process; drivers waiting on Delays",
                  "(Delay forMilliseconds: 2) wait");

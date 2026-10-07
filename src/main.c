@@ -54,6 +54,7 @@ static uint64_t evaluate_budget = EVAL_BYTECODE_BUDGET;
 #include "survey.h"
 #include "doctest.h"
 
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
@@ -228,9 +229,10 @@ load(const char *path)
  *  A changes file that cannot even be opened is not refused here: the image
  *  will meet that itself, with the errno, at the place that needed it.
  */
-#ifndef ST_WINDOWS
-static int  changes_lock_fd = -1;
-#endif
+/*
+ *  The descriptor is ST_changes_lock_fd, in prim.c, so that condenseChanges
+ *  can move the lock onto the file that replaces this one (Bugs5 FILES-9).
+ */
 
 static int
 hold_the_changes_file(const char *image_path)
@@ -243,18 +245,18 @@ hold_the_changes_file(const char *image_path)
 
     if (changes_file_of(image_path, path, sizeof path) <= 0)
         return 1;
-    changes_lock_fd = open(path, O_RDWR | O_CREAT, 0666);
-    if (changes_lock_fd < 0)
+    ST_changes_lock_fd = open(path, O_RDWR | O_CREAT, 0666);
+    if (ST_changes_lock_fd < 0)
         return 1;
-    if (flock(changes_lock_fd, LOCK_EX | LOCK_NB) == 0)
+    if (flock(ST_changes_lock_fd, LOCK_EX | LOCK_NB) == 0)
         return 1;
     fprintf(stderr,
             "st2026: %s is already open by another st2026; two of them writing\n"
             "st2026: one changes file lose each other's method source.  Copy\n"
             "st2026: the image (cp %s other.im) and serve the copy.\n",
             path, image_path);
-    close(changes_lock_fd);
-    changes_lock_fd = -1;
+    close(ST_changes_lock_fd);
+    ST_changes_lock_fd = -1;
     return 0;
 #endif
 }
@@ -2491,6 +2493,17 @@ count_argument(const char *text, uint64_t *out)
 
     if (!text || !*text)
         return 0;
+    /*
+     *  And a count starts with a digit.  strtoull also skips leading white
+     *  space and takes a sign, and a minus it NEGATES in unsigned
+     *  arithmetic: `-workers -3' became 18446744073709551613, was clamped
+     *  to 65535 and then to the build's 63, and the server started with a
+     *  message about a number nobody typed (Bugs5 COMP-11).  Nothing this
+     *  reads can be negative, so a token that does not begin with a digit
+     *  is not a count.
+     */
+    if (!isdigit((unsigned char) text[0]))
+        return 0;
     errno = 0;
     value = strtoull(text, &end, 0);
     if (errno != 0 || end == text || *end != '\0')
@@ -2781,7 +2794,12 @@ main(int argc, char **argv)
         }
         if (!strcmp(argv[i], "-inject")) {
             if (i + 1 >= argc)
-                return missing_argument(argv[0], "-inject", "a script file");
+                /*  The script, not a file of one: inject_reject warns
+                 *  about exactly the file name this used to ask for
+                 *  (Bugs5 DOCS-10).  */
+                return missing_argument(argv[0], "-inject",
+                                        "the script itself, such as "
+                                        "'m 100 80; d 130; u 130'");
             inject_script = argv[++i];
             continue;
         }

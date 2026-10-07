@@ -16,6 +16,7 @@
 
 #include "om_mt.h"
 #include "om.h"
+#include "finalize.h"
 #include "st_port.h"
 
 #include <stdio.h>
@@ -116,6 +117,77 @@ body_bytes(uint32_t flags, uint32_t size)
 }
 
 /*
+ *  Ephemerons the writer's own collection fired, sorted, so that each
+ *  object written can be asked whether it is one.
+ */
+static int
+compare_oops(const void *a, const void *b)
+{
+    st_oop  x = *(const st_oop *) a;
+    st_oop  y = *(const st_oop *) b;
+
+    return x < y ? -1 : x > y;
+}
+
+typedef struct {
+    const char *tmp;
+    const char *path;
+    char       *errbuf;
+    size_t      errlen;
+} write_args;
+
+static int  write_objects(const char *tmp, const char *path, char *errbuf,
+                          size_t errlen);
+
+/*
+ *  Set only for the length of one write, inside its safepoint, where
+ *  nothing else runs -- which is why a file-scope pair will do.
+ */
+static st_oop      *mourning;
+static uint32_t     mourning_n;
+
+static uint32_t
+write_at_safepoint(void *user)
+{
+    write_args *a = (write_args *) user;
+    int         failed;
+
+    /*
+     *  The ephemerons waiting to be mourned go to disk AS ephemerons.
+     *
+     *  The collection just before this can be the one that finds a key
+     *  dead: it queues the ephemeron for #mourn and clears its ephemeron
+     *  bit, so that it is told once.  But the queue is C state and no image
+     *  carries it, so in the image written here the ephemeron was a plain
+     *  object holding its key strongly, and nothing would ever mourn it --
+     *  its entry stayed in its WeakKeyDictionary for the life of every image
+     *  made from this one (Bugs5 OM-9).  Writing the bit back makes the
+     *  loader's own collection find the same dead key and queue it again
+     *  there.  The writer's queue is untouched, so the image that goes on
+     *  running mourns it too: two images, each told once.  Without the
+     *  memory to sort them the image is still written, as it used to be.
+     */
+    {
+        uint32_t    want = OM_mourn_pending();
+
+        mourning   = NULL;
+        mourning_n = 0;
+        if (want) {
+            mourning = (st_oop *) malloc((size_t) want * sizeof *mourning);
+            if (mourning) {
+                mourning_n = OM_mourn_queued(mourning, want);
+                qsort(mourning, mourning_n, sizeof *mourning, compare_oops);
+            }
+        }
+    }
+    failed = write_objects(a->tmp, a->path, a->errbuf, a->errlen) != 0;
+    free(mourning);
+    mourning   = NULL;
+    mourning_n = 0;
+    return (uint32_t) !failed;
+}
+
+/*
  *  Write the whole image to `tmp'.  The messages name `path', the image
  *  the caller asked for, because that is the name the caller knows; the
  *  temporary is OM_image_save's business, below.
@@ -123,13 +195,16 @@ body_bytes(uint32_t flags, uint32_t size)
 static int
 write_image(const char *tmp, const char *path, char *errbuf, size_t errlen)
 {
-    FILE       *f;
-    uint32_t    index;
+    write_args  a;
 
     if (errbuf && errlen)
         errbuf[0] = '\0';
+    a.tmp    = tmp;
+    a.path   = path;
+    a.errbuf = errbuf;
+    a.errlen = errlen;
     /*
-     *  Collect first, always.
+     *  Collect first, always -- and then write in the same safepoint.
      *
      *  The writer takes every table entry not marked free, and the collector
      *  runs only at a safepoint -- so between two of them the table holds
@@ -145,8 +220,20 @@ write_image(const char *tmp, const char *path, char *errbuf, size_t errlen)
      *  loader has always collected on the way in -- see the comment at the
      *  end of OM_image_load, which says it is reclaiming what the writer
      *  left -- and that is exactly the asymmetry this removes.
+     *
+     *  In the same safepoint, because between two the frozen workers still
+     *  drain signals and move processes between lists, and a write that
+     *  overlapped one could save a Semaphore and its Process each in a
+     *  different state (Bugs5 OM-14).  See OM_collect_then.
      */
-    OM_collect();
+    return OM_collect_then(write_at_safepoint, &a) ? 0 : -1;
+}
+
+static int
+write_objects(const char *tmp, const char *path, char *errbuf, size_t errlen)
+{
+    FILE       *f;
+    uint32_t    index;
     f = fopen(tmp, "wb");
     if (!f) {
         fail(errbuf, errlen, "cannot write %s: %s", tmp, strerror(errno));
@@ -183,13 +270,22 @@ write_image(const char *tmp, const char *path, char *errbuf, size_t errlen)
         }
         if (!present)
             continue;
-        if (write_u64(f, head->class_oop) != 0
-         || write_u32(f, head->size) != 0
-         || write_u32(f, head->flags) != 0
-         || write_u32(f, head->hash) != 0) {
-            fail(errbuf, errlen, "%s: short write", path);
-            fclose(f);
-            return -1;
+        {
+            st_oop      self  = (st_oop) index << 1;
+            uint32_t    flags = head->flags;
+
+            if (mourning_n && (flags & ST_FMT_POINTERS)
+             && bsearch(&self, mourning, mourning_n, sizeof *mourning,
+                        compare_oops))
+                flags |= ST_FMT_EPHEMERON;
+            if (write_u64(f, head->class_oop) != 0
+             || write_u32(f, head->size) != 0
+             || write_u32(f, flags) != 0
+             || write_u32(f, head->hash) != 0) {
+                fail(errbuf, errlen, "%s: short write", path);
+                fclose(f);
+                return -1;
+            }
         }
         {
             size_t  bytes = body_bytes(head->flags, head->size);
@@ -609,6 +705,11 @@ OM_image_load(const char *path, char *errbuf, size_t errlen)
      *  objects (Bugs4 MEM-4).
      */
     OM_recount_live();
+    /*
+     *  And every hole onto the free chain, or none of them is ever handed
+     *  out -- see OM_rebuild_free_chain (Bugs5 OM-8, found alongside).
+     */
+    OM_rebuild_free_chain();
     OM_collect();
     return 0;
 }

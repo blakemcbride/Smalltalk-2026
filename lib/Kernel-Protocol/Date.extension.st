@@ -65,28 +65,54 @@ Date class >> readFrom: aStream [
 	 skips it.  Which field is which is decided by where the letters are,
 	 and, when there are none, by the first number: a number no day or
 	 month can be is the year, which is how the year-first form is told
-	 from the month-first one without ambiguity.  A two-digit year is
-	 passed through as 1983 passes it.
+	 from the month-first one without ambiguity.
+
+	 A year of one or two digits is 1983's shorthand for the twentieth
+	 century -- `5APR82' is 1982 -- and the rule is applied HERE, to the
+	 text, where it can tell `82' from `0082'.  1983 applied it in
+	 newDay:month:year: to the number, so no Date before AD 100 could be
+	 made at all and a negative year became one in the 1890s; see that
+	 method (Bugs5 KERN-15).  For the same reason a minus before the
+	 year, after a space or a comma, is the year's sign: `19 June -16' is
+	 what printString writes for 16 BC (proleptic, year 0 being 1 BC), and
+	 it reads back as itself.  A minus straight after the month, as in
+	 `5-apr-82', is still a separator.
 
 	 Every field is checked -- a month name that names no month, a month
 	 past twelve, a day past the end of its month, a February 29th in a
 	 year that has none -- and refused with the same error, because a
 	 caller with bad text wants one thing to catch."
-	| fields field day month year names |
+	| fields widths field day month year yearIndex names previous c start negativeYear |
 	fields := OrderedCollection new.
+	widths := OrderedCollection new.
+	negativeYear := false.
 	[fields size < 3 and: [aStream atEnd not]] whileTrue: [
 		aStream peek isDigit
-			ifTrue: [fields add: (Integer readFrom: aStream)]
+			ifTrue: [
+				start := aStream position.
+				fields add: (Integer readFrom: aStream).
+				widths add: aStream position - start.
+				previous := nil]
 			ifFalse: [
 				aStream peek isLetter
 					ifTrue: [
 						field := WriteStream on: (String new: 10).
 						[aStream atEnd not and: [aStream peek isLetter]]
 							whileTrue: [field nextPut: aStream next].
-						fields add: field contents]
-					ifFalse: [aStream next]]].
+						fields add: field contents.
+						widths add: 0.
+						previous := nil]
+					ifFalse: [
+						c := aStream next.
+						(c = $- and: [fields size = 2
+							and: [previous notNil
+							and: [(previous isSeparator or: [previous = $,])
+							and: [aStream atEnd not and: [aStream peek isDigit]]]]])
+								ifTrue: [negativeYear := true].
+						previous := c]]].
 	fields size = 3 ifFalse: [^self notADate: aStream].
 	(fields at: 3) isString ifTrue: [^self notADate: aStream].
+	yearIndex := 3.
 	(fields at: 1) isString
 		ifTrue: [month := fields at: 1. day := fields at: 2. year := fields at: 3]
 		ifFalse: [
@@ -94,8 +120,12 @@ Date class >> readFrom: aStream [
 				ifTrue: [day := fields at: 1. month := fields at: 2. year := fields at: 3]
 				ifFalse: [
 					(fields at: 1) > 31
-						ifTrue: [year := fields at: 1. month := fields at: 2. day := fields at: 3]
+						ifTrue: [year := fields at: 1. month := fields at: 2. day := fields at: 3.
+							yearIndex := 1]
 						ifFalse: [month := fields at: 1. day := fields at: 2. year := fields at: 3]]].
+	negativeYear
+		ifTrue: [year := year negated]
+		ifFalse: [(widths at: yearIndex) <= 2 ifTrue: [year := 1900 + year]].
 	names := #('January' 'February' 'March' 'April' 'May' 'June'
 		'July' 'August' 'September' 'October' 'November' 'December').
 	month isString ifTrue: [month := self monthIndexOf: month in: names].
@@ -104,6 +134,59 @@ Date class >> readFrom: aStream [
 	(day isInteger and: [day between: 1 and: (self daysInMonthNumber: month year: year)])
 		ifFalse: [^self notADate: aStream].
 	^self newDay: day month: (names at: month) year: year
+]
+
+{ #category : '*Kernel-Protocol' }
+Date class >> newDay: day month: monthName year: year [
+	"The Date that is the day'th day of that month in that year -- the
+	 year as written, whatever it is.
+
+	 1983's first line is `year < 100 ifTrue: [^self newDay: day month:
+	 monthName year: 1900 + year]', which reads `82' as 1982 and makes
+	 every year under a hundred unreachable: `Date newDay: 1 month:
+	 #January year: -5' answered 1 January 1895.  Since Bugs4 CHRON-4 the
+	 arithmetic is proleptic in both directions, so those dates exist --
+	 `Date fromDays: -700000' is 19 June 16 BC and prints `19 June -16' --
+	 and a Date that cannot be made from its own fields cannot be stored:
+	 its storeString evaluated to 19 June 1916 (Bugs5 KERN-15).  The
+	 two-digit shorthand is a rule about TEXT, and readFrom: applies it to
+	 text; here a number is the year it says.
+
+	 Written against this file's own helpers and newDay:year:, not 1983's
+	 class variables, so that it compiles in profiles/pharo-time too,
+	 where Pharo's Date and its own newDay:month:year: replace it.  The
+	 month may be a name or, as Pharo also takes it, an index."
+	| monthIndex dayOfYear |
+	monthIndex := monthName isInteger
+		ifTrue: [monthName]
+		ifFalse: [self indexOfMonth: monthName].
+	(day between: 1 and: (self daysInMonthNumber: monthIndex year: year))
+		ifFalse: [^self error: 'illegal day in month'].
+	dayOfYear := day.
+	1 to: monthIndex - 1 do: [:m |
+		dayOfYear := dayOfYear + (self daysInMonthNumber: m year: year)].
+	^self newDay: dayOfYear year: year
+]
+
+{ #category : '*Kernel-Protocol' }
+Date >> storeOn: aStream [
+	"An expression that evaluates to me: `(Date newDay: 19 month: #June
+	 year: -16)'.
+
+	 1983 stores `(Date readFromString: '19 June -16')' -- my printString,
+	 read back -- and a printed year is ambiguous below a hundred: `5' is
+	 AD 5 to the printer and 1905 to the reader's two-digit rule, which
+	 is the rule a reader of text has to keep.  So every Date before AD
+	 100 stored as some other Date (Bugs5 KERN-15).  The fields, given to
+	 newDay:month:year:, which takes a year as written, are exact for every
+	 year there is."
+	aStream nextPutAll: '(' , self class name , ' newDay: ';
+		print: self dayOfMonth;
+		nextPutAll: ' month: #';
+		nextPutAll: self monthName;
+		nextPutAll: ' year: ';
+		print: self year;
+		nextPut: $)
 ]
 
 { #category : '*Kernel-Protocol' }

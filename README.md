@@ -154,7 +154,7 @@ is for:
 |---|---|
 | `OM=mt` | 64-bit threaded object memory — the real system, and the default |
 | `OM=bb` | 16-bit Blue Book memory — the validation harness. It loads the 1983 Xerox image and reproduces its traces; it cannot bootstrap an image, and says so if asked to |
-| `HEADLESS=1` | Build with no display: the graphics layer becomes a stub, and `make` stops asking for SDL3. Its own build directory, so it can never be half-linked against a graphical one |
+| `HEADLESS=1` | Build with no display: the graphics layer becomes a stub, and `make` stops asking for SDL3. Its own build directory, so it can never be half-linked against a graphical one. `./st2026` becomes the stub only when the tree has no windowed build; otherwise it is left in `build/mt-headless/st2026` |
 | `TSAN=1` | ThreadSanitizer build |
 | `ASAN=1` | Address + UB sanitizer build |
 | `FONT=`, `SIZE=`, `LEAD=` | inputs to `make font` |
@@ -185,23 +185,26 @@ a score may not fall, and may not rise without being recorded. A test that
 cannot pass here is recorded failing rather than dropped, with its reason in
 the profile beside it:
 
-| Profile | Tests |
-|---|---|
-| `st2026` | 545 / 545 |
-| `pharo-announcements` | 576 / 576 |
-| `pharo-time` | 1166 / 1166 |
-| `pharo-weak` | 1077 / 1076 |
-| `pharo-collections` | 1002 / 1002 |
+| Profile | Pharo's own tests | Passing |
+|---|---|---|
+| `st2026` | — | all |
+| `pharo-announcements` | 31 | all |
+| `pharo-time` | 621 | all |
+| `pharo-weak` | 532 | all but one |
+| `pharo-collections` | 457 | all |
 
-**1,689 of those are Pharo's own tests**, run unmodified against this system.
+**1,641 are Pharo's own tests**, run unmodified against this system.
 The rest are ours: the exceptions and concurrency classes 1983 has no
 equivalent of, a suite for the 1983 library itself — the numeric tower, the
 collections, strings and streams — the database, JSON, sockets, Tonel, the
 HTTP and REST servers, the HTTP client and TLS, the password hashing, the
-demo application, the clipboard, and the language models. Every profile
-requiring `st2026` inherits all of them, which is why the same 545 appear in
-every row; three more profiles need a database, the internet, or API keys, and
-are run on purpose. The composed image is 380 classes and 7,599 methods.
+demo application, the clipboard, and the language models — more than 550 of
+them, and every profile requiring `st2026` inherits them all on top of the
+Pharo tests in its row. Each profile's exact score is in
+[`tests/profiles.expected`](tests/profiles.expected), and `make test` fails
+when one moves. Three more profiles need a database, the internet, or API
+keys, and are run on purpose. The composed image is nearly 400 classes and
+well over 7,000 methods.
 Where this is going is [`doc/PLAN-TO-PHARO.md`](doc/PLAN-TO-PHARO.md).
 
 **SQL, on every core at once.** `lib/Database` reaches PostgreSQL, MySQL,
@@ -309,9 +312,11 @@ and `Promise` in its place. This is normative:
 [`doc/CONCURRENCY.md`](doc/CONCURRENCY.md) is required reading before writing
 Smalltalk for this system.
 
-**Thread map.** Thread 0 is a dedicated SDL pump and never executes Smalltalk;
-threads 1..N are Smalltalk workers and never call SDL video. SDL3's
-main-thread-only rules and macOS's Cocoa run loop force this shape.
+**Thread map.** Thread 0 owns SDL: it is the only thread that reads events or
+presents pixels. Under `-run` it also runs the desktop's interpreter, in
+slices, pumping SDL between them; under `-serve`, threads 1..N are Smalltalk
+workers and never call SDL video. SDL3's main-thread-only rules and macOS's
+Cocoa run loop force this shape.
 
 **`sources/` is never edited.** Every divergence from 1983 is a new file in
 `lib/` or `pharo/`, so "how far have we drifted" has a mechanical answer and

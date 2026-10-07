@@ -126,6 +126,14 @@ WORKER_enter_native(void)
      *  an object the worker is about to use.
      */
     ST_store_active_context();
+#ifdef ST_OM_MT
+    /*
+     *  And out of the reclamation epoch, by the same promise: a worker
+     *  blocked in a driver publishes nothing, and the epoch used to wait
+     *  for it for as long as the query took (Bugs5 OM-10).
+     */
+    OM_epoch_quiesce();
+#endif
     ST_mutex_lock(&safepoint_lock);
     ST_store_relaxed(&self->at_safepoint, 1);
     ST_fetch_add_acq_rel(&parked_count, 1);
@@ -153,6 +161,10 @@ WORKER_leave_native(void)
     ST_store_relaxed(&self->at_safepoint, 0);
     ST_fetch_sub_acq_rel(&parked_count, 1);
     ST_mutex_unlock(&safepoint_lock);
+#ifdef ST_OM_MT
+    /*  Back in the epoch before the caller touches anything.  */
+    OM_epoch_resume();
+#endif
 }
 
 /*

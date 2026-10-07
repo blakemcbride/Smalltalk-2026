@@ -337,6 +337,17 @@ static om_root_provider root_provider;
 static st_oop          *mark_stack;
 static uint32_t         mark_top;
 
+/*
+ *  Which entries the walk has reached, apart from the counts.  The count
+ *  used to be the mark -- reached for the first time when it went from 0
+ *  to 1 -- but the timer and network threads are not stopped by a
+ *  collection and count the Semaphores they signal; an increment between
+ *  the zeroing and the walk's visit hid a Semaphore from the walk, and
+ *  the Process waiting on it was swept (Bugs5 SCHED-lost-wakeup, found
+ *  and fixed in om_mt.c first).  A byte nothing but the walk writes.
+ */
+static uint8_t         *marked;
+
 void
 OM_set_root_provider(om_root_provider provider)
 {
@@ -358,7 +369,10 @@ mark_visit(st_oop p)
     count = OM_count_bits(p);
     if (count < ST_HUGE_SIZE - 1)
         OM_set_count_bits(p, count + 1);
-    if (count == 0 && mark_top < ST_OT_ENTRIES)
+    if (marked[p >> 1])
+        return;
+    marked[p >> 1] = 1;
+    if (mark_top < ST_OT_ENTRIES)
         mark_stack[mark_top++] = p;
 }
 
@@ -374,8 +388,14 @@ OM_collect(void)
     ++st_om_collections;
 
     mark_stack = (st_oop *) malloc(ST_OT_ENTRIES * sizeof *mark_stack);
-    if (!mark_stack)
+    marked     = (uint8_t *) calloc(ST_OT_ENTRIES, sizeof *marked);
+    if (!mark_stack || !marked) {
+        free(mark_stack);
+        free(marked);
+        mark_stack = NULL;
+        marked     = NULL;
         return 0;
+    }
     mark_top = 0;
 
     /*  Every count starts at zero and is rebuilt by the walk.  */
@@ -436,7 +456,7 @@ OM_collect(void)
     for (entry = 2; entry < st_om_ot_limit; entry += 2) {
         st_oop  p = (st_oop) entry;
 
-        if (OM_free_bit(p) || OM_count_bits(p) != 0)
+        if (OM_free_bit(p) || OM_count_bits(p) != 0 || marked[entry >> 1])
             continue;
         free_chunk_add(OM_segment_bits(p), OM_location(p), OM_size_bits(p));
         OM_set_free_bit(p, 1);
@@ -445,7 +465,9 @@ OM_collect(void)
         ++reclaimed;
     }
     free(mark_stack);
+    free(marked);
     mark_stack = NULL;
+    marked     = NULL;
     st_om_reclaimed += reclaimed;
     if (getenv("ST_GC_LOG"))
         fprintf(stderr, "  gc #%u reclaimed %u; %u words %u entries free\n",

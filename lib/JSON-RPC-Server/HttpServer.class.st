@@ -432,6 +432,8 @@ HttpServer >> dispatch: aRequest [
 
 { #category : 'logging' }
 HttpServer >> log: aString [
-	"To standard error: a server run has no Transcript window."
-	self reportOnStandardError: name, ': ', aString
+	"To standard error: a server run has no Transcript window.  Escaped,
+	 because the line quotes the request and its error, which are the
+	 client's: see HttpCodec class>>printableForLog: (Bugs5 NET-13)."
+	self reportOnStandardError: (HttpCodec printableForLog: name, ': ', aString)
 ]

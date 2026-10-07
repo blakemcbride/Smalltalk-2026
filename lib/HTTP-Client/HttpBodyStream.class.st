@@ -14,7 +14,9 @@ whatever is between this client and the origin may resolve it the other
 way.  A status that cannot have a body -- 1xx, 204, 304 -- is a stream
 that is at its end already.  A chunk's size line may carry extensions
 after a semicolon, which are ignored; a size that is not a number is a
-NetError, because the other end did not speak HTTP.
+NetError, because the other end did not speak HTTP, and so is a chunk
+whose data is not followed by exactly CR-LF, and a Transfer-Encoding that
+is anything but chunked alone (Bugs5 NET-10).
 
 A BODY THAT STOPS EARLY IS AN ERROR AND NOT A SHORT BODY, in all three
 shapes.  Chunked truncation was always caught, by the terminating chunk
@@ -130,6 +132,23 @@ HttpBodyStream class >> nextLineFrom: aStream limit: anInteger [
 	 A bare line feed is accepted here, unlike there: the server refuses
 	 one because a proxy in front may disagree about where a request ends,
 	 and a client reading its own connection has nobody to disagree with."
+	^self nextLineFrom: aStream limit: anInteger ifEnd: []
+]
+
+{ #category : 'reading' }
+HttpBodyStream class >> nextLineFrom: aStream limit: anInteger ifEnd: aBlock [
+	"As nextLineFrom:limit:, evaluating aBlock first when the stream ended
+	 before the line feed did -- whether or not some of the line came.
+
+	 THE END OF THE STREAM IS NOT A BLANK LINE, and the header section is
+	 where the difference matters.  nextLineFrom:limit: answers an empty
+	 String for both, and headerLinesFrom:do: stopped at the first empty
+	 String it was handed: a server that sent `HTTP/1.1 200 OK' and closed
+	 was a 200 with no headers and an empty body read up to the close --
+	 a complete, successful reply made of a status line and nothing else
+	 (Bugs5 NET-9).  Bugs4 NET-4 refused the same silent truncation in
+	 the body; this lets the header section refuse it too.  A last line
+	 with no line feed at all is cut off as surely, so it counts as well."
 	| out c n line |
 	out := WriteStream on: (String new: 80).
 	n := 0.
@@ -138,6 +157,7 @@ HttpBodyStream class >> nextLineFrom: aStream limit: anInteger [
 			^NetError new signal: 'the reply has a line longer than the ',
 				anInteger printString, ' bytes this client reads'].
 		out nextPut: c].
+	c isNil ifTrue: [aBlock value].
 	line := out contents.
 	(line size > 0 and: [line last = (Character value: 13)])
 		ifTrue: [^line copyFrom: 1 to: line size - 1].
@@ -148,12 +168,14 @@ HttpBodyStream class >> nextLineFrom: aStream limit: anInteger [
 HttpBodyStream class >> headerLinesFrom: aStream do: aBlock [
 	"Each line up to the blank one that ends a header section, to aBlock,
 	 bounded line by line and in total and in number; see the three limits
-	 and nextLineFrom:limit:.  The end of the stream ends the section, as
-	 the blank line does."
+	 and nextLineFrom:limit:.  Only the blank line ends the section: the
+	 end of the stream before it is a reply cut off in its headers, and a
+	 NetError (Bugs5 NET-9; see nextLineFrom:limit:ifEnd:)."
 	| line count total |
 	count := 0.
 	total := 0.
-	[line := self nextLineFrom: aStream limit: self maxLineBytes.
+	[line := self nextLineFrom: aStream limit: self maxLineBytes ifEnd: [
+		^NetError new signal: 'the connection closed inside the reply''s headers'].
 	 line isEmpty] whileFalse: [
 		(count := count + 1) > self maxHeaderCount ifTrue: [
 			^NetError new signal: 'the reply has more than ',
@@ -212,7 +234,18 @@ HttpBodyStream >> setStream: aSocketStream status: statusInteger headers: aDicti
 		 other reply it cannot read."
 		^NetError new signal:
 			'the reply frames its body two ways: Transfer-Encoding and Content-Length'].
-	(encoding notNil and: [encoding asLowercase includesSubstring: 'chunked']) ifTrue: [
+	encoding notNil ifTrue: [
+		"CHUNKED IS THE ONLY CODING THIS CLIENT UNDOES, and so the only one
+		 it accepts.  The test was whether the header mentioned `chunked'
+		 anywhere, so `gzip, chunked' was unchunked and handed back as the
+		 body still gzipped -- bytes that are not the document, answered as
+		 though they were -- and `chunkedfoo' was read as chunked (Bugs5
+		 NET-10).  HttpClient sends no TE header, so a server has no
+		 business applying any other coding, and one that does has sent a
+		 reply this client cannot read: a NetError, naming the coding."
+		encoding trimmed asLowercase = 'chunked' ifFalse: [
+			^NetError new signal: 'the reply''s Transfer-Encoding is ',
+				encoding printString, ', and this client reads only chunked'].
 		mode := #chunked.
 		remaining := 0.
 		^self].
@@ -251,10 +284,9 @@ HttpBodyStream >> nextChunkSize [
 	"The size of the next chunk, from its size line; 0 at the last, after
 	 which the trailers are read and dropped and the stream is at its end.
 	 Every chunk but the first is preceded by the CR-LF that ended the last
-	 one's data."
+	 one's data, and that CR-LF is checked: see skipChunkEnd."
 	| line semicolon size |
-	first ifTrue: [first := false] ifFalse: [
-		HttpBodyStream nextLineFrom: in limit: HttpBodyStream maxLineBytes].
+	first ifTrue: [first := false] ifFalse: [self skipChunkEnd].
 	line := (HttpBodyStream nextLineFrom: in limit: HttpBodyStream maxLineBytes) trimmed.
 	"THE PEER WENT AWAY, and that is not a malformed chunk size.  A
 	 connection closed in the middle of a chunked body reaches here with
@@ -281,6 +313,27 @@ HttpBodyStream >> nextChunkSize [
 		HttpBodyStream headerLinesFrom: in do: [:trailer | ].
 		mode := #none].
 	^size
+]
+
+{ #category : 'private' }
+HttpBodyStream >> skipChunkEnd [
+	"The CR-LF after a chunk's data, exactly.
+
+	 IT WAS A LINE, READ AND THROWN AWAY, so whatever stood between the
+	 chunk's last byte and the next line feed went with it: `3', CR-LF,
+	 `abcSMUGGLED', CR-LF answered `abc' and dropped the eight bytes after
+	 it without a word (Bugs5 NET-10).  A chunk that holds more than its
+	 size says is a peer whose framing this client and anything in between
+	 can read two ways, which is the shape of smuggling, and two bytes
+	 that are not CR-LF are a NetError for the same reason a size that is
+	 not a size is."
+	| ending |
+	ending := in next: 2.
+	ending size < 2 ifTrue: [
+		^NetError new signal: 'the connection closed in the middle of a chunked body'].
+	ending = (String with: (Character value: 13) with: (Character value: 10)) ifFalse: [
+		^NetError new signal: 'a chunk runs on past its size: ', ending printString,
+			' where its CR-LF should be']
 ]
 
 { #category : 'private' }

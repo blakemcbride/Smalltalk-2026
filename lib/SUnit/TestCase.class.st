@@ -332,3 +332,28 @@ TestCase >> assertCollection: actual hasSameElements: expected [
 		self assert: (expected includes: each)
 			description: 'unexpected ', each printString]
 ]
+
+{ #category : 'fixtures' }
+TestCase >> unusedName: aPrefix suffix: aSuffix in: aDirectory [
+	"A name for a fixture file in aDirectory -- Disk for the directory the
+	 tests run from -- that no file there has: aPrefix, a number drawn
+	 for this call, and aSuffix.  The caller makes the file and removes it.
+
+	 Fixtures had FIXED names -- TonelTestSample.class.st beside the image,
+	 Scratch.class.st in the REST suite's back end, one database file per
+	 live suite -- and so two runs of the suites from one tree at once wrote
+	 and deleted each other's files: six concurrent `-tests' runs in one
+	 directory failed every time, each a handful of tests short (Bugs5
+	 DOCS-6).  The C suites name theirs by process id; this image has no
+	 primitive that answers one, and needs none.  The number is from a new
+	 Random, which is seeded from the microsecond clock and its own
+	 identityHash, so two runs choose the same 32 bits only by starting in
+	 the same microsecond AND drawing the same hash; and a name that is
+	 already there is drawn again rather than shared.  The number is
+	 written in base 36 so that the name is still a legal class name when
+	 aPrefix is one: a REST service's file must be named as its class."
+	| name |
+	[name := aPrefix, ((Random new nextBits: 32) printString: 36), aSuffix.
+	 aDirectory includesKey: name] whileTrue.
+	^name
+]

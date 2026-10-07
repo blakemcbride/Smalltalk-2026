@@ -234,12 +234,26 @@ association_in_pool(st_oop pool, const char *name)
     return BOOT_image_association(pool, name);
 }
 
+/*
+ *  How many classes the pool walk below may climb before it stops.
+ *
+ *  The same number, for the same reason, as the interpreter's
+ *  MAX_SUPERCLASS_CHAIN: no image this system builds has a chain twenty
+ *  deep, and a walk that has taken thousands of steps is going round a
+ *  cycle made through instVarAt:put: (Bugs3 B6's kind).  This walk runs in
+ *  C holding the Symbol lock, with no safepoint in it, so a cycle here is a
+ *  worker gone for good and every other one parked behind it at the next
+ *  collection (Bugs5 COMP-8).
+ */
+#define IMGC_MAX_SUPERCLASS_CHAIN   4096
+
 static st_oop
 imgc_lookup_global(const char *name, void *user)
 {
     imgc_scope *scope = (imgc_scope *) user;
     st_oop      cls;
     st_oop      found;
+    unsigned    hops = 0;
 
     /*
      *  Class variables and pools, up the superclass chain, which is the
@@ -255,7 +269,8 @@ imgc_lookup_global(const char *name, void *user)
      */
     cls = scope ? scope->class_oop : ST_NIL;
     while (OM_is_object(cls) && OM_pointer_bit(cls)
-        && OM_fetch_word_length(cls) > ST_CLASS_SUPERCLASS) {
+        && OM_fetch_word_length(cls) > ST_CLASS_SUPERCLASS
+        && ++hops <= IMGC_MAX_SUPERCLASS_CHAIN) {
         st_oop      owner = pool_owner(cls);
         st_oop      pools;
         uint32_t    slots;
@@ -272,8 +287,19 @@ imgc_lookup_global(const char *name, void *user)
         if (found != ST_OOP_INVALID)
             return found;
         pools = OM_fetch_pointer(IMGC_CLASS_SHARED_POOLS, owner);
-        if (!OM_is_object(pools) || !OM_pointer_bit(pools))
+        /*
+         *  A sharedPools that is not a collection is no pools -- and the
+         *  walk still has to move UP.  This `continue' used to skip the
+         *  `cls = next' at the bottom of the loop, so a class whose slot
+         *  held 3 (one instVarAt: 9 put: away) was asked about again, and
+         *  again, for ever: `ZZA compile: 'h ^Transcript'' spun at 100% CPU
+         *  in C, holding the Symbol lock, until the process was killed
+         *  (Bugs5 COMP-8).  The test above has always advanced first.
+         */
+        if (!OM_is_object(pools) || !OM_pointer_bit(pools)) {
+            cls = next;
             continue;
+        }
         slots = OM_fetch_word_length(pools);
         for (i = 0; i < slots; ++i) {
             st_oop  pool = OM_fetch_pointer(i, pools);

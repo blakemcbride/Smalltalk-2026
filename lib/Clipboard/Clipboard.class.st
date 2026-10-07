@@ -67,9 +67,25 @@ Clipboard class >> text [
 { #category : 'accessing' }
 Clipboard class >> text: aStringOrText [
 	"Put the text on the system's clipboard, with its line ends made the
-	 world's.  Answer whether it went: false when there is no window."
+	 world's.  Answer whether it went: false when there is no window, and
+	 false for text holding a NUL.
 
-	^(self primCommand: 2 with: (self toOutside: aStringOrText asString)) == true
+	 The system's clipboard is a C string and cannot hold a NUL, so the
+	 primitive refuses such text -- it used to cut it short at the NUL,
+	 and paste then took the stub for something copied elsewhere and
+	 pasted it in place of the whole selection the image had copied
+	 (Bugs5 GUI-4).  Refused is not enough by itself: whatever was on the
+	 clipboard before would still be there, newer-looking than the
+	 selection, and paste would bring that back instead.  So the clipboard
+	 is emptied, which is what paste reads as `nothing from outside', and
+	 the editor's own buffer is what pastes, NUL and all."
+
+	| outside |
+	outside := self toOutside: aStringOrText asString.
+	(outside includes: (Character value: 0)) ifTrue:
+		[self primCommand: 2 with: ''.
+		 ^false].
+	^(self primCommand: 2 with: outside) == true
 ]
 
 { #category : 'translating' }

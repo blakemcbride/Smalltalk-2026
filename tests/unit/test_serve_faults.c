@@ -88,26 +88,50 @@ static const char *st2026;
 /*
  *  A fixture's path in this build's scratch directory (see
  *  st_test_dir), made once per name and kept.
+ *
+ *  With this process's id in it (Bugs5 DOCS-6).  Two runs from one tree --
+ *  two terminals, or make test beside a hand run -- shared every one of
+ *  these, and each server read whichever batch file the other run had
+ *  written last.  fixtures_remove takes them all away at the end, the
+ *  image's .changes with them, so that a name per run is not a pile per
+ *  run.
  */
+static struct { const char *name; char *path; } fixtures_made[32];
+
 static const char *
 fixture(const char *name)
 {
-    static struct { const char *name; char *path; } made[32];
     size_t  i;
     size_t  n;
 
-    for (i = 0; i < sizeof made / sizeof made[0] && made[i].name; ++i)
-        if (strcmp(made[i].name, name) == 0)
-            return made[i].path;
-    if (i == sizeof made / sizeof made[0])
+    for (i = 0; i < sizeof fixtures_made / sizeof fixtures_made[0]
+                && fixtures_made[i].name; ++i)
+        if (strcmp(fixtures_made[i].name, name) == 0)
+            return fixtures_made[i].path;
+    if (i == sizeof fixtures_made / sizeof fixtures_made[0])
         return name;
-    n = strlen(st_test_dir()) + strlen(name) + 2;
-    made[i].path = (char *) malloc(n);
-    if (!made[i].path)
+    n = strlen(st_test_dir()) + strlen(name) + 32;
+    fixtures_made[i].path = (char *) malloc(n);
+    if (!fixtures_made[i].path)
         return name;
-    snprintf(made[i].path, n, "%s/%s", st_test_dir(), name);
-    made[i].name = name;
-    return made[i].path;
+    snprintf(fixtures_made[i].path, n, "%s/%ld-%s", st_test_dir(),
+             st_test_pid(), name);
+    fixtures_made[i].name = name;
+    return fixtures_made[i].path;
+}
+
+static void
+fixtures_remove(void)
+{
+    char    changes[1024];
+    size_t  i;
+
+    for (i = 0; i < sizeof fixtures_made / sizeof fixtures_made[0]
+                && fixtures_made[i].name; ++i) {
+        unlink(fixtures_made[i].path);
+        snprintf(changes, sizeof changes, "%s.changes", fixtures_made[i].path);
+        unlink(changes);
+    }
 }
 
 static const char *
@@ -182,7 +206,7 @@ serve(const char *batch, unsigned workers, char *out, size_t len)
     if (write_file(BATCH, batch) != 0)
         return -1;
     snprintf(command, sizeof command,
-             "timeout -k 2 " SERVE_SECONDS " %s -serve %s -workers %u"
+             ST_TEST_TIMEOUT " -k 2 " SERVE_SECONDS " %s -serve %s -workers %u"
              " \"$(cat %s)\" 2>&1",
              st2026, IMAGE, workers, BATCH);
     return run(command, out, len);
@@ -228,6 +252,620 @@ check_survives(const char *batch, const char *error_text, const char *what)
     expect(out, error_text, what);
     expect(out, "3 + 4 ==> 7", what);
     expect_absent(out, "Segmentation", what);
+}
+
+/*
+ *  How many collections a GC log reports: one "  gc #" line each.
+ */
+static unsigned
+om_collections_logged(const char *out)
+{
+    unsigned    n = 0;
+    const char *p = out;
+
+    while ((p = strstr(p, "  gc #")) != NULL) {
+        ++n;
+        p += 6;
+    }
+    return n;
+}
+
+/*
+ *  Bugs5 low findings, om.  Each of these needs a pool, a class of its own
+ *  or a second run of a saved image, which is why they are here and not in
+ *  test_image.
+ */
+static void
+bugs5_low_om(void)
+{
+    static char out[65536];
+    char        command[2048];
+    int         status;
+
+    /*
+     *  OM-8, found alongside: a ceiling below the table's starting size is
+     *  honoured.  ST_MAX_OBJECTS=1048576 used to be silently replaced by
+     *  the 64M default, so a runaway never met an OutOfMemory -- it was
+     *  still allocating after a hundred seconds and 2.3 GB.  And once the
+     *  ceiling was honoured, the second runaway in such an image found the
+     *  reserve never re-armed, because the re-arm tested the table's
+     *  high-water mark, which the booted image alone holds at 255,177.
+     *  And under it lay two faults the high ceiling had hidden: the holes a
+     *  loaded image comes with were never put on the free chain, and a
+     *  collection that could not lower the table's limit dropped every
+     *  index sitting in a worker's magazine -- so a table three quarters
+     *  free collected for ever without reaching its OutOfMemory.  A
+     *  quarter of a million: the lowest ceiling accepted, two runaways
+     *  caught, about three seconds.
+     */
+    if (write_file(BATCH,
+            "| a r1 r2 | r1 := [a := OrderedCollection new. [a add: (Array "
+            "new: 1)] repeat] on: OutOfMemory do: [:e | e return: a size]. "
+            "a := nil. Smalltalk garbageCollect. r2 := [a := OrderedCollection "
+            "new. [a add: (Array new: 1)] repeat] on: OutOfMemory do: [:e | e "
+            "return: a size]. a := nil. (r1 between: 100000 and: 262144) & "
+            "(r2 between: 100000 and: 262144) ifTrue: ['survived twice'] "
+            "ifFalse: [{r1. r2}]\n") == 0) {
+        snprintf(command, sizeof command,
+                 "ST_MAX_OBJECTS=262144 " ST_TEST_TIMEOUT " -k 2 " SERVE_SECONDS " %s "
+                 "-serve %s -workers 4 \"$(cat %s)\" 2>&1",
+                 st2026, IMAGE, BATCH);
+        status = run(command, out, sizeof out);
+        ++st_test_checks;
+        if (status < 0) {
+            ++st_test_failures;
+            printf("  FAIL OM-8-alongside: could not run the server\n");
+        } else {
+            expect(out, "==> 'survived twice'",
+                   "OM-8-alongside ceiling below the starting size");
+        }
+    }
+
+    /*
+     *  COMP-8: a sharedPools slot that is not a collection is no pools, and
+     *  the walk up the superclass chain goes on past it.  It used to ask
+     *  about the same class for ever, in C, with the Symbol lock held.
+     *  (The walk is bounded against a superclass cycle as well, but a
+     *  compile: into a cycled class never reaches it: Behavior's own
+     *  instance-variable walk in Smalltalk exceeds the depth limit first.)
+     */
+    check_survives("Object subclass: #ZZComp8 instanceVariableNames: '' "
+                   "classVariableNames: '' poolDictionaries: '' category: 'x'."
+                   " (Smalltalk at: #ZZComp8) instVarAt: 9 put: 3."
+                   " (Smalltalk at: #ZZComp8) compile: 'h ^Transcript'."
+                   " (Smalltalk at: #ZZComp8) new h == Transcript"
+                   " ifTrue: ['pools walked'] ifFalse: ['wrong']\n"
+                   "3 + 4\n",
+                   "==> 'pools walked'", "COMP-8 sharedPools of 3");
+
+    /*
+     *  OM-12: one Delay timing process, not two.  The bootstrap runs the
+     *  class initializer twice and the first pass's process, not yet run,
+     *  read the second pass's TimingSemaphore when it did.
+     */
+    check_survives("Smalltalk garbageCollect. ((Delay classPool at: "
+                   "#TimingSemaphore) size = 1 and: [(Process allInstances "
+                   "select: [:p | p priority = Processor timingPriority]) "
+                   "size = 1]) ifTrue: ['one timing process'] ifFalse: "
+                   "[{(Delay classPool at: #TimingSemaphore) size}]\n"
+                   "3 + 4\n",
+                   "==> 'one timing process'", "OM-12 timing processes");
+
+    /*
+     *  OM-10: idle workers do not stall the reclamation epoch.  One worker
+     *  allocating, seven idle: the busy one's dropped Arrays used to wait
+     *  for the stop-the-world collector -- six collections where one
+     *  worker alone needed one -- because the epoch advanced only when
+     *  every worker had published it and an idle one never does.
+     */
+    if (write_file(BATCH, "| x | 1 to: 3000000 do: [:i | x := Array with: i "
+                          "with: (Array new: 3)]. 'allocated'\n") == 0) {
+        snprintf(command, sizeof command,
+                 "ST_GC_LOG=1 " ST_TEST_TIMEOUT " -k 2 " SERVE_SECONDS " %s -serve %s "
+                 "-workers 8 \"$(cat %s)\" 2>&1", st2026, IMAGE, BATCH);
+        status = run(command, out, sizeof out);
+        ++st_test_checks;
+        if (status < 0) {
+            ++st_test_failures;
+            printf("  FAIL OM-10: could not run the server\n");
+        } else {
+            expect(out, "==> 'allocated'", "OM-10 allocation loop");
+            ++st_test_checks;
+            if (om_collections_logged(out) > 2) {
+                ++st_test_failures;
+                printf("  FAIL OM-10: %u collections on eight workers, "
+                       "want at most 2\n", om_collections_logged(out));
+            }
+        }
+    }
+
+    /*
+     *  OM-9: an ephemeron the snapshot's own collection fired is mourned
+     *  in the image that comes back.  The writer queued it and cleared its
+     *  ephemeron bit, the queue is not in the file, and the reloaded image
+     *  held a plain object no one would ever tell.  The saved image resumes
+     *  the batch after the snapshot line, so the last line runs there.
+     */
+    {
+        const char *saved = fixture("bugs5-om9");
+        char        batch[2048];
+
+        unlink(fixture("bugs5-om9.im"));
+        snprintf(batch, sizeof batch,
+                 "Object ephemeronSubclass: #Bugs5OmEph instanceVariableNames:"
+                 " 'key' classVariableNames: '' poolDictionaries: '' "
+                 "category: 'Bugs5'\n"
+                 "(Smalltalk at: #Bugs5OmEph) compile: 'fill key := Object new'"
+                 " classified: 'x' notifying: nil\n"
+                 "(Smalltalk at: #Bugs5OmEph) compile: 'mourn Smalltalk at: "
+                 "#Bugs5OmMourned put: (Smalltalk at: #Bugs5OmMourned) + 1' "
+                 "classified: 'x' notifying: nil\n"
+                 "Smalltalk at: #Bugs5OmMourned put: 0. Smalltalk at: "
+                 "#Bugs5OmKeeper put: (Smalltalk at: #Bugs5OmEph) new. "
+                 "(Smalltalk at: #Bugs5OmKeeper) fill. 0\n"
+                 "Smalltalk snapshotAs: '%s' thenQuit: true\n"
+                 "(Delay forMilliseconds: 100) wait. Smalltalk garbageCollect."
+                 " (Delay forMilliseconds: 100) wait. 'mourned ', "
+                 "(Smalltalk at: #Bugs5OmMourned) printString\n", saved);
+        (void) serve(batch, 2, out, sizeof out);
+        snprintf(command, sizeof command,
+                 ST_TEST_TIMEOUT " -k 2 " SERVE_SECONDS " %s -serve %s -workers 2 2>&1",
+                 st2026, fixture("bugs5-om9.im"));
+        status = run(command, out, sizeof out);
+        ++st_test_checks;
+        if (status < 0) {
+            ++st_test_failures;
+            printf("  FAIL OM-9: could not run the saved image\n");
+        } else {
+            expect(out, "==> 'mourned 1'", "OM-9 mourned after a reload");
+        }
+
+        /*
+         *  OM-14: an image saved while timers fire comes back with every
+         *  process on the list it says it is on.  The write used to happen
+         *  after the collection's safepoint, with frozen workers still
+         *  draining timer signals and moving processes between lists.  A
+         *  race, so this cannot fail every time; it is the shape of the
+         *  check that would see it.  One worker when reloaded, so the
+         *  processes at background priority stay still while it looks.
+         */
+        unlink(fixture("bugs5-om9.im"));
+        snprintf(batch, sizeof batch,
+                 "Smalltalk at: #B5OmStop put: false. 1 to: 32 do: [:k | "
+                 "[[Smalltalk at: #B5OmStop] whileFalse: [(Delay "
+                 "forMilliseconds: 1) wait]] forkAt: Processor "
+                 "userBackgroundPriority]. (Delay forMilliseconds: 50) wait. 0\n"
+                 "Smalltalk snapshotAs: '%s' thenQuit: true\n"
+                 "| bad | bad := 0. Process allInstances do: [:p | | l | l := "
+                 "p instVarAt: 4. (l notNil and: [(l isKindOf: LinkedList) "
+                 "and: [(l includes: p) not]]) ifTrue: [bad := bad + 1]]. "
+                 "Smalltalk at: #B5OmStop put: true. 'bad ', bad printString\n",
+                 saved);
+        (void) serve(batch, 4, out, sizeof out);
+        snprintf(command, sizeof command,
+                 ST_TEST_TIMEOUT " -k 2 " SERVE_SECONDS " %s -serve %s -workers 1 2>&1",
+                 st2026, fixture("bugs5-om9.im"));
+        status = run(command, out, sizeof out);
+        ++st_test_checks;
+        if (status < 0) {
+            ++st_test_failures;
+            printf("  FAIL OM-14: could not run the saved image\n");
+        } else {
+            expect(out, "==> 'bad 0'", "OM-14 lists after a snapshot");
+        }
+        unlink(fixture("bugs5-om9.im"));
+        unlink(fixture("bugs5-om9.im.changes"));
+    }
+}
+
+static void
+bugs5_low_sched(void)
+{
+}
+
+static void
+bugs5_low_kern(void)
+{
+}
+
+static void
+bugs5_low_comp(void)
+{
+    static char out[65536];
+
+    /*
+     *  COMP-7.  The Decompiler failed on 1,646 of the image's methods --
+     *  the C compiler's jump layout and the closure bytecodes, neither of
+     *  which 1983's knew.  Every method decompiles now; the count of those
+     *  that do not is the number that must stay at nought.  A few seconds
+     *  here and more than twenty minutes under TSAN, so not under a
+     *  sanitizer; the method below covers the same code in little.
+     */
+#if !(defined(__SANITIZE_THREAD__) || defined(__SANITIZE_ADDRESS__) \
+   || (defined(__has_feature) && (__has_feature(thread_sanitizer) \
+                               || __has_feature(address_sanitizer))))
+    serve("[:bad | Smalltalk allBehaviorsDo: [:c | c selectors do: [:s |"
+          " [(c decompile: s) decompileString] on: Error do: [:e |"
+          " bad add: s]]]. bad size] value: OrderedCollection new\n",
+          1, out, sizeof out);
+    expect(out, "bad size] value: OrderedCollection new ==> 0",
+           "COMP-7 every method in the image should decompile");
+#endif
+
+    /*
+     *  And what it answers is the method.  A closure with a local nobody
+     *  uses, a variable two blocks share and assign (a vector, copied into
+     *  the inner block), loops with and without a body, and:, or:, a
+     *  cascade, brace arrays and a conditional for its value -- decompiled,
+     *  compiled again under another name, and run.
+     */
+    serve("Object compile: 'zzComp7: n | a b | a := 0. b := [:x | | u w |"
+          " w := x. a := a + w. [:y | a := a + y + n] value: 1. a]."
+          " #(1 2) do: [:e | b value: e]. [a > 100] whileFalse: [a := a * 2]."
+          " [a := a + 1. a > 1000] whileFalse. ^{a. n even and: [n > 1]."
+          " n odd or: [false]. (OrderedCollection new add: 3; add: 4;"
+          " yourself) asArray. {}. [:p | ] value: 1."
+          " n > 2 ifTrue: [#big] ifFalse: [#small]}'\n"
+          "Object compile: ((Object decompile: #zzComp7:) decompileString"
+          " copyReplaceAll: 'zzComp7:' with: 'zzComp7b:')\n"
+          "3 zzComp7b: 3\n"
+          "(3 zzComp7: 3) = (3 zzComp7b: 3)\n",
+          1, out, sizeof out);
+    expect(out, "3 zzComp7b: 3 ==> (1001 false true (3 4 ) () nil big )",
+           "COMP-7 a decompiled closure method should compile and run");
+    expect(out, "(3 zzComp7: 3) = (3 zzComp7b: 3) ==> true",
+           "COMP-7 the decompiled method should answer what the original"
+           " does");
+}
+
+static void
+bugs5_low_net(void)
+{
+    static char out[65536];
+    const char *login = fixture("bugs5-net-login.st");
+    char        batch[512];
+    int         status;
+
+    /*
+     *  Bugs5 NET-13: every log line is one line.  Bugs4 NET-6 escaped the
+     *  two fields RestDispatcher logs, and the rest of RestLog -- the demo
+     *  upload line with a client's file name in it -- and HttpServer>>log:
+     *  wrote CRs and ANSI escapes to standard error as they came.  The
+     *  batch builds the characters rather than holding them, so that the
+     *  only place a raw one could appear is the log line itself.
+     */
+    status = serve("RestLog info: 'zqA', (String with: (Character value: 13)),"
+                   " 'B', (String with: (Character value: 27)), '[2J'\n"
+                   "(HttpServer new name: 'zqhs') log: 'C', (String with:"
+                   " (Character value: 10)), 'D'\n"
+                   "3 + 4\n", 2, out, sizeof out);
+    ++st_test_checks;
+    if (status < 0) {
+        ++st_test_failures;
+        printf("  FAIL NET-13: could not run the server\n");
+    } else {
+        expect(out, "info: zqA\\x0dB\\x1b[2J", "NET-13 RestLog escapes");
+        expect(out, "zqhs: C\\x0aD", "NET-13 HttpServer>>log: escapes");
+        expect_absent(out, "zqA\rB", "NET-13 RestLog wrote a raw CR");
+        expect_absent(out, "\033[2J", "NET-13 RestLog wrote a raw ESC");
+    }
+
+    /*
+     *  Bugs5 NET-15, the second half: the demo's Login answered nil at
+     *  once for a user name with no row, and only a name that had one paid
+     *  for PBKDF2, so the time an `Invalid login' took said which names
+     *  exist.  Login is loaded from demo/backend over a database of one
+     *  method that finds nobody; the miss must cost at least half of one
+     *  PBKDF2 at PasswordHash's iterations -- the best of three of each,
+     *  so a busy machine slows both rather than one.
+     */
+    if (write_file(login,
+            "| cls req miss hash |\n"
+            "cls := Object subclass: #ZZNetDb instanceVariableNames: '' "
+            "classVariableNames: '' poolDictionaries: '' category: 'ZZNet'.\n"
+            "cls compile: 'fetchOne: q with: a ^nil' classified: 'x'.\n"
+            "cls compile: 'db ^self' classified: 'x'.\n"
+            "TonelReader loadFile: 'demo/backend/Login.class.st'.\n"
+            "req := cls new.\n"
+            "miss := (1 to: 3) inject: 1000000 into: [:m :i | m min: "
+            "(Time millisecondsToRun: [(Smalltalk at: #Login) login: 'nobody' "
+            "password: 'pw' outjson: nil request: req])].\n"
+            "hash := (1 to: 3) inject: 1000000 into: [:m :i | m min: "
+            "(Time millisecondsToRun: [Crypto pbkdf2: 'pw' salt: 'abcdefgh' "
+            "iterations: PasswordHash iterations])].\n"
+            "^'login-miss ', (miss * 2 >= hash) printString, ' ', "
+            "miss printString, '/', hash printString\n") != 0) {
+        ++st_test_checks;
+        ++st_test_failures;
+        printf("  FAIL NET-15: could not write the login script\n");
+        return;
+    }
+    snprintf(batch, sizeof batch,
+             "Compiler evaluate: (FileStream oldFileNamed: '%s') "
+             "contentsOfEntireFile\n", login);
+    status = serve(batch, 1, out, sizeof out);
+    ++st_test_checks;
+    if (status < 0) {
+        ++st_test_failures;
+        printf("  FAIL NET-15: could not run the server\n");
+    } else {
+        expect(out, "==> 'login-miss true", "NET-15 an unknown user costs a verify");
+    }
+    unlink(login);
+}
+
+/*
+ *  Whether there is anything at all at a fixture path.
+ */
+static int
+files_exists(const char *path)
+{
+    return access(path, F_OK) == 0;
+}
+
+static void
+bugs5_low_files(void)
+{
+    static char out[65536];
+    char        batch[2048];
+    char        command[2048];
+
+    /*
+     *  FILES-10.  The file layer's errno was one static for every worker.
+     *  One process fails to open a missing file, waits a moment, and asks
+     *  lastError, while six others open a directory as fast as they can:
+     *  it answered their EISDIR, 21, a hundred times in a hundred.
+     */
+    serve("[:done :stop | | bad | 1 to: 6 do: [:k | [[stop first]"
+          " whileFalse: [Disk fileClass new doPrimCommand: 4 name: '/'"
+          " page: nil]. done signal] fork]. (Delay forMilliseconds: 50)"
+          " wait. bad := (1 to: 100) inject: 0 into: [:n :i | | f |"
+          " f := Disk fileClass new. f doPrimCommand: 4 name:"
+          " '/nonexistent-bugs5-files10/x' page: nil. 1 to: 2000 do:"
+          " [:j | j even]. n + (f lastError = 2 ifTrue: [0] ifFalse: [1])]."
+          " stop at: 1 put: true. 6 timesRepeat: [done wait]. bad]"
+          " value: Semaphore new value: (Array with: false)\n",
+          8, out, sizeof out);
+    expect(out, "] value: Semaphore new value: (Array with: false) ==> 0\n",
+           "FILES-10 each worker's own errno");
+
+    /*
+     *  SNAPSHOT-zero-byte.  snapshotAs: opened the image file before
+     *  primitive 97 wrote anything -- and 97 writes a .tmp and renames
+     *  it -- so a snapshot that failed left a new name behind as an
+     *  empty .im.  The .tmp is made a directory so that 97 fails.
+     */
+    snprintf(command, sizeof command, "rm -rf %s %s.tmp && mkdir %s.tmp",
+             fixture("bugs5-files-snap.im"), fixture("bugs5-files-snap.im"),
+             fixture("bugs5-files-snap.im"));
+    (void) system(command);
+    snprintf(batch, sizeof batch,
+             "[Smalltalk snapshotAs: '%s'] on: Error do: [:e | 'failed']\n"
+             "(Delay forMilliseconds: 5) wait. 3 + 4\n",
+             fixture("bugs5-files-snap"));
+    serve(batch, 2, out, sizeof out);
+    expect(out, "==> 'failed'", "SNAPSHOT-zero-byte the snapshot fails");
+    expect(out, "3 + 4 ==> 7", "SNAPSHOT-zero-byte Delay still works");
+    ++st_test_checks;
+    if (files_exists(fixture("bugs5-files-snap.im"))) {
+        ++st_test_failures;
+        printf("  FAIL SNAPSHOT-zero-byte: a failed snapshot left %s\n",
+               fixture("bugs5-files-snap.im"));
+    }
+    snprintf(command, sizeof command, "rm -rf %s.tmp",
+             fixture("bugs5-files-snap.im"));
+    (void) system(command);
+
+    /*
+     *  FILES-9.  After condenseChanges the one-writer lock was held on
+     *  the changes file it had removed, and a second -serve of the image
+     *  was admitted.  The first server condenses and then stays up; the
+     *  second must still be refused.  Started once the first has said
+     *  'condensed', not after a fixed sleep -- under TSAN the condense
+     *  takes longer than any sleep worth writing -- and the first is then
+     *  stopped by its pid rather than left to run out its wait.
+     */
+    snprintf(command, sizeof command,
+             "rm -f %s %s.changes && cp %s %s",
+             fixture("bugs5-files-condense.im"),
+             fixture("bugs5-files-condense.im"), IMAGE,
+             fixture("bugs5-files-condense.im"));
+    (void) system(command);
+    if (write_file(BATCH, "Smalltalk condenseChanges. 'condensed'\n"
+                          "(Delay forSeconds: 600) wait. 'done'\n") == 0) {
+        snprintf(command, sizeof command,
+                 ST_TEST_TIMEOUT " -k 2 " SERVE_SECONDS " %s -serve %s -workers 2"
+                 " \"$(cat %s)\" >%s.first 2>&1 & first=$!;"
+                 " n=0; until grep -q \"==> 'condensed'\" %s.first"
+                 " || [ $n -ge " SERVE_SECONDS "0 ]; do sleep 0.1; n=$((n+1));"
+                 " done;"
+                 " " ST_TEST_TIMEOUT " -k 2 " SERVE_SECONDS " %s -serve %s -workers 1"
+                 " '3 + 4' 2>&1; kill $first; wait $first; cat %s.first",
+                 st2026, fixture("bugs5-files-condense.im"), BATCH,
+                 fixture("bugs5-files-condense.im"),
+                 fixture("bugs5-files-condense.im"),
+                 st2026, fixture("bugs5-files-condense.im"),
+                 fixture("bugs5-files-condense.im"));
+        run(command, out, sizeof out);
+        expect(out, "==> 'condensed'", "FILES-9 the condense ran");
+        expect(out, "is already open by another st2026",
+               "FILES-9 a second server is refused after a condense");
+        expect_absent(out, "3 + 4 ==> 7",
+                      "FILES-9 the second server did not run");
+    } else {
+        ++st_test_checks;
+        ++st_test_failures;
+        printf("  FAIL FILES-9: cannot write %s\n", BATCH);
+    }
+
+    /*
+     *  FILES-12, TonelWriter.  The pattern on the `Class >> pattern ['
+     *  line was copied from the source, so a method compiled from one
+     *  line wrote `+x' and `at:i put:v', which Pharo's reader splits
+     *  wrongly, and a comment in the pattern was taken for a word.
+     */
+    serve("Object subclass: #B5FilesZork instanceVariableNames: ''"
+          " classVariableNames: '' poolDictionaries: '' category: 'B5'."
+          " (Smalltalk at: #B5FilesZork) compile: '+x ^x' classified: 'a'."
+          " (Smalltalk at: #B5FilesZork) compile: 'at:i put:v ^i + v'"
+          " classified: 'a'. (Smalltalk at: #B5FilesZork) compile:"
+          " 'foo: \"c[\" a ^a' classified: 'a'. (TonelWriter sourceFor:"
+          " (Smalltalk at: #B5FilesZork)) displayNl. 1\n", 2, out,
+          sizeof out);
+    expect(out, "B5FilesZork >> + x [", "FILES-12 a binary pattern");
+    expect(out, "B5FilesZork >> at: i put: v [", "FILES-12 a keyword pattern");
+    expect(out, "B5FilesZork >> foo: a [", "FILES-12 a comment in a pattern");
+    expect(out, "\"c[\" ^a", "FILES-12 the comment is kept in the body");
+}
+
+#include <time.h>
+#include <sys/stat.h>
+
+/*
+ *  Run a command and answer how many seconds it took, its output in out.
+ */
+static long
+docs_timed_run(const char *command, char *out, size_t len, int *status)
+{
+    time_t  began = time(NULL);
+
+    *status = run(command, out, len);
+    return (long) (time(NULL) - began);
+}
+
+/*
+ *  make, run from inside `make unit-test', without the parent's job server
+ *  or level: only -n is wanted from it, and it is to read the Makefile, not
+ *  join the build that is running this.  Nor the sanitizer switches a
+ *  `make ASAN=1 unit-test' leaves in the environment: under them the rule
+ *  for ./st2026 is the sanitizer one, not the one being checked.
+ */
+#define DOCS_MAKE   "env -u MAKEFLAGS -u MFLAGS -u MAKELEVEL -u ASAN -u TSAN " \
+                    "make --no-print-directory "
+
+static void
+bugs5_low_docs(void)
+{
+    static char out[65536];
+    char        command[2048];
+    char        path[1024];
+    int         status;
+    long        took;
+    FILE       *f;
+
+    /*
+     *  DOCS-10: the message for a bare -inject asks for the script, not for
+     *  the file name inject_reject warns about.
+     */
+    snprintf(command, sizeof command, "%s -inject 2>&1", st2026);
+    run(command, out, sizeof out);
+    expect(out, "-inject needs the script itself", "DOCS-10 -inject message");
+    expect_absent(out, "script file", "DOCS-10 -inject message");
+
+    /*
+     *  DOCS-8: tools/timeout.sh's own watchdog -- the path a Mac without
+     *  timeout(1) takes, forced here on a machine that has one.  It stops
+     *  a hang and says 124, the GNU answer; it passes a command's output
+     *  and status through; it does not hold the pipe open for the rest of
+     *  the limit after the command is done, which a popen reader would sit
+     *  out in full; and a whole serve check runs through it.
+     */
+    took = docs_timed_run("ST_TIMEOUT_WATCHDOG=1 " ST_TEST_TIMEOUT
+                          " -k 1 1 sleep 60; echo status=$?",
+                          out, sizeof out, &status);
+    expect(out, "status=124", "DOCS-8 watchdog stops a hang");
+    ++st_test_checks;
+    if (took > 20) {
+        ++st_test_failures;
+        printf("  FAIL DOCS-8 watchdog took %ld seconds to stop sleep 60\n",
+               took);
+    }
+    took = docs_timed_run("ST_TIMEOUT_WATCHDOG=1 " ST_TEST_TIMEOUT
+                          " 60 sh -c 'echo through; exit 3'; echo status=$?",
+                          out, sizeof out, &status);
+    expect(out, "through\nstatus=3", "DOCS-8 watchdog passes status");
+    ++st_test_checks;
+    if (took > 20) {
+        ++st_test_failures;
+        printf("  FAIL DOCS-8 watchdog held the pipe %ld seconds\n", took);
+    }
+    if (setenv("ST_TIMEOUT_WATCHDOG", "1", 1) == 0) {
+        status = serve("3 + 4\n", 2, out, sizeof out);
+        unsetenv("ST_TIMEOUT_WATCHDOG");
+        expect(out, "3 + 4 ==> 7", "DOCS-8 serve under the watchdog");
+    }
+
+    /*
+     *  DOCS-7: a profile run that stalls is stopped at the wall-clock
+     *  limit and failed by name, with the end of its output.  The binary
+     *  is a stand-in that prints a line and then waits for ever, burning
+     *  no bytecodes -- the stall the budget could not see.
+     */
+    snprintf(path, sizeof path, "%s", fixture("docs-stall.sh"));
+    if (write_file(path, "#!/bin/sh\necho stalled in the middle of a test\n"
+                         "exec sleep 600\n") == 0
+     && chmod(path, 0755) == 0
+     && write_file(fixture("docs-stall.expected"), "st2026 1 1\n") == 0) {
+        snprintf(command, sizeof command,
+                 ST_TEST_TIMEOUT " -k 2 120 env ST_PROFILE_SECONDS=2 "
+                 "sh tests/run_profiles.sh %s %s 2>&1; echo status=$?",
+                 path, fixture("docs-stall.expected"));
+        took = docs_timed_run(command, out, sizeof out, &status);
+        expect(out, "FAIL st2026: did not finish in 2 seconds",
+               "DOCS-7 stalled profile stopped");
+        expect(out, "stalled in the middle of a test",
+               "DOCS-7 stalled profile's output shown");
+        expect(out, "status=1", "DOCS-7 stalled profile fails");
+        ++st_test_checks;
+        if (took > 60) {
+            ++st_test_failures;
+            printf("  FAIL DOCS-7 a 2-second limit took %ld seconds\n", took);
+        }
+    } else {
+        ++st_test_checks;
+        ++st_test_failures;
+        printf("  FAIL DOCS-7: cannot write the stand-in binary\n");
+    }
+
+    /*
+     *  DOCS-6: this run's fixtures carry its pid, so another run's are
+     *  other files.
+     */
+    snprintf(path, sizeof path, "/%ld-", st_test_pid());
+    expect(IMAGE, path, "DOCS-6 serve fixture named per run");
+    expect(st_test_path("x"), path, "DOCS-6 st_test_path named per run");
+
+    /*
+     *  DOCS-5: under make, this program was built with a dependency file
+     *  that names the header every suite includes, so editing it rebuilds
+     *  them.
+     */
+    if (getenv("ST_TEST_DIR")) {
+        snprintf(path, sizeof path, "%s/test_serve_faults.d", st_test_dir());
+        out[0] = '\0';
+        if ((f = fopen(path, "r")) != NULL) {
+            size_t  n = fread(out, 1, sizeof out - 1, f);
+
+            out[n] = '\0';
+            fclose(f);
+        }
+        expect(out, "st_test.h", "DOCS-5 test binaries track headers");
+    }
+
+    /*
+     *  DOCS-11 and DOCS-12, from the Makefile itself: clean takes what the
+     *  builds and suites leave, and a HEADLESS build does not overwrite
+     *  ./st2026 where there is a windowed build to keep.
+     */
+    run(DOCS_MAKE "-n clean 2>&1", out, sizeof out);
+    expect(out, "demo.im", "DOCS-11 clean removes demo.im");
+    expect(out, "st2026-parallel-file-test.txt",
+           "DOCS-11 clean removes the suites' fixtures");
+    expect(out, "demo/DB.sqlite", "DOCS-11 clean removes the demo database");
+    run(DOCS_MAKE "-n HEADLESS=1 st2026 2>&1 | tail -5", out, sizeof out);
+    expect(out, "if [ -x build/mt/st2026 ]",
+           "DOCS-12 HEADLESS keeps a windowed ./st2026");
+    expect(out, "./st2026 untouched", "DOCS-12 HEADLESS says so");
 }
 
 int
@@ -763,9 +1401,9 @@ main(void)
      *  the table's size, so the next runaway ate the reserve before anyone
      *  noticed and releasing it then gave nothing to signal with.  Two
      *  runaways in one image, each caught, the second with the reserve
-     *  re-armed.  Four million objects, because the table starts at that
-     *  size and a lower ceiling stops an image of either build before its
-     *  first OutOfMemory; about a minute, so not under a sanitizer.
+     *  re-armed.  Four million objects, the table's starting size; the
+     *  smaller ceilings that used to stop before a first OutOfMemory are
+     *  checked in bugs5_low_om.  About a minute, so not under a sanitizer.
      */
 #if !(defined(__SANITIZE_THREAD__) || defined(__SANITIZE_ADDRESS__) \
    || (defined(__has_feature) && (__has_feature(thread_sanitizer) \
@@ -778,8 +1416,8 @@ main(void)
             "return: a size]. a := nil. (r1 > 100000 and: [r2 > 100000]) "
             "ifTrue: ['survived twice'] ifFalse: [{r1. r2}]\n") == 0) {
         snprintf(command, sizeof command,
-                 "ST_MAX_OBJECTS=4194304 timeout -k 2 180 %s -serve %s "
-                 "-workers 4 \"$(cat %s)\" 2>&1", st2026, IMAGE, BATCH);
+                 "ST_MAX_OBJECTS=4194304 " ST_TEST_TIMEOUT " -k 2 180 %s "
+                 "-serve %s -workers 4 \"$(cat %s)\" 2>&1", st2026, IMAGE, BATCH);
         status = run(command, out, sizeof out);
         ++st_test_checks;
         if (status < 0) {
@@ -874,11 +1512,20 @@ main(void)
     }
     expect(out, "\n5\n", "B58 -eval handled");
 
+    bugs5_low_om();
+    bugs5_low_sched();
+    bugs5_low_kern();
+    bugs5_low_comp();
+    bugs5_low_net();
+    bugs5_low_files();
+    bugs5_low_docs();
+
     unlink(IMAGE);
     unlink(BATCH);
     unlink(STARTUP);
     unlink(RACE);
     unlink(SHARED);
+    fixtures_remove();
     return ST_TEST_END();
 }
 

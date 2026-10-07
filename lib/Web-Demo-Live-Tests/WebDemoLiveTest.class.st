@@ -5,25 +5,31 @@ smalltalk, logging in with the hash Kiss stored.  Then everything the CRUD and U
 screens do, through the wire, with a session.
 
 The fixture drops the two tables before every test so that each start is
-a first start; the file stays beside the image, as the other live
-fixtures' do.  Every login here is six hundred thousand PBKDF2 rounds --
+a first start; the file is the test's own, beside the image, and removed
+afterwards.  Every login here is six hundred thousand PBKDF2 rounds --
 a fifth of a second -- which is the cost of checking the real thing.
 "
 Class {
 	#name : 'WebDemoLiveTest',
 	#superclass : 'TestCase',
-	#instVars : [ 'server' ],
+	#instVars : [ 'server', 'databaseFile' ],
 	#category : 'Web-Demo-Live-Tests'
 }
 
 { #category : 'fixture' }
-WebDemoLiveTest class >> databaseFile [
-	^'st2026-web-demo-test.db'
+WebDemoLiveTest >> databaseFile [
+	"A file of this test's own, removed by tearDown.  It was
+	 st2026-web-demo-test.db for every run, and two runs from one tree at
+	 once dropped each other's tables in the middle of a test (Bugs5
+	 DOCS-6)."
+	databaseFile isNil ifTrue: [
+		databaseFile := self unusedName: 'st2026-web-demo-test-' suffix: '.db' in: Disk].
+	^databaseFile
 ]
 
 { #category : 'fixture' }
 WebDemoLiveTest >> connectionString [
-	^'DRIVER=SQLITE3;Database=', self class databaseFile, ';'
+	^'DRIVER=SQLITE3;Database=', self databaseFile, ';'
 ]
 
 { #category : 'fixture' }
@@ -54,7 +60,11 @@ WebDemoLiveTest >> setUp [
 
 { #category : 'running' }
 WebDemoLiveTest >> tearDown [
-	server notNil ifTrue: [server stop]
+	server notNil ifTrue: [server stop].
+	"The database, and the rollback journal SQLite may leave beside it."
+	databaseFile isNil ifTrue: [^self].
+	#('' '-journal') do: [:each |
+		(Disk includesKey: databaseFile, each) ifTrue: [Disk removeKey: databaseFile, each]]
 ]
 
 { #category : 'private' }

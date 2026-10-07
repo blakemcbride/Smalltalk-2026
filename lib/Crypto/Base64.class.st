@@ -94,14 +94,28 @@ Base64 class >> decode: aString [
 { #category : 'decoding' }
 Base64 class >> decode: aString ifInvalid: aBlock [
 	"The bytes the text names, or the value of aBlock when it is not Base64.
-	 Padding is accepted and not required."
+	 Padding is accepted and not required.
 
-	| n out i v0 v1 v2 v3 left |
+	 Padding that is there must be the padding the length calls for, and
+	 the bits a short last group leaves over must be zero (Bugs5
+	 FILES-12).  Up to two = were stripped and forgotten, which accepted
+	 what decode: says it refuses: `=' alone decoded to the empty string,
+	 `Zm9v=' and `Zm9v==' to `foo', and `Zh==' -- whose h carries four bits
+	 no byte has room for -- to the same byte as `Zg=='.  RFC 4648 section
+	 3.5 lets a decoder refuse both, and one that takes them gives two
+	 texts for one value, which is exactly what a stored hash compared as
+	 text must not have."
+
+	| n out i v0 v1 v2 v3 left pad |
 	n := aString size.
-	"Up to two = at the end are padding; strip them and forget them."
+	"Up to two = at the end are padding; strip them, and count them."
 	(n > 0 and: [(aString at: n) = $=]) ifTrue: [n := n - 1].
 	(n > 0 and: [(aString at: n) = $=]) ifTrue: [n := n - 1].
+	pad := aString size - n.
 	n \\ 4 = 1 ifTrue: [^aBlock value].
+	"Padding fills the last group to four, so there is none after a whole
+	 group and exactly 4 - (n \\ 4) after a short one."
+	(pad > 0 and: [pad ~= ((4 - (n \\ 4)) \\ 4)]) ifTrue: [^aBlock value].
 	out := WriteStream on: (String new: n * 3 // 4).
 	i := 1.
 	[i <= n] whileTrue: [
@@ -109,9 +123,13 @@ Base64 class >> decode: aString ifInvalid: aBlock [
 		v0 := self valueOf: (aString at: i) ifInvalid: [^aBlock value].
 		v1 := self valueOf: (aString at: i + 1) ifInvalid: [^aBlock value].
 		out nextPut: (Character value: ((v0 bitShift: 2) bitOr: (v1 bitShift: -4))).
+		"A last group of two characters holds one byte and four bits over;
+		 of three, two bytes and two bits over.  Those must be zero."
+		(left = 2 and: [(v1 bitAnd: 15) ~= 0]) ifTrue: [^aBlock value].
 		left >= 3 ifTrue: [
 			v2 := self valueOf: (aString at: i + 2) ifInvalid: [^aBlock value].
 			out nextPut: (Character value: (((v1 bitAnd: 15) bitShift: 4) bitOr: (v2 bitShift: -2))).
+			(left = 3 and: [(v2 bitAnd: 3) ~= 0]) ifTrue: [^aBlock value].
 			left >= 4 ifTrue: [
 				v3 := self valueOf: (aString at: i + 3) ifInvalid: [^aBlock value].
 				out nextPut: (Character value: (((v2 bitAnd: 3) bitShift: 6) bitOr: v3))]].

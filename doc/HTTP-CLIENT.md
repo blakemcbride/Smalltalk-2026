@@ -87,6 +87,15 @@ safe:
 or trailer line at 64 KB, and the headers (and the trailers) at 256 KB and
 256 lines. A server that sends more is answered with a `NetError`.
 
+**And it is read strictly.** The status is exactly three digits; the
+headers end only at a blank line, so a reply cut off inside them is a
+`NetError`, not a 200 with whatever arrived; `chunked` is the only
+transfer coding accepted, and each chunk's data must end with CR LF where
+its size says. A URL's fragment is dropped before the request, a `?`
+straight after the host means the path `/`, an IPv6 literal such as
+`http://[::1]:8080/` connects to that address, and a port outside 1–65535
+is refused rather than wrapped.
+
 **All four are bounded**, at 64 MB unless `maxBodyBytes:` says otherwise: the
 reply comes from a server this program did not write, and a
 `Content-Length: 100000000000` is a hundred gigabytes of `String`. A declared

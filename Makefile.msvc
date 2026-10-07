@@ -323,7 +323,12 @@ $(BIN): $(BUILD) $(OBJ) src\main.c $(HEADERS)
 #
 BUILDTEST = $(CC) /Fe$(BUILD)\ /Fo$(BUILD)\ $(CFLAGS) $(CPPFLAGS)
 
+#  ST_TEST_DIR is where a suite writes its scratch files -- images, source
+#  fixtures, named per run (Bugs5 DOCS-6) -- and without it they look for
+#  the GNU build's directory, which an MSVC tree does not have.  nmake runs
+#  SET itself, so it holds for every command after it.
 test: sdl3_ok $(BIN)
+	set ST_TEST_DIR=$(BUILD)
 	$(BUILDTEST) tests\unit\test_port.c $(OBJ) $(SDLLIBS) $(LINKOPT)
 	$(BUILD)\test_port.exe
 	$(BUILDTEST) tests\unit\test_compiler.c $(OBJ) $(SDLLIBS) $(LINKOPT)
@@ -380,3 +385,4 @@ clean:
 	@if exist $(BIN) del $(BIN)
 	@if exist st2026.pdb del st2026.pdb
 	@if exist st2026.ilk del st2026.ilk
+	@if exist demo.im del demo.im

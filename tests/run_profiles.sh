@@ -46,6 +46,18 @@ if [ ! -f "$EXPECTED" ]; then
     exit 1
 fi
 
+#  A wall-clock limit on each profile, for the stall the bytecode budget
+#  cannot see.  The budget counts bytecodes, and a process waiting on a
+#  semaphore or a quiet socket executes none, so a suite that stalled that
+#  way sat there for good: one run was found twelve minutes idle under
+#  `TestCase allTests run', and since the output is captured until the run
+#  ends, nothing said which test it was in (Bugs5 DOCS-7).  Now it is
+#  stopped, failed by name, and the end of what it printed is shown.
+#  Fifteen minutes is several times a plain build's whole run; the Makefile
+#  raises it for a sanitizer build, which interprets tens of times slower.
+#  tools/timeout.sh, not timeout(1), which stock macOS lacks (DOCS-8).
+LIMIT=${ST_PROFILE_SECONDS:-900}
+
 status=0
 #  Two counters, because they answer different questions: `attempted' says the
 #  expectations file had lines in it, and `checked' says a score came back.  A
@@ -67,7 +79,14 @@ while read -r name want_run want_passed rest; do
     #  -tests exits non-zero when anything failed, which is not the question
     #  here -- the question is whether the SCORE moved -- so the exit code is
     #  deliberately ignored and the summary line is parsed instead.
-    out=$("$ST2026" -bootstrap -profile "$profile" -tests 2>&1)
+    out=$(sh tools/timeout.sh -k 5 "$LIMIT" "$ST2026" -bootstrap -profile "$profile" -tests 2>&1)
+    ran=$?
+    if [ "$ran" -eq 124 ] || [ "$ran" -eq 137 ]; then
+        echo "  FAIL $name: did not finish in $LIMIT seconds -- stopped; it printed last:"
+        printf '%s\n' "$out" | tail -20 | sed 's/^/        /'
+        status=1
+        continue
+    fi
     line=$(printf '%s\n' "$out" | grep -E '^[0-9]+ run, ' | tail -1)
 
     #  A HOLE is protocol a supersession dropped that something still sends

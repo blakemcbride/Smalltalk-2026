@@ -634,12 +634,23 @@ Float >> floorLog: radix [
 	 logarithm is refused here too.  `radix > 1' is what does it, and it
 	 refuses a NaN radix as well, since a NaN is not greater than one.
 
-	 A receiver of zero or less keeps 1983's answer, which is 0, because
-	 the first line of the method it replaces answers 0 for anything below
-	 the radix and the comment says `self assumed positive'.  Changing
-	 that is a different decision from stopping a hang and is not made
-	 here; Integer>>floorLog: routes such a receiver back to this method
-	 so that the two agree."
+	 A receiver below one is answered exactly, through the Fraction it
+	 stands for.  1983's first line is `self < radix ifTrue: [^0]', which
+	 is right from one up to the radix and wrong below it: `0.001 floorLog:
+	 10' answered 0 for -3, and so did `1.0e-300' and every other positive
+	 number under one (Bugs5 KERN-12).  The floor of a negative logarithm
+	 is minus the CEILING of the reciprocal's, which differs from minus its
+	 floor by one exactly when the reciprocal is not a power of the radix,
+	 and that is a question only exact arithmetic answers -- 1/0.001 is
+	 not 1000 in a double.  asExactFraction is exact, Fraction>>floorLog:
+	 corrects its estimate against exact powers, and a subnormal, whose
+	 reciprocal is an infinity, is a Fraction like any other.
+
+	 A receiver of zero or less is refused.  1983's line answered 0 for it,
+	 which its comment excuses with `self assumed positive'; there is no
+	 logarithm of zero or of a negative number, and a 0 there was a wrong
+	 answer that looked like a right one.  Integer>>floorLog: and
+	 Fraction>>floorLog: send such a receiver here, so all three agree."
 	| x |
 	self isFinite ifFalse: [
 		^self error: (self isNaN
@@ -647,10 +658,16 @@ Float >> floorLog: radix [
 			ifFalse: ['an infinity has no floorLog:'])].
 	(radix isNumber and: [radix > 1])
 		ifFalse: [^self error: 'floorLog: needs a base greater than one, not ' , radix printString].
+	self > 0.0 ifFalse: [
+		^self error: 'floorLog: needs a positive receiver, not ' , self printString].
+	self < 1.0 ifTrue: [^self asExactFraction floorLog: radix].
 	self < radix ifTrue: [^0].
 	self < radix squared ifTrue: [^1].
 	x := 2 * (self floorLog: radix squared).
-	^x + (self / (radix raisedTo: x) floorLog: radix)
+	"The quotient is at least one in exact arithmetic and can round to a
+	 hair below it; that was 0 here before receivers under one were
+	 answered, and it stays 0 rather than becoming -1."
+	^x + ((self / (radix raisedTo: x) floorLog: radix) max: 0)
 ]
 
 { #category : '*Kernel-Protocol' }

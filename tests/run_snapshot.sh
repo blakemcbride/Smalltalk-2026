@@ -25,14 +25,25 @@
 set -u
 
 ST2026=${1:?usage: run_snapshot.sh <st2026>}
-DIR=build/snapshot-test
 
 if [ ! -x "$ST2026" ]; then
     echo "run_snapshot: $ST2026 is not executable" >&2
     exit 1
 fi
-mkdir -p "$DIR"
-rm -f "$DIR"/base.im "$DIR"/snap.im "$DIR"/prog.st "$DIR"/first.log "$DIR"/second.log
+
+#  A directory of this run's own, beside the binary under test, removed
+#  when the check passes and kept, logs and all, when it fails.  It was
+#  build/snapshot-test for every run of every variant, so two runs at once
+#  -- or a TSAN run beside a plain one -- resumed each other's snapshot
+#  (Bugs5 DOCS-6).
+DIR=$(mktemp -d "$(dirname "$ST2026")/snapshot-test.XXXXXX") || {
+    echo "run_snapshot: cannot make a directory beside $ST2026" >&2
+    exit 1
+}
+
+#  tools/timeout.sh and not timeout(1), which stock macOS does not have
+#  (Bugs5 DOCS-8).
+TIMEOUT="sh tools/timeout.sh"
 
 #  The image evaluates each line of its first argument, as Bugs3's probe
 #  image does; results go to standard error.
@@ -68,7 +79,7 @@ c1 := spin at: 1.
 PROG
 
 status=0
-timeout -k 2 60 "$ST2026" -serve "$DIR/base.im" -workers 2 \
+$TIMEOUT -k 2 60 "$ST2026" -serve "$DIR/base.im" -workers 2 \
     "Compiler evaluate: (FileStream oldFileNamed: '$DIR/prog.st') contentsOfEntireFile" \
     > "$DIR/first.log" 2>&1
 if ! grep -q 'snapshot written' "$DIR/first.log" \
@@ -78,7 +89,7 @@ if ! grep -q 'snapshot written' "$DIR/first.log" \
     status=1
 fi
 
-timeout -k 2 60 "$ST2026" -serve "$DIR/snap.im" -workers 2 > "$DIR/second.log" 2>&1
+$TIMEOUT -k 2 60 "$ST2026" -serve "$DIR/snap.im" -workers 2 > "$DIR/second.log" 2>&1
 if ! grep -q 'snapshot resumed' "$DIR/second.log" \
    || ! grep -q 'spinner counting' "$DIR/second.log" \
    || grep -q 'every process is blocked' "$DIR/second.log"; then
@@ -88,5 +99,6 @@ fi
 
 if [ $status -eq 0 ]; then
     echo "  a snapshot from two workers, with a process running on the other, resumed on two"
+    rm -rf "$DIR"
 fi
 exit $status

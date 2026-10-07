@@ -306,3 +306,22 @@ SocketTest >> testOptions [
 	client send: 'ok'.
 	self assert: (accepted receiveUpTo: 4) equals: 'ok'
 ]
+
+{ #category : 'tests' }
+SocketTest >> testAPortIsSixteenBits [
+	"Bugs5 NET-12.  The number went to getaddrinfo as text and came out
+	 as its low sixteen bits: listenOn: 65536 + p listened on p, and a
+	 connect to 65536 + p reached p.  Refused by name here, and by the
+	 primitive's failing beneath."
+	| listener |
+	listener := ServerSocket listenOn: 0 address: '127.0.0.1' backlog: 4.
+	[self should: [Socket connectTo: '127.0.0.1' port: 65536 + listener localPort] raise: NetError.
+	 self should: [Socket connectTo: '127.0.0.1' port: 65536 + listener localPort timeout: 1000] raise: NetError.
+	 self should: [ServerSocket listenOn: 65536 + listener localPort + 1] raise: NetError.
+	 self should: [Socket connectTo: '127.0.0.1' port: -1] raise: NetError.
+	 self should: [Socket connectTo: '127.0.0.1' port: 'x'] raise: NetError.
+	 "beneath the class's own check, the VM refuses the number too"
+	 self should: [Socket primCommand: 20 with: '127.0.0.1' with: 65536 + 80 with: nil] raise: NetError.
+	 self should: [Socket primCommand: 3 with: '127.0.0.1' with: 65536 with: 4] raise: NetError]
+		ensure: [listener close]
+]

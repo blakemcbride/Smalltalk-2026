@@ -230,12 +230,16 @@ rectangle. Neither is a bug and both will read as one.
 make test
 ```
 
-Unlike Windows, all of it runs. `make test` is `unit-test` and `suite-test`:
-sixteen C suites in `tests/unit/`, then `tests/run_profiles.sh`, which
+Unlike Windows, all of it runs. `make test` is `unit-test`, `suite-test` and
+`snapshot-test`: twenty-five C suites in `tests/unit/`, then
+`tests/run_profiles.sh`, which
 bootstraps each profile and runs Pharo's own tests inside it, holding the
 score to `tests/profiles.expected` in both directions. That script is POSIX
 `sh` with `grep -E`, `sed` and `printf` and no GNU-isms, so macOS's own tools
-run it.
+run it. macOS has no `timeout(1)`, and the gates that stop a hung run do not
+need one: they call `tools/timeout.sh`, which uses `timeout` or Homebrew's
+`gtimeout` when either is installed and a watchdog in plain `sh` when neither
+is.
 
 One thing skips: the Xerox oracle. `test_trace` and the reference-dump checks
 run against the 1983 tape, which carries no licence grant from anyone and is
@@ -308,15 +312,16 @@ that decision; macOS caused it. [`doc/PORTABILITY.md`](doc/PORTABILITY.md).
 **Thread 0 is the SDL pump, because of macOS.** `SDL_PumpEvents`,
 `SDL_CreateRenderer` and `SDL_LockTexture` are documented main-thread-only,
 and on macOS "main thread" means the thread that entered `main()` — Cocoa's
-run loop is bound to it and cannot be moved. So thread 0 never executes
-Smalltalk and workers never call SDL video. `src/main.c` includes
+run loop is bound to it and cannot be moved. So thread 0 is the only thread
+that calls SDL video, and workers never do. `src/main.c` includes
 `<SDL3/SDL_main.h>` so SDL can stand the entry point up.
 
 In practice today this costs nothing, because `-run` is single-threaded:
 `GFX_pump` is called from the interpreter loop in `do_run`, on the thread
-that entered `main()`, between bytecode slices. `WORKER_start` is called only
-from the tests and the benchmark. The window and the worker pool do not yet
-meet, and when they do, this is the shape they have to meet in.
+that entered `main()`, between bytecode slices — so under `-run` thread 0
+executes Smalltalk as well. The worker pool is `-serve`'s, which opens no
+window. The window and the worker pool do not meet, and if they do, this is
+the shape they have to meet in.
 [`doc/CONCURRENCY.md`](doc/CONCURRENCY.md) is normative on the rest.
 
 ## Known rough edges
@@ -356,13 +361,13 @@ meet, and when they do, this is the shape they have to meet in.
   `-U__linux__`, which takes `ST_cpu_count` off the `sched_getaffinity`
   path, takes `ST_thread_set_name` off the Linux `pthread_setname_np`,
   and reduces `pin_to_physical_cores` to its empty stub — the same three
-  branches macOS takes. Both object memories build and link, and all
-  sixteen unit suites and the benchmark compile, under the production
+  branches macOS takes. Both object memories build and link, and the
+  unit suites and the benchmark compile, under the production
   warning set: `-std=c11 -Wall -Wextra -Wpedantic
   -Werror=implicit-function-declaration -O2`. It is the same compiler
   taking the same branches, which is most of what a Mac would be doing
   and not the part that is a different compiler.
-- **The `<sched.h>` change.** Full build and all sixteen unit suites after
+- **The `<sched.h>` change.** Full build and all the unit suites after
   it: 0 failures, including the 31-thread parallel suites.
 - **Apple's make is new enough.** The makefile was searched for every GNU
   make 4.x construct — `$(file)`, `.ONESHELL`, `!=`, `::=`, `$(intcmp)`,

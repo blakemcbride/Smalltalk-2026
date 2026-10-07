@@ -141,6 +141,22 @@ OM_mourn_pending(void)
     return n;
 }
 
+uint32_t
+OM_mourn_queued(st_oop *out, uint32_t max)
+{
+    uint32_t    n = 0;
+    uint32_t    i;
+
+    if (!out)
+        return 0;
+    mourn_lock_init();
+    ST_mutex_lock(&mourn_lock);
+    for (i = queue_head; i < queue_count && n < max; ++i)
+        out[n++] = queue[i];
+    ST_mutex_unlock(&mourn_lock);
+    return n;
+}
+
 st_oop
 OM_take_mourned(void)
 {

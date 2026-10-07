@@ -33,6 +33,10 @@ build with no display instead, ask for it:
 make HEADLESS=1
 \end{sh}
 
+The stub build lives in \ct{build/mt-headless/st2026}. On a machine with no
+SDL3 it is also \ct{./st2026}; on one that has a windowed build,
+\ct{./st2026} stays the windowed one, so \ct{./run} still opens a window.
+
 \ct{make deps} answers what this machine has and what it is missing, one
 line per requirement, and runs on a machine too bare to build anything:
 

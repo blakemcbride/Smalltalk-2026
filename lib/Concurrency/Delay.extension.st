@@ -76,9 +76,25 @@ Extension { #name : 'Delay' }
 
 { #category : '*Concurrency' }
 Delay class >> initializeTimingProcess [
-	"Fork the process that resumes delays as their times come."
+	"Fork the process that resumes delays as their times come.
+
+	 The semaphore it waits on is the one that is TimingSemaphore NOW, read
+	 into a temporary before the fork, and not the class variable read
+	 each time round the loop.  The bootstrap runs every class initializer
+	 twice, and a forked process does not run until it is scheduled: the
+	 first pass's process had not yet reached its first wait when the
+	 second pass replaced TimingSemaphore, so when it did run it read the
+	 NEW semaphore -- and the shipped image had two timing processes
+	 waiting on one semaphore, each taking alternate signals, where the
+	 comment on initialize promised the first would be parked on an
+	 unreachable semaphore and collected (Bugs5 OM-12).  Bound at fork
+	 time, a superseded timing process waits on the semaphore it was made
+	 for, which nothing signals and nothing reaches once initialize has
+	 replaced it, and the collector takes them both."
+	| semaphore |
+	semaphore := TimingSemaphore.
 	[[true] whileTrue: [
-		TimingSemaphore wait.
+		semaphore wait.
 		AccessProtect wait.
 		[self resumeWhatIsDue] ensure: [AccessProtect signal]]]
 			forkAt: Processor timingPriority

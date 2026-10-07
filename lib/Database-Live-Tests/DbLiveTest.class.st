@@ -29,32 +29,36 @@ testing the SQL generator will reach.
 Class {
 	#name : 'DbLiveTest',
 	#superclass : 'TestCase',
+	#instVars : [ 'databaseFile' ],
 	#category : 'Database-Live-Tests'
 }
 
 { #category : 'fixture' }
-DbLiveTest class >> databaseFile [
-	"A file of our own, beside the image.  Not in /tmp: this system runs on
-	 Windows too, where /tmp is not a place."
+DbLiveTest >> databaseFile [
+	"A file of this test's own, beside the image.  Not in /tmp: this system
+	 runs on Windows too, where /tmp is not a place.
 
-	^'st2026-dblive-test.db'
+	 Named for this test and removed by tearDown.  It was one name,
+	 st2026-dblive-test.db, for every run -- and every test of every run
+	 began by dropping its tables, so two runs from one tree at once
+	 emptied each other's tables in the middle of a test (Bugs5 DOCS-6)."
+
+	databaseFile isNil ifTrue: [
+		databaseFile := self unusedName: 'st2026-dblive-test-' suffix: '.db' in: Disk].
+	^databaseFile
 ]
 
 { #category : 'fixture' }
 DbLiveTest >> connectionString [
-	^'DRIVER=SQLITE3;Database=', self class databaseFile, ';'
+	^'DRIVER=SQLITE3;Database=', self databaseFile, ';'
 ]
 
 { #category : 'fixture' }
 DbLiveTest >> setUp [
-	"Drop and recreate, rather than delete the file.
-
-	 The 1983 file protocol this image carries has no delete -- FileDirectory
-	 answers add:, rename: and removeOld:, and none of them is `remove this
-	 file now'.  Rather than reach around it, the fixture is reset in SQL,
-	 which has the side benefit of exercising the DDL path on every test
-	 instead of once.  The database file is left behind; it is small, it
-	 sits beside the image, and every run starts by emptying it."
+	"Drop and recreate.  The file is this test's own and new, so the drops
+	 find nothing; they stay because they are what made a run safe to
+	 repeat when the file was shared, and they still exercise the DDL path
+	 on every test.  tearDown removes the file (Bugs5 DOCS-6)."
 
 	self withConnection:
 		[:connection |
@@ -70,6 +74,14 @@ DbLiveTest >> setUp [
 			department_id INTEGER PRIMARY KEY,
 			name VARCHAR(40))'.
 		connection commit]
+]
+
+{ #category : 'fixture' }
+DbLiveTest >> tearDown [
+	"The database, and the rollback journal SQLite may leave beside it."
+	databaseFile isNil ifTrue: [^self].
+	#('' '-journal') do: [:each |
+		(Disk includesKey: databaseFile, each) ifTrue: [Disk removeKey: databaseFile, each]]
 ]
 
 { #category : 'fixture' }

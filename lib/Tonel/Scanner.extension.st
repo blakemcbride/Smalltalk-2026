@@ -20,7 +20,9 @@ read whole by xLetter.
 
 And patternEndIn:, for TonelWriter, which has to split a method's source into
 the pattern that goes on the `Class >> pattern [' line and the body that goes
-between the brackets, and once did it by counting words (Bugs5 COMP-3).
+between the brackets, and once did it by counting words (Bugs5 COMP-3); and
+patternTokensIn:, the words of that pattern, from which it writes the line
+(Bugs5 FILES-12).
 "
 Extension { #name : 'Scanner' }
 
@@ -73,4 +75,37 @@ Scanner >> patternEndIn: aString [
 		^end].
 	tokenType == #binary ifTrue: [self scanToken].
 	^mark + token size - 1
+]
+
+{ #category : '*Tonel' }
+Scanner >> patternTokensIn: aString [
+	"The words of the message pattern at the front of aString, a method's
+	 source, as Strings and in order: the unary selector; or the binary
+	 selector and its argument; or each keyword followed by its argument.
+	 Read as patternEndIn: reads them, so the two agree on where the
+	 pattern ends, and with whatever spacing and comments the source had
+	 left out of them.
+
+	 For TonelWriter, which writes these one space apart on the
+	 `Class >> pattern [' line rather than copying the pattern's own
+	 text (Bugs5 FILES-12): Pharo's reader finds the selector by
+	 splitting that line at blanks and colons, so `+x' read as a unary
+	 selector of two characters, and a comment there was taken for a
+	 keyword or an argument."
+
+	| tokens |
+	tokens := OrderedCollection new.
+	self scan: (ReadStream on: aString , '  ').
+	tokenType == #keyword ifTrue: [
+		[tokenType == #keyword] whileTrue: [
+			tokens add: token asString.
+			self scanToken.
+			tokens add: token asString.
+			self scanToken].
+		^tokens asArray].
+	tokens add: token asString.
+	tokenType == #binary ifTrue: [
+		self scanToken.
+		tokens add: token asString].
+	^tokens asArray
 ]

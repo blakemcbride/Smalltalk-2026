@@ -140,6 +140,24 @@ Socket class >> check: answer [
 	^answer
 ]
 
+{ #category : 'private' }
+Socket class >> checkPort: portInteger from: lowest [
+	"Raise unless portInteger is a port: an Integer from lowest -- 0 for a
+	 listener, which asks the system to pick, and 1 for a connection --
+	 to 65535.
+
+	 A PORT IS SIXTEEN BITS, and nothing between here and the kernel said
+	 so.  The number went to getaddrinfo as decimal text and came out
+	 truncated to its low sixteen bits: `ServerSocket listenOn: 65536 +
+	 40123' listened on 40123, and `connectTo: ... port: 65536 + P'
+	 connected to P -- past any allow-list a caller had checked the
+	 number against (Bugs5 NET-12).  The VM refuses such a number too,
+	 failing the primitive; this is here to say which number and why."
+	((portInteger isKindOf: Integer) and: [portInteger between: lowest and: 65535])
+		ifFalse: [^NetError new signal: 'not a port: ', portInteger printString,
+			' (a port is ', lowest printString, ' to 65535)']
+]
+
 { #category : 'instance creation' }
 Socket class >> connectTo: hostString port: portInteger [
 	"Open a connection to host:port, waiting until it is made, and answer
@@ -187,6 +205,7 @@ Socket class >> connectTo: hostString port: portInteger timeout: millisecondsOrN
 	 nothing."
 
 	| count last deadline |
+	self checkPort: portInteger from: 1.
 	count := self check: (self primCommand: 20 with: hostString with: portInteger with: nil).
 	deadline := millisecondsOrNil isNil
 		ifTrue: [nil]

@@ -281,7 +281,7 @@ test_metaclass_graph(void)
 static void
 test_snapshot_round_trip(void)
 {
-    const char *path = "build/test-bootstrap.image";
+    const char *path = st_test_path("test-bootstrap.image");
     char        err[256];
     st_oop      before;
 

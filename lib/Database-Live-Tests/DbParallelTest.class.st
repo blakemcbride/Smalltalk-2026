@@ -24,12 +24,25 @@ all, and that is a hang rather than a wrong answer.
 Class {
 	#name : 'DbParallelTest',
 	#superclass : 'TestCase',
+	#instVars : [ 'databaseFile' ],
 	#category : 'Database-Live-Tests'
 }
 
 { #category : 'fixture' }
 DbParallelTest >> connectionString [
-	^'DRIVER=SQLITE3;Database=', DbLiveTest databaseFile, ';'
+	"A database of this test's own, as DbLiveTest's is and for the same
+	 reason (Bugs5 DOCS-6); it shared DbLiveTest's one fixed file."
+	databaseFile isNil ifTrue: [
+		databaseFile := self unusedName: 'st2026-dbparallel-test-' suffix: '.db' in: Disk].
+	^'DRIVER=SQLITE3;Database=', databaseFile, ';'
+]
+
+{ #category : 'fixture' }
+DbParallelTest >> tearDown [
+	"The database, and the rollback journal SQLite may leave beside it."
+	databaseFile isNil ifTrue: [^self].
+	#('' '-journal') do: [:each |
+		(Disk includesKey: databaseFile, each) ifTrue: [Disk removeKey: databaseFile, each]]
 ]
 
 { #category : 'fixture' }

@@ -39,7 +39,8 @@ which runs a drain and re-arms it before anything else happens, while an image
 snapshotted from a LIVE run comes back with the process asleep and the VM with
 nowhere to signal.  The debt is kept rather than dropped, so the first drain
 from anywhere re-arms it and delivers whatever piled up; `Finalizer restart' is
-that drain.  The delay timer has the same shape of hole for the same reason --
+that drain, and SystemDictionary>>snapshotAs:thenQuit: signals the process once
+in the run that resumes, which sends it round to one (Bugs5 OM-9).  The delay timer has the same shape of hole for the same reason --
 primitive 136's outstanding request is C state too -- and it is what
 SystemDictionary>>install was for in 1983.
 

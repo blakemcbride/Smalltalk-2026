@@ -82,8 +82,13 @@ RestUserCache >> newUser: aName password: aPassword userId: anId [
 
 { #category : 'users' }
 RestUserCache >> findUser: aUuid [
-	"The user with that uuid, or nil -- for a nil or empty uuid too."
-	(aUuid isNil or: [aUuid isEmpty]) ifTrue: [^nil].
+	"The user with that uuid, or nil -- for a nil or empty uuid too, and
+	 for one that is not a String at all.  _uuid is whatever the client put
+	 in its document, and a number or a true there reached isEmpty: a
+	 MessageNotUnderstood, an HTTP 500 and a log line, from a dispatcher
+	 whose promise is always 200 and always JSON (Bugs5 NET-14).  A uuid
+	 that is not a String names no session, which is what nil says."
+	(aUuid isString and: [aUuid notEmpty]) ifFalse: [^nil].
 	^lock critical: [table at: aUuid ifAbsent: [nil]]
 ]
 

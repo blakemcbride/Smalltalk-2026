@@ -133,6 +133,23 @@ scan_comment(st_doctest_list *l, char *text, const char *where,
     add(l, expression, expected, where, file, line);
 }
 
+/*
+ *  Does a line end at P?
+ *
+ *  The source readers hand this file the method's text with its line ends
+ *  already turned into the image's own carriage returns -- a Smalltalk
+ *  String ends its lines with CR -- so counting only line feeds counted
+ *  nothing, and every failing example reported the line its method began
+ *  on (Bugs5 COMP-10: a failure on line 12 said `Foo.class.st:8').  Count
+ *  a CR, a LF, and a CR LF pair once, so the count is right whichever form
+ *  a reader leaves behind.
+ */
+static int
+line_end_at(const char *p)
+{
+    return *p == '\n' || (*p == '\r' && p[1] != '\n');
+}
+
 static int
 doctest_method(const char *class_name, int class_side, const char *category,
                const char *source, const char *file, unsigned line,
@@ -156,7 +173,7 @@ doctest_method(const char *class_name, int class_side, const char *category,
      *  quote doubled -- the inside of a string.
      */
     while (*p) {
-        if (*p == '\n') {
+        if (line_end_at(p)) {
             ++at_line;
             ++p;
         }  else if (*p == '$' && p[1]) {
@@ -164,7 +181,7 @@ doctest_method(const char *class_name, int class_side, const char *category,
         }  else if (*p == '\'') {
             ++p;
             while (*p) {
-                if (*p == '\n')
+                if (line_end_at(p))
                     ++at_line;
                 if (*p == '\'' && p[1] == '\'')
                     p += 2;
@@ -181,7 +198,7 @@ doctest_method(const char *class_name, int class_side, const char *category,
             char       *body;
 
             while (*p) {
-                if (*p == '\n')
+                if (line_end_at(p))
                     ++at_line;
                 if (*p == '"' && p[1] == '"')
                     p += 2;

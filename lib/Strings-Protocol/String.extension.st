@@ -185,7 +185,20 @@ String >> asInteger [
 
 { #category : '*Strings-Protocol' }
 String >> lines [
-	^self splitOn: Character nl
+	"My lines, without their endings, in an Array.
+
+	 It was `self splitOn: Character nl', which knows one convention of
+	 the three: a CR LF line kept its CR, and text broken with CR alone --
+	 Smalltalk-80's own line ending, what WriteStream>>cr writes and what
+	 every Paragraph breaks on -- came back as one line (Bugs5 KERN-14).
+	 It is PositionableStream>>nextLine, which takes all three, until the
+	 end.  An ending at the very end does not start another, empty, line,
+	 which is what Pharo's lines answers and what splitOn: did not."
+	| in out line |
+	in := ReadStream on: self.
+	out := WriteStream on: (Array new: 8).
+	[(line := in nextLine) isNil] whileFalse: [out nextPut: line].
+	^out contents
 ]
 
 { #category : '*Strings-Protocol' }

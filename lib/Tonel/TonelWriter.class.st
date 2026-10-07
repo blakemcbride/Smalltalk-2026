@@ -305,14 +305,49 @@ TonelWriter >> isSynthesized: selector of: aBehavior [
 ]
 
 { #category : 'private' }
+TonelWriter >> commentsIn: aString [
+	"Every comment in aString, quotes and all, one space apart; empty if
+	 there is none.  aString is a message pattern, which holds no string
+	 or character literal, so a double quote there always opens or closes
+	 a comment, and a doubled one inside a comment is two of them in a
+	 row -- which reads correctly as closing and reopening it."
+	| out inComment |
+	out := WriteStream on: (String new: 16).
+	inComment := false.
+	aString do: [:c |
+		(c = $" and: [inComment not and: [out position > 0]])
+			ifTrue: [out space].
+		(c = $" or: [inComment]) ifTrue: [out nextPut: c].
+		c = $" ifTrue: [inComment := inComment not]].
+	^out contents
+]
+
+{ #category : 'private' }
 TonelWriter >> writeMethod: selector of: aBehavior named: aString category: category [
-	| source cut pattern body cr |
+	"The method's `Class >> pattern [' line and its body.
+
+	 The pattern on that line is written from its words, one space apart
+	 -- `+ x', `at: i put: v' -- and not copied from the source (Bugs5
+	 FILES-12).  Copied, a method compiled from one line in the Browser as
+	 `+x ^x' wrote `ZorkA >> +x [', which this system reads back but Pharo
+	 does not: its reader splits the line at blanks and colons and took
+	 `+x' for a unary selector.  A comment inside the pattern was worse --
+	 taken for a keyword or an argument, and a bracket in one ended the
+	 line early.  Such comments are kept, as the first line of the body;
+	 the reader joins the two, so the method still has every word it had."
+	| source cut pattern body cr comments |
 	cr := Character cr.
 	source := aBehavior sourceCodeAt: selector.
 	self refuseLineFeedIn: source at: aString, ' >> ', selector.
 	cut := self patternLengthOf: source selector: selector.
-	pattern := source copyFrom: 1 to: cut.
+	comments := self commentsIn: (source copyFrom: 1 to: cut).
+	pattern := WriteStream on: (String new: 32).
+	(Scanner new patternTokensIn: source)
+		do: [:word | pattern nextPutAll: word]
+		separatedBy: [pattern space].
+	pattern := pattern contents.
 	body := source copyFrom: cut + 1 to: source size.
+	comments isEmpty ifFalse: [body := (String with: cr with: Character tab), comments, body].
 	"The one separator after the pattern is the reader's join, or the
 	 Browser's space; it is not part of the body between the brackets."
 	(body isEmpty not and: [body first isSeparator]) ifTrue: [body := body copyFrom: 2 to: body size].

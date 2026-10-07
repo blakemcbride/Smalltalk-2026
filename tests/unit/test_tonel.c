@@ -183,7 +183,8 @@ read_text(const char *name, const char *text, recorder *out, char *error,
     FILE   *f;
     int     ok;
 
-    snprintf(path, sizeof path, "/tmp/st2026-test-%s", name);
+    snprintf(path, sizeof path, "%s/%ld-tonel-%s",
+             st_test_dir(), st_test_pid(), name);
     f = fopen(path, "wb");
     if (!f) {
         printf("  cannot write %s\n", path);

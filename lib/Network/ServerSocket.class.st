@@ -24,6 +24,7 @@ ServerSocket class >> listenOn: portInteger [
 ServerSocket class >> listenOn: portInteger address: hostStringOrNil backlog: backlogInteger [
 	"Listen on one interface -- `127.0.0.1' for loopback only, nil for all."
 	| socket |
+	self checkPort: portInteger from: 0.
 	socket := self new.
 	socket setHandle: (self check:
 		(self primCommand: 3 with: hostStringOrNil with: portInteger with: backlogInteger)).

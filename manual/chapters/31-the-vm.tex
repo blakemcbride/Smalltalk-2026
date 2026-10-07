@@ -166,8 +166,10 @@ bootstrap has to construct each one deliberately.
 
 \section{The window}
 
-Thread 0 pumps SDL and never executes Smalltalk. Workers execute Smalltalk and
-never call SDL video. SDL3's main-thread-only rules and macOS's Cocoa run loop
+Thread 0 is the only thread that calls SDL video: it reads the events and
+presents the pixels. Under \ct{-run} it also runs the interpreter, in slices,
+pumping SDL between them; under \ct{-serve}, which opens no window, the workers
+execute Smalltalk and never call SDL video. SDL3's main-thread-only rules and macOS's Cocoa run loop
 force that shape, and it also avoids a real deadlock: a thread parked in a GC
 safepoint at the moment the window server wants a response would hang the
 compositor.

@@ -81,6 +81,70 @@ st_test_dir(void)
     return (dir && *dir) ? dir : "build/mt/tests";
 }
 
+/*
+ *  This process's id, for naming a fixture no other run will choose.
+ */
+#ifdef _WIN32
+#include <process.h>
+#define st_test_getpid_()   _getpid()
+#else
+#include <unistd.h>
+#define st_test_getpid_()   getpid()
+#endif
+
+ST_TEST_UNUSED static long
+st_test_pid(void)
+{
+    return (long) st_test_getpid_();
+}
+
+/*
+ *  A scratch file of this RUN: "<st_test_dir>/<pid>-<name>".
+ *
+ *  Fixtures had fixed names -- build/test-round-trip.image, /tmp/st2026-
+ *  prim-<name>, the serve-faults batch file -- so two runs from one tree at
+ *  once wrote each other's files: one test's image was another's half-
+ *  written one, and the batch a server read was the other run's batch
+ *  (Bugs5 DOCS-6).  The /tmp ones were also opened for writing at a name
+ *  anyone on the machine could have put a symbolic link at first.  The pid
+ *  separates runs; the build's own test directory, which is not shared with
+ *  other users and not with the other variants, keeps them out of /tmp.
+ *  The caller removes the file, as before.  The answer lasts the run: it
+ *  is kept in a table here, one entry per name, so that the address
+ *  sanitizer sees it reachable rather than leaked -- a bare malloc that
+ *  was never freed failed every ASAN run of the suites that use this.
+ */
+ST_TEST_UNUSED static const char *
+st_test_path(const char *name)
+{
+    static struct { const char *name; char *path; } made[64];
+    size_t  i;
+    size_t  n;
+
+    for (i = 0; i < sizeof made / sizeof made[0] && made[i].name; ++i)
+        if (strcmp(made[i].name, name) == 0)
+            return made[i].path;
+    if (i == sizeof made / sizeof made[0])
+        return name;
+    n = strlen(st_test_dir()) + strlen(name) + 32;
+    made[i].path = (char *) malloc(n);
+    if (!made[i].path)
+        return name;
+    snprintf(made[i].path, n, "%s/%ld-%s", st_test_dir(), st_test_pid(), name);
+    made[i].name = name;
+    return made[i].path;
+}
+
+/*
+ *  The portable `timeout', for a test that shells out to a command it must
+ *  be able to kill.  Stock macOS has no timeout(1) (Bugs5 DOCS-8); the
+ *  script uses timeout or gtimeout when there is one and a watchdog of its
+ *  own when there is not.  Paste it where `timeout' went: the arguments are
+ *  the same, -k included.  Relative, like every fixture path here: the
+ *  suites run from the top of the tree.
+ */
+#define ST_TEST_TIMEOUT     "sh tools/timeout.sh"
+
 #define ST_TEST_BEGIN(name)                                             \
     do {                                                                \
         st_test_checks   = 0;                                           \

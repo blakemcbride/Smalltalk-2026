@@ -156,11 +156,11 @@ and holds the scores against \ct{tests/profiles.expected}:
 
 \begin{plain}
 # profile               run  passed
-st2026                  545  545
-pharo-announcements     576  576
-pharo-time              1166 1166
-pharo-weak              1077 1076
-pharo-collections       1002 1002
+st2026                  560  560
+pharo-announcements     591  591
+pharo-time              1181 1181
+pharo-weak              1092 1091
+pharo-collections       1017 1017
 \end{plain}
 
 The numbers are whatever the last recorded run scored, and the file is the
@@ -196,6 +196,12 @@ The second row is the one that file exists for. A package whose tests stop
 being found reports a perfect score, and the Chronology suites spent weeks
 reporting nothing at all because four classes deadlocked the runner and the
 number nobody printed was the number nobody read.
+
+A run that stops making progress fails too. The bytecode budget cannot see a
+process that waits on a semaphore or a quiet socket, since waiting executes
+nothing, so each profile also has a wall-clock limit: fifteen minutes, four
+hours under a sanitizer. A profile that reaches it is stopped and fails by
+name, with the last lines it printed, which say which test it was in.
 
 \section{Checking the book itself}
 

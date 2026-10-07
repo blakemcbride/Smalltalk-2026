@@ -125,7 +125,15 @@ PasswordHash class >> needsRehash: aStoredString [
 PasswordHash class >> partsOf: aStoredString [
 	"An Array of the iteration count, the salt text and the key text, or
 	 nil when the value is not four $-separated fields beginning with the
-	 prefix and a count of digits."
+	 prefix and a count of digits.
+
+	 A count with more digits than Crypto maxIterations has is refused
+	 here, before it is read (Bugs5 FILES-12).  verify: refuses such a
+	 count anyway, but only after `asNumber' -- and reading a number of n
+	 digits costs n squared, so a stored value from somewhere untrusted
+	 with a count ten thousand digits long held a worker for half a second
+	 per attempt just to be told no.  No count that long could be used,
+	 so nothing is lost by not reading it."
 
 	| parts count |
 	(self isHashed: aStoredString) ifFalse: [^nil].
@@ -133,6 +141,7 @@ PasswordHash class >> partsOf: aStoredString [
 	parts size = 4 ifFalse: [^nil].
 	count := parts at: 2.
 	(count isEmpty or: [(count allSatisfy: [:c | c isDigit]) not]) ifTrue: [^nil].
+	count size > Crypto maxIterations printString size ifTrue: [^nil].
 	count := count asNumber.
 	count < 1 ifTrue: [^nil].
 	^Array with: count with: (parts at: 3) with: (parts at: 4)

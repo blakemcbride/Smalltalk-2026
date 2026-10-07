@@ -565,3 +565,112 @@ HttpClientTest >> testTheConnectHasItsOwnDeadline [
 	  self assert: socket isOpen.
 	  socket close] ensure: [listener close]
 ]
+
+{ #category : 'tests - framing' }
+HttpClientTest >> testAReplyCutOffInItsHeadersIsANetError [
+	"Bugs5 NET-9.  The end of the stream was read as the blank line that
+	 ends the headers, so a status line and a close was a complete 200
+	 with an empty body.  It is a reply cut off, and a NetError, whether
+	 the close came after a whole header line or in the middle of one."
+	self should: [self serving: 'HTTP/1.1 200 OK', self crlf
+		do: [:url | HttpClient get: url]] raise: NetError.
+	self should: [self serving: 'HTTP/1.1 200 OK', self crlf, 'Content-Length: 0', self crlf
+		do: [:url | HttpClient get: url]] raise: NetError.
+	self should: [self serving: 'HTTP/1.1 200 OK', self crlf, 'Content-Len'
+		do: [:url | HttpClient get: url]] raise: NetError.
+	"and the blank line, then the close, is still a whole reply"
+	self assert: (self serving: 'HTTP/1.1 200 OK', self crlf, 'Content-Length: 2', self crlf, self crlf, 'ok'
+		do: [:url | HttpClient get: url]) body equals: 'ok'
+]
+
+{ #category : 'tests - framing' }
+HttpClientTest >> testAStatusIsThreeDigits [
+	"Bugs5 NET-10.  asNumber made a status of whatever it could: -100 of
+	 `-100', 1 of `1/2'."
+	#('-100' '1/2' '20' '2000' '2e2' '+200' 'abc') do: [:code |
+		self should: [self serving: 'HTTP/1.1 ', code, ' OK', self crlf, 'Content-Length: 0', self crlf, self crlf
+			do: [:url | HttpClient get: url]] raise: NetError].
+	self assert: (self serving: 'HTTP/1.1 299 Fine', self crlf, 'Content-Length: 0', self crlf, self crlf
+		do: [:url | HttpClient get: url]) status equals: 299
+]
+
+{ #category : 'tests - framing' }
+HttpClientTest >> testAChunkEndsWhereItsSizeSays [
+	"Bugs5 NET-10.  The CR-LF after a chunk's data was a line read and
+	 thrown away, so `abc' answered for a chunk of three that carried
+	 `abcSMUGGLED'.  It is checked, by the whole body and by the line."
+	| reply |
+	reply := 'HTTP/1.1 200 OK', self crlf, 'Transfer-Encoding: chunked', self crlf, self crlf,
+		'3', self crlf, 'abcSMUGGLED', self crlf, '0', self crlf, self crlf.
+	self should: [self serving: reply do: [:url | HttpClient get: url]] raise: NetError.
+	self should: [self serving: reply do: [:url |
+		HttpClient new get: url do: [:r | r bodyStream linesDo: [:line | ]]]] raise: NetError.
+	"two chunks, each properly ended, are still one body"
+	self assert: (self serving: 'HTTP/1.1 200 OK', self crlf, 'Transfer-Encoding: chunked', self crlf, self crlf,
+			'3', self crlf, 'abc', self crlf, '2', self crlf, 'de', self crlf, '0', self crlf, self crlf
+		do: [:url | HttpClient get: url]) body equals: 'abcde'
+]
+
+{ #category : 'tests - framing' }
+HttpClientTest >> testOnlyChunkedIsATransferCoding [
+	"Bugs5 NET-10.  `gzip, chunked' was unchunked and the gzip handed back
+	 as the body; any coding but chunked is a reply this client cannot
+	 read."
+	#('gzip, chunked' 'chunkedfoo' 'identity') do: [:coding |
+		self should: [self serving: 'HTTP/1.1 200 OK', self crlf, 'Transfer-Encoding: ', coding, self crlf, self crlf,
+				'3', self crlf, 'abc', self crlf, '0', self crlf, self crlf
+			do: [:url | HttpClient get: url]] raise: NetError].
+	self assert: (self serving: 'HTTP/1.1 200 OK', self crlf, 'Transfer-Encoding: Chunked', self crlf, self crlf,
+			'3', self crlf, 'abc', self crlf, '0', self crlf, self crlf
+		do: [:url | HttpClient get: url]) body equals: 'abc'
+]
+
+{ #category : 'tests - urls' }
+HttpClientTest >> testTheAuthorityEndsAtAQueryOrAFragment [
+	"Bugs5 NET-11.  `?' with no path stayed in the host, and a fragment
+	 went out on the request line."
+	| url |
+	url := HttpUrl fromString: 'http://127.0.0.1?x=1'.
+	self assert: url host equals: '127.0.0.1'.
+	self assert: url path equals: '/?x=1'.
+	url := HttpUrl fromString: 'http://127.0.0.1:8080#top'.
+	self assert: url host equals: '127.0.0.1'.
+	self assert: url port equals: 8080.
+	self assert: url path equals: '/'.
+	url := HttpUrl fromString: 'http://example.com/a/b?q=1#frag'.
+	self assert: url path equals: '/a/b?q=1'.
+	url := HttpUrl fromString: 'http://[::1]:8080/x'.
+	self assert: url host equals: '[::1]'.
+	self assert: url connectHost equals: '::1'.
+	self assert: url hostHeader equals: '[::1]:8080'.
+	self assert: (HttpUrl fromString: 'http://example.com/') connectHost equals: 'example.com'
+]
+
+{ #category : 'tests - urls' }
+HttpClientTest >> testAnIPv6LiteralIsFetched [
+	"Bugs5 NET-11.  The brackets were stripped only for TLS, so a plain
+	 http URL to [::1] went to the resolver as `[::1]' and was not found.
+	 Skipped where the loopback has no IPv6."
+	| listener |
+	listener := [ServerSocket listenOn: 0 address: '::1' backlog: 4] on: NetError do: [:e | nil].
+	listener isNil ifTrue: [^self].
+	[ | reply |
+	 [[ | c in |
+		c := listener accept.
+		in := SocketStream on: c.
+		[in nextLine isEmpty] whileFalse: [].
+		c send: 'HTTP/1.1 200 OK', self crlf, 'Content-Length: 4', self crlf, self crlf, 'six!'.
+		c close] on: Error do: [:e | nil]] fork.
+	 reply := HttpClient get: 'http://[::1]:', listener localPort printString, '/'.
+	 self assert: reply body equals: 'six!'] ensure: [listener close]
+]
+
+{ #category : 'tests - urls' }
+HttpClientTest >> testAPortIsSixteenBits [
+	"Bugs5 NET-12.  `:98304' reached the resolver as it was and arrived at
+	 port 32768."
+	self should: [HttpUrl fromString: 'http://127.0.0.1:98304/'] raise: NetError.
+	self should: [HttpUrl fromString: 'http://127.0.0.1:65536/'] raise: NetError.
+	self should: [HttpUrl fromString: 'http://127.0.0.1:0/'] raise: NetError.
+	self assert: (HttpUrl fromString: 'http://127.0.0.1:65535/') port equals: 65535
+]

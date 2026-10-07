@@ -204,6 +204,61 @@ test_collects_cycles(void)
 }
 
 /*
+ *  A count taken by a thread the safepoint does not park, between the
+ *  collector zeroing the counts and its walk reaching the object.
+ *
+ *  The network's I/O thread and the delay timer are not workers: they
+ *  post signals while a collection runs, and posting counts the Semaphore
+ *  queued.  The walk used to take a count of 0 as "not reached yet", so a
+ *  Semaphore counted by the I/O thread first was counted by the walk and
+ *  never walked, and the Process waiting on it -- which only the Semaphore
+ *  names, the two referring to each other as myList and firstLink -- was
+ *  swept while it waited.  test_parallel_net hung about one run in ten on
+ *  it (Bugs5 SCHED-lost-wakeup).  The root walk runs after the zeroing, so
+ *  a root provider that counts before it visits is that thread, landing
+ *  in exactly that window, every time.
+ */
+static st_oop   foreign_semaphore;
+static int      foreign_count_owed;
+
+static void
+provide_root_counted_elsewhere_first(om_visit_fn visit)
+{
+    if (foreign_count_owed) {
+        foreign_count_owed = 0;
+        OM_increase_ref(foreign_semaphore);
+    }
+    visit(foreign_semaphore);
+}
+
+static void
+test_a_count_from_another_thread_does_not_hide_a_waiter(void)
+{
+    st_oop  semaphore = OM_instantiate_pointers(ST_CLASS_ARRAY, 1);
+    st_oop  waiter    = OM_instantiate_pointers(ST_CLASS_ARRAY, 1);
+
+    /*  Each names the other and nothing else names either.  */
+    OM_store_pointer(0, semaphore, waiter);
+    OM_store_pointer(0, waiter, semaphore);
+    foreign_semaphore  = semaphore;
+    foreign_count_owed = 1;
+    OM_set_root_provider(provide_root_counted_elsewhere_first);
+
+    OM_collect();
+    CHECK(OM_is_object(semaphore));
+    CHECK(OM_is_object(waiter));
+    if (OM_is_object(waiter))
+        CHECK_EQ_INT(OM_fetch_pointer(0, semaphore), waiter);
+
+    /*  The other thread's count is released, as the drain releases it.  */
+    OM_decrease_ref(semaphore);
+    OM_set_root_provider(NULL);
+    OM_collect();
+    CHECK(!OM_is_object(semaphore));
+    CHECK(!OM_is_object(waiter));
+}
+
+/*
  *  Ephemerons.
  *
  *  The rule is one sentence and every part of it has to be tested: an
@@ -396,7 +451,7 @@ test_become(void)
 static void
 test_image_round_trip(void)
 {
-    const char *path = "build/test-round-trip.image";
+    const char *path = st_test_path("test-round-trip.image");
     st_oop      array;
     st_oop      text;
     char        err[256];
@@ -459,7 +514,7 @@ test_image_round_trip(void)
 static void
 test_vm_state_round_trip(void)
 {
-    const char *path = "build/test-vm-state.image";
+    const char *path = st_test_path("test-vm-state.image");
     st_oop      semaphore;
     st_oop      form;
     char        err[256];
@@ -669,8 +724,8 @@ file_exists(const char *path)
 static void
 test_snapshot_never_destroys_the_old_image(void)
 {
-    const char     *path = "build/test-atomic-save.image";
-    const char     *tmp  = "build/test-atomic-save.image.tmp";
+    const char     *path = st_test_path("test-atomic-save.image");
+    const char     *tmp  = st_test_path("test-atomic-save.image.tmp");
     st_oop          array;
     st_oop          text;
     unsigned char  *good;
@@ -841,8 +896,8 @@ load_copy(const char *path, const unsigned char *img, size_t len, char *err,
 static void
 test_corrupt_image_is_refused(void)
 {
-    const char     *path = "build/test-corrupt-source.image";
-    const char     *bad  = "build/test-corrupt-copy.image";
+    const char     *path = st_test_path("test-corrupt-source.image");
+    const char     *bad  = st_test_path("test-corrupt-copy.image");
     st_oop          junk;
     st_oop          array;
     st_oop          text;
@@ -1041,6 +1096,7 @@ main(void)
     test_formats();
     test_reference_counting();
     test_collects_cycles();
+    test_a_count_from_another_thread_does_not_hide_a_waiter();
     test_ephemerons();
     test_become();
     test_become_keeps_identity_hashes();

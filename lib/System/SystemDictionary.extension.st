@@ -149,24 +149,57 @@ SystemDictionary >> snapshotAs: imageFilePrefix thenQuit: quitIfTrue [
 	 stopped the image with `every process is blocked; nothing can run'
 	 (Bugs5 OM-7).  ifCurtailed: and not ensure:, because the normal path
 	 releases it already, in the ifFalse: branch below, and a second
-	 signal would leave the lock open to two holders at once."
-	| justSnapped |
+	 signal would leave the lock open to two holders at once.
+
+	 The file is named and not opened (Bugs5 SNAPSHOT-zero-byte).  1983
+	 opened it -- `FileStream fileNamed:' and then close -- because on the
+	 Alto primitive 97 wrote into the very file it was given.  Here 97
+	 writes `<name>.tmp' and renames it over the name, so the open did
+	 nothing but create the name, empty, before a byte of image existed;
+	 and when 97 then failed, a snapshot to a new name left a zero-byte
+	 .im behind that -run refuses as no image at all.  A File that only
+	 carries the name is all 128 reads.
+
+	 And it is named after Delay preSnapshot, inside the block the
+	 primitive runs in, not before.  128 and 97 talk through one place in
+	 the VM, and preSnapshot holds Delay's AccessProtect until
+	 postSnapshot: naming the file under that lock is what keeps a second
+	 process's snapshotAs: from renaming the first one's image between the
+	 two sends.
+
+	 And a run that RESUMED wakes the finalization process once.  The
+	 writer puts the ephemerons its own collection fired back on disk as
+	 ephemerons, so the loader's collection queues them again (Bugs5
+	 OM-9) -- but where to signal is C state no image carries, and the
+	 process comes back asleep on a semaphore nothing will signal.  One
+	 signal sends it round its loop, and the drain at the top of the loop
+	 is what tells the VM where to signal from then on.  A signal and not
+	 Finalizer restart, which would terminate a process that may be half
+	 way through somebody's #mourn; and looked up rather than named,
+	 because the Blue Book profile has no Finalizer."
+	| justSnapped imageFile finalizer |
 	Cursor execute show.
 	self logChange: '''----SNAPSHOT----'''.
 	Disk == nil ifFalse:
-		["Name the file for primitive 97, which is how beSnapshotFile and
-		  snapshotPrimitive are one mechanism split across two sends."
-		 (FileStream fileNamed: imageFilePrefix , '.im')
-			beSnapshotFile; readWrite; close].
+		[imageFile := Disk fileClass new.
+		 imageFile fileName: (Disk pathFor: imageFilePrefix , '.im')].
 	self releaseExternalViews.
 	Transcript cr; show: 'Snapshot at: ', Time dateAndTimeNow printString.
 	Delay preSnapshot.
 	Cursor wait show.
-	justSnapped := [self snapshotPrimitive isNil]
-		ifCurtailed: [Delay postSnapshot].
+	justSnapped :=
+		["Name the file for primitive 97, which is how beSnapshotFile and
+		  snapshotPrimitive are one mechanism split across two sends."
+		 imageFile == nil ifFalse: [imageFile beSnapshotFile].
+		 self snapshotPrimitive isNil]
+			ifCurtailed: [Delay postSnapshot].
 	justSnapped & quitIfTrue
 		ifTrue: [self quitPrimitive]
 		ifFalse: [Delay postSnapshot].
+	justSnapped ifFalse: [
+		finalizer := self at: #Finalizer ifAbsent: [nil].
+		(finalizer notNil and: [finalizer process notNil])
+			ifTrue: [finalizer mournSemaphore signal]].
 	Cursor normal show.
 	^justSnapped
 ]
@@ -225,7 +258,19 @@ SystemDictionary >> condenseChanges [
 
 	 The order matters and is 1983's: everything is written and closed
 	 before anything is removed, so an interruption anywhere leaves either
-	 the old changes file or the new one, and never neither."
+	 the old changes file or the new one, and never neither.
+
+	 And the new file takes the old one's place in one step, with the lock
+	 (Bugs5 FILES-9).  This removed the old file and then renamed the new
+	 one onto the free name, which was a moment with no changes file at
+	 all; and the lock that keeps a second st2026 off this image's changes
+	 file (Bugs4 FILES-B) is held on the FILE, so it stayed with the one
+	 removed, and a second -serve of the image was admitted from then on.
+	 Primitive 131's command 7 replaces the old file with the new and moves
+	 the lock onto the new one before it takes the name.  It is not the
+	 rename:newName: protocol, which must refuse a name that is taken
+	 (Bugs5 FILES-8); replacing is the whole point here.  The File is told
+	 its new name, as rename:newName: tells it."
 
 	| old temp name |
 	"Under the source-file lock throughout: a compile writing to the old
@@ -240,8 +285,11 @@ SystemDictionary >> condenseChanges [
 		temp readOnly.
 		old close.
 		SourceFiles at: 2 put: temp.
-		Disk removeOld: old file.
-		temp file rename: name]
+		(Disk doPrimitive: 7 arg1: name arg2: temp file) == true
+			ifFalse: [^self error: 'cannot put ' , temp file fileName ,
+				' in the place of ' , name , ', '
+				, (temp file errorString: temp file lastError)].
+		temp file fileName: name]
 ]
 
 { #category : '*System' }
@@ -261,4 +309,66 @@ SystemDictionary >> logChange: aStringOrText [
 		aFileStream setToEnd; readWrite.
 		aFileStream cr; cr; nextChunkPut: aString.
 		aFileStream readOnly]
+]
+
+{ #category : '*System-Snapshot' }
+SystemDictionary >> imagePrefixFrom: aString [
+	"Answer aString without a trailing '.im' or '.image', in either case.
+
+	 What the save prompt is given is a file PREFIX -- saveAs:thenQuit:
+	 adds '.im' and '.changes' to it -- but what a person types is the name
+	 of the file they want, and that ends in '.im'.  1983's getImagePrefix
+	 took the suffix off only inside its retry loop, after a name had
+	 already been refused, so the ordinary case, a legal name typed once,
+	 went through untouched: typing zz.im wrote zz.im.im and zz.im.changes
+	 (Bugs5 GUI-3).  The same mistake ./run made with a typed name, from
+	 the other side."
+	| lower |
+	lower := aString asLowercase.
+	#('.image' '.im') do:
+		[:suffix |
+		 (lower size > suffix size
+		  and: [(lower copyFrom: lower size - suffix size + 1 to: lower size)
+				= suffix])
+			ifTrue: [^aString copyFrom: 1 to: aString size - suffix size]].
+	^aString
+]
+
+{ #category : '*System-Snapshot' }
+SystemDictionary >> getImagePrefix [
+	"Prompt the user for a snapshot file name.  Persist until a legal name
+	 is supplied.  Answer the name without its suffix, or an empty string
+	 if the user gave none.
+
+	 1983's method, with the typed answer passed through imagePrefixFrom:
+	 every time it is read rather than only on a retry (Bugs5 GUI-3); see
+	 there.  The block assigns to the temporary because this is compiled
+	 with closures, where a block's argument belongs to the block: 1983's
+	 `action: [:newPrefix | ]' relied on the Blue Book making a block
+	 argument one of the method's own temporaries."
+	| default newPrefix prompt |
+	SourceFiles == nil ifTrue: [^'snapshot'].
+	prompt := 'Enter name for image file:'.
+	default := 'snapshot'.
+	newPrefix := ''.
+	FillInTheBlank
+		request: prompt
+		displayAt: Sensor cursorPoint
+		centered: true
+		action: [:answer | newPrefix := self imagePrefixFrom: answer]
+		initialAnswer: default.
+	[newPrefix isEmpty or:
+			[(Disk isLegalFileName: newPrefix , '.changes') not]] whileTrue:
+		[newPrefix isEmpty ifTrue: [^newPrefix].
+		 prompt := 'Illegal file name: ' , newPrefix , '
+Enter name for image file:'.
+		 default := Disk checkName: newPrefix , '.changes' fixErrors: true.
+		 default := default copyFrom: 1 to: default size - 8.
+		 FillInTheBlank
+			request: prompt
+			displayAt: Sensor cursorPoint
+			centered: true
+			action: [:answer | newPrefix := self imagePrefixFrom: answer]
+			initialAnswer: default].
+	^newPrefix
 ]

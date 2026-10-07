@@ -304,7 +304,8 @@ dump_screen(const char *why)
 
     if (!GFX_form_from_oop(GFX_display_form(), &form))
         return;
-    snprintf(path, sizeof path, "/tmp/st2026-desktop-%s.pbm", why);
+    snprintf(path, sizeof path, "%s/%ld-desktop-%s.pbm",
+             st_test_dir(), st_test_pid(), why);
     if (!(f = fopen(path, "w")))
         return;
     fprintf(f, "P1\n%d %d\n", form.width, form.height);

@@ -150,3 +150,15 @@ OllamaTest >> testAMalformedSuccessIsAnLLMError [
 	"A reply with no message is no text, which is what it always was."
 	self assert: (ollama textOf: JSONObject new) equals: ''
 ]
+
+{ #category : 'tests - wire' }
+OllamaTest >> testASuccessThatIsNotJsonIsAnLLMError [
+	"Bugs5 NET-14.  A 200 <html> page from a proxy in front of the
+	 service was a JSONError -- `a value cannot begin with $<' -- though a
+	 malformed 2xx is an LLMError by the class comment's promise; and so
+	 was a streamed line that began like a document and was not one."
+	self should: [self serving: (self status: 200 body: '<html>a proxy</html>')
+		do: [:url | (self ollamaAt: url) model: 'm'; send: 'q']] raise: LLMError.
+	self should: [self serving: (self lines: #('{"model":"m","message":'))
+		do: [:url | (self ollamaAt: url) model: 'm'; send: 'q' do: [:p | ]]] raise: LLMError
+]

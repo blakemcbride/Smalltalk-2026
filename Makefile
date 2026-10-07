@@ -455,7 +455,7 @@ TEST_DIR  := $(BUILD_DIR)/tests
 #
 # Everything except src/om is unconditional.  The object memory is chosen by
 # OM= so that exactly one implementation is compiled in and the om.h macros
-# inline fully -- see doc/OBJECT-MEMORY.md.
+# inline fully -- see src/om/om.h.
 
 CORE_SRC  := $(wildcard src/port/*.c) \
              $(wildcard src/interp/*.c) \
@@ -565,12 +565,29 @@ $(VARIANT_BIN): $(MAIN_OBJ) $(LIB_AR) $(FLAGS_FILE)
 #  run $(VARIANT_BIN) out of the build directory and never wanted the copy;
 #  only a person typing ./st2026 does.
 #
+#  Nor, on a tree that has a windowed build, is a HEADLESS one: ./st2026 is
+#  what ./run starts, and the stub display opens no window.  `make
+#  HEADLESS=1' replaced it, and the desktop then failed to appear until the
+#  next plain `make', with nothing to say that the binary had changed under
+#  it (Bugs5 DOCS-12).  On a machine with no SDL3 there is no windowed
+#  build to keep, the stub is the only system there is, and the manual's
+#  ./st2026 has to be it -- so there it is copied, every time, as a plain
+#  build is.
+#
+WINDOWED_BIN := $(subst -headless,,$(BUILD_DIR))/st2026
+
 .PHONY: $(BIN)
 $(BIN): $(VARIANT_BIN)
-ifeq ($(strip $(TSAN)$(ASAN)),)
-	@cp -f $< $@
-else
+ifneq ($(strip $(TSAN)$(ASAN)),)
 	@echo "  $(BUILD_VARIANT) build left in $(VARIANT_BIN); ./st2026 untouched"
+else ifdef HEADLESS
+	@if [ -x $(WINDOWED_BIN) ]; then \
+	    echo "  $(BUILD_VARIANT) build left in $(VARIANT_BIN); ./st2026 untouched"; \
+	else \
+	    cp -f $< $@; \
+	fi
+else
+	@cp -f $< $@
 endif
 
 # Unit tests ----------------------------------------------------------------
@@ -578,9 +595,16 @@ endif
 UNIT_SRC  := $(wildcard tests/unit/test_*.c)
 UNIT_BIN  := $(patsubst tests/unit/%.c,$(TEST_DIR)/%,$(UNIT_SRC))
 
+#  -MMD -MP here as on the objects, with the dependency file named outright:
+#  compiling and linking in one step, the compiler would otherwise choose
+#  its name itself, and not every compiler chooses the same one.  Without
+#  them a test program depended on its own .c and nothing it included, so
+#  an edit to tests/st_test.h, or to a header a test reaches into, rebuilt
+#  no test at all and `make unit-test' ran the old ones (Bugs5 DOCS-5).
+#  The -include at the bottom finds these with every other .d.
 $(TEST_DIR)/%: tests/unit/%.c $(LIB_AR) $(FLAGS_FILE)
 	@mkdir -p $(dir $@)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(LIB_AR) -o $@ $(LDFLAGS) $(LIBS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -MMD -MP -MF $@.d -MT $@ $< $(LIB_AR) -o $@ $(LDFLAGS) $(LIBS)
 
 # Benchmarks ----------------------------------------------------------------
 #
@@ -593,7 +617,7 @@ BENCH_BIN := $(patsubst tests/bench/%.c,$(TEST_DIR)/%,$(BENCH_SRC))
 
 $(TEST_DIR)/bench_%: tests/bench/bench_%.c $(LIB_AR) $(FLAGS_FILE)
 	@mkdir -p $(dir $@)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(LIB_AR) -o $@ $(LDFLAGS) $(LIBS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -MMD -MP -MF $@.d -MT $@ $< $(LIB_AR) -o $@ $(LDFLAGS) $(LIBS)
 
 #
 #  Regenerate the built-in face.  NOT part of any build: src/gfx/font_face.c
@@ -661,11 +685,16 @@ endif
 # Book memory it refuses before it reaches a single test.  Skipped rather than
 # failed there, the same way test_trace skips under mt.
 
+#  The wall-clock limit on one profile's run (Bugs5 DOCS-7): fifteen
+#  minutes, and four hours under a sanitizer, which interprets tens of times
+#  slower and is not to be failed for that.
+PROFILE_SECONDS := $(if $(strip $(TSAN)$(ASAN)),14400,900)
+
 .PHONY: suite-test
 suite-test: $(VARIANT_BIN)
 ifeq ($(OM),mt)
 	@echo "==> imported package suites"
-	@sh tests/run_profiles.sh $(VARIANT_BIN) tests/profiles.expected
+	@ST_PROFILE_SECONDS=$(PROFILE_SECONDS) sh tests/run_profiles.sh $(VARIANT_BIN) tests/profiles.expected
 else
 	@echo "==> imported package suites"
 	@echo "skipped: the bootstrap targets the 64-bit object memory"
@@ -698,10 +727,30 @@ unit-test: $(UNIT_BIN) $(VARIANT_BIN)
 #  a document whose source is tracked -- no rule here produces one, so no
 #  rule here should delete one.
 #
+#  The rest of that list was missing too: `make demo-image' left demo.im,
+#  the suites' database and file fixtures stayed at the top of the tree,
+#  the demo's database stayed in demo/, and an MSVC build's executable,
+#  objects and debug files were not looked for (Bugs5 DOCS-11).
+#  The suites now name their fixtures per run and remove them, so what is
+#  left is what a run stopped part-way leaves: hence the globs.
+#
+#  *.im is on the list but is NOT removed wholesale, for the reason oracle/
+#  is not: a snapshot saved from the desktop is named whatever was typed at
+#  its prompt, snapshot.im by default, and it is somebody's work.  demo.im
+#  is the one .im a rule here makes, so it is the one taken away.  The
+#  demo's database is taken because it is made again, from demo/
+#  schema.sqlite, on the server's first start.
+#
 clean:
 	rm -rf build $(BIN)
-	rm -f *.image *.changes
+	rm -f *.image *.changes demo.im
 	rm -f screen*.pbm screen*.cov
+	rm -f st2026-*-test*.db st2026-*-test*.db-journal
+	rm -f st2026-parallel-file-test.txt
+	rm -f TonelTestSample*.class.st TonelTestS*.extension.st
+	rm -f http-server-test-page-*.html tests/rest-backend/services/Scratch*.class.st
+	rm -f demo/DB.sqlite demo/DB.sqlite-journal
+	rm -f st2026.exe st2026.pdb st2026.ilk *.obj
 
 #
 #  The same probes make runs, reporting on all of them instead of stopping

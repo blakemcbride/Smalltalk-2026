@@ -133,7 +133,8 @@ gone. Two ordinary mistakes reach it: recursion about five million frames deep,
 and `printString` of a structure that contains itself.
 
 There is still a ceiling, now a variable rather than a constant: sixteen times
-the starting size, and `ST_MAX_OBJECTS` in the environment moves it. A ceiling
+the starting size, and `ST_MAX_OBJECTS` in the environment moves it, down to a
+floor of 262144; a ceiling below the starting size starts the table there. A ceiling
 is wanted — growing until `malloc` says no means a runaway takes the machine
 rather than the image, and on a server that is other people's processes.
 Reserving the range costs eight bytes of *address space* per possible object

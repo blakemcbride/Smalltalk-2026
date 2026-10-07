@@ -74,7 +74,21 @@
  *  either one alone produces a green test that tests nothing.
  */
 #define SAFEPOINT_CEILING   200000
-#define DATABASE_FILE       "st2026-odbc-parallel-test.db"
+
+/*
+ *  The database file: this run's, in this build's test directory, and
+ *  removed when the run ends.  It was st2026-odbc-parallel-test.db at the
+ *  top of the tree, one file for every run, so two runs at once dropped
+ *  and refilled each other's table under their workers (Bugs5 DOCS-6).
+ */
+static const char  *database_file;
+
+static void
+remove_database_file(void)
+{
+    if (database_file)
+        remove(database_file);
+}
 
 /*
  *  Whether a database is reachable at all.  Decided once, before any thread
@@ -350,8 +364,10 @@ prepare_database(void)
 {
     int     connection;
 
+    database_file = st_test_path("odbc-parallel-test.db");
+    atexit(remove_database_file);
     snprintf(connection_string, sizeof connection_string,
-             "DRIVER=SQLITE3;Database=%s;", DATABASE_FILE);
+             "DRIVER=SQLITE3;Database=%s;", database_file);
 
     if (!ST_odbc_available())
         return 0;

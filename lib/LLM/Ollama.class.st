@@ -150,7 +150,7 @@ Ollama >> toolCallsOf: aReply [
 	list do: [:each |
 		function := each objectAt: 'function'.
 		arguments := function at: 'arguments' ifAbsent: [JSONObject new].
-		arguments isString ifTrue: [arguments := JSONObject fromString: arguments].
+		arguments isString ifTrue: [arguments := self documentFrom: arguments].
 		calls add: (LLMToolCall id: (function stringAt: 'name') name: (function stringAt: 'name') arguments: arguments)].
 	^calls
 ]
@@ -185,7 +185,7 @@ Ollama >> streamedTextOf: aLine [
 	 nothing; `error' is an error; the piece is message.content."
 	| document |
 	(aLine trimmed startsWith: '{') ifFalse: [^''].
-	document := JSONObject fromString: aLine.
+	document := self documentFrom: aLine.
 	(document includesKey: 'error') ifTrue: [
 		^(LLMError new) body: aLine; signal: 'Ollama: ', (document at: 'error') printString].
 	(document at: 'done' ifAbsent: [false]) == true ifTrue: [

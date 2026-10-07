@@ -451,7 +451,24 @@ LLM >> getJson: aUrl [
 LLM >> checked: aReply [
 	lastStatus := aReply status.
 	aReply isSuccess ifFalse: [^self failed: aReply status body: aReply body].
-	^aReply json
+	^self documentFrom: aReply body
+]
+
+{ #category : 'http' }
+LLM >> documentFrom: aString [
+	"aString, a document this service sent, as a JSONObject -- or the
+	 LLMError malformed:because: raises when it is not JSON at all.
+
+	 A 2xx THAT IS NOT JSON IS A MALFORMED REPLY, which the class comment
+	 promises is an LLMError, and it was a JSONError: `a value cannot begin
+	 with $<' from a proxy's 200 <html> page in front of an Ollama, which
+	 is a message about this package's parser rather than about the
+	 service, and an exception a caller handling LLMError does not catch
+	 (Bugs5 NET-14).  Every place a reply, a streamed line or a tool
+	 call's arguments are parsed comes through here."
+	^[JSONObject fromString: aString]
+		on: JSONError
+		do: [:e | e return: (self malformed: aString because: 'it is not JSON: ', e messageText)]
 ]
 
 { #category : 'http' }

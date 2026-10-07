@@ -526,6 +526,15 @@ void    ST_trace_set(st_trace_mode mode, void *stream);
 
 /*  Emitted by the interpreter at the points the Xerox tracer emitted them. */
 void    ST_trace_bytecode(uint8_t code, st_oop method, uint32_t ip);
+/*
+ *  A send's line shows at most ST_TRACE_MAX_ARGS arguments, and `args' need
+ *  hold only that many however large `argc' is: the rest are elided as
+ *  " ...".  The interpreter gathers them into a fixed array on its own
+ *  stack, and a send with nine arguments used to be printed by reading a
+ *  ninth slot past the end of it (Bugs5 INTERP-11).
+ */
+#define ST_TRACE_MAX_ARGS   8
+
 void    ST_trace_send(st_oop receiver, st_oop selector, uint32_t argc,
                       const st_oop *args);
 void    ST_trace_return(st_oop value, int from_block);

@@ -139,7 +139,8 @@ survey_text(st_survey *s, const char *name, const char *text)
     char    path[512];
     FILE   *f;
 
-    snprintf(path, sizeof path, "/tmp/st2026-prim-%s", name);
+    snprintf(path, sizeof path, "%s/%ld-prim-%s",
+             st_test_dir(), st_test_pid(), name);
     f = fopen(path, "wb");
     if (!f) {
         printf("  cannot write %s\n", path);

@@ -10,13 +10,19 @@ it rolled back -- seen from the next request, through the same connection.
 Class {
 	#name : 'RestLiveTest',
 	#superclass : 'TestCase',
-	#instVars : [ 'server' ],
+	#instVars : [ 'server', 'databaseFile' ],
 	#category : 'Rest-Server-Live-Tests'
 }
 
 { #category : 'fixture' }
-RestLiveTest class >> databaseFile [
-	^'st2026-rest-live-test.db'
+RestLiveTest >> databaseFile [
+	"A file of this test's own, removed by tearDown.  It was
+	 st2026-rest-live-test.db for every run, and two runs from one tree at
+	 once reset each other's ledger in the middle of a test (Bugs5
+	 DOCS-6)."
+	databaseFile isNil ifTrue: [
+		databaseFile := self unusedName: 'st2026-rest-live-test-' suffix: '.db' in: Disk].
+	^databaseFile
 ]
 
 { #category : 'running' }
@@ -25,7 +31,7 @@ RestLiveTest >> setUp [
 		port: 0;
 		bindAddress: '127.0.0.1';
 		backendDirectory: 'tests/rest-backend';
-		database: 'DRIVER=SQLITE3;Database=', self class databaseFile, ';';
+		database: 'DRIVER=SQLITE3;Database=', self databaseFile, ';';
 		connectionPoolSize: 1;
 		requireAuthentication: false;
 		name: 'live';
@@ -36,7 +42,11 @@ RestLiveTest >> setUp [
 
 { #category : 'running' }
 RestLiveTest >> tearDown [
-	server notNil ifTrue: [server stop]
+	server notNil ifTrue: [server stop].
+	"The database, and the rollback journal SQLite may leave beside it."
+	databaseFile isNil ifTrue: [^self].
+	#('' '-journal') do: [:each |
+		(Disk includesKey: databaseFile, each) ifTrue: [Disk removeKey: databaseFile, each]]
 ]
 
 { #category : 'private' }
@@ -105,7 +115,7 @@ RestLiveTest >> initServerInMode: aStringOrNil [
 		port: 0;
 		bindAddress: '127.0.0.1';
 		backendDirectory: 'tests/rest-init-backend';
-		database: 'DRIVER=SQLITE3;Database=', self class databaseFile, ';';
+		database: 'DRIVER=SQLITE3;Database=', self databaseFile, ';';
 		connectionPoolSize: 1;
 		requireAuthentication: false;
 		name: 'init';

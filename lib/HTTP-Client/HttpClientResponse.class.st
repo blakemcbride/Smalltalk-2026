@@ -84,8 +84,15 @@ HttpClientResponse >> readOneFrom: aStream maxBodyBytes: anInteger method: aMeth
 	 from.  An interim reply has no body, which HttpBodyStream already
 	 knows from the status, and neither has the reply to a HEAD, which it
 	 knows from the method.  The status line is bounded as the headers are
-	 (Bugs5 NET-4)."
-	| line space rest |
+	 (Bugs5 NET-4).
+
+	 THE STATUS IS THREE DIGITS, which is all RFC 7230 lets it be, and
+	 nothing else is a status.  asNumber read whatever it could make a
+	 number of and stopped at the rest: `-100' was status -100 and `1/2'
+	 was status 1 -- each of them a reply this client went on to frame by
+	 rules meant for a real status (Bugs5 NET-10).  A server that writes
+	 one of those is not speaking HTTP, and that is a NetError."
+	| line space rest code |
 	line := HttpBodyStream nextLineFrom: aStream limit: HttpBodyStream maxLineBytes.
 	(line startsWith: 'HTTP/') ifFalse: [^NetError new signal: 'not an HTTP reply: ', line printString].
 	space := line indexOf: Character space.
@@ -93,8 +100,10 @@ HttpClientResponse >> readOneFrom: aStream maxBodyBytes: anInteger method: aMeth
 	version := line copyFrom: 1 to: space - 1.
 	rest := (line copyFrom: space + 1 to: line size) trimmed.
 	space := rest indexOf: Character space.
-	status := (space = 0 ifTrue: [rest] ifFalse: [rest copyFrom: 1 to: space - 1]) asNumber.
-	(status isKindOf: Integer) ifFalse: [^NetError new signal: 'not an HTTP status: ', line printString].
+	code := space = 0 ifTrue: [rest] ifFalse: [rest copyFrom: 1 to: space - 1].
+	(code size = 3 and: [code allSatisfy: [:c | c isDigit]])
+		ifFalse: [^NetError new signal: 'not an HTTP status: ', line printString].
+	status := code asNumber.
 	reason := space = 0 ifTrue: [''] ifFalse: [(rest copyFrom: space + 1 to: rest size) trimmed].
 	self readHeadersFrom: aStream.
 	bodyStream := HttpBodyStream on: aStream status: status headers: headers

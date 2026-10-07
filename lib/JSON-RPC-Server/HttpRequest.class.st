@@ -37,7 +37,7 @@ ReadStream on a String, which is how the tests read it without a socket.
 Class {
 	#name : 'HttpRequest',
 	#superclass : 'Object',
-	#instVars : [ 'method', 'target', 'path', 'queryString', 'version', 'headers', 'body', 'remoteAddress', 'parts', 'query' ],
+	#instVars : [ 'method', 'target', 'path', 'queryString', 'version', 'headers', 'body', 'remoteAddress', 'parts', 'query', 'partsByName' ],
 	#category : 'JSON-RPC-Server'
 }
 
@@ -342,7 +342,23 @@ HttpRequest >> formParameters [
 
 { #category : 'multipart' }
 HttpRequest >> partNamed: aString [
-	^self parts detect: [:p | p name = aString] ifNone: [nil]
+	"The first part of that name, or nil.
+
+	 BY A DICTIONARY, built once, and not by a walk along the parts each
+	 time.  The walk was linear, and RestRequest>>uploadFileCount asks for
+	 _file-0, _file-1 ... until one is missing, so n uploads cost n
+	 squared over two comparisons: 1,000 files took 6.5 seconds of a
+	 worker and 4,000 -- a 299 KB request, well inside every limit --
+	 took 81 (Bugs5 NET-15).  The first part of a name wins, as detect:
+	 made it win.  One request is one worker's, so the lazy fill needs no
+	 lock, as parts' does not."
+	partsByName isNil ifTrue: [ | index |
+		index := Dictionary new.
+		self parts do: [:p |
+			(p name notNil and: [(index includesKey: p name) not])
+				ifTrue: [index at: p name put: p]].
+		partsByName := index].
+	^partsByName at: aString ifAbsent: [nil]
 ]
 
 { #category : 'private - multipart' }

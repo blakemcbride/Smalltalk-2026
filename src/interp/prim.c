@@ -27,6 +27,7 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <math.h>
+#include <float.h>
 /*  time.h for primitive 219: localtime_r and the host's zone database.  */
 #include <time.h>
 
@@ -43,6 +44,7 @@
 #else
 #include <dirent.h>
 #include <unistd.h>
+#include <sys/file.h>
 #endif
 
 /*  ----------  Argument helpers  ----------  */
@@ -1772,6 +1774,16 @@ st_rename_noreplace(const char *from, const char *to)
     return rename(from, to);
 }
 
+/*
+ *  Rename, replacing -- see the POSIX half.  There is no changes-file lock
+ *  on Windows to carry, so this is the port's replacing rename.
+ */
+static int
+st_replace_carrying_lock(const char *from, const char *to)
+{
+    return ST_file_replace(from, to);
+}
+
 static int
 st_file_truncate(int fd, int64_t end)
 {
@@ -1993,6 +2005,65 @@ st_rename_noreplace(const char *from, const char *to)
     return rename(from, to);
 }
 
+/*
+ *  Rename `from' over `to', replacing it in one step, and if `to' is the
+ *  changes file this process holds the lock on, hold the lock on `from'
+ *  instead before it takes the name (Bugs5 FILES-9).
+ *
+ *  condenseChanges writes the compacted changes beside the old file and
+ *  puts it in the old one's place.  The lock of Bugs4 FILES-B is an flock,
+ *  and an flock belongs to the file and not to its name: the old file was
+ *  unlinked and the new one renamed over the name, and the lock went on
+ *  holding the unlinked file -- so a second -serve of the same image found
+ *  an unlocked changes file and was admitted, where without the condense it
+ *  is refused.  And unlinking first left a moment with no changes file at
+ *  all, in which a second st2026 creates an empty one and locks THAT.
+ *
+ *  So: the new file is locked first, while it is still only the
+ *  .condensing name nobody else opens; then one rename replaces the old
+ *  file, so the name always names a file, and at every instant the file it
+ *  names is locked by this process; and only then is the old lock let go.
+ *  A lock that cannot be taken on the new file -- nothing should hold it --
+ *  fails the command before anything has moved.
+ */
+
+static int
+st_replace_carrying_lock(const char *from, const char *to)
+{
+    struct stat held;
+    struct stat named;
+    int         fd = -1;
+
+    if (ST_changes_lock_fd >= 0
+     && fstat(ST_changes_lock_fd, &held) == 0
+     && stat(to, &named) == 0
+     && held.st_dev == named.st_dev && held.st_ino == named.st_ino) {
+        fd = open(from, O_RDWR);
+        if (fd < 0)
+            return -1;
+        if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
+            int saved = errno;
+
+            close(fd);
+            errno = saved;
+            return -1;
+        }
+    }
+    if (rename(from, to) != 0) {
+        int saved = errno;
+
+        if (fd >= 0)
+            close(fd);
+        errno = saved;
+        return -1;
+    }
+    if (fd >= 0) {
+        close(ST_changes_lock_fd);
+        ST_changes_lock_fd = fd;
+    }
+    return 0;
+}
+
 static int64_t
 st_file_size(int fd)
 {
@@ -2062,7 +2133,32 @@ st_dir_close(st_dir *d)
 #define PAGE_BYTES_FIELD        4
 #define POSIX_PAGE_SIZE         512
 
-static int  posix_errno;
+/*
+ *  The errno of the last file primitive that failed ON THIS THREAD
+ *  (Bugs5 FILES-10).
+ *
+ *  This was one static for the whole process, written by every worker's
+ *  failing primitive and read back by primitive 132 a few bytecodes later
+ *  -- PosixFile>>doCommand:name:page:error: fails, then asks lastError.
+ *  Under -serve another worker's failure lands in between, and the error
+ *  carried that worker's text: a missing file opened while six other
+ *  processes opened a directory reported `Is a directory' a hundred times
+ *  out of a hundred.  It was also a plain data race.  Per thread is what
+ *  the socket layer and the ODBC layer already do, for the same reason:
+ *  the failure a caller wants explained is the one its own call just had.
+ *
+ *  Per thread and not per Process, which is a real difference only for a
+ *  process that moves to another worker between the failure and the read.
+ *  It moves only when it is parked, and nothing between the two parks it
+ *  -- a preemption there is possible and would answer that worker's last
+ *  errno, which is the same wrong text as before but once in a great many
+ *  runs instead of every time.  Carrying the errno in the Process would
+ *  close that too, at the price of a field the 1983 Process does not have.
+ */
+static _Thread_local int    posix_errno;
+
+/*  See prim.h, and st_replace_carrying_lock.  Never set on Windows.  */
+int ST_changes_lock_fd = -1;
 
 /*
  *  Which descriptors are OURS, in THIS process.
@@ -2566,7 +2662,8 @@ primitive_file_command(void)
  *
  *  1 removes a file, 2 renames one, 3 answers the names in a directory,
  *  4 answers whether a name is a directory, 5 answers its real path, and
- *  6 answers whether there is anything of that name at all.
+ *  6 answers whether there is anything of that name at all, and 7 renames
+ *  replacing, for condenseChanges (Bugs5 FILES-9).
  *  2 never replaces: renaming onto a name that is taken fails with EEXIST,
  *  as FileDirectory>>rename:newName: says it must (Bugs5 FILES-8).
  *  3 walks the directory the system was started in unless it is told
@@ -2612,6 +2709,25 @@ primitive_directory_command(void)
                            a, sizeof a))
             return 0;
         answer = st_rename_noreplace(a, b) == 0 ? ST_TRUE : ST_FALSE;
+        if (answer == ST_FALSE)
+            posix_errno = errno;
+        break;
+
+    case 7:                                     /*  arg2 replaces arg1  */
+        /*
+         *  Like 2, but taking the place of a file already called arg1,
+         *  in one step, and carrying this process's changes-file lock
+         *  across if arg1 is the file it locks -- see
+         *  st_replace_carrying_lock (Bugs5 FILES-9).  condenseChanges is
+         *  what sends it; 2 stays the rename that never replaces.
+         */
+        if (!c_from_string(arg1, b, sizeof b)
+         || !OM_is_object(arg2) || !OM_pointer_bit(arg2)
+         || OM_fetch_word_length(arg2) <= FILE_NAME_FIELD
+         || !c_from_string(OM_fetch_pointer(FILE_NAME_FIELD, arg2),
+                           a, sizeof a))
+            return 0;
+        answer = st_replace_carrying_lock(a, b) == 0 ? ST_TRUE : ST_FALSE;
         if (answer == ST_FALSE)
             posix_errno = errno;
         break;
@@ -2774,6 +2890,16 @@ primitive_directory_command(void)
  *  have just been resumed".  Failing the primitive outright is worse than
  *  useless here -- the fallback is `self primitiveFailed', and reporting
  *  that costs more than the snapshot would have.
+ *
+ *  snapshot_path is one for the process and NOT per thread, though Bugs5
+ *  FILES-10 suggested making it so beside posix_errno.  The two sends that
+ *  share it are a Process's, not a thread's: between them snapshotAs:
+ *  waits in Delay preSnapshot, and a process that waits may resume on
+ *  any worker, where a thread-local would be empty and the snapshot would
+ *  fail as `nobody said where'.  What keeps two snapshots from crossing
+ *  here is that snapshotAs: names the file only once it holds Delay's
+ *  AccessProtect, which it keeps until the write is over, and the
+ *  Semaphore that lock is made of orders the store here before the read.
  */
 static char     snapshot_path[1024];
 
@@ -4447,7 +4573,8 @@ primitive_local_utc_offset(void)
  *  the image, which knows what it wants; lib/Clipboard translates the line
  *  ends and nothing else.  The primitive FAILS when called wrongly and
  *  answers nil or false when there is no window -- headless, or -serve --
- *  so the editor's own buffer is what is left, as before.
+ *  so the editor's own buffer is what is left, as before.  2 answers false
+ *  too for a String holding a NUL, which a C string cannot carry.
  */
 static int
 primitive_clipboard(void)
@@ -4497,6 +4624,22 @@ primitive_clipboard(void)
         for (i = 0; i < n; ++i)
             text[i] = (char) OM_fetch_byte(i, arg);
         text[n] = '\0';
+        /*
+         *  A String with a NUL in it cannot go, and is refused rather than
+         *  cut short.  The system's clipboard takes a C string, so `x', NUL,
+         *  `y' arrived as `x' -- and the editor's paste, seeing outside text
+         *  that was not the selection it had copied, pasted the stub instead
+         *  of its own buffer, so copy and paste inside the image lost text
+         *  (Bugs5 GUI-4, PRIM-4's fault on a path that fix did not reach).
+         *  Answering false says "not on the clipboard", which is the truth;
+         *  Clipboard class>>text: then empties it, so nothing older pastes.
+         */
+        if (memchr(text, '\0', n) != NULL) {
+            free(text);
+            ST_pop_n(3);
+            ST_push(ST_FALSE);
+            return 1;
+        }
         rc = GFX_clipboard_set(text);
         free(text);
         ST_pop_n(3);
@@ -4639,7 +4782,25 @@ primitive_float_print_string(void)
         snprintf(text, sizeof text, "nan");
         digits = 0;
     } else {
-        for (digits = 15; digits <= 17; ++digits) {
+        /*
+         *  Fifteen digits is a safe place to START for a normal double and
+         *  not for a subnormal one.  A normal double carries 53 bits, so
+         *  any decimal of fifteen digits or fewer that reads back as it is
+         *  the one %.15g writes once the trailing zeros are gone -- the
+         *  double is nearer it than half a unit of the fifteenth digit --
+         *  and starting lower would only spend snprintf calls to find the
+         *  same text.  A subnormal carries fewer bits, down to ONE for the
+         *  smallest, and then a much shorter decimal reads back: Python's
+         *  repr of 2^-1074 is 5e-324, and this printed
+         *  4.94065645841247e-324, and 1e-320 as 9.99988867182683e-321 --
+         *  both round-tripped, neither was the shortest that does (Bugs5
+         *  KERN-11).  So below DBL_MIN every precision from one up is
+         *  tried, which is the same rule done the long way where only the
+         *  long way gives the right answer.
+         */
+        int first = (value != 0.0 && fabs(value) < DBL_MIN) ? 1 : 15;
+
+        for (digits = first; digits <= 17; ++digits) {
             snprintf(text, sizeof text, "%.*g", digits, value);
             if (strtod(text, NULL) == value)
                 break;
@@ -5169,6 +5330,26 @@ net_answer(st_oop value)
 
 static _Thread_local unsigned char  net_scratch[NET_SCRATCH_BYTES];
 
+/*
+ *  A port argument: a SmallInteger from 0 to 65535, or -1 for anything
+ *  else, which fails the primitive.  A port is sixteen bits and the value
+ *  was cast to an int and handed to getaddrinfo as decimal text, which
+ *  kept the low sixteen bits of whatever it was given: listenOn: 65536 +
+ *  40123 listened on 40123, and a connect to 65536 + P reached P (Bugs5
+ *  NET-12).  Socket and ServerSocket refuse such a number first, by name;
+ *  this is the VM not trusting that they did.
+ */
+static int
+net_port_arg(st_oop p)
+{
+    st_int  v;
+
+    if (!OM_is_int(p))
+        return -1;
+    v = OM_int_value(p);
+    return v >= 0 && v <= 65535 ? (int) v : -1;
+}
+
 /*  A handle argument: a SmallInteger, or -1.  */
 static int64_t
 net_handle_arg(st_oop p)
@@ -5289,9 +5470,8 @@ primitive_net_command(void)
             host[0] = '\0';
         else if (!c_from_string(a, host, sizeof host))
             return 0;
-        if (!OM_is_int(b))
+        if ((port = net_port_arg(b)) < 0)
             return 0;
-        port    = (int) OM_int_value(b);
         backlog = OM_is_int(c) ? (int) OM_int_value(c) : 0;
         handle  = NET_listen(host, port, backlog);
         return net_answer(handle < 0 ? ST_NIL : OM_int_oop((st_int) handle));
@@ -5439,7 +5619,7 @@ primitive_net_command(void)
         int64_t     handle;
         int         index;
 
-        if (!c_from_string(a, host, sizeof host) || !OM_is_int(b))
+        if (!c_from_string(a, host, sizeof host) || net_port_arg(b) < 0)
             return 0;
         /*  c: which of the host's addresses, from 0; nil is the first.  */
         index = OM_is_int(c) ? (int) OM_int_value(c) : 0;
@@ -5453,7 +5633,7 @@ primitive_net_command(void)
         char        host[256];
         int         count;
 
-        if (!c_from_string(a, host, sizeof host) || !OM_is_int(b))
+        if (!c_from_string(a, host, sizeof host) || net_port_arg(b) < 0)
             return 0;
         count = NET_address_count(host, (int) OM_int_value(b));
         return net_answer(count < 0 ? ST_NIL : OM_int_oop((st_int) count));

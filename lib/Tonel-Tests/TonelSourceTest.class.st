@@ -3,8 +3,9 @@ The registry, against a real file: loaded on first use, reloaded when the file
 changes, and written back when the class changes in the image -- through the
 same messages the Browser sends.
 
-The file is made in the directory the tests run from, under a name nothing
-else uses, and removed afterwards.
+The file is made in the directory the tests run from, under a name drawn
+for each test so that two runs from one tree do not share it (Bugs5
+DOCS-6), and removed afterwards.
 "
 Class {
 	#name : 'TonelSourceTest',
@@ -15,8 +16,14 @@ Class {
 
 { #category : 'running' }
 TonelSourceTest >> setUp [
-	path := 'TonelTestSample.class.st'.
-	extensionPath := 'TonelTestSmallInteger.extension.st'
+	"Names of this test's own.  They were TonelTestSample.class.st and
+	 TonelTestSmallInteger.extension.st, the same for every run, and two
+	 runs from one tree at once wrote and removed each other's file in the
+	 middle of a test (Bugs5 DOCS-6).  The class in the file keeps its
+	 name: classes are per image, and the registry does not care what the
+	 file is called."
+	path := self unusedName: 'TonelTestSample' suffix: '.class.st' in: Disk.
+	extensionPath := self unusedName: 'TonelTestSmallInteger' suffix: '.extension.st' in: Disk
 ]
 
 { #category : 'running' }
@@ -236,7 +243,7 @@ TonelSourceTest >> testAClassWithAClassFileAndAnExtensionFileWritesEach [
 	cr := String with: Character cr.
 	self writeFile: (self sampleAnswering: 1).
 	class := TonelSource loadFile: path.
-	extension := 'TonelTestSampleExtra.extension.st'.
+	extension := self unusedName: 'TonelTestSampleExtra' suffix: '.extension.st' in: Disk.
 	[ | stream classText extensionText |
 	 stream := Disk textFile: extension.
 	 [stream nextPutAll: 'Extension { #name : ''TonelTestSample'' }', cr,

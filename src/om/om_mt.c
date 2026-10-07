@@ -23,10 +23,25 @@ uint32_t         st_om_table_max = ST_OM_MAX_OBJECTS_CEILING;
  *  The ceiling, read once from the environment.
  *
  *  Called from OM_init rather than from a constructor so that a test can set
- *  it and re-init.  A value below the STARTING size is ignored: a ceiling
- *  under the floor would fail the first allocation of the bootstrap, and the
- *  message would then be about a method rather than about the setting.
+ *  it and re-init.  A value below TABLE_CEILING_FLOOR is ignored: a ceiling
+ *  under what the bootstrap itself needs would fail one of its allocations,
+ *  and the message would then be about a method rather than about the
+ *  setting.
+ *
+ *  The floor used to be the table's STARTING size, four million, and that
+ *  was the wrong number.  A ceiling of one, two or three million was not
+ *  refused, it was silently replaced by the sixty-four million default, so
+ *  the run asked to stop early ran on to sixteen times the size it asked
+ *  for: a runaway under ST_MAX_OBJECTS=1048576 was still allocating after a
+ *  hundred seconds and 2.3 GB, and looked like a hang because nothing ever
+ *  said OutOfMemory (Bugs5 OM-8, found alongside).  A ceiling below the
+ *  starting size is perfectly meaningful -- OM_init starts the table at the
+ *  ceiling instead -- so only a ceiling the bootstrap cannot fit under is
+ *  ignored.  The booted image is about sixteen thousand objects; a quarter
+ *  of a million is the collector's own threshold floor twice over.
  */
+#define TABLE_CEILING_FLOOR (256u * 1024u)
+
 static void
 read_table_ceiling(void)
 {
@@ -36,7 +51,7 @@ read_table_ceiling(void)
     if (text && *text) {
         unsigned long   wanted = strtoul(text, NULL, 10);
 
-        if (wanted >= ST_OM_MAX_OBJECTS && wanted <= UINT32_MAX)
+        if (wanted >= TABLE_CEILING_FLOOR && wanted <= UINT32_MAX)
             st_om_table_max = (uint32_t) wanted;
     }
 }
@@ -48,6 +63,7 @@ uint32_t     st_om_weak_cleared;
 uint32_t     st_om_ephemerons_mourned;
 
 static uint32_t     free_head;          /*  index chain through class_oop  */
+static void         rebuild_free_chain(uint32_t limit);
 
 /*
  *  When to collect.
@@ -207,6 +223,12 @@ static st_atomic_uint   next_hash;
 
 static st_atomic_uint   st_om_epoch;
 static st_atomic_uint   worker_epoch[ST_MAX_WORKERS];
+/*
+ *  Set while a worker is out of the epoch altogether: asleep in the
+ *  scheduler's idle loop or blocked in a native region, holding no pointer
+ *  into the object memory and touching none.  See OM_epoch_quiesce.
+ */
+static st_atomic_int    worker_quiescent[ST_MAX_WORKERS];
 
 typedef struct {
     uint32_t    n;
@@ -312,6 +334,34 @@ magazines_drain(void)
                                     + magazines[i].bytes_delta);
         magazines[i].live_delta  = 0;
         magazines[i].bytes_delta = 0;
+        /*
+         *  Onto the global chain, not merely forgotten.  "The rebuild is
+         *  about to find them" is true only when the collection moves the
+         *  table's limit down -- that is the one case the sweep rebuilds
+         *  the chain from the table.  With a live object at the top the
+         *  limit stays put, the chain is kept as it was, and every index
+         *  sitting in a magazine was FREE, on no chain and in no magazine:
+         *  gone for the life of the run.  Up to a magazine's worth per
+         *  worker per collection, and near a low ceiling, where every
+         *  worker refills from the chain and collections come one after
+         *  another, that is the table draining away entry by entry (Bugs5
+         *  OM-8, found alongside, with OM_rebuild_free_chain's fault).  A
+         *  magazine's entries are already FREE and are on no chain, so
+         *  linking them is all it takes; a rebuild below starts again from
+         *  the table and loses nothing by it.
+         */
+        {
+            uint32_t    j;
+
+            for (j = 0; j < magazines[i].n; ++j) {
+                om_header  *f = OM_table_get(magazines[i].idx[j]);
+
+                if (!f || !(f->flags & ST_FMT_FREE))
+                    continue;
+                f->class_oop = free_head;
+                free_head    = magazines[i].idx[j];
+            }
+        }
         magazines[i].n           = 0;
         /*
          *  Retired-but-not-yet-released objects are simply unreachable
@@ -415,12 +465,32 @@ OM_epoch_step(void)
      */
     if (mag->pending_n[g % EPOCH_BUCKETS] < ADVANCE_SCAN_MIN)
         return;
+    /*
+     *  Read again, sequentially consistent, so that this read and the
+     *  quiescent flags read below are in the one total order that
+     *  OM_epoch_resume's stores are in -- the order its argument rests on.
+     *  Only on the way to scanning, so the every-tick path stays acquire.
+     */
+    if ((unsigned) ST_load_seq(&st_om_epoch) != g)
+        return;
     count = WORKER_count();
     for (i = 0; i < count; ++i) {
         st_worker  *w = WORKER_at(i);
 
         if (!w || ST_load_relaxed(&w->exited))
             continue;       /*  gone, and not coming back to hold anything */
+        /*
+         *  Out of the epoch: asleep or in a native region, holding
+         *  nothing, and bound to publish the current epoch before it
+         *  touches anything again.  Waiting for its publication here is
+         *  what turned reclamation off on every server -- most of the
+         *  default 4 x CPU workers sit idle, never reach a bytecode
+         *  boundary, and the epoch stood still for all of them (Bugs5
+         *  OM-10).  Sequentially consistent, to pair with the stores in
+         *  OM_epoch_resume; see there for why that order is the proof.
+         */
+        if (ST_load_seq(&worker_quiescent[i]))
+            continue;
         if ((unsigned) ST_load_acquire(&worker_epoch[i]) != g)
             return;         /*  someone has not been quiescent yet  */
     }
@@ -428,6 +498,67 @@ OM_epoch_step(void)
         unsigned    expected = g;
 
         (void) ST_cas_strong(&st_om_epoch, &expected, g + 1);
+    }
+}
+
+/*
+ *  Out of the epoch, and back in.
+ *
+ *  The epoch used to advance only when EVERY live worker had published it,
+ *  and a worker publishes from the interpreter loop -- which an idle worker
+ *  is not in.  It sleeps in SCHED_suspend_active's slices, or blocks in a
+ *  database driver behind WORKER_enter_native, and on a server that is most
+ *  of the pool most of the time: one busy worker among thirty-one idle
+ *  ones retired into its buckets, overflowed them, and left everything to
+ *  the stop-the-world collector.  `1 to: 3000000 do: [:i | x := Array
+ *  with: i with: (Array new: 3)]' collected once on one worker and six
+ *  times on two, eight or thirty-two, about 17% slower (Bugs5 OM-10).
+ *
+ *  A worker that is out holds nothing and touches nothing -- the idle loop
+ *  marks only its sleep, not the signal drains between sleeps; a native
+ *  region has made that promise already -- so the advance may pass it by.
+ *
+ *  What makes coming back safe is the order.  The flag is cleared FIRST,
+ *  then the epoch is read and published, all sequentially consistent, and
+ *  only then is the object memory touched.  An advancer that still saw the
+ *  flag set read the epoch -- sequentially consistent too, just before its
+ *  scan -- before this worker did, so this worker comes
+ *  back at that epoch or a later one -- at worst one behind the advance,
+ *  which is the ordinary state of any worker.  Every object it reaches from
+ *  then on is live when it is reached, so it can only be retired at the
+ *  epoch this worker published or later, and freeing it needs two more
+ *  advances, both of which now wait for this worker's publication.
+ *
+ *  Its own buckets may have been left several epochs behind while it was
+ *  out.  Everything in them was retired before it went out, which is at
+ *  least as old as the bucket arithmetic assumes, so releasing them on the
+ *  usual schedule -- one per epoch entered -- is still releasing late,
+ *  never early.
+ */
+void
+OM_epoch_quiesce(void)
+{
+    st_worker  *self = WORKER_self();
+
+    if (!self || !magazine_of())
+        return;
+    ST_store_seq(&worker_quiescent[self->index], 1);
+}
+
+void
+OM_epoch_resume(void)
+{
+    st_worker    *self = WORKER_self();
+    om_magazine  *mag = magazine_of();
+    unsigned      g;
+
+    if (!self || !mag)
+        return;
+    ST_store_seq(&worker_quiescent[self->index], 0);
+    g = (unsigned) ST_load_seq(&st_om_epoch);
+    if ((unsigned) ST_load_relaxed(&worker_epoch[self->index]) != g) {
+        bucket_release(mag, (g + 1) % EPOCH_BUCKETS);
+        ST_store_seq(&worker_epoch[self->index], g);
     }
 }
 
@@ -457,14 +588,24 @@ table_take_free_locked(void)
 int
 OM_init(void)
 {
+    uint32_t    initial;
+
     OM_shutdown();
+    /*
+     *  The ceiling first, because it can now be below the starting size,
+     *  and then the table starts at it: a table bigger than its own ceiling
+     *  is entries the allocator must remember never to hand out, and a
+     *  message that says the table "holds 4194304 of at most 1048576".
+     */
+    read_table_ceiling();
+    initial = ST_OM_MAX_OBJECTS < st_om_table_max
+                ? ST_OM_MAX_OBJECTS : st_om_table_max;
     /*
      *  calloc of this size is a lazy mapping on every platform we target:
      *  the pages arrive as they are first written, so the cost here is
      *  address space rather than memory.
      */
-    st_om_table = (st_atomic_ptr *) calloc(ST_OM_MAX_OBJECTS,
-                                          sizeof *st_om_table);
+    st_om_table = (st_atomic_ptr *) calloc(initial, sizeof *st_om_table);
     if (!st_om_table)
         return -1;
     /*
@@ -472,7 +613,7 @@ OM_init(void)
      *  lazy mapping, and four bytes an object against the forty that
      *  padding the header to a cache line would have cost.
      */
-    st_om_refcounts = (st_atomic_uint *) calloc(ST_OM_MAX_OBJECTS,
+    st_om_refcounts = (st_atomic_uint *) calloc(initial,
                                                sizeof *st_om_refcounts);
     if (!st_om_refcounts) {
         /*
@@ -493,8 +634,7 @@ OM_init(void)
         st_om_table = NULL;
         return -1;
     }
-    st_om_table_size  = ST_OM_MAX_OBJECTS;
-    read_table_ceiling();
+    st_om_table_size  = initial;
     /*
      *  Index 0 is never handed out: object pointer 0 means "invalid", and
      *  index 1 is nil, whose pointer is 2.
@@ -509,6 +649,7 @@ OM_init(void)
     gc_threshold      = GC_THRESHOLD_FLOOR;
     memset(magazines, 0, sizeof magazines);
     memset((void *) worker_epoch, 0, sizeof worker_epoch);
+    memset((void *) worker_quiescent, 0, sizeof worker_quiescent);
     ST_store_seq(&st_om_epoch, 0);
     live_objects      = 0;
     live_bytes        = 0;
@@ -683,13 +824,32 @@ OM_release_table_reserve(void)
  *  Re-arm once the image is comfortably back under the ceiling the reserve
  *  was lifted from.  Called by the collector, which is the only thing that
  *  can make the statement true.
+ *
+ *  "Comfortably under" is two facts, and the test used to read one number
+ *  for both.  It asked whether the table's LIMIT was below half the
+ *  ceiling, but the limit is a high-water mark trimmed only of trailing
+ *  free entries: one live object near the top holds it up however little
+ *  is alive.  The booted image is exactly that -- 37,000 live objects with
+ *  the limit at 255,177 -- so under ST_MAX_OBJECTS=262144 the reserve could
+ *  never be re-armed at all, and the second runaway in such an image went
+ *  through the spent reserve and stopped it instead of being told (Bugs5
+ *  OM-8, found alongside).
+ *
+ *  So: what is ALIVE is under half the ceiling, which is what makes the
+ *  next runaway a long way off; and nothing lives above the ceiling, which
+ *  is what makes the whole reserve fresh again -- every index past the
+ *  ceiling is then above the limit, unreachable through the free chain,
+ *  and table_alloc_locked refuses it until the reserve is released.  An
+ *  object that the signal allocated and that survived up there keeps the
+ *  reserve spent, which is the honest answer: part of it IS spent.
  */
 void
 OM_rearm_table_reserve(void)
 {
     if (!reserve_released)
         return;
-    if ((uint32_t) ST_load_relaxed(&st_om_table_limit) < reserve_ceiling / 2u) {
+    if (live_objects < reserve_ceiling / 2u
+     && (uint32_t) ST_load_relaxed(&st_om_table_limit) <= reserve_ceiling) {
         st_om_table_max  = reserve_ceiling;
         reserve_released = 0;
     }
@@ -755,6 +915,22 @@ table_alloc_locked(void)
             return 0;
         return next;
     }
+}
+
+/*
+ *  Whether this thread's last refused allocation was refused for want of a
+ *  table entry -- the ceiling, not a bad argument and not malloc.  Read and
+ *  cleared by OM_take_table_refused; see there.
+ */
+static _Thread_local int    table_refused;
+
+int
+OM_take_table_refused(void)
+{
+    int was = table_refused;
+
+    table_refused = 0;
+    return was;
 }
 
 static st_oop
@@ -917,6 +1093,7 @@ instantiate(st_oop class_pointer, uint32_t size, uint32_t format,
             ST_mutex_unlock(&table_lock);
             if (!OM_grow_table_to(st_om_table_size + 1u)) {
                 free(head);
+                table_refused = 1;
                 return ST_OOP_INVALID;
             }
             ST_mutex_lock(&table_lock);
@@ -933,6 +1110,7 @@ instantiate(st_oop class_pointer, uint32_t size, uint32_t format,
             if (index == 0) {
                 ST_mutex_unlock(&table_lock);
                 free(head);
+                table_refused = 1;
                 return ST_OOP_INVALID;
             }
         }
@@ -1934,6 +2112,43 @@ static uint32_t         mark_top;
 static uint32_t         mark_capacity;
 
 /*
+ *  Which objects the walk has reached, one byte per table index, apart
+ *  from the counts.
+ *
+ *  The walk used to take the count itself as the mark: zero every count,
+ *  and an object whose count goes from 0 to 1 is reached for the first
+ *  time and has its fields walked.  That holds only while the collector
+ *  is the one thread changing counts, and it is not.  A safepoint parks
+ *  the WORKERS; the network's I/O thread and the delay timer are not
+ *  workers, and both post signals through SCHED_asynchronous_signal,
+ *  which counts the Semaphore it queues -- and the timer thread releases
+ *  its own hold on its Semaphore after that.  An increment that lands
+ *  after the zeroing and before the walk reaches the Semaphore makes the
+ *  walk's own visit see 1, not 0: the Semaphore is counted but never
+ *  walked, and the one thing only it refers to -- the Process waiting on
+ *  it, which nothing else in the image names -- is left at zero and swept
+ *  while it waits.  The Semaphore then names a freed entry as its first
+ *  link, and the next allocation is handed that entry.
+ *
+ *  test_parallel_net hung about one run in ten on it, more often with a
+ *  bigger heap (a longer walk is a wider window): a connection's echo
+ *  process, parked on its socket's read Semaphore with the socket armed,
+ *  was swept by the collection the echo processes force, the client
+ *  waited in recv for an echo that nobody was left to send, and the
+ *  drivers polled for a count that never came.  It looked like a lost
+ *  wakeup in the scheduler -- a process the scheduler had lost -- and
+ *  was read as one in Bugs5; the scheduler had not lost it, the
+ *  collector had freed it (Bugs5 SCHED-lost-wakeup).
+ *
+ *  So the mark is a byte of its own, which nothing but the walk writes,
+ *  and every object is walked exactly once however its count moves
+ *  meanwhile.  The counts are still rebuilt by the walk as before; a
+ *  foreign increment leaves one a count high, which the next collection
+ *  rebuilds, the trade OM-13 already made for the timer.
+ */
+static uint8_t         *marked;
+
+/*
  *  Ephemerons met during the walk and not yet decided.  Sized with the mark
  *  stack because it cannot hold more entries than there are objects.
  */
@@ -1949,11 +2164,26 @@ OM_set_root_provider(om_root_provider provider)
 static void
 mark_visit(st_oop p)
 {
+    uint32_t    index;
+
     if (!OM_is_object(p))
         return;
-    if (ST_fetch_add_relaxed(OM_refcount_of(p), 1) == 0
-     && mark_top < mark_capacity)
+    ST_fetch_add_relaxed(OM_refcount_of(p), 1);
+    index = (uint32_t) (p >> 1);
+    if (index >= mark_capacity || marked[index])
+        return;
+    marked[index] = 1;
+    if (mark_top < mark_capacity)
         mark_stack[mark_top++] = p;
+}
+
+/*  Reached by this collection's walk -- not "has a count", see marked.  */
+static int
+was_marked(st_oop p)
+{
+    uint32_t    index = (uint32_t) (p >> 1);
+
+    return index < mark_capacity && marked[index];
 }
 
 /*
@@ -2242,11 +2472,14 @@ collect_at_safepoint(void *unused)
     mark_capacity = (uint32_t) ST_load_relaxed(&st_om_table_limit) + 1;
     mark_stack = (st_oop *) malloc((size_t) mark_capacity * sizeof *mark_stack);
     pending    = (st_oop *) malloc((size_t) mark_capacity * sizeof *pending);
-    if (!mark_stack || !pending) {
+    marked     = (uint8_t *) calloc(mark_capacity, sizeof *marked);
+    if (!mark_stack || !pending || !marked) {
         free(mark_stack);
         free(pending);
+        free(marked);
         mark_stack = NULL;
         pending    = NULL;
+        marked     = NULL;
         return 0;
     }
     mark_top    = 0;
@@ -2355,6 +2588,16 @@ collect_at_safepoint(void *unused)
         if (ST_load_relaxed(&st_om_refcounts[index]) != 0)
             continue;
         /*
+         *  And not reached, whatever its count says.  The walk reached it
+         *  and a thread the safepoint does not park -- the timer letting go
+         *  of its Semaphore -- took the count back to zero: it is still
+         *  referred to, and freeing it is the fault the mark byte exists to
+         *  prevent, from the other side.  Kept: something still refers to
+         *  it, and the next collection rebuilds its count.
+         */
+        if (was_marked(p))
+            continue;
+        /*
          *  Unreachable.  Release it directly rather than through
          *  OM_deallocate: the counts are already exact, so decrementing its
          *  fields again would corrupt them.
@@ -2398,7 +2641,6 @@ collect_at_safepoint(void *unused)
      */
     {
         uint32_t    limit = (uint32_t) ST_load_relaxed(&st_om_table_limit);
-        uint32_t    i;
 
         walked = limit;
 
@@ -2418,15 +2660,7 @@ collect_at_safepoint(void *unused)
              *  exist, so it is rebuilt rather than trimmed.  Descending,
              *  so the head ends up lowest and allocation stays compact.
              */
-            free_head = FREE_END;
-            for (i = limit; i-- > 1; ) {
-                om_header  *head = OM_table_get(i);
-
-                if (head && (head->flags & ST_FMT_FREE)) {
-                    head->class_oop = free_head;
-                    free_head = i;
-                }
-            }
+            rebuild_free_chain(limit);
         }
 
         gc_threshold = (limit > st_om_table_size / GC_THRESHOLD_GROWTH)
@@ -2444,8 +2678,10 @@ collect_at_safepoint(void *unused)
 
     free(mark_stack);
     free(pending);
+    free(marked);
     mark_stack = NULL;
     pending    = NULL;
+    marked     = NULL;
     st_om_reclaimed += reclaimed;
     if (getenv("ST_GC_LOG"))
         fprintf(stderr, "  gc #%u reclaimed %u; %u live objects\n",
@@ -2485,6 +2721,93 @@ OM_collect(void)
      */
     OM_mourn_wake();
     return reclaimed;
+}
+
+/*
+ *  Thread every FREE entry below `limit' onto the chain, from scratch.
+ *  Descending, so the head ends up lowest and allocation stays compact.
+ *  Only where nothing else is touching the table: inside a collection, or
+ *  before any worker exists.
+ */
+static void
+rebuild_free_chain(uint32_t limit)
+{
+    uint32_t    i;
+
+    free_head = FREE_END;
+    for (i = limit; i-- > 1; ) {
+        om_header  *head = OM_table_get(i);
+
+        if (head && (head->flags & ST_FMT_FREE)) {
+            head->class_oop = free_head;
+            free_head = i;
+        }
+    }
+}
+
+/*
+ *  The loader's holes, onto the chain.
+ *
+ *  An image file has a hole for every entry that was free when it was
+ *  written, and the loader keeps a FREE header in each so the index stays
+ *  reserved -- with its class field zero, which is FREE_END, so on no chain
+ *  at all.  The collection at the end of the load rebuilds the chain only
+ *  when it can lower the limit, and a live object at the top of the table
+ *  stops that.  So every hole a loaded image came with was unusable for
+ *  the life of the run: the shipped image has 217,000 of them under a
+ *  limit of 255,000, and under ST_MAX_OBJECTS=262144 a runaway found the
+ *  chain empty with three quarters of the table free and collected for
+ *  ever, reclaiming nothing (Bugs5 OM-8, found alongside).  At the default
+ *  ceiling the table simply grew past them, which is why it was never seen.
+ */
+void
+OM_rebuild_free_chain(void)
+{
+    rebuild_free_chain((uint32_t) ST_load_relaxed(&st_om_table_limit));
+}
+
+/*
+ *  One safepoint for a collection and whatever has to see its result
+ *  undisturbed.
+ *
+ *  The image writer collected through OM_collect and then wrote, and
+ *  OM_collect's safepoint ended in between: the workers SCHED_freeze had
+ *  idled went on draining timer and socket signals, and every drain is
+ *  SCHED_synchronous_signal moving a process from a Semaphore to a ready
+ *  list.  A timer that fired half way through the write could save the
+ *  Semaphore from before the move and the Process from after it (Bugs5
+ *  OM-14).  A freeze is not a safepoint and cannot be made one -- the
+ *  writer needs a safepoint of its own for the collection, and two would
+ *  be a requester waiting for itself -- so the write goes INSIDE the
+ *  collection's.  Nothing runs Smalltalk while an image is being written
+ *  anyway; parked is merely idle made exact.
+ */
+typedef struct {
+    uint32_t  (*fn)(void *user);
+    void       *user;
+} om_collect_then_args;
+
+static uint32_t
+collect_then_at_safepoint(void *user)
+{
+    om_collect_then_args  *a = (om_collect_then_args *) user;
+
+    (void) collect_at_safepoint(NULL);
+    return a->fn(a->user);
+}
+
+uint32_t
+OM_collect_then(uint32_t (*fn)(void *user), void *user)
+{
+    om_collect_then_args    a;
+    uint32_t                result;
+
+    a.fn   = fn;
+    a.user = user;
+    result = WORKER_at_safepoint(collect_then_at_safepoint, &a);
+    /*  Outside, for the reason OM_collect gives.  */
+    OM_mourn_wake();
+    return result;
 }
 
 /*

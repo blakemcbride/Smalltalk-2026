@@ -14,7 +14,8 @@
 \ctp{make bench} & the parallel scaling benchmark\\
 \ctp{make demo-image} & bootstrap the demo application's server image (Chapter~\ref{ch:serving})\\
 \ctp{make font} & regenerate the built-in face (needs Pillow and a font)\\
-\ctp{make clean} & remove build artifacts\\
+\ctp{make clean} & remove build artifacts, \ct{demo.im}, and the files the
+  suites leave; a snapshot saved from the desktop stays\\
 \ctp{make help} & targets and variables\\
 \bottomrule
 \end{tabular}
@@ -27,8 +28,14 @@
 \ctp{OM=mt} & 64-bit threaded object memory --- the system, and the default\\
 \ctp{OM=bb} & 16-bit Blue Book memory --- the Xerox trace harness. Cannot
   bootstrap an image\\
-\ctp{TSAN=1} & ThreadSanitizer build\\
-\ctp{ASAN=1} & Address and undefined-behaviour sanitizers\\
+\ctp{HEADLESS=1} & build without SDL3; the display is a stub. The binary is
+  \ct{build/mt-headless/st2026}, and \ct{./st2026} becomes it only on a tree
+  with no windowed build\\
+\ctp{NODB=1} & build without ODBC\\
+\ctp{NOTLS=1} & build without OpenSSL\\
+\ctp{TSAN=1} & ThreadSanitizer build, left in \ct{build/mt-tsan}\\
+\ctp{ASAN=1} & Address and undefined-behaviour sanitizers, left in
+  \ct{build/mt-asan}\\
 \ctp{OPT=-O0} & override optimisation flags\\
 \ctp{FONT=} \ctp{SIZE=} \ctp{LEAD=} & inputs to \ctp{make font}\\
 \bottomrule

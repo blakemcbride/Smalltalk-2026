@@ -236,3 +236,27 @@ SortedCollection >> sorted: aBlock [
 	 whose sortBlock IS that block."
 	^(SortedCollection sortBlock: aBlock) addAll: self; yourself
 ]
+
+{ #category : '*Collections-Protocol' }
+SortedCollection >> with: aCollection collect: aBlock [
+	"Element by element, in step, answered in an OrderedCollection --
+	 which is what collect: answers here, and for the same reason.
+
+	 The inherited method gathers the answers and hands them to
+	 speciesFilledWith:, and my species is SortedCollection, so the
+	 answers were SORTED: `#(1 2 3) asSortedCollection with: #(30 20 10)
+	 collect: [:a :b | b]' answered 10 20 30, the pairing with my
+	 elements lost, and answers that cannot be compared with <= -- nil,
+	 say -- raised a doesNotUnderstand from inside the sort (Bugs5
+	 KERN-9).  What a block computes from my elements is not ordered by
+	 my sortBlock; 1983's SortedCollection>>collect: says exactly this and
+	 answers an OrderedCollection, and this answers the same thing in the
+	 same order."
+	| answers |
+	aCollection size = self size
+		ifFalse: [^self error: 'collections are not the same size'].
+	answers := OrderedCollection new: self size.
+	1 to: self size do: [:i |
+		answers addLast: (aBlock value: (self at: i) value: (aCollection at: i))].
+	^answers
+]

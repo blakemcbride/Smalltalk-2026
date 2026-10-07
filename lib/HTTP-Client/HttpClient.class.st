@@ -291,8 +291,8 @@ HttpClient >> request: aMethod url: aUrlString body: aStringOrNil contentType: a
 			' -- build with OpenSSL, or put a reverse proxy in front'].
 	self checkRequestLine: aMethod target: url path.
 	socket := connectTimeout isNil
-		ifTrue: [Socket connectTo: url host port: url port]
-		ifFalse: [Socket connectTo: url host port: url port timeout: connectTimeout].
+		ifTrue: [Socket connectTo: url connectHost port: url port]
+		ifFalse: [Socket connectTo: url connectHost port: url port timeout: connectTimeout].
 	total := self totalTimeout.
 	^[url isSecure ifTrue: [socket startTls: url host timeout: readTimeout].
 	  stream := SocketStream on: socket.

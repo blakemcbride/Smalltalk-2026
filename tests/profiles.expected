@@ -349,8 +349,8 @@
 # monotonic clock, and Ollama's toHtml: escapes the reply.
 #
 # profile               run  passed
-st2026                  560  560
-pharo-announcements     591  591
-pharo-time              1181 1181
-pharo-weak              1092 1091
-pharo-collections       1017 1017
+st2026                  572  572
+pharo-announcements     603  603
+pharo-time              1193 1193
+pharo-weak              1104 1103
+pharo-collections       1029 1029

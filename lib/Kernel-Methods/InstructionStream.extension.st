@@ -28,9 +28,11 @@ Six entries appended, for the six opcodes this system added:
     143 pushClosureCopy     4   opcode, counts, and a two-byte jump
 
 Only scanFor: is corrected here.  InstructionStream>>interpretNextInstruction-
-For: has the same 1983 horizon and would need the whole decompiler client
-protocol taught about closures, which is a different and much larger job;
-nothing reachable from the interface runs it today.
+For: has the same 1983 horizon, and is left with it: the Decompiler, which
+needs the closure instructions, decodes them itself (lib/Compiler-Fixes/
+Decompiler.extension.st), and the dispatch's other clients -- the debugger's
+simulation, the instruction printer -- would have to be taught a protocol
+they do not implement.
 "
 Extension { #name : 'InstructionStream' }
 

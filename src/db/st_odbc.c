@@ -1440,6 +1440,68 @@ value_room(int statement, size_t bytes)
  *  must still be paid for out of the buffer.  That is the classic off-by-one
  *  here, and it shows up as every long value being one character short.
  */
+/*
+ *  The rest of a value whose driver answered SQL_NO_TOTAL; see get_variable
+ *  (Bugs5 FILES-11).  The first `capacity' bytes are in the statement's
+ *  buffer already, less the terminator a character part ends with, and `r'
+ *  is what the call that read them answered.
+ *
+ *  Each further part goes in just past the bytes held, over the previous
+ *  part's terminator.  A part ends the value when the driver says how long
+ *  it was and that fits the room it was given -- the last part of an
+ *  unmeasured value is measured -- or when it answers SQL_NO_DATA, which a
+ *  value that ended exactly on a part boundary is entitled to do.  A part
+ *  answered SQL_SUCCESS with no length is taken as filling its room, less
+ *  the terminator for character data, which is the most a driver that
+ *  will not say can mean by it.
+ */
+static int
+get_unmeasured(int statement, SQLHSTMT stmt, int column, SQLSMALLINT c_type,
+               SQLRETURN r, size_t capacity, const unsigned char **text,
+               size_t *length)
+{
+    const size_t    terminator = (c_type == SQL_C_CHAR) ? 1 : 0;
+    size_t          have = capacity - terminator;
+    unsigned char  *buffer = NULL;
+    SQLLEN          indicator = SQL_NO_TOTAL;
+
+    while (r == SQL_SUCCESS_WITH_INFO) {
+        size_t  room;
+
+        if (capacity > ((size_t) -1) / 2) {
+            set_error("out of memory reading a column");
+            return -1;
+        }
+        capacity *= 2;
+        buffer = value_room(statement, capacity);
+        if (!buffer)
+            return -1;
+        room = capacity - have;
+        r = blocking_get_data(stmt, (SQLUSMALLINT) column, c_type,
+                              buffer + have, (SQLLEN) room, &indicator);
+        if (r == SQL_NO_DATA)
+            break;
+        if (!SQL_SUCCEEDED(r)) {
+            record_diagnostic(SQL_HANDLE_STMT, stmt, "SQLGetData(part)");
+            return -1;
+        }
+        if (indicator == SQL_NO_TOTAL || indicator == SQL_NULL_DATA
+         || indicator < 0 || (size_t) indicator + terminator > room) {
+            have += room - terminator;          /*  it filled its room  */
+            continue;
+        }
+        have += (size_t) indicator;             /*  the last part  */
+        break;
+    }
+    if (!buffer)
+        buffer = value_room(statement, capacity);   /*  the first part  */
+    if (!buffer)
+        return -1;
+    *text   = buffer;
+    *length = have;
+    return 0;
+}
+
 static int
 get_variable(int statement, SQLHSTMT stmt, int column, SQLSMALLINT c_type,
              const unsigned char **text, size_t *length)
@@ -1477,15 +1539,22 @@ get_variable(int statement, SQLHSTMT stmt, int column, SQLSMALLINT c_type,
         return 0;
     }
     /*
-     *  The driver will not say how long the value is.  What fit is what
-     *  there is to have: growing blindly would loop for as long as a driver
-     *  is willing to keep refusing to measure.
+     *  The driver will not say how long the value is, so it is read in
+     *  parts, the buffer doubling, until a part fits (Bugs5 FILES-11).
+     *
+     *  This answered the first buffer as the whole value -- 4,095 bytes of
+     *  a varchar(max), text or image column on SQL Server and FreeTDS,
+     *  which say SQL_NO_TOTAL for exactly those, with nothing to show the
+     *  rest had been dropped.  The reason given was that growing would
+     *  loop for as long as a driver kept refusing to measure; but every
+     *  SQLGetData that answers a part consumes it, so the loop ends when
+     *  the value does, and the doubling keeps the copying linear.  What
+     *  can stop it early is the memory to hold the value, and that fails
+     *  the read with `out of memory' rather than answering part of it.
      */
-    if (indicator == SQL_NO_TOTAL) {
-        *text   = buffer;
-        *length = capacity - terminator;
-        return 0;
-    }
+    if (indicator == SQL_NO_TOTAL)
+        return get_unmeasured(statement, stmt, column, c_type, r, capacity,
+                              text, length);
 
     total = (size_t) indicator;
     if (total + terminator <= capacity) {           /*  it all fit  */

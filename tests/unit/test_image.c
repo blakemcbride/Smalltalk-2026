@@ -580,8 +580,15 @@
  *  five tests (NET-4 to NET-8), four for Lehmer's gcd: and the stream
  *  (KERN-5, KERN-6, KERN-8), and two in PosixFileDirectory (FILES-7,
  *  FILES-8).
+ *
+ *  3171 -> 3219 with the Bugs5 low findings: eighteen in the HTTP client,
+ *  sockets, REST server and LLM with their twelve tests (NET-9 to NET-15),
+ *  seventeen teaching the Decompiler the C compiler's code and two for the
+ *  image prefix (COMP-7, GUI-3), eight in the numbers, dates and streams
+ *  (KERN-9 to KERN-15), two for the Tonel writer's patterns (FILES-12),
+ *  and TestCase>>unusedName:suffix:in: for per-run fixtures (DOCS-6).
  */
-#define LIB_METHODS             3171
+#define LIB_METHODS             3219
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -2735,8 +2742,11 @@ test_sunit(void)
      *
      *  555 -> 560 with the five Bugs5 NET-4 to NET-8 tests in HttpClientTest,
      *  RestServerTest and OllamaTest.
+     *
+     *  560 -> 572 with the twelve Bugs5 NET-9 to NET-15 tests in
+     *  HttpClientTest, SocketTest, RestServerTest and OllamaTest.
      */
-    check_integer("TestCase allTests tests size", 560);
+    check_integer("TestCase allTests tests size", 572);
 
     /*
      *  And the three buckets, from the outside as well as from within
@@ -2880,9 +2890,10 @@ test_browsing(void)
      *  2722786 with Bugs5 FILES-6, in DbConnection and DbCursor, and
      *  2722786 -> 2739039 with Bugs5 COMP-2, FILES-2, NET-1, NET-2 and
      *  NET-3, and INTERP-8, INTERP-10 and DOCS-4's checks.  2739039 ->
-     *  2792225 with the Bugs5 medium findings.
+     *  2792225 with the Bugs5 medium findings, and 2792225 -> 2853878
+     *  with the low ones.
      */
-    check_integer("(SourceFiles at: 1) contents size", 2792225);
+    check_integer("(SourceFiles at: 1) contents size", 2853878);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -4602,14 +4613,16 @@ test_bugs2(void)
      *  Bugs5 KERN-4: an exponent is bounded before the power is computed.
      *  `'1e100000' asNumber' took 55 seconds and `'1e999999999'' never
      *  finished; far too large is the error, far too small is zero, and
-     *  the edges of the Float range are still exact.
+     *  the edges of the Float range are still exact.  The smallest one
+     *  prints as 5.0e-324 since Bugs5 KERN-11 made a subnormal's printed
+     *  form the shortest that reads back.
      */
     check_string("(#('1e999999999' '1e309' '1e-99999999' '-1e-400' "
                  "'1.7976931348623157e308' '4.9e-324') collect: [:s |"
                  " [s asNumber printString] on: Error do: [:e | 'big']])"
                  " printString",
                  "('big' 'big' '0.0' '-0.0' '1.7976931348623157e308' "
-                 "'4.94065645841247e-324' )");
+                 "'5.0e-324' )");
     check_boolean("(ReadStream on: #(1 2 3)) skip: 10; atEnd", 1);
     check_boolean("| s | s := ReadStream on: #(1 2 3). s skip: -10. "
                   "^s position = 0", 1);
@@ -9348,6 +9361,369 @@ done:
     (void) system(expression);
 }
 
+/*
+ *  Bugs5 low findings, om.
+ *
+ *  Most of the area's fixes need a worker pool, a class of their own or a
+ *  second run of an image, and are checked in test_serve_faults; this is
+ *  the one that is a C function with a C contract.
+ */
+static void
+test_bugs5_low_om(void)
+{
+    /*
+     *  INTERP-11: a send's trace line reads no more than ST_TRACE_MAX_ARGS
+     *  arguments.  The interpreter gathers them into an array that size and
+     *  passed the send's own count, so a nine-argument send under
+     *  ST_EVAL_TRACE=s read a ninth slot past the end of it.  Given nine
+     *  here, the ninth a marker no line should print: the line must stop
+     *  after eight and say that more were elided.
+     */
+    {
+        st_oop  args[ST_TRACE_MAX_ARGS + 1];
+        FILE   *stream = tmpfile();
+        char    line[2048];
+        size_t  n = 0;
+        unsigned i;
+
+        for (i = 0; i < ST_TRACE_MAX_ARGS; ++i)
+            args[i] = OM_int_oop((st_int) (i + 1));
+        args[ST_TRACE_MAX_ARGS] = OM_int_oop(424242);
+        ++st_test_checks;
+        if (!stream) {
+            ++st_test_failures;
+            printf("  FAIL INTERP-11: no temporary file for the trace\n");
+        } else {
+            ST_trace_set(ST_TRACE_SENDS, stream);
+            ST_trace_send(ST_NIL, ST_NIL,
+                          ST_TRACE_MAX_ARGS + 1, args);
+            ST_trace_set(ST_TRACE_OFF, NULL);
+            rewind(stream);
+            n = fread(line, 1, sizeof line - 1, stream);
+            line[n] = '\0';
+            fclose(stream);
+            if (strstr(line, "424242") || !strstr(line, " 8 ...")) {
+                ++st_test_failures;
+                printf("  FAIL INTERP-11: a nine-argument send traced as"
+                       " '%s'; want eight arguments and ' ...'\n", line);
+            }
+        }
+    }
+}
+
+static void
+test_bugs5_low_sched(void)
+{
+}
+
+static void
+test_bugs5_low_kern(void)
+{
+    int     saved = test_dialect;
+    char    expression[2048];
+    char    digits[1301];
+
+    test_dialect = ST_DIALECT_CLOSURES;
+
+    /*
+     *  KERN-9: with:collect: on a SortedCollection sorted the answers, so
+     *  the pairing with the receiver's elements was lost, and answers that
+     *  cannot be compared raised from inside the sort.
+     */
+    check_string("^(#(1 2 3) asSortedCollection with: #(30 20 10)"
+                 " collect: [:a :b | b]) asArray printString",
+                 "(30 20 10 )");
+    check_string("^(#(1 2 3) asSortedCollection with: #(4 5 6)"
+                 " collect: [:a :b | nil]) class name",
+                 "OrderedCollection");
+
+    /*
+     *  KERN-10: an e with no exponent after it was taken as one, and read
+     *  as e0: '12e' was 12.0, and the stream was left past the e.
+     */
+    check_string("^'12e' asNumber printString", "12");
+    check_string("^'1e+5' asNumber printString", "1");
+    check_string("^'1.5e' asNumber printString", "1.5");
+    check_string("| s | s := ReadStream on: '5east'. Number readFrom: s."
+                 " ^s upToEnd", "east");
+    check_string("^'25e-2' asNumber printString", "0.25");
+
+    /*
+     *  KERN-11: a subnormal printed fifteen digits where far fewer read
+     *  back -- the smallest double was 4.94065645841247e-324.
+     */
+    check_string("^5.0e-324 printString", "5.0e-324");
+    check_string("^1.0e-320 printString", "1.0e-320");
+    check_boolean("^(Number readFrom: 1.0e-320 printString) = 1.0e-320", 1);
+
+    /*
+     *  KERN-12: floorLog: was 0 for every positive receiver under one,
+     *  and for zero and negatives.
+     */
+    check_integer("^0.001 floorLog: 10", -3);
+    check_integer("^(1/1000) floorLog: 10", -3);
+    check_integer("^(1/1001) floorLog: 10", -4);
+    check_integer("^1.0e-300 floorLog: 10", -300);
+    check_integer("^5.0e-324 floorLog: 2", -1074);
+    check_integer("^0.5 floorLog: 2", -1);
+    check_boolean("^[0 floorLog: 10. false] on: Error do: [:e | true]", 1);
+    check_boolean("^[-0.5 floorLog: 10. false] on: Error do: [:e | true]", 1);
+
+    /*
+     *  KERN-13: a Fraction past the double range went through asFloat
+     *  to inf or 0, and so did a big Integer raised to a fraction.
+     */
+    check_string("^((10 raisedTo: 400) / 3) sqrt printString",
+                 "5.773502691896257e199");
+    check_string("^(1/(10 raisedTo: 400)) ln printString",
+                 "-921.0340371976182");
+    check_string("^((10 raisedTo: 400) / 3) log printString",
+                 "399.52287874528025");
+    check_string("^((2 raisedTo: 2000) raisedTo: 1/2) printString",
+                 "1.0715086071862673e301");
+    check_string("^((1/(10 raisedTo: 400)) raisedTo: 0.5) printString",
+                 "1.0e-200");
+
+    /*
+     *  KERN-14: nextLine and lines knew LF and CR LF and not a bare CR,
+     *  which is what WriteStream>>cr writes.
+     */
+    check_integer("^(ReadStream on: 'line1', (String with: Character cr),"
+                  " 'line2') nextLine size", 5);
+    check_string("| s | s := ReadStream on: 'a', (String with: Character cr"
+                 " with: Character lf), 'b', (String with: Character cr), 'c'."
+                 " ^s nextLine, s nextLine, s nextLine", "abc");
+    check_string("^('a', (String with: Character cr), 'b', (String with:"
+                 " Character lf), 'c', (String with: Character lf)) lines"
+                 " printString", "('a' 'b' 'c' )");
+
+    /*
+     *  KERN-15: a year under 100 was taken as 19xx in newDay:month:year:,
+     *  so a Date before AD 100 could not be made or stored.
+     */
+    check_string("^(Date newDay: 1 month: #January year: -5) printString",
+                 "1 January -5");
+    check_boolean("| d | d := Date fromDays: -700000."
+                  " ^(Compiler evaluate: d storeString) = d", 1);
+    check_boolean("| d | d := Date newDay: 3 month: #March year: 50."
+                  " ^(Compiler evaluate: d storeString) = d", 1);
+    check_string("^(Date readFromString: '19 June -16') printString",
+                 "19 June -16");
+    check_string("^(Date readFromString: '5-apr-82') printString",
+                 "5 April 1982");
+
+    /*
+     *  KERN-6-alongside: an integer literal of 1,234 digits or more was
+     *  built in a fixed 512-byte buffer, and when it did not fit the
+     *  compiler took the builder's nil as the literal's value.
+     */
+    memset(digits, '1', 1300);
+    digits[1300] = '\0';
+    snprintf(expression, sizeof expression,
+             "^%s = ((10 raisedTo: 1300) - 1 // 9)", digits);
+    check_boolean(expression, 1);
+
+    test_dialect = saved;
+}
+
+static void
+test_bugs5_low_comp(void)
+{
+    char        dir[] = "/tmp/st2026-bugs5-comp-XXXXXX";
+    char        path[512];
+    char        command[2048];
+    FILE       *f;
+
+    /*
+     *  GUI-3.  The save prompt is given a file name and wants a prefix;
+     *  typing zz.im wrote zz.im.im, because the suffix came off only after
+     *  a name had been refused.  getImagePrefix passes every answer
+     *  through this.
+     */
+    check_string("Smalltalk imagePrefixFrom: 'zz.im'", "zz");
+    check_string("Smalltalk imagePrefixFrom: 'zz.IMAGE'", "zz");
+    check_string("Smalltalk imagePrefixFrom: 'zz'", "zz");
+    check_string("Smalltalk imagePrefixFrom: '.im'", ".im");
+
+    /*
+     *  COMP-7.  Two methods 1983's Decompiler could not read, decompiled
+     *  to their text: a conditional whose arms both return (the dead jump
+     *  and pop after it), and a closure.  test_serve_faults decompiles the
+     *  whole image.
+     */
+    check_string("(Object decompile: #isKindOf:) decompileString",
+                 "isKindOf: t1 \r\tself class == t1\r\t\tifTrue: [^true]"
+                 "\r\t\tifFalse: [^self class inheritsFrom: t1]");
+    check_string("(Collection decompile: #select:thenDo:) decompileString",
+                 "select: t1 thenDo: t2 \r\tself do: [:t3 | (t1 value: t3)"
+                 "\r\t\t\tifTrue: [t2 value: t3]]");
+
+    if (!mkdtemp(dir)) {
+        ++st_test_checks;
+        ++st_test_failures;
+        printf("  FAIL cannot make a scratch directory for the Bugs5 comp"
+               " checks\n");
+        return;
+    }
+
+    /*
+     *  COMP-11.  A negative pool size was wrapped by strtoull into a huge
+     *  one, clamped, and served; it is not a count.
+     */
+    snprintf(command, sizeof command,
+             "\"$ST2026\" -serve %s/none.im -workers -3", dir);
+    ++st_test_checks;
+    if (!bugs5_sys_output_has(dir, command, "-workers takes a number")) {
+        ++st_test_failures;
+        printf("  FAIL -workers -3 should be refused as not a number\n");
+    }
+
+    /*
+     *  COMP-9.  A profile from anywhere but the repository root: the
+     *  manifest bluebook names was found, and then none of the files it
+     *  lists.  The binary's path is made absolute before the cd.
+     */
+    snprintf(command, sizeof command,
+             "R=$PWD; case \"$ST2026\" in /*) B=$ST2026;; *) B=$R/$ST2026;;"
+             " esac; cd %s && \"$B\" -bootstrap -profile"
+             " \"$R/profiles/bluebook.profile\" -eval '3 + 4'", dir);
+    ++st_test_checks;
+    if (!bugs5_sys_output_has(dir, command, "\n7\n")) {
+        ++st_test_failures;
+        printf("  FAIL a profile should bootstrap from another directory\n");
+    }
+
+    /*
+     *  COMP-10.  A failing doctest reported its method's first line,
+     *  because the readers turn line ends into CR and only LF was
+     *  counted.  The example is on line 5.
+     */
+    snprintf(path, sizeof path, "%s/dt.st", dir);
+    f = fopen(path, "w");
+    if (f) {
+        fputs("!Object methodsFor: 'bugs5'!\nzzBugs5Line\n\t\"first\"\n"
+              "\t\"second\"\n\t\"(3 + 4) >>> 8\"\n\t^ 1! !\n", f);
+        fclose(f);
+    }
+    snprintf(command, sizeof command,
+             "\"$ST2026\" -bootstrap -profile " PROFILE " -doctests %s",
+             path);
+    ++st_test_checks;
+    if (!bugs5_sys_output_has(dir, command, "dt.st:5,")) {
+        ++st_test_failures;
+        printf("  FAIL a failing doctest should report its own line\n");
+    }
+
+#ifdef ST_HAVE_SDL3
+    /*
+     *  GUI-4.  The system's clipboard is a C string: `x', NUL, `y' went
+     *  as `x', and the editor's paste took the stub for something copied
+     *  elsewhere.  Refused now, and the clipboard emptied so nothing older
+     *  pastes either.  It needs a window, so the image is run with the
+     *  dummy video driver and waits for the window before it asks.
+     */
+    snprintf(command, sizeof command,
+             "\"$ST2026\" -bootstrap -profile " PROFILE " -startup"
+             " \"Display beDisplay. [Clipboard isAvailable] whileFalse:"
+             " [(Delay forMilliseconds: 10) wait]. Clipboard text: 'old'."
+             " (Clipboard text: 'x', (String with: (Character value: 0)),"
+             " 'y') printNl. Clipboard text printNl. Smalltalk quit\""
+             " -o %s/clip.im >/dev/null 2>&1 && SDL_VIDEODRIVER=dummy"
+             " timeout 60 \"$ST2026\" -run %s/clip.im 50000000", dir, dir);
+    ++st_test_checks;
+    if (!bugs5_sys_output_has(dir, command, "false\nnil\n")) {
+        ++st_test_failures;
+        printf("  FAIL text holding a NUL should be refused by the"
+               " clipboard, and leave it empty\n");
+    }
+#endif
+
+    snprintf(command, sizeof command, "rm -rf %s", dir);
+    (void) system(command);
+}
+
+static void
+test_bugs5_low_net(void)
+{
+}
+
+static void
+test_bugs5_low_files(void)
+{
+    /*
+     *  FILES-12, PasswordHash.  A count with more digits than
+     *  maxIterations is refused before `asNumber' reads it: reading
+     *  ten thousand digits is quadratic, and every one of them was read
+     *  only to be told no by verify:.  The real format still parses.
+     */
+    check_boolean("(PasswordHash partsOf: 'pbkdf2$000000001$XXxhRHyyeLvk3Af"
+                  "mOhTYhA$ZX/GcXFZJaj94VBbxu3zTVTwdVy7CxfxXfK/irpetUI')"
+                  " isNil", 1);
+    check_boolean("(PasswordHash partsOf: 'pbkdf2$600000$XXxhRHyyeLvk3AfmOh"
+                  "TYhA$ZX/GcXFZJaj94VBbxu3zTVTwdVy7CxfxXfK/irpetUI')"
+                  " first = 600000", 1);
+    check_boolean("PasswordHash needsRehash: 'pbkdf2$', (String new: 10000"
+                  " withAll: $9), '$XXxhRHyyeLvk3AfmOhTYhA$ZX/GcXFZJaj94VBbx"
+                  "u3zTVTwdVy7CxfxXfK/irpetUI'", 1);
+
+    /*
+     *  FILES-12, Base64.  Padding the length does not call for, and a
+     *  short last group with bits over, are refused -- `=' alone was the
+     *  empty string, `Zm9v=' and `Zm9v==' were `foo', `Zh==' was `f'.
+     */
+    check_string("Base64 decode: '=' ifInvalid: ['refused']", "refused");
+    check_string("Base64 decode: 'Zm9v=' ifInvalid: ['refused']", "refused");
+    check_string("Base64 decode: 'Zm9v==' ifInvalid: ['refused']", "refused");
+    check_string("Base64 decode: 'Zh==' ifInvalid: ['refused']", "refused");
+    check_string("Base64 decode: 'Zm9=' ifInvalid: ['refused']", "refused");
+    check_string("Base64 decode: 'Zm8==' ifInvalid: ['refused']", "refused");
+    check_string("Base64 decode: 'Zg==' ifInvalid: ['refused']", "f");
+    check_string("Base64 decode: 'Zg' ifInvalid: ['refused']", "f");
+    check_string("Base64 decode: 'Zm8=' ifInvalid: ['refused']", "fo");
+    check_string("Base64 decode: 'Zm9vYg' ifInvalid: ['refused']", "foob");
+    check_string("Base64 decode: '' ifInvalid: ['refused']", "");
+
+    /*
+     *  FILES-12, Odbc numberFromDigits:.  It answered what it had read
+     *  when something else came: '1e5' was 1, PostgreSQL's 'NaN' was 0.
+     *  An exponent is read, exactly; anything else left over raises.
+     */
+    check_boolean("(Odbc numberFromDigits: '1e5') = 100000", 1);
+    check_boolean("(Odbc numberFromDigits: '-1.5E-2') = (-3/200)", 1);
+    check_boolean("(Odbc numberFromDigits: ' 12.5 ') = (25/2)", 1);
+    check_string("[Odbc numberFromDigits: 'NaN'] on: DbError do: [:e |"
+                 " 'raised']", "raised");
+    check_string("[Odbc numberFromDigits: '12abc'] on: DbError do: [:e |"
+                 " 'raised']", "raised");
+    check_string("[Odbc numberFromDigits: '-'] on: DbError do: [:e |"
+                 " 'raised']", "raised");
+    check_string("[Odbc numberFromDigits: '1e'] on: DbError do: [:e |"
+                 " 'raised']", "raised");
+    check_string("[Odbc numberFromDigits: '1e999999999'] on: DbError do:"
+                 " [:e | 'raised']", "raised");
+
+    /*
+     *  FILES-12, TonelWriter: the words of a pattern, one space apart,
+     *  whatever spacing and comments the source had.  The line written
+     *  from them is checked under -serve, in test_serve_faults, which
+     *  can define a class to write.  The bodies have no caret, which
+     *  would make this harness take the doIt for a method body.
+     */
+    check_string("(Scanner new patternTokensIn: '+x x') printString",
+                 "('+' 'x' )");
+    check_string("(Scanner new patternTokensIn: 'at:i put:v i + v')"
+                 " printString", "('at:' 'i' 'put:' 'v' )");
+    check_string("(Scanner new patternTokensIn: 'foo: \"c\" a a')"
+                 " printString", "('foo:' 'a' )");
+    check_string("TonelWriter new commentsIn: 'with: x \"c1\" and: \"c[2\" y'",
+                 "\"c1\" \"c[2\"");
+}
+
+static void
+test_bugs5_low_docs(void)
+{
+}
+
 int
 main(void)
 {
@@ -9470,6 +9846,13 @@ main(void)
     test_bugs5_tonel();
     test_bugs5_net();
     test_bugs5_sys();
+    test_bugs5_low_om();
+    test_bugs5_low_sched();
+    test_bugs5_low_kern();
+    test_bugs5_low_comp();
+    test_bugs5_low_net();
+    test_bugs5_low_files();
+    test_bugs5_low_docs();
 
     OM_shutdown();
     return ST_TEST_END();
