@@ -128,9 +128,14 @@ Smalltalk gets done. Chapter~\ref{ch:browser} is about it.
 
 \item[\ctp{workspace}] Sends \ct{StringHolderView open}: a text pane with no
 model behind it and nothing to accept into. Type an expression, select it,
-choose \ct{do it} or \ct{print it}. Assigning to a name you never declared
-makes it a workspace variable that lives as long as the window does, which is
-what makes this a scratch pad rather than a series of one-shot evaluations.
+choose \ct{do it} or \ct{print it}. Each evaluation stands alone: a
+workspace keeps no variables of its own. Declare the names a selection
+needs at its head, as in \ct{| x | x := 3 + 4. x * 2}, and select the
+declaration along with the statements that use it. A name nobody declared
+is refused, and \ct{undeclared variable} is inserted into the text at that
+name. A value that must outlive one evaluation goes in a global:
+\ct{Smalltalk at: \#x put: 3 + 4}, after which a later selection reads
+\ct{x}.
 
 \item[\ctp{system transcript}] Sends
 \ct{TextCollectorView open: Transcript label: 'System Transcript'}. The

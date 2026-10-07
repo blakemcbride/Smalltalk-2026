@@ -6,8 +6,11 @@ Python, no pkg-config, no vendored dependency to fetch. The font is
 rasterised into `src/gfx/font_face.c` and checked in; the class library is
 plain text in `sources/`, `lib/` and `pharo/`.
 
-**Read this first.** This builds, links, runs, bootstraps an image and opens
-its desktop on Windows, all of it confirmed on a real MSVC. What remains
+**Read this first.** This built, linked, ran, bootstrapped an image and
+opened its desktop on Windows, all of it confirmed on a real MSVC. Since
+then `src/` has gained `image_compile.c`, `migrate.c` and `finalize.c`;
+`Makefile.msvc` names them, and the object list links with gcc on Linux,
+but no MSVC has built this tree since they arrived. What remains
 untested is narrower than it was and named exactly in the last section —
 chiefly `nmake test`, and the Win32 half of the file primitives under
 sustained use.
@@ -251,10 +254,14 @@ rectangle. Neither is a bug and both will read as one.
 nmake /f Makefile.msvc test
 ```
 
-That builds and runs all sixteen unit suites in `tests/unit/`. Each is
+That builds and runs all twenty-five unit suites in `tests/unit/`. Each is
 wrapped in `#ifdef ST_OM_MT` or `#ifdef ST_OM_BB` and reports itself skipped
 under the other memory, so the same list is right for both builds. nmake
-stops at the first suite that fails, at the suite that failed.
+stops at the first suite that fails, at the suite that failed. Several
+suites — `test_image`, `test_parallel_shared`, `test_parallel_net`,
+`test_parallel_rest` and `test_serve_faults` — include `<unistd.h>` or the
+BSD socket headers, which MSVC lacks; expect the run to stop at the first of
+them until they are given a Win32 branch.
 
 Two things do not run here:
 
@@ -360,7 +367,7 @@ Listed rather than smoothed over, because a first Windows build should know
 which surprises are already accounted for.
 
 1. **The suites have not been run there.** `nmake /f Makefile.msvc test`
-   builds and runs sixteen executables and no one has watched it do so. That
+   builds and runs twenty-five executables and no one has watched it do so. That
    is now the largest untested claim in this file.
 2. **Paths are the only thing `-bootstrap` has been seen to get wrong**, and
    that is fixed: `profile.c` now splits on either separator. It is listed
@@ -371,7 +378,11 @@ which surprises are already accounted for.
    does not. It had already drifted once: `src/boot/` was written after
    `Makefile.msvc` and nothing in it linked `bootstrap.c` or `profile.c`, so
    the build ended in unresolved externals from `main.obj` for as long as the
-   file existed. Add to both.
+   file existed. It drifted again when `image_compile.c`, `migrate.c` and
+   `finalize.c` were added. Add to both. Every object depends on every
+   header, since `cl` writes no dependency files, and a `HEADLESS=1` build
+   (or one with no `SDL3=`) goes to `build\<om>-headless-msvc`, apart from
+   the SDL3 build's objects.
 4. **`strdup`.** [`doc/PORTABILITY.md`](doc/PORTABILITY.md) says it appears
    nowhere under `src/`; three files call it. MSVC declares it and links it,
    deprecated in favour of `_strdup`, so the build sets
@@ -487,7 +498,7 @@ now named outright, after `/link` because `cl` has no `/SUBSYSTEM` of its own.
   `OM=bb`. The list it named before this document was written produced 40
   undefined references.
 - The `prim.c` shim is behaviour-identical to what it replaced. Both memories
-  build warning-clean, all sixteen unit suites and all five imported-package
+  build warning-clean, all the unit suites and all five imported-package
   suites pass at their recorded scores, and the file primitives were driven
   end to end from inside the image: a 2000-byte file written across four
   pages through `pwrite` is byte-for-byte what Smalltalk was asked to write

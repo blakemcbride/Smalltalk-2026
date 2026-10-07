@@ -542,6 +542,8 @@ void    ST_print_object(st_oop p, char *buf, size_t buflen);
 unsigned    ST_method_primitive_index(st_oop method);
 /*  The arguments a CompiledMethod's header says it takes.  */
 unsigned    ST_method_argument_count(st_oop method);
+/*  A CompiledMethod with its header and literal frame (Bugs5 INTERP-4).  */
+int         ST_method_shaped(st_oop method);
 /*
  *  Run `method' on the receiver and `argc' arguments on the stack, as a
  *  send would after lookup.  Primitive 188 -- withArgs:executeMethod:.

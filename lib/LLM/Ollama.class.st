@@ -27,8 +27,9 @@ timeoutSeconds (five minutes) and runs out as a TimedOut.
 
 toHtml: is Kiss's four substitutions, in order: `\boxed{x}' becomes x,
 every backslash goes, a newline becomes <br>, and **bold** becomes <b>.
-It does not escape HTML, because Kiss's does not and the screen sets the
-result as HTML; a reply that contains markup is shown as markup.
+The text is HTML-escaped before the last two, so the only markup in the
+result is the <br> and <b> this method wrote: the screen sets the result
+as HTML, and a reply that contains markup is shown as the characters it is.
 "
 Class {
 	#name : 'Ollama',
@@ -195,13 +196,43 @@ Ollama >> streamedTextOf: aLine [
 { #category : 'text' }
 Ollama class >> toHtml: aString [
 	"Kiss's Ollama.toHtml: boxed answers unboxed, backslashes gone, newlines
-	 as <br>, **bold** as <b>."
+	 as <br>, **bold** as <b>.
+
+	 ESCAPED BEFORE THE MARKUP IS ADDED.  Kiss's does not escape at all, and
+	 neither did this, and the demo's screen puts the result in the page
+	 with setHTMLValue -- so `<img src=x onerror=...>' in a reply ran as
+	 script in the page that holds the session's _uuid (Bugs5 NET-7).  A
+	 model repeats what it is given, and what it is given includes whatever
+	 a document, a web page or another user put in front of it, so the
+	 reply is text from a stranger.  The five characters are escaped after
+	 the backslashes go and before <br> and <b> go in, which leaves those
+	 two the only tags the result can contain; ** is not touched by the
+	 escape, so bold still pairs as it did."
 	| s |
 	aString isNil ifTrue: [^''].
 	s := self unbox: aString.
 	s := s reject: [:c | c = $\].
+	s := self escapeHtml: s.
 	s := s copyReplaceAll: (String with: (Character value: 10)) with: '<br>'.
 	^self bold: s
+]
+
+{ #category : 'private' }
+Ollama class >> escapeHtml: aString [
+	"aString with the ampersand, the two angle brackets and both quotes
+	 written as the character references they are, so that it reads as
+	 text wherever HTML puts it -- in an element, or in an attribute value
+	 quoted either way.  See toHtml:."
+	| out |
+	out := WriteStream on: (String new: aString size + 16).
+	aString do: [:c |
+		c = $& ifTrue: [out nextPutAll: '&amp;'] ifFalse: [
+		c = $< ifTrue: [out nextPutAll: '&lt;'] ifFalse: [
+		c = $> ifTrue: [out nextPutAll: '&gt;'] ifFalse: [
+		c = $" ifTrue: [out nextPutAll: '&quot;'] ifFalse: [
+		c = $' ifTrue: [out nextPutAll: '&#39;'] ifFalse: [
+			out nextPut: c]]]]]].
+	^out contents
 ]
 
 { #category : 'private' }

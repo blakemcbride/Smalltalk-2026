@@ -53,7 +53,14 @@ Scanner >> xLitQuote [
 	 compiler has always read and this one did not: it scanned the `[' as a
 	 left bracket and the Parser saw a block where a literal was meant.
 	 Answered as a #literal token, exactly as #(1 2 3) is, so nothing
-	 downstream has to know it exists."
+	 downstream has to know it exists.
+
+	 And #'hello world' is a Symbol.  1983 scanned the quoted string after
+	 the `#' and then left it a String, so a quoted Symbol -- the only way
+	 to write one with a space or a colon in the middle -- parsed as a
+	 String literal; nothing compiled from that parse, but the Browser's
+	 format printed it back as one, and accepting the formatted method
+	 changed what it answered (Bugs5 COMP-6)."
 
 	| start |
 	self step. "litQuote"
@@ -74,9 +81,57 @@ Scanner >> xLitQuote [
 						mark := start.
 						self offEnd: 'Unmatched bracket']]
 				ifFalse: [
-					(#(word keyword colon) includes: tokenType)
-						ifTrue: [self scanLitWord]]].
+					tokenType == #string
+						ifTrue: [token := token asSymbol]
+						ifFalse: [
+							(#(word keyword colon) includes: tokenType)
+								ifTrue: [self scanLitWord]]]].
 	tokenType := #literal
+]
+
+{ #category : '*Compiler-Fixes' }
+Scanner >> scanLitVec [
+	"The elements of #(...), the opening parenthesis already past: 1983's,
+	 read the way the compiler that compiles this image reads them.
+
+	 Two differences, both found by formatting every method in the image
+	 with the Browser's format and recompiling what it printed (Bugs5
+	 COMP-6).  This scanner is not what compiles methods -- primitive 228
+	 is -- but it is what format, explain and the debugger's source map
+	 parse with, and where it reads a literal differently the Browser
+	 shows the method as meaning something it does not.
+
+	 true, false and nil written bare inside a literal array are the
+	 objects, as the closures dialect has them (Bugs2), not the Symbols
+	 #true, #false and #nil that 1983 made of them.  A quoted #true is
+	 still the Symbol; it arrives through xLitQuote, not as a word.  The
+	 bluebook profile, which keeps 1983's Symbols, loads sources/ alone and
+	 never sees this method.
+
+	 A negative number is the number times -1, so that -0.0 stays minus
+	 zero; see Parser>>primaryExpression."
+
+	| s |
+	s := WriteStream on: (Array new: 16).
+	[tokenType = #rightParenthesis or: [tokenType = #doIt]]
+		whileFalse: [
+			tokenType = #leftParenthesis
+				ifTrue: [self scanToken; scanLitVec]
+				ifFalse: [
+					tokenType = #word | (tokenType = #keyword)
+						ifTrue: [
+							self scanLitWord.
+							token == #true ifTrue: [token := true].
+							token == #false ifTrue: [token := false].
+							token == #nil ifTrue: [token := nil]]
+						ifFalse: [
+							(token == #- and: [(typeTable at: hereChar asciiValue) = #xDigit])
+								ifTrue: [
+									self scanToken.
+									token := token * -1]]].
+			s nextPut: token.
+			self scanToken].
+	token := s contents
 ]
 
 { #category : '*Compiler-Fixes' }

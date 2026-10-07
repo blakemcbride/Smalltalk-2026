@@ -2,7 +2,8 @@
 A method the interpreter cannot execute: a bytecode that names a literal
 past the method's literal frame, an instruction pointer past the method's
 end, or a context resumed with an instruction or stack pointer outside its
-bounds (Bugs3 B11).
+bounds (Bugs3 B11); and, since Bugs5 INTERP-4 and INTERP-5, a push past the
+end of a context's frame and a block whose home is not a method context.
 
 The interpreter abandons the activation and sends #corruptMethod to its
 receiver in place of the answer; this is what that raises.  Before it

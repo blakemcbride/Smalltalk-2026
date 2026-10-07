@@ -573,8 +573,15 @@
  *  seven source readers and writers that hold it (FILES-2); Socket>>send:
  *  timeout:, SocketStream>>writeTimeout: and >>sendRaw:, HttpServer's six
  *  limit accessors and crlf, and HttpServerTest's three tests (NET-1).
+ *
+ *  3129 -> 3171 with the Bugs5 medium findings: twenty in the Tonel,
+ *  formatter and source-file fixes (COMP-3, COMP-6, FILES-3, FILES-4,
+ *  FILES-5), sixteen in the HTTP client, REST server and Ollama with their
+ *  five tests (NET-4 to NET-8), four for Lehmer's gcd: and the stream
+ *  (KERN-5, KERN-6, KERN-8), and two in PosixFileDirectory (FILES-7,
+ *  FILES-8).
  */
-#define LIB_METHODS             3129
+#define LIB_METHODS             3171
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -2725,8 +2732,11 @@ test_sunit(void)
      *
      *  552 -> 555 with Bugs5 NET-1's three in HttpServerTest: a dripped
      *  request, a client that never reads, and a connection over the cap.
+     *
+     *  555 -> 560 with the five Bugs5 NET-4 to NET-8 tests in HttpClientTest,
+     *  RestServerTest and OllamaTest.
      */
-    check_integer("TestCase allTests tests size", 555);
+    check_integer("TestCase allTests tests size", 560);
 
     /*
      *  And the three buckets, from the outside as well as from within
@@ -2869,9 +2879,10 @@ test_browsing(void)
      *  2722189 with Bugs5 KERN-7, Number>>to:by:do:, and 2722189 ->
      *  2722786 with Bugs5 FILES-6, in DbConnection and DbCursor, and
      *  2722786 -> 2739039 with Bugs5 COMP-2, FILES-2, NET-1, NET-2 and
-     *  NET-3, and INTERP-8, INTERP-10 and DOCS-4's checks.
+     *  NET-3, and INTERP-8, INTERP-10 and DOCS-4's checks.  2739039 ->
+     *  2792225 with the Bugs5 medium findings.
      */
-    check_integer("(SourceFiles at: 1) contents size", 2739039);
+    check_integer("(SourceFiles at: 1) contents size", 2792225);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -8763,6 +8774,580 @@ test_bugs4_docs(void)
 {
 }
 
+/*
+ *  Bugs5 medium findings, om.  One check or more per fix; empty until then.
+ */
+static void
+test_bugs5_om(void)
+{
+    char    dir[] = "/tmp/st_bugs5_om_XXXXXX";
+    char    tmp[256];
+    char    expression[1024];
+
+    test_dialect = ST_DIALECT_CLOSURES;
+
+    /*
+     *  OM-7: a snapshot that fails gives Delay's AccessProtect back.
+     *  preSnapshot takes it and only postSnapshot released it, so primitive
+     *  97 failing -- here because the .tmp it writes through is a directory
+     *  -- left it held, and the next Delay waited on it for ever.  Both the
+     *  lock's count and a Delay that has to get through it are asked.
+     */
+    if (!mkdtemp(dir)) {
+        ++st_test_checks;
+        ++st_test_failures;
+        printf("  FAIL OM-7: cannot make a scratch directory\n");
+    } else {
+        snprintf(tmp, sizeof tmp, "%s/x.im.tmp", dir);
+        mkdir(tmp, 0700);
+        snprintf(expression, sizeof expression,
+                 "| failed t | failed := [Smalltalk snapshotAs: '%s/x'. false]"
+                 " on: Error do: [:e | e return: true]."
+                 " t := Time millisecondClockValue."
+                 " (Delay forMilliseconds: 20) wait."
+                 " ^failed printString, ' ',"
+                 " ((Delay classPool at: #AccessProtect) instVarAt: 3)"
+                 " printString, ' ',"
+                 " ((Time millisecondClockValue - t) >= 15) printString",
+                 dir);
+        check_string(expression, "true 1 true");
+        rmdir(tmp);
+        snprintf(tmp, sizeof tmp, "%s/x.im", dir);
+        unlink(tmp);
+        snprintf(tmp, sizeof tmp, "%s/x.im.changes", dir);
+        unlink(tmp);
+        rmdir(dir);
+    }
+
+    test_dialect = ST_DIALECT_BLUE_BOOK;
+}
+
+/*
+ *  Bugs5 medium findings, interp.  One check or more per fix; empty until then.
+ */
+static void
+test_bugs5_interp(void)
+{
+    int saved = test_dialect;
+
+    test_dialect = ST_DIALECT_CLOSURES;
+
+    /*
+     *  INTERP-2: the size of a new CompiledMethod was a uint32_t sum that a
+     *  bytecode count near 2^32 wrapped to nothing, and the header was then
+     *  written into an object of zero bytes.  Refused now.
+     */
+    check_string("[CompiledMethod newMethod: 4294967288 header: 0. 'made']"
+                 " on: Error do: [:e | 'refused']", "refused");
+    check_string("[CompiledMethod newMethod: 4294967296 header: 0. 'made']"
+                 " on: Error do: [:e | 'refused']", "refused");
+
+    /*
+     *  INTERP-3: 93, 100 and 136 took any object as the semaphore to signal
+     *  later, and the timer then wrote a Semaphore's fields into it.  Only
+     *  a Semaphore or nil is accepted; nil still disarms.
+     */
+    check_string("[Processor signal: 'abc' copy atMilliseconds: (ByteArray new: 4)."
+                 " 'armed'] on: Error do: [:e | 'refused']", "refused");
+    check_string("ProcessorScheduler compile: 'bugs5Signal: s atTime: t"
+                 " <primitive: 136> ^#refused' classified: 'bugs5'."
+                 " ^(Processor bugs5Signal: Object new atTime: 0) printString",
+                 "refused");
+    check_boolean("^(Processor bugs5Signal: nil atTime: 0) == Processor", 1);
+    check_string("[InputState basicNew primInputSemaphore: 'abc' copy. 'accepted']"
+                 " on: Error do: [:e | 'refused']", "refused");
+
+    /*
+     *  INTERP-4 (a): a BlockClosure's outerContext was trusted to be a
+     *  context.  An Array shaped like one ran the block with whatever
+     *  receiver the Array held, and asContext (primitive 207) took any
+     *  receiver at all.
+     */
+    check_string("| b o | b := [self]. o := Array new: 10."
+                 " o at: 4 put: thisContext method. o at: 6 put: 42."
+                 " b instVarAt: 1 put: o."
+                 " ^([b value] on: Error do: [:e | #refused]) printString",
+                 "refused");
+    check_string("| o | o := Array new: 10. o at: 4 put: thisContext method."
+                 " o at: 6 put: 42."
+                 " ^([(Array with: o with: 1 with: 0) withArgs: #() executeMethod:"
+                 " (BlockClosure compiledMethodAt: #asContext)]"
+                 " on: Error do: [:e | #refused]) printString", "refused");
+    /*
+     *  (b): a BlockContext's home was trusted the same way; an Array there
+     *  supplied the receiver, so #corruptMethod went to an object of the
+     *  Array's choosing.  Now the block is abandoned with a CorruptMethod.
+     */
+    check_string("| c b | Object subclass: #Bugs5Home instanceVariableNames: ''"
+                 " classVariableNames: '' poolDictionaries: '' category: 'Bugs5'."
+                 " c := Smalltalk at: #Bugs5Home."
+                 " c compile: 'corruptMethod ^#confused' classified: 'bugs5'."
+                 " b := BlockContext new: 10. b instVarAt: 4 put: 0."
+                 " b instVarAt: 5 put: 1."
+                 " b instVarAt: 6 put: ((Array new: 10) at: 6 put: c new; yourself)."
+                 " ^([b value] on: Error do: [:e | e class name]) asString",
+                 "CorruptMethod");
+    /*  (c): the arguments of a BlockContext were stored past its end.  */
+    check_string("| b | b := BlockContext new: 0. b instVarAt: 4 put: 1."
+                 " b instVarAt: 5 put: 1. b instVarAt: 6 put: thisContext."
+                 " ^([b value: 3] on: Error do: [:e | #refused]) printString",
+                 "refused");
+    /*
+     *  (d): the method lookup read a method dictionary out of whatever the
+     *  superclass field held.  Only ASAN sees the stray read; the send must
+     *  end at doesNotUnderstand:.
+     */
+    check_string("| c | Object subclass: #Bugs5Super instanceVariableNames: ''"
+                 " classVariableNames: '' poolDictionaries: '' category: 'Bugs5'."
+                 " c := Smalltalk at: #Bugs5Super. c instVarAt: 1 put: Object new."
+                 " ^([c new bugs5Zork] on: MessageNotUnderstood do: [:e | #dnu])"
+                 " printString", "dnu");
+    /*
+     *  (e): anything in a method dictionary was run as a CompiledMethod --
+     *  here a ByteArray whose first word reads as a quick-return-self
+     *  header -- and a flag-6 header named a field the receiver lacks.
+     */
+    check_string("| c | Object subclass: #Bugs5NotMethod instanceVariableNames: ''"
+                 " classVariableNames: '' poolDictionaries: '' category: 'Bugs5'."
+                 " c := Smalltalk at: #Bugs5NotMethod."
+                 " c addSelector: #bugs5Zork withMethod: #[1 160 0 0 0 0 0 0]."
+                 " ^([c new bugs5Zork] on: MessageNotUnderstood do: [:e | #dnu])"
+                 " printString", "dnu");
+    check_string("| m | m := CompiledMethod newMethod: 0 header: 28544."
+                 " ^([3 withArgs: #() executeMethod: m]"
+                 " on: Error do: [:e | e class name]) asString", "CorruptMethod");
+
+    /*
+     *  INTERP-5: a stack pointer on the last slot of the sender left the
+     *  answer nowhere to go; the push stopped the interpreter.  Now the
+     *  sender is abandoned with a CorruptMethod a handler can catch, and
+     *  the expression goes on.
+     */
+    check_string("| r | Object compile: 'bugs5Overflow | c n |"
+                 " c := thisContext sender. n := c class instSize + c basicSize."
+                 " c instVarAt: 3 put: n - 6. ^1' classified: 'bugs5'."
+                 " r := [nil bugs5Overflow] on: Error do: [:e | e class name]."
+                 " Object removeSelector: #bugs5Overflow."
+                 " ^r asString, ' 5'", "CorruptMethod 5");
+
+    /*
+     *  INTERP-6: a `^' to a dead home through an ensure: ran every unwind
+     *  block to the bottom of the stack before failing.  Now it is a
+     *  cannotReturn: first, and the ensure blocks run as the handler
+     *  unwinds.
+     */
+    check_string("| log | log := OrderedCollection new."
+                 " Object compile: 'bugs5Dead: log ^[:x | [^x] ensure:"
+                 " [log add: #inner]]' classified: 'bugs5'."
+                 " [[(nil bugs5Dead: log) value: 9] ensure: [log add: #outer]]"
+                 " on: Error do: [:e | log add: #handler. -1]."
+                 " Object removeSelector: #bugs5Dead:."
+                 " ^log asArray printString", "(handler inner outer )");
+
+    /*
+     *  INTERP-7: a Symbol was writable through basicAt:put:, primitive 105
+     *  and primitive 234; only become: was refused.  Interning, which
+     *  writes a Symbol nobody has seen yet, must still work.
+     */
+    check_string("[#bugs5Seven basicAt: 1 put: $y] on: Error do: [:e | nil]."
+                 " [#bugs5Seven primReplaceFrom: 1 to: 4 with: 'york'"
+                 " startingAt: 1] on: Error do: [:e | nil]."
+                 " ^#bugs5Seven asString", "bugs5Seven");
+    check_boolean("^('bugs5', 'Seven') asSymbol == #bugs5Seven", 1);
+    check_string("[Object primMigrate: (Array with: #bugs5Seven)"
+                 " to: (Array with: 'york' copy) permuting: #() oldNamed: 0]"
+                 " on: Error do: [:e | nil]. ^#bugs5Seven class name asString",
+                 "Symbol");
+    check_boolean("^('bugs5Fresh', 'Interned') asSymbol"
+                  " == ('bugs5FreshInterned' copy asSymbol)", 1);
+
+    test_dialect = saved;
+}
+
+/*
+ *  Bugs5 medium findings, kern.  One check or more per fix; empty until then.
+ */
+static void
+test_bugs5_kern(void)
+{
+    int saved = test_dialect;
+
+    test_dialect = ST_DIALECT_CLOSURES;
+
+    /*
+     *  KERN-5: a negative bitAnd:/bitOr:/bitXor: whose magnitude needs one
+     *  byte more than the longer operand.  Both answered 0: the result was
+     *  allocated at the operands' length and the one non-zero byte of the
+     *  magnitude fell just past it.
+     */
+    check_boolean("^(-1 bitXor: (1 bitShift: 128) - 1) = (1 bitShift: 128) negated",
+                  1);
+    check_boolean("^(((1 bitShift: 64) - 1) negated bitAnd: "
+                  "((1 bitShift: 128) - 2) negated) = (1 bitShift: 128) negated",
+                  1);
+
+    /*
+     *  KERN-6: gcd: was Silver's binary algorithm, a full-length subtract
+     *  and shift per bit, so a large number against a small one ran out of
+     *  this harness's twenty million bytecodes -- and so did reducing a
+     *  Fraction, which is gcd: between two large numbers, now Lehmer's.
+     */
+    check_integer("^((10 raisedTo: 2000) + 1) * 7 gcd: 49", 7);
+    check_boolean("| g | g := (3 raisedTo: 1500) + 2. "
+                  "^(((7 raisedTo: 1200) + 1) * g gcd: ((5 raisedTo: 1350) + 3) * g) "
+                  "= (2 * g)", 1);
+    check_boolean("^((2/3) + (1/(10 raisedTo: 600))) denominator "
+                  "= (3 * (10 raisedTo: 600))", 1);
+    check_integer("^(0 gcd: 0) + (12 gcd: 0) + (-4 gcd: 6)", 14);
+
+    /*
+     *  KERN-8: setToEnd on a plain WriteStream went back to where the
+     *  stream stood before its writes, and the next write went over them.
+     */
+    check_string("| s | s := WriteStream on: String new. "
+                 "s nextPutAll: 'abc'; setToEnd; nextPutAll: 'def'. ^s contents",
+                 "abcdef");
+
+    test_dialect = saved;
+}
+
+/*
+ *  Bugs5 medium findings, tonel.  One check or more per fix.
+ */
+static void
+test_bugs5_tonel(void)
+{
+    test_dialect = ST_DIALECT_CLOSURES;
+
+    /*
+     *  COMP-3: the Tonel writer took a method's pattern to be two words a
+     *  keyword, so `with:x and:y' swallowed `^[x' and `+' and the body lost
+     *  a bracket; the reader took the selector from white-space words, so
+     *  a reload read #with:x and removed with:and: as gone from the file.
+     *  Both now read the pattern as the compiler does.
+     */
+    check_integer("^TonelWriter new patternLengthOf: 'with:x and:y ^[x + y] value'"
+                  " selector: #with:and:", 12);
+    check_integer("^TonelWriter new patternLengthOf: '+x ^x' selector: #+", 2);
+    check_integer("^TonelWriter new patternLengthOf: 'at:i \"c\" put:v \"d\" ^i'"
+                  " selector: #at:put:", 14);
+    check_integer("TonelWriter new patternLengthOf: 'bare' selector: #bare", 4);
+    check_string("^TonelReader new selectorOf: 'with:x and:y', "
+                 "(String with: Character cr), '^[x + y] value'", "with:and:");
+
+    /*
+     *  COMP-6: the Browser's format printed source that meant something
+     *  else.  Each case is formatted, compiled, and run.
+     */
+    check_integer("Object compile: (Compiler new format: 'bugs5FmtSelf"
+                  " ^3 = 3 ifTrue: [self] ifFalse: [0]' in: Object notifying: nil)"
+                  " classified: 'bugs5' notifying: nil. ^42 bugs5FmtSelf", 42);
+    check_integer("Object compile: (Compiler new format: 'bugs5FmtCascade"
+                  " ^Array with: (3 + 4; yourself)' in: Object notifying: nil)"
+                  " classified: 'bugs5' notifying: nil. ^nil bugs5FmtCascade first",
+                  3);
+    check_boolean("| r | Object compile: (Compiler new format: 'bugs5FmtLit"
+                  " ^Array with: #''hello world'' with: #(true #[1] #true) with: -0.0'"
+                  " in: Object notifying: nil) classified: 'bugs5' notifying: nil."
+                  " r := nil bugs5FmtLit."
+                  " ^(r first isSymbol and: [((r at: 2) at: 1) == true])"
+                  " and: [((r at: 2) at: 2) class == ByteArray"
+                  " and: [((r at: 2) at: 3) == #true"
+                  " and: [(r at: 3) printString = '-0.0']]]", 1);
+    check_integer("Object compile: (Compiler new format: 'bugs5FmtPragma <bugs5Tag>"
+                  " ^1' in: Object notifying: nil) classified: 'bugs5' notifying: nil."
+                  " ^(Object compiledMethodAt: #bugs5FmtPragma) pragmas size", 1);
+    check_boolean("Object compile: (Compiler new format: 'bugs5FmtBlock"
+                  " ^[:x] value: 7' in: Object notifying: nil) classified: 'bugs5'"
+                  " notifying: nil. ^nil bugs5FmtBlock isNil", 1);
+
+    /*
+     *  FILES-3: past the 22 bits a trailer holds, the compile raised but the
+     *  method had been installed first, with no source, and its source had
+     *  been appended anyway.  The changes stream is swapped for one already
+     *  4 MB long for the length of the check.
+     */
+    check_string("| old r | old := SourceFiles at: 2."
+                 " SourceFiles at: 2 put: (ReadWriteStream with: (String new: 4194304))."
+                 " [r := [Object compile: 'bugs5Full ^42' classified: 'bugs5'"
+                 " notifying: nil. 'compiled'] on: Error do: [:e | e return: 'refused']."
+                 " r := r, ' ', (Object includesSelector: #bugs5Full) printString,"
+                 " ' ', (SourceFiles at: 2) size printString]"
+                 " ensure: [SourceFiles at: 2 put: old]. ^r",
+                 "refused false 4194304");
+
+    /*
+     *  FILES-4: a write-back compares the file's stamp first, and refuses
+     *  -- writing nothing -- when the file has changed since it was read.
+     */
+    check_string("| name e r text f | name := 'bugs5-files4.st'."
+                 " f := Disk textFile: name. f nextPutAll: 'edited on disk'; close."
+                 " e := TonelSource new setName: #TonelError path: name."
+                 " e noteType: 'Class' prefix: nil comment: nil."
+                 " e recordStamp: #(1 1)."
+                 " r := e writeBack: TonelError."
+                 " f := Disk textFile: name. text := f contentsOfEntireFile. f close."
+                 " Disk removeKey: name."
+                 " ^(r isNil ifTrue: ['written'] ifFalse: ['refused']), ' ',"
+                 " (text = 'edited on disk') printString", "refused true");
+
+    /*
+     *  FILES-5: a line feed in a literal survives being asked for its source,
+     *  and is refused -- not quietly turned into a carriage return -- by the
+     *  Tonel writer and by a text file's chunk writer.
+     */
+    check_boolean("Object compile: 'bugs5Lf ^''a', (String with: (Character value: 10)),"
+                  " 'b''' classified: 'bugs5' notifying: nil."
+                  " ^(Object sourceCodeAt: #bugs5Lf) includes: (Character value: 10)", 1);
+    check_string("| r | TonelError compile: 'bugs5Lf ^''a', (String with: (Character"
+                 " value: 10)), 'b''' classified: 'bugs5' notifying: nil."
+                 " r := [TonelWriter sourceFor: TonelError. 'written']"
+                 " on: TonelError do: [:e | e return: 'refused']."
+                 " TonelError removeSelector: #bugs5Lf. ^r", "refused");
+    check_string("| f r | f := Disk textFile: 'bugs5-chunk.st'."
+                 " r := [f nextChunkPut: 'a', (String with: (Character value: 10)). 'written']"
+                 " on: Error do: [:e | e return: 'refused']."
+                 " f close. Disk removeKey: 'bugs5-chunk.st'. ^r", "refused");
+
+    test_dialect = ST_DIALECT_BLUE_BOOK;
+}
+
+/*
+ *  Bugs5 medium findings, net.  One check or more per fix; empty until then.
+ */
+static void
+test_bugs5_net(void)
+{
+}
+
+/*
+ *  Bugs5 medium findings, sys.  One check or more per fix; empty until then.
+ */
+/*
+ *  Run a command line and answer whether its output contains `want'.  The
+ *  output goes to a file in `dir' and is read back whole; the command is
+ *  given as built, so a caller that needs a long argument builds it.
+ */
+static int
+bugs5_sys_output_has(const char *dir, const char *command, const char *want)
+{
+    char        out[320];
+    char       *line;
+    char       *text;
+    size_t      size;
+    long        length;
+    FILE       *f;
+    int         found = 0;
+
+    snprintf(out, sizeof out, "%s/out.txt", dir);
+    size = strlen(command) + strlen(out) + 16;
+    line = malloc(size);
+    if (!line)
+        return 0;
+    snprintf(line, size, "%s >%s 2>&1", command, out);
+    (void) system(line);
+    free(line);
+    f = fopen(out, "rb");
+    if (!f)
+        return 0;
+    if (fseek(f, 0, SEEK_END) == 0 && (length = ftell(f)) >= 0
+     && fseek(f, 0, SEEK_SET) == 0
+     && (text = malloc((size_t) length + 1)) != NULL) {
+        length = (long) fread(text, 1, (size_t) length, f);
+        text[length] = '\0';
+        found = strstr(text, want) != NULL;
+        free(text);
+    }
+    fclose(f);
+    return found;
+}
+
+static void
+test_bugs5_sys(void)
+{
+    char        dir[] = "/tmp/st2026-bugs5-sys-XXXXXX";
+    char        path[512];
+    char        expression[2048];
+    char       *command;
+    size_t      size;
+    FILE       *f;
+    int         i;
+
+    if (!mkdtemp(dir)) {
+        ++st_test_checks;
+        ++st_test_failures;
+        printf("  FAIL cannot make a scratch directory for the Bugs5 sys"
+               " checks\n");
+        return;
+    }
+
+    /*
+     *  GUI-2.  An assignment to a name nobody declared said `cannot assign
+     *  to', and the complaint was placed after the right-hand side; it is
+     *  `undeclared variable', at the name -- position 1 here, not 13.
+     */
+    check_string("| a | a := Compiler compileSource: 'zzBugs5W := 3 + 4'"
+                 " for: UndefinedObject noPattern: true"
+                 " declaringUndeclared: false."
+                 " ^(a at: 3) , ' @ ' , (a at: 5) printString",
+                 "undeclared variable 'zzBugs5W' @ 1");
+    check_string("| a | a := Compiler compileSource: 'self := 3 + 4'"
+                 " for: UndefinedObject noPattern: true"
+                 " declaringUndeclared: false. ^a at: 3",
+                 "cannot assign to 'self'");
+
+    /*
+     *  FILES-7.  The listing stopped at 4,096 names, and includesKey: --
+     *  which read the listing -- could not see a dot file at all.
+     */
+    for (i = 0; i < 5000; ++i) {
+        snprintf(path, sizeof path, "%s/f%04d", dir, i);
+        f = fopen(path, "w");
+        if (f)
+            fclose(f);
+    }
+    snprintf(path, sizeof path, "%s/.env", dir);
+    f = fopen(path, "w");
+    if (f) {
+        fputs("secret\n", f);
+        fclose(f);
+    }
+    snprintf(expression, sizeof expression,
+             "(Disk directoryNamed: '%s') fileNames size", dir);
+    check_integer(expression, 5000);
+    snprintf(expression, sizeof expression,
+             "(Disk directoryNamed: '%s') includesKey: '.env'", dir);
+    check_boolean(expression, 1);
+    snprintf(expression, sizeof expression,
+             "Disk includesKey: '%s/.env'", dir);
+    check_boolean(expression, 1);
+    snprintf(expression, sizeof expression,
+             "Disk includesKey: '%s/no-such-file'", dir);
+    check_boolean(expression, 0);
+    for (i = 0; i < 5000; ++i) {
+        snprintf(path, sizeof path, "%s/f%04d", dir, i);
+        (void) unlink(path);
+    }
+
+    /*
+     *  FILES-8.  rename: ignored a failure and replaced an existing file;
+     *  newFileNamed: opened an existing file, and closing emptied it.
+     */
+    snprintf(path, sizeof path, "%s/a.txt", dir);
+    f = fopen(path, "w");
+    if (f) {
+        fputs("aaaa\n", f);
+        fclose(f);
+    }
+    snprintf(path, sizeof path, "%s/c.txt", dir);
+    f = fopen(path, "w");
+    if (f) {
+        fputs("cccc\n", f);
+        fclose(f);
+    }
+    snprintf(expression, sizeof expression,
+             "| file | file := (Disk file: '%s/a.txt') file."
+             " ^[file rename: '%s/nodir/x.txt'. 'renamed']"
+             " on: Error do: [:e | file fileName = '%s/a.txt']",
+             dir, dir, dir);
+    check_boolean(expression, 1);
+    snprintf(expression, sizeof expression,
+             "[(Disk file: '%s/a.txt') file rename: '%s/c.txt'. 'renamed']"
+             " on: Error do: [:e | (FileStream oldFileNamed: '%s/c.txt')"
+             " contentsOfEntireFile]",
+             dir, dir, dir);
+    check_string(expression, "cccc\n");
+    snprintf(expression, sizeof expression,
+             "[(FileStream newFileNamed: '%s/c.txt') close. 'opened']"
+             " on: Error do: [:e | (FileStream oldFileNamed: '%s/c.txt')"
+             " contentsOfEntireFile]",
+             dir, dir);
+    check_string(expression, "cccc\n");
+    snprintf(expression, sizeof expression,
+             "| s | s := FileStream newFileNamed: '%s/new.txt'."
+             " s nextPutAll: 'hi'. s close."
+             " ^(FileStream oldFileNamed: '%s/new.txt') contentsOfEntireFile",
+             dir, dir);
+    check_string(expression, "hi");
+    snprintf(expression, sizeof expression,
+             "(Disk file: '%s/a.txt') file rename: '%s/b.txt'."
+             " ^(Disk includesKey: '%s/b.txt')"
+             " & (Disk includesKey: '%s/a.txt') not",
+             dir, dir, dir, dir);
+    check_boolean(expression, 1);
+
+    if (access(st_test_binary(), X_OK) != 0) {
+        ++st_test_checks;
+        if (getenv("ST2026_BIN")) {
+            ++st_test_failures;
+            printf("  FAIL no st2026 binary at %s\n", st_test_binary());
+        } else
+            printf("  (skipping the Bugs5 sys command-line checks:"
+                   " no st2026)\n");
+        goto done;
+    }
+
+    /*
+     *  DOCS-1.  -eval copied its text into 4096 bytes and compiled what was
+     *  left: 4,100 spaces in front of `3 + 4' answered nil.
+     */
+    size = 8192;
+    command = malloc(size);
+    if (command) {
+        snprintf(command, size,
+                 "\"$ST2026\" -bootstrap -profile " PROFILE " -eval \"%*s3 + 4\"",
+                 4100, "");
+        ++st_test_checks;
+        if (!bugs5_sys_output_has(dir, command, "\n7\n")) {
+            ++st_test_failures;
+            printf("  FAIL -eval of a text longer than 4 KB should answer"
+                   " 7\n");
+        }
+        free(command);
+    }
+
+    /*
+     *  DOCS-1, doctests.  A long wrong doctest was cut at 2,047 bytes,
+     *  failed to compile, and was counted as needing something not here.
+     */
+    snprintf(path, sizeof path, "%s/doctest.st", dir);
+    f = fopen(path, "w");
+    if (f) {
+        fprintf(f, "!Object methodsFor: 'bugs5'!\nzzBugs5Doctest\n"
+                   "\t\"(%*s3 + 4) >>> 8\"\n\t^ 1! !\n", 2100, "");
+        fclose(f);
+    }
+    snprintf(expression, sizeof expression,
+             "\"$ST2026\" -bootstrap -profile " PROFILE " -doctests %s", path);
+    ++st_test_checks;
+    if (!bugs5_sys_output_has(dir, expression, "0 passed, 1 wrong, 0 need")) {
+        ++st_test_failures;
+        printf("  FAIL a long wrong doctest should be counted wrong\n");
+    }
+
+    /*
+     *  OM-11.  -startup was compiled as the Blue Book, so a block temporary
+     *  was one slot for every iteration: (31 31 31), where -eval of the same
+     *  text answers (11 21 31).  -serve resumes the startup process.
+     */
+    snprintf(expression, sizeof expression,
+             "\"$ST2026\" -bootstrap -profile " PROFILE " -startup '| bs |"
+             " bs := OrderedCollection new. 1 to: 3 do: [:i | | ms |"
+             " ms := i * 10. bs add: [| s | s := 1. ms + s]]."
+             " (bs collect: [:b | b value]) asArray printNl. Smalltalk quit'"
+             " -o %s/om11.im >/dev/null 2>&1"
+             " && \"$ST2026\" -serve %s/om11.im -workers 1", dir, dir);
+    ++st_test_checks;
+    if (!bugs5_sys_output_has(dir, expression, "(11 21 31 )")) {
+        ++st_test_failures;
+        printf("  FAIL -startup should be compiled with closures\n");
+    }
+
+done:
+    snprintf(expression, sizeof expression, "rm -rf %s", dir);
+    (void) system(expression);
+}
+
 int
 main(void)
 {
@@ -8879,6 +9464,12 @@ main(void)
     test_bugs4_collections();
     test_bugs4_om();
     test_bugs4_docs();
+    test_bugs5_om();
+    test_bugs5_interp();
+    test_bugs5_kern();
+    test_bugs5_tonel();
+    test_bugs5_net();
+    test_bugs5_sys();
 
     OM_shutdown();
     return ST_TEST_END();

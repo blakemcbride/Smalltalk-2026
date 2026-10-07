@@ -242,6 +242,13 @@ int BOOT_install_display(unsigned width, unsigned height);
  *  method is compiled from `startup_source`.  Answers 0 on failure.
  */
 int BOOT_install_scheduler(const char *startup_source);
+
+/*
+ *  The same, with the startup compiled in `dialect` (ST_DIALECT_*) -- the
+ *  dialect -eval uses, which is closures for every image that contains
+ *  closure code.  BOOT_install_scheduler is this with the Blue Book.
+ */
+int BOOT_install_scheduler_dialect(const char *startup_source, int dialect);
 st_oop  BOOT_make_large_integer_digits(const char *digits, unsigned radix,
                                        int negative, void *user);
 st_oop  BOOT_lookup_global(const char *name, void *user);

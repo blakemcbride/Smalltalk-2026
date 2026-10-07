@@ -28,6 +28,15 @@ ending back into a carriage return as the text is read.  The two have to
 exist together: filing out with line feeds and reading back without
 translating would put line feeds into method source, and the browser would
 show every method as a single line.
+
+The price of the pair is that a line feed the image holds cannot cross it: it
+goes out as a line feed and comes back as a carriage return.  For text that
+is nobody's business but the writer's.  For a CHUNK -- a method's source, a
+class definition, a comment, which fileIn will compile -- it changed a string
+literal holding the HTTP line end into one holding a carriage return, and the
+filed-in method answered something else (Bugs5 FILES-5).  So nextChunkPut:
+refuses a chunk with a line feed in it, rather than writing what will not
+read back.
 "
 Class {
 	#name : 'TextFileStream',
@@ -93,4 +102,24 @@ TextFileStream >> nextPutAll: aCollection [
 	start <= size ifTrue: [
 		super nextPutAll: (aCollection copyFrom: start to: size)].
 	^aCollection
+]
+
+{ #category : 'writing' }
+TextFileStream >> nextChunkPut: aString [
+	"Write aString as a chunk, as WriteStream does -- or refuse, writing
+	 nothing, if it holds a line feed: nextChunk reads every line feed
+	 back as a carriage return, so the chunk filed in would not be the
+	 chunk filed out (Bugs5 FILES-5; see this class's comment).  A line
+	 feed in a method's source can only be inside a literal or a comment,
+	 and `Character value: 10', built into the String when the method
+	 runs, says the same thing in a form that survives."
+
+	(aString asString includes: (Character value: 10)) ifTrue: [
+		^Error new signal: 'this chunk holds a line feed, which fileIn would',
+			' read back as a carriage return: ',
+			(aString asString copyFrom: 1 to: (aString size min: 40)) printString,
+			'.  Build the String when the method runs -- String with:',
+			' Character cr with: (Character value: 10) -- instead of writing',
+			' the character inside a literal.'].
+	^super nextChunkPut: aString
 ]

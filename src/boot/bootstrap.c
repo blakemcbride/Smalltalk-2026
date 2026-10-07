@@ -5738,13 +5738,22 @@ install_processor_object(void)
 int
 BOOT_install_scheduler(const char *startup_source)
 {
+    return BOOT_install_scheduler_dialect(startup_source,
+                                          ST_DIALECT_BLUE_BOOK);
+}
+
+int
+BOOT_install_scheduler_dialect(const char *startup_source, int dialect)
+{
     st_oop      process_class = BOOT_global("Process");
     st_oop      scheduler = install_processor_object();
     st_oop      process;
     st_oop      context;
     st_compile_context  ctx;
     st_compile_result   res;
-    char        source[2048];
+    char       *source;
+    size_t      source_size;
+    int         compiled;
 
     if (!OM_is_present(scheduler) || !OM_is_present(process_class)) {
         fprintf(stderr, "st2026: no scheduler: Processor=%d Process=%d\n",
@@ -5765,8 +5774,28 @@ BOOT_install_scheduler(const char *startup_source)
     ctx.make_method_state  = BOOT_make_method_state;
     ctx.make_character     = BOOT_make_character;
     ctx.lookup_global      = BOOT_lookup_global;
-    snprintf(source, sizeof source, "startUp %s", startup_source);
-    if (COMPILE_method(source, &ctx, &res) != 0) {
+    /*
+     *  The dialect is the caller's, and the buffer is the text's size
+     *  (Bugs5 OM-11).  The context used to be left at zero, which is the
+     *  Blue Book, so a -startup with block temporaries shared one slot
+     *  across every iteration -- `[:i | | ms | ... bs add: [ms + s]]'
+     *  answered (31 31 31) where -eval of the same text answers
+     *  (11 21 31).  And the text went through `char source[2048]' and
+     *  snprintf, which cut a longer startup off without a word and
+     *  compiled what was left: a different program, or a syntax error
+     *  pointing at a place that is not in the text anybody wrote.
+     */
+    ctx.dialect            = dialect;
+    source_size = strlen(startup_source) + sizeof "startUp ";
+    source = malloc(source_size);
+    if (source == NULL) {
+        fprintf(stderr, "st2026: out of memory compiling the startup\n");
+        return 0;
+    }
+    snprintf(source, source_size, "startUp %s", startup_source);
+    compiled = COMPILE_method(source, &ctx, &res);
+    free(source);
+    if (compiled != 0) {
         /*
          *  Said here as well as recorded, because by now nobody reads the
          *  record: boot_fail writes into the build's result, and the build

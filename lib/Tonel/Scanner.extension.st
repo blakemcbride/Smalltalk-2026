@@ -17,6 +17,10 @@ So scanToken is 1983's, with one line after it: a colon followed by an equals
 sign is the left-arrow token.  The colon on its own still scans as a colon,
 which is what a block argument needs, and keywords never reach here -- they are
 read whole by xLetter.
+
+And patternEndIn:, for TonelWriter, which has to split a method's source into
+the pattern that goes on the `Class >> pattern [' line and the body that goes
+between the brackets, and once did it by counting words (Bugs5 COMP-3).
 "
 Extension { #name : 'Scanner' }
 
@@ -35,4 +39,38 @@ Scanner >> scanToken [
 		tokenType := #leftArrow.
 		token := #'_'].
 	^token
+]
+
+{ #category : '*Tonel' }
+Scanner >> patternEndIn: aString [
+	"The index of the last character of the message pattern at the front
+	 of aString, a method's source: the end of the unary selector, or of
+	 the argument after the binary selector, or of the argument after the
+	 last keyword.
+
+	 Found with the tokens the compiler reads rather than by counting
+	 words, which is what TonelWriter did -- two words to a keyword -- and
+	 `with:x and:y ^[x + y] value' is two words where it counted four, so
+	 the pattern it wrote took `^[x' and `+' with it and the body lost a
+	 bracket.  The reload read a method with a different selector and
+	 removed the real one as gone from the file (Bugs5 COMP-3).  A comment
+	 between the keywords is skipped, as the compiler skips it, and so is
+	 one after the pattern, which belongs to the body.
+
+	 Two spaces are put after the source before it is scanned.  The
+	 Scanner reads two characters ahead and takes a token's position from
+	 how far it has read, which stops growing at the end of the input, so
+	 a token that ends the source -- a unary method with no body -- would
+	 be placed one character early."
+
+	| end |
+	self scan: (ReadStream on: aString , '  ').
+	tokenType == #keyword ifTrue: [
+		[tokenType == #keyword] whileTrue: [
+			self scanToken.
+			end := mark + token size - 1.
+			self scanToken].
+		^end].
+	tokenType == #binary ifTrue: [self scanToken].
+	^mark + token size - 1
 ]

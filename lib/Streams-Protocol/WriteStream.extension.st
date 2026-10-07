@@ -53,3 +53,34 @@ WriteStream >> pastEndPut: anObject [
 	writeLimit := collection size.
 	^collection at: (position := position + 1) put: anObject
 ]
+
+{ #category : '*Streams-Protocol' }
+WriteStream >> setToEnd [
+	"Set the position to the end of everything written or read so far.
+
+	 1983's PositionableStream>>setToEnd sets the position to readLimit,
+	 and a WriteStream raises readLimit only when it is asked for its
+	 contents, its size, a reset or a position: -- so a stream that has
+	 been written to and asked none of those answered setToEnd by going
+	 back to where it was before the writes, and the next write began on
+	 top of them.  `s nextPutAll: ''abc''; setToEnd; nextPutAll: ''def''.
+	 s contents' answered 'def' (Bugs5 KERN-8).
+
+	 This was first found, and first fixed, on ReadWriteStream alone.  The
+	 changes stream of a bootstrap that is not writing an image is a
+	 ReadWriteStream on a String, putSource:class:category:inFile: begins
+	 with `file setToEnd', and so every method compiled in a -bootstrap
+	 -tests or -eval run was written at the same place, each on top of the
+	 last: `sourceCodeAt:' answered the LAST method compiled whatever
+	 selector it was asked for.  But the fault is WriteStream's -- the
+	 readLimit it forgets to raise is the one its own contents, size,
+	 reset and position: raise -- and a plain WriteStream lost its
+	 contents the same way.  So the fix lives here, where ReadWriteStream
+	 inherits it and nothing has to remember a second copy.  A FileStream
+	 keeps its end on disk and overrides this.
+
+	 This is what contents does to readLimit, done where setToEnd needs
+	 it."
+	readLimit := readLimit max: position.
+	position := readLimit
+]

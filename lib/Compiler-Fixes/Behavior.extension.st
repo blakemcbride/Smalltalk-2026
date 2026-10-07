@@ -197,8 +197,10 @@ Behavior >> compileUnchecked: code [
 		Compiler reportFailure: answer of: code to: nil.
 		^nil].
 	selector := answer at: 2.
+	"The source before the install, so that a source file too full to
+	 point into refuses with no method installed (Bugs5 FILES-3)."
+	(answer at: 1) putSource: code asString inFile: 2.
 	self addSelectorUnchecked: selector withMethod: (answer at: 1).
-	(methodDict at: selector) putSource: code asString inFile: 2.
 	^selector
 ]
 

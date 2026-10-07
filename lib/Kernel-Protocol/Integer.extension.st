@@ -178,7 +178,20 @@ Integer >> digitLogic: arg op: op length: len [
 	 Written here rather than in sources/ because nothing in sources/ is
 	 ever edited; this is the 1983 method with the store rearranged to
 	 compute the stored byte first and to raise rdigits only when that byte
-	 is non-zero, which also trims a leading 255 - 255 correctly."
+	 is non-zero, which also trims a leading 255 - 255 correctly.
+
+	 AND ONE BYTE MORE FOR A NEGATIVE RESULT (Bugs5 KERN-5).  The callers
+	 pass the longer operand's length, which holds every magnitude the
+	 result can have but one: a negative result whose two's-complement form
+	 is all zeros in those bytes.  -1 bitXor: 2^128 - 1 is ...1 0000...0000
+	 in two's complement, sixteen zero bytes over an infinite run of ones,
+	 and its magnitude is 2^128 -- a one in the seventeenth byte, which the
+	 loop never reached.  Every byte it did reach stored a zero, so the
+	 answer was 0.  A 12,500-case comparison against Python found exactly
+	 that shape and nothing else.  The extra byte is what the operands'
+	 sign extension says it is (digitAt: past the end answers 0, which the
+	 negation above turns into 255 for a negative operand), and the trim at
+	 the end takes it away again whenever it was not needed."
 
 	| result neg1 neg2 rneg z1 z2 rz b1 b2 b stored rdigits |
 	neg1 := self negative.
@@ -186,7 +199,7 @@ Integer >> digitLogic: arg op: op length: len [
 	rneg := ((neg1 ifTrue: [-1] ifFalse: [0])
 		perform: op
 		with: (neg2 ifTrue: [-1] ifFalse: [0])) < 0.
-	result := Integer new: len neg: rneg.
+	result := Integer new: (rneg ifTrue: [len + 1] ifFalse: [len]) neg: rneg.
 	rz := z1 := z2 := true.
 	rdigits := 1.
 	1 to: result digitLength do: [:i |
@@ -337,39 +350,237 @@ Integer >> asFloat [
 
 { #category : '*Kernel-Protocol' }
 Integer >> gcd: anInteger [
-	"The greatest common divisor of me and anInteger.
+	"The greatest common divisor of me and anInteger, never negative.
 
-	 Roland Silver's algorithm as 1983 printed it, with one line added.
-	 1983 opens with an `easy test' -- `m \\ n = 0 ifTrue: [^n]' -- and
-	 when the smaller of the two magnitudes is zero that test divides by
-	 it, so `12 gcd: 0' raised ZeroDivide where the answer is 12, and
-	 `0 gcd: 0' where the answer is 0 (Bugs3 B40).  A gcd with zero is
-	 ordinary: Fraction>>reduced sends it for every ratio it makes, and
-	 lcm: goes through it.  The added line answers the other number when
-	 one is zero, before the easy test can divide by it; the rest is
-	 1983's, unchanged."
-	| m n d t |
+	 THIS IS NO LONGER 1983'S METHOD.  1983 printed Roland Silver's binary
+	 gcd -- strip the common factors of two, then subtract the smaller
+	 from the larger and shift out the twos, until the two are equal.  On
+	 a machine whose large integers were a curiosity that was a fair
+	 trade: no division, which the Blue Book's bignums do a byte at a time.
+	 But each pass of it is a full-length subtraction and a full-length
+	 shift of a LargeInteger, built byte by byte through digitAt:put:, and
+	 the passes take away about a bit each -- so when one operand is small
+	 it does tens of thousands of passes over the large one.
+	 `((10 raisedTo: 5000) + 1) gcd: 7' took 15.3 seconds where `// 7'
+	 takes 10 ms, and Fraction>>reduced sends gcd: for every ratio it
+	 makes, so `(2/3) + (1/(10 raisedTo: 3000))' took 11 (Bugs5 KERN-6).
+
+	 Now: Euclid, `m \\ n', while the smaller operand is a SmallInteger.
+	 Its first division brings the large operand down to the small one's
+	 size in one pass over it -- LargeInteger by SmallInteger is the cheap
+	 division -- and the rest is SmallInteger primitives.  When both are
+	 large it is Lehmer's algorithm, in lehmerGcd: below, which is where
+	 the time was really going: Euclid between two large integers would
+	 divide by 1983's byte-at-a-time long division thousands of times.
+
+	 Zero is ordinary.  `12 gcd: 0' is 12 and `0 gcd: 0' is 0 -- 1983's
+	 `easy test' divided by the smaller magnitude before looking at it and
+	 raised ZeroDivide for both (Bugs3 B40); the loop below asks n = 0
+	 before it divides by n."
+	| m n t |
 	m := self abs max: anInteger abs.
 	n := self abs min: anInteger abs.
-	n = 0 ifTrue: [^m].
-	m \\ n = 0 ifTrue: [^n].
-	d := 0.
-	[n even and: [m even]] whileTrue: [
-		d := d + 1.
-		n := n bitShift: -1.
-		m := m bitShift: -1].
-	[n even] whileTrue: [n := n bitShift: -1].
-	[m even] whileTrue: [m := m bitShift: -1].
-	[m = n] whileFalse: [
-		m > n
-			ifTrue: [m := m - n]
+	n digitLength > 8 ifTrue: [^m lehmerGcd: n].
+	[n = 0] whileFalse: [
+		t := m \\ n.
+		m := n.
+		n := t].
+	^m
+]
+
+{ #category : '*Kernel-Protocol' }
+Integer >> lehmerGcd: anInteger [
+	"The gcd of two positive LargeIntegers, me no smaller than anInteger,
+	 by Lehmer's algorithm (Knuth, volume 2, 4.5.2, Algorithm L).  Private
+	 to gcd:, which has already taken the signs off and handled zero.
+
+	 WHY NOT EUCLID.  Euclid between two numbers of n bits takes about
+	 0.6 n division steps, and a division here is 1983's long division, a
+	 byte at a time in Smalltalk: two 2,000-digit numbers would need some
+	 four thousand of them at a tenth of a second each.  Lehmer notices
+	 that the first several quotients of Euclid depend only on the LEADING
+	 bits of the two numbers.  It runs Euclid on the top 58 bits, in
+	 SmallInteger arithmetic, for as long as it can prove each quotient is
+	 the true one -- Knuth's test, that the bounds x+A / y+C and x+B / y+D
+	 agree -- while accumulating the 2-by-2 matrix of cofactors those
+	 steps amount to.  Then it applies the whole matrix to the large
+	 numbers at once: two linear combinations, each one pass over them,
+	 which take away some thirty bits.  No division at all in the common
+	 case.
+
+	 THE LARGE NUMBERS ARE ARRAYS OF 24-BIT LIMBS for the whole of the
+	 run, unpacked once by gcdLimbs: and packed once at the end -- the same
+	 representation, and the same reasoning, as digitMultiply:neg:.  A
+	 cofactor is held under 2^31, so a cofactor times a limb, twice, plus
+	 a carry, fits a SmallInteger with room to spare; a step that would
+	 make a larger cofactor ends the simulation there instead.  The arrays
+	 are written in place, and never grow, because neither number ever
+	 does.
+
+	 TWO CASES LEHMER CANNOT DO.  When the larger number has many more
+	 bits than the smaller, the very first quotient is too big for the
+	 simulation to begin.  Then the step is one digit of a long division:
+	 a quotient of at most 32 bits is estimated from the top of each number
+	 so that it is never too large -- the divisor's top bits are rounded
+	 UP -- and that quotient times the smaller number, moved up a whole
+	 number of limbs, is subtracted from the larger.  And when the
+	 simulation cannot prove even one quotient (B = 0 at the end of it,
+	 rare), the step is one exact Euclid step, by packing both numbers and
+	 dividing.  Both cases make progress, so the loop ends.
+
+	 The loop stops once the smaller number is under 2^48, and Euclid on
+	 Integers finishes: one division by a small divisor, then SmallIntegers.
+	 It was checked against Python's math.gcd over random operands of every
+	 size from one limb to several thousand, related and unrelated, before
+	 it was kept."
+	| x y lx ly bx by s e le xh yh qh a b c d q tc td go t v borrow i
+	  xi yi cx cy mask limit size |
+	mask := 16rFFFFFF.
+	limit := 16r7FFFFFFF.
+	size := (self digitLength + 2) // 3.
+	x := self gcdLimbs: size.
+	y := anInteger gcdLimbs: size.
+	lx := size.
+	[lx > 0 and: [(x at: lx) = 0]] whileTrue: [lx := lx - 1].
+	ly := size.
+	[ly > 0 and: [(y at: ly) = 0]] whileTrue: [ly := ly - 1].
+	[ly > 2] whileTrue: [
+		bx := (lx - 1) * 24 + (x at: lx) highBit.
+		by := (ly - 1) * 24 + (y at: ly) highBit.
+		bx - by >= 32
+			ifTrue: [
+				"One digit of long division: x := x - (qh * y * 2^e), with
+				 qh never more than the true quotient digit, so x stays
+				 non-negative."
+				s := by - 30.
+				yh := (Integer gcdTopOf: y shift: s) + 1.
+				le := bx - by - 8 // 24.
+				e := le * 24.
+				xh := Integer gcdTopOf: x shift: e + s.
+				qh := xh // yh.
+				borrow := 0.
+				1 to: ly do: [:j |
+					v := (x at: j + le) - (qh * (y at: j)) + borrow.
+					x at: j + le put: (v bitAnd: mask).
+					borrow := v bitShift: -24].
+				i := ly + le + 1.
+				[borrow ~= 0] whileTrue: [
+					v := (x at: i) + borrow.
+					x at: i put: (v bitAnd: mask).
+					borrow := v bitShift: -24.
+					i := i + 1]]
 			ifFalse: [
-				t := m.
-				m := n - m.
-				n := t].
-		[m even] whileTrue: [m := m bitShift: -1]].
-	d = 0 ifTrue: [^m].
-	^m bitShift: d
+				"Euclid on the leading bits, then the matrix on the whole."
+				s := bx - 58 max: 0.
+				xh := Integer gcdTopOf: x shift: s.
+				yh := Integer gcdTopOf: y shift: s.
+				a := 1. b := 0. c := 0. d := 1.
+				go := true.
+				[go] whileTrue: [
+					(yh + c <= 0 or: [yh + d <= 0])
+						ifTrue: [go := false]
+						ifFalse: [
+							q := xh + a // (yh + c).
+							q = (xh + b // (yh + d))
+								ifFalse: [go := false]
+								ifTrue: [
+									tc := a - (q * c).
+									td := b - (q * d).
+									(tc abs > limit or: [td abs > limit])
+										ifTrue: [go := false]
+										ifFalse: [
+											a := c. c := tc.
+											b := d. d := td.
+											t := xh - (q * yh).
+											xh := yh.
+											yh := t]]]].
+				b = 0
+					ifTrue: [
+						t := (Integer gcdFromLimbs: x size: lx)
+							\\ (Integer gcdFromLimbs: y size: ly).
+						x := y.
+						lx := ly.
+						y := t gcdLimbs: size.
+						ly := size]
+					ifFalse: [
+						cx := 0.
+						cy := 0.
+						1 to: lx do: [:j |
+							xi := x at: j.
+							yi := y at: j.
+							v := (a * xi) + (b * yi) + cx.
+							x at: j put: (v bitAnd: mask).
+							cx := v bitShift: -24.
+							v := (c * xi) + (d * yi) + cy.
+							y at: j put: (v bitAnd: mask).
+							cy := v bitShift: -24].
+						ly := lx]].
+		[lx > 0 and: [(x at: lx) = 0]] whileTrue: [lx := lx - 1].
+		[ly > 0 and: [(y at: ly) = 0]] whileTrue: [ly := ly - 1].
+		"Keep x the larger."
+		(lx < ly or: [lx = ly and: [
+				i := lx.
+				[i > 0 and: [(x at: i) = (y at: i)]] whileTrue: [i := i - 1].
+				i > 0 and: [(x at: i) < (y at: i)]]])
+			ifTrue: [
+				t := x. x := y. y := t.
+				t := lx. lx := ly. ly := t]].
+	x := Integer gcdFromLimbs: x size: lx.
+	y := Integer gcdFromLimbs: y size: ly.
+	[y = 0] whileFalse: [
+		t := x \\ y.
+		x := y.
+		y := t].
+	^x
+]
+
+{ #category : '*Kernel-Protocol' }
+Integer >> gcdLimbs: size [
+	"My magnitude as an Array of that many 24-bit limbs, least significant
+	 first, zero above my top.  The unpacking digitMultiply:neg: does, for
+	 lehmerGcd:, which needs room for a number as long as its larger one."
+	| limbs |
+	limbs := Array new: size.
+	1 to: size do: [:k |
+		limbs at: k put: (((self digitAt: k * 3) bitShift: 16)
+			+ ((self digitAt: k * 3 - 1) bitShift: 8)
+			+ (self digitAt: k * 3 - 2))].
+	^limbs
+]
+
+{ #category : '*Kernel-Protocol' }
+Integer class >> gcdFromLimbs: limbs size: count [
+	"The non-negative Integer whose 24-bit limbs are the first count of
+	 limbs, least significant first, the top one of them not zero.  The
+	 packing for lehmerGcd:, sized exactly so that truncated has no
+	 leading zero byte to copy the number again to remove."
+	| n result v |
+	count = 0 ifTrue: [^0].
+	v := limbs at: count.
+	n := (count - 1) * 3 + (v highBit + 7 // 8).
+	result := Integer new: n neg: false.
+	1 to: count do: [:k |
+		v := limbs at: k.
+		1 to: 3 do: [:b |
+			(k - 1) * 3 + b <= n ifTrue: [
+				result digitAt: (k - 1) * 3 + b put: (v bitAnd: 255)].
+			v := v bitShift: -8]].
+	^result truncated
+]
+
+{ #category : '*Kernel-Protocol' }
+Integer class >> gcdTopOf: limbs shift: s [
+	"The number limbs stand for, shifted right s bits, for lehmerGcd:,
+	 which asks only where that is at most 61 bits -- so it lies within
+	 four limbs of the shift, and every partial sum is a SmallInteger."
+	| first sh v |
+	first := s // 24 + 1.
+	sh := 0 - (s \\ 24).
+	v := 0.
+	first to: (first + 3 min: limbs size) do: [:j |
+		v := v + ((limbs at: j) bitShift: sh).
+		sh := sh + 24].
+	^v
 ]
 
 { #category : '*Kernel-Protocol' }

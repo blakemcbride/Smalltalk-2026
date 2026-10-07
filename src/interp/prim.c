@@ -515,6 +515,9 @@ primitive_at(void)
     return answer_integer(OM_fetch_byte(index - 1, object), 2);
 }
 
+/*  A Symbol already interned; defined with primitive 72 (Bugs5 INTERP-7).  */
+static int  symbol_is_sealed(st_oop p);
+
 static int
 primitive_at_put(void)
 {
@@ -531,6 +534,8 @@ primitive_at_put(void)
     length = indexable_length(object, &shape);
     if (index < 1 || index > length)
         return 0;
+    if (!shape.pointers && symbol_is_sealed(object))
+        return 0;               /*  Bugs5 INTERP-7: see symbol_is_sealed  */
     if (shape.pointers) {
         OM_store_pointer(shape.fixed + index - 1, object, value);
         ST_pop_n(3);
@@ -618,6 +623,8 @@ primitive_string_at_put(void)
     code = OM_fetch_pointer(0, value);
     if (!OM_is_int(code) || OM_int_value(code) < 0 || OM_int_value(code) > 255)
         return 0;
+    if (symbol_is_sealed(object))
+        return 0;               /*  Bugs5 INTERP-7: see symbol_is_sealed  */
     OM_store_byte(index - 1, object, (uint8_t) OM_int_value(code));
     ST_pop_n(3);
     ST_push(value);
@@ -738,6 +745,50 @@ is_a_symbol(st_oop p)
 {
     return OM_is_object(p)
         && OM_fetch_class(p) == OM_fetch_class(ST_SELECTOR_DOES_NOT_UNDERSTAND);
+}
+
+int
+ST_is_symbol(st_oop p)
+{
+    return is_a_symbol(p);
+}
+
+/*
+ *  May this Symbol's bytes still be written (Bugs5 INTERP-7)?
+ *
+ *  B21 refused become: and nothing else, so `#zork basicAt: 1 put: $y'
+ *  and primReplaceFrom:to:with:startingAt: rewrote the one object the
+ *  symbol table holds under `zork' -- it printed `york', `'zork' asSymbol'
+ *  then made a second Symbol, and every method dictionary keyed by the
+ *  first was keyed by a name nobody could spell.
+ *
+ *  The writes cannot simply be refused for every Symbol, because interning
+ *  makes one with them: 1983's Symbol class>>intern: is `(Symbol new:
+ *  aString size) string: aString', and string: is `super at: j put:' --
+ *  primitive 64 -- once per character, on an object nobody else has seen
+ *  yet.  That method is 1983's, in sources/, in the Blue Book profile and
+ *  in the Xerox image the bb build reads, so the VM has to tell the two
+ *  apart by looking.  What it can see is that `new:' fills with zero
+ *  bytes and string: fills them in order, so a Symbol still being built
+ *  has a zero byte -- its last, until the last write -- and a finished one
+ *  has none.  A Symbol with no zero byte is sealed.  The scan costs the
+ *  Symbol's length and is made only when a Symbol is the target, which
+ *  outside interning is never.  The one Symbol it cannot protect is one
+ *  that was interned with a NUL in its spelling.
+ */
+static int
+symbol_is_sealed(st_oop p)
+{
+    uint32_t    n;
+    uint32_t    i;
+
+    if (!is_a_symbol(p))
+        return 0;
+    n = OM_fetch_byte_length(p);
+    for (i = 0; i < n; ++i)
+        if (OM_fetch_byte(i, p) == 0)
+            return 0;
+    return 1;
 }
 
 static int
@@ -1696,6 +1747,31 @@ st_real_path(const char *path, char *out, size_t size)
     return n > 0 && n < size;
 }
 
+/*
+ *  Is there anything of that name -- file, directory, link?  See the POSIX
+ *  half for why the directory asks this rather than reading its listing.
+ */
+static int
+st_path_exists(const char *path)
+{
+    return GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES;
+}
+
+/*
+ *  Rename, refusing to replace -- see the POSIX half.  Win32's rename()
+ *  already refuses an existing destination with EEXIST or EACCES; the
+ *  check in front of it is so that the error is EEXIST either way.
+ */
+static int
+st_rename_noreplace(const char *from, const char *to)
+{
+    if (st_path_exists(to)) {
+        errno = EEXIST;
+        return -1;
+    }
+    return rename(from, to);
+}
+
 static int
 st_file_truncate(int fd, int64_t end)
 {
@@ -1862,6 +1938,59 @@ st_real_path(const char *path, char *out, size_t size)
     memcpy(out, resolved, n + 1);
     free(resolved);
     return 1;
+}
+
+/*
+ *  Is there anything of that name?  lstat, so that a symbolic link whose
+ *  target is gone still counts: readdir lists it, and a name the listing
+ *  shows must not be a name this says is absent.
+ *
+ *  Added for Bugs5 FILES-7.  PosixFileDirectory>>find:ifAbsentDo: answered
+ *  `is it there' by reading the whole listing and comparing names, and the
+ *  listing leaves out dot files and, until the same fix, stopped at 4,096
+ *  names -- so `Disk includesKey: ''.env''' was false for a file that
+ *  `fileNamed:' then opened, and in a big directory the static file
+ *  handler answered 404 for files that were there.  The file system knows;
+ *  asking it is one call where the listing was a walk of every name.
+ */
+static int
+st_path_exists(const char *path)
+{
+    struct stat st;
+
+    return lstat(path, &st) == 0;
+}
+
+/*
+ *  Rename `from' to `to', refusing to replace a file already called `to'
+ *  (Bugs5 FILES-8).
+ *
+ *  FileDirectory>>rename:newName: says `Create an error if a file by the
+ *  name, newName, already exists', and the Alto directory does exactly
+ *  that; rename(2) replaces the destination without a word, so renaming
+ *  onto a name that was taken destroyed that file.  renameat2 with
+ *  RENAME_NOREPLACE makes the test and the rename one step where the
+ *  kernel and the file system support it (Linux 3.15 and glibc 2.28 on);
+ *  elsewhere, and on a file system that answers EINVAL to the flag, the
+ *  name is looked for first.  The second way has a window between the
+ *  look and the rename that the first does not, and is the best a POSIX
+ *  rename offers -- macOS's renamex_np would close it there too, and is
+ *  not used because nothing here has been built on a Mac since.
+ */
+static int
+st_rename_noreplace(const char *from, const char *to)
+{
+#if defined(__linux__) && defined(RENAME_NOREPLACE)
+    if (renameat2(AT_FDCWD, from, AT_FDCWD, to, RENAME_NOREPLACE) == 0)
+        return 0;
+    if (errno != EINVAL && errno != ENOSYS)
+        return -1;
+#endif
+    if (st_path_exists(to)) {
+        errno = EEXIST;
+        return -1;
+    }
+    return rename(from, to);
 }
 
 static int64_t
@@ -2436,7 +2565,10 @@ primitive_file_command(void)
  *  primitive 131 -- PosixFileDirectory>>doPrimitive:arg1:arg2:
  *
  *  1 removes a file, 2 renames one, 3 answers the names in a directory,
- *  4 answers whether a name is a directory.
+ *  4 answers whether a name is a directory, 5 answers its real path, and
+ *  6 answers whether there is anything of that name at all.
+ *  2 never replaces: renaming onto a name that is taken fails with EEXIST,
+ *  as FileDirectory>>rename:newName: says it must (Bugs5 FILES-8).
  *  3 walks the directory the system was started in unless it is told
  *  otherwise: PosixFileDirectory new sets its directoryName to the empty
  *  string, and the empty string is where a relative name resolves.
@@ -2479,7 +2611,7 @@ primitive_directory_command(void)
          || !c_from_string(OM_fetch_pointer(FILE_NAME_FIELD, arg2),
                            a, sizeof a))
             return 0;
-        answer = rename(a, b) == 0 ? ST_TRUE : ST_FALSE;
+        answer = st_rename_noreplace(a, b) == 0 ? ST_TRUE : ST_FALSE;
         if (answer == ST_FALSE)
             posix_errno = errno;
         break;
@@ -2487,7 +2619,8 @@ primitive_directory_command(void)
     case 3: {                                   /*  the names  */
         st_dir          dir;
         const char     *name;
-        char           *names[4096];
+        char          **names = NULL;
+        uint32_t        capacity = 0;
         uint32_t        count = 0;
         uint32_t        i;
         st_oop          array;
@@ -2514,23 +2647,48 @@ primitive_directory_command(void)
          *  workers with the collector forced along a listing came back with
          *  a name that was no longer an object.
          */
-        while ((name = st_dir_next(&dir)) != NULL && count < 4096) {
+        /*
+         *  As many as there are (Bugs5 FILES-7).  This was `char
+         *  *names[4096]' and a loop that stopped at 4,096, which in a
+         *  bigger directory dropped the rest -- which ones depending on
+         *  readdir's order, so nothing about a name said whether it would
+         *  be seen -- and answered the shortened list as the whole one.
+         *  The array grows instead, and running out of memory fails the
+         *  primitive rather than answering part of a directory.
+         */
+        while ((name = st_dir_next(&dir)) != NULL) {
             size_t  n;
 
             if (name[0] == '.')                 /*  no dot files, no . or ..  */
                 continue;
+            if (count == capacity) {
+                uint32_t    want = capacity ? capacity * 2 : 256;
+                char      **grown = (want > capacity)
+                                    ? realloc(names, want * sizeof *names)
+                                    : NULL;
+
+                if (!grown) {
+                    failed = 1;
+                    break;
+                }
+                names = grown;
+                capacity = want;
+            }
             n = strlen(name);
             names[count] = malloc(n + 1);
-            if (!names[count])
+            if (!names[count]) {
+                failed = 1;
                 break;
+            }
             memcpy(names[count], name, n + 1);
             ++count;
         }
         st_dir_close(&dir);
-        array = OM_instantiate_pointers(ST_CLASS_ARRAY, count);
-        if (!OM_is_present(array))
+        array = failed ? ST_NIL
+                       : OM_instantiate_pointers(ST_CLASS_ARRAY, count);
+        if (!failed && !OM_is_present(array))
             failed = 1;
-        else {
+        if (!failed) {
             ST_push(array);
             for (i = 0; i < count; ++i) {
                 st_oop  one = string_from_c(names[i], strlen(names[i]));
@@ -2545,6 +2703,7 @@ primitive_directory_command(void)
         }
         for (i = 0; i < count; ++i)
             free(names[i]);
+        free(names);
         if (failed)
             return 0;
         ST_pop_n(3);
@@ -2555,6 +2714,18 @@ primitive_directory_command(void)
         if (!c_from_string(arg1, a, sizeof a))
             return 0;
         answer = st_path_is_directory(a) ? ST_TRUE : ST_FALSE;
+        break;
+
+    case 6:                                     /*  is there an arg1  */
+        /*
+         *  Anything of that name, dot file or not, listed or not -- see
+         *  st_path_exists (Bugs5 FILES-7).  A name C cannot carry is
+         *  answered false: there is no file of a name no file can have.
+         */
+        if (!c_from_string(arg1, a, sizeof a))
+            answer = ST_FALSE;
+        else
+            answer = st_path_exists(a) ? ST_TRUE : ST_FALSE;
         break;
 
     case 5:                                     /*  the real path of arg1  */
@@ -2871,9 +3042,30 @@ primitive_cursor_loc_put(void)
     return 1;                   /*  receiver remains as the result  */
 }
 
+/*
+ *  93, 100 and 136 hand the VM a semaphore to signal later, from the event
+ *  queue or the timer thread, and the 1983 comments on all three say to fail
+ *  if the argument is neither a Semaphore nor nil.  Nothing checked, so
+ *  `Processor signal: 'abc' copy atMilliseconds: ...' armed the timer with
+ *  a String, and when it fired SCHED_synchronous_signal read and wrote the
+ *  list and excess-signal fields of an object that has none -- heap
+ *  corruption reported long after, as `munmap_chunk(): invalid pointer'.
+ *  The test is primitive 85's: the class exactly, since nothing in the
+ *  image subclasses Semaphore (Bugs5 INTERP-3).
+ */
+static int
+semaphore_or_nil(st_oop semaphore)
+{
+    return semaphore == ST_NIL
+        || (OM_is_object(semaphore)
+            && OM_fetch_class(semaphore) == ST_CLASS_SEMAPHORE);
+}
+
 static int
 primitive_input_semaphore(void)
 {
+    if (!semaphore_or_nil(ST_stack_value(0)))
+        return 0;
     SCHED_set_input_semaphore(ST_stack_value(0));
     ST_pop_n(1);
     return 1;                   /*  receiver remains as the result  */
@@ -3252,7 +3444,18 @@ primitive_new_method(void)
      *  The header and the literal frame come first, then the bytecodes.  The
      *  stride is the object memory's pointer size, the same one the
      *  interpreter uses to find a method's first bytecode.
+     *
+     *  The sum is a uint32_t, so a bytecode count near 2^32 used to wrap
+     *  it: `newMethod: 4294967288' asked for 0 bytes, and the header store
+     *  below wrote 8 bytes into an object that had none -- a heap overflow
+     *  the allocator caught later as `free(): invalid size'.  On the
+     *  64-bit object memory the cast also truncated any count above 2^32.
+     *  A count that does not fit beside the literal frame is refused
+     *  before the sum is formed (Bugs5 INTERP-2).
      */
+    if ((uint64_t) bytecodes
+            > UINT32_MAX - (uint64_t) (literals + 1) * sizeof(st_oop))
+        return 0;
     method = OM_instantiate_bytes(cls,
                 (literals + 1) * (uint32_t) sizeof(st_oop)
                     + (uint32_t) bytecodes);
@@ -3289,6 +3492,8 @@ primitive_replace_from_to_with_starting_at(void)
     source_bytes = !OM_pointer_bit(source);
     if (target_bytes != source_bytes)
         return 0;               /*  no mixing pointers and bytes  */
+    if (target_bytes && symbol_is_sealed(target))
+        return 0;               /*  Bugs5 INTERP-7: see symbol_is_sealed  */
 
     for (i = 0; i <= stop - start; ++i) {
         uint32_t    to_index   = (uint32_t) (start + i - 1);
@@ -3443,9 +3648,10 @@ primitive_execute_method(void)
 
     if (st_vm.argument_count != 2)
         return 0;
-    if (!OM_is_present(arguments) || !OM_is_present(method)
-     || OM_fetch_class(arguments) != ST_CLASS_ARRAY
-     || OM_fetch_class(method) != ST_CLASS_COMPILED_METHOD)
+    /*  A CompiledMethod with the header and literals its header claims:
+     *  the send path trusts both from here on (Bugs5 INTERP-4).  */
+    if (!OM_is_present(arguments) || !ST_method_shaped(method)
+     || OM_fetch_class(arguments) != ST_CLASS_ARRAY)
         return 0;
     count = OM_fetch_word_length(arguments);
     if (ST_method_argument_count(method) != count)
@@ -4341,7 +4547,7 @@ primitive_signal_at_time(void)
     st_oop  when      = ST_stack_value(0);
     st_oop  semaphore = ST_stack_value(1);
 
-    if (!OM_is_int(when))
+    if (!OM_is_int(when) || !semaphore_or_nil(semaphore))
         return 0;
     SCHED_signal_at_ms(semaphore, (uint32_t) OM_int_value(when));
     ST_pop_n(2);                /*  answers the receiver  */
@@ -4368,6 +4574,8 @@ primitive_signal_at_milliseconds(void)
     uint32_t    when      = 0;
     uint32_t    i;
 
+    if (!semaphore_or_nil(semaphore))
+        return 0;
     if (!OM_is_object(bytes) || OM_fetch_byte_length(bytes) < 4)
         return 0;
     for (i = 0; i < 4; ++i)

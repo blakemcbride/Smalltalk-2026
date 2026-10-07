@@ -55,9 +55,10 @@ Class >> basicSubclass: t instanceVariableNames: f classVariableNames: d poolDic
 { #category : '*Tonel' }
 Class >> subclass: t instanceVariableNames: f classVariableNames: d poolDictionaries: s category: cat [
 	"Define or redefine the class, as 1983 did -- and if it came from a Tonel
-	 file, write the file."
+	 file, write the file, having asked first whether it can be."
 
 	| newClass |
+	TonelSource checkChangeTo: (Smalltalk at: t asSymbol ifAbsent: [nil]) source: nil.
 	newClass := self basicSubclass: t instanceVariableNames: f classVariableNames: d
 		poolDictionaries: s category: cat.
 	newClass notNil ifTrue: [TonelSource noteChangeIn: newClass].

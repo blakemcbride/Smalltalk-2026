@@ -153,20 +153,31 @@ ST_push(st_oop value)
     if (next >= st_vm.stack_limit) {
         char    name[200];
 
-        /*  Named whether or not errors are being reported: an overflow
-         *  ends the run, and the method is the whole of the diagnosis.  */
+        /*  Named whether or not errors are being reported: the method is
+         *  the whole of the diagnosis.  */
         if (!name_method(st_vm.receiver, st_vm.method, name, sizeof name))
             snprintf(name, sizeof name, "?");
         fprintf(stderr, "st2026: a method overflowed its frame at %u slots "
                         "(the context holds %u); its declared frame is too "
                         "small: %s\n",
                 next, (unsigned) st_vm.stack_limit, name);
-        ST_set_error_reporting(1);
-        ST_report_backtrace();
-        /*  And the chain as the scheduler sees it, registers written back.  */
-        ST_store_active_context();
-        ST_interp_dump_workers();
-        st_vm.running = 0;
+        /*
+         *  And delivered as a CorruptMethod, not by stopping the run (Bugs5
+         *  INTERP-5).  This used to clear st_vm.running: no handler could
+         *  see it, -eval exited 0 answering nil, and under -serve the worker
+         *  left the pool.  The commonest way here is not a compiler
+         *  estimate at all but a context whose stack pointer was written
+         *  through instVarAt:put: to the last slot -- which
+         *  fetch_context_registers rightly accepts, since a process can be
+         *  preempted with its stack exactly full -- and then returned to,
+         *  when the answer has nowhere to go.  The push is dropped and the
+         *  fault noted the way a pop past the floor is: a push happens in
+         *  the middle of a bytecode, so the top of the dispatch loop
+         *  abandons the activation and the sender sees #corruptMethod.
+         */
+        if (!st_vm.corrupt_reason)
+            st_vm.corrupt_reason = "a push past the end of the context";
+        st_vm.instruction_pointer = st_vm.method_end;
         return;
     }
     st_vm.stack_pointer = next;
@@ -268,6 +279,55 @@ static st_oop
 method_literal(uint32_t index, st_oop method)
 {
     return OM_fetch_pointer(ST_METHOD_LITERAL_START + index, method);
+}
+
+/*
+ *  Is this something a send can run (Bugs5 INTERP-4)?
+ *
+ *  A method dictionary is an ordinary object and `Behavior>>addSelector:
+ *  withMethod:' stores whatever it is handed, so `Object addSelector:
+ *  #zork withMethod: ''abc'' copy' put a String where a method belongs and
+ *  the next `nil zork' read a header out of three bytes of text.  What the
+ *  send path reads before any bytecode runs is the header word, the
+ *  literal frame the header describes (the extension literal of a flag-7
+ *  method is in it), and nothing more -- the bytecodes themselves are
+ *  bounded later, by fetch_context_registers.  So the test is the class
+ *  and enough bytes for exactly those, and `CompiledMethod new: 0' fails
+ *  it as surely as a String does.
+ */
+int
+ST_method_shaped(st_oop method)
+{
+    uint32_t    bytes;
+
+    if (!OM_is_object(method)
+     || OM_fetch_class(method) != ST_CLASS_COMPILED_METHOD)
+        return 0;
+    bytes = OM_fetch_byte_length(method);
+    if (bytes < (uint32_t) sizeof(st_oop))
+        return 0;
+    return bytes / (uint32_t) sizeof(st_oop)
+        >= ST_header_literal_count(method_header(method))
+           + ST_METHOD_LITERAL_START;
+}
+
+/*
+ *  Is this a context the interpreter can take registers from?  Either kind,
+ *  with at least the six fixed fields every context has.  The closure
+ *  paths and fetch_context_registers read those fields from whatever a
+ *  BlockClosure's outerContext or a BlockContext's home holds, and both
+ *  are instance variables `instVarAt:put:' writes (Bugs5 INTERP-4).
+ */
+static int
+context_shaped(st_oop ctx)
+{
+    st_oop  cls;
+
+    if (!OM_is_object(ctx) || !OM_pointer_bit(ctx))
+        return 0;
+    cls = OM_fetch_class(ctx);
+    return (cls == ST_CLASS_METHOD_CONTEXT || cls == ST_CLASS_BLOCK_CONTEXT)
+        && OM_fetch_word_length(ctx) >= ST_CTX_TEMP_FRAME_START;
 }
 
 static uint32_t
@@ -601,15 +661,35 @@ receiver_field_count(st_oop receiver)
 static void
 fetch_context_registers(void)
 {
-    st_oop  ctx = st_vm.active_context;
+    st_oop      ctx = st_vm.active_context;
+    const char *home_fault = NULL;
 
     if (OM_fetch_class(ctx) == ST_CLASS_BLOCK_CONTEXT)
         st_vm.home_context = OM_fetch_pointer(ST_CTX_HOME, ctx);
     else
         st_vm.home_context = ctx;
 
-    st_vm.receiver = OM_fetch_pointer(ST_CTX_RECEIVER, st_vm.home_context);
-    st_vm.method   = OM_fetch_pointer(ST_CTX_METHOD, st_vm.home_context);
+    /*
+     *  A BlockContext's home is an instance variable like any other, and
+     *  `BlockContext new: 10' with `instVarAt: 6 put: Object new' handed
+     *  the receiver and method fetches below an object with no fields
+     *  (Bugs5 INTERP-4).  A home that is not a MethodContext with the
+     *  fixed fields is not used: the block becomes its own home, so every
+     *  later temporary access stays inside an object that has the slots,
+     *  the method register is the arg count -- not a CompiledMethod -- and
+     *  the activation is abandoned below like any other bad register.
+     */
+    if (st_vm.home_context != ctx
+     && (!context_shaped(st_vm.home_context)
+      || OM_fetch_class(st_vm.home_context) != ST_CLASS_METHOD_CONTEXT)) {
+        st_vm.home_context = ctx;
+        home_fault = "a block context whose home is not a method context";
+    }
+
+    st_vm.receiver = home_fault ? ST_NIL
+                   : OM_fetch_pointer(ST_CTX_RECEIVER, st_vm.home_context);
+    st_vm.method   = home_fault ? ST_NIL
+                   : OM_fetch_pointer(ST_CTX_METHOD, st_vm.home_context);
     /*
      *  The last slot this context has, cached here rather than read from
      *  the object on every push.  Fetching it per push cost 8-12% across
@@ -645,9 +725,12 @@ fetch_context_registers(void)
         st_oop      sp_field = fetch_integer(ST_CTX_SP, ctx);
         st_int      ip = OM_is_int(ip_field) ? OM_int_value(ip_field) : -1;
         st_int      sp = OM_is_int(sp_field) ? OM_int_value(sp_field) : -1;
-        const char *fault = NULL;
+        const char *fault = home_fault;
 
-        if (!OM_is_object(st_vm.method)
+        if (fault) {
+            st_vm.literal_limit = 0;
+            st_vm.method_end    = 0;
+        }  else if (!OM_is_object(st_vm.method)
          || OM_fetch_class(st_vm.method) != ST_CLASS_COMPILED_METHOD) {
             st_vm.literal_limit = 0;
             st_vm.method_end    = 0;
@@ -663,8 +746,8 @@ fetch_context_registers(void)
                         "its method's bytecodes";
         }
         /*  Zero is an empty stack; the top must stay inside the object.  */
-        if (sp < 0
-         || (uint32_t) sp + ST_CTX_TEMP_FRAME_START - 1 >= st_vm.stack_limit)
+        if (!fault && (sp < 0
+         || (uint32_t) sp + ST_CTX_TEMP_FRAME_START - 1 >= st_vm.stack_limit))
             fault = "a context whose stack pointer is outside the context";
 
         if (fault) {
@@ -1226,12 +1309,27 @@ lookup_method(st_oop selector, st_oop start_class, st_oop *found_class)
 
     /*  A nil superclass is the top of the chain, so the walk stops there.  */
     while (OM_is_present(cls)) {
-        st_oop      dict = OM_fetch_pointer(ST_CLASS_METHOD_DICT, cls);
-        uint32_t    capacity = OM_method_dict_capacity(dict);
+        st_oop      dict;
+        uint32_t    capacity;
         uint32_t    slot;
 
         if (++hops > MAX_SUPERCLASS_CHAIN)
             break;                      /*  a cycle: see the constant  */
+        /*
+         *  Everything on the chain after the first class came out of a
+         *  superclass field, and `instVarAt: 1 put: Object new' writes one
+         *  that `superclass:' would have refused; the next fetch then read
+         *  a method dictionary out of an object with no fields (Bugs5
+         *  INTERP-4).  The receiver's class gets the same test for free.
+         *  Something without a superclass and a method dictionary is the
+         *  end of the chain, as nil is, and the send goes to
+         *  doesNotUnderstand:.
+         */
+        if (!OM_is_object(cls) || !OM_pointer_bit(cls)
+         || OM_fetch_word_length(cls) <= ST_CLASS_METHOD_DICT)
+            break;
+        dict     = OM_fetch_pointer(ST_CLASS_METHOD_DICT, cls);
+        capacity = OM_method_dict_capacity(dict);
 
         /*
          *  Probe from the selector's hash, the way the dictionary was
@@ -1264,9 +1362,25 @@ lookup_method(st_oop selector, st_oop start_class, st_oop *found_class)
                 slot = (start + probe) % capacity;
                 key  = OM_method_dict_key(dict, slot);
                 if (key == selector) {
+                    st_oop  method = OM_method_dict_value(dict, slot);
+
+                    /*
+                     *  And a value that is not a method is not one
+                     *  (Bugs5 INTERP-4): `Object addSelector: #zork
+                     *  withMethod: ''abc'' copy' used to send `nil zork'
+                     *  into run_method_found with a String for the
+                     *  CompiledMethod.  Treating the entry as absent
+                     *  makes every caller safe at once -- the sends, the
+                     *  perform: argument check, the VM's own lookups of
+                     *  #doesNotUnderstand: and the rest.  The walk goes
+                     *  on to the superclass, as for any selector not in
+                     *  this dictionary.
+                     */
+                    if (!ST_method_shaped(method))
+                        break;
                     if (found_class)
                         *found_class = cls;
-                    return OM_method_dict_value(dict, slot);
+                    return method;
                 }
                 if (key == ST_NIL)
                     break;      /*  a nil ends the probe: not in here  */
@@ -1706,6 +1820,17 @@ ST_activate_block(st_oop block, uint32_t argc)
     st_oop      initial_ip;
     uint32_t    i;
 
+    /*
+     *  The arguments go in fields six onward, and the record is a copy of
+     *  the block as somebody made it -- `BlockContext new: 0' has the six
+     *  fixed fields and nothing for `value: 3' to land in, and the store
+     *  wrote past the object (Bugs5 INTERP-4).  The primitive fails
+     *  instead.  The same bound keeps the stack pointer, which starts at
+     *  argc, inside the object for fetch_context_registers.
+     */
+    if (OM_fetch_word_length(block) < ST_CTX_TEMP_FRAME_START + argc)
+        return 0;
+
     /*  See activate_new_method: a block can run away just as a method can. */
     if (depth_ceiling_reached() && send_depth_exceeded(argc))
         return 1;
@@ -1786,20 +1911,26 @@ ST_closure_as_context(st_oop closure)
     uint32_t    slots;
     uint32_t    i;
 
-    if (!OM_is_object(closure))
+    /*
+     *  Primitive 207 is reachable with any receiver -- `Object new withArgs:
+     *  #() executeMethod: (BlockClosure compiledMethodAt: #asContext)' --
+     *  and outerContext is an instance variable (Bugs5 INTERP-4): both are
+     *  checked before anything is read through them.
+     */
+    if (!ST_is_block_closure(closure))
         return ST_OOP_INVALID;
-    outer = OM_fetch_pointer(ST_CLOSURE_OUTER_CONTEXT, closure);
-    if (!OM_is_present(outer))
-        return ST_OOP_INVALID;
-    method   = OM_fetch_pointer(ST_CTX_METHOD, outer);
-    receiver = OM_fetch_pointer(ST_CTX_RECEIVER, outer);
-    if (!OM_is_object(method))
-        return ST_OOP_INVALID;
-
     copied = OM_fetch_word_length(closure);
     if (copied < ST_CLOSURE_FIRST_COPIED)
         return ST_OOP_INVALID;
     copied -= ST_CLOSURE_FIRST_COPIED;
+
+    outer = OM_fetch_pointer(ST_CLOSURE_OUTER_CONTEXT, closure);
+    if (!context_shaped(outer))
+        return ST_OOP_INVALID;
+    method   = OM_fetch_pointer(ST_CTX_METHOD, outer);
+    receiver = OM_fetch_pointer(ST_CTX_RECEIVER, outer);
+    if (!ST_method_shaped(method))
+        return ST_OOP_INVALID;
 
     slots = ST_context_slots_for(method_header(method));
     if (copied + ST_CTX_TEMP_FRAME_START > slots)
@@ -1835,25 +1966,30 @@ ST_activate_closure(st_oop closure, uint32_t argc)
     uint32_t    slots;
     uint32_t    i;
 
-    outer = OM_fetch_pointer(ST_CLOSURE_OUTER_CONTEXT, closure);
-    if (!OM_is_present(outer))
+    copied = OM_fetch_word_length(closure);
+    if (copied < ST_CLOSURE_FIRST_COPIED)
         return 0;
+    copied -= ST_CLOSURE_FIRST_COPIED;
+
     /*
      *  The method and receiver come from the closure's birthplace, and a
      *  closure activation carries both, so this reads correctly however
      *  deeply closures are nested.  Note do_return nils a returning
      *  context's sender and ip but leaves its method and receiver intact --
      *  which is exactly what lets a closure outlive its creator.
+     *
+     *  outerContext is an instance variable, so `[3] instVarAt: 1 put:
+     *  Object new' made the two fetches read an object with no fields,
+     *  and a method that was not one was then sized by its `header'
+     *  (Bugs5 INTERP-4).  Both are checked; the primitive fails.
      */
+    outer = OM_fetch_pointer(ST_CLOSURE_OUTER_CONTEXT, closure);
+    if (!context_shaped(outer))
+        return 0;
     method   = OM_fetch_pointer(ST_CTX_METHOD, outer);
     receiver = OM_fetch_pointer(ST_CTX_RECEIVER, outer);
-    if (!OM_is_object(method))
+    if (!ST_method_shaped(method))
         return 0;
-
-    copied = OM_fetch_word_length(closure);
-    if (copied < ST_CLOSURE_FIRST_COPIED)
-        return 0;
-    copied -= ST_CLOSURE_FIRST_COPIED;
 
     slots = ST_context_slots_for(method_header(method));
     if (argc + copied + ST_CTX_TEMP_FRAME_START > slots)
@@ -2465,6 +2601,21 @@ return_value(st_oop result)
         int     discarded = 0;
         st_oop  unwind = find_unwind_between(ctx, home, &found, &discarded);
 
+        /*
+         *  An unwind frame is used only when the home is beyond it (Bugs5
+         *  INTERP-6).  aboutToReturn:through: runs every ensure block from
+         *  here down to the home -- and when the home had already returned
+         *  that was every ensure block to the bottom of the stack, the
+         *  callers' included, before `home return:' failed with "a
+         *  primitive has failed".  The search stopped at the first unwind
+         *  frame without asking whether the home lay past it, so the walk
+         *  is finished from there; it covers only the frames the search did
+         *  not, and a dead home gets cannotReturn: with nothing run early.
+         */
+        if (OM_is_present(unwind) && frames_through(unwind, home) < 0) {
+            send_cannot_return(ctx, result);
+            return;
+        }
         if (OM_is_present(unwind)) {
             send_about_to_return(ctx, result, unwind);
             return;
@@ -2682,7 +2833,18 @@ run_method_found(st_oop receiver, st_oop method)
         /*  receiver is now on top; leave it as the result  */
         return;
     }
-    if (flag == 6) {
+    /*
+     *  The field a flag-6 method answers is named by its header, and a
+     *  header is whatever `newMethod:header:' was given: 28544 run on 3
+     *  read through a SmallInteger, and on `Object new' answered whatever
+     *  lay past the object (Bugs5 INTERP-4).  A field the receiver does not
+     *  have is not a quick return; the method is activated instead, where
+     *  its bytecodes meet receiver_variable_ok or the end of the method and
+     *  the activation is abandoned with #corruptMethod -- a catchable error
+     *  in place of a stray read.
+     */
+    if (flag == 6
+     && ST_header_temporary_count(header) < receiver_field_count(receiver)) {
         uint32_t    index = ST_header_temporary_count(header);
         st_oop      value = OM_fetch_pointer(index, receiver);
 

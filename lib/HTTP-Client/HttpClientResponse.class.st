@@ -39,6 +39,13 @@ HttpClientResponse class >> readFrom: aStream maxBodyBytes: anInteger [
 	^self new readFrom: aStream maxBodyBytes: anInteger
 ]
 
+{ #category : 'instance creation' }
+HttpClientResponse class >> readFrom: aStream maxBodyBytes: anInteger method: aMethod [
+	"The reply to a request of that method: see HttpBodyStream, which is
+	 where a HEAD's reply is known to have no body (Bugs5 NET-8)."
+	^self new readFrom: aStream maxBodyBytes: anInteger method: aMethod
+]
+
 { #category : 'reading' }
 HttpClientResponse >> readFrom: aStream [
 	^self readFrom: aStream maxBodyBytes: HttpBodyStream defaultMaxBodyBytes
@@ -46,6 +53,11 @@ HttpClientResponse >> readFrom: aStream [
 
 { #category : 'reading' }
 HttpClientResponse >> readFrom: aStream maxBodyBytes: anInteger [
+	^self readFrom: aStream maxBodyBytes: anInteger method: nil
+]
+
+{ #category : 'reading' }
+HttpClientResponse >> readFrom: aStream maxBodyBytes: anInteger method: aMethodOrNil [
 	"The reply, past any interim ones.
 
 	 A 1xx IS NOT AN ANSWER, it is a note that the answer is coming, and
@@ -59,7 +71,7 @@ HttpClientResponse >> readFrom: aStream maxBodyBytes: anInteger [
 	 nothing but interim responses is a peer holding this process open."
 	| interim |
 	interim := 0.
-	[self readOneFrom: aStream maxBodyBytes: anInteger.
+	[self readOneFrom: aStream maxBodyBytes: anInteger method: aMethodOrNil.
 	 status < 100 or: [status > 199]] whileFalse: [
 		(interim := interim + 1) > 8 ifTrue: [
 			^NetError new signal: 'the reply is nothing but interim responses']].
@@ -67,12 +79,14 @@ HttpClientResponse >> readFrom: aStream maxBodyBytes: anInteger [
 ]
 
 { #category : 'private' }
-HttpClientResponse >> readOneFrom: aStream maxBodyBytes: anInteger [
+HttpClientResponse >> readOneFrom: aStream maxBodyBytes: anInteger method: aMethodOrNil [
 	"One status line, its headers, and the stream its body would be read
 	 from.  An interim reply has no body, which HttpBodyStream already
-	 knows from the status."
+	 knows from the status, and neither has the reply to a HEAD, which it
+	 knows from the method.  The status line is bounded as the headers are
+	 (Bugs5 NET-4)."
 	| line space rest |
-	line := aStream nextLine.
+	line := HttpBodyStream nextLineFrom: aStream limit: HttpBodyStream maxLineBytes.
 	(line startsWith: 'HTTP/') ifFalse: [^NetError new signal: 'not an HTTP reply: ', line printString].
 	space := line indexOf: Character space.
 	space = 0 ifTrue: [^NetError new signal: 'not an HTTP reply: ', line printString].
@@ -84,7 +98,7 @@ HttpClientResponse >> readOneFrom: aStream maxBodyBytes: anInteger [
 	reason := space = 0 ifTrue: [''] ifFalse: [(rest copyFrom: space + 1 to: rest size) trimmed].
 	self readHeadersFrom: aStream.
 	bodyStream := HttpBodyStream on: aStream status: status headers: headers
-		maxBodyBytes: anInteger
+		maxBodyBytes: anInteger method: aMethodOrNil
 ]
 
 { #category : 'private' }
@@ -101,10 +115,13 @@ HttpClientResponse >> readHeadersFrom: aStream [
 	 value is allowed, because that is one framing written twice and there
 	 is nothing to disagree about; anything else is a peer this client
 	 cannot safely read.  Other repeated headers are still last-wins: they
-	 say nothing about framing."
-	| line colon name value old |
+	 say nothing about framing.
+
+	 BOUNDED, line by line, in total and in number (Bugs5 NET-4): see
+	 HttpBodyStream class>>nextLineFrom:limit:."
+	| colon name value old |
 	headers := Dictionary new.
-	[(line := aStream nextLine) isEmpty] whileFalse: [
+	HttpBodyStream headerLinesFrom: aStream do: [:line |
 		colon := line indexOf: $:.
 		colon > 1 ifTrue: [
 			name := (line copyFrom: 1 to: colon - 1) trimmed asLowercase.

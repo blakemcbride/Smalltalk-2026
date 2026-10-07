@@ -1423,7 +1423,6 @@ evaluate(const char *expression, char *errbuf, size_t errlen)
 {
     st_compile_context  ctx;
     st_compile_result   res;
-    char                source[4096];
     st_oop              context;
     st_oop              method;
 
@@ -1456,8 +1455,15 @@ evaluate(const char *expression, char *errbuf, size_t errlen)
      *  an explicit ^ wherever it appears.
      */
     ctx.no_pattern = 1;
-    snprintf(source, sizeof source, "%s", expression);
-    if (COMPILE_method(source, &ctx, &res) != 0) {
+    /*
+     *  The text itself, not a copy of it (Bugs5 DOCS-1).  It went through
+     *  `char source[4096]' and snprintf, which cut anything longer off
+     *  without a word and compiled the rest: `-eval "$(cat program.st)"',
+     *  which chapter 2 recommends, ran part of a program and exited 0, or
+     *  complained of an unterminated string the program does not contain.
+     *  With no pattern to prepend there was never anything to copy for.
+     */
+    if (COMPILE_method(expression, &ctx, &res) != 0) {
         snprintf(errbuf, errlen, "%s", res.error);
         return ST_OOP_INVALID;
     }
@@ -1850,7 +1856,11 @@ do_bootstrap(const char *const *sources, const int *dialects, unsigned count,
      *  to resume, and this is the only place that knows what that should be;
      *  it is a string so that it can be changed without changing C.
      */
-    if (!BOOT_install_scheduler(startup ? startup :
+    /*
+     *  In -eval's dialect (Bugs5 OM-11): the startup is a doit like any
+     *  other, and an image with closures in it reads doits as closures.
+     */
+    if (!BOOT_install_scheduler_dialect(startup ? startup :
                                 /*
                                  *  beDisplay first: a reloaded image has a
                                  *  DisplayScreen but the VM has not been told
@@ -1861,7 +1871,8 @@ do_bootstrap(const char *const *sources, const int *dialects, unsigned count,
                                 " ScheduledControllers restore."
                                 " [true] whileTrue:"
                                 " [ScheduledControllers"
-                                " searchForActiveController]")) {
+                                " searchForActiveController]",
+                                eval_dialect)) {
         /*
          *  An error, and the end of the build (Bugs3 B58).  This used to
          *  say so and carry on: `-startup "3 +"' wrote the image and exited
@@ -1920,7 +1931,10 @@ do_bootstrap(const char *const *sources, const int *dialects, unsigned count,
                         doctest_paths->items[i], scan_error);
         }
         for (i = 0; i < list.count; ++i) {
-            char    source[2048];
+            static const char   doctest_frame[] =
+                "^[() = ()] on: Error do: [:e | #stDoctestRaised]";
+            char   *source;
+            size_t  source_size;
             st_oop  value;
 
             /*
@@ -1932,10 +1946,25 @@ do_bootstrap(const char *const *sources, const int *dialects, unsigned count,
              *  selector counted as a wrong answer and printed a backtrace
              *  on the way past.
              */
-            snprintf(source, sizeof source,
+            /*
+             *  Sized from the doctest (Bugs5 DOCS-1).  A fixed 2048 cut a
+             *  long one off, the cut text did not compile, and a doctest
+             *  that answered wrong was counted as needing something this
+             *  image has not got -- the one count that is not a bug.
+             */
+            source_size = sizeof doctest_frame
+                          + strlen(list.items[i].expression)
+                          + strlen(list.items[i].expected);
+            source = malloc(source_size);
+            if (source == NULL) {
+                fprintf(stderr, "st2026: out of memory running doctests\n");
+                exit(1);
+            }
+            snprintf(source, source_size,
                      "^[(%s) = (%s)] on: Error do: [:e | #stDoctestRaised]",
                      list.items[i].expression, list.items[i].expected);
             value = evaluate(source, err, sizeof err);
+            free(source);
             if (value == ST_TRUE) {
                 ++passed;
                 continue;

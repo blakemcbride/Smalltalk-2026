@@ -299,7 +299,7 @@ HttpClient >> request: aMethod url: aUrlString body: aStringOrNil contentType: a
 	  stream readTimeout: readTimeout.
 	  total isNil ifFalse: [stream deadlineIn: total].
 	  self write: aMethod url: url body: aStringOrNil contentType: aTypeOrNil on: stream.
-	  aBlock value: (HttpClientResponse readFrom: stream maxBodyBytes: maxBodyBytes)]
+	  aBlock value: (HttpClientResponse readFrom: stream maxBodyBytes: maxBodyBytes method: aMethod)]
 		ensure: [socket close]
 ]
 

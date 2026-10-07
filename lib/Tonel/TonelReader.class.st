@@ -402,18 +402,16 @@ TonelReader >> readMethodClassified: category [
 
 { #category : 'private - methods' }
 TonelReader >> selectorOf: source [
-	"The selector a method source's pattern names: the first line, which
-	 is a unary word, a binary selector and its argument, or keywords each
-	 followed by an argument."
-	| pattern words out |
-	pattern := source copyFrom: 1 to: ((source indexOf: Character cr) - 1 max: 0).
-	words := pattern substrings.
-	words isEmpty ifTrue: [^nil].
-	words size = 1 ifTrue: [^words first asSymbol].
-	(words first last = $:) ifFalse: [^words first asSymbol].		"binary"
-	out := WriteStream on: (String new: 32).
-	words do: [:w | w last = $: ifTrue: [out nextPutAll: w]].
-	^out contents asSymbol
+	"The selector a method source's pattern names, or nil if it names
+	 none: read by the image's own Parser, as the compiler reads it.
+
+	 It was read by splitting the first line at white space, which takes
+	 `with:x and:y' -- no space after either colon, and legal -- for the
+	 binary selector #with:x.  removeMethodsNotIn:from: asks this which
+	 selectors the file still has, so a reload of a file holding that
+	 method removed with:and: from the class as no longer in it, and said
+	 nothing (Bugs5 COMP-3)."
+	^[Parser new parseSelector: source] on: Error do: [:e | e return: nil]
 ]
 
 { #category : 'private - methods' }
@@ -460,12 +458,24 @@ TonelReader >> compileAll: methods substituting: aClassOrNil for: aSymbol [
 { #category : 'private - methods' }
 TonelReader >> installAll: compiledMethods [
 	"Install what compileAll:substituting:for: answered, through the layer
-	 below the write-back hook."
+	 below the write-back hook: every source logged first, and only then
+	 every method installed.  Logging a source is the step that can still
+	 fail once everything has compiled -- the changes file past the four
+	 megabytes a method's trailer can point into -- and a failure halfway
+	 through installing used to leave part of the file's methods in the
+	 class and the rest not (Bugs5 FILES-3).  Sources logged before the
+	 one refused stay in the changes file with nothing pointing at them,
+	 which costs space and changes no class."
+	compiledMethods do: [:each |
+		(each at: 3)
+			putSource: (each at: 4) asString
+			class: (each at: 1)
+			category: (each at: 5)
+			inFile: 2].
 	compiledMethods do: [:each |
 		(each at: 1)
 			basicInstall: (each at: 3)
 			selector: (each at: 2)
-			source: (each at: 4)
 			classified: (each at: 5)]
 ]
 
@@ -742,13 +752,11 @@ TonelReader >> loadClass: header comment: comment methods: methods [
 TonelReader >> defineNew: header comment: comment methods: methods as: name [
 	"A class the image has not got: defined, its methods compiled against
 	 it, and taken out again -- removeFromSystem, which is what the
-	 Browser's `remove class' does -- if one of them fails, so that a bad
-	 file leaves no class behind."
-	| compiled |
+	 Browser's `remove class' does -- if one of them fails, or if their
+	 sources cannot be logged, so that a bad file leaves no class behind."
 	definedClass := self define: header comment: comment as: name.
-	compiled := [self compileAll: methods substituting: nil for: name]
-		ifCurtailed: [definedClass removeFromSystem. definedClass := nil].
-	self installAll: compiled
+	[self installAll: (self compileAll: methods substituting: nil for: name)]
+		ifCurtailed: [definedClass removeFromSystem. definedClass := nil]
 ]
 
 { #category : 'loading' }

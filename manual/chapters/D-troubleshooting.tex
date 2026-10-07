@@ -89,7 +89,9 @@ st2026: N input events were dropped
   method, or move the data into a collection built once.
 \item[\ctp{a method overflowed its frame}] The context was sized from the
   compiler's estimate of the working stack and the method pushed past it.
-  Rare, and worth reporting along with the method that did it.
+  The push is refused and raises \ct{CorruptMethod}, which a handler can
+  catch; the line on standard error names the method. Rare, and worth
+  reporting along with the method that did it.
 \end{description}
 
 \section{JSON}

@@ -70,7 +70,9 @@ What crossed is the protocol, and it crossed unchanged so that Kiss's
 
 Always HTTP 200; errors are in the document. A multipart form's scalars are
 decoded the way `Server.js` encodes them — strings prefixed with `S`, and
-`true`, `false`, `null` and numbers bare. A binary reply is
+`true`, `false`, `null` and numbers bare. A value is a number only when it is
+one in JSON's grammar, and then it is exact, as in a JSON body: `-1.5` is
+`(-3/2)`, and `12abc`, `0x10` or `007` stay the Strings they arrived as. A binary reply is
 `application/octet-stream`: the JSON, one byte 3, the bytes. Three methods on
 the empty class are the framework's — `LoginRequired`, `Login`, `Logout` —
 and the application's `backend/Login.class.st` does the actual checking:
@@ -115,7 +117,10 @@ again if either changed. That is Kiss's microservice property — edit the file
 on a running server and the next call runs the new code — with a whole class
 as the unit. The other direction is the Browser: a method accepted or removed
 in it, on a class that came from a file, writes the file, through hooks on
-the three messages the Browser sends. `doc/TONEL.md` is not a file; the
+the three messages the Browser sends. A write that would lose something is
+refused with a `TonelError` instead: the file changed on disk since it was
+read, or the method's source holds a line feed, which no text file can carry
+inside a literal. `doc/TONEL.md` is not a file; the
 package's class comments are the document, and `lib/Tonel/TonelReader.class.st`
 is where to start.
 

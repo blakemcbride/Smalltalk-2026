@@ -486,6 +486,43 @@ RestServerTest >> testALongNumberInAFormIsNotRead [
 ]
 
 { #category : 'tests' }
+RestServerTest >> testAFormValueThatIsNotANumberStaysAString [
+	"Bugs5 NET-5.  numberFrom: ended in `[aString asNumber] on: Error do:
+	 [:e | aString]', and 1983's asNumber never raises: it answers nil for
+	 text with no number in it and the numeric prefix of text with one.  A
+	 username `ada' sent without the S prefix became nil and the login
+	 failed.  A form value is a number when it is a JSON number, read the
+	 way the JSON road into the same envelope reads it, and is otherwise
+	 the String it arrived as."
+	| dispatcher |
+	dispatcher := RestDispatcher on: server.
+	#('ada' '12abc' '0x10' '1/2' '16r1F' '2r101' '007' ' 1' '1 ' '-' '1.' '.5' '+1')
+		do: [:each | self assert: (dispatcher decodeFormValue: each named: 'n') equals: each].
+	self assert: (dispatcher decodeFormValue: '1e5' named: 'n') equals: 100000.
+	self assert: (dispatcher decodeFormValue: '0' named: 'n') equals: 0.
+	self assert: (dispatcher decodeFormValue: '-0.25e2' named: 'n') equals: -25.
+	self assert: (dispatcher decodeFormValue: '0.1' named: 'n') equals: (JSONParser parse: '0.1')
+]
+
+{ #category : 'tests' }
+RestServerTest >> testIdleTimeIsNotOnTheWallClock [
+	"Bugs5 NET-6.  A session's idle time was Time totalSeconds, which is
+	 local time: at spring forward every session was an hour idler than it
+	 was and the purge logged everybody out, and at fall back idle times
+	 went negative for an hour.  It is measured on the monotonic clock
+	 now, which no daylight-saving rule, operator or NTP step moves.  (The
+	 jump itself needs a TZ rule set before the process starts, which is
+	 more than a test case can arrange; the clock is what it can check.)"
+	| user now |
+	user := RestUserData username: 'x' password: 'y' userId: 1.
+	now := Time millisecondClockValue // 1000.
+	self assert: (user lastAccess - now) abs <= 1.
+	self assert: (user secondsSinceAccess between: 0 and: 1).
+	user touch.
+	self assert: (user lastAccess - (Time millisecondClockValue // 1000)) abs <= 1
+]
+
+{ #category : 'tests' }
 RestServerTest >> testTheLogTakesNoControlCharactersFromTheClient [
 	"Bugs4 NET-6.  _class and _method are whatever a stranger put in the
 	 request, and the log line interpolated them raw: a CR forges a whole

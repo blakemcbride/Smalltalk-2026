@@ -168,7 +168,21 @@ SDLLIBS =
 !ENDIF
 
 CPPFLAGS = $(INCLUDES) $(OMDEF) $(SDLDEF)
+
+#
+#  A build with no display has its own directory (Bugs5 DOCS-3), for the
+#  reason the GNU makefile puts HEADLESS in its variant name: the stub
+#  display.obj and the SDL3 one are different programs from one source,
+#  and with one directory for both, `nmake HEADLESS=1' followed by `nmake
+#  SDL3=...' found a display.obj newer than display.c and linked the stub
+#  into a build that had been told to open a window.  "No SDL3" is the same
+#  build as HEADLESS=1, because SDLDEF above is empty for both.
+#
+!IF defined(SDL3) && !defined(HEADLESS)
 BUILD    = build\$(OM)-msvc
+!ELSE
+BUILD    = build\$(OM)-headless-msvc
+!ENDIF
 PDB      = $(BUILD)\st2026.pdb
 
 #
@@ -181,17 +195,25 @@ PDB      = $(BUILD)\st2026.pdb
 #  from main.obj for as long as the file has existed.  Add here when you add
 #  there.
 #
+#  It drifted twice more (Bugs5 DOCS-3): image_compile.c, migrate.c and
+#  finalize.c joined the GNU build and not this one, and prim.c, bootstrap.c
+#  and om_mt.c call all three, so the link ended in seven undefined symbols
+#  -- IMGC_compile, the OM_mourn_* family, ST_prim_migrate_instances.  The
+#  list below is every .c the GNU makefile compiles for the same OM=, checked
+#  by linking exactly these objects with gcc on Linux.
+#
 CORE_OBJ = \
     $(BUILD)\st_port.obj \
     $(BUILD)\interp.obj $(BUILD)\prim.obj $(BUILD)\trace.obj \
+    $(BUILD)\migrate.obj \
     $(BUILD)\st_sched.obj $(BUILD)\worker.obj \
     $(BUILD)\bitblt.obj $(BUILD)\display.obj $(BUILD)\font_face.obj \
     $(BUILD)\chunk.obj $(BUILD)\lexer.obj $(BUILD)\compiler.obj \
     $(BUILD)\source.obj $(BUILD)\tonel.obj $(BUILD)\doctest.obj \
-    $(BUILD)\survey.obj \
+    $(BUILD)\survey.obj $(BUILD)\image_compile.obj \
     $(BUILD)\bootstrap.obj $(BUILD)\profile.obj \
     $(BUILD)\st_odbc.obj $(BUILD)\st_socket.obj $(BUILD)\st_crypto.obj \
-    $(BUILD)\census.obj
+    $(BUILD)\census.obj $(BUILD)\finalize.obj
 
 !IF "$(OM)" == "bb"
 OM_OBJ = $(BUILD)\om_bb.obj $(BUILD)\image_bb.obj
@@ -235,6 +257,22 @@ sdl3_ok:
 $(BUILD):
 	@if not exist $(BUILD) mkdir $(BUILD)
 
+#
+#  Header dependencies, the blunt way (Bugs5 DOCS-3).  cl has no -MMD, so
+#  nothing told nmake that an object depends on the headers it includes,
+#  and changing a struct in om.h rebuilt nothing: the objects that had the
+#  old layout linked with the ones that had the new.  Every object depends
+#  on every header instead -- a dependency line with no commands, whose
+#  commands come from the inference rules below.  Too many rebuilds, never
+#  too few.  nmake does take wildcards in a dependency line; it is only
+#  macros that have none.
+#
+HEADERS = src\port\*.h src\om\*.h src\interp\*.h src\gfx\*.h \
+          src\sched\*.h src\compiler\*.h src\boot\*.h src\db\*.h \
+          src\net\*.h src\crypto\*.h
+
+$(OBJ): $(HEADERS)
+
 {src\port\}.c{$(BUILD)\}.obj::
 	$(CC) $(CFLAGS) $(CPPFLAGS) /c /Fo$(BUILD)\ $<
 {src\om\}.c{$(BUILD)\}.obj::
@@ -256,7 +294,7 @@ $(BUILD):
 {src\crypto\}.c{$(BUILD)\}.obj::
 	$(CC) $(CFLAGS) $(CPPFLAGS) /c /Fo$(BUILD)\ $<
 
-$(BIN): $(BUILD) $(OBJ) src\main.c
+$(BIN): $(BUILD) $(OBJ) src\main.c $(HEADERS)
 	$(CC) $(CFLAGS) $(CPPFLAGS) /c /Fo$(BUILD)\ src\main.c
 	$(CC) $(LDFLAGS) /Fe$(BIN) $(BUILD)\main.obj $(OBJ) $(SDLLIBS) $(LINKOPT)
 
@@ -272,6 +310,12 @@ $(BIN): $(BUILD) $(OBJ) src\main.c
 #  test runner is the last place to find out which of them was right.
 #  nmake stops at the first command that returns non-zero, so a suite that
 #  fails ends the run where it failed.
+#
+#  All twenty-five (Bugs5 DOCS-3); the list had stopped at sixteen while
+#  tests/unit grew.  Several suites -- test_image, test_parallel_shared,
+#  test_parallel_net, test_parallel_rest, test_serve_faults -- include
+#  <unistd.h> or the BSD socket headers, which MSVC does not have, and none
+#  of this list has been compiled by cl.  Windows.md says so.
 #
 #  /Fe and /Fo lead rather than trail: a macro whose last character is a
 #  backslash is a line continuation to nmake, and the definition would
@@ -312,6 +356,24 @@ test: sdl3_ok $(BIN)
 	$(BUILD)\test_parallel_mvc.exe
 	$(BUILDTEST) tests\unit\test_parallel_processes.c $(OBJ) $(SDLLIBS) $(LINKOPT)
 	$(BUILD)\test_parallel_processes.exe
+	$(BUILDTEST) tests\unit\test_parallel_shared.c $(OBJ) $(SDLLIBS) $(LINKOPT)
+	$(BUILD)\test_parallel_shared.exe
+	$(BUILDTEST) tests\unit\test_parallel_json.c $(OBJ) $(SDLLIBS) $(LINKOPT)
+	$(BUILD)\test_parallel_json.exe
+	$(BUILDTEST) tests\unit\test_parallel_db.c $(OBJ) $(SDLLIBS) $(LINKOPT)
+	$(BUILD)\test_parallel_db.exe
+	$(BUILDTEST) tests\unit\test_odbc_parallel.c $(OBJ) $(SDLLIBS) $(LINKOPT)
+	$(BUILD)\test_odbc_parallel.exe
+	$(BUILDTEST) tests\unit\test_crypto.c $(OBJ) $(SDLLIBS) $(LINKOPT)
+	$(BUILD)\test_crypto.exe
+	$(BUILDTEST) tests\unit\test_socket.c $(OBJ) $(SDLLIBS) $(LINKOPT)
+	$(BUILD)\test_socket.exe
+	$(BUILDTEST) tests\unit\test_parallel_net.c $(OBJ) $(SDLLIBS) $(LINKOPT)
+	$(BUILD)\test_parallel_net.exe
+	$(BUILDTEST) tests\unit\test_parallel_rest.c $(OBJ) $(SDLLIBS) $(LINKOPT)
+	$(BUILD)\test_parallel_rest.exe
+	$(BUILDTEST) tests\unit\test_serve_faults.c $(OBJ) $(SDLLIBS) $(LINKOPT)
+	$(BUILD)\test_serve_faults.exe
 
 clean:
 	@if exist build rmdir /s /q build

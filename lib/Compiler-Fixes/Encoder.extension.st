@@ -106,3 +106,16 @@ Encoder >> autoBindBlockArgument: name [
 	node := self reallyBindTemp: name.
 	^Association key: node value: node
 ]
+
+{ #category : '*Compiler-Fixes' }
+Encoder >> pragmaSpecs [
+	"The pragmas Parser>>rememberPragmas: put into my literals, as the
+	 Arrays Parser>>pragma built, or an empty Array.  For MethodNode's
+	 printOn:, which is how the Browser's format keeps them (Bugs5 COMP-6)."
+
+	literalStream contents do: [:each |
+		((Smalltalk includesKey: #AdditionalMethodState)
+			and: [each isKindOf: (Smalltalk at: #AdditionalMethodState)])
+				ifTrue: [^each pragmaSpecs]].
+	^Array new: 0
+]

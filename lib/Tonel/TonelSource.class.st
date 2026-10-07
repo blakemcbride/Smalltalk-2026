@@ -54,6 +54,30 @@ because Mutex is not re-entrant and would report exactly that.
 
 A write-back records the file's new time and size, so that the next reload
 check does not read back what was just written.
+
+AND A WRITE-BACK COMPARES THEM FIRST.  The stamp was recorded at every load
+and every write and never consulted before writing, so a method added to the
+file in an editor after the load was silently replaced by the next Browser
+accept, which wrote the class as the image had it and nothing the file had
+gained (Bugs5 FILES-4).  Now a file whose time or size differs from the
+stamp is not written: the change is refused, with a TonelError naming the
+file, BEFORE the image changes -- the Browser's hooks ask checkChangeTo:
+source: first -- so that the image and the file stay a pair that agree.
+What to do next is the person's choice, and the message says both: load
+the file again, which takes its edits, and then make the change; or forget
+it, which leaves the file alone and stops writing it.  The blind spot is the one
+reloadIfChanged: has: a save in the same second at the same size.
+
+A SOURCE WITH A LINE FEED IN IT IS REFUSED THE SAME WAY.  The file's lines
+end in line feeds and the image's in carriage returns, and both readers turn
+every line ending in the file into a carriage return -- they have to, or a
+multi-line method would come back as one line.  So a line feed the image
+held inside a string literal -- the HTTP line end, a carriage return and a
+line feed -- was written as a line ending and read back as a carriage
+return, and the reloaded method answered something else (Bugs5 FILES-5).
+There is no escape for it inside a Smalltalk literal; `Character value: 10'
+built into the String when the method runs says the same thing in a form
+that survives, and the refusal says so.
 "
 Class {
 	#name : 'TonelSource',
@@ -205,14 +229,51 @@ TonelSource class >> reloadIfChanged: aClass [
 TonelSource class >> noteChangeIn: aBehavior [
 	"aBehavior -- a class or its metaclass -- has a method or definition
 	 changed.  If it came from a file, or has extension files, write each
-	 of them with what belongs to it."
+	 of them with what belongs to it.
 
-	| class |
+	 A file that cannot be written faithfully -- see checkChangeTo:source:
+	 -- is not written, and the TonelError that says why is signalled once
+	 the lock is released, so that whoever handles it, or the notifier
+	 that shows it, does not hold every other load and write-back up."
+
+	| class refusal |
 	class := aBehavior isMeta ifTrue: [aBehavior soleInstance] ifFalse: [aBehavior].
-	Lock critical: [ | entries |
+	refusal := Lock critical: [ | entries answer |
 		entries := self entriesFor: class name asSymbol.
 		entries notNil ifTrue: [
-			entries do: [:entry | entry writeBack: (Smalltalk at: class name asSymbol)]]]
+			entries do: [:entry | | why |
+				why := entry writeBack: (Smalltalk at: class name asSymbol).
+				answer isNil ifTrue: [answer := why]]].
+		answer].
+	refusal notNil ifTrue: [^TonelError new signal: refusal]
+]
+
+{ #category : 'writing back' }
+TonelSource class >> checkChangeTo: aBehaviorOrNil source: aStringOrNil [
+	"Raise a TonelError, and change nothing, if a change to aBehaviorOrNil
+	 -- a class or its metaclass -- with source aStringOrNil could not be
+	 written back to the files it came from as the image will hold it:
+	 one of them has changed on disk since it was loaded or last written
+	 (Bugs5 FILES-4), or the source holds a line feed, which no Tonel
+	 file can carry through a reload (Bugs5 FILES-5).  The Browser's
+	 hooks send this BEFORE they compile, remove or redefine anything; a
+	 class that came from no file passes."
+
+	| class refusal |
+	(aBehaviorOrNil isKindOf: Behavior) ifFalse: [^self].
+	class := aBehaviorOrNil isMeta
+		ifTrue: [aBehaviorOrNil soleInstance]
+		ifFalse: [aBehaviorOrNil].
+	refusal := Lock critical: [ | entries answer |
+		entries := self entriesFor: class name asSymbol.
+		entries notNil ifTrue: [
+			(aStringOrNil notNil
+				and: [aStringOrNil asString includes: (Character value: 10)])
+					ifTrue: [answer := TonelWriter lineFeedRefusal: 'the source given for ', class name].
+			entries do: [:entry |
+				answer isNil ifTrue: [answer := entry changedOnDiskRefusal]]].
+		answer].
+	refusal notNil ifTrue: [^TonelError new signal: refusal]
 ]
 
 { #category : 'accessing' }
@@ -280,15 +341,46 @@ TonelSource >> writeBack: aClass [
 	 all for an extension file whose prefix could not be found, since a
 	 file that owns no category has nothing that can be written to it
 	 without writing something else's.  Then record the file as written,
-	 so that the write is not read back as a change."
-	| file |
-	self isExtension
-		ifTrue: [
-			prefix isNil ifTrue: [^self].
-			TonelWriter writeExtensionOf: aClass prefix: prefix comment: comment toFile: path]
-		ifFalse: [TonelWriter write: aClass toFile: path].
+	 so that the write is not read back as a change.
+
+	 Answer nil, or -- having written nothing -- the reason the file was
+	 not written: it has changed on disk since it was loaded or last
+	 written, and writing would throw that change away (Bugs5 FILES-4);
+	 or TonelWriter refused the text (Bugs5 FILES-5).  The text is built
+	 before the file is opened, so a refusal leaves the file as it was."
+	| file why text |
+	(self isExtension and: [prefix isNil]) ifTrue: [^nil].
+	why := self changedOnDiskRefusal.
+	why notNil ifTrue: [^why].
+	text := [self isExtension
+			ifTrue: [TonelWriter extensionSourceFor: aClass prefix: prefix comment: comment]
+			ifFalse: [TonelWriter sourceFor: aClass]]
+		on: TonelError do: [:e | why := e messageText. e return: nil].
+	why notNil ifTrue: [^why].
+	TonelWriter writeText: text toFile: path.
 	file := TonelSource fileFor: path.
-	file notNil ifTrue: [self recordStamp: (TonelSource stampFrom: file)]
+	file notNil ifTrue: [self recordStamp: (TonelSource stampFrom: file)].
+	^nil
+]
+
+{ #category : 'writing back' }
+TonelSource >> changedOnDiskRefusal [
+	"nil if my file is as it was when it was last loaded or written, or
+	 is not there at all -- a file somebody deleted has nothing on disk
+	 to lose, and writing puts it back.  Otherwise the reason a write
+	 would be refused (Bugs5 FILES-4)."
+	| file stamp |
+	(self isExtension and: [prefix isNil]) ifTrue: [^nil].
+	modificationTime isNil ifTrue: [^nil].
+	file := TonelSource fileFor: path.
+	file isNil ifTrue: [^nil].
+	stamp := TonelSource stampFrom: file.
+	(stamp isNil or: [stamp = self stamp]) ifTrue: [^nil].
+	^path, ' has changed on disk since it was loaded, and writing ', name,
+		' to it would throw that change away, so nothing was changed.',
+		'  Load it again first -- TonelSource loadFile: ', path printString,
+		' -- or send TonelSource forget: ', name,
+		' to stop writing the class to it.'
 ]
 
 { #category : 'accessing' }

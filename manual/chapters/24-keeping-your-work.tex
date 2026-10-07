@@ -146,6 +146,12 @@ ending --- a line feed here, a carriage return and line feed on Windows ---
 and reading a chunk turns every ending back into a carriage return on the way
 in. The file is native, the image is 1983, and neither has to know about the
 other.
+
+A method's own source is read back exactly as it was stored. A line feed
+inside a String literal therefore survives a recompile in the image, but no
+text file can carry one: a file out, a Tonel write and a Browser accept into a
+class that lives in a file all refuse such a method. Build the String at run
+time instead --- \ct{(String with: (Character value: 10))}.
 \end{stnote}
 
 \section{What to do instead}
@@ -184,7 +190,10 @@ the Browser, on a class that came from a file, writes the file: the Browser's
 accept goes through \ct{compile:classified:notifying:}, which now tells
 \ct{TonelSource}, which asks \ct{TonelWriter} for the class as a file. A
 redefinition of the class through its template writes the file's header. The
-file on disk is the class, and the Browser is one way to edit it.
+file on disk is the class, and the Browser is one way to edit it. An accept
+that would lose something is refused with a \ct{TonelError} naming the file:
+when the file has changed on disk since it was read, and when the source holds
+a line feed.
 
 \begin{stnote}
 The Tonel reader and writer are the image's own now---\ct{TonelReader} and

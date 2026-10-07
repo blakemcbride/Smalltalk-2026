@@ -3328,6 +3328,8 @@ compile_expression_body(st_compiler *c)
         if (look.kind == ST_TOK_ASSIGN) {
             char        name[256];
             var_ref     v;
+            unsigned    name_line = c->token.line;
+            size_t      name_offset = c->token.offset;
 
             snprintf(name, sizeof name, "%s", c->token.text);
             advance(c);                 /*  past the name  */
@@ -3358,7 +3360,23 @@ compile_expression_body(st_compiler *c)
                 if (v.kind == VAR_NONE)
                     snprintf(c->out->undeclared, sizeof c->out->undeclared,
                              "%s", name);
-                fail(c, "cannot assign to '%s'", name);
+                /*
+                 *  Said as what it is, and where (Bugs5 GUI-2).  A name
+                 *  nobody declared was `cannot assign to', which reads as
+                 *  though the name were read-only, and the complaint was
+                 *  placed at the token AFTER the right-hand side -- the
+                 *  workspace put ` cannot assign to 'x'' after `3 + 4'.
+                 *  `undeclared variable', as reading the name says, and at
+                 *  the name.  A failure inside the right-hand side came
+                 *  first and is the one reported; c->failed says so.
+                 */
+                if (!c->failed) {
+                    fail(c, v.kind == VAR_NONE ? "undeclared variable '%s'"
+                                               : "cannot assign to '%s'",
+                         name);
+                    c->out->error_line   = name_line;
+                    c->out->error_offset = name_offset;
+                }
                 break;
             }
             return;

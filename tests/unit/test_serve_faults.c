@@ -70,6 +70,22 @@ static const char *startup_text =
 static const char *st2026;
 
 /*
+ *  How long one server run may take before it is killed as a hang.
+ *  Sixty seconds on a plain build; under a sanitizer the interpreter runs
+ *  tens of times slower, and since these runs drive this build's own
+ *  binary (Bugs5 DOCS-4) -- not the plain one they used to borrow -- the
+ *  thirty-two-worker storms met the plain build's limit and were killed
+ *  half way, which reported a hang that was only a slow binary.
+ */
+#if defined(__SANITIZE_THREAD__) || defined(__SANITIZE_ADDRESS__) \
+ || (defined(__has_feature) && (__has_feature(thread_sanitizer) \
+                             || __has_feature(address_sanitizer)))
+#define SERVE_SECONDS   "1200"
+#else
+#define SERVE_SECONDS   "60"
+#endif
+
+/*
  *  A fixture's path in this build's scratch directory (see
  *  st_test_dir), made once per name and kept.
  */
@@ -155,7 +171,7 @@ run(const char *command, char *out, size_t len)
 /*
  *  Serve the image on two workers with the batch as its argument.  The
  *  batch goes through a file rather than the command line, because the
- *  expressions are full of quotes.  Sixty seconds and then SIGKILL: a
+ *  expressions are full of quotes.  SERVE_SECONDS and then SIGKILL: a
  *  hang is one of the faults being checked for.
  */
 static int
@@ -166,7 +182,8 @@ serve(const char *batch, unsigned workers, char *out, size_t len)
     if (write_file(BATCH, batch) != 0)
         return -1;
     snprintf(command, sizeof command,
-             "timeout -k 2 60 %s -serve %s -workers %u \"$(cat %s)\" 2>&1",
+             "timeout -k 2 " SERVE_SECONDS " %s -serve %s -workers %u"
+             " \"$(cat %s)\" 2>&1",
              st2026, IMAGE, workers, BATCH);
     return run(command, out, len);
 }
@@ -574,8 +591,11 @@ main(void)
      *  between two bytecodes pushes one value too many, so a resumption
      *  in the middle of `s + (1 + 2)' would have added the wrong thing.
      *  The sum is exact only if every interruption left the loop as it
-     *  found it.  At most one signal can miss -- sent as the process
-     *  finishes -- so the count is checked against that.
+     *  found it, and it is the check; the count only has to show that a
+     *  handler resumed.  Not every signal reaches it: one sent while the
+     *  handler is still running from the last finds it disabled, as a
+     *  running handler is, and takes Warning's default action -- under
+     *  ThreadSanitizer three of twenty did.
      */
     if (write_file(RESUMED,
             "| p done count i |\n"
@@ -589,7 +609,7 @@ main(void)
             "2) wait. p signalException: Warning new. i := i + 1].\n"
             "[done isNil and: [p suspendedContext notNil]] whileTrue: "
             "[(Delay forMilliseconds: 10) wait].\n"
-            "^(done = 300000 and: [count > 0 and: [count >= (i - 1)]]) "
+            "^(done = 300000 and: [count > 0]) "
             "ifTrue: ['resumed ok'] ifFalse: [{done. count. i}]\n") == 0) {
         char        batch[512];
         unsigned    workers[] = { 8, 1 };

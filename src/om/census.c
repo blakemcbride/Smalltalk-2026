@@ -156,7 +156,10 @@ OM_method_dict_value(st_oop dict, uint32_t slot)
     if (slot >= OM_method_dict_capacity(dict))
         return ST_NIL;
     values = OM_fetch_pointer(ST_MD_VALUE_ARRAY, dict);
-    if (!OM_is_object(values) || slot >= OM_fetch_word_length(values))
+    /*  A pointer object, for the reason the capacity is (Bugs5 INTERP-4):
+     *  a String there answered its length in bytes and was read as oops. */
+    if (!OM_is_object(values) || !OM_pointer_bit(values)
+     || slot >= OM_fetch_word_length(values))
         return ST_NIL;
     return OM_fetch_pointer(slot, values);
 }

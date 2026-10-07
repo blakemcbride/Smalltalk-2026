@@ -146,6 +146,14 @@ f nextPutAll: 'hello'; close.
 (FileStream fileNamed: 'notes.txt') contentsOfEntireFile
 \end{st}
 
+\ct{fileNamed:} opens a file whether or not it exists. \ct{newFileNamed:}
+wants a name nothing has yet and raises an error for one that is taken;
+\ct{oldFileNamed:} wants a file that is already there. A stream's
+\ct{file} answers to \ct{rename:}, which raises an error rather than replace
+a file that already has the new name, and when the operating system refuses. A
+directory's \ct{fileNames} leaves out names that begin with a period, as
+\ct{ls} does, but \ct{includesKey:} asks the file system and finds them.
+
 The File List window---\ct{file list} on the desktop menu---is a browser for
 the same thing, and Chapter~\ref{ch:tools} covers it.
 

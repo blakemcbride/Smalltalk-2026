@@ -137,7 +137,19 @@ SystemDictionary >> snapshotAs: imageFilePrefix thenQuit: quitIfTrue [
 	 What is left is exactly the 1983 sequence otherwise, and that includes
 	 Delay preSnapshot and postSnapshot -- the hooks that stop and restart
 	 the timing process across a snapshot.  They were unreachable while the
-	 line above them raised, which is why nothing had ever run them."
+	 line above them raised, which is why nothing had ever run them.
+
+	 And postSnapshot has to run however the write ends.  preSnapshot
+	 takes Delay's AccessProtect and only postSnapshot gives it back, and
+	 primitive 97 fails for ordinary reasons -- a .tmp it cannot write, a
+	 full disk, a worker that would not park within ten seconds.  1983 had
+	 no path out of the primitive but the normal one, so the failure left
+	 the lock held for ever: the caller's handler caught the error and went
+	 on, and the next Delay anyone waited on blocked on AccessProtect and
+	 stopped the image with `every process is blocked; nothing can run'
+	 (Bugs5 OM-7).  ifCurtailed: and not ensure:, because the normal path
+	 releases it already, in the ifFalse: branch below, and a second
+	 signal would leave the lock open to two holders at once."
 	| justSnapped |
 	Cursor execute show.
 	self logChange: '''----SNAPSHOT----'''.
@@ -150,7 +162,8 @@ SystemDictionary >> snapshotAs: imageFilePrefix thenQuit: quitIfTrue [
 	Transcript cr; show: 'Snapshot at: ', Time dateAndTimeNow printString.
 	Delay preSnapshot.
 	Cursor wait show.
-	justSnapped := self snapshotPrimitive isNil.
+	justSnapped := [self snapshotPrimitive isNil]
+		ifCurtailed: [Delay postSnapshot].
 	justSnapped & quitIfTrue
 		ifTrue: [self quitPrimitive]
 		ifFalse: [Delay postSnapshot].

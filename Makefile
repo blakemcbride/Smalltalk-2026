@@ -493,7 +493,37 @@ BIN         := st2026
 
 all: $(BIN)
 
-$(OBJ_DIR)/%.o: %.c
+#
+#  The command line, as a file that changes only when the command line does.
+#
+#  What a build compiles is not only its sources.  ST_HAVE_SDL3, ST_HAVE_ODBC
+#  and ST_HAVE_TLS are detected when make starts, and they change which code
+#  every object contains; OPT, CFLAGS and CC change how.  None of them is in
+#  the variant name above, and no object depended on any of them, so
+#  installing openssl-devel into a built tree and typing `make' kept every
+#  stub object and did not even relink -- `Socket isTlsAvailable' stayed
+#  false on a machine that now had TLS -- and `make OPT=-O0', which `make
+#  help' and appendix A both offer, did nothing at all (Bugs5 DOCS-2).  The
+#  NODB fault the variant name was widened for, reached by another road.
+#
+#  Rewritten on every run but REPLACED only when the text differs, so its
+#  date moves only then, and only then is anything that depends on it out
+#  of date.  FORCE makes make run the recipe every time; GNU make looks at
+#  the file's date again afterwards, which is what makes `unchanged' cost
+#  nothing.  Every object, every test program and the link depend on it.
+#
+FLAGS_FILE := $(BUILD_DIR)/flags
+FLAGS_TEXT := $(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) $(LIBS)
+
+.PHONY: FORCE
+FORCE:
+
+$(FLAGS_FILE): FORCE
+	@mkdir -p $(dir $@)
+	@printf '%s\n' '$(subst ','\'',$(FLAGS_TEXT))' > $@.new
+	@if cmp -s $@.new $@; then rm -f $@.new; else mv -f $@.new $@; fi
+
+$(OBJ_DIR)/%.o: %.c $(FLAGS_FILE)
 	@mkdir -p $(dir $@)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -MMD -MP -c $< -o $@
 
@@ -513,7 +543,7 @@ $(LIB_AR): $(LIB_OBJ)
 	@rm -f $@
 	ar rcs $@ $^
 
-$(VARIANT_BIN): $(MAIN_OBJ) $(LIB_AR)
+$(VARIANT_BIN): $(MAIN_OBJ) $(LIB_AR) $(FLAGS_FILE)
 	$(CC) $(CFLAGS) $(MAIN_OBJ) $(LIB_AR) -o $@ $(LDFLAGS) $(LIBS)
 
 #
@@ -548,7 +578,7 @@ endif
 UNIT_SRC  := $(wildcard tests/unit/test_*.c)
 UNIT_BIN  := $(patsubst tests/unit/%.c,$(TEST_DIR)/%,$(UNIT_SRC))
 
-$(TEST_DIR)/%: tests/unit/%.c $(LIB_AR)
+$(TEST_DIR)/%: tests/unit/%.c $(LIB_AR) $(FLAGS_FILE)
 	@mkdir -p $(dir $@)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(LIB_AR) -o $@ $(LDFLAGS) $(LIBS)
 
@@ -561,7 +591,7 @@ $(TEST_DIR)/%: tests/unit/%.c $(LIB_AR)
 BENCH_SRC := $(wildcard tests/bench/bench_*.c)
 BENCH_BIN := $(patsubst tests/bench/%.c,$(TEST_DIR)/%,$(BENCH_SRC))
 
-$(TEST_DIR)/bench_%: tests/bench/bench_%.c $(LIB_AR)
+$(TEST_DIR)/bench_%: tests/bench/bench_%.c $(LIB_AR) $(FLAGS_FILE)
 	@mkdir -p $(dir $@)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(LIB_AR) -o $@ $(LDFLAGS) $(LIBS)
 

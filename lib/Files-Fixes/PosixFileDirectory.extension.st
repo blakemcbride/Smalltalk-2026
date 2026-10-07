@@ -185,8 +185,76 @@ PosixFileDirectory >> rename: aFile newName: newFileName [
 	 The name written into the File is the one the file must be OPENED by,
 	 which is the pathFor: form, for the same reason initFileName: uses it:
 	 a name a directory hands out is a designator, and a designator that
-	 has to be prefixed before it works is not one."
+	 has to be prefixed before it works is not one.
 
-	self doPrimitive: 2 arg1: (self pathFor: newFileName) arg2: aFile.
+	 And the rename is checked (Bugs5 FILES-8).  Its answer was thrown
+	 away, so a rename into a directory that is not there answered as
+	 though it had worked, the File took a name that names nothing, and
+	 later writes went on reaching the old file through the descriptor it
+	 still held.  The File is told its new name only once the file system
+	 has given it that name.
+
+	 Nor does it replace: FileDirectory>>rename:newName: says `Create an
+	 error if a file by the name, newName, already exists', and rename(2)
+	 replaced it without a word.  Command 2 refuses an existing name now,
+	 and the refusal arrives here as any other failure does, with the
+	 operating system's words for it -- `File exists'."
+
+	(self doPrimitive: 2 arg1: (self pathFor: newFileName) arg2: aFile) == true
+		ifFalse: [^aFile error: 'cannot be renamed to ' , newFileName , ': '
+			, (aFile errorString: aFile lastError)].
 	aFile fileName: (self pathFor: newFileName)
+]
+
+{ #category : '*Files-Fixes' }
+PosixFileDirectory >> find: aFile ifAbsentDo: aBlock [
+	"Answer aFile if there is a file of its name, otherwise the value of
+	 aBlock with it.
+
+	 The file system is asked, by name -- command 6 of primitive 131
+	 (Bugs5 FILES-7).  1983's FileDirectory>>find:ifAbsentDo: walks every
+	 name the directory lists and compares, which was right for an Alto
+	 directory and is wrong here twice over.  The listing leaves out dot
+	 files, as ls does, so `Disk includesKey: '.env'' answered false for
+	 a file that fileNamed: then opened.  And the listing stopped at 4,096
+	 names, so in a bigger directory includesKey: answered false for files
+	 that were there and the static file handler served them as 404s.
+	 Asking for the name is one call, where the walk read the whole
+	 directory to answer a question about one file.
+
+	 The comparison was sameAs:, which ignores case; a POSIX name is its
+	 case, and `README' is not `readme' unless the file system says so."
+
+	| fname |
+	fname := self checkNameOfFile: aFile.
+	aFile fileName: fname.
+	(self doPrimitive: 6 arg1: fname arg2: nil) == true ifTrue: [^aFile].
+	^aBlock value: aFile
+]
+
+{ #category : '*Files-Fixes' }
+PosixFileDirectory >> addNew: aFile [
+	"Add aFile as a new file: an error if there is a file of its name
+	 already (Bugs5 FILES-8).
+
+	 FileStream class>>newFileNamed: says `Error if the argument is not a
+	 new file name' and reaches here through addKey: and add:, and this
+	 opened the old file instead -- and FileStream>>close shortened it at
+	 the write position, so newFileNamed: on an existing name emptied it.
+	 fileNamed: reaches here only for a name find: did not find, so it is
+	 untouched by the refusal.
+
+	 1983's addNew: sent command 0 of primitive 131, which is no command:
+	 the primitive failed, the method answered the receiver, and the
+	 DIRECTORY was stored as the File's descriptor.  Nothing is opened
+	 here; asFileStream opens, creating, as it always has.  Between the
+	 look here and that open another process could make the file, and the
+	 open would take it -- the window every create-if-absent without
+	 O_EXCL has."
+
+	(self doPrimitive: 6 arg1: aFile fileName arg2: nil) == true
+		ifTrue: [^aFile error: 'already exists'].
+	aFile fd: nil.
+	aFile readWrite: Write.
+	^aFile
 ]

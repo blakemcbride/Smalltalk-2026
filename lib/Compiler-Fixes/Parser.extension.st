@@ -153,7 +153,13 @@ Parser >> primaryExpression [
 	 #[1 2 3] needs nothing here: the Scanner builds it into a literal, so
 	 it arrives as #literal like #(1 2 3) does.  A brace array cannot,
 	 because its elements are EXPRESSIONS evaluated when the method runs,
-	 not literals read when it is compiled."
+	 not literals read when it is compiled.
+
+	 A negative literal is the number times -1 and not the number negated:
+	 Float>>negated is 1983's `0.0 - self', which for 0.0 is 0.0, so
+	 `-0.0' parsed as plus zero -- where the C compiler, and readFrom:
+	 since Bugs5 KERN-3, read minus zero -- and the Browser's format wrote
+	 it back without its sign (Bugs5 COMP-6)."
 
 	hereType == #word
 		ifTrue: [
@@ -182,7 +188,7 @@ Parser >> primaryExpression [
 	(here == #- and: [tokenType == #number])
 		ifTrue: [
 			self advance.
-			parseNode := encoder encodeLiteral: self advance negated.
+			parseNode := encoder encodeLiteral: self advance * -1.
 			^true].
 	^false
 ]
@@ -295,7 +301,7 @@ Parser >> pragmaArgument [
 	 `<primitive: 60 error: ec>' -- where ec names a temporary rather than
 	 a value -- read without a special case."
 	(here == #- and: [tokenType == #number])
-		ifTrue: [self advance. ^self advance negated].
+		ifTrue: [self advance. ^self advance * -1].	"-0.0 too: see primaryExpression"
 	(hereType == #number or: [hereType == #string or: [hereType == #literal]])
 		ifTrue: [^self advance].
 	hereType == #word ifTrue: [

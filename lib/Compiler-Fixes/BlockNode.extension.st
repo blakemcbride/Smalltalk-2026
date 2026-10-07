@@ -56,7 +56,20 @@ BlockNode >> printArgumentsOn: aStream indent: level [
 { #category : '*Compiler-Fixes' }
 BlockNode >> printStatementsOn: aStream indent: level [
 	"1983's, starting past the temporary declarations, which
-	 printArgumentsOn:indent: has already written as a declaration."
+	 printArgumentsOn:indent: has already written as a declaration --
+	 and printing a bare `self' when it is the statement whose value the
+	 block answers.
+
+	 1983 left out every statement that is exactly `self', which is right
+	 for one in the middle -- it is evaluated for nothing -- and wrong for
+	 the last one, which IS the block's value: `[self]' printed as `[]',
+	 which answers nil, so the Browser's format turned
+	 `^x ifTrue: [self] ifFalse: [0]' into a method that answered nil
+	 where it had answered the receiver, and Collection>>ifEmpty: into one
+	 that answered nil for a collection that was not empty (Bugs5 COMP-6).
+	 The method's own trailing `^self' is a ReturnNode, not this, and is
+	 still dropped by the shown := shown - 1 above, which changes nothing
+	 a method answers."
 	| len shown thisStatement first |
 	comment == nil
 		ifFalse: [
@@ -71,11 +84,32 @@ BlockNode >> printStatementsOn: aStream indent: level [
 				ifTrue: [shown := shown - 1]].
 	first to: shown do: [:i |
 		thisStatement := statements at: i.
-		thisStatement == NodeSelf ifFalse: [
+		(thisStatement == NodeSelf and: [i < shown]) ifFalse: [
 			thisStatement printOn: aStream indent: level.
 			i < shown ifTrue: [aStream nextPut: $.; crtab: level].
 			thisStatement comment size > 0 ifTrue: [
 				i = shown ifTrue: [aStream crtab: level].
 				thisStatement printCommentOn: aStream indent: level.
 				i < shown ifTrue: [aStream crtab: level]]]]
+]
+
+{ #category : '*Compiler-Fixes' }
+BlockNode >> arguments: argNodes statements: statementsCollection returns: returnBool from: encoder sourceEnd: sourceEnd [
+	"1983's, except that a block with arguments and no statements answers
+	 nil, as the C compiler compiles it, and not its last argument.
+
+	 `[:x]' answering x is the Blue Book's rule; the closures dialect, and
+	 every dialect since, answers nil, and primitive 228 -- which is what
+	 compiles every method in this image -- does.  This tree is not what
+	 compiles a method, but it is what the Browser's format prints, and it
+	 printed `[:x]' as `[:x | x]': ContextPart>>mclass's
+	 `setClass: [:mclass]' came back as a block that answered its argument
+	 (Bugs5 COMP-6)."
+
+	sourceRange := sourceEnd to: sourceEnd.
+	arguments := argNodes.
+	statements := statementsCollection size > 0
+		ifTrue: [statementsCollection]
+		ifFalse: [Array with: NodeNil].
+	returns := returnBool
 ]

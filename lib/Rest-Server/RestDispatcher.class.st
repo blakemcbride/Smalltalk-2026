@@ -146,21 +146,34 @@ RestDispatcher >> numberFrom: aString [
 	 reading it is bounded too.
 
 	 A value over either cap is left as the String it arrived as, which is
-	 what every other unrecognised form value already becomes."
-	| digits exponentAt exponent |
+	 what every other unrecognised form value already becomes.
+
+	 A NUMBER IS WHAT JSON CALLS ONE, AND NOTHING ELSE IS.  The last line
+	 here was `[aString asNumber] on: Error do: [:e | aString]', and the
+	 fallback never ran: 1983's asNumber does not raise, it answers nil for
+	 text with no number in it and whatever numeric prefix it found for
+	 text with one (Bugs5 NET-5).  So a username `ada' sent without the S
+	 prefix became nil and the login failed, `12abc' became 12, `0x10'
+	 became 0, `1/2' became 1, and `16r1F' -- Smalltalk's own radix
+	 syntax, which no form ever meant -- became 31.  The value is read by
+	 JSONParser, the reader the other road into this server uses for the
+	 same envelope, so a field means the same thing whichever way it was
+	 sent: the strict grammar (no leading zero, no radix, no fraction
+	 bar), exact decimals, and the parser's own exponent cap.  Anything
+	 the grammar refuses is the String it arrived as.  A JSON number
+	 begins with a minus or a digit and ends with a digit, which is
+	 checked first so that `true', `S...' and padded text never reach the
+	 parser and so that the parser's tolerance of surrounding whitespace
+	 is not this method's."
+	| digits |
+	aString isEmpty ifTrue: [^aString].
+	((aString first = $- or: [aString first isDigit]) and: [aString last isDigit])
+		ifFalse: [^aString].
 	digits := 0.
-	exponentAt := 0.
-	1 to: aString size do: [:i | | c |
-		c := aString at: i.
-		c isDigit ifTrue: [digits := digits + 1].
-		(exponentAt = 0 and: [c = $e or: [c = $E]]) ifTrue: [exponentAt := i]].
+	aString do: [:c | c isDigit ifTrue: [digits := digits + 1]].
 	digits > self class maxFormNumberDigits ifTrue: [^aString].
-	exponentAt > 0 ifTrue: [
-		exponent := [(aString copyFrom: exponentAt + 1 to: aString size) asNumber]
-			on: Error do: [:e | nil].
-		(exponent isNil or: [exponent abs > self class maxFormNumberExponent])
-			ifTrue: [^aString]].
-	^[aString asNumber] on: Error do: [:e | aString]
+	^[(JSONParser on: aString) maxDigits: self class maxFormNumberDigits; parse]
+		on: JSONError do: [:e | aString]
 ]
 
 { #category : 'private - envelope' }
@@ -173,7 +186,9 @@ RestDispatcher class >> maxFormNumberDigits [
 { #category : 'private - envelope' }
 RestDispatcher class >> maxFormNumberExponent [
 	"How large a form field's exponent may be.  JSONParser's, which came
-	 down from 4096 to 400 with Bugs5 NET-3; see numberFrom:."
+	 down from 4096 to 400 with Bugs5 NET-3; see numberFrom:.  Since Bugs5
+	 NET-5 the form value is read by JSONParser itself, so this is the
+	 parser's cap named here rather than a second one enforced here."
 	^400
 ]
 

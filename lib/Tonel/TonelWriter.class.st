@@ -177,11 +177,41 @@ TonelWriter >> list: aCollection [
 ]
 
 { #category : 'private' }
+TonelWriter class >> lineFeedRefusal: whereString [
+	"The sentence a line feed in a source or a comment is refused with;
+	 see refuseLineFeedIn:at:."
+	^whereString, ' holds a line feed, and a Tonel file cannot keep one:',
+		' its lines end in line feeds and every one of them reads back as',
+		' a carriage return, so the text would change when the file is next',
+		' loaded.  Build the String when the method runs -- String with:',
+		' Character cr with: (Character value: 10) -- instead of writing',
+		' the character inside a literal.'
+]
+
+{ #category : 'private' }
+TonelWriter >> refuseLineFeedIn: aString at: whereString [
+	"Raise a TonelError if aString holds a line feed (Bugs5 FILES-5).
+
+	 Both readers turn every line ending in a file into the carriage
+	 return the image breaks lines on -- line feed, carriage return and
+	 line feed, carriage return -- and this writer's TextFileStream turns
+	 every carriage return into the host's line ending.  A line feed the
+	 image holds, which can only be inside a literal or a comment, went
+	 out as a line ending and came back as a carriage return:
+	 `'a<CR><LF>b' reloaded as `'a<CR><CR>b', and the method
+	 answered something else with nothing said.  No spelling inside a
+	 literal survives that, so the text is refused instead of written."
+	(aString includes: (Character value: 10))
+		ifTrue: [^TonelError new signal: (TonelWriter lineFeedRefusal: whereString)]
+]
+
+{ #category : 'private' }
 TonelWriter >> writeComment: aString [
 	"The class comment, in double quotes with any inside doubled, on lines
 	 of its own.  Trimmed first: the reader hands the comment over with the
 	 line breaks around it and the changes log hands it back without, and
 	 the file must come out the same either way."
+	self refuseLineFeedIn: aString at: 'the comment'.
 	stream nextPut: $".
 	self cr.
 	aString trimmed do: [:c |
@@ -194,23 +224,16 @@ TonelWriter >> writeComment: aString [
 
 { #category : 'private' }
 TonelWriter >> patternLengthOf: source selector: selector [
-	"How many characters of source are the message pattern: one word for a
-	 unary selector, two for a binary one, and two per keyword otherwise.
-	 A source compiled from a single line in the Browser has no line break
-	 between its pattern and its body, so the pattern is found by counting
-	 rather than by looking for one."
-	| words i n |
-	words := selector isEmpty ifTrue: [1] ifFalse: [
-		(selector last = $:)
-			ifTrue: [2 * (selector occurrencesOf: $:)]
-			ifFalse: [selector first isLetter ifTrue: [1] ifFalse: [2]]].
-	i := 1.
-	n := 0.
-	[n < words and: [i <= source size]] whileTrue: [
-		[i <= source size and: [(source at: i) isSeparator]] whileTrue: [i := i + 1].
-		[i <= source size and: [(source at: i) isSeparator not]] whileTrue: [i := i + 1].
-		n := n + 1].
-	^i - 1
+	"How many characters of source are the message pattern.  A source
+	 compiled from a single line in the Browser has no line break between
+	 its pattern and its body, so the end of the pattern is found by
+	 reading it as the compiler does -- see Scanner>>patternEndIn: --
+	 and not by looking for a line break, or by counting words, which is
+	 what this did until `with:x and:y' and `+x', each of them fewer
+	 words than it counted, wrote the start of the body into the pattern
+	 (Bugs5 COMP-3).  selector is no longer needed and is kept for the
+	 callers."
+	^Scanner new patternEndIn: source
 ]
 
 { #category : 'private' }
@@ -286,6 +309,7 @@ TonelWriter >> writeMethod: selector of: aBehavior named: aString category: cate
 	| source cut pattern body cr |
 	cr := Character cr.
 	source := aBehavior sourceCodeAt: selector.
+	self refuseLineFeedIn: source at: aString, ' >> ', selector.
 	cut := self patternLengthOf: source selector: selector.
 	pattern := source copyFrom: 1 to: cut.
 	body := source copyFrom: cut + 1 to: source size.

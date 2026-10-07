@@ -40,7 +40,7 @@ RestUserData >> setUsername: aName password: aPassword userId: anId [
 	password := aPassword.
 	userId := anId.
 	uuid := RestUuid new.
-	lastAccess := Time totalSeconds.
+	lastAccess := self clockSeconds.
 	data := Dictionary new.
 	lock := Mutex new.
 	requestLock := Mutex new
@@ -75,18 +75,39 @@ RestUserData >> uuid [
 
 { #category : 'accessing' }
 RestUserData >> lastAccess [
-	"Seconds on Time totalSeconds' scale."
+	"Seconds on clockSeconds' scale: comparable with another lastAccess
+	 and with clockSeconds, and not a time of day.  See clockSeconds."
 	^lastAccess
+]
+
+{ #category : 'private' }
+RestUserData >> clockSeconds [
+	"Whole seconds on the monotonic clock, which is what an idle time is
+	 measured against.
+
+	 NOT THE WALL CLOCK.  This was Time totalSeconds, which is LOCAL time,
+	 and local time jumps twice a year wherever daylight saving is kept
+	 (Bugs5 NET-6).  At spring forward every session looked an hour idler
+	 than it was, so RestUserCache's purge dropped every one of them at
+	 once -- the demo's userInactiveSeconds is 900 -- and everybody was
+	 logged out.  At fall back the idle times went NEGATIVE for an hour,
+	 so idle sessions were not purged and RestDispatcher's two-minute
+	 re-check, which is what logs out a user who has been disabled, did not
+	 run.  UTC would cure daylight saving and still move when an operator
+	 or NTP steps the clock; the millisecond clock does not move for
+	 anything, and a difference between two readings of it is the only
+	 thing this class ever asks."
+	^Time millisecondClockValue // 1000
 ]
 
 { #category : 'accessing' }
 RestUserData >> touch [
-	lastAccess := Time totalSeconds
+	lastAccess := self clockSeconds
 ]
 
 { #category : 'accessing' }
 RestUserData >> secondsSinceAccess [
-	^Time totalSeconds - lastAccess
+	^self clockSeconds - lastAccess
 ]
 
 { #category : 'data' }

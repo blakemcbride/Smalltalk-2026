@@ -33,16 +33,22 @@ Extension { #name : 'FileModel' }
 
 { #category : '*Files-Fixes' }
 FileModel >> acceptText: aText from: aController [
-	"Write my text back, in the line ending the file is already written in."
+	"Write my text back, in the line ending the file is already written in.
+
+	 Through fileNamed:, whatever the name.  1983 sent newFileNamed: unless
+	 the name carried an Alto version (`!'), because on the Alto that made
+	 a new version beside the old; here there are no versions, and
+	 newFileNamed: refuses a name that exists (Bugs5 FILES-8), which is
+	 every file this window saves.  A stream written from the start in the
+	 default mode is shortened where the writing stops, so the old text
+	 does not outlive the new."
 
 	| ending |
 	ending := self lineEndingOfFile.
 	Cursor write showWhile: [
-		((fileName includes: $!)
-			ifTrue: [FileStream fileNamed: fileName]
-			ifFalse: [FileStream newFileNamed: fileName])
-				nextPutAll: (self string: aText string lineEnding: ending);
-				close].
+		(FileStream fileNamed: fileName)
+			nextPutAll: (self string: aText string lineEnding: ending);
+			close].
 	^true
 ]
 

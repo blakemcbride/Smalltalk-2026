@@ -94,6 +94,14 @@ pair_is_movable(const migrate_args *a, st_oop old, st_oop fresh)
      */
     if (OM_pointer_bit(old) != OM_pointer_bit(fresh))
         return 0;
+    /*
+     *  Nor a Symbol on either side (Bugs5 INTERP-7), for primitive 72's
+     *  reason (Bugs3 B21): migrating #zork to a String left the symbol
+     *  table handing out a String for `zork'.  Reshaping Symbol itself is
+     *  thereby refused too, which is a class nothing should reshape.
+     */
+    if (ST_is_symbol(old) || ST_is_symbol(fresh))
+        return 0;
     return OM_can_swap_identities(old, fresh);
 }
 

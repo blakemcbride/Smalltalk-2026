@@ -122,6 +122,22 @@ OllamaTest >> testToHtml [
 	self assert: (Ollama toHtml: '') equals: ''
 ]
 
+{ #category : 'tests - text' }
+OllamaTest >> testToHtmlEscapesTheReply [
+	"Bugs5 NET-7.  The demo's screen sets toHtml:'s answer as HTML, and
+	 toHtml: escaped nothing, so markup a model was led to repeat ran as
+	 script in the page holding the session.  The reply is text; the only
+	 tags in the answer are the <br> and <b> toHtml: writes itself."
+	| lf |
+	lf := String with: (Character value: 10).
+	self assert: (Ollama toHtml: '<img src=x onerror=alert(document.cookie)> & **b**')
+		equals: '&lt;img src=x onerror=alert(document.cookie)&gt; &amp; <b>b</b>'.
+	self assert: (Ollama toHtml: '<a title="x">it''s</a>')
+		equals: '&lt;a title=&quot;x&quot;&gt;it&#39;s&lt;/a&gt;'.
+	self assert: (Ollama toHtml: '**<script>**', lf, '&amp;')
+		equals: '<b>&lt;script&gt;</b><br>&amp;amp;'
+]
+
 { #category : 'tests' }
 OllamaTest >> testAMalformedSuccessIsAnLLMError [
 	"Bugs4.  A 200 without the message or the embeddings the API documents

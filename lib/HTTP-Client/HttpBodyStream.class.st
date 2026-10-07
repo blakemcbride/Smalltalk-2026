@@ -75,8 +75,93 @@ HttpBodyStream class >> on: aSocketStream status: statusInteger headers: aDictio
 
 { #category : 'instance creation' }
 HttpBodyStream class >> on: aSocketStream status: statusInteger headers: aDictionary maxBodyBytes: anInteger [
+	^self on: aSocketStream status: statusInteger headers: aDictionary
+		maxBodyBytes: anInteger method: nil
+]
+
+{ #category : 'instance creation' }
+HttpBodyStream class >> on: aSocketStream status: statusInteger headers: aDictionary maxBodyBytes: anInteger method: aMethodOrNil [
+	"The body of the reply to a request of that method -- which matters for
+	 one method, HEAD, whose reply has no body whatever its headers say.
+	 nil is a request whose method is not known, and is read as a GET."
 	^self new setStream: aSocketStream status: statusInteger headers: aDictionary
-		maxBodyBytes: anInteger
+		maxBodyBytes: anInteger method: aMethodOrNil
+]
+
+{ #category : 'limits' }
+HttpBodyStream class >> maxLineBytes [
+	"The longest status line, header line, chunk-size line or trailer line
+	 this client reads: 64 KB.  See nextLineFrom:limit:."
+	^65536
+]
+
+{ #category : 'limits' }
+HttpBodyStream class >> maxHeaderBytes [
+	"The most a reply's headers -- or a chunked body's trailers -- may come
+	 to, lines together: 256 KB, which is ten times what any real server
+	 sends and a long way short of what a hostile one would like to."
+	^262144
+]
+
+{ #category : 'limits' }
+HttpBodyStream class >> maxHeaderCount [
+	"How many header lines, or trailer lines, one reply may have."
+	^256
+]
+
+{ #category : 'reading' }
+HttpBodyStream class >> nextLineFrom: aStream limit: anInteger [
+	"A line of the framing -- a status line, a header, a chunk size, a
+	 trailer -- without its ending, LF with or without a CR before it; an
+	 empty String at the end of the stream, as SocketStream>>nextLine
+	 answers.  More than anInteger bytes without a line feed is a NetError.
+
+	 BOUNDED, BECAUSE THE BODY WAS THE ONLY THING THAT WAS (Bugs5 NET-4).
+	 maxBodyBytes bounded the body in all three of its shapes and every
+	 line in front of it was read with nextLine, which is upTo: a line
+	 feed and stops for nothing else: a server answering
+	 `X-Big: aaaa...' and never ending the line grew one String until
+	 totalTimeout -- five minutes by default, fifty for lib/LLM -- and
+	 the audit's got to 19.8 MB of header and 826 MB of resident memory.
+	 HttpRequest has bounded the same lines on the server side since Bugs3
+	 B56 (nextLineFrom:limit:status:); this is that bound on this side,
+	 raising what this client raises about every reply it cannot read.
+
+	 A bare line feed is accepted here, unlike there: the server refuses
+	 one because a proxy in front may disagree about where a request ends,
+	 and a client reading its own connection has nobody to disagree with."
+	| out c n line |
+	out := WriteStream on: (String new: 80).
+	n := 0.
+	[(c := aStream next) isNil or: [c = (Character value: 10)]] whileFalse: [
+		(n := n + 1) > anInteger ifTrue: [
+			^NetError new signal: 'the reply has a line longer than the ',
+				anInteger printString, ' bytes this client reads'].
+		out nextPut: c].
+	line := out contents.
+	(line size > 0 and: [line last = (Character value: 13)])
+		ifTrue: [^line copyFrom: 1 to: line size - 1].
+	^line
+]
+
+{ #category : 'reading' }
+HttpBodyStream class >> headerLinesFrom: aStream do: aBlock [
+	"Each line up to the blank one that ends a header section, to aBlock,
+	 bounded line by line and in total and in number; see the three limits
+	 and nextLineFrom:limit:.  The end of the stream ends the section, as
+	 the blank line does."
+	| line count total |
+	count := 0.
+	total := 0.
+	[line := self nextLineFrom: aStream limit: self maxLineBytes.
+	 line isEmpty] whileFalse: [
+		(count := count + 1) > self maxHeaderCount ifTrue: [
+			^NetError new signal: 'the reply has more than ',
+				self maxHeaderCount printString, ' header lines'].
+		(total := total + line size + 2) > self maxHeaderBytes ifTrue: [
+			^NetError new signal: 'the reply''s headers are longer than the ',
+				self maxHeaderBytes printString, ' bytes this client reads'].
+		aBlock value: line]
 ]
 
 { #category : 'instance creation' }
@@ -92,12 +177,26 @@ HttpBodyStream >> maxBodyBytes [
 
 { #category : 'private' }
 HttpBodyStream >> setStream: aSocketStream status: statusInteger headers: aDictionary maxBodyBytes: anInteger [
+	^self setStream: aSocketStream status: statusInteger headers: aDictionary
+		maxBodyBytes: anInteger method: nil
+]
+
+{ #category : 'private' }
+HttpBodyStream >> setStream: aSocketStream status: statusInteger headers: aDictionary maxBodyBytes: anInteger method: aMethodOrNil [
 	| encoding length |
 	in := aSocketStream.
 	first := true.
 	maxBody := anInteger.
 	read := 0.
 	(statusInteger < 200 or: [statusInteger = 204 or: [statusInteger = 304]]) ifTrue: [mode := #none. ^self].
+	"THE REPLY TO A HEAD HAS NO BODY, whatever its Content-Length says:
+	 RFC 7230 section 3.3.3 puts it first among the rules for where a body
+	 ends, with the statuses above.  The Content-Length is the length a GET
+	 would have had, which is the point of asking for it, and this read
+	 used to wait for that many bytes that were never coming -- a NetError
+	 from a server that closed, and a TimedOut from one that kept the
+	 connection open (Bugs5 NET-8)."
+	aMethodOrNil = 'HEAD' ifTrue: [mode := #none. ^self].
 	encoding := aDictionary at: 'transfer-encoding' ifAbsent: [nil].
 	length := aDictionary at: 'content-length' ifAbsent: [nil].
 	(encoding notNil and: [length notNil]) ifTrue: [
@@ -154,8 +253,9 @@ HttpBodyStream >> nextChunkSize [
 	 Every chunk but the first is preceded by the CR-LF that ended the last
 	 one's data."
 	| line semicolon size |
-	first ifTrue: [first := false] ifFalse: [in nextLine].
-	line := in nextLine trimmed.
+	first ifTrue: [first := false] ifFalse: [
+		HttpBodyStream nextLineFrom: in limit: HttpBodyStream maxLineBytes].
+	line := (HttpBodyStream nextLineFrom: in limit: HttpBodyStream maxLineBytes) trimmed.
 	"THE PEER WENT AWAY, and that is not a malformed chunk size.  A
 	 connection closed in the middle of a chunked body reaches here with
 	 nothing left to read, and the message was `a chunk with no size' --
@@ -176,7 +276,9 @@ HttpBodyStream >> nextChunkSize [
 		^NetError new signal: 'a chunk of ', size printString,
 			' bytes is over the ', maxBody printString, ' this client reads'].
 	size = 0 ifTrue: [
-		[in nextLine isEmpty] whileFalse: [].
+		"The trailers, read and dropped -- and bounded as the headers are,
+		 because they are headers by another name (Bugs5 NET-4)."
+		HttpBodyStream headerLinesFrom: in do: [:trailer | ].
 		mode := #none].
 	^size
 ]

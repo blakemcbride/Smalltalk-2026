@@ -80,6 +80,9 @@ st_primitive_status ST_primitive_status_of(unsigned index, const char **name);
 uint32_t ST_string_hash_text(const void *bytes, size_t length);
 uint32_t ST_string_hash_object(st_oop string);
 
+/*  Is this an instance of Symbol?  migrate.c refuses to move one.  */
+int     ST_is_symbol(st_oop p);
+
 /*  Report a non-boolean where the compiler guaranteed one.  */
 void    ST_must_be_boolean(st_oop value);
 

@@ -381,31 +381,33 @@ timer_main(void *arg)
              *  at once is how a lock order gets invented by accident.
              */
             ST_mutex_unlock(&timer_lock);
-            if (SCHED_asynchronous_signal(semaphore)) {
-                /*
-                 *  Queued, and the queue took a count of its own; giving
-                 *  this thread's up cannot reach zero, so the order of
-                 *  these two does not matter and the root goes first.
-                 */
-                ST_store_release(&timer_delivering_semaphore,
-                                 (uintptr_t) ST_NIL);
-                OM_decrease_ref(semaphore);
-            }  else  {
-                /*
-                 *  Nothing took it -- the queue was full -- so this thread
-                 *  holds the last count and the release may free it.  The
-                 *  count goes first, while the root is still there: a
-                 *  collection between the two would otherwise recount the
-                 *  semaphore without the root that stands for this count
-                 *  and leave it one short, which is the whole of MEM-6.
-                 *  This worker is not parked by a safepoint, so "between
-                 *  the two" is a real instant here in a way it never is on
-                 *  a worker.
-                 */
-                OM_decrease_ref(semaphore);
-                ST_store_release(&timer_delivering_semaphore,
-                                 (uintptr_t) ST_NIL);
-            }
+            /*
+             *  Queued or not, this thread's count goes first and the root
+             *  after, while the root still stands for the count.
+             *
+             *  A collection does not trust counts: it zeroes them all and
+             *  rebuilds each from the heap and the root walk, and the timer
+             *  thread is not parked by a safepoint, so a collection really
+             *  can land between these two lines.  Root first, it recounts
+             *  the semaphore without the root that stood for this thread's
+             *  count -- the class variable, plus the queue's slot if it was
+             *  queued -- and the decrement after it leaves the semaphore
+             *  one short.  The drain's release then takes it to zero while
+             *  Delay's TimingSemaphore still names it: MEM-6 again, through
+             *  the other door.  The queued branch used to clear the root
+             *  first on the reasoning that the queue's own count made the
+             *  release safe, which holds between collections and not across
+             *  one (Bugs5 OM-13).  Count first, a collection in between
+             *  finds one root too many and counts the semaphore one high,
+             *  which costs nothing: the next collection rebuilds it again.
+             *
+             *  So whether the queue took it no longer decides the order.
+             *  If it did, it took a count of its own; if it was full, the
+             *  order is the one this branch always had, for the same reason.
+             */
+            (void) SCHED_asynchronous_signal(semaphore);
+            OM_decrease_ref(semaphore);
+            ST_store_release(&timer_delivering_semaphore, (uintptr_t) ST_NIL);
             ST_mutex_lock(&timer_lock);
             /*
              *  Cleared here and not before.  A re-arm during the delivery

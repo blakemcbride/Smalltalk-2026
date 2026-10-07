@@ -343,9 +343,14 @@
 # asks for thirty megabytes and never reads is dropped by the write timeout,
 # and a connection over maxConnections is answered 503.
 #
+# Every row moved by five with the Bugs5 NET-4 to NET-8 tests: the HTTP
+# client bounds its header lines and reads no body after a HEAD, a form value
+# that is not a JSON number stays a String, session idle time is on the
+# monotonic clock, and Ollama's toHtml: escapes the reply.
+#
 # profile               run  passed
-st2026                  555  555
-pharo-announcements     586  586
-pharo-time              1176 1176
-pharo-weak              1087 1086
-pharo-collections       1012 1012
+st2026                  560  560
+pharo-announcements     591  591
+pharo-time              1181 1181
+pharo-weak              1092 1091
+pharo-collections       1017 1017

@@ -297,7 +297,8 @@ image has sockets and a server-side parser and no client.
 - `lib/LLM`: `Ollama` — `url:` (default `http://localhost:11434/api/`),
   `isUp`, `models`, `model:`, `send:`, `timeoutSeconds:`, class-side
   `toHtml:` (Kiss's four regex replacements, by hand: drop `\boxed{…}`,
-  drop backslashes, newline → `<br>`, `**x**` → `<b>x</b>`). The chat and
+  drop backslashes, newline → `<br>`, `**x**` → `<b>x</b>`, after escaping
+  `& < > " '` so that the model's reply cannot inject markup). The chat and
   streaming halves of `Ollama.java` (425 lines) are not needed by the demo
   and are not in this plan. No live test in any ratchet — it needs a
   running Ollama; `toHtml:` gets doctests.

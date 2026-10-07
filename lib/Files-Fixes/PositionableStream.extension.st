@@ -18,6 +18,16 @@ The C chunk reader in src/compiler/chunk.c has done exactly this since it
 was written, for the same reason and with the same rule: a carriage return
 and a line feed together are one ending and not two.  This is that rule,
 where the image can reach it.
+
+NOT FOR A METHOD'S OWN SOURCE, which is what nextChunkVerbatim is for.  The
+sources the bootstrap hands over and the changes file the image appends to
+both hold a method's text exactly as the image compiled it -- every line
+ending already a carriage return -- so there is nothing to translate, and
+translating changed what was there: a method whose source held a line feed
+inside a string literal answered its source with a carriage return in its
+place, and the reshape that recompiles a class from its source when an
+instance variable is added compiled the changed literal into it (Bugs5
+FILES-5).  See RemoteString>>verbatimString.
 "
 Extension { #name : 'PositionableStream' }
 
@@ -47,5 +57,28 @@ PositionableStream >> nextChunk [
 						aStream nextPut: cr]
 					ifFalse: [
 						aStream nextPut: (char == lf ifTrue: [cr] ifFalse: [char])]]].
+	^aStream contents
+]
+
+{ #category : '*Files-Fixes' }
+PositionableStream >> nextChunkVerbatim [
+	"Answer the contents of the receiver up to the next terminator, with
+	 doubled terminators ignored and every other character as it is:
+	 1983's nextChunk, without the line-ending translation nextChunk now
+	 does.  For RemoteString>>verbatimString, reading a method's source
+	 back; see this extension's comment for why that is never
+	 translated."
+
+	| aStream char terminator |
+	terminator := $!.
+	aStream := WriteStream on: (String new: 200).
+	self skipSeparators.
+	[(char := self next) == nil] whileFalse: [
+		char == terminator
+			ifTrue: [
+				(self peekFor: terminator)
+					ifTrue: ["doubled terminator" aStream nextPut: char]
+					ifFalse: [^aStream contents]]
+			ifFalse: [aStream nextPut: char]].
 	^aStream contents
 ]

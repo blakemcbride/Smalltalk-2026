@@ -78,10 +78,14 @@ safe:
 
 | the reply says | the body is |
 |---|---|
-| a status that cannot have one (1xx, 204, 304) | empty |
+| a status that cannot have one (1xx, 204, 304), or the reply to a `HEAD` | empty |
 | `Transfer-Encoding: chunked` | hex-sized chunks to a chunk of zero, then the trailers, dropped |
 | `Content-Length` | that many bytes |
 | none of those | everything up to the close |
+
+**What comes before the body is bounded too**: a status, header, chunk-size
+or trailer line at 64 KB, and the headers (and the trailers) at 256 KB and
+256 lines. A server that sends more is answered with a `NetError`.
 
 **All four are bounded**, at 64 MB unless `maxBodyBytes:` says otherwise: the
 reply comes from a server this program did not write, and a

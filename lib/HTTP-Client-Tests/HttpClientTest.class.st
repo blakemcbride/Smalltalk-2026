@@ -467,6 +467,71 @@ HttpClientTest >> testAmbiguousFramingIsRefused [
 		do: [:url | HttpClient get: url]) headerAt: 'x-note') equals: 'two'
 ]
 
+{ #category : 'tests - refusals' }
+HttpClientTest >> testTheHeadersAreBounded [
+	"Bugs5 NET-4.  maxBodyBytes bounded the body and nothing bounded the
+	 lines in front of it: a header that never ended grew one String until
+	 totalTimeout, and the audit's reached 19.8 MB.  A line past
+	 maxLineBytes, headers past maxHeaderBytes or maxHeaderCount, and a
+	 trailer line past the line limit are each a NetError."
+	| long many trailer reply |
+	long := String new: HttpBodyStream maxLineBytes + 1 withAll: $a.
+	self should: [self serving: 'HTTP/1.1 200 OK', self crlf,
+			'X-Big: ', long, self crlf, 'Content-Length: 0', self crlf, self crlf
+		do: [:url | HttpClient get: url]] raise: NetError.
+	self should: [self serving: 'HTTP/1.1 200 OK ', long, self crlf, self crlf
+		do: [:url | HttpClient get: url]] raise: NetError.
+	many := WriteStream on: String new.
+	1 to: HttpBodyStream maxHeaderCount + 1 do: [:i |
+		many nextPutAll: 'X-', i printString, ': x'; nextPutAll: self crlf].
+	self should: [self serving: 'HTTP/1.1 200 OK', self crlf, many contents,
+			'Content-Length: 0', self crlf, self crlf
+		do: [:url | HttpClient get: url]] raise: NetError.
+	many := WriteStream on: String new.
+	1 to: HttpBodyStream maxHeaderBytes // 60000 + 1 do: [:i |
+		many nextPutAll: 'X-', i printString, ': ';
+			nextPutAll: (String new: 60000 withAll: $b); nextPutAll: self crlf].
+	self should: [self serving: 'HTTP/1.1 200 OK', self crlf, many contents,
+			'Content-Length: 0', self crlf, self crlf
+		do: [:url | HttpClient get: url]] raise: NetError.
+	trailer := 'HTTP/1.1 200 OK', self crlf, 'Transfer-Encoding: chunked', self crlf, self crlf,
+		'5', self crlf, 'hello', self crlf, '0', self crlf.
+	self should: [self serving: trailer, 'X-Trailer: ', long, self crlf, self crlf
+		do: [:url | HttpClient get: url]] raise: NetError.
+	"and a reply inside every limit is read: a long header, and a trailer"
+	reply := self serving: 'HTTP/1.1 200 OK', self crlf,
+			'X-Long: ', (String new: 60000 withAll: $c), self crlf,
+			'Content-Length: 2', self crlf, self crlf, 'ok'
+		do: [:url | HttpClient get: url].
+	self assert: (reply headerAt: 'x-long') size equals: 60000.
+	self assert: reply body equals: 'ok'.
+	reply := self serving: trailer, 'X-Trailer: t', self crlf, self crlf
+		do: [:url | HttpClient get: url].
+	self assert: reply body equals: 'hello'
+]
+
+{ #category : 'tests - bodies' }
+HttpClientTest >> testAHeadHasNoBody [
+	"Bugs5 NET-8.  The reply to a HEAD has no body whatever its
+	 Content-Length says, and the client waited for the bytes the header
+	 declared: a NetError from a server that closed, and a TimedOut from
+	 one that kept the connection open.  Against HttpServer, and against a
+	 peer that declares a length and sends nothing after the headers."
+	| base reply |
+	base := self startServer.
+	reply := HttpClient new request: 'HEAD' url: base, '/hello' body: nil contentType: nil.
+	self assert: reply status equals: 200.
+	self assert: reply body equals: ''.
+	self assert: (reply headerAt: 'content-length') notNil.
+	reply := self serving: 'HTTP/1.1 200 OK', self crlf, 'Content-Length: 5', self crlf, self crlf
+		do: [:url | HttpClient new readTimeout: 2000;
+			request: 'HEAD' url: url body: nil contentType: nil].
+	self assert: reply body equals: ''.
+	"and a GET of the same reply still wants its five bytes"
+	self should: [self serving: 'HTTP/1.1 200 OK', self crlf, 'Content-Length: 5', self crlf, self crlf
+		do: [:url | HttpClient get: url]] raise: NetError
+]
+
 { #category : 'tests - timeouts' }
 HttpClientTest >> testASlowDripMeetsTheOverallDeadline [
 	"Bugs4.  readTimeout: bounds ONE read, and a peer sending a byte every
