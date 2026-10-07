@@ -55,6 +55,32 @@ st_test_strdup(const char *s)
     return copy;
 }
 
+/*
+ *  The st2026 binary and the scratch directory of THIS build, for a test
+ *  that runs the binary or writes fixtures.  The Makefile exports both to
+ *  every unit test; run by hand, the default build's are assumed.
+ *
+ *  Tests named build/mt/st2026 and ./st2026 themselves, so a TSAN or ASAN
+ *  run tested the uninstrumented binary, a HEADLESS tree skipped and said
+ *  ok, and after `make OM=bb' test_image ran a Blue Book ./st2026 (Bugs5
+ *  DOCS-4).
+ */
+ST_TEST_UNUSED static const char *
+st_test_binary(void)
+{
+    const char *bin = getenv("ST2026_BIN");
+
+    return (bin && *bin) ? bin : "build/mt/st2026";
+}
+
+ST_TEST_UNUSED static const char *
+st_test_dir(void)
+{
+    const char *dir = getenv("ST_TEST_DIR");
+
+    return (dir && *dir) ? dir : "build/mt/tests";
+}
+
 #define ST_TEST_BEGIN(name)                                             \
     do {                                                                \
         st_test_checks   = 0;                                           \

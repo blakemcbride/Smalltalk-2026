@@ -140,7 +140,7 @@ RestDispatcher >> numberFrom: aString [
 	 The caps are the parser's, deliberately the same two numbers: 256
 	 digits, which is past every number that is really a number -- a 64-bit
 	 integer is 19 digits and the widest SQL DECIMAL is 38 -- and an
-	 exponent of 4096, because `1e1000000000' is eleven characters asking
+	 exponent of 400, because `1e1000000000' is eleven characters asking
 	 for a billion digits and refusing it is the only way not to answer.
 	 The exponent's own text is read only once the digit cap has passed, so
 	 reading it is bounded too.
@@ -172,9 +172,9 @@ RestDispatcher class >> maxFormNumberDigits [
 
 { #category : 'private - envelope' }
 RestDispatcher class >> maxFormNumberExponent [
-	"How large a form field's exponent may be.  JSONParser's; see
-	 numberFrom:."
-	^4096
+	"How large a form field's exponent may be.  JSONParser's, which came
+	 down from 4096 to 400 with Bugs5 NET-3; see numberFrom:."
+	^400
 ]
 
 { #category : 'private' }

@@ -62,13 +62,23 @@ HttpConnection >> serveOne [
 	"Read one request and answer it.  Answer whether the connection is to
 	 carry another."
 	| request response keepAlive |
+	"Waiting for the next request is bounded by the keep-alive time, one
+	 read at a time.  Reading it, once it has begun, is bounded as a WHOLE,
+	 or a client sending a byte every few seconds is never done (Bugs5
+	 NET-1); and writing the reply is bounded by how long the client may
+	 go without taking any of it."
 	stream readTimeout: server keepAliveMilliseconds.
+	stream deadlineIn: nil.
+	stream writeTimeout: server writeMilliseconds.
+	stream atEnd ifTrue: [^false].
+	stream deadlineIn: server requestMilliseconds.
 	request := [HttpRequest readFrom: stream maxBodyBytes: server maxRequestBytes]
 		on: HttpError
 		do: [:e |
 			self write: (HttpResponse error: e status reason: e messageText) keepAlive: false.
 			^false].
 	request isNil ifTrue: [^false].
+	stream deadlineIn: nil.
 	request remoteAddress: ([socket peerAddress] on: NetError do: [:e | nil]).
 	keepAlive := request isKeepAlive.
 	response := [server handle: request]

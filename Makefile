@@ -641,11 +641,15 @@ else
 	@echo "skipped: the bootstrap targets the 64-bit object memory"
 endif
 
-unit-test: $(UNIT_BIN)
+#  On $(VARIANT_BIN) as well: several suites run the binary, and they ran
+#  whatever was linked last -- after a source edit the tests ran before the
+#  relink (Bugs5 DOCS-4).  ST2026_BIN and ST_TEST_DIR tell them which binary
+#  and which scratch directory are this build's; see st_test_binary().
+unit-test: $(UNIT_BIN) $(VARIANT_BIN)
 	@status=0; \
 	for t in $(UNIT_BIN); do \
 	    echo "==> $$t"; \
-	    "$$t" || status=1; \
+	    ST2026_BIN=$(VARIANT_BIN) ST_TEST_DIR=$(TEST_DIR) "$$t" || status=1; \
 	done; \
 	exit $$status
 

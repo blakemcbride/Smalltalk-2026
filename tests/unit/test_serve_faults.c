@@ -39,17 +39,18 @@
 #include <unistd.h>
 #include <sys/wait.h>
 
-#define IMAGE       "build/mt/tests/bugs3-serve.im"
-#define BATCH       "build/mt/tests/bugs3-serve-batch.st"
-#define STARTUP     "build/mt/tests/bugs3-serve-startup.st"
-#define RACE        "build/mt/tests/bugs3-serve-race.st"
-#define BADIMAGE    "build/mt/tests/bugs3-serve-bad.im"
-#define SHARED      "build/mt/tests/bugs5-serve-shared.st"
-#define FORWARD     "build/mt/tests/bugs5-serve-forward.st"
-#define TERMLOCK    "build/mt/tests/bugs5-serve-terminate.st"
-#define RESUMED     "build/mt/tests/bugs5-serve-resumed.st"
-#define MONITOR     "build/mt/tests/bugs5-serve-monitor.st"
-#define WORDS       "build/mt/tests/bugs5-serve-words.st"
+#define IMAGE       fixture("bugs3-serve.im")
+#define BATCH       fixture("bugs3-serve-batch.st")
+#define STARTUP     fixture("bugs3-serve-startup.st")
+#define RACE        fixture("bugs3-serve-race.st")
+#define BADIMAGE    fixture("bugs3-serve-bad.im")
+#define SHARED      fixture("bugs5-serve-shared.st")
+#define FORWARD     fixture("bugs5-serve-forward.st")
+#define TERMLOCK    fixture("bugs5-serve-terminate.st")
+#define RESUMED     fixture("bugs5-serve-resumed.st")
+#define MONITOR     fixture("bugs5-serve-monitor.st")
+#define WORDS       fixture("bugs5-serve-words.st")
+#define SOURCES     fixture("bugs5-serve-sources.st")
 
 /*
  *  The harness from the Bugs3 appendix, verbatim: each line of the first
@@ -68,13 +69,36 @@ static const char *startup_text =
 
 static const char *st2026;
 
+/*
+ *  A fixture's path in this build's scratch directory (see
+ *  st_test_dir), made once per name and kept.
+ */
+static const char *
+fixture(const char *name)
+{
+    static struct { const char *name; char *path; } made[32];
+    size_t  i;
+    size_t  n;
+
+    for (i = 0; i < sizeof made / sizeof made[0] && made[i].name; ++i)
+        if (strcmp(made[i].name, name) == 0)
+            return made[i].path;
+    if (i == sizeof made / sizeof made[0])
+        return name;
+    n = strlen(st_test_dir()) + strlen(name) + 2;
+    made[i].path = (char *) malloc(n);
+    if (!made[i].path)
+        return name;
+    snprintf(made[i].path, n, "%s/%s", st_test_dir(), name);
+    made[i].name = name;
+    return made[i].path;
+}
+
 static const char *
 find_binary(void)
 {
-    if (access("build/mt/st2026", X_OK) == 0)
-        return "build/mt/st2026";
-    if (access("./st2026", X_OK) == 0)
-        return "./st2026";
+    if (access(st_test_binary(), X_OK) == 0)
+        return st_test_binary();
     return NULL;
 }
 
@@ -200,11 +224,20 @@ main(void)
 
     st2026 = find_binary();
     if (!st2026) {
-        printf("skipped: no st2026 binary to drive\n");
+        /*  Under make the binary is a prerequisite, so its absence fails.  */
+        if (getenv("ST2026_BIN")) {
+            ++st_test_checks;
+            ++st_test_failures;
+            printf("  FAIL no st2026 binary at %s\n", st_test_binary());
+        } else
+            printf("skipped: no st2026 binary to drive\n");
         return ST_TEST_END();
     }
     if (write_file(STARTUP, startup_text) != 0) {
-        printf("skipped: cannot write %s\n", STARTUP);
+        /*  A failure, not a skip: "ok: 0 checks" passed for nothing.  */
+        ++st_test_checks;
+        ++st_test_failures;
+        printf("  FAIL cannot write %s\n", STARTUP);
         return ST_TEST_END();
     }
     snprintf(command, sizeof command,
@@ -737,6 +770,50 @@ main(void)
         }
     }
 #endif
+
+    /*
+     *  Bugs5 FILES-2: eight workers compiling at once each get their own
+     *  source back.  Every compile moves the one changes-file stream to its
+     *  end, writes, and makes it read-only; every sourceCodeAt: moves it
+     *  somewhere else and reads.  Unlocked, a run of eight times a hundred
+     *  compiles garbled three hundred sources and raised `no writing
+     *  allowed'.  LibraryLocks class>>holdingSources: now serializes them.
+     */
+    if (write_file(SOURCES,
+            "| done bad errs n mtx classes |\n"
+            "done := Semaphore new. bad := 0. errs := 0. n := 8. "
+            "mtx := Semaphore forMutualExclusion.\n"
+            "classes := (1 to: n) collect: [:k | Object subclass: ('ZZPar', "
+            "k printString) asSymbol instanceVariableNames: '' "
+            "classVariableNames: '' poolDictionaries: '' category: 'ZZPar'].\n"
+            "1 to: n do: [:k | | cls | cls := classes at: k.\n"
+            "  Processor forkParallel: [1 to: 100 do: [:i | | src sel |\n"
+            "    sel := ('m', i printString) asSymbol.\n"
+            "    src := 'm', i printString, ' ^', (k * 1000 + i) printString.\n"
+            "    [cls compile: src classified: 'x'.\n"
+            "     (cls sourceCodeAt: sel) = src ifFalse: [mtx critical: "
+            "[bad := bad + 1]]]\n"
+            "      on: Error do: [:e | mtx critical: [errs := errs + 1]]].\n"
+            "    done signal]].\n"
+            "n timesRepeat: [done wait].\n"
+            "^'bad=', bad printString, ' errs=', errs printString\n") == 0) {
+        char        batch[512];
+        int         attempt;
+
+        snprintf(batch, sizeof batch,
+                 "Compiler evaluate: (FileStream oldFileNamed: '%s') "
+                 "contentsOfEntireFile\n", SOURCES);
+        for (attempt = 0; attempt < 2; ++attempt) {
+            status = serve(batch, 8, out, sizeof out);
+            ++st_test_checks;
+            if (status < 0) {
+                ++st_test_failures;
+                printf("  FAIL FILES-2: could not run the server\n");
+                break;
+            }
+            expect(out, "==> 'bad=0 errs=0'", "FILES-2 parallel compiles");
+        }
+    }
 
     /*  B58: a startup that does not compile writes no image, exit 1.  */
     unlink(BADIMAGE);

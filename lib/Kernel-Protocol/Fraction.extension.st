@@ -5,7 +5,20 @@ Extension { #name : 'Fraction' }
 
 { #category : '*Kernel-Protocol' }
 Fraction >> asFloat [
-	"The nearest Float to me, rounding to nearest and ties to even.
+	"The nearest Float to me, rounding to nearest and ties to even.  See
+	 Fraction class>>floatOfNumerator:denominator:, which does the work."
+	^Fraction floatOfNumerator: numerator denominator: denominator
+]
+
+{ #category : '*Kernel-Protocol' }
+Fraction class >> floatOfNumerator: n denominator: d [
+	"The nearest Float to n / d, rounding to nearest and ties to even --
+	 Fraction>>asFloat's work, taken out so that a ratio can be converted
+	 without first being a Fraction.  Number class>>readFrom: is why: a
+	 Fraction reduces itself, and reducing a 256-digit numerator against a
+	 power of ten by gcd: took 300 ms of an unauthenticated REST worker
+	 for one form field (Bugs5 NET-2); this division needs no reduced
+	 terms.
 
 	 1983 answers `numerator asFloat / denominator asFloat', which converts
 	 BOTH terms before dividing -- so above 2^53 the low bits are gone
@@ -22,9 +35,9 @@ Fraction >> asFloat [
 	 touching the mantissa.  Nothing here converts to Float until the
 	 mantissa is small enough to convert exactly."
 	| a b shift quotient remainder guard |
-	numerator = 0 ifTrue: [^0.0].
-	a := numerator abs.
-	b := denominator abs.
+	n = 0 ifTrue: [^0.0].
+	a := n abs.
+	b := d abs.
 	shift := 54 - a highBit + b highBit.
 	shift > 0
 		ifTrue: [a := a bitShift: shift]
@@ -48,7 +61,7 @@ Fraction >> asFloat [
 			quotient highBit > 53 ifTrue: [
 				quotient := quotient bitShift: -1.
 				shift := shift - 1]].
-	^(numerator negative
+	^(n negative ~= d negative
 		ifTrue: [quotient negated]
 		ifFalse: [quotient]) asFloat timesTwoPower: shift negated
 ]

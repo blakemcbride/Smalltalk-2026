@@ -72,7 +72,7 @@ Number class >> readFrom: aStream [
 	 A String is taken as well as a stream, because `Number readFrom: '42''
 	 is what ported code writes and Pharo answers it; 1983 sent atEnd to
 	 the String (Bugs3 B51)."
-	| value radix fraction digits start negative signed sawPoint answer exponent bits |
+	| value radix fraction digits start negative signed sawPoint answer exponent bits scale |
 	aStream isString ifTrue: [^self readFrom: (ReadStream on: aStream)].
 	radix := 10.
 	sawPoint := false.
@@ -95,6 +95,7 @@ Number class >> readFrom: aStream [
 	 RestDispatcher>>numberFrom: included (Bugs5 KERN-3).  Everything
 	 below works on the magnitude.
 	"
+	scale := 0.
 	negative := aStream peekFor: $-.
 	signed := [:magnitude | negative ifTrue: [magnitude negated] ifFalse: [magnitude]].
 	value := Integer readFrom: aStream.
@@ -125,8 +126,16 @@ Number class >> readFrom: aStream [
 					start := aStream position.
 					fraction := Integer readFrom: aStream radix: radix.
 					digits := aStream position - start.
-					"Exact: one Fraction, one rounding, at the end."
-					value := value + (fraction / (radix raisedTo: digits)).
+					"
+					 Exact: an Integer mantissa and a power of the radix,
+					 one rounding at the end.  It was a Fraction, and a
+					 Fraction reduces itself: gcd: on a 256-digit numerator
+					 cost 300 ms of a REST worker for one form field before
+					 any authentication (Bugs5 NET-2).  Nothing here needs
+					 the ratio in lowest terms, only its Float.
+					"
+					value := (value * (radix raisedTo: digits)) + fraction.
+					scale := digits negated.
 					"
 					 NOT converted here.  An exponent may follow, and
 					 applying it to a Float that has already been rounded
@@ -154,17 +163,24 @@ Number class >> readFrom: aStream [
 			"
 			exponent := Integer readFrom: aStream.
 			value = 0 ifFalse: [
-				bits := (value isInteger
-							ifTrue: [value highBit]
-							ifFalse: [value numerator highBit - value denominator highBit])
-						+ (exponent * (radix ln / 2 ln)).
+				bits := value highBit + ((scale + exponent) * (radix ln / 2 ln)).
 				bits > 1100 ifTrue: [
 					^self error: 'this number is too large for a Float'].
 				bits < -1100 ifTrue: [
-					^negative ifTrue: [-0.0] ifFalse: [0.0]].
-				value := value * (radix raisedTo: exponent)].
+					^negative ifTrue: [-0.0] ifFalse: [0.0]]].
+			scale := scale + exponent.
 			sawPoint := true].
 	sawPoint ifFalse: [^signed value: value].
+	"value * radix^scale, bounded now: the estimate above kept scale within
+	 what the text and the Float range allow, and zero is zero whatever it
+	 was scaled by."
+	value = 0
+		ifTrue: [answer := 0.0]
+		ifFalse: [
+			answer := scale >= 0
+				ifTrue: [(value * (radix raisedTo: scale)) asFloat]
+				ifFalse: [Fraction floatOfNumerator: value
+							denominator: (radix raisedTo: scale negated)]].
 	"
 	 The exponent is applied EXACTLY -- value is still an Integer or a
 	 Fraction here -- so an exponent that no Float can hold is visible as
@@ -176,7 +192,6 @@ Number class >> readFrom: aStream [
 	 rounding to zero is what IEEE 754 says happens and what every reader
 	 in every language does.
 	"
-	answer := value asFloat.
 	answer isFinite ifFalse: [
 		"Not printed: hundreds of digits say less than the sentence."
 		^self error: 'this number is too large for a Float'].

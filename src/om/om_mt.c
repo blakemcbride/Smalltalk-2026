@@ -1636,6 +1636,9 @@ OM_can_forward_identity(st_oop from, st_oop to)
      */
     if (root_pinned && root_pinned(from))
         return 0;
+    /*  A Character, for the reason OM_can_swap_identities gives.  */
+    if (OM_fetch_class(from) == ST_CLASS_CHARACTER)
+        return 0;
     return 1;
 }
 
@@ -1676,6 +1679,15 @@ OM_can_swap_identities(st_oop a, st_oop b)
         return 1;
     if ((a <= ST_LAST_IMMORTAL_OOP || b <= ST_LAST_IMMORTAL_OOP)
      && OM_fetch_class(a) != OM_fetch_class(b))
+        return 0;
+    /*
+     *  A Character names its code point for the image's life: there is one
+     *  per code point in CharacterTable and every String answers its
+     *  elements from there, so a swap rewrote every String in the image
+     *  (Bugs5 INTERP-8).
+     */
+    if (OM_fetch_class(a) == ST_CLASS_CHARACTER
+     || OM_fetch_class(b) == ST_CLASS_CHARACTER)
         return 0;
     /*
      *  What C holds in a place with no setter -- the context a worker is

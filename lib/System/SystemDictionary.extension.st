@@ -215,15 +215,37 @@ SystemDictionary >> condenseChanges [
 	 the old changes file or the new one, and never neither."
 
 	| old temp name |
-	old := SourceFiles at: 2.
-	name := old file fileName.
-	temp := Disk file: name , '.condensing'.
-	temp timeStamp.
-	Smalltalk allBehaviorsDo: [:class | class moveChangesTo: temp].
-	temp close.
-	temp readOnly.
-	old close.
-	SourceFiles at: 2 put: temp.
-	Disk removeOld: old file.
-	temp file rename: name
+	"Under the source-file lock throughout: a compile writing to the old
+	 file while this copies it would be lost with it (Bugs5 FILES-2)."
+	LibraryLocks holdingSources: [
+		old := SourceFiles at: 2.
+		name := old file fileName.
+		temp := Disk file: name , '.condensing'.
+		temp timeStamp.
+		Smalltalk allBehaviorsDo: [:class | class moveChangesTo: temp].
+		temp close.
+		temp readOnly.
+		old close.
+		SourceFiles at: 2 put: temp.
+		Disk removeOld: old file.
+		temp file rename: name]
+]
+
+{ #category : '*System' }
+SystemDictionary >> logChange: aStringOrText [
+	"Write the argument, a String or Text, onto the changes file -- 1983's,
+	 holding the source-file lock (Bugs5 FILES-2)."
+	| aFileStream aString |
+	SourceFiles == nil ifTrue: [^self].
+	aString := (aStringOrText isMemberOf: Text)
+		ifTrue: [aStringOrText string]
+		ifFalse: [aStringOrText].
+	(aString isMemberOf: String) ifFalse: [^self error: 'cant log this change'].
+	(aString findFirst: [:char | char isSeparator not]) = 0
+		ifTrue: [^self].  "null doits confuse replay"
+	LibraryLocks holdingSources: [
+		aFileStream := SourceFiles at: 2.
+		aFileStream setToEnd; readWrite.
+		aFileStream cr; cr; nextChunkPut: aString.
+		aFileStream readOnly]
 ]

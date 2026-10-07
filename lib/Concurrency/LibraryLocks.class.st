@@ -10,7 +10,9 @@ model in the image), the list of open directories (FileDirectory's
 ExternalReferences), the method dictionaries (Behavior>>addSelector:
 withMethod:, one per class but written by every worker that compiles), and
 the Transcript's entry stream (TextCollector>>nextPutAll:, one WriteStream
-on one String, which grows by become: under whoever is writing to it).  Each one lost entries when real workers wrote to it
+on one String, which grows by become: under whoever is writing to it), and
+the source files (SourceFiles, whose two streams every compile writes and
+every sourceCodeAt: repositions -- see holdingSources:).  Each one lost entries when real workers wrote to it
 together -- two workers interning the same new string made two Symbols,
 which is the worst of them, because a Symbol that is not identical to
 itself cannot be found as a selector.
@@ -42,6 +44,7 @@ Class {
 		'Files',
 		'Globals',
 		'Methods',
+		'Sources',
 		'Symbols',
 		'Transcript'
 	],
@@ -56,7 +59,8 @@ LibraryLocks class >> initialize [
 	Dependents := Mutex new.
 	Files := Mutex new.
 	Methods := Mutex new.
-	Transcript := Mutex new
+	Transcript := Mutex new.
+	Sources := Monitor new
 ]
 
 { #category : 'holding' }
@@ -93,4 +97,23 @@ LibraryLocks class >> holdingDependents: aBlock [
 LibraryLocks class >> holdingFiles: aBlock [
 	"Evaluate aBlock holding the lock on the open-directory list."
 	^Files isNil ifTrue: [aBlock value] ifFalse: [Files critical: aBlock]
+]
+
+{ #category : 'holding' }
+LibraryLocks class >> holdingSources: aBlock [
+	"Evaluate aBlock holding the lock on the source files -- SourceFiles,
+	 the .sources and .changes streams every compile writes and every
+	 sourceCodeAt: reads.
+
+	 One FileStream each, shared by the whole image, and every use of one
+	 moves its position: setToEnd, write, readOnly to log a method;
+	 position:, nextChunk to read one back.  Eight workers compiling at
+	 once interleaved all of that in one stream -- `no writing allowed'
+	 when one flipped it readOnly under another, and source pointers that
+	 named somebody else's text (Bugs5 FILES-2).
+
+	 A Monitor, not a Mutex, because condenseChanges holds it while it
+	 reads and writes every changed method; reentrant for any scheduled
+	 process, which is everything that runs it."
+	^Sources isNil ifTrue: [aBlock value] ifFalse: [Sources critical: aBlock]
 ]

@@ -305,6 +305,58 @@ HttpServerTest >> testAnIdleConnectionIsClosedAfterTheKeepAliveTime [
 	[self assert: in next isNil] ensure: [socket close]
 ]
 
+{ #category : 'tests - limits' }
+HttpServerTest >> testADrippedRequestIsCutOffAtItsDeadline [
+	"A byte every 300 ms is never a silent wait of a second, so only a
+	 deadline on the whole request ends it (Bugs5 NET-1)."
+	| socket in |
+	server keepAliveSeconds: 1; requestSeconds: 1.
+	server start.
+	socket := self connect.
+	[socket send: 'GET / HTTP/1.1', self crlf, 'X-A: '.
+	 10 timesRepeat: [
+		(Delay forMilliseconds: 300) wait.
+		[socket send: 'a'] on: Error do: [:e | nil]].
+	 in := SocketStream on: socket.
+	 in readTimeout: 3000.
+	 self assert: ([in next] on: Error do: [:e | nil]) isNil]
+		ensure: [socket close].
+	(Delay forMilliseconds: 200) wait.
+	self assert: server connectionCount equals: 0
+]
+
+{ #category : 'tests - limits' }
+HttpServerTest >> testAClientThatStopsReadingIsDropped [
+	"Thirty megabytes asked for and never read: more than any socket
+	 buffer holds, so the reply's write waits, and the write timeout ends
+	 it rather than the life of the server (Bugs5 NET-1)."
+	| socket big |
+	big := String new: 30 * 1024 * 1024 withAll: $x.
+	server at: '/big' put: [:request | HttpResponse text: big].
+	server writeSeconds: 1.
+	server start.
+	socket := self connect.
+	[socket send: 'GET /big HTTP/1.1', self crlf, 'Host: test', self crlf, self crlf.
+	 (Delay forMilliseconds: 3500) wait.
+	 self assert: server connectionCount equals: 0]
+		ensure: [socket close]
+]
+
+{ #category : 'tests - limits' }
+HttpServerTest >> testAConnectionOverTheCapIsAnswered503 [
+	"Over maxConnections, a connection is answered at once and closed,
+	 so slow clients cannot fill the socket table (Bugs5 NET-1)."
+	| first second reply |
+	server maxConnections: 2; keepAliveSeconds: 5.
+	server start.
+	first := self connect.
+	second := self connect.
+	[(Delay forMilliseconds: 200) wait.
+	 reply := self request: 'GET / HTTP/1.1', self crlf, 'Host: test', self crlf, self crlf.
+	 self assert: ((reply at: 1) includesSubstring: '503')]
+		ensure: [first close. second close]
+]
+
 { #category : 'tests' }
 HttpServerTest >> testTenConnectionsAtOnce [
 	"Ten clients, each on its own process, each getting its own answer."

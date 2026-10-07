@@ -53,10 +53,13 @@ nothing it could mean.  The objects I BUILD are another matter: a
 JSONObject and a JSONArray each carry a lock, so the document is safe to
 hand to another process the moment it is answered.
 
-THE EXPONENT IS BOUNDED for the same reason, at 4096.  1e4096 is a
-four-thousand-digit integer and exact arithmetic will happily produce it;
-1e1000000000 is a twelve-character document asking for a billion digits,
-and refusing it is the only way not to answer.
+THE EXPONENT IS BOUNDED for the same reason, at 400.  1e1000000000 is a
+twelve-character document asking for a billion digits, and refusing it is
+the only way not to answer.  It was 4096, and 1e4096 is a four-thousand-
+digit integer that exact arithmetic took 100 ms to build: a hundred of them
+in 700 bytes cost ten seconds, and /rest parses the document before there
+is a session to check (Bugs5 NET-3).  400 is past the largest and smallest
+double, so no number another system could have sent as a double is refused.
 
 AND SO ARE THE DIGITS, at 256 of them in the whole part and 256 in the
 fraction.  Bugs3 B53: a number written out as four thousand sevens took
@@ -93,8 +96,53 @@ Class {
 	#name : 'JSONParser',
 	#superclass : 'Object',
 	#instVars : [ 'stream', 'depth', 'maxDepth', 'maxDigits' ],
+	#classVars : [ 'PowersOfTen', 'PowersOfTenBy64' ],
 	#category : 'Json'
 }
+
+{ #category : 'class initialization' }
+JSONParser class >> initialize [
+	"Ten to the powers 0 to 64, and to 0, 64, 128 ... 704, from which
+	 tenTo: makes any power a bounded number can need with one multiply.
+
+	 Made once, here, and read by every parser on every worker without a
+	 lock -- an Array filled before anything can see it and never written
+	 again.  Recomputing `10 raisedTo: n' for every number was most of the
+	 cost of a document of large exponents, which /rest parses before
+	 there is a session to check (Bugs5 NET-3).  In a class initializer,
+	 never lazily: see ConcurrencyFixture for why `Foo ifNil: [Foo := ...]'
+	 is the one pattern this system will not have.
+
+	 Seventy-seven and not seven hundred, which would cover every power a
+	 bounded number can need directly: a table of seven hundred LargeIntegers made
+	 test_parallel_net hang thirteen runs in fifteen, against about one in
+	 ten without it.  That hang is older than this table -- it is in the
+	 socket and collector path that test exercises, and an image with
+	 more in it to collect simply meets it more often -- and it is not
+	 fixed here; this keeps the table out of its way."
+	| powers |
+	powers := Array new: 65.
+	powers at: 1 put: 1.
+	2 to: powers size do: [:i | powers at: i put: (powers at: i - 1) * 10].
+	PowersOfTen := powers.
+	powers := Array new: 12.
+	powers at: 1 put: 1.
+	2 to: powers size do: [:i |
+		powers at: i put: (powers at: i - 1) * (PowersOfTen at: 65)].
+	PowersOfTenBy64 := powers
+]
+
+{ #category : 'private' }
+JSONParser class >> tenTo: n [
+	"Ten to the n, as 10^(64q) * 10^r from the two tables -- one multiply,
+	 where a raisedTo: of several hundred was most of the cost -- or by
+	 raisedTo: past them, which the exponent cap keeps anything from
+	 reaching."
+	| q |
+	q := n // 64.
+	q >= PowersOfTenBy64 size ifTrue: [^10 raisedTo: n].
+	^(PowersOfTenBy64 at: q + 1) * (PowersOfTen at: n \\ 64 + 1)
+]
 
 { #category : 'parsing' }
 JSONParser class >> parse: aStringOrStream [
@@ -283,7 +331,7 @@ JSONParser >> nextNumber [
 	 nine and a half SECONDS.  One number, one reduction, and the reduction
 	 itself needs no gcd -- see reduce:over:.  That is the other half of
 	 Bugs3 B53, which the digit cap alone does not reach because the
-	 exponent may still be 4096."
+	 exponent may still be 400."
 
 	| negative whole digits exponent scale value |
 	negative := stream peekFor: $-.
@@ -308,14 +356,14 @@ JSONParser >> nextNumber [
 			exponent := self nextExponent].
 	value := digits isEmpty
 		ifTrue: [whole]
-		ifFalse: [whole * (10 raisedTo: digits size) + (self integerFrom: digits)].
+		ifFalse: [whole * (JSONParser tenTo: digits size) + (self integerFrom: digits)].
 	"Zero before anything is computed: `0e4096' is zero, and asking for
 	 a four-thousand-digit power of ten to multiply it by would be half a
 	 second spent to answer that."
 	value = 0 ifTrue: [^0].
 	scale := digits size - exponent.
 	value := scale <= 0
-		ifTrue: [value * (10 raisedTo: scale negated)]
+		ifTrue: [value * (JSONParser tenTo: scale negated)]
 		ifFalse: [self reduce: value over: scale].
 	^negative ifTrue: [value negated] ifFalse: [value]
 ]
@@ -353,7 +401,11 @@ JSONParser >> reduce: anInteger over: k [
 	[twos < k and: [n even]] whileTrue: [n := n // 2. twos := twos + 1].
 	fives := 0.
 	[fives < k and: [n \\ 5 = 0]] whileTrue: [n := n // 5. fives := fives + 1].
-	denominator := (2 raisedTo: k - twos) * (5 raisedTo: k - fives).
+	"2^(k - twos) * 5^(k - fives), as a power of ten from the table and
+	 whichever factor is left over."
+	denominator := twos >= fives
+		ifTrue: [(JSONParser tenTo: k - twos) * (5 raisedTo: twos - fives)]
+		ifFalse: [(JSONParser tenTo: k - fives) * (2 raisedTo: fives - twos)].
 	denominator = 1 ifTrue: [^n].
 	^Fraction coprimeNumerator: n denominator: denominator
 ]
@@ -436,9 +488,10 @@ JSONParser >> nextDigitString [
 JSONParser >> nextExponent [
 	"The signed integer after the e, bounded.
 
-	 4096 is not a limit of the arithmetic -- it is exact and would carry on
+	 400 is not a limit of the arithmetic -- it is exact and would carry on
 	 -- it is a limit on what a twelve-character document may ask this
-	 process to compute.  1e1000000000 is such a document."
+	 process to compute.  1e1000000000 is such a document, and so, a
+	 hundred at a time, was 1e4096 (Bugs5 NET-3); see the class comment."
 
 	| negative value |
 	negative := false.
@@ -447,7 +500,7 @@ JSONParser >> nextExponent [
 	(stream atEnd not and: [stream peek isDigit])
 		ifFalse: [self error: 'an exponent needs at least one digit'].
 	value := self nextDigits.
-	value > 4096 ifTrue: [
+	value > 400 ifTrue: [
 		self error: 'an exponent of ', value printString,
 			' is larger than this parser will compute'].
 	^negative ifTrue: [value negated] ifFalse: [value]

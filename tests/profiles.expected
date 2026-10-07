@@ -338,9 +338,14 @@
 # require st2026 and inherit its suites, which is why these rows move
 # together whenever lib/Library-Tests does.
 #
+# Every row moved by three with Bugs5 NET-1's tests in HttpServerTest: a
+# request dripped a byte at a time is cut off at its deadline, a client that
+# asks for thirty megabytes and never reads is dropped by the write timeout,
+# and a connection over maxConnections is answered 503.
+#
 # profile               run  passed
-st2026                  552  552
-pharo-announcements     583  583
-pharo-time              1173 1173
-pharo-weak              1084 1083
-pharo-collections       1009 1009
+st2026                  555  555
+pharo-announcements     586  586
+pharo-time              1176 1176
+pharo-weak              1087 1086
+pharo-collections       1012 1012

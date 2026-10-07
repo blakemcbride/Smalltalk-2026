@@ -32,7 +32,7 @@ two are compared.
 Class {
 	#name : 'SocketStream',
 	#superclass : 'Stream',
-	#instVars : [ 'socket', 'inBuffer', 'inPosition', 'inLimit', 'outBuffer', 'outPosition', 'atEnd', 'readTimeout', 'deadline' ],
+	#instVars : [ 'socket', 'inBuffer', 'inPosition', 'inLimit', 'outBuffer', 'outPosition', 'atEnd', 'readTimeout', 'deadline', 'writeTimeout' ],
 	#category : 'Network'
 }
 
@@ -51,7 +51,8 @@ SocketStream >> setSocket: aSocket [
 	outPosition := 0.
 	atEnd := false.
 	readTimeout := nil.
-	deadline := nil
+	deadline := nil.
+	writeTimeout := nil
 ]
 
 { #category : 'accessing' }
@@ -64,6 +65,20 @@ SocketStream >> readTimeout: millisecondsOrNil [
 	"How long a read may wait for data before raising TimedOut; nil for as
 	 long as it takes."
 	readTimeout := millisecondsOrNil
+]
+
+{ #category : 'accessing' }
+SocketStream >> writeTimeout: millisecondsOrNil [
+	"How long a write may go without the peer taking anything before it
+	 raises TimedOut; nil for as long as it takes.  See Socket>>send:timeout:."
+	writeTimeout := millisecondsOrNil
+]
+
+{ #category : 'private' }
+SocketStream >> sendRaw: aString [
+	writeTimeout isNil
+		ifTrue: [socket send: aString]
+		ifFalse: [socket send: aString timeout: writeTimeout]
 ]
 
 { #category : 'accessing' }
@@ -199,7 +214,7 @@ SocketStream >> nextPutAll: aString [
 	| n |
 	aString size > outBuffer size ifTrue: [
 		self flush.
-		socket send: aString.
+		self sendRaw: aString.
 		^aString].
 	aString size > (outBuffer size - outPosition) ifTrue: [self flush].
 	n := aString size.
@@ -229,7 +244,7 @@ SocketStream >> cr [
 SocketStream >> flush [
 	"Send what is buffered."
 	outPosition = 0 ifTrue: [^self].
-	socket send: (outBuffer copyFrom: 1 to: outPosition).
+	self sendRaw: (outBuffer copyFrom: 1 to: outPosition).
 	outPosition := 0
 ]
 

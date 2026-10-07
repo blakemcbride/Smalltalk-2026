@@ -60,7 +60,7 @@ the comparison, and HttpRequest>>isPreflight the question.
 Class {
 	#name : 'HttpServer',
 	#superclass : 'Object',
-	#instVars : [ 'port', 'bindAddress', 'listener', 'acceptProcess', 'handlers', 'handlersLock', 'staticHandler', 'maxRequestBytes', 'keepAliveMilliseconds', 'standingHeaders', 'connections', 'connectionsLock', 'running', 'name' ],
+	#instVars : [ 'port', 'bindAddress', 'listener', 'acceptProcess', 'handlers', 'handlersLock', 'staticHandler', 'maxRequestBytes', 'keepAliveMilliseconds', 'requestMilliseconds', 'writeMilliseconds', 'maxConnections', 'standingHeaders', 'connections', 'connectionsLock', 'running', 'name' ],
 	#category : 'JSON-RPC-Server'
 }
 
@@ -74,6 +74,10 @@ HttpServer >> initialize [
 	connections := 0.
 	maxRequestBytes := 64 * 1024 * 1024.
 	keepAliveMilliseconds := 15000.
+	"Bugs5 NET-1: see requestSeconds:, writeSeconds: and maxConnections:."
+	requestMilliseconds := 120000.
+	writeMilliseconds := 30000.
+	maxConnections := 1024.
 	running := false.
 	name := 'http'.
 	"The headers Kiss's SecurityHeadersFilter added to every response."
@@ -111,6 +115,55 @@ HttpServer >> maxRequestBytes: anInteger [
 HttpServer >> keepAliveSeconds: aNumber [
 	"How long a connection may sit idle between requests."
 	keepAliveMilliseconds := (aNumber * 1000) rounded
+]
+
+{ #category : 'configuration' }
+HttpServer >> requestSeconds: aNumber [
+	"How long one whole request -- its head and its body -- may take to
+	 arrive, once its first byte has.
+
+	 keepAliveSeconds: bounds one wait for data, and a client that sends a
+	 byte every few seconds never waits that long: `X-A: ' dripped one
+	 character at a time was still being read after thirty seconds, and
+	 4,300 such clients filled the socket table so that nothing else could
+	 connect (Bugs5 NET-1).  Two minutes by default, which is a 64 MB body
+	 at half a megabyte a second."
+	requestMilliseconds := (aNumber * 1000) rounded
+]
+
+{ #category : 'configuration' }
+HttpServer >> requestMilliseconds [
+	^requestMilliseconds
+]
+
+{ #category : 'configuration' }
+HttpServer >> writeSeconds: aNumber [
+	"How long a response may wait for the client to take any of it.  A
+	 client that asks for a large file and never reads held its connection,
+	 its process and the file's bytes for ever (Bugs5 NET-1); one that reads
+	 slowly is not cut off, since the clock starts again whenever it takes
+	 something."
+	writeMilliseconds := (aNumber * 1000) rounded
+]
+
+{ #category : 'configuration' }
+HttpServer >> writeMilliseconds [
+	^writeMilliseconds
+]
+
+{ #category : 'configuration' }
+HttpServer >> maxConnections: anInteger [
+	"How many connections may be open at once; one more is answered 503
+	 and closed.  Without a cap, slow clients filled the VM's table of
+	 4,096 sockets and the server stopped accepting at all (Bugs5 NET-1).
+	 1,024 by default, which leaves room in that table for everything else
+	 the image opens -- database connections, outgoing HTTP, files."
+	maxConnections := anInteger
+]
+
+{ #category : 'configuration' }
+HttpServer >> maxConnections [
+	^maxConnections
 ]
 
 { #category : 'configuration' }
@@ -258,9 +311,31 @@ HttpServer >> acceptFailed: anError [
 { #category : 'private' }
 HttpServer >> serve: aSocket [
 	"One connection, in a process of its own.  The socket is this method's
-	 argument and therefore this activation's -- see the class comment."
-	connectionsLock critical: [connections := connections + 1].
+	 argument and therefore this activation's -- see the class comment.
+
+	 Over maxConnections it is answered 503 and closed here, before a
+	 process is forked for it: the reply is a few dozen bytes into a socket
+	 nothing has been written to, so it does not wait, and the write
+	 timeout is there in case it would."
+	| admitted |
+	admitted := connectionsLock critical: [
+		connections < maxConnections
+			ifTrue: [connections := connections + 1. true]
+			ifFalse: [false]].
+	admitted ifFalse: [
+		[[aSocket
+			send: 'HTTP/1.1 503 Service Unavailable', self crlf,
+				'Content-Length: 0', self crlf,
+				'Connection: close', self crlf, self crlf
+			timeout: 1000] ensure: [aSocket close]]
+			on: Error do: [:e | nil].
+		^self].
 	[(HttpConnection on: aSocket server: self) run] fork
+]
+
+{ #category : 'private' }
+HttpServer >> crlf [
+	^String with: (Character value: 13) with: (Character value: 10)
 ]
 
 { #category : 'private' }

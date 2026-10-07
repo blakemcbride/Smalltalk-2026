@@ -219,11 +219,19 @@ DbConnection >> query: sqlString [
 { #category : 'querying' }
 DbConnection >> query: sqlString with: anArrayOfValues [
 	"A cursor over the rows.  The cursor owns a command of its own and
-	 closes it when the cursor closes."
+	 closes it when the cursor closes.
+
+	 Until there is a cursor, nothing owns the command but this method, so
+	 a query that fails -- in the prepare, a bind or the execute -- closes
+	 it here.  It did not: every failed query left a prepared statement in
+	 the process-wide table and a command in this connection's list, and
+	 after 1,024 of them every connection in the process answered `too many
+	 open statements' (Bugs5 FILES-6)."
 
 	| command |
 	command := self newCommand.
-	^(command query: sqlString with: anArrayOfValues) ownCommand
+	^[(command query: sqlString with: anArrayOfValues) ownCommand]
+		ifCurtailed: [command close]
 ]
 
 { #category : 'querying' }

@@ -565,8 +565,16 @@
  *
  *  3103 -> 3104 with Bugs5 KERN-7: Number>>to:by:do:, refusing a step of
  *  zero instead of looping for ever.
+ *
+ *  3104 -> 3129 with the rest of the Bugs5 high-severity fixes:
+ *  Behavior>>sourceCodeForMethod:at: (COMP-2); Fraction
+ *  class>>floatOfNumerator:denominator: and JSONParser's class initialize
+ *  and tenTo: (NET-2, NET-3); LibraryLocks class>>holdingSources: and the
+ *  seven source readers and writers that hold it (FILES-2); Socket>>send:
+ *  timeout:, SocketStream>>writeTimeout: and >>sendRaw:, HttpServer's six
+ *  limit accessors and crlf, and HttpServerTest's three tests (NET-1).
  */
-#define LIB_METHODS             3104
+#define LIB_METHODS             3129
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -2714,8 +2722,11 @@ test_sunit(void)
      *  what sourceTextOf: and sourceOffsetOf: make of a stream standing
      *  partway through its collection, and what a do it on such a stream
      *  answers and where it says a mistake is.
+     *
+     *  552 -> 555 with Bugs5 NET-1's three in HttpServerTest: a dripped
+     *  request, a client that never reads, and a connection over the cap.
      */
-    check_integer("TestCase allTests tests size", 552);
+    check_integer("TestCase allTests tests size", 555);
 
     /*
      *  And the three buckets, from the outside as well as from within
@@ -2855,9 +2866,12 @@ test_browsing(void)
      *  2719521 with Bugs5 FILES-1, in FileStream.  2719521 -> 2720214
      *  with Bugs5 KERN-3, in Number class>>readFrom:, and 2720214 ->
      *  2721326 with Bugs5 KERN-4 in the same method, and 2721326 ->
-     *  2722189 with Bugs5 KERN-7, Number>>to:by:do:.
+     *  2722189 with Bugs5 KERN-7, Number>>to:by:do:, and 2722189 ->
+     *  2722786 with Bugs5 FILES-6, in DbConnection and DbCursor, and
+     *  2722786 -> 2739039 with Bugs5 COMP-2, FILES-2, NET-1, NET-2 and
+     *  NET-3, and INTERP-8, INTERP-10 and DOCS-4's checks.
      */
-    check_integer("(SourceFiles at: 1) contents size", 2722189);
+    check_integer("(SourceFiles at: 1) contents size", 2739039);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -4506,6 +4520,35 @@ test_bugs2(void)
     check_integer("'12abc' asNumber", 12);
     check_integer("'0' asNumber", 0);
     /*
+     *  Bugs5 COMP-2: a method ending in `$ ' is shown with its space, so the
+     *  shown source compiles back to the same method.  Trimmed to a bare $,
+     *  it did not compile, and a Tonel write-back turned it into $ and a
+     *  newline -- padLeftTo: padded with carriage returns.
+     */
+    check_string("Object compile: 'zzComp2 ^$ ' classified: 'testing'."
+                 " Object compile: (Object sourceCodeAt: #zzComp2)"
+                 " classified: 'testing'."
+                 " ^{0 zzComp2 = Character space. 'abc' padLeftTo: 6}"
+                 " printString", "(true '   abc' )");
+    /*
+     *  Bugs5 INTERP-10: timesTwoPower: kept only the low 32 bits of its
+     *  power, so 2^32 multiplied by one and 2^32 - 1 halved.
+     */
+    check_string("{1.0 timesTwoPower: 4294967296. 1.0 timesTwoPower: 4294967295."
+                 " 1.0 timesTwoPower: -4294967295. 3.0 timesTwoPower: 4} printString",
+                 "(inf inf 0.0 48.0 )");
+    /*
+     *  Bugs5 INTERP-8: a Character cannot change identity.  There is one
+     *  per code point and every String answers its elements from them, so
+     *  `$a become: $b' rewrote every String in the image.
+     */
+    check_string("| r | r := OrderedCollection new."
+                 " r add: ([$a become: $b. #swapped] on: Error do: [:e | #refused])."
+                 " r add: ([(Array with: $a) elementsForwardIdentityTo:"
+                 " (Array with: $b). #forwarded] on: Error do: [:e | #refused])."
+                 " r add: 'abc'. ^r asArray printString",
+                 "(refused refused 'abc' )");
+    /*
      *  Bugs5 KERN-7: to:by:do: with a step of zero is refused, as an
      *  Interval with one has been since Bugs1 B14.  It ran its block for
      *  ever -- with a 0 or 0.0 in a variable, or sent by perform:.
@@ -5935,8 +5978,12 @@ check_changes_file_survives_a_restart(void)
     int         ok;
 
     ++st_test_checks;
-    if (access("./st2026", X_OK) != 0) {
-        printf("  (skipping the changes-file restart check: no ./st2026)\n");
+    if (access(st_test_binary(), X_OK) != 0) {
+        if (getenv("ST2026_BIN")) {
+            ++st_test_failures;
+            printf("  FAIL no st2026 binary at %s\n", st_test_binary());
+        } else
+            printf("  (skipping the changes-file restart check: no st2026)\n");
         return;
     }
     if (!mkdtemp(dir)) {
@@ -5947,18 +5994,18 @@ check_changes_file_survives_a_restart(void)
     snprintf(image, sizeof image, "%s/b20.im", dir);
     snprintf(changes, sizeof changes, "%s/b20.im.changes", dir);
     snprintf(command, sizeof command,
-             "./st2026 -bootstrap -profile " PROFILE " -startup \"%s\""
+             "\"$ST2026\" -bootstrap -profile " PROFILE " -startup \"%s\""
              " -eval \"Object compile: 'zzBootA ^ 42' classified: 'b20'\""
              " -o %s >/dev/null 2>&1", startup, image);
     ok = system(command) == 0;
     if (ok) {
         snprintf(command, sizeof command,
-                 "./st2026 -serve %s -workers 1"
+                 "\"$ST2026\" -serve %s -workers 1"
                  " \"Object compile: 'zzBootB ^ 43' classified: 'b20'\""
                  " >/dev/null 2>&1", image);
         (void) system(command);
         snprintf(command, sizeof command,
-                 "./st2026 -serve %s -workers 1"
+                 "\"$ST2026\" -serve %s -workers 1"
                  " \"Object compile: 'zzBootC ^ 44' classified: 'b20'\""
                  " >/dev/null 2>&1", image);
         (void) system(command);
@@ -7481,7 +7528,8 @@ test_bugs4_net(void)
      */
     check_integer("RestDispatcher maxFormNumberDigits", 256);
     check_integer("JSONParser new maxDigits", 256);
-    check_integer("RestDispatcher maxFormNumberExponent", 4096);
+    /*  400 since Bugs5 NET-2 and NET-3, both roads together.  */
+    check_integer("RestDispatcher maxFormNumberExponent", 400);
     check_boolean("(RestDispatcher new decodeFormValue: '42' named: 'n') = 42", 1);
     check_boolean("(RestDispatcher new decodeFormValue: "
                   "(String new: 4000 withAll: $9) named: 'n') isString", 1);
@@ -7686,9 +7734,13 @@ test_bugs4_files(void)
         int         built;
 
         ++st_test_checks;
-        if (access("./st2026", X_OK) != 0) {
-            printf("  (skipping the Bugs4 image and command-line checks:"
-                   " no ./st2026)\n");
+        if (access(st_test_binary(), X_OK) != 0) {
+            if (getenv("ST2026_BIN")) {
+                ++st_test_failures;
+                printf("  FAIL no st2026 binary at %s\n", st_test_binary());
+            } else
+                printf("  (skipping the Bugs4 image and command-line checks:"
+                       " no st2026)\n");
             return;
         }
 
@@ -7699,15 +7751,15 @@ test_bugs4_files(void)
          *  -version still exits 0, because that one really did work.
          */
         ++st_test_checks;
-        if (system("./st2026 -frobnicate >/dev/null 2>&1") == 0
-         || system("./st2026 -serve >/dev/null 2>&1") == 0
-         || system("./st2026 -inspect somewhere.im >/dev/null 2>&1") == 0) {
+        if (system("\"$ST2026\" -frobnicate >/dev/null 2>&1") == 0
+         || system("\"$ST2026\" -serve >/dev/null 2>&1") == 0
+         || system("\"$ST2026\" -inspect somewhere.im >/dev/null 2>&1") == 0) {
             ++st_test_failures;
             printf("  FAIL a command line st2026 cannot obey should exit"
                    " non-zero\n");
         }
         ++st_test_checks;
-        if (system("./st2026 -version >/dev/null 2>&1") != 0) {
+        if (system("\"$ST2026\" -version >/dev/null 2>&1") != 0) {
             ++st_test_failures;
             printf("  FAIL -version should still exit 0\n");
         }
@@ -7721,7 +7773,7 @@ test_bugs4_files(void)
         snprintf(image, sizeof image, "%s/b4.im", dir);
         snprintf(copy, sizeof copy, "%s/copy.im", dir);
         snprintf(command, sizeof command,
-                 "./st2026 -bootstrap -profile " PROFILE " -startup \"%s\""
+                 "\"$ST2026\" -bootstrap -profile " PROFILE " -startup \"%s\""
                  " -o %s >/dev/null 2>&1", startup, image);
         built = system(command) == 0;
         if (!built) {
@@ -7746,13 +7798,13 @@ test_bugs4_files(void)
              *  being tested is the file it left, so that is what is asked.
              */
             snprintf(command, sizeof command,
-                     "./st2026 -serve %s -workers 1"
+                     "\"$ST2026\" -serve %s -workers 1"
                      " \"Smalltalk snapshotAs: '%s/snapA' thenQuit: false\""
                      " >/dev/null 2>&1;"
-                     " ./st2026 -serve %s -workers 1"
+                     " \"$ST2026\" -serve %s -workers 1"
                      " \"Smalltalk snapshotAs: '%s/snapB'\" >/dev/null 2>&1;"
                      " test -s %s/snapA.im && test -s %s/snapB.im"
-                     " && ./st2026 -census %s/snapA.im >/dev/null 2>&1",
+                     " && \"$ST2026\" -census %s/snapA.im >/dev/null 2>&1",
                      image, dir, image, dir, dir, dir, dir);
             if (system(command) != 0) {
                 ++st_test_failures;
@@ -7771,7 +7823,7 @@ test_bugs4_files(void)
             ++st_test_checks;
             snprintf(command, sizeof command,
                      "cp %s %s;"
-                     " ./st2026 -serve %s -workers 1"
+                     " \"$ST2026\" -serve %s -workers 1"
                      " \"Object compile: 'zzB4copy ^42'\" >/dev/null 2>&1;"
                      " grep -qF 'zzB4copy ^42' %s.changes"
                      " && ! grep -qF 'zzB4copy' %s.changes",
@@ -7793,10 +7845,10 @@ test_bugs4_files(void)
         if (built) {
             ++st_test_checks;
             snprintf(command, sizeof command,
-                     "./st2026 -serve %s -workers 1"
+                     "\"$ST2026\" -serve %s -workers 1"
                      " \"(Delay forSeconds: 3) wait\" >/dev/null 2>&1 &"
                      " sleep 1;"
-                     " ./st2026 -serve %s -workers 1 \"1+1\" >%s/second.log 2>&1;"
+                     " \"$ST2026\" -serve %s -workers 1 \"1+1\" >%s/second.log 2>&1;"
                      " wait;"
                      " grep -q 'already open by another st2026' %s/second.log",
                      image, image, dir, dir);
@@ -7827,7 +7879,7 @@ test_bugs4_files(void)
         if (built) {
             ++st_test_checks;
             snprintf(command, sizeof command,
-                     "./st2026 -serve %s -workers 1"
+                     "\"$ST2026\" -serve %s -workers 1"
                      " \"Object compile: 'condensed ^42'."
                      " Smalltalk condenseChanges."
                      " ((Object compiledMethodAt: #condensed) getSource"
@@ -8715,6 +8767,13 @@ int
 main(void)
 {
     ST_TEST_BEGIN("1983 image");
+    /*
+     *  The checks that run the binary say "$ST2026" in their shell
+     *  commands, so the one this build made is the one they run (Bugs5
+     *  DOCS-4): they named ./st2026, which was whatever was copied there
+     *  last -- a Blue Book one after `make OM=bb', a stale one under TSAN.
+     */
+    setenv("ST2026", st_test_binary(), 1);
 
     if (!load_sources())
         return ST_TEST_END();

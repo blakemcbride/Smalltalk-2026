@@ -205,3 +205,30 @@ Behavior >> format: nInstVars variable: isVar words: isWords pointers: isPointer
 	weak ifTrue: [format := format bitOr: 2048].
 	ephemeron ifTrue: [format := (format bitAnd: 16r7FFF) bitOr: 32768]
 ]
+
+{ #category : '*Kernel-Protocol' }
+Behavior >> sourceCodeForMethod: method at: messageSelector [
+	"Answer the source of method, without the separators it ends with.
+
+	 1983's, trimming every trailing separator -- except the one after a
+	 trailing $.  A source can only end in $ when that $ begins a Character
+	 literal whose character is the separator, so trimming it changed the
+	 method: `^self padLeftTo: width with: $ ' was shown ending in a bare $,
+	 which no longer compiled, and TonelWriter, adding its own newline,
+	 wrote a method that padded with carriage returns once reloaded (Bugs5
+	 COMP-2)."
+	| newSource index |
+	Sensor leftShiftDown
+		ifTrue: [^(self decompilerClass new
+					decompile: messageSelector in: self method: method) decompileString].
+	newSource := method getSource.
+	newSource isNil ifTrue: [
+		^(self decompilerClass new
+			decompile: messageSelector in: self method: method) decompileString].
+	(newSource isEmpty not and: [newSource last isSeparator]) ifFalse: [^newSource].
+	index := newSource size.
+	[index > 1 and: [(newSource at: index) isSeparator]] whileTrue: [index := index - 1].
+	((newSource at: index) = $$ and: [index < newSource size])
+		ifTrue: [index := index + 1].
+	^newSource copyFrom: 1 to: index
+]

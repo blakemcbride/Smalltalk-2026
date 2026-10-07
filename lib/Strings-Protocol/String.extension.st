@@ -235,7 +235,13 @@ String >> padLeftTo: width with: aCharacter [
 
 { #category : '*Strings-Protocol' }
 String >> padLeftTo: width [
-	^self padLeftTo: width with: $ 
+	"Character space, not $ followed by a space: a method whose source
+	 ends in a separator has it trimmed when the source is shown, and a
+	 bare $ at the end then took the newline after it as its character --
+	 'abc' padLeftTo: 6 answered three carriage returns and abc after a
+	 Tonel write-back and reload (Bugs5 COMP-2).  The trimming is fixed
+	 too; this no longer depends on it."
+	^self padLeftTo: width with: Character space
 ]
 
 { #category : '*Strings-Protocol' }
@@ -248,7 +254,8 @@ String >> padRightTo: width with: aCharacter [
 
 { #category : '*Strings-Protocol' }
 String >> padRightTo: width [
-	^self padRightTo: width with: $ 
+	"Character space, for the reason padLeftTo: gives."
+	^self padRightTo: width with: Character space
 ]
 
 { #category : '*Strings-Protocol' }

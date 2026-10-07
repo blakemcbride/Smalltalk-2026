@@ -182,12 +182,12 @@ DbCursor >> record [
 
 { #category : 'reading' }
 DbCursor >> fetchOne [
-	"The first row, and close.  nil when there were none."
+	"The first row, and close.  nil when there were none.
 
-	| record |
-	record := self next.
-	self close.
-	^record
+	 Closed however reading ends: a row that fails to convert raises out
+	 of next, and the close after it was skipped (Bugs5 FILES-6)."
+
+	^[self next] ensure: [self close]
 ]
 
 { #category : 'reading' }
@@ -196,8 +196,9 @@ DbCursor >> fetchAll [
 
 	| all record |
 	all := OrderedCollection new.
-	[(record := self next) isNil] whileFalse: [all add: record].
-	self close.
+	"ensure:, for the reason fetchOne gives."
+	[[(record := self next) isNil] whileFalse: [all add: record]]
+		ensure: [self close].
 	^all
 ]
 

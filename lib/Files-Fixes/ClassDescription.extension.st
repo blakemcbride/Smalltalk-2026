@@ -31,3 +31,18 @@ ClassDescription >> fileOutMessage: aString fileName: fileName [
 	self fileOutMessage: aString on: fileStream moveSource: false toFile: 0.
 	fileStream close
 ]
+
+{ #category : '*Files-Fixes' }
+ClassDescription >> logOrganizationChange [
+	"Record that the receiver is being reorganized on the changes file --
+	 1983's, holding the source-file lock (Bugs5 FILES-2)."
+	| file |
+	SourceFiles == nil ifTrue: [^self].
+	LibraryLocks holdingSources: [
+		file := SourceFiles at: 2.
+		file setToEnd; readWriteShorten.
+		file cr; nextChunkPut:
+			self name, ' organization changeFromString: ',
+				self organization printString storeString.
+		file cr; readOnly]
+]

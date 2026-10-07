@@ -73,3 +73,41 @@ CompiledMethod >> setSourcePosition: position inFile: fileIndex [
 	self at: index + 1 put: middleByte.
 	self at: index put: lowByte
 ]
+
+{ #category : '*Files-Fixes' }
+CompiledMethod >> putSource: sourceStr class: class category: catName inFile: fileIndex [
+	"1983's, holding the source-file lock (Bugs5 FILES-2): the stream is
+	 moved to its end, made writable, written and made read-only again, and
+	 another compile doing the same in between wrote into the middle of it."
+	| file remoteString |
+	SourceFiles == nil ifTrue: [^self].
+	LibraryLocks holdingSources: [
+		file := SourceFiles at: fileIndex.
+		file setToEnd; readWriteShorten.
+		class printCategoryChunk: catName on: file.
+		file cr.
+		remoteString := RemoteString
+			newString: sourceStr
+			onFileNumber: fileIndex
+			toFile: file.
+		file nextChunkPut: ' '; readOnly.
+		self setSourcePosition: remoteString position inFile: fileIndex]
+]
+
+{ #category : '*Files-Fixes' }
+CompiledMethod >> putSource: sourceStr inFile: fileIndex [
+	"1983's, holding the source-file lock, for the reason
+	 putSource:class:category:inFile: gives."
+	| file remoteString |
+	SourceFiles == nil ifTrue: [^self].
+	LibraryLocks holdingSources: [
+		file := SourceFiles at: fileIndex.
+		file setToEnd; readWriteShorten.
+		file cr; nextPut: $!; nextChunkPut: 'Behavior method'; cr.
+		remoteString := RemoteString
+			newString: sourceStr
+			onFileNumber: fileIndex
+			toFile: file.
+		file nextChunkPut: ' '; readOnly.
+		self setSourcePosition: remoteString position inFile: fileIndex]
+]

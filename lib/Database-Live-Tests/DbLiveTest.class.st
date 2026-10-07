@@ -250,6 +250,24 @@ DbLiveTest >> testCursorClosesWhenABlockLeavesEarly [
 ]
 
 { #category : 'tests' }
+DbLiveTest >> testFailedQueriesLeaveNoStatementsBehind [
+	"A query that fails closes the statement it prepared (Bugs5 FILES-6).
+
+	 Every failed fetchOne:with: used to leave one in the process-wide
+	 table of 1,024, and past that every connection in the process answered
+	 `too many open statements'.  Eleven hundred failures, then a query
+	 that must still work."
+
+	self withConnection:
+		[:connection |
+		1 to: 1100 do: [:i |
+			[connection fetchOne: 'SELECT employee_id FROM employee WHERE employee_id = ?'
+				with: (Array with: Object new)]
+				on: Error do: [:e | nil]].
+		self assert: ((connection fetchOne: 'SELECT 1 AS x') at: 'x') equals: 1]
+]
+
+{ #category : 'tests' }
 DbLiveTest >> testTransactionRollsBack [
 	self withConnection:
 		[:connection |

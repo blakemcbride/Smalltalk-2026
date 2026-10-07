@@ -509,6 +509,36 @@ Socket >> send: aString [
 			ifFalse: [start := start + (self class check: answer)]]
 ]
 
+{ #category : 'writing' }
+Socket >> send: aString timeout: milliseconds [
+	"As send:, but raise TimedOut if the peer takes nothing for
+	 milliseconds -- the clock starts again whenever any of aString goes.
+
+	 send: waits for as long as the kernel's buffer stays full, and a peer
+	 that asks for a large reply and never reads keeps it full for ever:
+	 the process that answered it, and the body it was sending, were held
+	 for the life of the server (Bugs5 NET-1).  A peer that reads slowly
+	 but does read is not cut off; one that stops is."
+	| start answer deadline |
+	start := 1.
+	deadline := Time millisecondClockValue + milliseconds.
+	[start <= aString size] whileTrue: [
+		self checkOpen.
+		answer := self class primCommand: 6 with: handle with: aString with: start.
+		(answer == false or: [answer == -1 or: [answer == -2]])
+			ifTrue: [ | left |
+				left := deadline - Time millisecondClockValue.
+				left <= 0 ifTrue: [
+					^(TimedOut new) tag: self;
+						signal: 'the peer took nothing for ', milliseconds printString, ' ms'].
+				answer == -1
+					ifTrue: [self waitReadableTimeout: left]
+					ifFalse: [self waitWritableTimeout: left]]
+			ifFalse: [
+				start := start + (self class check: answer).
+				deadline := Time millisecondClockValue + milliseconds]]
+]
+
 { #category : 'tls' }
 Socket >> startTls: hostName [
 	"Make this connected socket the client end of a TLS connection to

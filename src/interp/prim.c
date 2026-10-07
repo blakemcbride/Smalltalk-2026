@@ -760,6 +760,17 @@ primitive_become(void)
      */
     if (is_a_symbol(a) || is_a_symbol(b))
         return 0;
+    /*
+     *  Nor a Character, for the same reason: CharacterTable holds one
+     *  object per code point and every String answers its elements from
+     *  it, so `$a become: $b' made 'abc' print 'bac' for the rest of the
+     *  image's life (Bugs5 INTERP-8).  The mt memory refuses it in
+     *  OM_can_swap_identities as well, which is what reaches 234 and 249;
+     *  this is the Blue Book memory's guard.
+     */
+    if ((OM_is_object(a) && OM_fetch_class(a) == ST_CLASS_CHARACTER)
+     || (OM_is_object(b) && OM_fetch_class(b) == ST_CLASS_CHARACTER))
+        return 0;
     if (!OM_swap_identities(a, b))
         return 0;
     ST_pop_n(1);
@@ -3111,6 +3122,17 @@ float_primitive(unsigned index)
 
         if (!float_value(ST_stack_value(1), &a) || !integer_arg(0, &power))
             return 0;
+        /*
+         *  Clamped, not cast.  A SmallInteger is 62 bits and `(int) power'
+         *  kept the low 32 of it: `1.0 timesTwoPower: 4294967296' answered
+         *  1.0 and `4294967295' answered 0.5 (Bugs5 INTERP-10).  Any power
+         *  past about 2,100 either way already overflows or underflows a
+         *  double, so 100,000 changes no answer that was right.
+         */
+        if (power > 100000)
+            power = 100000;
+        else if (power < -100000)
+            power = -100000;
         return answer_float(ldexp(a, (int) power), 2);
     }
     default:

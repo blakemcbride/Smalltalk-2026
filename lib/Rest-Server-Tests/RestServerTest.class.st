@@ -458,7 +458,7 @@ RestServerTest >> testALongNumberInAFormIsNotRead [
 	 the login check, so an unauthenticated client could pin a worker for
 	 as long as it liked in a body bounded only by maxRequestBytes at
 	 64 MB.  The caps are the JSON parser's own two numbers, 256 digits
-	 and an exponent of 4096; a field over either stays the String it
+	 and an exponent of 400; a field over either stays the String it
 	 arrived as, which is what every unrecognised form value already
 	 becomes."
 	| dispatcher started |
@@ -467,7 +467,8 @@ RestServerTest >> testALongNumberInAFormIsNotRead [
 	self assert: (dispatcher decodeFormValue: '-1.5' named: 'n') equals: -1.5.
 	self assert: (dispatcher decodeFormValue: '1e3' named: 'n') equals: 1000.0.
 	self assert: RestDispatcher maxFormNumberDigits equals: JSONParser new maxDigits.
-	self assert: RestDispatcher maxFormNumberExponent equals: 4096.
+	"400 since Bugs5 NET-2/NET-3: past the Float range either way."
+	self assert: RestDispatcher maxFormNumberExponent equals: 400.
 	"At the cap and one past it.  The number AT the cap is read, and
 	 reading it is the most work this server will do for one field."
 	self assert: (dispatcher decodeFormValue:
