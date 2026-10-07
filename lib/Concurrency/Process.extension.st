@@ -50,12 +50,39 @@ Process >> primDetach: takeFromSemaphore [
 	        inside an unwind block back into the same wait
 	     4  waiting on a Semaphore and LEFT there, takeFromSemaphore
 	        being false
+	     5  nothing was done: the SENDER is itself being stopped by
+	        another worker, and gave way to that rather than wait for me
+	        while that worker waits for it (Bugs6 SCHED-1).  The sender
+	        yields -- which lets the stop land -- and asks again if it
+	        ever runs again
 
-	 In every case but 4 I am afterwards parked, on no list, in nobody's
-	 hands, with suspendedContext where I stopped.  Fails for the active
-	 process, which cannot be stopped from inside itself this way."
+	 In every case but 4 and 5 I am afterwards parked, on no list, in
+	 nobody's hands, with suspendedContext where I stopped.  Fails for
+	 the active process, which cannot be stopped from inside itself this
+	 way."
 	<primitive: 231>
 	^self primitiveFailed
+]
+
+{ #category : '*Concurrency' }
+Process >> detachTakingFromSemaphore: takeFromSemaphore [
+	"primDetach:, asked again for as long as it answers 5.
+
+	 Two processes stopping each other at the same moment -- a worker and
+	 its watchdog, each terminating the other as both fire -- used to
+	 spin both their workers for ever inside the primitive, each waiting
+	 for the other to park: a worker inside the primitive never reaches
+	 the bytecode it would park at.  On two workers nothing else in the
+	 image ran again.  Now one of the two gives way (the primitive says
+	 which) and answers 5, and the yield here is where its own stop
+	 lands: it is parked at its next bytecode, and the other process goes
+	 on.  Only a process that is later resumed -- suspended rather than
+	 terminated, or handed an exception it survives -- comes back round
+	 the loop, and it still owes the stop it was asked for."
+	| where |
+	[(where := self primDetach: takeFromSemaphore) = 5]
+		whileTrue: [Processor yield].
+	^where
 ]
 
 { #category : '*Concurrency' }
@@ -130,7 +157,7 @@ Process >> terminate [
 	Processor activeProcess == self ifTrue: [
 		self runUnwindBlocksFrom: thisContext.
 		^self primTerminateActive].
-	where := self primDetach: true.
+	where := self detachTakingFromSemaphore: true.
 	context := suspendedContext.
 	context isNil ifTrue: [^self].
 	self noteMutexOwnerIn: context waiting: where isInteger not.
@@ -216,7 +243,7 @@ Process >> suspend [
 	 as though the signal had come."
 	<primitive: 88>
 	Processor activeProcess == self ifTrue: [^self primitiveFailed].
-	(self primDetach: false) = 4 ifTrue: [
+	(self detachTakingFromSemaphore: false) = 4 ifTrue: [
 		^self error: 'This process is waiting on a Semaphore and cannot be suspended'].
 	^self
 ]
@@ -260,7 +287,7 @@ Process >> signalException: anException [
 	 case the frame waits for whoever resumes it."
 	| frame where |
 	self == Processor activeProcess ifTrue: [^anException signal].
-	where := self primDetach: true.
+	where := self detachTakingFromSemaphore: true.
 	suspendedContext isNil ifTrue: [^self].
 	"Stopped in Mutex>>waitFor: with the lock already handed over: record
 	 the owner, or the unwind the signal may start leaves it held (Bugs5

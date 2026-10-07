@@ -191,6 +191,7 @@ dependents table lost 143 of 1{,}600; \ct{Compiler evaluate:} answered nil
 \ct{addDependent:} and the dependents table & serialize & \ctp{LibraryLocks}\\
 \ct{Transcript}, per send & serialize & \ctp{LibraryLocks}\\
 open directories, method dictionaries & serialize & \ctp{LibraryLocks}\\
+class definition: the organizers, the subclass lists, the change set & serialize & \ctp{LibraryLocks}\\
 \ct{Compiler evaluate:} & reorganize & primitive 188\\
 \ct{Processor yield} & reorganize & primitive 167\\
 \ct{Delay}'s timing process & reorganize & a stale signal is a look at the clock\\

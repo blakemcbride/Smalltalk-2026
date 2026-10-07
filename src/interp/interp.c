@@ -1142,6 +1142,30 @@ ST_interp_swap_forbidden(st_oop p)
      || p == st_vm.method || p == st_vm.active_process)
         return 1;
     /*
+     *  Any context at all, and any process the scheduler holds (Bugs6
+     *  OM-3).  The pins above cover the context a worker is executing
+     *  NOW; every context below it in the sender chain, the home a block
+     *  returns to, and the suspendedContext of a process waiting on a
+     *  Semaphore or a Delay were all accepted, and `thisContext
+     *  becomeForward: x' is always the chain case, because becomeForward:
+     *  is itself an activation whose sender is the block's context.  The
+     *  sweep rewrote the sender slot to the Object, and on return
+     *  set_active_context was handed something that is not a context and
+     *  stopped the image.  A context's identity is its place in a chain
+     *  that the interpreter walks by oop, so none of them may change
+     *  identity -- Pharo refuses the same -- and a process on a
+     *  Semaphore or ready list, in a worker's hands or named by a detach
+     *  is linked THROUGH its own body (nextLink), which a forward does not
+     *  move: the list went on naming an Object, and the timer resumed it.
+     *  A process on no list and in nobody's hands is held by Smalltalk
+     *  alone and is an ordinary object here.
+     */
+    if (OM_fetch_class(p) == ST_CLASS_METHOD_CONTEXT
+     || OM_fetch_class(p) == ST_CLASS_BLOCK_CONTEXT)
+        return 1;
+    if (SCHED_holds_process(p))
+        return 1;
+    /*
      *  Held by C in variables with no setter this can reach.  Each one has
      *  a single owner elsewhere in the system, and a forward would leave
      *  that owner holding a freed object.
@@ -2642,15 +2666,39 @@ send_does_not_understand(st_oop receiver, st_oop selector, st_oop lookup_class)
     st_oop  found;
     uint32_t i;
 
+    /*
+     *  The Message first, and pushed, and only then the Array of
+     *  arguments (Bugs6 OM-1).  It was the other way round -- the Array
+     *  built and filled, then the Message allocated -- and between the
+     *  two the Array was held in a C local and nowhere else: count zero,
+     *  on no stack, in no root.  Any allocation can run a collection,
+     *  and the walk rebuilds counts from the roots, so a collection
+     *  landing inside the Message's allocation swept the Array, and the
+     *  Message was then built round a freed entry.  The handler's
+     *  `e message arguments' read whatever next took that entry, or a
+     *  NULL slot at the top of the table and a segmentation fault; and
+     *  when the Message died, its release stole a count from the live
+     *  object that had the entry by then.  Every unhandled send goes
+     *  through here, so a server reached it by itself in minutes.
+     *
+     *  With the Message on the context's stack -- marked up to the stack
+     *  pointer, so one push is all it takes -- the Array is stored into
+     *  it before anything else is allocated, and the walk reaches both.
+     *  The arguments are read one slot deeper while the Message is on
+     *  top of them.  This is the order doc/CONCURRENCY.md asks for under
+     *  "Roots are the walk, not the count", and the order
+     *  primitive_compile_method already keeps.
+     */
+    message = OM_instantiate_pointers(ST_CLASS_MESSAGE, 2);
+    ST_push(message);
     args = OM_instantiate_pointers(ST_CLASS_ARRAY, st_vm.argument_count);
     for (i = 0; i < st_vm.argument_count; ++i)
         OM_store_pointer(i, args,
-                         ST_stack_value(st_vm.argument_count - 1 - i));
-    message = OM_instantiate_pointers(ST_CLASS_MESSAGE, 2);
+                         ST_stack_value(st_vm.argument_count - i));
     OM_store_pointer(ST_MESSAGE_SELECTOR, message, selector);
     OM_store_pointer(ST_MESSAGE_ARGUMENTS, message, args);
 
-    ST_pop_n(st_vm.argument_count);
+    ST_pop_n(st_vm.argument_count + 1);
     ST_push(message);
     st_vm.argument_count = 1;
 

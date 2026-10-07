@@ -2610,12 +2610,16 @@ SCHED_primitive_terminate_active(void)
  *      4   it was waiting on a Semaphore and was LEFT there, because the
  *          argument was false -- suspend keeps 1983's refusal to take a
  *          process out of a wait it would later continue past
+ *      5   nothing was done: the CALLER is itself being stopped by
+ *          another worker's detach and gave way to it (below).  The
+ *          caller yields and asks again, if it ever runs again
  *
- *  and in every case but 4 the receiver is afterwards parked, on no list,
- *  in nobody's hands, with its suspendedContext where it stopped: the
- *  state Process>>terminate, >>suspend and >>signalException: each go on
- *  from.  Fails for the caller's own active process, which those methods
- *  handle themselves, and for anything that is not a Process.
+ *  and in every case but 4 and 5 the receiver is afterwards parked, on
+ *  no list, in nobody's hands, with its suspendedContext where it
+ *  stopped: the state Process>>terminate, >>suspend and
+ *  >>signalException: each go on from.  Fails for the caller's own
+ *  active process, which those methods handle themselves, and for
+ *  anything that is not a Process.
  *
  *  The loop is the whole argument for the two tables above.  Naming the
  *  process first means that from here on it can only move towards being
@@ -2636,7 +2640,40 @@ SCHED_primitive_terminate_active(void)
  *  Waiting polls the safepoint and holds no lock, since the worker being
  *  waited for may be the one asking for a collection.  A stop request
  *  ends the wait: the run is over and the answer no longer matters.
+ *
+ *  Bugs6 SCHED-1.  The wait is for the worker holding the process to
+ *  park it at its next bytecode -- and a worker inside this primitive
+ *  never reaches one.  Process A on one worker detaching B while B on
+ *  another detaches A: each saw the other in a `held' row and waited for
+ *  it to land, neither landed, and both workers spun here for ever with
+ *  their processes in hand.  On a pool of two nothing else ever ran
+ *  again, the Delay timing process included, and the image was hung
+ *  outright; on a larger pool two workers and two processes were lost
+ *  silently.  A worker process and its watchdog each terminating the
+ *  other at the moment both fire is the ordinary way to arrive here.
+ *
+ *  So the wait gives way.  A caller whose own process is named -- some
+ *  worker wants it stopped -- un-names its target and answers 5, and at
+ *  its next bytecode SCHED_check_process_switch parks it, which is what
+ *  the worker naming it was waiting for.  That worker goes on; the
+ *  caller, if it is ever resumed, yields and asks again.  Not every
+ *  named caller gives way, or two naming each other would both back
+ *  off and both retry, round after round: only the one whose target has
+ *  the LOWER oop does.  The oops are a total order, so in any cycle of
+ *  waiters the member with the highest oop has a lower target and
+ *  gives way, which frees its predecessor, and so on round -- while a
+ *  caller named by some third worker and waiting for a process that is
+ *  merely running keeps waiting, as before, and parks the moment it
+ *  returns.
  */
+static int
+must_give_way(st_oop process)
+{
+    st_oop  me = SCHED_active_process();
+
+    return process < me && is_named(me);
+}
+
 int
 SCHED_primitive_detach(void)
 {
@@ -2666,6 +2703,11 @@ SCHED_primitive_detach(void)
         /*  Every slot taken by another worker's detach: wait for one.  */
         if (SCHED_stop_requested())
             return 0;
+        if (must_give_way(process)) {
+            ST_pop_n(2);
+            ST_push(OM_int_oop(5));
+            return 1;
+        }
         WORKER_poll();
         ST_sleep_ns(1000);
     }
@@ -2725,6 +2767,10 @@ SCHED_primitive_detach(void)
         }
         if (in_anyones_hands(process)) {
             seen_in_hands = 1;
+            if (must_give_way(process)) {
+                where = 5;
+                break;
+            }
             WORKER_poll();
             ST_sleep_ns(1000);
             continue;
@@ -2752,6 +2798,57 @@ SCHED_primitive_detach(void)
     } else
         ST_push(OM_int_oop(where));
     return 1;
+}
+
+/*
+ *  Whether the scheduler holds this object as a process: executing or
+ *  about to be on some worker, named by a detach, or linked on a
+ *  Semaphore or ready list.  For ST_interp_swap_forbidden (Bugs6 OM-3):
+ *  a process the scheduler holds is linked through its own body, and a
+ *  become: moves bodies.
+ *
+ *  Membership of the list is checked, not merely the myList slot: any
+ *  object with four pointer fields has a fourth, and an object that is
+ *  not a process must not be refused for what happens to be in it.
+ *  Under the list's stripe lock, since the timer thread signals without
+ *  being parked by a safepoint, and the forward path asks this before
+ *  its safepoint in any case.  Answers 0 for the Blue Book memory's
+ *  single thread as for the pool: the lists are the same.
+ */
+int
+SCHED_holds_process(st_oop p)
+{
+    st_oop  list;
+    st_oop  link;
+    int     linked = 0;
+
+    if (!OM_is_object(p) || !OM_pointer_bit(p)
+     || OM_fetch_word_length(p) <= ST_PROCESS_MY_LIST)
+        return 0;
+    if (in_anyones_hands(p) || is_named(p))
+        return 1;
+    list = OM_fetch_pointer(ST_PROCESS_MY_LIST, p);
+    if (!OM_is_present(list) || !OM_pointer_bit(list)
+     || OM_fetch_word_length(list) <= ST_LIST_LAST_LINK)
+        return 0;
+    {
+        st_mutex   *lock = stripe_for(list);
+
+        stripe_lock(lock);
+        for (link = OM_fetch_pointer(ST_LIST_FIRST_LINK, list);
+             OM_is_present(link);
+             link = OM_fetch_pointer(ST_LINK_NEXT, link)) {
+            if (link == p) {
+                linked = 1;
+                break;
+            }
+            if (!OM_pointer_bit(link)
+             || OM_fetch_word_length(link) <= ST_LINK_NEXT)
+                break;
+        }
+        stripe_unlock(lock);
+    }
+    return linked;
 }
 
 /*

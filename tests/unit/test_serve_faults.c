@@ -868,6 +868,246 @@ bugs5_low_docs(void)
     expect(out, "./st2026 untouched", "DOCS-12 HEADLESS says so");
 }
 
+/*
+ *  Bugs6, the two critical findings.
+ */
+static void
+bugs6_critical(void)
+{
+    static char out[65536];
+    const char *mutual  = fixture("bugs6-serve-mutual.st");
+    const char *classes = fixture("bugs6-serve-classes.st");
+    char        batch[512];
+    int         status;
+
+    /*
+     *  SCHED-1: two processes terminating each other at the same moment.
+     *
+     *  primDetach: waits for the worker holding its target to park it at
+     *  its next bytecode, and a worker inside primDetach: never reaches
+     *  one: a and b, each terminating the other, spun both their workers
+     *  for ever, and on two workers nothing else in the image ran again.
+     *  Two hundred rounds of the audit's pair; every round one of the two
+     *  must survive to set the flag.  The old binary failed within sixty
+     *  rounds on eight workers and hung outright on two, which here is
+     *  the sixty-second kill.
+     */
+    if (write_file(mutual,
+            "| run |\n"
+            "run := [:rounds | | ok |\n"
+            "  ok := true.\n"
+            "  1 to: rounds do: [:i | | go a b finished tries |\n"
+            "    ok ifTrue: [\n"
+            "      finished := false. go := Semaphore new.\n"
+            "      a := [go wait. b terminate. finished := true] newProcess.\n"
+            "      b := [go wait. a terminate. finished := true] newProcess.\n"
+            "      a resume. b resume.\n"
+            "      (Delay forMilliseconds: 1) wait.\n"
+            "      go signal. go signal.\n"
+            "      tries := 0.\n"
+            "      [finished or: [tries >= 1000]] whileFalse: "
+            "[(Delay forMilliseconds: 1) wait. tries := tries + 1].\n"
+            "      finished ifFalse: [ok := false]]].\n"
+            "  ok].\n"
+            "^(run value: 200) ifTrue: ['mutual ok'] ifFalse: ['mutual STUCK']\n")
+        == 0) {
+        unsigned    workers[] = { 2, 8 };
+        int         run_index;
+
+        snprintf(batch, sizeof batch,
+                 "Compiler evaluate: (FileStream oldFileNamed: '%s') "
+                 "contentsOfEntireFile\n", mutual);
+        for (run_index = 0; run_index < 2; ++run_index) {
+            status = serve(batch, workers[run_index], out, sizeof out);
+            ++st_test_checks;
+            if (status < 0) {
+                ++st_test_failures;
+                printf("  FAIL SCHED-1: could not run the server\n");
+                break;
+            }
+            expect(out, "==> 'mutual ok'", "SCHED-1 mutual terminate");
+        }
+    }
+
+    /*
+     *  KERNB-1: eight workers defining fifty classes each under one
+     *  superclass and one category.  The organizer's three arrays were
+     *  replaced one at a time with no lock and the superclass's Set of
+     *  subclasses grew under whoever was adding to it: every run lost
+     *  tens of subclasses and two hundred organizer entries, printed
+     *  SubscriptOutOfBounds from the organizer, and now and then looped
+     *  for ever on a nil read out of a half-replaced array.  Now every
+     *  class is a subclass, is in its category, is in the change set, and
+     *  nothing raised.  A handler round each definition so that the old
+     *  binary's endless loop reports as a count rather than a hang.
+     */
+    if (write_file(classes,
+            "| sup done lostSub lostOrg lostGlob lostChg errs |\n"
+            "Object subclass: #Bugs6KbSup instanceVariableNames: '' "
+            "classVariableNames: '' poolDictionaries: '' "
+            "category: 'Bugs6-KbProbe'.\n"
+            "sup := Smalltalk at: #Bugs6KbSup. done := Semaphore new. "
+            "errs := 0.\n"
+            "1 to: 8 do: [:w | [1 to: 50 do: [:i | [sup subclass: "
+            "('Bugs6KbSub', w printString, 'x', i printString) asSymbol "
+            "instanceVariableNames: '' classVariableNames: '' "
+            "poolDictionaries: '' category: 'Bugs6-KbProbe'] "
+            "on: Error do: [:e | errs := errs + 1. e return: nil]]. "
+            "done signal] fork].\n"
+            "1 to: 8 do: [:i | done wait].\n"
+            "lostSub := 400 - sup subclasses size. lostGlob := 0. "
+            "lostOrg := 0.\n"
+            "1 to: 8 do: [:w | 1 to: 50 do: [:i | | n | "
+            "n := ('Bugs6KbSub', w printString, 'x', i printString) asSymbol.\n"
+            "  (Smalltalk includesKey: n) ifFalse: [lostGlob := lostGlob + 1].\n"
+            "  ((SystemOrganization listAtCategoryNamed: #'Bugs6-KbProbe') "
+            "includes: n) ifFalse: [lostOrg := lostOrg + 1]]].\n"
+            "lostChg := 400 - (Smalltalk changes changedClasses select: "
+            "[:c | c name beginsWith: 'Bugs6KbSub']) size.\n"
+            "^'classes lost ', lostSub printString, ' ', lostGlob printString, "
+            "' ', lostOrg printString, ' ', lostChg printString, "
+            "' errors ', errs printString\n") == 0) {
+        int     run_index;
+
+        snprintf(batch, sizeof batch,
+                 "Compiler evaluate: (FileStream oldFileNamed: '%s') "
+                 "contentsOfEntireFile\n", classes);
+        for (run_index = 0; run_index < 2; ++run_index) {
+            status = serve(batch, 8, out, sizeof out);
+            ++st_test_checks;
+            if (status < 0) {
+                ++st_test_failures;
+                printf("  FAIL KERNB-1: could not run the server\n");
+                break;
+            }
+            expect(out, "==> 'classes lost 0 0 0 0 errors 0'",
+                   "KERNB-1 eight workers defining classes");
+            expect_absent(out, "SubscriptOutOfBounds",
+                          "KERNB-1 the organizer stays whole");
+            expect_absent(out, "Segmentation", "KERNB-1 no crash");
+        }
+    }
+}
+
+/*
+ *  Bugs6, the object-memory findings among the high ones.
+ */
+static void
+bugs6_high_om(void)
+{
+    static char out[65536];
+    const char *oops = fixture("bugs6-serve-oops.st");
+    const char *ctx  = fixture("bugs6-serve-ctx.st");
+    char        batch[1024];
+    char        command[2048];
+    int         status;
+
+    /*
+     *  OM-1: doesNotUnderstand: built its Message round a freed Array.
+     *
+     *  The Array of arguments was allocated first and held in a C local
+     *  while the Message was allocated; a collection inside that second
+     *  allocation swept the Array, and the handler's `e message
+     *  arguments' read a freed entry.  ST_GC_AT_CLASS=32 forces a
+     *  collection at every Message allocation, which is the audit's
+     *  oracle: the old binary dies with a segmentation fault on the
+     *  first unhandled send, and the fixed one answers the arguments.
+     */
+    snprintf(command, sizeof command,
+             "ST_GC_AT_CLASS=32 " ST_TEST_TIMEOUT " -k 2 " SERVE_SECONDS
+             " %s -serve %s -workers 1 \"[:x | ([nil zork: x] on: "
+             "MessageNotUnderstood do: [:e | e message arguments]) first == x]"
+             " value: (Array with: 1 with: 2 with: 3)\" 2>&1",
+             st2026, IMAGE);
+    status = run(command, out, sizeof out);
+    ++st_test_checks;
+    if (status < 0) {
+        ++st_test_failures;
+        printf("  FAIL OM-1: could not run the server\n");
+    } else {
+        expect(out, "value: (Array with: 1 with: 2 with: 3) ==> true",
+               "OM-1 the Message's arguments survive a collection");
+        expect_absent(out, "Segmentation", "OM-1 no crash");
+    }
+
+    /*
+     *  OM-2: Smalltalk oopsLeft walked the free chain with no lock while
+     *  seven workers took entries off it.  The walk read a header being
+     *  relinked and never ended -- inside a primitive, so it never polled,
+     *  and the next collection parked every other worker behind it for
+     *  ever; or it dereferenced NULL.  The old binary died within a
+     *  second of this; the walk is under the table lock now.
+     */
+    if (write_file(oops,
+            "| fin |\n"
+            "fin := Semaphore new.\n"
+            "1 to: 7 do: [:w | [1 to: 300000 do: [:i | Array new: 3]. "
+            "fin signal] fork].\n"
+            "[1 to: 20000 do: [:i | Smalltalk oopsLeft]. fin signal] fork.\n"
+            "1 to: 8 do: [:w | fin wait].\n"
+            "^'oopsLeft survived'\n") == 0) {
+        snprintf(batch, sizeof batch,
+                 "Compiler evaluate: (FileStream oldFileNamed: '%s') "
+                 "contentsOfEntireFile\n", oops);
+        status = serve(batch, 8, out, sizeof out);
+        ++st_test_checks;
+        if (status < 0) {
+            ++st_test_failures;
+            printf("  FAIL OM-2: could not run the server\n");
+        } else {
+            expect(out, "==> 'oopsLeft survived'",
+                   "OM-2 oopsLeft beside allocating workers");
+            expect_absent(out, "Segmentation", "OM-2 no crash");
+        }
+    }
+
+    /*
+     *  OM-3: a context below the active one, the home of a block, the
+     *  suspendedContext of a waiting process, and the waiting process
+     *  itself were all accepted by become: and becomeForward:, and each
+     *  one stopped the image -- the sender chain or a Semaphore list was
+     *  left naming an Object.  Every one is refused now, with the error
+     *  the active context has always got; and an ordinary pair of Arrays
+     *  still swaps and forwards.
+     */
+    if (write_file(ctx,
+            "| r p |\n"
+            "r := OrderedCollection new.\n"
+            "p := [(Delay forSeconds: 30) wait] fork. "
+            "(Delay forMilliseconds: 20) wait.\n"
+            "r add: ([p suspendedContext becomeForward: Object new. #bad] "
+            "on: Error do: [:e | #refused]).\n"
+            "r add: ([p become: Object new. #bad] on: Error do: [:e | #refused]).\n"
+            "r add: ([p becomeForward: Object new. #bad] "
+            "on: Error do: [:e | #refused]).\n"
+            "r add: ([thisContext sender becomeForward: Object new. #bad] "
+            "on: Error do: [:e | #refused]).\n"
+            "r add: ([thisContext home becomeForward: Object new. #bad] "
+            "on: Error do: [:e | #refused]).\n"
+            "r add: ([thisContext becomeForward: Object new. #bad] "
+            "on: Error do: [:e | #refused]).\n"
+            "r add: ([(Array new: 2) become: (Array new: 3). #swapped] "
+            "on: Error do: [:e | #refused]).\n"
+            "r add: ([(Array new: 2) becomeForward: (Array new: 3). #forwarded] "
+            "on: Error do: [:e | #refused]).\n"
+            "^r asArray\n") == 0) {
+        snprintf(batch, sizeof batch,
+                 "Compiler evaluate: (FileStream oldFileNamed: '%s') "
+                 "contentsOfEntireFile\n3 + 4\n", ctx);
+        status = serve(batch, 1, out, sizeof out);
+        ++st_test_checks;
+        if (status < 0) {
+            ++st_test_failures;
+            printf("  FAIL OM-3: could not run the server\n");
+        } else {
+            expect(out, "==> (refused refused refused refused refused refused "
+                        "swapped forwarded )",
+                   "OM-3 contexts and waiting processes refuse become:");
+            expect(out, "3 + 4 ==> 7", "OM-3 the image survived");
+        }
+    }
+}
+
 int
 main(void)
 {
@@ -1519,6 +1759,8 @@ main(void)
     bugs5_low_net();
     bugs5_low_files();
     bugs5_low_docs();
+    bugs6_critical();
+    bugs6_high_om();
 
     unlink(IMAGE);
     unlink(BATCH);

@@ -85,7 +85,9 @@ fine on one thread and not on thirty-one.
 All three of \ct{terminate}, \ct{suspend} and \ct{signalException:} reach a
 process wherever it is: on a ready list, waiting on a \ct{Semaphore}, or
 running on another worker, in which case that worker parks it at its next
-bytecode and the sender waits for that before going on. \ct{terminate} runs
+bytecode and the sender waits for that before going on. Two processes that
+stop each other at the same moment do not wait for each other: one gives way
+and is stopped, and the other goes on. \ct{terminate} runs
 every \ct{ensure:} block the process is inside, innermost first, on the
 process that sends \ct{terminate}---so a process terminated inside
 \ct{aMutex critical:} releases the mutex on its way out---and leaves

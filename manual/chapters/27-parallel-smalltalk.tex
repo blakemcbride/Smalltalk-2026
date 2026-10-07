@@ -230,7 +230,9 @@ Read it once into a temporary and use that. 1983's \ct{TempNameCache} and
 The 1983 structures that every program shares are guarded for you:
 \ct{Symbol intern:}, \ct{Smalltalk at:put:} and its readers, the dependents
 table behind \ct{addDependent:}, the list of open directories, every method
-dictionary and each send to the \ct{Transcript} all take a lock from
+dictionary, each send to the \ct{Transcript}, and what a class definition
+writes---every \ct{ClassOrganizer}, every class's list of subclasses and the
+system change set---all take a lock from
 \ct{LibraryLocks}. \ct{Compiler evaluate:}
 runs the compiled method without installing it, \ct{Processor yield} is a
 primitive, and a \ct{Delay} survives a stale timer signal.

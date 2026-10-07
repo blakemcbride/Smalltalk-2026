@@ -598,10 +598,10 @@ void    OM_swap_identities_at_boot(st_oop a, st_oop b);
  *
  *  Answers 0 without changing anything if the forward cannot be done: an
  *  immortal oop, or a `from' that some part of C holds in a place this
- *  cannot rewrite -- a running context, the method being executed, the
- *  display form.  A primitive failure is the right answer there, because
- *  the alternative is a dangling pointer in the interpreter's own
- *  registers.
+ *  cannot rewrite -- any context, a process the scheduler holds, the
+ *  method being executed, the display form.  A primitive failure is the
+ *  right answer there, because the alternative is a dangling pointer in
+ *  the interpreter's own registers.
  */
 /*
  *  Whether that forward would be accepted, asked without doing it.  The

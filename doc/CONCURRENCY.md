@@ -350,8 +350,11 @@ kept. What it found in the library, and what was done:
 | `FileDirectory` — `ExternalReferences` | add and remove with nothing between | serialize | `lib/Files-Fixes/FileDirectory.extension.st` |
 | `Behavior>>addSelector:withMethod:` — a method dictionary | not exercised; the same find-then-write | serialize the write | `lib/Concurrency/Behavior.extension.st` |
 | `Transcript` — one `WriteStream` on one `String`, grown by `become:` | eight workers' lines in each other's bytes; ThreadSanitizer saw the freed `String` reused under a writer | serialize each send | `lib/Concurrency/TextCollector.extension.st` |
+| class definition — every `ClassOrganizer` (three parallel Arrays replaced one at a time), every class's Set of subclasses (grown by `become:`), the system `ChangeSet` | eight workers defining fifty classes each lost 14-125 of 400 subclasses and 205-229 of 400 organizer entries, and one run in six looped for ever on a torn organizer (Bugs6 KERNB-1) | serialize, readers too | `lib/Concurrency/ClassOrganizer.extension.st`, `Behavior.extension.st`, `ChangeSet.extension.st`, under one `Monitor` |
 
-`LibraryLocks` holds the six locks, one `Mutex` each, in `lib/Concurrency`,
+`LibraryLocks` holds the eight locks — a `Mutex` each, but a `Monitor` for
+the source files and for class definition, whose protected methods send one
+another — in `lib/Concurrency`,
 because a class in `sources/` cannot be given a class variable from `lib/`.
 Its `holding...:` methods run their block unlocked while the lock does not yet
 exist — that is the bootstrap, single-threaded by construction — and never
@@ -460,7 +463,13 @@ the shape of each is the argument for it:
   wait a moment if some row names it, or -- neither -- conclude. The
   conclusion is sound because the exits are closed, and it is what
   `terminate`, `suspend` and `signalException:` in `lib/Concurrency` go on
-  from.
+  from. The wait has one exception: a worker inside `primDetach:` never
+  reaches the bytecode it would be parked at, so two processes detaching
+  each other would wait for each other for ever (Bugs6 SCHED-1). A caller
+  whose own process is named, and whose target has the lower oop, gives
+  way instead: it un-names its target and answers 5, parks at its next
+  bytecode, and -- if it is ever resumed -- yields and asks again. The oop
+  order makes exactly one member of any cycle give way.
 
 `terminate` then runs the process's `ensure:` blocks, innermost first, *on
 the terminating process*, the way `Exception>>unwindTo:` and Squeak's

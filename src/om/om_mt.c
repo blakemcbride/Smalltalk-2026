@@ -42,6 +42,28 @@ uint32_t         st_om_table_max = ST_OM_MAX_OBJECTS_CEILING;
  */
 #define TABLE_CEILING_FLOOR (256u * 1024u)
 
+/*
+ *  A collection forced at every allocation of one class: ST_GC_AT_CLASS
+ *  names the class's oop (32 is Message).  An oracle for the tests and
+ *  for the next audit, not a tuning knob: an object held only in a C
+ *  local across an allocation is freed by the collection that allocation
+ *  runs, and this makes every such allocation run one, so a fault that
+ *  takes a server minutes to reach by chance is reached on the first
+ *  send.  Bugs6 OM-1 was found this way.  Zero, and one relaxed load on
+ *  the allocation path, whenever it is unset.
+ */
+static st_oop   gc_at_class;
+
+static void
+read_forced_collection(void)
+{
+    const char *text = getenv("ST_GC_AT_CLASS");
+
+    gc_at_class = 0;
+    if (text && *text)
+        gc_at_class = (st_oop) strtoull(text, NULL, 10);
+}
+
 static void
 read_table_ceiling(void)
 {
@@ -598,6 +620,7 @@ OM_init(void)
      *  message that says the table "holds 4194304 of at most 1048576".
      */
     read_table_ceiling();
+    read_forced_collection();
     initial = ST_OM_MAX_OBJECTS < st_om_table_max
                 ? ST_OM_MAX_OBJECTS : st_om_table_max;
     /*
@@ -939,6 +962,10 @@ instantiate(st_oop class_pointer, uint32_t size, uint32_t format,
 {
     uint32_t    index;
     om_header  *head;
+
+    /*  The test oracle above: nothing is held yet, so collecting is safe.  */
+    if (gc_at_class && class_pointer == gc_at_class)
+        (void) OM_collect();
 
     /*
      *  Before anything else: a recycled entry whose body is already big
@@ -2084,12 +2111,25 @@ uint32_t
 OM_oops_left(void)
 {
     uint32_t    n = 0;
-    uint32_t    index = free_head;
+    uint32_t    index;
 
-    while (index != FREE_END) {
+    /*
+     *  Under the table lock (Bugs6 OM-2).  The chain is relinked under
+     *  it by every refill, every magazine hand-back and every release
+     *  without a magazine, and the one path that frees a header
+     *  (table_alloc_locked) runs under it too; the rebuild runs at a
+     *  safepoint, which a worker holding this lock has not reached.  An
+     *  unlocked walk read a header mid-relink, landed in a cycle or on a
+     *  reused entry, and never came back -- inside a primitive, so it
+     *  never polled, and the next collection any worker asked for parked
+     *  everyone else behind it for ever, SIGTERM included.  Seven
+     *  workers allocating beside one calling oopsLeft hung every run.
+     */
+    ST_mutex_lock(&table_lock);
+    for (index = free_head; index != FREE_END;
+         index = (uint32_t) OM_table_get(index)->class_oop)
         ++n;
-        index = (uint32_t) OM_table_get(index)->class_oop;
-    }
+    ST_mutex_unlock(&table_lock);
     /*
      *  Against the CEILING, not against what is mapped today.  The table
      *  grows on demand, so what is left to allocate is what the ceiling

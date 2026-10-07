@@ -588,7 +588,7 @@
  *  (KERN-9 to KERN-15), two for the Tonel writer's patterns (FILES-12),
  *  and TestCase>>unusedName:suffix:in: for per-run fixtures (DOCS-6).
  */
-#define LIB_METHODS             3219
+#define LIB_METHODS             3253
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -2891,9 +2891,11 @@ test_browsing(void)
      *  2722786 -> 2739039 with Bugs5 COMP-2, FILES-2, NET-1, NET-2 and
      *  NET-3, and INTERP-8, INTERP-10 and DOCS-4's checks.  2739039 ->
      *  2792225 with the Bugs5 medium findings, and 2792225 -> 2853878
-     *  with the low ones.
+     *  with the low ones.  2853878 -> 2874524 with the Bugs6 criticals:
+     *  the thirty-four methods of ClassOrganizer, ChangeSet and Behavior
+     *  that hold the Classes lock, and the detach retry in Process.
      */
-    check_integer("(SourceFiles at: 1) contents size", 2853878);
+    check_integer("(SourceFiles at: 1) contents size", 2874524);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.

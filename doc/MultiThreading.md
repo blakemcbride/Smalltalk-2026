@@ -390,7 +390,11 @@ The roots are:
 - whatever provider the embedder installed, which must chain to the
   bootstrap's.
 
-`ST_GC_LOG=1` prints what each collection reclaimed.
+`ST_GC_LOG=1` prints what each collection reclaimed. `ST_GC_AT_CLASS=<oop>`
+forces a collection at every allocation of that class (32 is Message): a
+test oracle, since an object held only in a C local across an allocation is
+freed by the collection that allocation runs, and this makes every such
+allocation run one.
 
 ---
 

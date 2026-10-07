@@ -13,6 +13,15 @@ Only the write to methodDict is held.  What 1983 does around it -- the
 cache flush, the bookkeeping of copied and conflicting selectors, telling
 the change set -- stays outside, unchanged, because some of it reaches
 other classes' dictionaries and the lock is not re-entrant.
+
+The list of subclasses, the same way, under the Classes lock (Bugs6
+KERNB-1).  It is a Set that grows by become: under whoever is adding to
+it, and eight workers each defining fifty subclasses of one class lost
+14-125 of the 400 every run.  addSubclass:, removeSubclass:, the copy
+that subclasses answers -- 1983 already answered a copy, but copied it
+while another worker could be growing it -- and Behavior>>copy, which
+nils the variable while it copies the class and would have a concurrent
+addSubclass: start a second Set that the restore then threw away.
 "
 Extension { #name : 'Behavior' }
 
@@ -52,4 +61,49 @@ Behavior >> removeSelectorSimply: selector [
 		methodDict removeKey: selector ifAbsent: [nil].
 		true].
 	had ifTrue: [self flushCache]
+]
+
+{ #category : '*Concurrency' }
+Behavior >> addSubclass: aSubclass [
+	"Make the argument, aSubclass, be one of the subclasses of the receiver."
+
+	(aSubclass superclasses includes: self)
+		ifTrue: [LibraryLocks holdingClasses: [
+			subclasses == nil
+				ifTrue: [subclasses := Set with: aSubclass]
+				ifFalse: [subclasses add: aSubclass]]]
+		ifFalse: [self error: aSubclass name , ' is not my subclass']
+]
+
+{ #category : '*Concurrency' }
+Behavior >> removeSubclass: aSubclass [
+	"If the argument, aSubclass, is one of the receiver's subclasses, remove it."
+	LibraryLocks holdingClasses: [
+		subclasses == nil ifFalse:
+			[subclasses remove: aSubclass ifAbsent: [].
+			subclasses isEmpty ifTrue: [subclasses := nil]]]
+]
+
+{ #category : '*Concurrency' }
+Behavior >> subclasses [
+	"Answer the receiver's subclasses.  Return a copy so that callers who
+	add or delete subclasses won't get confused."
+
+	^LibraryLocks holdingClasses: [
+		subclasses == nil
+			ifTrue: [Set new]
+			ifFalse: [subclasses copy]]
+]
+
+{ #category : '*Concurrency' }
+Behavior >> copy [
+	"Make a copy of the receiver without a list of subclasses."
+
+	| myCopy savedSubclasses |
+	^LibraryLocks holdingClasses: [
+		savedSubclasses := subclasses.
+		subclasses := nil.
+		myCopy := self shallowCopy.
+		subclasses := savedSubclasses.
+		myCopy methodDictionary: methodDict copy]
 ]
