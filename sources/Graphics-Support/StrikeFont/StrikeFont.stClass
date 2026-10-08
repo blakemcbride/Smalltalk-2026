@@ -46,7 +46,7 @@ characterForm: character
 
 	| characterForm ascii |
 	ascii _ character asciiValue.
-	ascii > maxAscii ifTrue: [ascii _maxAscii].
+	ascii > maxAscii ifTrue: [ascii _ maxAscii].
 	characterForm _ Form new extent: (self widthOf: character) @ self height.
 	characterForm
 		copyBits: (Rectangle origin: (xTable at: ascii + 1)

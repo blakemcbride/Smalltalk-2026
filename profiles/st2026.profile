@@ -5,13 +5,15 @@ lib/ is where this system diverges from 1983.  Nothing in sources/ is ever
 edited for BEHAVIOUR; every difference is a file here, so 'how far have we
 drifted' has a mechanical answer.
 
-The one thing sources/ has been edited for is spelling.  Fifty-seven places
-wrote 1983's assignment arrow glued to the name before it -- `runs_ runs
-copyWith: 1' -- which 1983's parser reads as an assignment and the closures
-lexer reads as an identifier ending in an underscore, so those methods
-could not be recompiled from the source the system itself shows.  They are
-written `runs _ runs copyWith: 1' now.  Whitespace only, in both dialects,
-and no method's meaning moved.
+The one thing sources/ has been edited for is spelling.  Fifty-eight places
+wrote 1983's assignment arrow glued to a name -- fifty-seven to the name
+before it, `runs_ runs copyWith: 1', and one to the name after it, `ascii
+_maxAscii' -- which 1983's parser reads as an assignment and the closures
+lexer reads as part of an identifier, so those methods could not be
+recompiled from the source the system itself shows, or recompiled to mean
+something else.  They are written `runs _ runs copyWith: 1' and `ascii _
+maxAscii' now.  Whitespace only, in both dialects, and no method's meaning
+moved; tests/unit/test_library.c keeps the count of glued arrows at zero.
 
 SharedQueue is excluded from the 1983 sources because lib/Concurrency
 replaces it.  The original guards an OrderedCollection with two Semaphores,

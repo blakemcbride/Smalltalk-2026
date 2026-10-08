@@ -2909,8 +2909,11 @@ test_browsing(void)
      *  on a reserve per process.  2900953 -> 2904282 with SCHED-8, SCHED-3,
      *  INTERP-2 and KERNB-7: priority: through its primitive, the
      *  forked-process rule in Error, and unwindTo: answering its count.
+     *  2904282 -> 2905285 with COMP-8 and KERNA-1: the blank after
+     *  StrikeFont's arrow, and Float>>floorLog: answering exactly from
+     *  one up, with Integer>>floorLog: taking a fractional base.
      */
-    check_integer("(SourceFiles at: 1) contents size", 2904282);
+    check_integer("(SourceFiles at: 1) contents size", 2905285);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -10040,6 +10043,108 @@ test_bugs6_high_files(void)
  *  while ready moves to the new list (SCHED-3), and the mourn semaphore
  *  must be a Semaphore (INTERP-2).
  */
+/*
+ *  Bugs6 COMP-5, COMP-8 and KERNA-1 (medium): what an inlined block's
+ *  temporaries mean, an arrow glued to the name after it, and the floor of
+ *  a Float's logarithm.
+ */
+static void
+test_bugs6_medium_comp_kern(void)
+{
+    test_dialect = ST_DIALECT_CLOSURES;
+
+    /*
+     *  COMP-5: an inlined loop body's temporaries are nil each time round,
+     *  and one that a closure captures is a different variable in each
+     *  iteration -- as they are for the real block, which is the control.
+     *  The old compiler hoisted them into the method's frame once and
+     *  answered (2 2 2) and 1.
+     */
+    check_string("| blocks i | blocks := OrderedCollection new. i := 0. "
+                 "[i < 3] whileTrue: [ | t | t := i. blocks add: [t]. i := i + 1]. "
+                 "^(blocks collect: [:b | b value]) asArray printString", "(0 1 2 )");
+    check_string("| count i | count := 0. i := 0. "
+                 "[i < 3] whileTrue: [ | t | t isNil ifTrue: [count := count + 1]. t := 1. i := i + 1]. "
+                 "^count printString", "3");
+    check_string("| blocks | blocks := OrderedCollection new. "
+                 "#(1 2 3) do: [:e | | t | t := e. blocks add: [t]]. "
+                 "^(blocks collect: [:b | b value]) asArray printString", "(1 2 3 )");
+    /*  An arm inside the loop; the loop's own test; a capture through a
+     *  nested real block; a loop inside a real block; and a method-level
+     *  name shared with the loop's closures, which stays one variable.  */
+    check_string("| blocks i | blocks := OrderedCollection new. i := 0. "
+                 "[i < 4] whileTrue: [i even ifTrue: [ | t | t := i. blocks add: [t]] "
+                 "ifFalse: [ | u | u := i * 10. blocks add: [u]]. i := i + 1]. "
+                 "^(blocks collect: [:b | b value]) asArray printString", "(0 10 2 30 )");
+    check_string("| count i | count := 0. i := 0. "
+                 "[ | t | t isNil ifTrue: [count := count + 1]. t := 1. i := i + 1. i <= 3] whileTrue. "
+                 "^count printString", "4");
+    check_string("| blocks i | blocks := OrderedCollection new. i := 0. "
+                 "[i < 3] whileTrue: [ | t | t := i. #(1) do: [:e | blocks add: [t + e]]. i := i + 1]. "
+                 "^(blocks collect: [:b | b value]) asArray printString", "(1 2 3 )");
+    check_string("| r | r := OrderedCollection new. 1 to: 2 do: [:k | | i | i := 0. "
+                 "[i < 2] whileTrue: [ | t | t := k * 10 + i. r add: [t]. i := i + 1]]. "
+                 "^(r collect: [:b | b value]) asArray printString", "(10 11 20 21 )");
+    check_string("| i acc blocks | acc := 0. i := 0. blocks := OrderedCollection new. "
+                 "[i < 3] whileTrue: [ | t | t := i. blocks add: [acc := acc + t]. i := i + 1]. "
+                 "blocks do: [:b | b value]. ^acc printString", "3");
+    /*  The Blue Book dialect nils them too.  */
+    test_dialect = ST_DIALECT_BLUE_BOOK;
+    check_string("| count i | count _ 0. i _ 0. "
+                 "[i < 3] whileTrue: [ | t | t isNil ifTrue: [count _ count + 1]. t _ 1. i _ i + 1]. "
+                 "^count printString", "3");
+    test_dialect = ST_DIALECT_CLOSURES;
+
+    /*
+     *  COMP-8: `ascii _maxAscii' in StrikeFont>>characterForm: is `ascii _
+     *  maxAscii' now, so recompiling the method from its own source keeps
+     *  its meaning -- it used to come back sending #_maxAscii to an
+     *  Integer -- and the closure dialect refuses a unary selector that
+     *  begins with an underscore, which is what a glued arrow reads as.
+     */
+    check_refused_method("zzGlued | a | a _maxAscii. ^a",
+                         "'_maxAscii' is not a unary selector");
+    check_string("| font before after | font := TextStyle default fontAt: 1. "
+                 "before := (font characterForm: (Character value: 255)) extent printString. "
+                 "StrikeFont recompile: #characterForm: from: StrikeFont. "
+                 "after := [(font characterForm: (Character value: 255)) extent printString] "
+                 "on: Error do: [:e | 'ERR ', e messageText]. "
+                 "^before, ' ', after, ' ', ((StrikeFont compiledMethodAt: #characterForm:) "
+                 "literals includes: #_maxAscii) printString", "0@26 0@26 false");
+
+    /*
+     *  KERNA-1: a Float at or above one answers floorLog: exactly, through
+     *  the Integer or Fraction it stands for, so a number answers the same
+     *  whatever its class.  1.0e23 is below 10^23 and used to answer 23;
+     *  every double nearest a power of ten agrees with the exact oracle
+     *  with the Integer radix and the Float one; a fractional base goes
+     *  through Fraction>>floorLog: from every class, exactly at 2.5^5; an
+     *  infinite base is refused by name instead of being handed back and
+     *  forth between Float and Integer for ever.
+     */
+    check_string("({1.0e23 floorLog: 10. 1.0e23 asExactFraction floorLog: 10. "
+                 "1.0e23 truncated floorLog: 10. 1.0e23 < (10 raisedTo: 23). "
+                 "1.0e62 floorLog: 10.0. 1.0e62 floorLog: 10}) printString",
+                 "(22 22 22 true 62 62 )");
+    check_string("| wrong | wrong := 0. "
+                 "#(0 1 15 22 23 24 30 61 62 63 100 150 200 250 300 308) do: [:n | | d exact | "
+                 "d := (10 raisedTo: n) asFloat. "
+                 "exact := d asExactFraction >= (10 raisedTo: n) ifTrue: [n] ifFalse: [n - 1]. "
+                 "(d floorLog: 10) = exact ifFalse: [wrong := wrong + 1]. "
+                 "(d floorLog: 10.0) = exact ifFalse: [wrong := wrong + 1]]. "
+                 "^wrong printString", "0");
+    check_string("({100.0 floorLog: 2.5. 100 floorLog: 2.5. 97.65625 floorLog: 2.5. "
+                 "97.65625 floorLog: (5/2). 97.65624 floorLog: 2.5. 1.0e-300 floorLog: 10. "
+                 "5.0e-324 floorLog: 10. 1.7976931348623157e308 floorLog: 10}) printString",
+                 "(5 5 5 5 4 -300 -324 308 )");
+    check_string("^({[10.0 floorLog: Float infinity] on: Error do: [:e | e messageText]. "
+                 "[10 floorLog: Float infinity] on: Error do: [:e | e messageText]} "
+                 "collect: [:m | m copyFrom: 1 to: 25]) printString",
+                 "('floorLog: needs a finite ' 'floorLog: needs a finite ' )");
+
+    test_dialect = ST_DIALECT_BLUE_BOOK;
+}
+
 static void
 test_bugs6_medium(void)
 {
@@ -10230,6 +10335,7 @@ main(void)
     test_bugs6_high_netgui();
     test_bugs6_high_files();
     test_bugs6_medium();
+    test_bugs6_medium_comp_kern();
 
     OM_shutdown();
     return ST_TEST_END();

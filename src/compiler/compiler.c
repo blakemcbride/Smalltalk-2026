@@ -101,6 +101,7 @@ typedef struct {
      *  which scope a block is, and every frame index after it is wrong.
      */
     unsigned        block_seen;
+    unsigned        inline_seen;
     unsigned        decl_count;
     unsigned        decl_visible;
     unsigned        decl_seen;
@@ -135,6 +136,16 @@ typedef struct {
  *  Simplifying to one vector for the whole method would be wrong in a way
  *  that hides: an outer block's own captured temporaries would then be
  *  shared between that block's own activations.
+ *
+ *  The same hiding wrong, one level down: an INLINED block -- the body of
+ *  a whileTrue:, an arm of an ifTrue: -- has no activation of its own, so
+ *  its temporaries are hoisted into the enclosing frame, and a hoisted
+ *  name that an inner closure shares went into the enclosing scope's one
+ *  vector.  Every iteration's closures then shared it.  So a vector is
+ *  named by (scope, group), where group 0 is the scope's own and every
+ *  other group is one inlined block's; an inlined block's vector sits in
+ *  the enclosing frame like its own and is made afresh each time the
+ *  block is entered.  See enter_inline_temporaries.  Bugs6 COMP-5.
  */
 
 /*
@@ -165,27 +176,46 @@ typedef struct {
     int         is_argument;
     int         assigned;       /*  appears as an assignment target  */
     int         captured;       /*  read or written from an inner scope  */
+    /*
+     *  Which vector of its scope it would go in: 0 for a name the scope
+     *  declares itself, else the number of the inlined block that declares
+     *  it.  Numbered as the parser meets them, in both passes.
+     */
+    unsigned    group;
     /*  Decided between the passes.  */
-    int         remote;         /*  lives in its scope's vector  */
+    int         remote;         /*  lives in a vector of its scope  */
+    unsigned    vector;         /*  which one, if remote: an index into vectors[]  */
     unsigned    slot;           /*  frame slot, or slot within the vector  */
 } var_decl;
 
 typedef struct {
-    int         is_vector;      /*  copying a scope's vector, not a value  */
-    unsigned    which;          /*  scope id if is_vector, else decl index  */
+    int         is_vector;      /*  copying a vector, not a value  */
+    unsigned    which;          /*  vector index if is_vector, else decl index  */
     unsigned    slot;           /*  where it lands in this frame           */
 } copied_item;
+
+/*
+ *  One vector: an Array in a frame slot of `scope', holding that scope's
+ *  remote names of one group.  Laid out by plan_frames.
+ */
+typedef struct {
+    unsigned    scope;
+    unsigned    group;
+    unsigned    size;
+    unsigned    slot;
+} vector_info;
+
+/*  A vector holds at least one name, so there are never more than names.  */
+#define MAX_VECTORS     MAX_DECLS
 
 typedef struct {
     unsigned    parent;
     unsigned    argc;
-    int         has_vector;
-    unsigned    vector_size;
-    unsigned    vector_slot;
     copied_item copied[MAX_COPIED];
     unsigned    copied_count;
+    unsigned    inline_vectors; /*  vectors of inlined blocks in this scope  */
     unsigned    locals;         /*  non-remote, non-argument names  */
-    unsigned    frame_size;     /*  args + copied + vector + locals  */
+    unsigned    frame_size;     /*  args + copied + vectors + locals  */
 } scope_info;
 
 typedef struct {
@@ -226,6 +256,9 @@ typedef struct {
     unsigned    scope_count;
     unsigned    current_scope;
     unsigned    block_seen;     /*  how many real blocks so far, both passes */
+    unsigned    inline_seen;    /*  and inlined blocks with temporaries  */
+    vector_info vectors[MAX_VECTORS];
+    unsigned    vector_count;
     struct {
         unsigned    scope;
         unsigned    decl;
@@ -877,7 +910,7 @@ find_decl(const st_compiler *c, const char *name)
  *  same declaration in both.
  */
 static void
-declare(st_compiler *c, const char *name, int is_argument)
+declare(st_compiler *c, const char *name, int is_argument, unsigned group)
 {
     var_decl   *d;
 
@@ -897,6 +930,7 @@ declare(st_compiler *c, const char *name, int is_argument)
     memset(d, 0, sizeof *d);
     snprintf(d->name, sizeof d->name, "%s", name);
     d->scope       = c->current_scope;
+    d->group       = group;
     d->is_argument = is_argument;
     if (is_argument)
         ++c->scopes[c->current_scope].argc;
@@ -957,6 +991,19 @@ note_use(st_compiler *c, long d, int assigning)
     }
 }
 
+/*  The vector holding scope `s`'s remote names of `group`, or -1.  */
+static long
+find_vector(const st_compiler *c, unsigned s, unsigned group)
+{
+    unsigned    v;
+
+    for (v = 0; v < c->vector_count; ++v) {
+        if (c->vectors[v].scope == s && c->vectors[v].group == group)
+            return (long) v;
+    }
+    return -1;
+}
+
 /*
  *  Between the passes: decide what is remote and lay every frame out.
  *
@@ -970,38 +1017,55 @@ plan_frames(st_compiler *c)
 {
     unsigned    i;
     unsigned    s;
+    unsigned    v;
 
     for (i = 0; i < c->decl_count; ++i)
         c->decls[i].remote = c->decls[i].captured && c->decls[i].assigned;
+
+    /*
+     *  The vectors, one per (scope, group) that has a remote name, and
+     *  each remote name's slot within its vector, in declaration order.
+     */
+    c->vector_count = 0;
+    for (i = 0; i < c->decl_count; ++i) {
+        long    found;
+
+        if (!c->decls[i].remote)
+            continue;
+        found = find_vector(c, c->decls[i].scope, c->decls[i].group);
+        if (found < 0) {
+            found = (long) c->vector_count++;
+            c->vectors[found].scope = c->decls[i].scope;
+            c->vectors[found].group = c->decls[i].group;
+            c->vectors[found].size  = 0;
+            c->vectors[found].slot  = 0;
+        }
+        c->decls[i].vector = (unsigned) found;
+        c->decls[i].slot   = c->vectors[found].size++;
+    }
+    /*
+     *  A vector is made by bytecode 138, whose operand keeps its top bit
+     *  for "take the elements off the stack" and seven bits for the size.
+     *  A vector of 128 would have been emitted as that flag plus a size of
+     *  0 and popped nothing into nothing.  MAX_DECLS is 192, so it is
+     *  reachable.  Bugs3 B22's family.
+     */
+    for (v = 0; v < c->vector_count; ++v) {
+        if (c->vectors[v].size > MAX_VECTOR_SIZE) {
+            fail(c, "%u names are shared with blocks and assigned in one "
+                    "scope; the bytecode set holds %u in a vector",
+                 c->vectors[v].size, (unsigned) MAX_VECTOR_SIZE);
+            return;
+        }
+    }
 
     for (s = 0; s < c->scope_count; ++s) {
         scope_info *scope = &c->scopes[s];
         unsigned    next;
 
-        scope->copied_count = 0;
-        scope->vector_size  = 0;
-        scope->has_vector   = 0;
-        scope->locals       = 0;
-
-        /*  Slots within this scope's vector, in declaration order.  */
-        for (i = 0; i < c->decl_count; ++i) {
-            if (c->decls[i].scope == s && c->decls[i].remote)
-                c->decls[i].slot = scope->vector_size++;
-        }
-        scope->has_vector = scope->vector_size > 0;
-        /*
-         *  The vector is made by bytecode 138, whose operand keeps its top
-         *  bit for "take the elements off the stack" and seven bits for
-         *  the size.  A vector of 128 would have been emitted as that
-         *  flag plus a size of 0 and popped nothing into nothing.  MAX_DECLS
-         *  is 192, so it is reachable.  Bugs3 B22's family.
-         */
-        if (scope->vector_size > MAX_VECTOR_SIZE) {
-            fail(c, "%u names are shared with blocks and assigned in one "
-                    "scope; the bytecode set holds %u in a vector",
-                 scope->vector_size, (unsigned) MAX_VECTOR_SIZE);
-            return;
-        }
+        scope->copied_count   = 0;
+        scope->inline_vectors = 0;
+        scope->locals         = 0;
 
         /*  Arguments first, in declaration order, as an activation fills them. */
         next = 0;
@@ -1022,7 +1086,6 @@ plan_frames(st_compiler *c)
         /*  Then the copied values, one slot each.  */
         for (i = 0; i < c->need_count; ++i) {
             unsigned    decl;
-            unsigned    from;
             int         is_vector;
             unsigned    which;
             unsigned    k;
@@ -1031,9 +1094,8 @@ plan_frames(st_compiler *c)
             if (c->needs[i].scope != s)
                 continue;
             decl      = c->needs[i].decl;
-            from      = c->decls[decl].scope;
             is_vector = c->decls[decl].remote;
-            which     = is_vector ? from : decl;
+            which     = is_vector ? c->decls[decl].vector : decl;
 
             for (k = 0; k < scope->copied_count; ++k) {
                 if (scope->copied[k].is_vector == is_vector
@@ -1054,9 +1116,22 @@ plan_frames(st_compiler *c)
             ++scope->copied_count;
         }
 
-        /*  Then this scope's own vector, if it has one.  */
-        if (scope->has_vector)
-            scope->vector_slot = next++;
+        /*
+         *  Then this scope's own vector, if it has one, and after it the
+         *  vectors of the inlined blocks in this scope.  A block's prologue
+         *  pushes the first in place and a nil for each of the others, which
+         *  are made when their blocks are entered.
+         */
+        for (v = 0; v < c->vector_count; ++v) {
+            if (c->vectors[v].scope == s && c->vectors[v].group == 0)
+                c->vectors[v].slot = next++;
+        }
+        for (v = 0; v < c->vector_count; ++v) {
+            if (c->vectors[v].scope == s && c->vectors[v].group != 0) {
+                c->vectors[v].slot = next++;
+                ++scope->inline_vectors;
+            }
+        }
 
         /*  Then the local temporaries that stayed in the frame.  */
         for (i = 0; i < c->decl_count; ++i) {
@@ -1070,22 +1145,20 @@ plan_frames(st_compiler *c)
     }
 }
 
-/*  Where scope `s` keeps scope `from`'s vector, as a frame slot of s.  */
+/*  Where scope `s` keeps vector `v`, as a frame slot of s.  */
 static int
-copied_vector_slot(const st_compiler *c, unsigned s, unsigned from,
+copied_vector_slot(const st_compiler *c, unsigned s, unsigned v,
                    unsigned *slot)
 {
     unsigned    k;
 
-    if (s == from) {
-        if (!c->scopes[s].has_vector)
-            return 0;
-        *slot = c->scopes[s].vector_slot;
+    if (c->vectors[v].scope == s) {
+        *slot = c->vectors[v].slot;
         return 1;
     }
     for (k = 0; k < c->scopes[s].copied_count; ++k) {
         if (c->scopes[s].copied[k].is_vector
-         && c->scopes[s].copied[k].which == from) {
+         && c->scopes[s].copied[k].which == v) {
             *slot = c->scopes[s].copied[k].slot;
             return 1;
         }
@@ -1157,7 +1230,7 @@ resolve_scoped(st_compiler *c, const char *name, int assigning, var_ref *out)
         return 1;
     }
     if (decl->remote) {
-        if (!copied_vector_slot(c, c->current_scope, decl->scope, &slot)) {
+        if (!copied_vector_slot(c, c->current_scope, decl->vector, &slot)) {
             fail(c, "'%s' is shared but its vector is not in scope", name);
             return 1;
         }
@@ -1996,7 +2069,7 @@ apply_pragma(st_compiler *c, const char *selector,
                 c->max_names = c->name_count;
         }
         if (c->dialect == ST_DIALECT_CLOSURES)
-            declare(c, args[1].text, 0);
+            declare(c, args[1].text, 0, 0);
         return;
     }
     if (strcmp(selector, "primitive:module:") == 0 && argc == 2
@@ -2234,7 +2307,7 @@ declare_in_block(st_compiler *c, const char *name, unsigned first_decl,
         fail(c, "'%s' is already declared", name);
         return;
     }
-    declare(c, name, is_argument);
+    declare(c, name, is_argument, 0);
 }
 
 static void
@@ -2317,7 +2390,7 @@ compile_closure(st_compiler *c)
             if (c->pass == 0 && !duplicate[0]
              && block_declared(c, c->token.text, first_decl))
                 snprintf(duplicate, sizeof duplicate, "%s", c->token.text);
-            declare(c, c->token.text, 0);
+            declare(c, c->token.text, 0, 0);
             advance(c);
         }
         if (accept(c, ST_TOK_BAR)) {
@@ -2372,9 +2445,11 @@ compile_closure(st_compiler *c)
      *  how the frame grows past the copied values.
      */
     if (c->pass == 1) {
-        if (info->has_vector) {
+        long    own = find_vector(c, scope, 0);
+
+        if (own >= 0) {
             emit(c, 138);
-            emit(c, (uint8_t) info->vector_size);
+            emit(c, (uint8_t) c->vectors[own].size);
         }
         for (i = 0; i < c->decl_count; ++i) {
             if (c->decls[i].scope != scope || !c->decls[i].is_argument
@@ -2394,10 +2469,12 @@ compile_closure(st_compiler *c)
                         ++position;
                 }
                 emit_push_temporary(c, position);
-                emit_store_remote(c, c->decls[i].slot, info->vector_slot, 1);
+                emit_store_remote(c, c->decls[i].slot,
+                                  c->vectors[own].slot, 1);
             }
         }
-        for (i = 0; i < info->locals; ++i)
+        /*  A nil for each inlined block's vector slot, then each local.  */
+        for (i = 0; i < info->inline_vectors + info->locals; ++i)
             emit(c, 115);               /*  push nil  */
     }
 
@@ -2810,6 +2887,7 @@ mark(st_compiler *c, compiler_mark *m)
     m->literal_count = c->out->literal_count;
     m->name_count    = c->name_count;
     m->block_seen    = c->block_seen;
+    m->inline_seen   = c->inline_seen;
     m->decl_count    = c->decl_count;
     m->decl_visible  = c->decl_visible;
     m->decl_seen     = c->decl_seen;
@@ -2829,6 +2907,7 @@ rewind_to(st_compiler *c, const compiler_mark *m)
     c->out->literal_count  = m->literal_count;
     c->name_count          = m->name_count;
     c->block_seen          = m->block_seen;
+    c->inline_seen         = m->inline_seen;
     c->decl_count          = m->decl_count;
     c->decl_visible        = m->decl_visible;
     c->decl_seen           = m->decl_seen;
@@ -2928,6 +3007,66 @@ at_inlinable_block(st_compiler *c)
 }
 
 /*
+ *  Enter an inlined block that declares temporaries: make each of them nil
+ *  again, and remake the vector that holds the shared ones.
+ *
+ *  The names are hoisted into the enclosing frame (below), so without this
+ *  they kept their values from one entry to the next.  For the body of an
+ *  inlined whileTrue: that meant `[ | t | t isNil ifTrue: [...]. t := 1 ]'
+ *  saw nil once in three iterations, where the manual promises that a
+ *  block's temporaries are nilled at every activation.  Worse, a `t' that
+ *  a real closure inside the body captured and the body assigned lived in
+ *  the enclosing scope's one vector, so the closures made in different
+ *  iterations all shared it: `[i < 3] whileTrue: [ | t | t := i. blocks
+ *  add: [t]. i := i + 1]' answered (2 2 2).  The same source as a real
+ *  block, `#(1 2 3) do: [:e | | t | ...]', answered (1 2 3), and inlining
+ *  must not change what the source means.  Bugs6 COMP-5.
+ *
+ *  So the shared names of an inlined block have a vector of their own --
+ *  plan_frames gives every (scope, group) one -- and it is made afresh
+ *  here, on each entry, so that each iteration's closures copy a different
+ *  one; and each unshared name is stored nil.  Squeak's compiler does the
+ *  same for the body of an optimized loop.  Every inlined block gets it,
+ *  not only a loop body: an ifTrue: arm inside a loop is entered once per
+ *  iteration too, and outside a loop the two bytes per name are dead and
+ *  harmless.  The Blue Book dialect has no vectors, and its names are
+ *  nilled from names[]; no 1983 method declares a block temporary, so no
+ *  1983 method's bytecodes move.
+ */
+static void
+enter_inline_temporaries(st_compiler *c, unsigned group, unsigned first_name)
+{
+    unsigned    i;
+
+    if (c->dialect != ST_DIALECT_CLOSURES) {
+        for (i = first_name; i < c->name_count; ++i) {
+            emit(c, 115);               /*  push nil  */
+            emit_store_temporary(c, i, 1);
+        }
+    }  else if (c->pass == 1) {
+        long    v = find_vector(c, c->current_scope, group);
+
+        if (v >= 0) {
+            emit(c, 138);
+            emit(c, (uint8_t) c->vectors[v].size);
+            emit_store_temporary(c, c->vectors[v].slot, 1);
+        }
+        for (i = 0; i < c->decl_count; ++i) {
+            if (c->decls[i].group != group || c->decls[i].remote)
+                continue;
+            emit(c, 115);               /*  push nil  */
+            emit_store_temporary(c, c->decls[i].slot, 1);
+        }
+    }
+    /*
+     *  Nothing emitted before this is the last thing emitted any more.
+     *  Same reason compile_closure clears them.
+     */
+    c->loop_nil_end = NO_LOOP_NIL;
+    c->store_end    = NO_STORE;
+}
+
+/*
  *  Temporaries declared inside a block that is being inlined.
  *
  *  They have nowhere of their own to live: the whole point of inlining is
@@ -2958,6 +3097,13 @@ compile_inline_block(st_compiler *c)
 
     advance(c);                         /*  past [  */
     if (at(c, ST_TOK_BAR)) {
+        /*
+         *  Numbered as the parser meets them, like the real blocks, so the
+         *  two passes agree on which group a name is in; rewind_to gives
+         *  an abandoned attempt's number back for the same reason.
+         */
+        unsigned    group = ++c->inline_seen;
+
         advance(c);
         while (at(c, ST_TOK_IDENTIFIER)) {
             /*
@@ -2970,13 +3116,14 @@ compile_inline_block(st_compiler *c)
             if (c->name_count > c->max_names)
                 c->max_names = c->name_count;
             if (c->dialect == ST_DIALECT_CLOSURES)
-                declare(c, c->token.text, 0);
+                declare(c, c->token.text, 0, group);
             advance(c);
         }
         if (!accept(c, ST_TOK_BAR)) {
             fail(c, "expected | after an inlined block's temporaries");
             return;
         }
+        enter_inline_temporaries(c, group, outer_names);
     }
     compile_statements(c, 1);
     if (!accept(c, ST_TOK_RBRACKET))
@@ -3152,6 +3299,25 @@ compile_unary_sequence(st_compiler *c, int receiver_is_super)
 
         mark(c, &receiver);             /*  the code so far IS the receiver */
         snprintf(selector, sizeof selector, "%s", c->token.text);
+        /*
+         *  A unary selector beginning with an underscore is 1983's
+         *  assignment arrow glued to the name after it.  The closure
+         *  dialect's lexer reads `_maxAscii' as one identifier, because
+         *  Pharo names can begin so, and the bootstrap reads the same text
+         *  as Blue Book, where `_' is always the arrow: StrikeFont>>
+         *  characterForm: stored maxAscii into ascii at bootstrap and sent
+         *  #_maxAscii to an Integer the moment a Browser accepted its
+         *  unchanged text, with nothing said until a character above
+         *  maxAscii came along (Bugs6 COMP-8).  No Pharo selector begins
+         *  with an underscore, so refusing the send loses nothing and says
+         *  what happened.
+         */
+        if (c->dialect == ST_DIALECT_CLOSURES && selector[0] == '_') {
+            fail(c, "'%s' is not a unary selector: an underscore followed "
+                    "by a name is read as one name, so 1983's assignment "
+                    "arrow needs a blank after it", selector);
+            return sent;
+        }
         advance(c);
         emit_send(c, selector, 0, receiver_is_super);
         receiver_is_super = 0;
@@ -3962,7 +4128,7 @@ compile_pattern(st_compiler *c)
         if (!add_name(c, LEX_text(&c->token), 0, 1))
             return;
         if (c->dialect == ST_DIALECT_CLOSURES)
-            declare(c, c->token.text, 1);
+            declare(c, c->token.text, 1, 0);
         ++c->argument_count;
         LEX_begin_statement(c->lx);
         advance(c);
@@ -3995,7 +4161,7 @@ compile_pattern(st_compiler *c)
              *  notice was a class-side method answering "nil metres".
              */
             if (c->dialect == ST_DIALECT_CLOSURES)
-                declare(c, c->token.text, 1);
+                declare(c, c->token.text, 1, 0);
             ++c->argument_count;
             /*
              *  The header extension holds the argument count in five bits,
@@ -4209,6 +4375,7 @@ to_bytecodes(st_compiler *c, const char *source, size_t length,
         c->used_super    = 0;
         c->failed        = 0;
         c->block_seen    = 0;
+        c->inline_seen   = 0;
         c->current_scope = 0;
         c->pragma_count  = 0;
         c->depth         = 0;
@@ -4218,9 +4385,10 @@ to_bytecodes(st_compiler *c, const char *source, size_t length,
         c->decl_visible = 0;
         c->decl_seen    = 0;
         if (pass == 0) {
-            c->decl_count  = 0;
-            c->need_count  = 0;
-            c->scope_count = 1;
+            c->decl_count   = 0;
+            c->need_count   = 0;
+            c->vector_count = 0;
+            c->scope_count  = 1;
             memset(&c->scopes[0], 0, sizeof c->scopes[0]);
         }
 
@@ -4270,7 +4438,7 @@ to_bytecodes(st_compiler *c, const char *source, size_t length,
                     if (!add_name(c, LEX_text(&c->token), 0, 0))
                         break;
                     if (c->dialect == ST_DIALECT_CLOSURES)
-                        declare(c, c->token.text, 0);
+                        declare(c, c->token.text, 0, 0);
                     advance(c);
                 }
                 if (!accept(c, ST_TOK_BAR))
@@ -4308,13 +4476,13 @@ to_bytecodes(st_compiler *c, const char *source, size_t length,
          *  it, and moves any shared argument into it.
          */
         if (c->dialect == ST_DIALECT_CLOSURES && pass == 1) {
-            scope_info *method_scope = &c->scopes[0];
+            long        own = find_vector(c, 0, 0);
             unsigned    i;
 
-            if (method_scope->has_vector) {
+            if (own >= 0) {
                 emit(c, 138);
-                emit(c, (uint8_t) method_scope->vector_size);
-                emit_store_temporary(c, method_scope->vector_slot, 1);
+                emit(c, (uint8_t) c->vectors[own].size);
+                emit_store_temporary(c, c->vectors[own].slot, 1);
             }
             for (i = 0; i < c->decl_count; ++i) {
                 unsigned    k;
@@ -4329,7 +4497,7 @@ to_bytecodes(st_compiler *c, const char *source, size_t length,
                 }
                 emit_push_temporary(c, position);
                 emit_store_remote(c, c->decls[i].slot,
-                                  method_scope->vector_slot, 1);
+                                  c->vectors[own].slot, 1);
             }
         }
 

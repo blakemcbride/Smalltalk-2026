@@ -15,7 +15,7 @@ Where the six candidates stand, measured rather than assumed:
 |---|---|
 | Dynamic arrays `{ a. b }` | **Implemented.** The elements are compiled in order and bytecode 138 (push new Array, elements off the stack -- Squeak's, and the interpreter's already) builds the Array from them; up to 127 elements, no literal per element |
 | General pragmas `<foo: 1>` | **Implemented**, several per method, all literal argument kinds. Kept in the literal frame as an `AdditionalMethodState`, which `CompiledMethod>>pragmas` reads back |
-| Block-local temporaries `[:x \| \| t \| ...]` | **Implemented.** Each gets a frame slot and is nilled at every activation |
+| Block-local temporaries `[:x \| \| t \| ...]` | **Implemented.** Each gets a frame slot and is nilled at every activation. The temporaries of an inlined block (a `whileTrue:` body, an `ifTrue:` arm) are nilled each time it is entered, and one that a closure captures is a fresh variable per entry, so a loop that collects closures gets one value per iteration |
 | Byte arrays `#[1 2 3]` | **Implemented**, including nested inside `#(...)` |
 | Named primitives `<primitive: 'p' module: 'M'>` | **Implemented** as Squeak's primitive 117 with the descriptor as literal 0. The VM does not yet dispatch it |
 | Scaled decimals `1.23s2` | **Not implemented, deliberately.** See below |

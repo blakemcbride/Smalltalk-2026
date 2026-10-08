@@ -58,6 +58,19 @@ arguments but with temporaries starts straight in with the bar:
 [ | t | t := 10. t squared ] value       "100"
 \end{st}
 
+The same holds when the block is the body of a \ct{whileTrue:} or an arm of
+an \ct{ifTrue:}, which the compiler runs in place rather than as a separate
+activation: its temporaries are nil each time it is entered, and a closure
+made inside a loop body keeps the value of its own time round.
+
+\begin{st}
+| blocks i |
+blocks := OrderedCollection new.
+i := 0.
+[i < 3] whileTrue: [ | t | t := i. blocks add: [t]. i := i + 1].
+blocks collect: [:b | b value]           "an OrderedCollection(0 1 2 )"
+\end{st}
+
 \section{What a closure closes over}
 
 A block captures the variables of the place it was written, not their values.

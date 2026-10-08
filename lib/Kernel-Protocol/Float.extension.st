@@ -634,40 +634,45 @@ Float >> floorLog: radix [
 	 logarithm is refused here too.  `radix > 1' is what does it, and it
 	 refuses a NaN radix as well, since a NaN is not greater than one.
 
-	 A receiver below one is answered exactly, through the Fraction it
-	 stands for.  1983's first line is `self < radix ifTrue: [^0]', which
-	 is right from one up to the radix and wrong below it: `0.001 floorLog:
-	 10' answered 0 for -3, and so did `1.0e-300' and every other positive
-	 number under one (Bugs5 KERN-12).  The floor of a negative logarithm
-	 is minus the CEILING of the reciprocal's, which differs from minus its
-	 floor by one exactly when the reciprocal is not a power of the radix,
-	 and that is a question only exact arithmetic answers -- 1/0.001 is
-	 not 1000 in a double.  asExactFraction is exact, Fraction>>floorLog:
-	 corrects its estimate against exact powers, and a subnormal, whose
-	 reciprocal is an infinity, is a Fraction like any other.
+	 Every other receiver is answered exactly, through the Integer or
+	 Fraction it stands for.  1983's first line is `self < radix ifTrue:
+	 [^0]', which is right from one up to the radix and wrong below it:
+	 `0.001 floorLog: 10' answered 0 for -3, and so did `1.0e-300' and
+	 every other positive number under one (Bugs5 KERN-12).  The floor of
+	 a negative logarithm is minus the CEILING of the reciprocal's, which
+	 differs from minus its floor by one exactly when the reciprocal is
+	 not a power of the radix, and that is a question only exact
+	 arithmetic answers -- 1/0.001 is not 1000 in a double.  That fix kept
+	 1983's recursion for receivers from one up, and it is wrong there
+	 too, by the same ulp: every level divides in doubles, and the
+	 quotient rounds across a power of the base whenever the receiver is
+	 within a rounding of one.  The double written 1.0e23 is
+	 99999999999999991611392, below 10^23, so its floorLog is 22; the
+	 recursion answered 23, and 103 of the 632 doubles from 1e-323 to
+	 1e308 were off by one with the radix 10, 136 with the radix 10.0,
+	 whose powers round as well (Bugs6 KERNA-1).  The same number answered
+	 three things depending on whether it was a Float, a Fraction or an
+	 Integer.  asExactFraction is exact, Integer>>floorLog: and
+	 Fraction>>floorLog: correct their estimates against exact powers of
+	 the base, and a subnormal, whose reciprocal is an infinity, is a
+	 Fraction like any other; so one answer, the exact one, whatever the
+	 class.  An infinite base is refused with the rest: no exact power of
+	 it exists to compare against.
 
 	 A receiver of zero or less is refused.  1983's line answered 0 for it,
 	 which its comment excuses with `self assumed positive'; there is no
 	 logarithm of zero or of a negative number, and a 0 there was a wrong
 	 answer that looked like a right one.  Integer>>floorLog: and
 	 Fraction>>floorLog: send such a receiver here, so all three agree."
-	| x |
 	self isFinite ifFalse: [
 		^self error: (self isNaN
 			ifTrue: ['a NaN has no floorLog:']
 			ifFalse: ['an infinity has no floorLog:'])].
-	(radix isNumber and: [radix > 1])
-		ifFalse: [^self error: 'floorLog: needs a base greater than one, not ' , radix printString].
+	(radix isNumber and: [radix > 1 and: [radix isFloat not or: [radix isFinite]]])
+		ifFalse: [^self error: 'floorLog: needs a finite base greater than one, not ' , radix printString].
 	self > 0.0 ifFalse: [
 		^self error: 'floorLog: needs a positive receiver, not ' , self printString].
-	self < 1.0 ifTrue: [^self asExactFraction floorLog: radix].
-	self < radix ifTrue: [^0].
-	self < radix squared ifTrue: [^1].
-	x := 2 * (self floorLog: radix squared).
-	"The quotient is at least one in exact arithmetic and can round to a
-	 hair below it; that was 0 here before receivers under one were
-	 answered, and it stays 0 rather than becoming -1."
-	^x + ((self / (radix raisedTo: x) floorLog: radix) max: 0)
+	^self asExactFraction floorLog: radix
 ]
 
 { #category : '*Kernel-Protocol' }

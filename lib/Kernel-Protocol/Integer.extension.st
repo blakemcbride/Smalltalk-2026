@@ -1016,16 +1016,24 @@ Integer >> floorLog: radix [
 	 `floorLog: 10.0' -- is taken as that whole number, so that it gets
 	 the exact path too rather than falling back to a double that cannot
 	 hold the receiver; a Fraction that stands for one is already an
-	 Integer, since Fraction reduces itself.  A non-positive receiver, or
-	 a base that is genuinely fractional, goes to Float>>floorLog: as it
-	 always did -- which refuses a receiver of zero or less now rather than
-	 answering 1983's 0 for it (Bugs5 KERN-12)."
+	 Integer, since Fraction reduces itself.  A base that is genuinely
+	 fractional, 2.5 or 5/2, is answered by Fraction>>floorLog: with the
+	 receiver as a Fraction over one, which corrects its estimate against
+	 the base's exact powers; it went to Float>>floorLog: before, and
+	 since that answers through asExactFraction now -- it is an Integer
+	 again -- the two would have handed the question back and forth for
+	 ever (Bugs6 KERNA-1).  A non-positive receiver, or a base that has no
+	 logarithm, goes to Float>>floorLog: as it always did -- which refuses
+	 it by name now rather than answering 1983's 0 for it (Bugs5 KERN-12)."
 	| base estimate |
 	base := (radix isFloat and: [radix isFinite and: [radix fractionPart = 0.0]])
 		ifTrue: [radix truncated]
 		ifFalse: [radix].
-	(self > 0 and: [base isInteger and: [base > 1]])
-		ifFalse: [^self asFloat floorLog: radix].
+	(self > 0 and: [base isNumber and: [base > 1 and: [
+		base isFloat not or: [base isFinite]]]])
+			ifFalse: [^self asFloat floorLog: radix].
+	base isInteger
+		ifFalse: [^(Fraction numerator: self denominator: 1) floorLog: radix].
 	base = 2 ifTrue: [^self highBit - 1].
 	estimate := (self ln / base ln) floor.
 	estimate < 0 ifTrue: [estimate := 0].
