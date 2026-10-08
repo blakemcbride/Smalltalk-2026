@@ -34,17 +34,32 @@ Error >> defaultAction [
 	 every ensure: and ifCurtailed: block, innermost first -- and the lock
 	 is released on the way past.
 
-	 Unwinding and then ANSWERING is deliberate, and terminating the
-	 process is not what to do instead.  A test runner catching its own
-	 failures is a process like any other, and terminating it took the
-	 whole pharo-time suite down with the first test that signalled outside
-	 a handler -- `did not report at all', which is the shape of failure
-	 the ratchet exists to catch.  Answering is safe because
-	 runUnwindBlock DISARMS each frame it runs: when those frames later
-	 return normally their ensure: blocks are already nil and do nothing.
-	 So the cleanup happens once, here, and execution carries on exactly as
-	 it did before -- which for an unhandled error is not ideal and is a
-	 separate argument from this one.
+	 Unwinding and then ANSWERING is deliberate for the process that
+	 evaluates a top-level expression -- a doIt, a doctest, a test runner.
+	 A test runner catching its own failures is a process like any other,
+	 and terminating it took the whole pharo-time suite down with the
+	 first test that signalled outside a handler -- `did not report at
+	 all', which is the shape of failure the ratchet exists to catch.
+	 Answering is safe there because runUnwindBlock DISARMS each frame it
+	 runs: when those frames later return normally their ensure: blocks
+	 are already nil and do nothing.
+
+	 A FORKED process whose unwinding ran anything is ENDED instead (Bugs6
+	 SCHED-8).  Answering let it carry on at the failed send with every
+	 ensure: on its stack already spent: on inside `aMutex critical:'
+	 while another process held the Mutex, on past a closed file -- and
+	 inside the library, on into `SuspendedDelays add:' after Delay>>wait
+	 had raised and given AccessProtect back, so one Delay waited on
+	 twice was both ActiveDelay and in the queue.  The manual says fork
+	 swallows what its block raises, and a reader takes that for `the
+	 process stops there', not `the process goes on without its locks'.
+	 So it stops there, once the report is out and the cleanup has run.
+	 Only when something WAS torn down: a forked process that raised with
+	 no ensure: in sight continues as it always did, which keeps every
+	 probe and test that relies on it; and only on a process made by
+	 newProcess, which is what fork and forkAt: make -- the top-level
+	 evaluators are not, and the bare contexts the test harnesses and the
+	 bootstrap run on have no process to end at all.
 
 	 THE REPORT IS ITSELF PROTECTED, because reporting runs image code and
 	 image code can fail.  reportAsText builds its line with `,', which is
@@ -70,8 +85,32 @@ Error >> defaultAction [
 		do: [:inner | self reportOnStandardError:
 				'an error was raised that could not describe itself'].
 	self canOpenNotifier ifTrue: [^self openNotifier].
-	self unwindTo: nil.
+	(self unwindTo: nil) > 0 ifTrue: [
+		self isOnForkedProcess ifTrue: [^Processor terminateActive]].
 	^nil
+]
+
+{ #category : 'private' }
+Error >> isOnForkedProcess [
+	"Whether the stack this runs on is a forked process's: one whose
+	 bottom frame is the context newProcess (or newProcessWith:) wraps
+	 the block in, the one that ends the process when the block is done.
+	 A doIt, a doctest, the startup expression and a test harness's bare
+	 context all bottom out elsewhere."
+	| ctx bottom wrappers |
+	ctx := thisContext.
+	[ctx isNil] whileFalse: [bottom := ctx. ctx := ctx sender].
+	"Both dialects' wrappers: BlockClosure's (lib/Concurrency) for closure
+	 code, and 1983's BlockContext>>newProcess for the Blue Book dialect,
+	 which the test harnesses compile their doIts in.  Asked with
+	 includesSelector: first: this runs inside defaultAction, where a
+	 doesNotUnderstand of its own would come straight back here."
+	wrappers := OrderedCollection new.
+	(Array with: BlockClosure with: BlockContext) do: [:class |
+		#(#newProcess #newProcessWith:) do: [:each |
+			(class includesSelector: each)
+				ifTrue: [wrappers add: (class compiledMethodAt: each)]]].
+	^bottom notNil and: [bottom method notNil and: [wrappers includes: bottom method]]
 ]
 
 { #category : 'private' }

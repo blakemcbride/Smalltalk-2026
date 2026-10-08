@@ -147,6 +147,22 @@ Process >> priority: anInteger [
 		^self error: 'priority too low'].
 	anInteger > Processor highestPriority ifTrue: [
 		^self error: 'priority too high'].
+	self primPriority: anInteger
+]
+
+{ #category : '*Concurrency' }
+Process >> primPriority: anInteger [
+	"Store my priority -- and, if I am waiting for the processor, move me
+	 to the ready list of the new priority, in one step under the ready
+	 lock (Bugs6 SCHED-3).  1983 stored the field and left the process on
+	 the list of its old priority, so a process given a new priority
+	 while ready was on a list its field did not name: primDetach: took it
+	 for one waiting on a Semaphore, suspend refused it, and terminate
+	 edited a ready list under the wrong lock.  Pharo re-queues; so does
+	 this.  Where the primitive is absent the field alone is stored, which
+	 is the single-threaded 1983 behaviour and correct there: the list is
+	 then told by the field."
+	<primitive: 237>
 	priority := anInteger
 ]
 

@@ -28,6 +28,7 @@
 #include "census.h"
 #include "gfx.h"
 #include "st_sched.h"
+#include "finalize.h"
 #include "source.h"
 #include "tonel.h"
 
@@ -588,7 +589,7 @@
  *  (KERN-9 to KERN-15), two for the Tonel writer's patterns (FILES-12),
  *  and TestCase>>unusedName:suffix:in: for per-run fixtures (DOCS-6).
  */
-#define LIB_METHODS             3266
+#define LIB_METHODS             3268
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -2905,9 +2906,11 @@ test_browsing(void)
      *  for the thread sanitizer, and the comment that says why.
      *  2899186 -> 2900953 with Bugs6 OM-4, 5 and 6: the mourning lock, the
      *  weak dictionary's two writers under it, and OutOfMemory's comment
-     *  on a reserve per process.
+     *  on a reserve per process.  2900953 -> 2904282 with SCHED-8, SCHED-3,
+     *  INTERP-2 and KERNB-7: priority: through its primitive, the
+     *  forked-process rule in Error, and unwindTo: answering its count.
      */
-    check_integer("(SourceFiles at: 1) contents size", 2900953);
+    check_integer("(SourceFiles at: 1) contents size", 2904282);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -10030,6 +10033,70 @@ test_bugs6_high_files(void)
     unlink(db);
 }
 
+/*
+ *  Bugs6, three medium findings: a forked process that raised inside a
+ *  section no longer carries on without its lock (SCHED-8, and KERNB-7's
+ *  unwindTo: nil that never unwound), a process given a new priority
+ *  while ready moves to the new list (SCHED-3), and the mourn semaphore
+ *  must be a Semaphore (INTERP-2).
+ */
+static void
+test_bugs6_medium(void)
+{
+    /*  KERNB-7: unwindTo: nil runs every unwind block to the bottom, and
+     *  at top level the process then carries on, as documented.  */
+    check_string("| log flag | log := OrderedCollection new. flag := false. "
+                 "[Error signal: #x. log add: flag] ensure: [flag := true]. "
+                 "log add: flag. ^log asArray printString", "(true true )");
+    check_string("| log | log := OrderedCollection new. "
+                 "[Error new unwindTo: nil. log add: #ret] ensure: [log add: #ens]. "
+                 "^log asArray printString", "(ens ret )");
+    /*  SCHED-8: a forked process that raised inside critical: releases
+     *  the Mutex and ends; the second process gets in.  One that raised
+     *  with nothing to unwind carries on as before.  */
+    check_string("| m log p q | m := Mutex new. log := OrderedCollection new. "
+                 "p := [m critical: [log add: #in. nil foo. log add: #stillInside]] fork. "
+                 "q := [(Delay forMilliseconds: 5) wait. m critical: [log add: #second]] fork. "
+                 "(Delay forMilliseconds: 60) wait. "
+                 "^log asArray printString, m isHeld printString, p suspendedContext isNil printString",
+                 "(in second )falsetrue");
+    check_string("| p log | log := OrderedCollection new. "
+                 "p := [nil foo. log add: #after] fork. (Delay forMilliseconds: 30) wait. "
+                 "^log asArray printString, p suspendedContext isNil printString",
+                 "(after )true");
+    /*  SCHED-8, the Delay case: a Delay waited on twice is refused once
+     *  and is then in the queue once.  */
+    check_string("| d sd | sd := Delay classPool at: #SuspendedDelays. "
+                 "d := Delay forMilliseconds: 300. [d wait] fork. [d wait] fork. "
+                 "(Delay forMilliseconds: 50) wait. "
+                 "^((sd includes: d) and: [(Delay classPool at: #ActiveDelay) == d]) printString",
+                 "false");
+    /*  SCHED-3: priority: moves a ready process to the new list, and the
+     *  detach then takes it as ready (2) rather than as waiting.  */
+    check_string("| p lists | p := [[true] whileTrue: [Processor yield]] newProcess. "
+                 "p priority: 3. p resume. lists := Processor instVarAt: 1. p priority: 5. "
+                 "^((lists at: 3) includes: p) printString, ((lists at: 5) includes: p) printString, "
+                 "([p suspend. #suspended] on: Error do: [:e | e messageText]) printString",
+                 "falsetruesuspended");
+    check_string("| p | p := [[true] whileTrue: [Processor yield]] newProcess. "
+                 "p priority: 3. p resume. p priority: 5. ^(p primDetach: true) printString",
+                 "2");
+    /*  INTERP-2: primitive 236 refuses anything but nil or a Semaphore,
+     *  so the collector's wake can never be aimed at another object.  */
+    {
+        st_oop  before = OM_mourn_semaphore();
+
+        evaluate("Finalizer primNextMournedObjectSignalling: Object new");
+        CHECK_EQ_INT((int) (OM_mourn_semaphore() == before), 1);
+        evaluate("Finalizer primNextMournedObjectSignalling: 'a string'");
+        CHECK_EQ_INT((int) (OM_mourn_semaphore() == before), 1);
+        evaluate("Finalizer primNextMournedObjectSignalling: Semaphore new");
+        CHECK_EQ_INT((int) (OM_mourn_semaphore() != before), 1);
+        evaluate("Finalizer primNextMournedObjectSignalling: nil");
+        CHECK_EQ_INT((int) (OM_mourn_semaphore() == ST_NIL), 1);
+    }
+}
+
 int
 main(void)
 {
@@ -10162,6 +10229,7 @@ main(void)
     test_bugs6_high_comp();
     test_bugs6_high_netgui();
     test_bugs6_high_files();
+    test_bugs6_medium();
 
     OM_shutdown();
     return ST_TEST_END();

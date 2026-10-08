@@ -1946,6 +1946,14 @@ SCHED_synchronous_signal(st_oop semaphore)
     if (!OM_is_present(semaphore))
         return;
     /*
+     *  And a Semaphore, whatever registered it (Bugs6 INTERP-2): this is
+     *  the one consumer every registration primitive feeds, and the
+     *  fields below are read and written in whatever arrives.
+     */
+    if (!OM_is_object(semaphore)
+     || OM_fetch_class(semaphore) != ST_CLASS_SEMAPHORE)
+        return;
+    /*
      *  Under the semaphore's stripe lock, exactly as SCHED_primitive_signal
      *  is, because SCHED_primitive_wait is: a waiter reads the excess count
      *  and links itself under that lock, and a signal that runs between
@@ -2373,6 +2381,36 @@ remove_link_from_list(st_oop link, st_oop list)
     return 1;
 }
 
+/*
+ *  Whether the list is one of the scheduler's ready lists -- any of them,
+ *  by identity (Bugs6 SCHED-3).  It used to be decided from the process's
+ *  CURRENT priority: `p priority: 5' on a process sitting on list 3 (1983's
+ *  priority: stores the field and moves nothing) made primDetach: and
+ *  removeReadyProcess: compute list 5, find myList was not it, and take
+ *  the process for one waiting on a Semaphore -- suspend refused it,
+ *  terminate unlinked it from a ready list under a stripe lock instead of
+ *  the ready lock, and a terminate inside an unwind block put it back
+ *  into "the same wait" by sending wait to a LinkedList.
+ */
+static int
+is_ready_list(st_oop list)
+{
+    st_oop      lists;
+    uint32_t    n;
+    uint32_t    i;
+
+    if (!OM_is_present(list))
+        return 0;
+    lists = OM_fetch_pointer(ST_SCHEDULER_PROCESS_LISTS, SCHED_scheduler());
+    if (!OM_is_present(lists) || !OM_pointer_bit(lists))
+        return 0;
+    n = OM_fetch_word_length(lists);
+    for (i = 0; i < n; ++i)
+        if (OM_fetch_pointer(i, lists) == list)
+            return 1;
+    return 0;
+}
+
 /*  The ready list a process of this priority waits on, or nil.  */
 static st_oop
 ready_list_at(st_int priority)
@@ -2402,18 +2440,71 @@ SCHED_remove_ready_process(st_oop process)
 
     ready_lock_init();
     ST_mutex_lock(&ready_lock);
-    list = ready_list_at(OM_int_value(priority));
+    list = OM_fetch_pointer(ST_PROCESS_MY_LIST, process);
     /*
-     *  Only the ready list at its own priority, which is what the 1983
-     *  method did: a process waiting on a SEMAPHORE is not "waiting for
-     *  the processor", and quietly taking it off the semaphore's list
-     *  would lose the signal it is waiting for.
+     *  Only a ready list -- the one it is on, whichever that is -- which
+     *  is what the 1983 method meant: a process waiting on a SEMAPHORE is
+     *  not "waiting for the processor", and quietly taking it off the
+     *  semaphore's list would lose the signal it is waiting for.  Which
+     *  list is asked of the list and not of the priority field, since the
+     *  two disagree once priority: has been sent (Bugs6 SCHED-3).
      */
-    removed = OM_is_present(list)
-           && OM_fetch_pointer(ST_PROCESS_MY_LIST, process) == list
-           && remove_link_from_list(process, list);
+    removed = is_ready_list(list) && remove_link_from_list(process, list);
     ST_mutex_unlock(&ready_lock);
+    (void) priority;
     return removed;
+}
+
+/*
+ *  237: Process>>primPriority: anInteger -- store the priority, and if the
+ *  receiver is waiting for the processor move it to the ready list of its
+ *  new priority, under the ready lock, as one step (Bugs6 SCHED-3).
+ *
+ *  1983 stored the field and left the process where it was, and Pharo
+ *  re-queues; here the two have to agree, because every reader of the
+ *  lists has been taught to trust the list over the field.  Published in
+ *  this worker's `taken' slot across the move, as take_first_runnable
+ *  publishes what it takes: a detacher that read myList between the
+ *  unlink and the link would otherwise find a process on no list and in
+ *  nobody's hands, and conclude.  A process waiting on a Semaphore, or
+ *  running, or parked, only has its field stored, which is where 1983
+ *  left it too: it goes onto the right list the next time it is queued.
+ */
+int
+SCHED_primitive_set_priority(void)
+{
+    st_oop  priority = ST_stack_value(0);
+    st_oop  process  = ST_stack_value(1);
+    st_oop  list;
+    st_oop  target;
+
+    if (!OM_is_object(process) || !OM_pointer_bit(process)
+     || OM_fetch_word_length(process) <= ST_PROCESS_MY_LIST)
+        return 0;
+    if (!OM_is_int(priority))
+        return 0;
+    target = ready_list_at(OM_int_value(priority));
+    if (!OM_is_present(target))
+        return 0;               /*  out of range: the fallback raises  */
+    ready_lock_init();
+    ST_mutex_lock(&ready_lock);
+    list = OM_fetch_pointer(ST_PROCESS_MY_LIST, process);
+    if (is_ready_list(list) && list != target) {
+        st_hands   *h = my_hands();
+
+        if (h)
+            publish(&h->taken, process);
+        if (remove_link_from_list(process, list)) {
+            OM_store_pointer(ST_PROCESS_PRIORITY, process, priority);
+            SCHED_add_last_link(process, target);
+        }
+        if (h)
+            publish(&h->taken, ST_OOP_INVALID);
+    } else
+        OM_store_pointer(ST_PROCESS_PRIORITY, process, priority);
+    ST_mutex_unlock(&ready_lock);
+    ST_pop_n(1);                /*  answers the receiver  */
+    return 1;
 }
 
 st_oop
@@ -2894,11 +2985,9 @@ SCHED_primitive_detach(void)
             break;
         }
         if (OM_is_present(list)) {
-            st_oop  priority = OM_fetch_pointer(ST_PROCESS_PRIORITY, process);
-            st_oop  ready    = OM_is_int(priority)
-                             ? ready_list_at(OM_int_value(priority)) : ST_NIL;
-
-            if (list == ready) {
+            /*  A ready list is known by identity, not by the priority
+             *  field, which may say another list (Bugs6 SCHED-3).  */
+            if (is_ready_list(list)) {
                 if (SCHED_remove_ready_process(process)) {
                     where = seen_in_hands ? 1 : 2;
                     break;

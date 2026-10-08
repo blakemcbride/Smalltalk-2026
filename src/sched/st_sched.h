@@ -161,6 +161,7 @@ int         SCHED_primitive_suspend(void);
 int         SCHED_primitive_detach(void);            /*  231  */
 int         SCHED_primitive_terminate_active(void);  /*  232  */
 int         SCHED_primitive_release(void);           /*  235  */
+int         SCHED_primitive_set_priority(void);      /*  237  */
 /*  A C caller of the detach lets go of what it stopped (235 with false).  */
 void        SCHED_release_process(st_oop process);
 

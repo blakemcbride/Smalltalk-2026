@@ -205,8 +205,9 @@ Exception >> return: aValue [
 Exception >> unwindTo: aContext [
 	"Run every unwind action between the signal and aContext, innermost
 	 first -- there may be several nested, and each one's ensure: block
-	 has to run before the frames outside it are discarded."
-	| unwind ctx |
+	 has to run before the frames outside it are discarded.  Answers how
+	 many ran."
+	| unwind ctx ran |
 	"From HERE, not from the signal.  The handler block and whatever it
 	 called sit above signalContext on the stack -- a handler is entered
 	 from inside signal -- and they are discarded too.  Walked from
@@ -217,15 +218,25 @@ Exception >> unwindTo: aContext [
 	 Only if aContext is on this stack.  An exception kept and returned
 	 from later names a handler that has gone, and a walk looking for it
 	 would run every unwind block to the bottom of the process; the jump
-	 after this refuses that context anyway."
+	 after this refuses that context anyway.
+
+	 A nil aContext is the bottom of the stack, which is what
+	 Error>>defaultAction asks for.  The walk reaches nil by stepping off
+	 the bottom, so the equality is tested FIRST: tested second, the nil
+	 guard fired one step before the equality would have, and `unwindTo:
+	 nil' answered without running anything, leaving the cleanup
+	 defaultAction documents as dead code (Bugs6 KERNB-7)."
 	ctx := thisContext.
 	[ctx == aContext] whileFalse: [
 		ctx := ctx sender.
-		ctx isNil ifTrue: [^self]].
+		(ctx isNil and: [aContext notNil]) ifTrue: [^0]].
+	ran := 0.
 	unwind := thisContext findNextUnwindUpTo: aContext.
 	[unwind isNil] whileFalse: [
 		unwind runUnwindBlock.
-		unwind := unwind findNextUnwindUpTo: aContext]
+		ran := ran + 1.
+		unwind := unwind findNextUnwindUpTo: aContext].
+	^ran
 ]
 
 { #category : 'handling' }

@@ -7053,6 +7053,7 @@ ST_primitive_dispatch(unsigned index)
     case 236: return OM_primitive_next_mourned();
     case 232: return SCHED_primitive_terminate_active();
     case 235: return SCHED_primitive_release();
+    case 237: return SCHED_primitive_set_priority();
     case 250: return primitive_full_collect();
     case 247: return primitive_context_resume();
 

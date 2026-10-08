@@ -294,7 +294,17 @@ OM_primitive_next_mourned(void)
 {
     st_oop  semaphore = ST_stack_value(0);
 
-    if (semaphore != ST_NIL && !OM_is_object(semaphore))
+    /*
+     *  Nil or a Semaphore, and nothing else (Bugs6 INTERP-2).  Any pointer
+     *  object was accepted, and the collector's wake then went through
+     *  SCHED_synchronous_signal, which reads and writes a Semaphore's
+     *  fields in whatever it is handed: an 8-byte store into field 2 of
+     *  a 0-field Object.  Primitives 93, 100 and 136 were given this
+     *  check in Bugs5; this was the one registration left without it.
+     */
+    if (semaphore != ST_NIL
+     && (!OM_is_object(semaphore)
+      || OM_fetch_class(semaphore) != ST_CLASS_SEMAPHORE))
         return 0;
     OM_set_mourn_semaphore(semaphore);
     ST_pop_n(2);

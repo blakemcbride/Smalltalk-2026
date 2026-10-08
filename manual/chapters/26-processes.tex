@@ -15,9 +15,12 @@ A block becomes a process by being sent \ct{fork}:
 \end{st}
 
 \ct{fork} answers nothing useful and \emph{swallows anything the block
-raises}, which is tolerable for a background chore and wrong for a share of a
-computation somebody is waiting on. For that, use \ct{forkParallel:}
-(Chapter~\ref{ch:parallel}), which answers a \ct{Promise}.
+raises}: an unhandled error is reported on the standard error and, if it was
+raised inside an \ct{ensure:} or a \ct{critical:}, the process ends there,
+its unwind blocks having run; raised with nothing to unwind, the process
+carries on from the failed send. That is tolerable for a background chore and
+wrong for a share of a computation somebody is waiting on. For that, use
+\ct{forkParallel:} (Chapter~\ref{ch:parallel}), which answers a \ct{Promise}.
 
 To make a process without starting it:
 
