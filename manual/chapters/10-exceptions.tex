@@ -214,9 +214,10 @@ the 1983 notifier when there is a screen for it.
 it is what lets one worker's runaway stop being every worker's: a REST
 request that exhausts the object table fails, and the server goes on serving.
 Raising it costs objects at the moment there are none, so the object memory
-keeps an emergency reserve and releases it once for the signal---which means
-a program that catches this and then allocates on regardless does eventually
-stop. Very deep stacks are the exception: past sixteen thousand frames the
+keeps an emergency reserve and releases it once, to each process that runs
+out, for the signal---which means a process that catches this and then
+allocates on regardless does eventually stop, while another process that runs
+out meanwhile is told in its turn. Very deep stacks are the exception: past sixteen thousand frames the
 interpreter stops rather than signals, because delivering an exception is
 quadratic in the depth and a runaway recursion is millions of frames down.
 That case still prints a line and stops, in about four seconds.

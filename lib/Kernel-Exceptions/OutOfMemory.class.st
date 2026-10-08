@@ -11,11 +11,16 @@ structure that contains itself.
 WHAT MAKES IT POSSIBLE TO RAISE AT ALL is worth stating, because raising an
 error costs objects and this is raised at the moment there are none.  The
 object memory keeps an emergency reserve of table entries and releases it
-once, here, so that the Exception, its text and the contexts a handler search
-walks through all have somewhere to live.  A handler that unwinds gives the
-frames back and the collector re-arms the reserve; a program that ignores the
-error and allocates on reaches the raised ceiling with the reserve already
-spent, and THAT is where the process stops.  The rope is finite on purpose.
+once, here, to the process being told, so that the Exception, its text and
+the contexts a handler search walks through all have somewhere to live.  Once
+to EACH process: released once for the whole image, the first process to run
+out took it, and the others -- allocating from the same reserve while that
+one's handler unwound -- reached the raised ceiling with nothing left and
+stopped the image although every one of them handled this (Bugs6 OM-5).  A
+handler that unwinds gives the frames back and the collector re-arms the
+reserves; a process that ignores the error and allocates on reaches the
+raised ceiling with its own reserve already spent, and THAT is where it
+stops.  The rope is finite on purpose, and it is each process's own.
 
 So a handler is not decoration.  A REST worker isolating one request, or a
 test runner, can catch this and go on serving; without one the report is the

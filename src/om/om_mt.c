@@ -193,6 +193,24 @@ static st_atomic_uint   next_hash;
  */
 #define MAGAZINE_MAX        512
 #define MAGAZINE_REFILL     256
+/*
+ *  How large a dead object's body a magazine keeps for reuse (Bugs6 OM-4).
+ *
+ *  Keeping the body is what makes recycling pay: contexts are 94% of what
+ *  is allocated, come in two sizes well under a kilobyte, and a kept body
+ *  is a malloc and a free not made.  But a kept body of any size is memory
+ *  the process holds and nothing in the image refers to.  A five-megabyte
+ *  String that died by its count kept five megabytes on the magazine until
+ *  the entry was reused -- and reused by a 48-byte context, which then sat
+ *  on those five megabytes for as long as it lived -- so a server that had
+ *  once held a 500 MB burst stayed at 500 MB resident for the rest of its
+ *  life, whatever it did afterwards, where the same program with no worker
+ *  pool went straight back to where it started.  A page: every context and
+ *  every small object recycles as before, and a body larger than that is
+ *  given back to the allocator the moment its object dies, as the path
+ *  without a magazine has always done.
+ */
+#define OM_RECYCLE_CAP      4096u
 
 /*
  *  ----------  Epoch-based reclamation  ----------
@@ -333,6 +351,27 @@ magazine_of(void)
 }
 
 /*
+ *  A free entry's body given back to the allocator, leaving the bare
+ *  header the chain threads through and a stale pointer can still read a
+ *  free flag from (Bugs6 OM-4).  `size' is a kept body's capacity and
+ *  zero means none, which is what the reuse test in instantiate asks.
+ */
+static void
+shrink_free_body(uint32_t index)
+{
+    om_header  *head = OM_table_get(index);
+    om_header  *small;
+
+    if (!head || head->size == 0)
+        return;
+    small = (om_header *) realloc(head, sizeof *head);
+    if (!small)
+        small = head;            /*  a shrink that fails keeps the body  */
+    small->size = 0;
+    OM_table_set(index, small);
+}
+
+/*
  *  Fold the per-worker deltas into the global counts and hand every
  *  magazine back.  Called by the collector, which runs with every worker
  *  parked, so reaching into their magazines is safe here and nowhere else.
@@ -380,6 +419,13 @@ magazines_drain(void)
 
                 if (!f || !(f->flags & ST_FMT_FREE))
                     continue;
+                /*
+                 *  Without its body: an entry on the chain is nobody's
+                 *  recycling, and its body was memory the image had let
+                 *  go of (Bugs6 OM-4).
+                 */
+                shrink_free_body(magazines[i].idx[j]);
+                f = OM_table_get(magazines[i].idx[j]);
                 f->class_oop = free_head;
                 free_head    = magazines[i].idx[j];
             }
@@ -827,20 +873,52 @@ grow_at_safepoint(void *user)
  */
 #define OM_TABLE_RESERVE    (64u * 1024u)
 
-static int          reserve_released;
-static uint32_t     reserve_ceiling;    /*  what it was lifted from  */
+/*
+ *  One reserve PER PROCESS that reaches the ceiling, not one for the image
+ *  (Bugs6 OM-5).  Released once for everyone, the first process to run
+ *  out took it, and every other process -- allocating from the same 64K
+ *  while that one's handler was still unwinding -- reached the raised
+ *  ceiling with nothing left to release and stopped the image, although
+ *  each of them handled OutOfMemory: four requests allocating heavily at
+ *  the same moment, every one of them inside `on: OutOfMemory do:', and
+ *  the server died.  So the ceiling is lifted once for each process that
+ *  reaches it, and the processes are remembered: a process that ignores
+ *  its error and allocates on finds itself on the list and is refused,
+ *  which is the finite rope as before, and a process that was never told
+ *  gets a reserve of its own.  Bounded, since the table is finite: more
+ *  than OM_RESERVE_LIFTS processes out of room at once is the image out
+ *  of room.  The collector re-arms them all together once the image is
+ *  comfortably back under the ceiling the first lift was made from.
+ *  Under the table lock, which is the lock the ceiling is read under.
+ */
+#define OM_RESERVE_LIFTS    16
+
+static uint32_t     reserve_lifts;      /*  outstanding, 0 is armed  */
+static uint32_t     reserve_ceiling;    /*  what the first was lifted from  */
+static st_oop       reserve_holders[OM_RESERVE_LIFTS];
 
 int
-OM_release_table_reserve(void)
+OM_release_table_reserve(st_oop process)
 {
-    if (reserve_released)
-        return 0;
+    uint32_t    i;
+    int         lifted = 0;
+
+    ST_mutex_lock(&table_lock);
+    for (i = 0; i < reserve_lifts; ++i)
+        if (reserve_holders[i] == process)
+            goto done;           /*  its rope is spent  */
+    if (reserve_lifts >= OM_RESERVE_LIFTS)
+        goto done;
     if (st_om_table_max > UINT32_MAX - OM_TABLE_RESERVE)
-        return 0;
-    reserve_ceiling  = st_om_table_max;
+        goto done;
+    if (reserve_lifts == 0)
+        reserve_ceiling = st_om_table_max;
     st_om_table_max += OM_TABLE_RESERVE;
-    reserve_released = 1;
-    return 1;
+    reserve_holders[reserve_lifts++] = process;
+    lifted = 1;
+done:
+    ST_mutex_unlock(&table_lock);
+    return lifted;
 }
 
 /*
@@ -869,13 +947,14 @@ OM_release_table_reserve(void)
 void
 OM_rearm_table_reserve(void)
 {
-    if (!reserve_released)
-        return;
-    if (live_objects < reserve_ceiling / 2u
+    ST_mutex_lock(&table_lock);
+    if (reserve_lifts
+     && live_objects < reserve_ceiling / 2u
      && (uint32_t) ST_load_relaxed(&st_om_table_limit) <= reserve_ceiling) {
-        st_om_table_max  = reserve_ceiling;
-        reserve_released = 0;
+        st_om_table_max = reserve_ceiling;
+        reserve_lifts   = 0;
     }
+    ST_mutex_unlock(&table_lock);
 }
 
 int
@@ -1363,8 +1442,11 @@ release_one(st_oop p)
 
                 ST_mutex_lock(&table_lock);
                 for (i = 0; i < MAGAZINE_REFILL; ++i) {
-                    om_header  *f = OM_table_get(mag->idx[i]);
+                    om_header  *f;
 
+                    /*  Handed back without its body (Bugs6 OM-4).  */
+                    shrink_free_body(mag->idx[i]);
+                    f = OM_table_get(mag->idx[i]);
                     f->class_oop = free_head;
                     free_head    = mag->idx[i];
                 }
@@ -1386,12 +1468,20 @@ release_one(st_oop p)
              *  its capacity in `size' so the next allocation of this class
              *  can take it as it stands.  Releasing to a magazine is the
              *  half of recycling that makes the other half possible.
+             *
+             *  Up to OM_RECYCLE_CAP.  A larger body goes back to the
+             *  allocator here and now, as it would without a magazine: it
+             *  was memory the image had let go of, and kept it was the
+             *  server whose resident size was its all-time high-water
+             *  mark (Bugs6 OM-4).
              */
             head->flags     = ST_FMT_FREE;
             head->size      = (uint32_t) freed_bytes;
             ST_store_relaxed(&st_om_refcounts[index], 0);
             head->class_oop = 0;        /*  not on the global chain  */
             OM_table_set(index, head);
+            if (freed_bytes > OM_RECYCLE_CAP)
+                shrink_free_body(index);
             mag->idx[mag->n++] = index;
             return;
         }
@@ -2723,6 +2813,12 @@ collect_at_safepoint(void *unused)
     pending    = NULL;
     marked     = NULL;
     st_om_reclaimed += reclaimed;
+    /*
+     *  And the pages the C allocator is holding for nothing, back to the
+     *  system: what this collection and every release before it freed
+     *  (Bugs6 OM-4).
+     */
+    ST_memory_trim();
     if (getenv("ST_GC_LOG"))
         fprintf(stderr, "  gc #%u reclaimed %u; %u live objects\n",
                 st_om_collections, reclaimed, live_objects);

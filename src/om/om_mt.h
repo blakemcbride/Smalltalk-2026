@@ -254,10 +254,12 @@ int     OM_grow_table_to(uint32_t entries);
 
 /*
  *  Lift the ceiling by an emergency reserve so the image can raise an error
- *  about having run out of room.  Answers zero if it is already spent.  The
- *  collector re-arms it once the image is comfortably back underneath.
+ *  about having run out of room -- once per process that reaches it, the
+ *  process being the one about to be told.  Answers zero if that process
+ *  has had its reserve already, or too many have.  The collector re-arms
+ *  them once the image is comfortably back underneath.
  */
-int     OM_release_table_reserve(void);
+int     OM_release_table_reserve(st_oop process);
 void    OM_rearm_table_reserve(void);
 extern st_atomic_uint   st_om_table_limit;  /*  first index past the used range */
 

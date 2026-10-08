@@ -6,6 +6,9 @@
  */
 
 #include "st_port.h"
+#if defined(__GLIBC__)
+#include <malloc.h>
+#endif
 
 #include <stdlib.h>
 #include <string.h>
@@ -592,6 +595,25 @@ ST_sleep_ns(int64_t ns)
 }
 
 #endif
+
+/*
+ *  Bugs6 OM-4.  Freeing a body gives it back to the C allocator, not to
+ *  the operating system: glibc keeps freed memory in its arena against
+ *  the next request, and raises its mmap threshold every time a large
+ *  mapped chunk is freed, so a hundred five-megabyte Strings that died
+ *  were freed in every sense but the one `ps' reports.  malloc_trim walks
+ *  the free lists and returns whole free pages with madvise, which is the
+ *  only way an arena gives anything back from its middle.  Once per
+ *  collection it is cheap beside the collection.
+ */
+void
+ST_memory_trim(void)
+{
+#if defined(__GLIBC__)
+    malloc_trim(0);
+#endif
+}
+
 
 /*  Platform-independent: one clock for every caller.  See st_port.h.  */
 uint32_t

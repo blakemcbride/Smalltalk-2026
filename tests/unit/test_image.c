@@ -588,7 +588,7 @@
  *  (KERN-9 to KERN-15), two for the Tonel writer's patterns (FILES-12),
  *  and TestCase>>unusedName:suffix:in: for per-run fixtures (DOCS-6).
  */
-#define LIB_METHODS             3265
+#define LIB_METHODS             3266
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -2903,8 +2903,11 @@ test_browsing(void)
      *  multipart limits, the appending setToEnd, and their comments.
      *  2898881 -> 2899186: RestServerTest's upload bound, ten seconds
      *  for the thread sanitizer, and the comment that says why.
+     *  2899186 -> 2900953 with Bugs6 OM-4, 5 and 6: the mourning lock, the
+     *  weak dictionary's two writers under it, and OutOfMemory's comment
+     *  on a reserve per process.
      */
-    check_integer("(SourceFiles at: 1) contents size", 2899186);
+    check_integer("(SourceFiles at: 1) contents size", 2900953);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.

@@ -47,6 +47,7 @@ Class {
 	#classVars : [
 		'Classes',
 		'Dependents',
+		'Mourning',
 		'Files',
 		'Globals',
 		'Methods',
@@ -67,7 +68,8 @@ LibraryLocks class >> initialize [
 	Methods := Mutex new.
 	Transcript := Mutex new.
 	Sources := Monitor new.
-	Classes := Monitor new
+	Classes := Monitor new.
+	Mourning := Monitor new
 ]
 
 { #category : 'holding' }
@@ -166,4 +168,30 @@ LibraryLocks class >> holdingClasses: aBlock [
 	^(Classes isNil or: [Processor activeProcess isNil])
 		ifTrue: [aBlock value]
 		ifFalse: [Classes critical: aBlock]
+]
+
+{ #category : 'holding' }
+LibraryLocks class >> holdingMourning: aBlock [
+	"Evaluate aBlock holding the lock on every weak-keyed dictionary's
+	 table: what WeakKeyDictionary>>at:put: and removeKey:ifAbsent: take,
+	 and so what WeakKeyAssociation>>mourn takes through the latter.
+
+	 The second writer to a WeakKeyDictionary is the system.  When a key
+	 dies the collector queues the association and the finalization
+	 process, on another worker at userInterruptPriority, sends it mourn,
+	 which is `container removeKey: key' -- into a dictionary whose owner
+	 may be inside at:put:, growing or rehashing it.  The two walks lost
+	 each other's updates: associations whose key was dead stayed in the
+	 array after their one mourn (the ephemeron bit is cleared when it is
+	 queued, so they were never queued again) and held the dead key
+	 strongly for ever -- six per cent of twenty thousand on eight
+	 workers, none on one (Bugs6 OM-6).  doc/CONCURRENCY.md leaves
+	 unsynchronised collections to their owner, but an owner cannot lock
+	 against a process it cannot see, so the dictionary's writers and the
+	 mourning take one lock here.  A Monitor, because grow re-adds through
+	 the same methods.  Readers are not held: a probe sees the old array
+	 or the new one, both consistent, as with every other lock here."
+	^(Mourning isNil or: [Processor activeProcess isNil])
+		ifTrue: [aBlock value]
+		ifFalse: [Mourning critical: aBlock]
 ]

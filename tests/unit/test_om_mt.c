@@ -314,8 +314,14 @@ test_ephemerons(void)
     CHECK_EQ_INT((int) OM_mourn_pending(), 1);
     CHECK(OM_is_object(key));
 
-    /*  The finalization process takes it; that is the whole protocol.  */
-    CHECK_EQ_INT((int) (OM_take_mourned() == eph), 1);
+    /*  The finalization process takes it; that is the whole protocol.
+     *  With the queue's count, which the taker gives up (Bugs6 OM-6).  */
+    {
+        st_oop  taken = OM_take_mourned();
+
+        CHECK_EQ_INT((int) (taken == eph), 1);
+        OM_decrease_ref(taken);
+    }
     CHECK_EQ_INT((int) OM_mourn_pending(), 0);
     CHECK_EQ_INT((int) (OM_take_mourned() == ST_NIL), 1);
 
@@ -410,8 +416,12 @@ test_ephemerons(void)
      *  it has been mourned or swept and the queue is drained here rather
      *  than left for whatever test runs next.
      */
-    while (OM_take_mourned() != ST_NIL)
-        ;
+    {
+        st_oop  taken;
+
+        while ((taken = OM_take_mourned()) != ST_NIL)
+            OM_decrease_ref(taken);     /*  the queue's count, given up  */
+    }
     OM_set_root_provider(NULL);
 }
 

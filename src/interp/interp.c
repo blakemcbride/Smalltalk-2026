@@ -1734,7 +1734,9 @@ send_out_of_memory(void)
     if (!OM_is_present(lookup_method(selector, OM_fetch_class(receiver),
                                      &found)))
         return 0;
-    if (!OM_release_table_reserve())
+    /*  The reserve is this process's: a second process out of room gets
+     *  one of its own, and this one allocating on does not (Bugs6 OM-5).  */
+    if (!OM_release_table_reserve(SCHED_active_process()))
         return 0;
     ST_pop_n(st_vm.argument_count);
     st_vm.argument_count = 0;

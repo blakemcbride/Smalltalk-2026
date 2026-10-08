@@ -426,11 +426,14 @@ A collection that does not help is now a third case rather than the end: the
 table grows, at a safepoint, up to `st_om_table_max`. Reaching *that* raises
 an `OutOfMemory` the image can catch, which needed one more piece — raising an
 error costs objects at the moment there are none, so the memory keeps an
-emergency reserve of 64K entries and releases it once, for the signal.  A
+emergency reserve of 64K entries and releases it once for each process that
+runs out, for the signal (one for the whole image left every other process
+allocating from the first one's reserve and stopped the image although each
+handled the error -- Bugs6 OM-5; at most sixteen are outstanding).  A
 handler that unwinds gives the frames back and the collector re-arms the
-reserve below the ceiling it was lifted from; a program that ignores the error
-and allocates on reaches the raised ceiling with the reserve spent, and that is
-where the process stops.
+reserves below the ceiling they were lifted from; a process that ignores the
+error and allocates on reaches the raised ceiling with its reserve spent, and
+that is where the process stops.
 
 There is a measured limit on when the error can be raised at all, and it is
 worth stating because it is a property of the *exception* design rather than of

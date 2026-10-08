@@ -60,7 +60,7 @@ uint32_t    OM_mourn_queued(st_oop *out, uint32_t max);
  *  Take the oldest queued ephemeron, or ST_NIL when there is none.  The
  *  primitive behind Finalizer>>primNextMournedObjectSignalling:.
  */
-st_oop      OM_take_mourned(void);
+st_oop      OM_take_mourned(void);  /*  with the queue's count: release it  */
 
 /*
  *  The Semaphore the collector signals when it queues something, as the

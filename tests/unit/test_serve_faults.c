@@ -1702,6 +1702,150 @@ bugs6_high_kern(void)
     }
 }
 
+/*
+ *  Bugs6, three medium findings in the object memory.
+ */
+static void
+bugs6_medium_om(void)
+{
+    static char out[65536];
+    const char *rss   = fixture("bugs6-serve-rss.st");
+    const char *big   = fixture("bugs6-serve-five.bin");
+    const char *oom   = fixture("bugs6-serve-oom3.st");
+    const char *weak  = fixture("bugs6-serve-weak.st");
+    const char *wimg  = fixture("bugs6-serve-weak.im");
+    char        batch[1024];
+    char        command[2048];
+    int         status;
+
+    /*
+     *  OM-4: under workers a dead object's body was kept on the magazine
+     *  whatever its size, and a small object reusing the entry pinned it:
+     *  a hundred five-megabyte Strings dropped and collected left the
+     *  process at its high-water mark for good.  Bodies over a page go
+     *  back to the allocator when their object dies; the resident size
+     *  after the drop must be within 100 MB of the size before.
+     */
+    snprintf(command, sizeof command,
+             "dd if=/dev/urandom of=%s bs=1M count=5 2>/dev/null", big);
+    (void) run(command, out, sizeof out);
+    snprintf(batch, sizeof batch,
+             "| rss keep before after |\n"
+             "rss := [ | s line v | s := FileStream oldFileNamed: '/proc/self/status'. "
+             "v := nil. [s atEnd] whileFalse: [line := s nextLine. "
+             "(line beginsWith: 'VmRSS') ifTrue: [v := (line copyFrom: 7 to: line size - 3) "
+             "asInteger]]. s close. v].\n"
+             "before := rss value. keep := OrderedCollection new.\n"
+             "1 to: 100 do: [:i | keep add: (FileStream oldFileNamed: '%s') "
+             "contentsOfEntireFile].\n"
+             "keep := nil. Smalltalk garbageCollect. Smalltalk garbageCollect.\n"
+             "1 to: 300000 do: [:i | Array new: 3]. Smalltalk garbageCollect.\n"
+             "after := rss value.\n"
+             "^after - before < 102400 ifTrue: ['memory came back'] "
+             "ifFalse: [{before. after}]\n", big);
+    if (write_file(rss, batch) == 0) {
+        snprintf(batch, sizeof batch,
+                 "Compiler evaluate: (FileStream oldFileNamed: '%s') "
+                 "contentsOfEntireFile\n", rss);
+        status = serve(batch, 2, out, sizeof out);
+        ++st_test_checks;
+        if (status < 0) {
+            ++st_test_failures;
+            printf("  FAIL OM-4: could not run the server\n");
+        } else
+            expect(out, "==> 'memory came back'", "OM-4 dead bodies are given back");
+    }
+
+    /*
+     *  OM-5: the emergency reserve was lifted once for the whole image, so
+     *  the second process to reach the ceiling while the first's handler
+     *  unwound found nothing to release and stopped the image, handler or
+     *  no handler.  Four runaways at once, each handling OutOfMemory, must
+     *  all be caught.  Half a million, as the runaway check above.
+     */
+    if (write_file(oom,
+            "| fin rs |\n"
+            "fin := Semaphore new. rs := Array new: 4.\n"
+            "1 to: 4 do: [:w | [ | a | rs at: w put: ([a := OrderedCollection new. "
+            "[a add: (Array new: 1)] repeat] on: OutOfMemory do: [:e | e return: #caught]). "
+            "a := nil. fin signal] fork].\n"
+            "4 timesRepeat: [fin wait].\n"
+            "^rs\n") == 0) {
+        snprintf(command, sizeof command,
+                 "ST_MAX_OBJECTS=524288 " ST_TEST_TIMEOUT " -k 2 " SERVE_SECONDS " %s "
+                 "-serve %s -workers 8 \"$(cat %s)\" 2>&1",
+                 st2026, IMAGE, oom);
+        snprintf(batch, sizeof batch,
+                 "Compiler evaluate: (FileStream oldFileNamed: '%s') "
+                 "contentsOfEntireFile\n", oom);
+        if (write_file(BATCH, batch) == 0) {
+            snprintf(command, sizeof command,
+                     "ST_MAX_OBJECTS=524288 " ST_TEST_TIMEOUT " -k 2 " SERVE_SECONDS " %s "
+                     "-serve %s -workers 8 \"$(cat %s)\" 2>&1",
+                     st2026, IMAGE, BATCH);
+            status = run(command, out, sizeof out);
+            ++st_test_checks;
+            if (status < 0) {
+                ++st_test_failures;
+                printf("  FAIL OM-5: could not run the server\n");
+            } else {
+                expect(out, "==> (caught caught caught caught )",
+                       "OM-5 four handled runaways");
+                expect_absent(out, "out of memory activating",
+                              "OM-5 the image did not stop");
+            }
+        }
+    }
+
+    /*
+     *  OM-6: the Finalizer's mourn raced the owner's at:put: on one
+     *  WeakKeyDictionary, so six per cent of dead keys were never removed
+     *  and the queue once handed the Finalizer an Array.  Needs the weak
+     *  classes, which are the pharo-weak profile's, so that image is
+     *  built here; twenty thousand keys die while being added on eight
+     *  workers, and once the size settles it must be zero.
+     */
+    snprintf(command, sizeof command,
+             "%s -bootstrap -profile profiles/pharo-weak.profile "
+             "-startup \"$(cat %s)\" -o %s 2>&1", st2026, STARTUP, wimg);
+    status = run(command, out, sizeof out);
+    ++st_test_checks;
+    if (status != 0) {
+        ++st_test_failures;
+        printf("  FAIL OM-6: cannot build the weak image (exit %d)\n", status);
+    } else if (write_file(weak,
+            "| d last same fin result |\n"
+            "d := WeakKeyDictionary new. fin := Semaphore new. result := nil.\n"
+            "[1 to: 20000 do: [:i | d at: Object new put: i. "
+            "i \\\\ 2000 = 0 ifTrue: [Smalltalk garbageCollect]]. fin signal] fork.\n"
+            "fin wait. last := -1. same := 0.\n"
+            "1 to: 120 do: [:i | | s | result isNil ifTrue: [Smalltalk garbageCollect. "
+            "(Delay forMilliseconds: 250) wait. s := d size.\n"
+            "    s = last ifTrue: [same := same + 1] ifFalse: [same := 0]. last := s.\n"
+            "    same >= 8 ifTrue: [result := {s. d keys size. "
+            "((d instVarAt: 2) select: [:x | x notNil]) size}]]].\n"
+            "^result\n") == 0) {
+        snprintf(batch, sizeof batch,
+                 "Compiler evaluate: (FileStream oldFileNamed: '%s') "
+                 "contentsOfEntireFile\n", weak);
+        if (write_file(BATCH, batch) == 0) {
+            snprintf(command, sizeof command,
+                     ST_TEST_TIMEOUT " -k 2 " SERVE_SECONDS " %s "
+                     "-serve %s -workers 8 \"$(cat %s)\" 2>&1",
+                     st2026, wimg, BATCH);
+            status = run(command, out, sizeof out);
+            ++st_test_checks;
+            if (status < 0) {
+                ++st_test_failures;
+                printf("  FAIL OM-6: could not run the weak server\n");
+            } else {
+                expect(out, "==> (0 0 0 )", "OM-6 every dead key is mourned");
+                expect_absent(out, "mourning", "OM-6 only associations are queued");
+            }
+        }
+    }
+}
+
 int
 main(void)
 {
@@ -2360,6 +2504,7 @@ main(void)
     bugs6_high_netgui();
     bugs6_high_files();
     bugs6_high_kern();
+    bugs6_medium_om();
 
     unlink(IMAGE);
     unlink(BATCH);

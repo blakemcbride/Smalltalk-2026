@@ -182,6 +182,12 @@ int64_t ST_time_smalltalk_ms(void);
 #define ST_EPOCH_OFFSET_SEC     INT64_C(2177452800)
 
 void    ST_sleep_ns(int64_t ns);
+/*
+ *  Give the C allocator's free pages back to the operating system, where
+ *  the allocator has such a thing to do (glibc's malloc_trim); a no-op
+ *  elsewhere.  The collector calls it once per collection (Bugs6 OM-4).
+ */
+void    ST_memory_trim(void);
 
 /*  Files
  *

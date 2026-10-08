@@ -88,6 +88,19 @@ OM_mourn_queue_add(st_oop ephemeron)
     }
     queue[queue_count++] = ephemeron;
     signal_owed = 1;
+    /*
+     *  Counted while queued (Bugs6 OM-6).  The queue was a root only at
+     *  the next walk, and between two collections nothing but the
+     *  dictionary it was about to be removed from held a queued
+     *  association: the owner's own removeKey: or grow, racing the
+     *  Finalizer, dropped it from every array, its count reached zero,
+     *  its entry was reused, and the queue handed the Finalizer an Array.
+     *  A count of the queue's own keeps the entry until OM_take_mourned
+     *  hands the count on with the object; the walk's visit of the queue
+     *  rebuilds the same count, as it does for the timer's semaphore
+     *  (Bugs5 OM-13), so nothing is counted twice.
+     */
+    OM_increase_ref(ephemeron);
     ST_mutex_unlock(&mourn_lock);
 }
 
@@ -157,6 +170,11 @@ OM_mourn_queued(st_oop *out, uint32_t max)
     return n;
 }
 
+/*
+ *  The oldest queued ephemeron, WITH THE QUEUE'S COUNT ON IT: the caller
+ *  owns that count and releases it once the object is held somewhere the
+ *  walk can see -- primitive 236 pushes it first and releases second.
+ */
 st_oop
 OM_take_mourned(void)
 {
@@ -240,8 +258,12 @@ OM_mourn_wake(void)
 void
 OM_mourn_reset(void)
 {
+    uint32_t    i;
+
     mourn_lock_init();
     ST_mutex_lock(&mourn_lock);
+    for (i = queue_head; i < queue_count; ++i)
+        OM_decrease_ref(queue[i]);      /*  the queue's counts, given up  */
     free(queue);
     queue           = NULL;
     queue_count     = 0;
@@ -276,6 +298,13 @@ OM_primitive_next_mourned(void)
         return 0;
     OM_set_mourn_semaphore(semaphore);
     ST_pop_n(2);
-    ST_push(OM_take_mourned());
+    {
+        st_oop  taken = OM_take_mourned();
+
+        /*  On the stack first, where the walk sees it; then the queue's
+         *  count is released (Bugs6 OM-6).  */
+        ST_push(taken);
+        OM_decrease_ref(taken);
+    }
     return 1;
 }
