@@ -247,6 +247,27 @@ typedef struct {
  */
 int     COMPILE_selector_of(const char *source, char *out, size_t out_len);
 
+/*
+ *  The compiles in flight on one thread, as roots for the collector.
+ *
+ *  Every literal a compile makes -- each String, Float, LargeInteger,
+ *  nested Array and every element of a literal array -- lives in C arrays
+ *  until the CompiledMethod is built around them at the end, and a C array
+ *  is not a root: a collection in the middle of a compile freed every
+ *  literal made so far, and the rest of the compile allocated into their
+ *  slots.  The bootstrap of one 150,000-element literal came out with the
+ *  array's first element the 106,605th string (Bugs6 COMP-2), and a
+ *  -serve compile past the 256 objects its guard Array held was exposed to
+ *  every other worker's allocation.  So the compiler threads each compile
+ *  it runs onto the running interpreter's chain (st_vm.compile_roots), and
+ *  the root walk visits the chain of every registered interpreter through
+ *  this.  The chain is written only by its own thread and read at a
+ *  safepoint with that thread parked, exactly as its active context is.
+ */
+struct st_compile_roots;
+void    COMPILE_visit_roots(const struct st_compile_roots *chain,
+                            void (*visit)(st_oop object));
+
 int     COMPILE_to_bytecodes(const char *source, const st_compile_context *ctx,
                              st_compiled_code *out);
 int     COMPILE_to_bytecodes_n(const char *source, size_t length,

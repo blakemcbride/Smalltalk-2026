@@ -194,16 +194,38 @@ Behavior >> format: nInstVars variable: isVar words: isWords pointers: isPointer
 	 word here (isBits, isVariable, isBytes, the VM's shape_of_class,
 	 isWeak, isEphemeron) knows both that word and the bootstrap's
 	 positive one.  An ephemeron is carried in the positive form, since
-	 bit 15 means nothing in a negative word; see isEphemeron."
-	| weak ephemeron |
+	 bit 15 means nothing in a negative word; see isEphemeron.
+
+	 AND A WORD THAT DESCRIBES THE SHAPE I ALREADY HAVE IS NOT WRITTEN.
+	 subclassOf:oldClass:instanceVariableNames:variable:words:pointers:ifBad:
+	 decides whether a redefinition changed the class's shape by comparing
+	 the word before this with the word after, exactly as 1983 did -- and
+	 in 1983 the two words for one shape were always the same word.  Here
+	 the bootstrap writes the positive form and this message wrote the
+	 negative one, so Pragma's 24579 was `changed' into -8189 by its own
+	 definition: every class the bootstrap built was rebuilt by an accept
+	 of its unchanged template or a fileIn of its own fileOut -- a new
+	 class object, its instances migrated, every method recompiled -- and
+	 for ContextPart the rebuild ran under the very contexts being
+	 replaced and stopped the image (Bugs6 COMP-12).  So the word is
+	 compared by what it says, its low fifteen bits and the ephemeron bit,
+	 and kept when it says the same; a definition that changes nothing now
+	 changes nothing, which is what Metaclass>>name:inEnvironment:...
+	 was written to rely on."
+	| weak ephemeron new |
 	weak := self isWeak.
 	ephemeron := self isEphemeron.
-	format := nInstVars +
+	new := nInstVars +
 				(isVar ifTrue: [4096] ifFalse: [0]) +
 				(isWords ifTrue: [8192] ifFalse: [0]) +
 				(isPointers ifTrue: [-16384] ifFalse: [0]).
-	weak ifTrue: [format := format bitOr: 2048].
-	ephemeron ifTrue: [format := (format bitAnd: 16r7FFF) bitOr: 32768]
+	weak ifTrue: [new := new bitOr: 2048].
+	ephemeron ifTrue: [new := (new bitAnd: 16r7FFF) bitOr: 32768].
+	((format isKindOf: Integer)
+		and: [(new bitAnd: 16r7FFF) = (format bitAnd: 16r7FFF)
+		and: [(new >= 0 and: [(new bitAnd: 32768) ~= 0]) = ephemeron]])
+			ifTrue: [^self].
+	format := new
 ]
 
 { #category : '*Kernel-Protocol' }

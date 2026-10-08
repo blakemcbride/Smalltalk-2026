@@ -32,8 +32,11 @@
 
 #define ALL_ONES        0xFFFFu
 
-/*  The largest coordinate a blit may name; see GFX_blit_from_oop below.  */
-#define GFX_COORD_LIMIT 1073741824      /*  2^30  */
+/*
+ *  The first coordinate a blit may NOT name, either side of zero; see
+ *  GFX_blit_from_oop below for why it is this and not twice it.
+ */
+#define GFX_COORD_LIMIT 536870912       /*  2^29  */
 
 /*  RightMasks at: n+1 is n low bits set.  */
 static const uint16_t right_masks[17] = {
@@ -371,6 +374,26 @@ GFX_copy_bits(gfx_blit *b)
     if (b->w <= 0 || b->h <= 0)
         return;
 
+    /*
+     *  And what is left lies inside the destination form: clip_range
+     *  intersected the rectangle with the clipping rectangle, and the
+     *  clipping rectangle with the form, so dx and dy are not negative and
+     *  dx + w and dy + h are within the extent.  When that does not hold
+     *  the arithmetic above has been defeated -- signed overflow is the
+     *  only way, and the coordinate limit in GFX_blit_from_oop is what
+     *  keeps it out -- and the loop below would run n_words by h for a
+     *  width that describes nothing, every word_put of it dropped: 2^26
+     *  words a row was Bugs6 GUI-1's twelve seconds, and 2^30 rows of
+     *  them its hang.  Nothing is drawn, which is what a rectangle the
+     *  arithmetic cannot describe deserves, and the words the loop can
+     *  visit are thereby bounded by the form's own -- n_words by the
+     *  raster, the rows by the height -- whatever numbers arrived.
+     *  Written as differences so that the test cannot overflow itself.
+     */
+    if (b->dx < 0 || b->dy < 0
+     || b->w > b->dest.width - b->dx || b->h > b->dest.height - b->dy)
+        return;
+
     /*  Record what will be touched before the loop starts moving dy.  */
     b->damage_x = b->dx;
     b->damage_y = b->dy;
@@ -582,15 +605,29 @@ GFX_blit_from_oop(st_oop bitblt, gfx_blit *b)
          *  `dx + w' in clip_range -- signed overflow, which the UBSan build
          *  reports, and after which the clipping arithmetic is meaningless.
          *
-         *  A billion is the bound because clip_range adds and subtracts
-         *  these in pairs and nothing else, so two of them must still be an
-         *  int; and because a blit whose coordinates are past a billion
-         *  pixels is not a picture of anything.  Refusing it fails the
-         *  primitive, and copyBits' own fallback then raises only if the
-         *  rectangle it was asked for meets the clipping rectangle -- which,
-         *  at these coordinates, it cannot.
+         *  Half a billion is the bound, and it is exclusive, because
+         *  clip_range adds and subtracts these in twos and threes -- `dx +
+         *  w', `source_x + (clip_x - dest_x)' -- and every such sum must
+         *  still be an int; and because a blit whose coordinates are past
+         *  half a billion pixels is not a picture of anything.  It was a
+         *  billion, 2^30, and inclusive, on the reasoning that two of them
+         *  must still be an int: but 2^30 + 2^30 is 2^31, which is not.
+         *  `destX = width = 2^30' passed, `dx + w' wrapped negative in
+         *  clip_range, the width was never clipped, and copyLoop ran 2^26
+         *  words for every row with every word_put dropped by the bounds
+         *  check -- twelve seconds for the Display's 480 rows, and with
+         *  destY = height = 2^30 as well, 2^30 rows of them: `Display
+         *  fill: (1073741824@1073741824 extent: 1073741824@1073741824)
+         *  mask: Form black' never returned, and SIGTERM, which only sets
+         *  a flag the loop never reads, could not end it (Bugs6 GUI-1).
+         *  With every value under 2^29 the widest sum below -- dx + w
+         *  where dest_x is left of clip_x, which is clip_x + (width -
+         *  (clip_x - dest_x)), four terms -- is at most 2^31 - 4.
+         *  Refusing fails the primitive, and copyBits' own fallback then
+         *  raises only if the rectangle it was asked for meets the
+         *  clipping rectangle -- which, at these coordinates, it cannot.
          */
-        if (v < -GFX_COORD_LIMIT || v > GFX_COORD_LIMIT)
+        if (v <= -GFX_COORD_LIMIT || v >= GFX_COORD_LIMIT)
             return 0;
         *targets[i] = (int) v;
     }

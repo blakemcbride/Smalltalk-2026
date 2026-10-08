@@ -1842,6 +1842,37 @@ st_file_pwrite(int fd, const void *buf, size_t count, int64_t off)
     return (int64_t) put;
 }
 
+/*
+ *  Append at the end the file has at the instant of the write, and answer
+ *  the offset the bytes end at, or -1 (Bugs6 FILES-4).  An OVERLAPPED
+ *  whose offset is all ones means "the end of the file" to WriteFile, and
+ *  the write is one atomic operation, which is the O_APPEND of this side.
+ *  The end is asked afterwards; another writer's append in between makes
+ *  it later than ours, which the caller takes as the conservative case.
+ */
+static int64_t
+st_file_append(int fd, const void *buf, size_t count)
+{
+    HANDLE          h = (HANDLE) _get_osfhandle(fd);
+    OVERLAPPED      ov;
+    DWORD           put = 0;
+    LARGE_INTEGER   size;
+
+    if (h == INVALID_HANDLE_VALUE) {
+        errno = EBADF;
+        return -1;
+    }
+    memset(&ov, 0, sizeof ov);
+    ov.Offset     = 0xFFFFFFFFu;
+    ov.OffsetHigh = 0xFFFFFFFFu;
+    if (!WriteFile(h, buf, (DWORD) count, &put, &ov) || put != (DWORD) count
+     || !GetFileSizeEx(h, &size)) {
+        errno = EIO;
+        return -1;
+    }
+    return (int64_t) size.QuadPart;
+}
+
 static int
 st_dir_open(st_dir *d, const char *path)
 {
@@ -2103,6 +2134,44 @@ st_file_pwrite(int fd, const void *buf, size_t count, int64_t off)
     return (int64_t) pwrite(fd, buf, count, (off_t) off);
 }
 
+/*
+ *  Append at the end the file has at the instant of the write, and answer
+ *  the offset the bytes end at, or -1 with errno (Bugs6 FILES-4).
+ *
+ *  O_APPEND is set on the descriptor for the one write and taken off
+ *  again.  The flag makes the kernel find the end and write there under
+ *  its own lock, which is the only atomic append there is; pwrite at an
+ *  offset we measured a moment ago is not one, and on Linux pwrite under
+ *  O_APPEND ignores its offset anyway.  Set on OUR descriptor rather than
+ *  on a second one opened by name, so that it is this file and not
+ *  whatever the name means by now.  The descriptor's own offset, which
+ *  nothing else here uses -- every other read and write is positioned --
+ *  is left at the end of what was written, and that is the answer.
+ */
+static int64_t
+st_file_append(int fd, const void *buf, size_t count)
+{
+    int     flags = fcntl(fd, F_GETFL);
+    ssize_t put;
+    off_t   end = -1;
+
+    if (flags < 0)
+        return -1;
+    if (fcntl(fd, F_SETFL, flags | O_APPEND) != 0)
+        return -1;
+    put = write(fd, buf, count);
+    if (put >= 0)
+        end = lseek(fd, 0, SEEK_CUR);
+    (void) fcntl(fd, F_SETFL, flags);
+    if (put < 0 || end < 0)
+        return -1;
+    if ((size_t) put != count) {
+        errno = EIO;
+        return -1;
+    }
+    return (int64_t) end;
+}
+
 static int
 st_dir_open(st_dir *d, const char *path)
 {
@@ -2187,6 +2256,92 @@ int ST_changes_lock_fd = -1;
  *  atomic says what the ordering already guaranteed.
  */
 static st_atomic_int    fd_is_ours[POSIX_MAX_FD];
+
+/*
+ *  And WHICH FILE opened each of them (Bugs6 FILES-2).
+ *
+ *  fd_is_ours says that some File of this process opened descriptor N; it
+ *  does not say which, and a number is not an identity.  A File saved with
+ *  6 in its fd field -- a `Disk findKey:' File that was asked its size,
+ *  which opens on demand and caches the descriptor, and which nothing
+ *  registers or closes -- came back from the snapshot still holding 6, and
+ *  the moment the new life had opened six files, fd_is_ours[6] was set and
+ *  the stale number was believed: every page the old File read came from
+ *  whatever file held 6 now, and every page it wrote went there.  The
+ *  manual's promise that a resumed image reopens by name was kept only
+ *  until the sixth open.
+ *
+ *  So the mark is the oop of the File that did the opening, and a
+ *  descriptor is believed only when the File asking is the File that
+ *  opened it.  Oops are stable in both object memories -- each is an index
+ *  into an object table, and the collector moves bodies, not entries -- so
+ *  the comparison means what it says.  A stale File fails it, its
+ *  descriptor is treated as from another life, and posix_fd_for reopens it
+ *  by name and records the new descriptor as its own.  The mark cannot be
+ *  passed on: a File that dies without closing leaves its descriptor
+ *  marked with a dead oop, and an object later made at that oop starts
+ *  with nil in its fd field, so nothing can present the number again.
+ *  Atomic for the reason fd_is_ours is, and 64 bits because an oop is.
+ */
+static st_atomic_i64    fd_owner[POSIX_MAX_FD];
+
+/*
+ *  Where each of our descriptors' FILE ENDS, as far as the stream on it
+ *  knows (Bugs6 FILES-4).
+ *
+ *  A FileStream is a 512-byte page and a position in it, and 1983 wrote it
+ *  for one writer per file: a write puts the whole page back at the page's
+ *  offset, and close in the default mode truncates the file at the
+ *  stream's position.  Two streams on one file -- two request handlers
+ *  logging through streams of their own, or one stream kept open while
+ *  anything else appends -- therefore overwrote and cut off each other's
+ *  bytes, and nothing was reported: eight workers each opening, setToEnd,
+ *  writing one line and closing, fifty times, left eighty of four hundred
+ *  lines.  Nothing was shared between them; each did exactly what chapter
+ *  14 of the manual shows.
+ *
+ *  An append has to go where the file ends NOW, in one write, and a close
+ *  has to leave another writer's appends alone.  The stream cannot say
+ *  which bytes of its page are new, but this table can: for each
+ *  descriptor it keeps which page was last read or written through it and
+ *  how many bytes of that page were on the disk at the time (fd_page,
+ *  fd_page_bytes), and where the file ended by the stream's own account
+ *  (fd_believed) -- set from the kernel at open and at every size query
+ *  and short read, and advanced by the stream's own writes.  A write that
+ *  puts MORE bytes on the page than were there, starting exactly where the
+ *  stream believes the file ends, is an append: the bytes that were there
+ *  are put back at their offset as before, and the new ones are written at
+ *  the kernel's end with O_APPEND (st_file_append), which is atomic, so
+ *  they land after everything other writers have put there and are never
+ *  put on top of it.  A truncate is refused, silently, when the file is
+ *  not the length this stream believes it is, because the difference is
+ *  another writer's work; a single writer's file is always the length it
+ *  believes, and is shortened as before.
+ *
+ *  WHEN AN APPEND LANDS PAST WHERE THE STREAM THOUGHT THE END WAS, the
+ *  stream's page coordinates are no longer the file's: its page N now has
+ *  bytes at two places on the disk.  That is fd_relocated, and while it is
+ *  set only the bytes of the page that are still at the page's offset
+ *  (fd_relocated_bytes) are ever put back there, further new bytes keep
+ *  being appended, a page beyond the stream's own end is answered empty
+ *  rather than read -- what is there belongs to someone else -- and
+ *  nothing is truncated.  The next read of a page, or the next size query
+ *  (which FileStream>>setToEnd makes before it re-reads the last page),
+ *  puts the stream back into the file's coordinates and clears it.  What
+ *  this guarantees, and what it does not, is written down in the manual's
+ *  streams chapter: appends through setToEnd are safe between any number
+ *  of writers, each flush or close of a page arriving whole; editing one
+ *  file in place through two streams is not.
+ *
+ *  Atomic for the reason fd_is_ours is: the number comes back, and the
+ *  worker that reset these for a new open is not the worker that last
+ *  wrote them for the old one.
+ */
+static st_atomic_int    fd_page[POSIX_MAX_FD];
+static st_atomic_int    fd_page_bytes[POSIX_MAX_FD];
+static st_atomic_i64    fd_believed[POSIX_MAX_FD];
+static st_atomic_int    fd_relocated[POSIX_MAX_FD];
+static st_atomic_int    fd_relocated_bytes[POSIX_MAX_FD];
 
 /*
  *  Which of our descriptors were opened READ-ONLY because the file could
@@ -2283,14 +2438,35 @@ posix_fd_of(st_oop file)
 
         if (n < 0 || n >= POSIX_MAX_FD || !ST_load_relaxed(&fd_is_ours[n]))
             return -1;                  /*  not ours: from another life  */
+        if (ST_load_relaxed(&fd_owner[n]) != (int64_t) file)
+            return -1;                  /*  ours, but not this File's: the
+                                            same, see fd_owner  */
         return (int) n;
     }
 }
 
-/*  Remember, or forget, a descriptor of our own.  */
-static int
-posix_own(int fd)
+/*
+ *  Forget a descriptor the File holds and the VM does not honour, so that
+ *  a close leaves the field nil whether the number was ours or stale.
+ */
+static void
+posix_forget(st_oop file)
 {
+    if (OM_is_object(file) && OM_pointer_bit(file)
+     && OM_fetch_word_length(file) > POSIX_FD_FIELD
+     && OM_is_int(OM_fetch_pointer(POSIX_FD_FIELD, file)))
+        OM_store_pointer(POSIX_FD_FIELD, file, ST_NIL);
+}
+
+/*
+ *  Remember, or forget, a descriptor of our own: whose it is, and that the
+ *  stream on it has seen none of the file yet beyond its length.
+ */
+static int
+posix_own(int fd, st_oop file)
+{
+    int64_t     size;
+
     if (fd < 0)
         return fd;
     if (fd >= POSIX_MAX_FD) {           /*  further than we can vouch for  */
@@ -2298,9 +2474,51 @@ posix_own(int fd)
         posix_errno = EMFILE;
         return -1;
     }
+    size = st_file_size(fd);
+    ST_store_relaxed(&fd_owner[fd], (int64_t) file);
+    ST_store_relaxed(&fd_page[fd], 0);
+    ST_store_relaxed(&fd_page_bytes[fd], 0);
+    ST_store_relaxed(&fd_believed[fd], size < 0 ? 0 : size);
+    ST_store_relaxed(&fd_relocated[fd], 0);
+    ST_store_relaxed(&fd_relocated_bytes[fd], 0);
     ST_store_relaxed(&fd_is_ours[fd], 1);
     ST_store_relaxed(&fd_read_only[fd], 0);     /*  a fresh open: not yet  */
     return fd;
+}
+
+/*
+ *  A page was read through fd, or the file's length was asked: the stream
+ *  is in the file's coordinates again for that page.  A short read says
+ *  exactly where the file ends; a full one says only that it reaches past
+ *  this page.  A read that found NO page -- past the end, which is how a
+ *  stream looks for its end and how atEnd turns the last page -- says
+ *  nothing about the page the stream still holds, and is not noted: a
+ *  reader of a 13-byte file that asked for page two and then wrote two
+ *  bytes at the front and closed would otherwise have had its truncate
+ *  refused, the file being 13 bytes and not the 512 the note would claim.
+ */
+static void
+posix_note_read(int fd, long n, uint32_t bytes, int64_t got)
+{
+    if (got == 0 && n > 1)
+        return;
+    ST_store_relaxed(&fd_page[fd], (int) n);
+    ST_store_relaxed(&fd_page_bytes[fd], (int) bytes);
+    ST_store_relaxed(&fd_relocated[fd], 0);
+    ST_store_relaxed(&fd_relocated_bytes[fd], 0);
+    if (got < POSIX_PAGE_SIZE)
+        ST_store_relaxed(&fd_believed[fd],
+                         (int64_t) (n - 1) * POSIX_PAGE_SIZE + got);
+    else if (ST_load_relaxed(&fd_believed[fd]) < (int64_t) n * POSIX_PAGE_SIZE)
+        ST_store_relaxed(&fd_believed[fd], (int64_t) n * POSIX_PAGE_SIZE);
+}
+
+static void
+posix_note_size(int fd, int64_t size)
+{
+    ST_store_relaxed(&fd_believed[fd], size);
+    ST_store_relaxed(&fd_relocated[fd], 0);
+    ST_store_relaxed(&fd_relocated_bytes[fd], 0);
 }
 
 static void
@@ -2349,7 +2567,7 @@ posix_fd_for(st_oop file, int for_writing)
         posix_errno = errno;
         return -1;
     }
-    if (posix_own(fd) < 0)
+    if (posix_own(fd, file) < 0)
         return -1;
     if (read_only)
         ST_store_relaxed(&fd_read_only[fd], 1);
@@ -2425,7 +2643,7 @@ primitive_file_command(void)
             fd = st_file_open(path, ST_OPEN_RDONLY);  /*  readable is enough  */
             read_only = fd >= 0;
         }
-        if (fd < 0 || posix_own(fd) < 0) {
+        if (fd < 0 || posix_own(fd, file) < 0) {
             if (fd >= 0)
                 answer = ST_FALSE;
             else
@@ -2444,8 +2662,8 @@ primitive_file_command(void)
         if (fd >= 0) {
             st_file_close(fd);
             posix_disown(fd);
-            OM_store_pointer(POSIX_FD_FIELD, file, ST_NIL);
         }
+        posix_forget(file);     /*  a stale number too (Bugs6 FILES-2)  */
         answer = ST_TRUE;
         break;
     /*
@@ -2470,6 +2688,7 @@ primitive_file_command(void)
             answer = ST_FALSE;
             break;
         }
+        posix_note_size(fd, size);      /*  the stream now knows the end  */
         ST_pop_n(4);
         ST_push(OM_int_oop((st_int) size));
         return 1;
@@ -2513,6 +2732,28 @@ primitive_file_command(void)
         n = (long) OM_int_value(number);
         if (n < 1)
             n = 1;
+        /*
+         *  A page at or past the stream's own end, while an append of its
+         *  has landed beyond that end (Bugs6 FILES-4): what the disk holds
+         *  there is another writer's, and reading it would make the
+         *  stream carry on writing in the middle of it.  Answered empty
+         *  without reading -- the end, for any page but the first -- so
+         *  that what the stream writes next is new bytes and is appended.
+         */
+        if (ST_load_relaxed(&fd_relocated[fd])
+         && (int64_t) (n - 1) * POSIX_PAGE_SIZE
+            >= ST_load_relaxed(&fd_believed[fd])) {
+            ST_store_relaxed(&fd_page[fd], (int) n);
+            ST_store_relaxed(&fd_page_bytes[fd], 0);
+            ST_store_relaxed(&fd_relocated_bytes[fd], 0);
+            if (n > 1) {
+                answer = ST_FALSE;
+                break;
+            }
+            OM_store_pointer(PAGE_BYTES_FIELD, page, OM_int_oop(0));
+            answer = ST_TRUE;
+            break;
+        }
         got = st_file_pread(fd, bytes, sizeof bytes,
                             (int64_t) (n - 1) * POSIX_PAGE_SIZE);
         /*
@@ -2536,6 +2777,10 @@ primitive_file_command(void)
             posix_errno = errno;
             return 0;
         }
+        room = OM_fetch_byte_length(buffer);
+        if ((uint32_t) got < room)
+            room = (uint32_t) got;
+        posix_note_read(fd, n, room, got);
         /*
          *  Page one always exists, even in an empty file.
          *
@@ -2550,9 +2795,6 @@ primitive_file_command(void)
             answer = ST_FALSE;                  /*  the end of the file  */
             break;
         }
-        room = OM_fetch_byte_length(buffer);
-        if ((uint32_t) got < room)
-            room = (uint32_t) got;
         for (i = 0; i < room; ++i)
             OM_store_byte(i, buffer, (uint8_t) bytes[i]);
         OM_store_pointer(PAGE_BYTES_FIELD, page, OM_int_oop((st_int) room));
@@ -2586,12 +2828,89 @@ primitive_file_command(void)
             bytes[i] = (char) OM_fetch_byte(i, buffer);
         if (n < 1)
             n = 1;
-        if (st_file_pwrite(fd, bytes, len,
-                           (int64_t) (n - 1) * POSIX_PAGE_SIZE)
-            != (int64_t) len) {
-            posix_errno = errno;
-            answer = ST_FALSE;
-            break;
+        /*
+         *  Which of these bytes are NEW, and where the new ones go.  See
+         *  fd_believed (Bugs6 FILES-4).  `known' is how many bytes of
+         *  this page the disk already had the last time this descriptor
+         *  read or wrote it -- none, for a page it has never seen, which
+         *  is a page the stream is adding past its end.  `at_offset' is
+         *  how many of those are still at the page's own offset: all of
+         *  them, unless an append of this stream's has landed elsewhere.
+         */
+        {
+            int64_t     offset    = (int64_t) (n - 1) * POSIX_PAGE_SIZE;
+            int64_t     end       = offset + (int64_t) len;
+            int64_t     believed  = ST_load_relaxed(&fd_believed[fd]);
+            int         relocated = ST_load_relaxed(&fd_relocated[fd]);
+            int         same_page = ST_load_relaxed(&fd_page[fd]) == (int) n;
+            uint32_t    known     = same_page
+                                  ? (uint32_t) ST_load_relaxed(&fd_page_bytes[fd])
+                                  : 0;
+            uint32_t    at_offset = !same_page ? 0
+                                  : relocated
+                                  ? (uint32_t) ST_load_relaxed(&fd_relocated_bytes[fd])
+                                  : known;
+            int         failed    = 0;
+
+            if (!same_page)
+                ST_store_relaxed(&fd_relocated_bytes[fd], 0);
+            if (at_offset > known)
+                at_offset = known;
+            if (len > known && offset + (int64_t) known >= believed
+             && (relocated || offset + (int64_t) known == believed)) {
+                /*
+                 *  An append: the stream is adding bytes at what it
+                 *  believes is the end of the file.  The bytes the page
+                 *  already had go back where they were, in case the
+                 *  stream changed them; the new ones go at the END THE
+                 *  KERNEL HAS, in one write, which is what makes two
+                 *  writers' appends land one after the other instead of
+                 *  on top of each other.  Where they landed tells whether
+                 *  the stream's view of the file is still the file's.
+                 */
+                int64_t     landing;
+
+                if (at_offset > 0
+                 && st_file_pwrite(fd, bytes, at_offset, offset)
+                    != (int64_t) at_offset)
+                    failed = 1;
+                if (!failed) {
+                    landing = st_file_append(fd, bytes + known, len - known);
+                    if (landing < 0)
+                        failed = 1;
+                    else {
+                        ST_store_relaxed(&fd_believed[fd], end);
+                        if (landing != end && !relocated) {
+                            ST_store_relaxed(&fd_relocated[fd], 1);
+                            ST_store_relaxed(&fd_relocated_bytes[fd],
+                                             (int) known);
+                        }
+                    }
+                }
+            } else {
+                /*
+                 *  A page put back where it was: the ordinary write, and
+                 *  the only kind 1983 had.  While relocated, only the
+                 *  bytes that are still at this offset are written -- the
+                 *  rest of the page is elsewhere on the disk, and what is
+                 *  at the offset past them is another writer's.
+                 */
+                uint32_t    count = relocated && len > at_offset ? at_offset
+                                                                 : len;
+
+                if (count > 0
+                 && st_file_pwrite(fd, bytes, count, offset) != (int64_t) count)
+                    failed = 1;
+                else if (!relocated && believed < end)
+                    ST_store_relaxed(&fd_believed[fd], end);
+            }
+            if (failed) {
+                posix_errno = errno;
+                answer = ST_FALSE;
+                break;
+            }
+            ST_store_relaxed(&fd_page[fd], (int) n);
+            ST_store_relaxed(&fd_page_bytes[fd], (int) (len > known ? len : known));
         }
         answer = ST_TRUE;
         break;
@@ -2641,11 +2960,54 @@ primitive_file_command(void)
                 len = POSIX_PAGE_SIZE;
             end = (int64_t) (n - 1) * POSIX_PAGE_SIZE + len;
         }
+        /*
+         *  NEVER PAST ANOTHER WRITER'S END (Bugs6 FILES-4).  A stream that
+         *  closes in the default mode shortens its file to its position,
+         *  which for a file it had to itself is the whole of the file --
+         *  so far as it has seen, the file IS that long, fd_believed says
+         *  so, and the cut is right.  A file that is longer than the
+         *  stream believes has been appended to by somebody else since,
+         *  and cutting it would throw their lines away; a stream whose
+         *  own appends have landed elsewhere (relocated) does not even
+         *  know where its position is on the disk.  Either way the file
+         *  is left as it is, which loses nothing: every byte this stream
+         *  wrote is already on it.
+         *
+         *  And NOTHING TO CUT means no cut at all.  A stream whose
+         *  position is at or past everything it knows the file holds --
+         *  every appender, which is what close in the default mode
+         *  mostly sees -- would truncate the file at its own end, a cut
+         *  of nothing; but the size is measured first and the cut made
+         *  second, and an append landing between the two was cut off:
+         *  eight workers lost one line of four hundred in two runs of
+         *  six.  The cut is for a stream that has made its file SHORTER
+         *  than what it knew, and only that stream asks for it.
+         */
+        {
+            int64_t believed = ST_load_relaxed(&fd_believed[fd]);
+            int64_t real;
+
+            if (ST_load_relaxed(&fd_relocated[fd]) || end >= believed) {
+                answer = ST_TRUE;
+                break;
+            }
+            real = st_file_size(fd);
+            if (real >= 0 && real != believed) {
+                answer = ST_TRUE;
+                break;
+            }
+        }
         if (st_file_truncate(fd, end) != 0) {
             posix_errno = errno;
             answer = ST_FALSE;
             break;
         }
+        ST_store_relaxed(&fd_believed[fd], end);
+        if (OM_is_int(number)
+         && ST_load_relaxed(&fd_page[fd]) == (int) OM_int_value(number))
+            ST_store_relaxed(&fd_page_bytes[fd],
+                             (int) (end - (int64_t) (OM_int_value(number) - 1)
+                                          * POSIX_PAGE_SIZE));
         answer = ST_TRUE;
         break;
     }
@@ -4090,7 +4452,6 @@ primitive_compile_method(void)
     st_oop              assoc      = ST_stack_value(1);
     st_oop              no_pattern = ST_stack_value(0);
     st_compile_result   res;
-    st_oop              guard;
     st_oop              answer;
     st_oop              text;
     int                 status;
@@ -4099,26 +4460,23 @@ primitive_compile_method(void)
         return 0;
 
     /*
-     *  The guard is pushed BEFORE the compile and stays until the answer is
-     *  built, because everything either of them makes is otherwise held in
-     *  C alone.  A context's stack is marked up to its stack pointer, so a
-     *  push is all it takes to make one reachable.
+     *  The answer Array is made and pushed BEFORE the compile, because the
+     *  method the compile answers is held in C alone until it is stored
+     *  here, and an allocation between the two could run a collection.  A
+     *  context's stack is marked up to its stack pointer, so a push is all
+     *  it takes to make the Array reachable.  The literals made on the way
+     *  are the compiler's own roots now (COMPILE_visit_roots); the 256-slot
+     *  guard Array that used to be pushed here held the first 256 of them
+     *  and left the rest to be freed under a -serve compile by any other
+     *  worker's allocation (Bugs6 COMP-2).
      */
-    guard = OM_instantiate_pointers(ST_CLASS_ARRAY, 256);
-    if (!OM_is_object(guard))
+    answer = OM_instantiate_pointers(ST_CLASS_ARRAY, 6);
+    if (!OM_is_object(answer))
         return 0;
-    ST_push(guard);
+    ST_push(answer);
 
     status = IMGC_compile(source, class_oop, ivar_names, assoc,
-                          no_pattern == ST_TRUE, ST_DIALECT_CLOSURES,
-                          guard, &res);
-
-    answer = OM_instantiate_pointers(ST_CLASS_ARRAY, 6);
-    if (!OM_is_object(answer)) {
-        ST_pop_n(1);                /*  the guard  */
-        return 0;
-    }
-    ST_push(answer);
+                          no_pattern == ST_TRUE, ST_DIALECT_CLOSURES, &res);
     if (status == 0) {
         OM_store_pointer(0, answer, res.method);
         text = BOOT_intern_symbol(res.selector, NULL);
@@ -4135,16 +4493,16 @@ primitive_compile_method(void)
         }
     }
     /*
-     *  The guard and the rooting push come off, then the receiver and its
-     *  five arguments, and the answer goes where the receiver was -- which
-     *  is what every primitive leaves behind.  Popping the arguments and
-     *  not the receiver left TWO values where the send expected one, and
-     *  the caller's stack was off by one from there on: the first symptom
-     *  was addSelector:withMethod: sending #asOop to something that was not
-     *  a Symbol.  Nothing is allocated between the pop and the push, so the
+     *  The rooting push comes off, then the receiver and its five
+     *  arguments, and the answer goes where the receiver was -- which is
+     *  what every primitive leaves behind.  Popping the arguments and not
+     *  the receiver left TWO values where the send expected one, and the
+     *  caller's stack was off by one from there on: the first symptom was
+     *  addSelector:withMethod: sending #asOop to something that was not a
+     *  Symbol.  Nothing is allocated between the pop and the push, so the
      *  answer needs no root across it.
      */
-    ST_pop_n(2);                    /*  the answer and the guard  */
+    ST_pop_n(1);                    /*  the answer  */
     ST_pop_n(6);                    /*  the arguments and the receiver  */
     ST_push(answer);
     return 1;
@@ -4336,6 +4694,105 @@ primitive_string_hash(void)
     if (shape.pointers || shape.words || !shape.indexable)
         return 0;
     return answer_positive(ST_string_hash_object(receiver), 1);
+}
+
+/*
+ *  220: String>>indexOfSubstring:startingAt:, in C.
+ *
+ *  The Smalltalk search is quadratic -- every position compared with the
+ *  whole pattern -- and was written for selectors and lines of text, where
+ *  that is the fastest thing there is.  Then HttpRequest>>parseParts used
+ *  it to find a stranger's boundary in a stranger's body, before anything
+ *  had been authenticated: a 100 KB body with a 50-character boundary was
+ *  2.4 seconds of a worker, a 300 KB body with a 2,000-character one held
+ *  the worker past sixty seconds with no reply, and maxConnections of them
+ *  would hold every worker (Bugs6 NET-1).  The boundary is capped at RFC
+ *  2046's seventy characters where it is read; this is the other half, a
+ *  search whose mismatch costs one comparison.
+ *
+ *  memchr to the next byte that could begin a match and memcmp to confirm
+ *  it, over the contiguous bytes the threaded memory keeps.  Not memmem,
+ *  which is a GNU extension the Windows build has no declaration for; and
+ *  with the pattern bounded at the one caller that takes it from a
+ *  stranger, this is linear in the body with a small constant -- a
+ *  megabyte of the worst case, every byte a candidate that fails on the
+ *  last of seventy, is some ten milliseconds.  The Blue Book memory packs
+ *  two bytes to a word, high byte first, so there the bytes are fetched
+ *  one at a time; it is the validation build and the shape is what
+ *  matters, not the speed.
+ *
+ *  Strings and Symbols only, on both sides.  Their at: answers Characters,
+ *  which are unique, so `=' on two of them is the equality of their bytes
+ *  and the C answer is the Smalltalk one.  A ByteArray's at: answers
+ *  Integers, which are never = to a Character, so a ByteArray receiver with
+ *  a String argument must answer 0, and does, in Smalltalk, because this
+ *  fails for it; a subclass of String takes the same road.  The fallback
+ *  gives the same answers as this for everything this accepts: an empty
+ *  pattern is found at start, a start past the last possible match is 0,
+ *  and a start below 1 fails here so that the fallback's at: raises as it
+ *  always did.
+ */
+static int
+is_a_string(st_oop p)
+{
+    return OM_is_object(p) && OM_fetch_class(p) == ST_CLASS_STRING;
+}
+
+static int
+primitive_index_of_substring(void)
+{
+    st_oop      receiver = ST_stack_value(2);
+    st_oop      pattern  = ST_stack_value(1);
+    st_oop      start    = ST_stack_value(0);
+    uint32_t    text_size;
+    uint32_t    needle_size;
+    uint32_t    at;
+    uint32_t    last;
+    st_int      from;
+
+    if (!(is_a_string(receiver) || is_a_symbol(receiver))
+     || !(is_a_string(pattern) || is_a_symbol(pattern))
+     || !OM_is_int(start))
+        return 0;
+    from = OM_int_value(start);
+    if (from < 1)
+        return 0;
+    text_size   = OM_fetch_byte_length(receiver);
+    needle_size = OM_fetch_byte_length(pattern);
+    if (needle_size == 0)
+        return answer_integer(from, 3);
+    if ((uint64_t) from > (uint64_t) text_size || needle_size > text_size)
+        return answer_integer(0, 3);
+    at   = (uint32_t) (from - 1);
+    last = text_size - needle_size;             /*  the last start, 0-based  */
+#if defined(ST_OM_MT)
+    {
+        const uint8_t  *text   = (const uint8_t *) OM_word_base(receiver);
+        const uint8_t  *needle = (const uint8_t *) OM_word_base(pattern);
+
+        while (at <= last) {
+            const uint8_t  *hit = memchr(text + at, needle[0], last - at + 1);
+
+            if (!hit)
+                break;
+            at = (uint32_t) (hit - text);
+            if (memcmp(hit, needle, needle_size) == 0)
+                return answer_integer((st_int) at + 1, 3);
+            ++at;
+        }
+    }
+#else
+    for (; at <= last; ++at) {
+        uint32_t    j;
+
+        for (j = 0; j < needle_size; ++j)
+            if (OM_fetch_byte(at + j, receiver) != OM_fetch_byte(j, pattern))
+                break;
+        if (j == needle_size)
+            return answer_integer((st_int) at + 1, 3);
+    }
+#endif
+    return answer_integer(0, 3);
 }
 
 /*
@@ -5990,6 +6447,41 @@ odbc_int_arg(st_oop p)
 }
 
 /*
+ *  A connection or statement handle argument, or -1 for anything else.
+ *
+ *  A handle is a slot and the serial of the claim that filled it (Bugs6
+ *  FILES-1; see st_odbc.h), which is a SmallInteger under the 64-bit
+ *  memory and a LargePositiveInteger of up to eight bytes under the Blue
+ *  Book one, whose SmallIntegers stop at 16383.  Both are read here, so
+ *  the image never has to know which it was handed; it is answered by
+ *  odbc_integer, which makes the same choice the other way.  Anything
+ *  else -- nil, a negative, a wider number -- is -1, which st_odbc.c
+ *  answers "no such database connection" for.
+ */
+static st_odbc_handle
+odbc_handle_arg(st_oop p)
+{
+    if (OM_is_int(p)) {
+        st_int  v = OM_int_value(p);
+
+        return v < 0 ? -1 : (st_odbc_handle) v;
+    }
+    if (OM_is_object(p) && !OM_pointer_bit(p)
+     && OM_fetch_class(p) == ST_CLASS_LARGE_POSITIVE_INTEGER) {
+        uint32_t    n = OM_fetch_byte_length(p);
+        uint64_t    v = 0;
+        uint32_t    i;
+
+        if (n > 8)
+            return -1;
+        for (i = 0; i < n; ++i)
+            v |= (uint64_t) OM_fetch_byte(i, p) << (i * 8);
+        return v > (uint64_t) INT64_MAX ? -1 : (st_odbc_handle) v;
+    }
+    return -1;
+}
+
+/*
  *  Element `index' of an Array argument, or nil.
  *
  *  Answers nil rather than failing for a short array so that the caller's
@@ -6028,7 +6520,7 @@ odbc_answer(st_oop value)
  *  caller names those explicitly, with their own commands.
  */
 static int
-odbc_bind_value(int statement, int index, st_oop value)
+odbc_bind_value(st_odbc_handle statement, int index, st_oop value)
 {
     if (value == ST_NIL)
         return ST_odbc_bind_null(statement, index, 0);
@@ -6171,9 +6663,9 @@ primitive_odbc_command(void)
     }
 
     case ODBC_CONNECT: {
-        char   *text;
-        int     ok;
-        int     handle;
+        char           *text;
+        int             ok;
+        st_odbc_handle  handle;
 
         text = odbc_string(a, &ok);
         if (!ok || !text) {
@@ -6182,39 +6674,41 @@ primitive_odbc_command(void)
         }
         handle = ST_odbc_connect(text);
         free(text);
-        return odbc_answer(handle < 0 ? ST_NIL : OM_int_oop((st_int) handle));
+        /*  Through odbc_integer: a handle may not be a SmallInteger
+         *  everywhere (Bugs6 FILES-1); see odbc_handle_arg.  */
+        return odbc_answer(handle < 0 ? ST_NIL : odbc_integer(handle));
     }
 
     case ODBC_DISCONNECT:
-        return odbc_answer(ST_odbc_disconnect(odbc_int_arg(a)) == 0
+        return odbc_answer(ST_odbc_disconnect(odbc_handle_arg(a)) == 0
                            ? ST_TRUE : ST_FALSE);
 
     case ODBC_IS_CONNECTED:
-        return odbc_answer(ST_odbc_is_connected(odbc_int_arg(a))
+        return odbc_answer(ST_odbc_is_connected(odbc_handle_arg(a))
                            ? ST_TRUE : ST_FALSE);
 
     case ODBC_SET_AUTOCOMMIT:
-        return odbc_answer(ST_odbc_set_autocommit(odbc_int_arg(a),
+        return odbc_answer(ST_odbc_set_autocommit(odbc_handle_arg(a),
                                                   b == ST_TRUE) == 0
                            ? ST_TRUE : ST_FALSE);
 
     case ODBC_SET_READ_ONLY:
-        return odbc_answer(ST_odbc_set_read_only(odbc_int_arg(a),
+        return odbc_answer(ST_odbc_set_read_only(odbc_handle_arg(a),
                                                  b == ST_TRUE) == 0
                            ? ST_TRUE : ST_FALSE);
 
     case ODBC_COMMIT:
-        return odbc_answer(ST_odbc_commit(odbc_int_arg(a)) == 0
+        return odbc_answer(ST_odbc_commit(odbc_handle_arg(a)) == 0
                            ? ST_TRUE : ST_FALSE);
 
     case ODBC_ROLLBACK:
-        return odbc_answer(ST_odbc_rollback(odbc_int_arg(a)) == 0
+        return odbc_answer(ST_odbc_rollback(odbc_handle_arg(a)) == 0
                            ? ST_TRUE : ST_FALSE);
 
     case ODBC_INFO_STRING: {
         char    text[512];
 
-        if (ST_odbc_info_string(odbc_int_arg(a), odbc_int_arg(b),
+        if (ST_odbc_info_string(odbc_handle_arg(a), odbc_int_arg(b),
                                 text, sizeof text) != 0)
             return odbc_answer(ST_NIL);
         return odbc_answer(string_from_c(text, strlen(text)));
@@ -6228,7 +6722,7 @@ primitive_odbc_command(void)
         text = odbc_string(b, &ok);
         if (!ok)
             return 0;
-        result = ST_odbc_set_schema(odbc_int_arg(a), text ? text : "");
+        result = ST_odbc_set_schema(odbc_handle_arg(a), text ? text : "");
         free(text);
         return odbc_answer(result == 0 ? ST_TRUE : ST_FALSE);
     }
@@ -6236,40 +6730,40 @@ primitive_odbc_command(void)
     case ODBC_GET_SCHEMA: {
         char    text[512];
 
-        if (ST_odbc_get_schema(odbc_int_arg(a), text, sizeof text) != 0)
+        if (ST_odbc_get_schema(odbc_handle_arg(a), text, sizeof text) != 0)
             return odbc_answer(ST_NIL);
         return odbc_answer(string_from_c(text, strlen(text)));
     }
 
     case ODBC_PREPARE: {
-        char   *sql;
-        int     ok;
-        int     handle;
+        char           *sql;
+        int             ok;
+        st_odbc_handle  handle;
 
         sql = odbc_string(b, &ok);
         if (!ok || !sql) {
             free(sql);
             return 0;
         }
-        handle = ST_odbc_prepare(odbc_int_arg(a), sql);
+        handle = ST_odbc_prepare(odbc_handle_arg(a), sql);
         free(sql);
-        return odbc_answer(handle < 0 ? ST_NIL : OM_int_oop((st_int) handle));
+        return odbc_answer(handle < 0 ? ST_NIL : odbc_integer(handle));
     }
 
     case ODBC_CLOSE_STATEMENT:
-        return odbc_answer(ST_odbc_close_statement(odbc_int_arg(a)) == 0
+        return odbc_answer(ST_odbc_close_statement(odbc_handle_arg(a)) == 0
                            ? ST_TRUE : ST_FALSE);
 
     case ODBC_CLEAR_PARAMETERS:
-        return odbc_answer(ST_odbc_clear_parameters(odbc_int_arg(a)) == 0
+        return odbc_answer(ST_odbc_clear_parameters(odbc_handle_arg(a)) == 0
                            ? ST_TRUE : ST_FALSE);
 
     case ODBC_BIND:
-        return odbc_answer(odbc_bind_value(odbc_int_arg(a), odbc_int_arg(b),
+        return odbc_answer(odbc_bind_value(odbc_handle_arg(a), odbc_int_arg(b),
                                            c) == 0 ? ST_TRUE : ST_FALSE);
 
     case ODBC_BIND_NULL:
-        return odbc_answer(ST_odbc_bind_null(odbc_int_arg(a), odbc_int_arg(b),
+        return odbc_answer(ST_odbc_bind_null(odbc_handle_arg(a), odbc_int_arg(b),
                                              OM_is_int(c)
                                              ? (int) OM_int_value(c) : 0) == 0
                            ? ST_TRUE : ST_FALSE);
@@ -6287,21 +6781,21 @@ primitive_odbc_command(void)
         bytes = odbc_bytes(c, &length);
         if (!bytes)
             return 0;
-        result = ST_odbc_bind_bytes(odbc_int_arg(a), odbc_int_arg(b),
+        result = ST_odbc_bind_bytes(odbc_handle_arg(a), odbc_int_arg(b),
                                     bytes, length);
         free(bytes);
         return odbc_answer(result == 0 ? ST_TRUE : ST_FALSE);
     }
 
     case ODBC_BIND_DATE:
-        return odbc_answer(ST_odbc_bind_date(odbc_int_arg(a), odbc_int_arg(b),
+        return odbc_answer(ST_odbc_bind_date(odbc_handle_arg(a), odbc_int_arg(b),
                                              odbc_int_arg(odbc_element(c, 0)),
                                              odbc_int_arg(odbc_element(c, 1)),
                                              odbc_int_arg(odbc_element(c, 2)))
                            == 0 ? ST_TRUE : ST_FALSE);
 
     case ODBC_BIND_TIME:
-        return odbc_answer(ST_odbc_bind_time(odbc_int_arg(a), odbc_int_arg(b),
+        return odbc_answer(ST_odbc_bind_time(odbc_handle_arg(a), odbc_int_arg(b),
                                              odbc_int_arg(odbc_element(c, 0)),
                                              odbc_int_arg(odbc_element(c, 1)),
                                              odbc_int_arg(odbc_element(c, 2)),
@@ -6309,7 +6803,7 @@ primitive_odbc_command(void)
 
     case ODBC_BIND_TIMESTAMP:
         return odbc_answer(ST_odbc_bind_timestamp(
-                               odbc_int_arg(a), odbc_int_arg(b),
+                               odbc_handle_arg(a), odbc_int_arg(b),
                                odbc_int_arg(odbc_element(c, 0)),
                                odbc_int_arg(odbc_element(c, 1)),
                                odbc_int_arg(odbc_element(c, 2)),
@@ -6320,7 +6814,7 @@ primitive_odbc_command(void)
                            == 0 ? ST_TRUE : ST_FALSE);
 
     case ODBC_EXECUTE:
-        return odbc_answer(ST_odbc_execute(odbc_int_arg(a)) == 0
+        return odbc_answer(ST_odbc_execute(odbc_handle_arg(a)) == 0
                            ? ST_TRUE : ST_FALSE);
 
     case ODBC_EXECUTE_DIRECT: {
@@ -6334,13 +6828,13 @@ primitive_odbc_command(void)
             free(sql);
             return 0;
         }
-        result = ST_odbc_execute_direct(odbc_int_arg(a), sql, &rows);
+        result = ST_odbc_execute_direct(odbc_handle_arg(a), sql, &rows);
         free(sql);
         return odbc_answer(result == 0 ? odbc_integer(rows) : ST_NIL);
     }
 
     case ODBC_FETCH: {
-        int     got = ST_odbc_fetch(odbc_int_arg(a));
+        int     got = ST_odbc_fetch(odbc_handle_arg(a));
 
         /*
          *  Three answers, not two.  A row, the end of the result set, and a
@@ -6354,13 +6848,13 @@ primitive_odbc_command(void)
     case ODBC_ROW_COUNT: {
         int64_t rows = 0;
 
-        if (ST_odbc_row_count(odbc_int_arg(a), &rows) != 0)
+        if (ST_odbc_row_count(odbc_handle_arg(a), &rows) != 0)
             return odbc_answer(ST_NIL);
         return odbc_answer(odbc_integer(rows));
     }
 
     case ODBC_COLUMN_COUNT: {
-        int     count = ST_odbc_column_count(odbc_int_arg(a));
+        int     count = ST_odbc_column_count(odbc_handle_arg(a));
 
         return odbc_answer(count < 0 ? ST_NIL : OM_int_oop((st_int) count));
     }
@@ -6374,7 +6868,7 @@ primitive_odbc_command(void)
         st_oop      array;
         st_oop      name_string;
 
-        if (ST_odbc_describe_column(odbc_int_arg(a), odbc_int_arg(b),
+        if (ST_odbc_describe_column(odbc_handle_arg(a), odbc_int_arg(b),
                                     name, sizeof name, &sql_type, &size,
                                     &digits, &nullable) != 0)
             return odbc_answer(ST_NIL);
@@ -6401,7 +6895,7 @@ primitive_odbc_command(void)
     case ODBC_GET_VALUE: {
         st_odbc_value   value;
 
-        if (ST_odbc_get(odbc_int_arg(a), odbc_int_arg(b), &value) != 0)
+        if (ST_odbc_get(odbc_handle_arg(a), odbc_int_arg(b), &value) != 0)
             return 0;                   /*  the fallback code raises  */
         return odbc_answer(odbc_value_object(&value));
     }
@@ -6410,12 +6904,12 @@ primitive_odbc_command(void)
     case ODBC_COLUMNS:
     case ODBC_PRIMARY_KEYS:
     case ODBC_IMPORTED_KEYS: {
-        char   *schema;
-        char   *first;
-        char   *second = NULL;
-        int     ok;
-        int     handle;
-        int     connection = odbc_int_arg(a);
+        char           *schema;
+        char           *first;
+        char           *second = NULL;
+        int             ok;
+        st_odbc_handle  handle;
+        st_odbc_handle  connection = odbc_handle_arg(a);
 
         schema = odbc_string(b, &ok);
         if (!ok)
@@ -6443,8 +6937,7 @@ primitive_odbc_command(void)
         free(schema);
         free(first);
         free(second);
-        return odbc_answer(handle < 0 ? ST_NIL
-                                      : OM_int_oop((st_int) handle));
+        return odbc_answer(handle < 0 ? ST_NIL : odbc_integer(handle));
     }
 
     default:
@@ -6559,6 +7052,7 @@ ST_primitive_dispatch(unsigned index)
      */
     case 236: return OM_primitive_next_mourned();
     case 232: return SCHED_primitive_terminate_active();
+    case 235: return SCHED_primitive_release();
     case 250: return primitive_full_collect();
     case 247: return primitive_context_resume();
 
@@ -6596,6 +7090,8 @@ ST_primitive_dispatch(unsigned index)
     case 221: return primitive_closure_value(0);
     case 222: return primitive_closure_value(1);
     case ST_PRIMITIVE_STRING_HASH: return primitive_string_hash();
+    /*  220 is a number Squeak leaves unassigned, beside 219, already ours.  */
+    case 220: return primitive_index_of_substring();
 
     /*
      *  What Pharo's Kernel names.  See doc/PHARO-INTAKE.md for the ones

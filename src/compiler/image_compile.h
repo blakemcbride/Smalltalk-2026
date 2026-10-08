@@ -40,12 +40,13 @@ extern "C" {
  *                        super send, or nil
  *    no_pattern          non-zero for a doIt: no pattern line, and the last
  *                        statement's value is the answer
- *    guard               a pointer Array the caller has made REACHABLE --
- *                        pushed on the Smalltalk stack, say -- into which
- *                        every object the compile builds is stored as it is
- *                        made.  See imgc_hold in image_compile.c: without
- *                        it a collection in the middle of a compile frees
- *                        literals that exist only in a C array.
+ *
+ *  THE METHOD ANSWERED IS HELD IN C ALONE until the caller stores it, so
+ *  the caller must allocate nothing before it does -- make the Array it
+ *  goes into first, and push that.  The literals the compile builds on the
+ *  way are the compiler's own concern: it roots the compile in flight
+ *  (COMPILE_visit_roots), which is what the 256-slot guard Array this once
+ *  took did for the first 256 of them and not the rest (Bugs6 COMP-2).
  *
  *  THE CALLER MUST HOLD THE IMAGE'S SYMBOL LOCK.  Interning goes through the
  *  bootstrap's table, which is not itself guarded, and the image's own
@@ -59,7 +60,7 @@ extern "C" {
  */
 int     IMGC_compile(st_oop source, st_oop class_oop, st_oop ivar_names,
                      st_oop class_association, int no_pattern, int dialect,
-                     st_oop guard, st_compile_result *out);
+                     st_compile_result *out);
 
 #ifdef __cplusplus
 }

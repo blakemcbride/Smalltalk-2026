@@ -192,8 +192,10 @@ accept goes through \ct{compile:classified:notifying:}, which now tells
 redefinition of the class through its template writes the file's header. The
 file on disk is the class, and the Browser is one way to edit it. An accept
 that would lose something is refused with a \ct{TonelError} naming the file:
-when the file has changed on disk since it was read, and when the source holds
-a line feed.
+when the file has changed on disk since it was read, when the source holds a
+line feed, and when the text the writer made would not read back as the
+methods it was written from---the text is read and every method in it
+compiled, none of them installed, before anything reaches the disk.
 
 \begin{stnote}
 The Tonel reader and writer are the image's own now---\ct{TonelReader} and

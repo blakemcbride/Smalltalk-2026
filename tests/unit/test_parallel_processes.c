@@ -433,11 +433,24 @@ detach_and_take_worker(st_worker *self, void *user)
             }
             answer = ST_stack_top();
             ST_pop_n(1);
+            /*  5 and 6 did nothing: it gave way, or another stopper holds
+             *  the process (Bugs6 SCHED-1 and SCHED-7).  Neither can
+             *  happen here, where each process has one owner and no
+             *  worker is stopped, but neither may be followed by a sleep
+             *  of a process that was never taken off its list.  */
+            if (OM_is_int(answer) && OM_int_value(answer) >= 5)
+                continue;
             ST_fetch_add_relaxed(&mem1_detaches, 1);
             if (OM_is_int(answer) && OM_int_value(answer) == 0)
                 ST_fetch_add_relaxed(&mem1_nowhere, 1);
-            /*  Parked and free now, which is the one moment it may be. */
+            /*
+             *  Parked and free now, which is the one moment it may be --
+             *  and HELD by this worker until it lets go (Bugs6 SCHED-7):
+             *  back on its list first, released second, the order
+             *  primitive 235 keeps so that no resume finds it free.
+             */
             SCHED_sleep(p);
+            SCHED_release_process(p);
         }
         self->bytecodes += MEM1_OWNED;
     }

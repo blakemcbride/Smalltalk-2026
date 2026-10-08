@@ -85,9 +85,14 @@ menu compiles what is there and installs it, and the installation is immediate
 
 What \ct{accept} means depends on the mode above. On a method it compiles a
 method into the selected class, on the selected side. On a class definition it
-redefines the class and recompiles every method affected by the change. On a
-comment it stores the comment. On \ct{protocols} or \ct{edit all} it
-reorganizes.
+redefines the class and recompiles every method affected by the change; a
+definition that changes nothing---the template accepted as it stands---changes
+nothing, and the class object, its instances and its methods stay as they are.
+A definition that would reshape \ct{ContextPart}, \ct{MethodContext},
+\ct{BlockContext}, \ct{Process} or \ct{CompiledMethod}, or a class one of
+them inherits from, is refused with an error: the interpreter holds their
+instances in its registers, and nothing can move them. On a comment it stores
+the comment. On \ct{protocols} or \ct{edit all} it reorganizes.
 
 \begin{stwarn}
 A code pane you have edited and not accepted holds the only copy of that text.

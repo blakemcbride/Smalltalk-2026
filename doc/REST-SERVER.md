@@ -239,8 +239,11 @@ timeout, multipart/form-data, and files under a document root for every path
 no handler claims — `..` refused, a directory answering its `index.html`,
 the content type by extension. Every reading is bounded: a line over 8,192
 bytes, more than a hundred headers, a body over the limit (64 MB by default)
-are refused before they are read. Kiss's `SecurityHeadersFilter` headers are
-sent with every response.
+are refused before they are read. A multipart boundary is 1 to 70 characters
+(RFC 2046) and a body has at most 10,000 parts, each refused with 400 past
+its limit, and the search for the boundary is linear in the body — it was
+body × boundary, scanned before authentication, until Bugs6 NET-1. Kiss's
+`SecurityHeadersFilter` headers are sent with every response.
 
 **Framing is strict**, because the documented way to run this is behind a
 reverse proxy and two parsers that divide the same bytes into different

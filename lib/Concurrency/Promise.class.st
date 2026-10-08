@@ -97,12 +97,23 @@ Promise >> breakIfUnsettled: anException [
 Promise >> value [
 	"The value, waiting for it if necessary.  If the promise was broken,
 	 raise that here -- in the process that asked, which is the one able
-	 to do something about it."
+	 to do something about it.
+
+	 A COPY of the stored exception is what is raised, one per asker.  An
+	 exception's signalContext and handlerContext are its own instance
+	 variables, written by signal; eight consumers released by one
+	 signalAll all signalling the one stored object at once each wrote
+	 their handler into it and read back somebody else's: a handler's
+	 return: was then sent to a context on another worker's stack, which
+	 primitive 246 refuses, and the asker's on:do: answered a
+	 MethodContext and printed 'a primitive has failed' (Bugs6 KERNB-2).
+	 The copy is shallow -- the text and whatever a subclass carries come
+	 along -- and signal writes both context fields afresh."
 	| e |
 	e := monitor critical: [
 		monitor waitUntil: [settled].
 		error].
-	e isNil ifFalse: [^e signal].
+	e isNil ifFalse: [^e copy signal].
 	^value
 ]
 

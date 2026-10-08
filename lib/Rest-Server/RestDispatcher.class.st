@@ -96,7 +96,15 @@ RestDispatcher >> handle: anHttpRequest [
 RestDispatcher >> injsonFrom: anHttpRequest [
 	"The request document: the JSON body, or the fields of a multipart form
 	 decoded the way Kiss's Server.js encodes them -- strings prefixed with
-	 S, and the rest as true, false, null or a number."
+	 S, and the rest as true, false, null or a number.
+
+	 Either way the whole body is read before dispatch: looks at _uuid,
+	 because the token is inside the document, so the cost of reading it
+	 is paid for anyone.  The JSON road is bounded by the parser's caps
+	 (Bugs3 B53); the multipart road is bounded in HttpRequest>>parseParts,
+	 where the boundary is capped at RFC 2046's seventy characters and the
+	 search for it is linear, since it once cost the body times the
+	 boundary and a 300 KB form held a worker for minutes (Bugs6 NET-1)."
 	| injson |
 	anHttpRequest isMultipart ifFalse: [
 		^anHttpRequest body isEmpty

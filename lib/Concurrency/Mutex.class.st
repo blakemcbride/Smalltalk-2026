@@ -137,9 +137,21 @@ Mutex >> noteOwner: aProcess stoppedIn: aContext waiting: wasWaiting [
 
 { #category : 'locking' }
 Mutex >> release [
-	"Give this up.  Answers the receiver."
-	owner := nil.
-	semaphore signal
+	"Give this up.  Answers the receiver.
+
+	 Two sends, and a process can be stopped between them: with owner
+	 already nil and the signal not yet sent, nothing that unwinds the
+	 process afterwards sees a lock to give back -- critical:'s ensure:
+	 asks `owner == me' -- and the semaphore stays at zero for ever
+	 (Bugs6 FIXES-2, found through Monitor>>waitForChange, which sends
+	 this outside any unwind block).  Process>>terminate and
+	 >>signalException: now let a process finish the section or the
+	 unwind block it is running in, which covers every release the
+	 library sends; this shape covers a release sent from anywhere, by
+	 making the signal an unwind action of the store: stopped before the
+	 store, owner still says who holds it; stopped after, the ensure:
+	 frame is on the stack and whoever unwinds the process signals."
+	[owner := nil] ensure: [semaphore signal]
 ]
 
 { #category : 'printing' }

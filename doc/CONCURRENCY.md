@@ -199,6 +199,29 @@ to something else, and the bytes read back belonged to a different string.
 A crash would have been kinder. `BOOT_provide_roots` now visits all of it,
 and a caller that installs its own provider must chain to it.
 
+The same rule reaches into the compiler, which makes an object per literal and
+keeps every one of them in a C array until the CompiledMethod is built at the
+end. Each compile in flight is therefore a root: the compiler links it onto the
+running interpreter's `compile_roots` chain for as long as it holds anything —
+the literal frame it is filling, the literal-array buffers it has open, the
+pragma arguments it parsed before the body, and the finished frame while the
+method is allocated — and `provide_roots` walks the chain of every interpreter
+through `COMPILE_visit_roots`. The chain is thread-local and lock-free for the
+same reason the active context is: only its thread writes it, and the walk
+reads it at a safepoint with that thread parked. Before this, the bootstrap of
+one method with a 150,000-string literal collected mid-compile with no roots
+installed at all (the bootstrap now installs `BOOT_provide_roots` before it
+builds, not after), and a `-serve` compile was protected by a 256-slot guard
+Array that silently stopped holding at the 257th object (Bugs6 COMP-2). The
+oracle for this class of fault is `ST_GC_AT_CLASS=<class oop>` (see
+`doc/MultiThreading.md`), which forces a collection at every allocation of one
+class; with it set to 14, String, a `-serve` compile of a 300-string literal
+array answers the strings it was given, where the guard-only version answered
+freed objects for 299 of them. The bootstrap itself does not survive that
+oracle: it dies in `link_class_objects`, which holds an instance-variable-name
+Array in C while it makes the Strings that go into it — a builder fault of the
+same family, outside the compiler, still open.
+
 The same rule reaches into every primitive that makes more than one object,
 because an allocation can run a full collection — the table fills, or another
 worker's safepoint is entered by way of the allocator — and between two
@@ -469,12 +492,27 @@ the shape of each is the argument for it:
   whose own process is named, and whose target has the lower oop, gives
   way instead: it un-names its target and answers 5, parks at its next
   bytecode, and -- if it is ever resumed -- yields and asks again. The oop
-  order makes exactly one member of any cycle give way.
+  order makes exactly one member of any cycle give way. And a process the
+  primitive has stopped stays *held* by its stopper -- a second table, off
+  the hot path -- until the stopper releases it with primitive 235, which
+  resumes it first when that is wanted: `resume` from anyone else is
+  refused meanwhile, and a second stopper's `primDetach:` answers 6 and
+  retries (Bugs6 SCHED-7).
 
 `terminate` then runs the process's `ensure:` blocks, innermost first, *on
 the terminating process*, the way `Exception>>unwindTo:` and Squeak's
 terminate before `runUntilErrorOrReturnFrom:` ran them -- the only model
 this system's machinery supports, and enough for what an `ensure:` is for.
+Two places a process is let out of first rather than unwound from: an
+unwind block it is already running (the frame is disarmed before the block
+runs, so an unwind from outside would skip the rest of it -- half of a
+`Mutex>>release`), and a `critical:` section it is *running* in (the lock's
+`ensure:` would give the lock back around a half-done update; Delay's queue
+was left with a nil at its head, Bugs6 SCHED-7). The process is resumed to
+finish, and the terminate or the `signalException:` takes effect when it
+has -- for a section, through the section's own unwind block, which runs
+however the section ends. A process *waiting* inside a section is unwound
+as before: a wait is a stable point.
 A terminated process has a nil `suspendedContext`, primitive 87 refuses to
 resume one, and the switch drops one that a racing signal delivers anyway
 rather than stopping the image on it.

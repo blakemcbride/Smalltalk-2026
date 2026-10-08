@@ -760,6 +760,105 @@ unname_process(st_oop process)
     }
 }
 
+/*
+ *  ----------  Processes a stopper holds  ----------
+ *
+ *  Bugs6 SCHED-7.  primDetach: answers with the process parked, on no
+ *  list, in nobody's hands -- and what Process>>terminate,
+ *  >>signalException: and >>suspend then do with it takes a while on the
+ *  Smalltalk side: unwind blocks are run, a frame is spliced, or the
+ *  process is resumed to finish the unwind block or the critical:
+ *  section it was stopped in.  Between the answer and that resume the
+ *  process looked exactly like one suspended on purpose, and `resume'
+ *  from anyone else was accepted: it ran, the stopper's own resume then
+ *  raised `already waiting', and a second stopper arriving in the same
+ *  window detached a process the first was still working on and nilled
+ *  its suspendedContext under it.  Letting a process finish its section
+ *  widened that window from a rare instant to every terminate inside
+ *  one, and the randomized stress saw `resume of a live process did not
+ *  raise' within a run.
+ *
+ *  So a stopped process is HELD by its stopper until the stopper lets go:
+ *  primDetach: puts it in this table before un-naming it, primitive 87
+ *  refuses a held process, a second primDetach: of it answers 6 and the
+ *  caller yields and asks again, and primitive 235 releases it -- after
+ *  resuming it, when that is what the stopper wants, so that there is no
+ *  instant at which it is free and not yet on a list.  A plain table
+ *  under a plain lock: nothing on the hot path looks here, which is why
+ *  this is not the detach table -- a name is scanned by every worker at
+ *  every bytecode while any name is held, and a hold lasts for as long
+ *  as the Smalltalk side takes.
+ */
+static st_atomic_ptr    held_table[DETACH_MAX];
+static st_mutex         held_lock;
+static int              held_lock_ready;
+
+static void
+held_lock_init(void)
+{
+    if (held_lock_ready)
+        return;
+    ST_mutex_init(&held_lock);
+    held_lock_ready = 1;
+}
+
+static int
+is_held(st_oop process)
+{
+    unsigned    i;
+    int         found = 0;
+
+    held_lock_init();
+    ST_mutex_lock(&held_lock);
+    for (i = 0; i < DETACH_MAX; ++i)
+        if ((st_oop) ST_load_relaxed(&held_table[i]) == process) {
+            found = 1;
+            break;
+        }
+    ST_mutex_unlock(&held_lock);
+    return found;
+}
+
+/*  Answers 0 when the process is already held, or the table is full.  */
+static int
+hold_process(st_oop process)
+{
+    unsigned    i;
+    int         slot = -1;
+
+    held_lock_init();
+    ST_mutex_lock(&held_lock);
+    for (i = 0; i < DETACH_MAX; ++i) {
+        st_oop  entry = (st_oop) ST_load_relaxed(&held_table[i]);
+
+        if (entry == process) {
+            ST_mutex_unlock(&held_lock);
+            return 0;
+        }
+        if (entry == ST_OOP_INVALID && slot < 0)
+            slot = (int) i;
+    }
+    if (slot >= 0)
+        ST_store_relaxed(&held_table[slot], (uintptr_t) process);
+    ST_mutex_unlock(&held_lock);
+    return slot >= 0;
+}
+
+static void
+unhold_process(st_oop process)
+{
+    unsigned    i;
+
+    held_lock_init();
+    ST_mutex_lock(&held_lock);
+    for (i = 0; i < DETACH_MAX; ++i)
+        if ((st_oop) ST_load_relaxed(&held_table[i]) == process) {
+            ST_store_relaxed(&held_table[i], (uintptr_t) ST_OOP_INVALID);
+            break;
+        }
+    ST_mutex_unlock(&held_lock);
+}
+
 static int  remove_link_from_list(st_oop link, st_oop list);
 
 /*
@@ -983,8 +1082,10 @@ SCHED_reset(void)
     {
         unsigned    i;
 
-        for (i = 0; i < DETACH_MAX; ++i)
+        for (i = 0; i < DETACH_MAX; ++i) {
             ST_store_release(&detach_table[i], (uintptr_t) ST_OOP_INVALID);
+            ST_store_relaxed(&held_table[i], (uintptr_t) ST_OOP_INVALID);
+        }
         ST_store_seq(&detach_count, 0);
         ST_store_seq(&frozen, 0);
         if (my_hands())
@@ -2535,7 +2636,70 @@ SCHED_primitive_resume(void)
         return 0;               /*  running: here  */
     if (in_anyones_hands(process) || is_named(process))
         return 0;               /*  running, or being stopped: elsewhere  */
+    if (is_held(process))
+        return 0;               /*  stopped, and its stopper not done  */
     SCHED_resume(process);
+    return 1;
+}
+
+/*
+ *  For C callers of SCHED_primitive_detach -- the test harnesses that
+ *  park the process back themselves: what primRelease: false does.
+ */
+void
+SCHED_release_process(st_oop process)
+{
+    unhold_process(process);
+}
+
+/*
+ *  235: Process>>primRelease: resumeIt -- let go of a process this
+ *  caller stopped with primDetach:, after putting it back to work if
+ *  resumeIt is true.  Resumed FIRST and released second, so that at no
+ *  instant is the process free for a stray resume to take: between the
+ *  two it is on its ready list, or nominated, and primitive 87 refuses
+ *  both.
+ *
+ *  With false, a receiver that is not held is left alone and the
+ *  primitive answers: the Smalltalk side releases in an ensure: as well
+ *  as on each path, and the second release must be harmless.  With
+ *  true, a receiver that is not held, or cannot be resumed -- no
+ *  context, on a list -- is a fault, and the primitive fails; the hold
+ *  is given up first either way, since a process nobody can release is
+ *  one nobody can resume or stop again.
+ */
+int
+SCHED_primitive_release(void)
+{
+    st_oop  resume  = ST_stack_value(0);
+    st_oop  process = ST_stack_value(1);
+    st_oop  context;
+
+    if (!OM_is_object(process) || !OM_pointer_bit(process)
+     || OM_fetch_word_length(process) <= ST_PROCESS_MY_LIST)
+        return 0;
+    if (resume != ST_TRUE && resume != ST_FALSE)
+        return 0;
+    if (resume == ST_FALSE) {
+        unhold_process(process);
+        ST_pop_n(1);
+        return 1;
+    }
+    if (!is_held(process))
+        return 0;
+    context = OM_fetch_pointer(ST_PROCESS_SUSPENDED_CONTEXT, process);
+    if (!OM_is_object(context)
+     || (OM_fetch_class(context) != ST_CLASS_METHOD_CONTEXT
+      && OM_fetch_class(context) != ST_CLASS_BLOCK_CONTEXT)
+     || OM_is_present(OM_fetch_pointer(ST_PROCESS_MY_LIST, process))
+     || process == SCHED_active_process()
+     || in_anyones_hands(process) || is_named(process)) {
+        unhold_process(process);
+        return 0;
+    }
+    SCHED_resume(process);
+    unhold_process(process);
+    ST_pop_n(1);
     return 1;
 }
 
@@ -2613,13 +2777,16 @@ SCHED_primitive_terminate_active(void)
  *      5   nothing was done: the CALLER is itself being stopped by
  *          another worker's detach and gave way to it (below).  The
  *          caller yields and asks again, if it ever runs again
+ *      6   nothing was done: another stopper holds the receiver (the
+ *          held table above) and has not let go.  The caller yields and
+ *          asks again
  *
- *  and in every case but 4 and 5 the receiver is afterwards parked, on
- *  no list, in nobody's hands, with its suspendedContext where it
- *  stopped: the state Process>>terminate, >>suspend and
- *  >>signalException: each go on from.  Fails for the caller's own
- *  active process, which those methods handle themselves, and for
- *  anything that is not a Process.
+ *  and in every case but 4, 5 and 6 the receiver is afterwards parked,
+ *  on no list, in nobody's hands, with its suspendedContext where it
+ *  stopped, and HELD by the caller until primitive 235 lets it go: the
+ *  state Process>>terminate, >>suspend and >>signalException: each go
+ *  on from.  Fails for the caller's own active process, which those
+ *  methods handle themselves, and for anything that is not a Process.
  *
  *  The loop is the whole argument for the two tables above.  Naming the
  *  process first means that from here on it can only move towards being
@@ -2716,6 +2883,16 @@ SCHED_primitive_detach(void)
 
         if (SCHED_stop_requested())
             break;
+        /*
+         *  Somebody else's, until they let go.  Asked every pass, before
+         *  the process is touched: a holder resumes before it releases,
+         *  so a held process can be on a list or in a worker's hands for
+         *  a moment, and must be left there.
+         */
+        if (is_held(process)) {
+            where = 6;
+            break;
+        }
         if (OM_is_present(list)) {
             st_oop  priority = OM_fetch_pointer(ST_PROCESS_PRIORITY, process);
             st_oop  ready    = OM_is_int(priority)
@@ -2790,6 +2967,21 @@ SCHED_primitive_detach(void)
         where = seen_in_hands ? 1 : 0;
         break;
     }
+    /*
+     *  Held before un-named, so that there is no instant at which the
+     *  process is neither.  The hold can be refused for a moment: a
+     *  previous holder resumes and THEN releases, and this pass may have
+     *  taken the process off the list that resume put it on before the
+     *  release landed -- or the table is full.  Nothing else can reach a
+     *  process that is named and off every list, so waiting is exact.
+     */
+    if (where <= 3)
+        while (!hold_process(process)) {
+            if (SCHED_stop_requested())
+                break;
+            WORKER_poll();
+            ST_sleep_ns(1000);
+        }
     unname_process(process);
     ST_pop_n(2);
     if (where == 3) {

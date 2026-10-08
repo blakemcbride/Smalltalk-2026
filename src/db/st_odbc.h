@@ -21,14 +21,36 @@
  *  VARCHAR 12, DATE 91, TIMESTAMP 93) from ODBC, so the type switches in the
  *  ported code carry their constants over unchanged.
  *
- *  WHY HANDLES ARE SMALL INTEGERS and not addresses.  A SQLHDBC is a
- *  pointer, and this system writes its memory to a file and reads it back
- *  in another process.  An image holding a pointer from a previous life
+ *  WHY HANDLES ARE INTEGERS and not addresses.  A SQLHDBC is a pointer,
+ *  and this system writes its memory to a file and reads it back in
+ *  another process.  An image holding a pointer from a previous life
  *  would find it plausible and dereference it.  So connections and
- *  statements are indices into tables here, every index is checked against
- *  the table before use, and an image resumed from a snapshot finds every
- *  slot empty -- which is the truth, and the same reason primitive 130
- *  keeps fd_is_ours rather than trusting the number in the object.
+ *  statements live in tables here, a handle names a slot in one, every
+ *  handle is checked against the table before use, and an image resumed
+ *  from a snapshot finds every slot empty -- which is the truth, and the
+ *  same reason primitive 130 keeps fd_is_ours rather than trusting the
+ *  number in the object.
+ *
+ *  AND WHY A HANDLE IS MORE THAN A SLOT NUMBER (Bugs6 FILES-1).  Empty is
+ *  the truth only until the first connect of the new life fills slot 0,
+ *  and a DbConnection that came back in the image holding handle 0 -- a
+ *  workspace variable, a global, a RestConnectionPool -- then names that
+ *  connection, which may be another worker's and mid-transaction: its
+ *  fetchAll: read the other worker's rows, its isOpen answered true, and
+ *  its close closed the other worker's connection out from under it.  The
+ *  same happened inside one life, to a DbCommand kept after its
+ *  connection was closed and the slot handed to the next connect.
+ *
+ *  So a handle carries a serial as well as a slot: the low bits say which
+ *  slot, the rest say which CLAIM of that slot, and the table remembers
+ *  the serial of the claim it is holding.  A handle whose serial is not
+ *  the slot's current one is nobody's, and every call on it answers "no
+ *  such database connection" (or statement) for as long as the object
+ *  holding it lives.  The serial counts up from the time the process
+ *  started, in a unit no process can claim faster than, so a later life
+ *  never repeats an earlier one's numbers; see claim_serial in st_odbc.c.
+ *  Sixty-four bits because the serial needs them; the image sees the
+ *  handle as an Integer and never looks inside it.
  *
  *  THE BLOCKING PROBLEM, and it is the whole design.  A worker inside
  *  SQLExecute is not running bytecodes, so it never reaches WORKER_poll, so
@@ -61,6 +83,13 @@ extern "C" {
 int         ST_odbc_available(void);
 
 /*
+ *  A connection or statement handle: a slot in the table and the serial of
+ *  the claim that filled it, or -1 where a call answers failure.  Never
+ *  decoded outside st_odbc.c.
+ */
+typedef int64_t st_odbc_handle;
+
+/*
  *  The most recent failure, as text, for the calling thread.
  *
  *  Per thread and not per handle, because the call that fails most often is
@@ -79,31 +108,31 @@ const char *ST_odbc_last_error(void);
  *  SQLConnect so that a caller who knows their driver can say so without a
  *  DSN having to exist in a file first.
  */
-int         ST_odbc_connect(const char *connection_string);
-int         ST_odbc_disconnect(int connection);
-int         ST_odbc_is_connected(int connection);
+st_odbc_handle ST_odbc_connect(const char *connection_string);
+int         ST_odbc_disconnect(st_odbc_handle connection);
+int         ST_odbc_is_connected(st_odbc_handle connection);
 
-int         ST_odbc_set_autocommit(int connection, int on);
-int         ST_odbc_set_read_only(int connection, int on);
-int         ST_odbc_commit(int connection);
-int         ST_odbc_rollback(int connection);
+int         ST_odbc_set_autocommit(st_odbc_handle connection, int on);
+int         ST_odbc_set_read_only(st_odbc_handle connection, int on);
+int         ST_odbc_commit(st_odbc_handle connection);
+int         ST_odbc_rollback(st_odbc_handle connection);
 
 /*
  *  SQLGetInfo for the string-valued types this port asks for.  info is an
  *  ODBC SQL_* info constant; the two that matter are SQL_DBMS_NAME (17),
  *  which is getDatabaseProductName, and SQL_DBMS_VER (18).
  */
-int         ST_odbc_info_string(int connection, int info, char *out,
+int         ST_odbc_info_string(st_odbc_handle connection, int info, char *out,
                                 size_t max);
 
 /*  Schema, as SQLSetConnectAttr(SQL_ATTR_CURRENT_CATALOG) understands it.  */
-int         ST_odbc_set_schema(int connection, const char *schema);
-int         ST_odbc_get_schema(int connection, char *out, size_t max);
+int         ST_odbc_set_schema(st_odbc_handle connection, const char *schema);
+int         ST_odbc_get_schema(st_odbc_handle connection, char *out, size_t max);
 
 /*  ----------  Statements  ----------  */
 
-int         ST_odbc_prepare(int connection, const char *sql);
-int         ST_odbc_close_statement(int statement);
+st_odbc_handle ST_odbc_prepare(st_odbc_handle connection, const char *sql);
+int         ST_odbc_close_statement(st_odbc_handle statement);
 
 /*
  *  Forget the bound parameters, keeping the prepared plan.
@@ -112,48 +141,48 @@ int         ST_odbc_close_statement(int statement);
  *  between them; without it a row that binds fewer parameters than the last
  *  one inherits the leftovers, silently.
  */
-int         ST_odbc_clear_parameters(int statement);
+int         ST_odbc_clear_parameters(st_odbc_handle statement);
 
-int         ST_odbc_bind_null(int statement, int index, int sql_type);
-int         ST_odbc_bind_int(int statement, int index, int64_t value);
-int         ST_odbc_bind_double(int statement, int index, double value);
-int         ST_odbc_bind_string(int statement, int index, const char *text,
+int         ST_odbc_bind_null(st_odbc_handle statement, int index, int sql_type);
+int         ST_odbc_bind_int(st_odbc_handle statement, int index, int64_t value);
+int         ST_odbc_bind_double(st_odbc_handle statement, int index, double value);
+int         ST_odbc_bind_string(st_odbc_handle statement, int index, const char *text,
                                 size_t length);
-int         ST_odbc_bind_bytes(int statement, int index, const void *bytes,
+int         ST_odbc_bind_bytes(st_odbc_handle statement, int index, const void *bytes,
                                size_t length);
-int         ST_odbc_bind_boolean(int statement, int index, int value);
-int         ST_odbc_bind_date(int statement, int index,
+int         ST_odbc_bind_boolean(st_odbc_handle statement, int index, int value);
+int         ST_odbc_bind_date(st_odbc_handle statement, int index,
                               int year, int month, int day);
-int         ST_odbc_bind_time(int statement, int index,
+int         ST_odbc_bind_time(st_odbc_handle statement, int index,
                               int hour, int minute, int second,
                               uint32_t nanoseconds);
-int         ST_odbc_bind_timestamp(int statement, int index,
+int         ST_odbc_bind_timestamp(st_odbc_handle statement, int index,
                                    int year, int month, int day,
                                    int hour, int minute, int second,
                                    uint32_t nanoseconds);
 
 /*  Run a prepared statement.  Answers 0, or -1 with last_error set.  */
-int         ST_odbc_execute(int statement);
+int         ST_odbc_execute(st_odbc_handle statement);
 
 /*
  *  Run one statement that was never prepared, on a new statement handle
  *  which is closed before this answers.  This is Connection>>executeImmediate
  *  and the DDL path; a prepare would be a second round trip for nothing.
  */
-int         ST_odbc_execute_direct(int connection, const char *sql,
+int         ST_odbc_execute_direct(st_odbc_handle connection, const char *sql,
                                    int64_t *rows_affected);
 
 /*  1 a row was read, 0 the end of the result set, -1 failure.  */
-int         ST_odbc_fetch(int statement);
+int         ST_odbc_fetch(st_odbc_handle statement);
 
-int         ST_odbc_row_count(int statement, int64_t *out);
-int         ST_odbc_column_count(int statement);
+int         ST_odbc_row_count(st_odbc_handle statement, int64_t *out);
+int         ST_odbc_column_count(st_odbc_handle statement);
 
 /*
  *  Describe one column, one-relative as ODBC and JDBC both number them.
  *  sql_type is the ODBC/java.sql.Types code.
  */
-int         ST_odbc_describe_column(int statement, int column,
+int         ST_odbc_describe_column(st_odbc_handle statement, int column,
                                     char *name, size_t name_max,
                                     int *sql_type, int64_t *size,
                                     int *decimal_digits, int *nullable);
@@ -202,7 +231,7 @@ typedef struct {
  *  next call on that statement.  The caller copies it out at once; prim.c
  *  does exactly that, into a Smalltalk String, before it does anything else.
  */
-int         ST_odbc_get(int statement, int column, st_odbc_value *out);
+int         ST_odbc_get(st_odbc_handle statement, int column, st_odbc_value *out);
 
 /*  ----------  Catalogue  ----------  */
 
@@ -212,11 +241,11 @@ int         ST_odbc_get(int statement, int column, st_odbc_value *out);
  *  DatabaseMetaData -- getColumns answers a ResultSet -- so the ported code
  *  keeps its structure.  NULL for a pattern means "any".
  */
-int         ST_odbc_tables(int connection, const char *schema,
+st_odbc_handle ST_odbc_tables(st_odbc_handle connection, const char *schema,
                            const char *table, const char *types);
-int         ST_odbc_columns(int connection, const char *schema,
+st_odbc_handle ST_odbc_columns(st_odbc_handle connection, const char *schema,
                             const char *table, const char *column);
-int         ST_odbc_primary_keys(int connection, const char *schema,
+st_odbc_handle ST_odbc_primary_keys(st_odbc_handle connection, const char *schema,
                                  const char *table);
 /*
  *  The foreign keys that point OUT of `table', which is getImportedKeys and
@@ -224,7 +253,7 @@ int         ST_odbc_primary_keys(int connection, const char *schema,
  *  which question is being asked by which end is named; naming the table as
  *  the foreign-key side asks this one.
  */
-int         ST_odbc_imported_keys(int connection, const char *schema,
+st_odbc_handle ST_odbc_imported_keys(st_odbc_handle connection, const char *schema,
                                   const char *table);
 
 #ifdef __cplusplus

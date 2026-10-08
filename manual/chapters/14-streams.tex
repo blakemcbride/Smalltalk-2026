@@ -157,12 +157,36 @@ directory's \ct{fileNames} leaves out names that begin with a period, as
 The File List window---\ct{file list} on the desktop menu---is a browser for
 the same thing, and Chapter~\ref{ch:tools} covers it.
 
+Two streams on one file are two views of it, and the one thing they agree
+about is the end. \ct{setToEnd} goes to the end of the file as it is on disk
+at that moment, not as the stream last saw it, and what is written after it
+is appended at the end the file has when the page is flushed or
+closed---after whatever other writers have added in the meantime, never on
+top of it, and in one piece unless it crosses a page boundary. \ct{close}
+shortens a file only when it is still the length the stream believes it is;
+a file another writer has appended to is left whole. That is enough for any
+number of processes to append lines to one log file through streams of their
+own:
+
+\begin{st}
+| log |
+log := FileStream fileNamed: 'server.log'.
+log setToEnd; nextPutAll: 'request served'; cr; close.
+\end{st}
+
+It is not enough for two streams to edit one file in place: the page a
+stream holds does not change when another writer changes the file, and a
+stream sees other writers' bytes only when it \ct{setToEnd} or moves to a
+page it has not read. Share a stream itself between processes only under a
+lock, as Chapter~\ref{ch:contract} says of any stream.
+
 Underneath, this is a small set of POSIX primitives the VM supplies: open,
-close, read, write, truncate, size, remove, rename and list. A file's
+close, read, write, append, truncate, size, remove, rename and list. A file's
 descriptor lives in an instance variable, which means it is part of the object
 memory and gets written into a snapshot; the VM only believes a descriptor
-that the current process opened, so a resumed image reopens by name rather
-than writing to whatever that number now means.
+that the current process opened for that very \ct{File}, so a resumed image
+reopens by name rather than reading or writing whatever that number now
+means.
 
 \section{The \texttt{Transcript}}
 

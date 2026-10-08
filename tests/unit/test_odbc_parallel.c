@@ -129,8 +129,8 @@ note_failure(const char *what)
 static void
 database_worker(st_worker *self, void *user)
 {
-    int         connection;
-    int         statement;
+    st_odbc_handle  connection;
+    st_odbc_handle  statement;
     int         id = (int) self->index;
     int         n;
 
@@ -222,7 +222,7 @@ database_worker(st_worker *self, void *user)
 
     /*  Read back only this worker's own rows.  */
     {
-        int     query = ST_odbc_prepare(connection,
+        st_odbc_handle  query = ST_odbc_prepare(connection,
                             "SELECT COUNT(*), MIN(LENGTH(note)) FROM t "
                             "WHERE worker = ?");
 
@@ -272,8 +272,8 @@ database_worker(st_worker *self, void *user)
 static void
 slow_query_worker(st_worker *self, void *user)
 {
-    int         connection;
-    int         statement;
+    st_odbc_handle  connection;
+    st_odbc_handle  statement;
     int64_t     began;
 
     (void) self;
@@ -362,7 +362,7 @@ time_one_safepoint(void *unused)
 static int
 prepare_database(void)
 {
-    int     connection;
+    st_odbc_handle  connection;
 
     database_file = st_test_path("odbc-parallel-test.db");
     atexit(remove_database_file);
@@ -388,6 +388,51 @@ prepare_database(void)
     return 1;
 }
 
+/*
+ *  A handle names one claim of a slot, not the slot (Bugs6 FILES-1).
+ *
+ *  Connections and statements are slots in two tables, handed out lowest
+ *  free first, so a closed connection's handle used to name whatever took
+ *  its slot next -- the next connect in this process, or in the process
+ *  that resumed a snapshot the handle was saved in -- and a DbConnection
+ *  kept past its close read and closed another's.  Now a handle carries
+ *  the serial of its claim, and the stale one is nobody's: not connected,
+ *  harmless to close again, and the slot's new holder is untouched.  The
+ *  same for a statement.  In-process, with the slot reused on purpose.
+ */
+static void
+check_stale_handles(void)
+{
+    st_odbc_handle  a;
+    st_odbc_handle  b;
+    st_odbc_handle  s;
+    st_odbc_handle  t;
+
+    a = ST_odbc_connect(connection_string);
+    CHECK(a >= 0);
+    CHECK(ST_odbc_disconnect(a) == 0);
+    b = ST_odbc_connect(connection_string);
+    CHECK(b >= 0);
+    CHECK(b != a);                          /*  the slot came round, the handle did not  */
+    CHECK(!ST_odbc_is_connected(a));
+    CHECK(ST_odbc_is_connected(b));
+    CHECK(ST_odbc_commit(a) != 0);          /*  "no such database connection"  */
+    CHECK(ST_odbc_disconnect(a) == 0);      /*  harmless, and not b's close  */
+    CHECK(ST_odbc_is_connected(b));
+
+    s = ST_odbc_prepare(b, "SELECT 1");
+    CHECK(s >= 0);
+    CHECK(ST_odbc_close_statement(s) == 0);
+    t = ST_odbc_prepare(b, "SELECT 1");
+    CHECK(t >= 0);
+    CHECK(t != s);
+    CHECK(ST_odbc_execute(s) != 0);         /*  "no such statement"  */
+    CHECK(ST_odbc_close_statement(s) == 0); /*  and t is still there  */
+    CHECK(ST_odbc_execute(t) == 0);
+    CHECK(ST_odbc_close_statement(t) == 0);
+    CHECK(ST_odbc_disconnect(b) == 0);
+}
+
 int
 main(void)
 {
@@ -404,6 +449,7 @@ main(void)
         printf("  (%s)\n", ST_odbc_last_error());
         return 0;
     }
+    check_stale_handles();
 
     if (OM_init() != 0) {
         printf("  cannot initialize the object memory\n");

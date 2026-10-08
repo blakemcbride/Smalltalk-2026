@@ -16,6 +16,16 @@ File class>>initialize), opening an old file, reading part of it and closing
 it cut the file off at the read position (Bugs5 FILES-1).  writing and close
 are answered below so that only a write sets the mode, which nextPut: and
 nextPutAll: already do for themselves.
+
+And the end of a file is where the file ends, not where this stream last
+saw it end (Bugs6 FILES-4).  1983's setToEnd positioned at the File's own
+cached last page, and the cache was filled when the stream was opened; so
+two streams appending to one file -- eight request handlers logging, each
+through a stream of its own -- each put its page back over the other's
+lines, and close cut the file at its own position.  setToEnd below asks the
+file system for the end and re-reads the last page, and the VM's page write
+puts new bytes at the end the kernel has (src/interp/prim.c, fd_believed),
+so appends from any number of streams land one after another.
 "
 Extension { #name : 'FileStream' }
 
@@ -145,4 +155,44 @@ FileStream >> close [
 		readLimit := writeLimit := 0.
 		self file close.
 		FileDirectory removeExternalReference: self]
+]
+
+{ #category : '*Files-Fixes' }
+FileStream >> setToEnd [
+	"Set my position to the end of my file -- the end the file has NOW, on
+	 the disk, which is not necessarily the end I last saw (Bugs6 FILES-4).
+
+	 1983 wrote `self read: (self file size max: page pageNumber)', and
+	 File>>size answers lastPageNumber, a number found when the file was
+	 opened and advanced only by this stream's own writes.  Nothing in that
+	 asks the disk, and read: does not re-read a page the stream is already
+	 on.  So a stream opened while a file had one page went on believing it
+	 had one page however much anybody else appended, and the eight workers
+	 of the audit, each opening its own stream, calling setToEnd, writing a
+	 line and closing, left eighty lines of four hundred: each stream's
+	 setToEnd was the end of the page as that stream had read it, and each
+	 write put the whole page back.  A stream kept open was worse: its
+	 cached page was put back over everything appended since it was read.
+
+	 So this asks for the end three ways.  Whatever I have written and not
+	 yet flushed is written first, as an append (the VM puts new bytes at
+	 the kernel's end), because the re-read that follows would drop it; a
+	 stream that has not written has nothing to flush, and flushing a
+	 read-only one would be refused.  findLastPageNumber is one stat, and
+	 the last page is then read again even when it is the page I hold,
+	 since its bytes on the disk may be more than mine by now; readPageNumber:
+	 reads into my own page object and asFileStream: positions me on it as
+	 read: would.  The position is then the end of that page, which is the
+	 end of the file as it was the moment the stat was made.  Between that
+	 moment and my next write someone else may append again, and that is
+	 the VM's problem, not this method's: the write goes at the end the
+	 kernel has then."
+	| last |
+	self reopen.
+	(rwmode notNil and: [self writing]) ifTrue: [self flush].
+	self file findLastPageNumber.
+	last := self file lastPageNumber max: 1.
+	(page readPageNumber: last) isNil ifTrue: [^self error: 'setToEnd'].
+	page asFileStream: self.
+	position := readLimit
 ]

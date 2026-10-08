@@ -243,6 +243,12 @@ typedef struct {
     }           pragmas[MAX_PRAGMAS];
     unsigned    pragma_count;
 
+    /*
+     *  The innermost literal-array buffer being filled, or NULL; see
+     *  literal_elements.  Walked by COMPILE_visit_roots.
+     */
+    struct literal_elements *open_elements;
+
     /*  Argument and temporary names, arguments first as the frame expects. */
     char        names[MAX_TEMPS][MAX_NAME];
     unsigned    name_count;
@@ -1370,7 +1376,7 @@ emit_push_variable(st_compiler *c, const var_ref *v, const char *name)
 /*  ----------  Expressions  ----------  */
 
 static void compile_expression(st_compiler *c);
-static void compile_statements(st_compiler *c, int inside_block);
+static int  compile_statements(st_compiler *c, int inside_block);
 static void mark(st_compiler *c, compiler_mark *m);
 static void rewind_to(st_compiler *c, const compiler_mark *m);
 static void compile_closure(st_compiler *c);
@@ -1470,19 +1476,35 @@ string_literal(st_compiler *c)
  *  shorter -- printString and storeString being readable back is the
  *  contract, and it was silently not being kept.
  */
-typedef struct {
+typedef struct literal_elements {
     st_oop     *elements;
     unsigned    count;
     unsigned    capacity;
+    /*
+     *  The buffer this one is nested in, if any -- `#(1 #(2 3) 4)' has the
+     *  inner one open while the outer one still holds 1.  The chain hangs
+     *  off the compiler, where the root walk finds it: an element that is
+     *  in a buffer and nowhere else would otherwise be freed by the
+     *  collection that the NEXT element's allocation runs.  Bugs6 COMP-2.
+     */
+    struct literal_elements *outer;
     st_oop      first[64];      /*  most literal arrays are small  */
 } literal_elements;
 
+/*
+ *  Open a buffer and make it a root: it goes on the compiler's chain of
+ *  open buffers, which COMPILE_visit_roots walks, and comes off again in
+ *  elements_close.  Open and close pair as a stack, because the parse is
+ *  recursive and the innermost array is always the one being filled.
+ */
 static void
-elements_open(literal_elements *e)
+elements_open(st_compiler *c, literal_elements *e)
 {
     e->elements = e->first;
     e->count    = 0;
     e->capacity = (unsigned) (sizeof e->first / sizeof e->first[0]);
+    e->outer    = c->open_elements;
+    c->open_elements = e;
 }
 
 /*  Answers 0 when there was no memory for it, which the caller reports.  */
@@ -1508,8 +1530,9 @@ elements_add(literal_elements *e, st_oop element)
 }
 
 static void
-elements_close(literal_elements *e)
+elements_close(st_compiler *c, literal_elements *e)
 {
+    c->open_elements = e->outer;
     if (e->elements != e->first)
         free(e->elements);
 }
@@ -1543,7 +1566,7 @@ parse_literal_array_body(st_compiler *c)
     literal_elements    elements;
     st_oop              result;
 
-    elements_open(&elements);
+    elements_open(c, &elements);
     while (!c->failed && !at(c, ST_TOK_RPAREN) && !at(c, ST_TOK_END)) {
         st_oop  element = ST_NIL;
 
@@ -1652,7 +1675,7 @@ parse_literal_array_body(st_compiler *c)
                 if (joined != stack)
                     free(joined);
                 fail(c, "out of memory building a literal array");
-                elements_close(&elements);
+                elements_close(c, &elements);
                 return ST_NIL;
             }
             joined[n] = '\0';
@@ -1759,12 +1782,12 @@ parse_literal_array_body(st_compiler *c)
             break;
         default:
             fail(c, "unexpected token in a literal array");
-            elements_close(&elements);
+            elements_close(c, &elements);
             return ST_NIL;
         }
         if (!elements_add(&elements, element)) {
             fail(c, "out of memory building a literal array");
-            elements_close(&elements);
+            elements_close(c, &elements);
             return ST_NIL;
         }
     }
@@ -1779,7 +1802,7 @@ parse_literal_array_body(st_compiler *c)
         fail(c, "expected ) closing a literal array");
     result = c->ctx->make_array(elements.elements, elements.count,
                                 c->ctx->user);
-    elements_close(&elements);
+    elements_close(c, &elements);
     return result;
 }
 
@@ -2061,13 +2084,25 @@ apply_pragma(st_compiler *c, const char *selector,
 static int
 parse_pragma(st_compiler *c)
 {
-    char        selector[256];
-    pragma_arg  args[8];
-    unsigned    argc = 0;
-    size_t      n = 0;
+    char                selector[256];
+    pragma_arg          args[8];
+    literal_elements    held;
+    unsigned            argc = 0;
+    size_t              n = 0;
+    int                 answer = 1;
 
     advance(c);                                 /*  past '<'  */
     selector[0] = '\0';
+
+    /*
+     *  The argument literals already parsed are held only in args[] while
+     *  the next one is made -- `<primitive: 'name' module: 'mod'>' makes
+     *  two Strings -- and then in c->pragmas[] for the whole of the body's
+     *  compile.  Both are roots through the compiler's chain: this buffer
+     *  for the parse, and COMPILE_visit_roots reads the table.  Bugs6
+     *  COMP-2.  Every return from here on goes through `done'.
+     */
+    elements_open(c, &held);
 
     if (at(c, ST_TOK_IDENTIFIER)) {
         snprintf(selector, sizeof selector, "%s", c->token.text);
@@ -2076,20 +2111,21 @@ parse_pragma(st_compiler *c)
         snprintf(selector, sizeof selector, "%s", c->token.text);
         advance(c);
         if (argc >= 8 || !pragma_literal(c, &args[argc]))
-            return 0;
+            goto refused;
+        (void) elements_add(&held, args[argc].value);
         ++argc;
     } else if (at(c, ST_TOK_KEYWORD)) {
         while (at(c, ST_TOK_KEYWORD)) {
             const char *part = c->token.text;
 
             if (n + c->token.text_length >= sizeof selector)
-                return 0;               /*  not a pragma this compiler knows */
+                goto refused;           /*  not a pragma this compiler knows */
             while (*part && n + 1 < sizeof selector)
                 selector[n++] = *part++;
             selector[n] = '\0';
             advance(c);
             if (argc >= 8)
-                return 0;
+                goto refused;
             /*
              *  An identifier where a literal was expected is the
              *  error-code form: <primitive: 148 error: ec>.  Nothing else
@@ -2116,12 +2152,13 @@ parse_pragma(st_compiler *c)
                          c->token.text);
                 advance(c);
             }  else if (!pragma_literal(c, &args[argc])) {
-                return 0;
+                goto refused;
             }
+            (void) elements_add(&held, args[argc].value);
             ++argc;
         }
     } else {
-        return 0;
+        goto refused;
     }
 
     /*
@@ -2133,10 +2170,17 @@ parse_pragma(st_compiler *c)
      *  that swallowed the character after it.
      */
     if (!at(c, ST_TOK_BINARY) || strcmp(c->token.text, ">") != 0)
-        return 0;
+        goto refused;
     advance(c);
     apply_pragma(c, selector, args, argc);
-    return !c->failed;
+    answer = !c->failed;
+    goto done;
+
+refused:
+    answer = 0;
+done:
+    elements_close(c, &held);
+    return answer;
 }
 
 /*
@@ -3524,14 +3568,30 @@ discard_statement_value(st_compiler *c)
     emit(c, 135);
 }
 
-static void
+/*
+ *  Answers 1 when the sequence ended in an explicit return -- `^ expr' as
+ *  its last statement -- and 0 otherwise.  The method's end needs to know,
+ *  and it used to find out by looking at the last byte emitted: a 124 there
+ *  was taken to be the return-stack-top of a `^'.  But the last byte is not
+ *  always an opcode.  After a whileTrue: loop in statement position,
+ *  discard_statement_value deletes the loop's push-nil and the method ends
+ *  in the OPERAND of the backward jump, which is 124 whenever the distance
+ *  back to the loop's top is 124 modulo 256 -- a body of 130, 386, 642 or
+ *  898 bytes.  The method then got no returnSelf, ran off its bytecodes into
+ *  the source-pointer trailer, and failed with "a literal index past the
+ *  method's literal frame" (or, under the Blue Book, spun until the
+ *  bytecode budget).  One method in 256 that ends in a loop.  Bugs6 COMP-1.
+ *  Whether a return was compiled is a fact about the statements, so the
+ *  statements report it; nothing is read back from the bytes.
+ */
+static int
 compile_statements(st_compiler *c, int inside_block)
 {
     int emitted = 0;
 
     for (;;) {
         if (c->failed)
-            return;
+            return 0;
         if (at(c, ST_TOK_END) || at(c, ST_TOK_RBRACKET))
             break;
         if (accept(c, ST_TOK_PERIOD))
@@ -3543,7 +3603,7 @@ compile_statements(st_compiler *c, int inside_block)
             emitted = 1;
             accept(c, ST_TOK_PERIOD);
             if (at(c, ST_TOK_END) || at(c, ST_TOK_RBRACKET))
-                return;
+                return 1;
             /*
              *  A return ends its statement sequence.  Anything after it
              *  can never run, and 1983 refuses it -- "Nothing more
@@ -3553,7 +3613,7 @@ compile_statements(st_compiler *c, int inside_block)
              */
             if (!c->failed)
                 fail(c, "nothing more expected after a return");
-            return;
+            return 1;
         }
         compile_expression(c);
         emitted = 1;
@@ -3590,6 +3650,7 @@ compile_statements(st_compiler *c, int inside_block)
     } else if (!inside_block) {
         discard_statement_value(c);     /*  a method answers self, not this */
     }
+    return 0;
 }
 
 /*
@@ -3637,13 +3698,19 @@ needs_method_class(const st_compiler *c)
 static void
 add_method_state_literal(st_compiler *c)
 {
-    st_oop      entries[MAX_PRAGMAS];
-    st_oop      pragmas;
-    st_oop      state;
-    unsigned    i;
+    literal_elements    entries;
+    st_oop              pragmas;
+    st_oop              state;
+    unsigned            i;
 
     if (c->failed || c->pragma_count == 0 || !c->ctx->make_method_state)
         return;
+    /*
+     *  One Array per pragma, then the Array of them: each is held only
+     *  here while the next is allocated, so they go through a rooted
+     *  buffer like a literal array's elements do.  Bugs6 COMP-2.
+     */
+    elements_open(c, &entries);
     for (i = 0; i < c->pragma_count; ++i) {
         st_oop      parts[1 + MAX_PRAGMA_ARGS];
         unsigned    k;
@@ -3651,11 +3718,23 @@ add_method_state_literal(st_compiler *c)
         parts[0] = c->ctx->intern_symbol(c->pragmas[i].keyword, c->ctx->user);
         for (k = 0; k < c->pragmas[i].argc; ++k)
             parts[1 + k] = c->pragmas[i].args[k];
-        entries[i] = c->ctx->make_array(parts, 1 + c->pragmas[i].argc,
-                                        c->ctx->user);
+        if (!elements_add(&entries,
+                          c->ctx->make_array(parts, 1 + c->pragmas[i].argc,
+                                             c->ctx->user))) {
+            fail(c, "out of memory building the method's pragmas");
+            elements_close(c, &entries);
+            return;
+        }
     }
-    pragmas = c->ctx->make_array(entries, c->pragma_count, c->ctx->user);
+    pragmas = c->ctx->make_array(entries.elements, entries.count,
+                                 c->ctx->user);
+    /*
+     *  The buffer stays open across this one allocation too: `pragmas' is
+     *  in nothing the walk can see until the state holds it.
+     */
+    (void) elements_add(&entries, pragmas);
     state   = c->ctx->make_method_state(pragmas, c->ctx->user);
+    elements_close(c, &entries);
     /*
      *  A profile with no AdditionalMethodState answers nil, and the method
      *  is compiled exactly as it was before pragmas were kept.
@@ -3985,18 +4064,127 @@ COMPILE_to_bytecodes(const char *source, const st_compile_context *ctx,
     return COMPILE_to_bytecodes_n(source, strlen(source), ctx, out);
 }
 
+/*
+ *  ----------  A compile in flight is a root  ----------
+ *
+ *  What a compile holds in C and nothing else does: the literal frame it
+ *  is filling (out->literals), the literal-array buffers it has open, the
+ *  pragma arguments it parsed before the body, and -- once the parser is
+ *  done and the CompiledMethod is being allocated -- the finished frame
+ *  waiting to be stored into it.  Every one of those is an object the
+ *  collector would free, because the collector rebuilds every count from
+ *  the root walk and a C array is not in the walk (doc/CONCURRENCY.md,
+ *  "Roots are the walk, not the count").  A collection runs whenever an
+ *  allocation asks for one, and a compile allocates on every literal: the
+ *  bootstrap of one method with a 150,000-string literal collected
+ *  mid-compile and came out with `'s106605'' as the array's first element,
+ *  and under -serve a compile of more than the 256 literals the old guard
+ *  Array held was freed under it by another worker's allocation.  Bugs6
+ *  COMP-2.
+ *
+ *  So each compile links one of these onto the running interpreter's
+ *  st_vm.compile_roots for as long as it holds anything, and the root walk
+ *  (interp.c provide_roots) visits the chain of every interpreter through
+ *  COMPILE_visit_roots.  Thread-local and lock-free for the same reason the
+ *  active context is: only this thread writes the chain, and the walk reads
+ *  it at a safepoint with this thread parked, or from this thread itself.
+ *  It is a chain rather than one pointer because a compile can nest --
+ *  COMPILE_method_n holds the finished frame while COMPILE_to_bytecodes_n
+ *  held the parser's -- and nothing is lost if the same frame is visited
+ *  twice.
+ */
+struct st_compile_roots {
+    struct st_compile_roots    *outer;      /*  the compile this nests in  */
+    const st_compiler          *compiler;   /*  while the parser runs  */
+    const st_compiled_code     *code;       /*  while the method is built  */
+};
+
+static void
+roots_enter(struct st_compile_roots *r)
+{
+    r->compiler = NULL;
+    r->code     = NULL;
+    r->outer    = st_vm.compile_roots;
+    st_vm.compile_roots = r;
+}
+
+static void
+roots_leave(struct st_compile_roots *r)
+{
+    st_vm.compile_roots = r->outer;
+}
+
+static void
+visit_literal_frame(const st_compiled_code *code, void (*visit)(st_oop))
+{
+    unsigned    i;
+
+    for (i = 0; i < code->literal_count && i < 256; ++i)
+        visit(code->literals[i]);
+}
+
+void
+COMPILE_visit_roots(const struct st_compile_roots *chain,
+                    void (*visit)(st_oop object))
+{
+    for (; chain; chain = chain->outer) {
+        const st_compiler          *c = chain->compiler;
+        const literal_elements     *e;
+        unsigned                    i;
+        unsigned                    k;
+
+        if (chain->code)
+            visit_literal_frame(chain->code, visit);
+        if (!c)
+            continue;
+        if (c->out)
+            visit_literal_frame(c->out, visit);
+        for (e = c->open_elements; e; e = e->outer) {
+            for (i = 0; i < e->count; ++i)
+                visit(e->elements[i]);
+        }
+        for (i = 0; i < c->pragma_count && i < MAX_PRAGMAS; ++i) {
+            for (k = 0; k < c->pragmas[i].argc && k < MAX_PRAGMA_ARGS; ++k)
+                visit(c->pragmas[i].args[k]);
+        }
+    }
+}
+
+static int to_bytecodes(st_compiler *c, const char *source, size_t length,
+                        const st_compile_context *ctx, st_compiled_code *out);
+
 int
 COMPILE_to_bytecodes_n(const char *source, size_t length,
                        const st_compile_context *ctx, st_compiled_code *out)
 {
-    st_compiler c;
+    st_compiler             c;
+    struct st_compile_roots roots;
+    int                     status;
+
+    roots_enter(&roots);
+    roots.compiler = &c;
+    status = to_bytecodes(&c, source, length, ctx, out);
+    roots_leave(&roots);
+    return status;
+}
+
+/*
+ *  The parser proper.  Its several exits all return through the wrapper
+ *  above, which owns the compiler state the root chain points at and is
+ *  what takes the compile off the chain.
+ */
+static int
+to_bytecodes(st_compiler *c, const char *source, size_t length,
+             const st_compile_context *ctx, st_compiled_code *out)
+{
     int         pass;
+    int         returned = 0;   /*  did the body end in an explicit `^'?  */
 
     memset(out, 0, sizeof *out);
-    memset(&c, 0, sizeof c);
-    c.ctx     = ctx;
-    c.out     = out;
-    c.dialect = ctx->dialect;
+    memset(c, 0, sizeof *c);
+    c->ctx     = ctx;
+    c->out     = out;
+    c->dialect = ctx->dialect;
 
     /*
      *  The Blue Book dialect runs once.  The closure dialect runs the same
@@ -4011,35 +4199,35 @@ COMPILE_to_bytecodes_n(const char *source, size_t length,
      *  re-derive those decisions and agree with them forever; the same
      *  parser agrees by construction.
      */
-    for (pass = 0; pass <= (c.dialect == ST_DIALECT_CLOSURES); ++pass) {
-        c.pass          = pass;
-        c.loop_nil_end  = NO_LOOP_NIL;
-        c.store_end     = NO_STORE;
-        c.max_names     = 0;
-        c.name_count    = 0;
-        c.argument_count = 0;
-        c.used_super    = 0;
-        c.failed        = 0;
-        c.block_seen    = 0;
-        c.current_scope = 0;
-        c.pragma_count  = 0;
-        c.depth         = 0;
+    for (pass = 0; pass <= (c->dialect == ST_DIALECT_CLOSURES); ++pass) {
+        c->pass          = pass;
+        c->loop_nil_end  = NO_LOOP_NIL;
+        c->store_end     = NO_STORE;
+        c->max_names     = 0;
+        c->name_count    = 0;
+        c->argument_count = 0;
+        c->used_super    = 0;
+        c->failed        = 0;
+        c->block_seen    = 0;
+        c->current_scope = 0;
+        c->pragma_count  = 0;
+        c->depth         = 0;
         out->length        = 0;
         out->literal_count = 0;
         out->error[0]      = '\0';
-        c.decl_visible = 0;
-        c.decl_seen    = 0;
+        c->decl_visible = 0;
+        c->decl_seen    = 0;
         if (pass == 0) {
-            c.decl_count  = 0;
-            c.need_count  = 0;
-            c.scope_count = 1;
-            memset(&c.scopes[0], 0, sizeof c.scopes[0]);
+            c->decl_count  = 0;
+            c->need_count  = 0;
+            c->scope_count = 1;
+            memset(&c->scopes[0], 0, sizeof c->scopes[0]);
         }
 
-        c.lx = LEX_open_n(source, length);
-        if (c.lx)
-            LEX_set_dialect(c.lx, c.dialect);
-        if (!c.lx) {
+        c->lx = LEX_open_n(source, length);
+        if (c->lx)
+            LEX_set_dialect(c->lx, c->dialect);
+        if (!c->lx) {
             snprintf(out->error, sizeof out->error, "out of memory");
             return -1;
         }
@@ -4051,12 +4239,12 @@ COMPILE_to_bytecodes_n(const char *source, size_t length,
              *  negative literal, which the lexer decides from what came
              *  before and there is nothing before it.
              */
-            snprintf(c.out->selector, sizeof c.out->selector, "DoIt");
-            LEX_begin_statement(c.lx);
-            advance(&c);
+            snprintf(c->out->selector, sizeof c->out->selector, "DoIt");
+            LEX_begin_statement(c->lx);
+            advance(c);
         }  else  {
-            advance(&c);
-            compile_pattern(&c);
+            advance(c);
+            compile_pattern(c);
         }
 
         /*
@@ -4072,21 +4260,21 @@ COMPILE_to_bytecodes_n(const char *source, size_t length,
         for (;;) {
             int progress = 0;
 
-            if (at(&c, ST_TOK_BAR)) {
-                advance(&c);
-                while (at(&c, ST_TOK_IDENTIFIER)) {
+            if (at(c, ST_TOK_BAR)) {
+                advance(c);
+                while (at(c, ST_TOK_IDENTIFIER)) {
                     /*
                      *  From 0: a temporary that repeats an ARGUMENT's name
                      *  is a duplicate too, `foo: a | a |'.
                      */
-                    if (!add_name(&c, LEX_text(&c.token), 0, 0))
+                    if (!add_name(c, LEX_text(&c->token), 0, 0))
                         break;
-                    if (c.dialect == ST_DIALECT_CLOSURES)
-                        declare(&c, c.token.text, 0);
-                    advance(&c);
+                    if (c->dialect == ST_DIALECT_CLOSURES)
+                        declare(c, c->token.text, 0);
+                    advance(c);
                 }
-                if (!accept(&c, ST_TOK_BAR))
-                    fail(&c, "expected | after temporaries");
+                if (!accept(c, ST_TOK_BAR))
+                    fail(c, "expected | after temporaries");
                 progress = 1;
             }
             /*
@@ -4096,20 +4284,20 @@ COMPILE_to_bytecodes_n(const char *source, size_t length,
              *  with no temporaries.  A parse that does not reach a closing
              *  '>' rewinds and the statement compiler gets the token back.
              */
-            while (!c.failed && at(&c, ST_TOK_BINARY)
-                && strcmp(c.token.text, "<") == 0) {
+            while (!c->failed && at(c, ST_TOK_BINARY)
+                && strcmp(c->token.text, "<") == 0) {
                 compiler_mark   before_pragma;
 
-                mark(&c, &before_pragma);
-                if (!parse_pragma(&c)) {
-                    if (c.failed)
+                mark(c, &before_pragma);
+                if (!parse_pragma(c)) {
+                    if (c->failed)
                         break;
-                    rewind_to(&c, &before_pragma);
+                    rewind_to(c, &before_pragma);
                     goto done_prelude;
                 }
                 progress = 1;
             }
-            if (!progress || c.failed)
+            if (!progress || c->failed)
                 break;
         }
     done_prelude:
@@ -4119,33 +4307,33 @@ COMPILE_to_bytecodes_n(const char *source, size_t length,
          *  prologue builds the vector if any block shares a variable with
          *  it, and moves any shared argument into it.
          */
-        if (c.dialect == ST_DIALECT_CLOSURES && pass == 1) {
-            scope_info *method_scope = &c.scopes[0];
+        if (c->dialect == ST_DIALECT_CLOSURES && pass == 1) {
+            scope_info *method_scope = &c->scopes[0];
             unsigned    i;
 
             if (method_scope->has_vector) {
-                emit(&c, 138);
-                emit(&c, (uint8_t) method_scope->vector_size);
-                emit_store_temporary(&c, method_scope->vector_slot, 1);
+                emit(c, 138);
+                emit(c, (uint8_t) method_scope->vector_size);
+                emit_store_temporary(c, method_scope->vector_slot, 1);
             }
-            for (i = 0; i < c.decl_count; ++i) {
+            for (i = 0; i < c->decl_count; ++i) {
                 unsigned    k;
                 unsigned    position = 0;
 
-                if (c.decls[i].scope != 0 || !c.decls[i].is_argument
-                 || !c.decls[i].remote)
+                if (c->decls[i].scope != 0 || !c->decls[i].is_argument
+                 || !c->decls[i].remote)
                     continue;
                 for (k = 0; k < i; ++k) {
-                    if (c.decls[k].scope == 0 && c.decls[k].is_argument)
+                    if (c->decls[k].scope == 0 && c->decls[k].is_argument)
                         ++position;
                 }
-                emit_push_temporary(&c, position);
-                emit_store_remote(&c, c.decls[i].slot,
+                emit_push_temporary(c, position);
+                emit_store_remote(c, c->decls[i].slot,
                                   method_scope->vector_slot, 1);
             }
         }
 
-        compile_statements(&c, ctx->no_pattern);
+        returned = compile_statements(c, ctx->no_pattern);
 
         /*
          *  And nothing may be left over.
@@ -4160,45 +4348,48 @@ COMPILE_to_bytecodes_n(const char *source, size_t length,
          *  take, and the chunk reader already refused it -- only the Tonel
          *  and doit paths did not.
          */
-        if (!c.failed && !at(&c, ST_TOK_END))
-            fail(&c, "unexpected %s after the end of the method",
-                 c.token.text[0] ? c.token.text : "token");
+        if (!c->failed && !at(c, ST_TOK_END))
+            fail(c, "unexpected %s after the end of the method",
+                 c->token.text[0] ? c->token.text : "token");
 
         /*
          *  A method with no explicit return answers the receiver, which the
          *  one-byte "return self" bytecode does directly.  A doIt answers
          *  its last statement, which compile_statements has left on the
          *  stack, so it returns the stack top instead.
+         *
+         *  Whether the body already returned is what compile_statements
+         *  answered, not what the last byte looks like: that byte is a jump
+         *  operand when the body ends in a loop, and an operand of 124 is
+         *  not a return.  Bugs6 COMP-1; the account is on compile_statements.
          */
-        if (!c.failed) {
-            if (out->length == 0 || out->bytecodes[out->length - 1] != 124)
-                emit(&c, ctx->no_pattern ? 124 : 120);
-        }
-        add_method_state_literal(&c);
-        append_method_class_literal(&c);
-        LEX_close(c.lx);
+        if (!c->failed && !returned)
+            emit(c, ctx->no_pattern ? 124 : 120);
+        add_method_state_literal(c);
+        append_method_class_literal(c);
+        LEX_close(c->lx);
 
-        if (c.failed)
+        if (c->failed)
             return -1;
         if (pass == 0)
-            plan_frames(&c);
-        if (c.failed)
+            plan_frames(c);
+        if (c->failed)
             return -1;
     }
 
-    out->argument_count  = c.argument_count;
-    if (c.dialect == ST_DIALECT_CLOSURES) {
+    out->argument_count  = c->argument_count;
+    if (c->dialect == ST_DIALECT_CLOSURES) {
         /*
          *  The method's frame holds its arguments, whatever it copied (it
          *  copies nothing -- it is the outermost scope), its vector and its
          *  local temporaries.  A shared name is in the vector rather than a
          *  slot, so it is not counted twice.
          */
-        out->temporary_count = c.scopes[0].frame_size;
+        out->temporary_count = c->scopes[0].frame_size;
     }  else  {
-        if (c.name_count > c.max_names)
-            c.max_names = c.name_count;
-        out->temporary_count = c.max_names;
+        if (c->name_count > c->max_names)
+            c->max_names = c->name_count;
+        out->temporary_count = c->max_names;
     }
     /*
      *  The header keeps the temporary count in five bits, and the
@@ -4213,7 +4404,7 @@ COMPILE_to_bytecodes_n(const char *source, size_t length,
      *  temporaries.  Bugs3 B22.
      */
     if (out->temporary_count > MAX_HEADER_TEMPS) {
-        fail(&c, "this method needs %u argument and temporary slots; the "
+        fail(c, "this method needs %u argument and temporary slots; the "
                  "method header holds at most %u",
              out->temporary_count, (unsigned) MAX_HEADER_TEMPS);
         return -1;
@@ -4237,14 +4428,14 @@ COMPILE_to_bytecodes_n(const char *source, size_t length,
         unsigned    need = out->temporary_count + max_stack_depth(out);
 
         if (need > ST_HEADER_FRAME_MAX) {
-            fail(&c, "method needs %u frame slots and the format holds %u",
+            fail(c, "method needs %u frame slots and the format holds %u",
                  need, (unsigned) ST_HEADER_FRAME_MAX);
             need = ST_HEADER_FRAME_MAX;
         }
         out->frame_slots = need;
     }
 
-    return c.failed ? -1 : 0;
+    return c->failed ? -1 : 0;
 }
 
 /*  ----------  Building the CompiledMethod  ----------  */
@@ -4302,6 +4493,7 @@ COMPILE_method_n(const char *source, size_t length,
     unsigned            i;
     unsigned            byte_start;
     unsigned            total_bytes;
+    struct st_compile_roots roots;
 
     memset(out, 0, sizeof *out);
     if (COMPILE_to_bytecodes_n(source, length, ctx, &code) != 0) {
@@ -4364,8 +4556,16 @@ COMPILE_method_n(const char *source, size_t length,
      */
     total_bytes = byte_start + code.length + 3;
 
+    /*
+     *  The frame is held in `code' alone until it is stored below, and
+     *  this allocation can run a collection: on the chain for the span.
+     *  Bugs6 COMP-2.
+     */
+    roots_enter(&roots);
+    roots.code = &code;
     method = OM_instantiate_bytes(ST_CLASS_COMPILED_METHOD, total_bytes);
     if (!OM_is_object(method)) {
+        roots_leave(&roots);
         snprintf(out->error, sizeof out->error, "out of memory");
         out->method = ST_OOP_INVALID;
         return -1;
@@ -4402,6 +4602,7 @@ COMPILE_method_n(const char *source, size_t length,
     }
     for (i = 0; i < code.length; ++i)
         OM_store_byte(byte_start + i, method, code.bytecodes[i]);
+    roots_leave(&roots);            /*  the method holds its frame now  */
 
     out->method = method;
     return 0;

@@ -28,6 +28,14 @@ raises---which is the form to prefer, because a connection left open by a
 method that returned early is a server-side resource nothing in this image
 will ever free.
 
+A connection belongs to the process that opened it, in the operating
+system's sense as well. A \ct{DbConnection} that was open when an image was
+saved answers \ct{isOpen} false in the image that resumes, and every use of
+it raises \emph{no such database connection}; open a new one. The same is
+true of a connection after \ct{close}: its handle is never handed to another,
+so a stale object can neither read nor close the connection that took its
+place.
+
 \section{One connection per process}
 
 A \ct{DbConnection} belongs to one process. That is not a limitation of the

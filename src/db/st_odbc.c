@@ -90,7 +90,8 @@ typedef struct {
 
 typedef struct {
     int             in_use;
-    int             connection;     /*  which connection owns it          */
+    uint64_t        serial;         /*  of the claim holding the slot     */
+    st_odbc_handle  connection;     /*  which connection owns it          */
     SQLHSTMT        handle;
 
     st_odbc_param **params;         /*  pointers: see st_odbc_param  */
@@ -106,6 +107,7 @@ typedef struct {
 
 typedef struct {
     int             in_use;
+    uint64_t        serial;         /*  of the claim holding the slot     */
     SQLHDBC         handle;
 } st_odbc_connection;
 
@@ -114,6 +116,64 @@ static int                  environment_ready;
 
 static st_odbc_connection   connections[ST_ODBC_MAX_CONNECTIONS];
 static st_odbc_statement    statements[ST_ODBC_MAX_STATEMENTS];
+
+/*
+ *  What a handle is made of (Bugs6 FILES-1): the slot in its low bits and
+ *  the serial of the claim above them.  Eleven bits of slot hold the 1024
+ *  statements with room over; the serial has the other fifty-two of a
+ *  non-negative int64, which the image holds as a SmallInteger while it
+ *  stays under 2^62 -- 2^41 milliseconds of serials at 1024 a millisecond,
+ *  until the year 2095 or so; see claim_serial -- and as a
+ *  LargePositiveInteger after that, which prim.c reads back just the same.
+ */
+#define ST_ODBC_SLOT_BITS           11
+#define ST_ODBC_SLOT_MASK           ((1 << ST_ODBC_SLOT_BITS) - 1)
+
+/*
+ *  The next serial to hand out, under table_lock.
+ *
+ *  SEEDED FROM THE CLOCK, because a serial that counted from one in every
+ *  process would come round again: a resumed image's stale handle says
+ *  "slot 0, claim 1", and the new life's first connect IS slot 0, claim 1.
+ *  The seed is the millisecond this process first touched the tables,
+ *  counted from the start of 2026 and multiplied by 1024, and every claim
+ *  takes the next number.  No process claims a thousand handles in one
+ *  millisecond -- each is a lock and a driver call, and SQLPrepare alone
+ *  is tens of microseconds -- so a process's last serial is always below
+ *  the seed of any process that starts after it, and the handles a
+ *  snapshot carries are never the handles the life that resumes it makes.
+ *  Two lives that overlap in time have separate tables and separate
+ *  numbers, and neither holds the other's handles.
+ *
+ *  Not the pid, which is sixteen bits on some systems and is reused; not a
+ *  random number, which is not an argument.  The clock going backwards --
+ *  a machine whose date is reset to before a snapshot was taken -- is the
+ *  one way this can repeat, and it would take a reset to the same
+ *  millisecond.
+ */
+#define ST_ODBC_SERIAL_EPOCH_MS     INT64_C(3944678400000)   /*  2026-01-01  */
+#define ST_ODBC_SERIALS_PER_MS      1024
+
+static uint64_t             next_serial;
+
+static uint64_t
+claim_serial(void)
+{
+    if (next_serial == 0) {
+        int64_t     ms = ST_time_smalltalk_ms() - ST_ODBC_SERIAL_EPOCH_MS;
+
+        if (ms < 1)
+            ms = 1;                     /*  a clock set before 2026  */
+        next_serial = (uint64_t) ms * ST_ODBC_SERIALS_PER_MS;
+    }
+    return next_serial++;
+}
+
+static st_odbc_handle
+make_handle(int slot, uint64_t serial)
+{
+    return (st_odbc_handle) ((serial << ST_ODBC_SLOT_BITS) | (uint64_t) slot);
+}
 
 /*
  *  One lock, over the two tables and nothing else.
@@ -456,22 +516,43 @@ ensure_environment(void)
     return 0;
 }
 
+/*
+ *  The slot a handle names, if it is still that handle's: a slot in use
+ *  whose claim is the one the handle was made from.  Anything else -- a
+ *  negative, a slot past the table, an empty slot, or a slot filled since
+ *  by a later claim -- is NULL, and the caller says "no such ...".  Under
+ *  table_lock, as every reader of the tables is.
+ */
 static st_odbc_connection *
-connection_at(int index)
+connection_at(st_odbc_handle handle)
 {
-    if (index < 0 || index >= ST_ODBC_MAX_CONNECTIONS)
+    int         index;
+    uint64_t    serial;
+
+    if (handle < 0)
         return NULL;
-    if (!connections[index].in_use)
+    index  = (int) (handle & ST_ODBC_SLOT_MASK);
+    serial = (uint64_t) handle >> ST_ODBC_SLOT_BITS;
+    if (index >= ST_ODBC_MAX_CONNECTIONS)
+        return NULL;
+    if (!connections[index].in_use || connections[index].serial != serial)
         return NULL;
     return &connections[index];
 }
 
 static st_odbc_statement *
-statement_at(int index)
+statement_at(st_odbc_handle handle)
 {
-    if (index < 0 || index >= ST_ODBC_MAX_STATEMENTS)
+    int         index;
+    uint64_t    serial;
+
+    if (handle < 0)
         return NULL;
-    if (!statements[index].in_use)
+    index  = (int) (handle & ST_ODBC_SLOT_MASK);
+    serial = (uint64_t) handle >> ST_ODBC_SLOT_BITS;
+    if (index >= ST_ODBC_MAX_STATEMENTS)
+        return NULL;
+    if (!statements[index].in_use || statements[index].serial != serial)
         return NULL;
     return &statements[index];
 }
@@ -486,7 +567,7 @@ statement_at(int index)
  *  race this layer can paper over -- but the TABLE stays consistent.
  */
 static SQLHDBC
-connection_handle(int index)
+connection_handle(st_odbc_handle index)
 {
     st_odbc_connection *c;
     SQLHDBC             handle = SQL_NULL_HDBC;
@@ -502,7 +583,7 @@ connection_handle(int index)
 }
 
 static SQLHSTMT
-statement_handle(int index)
+statement_handle(st_odbc_handle index)
 {
     st_odbc_statement  *s;
     SQLHSTMT            handle = SQL_NULL_HSTMT;
@@ -537,20 +618,23 @@ free_statement_slot(st_odbc_statement *s)
     memset(s, 0, sizeof *s);
 }
 
-static int
-claim_statement(int connection, SQLHSTMT handle)
+static st_odbc_handle
+claim_statement(st_odbc_handle connection, SQLHSTMT handle)
 {
     int     i;
 
     lock_tables();
     for (i = 0; i < ST_ODBC_MAX_STATEMENTS; ++i) {
         if (!statements[i].in_use) {
+            uint64_t    serial = claim_serial();
+
             memset(&statements[i], 0, sizeof statements[i]);
             statements[i].in_use     = 1;
+            statements[i].serial     = serial;
             statements[i].connection = connection;
             statements[i].handle     = handle;
             unlock_tables();
-            return i;
+            return make_handle(i, serial);
         }
     }
     unlock_tables();
@@ -564,11 +648,11 @@ claim_statement(int connection, SQLHSTMT handle)
  *  Shared by prepare and by the four catalogue calls, all of which produce a
  *  statement the caller then fetches from.
  */
-static int
-new_statement(int connection, SQLHDBC dbc, SQLHSTMT *out)
+static st_odbc_handle
+new_statement(st_odbc_handle connection, SQLHDBC dbc, SQLHSTMT *out)
 {
-    SQLHSTMT    stmt = SQL_NULL_HSTMT;
-    int         id;
+    SQLHSTMT        stmt = SQL_NULL_HSTMT;
+    st_odbc_handle  id;
 
     if (!SQL_SUCCEEDED(SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt))) {
         record_diagnostic(SQL_HANDLE_DBC, dbc, "SQLAllocHandle(STMT)");
@@ -584,7 +668,7 @@ new_statement(int connection, SQLHDBC dbc, SQLHSTMT *out)
 }
 
 int
-ST_odbc_close_statement(int statement)
+ST_odbc_close_statement(st_odbc_handle statement)
 {
     st_odbc_statement  *s;
     SQLHSTMT            handle = SQL_NULL_HSTMT;
@@ -612,14 +696,14 @@ ST_odbc_close_statement(int statement)
 
 /*  ----------  Connections  ----------  */
 
-int
+st_odbc_handle
 ST_odbc_connect(const char *connection_string)
 {
     SQLHDBC     dbc = SQL_NULL_HDBC;
-    SQLCHAR     completed[2048];
-    SQLSMALLINT completed_length = 0;
-    int         i;
-    int         id = -1;
+    SQLCHAR         completed[2048];
+    SQLSMALLINT     completed_length = 0;
+    int             i;
+    st_odbc_handle  id = -1;
 
     clear_error();
     if (!connection_string || !*connection_string) {
@@ -646,9 +730,12 @@ ST_odbc_connect(const char *connection_string)
     lock_tables();
     for (i = 0; i < ST_ODBC_MAX_CONNECTIONS; ++i) {
         if (!connections[i].in_use) {
+            uint64_t    serial = claim_serial();
+
             connections[i].in_use = 1;
+            connections[i].serial = serial;
             connections[i].handle = dbc;
-            id = i;
+            id = make_handle(i, serial);
             break;
         }
     }
@@ -664,19 +751,31 @@ ST_odbc_connect(const char *connection_string)
 }
 
 int
-ST_odbc_disconnect(int connection)
+ST_odbc_disconnect(st_odbc_handle connection)
 {
-    SQLHDBC     dbc = SQL_NULL_HDBC;
-    int         i;
+    SQLHDBC             dbc = SQL_NULL_HDBC;
+    st_odbc_connection *c;
+    int                 i;
 
     clear_error();
+    /*
+     *  A handle that names nothing -- closed already, or from a life
+     *  before this one (Bugs6 FILES-1) -- has nothing to close, and in
+     *  particular must not reach the slot's CURRENT holder: the stale
+     *  DbConnection's close used to disconnect whichever connection had
+     *  taken its slot number since.
+     */
+    lock_tables();
+    if (connection_at(connection) == NULL) {
+        unlock_tables();
+        return 0;                       /*  already closed; see below  */
+    }
     /*
      *  Close this connection's statements first, and do it before the
      *  disconnect rather than leaving them to SQLDisconnect.  A driver
      *  handed a connection with live statements is entitled to refuse, and
      *  the ones that do not refuse leak the handles instead.
      */
-    lock_tables();
     for (i = 0; i < ST_ODBC_MAX_STATEMENTS; ++i)
         if (statements[i].in_use && statements[i].connection == connection) {
             SQLHSTMT    handle = statements[i].handle;
@@ -686,11 +785,12 @@ ST_odbc_disconnect(int connection)
             blocking_free_statement(handle);
             lock_tables();
         }
-    if (connection >= 0 && connection < ST_ODBC_MAX_CONNECTIONS
-     && connections[connection].in_use) {
-        dbc = connections[connection].handle;
-        connections[connection].in_use = 0;
-        connections[connection].handle = SQL_NULL_HDBC;
+    c = connection_at(connection);      /*  looked up again: the lock was let go  */
+    if (c) {
+        dbc = c->handle;
+        c->in_use = 0;
+        c->serial = 0;
+        c->handle = SQL_NULL_HDBC;
     }
     unlock_tables();
 
@@ -721,7 +821,7 @@ ST_odbc_disconnect(int connection)
 }
 
 int
-ST_odbc_is_connected(int connection)
+ST_odbc_is_connected(st_odbc_handle connection)
 {
     int     open;
 
@@ -732,7 +832,7 @@ ST_odbc_is_connected(int connection)
 }
 
 static int
-set_connect_attribute(int connection, SQLINTEGER attribute, SQLUINTEGER value,
+set_connect_attribute(st_odbc_handle connection, SQLINTEGER attribute, SQLUINTEGER value,
                       const char *what)
 {
     SQLHDBC     dbc = connection_handle(connection);
@@ -749,7 +849,7 @@ set_connect_attribute(int connection, SQLINTEGER attribute, SQLUINTEGER value,
 }
 
 int
-ST_odbc_set_autocommit(int connection, int on)
+ST_odbc_set_autocommit(st_odbc_handle connection, int on)
 {
     return set_connect_attribute(connection, SQL_ATTR_AUTOCOMMIT,
                                  on ? SQL_AUTOCOMMIT_ON : SQL_AUTOCOMMIT_OFF,
@@ -757,7 +857,7 @@ ST_odbc_set_autocommit(int connection, int on)
 }
 
 int
-ST_odbc_set_read_only(int connection, int on)
+ST_odbc_set_read_only(st_odbc_handle connection, int on)
 {
     return set_connect_attribute(connection, SQL_ATTR_ACCESS_MODE,
                                  on ? SQL_MODE_READ_ONLY : SQL_MODE_READ_WRITE,
@@ -765,7 +865,7 @@ ST_odbc_set_read_only(int connection, int on)
 }
 
 static int
-end_transaction(int connection, SQLSMALLINT how, const char *what)
+end_transaction(st_odbc_handle connection, SQLSMALLINT how, const char *what)
 {
     SQLHDBC     dbc = connection_handle(connection);
 
@@ -780,19 +880,19 @@ end_transaction(int connection, SQLSMALLINT how, const char *what)
 }
 
 int
-ST_odbc_commit(int connection)
+ST_odbc_commit(st_odbc_handle connection)
 {
     return end_transaction(connection, SQL_COMMIT, "SQLEndTran(COMMIT)");
 }
 
 int
-ST_odbc_rollback(int connection)
+ST_odbc_rollback(st_odbc_handle connection)
 {
     return end_transaction(connection, SQL_ROLLBACK, "SQLEndTran(ROLLBACK)");
 }
 
 int
-ST_odbc_info_string(int connection, int info, char *out, size_t max)
+ST_odbc_info_string(st_odbc_handle connection, int info, char *out, size_t max)
 {
     SQLHDBC     dbc = connection_handle(connection);
     SQLSMALLINT length = 0;
@@ -815,7 +915,7 @@ ST_odbc_info_string(int connection, int info, char *out, size_t max)
 }
 
 int
-ST_odbc_set_schema(int connection, const char *schema)
+ST_odbc_set_schema(st_odbc_handle connection, const char *schema)
 {
     SQLHDBC     dbc = connection_handle(connection);
 
@@ -833,7 +933,7 @@ ST_odbc_set_schema(int connection, const char *schema)
 }
 
 int
-ST_odbc_get_schema(int connection, char *out, size_t max)
+ST_odbc_get_schema(st_odbc_handle connection, char *out, size_t max)
 {
     SQLHDBC     dbc = connection_handle(connection);
     SQLINTEGER  length = 0;
@@ -858,12 +958,12 @@ ST_odbc_get_schema(int connection, char *out, size_t max)
 
 /*  ----------  Preparing and binding  ----------  */
 
-int
-ST_odbc_prepare(int connection, const char *sql)
+st_odbc_handle
+ST_odbc_prepare(st_odbc_handle connection, const char *sql)
 {
-    SQLHDBC     dbc = connection_handle(connection);
-    SQLHSTMT    stmt = SQL_NULL_HSTMT;
-    int         id;
+    SQLHDBC         dbc = connection_handle(connection);
+    SQLHSTMT        stmt = SQL_NULL_HSTMT;
+    st_odbc_handle  id;
 
     if (dbc == SQL_NULL_HDBC)
         return -1;
@@ -896,7 +996,7 @@ ST_odbc_prepare(int connection, const char *sql)
  *  kept until the statement is closed or its parameters are cleared.
  */
 static st_odbc_param *
-parameter_room(int statement, int index, size_t bytes)
+parameter_room(st_odbc_handle statement, int index, size_t bytes)
 {
     st_odbc_statement  *s;
     st_odbc_param      *p;
@@ -956,7 +1056,7 @@ parameter_room(int statement, int index, size_t bytes)
 }
 
 static int
-bind_parameter(int statement, int index, SQLSMALLINT c_type,
+bind_parameter(st_odbc_handle statement, int index, SQLSMALLINT c_type,
                SQLSMALLINT sql_type, SQLULEN column_size,
                SQLSMALLINT decimal_digits, const void *bytes, size_t length,
                SQLLEN indicator)
@@ -987,7 +1087,7 @@ bind_parameter(int statement, int index, SQLSMALLINT c_type,
 }
 
 int
-ST_odbc_bind_null(int statement, int index, int sql_type)
+ST_odbc_bind_null(st_odbc_handle statement, int index, int sql_type)
 {
     /*
      *  A null still needs a type, and a caller who does not know one says
@@ -1004,21 +1104,21 @@ ST_odbc_bind_null(int statement, int index, int sql_type)
 }
 
 int
-ST_odbc_bind_int(int statement, int index, int64_t value)
+ST_odbc_bind_int(st_odbc_handle statement, int index, int64_t value)
 {
     return bind_parameter(statement, index, SQL_C_SBIGINT, SQL_BIGINT, 0, 0,
                           &value, sizeof value, 0);
 }
 
 int
-ST_odbc_bind_double(int statement, int index, double value)
+ST_odbc_bind_double(st_odbc_handle statement, int index, double value)
 {
     return bind_parameter(statement, index, SQL_C_DOUBLE, SQL_DOUBLE, 0, 0,
                           &value, sizeof value, 0);
 }
 
 int
-ST_odbc_bind_boolean(int statement, int index, int value)
+ST_odbc_bind_boolean(st_odbc_handle statement, int index, int value)
 {
     unsigned char   bit = value ? 1 : 0;
 
@@ -1027,7 +1127,7 @@ ST_odbc_bind_boolean(int statement, int index, int value)
 }
 
 int
-ST_odbc_bind_string(int statement, int index, const char *text, size_t length)
+ST_odbc_bind_string(st_odbc_handle statement, int index, const char *text, size_t length)
 {
     /*
      *  Column size is the length and not the capacity.  A driver told the
@@ -1041,7 +1141,7 @@ ST_odbc_bind_string(int statement, int index, const char *text, size_t length)
 }
 
 int
-ST_odbc_bind_bytes(int statement, int index, const void *bytes, size_t length)
+ST_odbc_bind_bytes(st_odbc_handle statement, int index, const void *bytes, size_t length)
 {
     return bind_parameter(statement, index, SQL_C_BINARY,
                           length > 4000 ? SQL_LONGVARBINARY : SQL_VARBINARY,
@@ -1050,7 +1150,7 @@ ST_odbc_bind_bytes(int statement, int index, const void *bytes, size_t length)
 }
 
 int
-ST_odbc_bind_date(int statement, int index, int year, int month, int day)
+ST_odbc_bind_date(st_odbc_handle statement, int index, int year, int month, int day)
 {
     SQL_DATE_STRUCT     d;
 
@@ -1062,7 +1162,7 @@ ST_odbc_bind_date(int statement, int index, int year, int month, int day)
 }
 
 int
-ST_odbc_bind_time(int statement, int index, int hour, int minute, int second,
+ST_odbc_bind_time(st_odbc_handle statement, int index, int hour, int minute, int second,
                   uint32_t nanoseconds)
 {
     SQL_TIME_STRUCT     t;
@@ -1076,7 +1176,7 @@ ST_odbc_bind_time(int statement, int index, int hour, int minute, int second,
 }
 
 int
-ST_odbc_bind_timestamp(int statement, int index, int year, int month, int day,
+ST_odbc_bind_timestamp(st_odbc_handle statement, int index, int year, int month, int day,
                        int hour, int minute, int second, uint32_t nanoseconds)
 {
     SQL_TIMESTAMP_STRUCT    ts;
@@ -1099,7 +1199,7 @@ ST_odbc_bind_timestamp(int statement, int index, int year, int month, int day,
 }
 
 int
-ST_odbc_clear_parameters(int statement)
+ST_odbc_clear_parameters(st_odbc_handle statement)
 {
     st_odbc_statement  *s;
     SQLHSTMT            stmt;
@@ -1139,7 +1239,7 @@ ST_odbc_clear_parameters(int statement)
  *  the execution and not to the statement.
  */
 static void
-forget_description(int statement)
+forget_description(st_odbc_handle statement)
 {
     st_odbc_statement  *s;
 
@@ -1155,7 +1255,7 @@ forget_description(int statement)
 }
 
 int
-ST_odbc_execute(int statement)
+ST_odbc_execute(st_odbc_handle statement)
 {
     SQLHSTMT    stmt;
     SQLRETURN   r;
@@ -1182,7 +1282,7 @@ ST_odbc_execute(int statement)
 }
 
 int
-ST_odbc_execute_direct(int connection, const char *sql, int64_t *rows_affected)
+ST_odbc_execute_direct(st_odbc_handle connection, const char *sql, int64_t *rows_affected)
 {
     SQLHDBC     dbc = connection_handle(connection);
     SQLHSTMT    stmt = SQL_NULL_HSTMT;
@@ -1212,7 +1312,7 @@ ST_odbc_execute_direct(int connection, const char *sql, int64_t *rows_affected)
 }
 
 int
-ST_odbc_fetch(int statement)
+ST_odbc_fetch(st_odbc_handle statement)
 {
     SQLHSTMT    stmt;
     SQLRETURN   r;
@@ -1232,7 +1332,7 @@ ST_odbc_fetch(int statement)
 }
 
 int
-ST_odbc_row_count(int statement, int64_t *out)
+ST_odbc_row_count(st_odbc_handle statement, int64_t *out)
 {
     SQLHSTMT    stmt;
     SQLLEN      rows = 0;
@@ -1259,7 +1359,7 @@ ST_odbc_row_count(int statement, int64_t *out)
  *  thousand describes for information that could not have changed.
  */
 static int
-describe_columns(int statement)
+describe_columns(st_odbc_handle statement)
 {
     SQLHSTMT            stmt;
     SQLSMALLINT         count = 0;
@@ -1332,7 +1432,7 @@ describe_columns(int statement)
 }
 
 int
-ST_odbc_column_count(int statement)
+ST_odbc_column_count(st_odbc_handle statement)
 {
     st_odbc_statement  *s;
     int                 count;
@@ -1347,7 +1447,7 @@ ST_odbc_column_count(int statement)
 }
 
 int
-ST_odbc_describe_column(int statement, int column, char *name, size_t name_max,
+ST_odbc_describe_column(st_odbc_handle statement, int column, char *name, size_t name_max,
                         int *sql_type, int64_t *size, int *decimal_digits,
                         int *nullable)
 {
@@ -1398,7 +1498,7 @@ ST_odbc_describe_column(int statement, int column, char *name, size_t name_max,
  *  statement, so two workers reading two statements never meet.
  */
 static unsigned char *
-value_room(int statement, size_t bytes)
+value_room(st_odbc_handle statement, size_t bytes)
 {
     st_odbc_statement  *s;
     unsigned char      *buffer = NULL;
@@ -1456,7 +1556,7 @@ value_room(int statement, size_t bytes)
  *  will not say can mean by it.
  */
 static int
-get_unmeasured(int statement, SQLHSTMT stmt, int column, SQLSMALLINT c_type,
+get_unmeasured(st_odbc_handle statement, SQLHSTMT stmt, int column, SQLSMALLINT c_type,
                SQLRETURN r, size_t capacity, const unsigned char **text,
                size_t *length)
 {
@@ -1503,7 +1603,7 @@ get_unmeasured(int statement, SQLHSTMT stmt, int column, SQLSMALLINT c_type,
 }
 
 static int
-get_variable(int statement, SQLHSTMT stmt, int column, SQLSMALLINT c_type,
+get_variable(st_odbc_handle statement, SQLHSTMT stmt, int column, SQLSMALLINT c_type,
              const unsigned char **text, size_t *length)
 {
     const size_t    terminator = (c_type == SQL_C_CHAR) ? 1 : 0;
@@ -1582,7 +1682,7 @@ get_variable(int statement, SQLHSTMT stmt, int column, SQLSMALLINT c_type,
 }
 
 int
-ST_odbc_get(int statement, int column, st_odbc_value *out)
+ST_odbc_get(st_odbc_handle statement, int column, st_odbc_value *out)
 {
     SQLHSTMT        stmt;
     int             sql_type = 0;
@@ -1798,14 +1898,14 @@ pattern(const char *text)
     return (SQLCHAR *) text;
 }
 
-static int
-catalogue(int connection, int which, const char *schema, const char *a,
+static st_odbc_handle
+catalogue(st_odbc_handle connection, int which, const char *schema, const char *a,
           const char *b)
 {
-    SQLHDBC     dbc = connection_handle(connection);
-    SQLHSTMT    stmt = SQL_NULL_HSTMT;
-    SQLRETURN   r = SQL_ERROR;
-    int         id;
+    SQLHDBC         dbc = connection_handle(connection);
+    SQLHSTMT        stmt = SQL_NULL_HSTMT;
+    SQLRETURN       r = SQL_ERROR;
+    st_odbc_handle  id;
 
     if (dbc == SQL_NULL_HDBC)
         return -1;
@@ -1852,28 +1952,28 @@ catalogue(int connection, int which, const char *schema, const char *a,
     return id;
 }
 
-int
-ST_odbc_tables(int connection, const char *schema, const char *table,
+st_odbc_handle
+ST_odbc_tables(st_odbc_handle connection, const char *schema, const char *table,
                const char *types)
 {
     return catalogue(connection, 0, schema, table, types);
 }
 
-int
-ST_odbc_columns(int connection, const char *schema, const char *table,
+st_odbc_handle
+ST_odbc_columns(st_odbc_handle connection, const char *schema, const char *table,
                 const char *column)
 {
     return catalogue(connection, 1, schema, table, column);
 }
 
-int
-ST_odbc_primary_keys(int connection, const char *schema, const char *table)
+st_odbc_handle
+ST_odbc_primary_keys(st_odbc_handle connection, const char *schema, const char *table)
 {
     return catalogue(connection, 2, schema, table, NULL);
 }
 
-int
-ST_odbc_imported_keys(int connection, const char *schema, const char *table)
+st_odbc_handle
+ST_odbc_imported_keys(st_odbc_handle connection, const char *schema, const char *table)
 {
     return catalogue(connection, 3, schema, table, NULL);
 }
@@ -1898,16 +1998,16 @@ static const char   absent[] =
 int         ST_odbc_available(void)                     { return 0; }
 const char *ST_odbc_last_error(void)                    { return absent; }
 
-int  ST_odbc_connect(const char *s)                     { (void) s; return -1; }
-int  ST_odbc_disconnect(int c)                          { (void) c; return -1; }
-int  ST_odbc_is_connected(int c)                        { (void) c; return 0; }
-int  ST_odbc_set_autocommit(int c, int o)          { (void) c; (void) o; return -1; }
-int  ST_odbc_set_read_only(int c, int o)           { (void) c; (void) o; return -1; }
-int  ST_odbc_commit(int c)                              { (void) c; return -1; }
-int  ST_odbc_rollback(int c)                            { (void) c; return -1; }
+st_odbc_handle ST_odbc_connect(const char *s)                     { (void) s; return -1; }
+int  ST_odbc_disconnect(st_odbc_handle c)                          { (void) c; return -1; }
+int  ST_odbc_is_connected(st_odbc_handle c)                        { (void) c; return 0; }
+int  ST_odbc_set_autocommit(st_odbc_handle c, int o)          { (void) c; (void) o; return -1; }
+int  ST_odbc_set_read_only(st_odbc_handle c, int o)           { (void) c; (void) o; return -1; }
+int  ST_odbc_commit(st_odbc_handle c)                              { (void) c; return -1; }
+int  ST_odbc_rollback(st_odbc_handle c)                            { (void) c; return -1; }
 
 int
-ST_odbc_info_string(int c, int i, char *out, size_t max)
+ST_odbc_info_string(st_odbc_handle c, int i, char *out, size_t max)
 {
     (void) c; (void) i;
     if (out && max)
@@ -1915,10 +2015,10 @@ ST_odbc_info_string(int c, int i, char *out, size_t max)
     return -1;
 }
 
-int  ST_odbc_set_schema(int c, const char *s)      { (void) c; (void) s; return -1; }
+int  ST_odbc_set_schema(st_odbc_handle c, const char *s)      { (void) c; (void) s; return -1; }
 
 int
-ST_odbc_get_schema(int c, char *out, size_t max)
+ST_odbc_get_schema(st_odbc_handle c, char *out, size_t max)
 {
     (void) c;
     if (out && max)
@@ -1926,45 +2026,45 @@ ST_odbc_get_schema(int c, char *out, size_t max)
     return -1;
 }
 
-int  ST_odbc_prepare(int c, const char *s)         { (void) c; (void) s; return -1; }
-int  ST_odbc_close_statement(int s)                     { (void) s; return -1; }
-int  ST_odbc_clear_parameters(int s)                    { (void) s; return -1; }
+st_odbc_handle ST_odbc_prepare(st_odbc_handle c, const char *s)         { (void) c; (void) s; return -1; }
+int  ST_odbc_close_statement(st_odbc_handle s)                     { (void) s; return -1; }
+int  ST_odbc_clear_parameters(st_odbc_handle s)                    { (void) s; return -1; }
 
-int  ST_odbc_bind_null(int s, int i, int t)   { (void) s; (void) i; (void) t; return -1; }
-int  ST_odbc_bind_int(int s, int i, int64_t v){ (void) s; (void) i; (void) v; return -1; }
-int  ST_odbc_bind_double(int s, int i, double v){ (void) s; (void) i; (void) v; return -1; }
-int  ST_odbc_bind_boolean(int s, int i, int v){ (void) s; (void) i; (void) v; return -1; }
+int  ST_odbc_bind_null(st_odbc_handle s, int i, int t)   { (void) s; (void) i; (void) t; return -1; }
+int  ST_odbc_bind_int(st_odbc_handle s, int i, int64_t v){ (void) s; (void) i; (void) v; return -1; }
+int  ST_odbc_bind_double(st_odbc_handle s, int i, double v){ (void) s; (void) i; (void) v; return -1; }
+int  ST_odbc_bind_boolean(st_odbc_handle s, int i, int v){ (void) s; (void) i; (void) v; return -1; }
 
 int
-ST_odbc_bind_string(int s, int i, const char *t, size_t n)
+ST_odbc_bind_string(st_odbc_handle s, int i, const char *t, size_t n)
 {
     (void) s; (void) i; (void) t; (void) n;
     return -1;
 }
 
 int
-ST_odbc_bind_bytes(int s, int i, const void *b, size_t n)
+ST_odbc_bind_bytes(st_odbc_handle s, int i, const void *b, size_t n)
 {
     (void) s; (void) i; (void) b; (void) n;
     return -1;
 }
 
 int
-ST_odbc_bind_date(int s, int i, int y, int m, int d)
+ST_odbc_bind_date(st_odbc_handle s, int i, int y, int m, int d)
 {
     (void) s; (void) i; (void) y; (void) m; (void) d;
     return -1;
 }
 
 int
-ST_odbc_bind_time(int s, int i, int h, int m, int sec, uint32_t ns)
+ST_odbc_bind_time(st_odbc_handle s, int i, int h, int m, int sec, uint32_t ns)
 {
     (void) s; (void) i; (void) h; (void) m; (void) sec; (void) ns;
     return -1;
 }
 
 int
-ST_odbc_bind_timestamp(int s, int i, int y, int mo, int d,
+ST_odbc_bind_timestamp(st_odbc_handle s, int i, int y, int mo, int d,
                        int h, int mi, int sec, uint32_t ns)
 {
     (void) s; (void) i; (void) y; (void) mo; (void) d;
@@ -1972,21 +2072,21 @@ ST_odbc_bind_timestamp(int s, int i, int y, int mo, int d,
     return -1;
 }
 
-int  ST_odbc_execute(int s)                             { (void) s; return -1; }
+int  ST_odbc_execute(st_odbc_handle s)                             { (void) s; return -1; }
 
 int
-ST_odbc_execute_direct(int c, const char *sql, int64_t *rows)
+ST_odbc_execute_direct(st_odbc_handle c, const char *sql, int64_t *rows)
 {
     (void) c; (void) sql; (void) rows;
     return -1;
 }
 
-int  ST_odbc_fetch(int s)                               { (void) s; return -1; }
-int  ST_odbc_row_count(int s, int64_t *o)          { (void) s; (void) o; return -1; }
-int  ST_odbc_column_count(int s)                        { (void) s; return -1; }
+int  ST_odbc_fetch(st_odbc_handle s)                               { (void) s; return -1; }
+int  ST_odbc_row_count(st_odbc_handle s, int64_t *o)          { (void) s; (void) o; return -1; }
+int  ST_odbc_column_count(st_odbc_handle s)                        { (void) s; return -1; }
 
 int
-ST_odbc_describe_column(int s, int c, char *name, size_t max, int *type,
+ST_odbc_describe_column(st_odbc_handle s, int c, char *name, size_t max, int *type,
                         int64_t *size, int *digits, int *nullable)
 {
     (void) s; (void) c; (void) type; (void) size;
@@ -1996,31 +2096,31 @@ ST_odbc_describe_column(int s, int c, char *name, size_t max, int *type,
     return -1;
 }
 
-int  ST_odbc_get(int s, int c, st_odbc_value *o)  { (void) s; (void) c; (void) o; return -1; }
+int  ST_odbc_get(st_odbc_handle s, int c, st_odbc_value *o)  { (void) s; (void) c; (void) o; return -1; }
 
-int
-ST_odbc_tables(int c, const char *s, const char *t, const char *y)
+st_odbc_handle
+ST_odbc_tables(st_odbc_handle c, const char *s, const char *t, const char *y)
 {
     (void) c; (void) s; (void) t; (void) y;
     return -1;
 }
 
-int
-ST_odbc_columns(int c, const char *s, const char *t, const char *col)
+st_odbc_handle
+ST_odbc_columns(st_odbc_handle c, const char *s, const char *t, const char *col)
 {
     (void) c; (void) s; (void) t; (void) col;
     return -1;
 }
 
-int
-ST_odbc_primary_keys(int c, const char *s, const char *t)
+st_odbc_handle
+ST_odbc_primary_keys(st_odbc_handle c, const char *s, const char *t)
 {
     (void) c; (void) s; (void) t;
     return -1;
 }
 
-int
-ST_odbc_imported_keys(int c, const char *s, const char *t)
+st_odbc_handle
+ST_odbc_imported_keys(st_odbc_handle c, const char *s, const char *t)
 {
     (void) c; (void) s; (void) t;
     return -1;

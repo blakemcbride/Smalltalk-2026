@@ -588,7 +588,7 @@
  *  (KERN-9 to KERN-15), two for the Tonel writer's patterns (FILES-12),
  *  and TestCase>>unusedName:suffix:in: for per-run fixtures (DOCS-6).
  */
-#define LIB_METHODS             3253
+#define LIB_METHODS             3265
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -2894,8 +2894,17 @@ test_browsing(void)
      *  with the low ones.  2853878 -> 2874524 with the Bugs6 criticals:
      *  the thirty-four methods of ClassOrganizer, ChangeSet and Behavior
      *  that hold the Classes lock, and the detach retry in Process.
+     *  2874524 -> 2881005 with Bugs6 SCHED-2, 6 and 7: Delay's three
+     *  critical: sections and the five Process methods that let a
+     *  stopped process finish what it was in.  2881005 -> 2898881 with
+     *  the rest of the Bugs6 high findings: the re-wait frame in
+     *  Process, the Tonel read-back, the unchanged-shape test in
+     *  Behavior and ClassDescription, the bounded substring search and
+     *  multipart limits, the appending setToEnd, and their comments.
+     *  2898881 -> 2899186: RestServerTest's upload bound, ten seconds
+     *  for the thread sanitizer, and the comment that says why.
      */
-    check_integer("(SourceFiles at: 1) contents size", 2874524);
+    check_integer("(SourceFiles at: 1) contents size", 2899186);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -9726,6 +9735,298 @@ test_bugs5_low_docs(void)
 {
 }
 
+/*
+ *  Bugs6, the high findings fixed by area: one function per worker, so
+ *  that their additions land in disjoint regions of this file.
+ */
+static void
+test_bugs6_high_comp(void)
+{
+    test_dialect = ST_DIALECT_CLOSURES;
+
+    /*
+     *  COMP-1: the implicit returnSelf was appended only when the last
+     *  byte emitted was not 124, and after a whileTrue: loop in statement
+     *  position the last byte is the OPERAND of the backward jump -- 124
+     *  whenever the distance back is 124 modulo 256.  Thirty-nine fillers
+     *  is that distance in the closure dialect; the neighbours are the
+     *  control.  The old compiler left such a method without its 120 and
+     *  it ran into its trailer: `a literal index past the method's
+     *  literal frame'.
+     */
+    check_string("| r | r := WriteStream on: String new."
+                 " 37 to: 41 do: [:n | | src |"
+                 " src := WriteStream on: String new."
+                 " src nextPutAll: 'bugs6Loop | i | i := 0. [i < 3] whileTrue: [i := i + 1. i := i + 1. '."
+                 " n timesRepeat: [src nextPutAll: 'self yourself. ']. src nextPutAll: ']'."
+                 " Object compile: src contents classified: 'bugs6' notifying: nil."
+                 " r nextPutAll: ([Object new bugs6Loop class name] on: Error do: [:e | e return: 'ERR'])."
+                 " r nextPutAll: ' ', ((Object compiledMethodAt: #bugs6Loop) at:"
+                 " (Object compiledMethodAt: #bugs6Loop) size - 3) printString; nextPut: $;]."
+                 " Object removeSelector: #bugs6Loop. ^r contents",
+                 "Object 120;Object 120;Object 120;Object 120;Object 120;");
+
+    /*
+     *  COMP-12: a definition that changes nothing changes nothing.  Pragma
+     *  is a bootstrapped class, whose format word is the positive form;
+     *  1983's format:variable:words:pointers: wrote the negative form of
+     *  the same shape, the two compared unequal, and the class was rebuilt
+     *  -- a new object, instances migrated, every method recompiled -- by
+     *  an accept of its unchanged template.  The scratch class is the
+     *  control: a definition that does change the shape still makes a new
+     *  class.
+     */
+    check_string("| old p | old := Pragma. p := Pragma new."
+                 " Compiler evaluate: Pragma definition logged: false."
+                 " ^(old == Pragma) printString, ' ', (Pragma format = old format) printString,"
+                 " ' ', (p isKindOf: Pragma) printString", "true true true");
+    check_string("| a b c | a := Object subclass: #Bugs6Shape instanceVariableNames: 'x'"
+                 " classVariableNames: '' poolDictionaries: '' category: 'Bugs6'."
+                 " b := Object subclass: #Bugs6Shape instanceVariableNames: 'x'"
+                 " classVariableNames: '' poolDictionaries: '' category: 'Bugs6'."
+                 " c := Object subclass: #Bugs6Shape instanceVariableNames: 'x y'"
+                 " classVariableNames: '' poolDictionaries: '' category: 'Bugs6'."
+                 " Smalltalk removeClassNamed: #Bugs6Shape."
+                 " ^(a == b) printString, ' ', (b == c) printString, ' ', c instVarNames printString",
+                 "true false ('x' 'y' )");
+
+    /*
+     *  COMP-14: a Tonel class with a selector holding an underscore, and
+     *  one whose selector is a vertical bar.  The writer read the pattern
+     *  with the 1983 Scanner, for which `_' is the assignment arrow, and
+     *  wrote `simulate [' with `_vmMilliseconds: x' as the body's first
+     *  line -- a file that never loaded again -- and `| [' with the
+     *  argument in the body.  One accept of any method writes the whole
+     *  file; the file must then hold both patterns whole and load, and the
+     *  reload must keep simulate_vmMilliseconds:, which the reader's own
+     *  selectorOf: used to misread the same way and remove as no longer in
+     *  the file.  And the write-back reads its text back before writing
+     *  it: the writer's own text passes, and the text the old writer
+     *  produced is refused with the reason the reader gives.
+     */
+    check_string("| f text path | path := 'Bugs6Wb.class.st'."
+                 " text := 'Class {~\t#name : ''Bugs6Wb'',~\t#superclass : ''Object'',~\t#category : ''Bugs6''~}~~"
+                 "{ #category : ''x'' }~Bugs6Wb >> simulate_vmMilliseconds: x [~\t^x + 1~]~~"
+                 "{ #category : ''x'' }~Bugs6Wb >> | x [~\t^x~]~'."
+                 " text := text copyReplaceAll: '~' with: (String with: Character cr)."
+                 " f := Disk textFile: path. f nextPutAll: text; close."
+                 " TonelSource loadFile: path."
+                 " ^(Smalltalk at: #Bugs6Wb) selectors asSortedCollection asArray printString",
+                 "(simulate_vmMilliseconds: | )");
+    check_string("| f r cls text path | path := 'Bugs6Wb.class.st'. cls := Smalltalk at: #Bugs6Wb."
+                 " r := [cls compile: 'three ^3' classified: 'x' notifying: nil. 'accepted']"
+                 " on: Error do: [:e | e return: 'ERR ', e messageText]."
+                 " r := r, ' ', ([TonelSource loadFile: path. 'reloaded'] on: Error do: [:e | e return: 'ERR ', e messageText])."
+                 " r := r, ' ', cls selectors asSortedCollection asArray printString,"
+                 " ' ', (cls new simulate_vmMilliseconds: 1) printString, ' ', (cls new | 5) printString."
+                 " f := Disk textFile: path. text := f contentsOfEntireFile. f close."
+                 " ^r, ' ', ((text indexOfSubCollection: 'Bugs6Wb >> simulate_vmMilliseconds: x [' startingAt: 1) > 0) printString,"
+                 " ((text indexOfSubCollection: 'Bugs6Wb >> | x [' startingAt: 1) > 0) printString",
+                 "accepted reloaded (simulate_vmMilliseconds: three | ) 2 5 truetrue");
+    check_string("| w r cls text path pairs bad | path := 'Bugs6Wb.class.st'. cls := Smalltalk at: #Bugs6Wb."
+                 " w := TonelWriter new. w writeClass: cls. text := w contents. pairs := w written."
+                 " r := (TonelReader refusalReading: text named: path holding: pairs) printString."
+                 " bad := text copyReplaceAll: 'Bugs6Wb >> simulate_vmMilliseconds: x [' with: 'Bugs6Wb >> simulate [',"
+                 " (String with: Character cr), '_vmMilliseconds: x'."
+                 " r := r, ' ', (((TonelReader refusalReading: bad named: path holding: pairs)"
+                 " indexOfSubCollection: 'in simulate:' startingAt: 1) > 0) printString."
+                 " TonelSource forget: cls. Disk removeKey: path. Smalltalk removeClassNamed: #Bugs6Wb."
+                 " ^r, ' ', (Smalltalk includesKey: #Bugs6Wb) printString",
+                 "nil true false");
+
+    test_dialect = ST_DIALECT_BLUE_BOOK;
+}
+
+static void
+test_bugs6_high_netgui(void)
+{
+    /*
+     *  NET-1: String>>indexOfSubstring:startingAt: is primitive 220, and
+     *  its Smalltalk fallback stops at the first mismatch.  The old loop
+     *  compared the whole pattern at every position -- 2.4 seconds of a
+     *  worker for a 100 KB body and a 50-character boundary, no reply in
+     *  sixty for 300 KB and 2,000 -- and HttpRequest>>parseParts ran it
+     *  over a stranger's body with a stranger's boundary before anything
+     *  had been authenticated.  evaluate's budget is twenty million
+     *  bytecodes, so the two scans here -- 200 KB with nothing to find,
+     *  and the worst case for a search that stops at a mismatch, every
+     *  position matching all but the last byte -- did not finish on the
+     *  old binary and are instant on this one.
+     */
+    check_integer("(String new: 200000 withAll: $B) indexOfSubstring:"
+                  " ('--', (String new: 70 withAll: $A)) startingAt: 1", 0);
+    check_integer("(String new: 200000 withAll: $-) indexOfSubstring:"
+                  " ((String new: 69 withAll: $-), 'X') startingAt: 1", 0);
+    /*  The answers 1983's rules give, from the primitive and from the
+     *  fallback alike; the last is the fallback, since a start below 1
+     *  fails the primitive so that at: can raise as it always did.  */
+    check_integer("'hello world' indexOfSubstring: 'world' startingAt: 1", 7);
+    check_integer("'hello world' indexOfSubstring: 'hello' startingAt: 2", 0);
+    check_integer("'hello world' indexOfSubstring: 'o' startingAt: 6", 8);
+    check_integer("'hello world' indexOfSubstring: '' startingAt: 4", 4);
+    check_integer("'hello world' indexOfSubstring: 'd' startingAt: 11", 11);
+    check_integer("'hello world' indexOfSubstring: 'ld' startingAt: 11", 0);
+    check_integer("'hello world' indexOfSubstring: 'world' startingAt: 100",
+                  0);
+    check_integer("'aaab' indexOfSubstring: 'aab' startingAt: 1", 2);
+    check_integer("'hello world' indexOfSubstring: #world startingAt: 1", 7);
+    check_integer("#'hello world' indexOfSubstring: 'wor' startingAt: 1", 7);
+    check_boolean("'hello world' includesSubstring: 'lo w'", 1);
+    check_string("[('hello' indexOfSubstring: 'h' startingAt: 0) printString]"
+                 " on: Error do: [:e | 'raised']", "raised");
+    /*
+     *  And the boundary is 1 to 70 characters (RFC 2046) before a byte of
+     *  the body is scanned: 71 is 400, empty is 400, 70 parses.
+     */
+    check_integer(
+        "| crlf b body r | crlf := String with: (Character value: 13)"
+        " with: (Character value: 10). b := String new: 71 withAll: $A."
+        " body := '--', b, crlf, 'Content-Disposition: form-data; name=\"x\"',"
+        " crlf, crlf, '1', crlf, '--', b, '--', crlf."
+        " r := HttpRequest fromString: 'POST /rest HTTP/1.1', crlf,"
+        " 'Content-Type: multipart/form-data; boundary=', b, crlf,"
+        " 'Content-Length: ', body size printString, crlf, crlf, body."
+        " ^[r parts size] on: HttpError do: [:e | e status]", 400);
+    check_integer(
+        "| crlf b body r | crlf := String with: (Character value: 13)"
+        " with: (Character value: 10). b := ''."
+        " body := '--', b, crlf, 'Content-Disposition: form-data; name=\"x\"',"
+        " crlf, crlf, '1', crlf, '--', b, '--', crlf."
+        " r := HttpRequest fromString: 'POST /rest HTTP/1.1', crlf,"
+        " 'Content-Type: multipart/form-data; boundary=', b, crlf,"
+        " 'Content-Length: ', body size printString, crlf, crlf, body."
+        " ^[r parts size] on: HttpError do: [:e | e status]", 400);
+    check_integer(
+        "| crlf b body r | crlf := String with: (Character value: 13)"
+        " with: (Character value: 10). b := String new: 70 withAll: $A."
+        " body := '--', b, crlf, 'Content-Disposition: form-data; name=\"x\"',"
+        " crlf, crlf, '1', crlf, '--', b, '--', crlf."
+        " r := HttpRequest fromString: 'POST /rest HTTP/1.1', crlf,"
+        " 'Content-Type: multipart/form-data; boundary=', b, crlf,"
+        " 'Content-Length: ', body size printString, crlf, crlf, body."
+        " ^[r parts size] on: HttpError do: [:e | e status]", 1);
+
+    /*
+     *  GUI-1: a coordinate of exactly 2^30 passed GFX_blit_from_oop's
+     *  limit, `dx + w' overflowed in clip_range, the width was never
+     *  clipped, and copyLoop ran 2^26 words for every row with every write
+     *  dropped -- twelve seconds for the Display's 480 rows, and for ever
+     *  with 2^30 rows as well.  The limit is 2^29 and exclusive now, and
+     *  the loop refuses a rectangle that does not lie inside the form.
+     *  The two half-overflows, one per axis, each took twelve seconds on
+     *  the old binary; the whole one never returned and is in
+     *  test_serve_faults, where a hang is a sixty-second kill rather than
+     *  a stuck suite.
+     */
+    check_boolean("(Time millisecondsToRun: [Display fill: (1073741824@0"
+                  " extent: 1073741824@480) mask: Form black]) < 1000", 1);
+    check_boolean("(Time millisecondsToRun: [Display fill: (0@1073741824"
+                  " extent: 480@1073741824) mask: Form black]) < 1000", 1);
+    /*  Just inside the limit is accepted, clipped away, and draws
+     *  nothing; at the limit the primitive fails and copyBits' fallback
+     *  returns, since the rectangle cannot meet the clipping rectangle;
+     *  and an ordinary fill still fills.  */
+    check_boolean("| f | f := Form extent: 64@64."
+                  " f fill: (536870911@0 extent: 536870911@64) mask: Form black."
+                  " ^(f bits inject: 0 into: [:a :w | a + w]) = 0", 1);
+    check_string("| f | f := Form extent: 64@64."
+                 " f fill: (536870912@0 extent: 10@10) mask: Form black."
+                 " ^'returned'", "returned");
+    check_integer("| f | f := Form extent: 64@64."
+                  " f fill: (0@0 extent: 16@16) mask: Form black."
+                  " ^f bits inject: 0 into: [:a :w | a + (w = 0 ifTrue: [0]"
+                  " ifFalse: [1])]", 16);
+}
+
+static void
+test_bugs6_high_files(void)
+{
+    const char *log   = st_test_path("bugs6-files4-held.txt");
+    const char *two   = st_test_path("bugs6-files4-two.txt");
+    const char *data  = st_test_path("bugs6-files2-data.txt");
+    const char *other = st_test_path("bugs6-files2-other.txt");
+    const char *db    = st_test_path("bugs6-files1.db");
+    char        expression[1536];
+
+    /*
+     *  FILES-4.  A stream held open appends at the end the file HAS, not
+     *  the end it last saw: another stream's append between two of its
+     *  own is kept, and its close does not cut it off.  The old code
+     *  answered 'line0|A1|A2' -- the page was put back over OTHER and
+     *  the file truncated at the stream's own position.
+     */
+    snprintf(expression, sizeof expression,
+             "| a | (FileStream fileNamed: '%s') nextPutAll: 'line0'; close. "
+             "a := FileStream fileNamed: '%s'. "
+             "a setToEnd; nextPutAll: '|A1'; flush. "
+             "(FileStream fileNamed: '%s') setToEnd; nextPutAll: '|OTHER'; "
+             "close. a setToEnd; nextPutAll: '|A2'; close. "
+             "^(FileStream oldFileNamed: '%s') contentsOfEntireFile",
+             log, log, log, log);
+    check_string(expression, "line0|A1|OTHER|A2");
+    unlink(log);
+
+    /*  Two streams held open, taking turns: 'line0|B1|B2' before.  */
+    snprintf(expression, sizeof expression,
+             "| a b | (FileStream fileNamed: '%s') nextPutAll: 'line0'; close. "
+             "a := FileStream fileNamed: '%s'. b := FileStream fileNamed: '%s'. "
+             "a setToEnd; nextPutAll: '|A1'; flush. "
+             "b setToEnd; nextPutAll: '|B1'; flush. "
+             "a setToEnd; nextPutAll: '|A2'; flush. "
+             "b setToEnd; nextPutAll: '|B2'; flush. a close. b close. "
+             "^(FileStream oldFileNamed: '%s') contentsOfEntireFile",
+             two, two, two, two);
+    check_string(expression, "line0|A1|B1|A2|B2");
+    unlink(two);
+
+    /*
+     *  FILES-2.  A File presenting a descriptor that is this process's
+     *  but not ITS OWN -- which is what a File from a saved image
+     *  presents once the new life has opened as many files -- is not
+     *  believed: g carries f's number, and reading through g must read
+     *  g's file and writing through g must leave f's alone.  Before, g
+     *  read 'DATA-OF-F' and the write landed in f's file.
+     */
+    snprintf(expression, sizeof expression,
+             "| f g p r | (FileStream fileNamed: '%s') nextPutAll: 'DATA-OF-F'; "
+             "close. (FileStream fileNamed: '%s') nextPutAll: 'OTHER-FILE'; "
+             "close. f := Disk findKey: '%s'. f size. g := Disk findKey: '%s'. "
+             "g fd: (f instVarAt: 9). p := g readPageNumber: 1. "
+             "r := (p page copyFrom: 1 to: p size) asString. "
+             "p page replaceFrom: 1 to: 9 with: 'WRITTEN-G' asByteArray "
+             "startingAt: 1. p size: 9. g write: p. g close. f close. "
+             "^r, ' / ', (FileStream oldFileNamed: '%s') contentsOfEntireFile, "
+             "' / ', (FileStream oldFileNamed: '%s') contentsOfEntireFile",
+             data, other, data, other, data, other);
+    check_string(expression, "OTHER-FILE / DATA-OF-F / WRITTEN-GE");
+    unlink(data);
+    unlink(other);
+
+    /*
+     *  FILES-1, the half that needs no snapshot: a handle names one claim
+     *  of a table slot, not the slot.  A closed connection's handle is
+     *  not believed once the slot is claimed again, and closing it again
+     *  does not close the new holder.  Before: '(true true true false )'.
+     *  Through SQLite, so it is skipped where there is no driver -- as
+     *  test_odbc_parallel skips -- rather than failing for want of one.
+     */
+    snprintf(expression, sizeof expression,
+             "[(DbConnection open: 'DRIVER=SQLITE3;Database=%s;') close. true] "
+             "on: Error do: [:e | false]", db);
+    if (evaluate(expression) == ST_TRUE) {
+        snprintf(expression, sizeof expression,
+                 "| a h b r | a := DbConnection open: "
+                 "'DRIVER=SQLITE3;Database=%s;'. h := a handle. a close. "
+                 "b := DbConnection open: 'DRIVER=SQLITE3;Database=%s;'. "
+                 "r := {Odbc isConnected: h. b isOpen. h = b handle}. "
+                 "a close. r := r, {b isOpen}. b close. ^r printString",
+                 db, db);
+        check_string(expression, "(false true false true )");
+    } else
+        printf("  skipped FILES-1 in-process: no SQLITE3 driver\n");
+    unlink(db);
+}
+
 int
 main(void)
 {
@@ -9855,6 +10156,9 @@ main(void)
     test_bugs5_low_net();
     test_bugs5_low_files();
     test_bugs5_low_docs();
+    test_bugs6_high_comp();
+    test_bugs6_high_netgui();
+    test_bugs6_high_files();
 
     OM_shutdown();
     return ST_TEST_END();

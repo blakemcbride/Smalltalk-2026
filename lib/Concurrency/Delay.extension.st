@@ -26,10 +26,21 @@ nothing resets the semaphore, so there is nothing to race.  Re-arming
 replaces the VM's one outstanding request, which is what primitive 136
 does anyway.
 
-The lock is released by ensure: in both the timing process and wait, so
-an error inside either -- setResumption refusing a Delay that is already
-waiting, say -- cannot leave AccessProtect held and every later wait
-behind it.  And what is given to delay: is checked there, when the Delay
+The lock is taken with critical: in the timing process, in wait and in
+retire, so an error inside any of them -- setResumption refusing a Delay
+that is already waiting, say -- cannot leave AccessProtect held and every
+later wait behind it.  critical:, and not 1983's `AccessProtect wait ...
+ensure: [AccessProtect signal]', which this file kept until Bugs6 SCHED-2:
+a process signalled off AccessProtect sits on its ready list with the
+lock and no unwind frame yet, and a terminate there ran no ensure: block,
+so the signal it had been handed was never given back and every Delay in
+the image waited for ever on a lock nobody held -- eleven runs in eleven
+of a randomized terminate stress, within three seconds.  Semaphore's
+critical: waits inside the protected block and marks that it was had, so
+Process>>terminate can tell a process stopped just after the wait from one
+stopped just before it (Bugs5 OM-5).  The timing process also catches an
+Error per tick and reports it, so one bad Delay cannot stop every other
+(Bugs6 SCHED-7).  And what is given to delay: is checked there, when the Delay
 is made, rather than discovered at armTimer with the lock held and the
 class variables half changed: a Float, a negative, or a duration wider
 than the timer counts is rounded, floored at zero, or refused with an
@@ -95,8 +106,9 @@ Delay class >> initializeTimingProcess [
 	semaphore := TimingSemaphore.
 	[[true] whileTrue: [
 		semaphore wait.
-		AccessProtect wait.
-		[self resumeWhatIsDue] ensure: [AccessProtect signal]]]
+		[AccessProtect critical: [self resumeWhatIsDue]]
+			on: Error
+			do: [:e | e reportAsText. e return: nil]]]
 			forkAt: Processor timingPriority
 ]
 
@@ -224,8 +236,8 @@ Delay >> wait [
 	 nothing would ever fire it (Bugs3 B12).  delay: now refuses what the
 	 timer cannot count, so armTimer cannot raise; the order here is what
 	 keeps the class variables consistent should it ever learn to."
-	AccessProtect wait.
-	[self setResumption.
+	AccessProtect critical: [
+	 self setResumption.
 	 (ActiveDelay isNil or: [resumptionTime < ActiveDelay resumptionTime])
 		ifTrue: [ | displaced |
 			displaced := ActiveDelay.
@@ -245,8 +257,7 @@ Delay >> wait [
 			 same one -- so the cost is a primitive call per wait and
 			 the queue can no longer be left with nothing counting it."
 			SuspendedDelays add: self.
-			ActiveDelay armTimer]]
-			ensure: [AccessProtect signal].
+			ActiveDelay armTimer]].
 	"Retired on the way out however the wait ends.  Terminate runs unwind
 	 blocks, so a process killed while waiting takes its Delay out of the
 	 queue with it instead of leaving it there until its own time comes
@@ -428,17 +439,16 @@ Delay >> retire [
 	 The head is replaced and the timer re-armed for whatever is behind
 	 it, so retiring the delay everything else is queued behind does not
 	 leave the queue with nothing counting it."
-	AccessProtect wait.
-	[delayInProgress ifTrue: [
-		delayInProgress := false.
-		ActiveDelay == self
-			ifTrue: [
-				ActiveDelay := SuspendedDelays isEmpty
-					ifTrue: [nil]
-					ifFalse: [SuspendedDelays removeFirst].
-				ActiveDelay notNil ifTrue: [ActiveDelay armTimer]]
-			ifFalse: [SuspendedDelays remove: self ifAbsent: []]]]
-				ensure: [AccessProtect signal]
+	AccessProtect critical: [
+		delayInProgress ifTrue: [
+			delayInProgress := false.
+			ActiveDelay == self
+				ifTrue: [
+					ActiveDelay := SuspendedDelays isEmpty
+						ifTrue: [nil]
+						ifFalse: [SuspendedDelays removeFirst].
+					ActiveDelay notNil ifTrue: [ActiveDelay armTimer]]
+				ifFalse: [SuspendedDelays remove: self ifAbsent: []]]]
 ]
 
 { #category : '*Concurrency' }

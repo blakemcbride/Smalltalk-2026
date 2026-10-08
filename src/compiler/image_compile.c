@@ -63,110 +63,26 @@
 
 typedef struct {
     st_oop      class_oop;          /*  whose class variables are in scope  */
-    st_oop      guard;              /*  a rooted Array; see imgc_hold  */
-    uint32_t    held;
 } imgc_scope;
 
 /*
- *  Keep what the compile has built alive until the method holds it.
+ *  The factories are the bootstrap's own, unwrapped.
  *
- *  compiler.c collects literals in a C array and hands them over only at the
- *  end, when the CompiledMethod is made.  A C array is not a root.  Under
- *  the bootstrap that never mattered -- one thread, and the collector runs
- *  when allocation asks it to, which is rarely there -- but a run-time
- *  compile happens on a worker with thirty others allocating beside it, so
- *  a collection in the middle of one would free a String or an Array that
- *  exists so far only in `code.literals[]', and the method would be built
- *  around a freed object.
+ *  They were wrapped once, in imgc_hold: every object a factory made was
+ *  also stored into a 256-slot Array the primitive had pushed on the
+ *  Smalltalk stack, because compiler.c collects literals in a C array and
+ *  a C array is not a root.  Past the 256th object the guard silently
+ *  stopped holding, and a -serve compile of a longer literal array -- or
+ *  a cascade of 130 string arguments, each part compiled twice -- was
+ *  freed under it by another worker's allocation: `bad=1569' of 4,000
+ *  strings in one run (Bugs6 COMP-2).  The compiler now roots its own
+ *  compile for as long as it holds anything (COMPILE_visit_roots, on the
+ *  interpreter's compile_roots chain), with no ceiling, so there is nothing
+ *  left for a guard to do and the factories go in directly.
  *
- *  So every object a factory makes is also stored into an Array the CALLER
- *  has made reachable -- it pushes it on the Smalltalk stack, and the
- *  collector marks a context's stack up to its stack pointer.  The guard is
- *  dropped as soon as the method exists, because the method then holds its
- *  own literals.
- *
- *  Overflow is not a failure: a method may reference at most 64 literals
- *  (six bits in the Blue Book header), so the room here is several times
- *  what any method can use, and running out means the compile was going to
- *  be refused anyway.
+ *  Symbols never needed holding: interning puts them in the symbol table,
+ *  which is a root.  Characters are fetched from CharacterTable, not made.
  */
-static st_oop
-imgc_hold(imgc_scope *scope, st_oop object)
-{
-    if (scope && OM_is_object(object) && OM_is_object(scope->guard)
-     && scope->held < OM_fetch_word_length(scope->guard)) {
-        OM_store_pointer(scope->held, scope->guard, object);
-        ++scope->held;
-    }
-    return object;
-}
-
-/*
- *  The factories, each the bootstrap's with the object held.
- *
- *  Symbols are not held and do not need to be: interning refcounts them and
- *  puts them in the symbol table, which is a root, so a Symbol outlives any
- *  collection from the moment it exists.  Characters are the same -- they
- *  are fetched from CharacterTable rather than made.
- */
-static st_oop
-imgc_make_string(const char *text, void *user)
-{
-    return imgc_hold((imgc_scope *) user, BOOT_make_string(text, user));
-}
-
-/*
- *  And from bytes, for a string literal holding a NUL -- which is data in
- *  a String and the end of the text to make_string.  Bugs3 B28.
- */
-static st_oop
-imgc_make_string_n(const char *bytes, size_t length, void *user)
-{
-    return imgc_hold((imgc_scope *) user,
-                     BOOT_make_string_n(bytes, length, user));
-}
-
-static st_oop
-imgc_make_float(double value, void *user)
-{
-    return imgc_hold((imgc_scope *) user, BOOT_make_float(value, user));
-}
-
-static st_oop
-imgc_make_large_integer(int64_t value, void *user)
-{
-    return imgc_hold((imgc_scope *) user, BOOT_make_large_integer(value, user));
-}
-
-static st_oop
-imgc_make_large_integer_digits(const char *digits, unsigned radix,
-                               int negative, void *user)
-{
-    return imgc_hold((imgc_scope *) user,
-                     BOOT_make_large_integer_digits(digits, radix, negative,
-                                                    user));
-}
-
-static st_oop
-imgc_make_array(st_oop *elements, unsigned count, void *user)
-{
-    return imgc_hold((imgc_scope *) user,
-                     BOOT_make_array(elements, count, user));
-}
-
-static st_oop
-imgc_make_byte_array(const uint8_t *bytes, unsigned count, void *user)
-{
-    return imgc_hold((imgc_scope *) user,
-                     BOOT_make_byte_array(bytes, count, user));
-}
-
-static st_oop
-imgc_make_method_state(st_oop pragmas, void *user)
-{
-    return imgc_hold((imgc_scope *) user,
-                     BOOT_make_method_state(pragmas, user));
-}
 
 /*
  *  Whether that object is a class.
@@ -376,7 +292,7 @@ c_string_of(st_oop string, size_t *length)
 int
 IMGC_compile(st_oop source, st_oop class_oop, st_oop ivar_names,
              st_oop class_association, int no_pattern, int dialect,
-             st_oop guard, st_compile_result *out)
+             st_compile_result *out)
 {
     st_compile_context  ctx;
     imgc_scope          scope;
@@ -413,8 +329,6 @@ IMGC_compile(st_oop source, st_oop class_oop, st_oop ivar_names,
     }
 
     scope.class_oop = class_oop;
-    scope.guard     = guard;
-    scope.held      = 0;
 
     memset(&ctx, 0, sizeof ctx);
     ctx.dialect                   = dialect;
@@ -424,14 +338,14 @@ IMGC_compile(st_oop source, st_oop class_oop, st_oop ivar_names,
     ctx.lookup_global             = imgc_lookup_global;
     ctx.user                      = &scope;
     ctx.intern_symbol             = BOOT_intern_symbol;
-    ctx.make_string               = imgc_make_string;
-    ctx.make_string_n             = imgc_make_string_n;
-    ctx.make_float                = imgc_make_float;
-    ctx.make_large_integer        = imgc_make_large_integer;
-    ctx.make_large_integer_digits = imgc_make_large_integer_digits;
-    ctx.make_array                = imgc_make_array;
-    ctx.make_byte_array           = imgc_make_byte_array;
-    ctx.make_method_state         = imgc_make_method_state;
+    ctx.make_string               = BOOT_make_string;
+    ctx.make_string_n             = BOOT_make_string_n;
+    ctx.make_float                = BOOT_make_float;
+    ctx.make_large_integer        = BOOT_make_large_integer;
+    ctx.make_large_integer_digits = BOOT_make_large_integer_digits;
+    ctx.make_array                = BOOT_make_array;
+    ctx.make_byte_array           = BOOT_make_byte_array;
+    ctx.make_method_state         = BOOT_make_method_state;
     ctx.make_character            = BOOT_make_character;
     ctx.method_class_association  = OM_is_object(class_association)
                                         ? class_association
@@ -439,11 +353,10 @@ IMGC_compile(st_oop source, st_oop class_oop, st_oop ivar_names,
 
     status = COMPILE_method_n(text, length, &ctx, out);
     /*
-     *  And the method itself, for the moment between building it and the
-     *  caller storing it somewhere the collector can see.
+     *  The method answered is held in C alone from here until the caller
+     *  stores it: the caller allocates nothing before it does (prim.c
+     *  makes the answer Array first), and this frees only C memory.
      */
-    if (status == 0)
-        (void) imgc_hold(&scope, out->method);
 
     for (i = 0; i < ivar_count; ++i)
         free(ivars[i]);

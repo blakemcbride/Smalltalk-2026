@@ -96,7 +96,15 @@ static const char *st2026;
  *  image's .changes with them, so that a name per run is not a pile per
  *  run.
  */
-static struct { const char *name; char *path; } fixtures_made[32];
+/*
+ *  Sixty-four, not thirty-two: the Bugs6 file findings brought the count
+ *  of names past the old table, and a name the table has no room for
+ *  comes back BARE -- so a snapshot was written under the tree's root and
+ *  the run that was to resume it looked in the test directory and could
+ *  not open it.  Names derived from one fixture (`.im', `.im.changes')
+ *  are made with snprintf by their users rather than registered here.
+ */
+static struct { const char *name; char *path; } fixtures_made[64];
 
 static const char *
 fixture(const char *name)
@@ -294,20 +302,23 @@ bugs5_low_om(void)
      *  loaded image comes with were never put on the free chain, and a
      *  collection that could not lower the table's limit dropped every
      *  index sitting in a worker's magazine -- so a table three quarters
-     *  free collected for ever without reaching its OutOfMemory.  A
-     *  quarter of a million: the lowest ceiling accepted, two runaways
-     *  caught, about three seconds.
+     *  free collected for ever without reaching its OutOfMemory.  Half a
+     *  million: two runaways caught, about four seconds.  It was a
+     *  quarter of a million, the lowest ceiling accepted, until the
+     *  Bugs6 fixes grew the library past it -- the bootstrap's table
+     *  high-water mark, which a loaded image needs whole, passed 262,144
+     *  and the image could not be loaded under the ceiling at all.
      */
     if (write_file(BATCH,
             "| a r1 r2 | r1 := [a := OrderedCollection new. [a add: (Array "
             "new: 1)] repeat] on: OutOfMemory do: [:e | e return: a size]. "
             "a := nil. Smalltalk garbageCollect. r2 := [a := OrderedCollection "
             "new. [a add: (Array new: 1)] repeat] on: OutOfMemory do: [:e | e "
-            "return: a size]. a := nil. (r1 between: 100000 and: 262144) & "
-            "(r2 between: 100000 and: 262144) ifTrue: ['survived twice'] "
+            "return: a size]. a := nil. (r1 between: 100000 and: 524288) & "
+            "(r2 between: 100000 and: 524288) ifTrue: ['survived twice'] "
             "ifFalse: [{r1. r2}]\n") == 0) {
         snprintf(command, sizeof command,
-                 "ST_MAX_OBJECTS=262144 " ST_TEST_TIMEOUT " -k 2 " SERVE_SECONDS " %s "
+                 "ST_MAX_OBJECTS=524288 " ST_TEST_TIMEOUT " -k 2 " SERVE_SECONDS " %s "
                  "-serve %s -workers 4 \"$(cat %s)\" 2>&1",
                  st2026, IMAGE, BATCH);
         status = run(command, out, sizeof out);
@@ -1108,6 +1119,589 @@ bugs6_high_om(void)
     }
 }
 
+/*
+ *  Bugs6, the scheduler findings among the high ones: three ways a
+ *  terminate or a signalException: lost a lock or tore a queue.  Every
+ *  line is deterministic on one worker, where `Processor yield' runs a
+ *  forked process up to its next wait or yield.
+ */
+static void
+bugs6_high_sched(void)
+{
+    static char out[65536];
+    const char *probe = fixture("bugs6-serve-sched.st");
+    char        batch[512];
+    int         status;
+
+    /*
+     *  SCHED-2: Delay>>wait kept 1983's `AccessProtect wait ... ensure:
+     *  [AccessProtect signal]', so a process terminated after the wait
+     *  returned and before the ensure: was entered kept the lock, and
+     *  every Delay in the image waited for ever.  The lock is taken,
+     *  handed to a process that is then terminated on its ready list,
+     *  and must come back: the next Delay has to return.
+     *
+     *  SCHED-6: signalException: into a process waiting inside an
+     *  ensure: block threw the rest of the block away.  The block has
+     *  to finish (ensureEnd) before the handler runs (handled).
+     *
+     *  SCHED-7: terminate of a process parked inside a critical: section
+     *  unwound it from the middle.  The section has to finish (1 2)
+     *  before the process ends, and the Mutex be free after; then eight
+     *  processes looping on short Delays, terminated and replaced at
+     *  random for two seconds, must leave Delay working -- the old
+     *  binary's timing process died on a nil at the head of the queue
+     *  every run.
+     */
+    if (write_file(probe,
+            "| ap p gate log m oc procs killer rnd stop n |\n"
+            "ap := Delay classPool at: #AccessProtect. ap wait.\n"
+            "p := [(Delay forMilliseconds: 5) wait] fork. Processor yield. "
+            "ap signal.\n"
+            "p terminate.\n"
+            "(Delay forMilliseconds: 1) wait.\n"
+            "log := OrderedCollection new. gate := Semaphore new.\n"
+            "p := [[[log add: #body] ensure: [log add: #ensureStart. "
+            "gate wait. log add: #ensureEnd]] on: Error do: [:e | "
+            "log add: #handled]] fork.\n"
+            "Processor yield. p signalException: (Error new messageText: "
+            "'poke'). gate signal.\n"
+            "(Delay forMilliseconds: 20) wait.\n"
+            "m := Mutex new. oc := OrderedCollection new.\n"
+            "p := [m critical: [oc add: 1. Processor yield. oc add: 2]] fork.\n"
+            "Processor yield. p terminate.\n"
+            "(Delay forMilliseconds: 20) wait.\n"
+            "rnd := Random new. rnd seed: 7. stop := false. n := 0.\n"
+            "procs := (1 to: 8) collect: [:i | [[stop] whileFalse: "
+            "[(Delay forMilliseconds: 1 + (rnd next * 2) truncated) wait]] fork].\n"
+            "killer := [[stop] whileFalse: [ | k | k := (rnd next * 8) "
+            "truncated + 1. (procs at: k) terminate. procs at: k put: "
+            "[[stop] whileFalse: [(Delay forMilliseconds: 1 + (rnd next * 2) "
+            "truncated) wait]] fork. n := n + 1. Processor yield]] fork.\n"
+            "(Delay forSeconds: 2) wait. stop := true. "
+            "(Delay forMilliseconds: 50) wait.\n"
+            "procs do: [:q | q terminate]. killer terminate.\n"
+            "(Delay forMilliseconds: 5) wait.\n"
+            "^{(ap instVarAt: 3). log asArray. oc asArray. "
+            "p suspendedContext isNil. m isHeld. n > 100}\n") == 0) {
+        snprintf(batch, sizeof batch,
+                 "Compiler evaluate: (FileStream oldFileNamed: '%s') "
+                 "contentsOfEntireFile\n3 + 4\n", probe);
+        status = serve(batch, 1, out, sizeof out);
+        ++st_test_checks;
+        if (status < 0) {
+            ++st_test_failures;
+            printf("  FAIL SCHED-2/6/7: could not run the server\n");
+        } else {
+            expect(out, "==> (1 (body ensureStart ensureEnd handled ) (1 2 ) "
+                        "true false true )",
+                   "SCHED-2/6/7 the lock comes back, the block finishes, "
+                   "the section finishes, Delay survives the storm");
+            expect(out, "3 + 4 ==> 7", "SCHED-2/6/7 the image survived");
+        }
+    }
+}
+
+/*
+ *  Bugs6, the high findings fixed by area: one function per worker.
+ */
+static void
+bugs6_high_comp(void)
+{
+    static char out[65536];
+    const char *lits = fixture("bugs6-comp2.st");
+    char        command[2048];
+    int         status;
+
+    /*
+     *  COMP-2: the literals a compile builds lived in C arrays until the
+     *  method was made, and the guard Array the primitive pushed held the
+     *  first 256 of them and silently no more.  ST_GC_AT_CLASS=14 forces a
+     *  collection at every String allocation, so a 300-string literal
+     *  array is collected under 300 times while it is being built: the
+     *  old binary answered 299 strings that were not the ones in the
+     *  source, and the fixed compiler -- which roots the compile in flight
+     *  -- answers every one.  One worker, so that nothing but the compile's
+     *  own allocations is in play.
+     */
+    if (write_file(lits,
+                   "[:n | | src a bad | src := WriteStream on: (String new: 4000)."
+                   " src nextPutAll: 'bugs6Lits ^#('."
+                   " 1 to: n do: [:i | src nextPutAll: '''s'; print: i; nextPutAll: ''' ']."
+                   " src nextPutAll: ')'. Object compile: src contents."
+                   " a := Object new bugs6Lits. bad := 0."
+                   " 1 to: n do: [:i | ((a at: i) class == String and: [(a at: i) = ('s', i printString)])"
+                   " ifFalse: [bad := bad + 1]]. 'bad=', bad printString] value: 300\n") != 0) {
+        ++st_test_checks;
+        ++st_test_failures;
+        printf("  FAIL COMP-2: cannot write the probe\n");
+    } else {
+        snprintf(command, sizeof command,
+                 "ST_GC_AT_CLASS=14 " ST_TEST_TIMEOUT " -k 2 " SERVE_SECONDS
+                 " %s -serve %s -workers 1 \"$(cat %s)\" 2>&1",
+                 st2026, IMAGE, lits);
+        status = run(command, out, sizeof out);
+        ++st_test_checks;
+        if (status < 0) {
+            ++st_test_failures;
+            printf("  FAIL COMP-2: could not run the server\n");
+        } else {
+            expect(out, "==> 'bad=0'",
+                   "COMP-2 a literal array's strings survive collections mid-compile");
+            expect_absent(out, "Segmentation", "COMP-2 no crash");
+        }
+    }
+
+    /*
+     *  COMP-12: re-evaluating ContextPart's own definition rebuilt the
+     *  class under the running contexts -- `asked to run an object that is
+     *  not a context', 1383 errors, then nothing -- because the bootstrap's
+     *  format word and 1983's recomputed one differ for the same shape.
+     *  In its own process, since the old binary does not come back from
+     *  it.  An unchanged definition answers the same class; a definition
+     *  that would reshape ContextPart is refused before anything is
+     *  touched; and the image goes on.
+     */
+    status = serve("[:old | Compiler evaluate: ContextPart definition logged: false."
+                   " old == ContextPart] value: ContextPart\n"
+                   "[Object subclass: #ContextPart instanceVariableNames: 'sender pc stackp bugs6'"
+                   " classVariableNames: '' poolDictionaries: '' category: 'Kernel-Methods'."
+                   " 'not refused'] on: Error do: [:e | e return: e messageText]\n"
+                   "ContextPart instVarNames size\n"
+                   "3 + 4\n", 2, out, sizeof out);
+    ++st_test_checks;
+    if (status < 0) {
+        ++st_test_failures;
+        printf("  FAIL COMP-12: could not run the server\n");
+    } else {
+        expect(out, "value: ContextPart ==> true",
+               "COMP-12 an unchanged definition keeps the class");
+        expect(out, "==> 'ContextPart cannot be reshaped: the interpreter holds "
+                    "ContextPart instances in its registers; define a subclass instead'",
+               "COMP-12 a reshape of ContextPart is refused");
+        expect(out, "3 + 4 ==> 7", "COMP-12 the image goes on");
+        expect_absent(out, "recompiling ContextPart", "COMP-12 nothing recompiled");
+        expect_absent(out, "not a context", "COMP-12 no wreck");
+    }
+}
+
+static void
+bugs6_high_netgui(void)
+{
+    static char out[65536];
+    const char *multipart = fixture("bugs6-serve-multipart.st");
+    const char *parts     = fixture("bugs6-serve-parts.st");
+    char        batch[1024];
+    int         status;
+
+    /*
+     *  NET-1: a multipart POST, unauthenticated, against a RestServer that
+     *  requires authentication.  indexOfSubstring:startingAt: compared the
+     *  whole boundary at every position of the body, and parseParts ran
+     *  it before the login check because the session token is a field of
+     *  the form: 300 KB with a 2,000-character boundary left the worker
+     *  scanning past the sixty-second mark with no reply.  Now the
+     *  boundary is capped at RFC 2046's seventy characters (400 at once),
+     *  the search is primitive 220, and a body of more than ten thousand
+     *  parts is 400 where the cap is passed.  The client is the image's
+     *  own Socket, so the run needs nothing outside the binary; the old
+     *  binary answered the first request with nothing in twenty seconds.
+     *  Two files, because one doIt may name 63 literals and the whole
+     *  of this names more.
+     */
+    if (write_file(multipart,
+            "| crlf server port post reply |\n"
+            "crlf := String with: (Character value: 13) with: (Character value: 10).\n"
+            "server := RestServer new port: 0; bindAddress: '127.0.0.1';\n"
+            "  backendDirectory: 'tests/rest-backend'; requireAuthentication: true;\n"
+            "  maxRequestBytes: 1000000; name: 'bugs6'; yourself.\n"
+            "server start. port := server port.\n"
+            "post := [:bnd :text | | sock buf n |\n"
+            "  sock := Socket connectTo: '127.0.0.1' port: port.\n"
+            "  sock send: 'POST /rest HTTP/1.1', crlf, 'Host: x', crlf,\n"
+            "    'Content-Type: multipart/form-data; boundary=', bnd, crlf,\n"
+            "    'Content-Length: ', text size printString, crlf,\n"
+            "    'Connection: close', crlf, crlf, text.\n"
+            "  buf := String new: 12.\n"
+            "  n := sock receiveInto: buf timeout: 20000.\n"
+            "  sock close.\n"
+            "  n isNil ifTrue: ['no reply'] ifFalse: [buf copyFrom: 1 to: n]].\n"
+            "reply := (post value: (String new: 2000 withAll: $A)\n"
+            "    value: (String new: 300000 withAll: $B)), ' / ',\n"
+            "  (post value: (String new: 70 withAll: $A)\n"
+            "    value: (String new: 300000 withAll: $B)).\n"
+            "server stop.\n"
+            "^reply\n") == 0
+     && write_file(parts,
+            "| crlf body |\n"
+            "crlf := String with: (Character value: 13) with: (Character value: 10).\n"
+            "body := WriteStream on: (String new: 600000).\n"
+            "10001 timesRepeat: [body nextPutAll: '--b'; nextPutAll: crlf;\n"
+            "  nextPutAll: 'Content-Disposition: form-data; name=\"f\"';\n"
+            "  nextPutAll: crlf; nextPutAll: crlf; nextPutAll: '1'; nextPutAll: crlf].\n"
+            "body nextPutAll: '--b--'; nextPutAll: crlf. body := body contents.\n"
+            "^'parts cap ', ([(HttpRequest fromString: 'POST /rest HTTP/1.1', crlf,\n"
+            "  'Content-Type: multipart/form-data; boundary=b', crlf,\n"
+            "  'Content-Length: ', body size printString, crlf, crlf, body)\n"
+            "    parts size printString] on: HttpError do: [:e | e status printString])\n")
+        == 0) {
+        snprintf(batch, sizeof batch,
+                 "Compiler evaluate: (FileStream oldFileNamed: '%s') "
+                 "contentsOfEntireFile\n"
+                 "Compiler evaluate: (FileStream oldFileNamed: '%s') "
+                 "contentsOfEntireFile\n", multipart, parts);
+        status = serve(batch, 2, out, sizeof out);
+        ++st_test_checks;
+        if (status < 0) {
+            ++st_test_failures;
+            printf("  FAIL NET-1: could not run the server\n");
+        }  else  {
+            expect(out, "==> 'HTTP/1.1 400 / HTTP/1.1 200'",
+                   "NET-1 an unauthenticated multipart POST is answered at once");
+            expect(out, "==> 'parts cap 400'",
+                   "NET-1 a body of more than ten thousand parts is refused");
+        }
+    }
+
+    /*
+     *  GUI-1: a blit at the accepted coordinate limit, 2^30 on both axes,
+     *  overflowed the clip sums and looped 2^26 words for 2^30 rows -- for
+     *  ever, inside a primitive, where SIGTERM only sets a flag the loop
+     *  never read.  On the old binary this is the sixty-second kill and
+     *  the line after it never prints.
+     */
+    status = serve("Display fill: (1073741824@1073741824 extent: "
+                   "1073741824@1073741824) mask: Form black. 'blit returned'\n"
+                   "3 + 4\n", 2, out, sizeof out);
+    ++st_test_checks;
+    if (status < 0) {
+        ++st_test_failures;
+        printf("  FAIL GUI-1: could not run the server\n");
+    }  else  {
+        expect(out, "==> 'blit returned'", "GUI-1 the blit at 2^30 returns");
+        expect(out, "3 + 4 ==> 7", "GUI-1 the pool is still there");
+    }
+}
+
+/*
+ *  Bugs6, the file and database findings among the high ones.  Two of them
+ *  need two lives of one image -- a handle or a descriptor saved by one
+ *  process and presented to the next -- and the third needs eight workers
+ *  appending at once, which is why they are here and not in test_image.
+ */
+static void
+bugs6_high_files(void)
+{
+    static char out[65536];
+    const char *db_probe  = fixture("bugs6-serve-files1.st");
+    const char *db_a      = fixture("bugs6-files1-a.db");
+    const char *db_b      = fixture("bugs6-files1-b.db");
+    const char *db_snap   = fixture("bugs6-files1-snap");
+    const char *fd_probe  = fixture("bugs6-serve-files2.st");
+    const char *fd_data   = fixture("bugs6-files2-data.txt");
+    const char *fd_other  = fixture("bugs6-files2-other.txt");
+    const char *fd_snap   = fixture("bugs6-files2-snap");
+    const char *log_probe = fixture("bugs6-serve-files4.st");
+    const char *log       = fixture("bugs6-files4.log");
+    char        image[1024];
+    char        changes[1024];
+    char        batch[512];
+    char        command[2048];
+    char        text[4096];
+    int         status;
+
+    /*
+     *  FILES-1.  A DbConnection saved open came back holding handle 0,
+     *  and the first connect of the new life took slot 0: the stale
+     *  object's fetchAll: read the new connection's rows, its isOpen
+     *  answered true, and its close closed the new connection.  Now a
+     *  handle carries the serial of its claim: the stale one answers "no
+     *  such database connection" for ever and the new one is untouched.
+     *  Through SQLite, and skipped where there is no driver, as
+     *  test_odbc_parallel skips.
+     */
+    if (write_file(db_probe, "") == 0) {
+        snprintf(text, sizeof text,
+            "| ca cb r |\n"
+            "ca := [DbConnection open: 'DRIVER=SQLITE3;Database=%s;'] "
+            "on: Error do: [:e | nil].\n"
+            "ca isNil ifTrue: [^'no sqlite driver'].\n"
+            "ca execute: 'create table t (v varchar(20))'. "
+            "ca execute: 'insert into t values (?)' with: #('from-A'). "
+            "ca commit.\n"
+            "Smalltalk at: #Bugs6FilesCA put: ca.\n"
+            "(Smalltalk snapshotAs: '%s' thenQuit: true) ifTrue: [^'saved'].\n"
+            "ca := Smalltalk at: #Bugs6FilesCA.\n"
+            "cb := DbConnection open: 'DRIVER=SQLITE3;Database=%s;'.\n"
+            "cb execute: 'create table t (v varchar(20))'. "
+            "cb execute: 'insert into t values (?)' with: #('from-B'). "
+            "cb commit.\n"
+            "r := [((ca fetchAll: 'select v from t') collect: [:e | e at: 'v']) "
+            "printString] on: Error do: [:e | e messageText].\n"
+            "ca close.\n"
+            "^'stale ', ca isOpen printString, ' ', r, ' / live ', "
+            "cb isOpen printString, ' ', ((cb fetchAll: 'select v from t') "
+            "collect: [:e | e at: 'v']) asArray printString\n",
+            db_a, db_snap, db_b);
+        snprintf(image, sizeof image, "%s.im", db_snap);
+        snprintf(changes, sizeof changes, "%s.im.changes", db_snap);
+        unlink(db_a);
+        unlink(db_b);
+        unlink(image);
+        if (write_file(db_probe, text) == 0) {
+            snprintf(batch, sizeof batch,
+                     "Compiler evaluate: (FileStream oldFileNamed: '%s') "
+                     "contentsOfEntireFile\n", db_probe);
+            status = serve(batch, 2, out, sizeof out);
+            ++st_test_checks;
+            if (status < 0) {
+                ++st_test_failures;
+                printf("  FAIL FILES-1: could not run the server\n");
+            } else if (strstr(out, "==> 'no sqlite driver'")) {
+                printf("  skipped FILES-1: no SQLITE3 driver\n");
+            } else {
+                snprintf(command, sizeof command,
+                         ST_TEST_TIMEOUT " -k 2 " SERVE_SECONDS
+                         " %s -serve %s -workers 2 2>&1",
+                         st2026, image);
+                status = run(command, out, sizeof out);
+                if (status < 0) {
+                    ++st_test_failures;
+                    printf("  FAIL FILES-1: could not run the saved image\n");
+                } else
+                    /*  A String answer is printed with its quotes doubled.  */
+                    expect(out, "==> 'stale false no such database connection"
+                                " / live true (''from-B'' )'",
+                           "FILES-1 a connection from the previous life");
+            }
+        }
+        unlink(db_a);
+        unlink(db_b);
+        unlink(image);
+        unlink(changes);
+    }
+
+    /*
+     *  FILES-2.  A File saved with descriptor N was believed as soon as
+     *  the new life had opened N files: the old File read and wrote
+     *  whichever file held N now.  The descriptor is now marked with the
+     *  File that opened it, so the stale one is refused and the File is
+     *  reopened by name.  Before: read 'OTHER-FILE', and the write went
+     *  to the other file.
+     */
+    snprintf(text, sizeof text,
+        "| f streams page r |\n"
+        "(FileStream fileNamed: '%s') nextPutAll: 'DATA-OF-F'; close.\n"
+        "(FileStream fileNamed: '%s') nextPutAll: 'OTHER-FILE'; close.\n"
+        "f := Disk findKey: '%s'. f size. Smalltalk at: #Bugs6FilesF put: f.\n"
+        "(Smalltalk snapshotAs: '%s' thenQuit: true) ifTrue: [^'saved'].\n"
+        "f := Smalltalk at: #Bugs6FilesF.\n"
+        "streams := (1 to: 16) collect: [:i | FileStream oldFileNamed: '%s'].\n"
+        "page := f readPageNumber: 1.\n"
+        "r := (page page copyFrom: 1 to: page size) asString.\n"
+        "page page replaceFrom: 1 to: 9 with: 'WRITTEN-F' asByteArray "
+        "startingAt: 1. page size: 9. f write: page.\n"
+        "^'read ', r, ' data ', (FileStream oldFileNamed: '%s') "
+        "contentsOfEntireFile, ' other ', (FileStream oldFileNamed: '%s') "
+        "contentsOfEntireFile\n",
+        fd_data, fd_other, fd_data, fd_snap, fd_other, fd_data, fd_other);
+    snprintf(image, sizeof image, "%s.im", fd_snap);
+    snprintf(changes, sizeof changes, "%s.im.changes", fd_snap);
+    unlink(image);
+    if (write_file(fd_probe, text) == 0) {
+        snprintf(batch, sizeof batch,
+                 "Compiler evaluate: (FileStream oldFileNamed: '%s') "
+                 "contentsOfEntireFile\n", fd_probe);
+        status = serve(batch, 2, out, sizeof out);
+        ++st_test_checks;
+        if (status < 0) {
+            ++st_test_failures;
+            printf("  FAIL FILES-2: could not run the server\n");
+        } else {
+            snprintf(command, sizeof command,
+                     ST_TEST_TIMEOUT " -k 2 " SERVE_SECONDS
+                     " %s -serve %s -workers 2 2>&1",
+                     st2026, image);
+            status = run(command, out, sizeof out);
+            if (status < 0) {
+                ++st_test_failures;
+                printf("  FAIL FILES-2: could not run the saved image\n");
+            } else
+                expect(out, "==> 'read DATA-OF-F data WRITTEN-F other OTHER-FILE'",
+                       "FILES-2 a descriptor from the previous life");
+        }
+    }
+    unlink(fd_data);
+    unlink(fd_other);
+    unlink(image);
+    unlink(changes);
+
+    /*
+     *  FILES-4.  Eight workers, each fifty times opening its own stream
+     *  on one log file, setToEnd, one line, close: 400 lines must be
+     *  there afterwards.  The old binary kept 80 to 106 of them -- each
+     *  stream's setToEnd was the end of its own cached page, each write
+     *  put the whole page back, and each close truncated at its own
+     *  position.
+     */
+    snprintf(text, sizeof text,
+        "| sem n |\n"
+        "(FileStream fileNamed: '%s') nextPutAll: ''; close.\n"
+        "sem := Semaphore new. n := 8.\n"
+        "1 to: n do: [:w | Processor forkParallel: [1 to: 50 do: [:i | | f | "
+        "f := FileStream fileNamed: '%s'. f setToEnd; nextPutAll: 'w', "
+        "w printString, '-', i printString, (String with: Character cr); "
+        "close]. sem signal]].\n"
+        "n timesRepeat: [sem wait].\n"
+        "^'lines ', ((FileStream oldFileNamed: '%s') contentsOfEntireFile "
+        "occurrencesOf: Character cr) printString\n",
+        log, log, log);
+    if (write_file(log_probe, text) == 0) {
+        snprintf(batch, sizeof batch,
+                 "Compiler evaluate: (FileStream oldFileNamed: '%s') "
+                 "contentsOfEntireFile\n", log_probe);
+        status = serve(batch, 8, out, sizeof out);
+        ++st_test_checks;
+        if (status < 0) {
+            ++st_test_failures;
+            printf("  FAIL FILES-4: could not run the server\n");
+        } else
+            expect(out, "==> 'lines 400'",
+                   "FILES-4 eight workers appending to one log");
+    }
+    unlink(log);
+}
+
+/*
+ *  Bugs6, the kernel and concurrency findings among the high ones.
+ */
+static void
+bugs6_high_kern(void)
+{
+    static char out[65536];
+    const char *promise = fixture("bugs6-serve-promise.st");
+    const char *waiter  = fixture("bugs6-serve-waiter.st");
+    const char *storm   = fixture("bugs6-serve-monitor.st");
+    char        batch[512];
+    int         status;
+
+    /*
+     *  KERNB-2: a broken Promise signalled ONE stored Error in every
+     *  waiter; eight woken together wrote their handlers into the same
+     *  object and answered each other's contexts.  Each must get its
+     *  own number back.
+     */
+    if (write_file(promise,
+            "| p results done bad |\n"
+            "results := Array new: 8. done := Semaphore new. p := Promise new.\n"
+            "1 to: 8 do: [:i | [results at: i put: ([p value] on: Error "
+            "do: [:e | e return: i]). done signal] fork].\n"
+            "(Delay forMilliseconds: 200) wait.\n"
+            "p signalError: (Error new messageText: 'boom').\n"
+            "1 to: 8 do: [:i | done wait].\n"
+            "bad := 0. 1 to: 8 do: [:i | (results at: i) = i ifFalse: "
+            "[bad := bad + 1]].\n"
+            "^'promise bad ', bad printString\n") == 0) {
+        snprintf(batch, sizeof batch,
+                 "Compiler evaluate: (FileStream oldFileNamed: '%s') "
+                 "contentsOfEntireFile\n", promise);
+        status = serve(batch, 8, out, sizeof out);
+        ++st_test_checks;
+        if (status < 0) {
+            ++st_test_failures;
+            printf("  FAIL KERNB-2: could not run the server\n");
+        } else {
+            expect(out, "==> 'promise bad 0'", "KERNB-2 one exception per asker");
+            expect_absent(out, "a primitive has failed", "KERNB-2 no stray return:");
+        }
+    }
+
+    /*
+     *  KERNB-3: a Warning poked into a process waiting for a Mutex was
+     *  resumed by its own defaultAction straight past the wait, into the
+     *  section beside the holder.  The waiter must enter only once the
+     *  holder lets go, and the semaphore must count one afterwards.
+     */
+    if (write_file(waiter,
+            "| m holder waiter inside go rel log |\n"
+            "m := Mutex new. go := Semaphore new. rel := Semaphore new. "
+            "inside := 0. log := OrderedCollection new.\n"
+            "holder := [m critical: [go signal. rel wait]] fork. go wait.\n"
+            "waiter := [m critical: [inside := inside + 1. "
+            "log add: #waiterInside]] fork.\n"
+            "(Delay forMilliseconds: 100) wait.\n"
+            "waiter signalException: (Warning new messageText: 'poke').\n"
+            "(Delay forMilliseconds: 100) wait.\n"
+            "log add: (m owner == holder); add: inside.\n"
+            "rel signal. (Delay forMilliseconds: 100) wait.\n"
+            "log add: inside; add: ((m instVarAt: 1) instVarAt: 3).\n"
+            "^log asArray\n") == 0) {
+        unsigned    workers[] = { 8, 1 };
+        int         run_index;
+
+        snprintf(batch, sizeof batch,
+                 "Compiler evaluate: (FileStream oldFileNamed: '%s') "
+                 "contentsOfEntireFile\n", waiter);
+        for (run_index = 0; run_index < 2; ++run_index) {
+            status = serve(batch, workers[run_index], out, sizeof out);
+            ++st_test_checks;
+            if (status < 0) {
+                ++st_test_failures;
+                printf("  FAIL KERNB-3: could not run the server\n");
+                break;
+            }
+            expect(out, "==> (true 0 waiterInside 1 1 )",
+                   "KERNB-3 a resumed poke goes back into its wait");
+        }
+    }
+
+    /*
+     *  FIXES-2: a storm of terminates on Monitor waiters left the
+     *  Monitor's Mutex owned by nobody with its semaphore at zero, or a
+     *  nil in its waiters, and on eight workers the image reported every
+     *  process blocked.  A thousand kills of consumers blocked in or
+     *  around waitForChange; afterwards critical: must still answer, no
+     *  consumer may be left waiting, and the Mutex must be free.
+     */
+    if (write_file(storm,
+            "| m consumers producer killer stop kills fin okCritical live rnd alive |\n"
+            "m := Monitor new. stop := false. kills := 0. fin := Semaphore new. "
+            "rnd := Random new. consumers := OrderedCollection new.\n"
+            "alive := [:i | [[stop] whileFalse: [m critical: [m waitForChange]]] "
+            "forkAt: Processor userSchedulingPriority].\n"
+            "1 to: 20 do: [:i | consumers add: (alive value: i)].\n"
+            "producer := [[stop] whileFalse: [m critical: [m signal]. "
+            "Processor yield]] fork.\n"
+            "killer := [1 to: 1000 do: [:k | | idx | (Delay forMilliseconds: 1) wait. "
+            "idx := (rnd next * consumers size) truncated + 1.\n"
+            "    (consumers at: idx) terminate. kills := kills + 1. "
+            "consumers at: idx put: (alive value: idx)]. fin signal] fork.\n"
+            "fin wait.\n"
+            "okCritical := false. [m critical: [okCritical := true]. fin signal] fork. "
+            "[(Delay forSeconds: 3) wait. fin signal] fork. fin wait.\n"
+            "stop := true. 1 to: 60 do: [:i | m critical: [m signalAll]. "
+            "(Delay forMilliseconds: 5) wait].\n"
+            "live := consumers count: [:p | p suspendedContext notNil].\n"
+            "^{kills. okCritical. live. m hasWaiters. (m instVarAt: 1) owner}\n")
+        == 0) {
+        snprintf(batch, sizeof batch,
+                 "Compiler evaluate: (FileStream oldFileNamed: '%s') "
+                 "contentsOfEntireFile\n", storm);
+        status = serve(batch, 8, out, sizeof out);
+        ++st_test_checks;
+        if (status < 0) {
+            ++st_test_failures;
+            printf("  FAIL FIXES-2: could not run the server\n");
+        } else {
+            expect(out, "==> (1000 true 0 false nil )",
+                   "FIXES-2 a terminate storm leaves the Monitor whole");
+            expect_absent(out, "sent to a UndefinedObject",
+                          "FIXES-2 no nil among the waiters");
+            expect_absent(out, "every process is blocked", "FIXES-2 no deadlock");
+        }
+    }
+}
+
 int
 main(void)
 {
@@ -1761,6 +2355,11 @@ main(void)
     bugs5_low_docs();
     bugs6_critical();
     bugs6_high_om();
+    bugs6_high_sched();
+    bugs6_high_comp();
+    bugs6_high_netgui();
+    bugs6_high_files();
+    bugs6_high_kern();
 
     unlink(IMAGE);
     unlink(BATCH);

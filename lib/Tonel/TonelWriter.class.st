@@ -42,7 +42,7 @@ TextFileStream, which is where the image's line ending becomes the host's.
 Class {
 	#name : 'TonelWriter',
 	#superclass : 'Object',
-	#instVars : [ 'stream' ],
+	#instVars : [ 'stream', 'written' ],
 	#category : 'Tonel'
 }
 
@@ -146,12 +146,22 @@ TonelWriter class >> classTraitsFor: composition [
 
 { #category : 'initialization' }
 TonelWriter >> initialize [
-	stream := WriteStream on: (String new: 4096)
+	stream := WriteStream on: (String new: 4096).
+	written := OrderedCollection new
 ]
 
 { #category : 'accessing' }
 TonelWriter >> contents [
 	^stream contents
+]
+
+{ #category : 'private' }
+TonelWriter >> written [
+	"The methods written so far, an Array of behavior and selector for
+	 each, in the order written: what the text must read back as.  For
+	 TonelReader class>>refusalReading:named:holding:, which TonelSource
+	 asks before the text goes to the disk (Bugs6 COMP-14)."
+	^written asArray
 ]
 
 { #category : 'private' }
@@ -359,7 +369,8 @@ TonelWriter >> writeMethod: selector of: aBehavior named: aString category: cate
 	stream nextPutAll: aString; nextPutAll: ' >> '; nextPutAll: pattern trimmed; nextPutAll: ' ['.
 	stream nextPutAll: body.
 	stream nextPut: $].
-	self cr
+	self cr.
+	written add: (Array with: aBehavior with: selector)
 ]
 
 { #category : 'writing' }

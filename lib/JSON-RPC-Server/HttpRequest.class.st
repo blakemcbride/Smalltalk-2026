@@ -365,11 +365,42 @@ HttpRequest >> partNamed: aString [
 HttpRequest >> parseParts [
 	"multipart/form-data, RFC 7578: `--boundary' CRLF headers CRLF CRLF
 	 body CRLF ... `--boundary--'.  The body of a part ends at the CRLF
-	 before the next boundary line."
+	 before the next boundary line.
+
+	 THE BOUNDARY IS 1 TO 70 CHARACTERS, which is what RFC 2046 section
+	 5.1.1 allows, and a longer one is 400 before a byte of the body has
+	 been looked at.  Both the boundary and the body are the stranger's --
+	 the boundary bounded only by the 8,192-byte header line, the body only
+	 by maxRequestBytes, 64 MB unless the server says otherwise -- and this
+	 runs BEFORE ANYTHING IS AUTHENTICATED.  It has to: the session token
+	 is a field of the very form it is taking apart, the reason
+	 RestDispatcher>>numberFrom: gives for its own cap.  So the cost of
+	 this scan is the cost of a request from anyone, and it was the body
+	 times the boundary: indexOfSubstring:startingAt: compared the whole
+	 pattern at every position, and a 300 KB body with a 2,000-character
+	 boundary, both well inside the limits, held a worker past the
+	 sixty-second mark with no reply, while maxConnections of them would
+	 hold every worker (Bugs6 NET-1).  The search is in C now and stops at
+	 the first mismatch; the cap on the boundary bounds what one mismatch
+	 can cost on top of that, so the parse is linear in the body with a
+	 small constant.  An empty boundary is refused with the long ones --
+	 `--' alone would match inside any body and means nothing.
+
+	 AND AT MOST 10,000 PARTS, for the same reason: with the search fixed
+	 a megabyte of one-byte fields -- 19,000 parts -- still cost five and
+	 a half seconds, nearly all of it in the headers each part is given,
+	 and a 64 MB body of them would be six minutes of a worker, which is
+	 the finding again by another road.  No form has ten thousand fields;
+	 Bugs5 NET-15's four thousand files were an audit's, and they pass.
+	 The scan stops where the cap is passed, so the work is bounded there
+	 too."
 	| boundary delimiter out position |
 	self isMultipart ifFalse: [^#()].
 	boundary := self contentTypeParameterAt: 'boundary'.
 	boundary isNil ifTrue: [HttpError status: 400 reason: 'a multipart body names no boundary'].
+	(boundary isEmpty or: [boundary size > 70]) ifTrue: [
+		HttpError status: 400
+			reason: 'a multipart boundary is 1 to 70 characters, not ', boundary size printString].
 	delimiter := '--', boundary.
 	out := OrderedCollection new.
 	position := body indexOfSubstring: delimiter startingAt: 1.
@@ -388,6 +419,7 @@ HttpRequest >> parseParts [
 	 next := body indexOfSubstring: delimiter startingAt: position.
 	 next = 0 ifTrue: [HttpError status: 400 reason: 'a part is not closed'].
 	 partBody := body copyFrom: position to: (self trimLineEndBefore: next in: body) - 1.
+	 out size >= 10000 ifTrue: [HttpError status: 400 reason: 'a multipart body has more than 10000 parts'].
 	 out add: (HttpPart
 		name: (partHeaders at: 'name' ifAbsent: [''])
 		fileName: (partHeaders at: 'filename' ifAbsent: [nil])

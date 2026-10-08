@@ -718,8 +718,14 @@ RestServerTest >> testManyUploadsAreCountedInLinearTime [
 	"Bugs5 NET-15.  uploadFileCount asks partNamed: for _file-0, _file-1
 	 ... and partNamed: walked the parts each time: 1,000 uploads took 6.5
 	 seconds and 4,000 took 81.  By a dictionary built once, 2,000 are
-	 counted in a few milliseconds; the bound here is generous enough for
-	 a sanitizer build and far short of the quadratic walk."
+	 counted in a few milliseconds.
+
+	 Ten seconds, which is far short of the quadratic walk -- 2,000 files
+	 would be half a minute of it on a plain build, and the sanitizers
+	 interpret some fifty times slower -- and is the bound a thread
+	 sanitizer build needs: it measures the count at just under five
+	 seconds, where the four the bound used to be fell exactly one test
+	 short of green in every profile that carries this suite."
 	| crlf out body http request ms |
 	crlf := self crlf.
 	out := WriteStream on: (String new: 200000).
@@ -736,7 +742,7 @@ RestServerTest >> testManyUploadsAreCountedInLinearTime [
 	self assert: http parts size equals: 2000.
 	request := RestRequest server: server httpRequest: http injson: JSONObject new outjson: JSONObject new.
 	ms := Time millisecondsToRun: [self assert: request uploadFileCount equals: 2000].
-	self assert: ms < 4000.
+	self assert: ms < 10000.
 	self assert: (request uploadFileName: 1999) equals: 'f1999.txt'.
 	"the first part of a name is the one answered, as it was"
 	self assert: (http partNamed: '_file-0') fileName equals: 'f0.txt'.

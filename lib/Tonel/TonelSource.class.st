@@ -346,17 +346,33 @@ TonelSource >> writeBack: aClass [
 	 Answer nil, or -- having written nothing -- the reason the file was
 	 not written: it has changed on disk since it was loaded or last
 	 written, and writing would throw that change away (Bugs5 FILES-4);
-	 or TonelWriter refused the text (Bugs5 FILES-5).  The text is built
-	 before the file is opened, so a refusal leaves the file as it was."
-	| file why text |
+	 or TonelWriter refused the text (Bugs5 FILES-5); or the text would
+	 not read back as the methods it was written from (Bugs6 COMP-14).
+	 The text is built, and read back, before the file is opened, so a
+	 refusal leaves the file as it was.
+
+	 THE READ-BACK IS WHAT STANDS BETWEEN A WRITER FAULT AND THE DISK.  A
+	 file this system has written and cannot read is the worst thing a
+	 write-back can do: the class is gone at the next load, the server
+	 cannot reload its service, and the text the file held is gone with
+	 it -- the stamp check above cannot help, because the write is the
+	 system's own.  One accept of any method of a class with a selector
+	 holding an underscore did exactly that (Bugs6 COMP-14), and two
+	 earlier writer faults (Bugs5 COMP-3, FILES-12) would have been caught
+	 the same way.  It costs compiling the class's methods once more,
+	 without installing them, which an accept can afford."
+	| file why text writer |
 	(self isExtension and: [prefix isNil]) ifTrue: [^nil].
 	why := self changedOnDiskRefusal.
 	why notNil ifTrue: [^why].
+	writer := TonelWriter new.
 	text := [self isExtension
-			ifTrue: [TonelWriter extensionSourceFor: aClass prefix: prefix comment: comment]
-			ifFalse: [TonelWriter sourceFor: aClass]]
+			ifTrue: [writer writeExtensionOf: aClass prefix: prefix comment: comment; contents]
+			ifFalse: [writer writeClass: aClass; contents]]
 		on: TonelError do: [:e | why := e messageText. e return: nil].
 	why notNil ifTrue: [^why].
+	why := TonelReader refusalReading: text named: path holding: writer written.
+	why notNil ifTrue: [^'the file would not read back as written, so it was not written: ', why].
 	TonelWriter writeText: text toFile: path.
 	file := TonelSource fileFor: path.
 	file notNil ifTrue: [self recordStamp: (TonelSource stampFrom: file)].

@@ -37,6 +37,7 @@ ClassDescription >> subclassOf: newSuper oldClass: oldClass instanceVariableName
 	(invalid := superclass ~~ newSuper)
 		ifTrue:
 			["superclass changed"
+			(self reshapeIsRefusedFor: oldClass) ifTrue: [^badBlock value].
 			oldSuperMeta := superclass class.
 			superclass removeSubclass: self.
 			superclass := newSuper.
@@ -71,5 +72,40 @@ ClassDescription >> subclassOf: newSuper oldClass: oldClass instanceVariableName
 		pointers: p.
 	invalid := invalid | (format ~= old).
 	"format changed"
+	(invalid and: [self reshapeIsRefusedFor: oldClass]) ifTrue: [^badBlock value].
 	^invalid
+]
+
+{ #category : '*Kernel-Protocol' }
+ClassDescription >> reshapeIsRefusedFor: oldClass [
+	"Whether oldClass, which a definition is about to reshape, is one the
+	 interpreter holds instances of in its registers -- a context, a
+	 process or a compiled method -- or a class one of those inherits
+	 from, so that reshaping it would reshape them.  Refused with an
+	 error, as the reserved-name and sixty-four-variable checks above
+	 refuse, and answered true so the caller can take the bad block if
+	 the error is proceeded.
+
+	 A reshape migrates every instance to a new object of the new shape
+	 and recompiles every method; for ContextPart that ran under the very
+	 contexts being replaced -- thousands of `The block needs more or
+	 fewer arguments defined', then `asked to run an object that is not a
+	 context', and the image was gone (Bugs6 COMP-12).  The interpreter's
+	 registers hold the active context, its method and its process by
+	 identity and cache raw pointers into their bodies (see
+	 ST_interp_swap_forbidden), so no become: can move them: there is no
+	 safe moment for this reshape, and refusing it is the only answer.
+	 Asked at both points where a change of shape is first known, before
+	 the subclass lists are touched for a new superclass and after the
+	 field and format comparison, so that a refusal leaves everything as
+	 it was.  A definition that changes nothing never gets here."
+	#(ContextPart MethodContext BlockContext Process CompiledMethod) do: [:name | | held |
+		held := Smalltalk at: name ifAbsent: [nil].
+		(held notNil
+			and: [(oldClass includesBehavior: held) or: [held includesBehavior: oldClass]])
+				ifTrue: [
+					self error: oldClass name, ' cannot be reshaped: the interpreter holds ',
+						held name, ' instances in its registers; define a subclass instead'.
+					^true]].
+	^false
 ]

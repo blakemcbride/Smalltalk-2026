@@ -392,6 +392,16 @@ typedef struct {
     st_oop      new_process;
     int         new_process_waiting;
     /*
+     *  The compiles this thread has in flight, innermost first, or NULL.
+     *  The compiler links each one on for as long as it holds literals in
+     *  C alone, and provide_roots visits them (COMPILE_visit_roots), so a
+     *  collection in the middle of a compile -- another worker's, or this
+     *  one's own next allocation -- frees nothing the method is being built
+     *  from.  Written only by this thread; read with it parked.  Bugs6
+     *  COMP-2.
+     */
+    struct st_compile_roots *compile_roots;
+    /*
      *  Set once this worker has parked its active process -- registers
      *  into the context, context into the process -- and so no longer
      *  owns it: another worker may take it from wherever it waits, and

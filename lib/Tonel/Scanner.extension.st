@@ -22,7 +22,14 @@ And patternEndIn:, for TonelWriter, which has to split a method's source into
 the pattern that goes on the `Class >> pattern [' line and the body that goes
 between the brackets, and once did it by counting words (Bugs5 COMP-3); and
 patternTokensIn:, the words of that pattern, from which it writes the line
-(Bugs5 FILES-12).
+(Bugs5 FILES-12).  Both read the pattern through scanPattern:, which is scan:
+with the one difference the closure dialect makes to a pattern: an underscore
+is a letter there.  To this scanner it is the left arrow, so a Pharo-ported
+`simulate_vmMilliseconds: x' read as the unary selector `simulate' followed by
+an assignment, and TonelWriter wrote `Wb >> simulate [' with `_vmMilliseconds:
+x' as the first line of the body -- a file that never loaded again, from one
+accept of ANY method of the class (Bugs6 COMP-14).  A vertical bar is a binary
+selector in a pattern too, and its argument is kept.
 "
 Extension { #name : 'Scanner' }
 
@@ -44,6 +51,34 @@ Scanner >> scanToken [
 ]
 
 { #category : '*Tonel' }
+Scanner >> scanPattern: aString [
+	"scan:, on the message pattern at the front of aString, a method's
+	 source, as the C compiler reads a pattern in the closure dialect --
+	 which every Tonel file is written in and compiled from -- and so with
+	 an underscore read as a letter.  The type table says it is the left
+	 arrow, and for everything else this scanner does it must go on saying
+	 so; it is a class variable, so the instance takes a copy and changes
+	 its own.  Only when the text has one: most patterns do not, and the
+	 copy is 256 slots.  The first token is scanned by scan: with the old
+	 table, so the stream is put back and the two characters of lookahead
+	 and the token are read again with the new one.  Bugs6 COMP-14.
+
+	 Two spaces are put after the source before it is scanned.  The
+	 Scanner reads two characters ahead and takes a token's position from
+	 how far it has read, which stops growing at the end of the input, so
+	 a token that ends the source -- a unary method with no body -- would
+	 be placed one character early."
+	self scan: (ReadStream on: aString , '  ').
+	(aString includes: $_) ifFalse: [^self].
+	typeTable := typeTable copy.
+	typeTable at: $_ asciiValue put: #xLetter.
+	currentComment := nil.
+	source reset.
+	self on: source.
+	self scanToken
+]
+
+{ #category : '*Tonel' }
 Scanner >> patternEndIn: aString [
 	"The index of the last character of the message pattern at the front
 	 of aString, a method's source: the end of the unary selector, or of
@@ -59,21 +94,20 @@ Scanner >> patternEndIn: aString [
 	 between the keywords is skipped, as the compiler skips it, and so is
 	 one after the pattern, which belongs to the body.
 
-	 Two spaces are put after the source before it is scanned.  The
-	 Scanner reads two characters ahead and takes a token's position from
-	 how far it has read, which stops growing at the end of the input, so
-	 a token that ends the source -- a unary method with no body -- would
-	 be placed one character early."
+	 Read through scanPattern:, which puts two spaces after the source --
+	 see there for why -- and reads an underscore as a letter.  A vertical
+	 bar is #verticalBar to this scanner and not #binary, so `| x' used to
+	 end at the bar and its argument went into the body (Bugs6 COMP-14)."
 
 	| end |
-	self scan: (ReadStream on: aString , '  ').
+	self scanPattern: aString.
 	tokenType == #keyword ifTrue: [
 		[tokenType == #keyword] whileTrue: [
 			self scanToken.
 			end := mark + token size - 1.
 			self scanToken].
 		^end].
-	tokenType == #binary ifTrue: [self scanToken].
+	(tokenType == #binary or: [tokenType == #verticalBar]) ifTrue: [self scanToken].
 	^mark + token size - 1
 ]
 
@@ -95,7 +129,7 @@ Scanner >> patternTokensIn: aString [
 
 	| tokens |
 	tokens := OrderedCollection new.
-	self scan: (ReadStream on: aString , '  ').
+	self scanPattern: aString.
 	tokenType == #keyword ifTrue: [
 		[tokenType == #keyword] whileTrue: [
 			tokens add: token asString.
@@ -104,7 +138,7 @@ Scanner >> patternTokensIn: aString [
 			self scanToken].
 		^tokens asArray].
 	tokens add: token asString.
-	tokenType == #binary ifTrue: [
+	(tokenType == #binary or: [tokenType == #verticalBar]) ifTrue: [
 		self scanToken.
 		tokens add: token asString].
 	^tokens asArray

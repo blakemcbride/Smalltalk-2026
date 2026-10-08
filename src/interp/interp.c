@@ -19,6 +19,7 @@
 
 #include "interp.h"
 #include "prim.h"
+#include "compiler.h"
 #include "census.h"
 #include "st_sched.h"
 #include "gfx.h"
@@ -1027,6 +1028,8 @@ provide_roots(om_visit_fn visit)
             /*  And the processes only this worker's scheduler holds.  */
             visit(vm->active_process);
             visit(vm->new_process);
+            /*  And the literals of a compile it is in the middle of.  */
+            COMPILE_visit_roots(vm->compile_roots, visit);
         }
     }
     /*
@@ -1046,6 +1049,7 @@ provide_roots(om_visit_fn visit)
      *  thread doing the collecting is always the thread that is running.
      */
     visit(st_vm.active_context);
+    COMPILE_visit_roots(st_vm.compile_roots, visit);
     visit(GFX_display_form());
     visit(SCHED_input_semaphore());
     visit(SCHED_timer_semaphore());

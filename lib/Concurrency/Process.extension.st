@@ -35,6 +35,23 @@ run again if the frame is ever unwound a second time.
 A process that has terminated has a nil suspendedContext, which is the
 mark 1983 left and the mark primitive 87 now refuses (Bugs3 B3): resuming
 a terminated process raises here instead of stopping the image.
+
+Two kinds of place a process is not stopped IN, but let out of first
+(Bugs5 OM-5, Bugs6 SCHED-6 and SCHED-7).  An unwind block it is already
+running: runUnwindBlock disarms the frame before the block, so an unwind
+from outside would skip the rest of it -- the rest of a lock's release,
+say.  And a critical: section it is RUNNING in -- Semaphore's, Mutex's or
+Monitor's: the lock's ensure: would give the lock back around a half-done
+update, and Delay's queue was left with a nil at its head, which stopped
+the timing process and with it every Delay in the image.  In both cases
+the process is resumed to finish what it was in, and what terminate or
+signalException: wanted happens when it has: terminate by a frame spliced
+under the unwind block, or by the section's own unwind block made to end
+the process after it has run; signalException: by a frame that raises
+where the unwind block returns to, or by the section's unwind block made
+to raise once it has run.  A process WAITING inside a section is not let
+out first: a wait is a stable point, and a consumer blocked in
+SharedQueue>>next must not be made to take an item on its way out.
 "
 Extension { #name : 'Process' }
 
@@ -55,12 +72,26 @@ Process >> primDetach: takeFromSemaphore [
 	        while that worker waits for it (Bugs6 SCHED-1).  The sender
 	        yields -- which lets the stop land -- and asks again if it
 	        ever runs again
+	     6  nothing was done: another stopper holds me and has not yet
+	        let go (Bugs6 SCHED-7).  The sender yields and asks again
 
-	 In every case but 4 and 5 I am afterwards parked, on no list, in
-	 nobody's hands, with suspendedContext where I stopped.  Fails for
-	 the active process, which cannot be stopped from inside itself this
-	 way."
+	 In every case but 4, 5 and 6 I am afterwards parked, on no list, in
+	 nobody's hands, with suspendedContext where I stopped -- and HELD by
+	 the sender until it sends primRelease:, so that nobody else can
+	 resume me or stop me again meanwhile.  Fails for the active process,
+	 which cannot be stopped from inside itself this way."
 	<primitive: 231>
+	^self primitiveFailed
+]
+
+{ #category : '*Concurrency' }
+Process >> primRelease: resumeIt [
+	"Let go of me, having stopped me with primDetach:; and first put me
+	 back to work if resumeIt is true -- resumed and THEN released, so
+	 that there is no instant at which a stray resume could take me.
+	 With false, harmless when I am not held: terminate and
+	 signalException: release in an ensure: as well as on each path."
+	<primitive: 235>
 	^self primitiveFailed
 ]
 
@@ -80,7 +111,7 @@ Process >> detachTakingFromSemaphore: takeFromSemaphore [
 	 terminated, or handed an exception it survives -- comes back round
 	 the loop, and it still owes the stop it was asked for."
 	| where |
-	[(where := self primDetach: takeFromSemaphore) = 5]
+	[(where := self primDetach: takeFromSemaphore) = 5 or: [where = 6]]
 		whileTrue: [Processor yield].
 	^where
 ]
@@ -153,18 +184,82 @@ Process >> terminate [
 	 let finish the block itself and terminates when it returns; see
 	 finishUnwindBlock:waitingOn:.  A process that terminates ITSELF from
 	 an unwind block asked to stop there, and does."
-	| where context unwinding |
+	| where context unwinding section |
 	Processor activeProcess == self ifTrue: [
 		self runUnwindBlocksFrom: thisContext.
 		^self primTerminateActive].
 	where := self detachTakingFromSemaphore: true.
-	context := suspendedContext.
-	context isNil ifTrue: [^self].
-	self noteMutexOwnerIn: context waiting: where isInteger not.
-	unwinding := self unwindBlockInProgressFrom: context.
-	unwinding notNil ifTrue: [^self finishUnwindBlock: unwinding waitingOn: where].
-	suspendedContext := nil.
+	"Held from here until released, on every path: by the resume that
+	 lets me finish what I was in, or explicitly once my stack is taken,
+	 and in the ensure: should anything in between fail."
+	[context := suspendedContext.
+	 context isNil ifTrue: [^self].
+	 self noteMutexOwnerIn: context waiting: where isInteger not.
+	 unwinding := self unwindBlockInProgressFrom: context.
+	 unwinding notNil ifTrue: [^self finishUnwindBlock: unwinding waitingOn: where].
+	 section := self criticalSectionFrom: context stoppedAt: where.
+	 section notNil ifTrue: [^self finishSection: section].
+	 suspendedContext := nil]
+		ensure: [self primRelease: false].
 	self runUnwindBlocksFrom: context
+]
+
+{ #category : '*Concurrency' }
+Process >> criticalSectionFrom: aContext stoppedAt: where [
+	"The ensure: frame of the OUTERMOST critical: section I was stopped
+	 RUNNING in -- Semaphore's, Mutex's or Monitor's critical:, known by
+	 method identity, the way runUnwindBlock is -- from aContext down; or
+	 nil.
+
+	 Running is where 1 (parked by the worker executing me) or 2 (taken
+	 off a ready list): anywhere in the section, including the middle of
+	 a store.  A process stopped WAITING on a Semaphore inside a section
+	 -- where is that Semaphore -- is at a stable point and is unwound
+	 from there as it always was; the one suspended on purpose (0) is
+	 left as whoever suspended it left it.  Outermost, because a section
+	 inside a section is part of finishing the outer one, and because
+	 Monitor>>critical: is Mutex>>critical: one frame in.
+
+	 Bugs6 SCHED-7: a process terminated between the two halves of
+	 OrderedCollection>>insert:before: inside Delay>>wait left a nil at
+	 the head of SuspendedDelays, the timing process raised on it, and no
+	 Delay in the image fired again -- three runs in three of a randomized
+	 stress; and SharedQueue's items were torn the same way."
+	| sem mut mon ctx found |
+	(where = 1 or: [where = 2]) ifFalse: [^nil].
+	sem := Semaphore compiledMethodAt: #critical:.
+	mut := Mutex compiledMethodAt: #critical:.
+	mon := Monitor compiledMethodAt: #critical:.
+	ctx := aContext.
+	[ctx isNil] whileFalse: [ | caller |
+		(ctx isUnwindContext
+		 and: [(caller := ctx sender) notNil
+		 and: [caller method == sem or: [caller method == mut or: [caller method == mon]]]])
+			ifTrue: [found := ctx].
+		ctx := ctx sender].
+	^found
+]
+
+{ #category : '*Concurrency' }
+Process >> finishSection: anUnwindContext [
+	"I was stopped running inside the critical: section anUnwindContext
+	 guards.  Let me finish it, and end when it ends: the section's
+	 unwind block is replaced by one that runs it and then terminates me.
+
+	 In the unwind block, and not in a frame spliced under the section
+	 (which is what finishUnwindBlock:waitingOn: does for a block already
+	 running), because a section can end by a ^ or an exception out
+	 through it, and those discard a spliced frame without running it; an
+	 unwind block runs however the section ends, once, since
+	 runUnwindBlock disarms it first.  `self terminate' from the block is
+	 the active-process path when I run it myself, which runs the unwind
+	 blocks outside the section and ends me; run by a second terminator
+	 that has already taken my stack, it finds no suspendedContext and
+	 does nothing."
+	| guarded |
+	guarded := anUnwindContext tempAt: 1.
+	anUnwindContext tempAt: 1 put: [guarded value. self terminate].
+	self primRelease: true
 ]
 
 { #category : '*Concurrency' }
@@ -228,7 +323,7 @@ Process >> finishUnwindBlock: aContext waitingOn: where [
 		suspendedContext pop.
 		frame instVarAt: 1 put: suspendedContext.
 		suspendedContext := frame].
-	self resume
+	self primRelease: true
 ]
 
 { #category : '*Concurrency' }
@@ -245,6 +340,8 @@ Process >> suspend [
 	Processor activeProcess == self ifTrue: [^self primitiveFailed].
 	(self detachTakingFromSemaphore: false) = 4 ifTrue: [
 		^self error: 'This process is waiting on a Semaphore and cannot be suspended'].
+	"Stopped and held: let go, and it stays parked for a resume."
+	self primRelease: false.
 	^self
 ]
 
@@ -285,20 +382,100 @@ Process >> signalException: anException [
 	 suspendedContext would never be seen.  Once stopped it is resumed
 	 with the frame on top, unless it was suspended on purpose, in which
 	 case the frame waits for whoever resumes it."
-	| frame where |
+	| frame where unwinding section |
 	self == Processor activeProcess ifTrue: [^anException signal].
 	where := self detachTakingFromSemaphore: true.
-	suspendedContext isNil ifTrue: [^self].
-	"Stopped in Mutex>>waitFor: with the lock already handed over: record
-	 the owner, or the unwind the signal may start leaves it held (Bugs5
-	 OM-5)."
-	self noteMutexOwnerIn: suspendedContext waiting: where isInteger not.
-	frame := self signalFrameFor: anException over: suspendedContext.
-	"Field one of any context is its sender; splicing it in is what makes
-	 the signal appear to happen inside this process rather than beside it."
-	frame instVarAt: 1 put: suspendedContext.
-	suspendedContext := frame.
-	where = 0 ifFalse: [self resume]
+	"Held from here until released on every path (see terminate)."
+	[suspendedContext isNil ifTrue: [^self].
+	 "Stopped in Mutex>>waitFor: with the lock already handed over: record
+	  the owner, or the unwind the signal may start leaves it held (Bugs5
+	  OM-5)."
+	 self noteMutexOwnerIn: suspendedContext waiting: where isInteger not.
+	 "Inside an unwind block, or running inside a critical: section: let
+	  that finish first, and raise where it ends (Bugs6 SCHED-6, SCHED-7).
+	  Delivered into the middle of Mutex>>release, which is two sends, the
+	  exception's own unwind skipped the disarmed ensure: and the signal
+	  was never sent: a Mutex with an owner long gone, every later
+	  critical: on it blocked for ever."
+	 unwinding := self unwindBlockInProgressFrom: suspendedContext.
+	 unwinding notNil ifTrue: [^self signal: anException after: unwinding waitingOn: where].
+	 section := self criticalSectionFrom: suspendedContext stoppedAt: where.
+	 section notNil ifTrue: [^self signal: anException leaving: section].
+	 frame := self signalFrameFor: anException over: suspendedContext waitingOn: where.
+	 "Field one of any context is its sender; splicing it in is what makes
+	  the signal appear to happen inside this process rather than beside
+	  it.  Resumed unless it was suspended on purpose, in which case the
+	  frame waits for whoever resumes it."
+	 frame instVarAt: 1 put: suspendedContext.
+	 suspendedContext := frame.
+	 self primRelease: where ~= 0]
+		ensure: [self primRelease: false]
+]
+
+{ #category : '*Concurrency' }
+Process >> signal: anException after: aContext waitingOn: where [
+	"I was stopped inside an unwind block, with aContext running it.  Let
+	 the block finish, and raise anException in the frame it returns to;
+	 and if the stop took me off a Semaphore (where is that Semaphore),
+	 put me back into the same wait first.  The shape of
+	 finishUnwindBlock:waitingOn:, with a signal where that has a
+	 terminate.
+
+	 The frame answers nil to aContext's sender, which is right because
+	 every sender of runUnwindBlock -- ensure:'s normal path, unwindTo:,
+	 aboutToReturn:through:, runUnwindBlocksFrom: -- discards its answer.
+	 A handler that resumes the exception lets the frame return there; one
+	 that returns, retries or passes unwinds from the frame outwards, and
+	 the ensure: this block belongs to has already been disarmed."
+	| frame |
+	frame := [anException signal. nil] asContext.
+	"Field one of any context is its sender."
+	frame instVarAt: 1 put: aContext sender.
+	aContext instVarAt: 1 put: frame.
+	where isInteger ifFalse: [
+		frame := [where wait] asContext.
+		suspendedContext pop.
+		frame instVarAt: 1 put: suspendedContext.
+		suspendedContext := frame].
+	self primRelease: where ~= 0
+]
+
+{ #category : '*Concurrency' }
+Process >> signal: anException leaving: anUnwindContext [
+	"I was stopped running inside the critical: section anUnwindContext
+	 guards.  Let me finish it, and raise anException as it ends: the
+	 section's unwind block is replaced by one that runs it -- releasing
+	 the lock -- and then signals.  See finishSection: for why the unwind
+	 block and not a spliced frame.  The handler search walks out from
+	 the block through the section's frames to whatever on:do: is below,
+	 as it would from anywhere in the section."
+	| guarded |
+	guarded := anUnwindContext tempAt: 1.
+	anUnwindContext tempAt: 1 put: [guarded value. anException signal].
+	self primRelease: true
+]
+
+{ #category : '*Concurrency' }
+Process >> signalFrameFor: anException over: aContext waitingOn: where [
+	"A context that signals anException and, if a handler resumes it,
+	 returns into aContext leaving aContext exactly as it was stopped --
+	 or, when the stop took me off a Semaphore (where is that Semaphore),
+	 puts me back into the same wait first.
+
+	 Back into the wait, because a resumption that simply returned let
+	 me PAST it (Bugs6 KERNB-3).  A Warning -- which halt, notify: and
+	 confirm: signal, and which its own defaultAction resumes when
+	 nothing handles it -- poked into a process waiting for a Mutex
+	 returned into Mutex>>waitFor: just past its wait: owner := me ran,
+	 the process walked into the critical section beside the holder, and
+	 its release on the way out left the semaphore counting two for good.
+	 The interrupted wait's answer is the Semaphore, and that is what the
+	 fresh wait answers, so aContext sees exactly the return it was
+	 expecting, only later.  The same shape finishUnwindBlock:waitingOn:
+	 and signal:after:waitingOn: already had."
+	where isInteger ifFalse: [
+		^[anException signal. aContext pop. where wait] asContext].
+	^self signalFrameFor: anException over: aContext
 ]
 
 { #category : '*Concurrency' }

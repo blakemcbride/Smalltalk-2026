@@ -85,8 +85,8 @@ main(void)
 {
     char            connection_string[512];
     const char     *database_file;
-    int             connection;
-    int             statement;
+    st_odbc_handle  connection;     /*  a slot and a serial: Bugs6 FILES-1  */
+    st_odbc_handle  statement;
     char           *text;
     unsigned char  *bytes;
     st_odbc_value   value;

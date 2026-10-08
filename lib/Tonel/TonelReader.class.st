@@ -403,15 +403,28 @@ TonelReader >> readMethodClassified: category [
 { #category : 'private - methods' }
 TonelReader >> selectorOf: source [
 	"The selector a method source's pattern names, or nil if it names
-	 none: read by the image's own Parser, as the compiler reads it.
+	 none: read from the pattern's words, as TonelWriter reads them to
+	 write the `Class >> pattern [' line (Scanner>>patternTokensIn:), so
+	 that what the writer wrote and what this finds in it are one reading.
 
 	 It was read by splitting the first line at white space, which takes
 	 `with:x and:y' -- no space after either colon, and legal -- for the
 	 binary selector #with:x.  removeMethodsNotIn:from: asks this which
 	 selectors the file still has, so a reload of a file holding that
 	 method removed with:and: from the class as no longer in it, and said
-	 nothing (Bugs5 COMP-3)."
-	^[Parser new parseSelector: source] on: Error do: [:e | e return: nil]
+	 nothing (Bugs5 COMP-3).  Then it was read by the image's own Parser,
+	 for which an underscore is the assignment arrow: a Pharo-ported
+	 `simulate_vmMilliseconds: x' named #simulate, and a reload of the
+	 file that holds it -- once the writer could write it -- would have
+	 installed the method and then removed it as not in the file (Bugs6
+	 COMP-14)."
+	| tokens selector |
+	tokens := [Scanner new patternTokensIn: source] on: Error do: [:e | e return: nil].
+	(tokens isNil or: [tokens isEmpty or: [tokens first isEmpty]]) ifTrue: [^nil].
+	tokens first last = $: ifFalse: [^tokens first asSymbol].
+	selector := WriteStream on: (String new: 32).
+	1 to: tokens size by: 2 do: [:i | selector nextPutAll: (tokens at: i)].
+	^selector contents asSymbol
 ]
 
 { #category : 'private - methods' }
@@ -686,6 +699,57 @@ TonelReader >> removeFrom: aBehavior allBut: selectors in: categoryBlock [
 		(categoryBlock value: category asString) ifTrue: [
 			((organization listAtCategoryNamed: category) reject: [:s | selectors includes: s])
 				do: [:s | aBehavior basicRemoveSelector: s]]]
+]
+
+{ #category : 'reading back' }
+TonelReader class >> refusalReading: aString named: pathString holding: pairs [
+	"The reason aString -- the text of a Tonel file TonelWriter has just
+	 made from the image, about to be written to pathString -- would not
+	 read back as exactly the methods it was written from, or nil when it
+	 would.  pairs are what the writer wrote, an Array of behavior and
+	 selector for each method.  Nothing is installed or removed: the text
+	 is read, every method in it is compiled against its class and the
+	 selectors compiled are compared with the ones written, and the image
+	 is as it was.
+
+	 For TonelSource>>writeBack:, which refuses to write a file this
+	 answers a reason for.  The writer once wrote `Wb >> simulate [' for
+	 simulate_vmMilliseconds: and the file never loaded again, with the
+	 original text gone from the disk (Bugs6 COMP-14); a writer fault of
+	 the same family wrote the start of the body into the pattern (Bugs5
+	 COMP-3) and a bracket inside a pattern comment (FILES-12).  Each of
+	 them is a text that does not read back, and reading it back before
+	 it goes to the disk is the one check that catches the family."
+	^[(self new setText: aString path: pathString) readBackHolding: pairs. nil]
+		on: TonelError do: [:e | e return: e messageText]
+]
+
+{ #category : 'reading back' }
+TonelReader >> readBackHolding: pairs [
+	"The read of load, up to the point of acting, and then the comparison
+	 refusalReading:named:holding: describes.  A Class file's header must
+	 describe the shape the class has -- the writer took it from the
+	 class, so anything else is a writer fault -- or a reload would
+	 reshape the class rather than refresh it."
+	| type header methods name class compiled found |
+	self readComment.
+	self skipSeparators.
+	type := self readWord.
+	type isEmpty ifTrue: [^self fail: 'not a Tonel file'].
+	header := self readSton.
+	(type = 'Class' or: [type = 'Extension']) ifFalse: [^self fail: 'unknown Tonel type ', type].
+	name := header at: 'name' ifAbsent: [^self fail: 'a Tonel ', type, ' has no #name'].
+	class := Smalltalk at: name asSymbol ifAbsent: [^self fail: name, ' is not a class in this image'].
+	(type = 'Class' and: [(self header: header describesShapeOf: class) not])
+		ifTrue: [^self fail: 'the header does not describe the shape ', name, ' has'].
+	methods := self readMethods.
+	compiled := self compileAll: methods substituting: nil for: name asSymbol.
+	found := compiled collect: [:each | Array with: (each at: 1) with: (each at: 2)].
+	pairs do: [:pair |
+		(found includes: pair) ifFalse: [
+			^self fail: (pair at: 1) name, '>>', (pair at: 2), ' does not read back as it was written']].
+	found size = pairs size ifFalse: [
+		^self fail: 'read back ', found size printString, ' methods where ', pairs size printString, ' were written']
 ]
 
 { #category : 'loading' }

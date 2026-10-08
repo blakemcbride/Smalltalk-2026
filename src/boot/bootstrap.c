@@ -3972,12 +3972,29 @@ int
 BOOT_build_dialects(const char *const *paths, const int *dialects,
                     unsigned path_count, st_bootstrap_result *out)
 {
-    int status = boot_build_locked(paths, dialects, path_count, out);
+    int status;
+
+    /*
+     *  Nothing C holds survives a collection unless the walk can see it --
+     *  and that includes everything this file holds WHILE IT BUILDS.  The
+     *  roots used to be installed after boot_build_locked returned, so a
+     *  collection during the build walked the fixed classes alone: the
+     *  first one freed the symbol table, every class not at a fixed oop,
+     *  and every literal of the method being compiled, and the rest of
+     *  the build allocated into their slots.  No shipped profile collected
+     *  mid-build, by a margin of about fifteen percent; one method with a
+     *  150,000-element literal did, and its array's first element came
+     *  out as the 106,605th string (Bugs6 COMP-2).  Installed first, the
+     *  walk sees the builder's tables from the start -- they are empty
+     *  until filled, and the walk ignores what is not an object -- and the
+     *  compiler's own chain (COMPILE_visit_roots) covers the method in
+     *  flight.
+     */
+    ST_interp_install_roots(BOOT_provide_roots);
+    status = boot_build_locked(paths, dialects, path_count, out);
 
     result = NULL;
     path_dialects = NULL;
-    /*  Nothing C holds survives a collection unless the walk can see it.  */
-    ST_interp_install_roots(BOOT_provide_roots);
     return status;
 }
 

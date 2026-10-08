@@ -131,7 +131,12 @@ bytes, more than a hundred headers, a body over the server's limit (64 MB
 unless \ct{maxRequestBytes:} says otherwise) are refused before they are
 read, each with its own status; a body with no declared length---chunked---is
 refused with 411, because a JSON-RPC client always knows how long its document
-is. Framing is strict for the same reason the documents are: a line ended by a
+is. A multipart body is taken apart within limits of its own: a boundary longer
+than the seventy characters RFC 2046 permits, or empty, is 400 before a byte of
+the body is looked at, a body of more than ten thousand parts is 400 where the
+cap is passed, and the search for each boundary is linear in the body, so a
+form costs what its size says and not what its boundary says. Framing is
+strict for the same reason the documents are: a line ended by a
 bare line feed, a field name with whitespace in it, a second
 \ct{Content-Length}, a \ct{Content-Length} that is not all digits, a
 \ct{Transfer-Encoding} beside a \ct{Content-Length}, and a malformed percent

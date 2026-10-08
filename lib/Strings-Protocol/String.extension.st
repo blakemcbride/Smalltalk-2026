@@ -48,18 +48,40 @@ String >> includesSubstring: aString [
 String >> indexOfSubstring: aString startingAt: start [
 	"Where aString next appears at or after start, or 0.
 
-	 The plain quadratic search.  Every caller here is looking through a
-	 selector or a line of text, so the constant matters more than the
-	 exponent and this has the smaller constant."
+	 IN C, AND THE SMALLTALK BELOW IS THE FALLBACK.  This was the plain
+	 quadratic search, written for callers looking through a selector or a
+	 line of text, where the constant matters more than the exponent -- and
+	 its inner loop did not even stop at the first mismatch, so every
+	 position cost the whole pattern whatever the bytes were.  Then
+	 HttpRequest>>parseParts began looking through a stranger's body for a
+	 stranger's boundary with it, before anything had been authenticated.
+	 A 100 KB body and a 50-character boundary cost 2.4 seconds of a
+	 worker; a 300 KB body and a 2,000-character boundary, both inside
+	 every limit the server has, left the worker still scanning at the
+	 sixty-second mark with no reply, and maxConnections of them pin every
+	 worker (Bugs6 NET-1).
+
+	 Primitive 220 walks the bytes in C -- to the next byte that could
+	 begin a match, then the pattern against it -- so a mismatch costs one
+	 comparison and a megabyte is milliseconds.  It fails, and this body
+	 runs, for anything that is not a String or a Symbol on both sides, so
+	 a subclass or a stranger argument still gets 1983's answer by 1983's
+	 rules: `=' on the elements, one at a time.  The fallback stops at the
+	 first mismatch too now, which is the other half of the finding.
+
+	 The two agree on every input: an empty pattern is found at start, a
+	 start past the last possible match is 0, and the first occurrence at
+	 or after start is the one answered."
+	<primitive: 220>
 	| limit |
 	aString size = 0 ifTrue: [^start].
 	limit := self size - aString size + 1.
 	start to: limit do: [:i |
-		| matches |
-		matches := true.
-		1 to: aString size do: [:j |
-			(self at: i + j - 1) = (aString at: j) ifFalse: [matches := false]].
-		matches ifTrue: [^i]].
+		| j |
+		j := 1.
+		[j <= aString size and: [(self at: i + j - 1) = (aString at: j)]]
+			whileTrue: [j := j + 1].
+		j > aString size ifTrue: [^i]].
 	^0
 ]
 

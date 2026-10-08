@@ -260,11 +260,22 @@ grow should grow inside its own number: numbers are a space of 255 that the Blue
 Book, Squeak, Pharo and this system are all already spending, and one given away
 is never given back.
 
-Handles are small integers indexing tables in `src/db/st_odbc.c`, not addresses.
-This system writes its memory to a file and reads it back in another process; an
-image holding a `SQLHDBC` from a previous life would find it plausible and
-dereference it. Every index is checked against the table before use, and a
-resumed image finds every slot empty — which is the truth.
+Handles are integers naming slots in tables in `src/db/st_odbc.c`, not
+addresses. This system writes its memory to a file and reads it back in another
+process; an image holding a `SQLHDBC` from a previous life would find it
+plausible and dereference it. Every handle is checked against the table before
+use, and a resumed image finds every slot empty — which is the truth.
+
+It was the truth only until the first connect of the new life refilled slot 0
+(Bugs6 FILES-1): a `DbConnection` that came back in the image holding handle 0
+then named that connection — another worker's, mid-transaction — and read its
+rows, answered `isOpen` true, and closed it. So a handle is a slot *and the
+serial of the claim that filled it*: the low eleven bits are the slot, the rest
+a counter seeded from the clock when the process first touches the tables, so
+no two claims in one process and no two processes share a number. A handle whose
+serial is not the slot's current one is nobody's, and every call on it answers
+"no such database connection" (or statement) for as long as the object lives.
+The image sees the handle as an Integer and never looks inside it.
 
 **Two failures, two routes**, and getting them the same way round is what makes
 a diagnostic useful:
