@@ -3965,9 +3965,11 @@ primitive_replace_from_to_with_starting_at(void)
     st_int      start;
     st_int      stop;
     st_int      from;
-    st_int      i;
+    uint64_t    count;
+    uint64_t    n;
     int         target_bytes;
     int         source_bytes;
+    int         downwards;
 
     if (!OM_is_present(target) || !OM_is_present(source))
         return 0;
@@ -3983,22 +3985,49 @@ primitive_replace_from_to_with_starting_at(void)
     if (target_bytes && symbol_is_sealed(target))
         return 0;               /*  Bugs5 INTERP-7: see symbol_is_sealed  */
 
-    for (i = 0; i <= stop - start; ++i) {
-        uint32_t    to_index   = (uint32_t) (start + i - 1);
-        uint32_t    from_index = (uint32_t) (from + i - 1);
+    /*
+     *  Both ranges are checked before anything moves, so that a request
+     *  outside either object fails with the target as the caller had it.
+     *  It used to be checked an element at a time, after the elements
+     *  below the bad one had been written.
+     *
+     *  When the source IS the target and the range moves up -- a gap
+     *  opened to insert something, `a replaceFrom: 2 to: 5 with: a
+     *  startingAt: 1' -- copying from the bottom overwrites each element
+     *  before it is read, and the first one smeared across the range:
+     *  (1 1 1 1 1 6) for (1 1 2 3 4 6), on String and ByteArray here and
+     *  on everything else in the Smalltalk method this primitive stands
+     *  in for (Bugs6 KERNA-3).  That case is copied from the top down,
+     *  which is memmove's rule; lib/Collections-Protocol's
+     *  SequenceableCollection>>replaceFrom:to:with:startingAt: has the
+     *  same test.  Any other overlap, and every copy between two
+     *  objects, reads ahead of what it writes and goes from the bottom
+     *  as before.
+     */
+    count = (uint64_t) (stop - start + 1);
+    if (count) {
+        uint64_t    target_length = target_bytes
+                                  ? OM_fetch_byte_length(target)
+                                  : OM_fetch_word_length(target);
+        uint64_t    source_length = source_bytes
+                                  ? OM_fetch_byte_length(source)
+                                  : OM_fetch_word_length(source);
 
-        if (target_bytes) {
-            if (to_index >= OM_fetch_byte_length(target)
-             || from_index >= OM_fetch_byte_length(source))
-                return 0;
+        if (from < 1 || (uint64_t) (start - 1) + count > target_length
+         || (uint64_t) (from - 1) + count > source_length)
+            return 0;
+    }
+    downwards = target == source && from < start;
+    for (n = 0; n < count; ++n) {
+        uint64_t    i          = downwards ? count - 1 - n : n;
+        uint32_t    to_index   = (uint32_t) ((uint64_t) (start - 1) + i);
+        uint32_t    from_index = (uint32_t) ((uint64_t) (from - 1) + i);
+
+        if (target_bytes)
             OM_store_byte(to_index, target, OM_fetch_byte(from_index, source));
-        }  else  {
-            if (to_index >= OM_fetch_word_length(target)
-             || from_index >= OM_fetch_word_length(source))
-                return 0;
+        else
             OM_store_pointer(to_index, target,
                              OM_fetch_pointer(from_index, source));
-        }
     }
     ST_pop_n(4);
     return 1;                   /*  answers the receiver  */

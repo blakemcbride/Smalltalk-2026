@@ -810,3 +810,30 @@ SequenceableCollection >> copyReplaceAll: oldSubCollection with: newSubCollectio
 			startSearch := currentIndex + newSubCollection size].
 	^answer
 ]
+
+{ #category : '*Collections-Protocol' }
+SequenceableCollection >> replaceFrom: start to: stop with: replacement startingAt: repStart [
+	"Store replacement's elements from repStart on into my start to stop,
+	 and answer myself.  No range checks: an index outside either of us
+	 fails in at: or at:put:, as 1983's did.
+
+	 1983 copies element by element from start upwards whatever the
+	 replacement is.  When the replacement is ME and repStart is below
+	 start -- a shift towards my end, which is how a gap is opened to
+	 insert something -- each element is overwritten before it is read and
+	 the first one smears across the range: `#(1 2 3 4 5 6) copy
+	 replaceFrom: 2 to: 5 with: self startingAt: 1' answered (1 1 1 1 1 6)
+	 where (1 1 2 3 4 6) is the only thing the request can mean (Bugs6
+	 KERNA-3).  A wrong collection and no error, on Array, OrderedCollection
+	 and every class without primitive 105; String and ByteArray reached
+	 the same answer through the primitive, which now copies the safe way
+	 round for the same case (src/interp/prim.c).  The other direction was
+	 always right, because what is read is ahead of what is written.  So a
+	 shift up within myself goes from the top down, as memmove would, and
+	 everything else is 1983's loop."
+	| offset |
+	offset := repStart - start.
+	(replacement == self and: [repStart < start])
+		ifTrue: [stop to: start by: -1 do: [:i | self at: i put: (self at: i + offset)]]
+		ifFalse: [start to: stop do: [:i | self at: i put: (replacement at: i + offset)]]
+]

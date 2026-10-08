@@ -588,8 +588,13 @@
  *  image prefix (COMP-7, GUI-3), eight in the numbers, dates and streams
  *  (KERN-9 to KERN-15), two for the Tonel writer's patterns (FILES-12),
  *  and TestCase>>unusedName:suffix:in: for per-run fixtures (DOCS-6).
+ *
+ *  3268 -> 3272 with Bugs6 KERNA-2 and KERNA-3: Interval>>do:,
+ *  reverseDo: and collect: counting by index as size does, and
+ *  SequenceableCollection>>replaceFrom:to:with:startingAt: copying a
+ *  shift within itself from the top down.
  */
-#define LIB_METHODS             3268
+#define LIB_METHODS             3272
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -2912,8 +2917,12 @@ test_browsing(void)
      *  2904282 -> 2905285 with COMP-8 and KERNA-1: the blank after
      *  StrikeFont's arrow, and Float>>floorLog: answering exactly from
      *  one up, with Integer>>floorLog: taking a fractional base.
+     *
+     *  2905285 -> 2908312 with KERNA-2 and KERNA-3: Interval's three
+     *  enumerators counting by index, and SequenceableCollection's
+     *  replaceFrom:to:with:startingAt: copying a shift up from the top.
      */
-    check_integer("(SourceFiles at: 1) contents size", 2905285);
+    check_integer("(SourceFiles at: 1) contents size", 2908312);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -10146,6 +10155,76 @@ test_bugs6_medium_comp_kern(void)
 }
 
 static void
+test_bugs6_medium_kerna(void)
+{
+    test_dialect = ST_DIALECT_CLOSURES;
+
+    /*
+     *  KERNA-2: an Interval's enumerators count the way size does.  1983's
+     *  do:, reverseDo: and collect: added the step to a running value,
+     *  which for a Float step rounds differently from the division in
+     *  size: (0 to: 0.6 by: 0.1) had six elements by size, at:, last and
+     *  asArray and seven by do:, inject:into: and asOrderedCollection, and
+     *  collect: -- size slots filled from the walk -- raised
+     *  SubscriptOutOfBounds on it.  Every element is now start + (step *
+     *  (i - 1)), the expression at: answers, so the walk and the index
+     *  agree to the last ulp.
+     */
+    check_string("| i | i := 0 to: 0.6 by: 0.1. "
+                 "^({i size. i last. i asArray size. i asOrderedCollection size. "
+                 "i inject: 0 into: [:n :x | n + 1]. (i collect: [:x | x]) size. "
+                 "i at: i size. (i collect: [:x | x]) last}) printString",
+                 "(6 0.5 6 6 6 6 0.5 0.5 )");
+    check_string("| i n | i := 0 to: 0.6 by: 0.1. n := 0. "
+                 "i reverseDo: [:x | n := n + 1]. ^n printString", "6");
+    check_string("| last | (0 to: 1 by: 0.1) do: [:x | last := x]. "
+                 "^({last. (0 to: 1 by: 0.1) at: 11}) printString", "(1.0 1.0 )");
+    check_string("^((1 to: 5) collect: [:x | x * x]) printString", "(1 4 9 16 25 )");
+    check_string("^(5 to: 1 by: -2) asOrderedCollection printString",
+                 "an OrderedCollection(5 3 1 )");
+    check_string("| r | r := OrderedCollection new. "
+                 "(1 to: 6 by: 2) reverseDo: [:x | r add: x]. ^r asArray printString",
+                 "(5 3 1 )");
+    check_string("^((1 to: 0) collect: [:x | x]) printString", "()");
+
+    /*
+     *  KERNA-3: replaceFrom:to:with:startingAt: with the receiver as the
+     *  replacement and a shift towards the end.  Primitive 105 and 1983's
+     *  loop both copied from the bottom up, so each element was
+     *  overwritten before it was read and the first smeared across the
+     *  range: (1 1 1 1 1 6) on all four classes.  The shift down was
+     *  always right and still is; a replacement that is another
+     *  collection takes the old path; an OrderedCollection whose first
+     *  element is not at its first slot shifts by its own indices.
+     */
+    check_string("| a s b o | a := #(1 2 3 4 5 6) copy. "
+                 "a replaceFrom: 2 to: 5 with: a startingAt: 1. "
+                 "s := 'abcdef' copy. s replaceFrom: 2 to: 5 with: s startingAt: 1. "
+                 "b := #[1 2 3 4 5 6] copy. b replaceFrom: 2 to: 5 with: b startingAt: 1. "
+                 "o := OrderedCollection withAll: #(1 2 3 4 5 6). "
+                 "o replaceFrom: 2 to: 5 with: o startingAt: 1. "
+                 "^({a. s. b. o asArray}) printString",
+                 "((1 1 2 3 4 6 ) 'aabcdf' a ByteArray(1 1 2 3 4 6 ) (1 1 2 3 4 6 ) )");
+    check_string("| a s | a := #(1 2 3 4 5 6) copy. "
+                 "a replaceFrom: 1 to: 4 with: a startingAt: 2. "
+                 "s := 'abcdef' copy. s replaceFrom: 1 to: 4 with: s startingAt: 2. "
+                 "^({a. s}) printString", "((2 3 4 5 5 6 ) 'bcdeef' )");
+    check_string("| o | o := OrderedCollection withAll: #(0 1 2 3 4 5 6). o removeFirst. "
+                 "o replaceFrom: 2 to: 5 with: o startingAt: 1. ^o asArray printString",
+                 "(1 1 2 3 4 6 )");
+    check_string("| s t | s := 'abcdef' copy. s replaceFrom: 2 to: 4 with: #xyz startingAt: 1. "
+                 "t := 'abcdef' copy. t replaceFrom: 3 to: 3 with: t startingAt: 1. "
+                 "^({s. t}) printString", "('axyzef' 'abadef' )");
+    /*  A range outside either object is still refused.  */
+    check_string("| s | s := 'abc' copy. "
+                 "^[s replaceFrom: 1 to: 3 with: 'xy' startingAt: 1. 'ran'] "
+                 "on: Error do: [:e | 'refused']",
+                 "refused");
+
+    test_dialect = ST_DIALECT_BLUE_BOOK;
+}
+
+static void
 test_bugs6_medium(void)
 {
     /*  KERNB-7: unwindTo: nil runs every unwind block to the bottom, and
@@ -10336,6 +10415,7 @@ main(void)
     test_bugs6_high_files();
     test_bugs6_medium();
     test_bugs6_medium_comp_kern();
+    test_bugs6_medium_kerna();
 
     OM_shutdown();
     return ST_TEST_END();

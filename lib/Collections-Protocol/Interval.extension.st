@@ -99,3 +99,42 @@ Interval class >> from: startInteger to: stopInteger by: stepInteger [
 		to: stopInteger
 		by: stepInteger
 ]
+
+{ #category : '*Collections-Protocol' }
+Interval >> do: aBlock [
+	"Evaluate aBlock with each of my elements, first to last.
+
+	 Each element is computed from its index -- `start + (step * (i - 1))',
+	 which is what at: answers -- rather than by adding step to a running
+	 value as 1983 does.  The two are the same for Integers and not for
+	 Floats: repeated addition rounds at every step and the division in
+	 size rounds once, so `(0 to: 0.6 by: 0.1)' had a size of 6 and a last
+	 of 0.5 while do: delivered seven elements ending in 0.6, because
+	 0.5 + 0.1 is 0.6 exactly and 0.6 / 0.1 is 5.999... (Bugs6 KERNA-2).
+	 inject:into:, asOrderedCollection and everything else built on do:
+	 disagreed with size, at: and asArray about how many elements I had,
+	 and collect:, which allocates size slots and filled them from the
+	 walk, raised SubscriptOutOfBounds on an ordinary Interval.  Now every
+	 element comes from the one expression, so every message agrees;
+	 reverseDo: and collect: below are the same arithmetic the other way
+	 round and into an Array."
+	1 to: self size do: [:i | aBlock value: start + (step * (i - 1))]
+]
+
+{ #category : '*Collections-Protocol' }
+Interval >> reverseDo: aBlock [
+	"Evaluate aBlock with each of my elements, last to first: do:'s
+	 arithmetic, counted down.  See do:."
+	self size to: 1 by: -1 do: [:i | aBlock value: start + (step * (i - 1))]
+]
+
+{ #category : '*Collections-Protocol' }
+Interval >> collect: aBlock [
+	"An Array of aBlock's answers for my elements, in my order: do:'s
+	 arithmetic, so the Array is exactly size long.  See do:."
+	| size result |
+	size := self size.
+	result := self species new: size.
+	1 to: size do: [:i | result at: i put: (aBlock value: start + (step * (i - 1)))].
+	^result
+]

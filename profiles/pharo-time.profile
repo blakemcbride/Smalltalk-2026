@@ -19,6 +19,11 @@ reflection class, which we do not have and which describes a VM that is
 not this one.  Of the five extension files in the package it is the only
 one whose class is missing; the other four extend Integer, Number, String
 and BlockClosure, which is where `3 seconds' and `1 day' come from.
+
+lib/Chronology-Compat-Tests checks what Chronology-Compat changes in
+Pharo's own classes -- a fault Pharo's version does not have is one its
+suite never had a reason to cover -- and is scored with the Pharo suites
+in tests/profiles.expected.
 "
 Profile {
 	#name     : 'pharo-time',
@@ -28,5 +33,6 @@ Profile {
 	               'VirtualMachine', 'ExceptionTest', 'ExceptionTester' ],
 	#supersede : [ 'Date', 'Time' ],
 	#packages : [ '../pharo/System-Time', '../lib/Chronology-Compat',
-	              '../pharo/System-Time-Tests' ]
+	              '../pharo/System-Time-Tests',
+	              '../lib/Chronology-Compat-Tests' ]
 }
