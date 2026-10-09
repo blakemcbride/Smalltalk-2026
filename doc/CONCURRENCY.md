@@ -72,7 +72,11 @@ for each piece of shared state, choose **serialize** (lock it), **replicate**
    `Set`, `Bag` and friends are **not** synchronized. This follows Java's
    post-`Vector` lesson: paying for a lock on every access to serve the rare
    shared case is the wrong default. Use the explicitly shared variants, or
-   guard them yourself.
+   guard them yourself -- readers included. One writer against unguarded
+   readers is not safe: a `Dictionary` or `Set` that grows under `at:put:`
+   swaps in a new table (`Set>>grow`, a `become:`), and a reader that
+   computed its probe for the old table carries on into the new one and
+   answers absent for a key that was present throughout.
 
 4. **`Transcript` interleaving.** One send — one `show:`, one `cr` — is
    atomic, since the Transcript's entry stream is written under a lock

@@ -1999,11 +1999,18 @@ do_bootstrap(const char *const *sources, const int *dialects, unsigned count,
      *  nobody had to write by hand -- the examples came with the methods.
      *
      *  A doctest is checked by evaluating "(expression) = (expected)",
-     *  which is what the notation means.  Three outcomes are told apart,
-     *  because they are three different pieces of news: a pass, a WRONG
-     *  ANSWER -- the method exists here and does something else -- and a
-     *  failure to run at all, which is almost always a class or a selector
-     *  this image has not got yet.
+     *  which is what the notation means.  Four outcomes are told apart,
+     *  because they are four different pieces of news: a pass; a WRONG
+     *  ANSWER -- the method exists here and does something else; a
+     *  failure to run for want of a class or a selector this image has
+     *  not got yet, which is a MessageNotUnderstood; and an example that
+     *  is BROKEN -- it raised anything else, or would not compile.  The
+     *  last two used to be one count, "need something not here", the one
+     *  count that is not a bug, and the exit status ignored it: so a
+     *  book example that stopped working by raising passed the book's own
+     *  gate (Bugs6 COMP-3).  Now each is named with its reason, and the
+     *  exit status is 0 only when every doctest passed -- a gate is a
+     *  gate, and the counts are on stderr for whoever wants the survey.
      */
     if (doctest_paths->count) {
         st_doctest_list list;
@@ -2012,7 +2019,7 @@ do_bootstrap(const char *const *sources, const int *dialects, unsigned count,
         unsigned        wrong = 0;
         unsigned        unrunnable = 0;
         unsigned        shown = 0;
-        st_oop          raised = BOOT_intern_symbol("stDoctestRaised", NULL);
+        unsigned        broken = 0;
         uint64_t        saved_budget = evaluate_budget;
 
         evaluate_budget = UINT64_C(2000000);
@@ -2026,12 +2033,6 @@ do_bootstrap(const char *const *sources, const int *dialects, unsigned count,
                         doctest_paths->items[i], scan_error);
         }
         for (i = 0; i < list.count; ++i) {
-            static const char   doctest_frame[] =
-                "^[() = ()] on: Error do: [:e | #stDoctestRaised]";
-            char   *source;
-            size_t  source_size;
-            st_oop  value;
-
             /*
              *  Under a handler, so that a selector this image has not got
              *  is told apart from an answer that is merely different.  The
@@ -2039,8 +2040,22 @@ do_bootstrap(const char *const *sources, const int *dialects, unsigned count,
              *  is a method that is here and disagrees -- and only the
              *  second is a bug.  Without the handler every missing
              *  selector counted as a wrong answer and printed a backtrace
-             *  on the way past.
+             *  on the way past.  The handler answers a String that names
+             *  which of the two it saw and carries the exception's own
+             *  description, so the report can say why.
              */
+            static const char   doctest_frame[] =
+                "^[(%s) = (%s)] on: Error do: [:e | "
+                "((e isKindOf: MessageNotUnderstood) "
+                "ifTrue: ['stDoctestMissing: '] "
+                "ifFalse: ['stDoctestBroken: ']), e messageText]";
+            char       *source;
+            size_t      source_size;
+            st_oop      value;
+            char        text[512] = "";
+            const char *kind;
+            const char *reason;
+
             /*
              *  Sized from the doctest (Bugs5 DOCS-1).  A fixed 2048 cut a
              *  long one off, the cut text did not compile, and a doctest
@@ -2055,38 +2070,57 @@ do_bootstrap(const char *const *sources, const int *dialects, unsigned count,
                 fprintf(stderr, "st2026: out of memory running doctests\n");
                 exit(1);
             }
-            snprintf(source, source_size,
-                     "^[(%s) = (%s)] on: Error do: [:e | #stDoctestRaised]",
+            snprintf(source, source_size, doctest_frame,
                      list.items[i].expression, list.items[i].expected);
+            err[0] = '\0';
             value = evaluate(source, err, sizeof err);
             free(source);
             if (value == ST_TRUE) {
                 ++passed;
                 continue;
             }
-            if (value == ST_OOP_INVALID || value == raised)
+            if (value == ST_OOP_INVALID) {
+                /*  It would not compile, or did not finish.  */
+                kind   = "broken";
+                reason = err;
+                ++broken;
+            }  else if (OM_is_object(value)
+                    && OM_fetch_class(value) == ST_CLASS_STRING
+                    && OM_string_of(value, text, sizeof text) > 0
+                    && strncmp(text, "stDoctestMissing: ", 18) == 0) {
+                kind   = "missing";
+                reason = text + 18;
                 ++unrunnable;
-            else
+            }  else if (text[0] && strncmp(text, "stDoctestBroken: ", 17) == 0) {
+                kind   = "broken";
+                reason = text + 17;
+                ++broken;
+            }  else  {
+                kind   = "wrong";
+                reason = NULL;
                 ++wrong;
+            }
             /*
              *  A few, named, rather than all of them: the point of the
              *  number is to move, and a thousand lines of output is not
              *  something anybody reads twice.
              */
-            if (value != ST_OOP_INVALID && value != raised && shown < 12) {
+            if (shown < 12) {
                 ++shown;
-                fprintf(stderr, "st2026:   wrong: %s  (%s:%u, %s)\n",
-                        list.items[i].expression, list.items[i].file,
-                        list.items[i].line, list.items[i].where);
+                fprintf(stderr, "st2026:   %s: %s  (%s:%u, %s)%s%s\n",
+                        kind, list.items[i].expression, list.items[i].file,
+                        list.items[i].line, list.items[i].where,
+                        reason ? ": " : "", reason ? reason : "");
             }
         }
         fprintf(stderr, "st2026: %u doctests in %u methods of %u files: "
-                        "%u passed, %u wrong, %u need something not here\n",
+                        "%u passed, %u wrong, %u need something not here, "
+                        "%u broken\n",
                 list.count, list.methods, list.files,
-                passed, wrong, unrunnable);
+                passed, wrong, unrunnable, broken);
         DOCTEST_free(&list);
         evaluate_budget = saved_budget;
-        if (wrong)
+        if (wrong || unrunnable || broken)
             return 1;
     }
 

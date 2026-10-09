@@ -1172,3 +1172,30 @@ Integer >> smallDigitMultiply: arg neg: ng [
 	(prod digitAt: pl) = 0 ifTrue: [^(prod growby: -1) truncated].
 	^prod truncated
 ]
+
+{ #category : '*Kernel-Protocol' }
+Integer >> <= aNumber [
+	"Compare the receiver with the argument and return true if the receiver
+	 is less than or equal to the argument.  Otherwise return false.
+
+	 An Integer argument is decided by > and not, as 1983 decided every
+	 argument -- through Magnitude's `(self > aNumber) not' -- and that not
+	 is wrong for the one argument that is unordered: `0 >= Float nan' and
+	 `9007199254740993 <= Float nan' were true while the same with a
+	 Float on both sides is false (Bugs6 KERNA-5).  Anything else is
+	 retried with this selector, so that compare:exactlyWith: sees it and
+	 answers false for a NaN."
+
+	aNumber isInteger ifTrue: [^(self > aNumber) not].
+	^self retry: #<= coercing: aNumber
+]
+
+{ #category : '*Kernel-Protocol' }
+Integer >> >= aNumber [
+	"Compare the receiver with the argument and return true if the receiver
+	 is greater than or equal to the argument.  Otherwise return false.
+	 See <=."
+
+	aNumber isInteger ifTrue: [^(self < aNumber) not].
+	^self retry: #>= coercing: aNumber
+]

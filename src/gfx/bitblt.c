@@ -26,6 +26,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include "interp.h"
+#include "census.h"
 
 #include <string.h>
 #include <limits.h>
@@ -122,6 +123,47 @@ bitmap_word_length(st_oop bits)
     return OM_fetch_word_length(bits);
 }
 
+/*
+ *  Whether an object is of a class whose instances are bitmaps: raw
+ *  storage that is MEANT to be written through.
+ *
+ *  Refusing a list of classes was the wrong shape (Bugs6 GUI-2).  The
+ *  pointer-bit test below refuses pointer objects and the exact-class test
+ *  after it refused CompiledMethod (Bugs5 GUI-1), and everything else that
+ *  is not pointers got through -- a Symbol, which is bytes, and a Float,
+ *  which is words.  `Form new extent: 16@4 offset: 0@0 bits: #printString'
+ *  followed by `black' wrote 0xFF over the first eight bytes of the
+ *  interned Symbol, so `Symbol intern: 'printString'' then answered some
+ *  other object and every method compiled after it sent a selector no
+ *  class implements -- the symbol table handing out something else, which
+ *  Bugs5 INTERP-7 closed for four primitives and this one reached another
+ *  way.  `bits: 3.25' then `black' turned the Float, a shared literal,
+ *  into NaN where it lay.
+ *
+ *  So the classes a bitmap may be are named instead, and nothing else is
+ *  one: WordArray and DisplayBitmap, which 1983 makes every Form from, and
+ *  ByteArray and String, which are bytes anyone may own; Bitmap for an
+ *  image that has one.  The exact class, as the collector asks it -- a
+ *  Symbol is a String by inheritance and is the object this exists to
+ *  keep out.  Two are special objects and are compared as such; the
+ *  others are known by name, which is a few fetches and a strcmp against a
+ *  blit, and nothing to cache across images.
+ */
+static int
+is_bitmap_class(st_oop bits)
+{
+    st_oop  cls = OM_fetch_class(bits);
+    char    name[64];
+
+    if (cls == ST_CLASS_DISPLAY_BITMAP || cls == ST_CLASS_STRING)
+        return 1;
+    if (!OM_class_name_of(cls, name, sizeof name))
+        return 0;
+    return strcmp(name, "WordArray") == 0
+        || strcmp(name, "ByteArray") == 0
+        || strcmp(name, "Bitmap") == 0;
+}
+
 int
 GFX_form_from_oop(st_oop form, gfx_form *out)
 {
@@ -166,15 +208,17 @@ GFX_form_from_oop(st_oop form, gfx_form *out)
     if (OM_pointer_bit(bits))
         return 0;
     /*
-     *  Nor a CompiledMethod, which the pointer bit calls raw and is not:
-     *  its leading words are the header and the literal frame, and the
-     *  collector and becomeForward: walk them as object pointers.  `Form
-     *  new extent: 16@8 offset: 0@0 bits: aMethod' passed the test above,
-     *  and `black' turned three literals into sixty-three SmallIntegers --
-     *  aimed at Object>>printString, every printString in the image after
-     *  it (Bugs5 GUI-1).  The exact class, as the collector asks it.
+     *  Nor anything that is not a bitmap by class -- see is_bitmap_class.
+     *  A CompiledMethod was the first of these: the pointer bit calls it
+     *  raw and it is not, its leading words being the header and the
+     *  literal frame that the collector and becomeForward: walk as object
+     *  pointers, and `Form new extent: 16@8 offset: 0@0 bits: aMethod'
+     *  then `black' turned three literals into sixty-three SmallIntegers
+     *  -- aimed at Object>>printString, every printString in the image
+     *  after it (Bugs5 GUI-1).  A Symbol and a Float were the next (Bugs6
+     *  GUI-2).
      */
-    if (OM_fetch_class(bits) == ST_CLASS_COMPILED_METHOD)
+    if (!is_bitmap_class(bits))
         return 0;
     /*
      *  The extent is a pair of SmallIntegers, and a SmallInteger here is
@@ -556,6 +600,22 @@ GFX_blit_from_oop(st_oop bitblt, gfx_blit *b)
 
     memset(b, 0, sizeof *b);
     if (!OM_is_object(bitblt))
+        return 0;
+    /*
+     *  And shaped like a BitBlt: fourteen pointer fields, the last of them
+     *  clipHeight.  The receiver of primitive 96 is normally a BitBlt, but
+     *  primitive 188 -- withArgs:executeMethod:, which the Compiler uses --
+     *  runs any method against any receiver, and `(3@4) withArgs: #()
+     *  executeMethod: (BitBlt compiledMethodAt: #copyBits)' read field 2
+     *  and upward of a two-field Point: the read past the object that
+     *  GFX_form_from_oop refuses for destForm (Bugs4 GRAPHICS-2), left
+     *  unguarded on the BitBlt itself (Bugs6 GUI-7).  On the shipping
+     *  binary the words past the Point mostly failed to validate as the
+     *  rule and the primitive failed safe; under ASAN it was a
+     *  heap-buffer-overflow.  The same guard, for the same reason.
+     */
+    if (!OM_pointer_bit(bitblt)
+     || OM_fetch_word_length(bitblt) < ST_BITBLT_CLIP_HEIGHT + 1)
         return 0;
 
     dest     = OM_fetch_pointer(ST_BITBLT_DEST_FORM, bitblt);

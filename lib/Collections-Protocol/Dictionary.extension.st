@@ -158,9 +158,17 @@ Dictionary class >> newFrom: aCollection [
 	 and the first value was sent #key (Bugs3 B51).  A Dictionary is
 	 copied binding by binding into fresh Associations -- not by adding
 	 its own, which are the objects at:put: writes through, so sharing
-	 them would make the copy write the original."
+	 them would make the copy write the original.
+
+	 Sized to a power of two above the source's size, not to the size:
+	 IdentityDictionary accepts no other capacity -- `size must be a power
+	 of 2', or `>= 1' for an empty source -- so `{1->2. 3->4. 5->6} as:
+	 IdentityDictionary' raised, four pairs did not, and `IdentityDictionary
+	 newFrom: #()' raised; as:, newFromArray: and <- all come through here
+	 (Bugs6 KERNA-6).  A Dictionary of any other kind is as happy with a
+	 power of two as with the count, and grows anyway as it fills."
 	| dictionary |
-	dictionary := self new: aCollection size.
+	dictionary := self new: (1 bitShift: (aCollection size max: 1) highBit).
 	(aCollection isKindOf: Dictionary)
 		ifTrue: [aCollection keysAndValuesDo: [:key :value | dictionary at: key put: value]]
 		ifFalse: [aCollection do: [:each | dictionary at: each key put: each value]].

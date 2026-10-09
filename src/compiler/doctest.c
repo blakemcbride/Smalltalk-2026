@@ -100,40 +100,6 @@ undouble(char *text)
 }
 
 /*
- *  Take the doctests out of one comment.
- *
- *  The separator is ">>>", and the FIRST one is the separator: an
- *  expression may contain ">>" -- "Object>>#foo" is how Pharo names a
- *  compiled method -- but the expected value is a literal and does not.
- *  Taking the last would split "(Object>>#foo) numArgs >>> 0" in the wrong
- *  place.
- */
-static void
-scan_comment(st_doctest_list *l, char *text, const char *where,
-             const char *file, unsigned line)
-{
-    char   *sep = strstr(text, ">>>");
-    char   *expression;
-    char   *expected;
-
-    if (!sep)
-        return;
-    *sep = '\0';
-    expression = text;
-    expected   = sep + 3;
-    trim(expression);
-    trim(expected);
-    /*
-     *  Both halves have to be there.  "<Collection of<Plugin>>>" in a class
-     *  comment is a type annotation that happens to end in three angle
-     *  brackets, and it leaves nothing on the right.
-     */
-    if (!expression[0] || !expected[0])
-        return;
-    add(l, expression, expected, where, file, line);
-}
-
-/*
  *  Does a line end at P?
  *
  *  The source readers hand this file the method's text with its line ends
@@ -148,6 +114,152 @@ static int
 line_end_at(const char *p)
 {
     return *p == '\n' || (*p == '\r' && p[1] != '\n');
+}
+
+/*
+ *  Step over a string or character literal starting at P, or over one
+ *  character of anything else.  The three scanners below share it so that
+ *  none of them reads a quote, a period or a separator that is inside a
+ *  literal as the real thing.
+ */
+static char *
+skip_literal(char *p)
+{
+    if (*p == '$' && p[1])
+        return p + 2;
+    if (*p != '\'')
+        return p + 1;
+    ++p;
+    while (*p) {
+        if (*p == '\'' && p[1] == '\'')
+            p += 2;
+        else if (*p == '\'')
+            return p + 1;
+        else
+            ++p;
+    }
+    return p;
+}
+
+/*
+ *  The first separator at or after P that is outside a string or a
+ *  character literal, or NULL.  `('a>>>b' size) >>> 5' was split inside
+ *  the string (Bugs6 COMP-3).
+ */
+static char *
+find_separator(char *p)
+{
+    while (*p) {
+        if (*p == '\'' || *p == '$') {
+            p = skip_literal(p);
+            continue;
+        }
+        if (p[0] == '>' && p[1] == '>' && p[2] == '>')
+            return p;
+        ++p;
+    }
+    return NULL;
+}
+
+/*
+ *  The first period in [P, END) that ends a statement: at the top level,
+ *  outside every literal and every kind of bracket, and not the point of a
+ *  number, which a digit follows at once.  An expected value is a literal
+ *  and holds no statement end of its own, so the first one is where the
+ *  example stops.
+ */
+static char *
+statement_end(char *p, const char *end)
+{
+    int     depth = 0;
+
+    while (p < end) {
+        if (*p == '\'' || *p == '$') {
+            p = skip_literal(p);
+            continue;
+        }
+        if (*p == '(' || *p == '[' || *p == '{')
+            ++depth;
+        else if (*p == ')' || *p == ']' || *p == '}') {
+            if (depth > 0)
+                --depth;
+        }  else if (*p == '.' && depth == 0
+                && !isdigit((unsigned char) p[1]))
+            return p;
+        ++p;
+    }
+    return NULL;
+}
+
+/*
+ *  Take the doctests out of one comment.
+ *
+ *  The separator is ">>>", and the FIRST one is the separator: an
+ *  expression may contain ">>" -- "Object>>#foo" is how Pharo names a
+ *  compiled method -- but the expected value is a literal and does not.
+ *  Taking the last would split "(Object>>#foo) numArgs >>> 0" in the wrong
+ *  place.
+ *
+ *  A comment may hold several examples, and an example may end in a period
+ *  (Bugs6 COMP-3).  "3 + 4 >>> 7. 2 + 2 >>> 4" used to be one doctest
+ *  whose expected value was "7. 2 + 2 >>> 4", and "3 + 4 >>> 7." one whose
+ *  expected value was "7." -- neither compiled, and both were counted
+ *  among the examples that need something this image has not got, which
+ *  is the one count that is not a bug.  Now the expected value ends at
+ *  the first statement end, and the text after it is the next example.
+ */
+static void
+scan_comment(st_doctest_list *l, char *text, const char *where,
+             const char *file, unsigned line)
+{
+    char       *p = text;
+    char       *sep = find_separator(p);
+    const char *scan;
+    unsigned    at_line = line;
+
+    while (sep) {
+        char   *expression = p;
+        char   *expected   = sep + 3;
+        char   *next       = find_separator(expected);
+        char   *end        = next ? next : expected + strlen(expected);
+        char   *stop       = statement_end(expected, end);
+        unsigned    example_line;
+
+        /*  The line the example begins on, for the report.  */
+        for (scan = expression; scan < sep; ++scan)
+            if (line_end_at(scan))
+                ++at_line;
+        example_line = at_line;
+        *sep = '\0';
+        if (stop) {
+            *stop = '\0';
+            p = stop + 1;
+        }  else if (next) {
+            /*
+             *  Two separators and no statement end between them: the
+             *  expected value runs to the second separator, and what
+             *  follows that is the next example's expected value with no
+             *  expression -- which is dropped below, as a comment with
+             *  nothing on one side always was.  The first example then
+             *  fails to compile and says so, which is the loud outcome a
+             *  malformed comment should get.
+             */
+            *next = '\0';
+            p = next + 3;
+        }  else  {
+            p = NULL;
+        }
+        trim(expression);
+        trim(expected);
+        /*
+         *  Both halves have to be there.  "<Collection of<Plugin>>>" in a
+         *  class comment is a type annotation that happens to end in three
+         *  angle brackets, and it leaves nothing on the right.
+         */
+        if (expression[0] && expected[0])
+            add(l, expression, expected, where, file, example_line);
+        sep = p ? find_separator(p) : NULL;
+    }
 }
 
 static int

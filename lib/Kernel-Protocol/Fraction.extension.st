@@ -302,3 +302,23 @@ Fraction >> floorLog: radix [
 	[(base raisedTo: estimate + 1) <= self] whileTrue: [estimate := estimate + 1].
 	^estimate
 ]
+
+{ #category : '*Kernel-Protocol' }
+Fraction >> <= aNumber [
+	"Less than or equal: decided against another Fraction by > and not, as
+	 1983 decided every argument through Magnitude, and against anything
+	 else by retrying with this selector -- so that a NaN gets the false
+	 that compare:exactlyWith: answers for it, where the not gave it true:
+	 `(1/2) <= Float nan' was true (Bugs6 KERNA-5).  See Integer>><=."
+
+	(aNumber isMemberOf: Fraction) ifTrue: [^(self > aNumber) not].
+	^self retry: #<= coercing: aNumber
+]
+
+{ #category : '*Kernel-Protocol' }
+Fraction >> >= aNumber [
+	"Greater than or equal.  See <=."
+
+	(aNumber isMemberOf: Fraction) ifTrue: [^(self < aNumber) not].
+	^self retry: #>= coercing: aNumber
+]

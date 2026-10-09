@@ -255,9 +255,10 @@ TonelSource class >> checkChangeTo: aBehaviorOrNil source: aStringOrNil [
 	 written back to the files it came from as the image will hold it:
 	 one of them has changed on disk since it was loaded or last written
 	 (Bugs5 FILES-4), or the source holds a line feed, which no Tonel
-	 file can carry through a reload (Bugs5 FILES-5).  The Browser's
-	 hooks send this BEFORE they compile, remove or redefine anything; a
-	 class that came from no file passes."
+	 file can carry through a reload (Bugs5 FILES-5), or one of them
+	 cannot be written -- it may only be read, or its directory is gone
+	 (Bugs6 COMP-13).  The Browser's hooks send this BEFORE they compile,
+	 remove or redefine anything; a class that came from no file passes."
 
 	| class refusal |
 	(aBehaviorOrNil isKindOf: Behavior) ifFalse: [^self].
@@ -271,7 +272,8 @@ TonelSource class >> checkChangeTo: aBehaviorOrNil source: aStringOrNil [
 				and: [aStringOrNil asString includes: (Character value: 10)])
 					ifTrue: [answer := TonelWriter lineFeedRefusal: 'the source given for ', class name].
 			entries do: [:entry |
-				answer isNil ifTrue: [answer := entry changedOnDiskRefusal]]].
+				answer isNil ifTrue: [answer := entry changedOnDiskRefusal].
+				answer isNil ifTrue: [answer := entry unwritableRefusal]]].
 		answer].
 	refusal notNil ifTrue: [^TonelError new signal: refusal]
 ]
@@ -346,10 +348,11 @@ TonelSource >> writeBack: aClass [
 	 Answer nil, or -- having written nothing -- the reason the file was
 	 not written: it has changed on disk since it was loaded or last
 	 written, and writing would throw that change away (Bugs5 FILES-4);
-	 or TonelWriter refused the text (Bugs5 FILES-5); or the text would
-	 not read back as the methods it was written from (Bugs6 COMP-14).
-	 The text is built, and read back, before the file is opened, so a
-	 refusal leaves the file as it was.
+	 or it cannot be written at all (Bugs6 COMP-13); or TonelWriter
+	 refused the text (Bugs5 FILES-5); or the text would not read back as
+	 the methods it was written from (Bugs6 COMP-14).  The text is built,
+	 and read back, before the file is opened, so a refusal leaves the
+	 file as it was.
 
 	 THE READ-BACK IS WHAT STANDS BETWEEN A WRITER FAULT AND THE DISK.  A
 	 file this system has written and cannot read is the worst thing a
@@ -364,6 +367,8 @@ TonelSource >> writeBack: aClass [
 	| file why text writer |
 	(self isExtension and: [prefix isNil]) ifTrue: [^nil].
 	why := self changedOnDiskRefusal.
+	why notNil ifTrue: [^why].
+	why := self unwritableRefusal.
 	why notNil ifTrue: [^why].
 	writer := TonelWriter new.
 	text := [self isExtension
@@ -396,6 +401,43 @@ TonelSource >> changedOnDiskRefusal [
 		' to it would throw that change away, so nothing was changed.',
 		'  Load it again first -- TonelSource loadFile: ', path printString,
 		' -- or send TonelSource forget: ', name,
+		' to stop writing the class to it.'
+]
+
+{ #category : 'writing back' }
+TonelSource >> unwritableRefusal [
+	"nil if my file could be written now, or the reason it could not: the
+	 directory in front of its name is gone, or the file is there and may
+	 only be read.  A file that is not there is written back whole, as
+	 changedOnDiskRefusal says; a directory that is not there cannot be.
+
+	 Asked BEFORE an accept installs anything, as the stamp is (Bugs5
+	 FILES-4).  An accept on a class whose file could not be written
+	 installed the method and then raised from the write, so the Browser
+	 showed a method the file did not have -- and the next load of the
+	 file, a server's restart or its reload once the file was touched,
+	 took the method out again as one the file did not hold (Bugs6
+	 COMP-13).  The file is opened to ask, the way a stream would open
+	 it, and closed again: the question costs no descriptor."
+	| cut dir file readOnly |
+	(self isExtension and: [prefix isNil]) ifTrue: [^nil].
+	cut := 0.
+	1 to: path size do: [:i | (path at: i) = $/ ifTrue: [cut := i]].
+	cut > 1 ifTrue: [
+		dir := path copyFrom: 1 to: cut - 1.
+		(Disk isDirectoryNamed: dir) ifFalse: [
+			^'the directory ', dir, ' is not there, so ', name,
+				' cannot be written to ', path, ' and nothing was changed.',
+				'  Put the directory back, or send TonelSource forget: ', name,
+				' to stop writing the class to it.']].
+	file := TonelSource fileFor: path.
+	file isNil ifTrue: [^nil].
+	readOnly := [[file open. file isReadOnly] on: Error do: [:e | e return: true]]
+		ensure: [file close].
+	readOnly ifFalse: [^nil].
+	^path, ' may only be read, so ', name,
+		' cannot be written to it and nothing was changed.',
+		'  Make the file writable, or send TonelSource forget: ', name,
 		' to stop writing the class to it.'
 ]
 

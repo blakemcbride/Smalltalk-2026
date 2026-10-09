@@ -2048,6 +2048,131 @@ bugs6_medium_files(void)
     unlink(changes);
 }
 
+/*
+ *  Bugs6 FIXES-1 (medium) and COMP-3 (low-medium): the `^' through ensure:
+ *  at the top of -eval, and the doctest run that could not fail.  Both are
+ *  the binary's own paths, so both are run as commands.
+ */
+static void
+bugs6_medium_eval(void)
+{
+    static char out[65536];
+    const char *mixed = fixture("bugs6-comp3-mixed.class.st");
+    const char *clean = fixture("bugs6-comp3-clean.class.st");
+    const char *lacks = fixture("bugs6-comp3-lacks.class.st");
+    char        command[4096];
+    int         status;
+
+    /*
+     *  FIXES-1.  The body of -eval is the bottom of its process, and a
+     *  `^' from a block with an ensure: or ifCurtailed: between it and
+     *  that body answers the value, as `[^9] value. 5' always did.
+     *  Before: `Error: 'a primitive has failed'', then 5, exit 1.
+     */
+    snprintf(command, sizeof command,
+             "%s -bootstrap -profile profiles/st2026.profile "
+             "-eval '[[^9] ensure: [1]] value. 5' 2>/dev/null", st2026);
+    status = run(command, out, sizeof out);
+    ++st_test_checks;
+    if (status != 0 || strcmp(out, "9\n") != 0) {
+        ++st_test_failures;
+        printf("  FAIL FIXES-1 -eval ^ through ensure: exit %d, output '%s', "
+               "want 9\n", status, out);
+    }
+    snprintf(command, sizeof command,
+             "%s -bootstrap -profile profiles/st2026.profile "
+             "-eval '[:x | [^x] ifCurtailed: [1]] value: 9. 5' 2>/dev/null",
+             st2026);
+    status = run(command, out, sizeof out);
+    ++st_test_checks;
+    if (status != 0 || strcmp(out, "9\n") != 0) {
+        ++st_test_failures;
+        printf("  FAIL FIXES-1 -eval ^ through ifCurtailed: exit %d, "
+               "output '%s', want 9\n", status, out);
+    }
+
+    /*
+     *  COMP-3.  -doctests tells a broken example -- one that raises, or
+     *  does not compile -- from one that needs a selector this image has
+     *  not got, names each with its reason, reads several examples out of
+     *  one comment, lets an example end in a period or hold the separator
+     *  in a string, and exits 1 unless every example passed.  Before, the
+     *  five that were not `3 + 4 >>> 7' all counted as needing something
+     *  not here, and the exit status was 0.
+     */
+    if (write_file(mixed,
+            "Class {\n\t#name : 'Bugs6Dt',\n\t#superclass : 'Object',\n"
+            "\t#category : 'Bugs6-Dt'\n}\n\n"
+            "Bugs6Dt >> a [\n\t\"3 + 4 >>> 7\"\n\t^1\n]\n\n"
+            "Bugs6Dt >> b [\n\t\"3 zork >>> 8\"\n\t^1\n]\n\n"
+            "Bugs6Dt >> c [\n\t\"3 + >>> 7\"\n\t^1\n]\n\n"
+            "Bugs6Dt >> d [\n\t\"3 + 4 >>> 7.\"\n\t^1\n]\n\n"
+            "Bugs6Dt >> e [\n\t\"3 + 4 >>> 7. 2 + 2 >>> 4\"\n\t^1\n]\n\n"
+            "Bugs6Dt >> f [\n\t\"(Error signal: 'boom') >>> 5\"\n\t^1\n]\n\n"
+            "Bugs6Dt >> g [\n\t\"('a>>>b' size) >>> 5.\n\t 3 + 0.5 >>> 3.5\"\n\t^1\n]\n")
+        == 0) {
+        snprintf(command, sizeof command,
+                 "%s -bootstrap -profile profiles/st2026.profile "
+                 "-doctests %s 2>&1", st2026, mixed);
+        status = run(command, out, sizeof out);
+        ++st_test_checks;
+        if (status != 1) {
+            ++st_test_failures;
+            printf("  FAIL COMP-3 -doctests with broken examples exited %d, "
+                   "want 1\n", status);
+        }
+        expect(out, "9 doctests in 7 methods of 1 files: 6 passed, 0 wrong, "
+                    "1 need something not here, 2 broken",
+               "COMP-3 the four counts");
+        expect(out, "missing: 3 zork  (", "COMP-3 a missing selector named");
+        expect(out, "Bugs6Dt): Message not understood: zork",
+               "COMP-3 a missing selector's reason");
+        expect(out, "broken: (Error signal: 'boom')  (",
+               "COMP-3 an example that raises named");
+        expect(out, "Bugs6Dt): boom", "COMP-3 the exception's text");
+        expect(out, "broken: 3 +  (", "COMP-3 an example that does not compile");
+        expect_absent(out, "wrong:", "COMP-3 nothing counted wrong");
+    }
+    if (write_file(clean,
+            "Class {\n\t#name : 'Bugs6Dt',\n\t#superclass : 'Object',\n"
+            "\t#category : 'Bugs6-Dt'\n}\n\n"
+            "Bugs6Dt >> a [\n\t\"3 + 4 >>> 7. (3 @ 4) >>> 3@4.\"\n\t^1\n]\n")
+        == 0) {
+        snprintf(command, sizeof command,
+                 "%s -bootstrap -profile profiles/st2026.profile "
+                 "-doctests %s 2>&1", st2026, clean);
+        status = run(command, out, sizeof out);
+        ++st_test_checks;
+        if (status != 0) {
+            ++st_test_failures;
+            printf("  FAIL COMP-3 -doctests with every example passing "
+                   "exited %d, want 0\n", status);
+        }
+        expect(out, "2 doctests in 1 methods of 1 files: 2 passed, 0 wrong, "
+                    "0 need something not here, 0 broken",
+               "COMP-3 two examples in one comment");
+    }
+    if (write_file(lacks,
+            "Class {\n\t#name : 'Bugs6Dt',\n\t#superclass : 'Object',\n"
+            "\t#category : 'Bugs6-Dt'\n}\n\n"
+            "Bugs6Dt >> a [\n\t\"3 zork >>> 7\"\n\t^1\n]\n")
+        == 0) {
+        snprintf(command, sizeof command,
+                 "%s -bootstrap -profile profiles/st2026.profile "
+                 "-doctests %s 2>&1", st2026, lacks);
+        status = run(command, out, sizeof out);
+        ++st_test_checks;
+        if (status != 1) {
+            ++st_test_failures;
+            printf("  FAIL COMP-3 -doctests needing a selector exited %d, "
+                   "want 1\n", status);
+        }
+    }
+    unlink(mixed);
+    unlink(clean);
+    unlink(lacks);
+}
+
 int
 main(void)
 {
@@ -2709,6 +2834,7 @@ main(void)
     bugs6_medium_om();
     bugs6_medium_kern();
     bugs6_medium_files();
+    bugs6_medium_eval();
 
     unlink(IMAGE);
     unlink(BATCH);

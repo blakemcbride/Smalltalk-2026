@@ -685,3 +685,31 @@ Float >> isZero [
 	 round for the one comparison a double can make by itself."
 	^self = 0.0
 ]
+
+{ #category : '*Kernel-Protocol' }
+Float >> <= aNumber [
+	"Compare the receiver with the argument and return true if the receiver
+	 is less than or equal to the argument.  Otherwise return false.  Fail
+	 if the argument is not a Float -- and then retry with THIS selector.
+
+	 1983 fell back to `super <= aNumber', which is Magnitude's `(self >
+	 aNumber) not', and the not turned the false a NaN earns from every
+	 comparison into true: `Float nan <= 2' was true while `Float nan <=
+	 2.0' was false, and `Float nan between: 1 and: 0' was true (Bugs6
+	 KERNA-5).  Retried with #<= itself, compare:exactlyWith: sees the
+	 selector and answers false for a NaN, as it does for < and >."
+
+	<primitive: 45>
+	^self retry: #<= coercing: aNumber
+]
+
+{ #category : '*Kernel-Protocol' }
+Float >> >= aNumber [
+	"Compare the receiver with the argument and return true if the receiver
+	 is greater than or equal to the argument.  Otherwise return false.
+	 Fail if the argument is not a Float -- and then retry with this
+	 selector, for the reason <= gives."
+
+	<primitive: 46>
+	^self retry: #>= coercing: aNumber
+]

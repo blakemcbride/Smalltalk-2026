@@ -604,8 +604,12 @@
  *  delaySemaphore:, Monitor>>waitForChangeWithin: and waitUntil:within:,
  *  SharedQueue>>nextWithin:ifNone:), DbConnection>>isAlive with Odbc
  *  class>>isAlive:, and the pool's waitSeconds, waitSeconds: and reopen.
+ *
+ *  3289 -> 3298 with Bugs6 GUI-5, KERNA-5 and COMP-13: Form>>extent:
+ *  and WordArray class>>maxSize, <= and >= on Float, Integer and
+ *  Fraction, and TonelSource>>unwritableRefusal.
  */
-#define LIB_METHODS             3289
+#define LIB_METHODS             3298
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -2940,8 +2944,12 @@ test_browsing(void)
      *  2916205 -> 2927980 with Bugs6 FILES-3, FILES-5, FILES-7 and
      *  FILES-8: a release that flushes, a snapshot that copies its changes
      *  file, a remove that is checked, and the timed wait under the pool.
+     *
+     *  2927980 -> 2933880 with Bugs6 GUI-5, KERNA-5 and COMP-13: a Form
+     *  as big as its extent, the NaN that is unordered against an Integer,
+     *  and the accept refused before the file that cannot be written.
      */
-    check_integer("(SourceFiles at: 1) contents size", 2927980);
+    check_integer("(SourceFiles at: 1) contents size", 2933880);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -10348,6 +10356,175 @@ test_bugs6_medium_files(void)
 }
 
 /*
+ *  Bugs6 GUI-2, GUI-5, GUI-7, FIXES-1 (medium) and COMP-13, KERNA-5,
+ *  KERNA-6 (low-medium): the Form whose bits were a Symbol, the Form too
+ *  big for the Alto, the BitBlt that was a Point, the `^' through ensure:
+ *  at the bottom of the world, the accept on a file that could not be
+ *  written, the NaN that <= called true, and the IdentityDictionary that
+ *  wanted a power of two.  COMP-3 is the doctest driver, which is the
+ *  binary's and is in test_serve_faults; DOCS-22 is a sentence in the
+ *  manual.
+ */
+static void
+test_bugs6_medium_gui_fixes(void)
+{
+    const char *dir = st_test_path("bugs6-comp13");
+    char        file[1024];
+    char        expression[3072];
+    FILE       *f;
+
+    test_dialect = ST_DIALECT_CLOSURES;
+
+    /*
+     *  GUI-2.  A Form whose bits are a Symbol or a Float is refused by the
+     *  primitive, and the object is left as it was.  Before, `black' wrote
+     *  0xFF over the interned Symbol, so `Symbol intern:' of its name
+     *  answered another object, and the Float became NaN in place.  A
+     *  WordArray, a ByteArray and a String are still bitmaps.
+     */
+    check_string("| s f | s := #printString. "
+                 "f := Form new extent: 16@4 offset: 0@0 bits: s. "
+                 "[f black] on: Error do: [:e | nil]. "
+                 "^((Symbol intern: (String withAll: 'printString')) == s) "
+                 "printString, ' ', (s asString = 'printString') printString",
+                 "true true");
+    check_string("| x f | x := 3.25. "
+                 "f := Form new extent: 16@1 offset: 0@0 bits: x. "
+                 "[f black] on: Error do: [:e | nil]. ^x printString", "3.25");
+    check_integer("| f | f := Form new extent: 16@1 offset: 0@0 "
+                  "bits: (WordArray new: 1). f black. ^f bits first", 65535);
+    check_string("| f | f := Form new extent: 16@1 offset: 0@0 "
+                 "bits: (ByteArray new: 2). f black. ^f bits printString",
+                 "a ByteArray(255 255 )");
+    check_integer("| f | f := Form new extent: 16@1 offset: 0@0 "
+                  "bits: (String new: 2). f black. ^f bits first asInteger",
+                  255);
+
+    /*
+     *  GUI-5.  A Form's bitmap is as big as its extent: 1024 by 1023 is
+     *  65,472 words, which 1983 clamped to 64,640, and the primitive then
+     *  refused the Form for ever.  A DisplayText of 2,000 characters has a
+     *  form; WordArray's ceiling is a collection's.
+     */
+    check_integer("(Form new extent: 1024@1023) bits size", 65472);
+    check_string("^[(Form new extent: 1024@1023) black. 'drawn'] "
+                 "on: Error do: [:e | e messageText]", "drawn");
+    check_string("| e | e := [(DisplayText text: (String new: 2000 withAll: $m) "
+                 "asText) form extent] on: Error do: [:ex | ex return: 0@0]. "
+                 "^(e x >= 2000 and: [e y > 0]) printString", "true");
+    check_boolean("WordArray maxSize > 64640", 1);
+
+    /*
+     *  GUI-7.  copyBits run against a Point fails its primitive without
+     *  reading past the Point, and the method body's instance-variable
+     *  access is then refused by the interpreter: an Error, not a read of
+     *  the heap past a 24-byte object.
+     */
+    check_string("^[(3@4) withArgs: #() executeMethod: "
+                 "(BitBlt compiledMethodAt: #copyBits). 'ran'] "
+                 "on: Error do: [:e | 'refused']", "refused");
+
+    /*
+     *  FIXES-1.  A `^' from a block through an ensure: or ifCurtailed:
+     *  frame, at the bottom of the stack -- which is what every doIt here
+     *  is, like the body of -eval -- answers the value, with the unwind
+     *  block run once and the statement after the block never reached.
+     *  Before: `a primitive has failed', then the next statement, then 5.
+     */
+    evaluate("Smalltalk at: #Bugs6Fixes1 put: OrderedCollection new");
+    check_integer("[[^9] ensure: [(Smalltalk at: #Bugs6Fixes1) add: 'ensure']] "
+                  "value. (Smalltalk at: #Bugs6Fixes1) add: 'after'. ^5", 9);
+    check_integer("[:x | [^x] ifCurtailed: [(Smalltalk at: #Bugs6Fixes1) "
+                  "add: 'curtailed']] value: 7. "
+                  "(Smalltalk at: #Bugs6Fixes1) add: 'after'. ^5", 7);
+    check_string("^(Smalltalk at: #Bugs6Fixes1) printString",
+                 "an OrderedCollection('ensure' 'curtailed' )");
+    evaluate("Smalltalk removeKey: #Bugs6Fixes1");
+
+    /*
+     *  KERNA-5.  A NaN is unordered against an Integer or a Fraction as
+     *  it is against a Float: the first eight were true, true, true, true,
+     *  false, true, false, true.  The ordered cases still order.
+     */
+    check_string("^{Float nan >= 0. Float nan <= 2. 0 >= Float nan. "
+                 "(1/2) <= Float nan. Float nan >= 0.0. "
+                 "Float nan between: 1 and: 0. Float nan between: 1.0 and: 0.0. "
+                 "9007199254740993 <= Float nan. "
+                 "1 <= 2. 2 >= (1/2). (1/2) <= 1. 3.5 >= 3. 3 <= 3.0. "
+                 "(1/2) >= (1/3). 9007199254740993 >= 9007199254740992.0. "
+                 "2 <= Float infinity. (2 raisedTo: 70) <= 3. (1/2) <= 0.5} "
+                 "printString",
+                 "(false false false false false false false false "
+                 "true true true true true true true true false true )");
+
+    /*
+     *  KERNA-6.  An IdentityDictionary from a source of any size: three
+     *  pairs raised `size must be a power of 2' and an empty source
+     *  `size must be >= 1', while four pairs worked.
+     */
+    check_string("^{({1->2. 3->4. 5->6} as: IdentityDictionary) size. "
+                 "({1->2. 3->4} as: IdentityDictionary) size. "
+                 "(IdentityDictionary newFrom: #()) size. "
+                 "(IdentityDictionary newFrom: ((1 to: 1000) collect: [:i | i -> i])) size. "
+                 "({1->2. 3->4. 5->6} as: IdentityDictionary) class == IdentityDictionary. "
+                 "({1->2. 3->4. 5->6} as: IdentityDictionary) at: 5. "
+                 "(Dictionary newFrom: {1->2. 3->4. 5->6}) size} printString",
+                 "(3 2 0 1000 true 6 3 )");
+
+    /*
+     *  COMP-13.  An accept on a class from a Tonel file is refused BEFORE
+     *  the method is installed when the file cannot be written: it may
+     *  only be read, or its directory is gone.  A writable file takes the
+     *  method, and gets it.  Before, the method was installed, the write
+     *  raised, and the next load of the file took the method out again.
+     *  The read-only half needs a user the mode applies to, so root skips
+     *  it, as the FILES-7 check does.
+     */
+    mkdir(dir, 0755);
+    snprintf(file, sizeof file, "%s/Bugs6Wb13.class.st", dir);
+    f = fopen(file, "w");
+    if (f) {
+        fputs("Class {\n\t#name : 'Bugs6Wb13',\n\t#superclass : 'Object',\n"
+              "\t#category : 'Bugs6-Wb13'\n}\n\n{ #category : 'probes' }\n"
+              "Bugs6Wb13 >> one [\n\t^1\n]\n", f);
+        fclose(f);
+    }
+    snprintf(expression, sizeof expression,
+             "| c r | TonelSource loadFile: '%s'. c := Smalltalk at: #Bugs6Wb13. "
+             "r := [c compile: 'two ^2' classified: 'probes' notifying: nil. "
+             "'accepted'] on: TonelError do: [:e | e return: e messageText]. "
+             "^r, ' ', (c includesSelector: #two) printString, ' ', "
+             "((FileStream oldFileNamed: '%s') contentsOfEntireFile "
+             "includesSubstring: 'two') printString", file, file);
+    check_string(expression, "accepted true true");
+    if (geteuid() != 0) {
+        chmod(file, 0444);
+        check_string("| c r | c := Smalltalk at: #Bugs6Wb13. "
+                     "r := [c compile: 'three ^3' classified: 'probes' notifying: nil. "
+                     "'accepted'] on: TonelError do: [:e | e return: "
+                     "((e messageText includesSubstring: 'may only be read') "
+                     "ifTrue: ['refused'] ifFalse: [e messageText])]. "
+                     "^r, ' ', (c includesSelector: #three) printString",
+                     "refused false");
+        chmod(file, 0644);
+    }
+    unlink(file);
+    rmdir(dir);
+    check_string("| c r | c := Smalltalk at: #Bugs6Wb13. "
+                 "r := [c compile: 'four ^4' classified: 'probes' notifying: nil. "
+                 "'accepted'] on: TonelError do: [:e | e return: "
+                 "((e messageText includesSubstring: 'is not there') "
+                 "ifTrue: ['refused'] ifFalse: [e messageText])]. "
+                 "^r, ' ', (c includesSelector: #four) printString",
+                 "refused false");
+    evaluate("TonelSource forget: (Smalltalk at: #Bugs6Wb13). "
+             "^(Smalltalk at: #Bugs6Wb13) removeFromSystem");
+    check_boolean("Smalltalk includesKey: #Bugs6Wb13", 0);
+
+    test_dialect = ST_DIALECT_BLUE_BOOK;
+}
+
+/*
  *  Bugs6 COMP-5, COMP-8 and KERNA-1 (medium): what an inlined block's
  *  temporaries mean, an arrow glued to the name after it, and the floor of
  *  a Float's logarithm.
@@ -10713,6 +10890,7 @@ main(void)
     test_bugs6_medium_kerna();
     test_bugs6_medium_kernb();
     test_bugs6_medium_files();
+    test_bugs6_medium_gui_fixes();
 
     OM_shutdown();
     return ST_TEST_END();

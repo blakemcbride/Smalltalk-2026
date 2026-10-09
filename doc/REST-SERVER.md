@@ -119,7 +119,8 @@ as the unit. The other direction is the Browser: a method accepted or removed
 in it, on a class that came from a file, writes the file, through hooks on
 the three messages the Browser sends. A write that would lose something is
 refused with a `TonelError` instead: the file changed on disk since it was
-read, or the method's source holds a line feed, which no text file can carry
+read, the file cannot be written (it may only be read, or its directory is
+gone), or the method's source holds a line feed, which no text file can carry
 inside a literal. `doc/TONEL.md` is not a file; the
 package's class comments are the document, and `lib/Tonel/TonelReader.class.st`
 is where to start.

@@ -239,11 +239,16 @@ An \ct{Association} is an ordinary object made with \ct{->}:
 
 \begin{stwarn}
 \textbf{The base collections are not synchronised.} \ct{OrderedCollection},
-\ct{Dictionary}, \ct{Set} and \ct{Bag} may be read by many workers at once and
-written by exactly one, or you must guard them yourself. This is deliberate:
-paying for a lock on every access to serve the rare shared case is the wrong
-default, which is the lesson Java learned from \ct{Vector}. Use \ct{Mutex},
-\ct{Monitor} or \ct{SharedQueue} when a collection really is shared---see
+\ct{Dictionary}, \ct{Set} and \ct{Bag} may be read by many workers at once
+only while nobody writes them. One writer is one too many for unguarded
+readers: a \ct{Dictionary} or \ct{Set} that grows under an \ct{at:put:}
+moves every element to a new table, and a reader half way through probing
+the old one answers absent for a key that was there all along. So a
+collection that any worker writes is guarded on every side, readers
+included, or it is not shared. This is deliberate: paying for a lock on
+every access to serve the rare shared case is the wrong default, which is
+the lesson Java learned from \ct{Vector}. Use \ct{Mutex}, \ct{Monitor} or
+\ct{SharedQueue} when a collection really is shared---see
 Chapter~\ref{ch:parallel}.
 \end{stwarn}
 

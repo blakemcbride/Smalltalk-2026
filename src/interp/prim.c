@@ -1290,6 +1290,20 @@ context_is_live(st_oop ctx)
 /*
  *  246: ContextPart>>return: value.  Abandon everything up to and including
  *  the receiver, and let the send that created it answer `value`.
+ *
+ *  A live context with no sender is the bottom of its process -- the body
+ *  of -eval or -startup, or a test harness's doIt -- and returning from it
+ *  is what do_return does for a plain `^' there: the answer is kept and
+ *  the process stops, which is how -eval gets its answer at all.  This
+ *  used to refuse such a context as having "nothing to answer to", and the
+ *  one path that sends return: to the bottom context is a `^' from a
+ *  block with an ensure: or ifCurtailed: between it and its home, which
+ *  aboutToReturn:through: finishes with `home return:' after running the
+ *  unwind blocks.  So `[[^9] ensure: [1]] value. 5' under -eval printed
+ *  `a primitive has failed' and went on to answer 5, where `[^9] value. 5'
+ *  answered 9 and the same text in a method answered 9 (Bugs6 FIXES-1).
+ *  Being live is the whole condition: a context that has returned is off
+ *  the chain and is refused as before.
  */
 static int
 primitive_context_return(void)
@@ -1299,8 +1313,6 @@ primitive_context_return(void)
 
     if (!is_a_context(ctx))
         return 0;
-    if (!OM_is_present(OM_fetch_pointer(ST_CTX_SENDER, ctx)))
-        return 0;                   /*  nothing to answer to  */
     if (!context_is_live(ctx))
         return 0;
     ST_pop_n(2);

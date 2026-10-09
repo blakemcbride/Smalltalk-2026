@@ -118,11 +118,11 @@ this source parse here" but "does it \emph{mean} here what it means there".
 
 \begin{plain}
 st2026: 10 doctests in 3 methods of 1 files: 10 passed, 0 wrong,
-      0 need something not here
+      0 need something not here, 0 broken
 \end{plain}
 
-A doctest is checked by evaluating \ct{(expression) = (expected)}. Three
-outcomes are told apart, because they are three different pieces of news:
+A doctest is checked by evaluating \ct{(expression) = (expected)}. Four
+outcomes are told apart, because they are four different pieces of news:
 
 \begin{center}
 \small
@@ -133,9 +133,18 @@ wrong & the method exists here and does something else. \textbf{This is a
   bug}\\
 need something not here & it could not run: a class or selector this image has
   not got\\
+broken & it raised anything else, or would not compile. \textbf{This is a
+  bug}, in the example or in what it calls\\
 \bottomrule
 \end{tabular}
 \end{center}
+
+Every example that did not pass is named with its reason, a dozen of them at
+most, and the exit status is 0 only when every example passed, so a run of
+\ct{-doctests} is a gate a build script can ask. A comment may hold several
+examples: each ends at the statement end after its expected value, so an
+example may be written with a period after it, and the next may follow on
+the same line or the next.
 
 \begin{stnote}
 The file being scanned need not be part of the image. \ct{-doctests} reads
