@@ -397,7 +397,11 @@ sends \ct{request closeConnection: aBoolean}---commit or roll back---and
 nothing more is done to it. The pool is a \ct{SharedQueue} of open
 connections, which bounds how many requests are inside the database at once
 to the pool's size; \ct{lib/Database} asks that a connection belong to one
-process at a time, and the queue is what enforces it.
+process at a time, and the queue is what enforces it. A connection that is
+no longer alive when a request hands it back is closed and replaced; when
+the replacement cannot be opened, the pool keeps a place for it that the
+next request fills; and a request that has waited thirty seconds for a
+connection is refused with a logged error rather than left waiting.
 
 \subsection{Startup}
 

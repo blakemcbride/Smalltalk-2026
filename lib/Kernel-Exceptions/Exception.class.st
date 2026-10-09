@@ -74,7 +74,13 @@ Exception >> isResumable [
 { #category : 'signalling' }
 Exception >> signal [
 	"thisContext is this activation of #signal, so its sender is where the
-	 signal came from -- and the search starts there rather than here."
+	 signal came from -- and the search starts there rather than here.
+
+	 Signalled already, I am being raised again -- from inside my own
+	 handler, which the manual's table offers as `re-signal this
+	 exception' -- and that goes through resignalFrom:, which keeps my
+	 place (Bugs6 KERNB-4)."
+	signalContext isNil ifFalse: [^self resignalFrom: thisContext sender].
 	signalContext := thisContext sender.
 	^self signalFrom: signalContext
 ]
@@ -82,6 +88,7 @@ Exception >> signal [
 { #category : 'signalling' }
 Exception >> signal: aMessage [
 	messageText := aMessage.
+	signalContext isNil ifFalse: [^self resignalFrom: thisContext sender].
 	signalContext := thisContext sender.
 	^self signalFrom: signalContext
 ]
@@ -93,6 +100,43 @@ Exception >> signalFrom: aContext [
 	found isNil ifTrue: [^self defaultAction].
 	handlerContext := found.
 	^self runHandler
+]
+
+{ #category : 'private' }
+Exception >> resignalFrom: aContext [
+	"signal, sent to an exception that has been signalled already: look
+	 for a handler from aContext, and if that handler resumes, come back
+	 here with its value and carry on as before.
+
+	 The two fields are what a resumption returns to and what a handler
+	 acts on, and a second signal used to overwrite both on the same
+	 object with nothing to put them back.  An inner handler that
+	 re-signalled and was resumed by the outer one then finished with
+	 handlerContext naming the OUTER on:do:, and runHandler returned from
+	 that: whatever followed the inner on:do: in its method never ran.
+	 Re-signalled into an on:do: nested inside the handler block, which
+	 returned, it finished with the nested frame, gone from the stack, and
+	 `a primitive has failed' came out of the inner on:do: in place of its
+	 value (Bugs6 KERNB-4).
+
+	 Kept the way outer keeps them: saved, replaced for the duration, and
+	 restored on the resumption path, which lands here because
+	 signalContext names this activation.  The search starts from the
+	 re-signal and not, as outer's does, from below the handler, so that
+	 an on:do: inside the handler block is found first -- that is the
+	 difference between the two, and `[e signal] on: ... do:' inside a
+	 handler is what it is for.  A handler that returns rather than
+	 resumes discards this activation and the restore with it; runHandler
+	 then puts handlerContext back to the frame whose handler is
+	 finishing, which is all return: needs."
+	| savedSignal savedHandler result |
+	savedSignal := signalContext.
+	savedHandler := handlerContext.
+	signalContext := thisContext.
+	result := self signalFrom: aContext.
+	signalContext := savedSignal.
+	handlerContext := savedHandler.
+	^result
 ]
 
 { #category : 'private' }
@@ -144,9 +188,12 @@ Exception >> findHandlerFrom: aContext [
 				 ran the INNER handler, which then returned normally from
 				 the middle of the protected block and abandoned the outer
 				 one (Bugs5 KERN-1).  runHandler carries the handler mark so
-				 that the walk stops at it; its third temporary is nil, so
-				 nothing else takes it for an on:do:."
-				ctx := ctx receiver handlerContext.
+				 that the walk stops at it, and keeps its on:do: in its
+				 second temporary -- its own copy, not the exception's
+				 handlerContext, which a re-signal inside the handler has
+				 pointed elsewhere by now (Bugs6 KERNB-4); its third
+				 temporary is nil, so nothing else takes it for an on:do:."
+				ctx := ctx tempAt: 2.
 				ctx isNil ifTrue: [^nil]]
 			ifFalse: [
 				guard := ctx tempAt: 1.
@@ -161,22 +208,33 @@ Exception >> findHandlerFrom: aContext [
 
 { #category : 'private' }
 Exception >> runHandler [
-	"Run the handler with itself turned off, so that anything IT signals
-	 goes to the next handler out rather than back to this one.
+	"Run the handler with its on:do: turned off, so that anything IT
+	 signals goes to the next handler out rather than back to this one.
 
 	 Marked as on:do: is, so that findHandlerFrom:'s walk stops here and
 	 can skip from a running handler to its own on:do: (Bugs5 KERN-1).
 	 The mark is a tag and always fails into this body; the third
 	 temporary, which on:do: keeps true while it is listening, is never
-	 written here, so nothing reads this frame as a handler."
-	| block result notAHandler |
+	 written here, so nothing reads this frame as a handler.
+
+	 The frame goes into a temporary first and everything after the block
+	 uses the temporary.  What the handler block does to me -- a re-signal
+	 caught and returned from inside it -- can leave handlerContext naming
+	 another on:do: by the time it finishes, and it is THIS frame whose
+	 handler ran, this frame that goes back into service, and this frame
+	 that answers (Bugs6 KERNB-4).  The second temporary is also what
+	 findHandlerFrom: and resume: read to learn which on:do: a running
+	 handler belongs to."
+	| block frame notAHandler result |
 	<primitive: 199>
-	block := handlerContext tempAt: 2.
-	handlerContext handlerIsActive: false.
+	frame := handlerContext.
+	block := frame tempAt: 2.
+	frame handlerIsActive: false.
 	result := block numArgs = 0
 		ifTrue: [block value]
 		ifFalse: [block value: self].
-	handlerContext handlerIsActive: true.
+	frame handlerIsActive: true.
+	handlerContext := frame.
 	"Falling off the end of a handler answers its value, like Pharo."
 	^self return: result
 ]
@@ -392,6 +450,7 @@ Exception >> resume: aValue [
 	 frame nothing refers to any more.  That happens when the exception
 	 outlives its handler -- stored in a variable and resumed later -- and
 	 it is a mistake worth naming rather than a crash worth having."
+	| ctx frame runHandler |
 	self isResumable ifFalse: [
 		^Error new signal: 'this exception is not resumable'].
 	signalContext isNil ifTrue: [
@@ -399,8 +458,23 @@ Exception >> resume: aValue [
 	"The handler's own frames are above signalContext and are discarded
 	 by the jump, so their ensure: blocks run first (Bugs5 KERN-2)."
 	self unwindTo: signalContext.
-	"The frame stays and may catch again, so put it back in service."
-	handlerContext isNil ifFalse: [handlerContext handlerIsActive: true].
+	"Every handler running in those frames is finished with, and its
+	 on:do: -- below signalContext, so it stays -- goes back into service.
+	 Every one, not only mine: pass and resignalAs: hand me to the handler
+	 outside, and when that one resumed, only its own on:do: was put back;
+	 the on:do: whose handler did the passing was left switched off for
+	 the rest of its protected block, so the next signal of the same kind
+	 inside it skipped it and went outside again (Bugs6 KERNB-5).  Each
+	 runHandler between here and the signal keeps its frame in its second
+	 temporary; a block activation inside one is skipped, since its
+	 temporaries are its own."
+	runHandler := Exception compiledMethodAt: #runHandler.
+	ctx := thisContext sender.
+	[ctx isNil or: [ctx == signalContext]] whileFalse: [
+		(ctx class == MethodContext and: [ctx method == runHandler]) ifTrue: [
+			frame := ctx tempAt: 2.
+			frame isNil ifFalse: [frame handlerIsActive: true]].
+		ctx := ctx sender].
 	"Primitive 247 refuses a context that has already returned, and there
 	 is nothing sensible to do about that here but say so."
 	^signalContext resume: aValue

@@ -196,3 +196,29 @@ FileStream >> setToEnd [
 	page asFileStream: self.
 	position := readLimit
 ]
+
+{ #category : '*Files-Fixes' }
+FileStream >> release [
+	"Let go of my file without closing it -- what a snapshot sends to every
+	 open stream, so that the image on the disk holds no open file -- having
+	 first written out whatever I was given and had not yet written.
+
+	 1983's release wrote nothing: it was the forgiving close, for a stream
+	 whose file might be gone.  Sent by releaseExternalReferences it threw
+	 away the page a stream had been written to and not flushed, and not
+	 only in the image being saved: in the process that took the snapshot
+	 and went on, the stream was now closed, its later close did nothing,
+	 and its next write reopened by re-reading the page from the disk --
+	 so `f nextPutAll: 'hello world'. Smalltalk snapshotAs: 'x'. f close'
+	 left an empty file (Bugs6 FILES-3).  The flush is close's own, under
+	 close's own condition: a stream with no mode was never written and
+	 has nothing to write, and one that may not be written is not asked
+	 to.  What is NOT done is close's shorten, which cuts the file at the
+	 position; release is not close, and a stream overwriting the front
+	 of a longer file is not finished with it."
+	closed ifFalse: [
+		(rwmode notNil and: [self writing]) ifTrue: [self flush].
+		closed := true.
+		readLimit := writeLimit := 0.
+		self file release]
+]

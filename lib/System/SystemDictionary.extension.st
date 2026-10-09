@@ -62,6 +62,29 @@ SystemDictionary >> removeKey: key ifAbsent: aBlock [
 ]
 
 { #category : '*System' }
+SystemDictionary >> declare: key from: aDictionary [
+	"Under the same lock as at:put:, the whole of it.
+
+	 1983's Dictionary>>declare:from: asks whether I have the key, then
+	 whether aDictionary has it -- Undeclared, from the one sender,
+	 Metaclass>>name:inEnvironment:subclassOf:..., defining a class whose
+	 name some method was compiled against first -- and moves the
+	 Association across in two writes.  Mine were under the lock one at a
+	 time and the write to Undeclared was under none: a compile on another
+	 worker storing a new name into Undeclared at the same moment lost one
+	 entry or the other (Bugs6 KERNB-6).  The steps run together under the
+	 lock, through the unlocked insides, because the globals lock is a
+	 Mutex and does not nest."
+	^LibraryLocks holdingGlobals: [
+		(super includesKey: key) ifFalse: [
+			(aDictionary includesKey: key)
+				ifTrue: [
+					super add: (aDictionary associationAt: key).
+					aDictionary removeKey: key]
+				ifFalse: [self lockedAt: key put: nil]]]
+]
+
+{ #category : '*System' }
 SystemDictionary >> classNames [
 	"Answer a SortedCollection of all class names, cached.
 
@@ -176,13 +199,28 @@ SystemDictionary >> snapshotAs: imageFilePrefix thenQuit: quitIfTrue [
 	 is what tells the VM where to signal from then on.  A signal and not
 	 Finalizer restart, which would terminate a process that may be half
 	 way through somebody's #mourn; and looked up rather than named,
-	 because the Blue Book profile has no Finalizer."
+	 because the Blue Book profile has no Finalizer.
+
+	 And the changes file goes with the image (Bugs6 FILES-5).  Every
+	 method's trailer is an offset in the file SourceFiles at: 2 names.
+	 1983's saveAs: copies that file beside the new image and makes the
+	 copy the running image's own; snapshotAs: copied nothing, so `x.im'
+	 was written, `-run x.im' found no changes file beside it and made an
+	 empty one, and every method accepted before the snapshot read its
+	 source from the wrong place -- `position out of bounds', or another
+	 method's text once anything had been logged there.  The file is
+	 copied here too, as `<prefix>.changes', the spelling -run looks for
+	 second, but NOT installed: this image goes on running as itself and
+	 keeps logging where it was.  The copy is made before the files are
+	 released and the image written, and is exactly the file the saved
+	 methods were written into, up to this moment."
 	| justSnapped imageFile finalizer |
 	Cursor execute show.
 	self logChange: '''----SNAPSHOT----'''.
 	Disk == nil ifFalse:
 		[imageFile := Disk fileClass new.
-		 imageFile fileName: (Disk pathFor: imageFilePrefix , '.im')].
+		 imageFile fileName: (Disk pathFor: imageFilePrefix , '.im').
+		 self copyChangesFileTo: imageFilePrefix , '.changes'].
 	self releaseExternalViews.
 	Transcript cr; show: 'Snapshot at: ', Time dateAndTimeNow printString.
 	Delay preSnapshot.
@@ -309,6 +347,39 @@ SystemDictionary >> logChange: aStringOrText [
 		aFileStream setToEnd; readWrite.
 		aFileStream cr; cr; nextChunkPut: aString.
 		aFileStream readOnly]
+]
+
+{ #category : '*System-Snapshot' }
+SystemDictionary >> copyChangesFileTo: newFileName [
+	"Copy the changes file to newFileName, for an image about to be saved
+	 beside it (see snapshotAs:thenQuit:) -- without making the copy this
+	 image's own, which is what 1983's copyChangesTo: does for saveAs:.
+
+	 Nothing is copied when there is no changes file (an image built
+	 without -o keeps its changes in memory), or when newFileName is the
+	 changes file itself: saveAs: has installed its copy under that very
+	 name by the time it sends snapshotAs:, and a copy onto itself would
+	 empty the file.  Under the sources lock, which every writer of the
+	 changes file holds, so the copy ends at the end of a whole chunk; and
+	 through a stream of its own, since the writers' stream is positioned
+	 wherever they left it.  Page by page, because a changes file is as
+	 long as the image's history."
+	| changes old new target |
+	SourceFiles == nil ifTrue: [^self].
+	changes := SourceFiles at: 2.
+	(changes isKindOf: FileStream) ifFalse: [^self].
+	target := Disk pathFor: newFileName.
+	target = changes name ifTrue: [^self].
+	((Disk includesKey: target)
+		and: [(Disk realPathNamed: target) = (Disk realPathNamed: changes name)])
+		ifTrue: [^self].
+	LibraryLocks holdingSources: [
+		old := FileStream oldFileNamed: changes name.
+		old readOnly.
+		new := FileStream fileNamed: target.
+		[old atEnd] whileFalse: [new nextPutAll: (old next: 32768)].
+		old close.
+		new close]
 ]
 
 { #category : '*System-Snapshot' }

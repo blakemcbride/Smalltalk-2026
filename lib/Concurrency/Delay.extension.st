@@ -235,7 +235,33 @@ Delay >> wait [
 	 later, shorter delay was filed behind it in SuspendedDelays, where
 	 nothing would ever fire it (Bugs3 B12).  delay: now refuses what the
 	 timer cannot count, so armTimer cannot raise; the order here is what
-	 keeps the class variables consistent should it ever learn to."
+	 keeps the class variables consistent should it ever learn to.
+
+	 Queueing and waiting are two methods: schedule is the first half,
+	 on its own for a waiter that waits on a Semaphore of its own (see
+	 delaySemaphore:)."
+	self schedule.
+	"Retired on the way out however the wait ends.  Terminate runs unwind
+	 blocks, so a process killed while waiting takes its Delay out of the
+	 queue with it instead of leaving it there until its own time comes
+	 (Bugs4 CHRON-6); and a waiter woken early by a direct signal on
+	 delaySemaphore -- which is what valueWithin:onTimeout: does to retire
+	 a watchdog -- takes it out too.  delayInProgress is already false on
+	 the ordinary path, where the timing process cleared it before
+	 signalling, so the ordinary wait pays one field read and no lock."
+	[delaySemaphore wait] ensure: [delayInProgress ifTrue: [self retire]]
+]
+
+{ #category : '*Concurrency' }
+Delay >> schedule [
+	"Put me in the queue, armed: my semaphore is signalled at my
+	 resumption time, and nobody waits here.  The first half of wait, and
+	 what Monitor>>waitForChangeWithin: sends after making its own wakeup
+	 Semaphore mine (delaySemaphore:), so that one wait on that Semaphore
+	 ends at a signal or at the time, whichever comes first (Bugs6
+	 FILES-8).  Such a waiter sends retire when it is done, which is
+	 nothing if my time has come already.  The class variables are
+	 changed as wait's comment says."
 	AccessProtect critical: [
 	 self setResumption.
 	 (ActiveDelay isNil or: [resumptionTime < ActiveDelay resumptionTime])
@@ -257,16 +283,21 @@ Delay >> wait [
 			 same one -- so the cost is a primitive call per wait and
 			 the queue can no longer be left with nothing counting it."
 			SuspendedDelays add: self.
-			ActiveDelay armTimer]].
-	"Retired on the way out however the wait ends.  Terminate runs unwind
-	 blocks, so a process killed while waiting takes its Delay out of the
-	 queue with it instead of leaving it there until its own time comes
-	 (Bugs4 CHRON-6); and a waiter woken early by a direct signal on
-	 delaySemaphore -- which is what valueWithin:onTimeout: does to retire
-	 a watchdog -- takes it out too.  delayInProgress is already false on
-	 the ordinary path, where the timing process cleared it before
-	 signalling, so the ordinary wait pays one field read and no lock."
-	[delaySemaphore wait] ensure: [delayInProgress ifTrue: [self retire]]
+			ActiveDelay armTimer]]
+]
+
+{ #category : '*Concurrency' }
+Delay >> delaySemaphore: aSemaphore [
+	"Signal aSemaphore when my time comes, instead of one of my own.
+
+	 For a waiter with one Semaphore and two reasons to wake: a Monitor's
+	 timed wait (waitForChangeWithin:) is woken by a signal on the
+	 Semaphore it put on the waiters list, and by me on the same one, so
+	 it waits once and nothing has to interrupt it -- which is what makes
+	 an item taken in the moment the time runs out an item taken, not one
+	 lost.  Before schedule, never after; and disable, which terminates
+	 whoever waits on my semaphore, is not for a Delay made this way."
+	delaySemaphore := aSemaphore
 ]
 
 { #category : '*Concurrency' }

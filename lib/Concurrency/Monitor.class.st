@@ -136,6 +136,60 @@ Monitor >> waitForChange [
 	depth := savedDepth
 ]
 
+{ #category : 'waiting' }
+Monitor >> waitForChangeWithin: milliseconds [
+	"waitForChange with a limit: release the monitor, wait until something
+	 signals a change OR milliseconds have passed, take the monitor back,
+	 and answer whether it was a signal.  Send only from inside critical:.
+
+	 One wait, not a wait and an interruption.  The timer is a Delay told
+	 to signal the very Semaphore a signal would (Delay>>delaySemaphore:),
+	 so the waiter sleeps on one Semaphore for either reason and nothing
+	 unwinds it -- where a timeout that interrupted the waiter, as
+	 valueWithin:onTimeout: does, could land between a queue's removeFirst
+	 and its answer and lose the item.  Which reason woke me is whether my
+	 Semaphore is still on the waiters list: a signal takes it off, the
+	 timer does not; both at once is a signal, with a wakeup to spare on a
+	 Semaphore nobody will wait on again.  The Delay is retired on the way
+	 out whichever way the wait ends, which is nothing if it has fired.
+	 No longer than Delay maximumMilliseconds, which is six days."
+	| mine savedDepth timer signalled |
+	self isHeldByActiveProcess ifFalse: [
+		^Error new signal: 'waitForChangeWithin: must be sent from inside critical:'].
+	mine := Semaphore new.
+	timer := Delay forMilliseconds: milliseconds.
+	timer delaySemaphore: mine.
+	waiters addLast: mine.
+	savedDepth := depth.
+	depth := 0.
+	owner := nil.
+	mutex release.
+	[timer schedule.
+	 mine wait] ifCurtailed: [timer retire. self abandonWait: mine].
+	timer retire.
+	mutex acquire.
+	owner := Processor activeProcess.
+	depth := savedDepth.
+	signalled := (waiters includes: mine) not.
+	signalled ifFalse: [waiters remove: mine].
+	^signalled
+]
+
+{ #category : 'waiting' }
+Monitor >> waitUntil: aConditionBlock within: milliseconds [
+	"waitUntil: with a limit: answer true once aConditionBlock answers
+	 true, or false when milliseconds have passed and it still does not --
+	 holding the monitor either way, and re-testing after every wake as
+	 waitUntil: does.  Send only from inside critical:."
+	| deadline left |
+	deadline := Time millisecondClockValue + milliseconds.
+	[aConditionBlock value] whileFalse: [
+		left := deadline - Time millisecondClockValue.
+		left <= 0 ifTrue: [^false].
+		(self waitForChangeWithin: left) ifFalse: [^aConditionBlock value]].
+	^true
+]
+
 { #category : 'private' }
 Monitor >> abandonWait: mine [
 	"A waiter is leaving waitForChange without its wakeup having been

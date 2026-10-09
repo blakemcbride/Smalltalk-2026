@@ -593,8 +593,19 @@
  *  reverseDo: and collect: counting by index as size does, and
  *  SequenceableCollection>>replaceFrom:to:with:startingAt: copying a
  *  shift within itself from the top down.
+ *
+ *  3272 -> 3276 with Bugs6 KERNB-4 and KERNB-6: Exception>>resignalFrom:,
+ *  SystemDictionary>>declare:from:, Dictionary>>declare:from: and
+ *  Encoder>>declareUndeclared:.
+ *
+ *  3276 -> 3289 with Bugs6 FILES-3, FILES-5, FILES-7 and
+ *  FILES-8: FileStream>>release, SystemDictionary>>copyChangesFileTo:,
+ *  PosixFileDirectory>>removeOld:, the timed wait (Delay>>schedule and
+ *  delaySemaphore:, Monitor>>waitForChangeWithin: and waitUntil:within:,
+ *  SharedQueue>>nextWithin:ifNone:), DbConnection>>isAlive with Odbc
+ *  class>>isAlive:, and the pool's waitSeconds, waitSeconds: and reopen.
  */
-#define LIB_METHODS             3272
+#define LIB_METHODS             3289
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -2921,8 +2932,16 @@ test_browsing(void)
      *  2905285 -> 2908312 with KERNA-2 and KERNA-3: Interval's three
      *  enumerators counting by index, and SequenceableCollection's
      *  replaceFrom:to:with:startingAt: copying a shift up from the top.
+     *
+     *  2908312 -> 2916205 with Bugs6 KERNB-4, KERNB-5 and KERNB-6: the
+     *  re-signal that keeps its place, the resume: that re-arms what it
+     *  discards, and the Undeclared writers under the globals lock.
+     *
+     *  2916205 -> 2927980 with Bugs6 FILES-3, FILES-5, FILES-7 and
+     *  FILES-8: a release that flushes, a snapshot that copies its changes
+     *  file, a remove that is checked, and the timed wait under the pool.
      */
-    check_integer("(SourceFiles at: 1) contents size", 2908312);
+    check_integer("(SourceFiles at: 1) contents size", 2927980);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -10052,6 +10071,282 @@ test_bugs6_high_files(void)
  *  while ready moves to the new list (SCHED-3), and the mourn semaphore
  *  must be a Semaphore (INTERP-2).
  */
+
+/*
+ *  Bugs6, the medium findings in the exception machinery and in the
+ *  compiler's one shared dictionary (KERNB-4, KERNB-5, KERNB-6).
+ */
+static void
+test_bugs6_medium_kernb(void)
+{
+    test_dialect = ST_DIALECT_CLOSURES;
+
+    /*
+     *  KERNB-4: `e signal' inside e's own handler.  A second signal
+     *  overwrote signalContext and handlerContext on the same object with
+     *  nothing to put them back, so an inner handler resumed by the outer
+     *  one finished with the OUTER on:do: as its frame and returned from
+     *  that -- afterInner never ran -- and one re-signalled into an on:do:
+     *  nested in the handler block, which returned, finished with a frame
+     *  that was gone and raised `a primitive has failed' out of the inner
+     *  on:do:.  A re-signal now keeps its place the way outer does, and
+     *  runHandler answers from the frame whose handler it ran, whatever
+     *  the handler did to the exception.
+     */
+    check_string("| log r | log := OrderedCollection new. "
+                 "r := [ | x | x := [Warning signal: #a. #inner] on: Warning do: [:e | "
+                 "log add: #h1. e signal. log add: #h1done. #fromHandler]. "
+                 "log add: #afterInner. x] on: Warning do: [:e | log add: #outer. e resume: 7]. "
+                 "log add: r. ^log printString",
+                 "an OrderedCollection(h1 outer h1done afterInner fromHandler )");
+    check_boolean("^[[Error signal: #in] on: Error do: [:e | "
+                  "[e signal] on: Error do: [:e2 | e2 return: #nestedCaught]]] value "
+                  "== #nestedCaught", 1);
+    /*  After the nested return the handler's own value is still its frame's.  */
+    check_string("| log | log := OrderedCollection new. "
+                 "log add: ([[Error signal: #in. #body] on: Error do: [:e | "
+                 "log add: ([e signal: #again] on: Error do: [:e2 | e2 return: 1]). #h1]] value). "
+                 "^log printString",
+                 "an OrderedCollection(1 h1 )");
+    /*  The resumption value comes back to the re-signal; return: still works after it.  */
+    check_string("| log | log := OrderedCollection new. "
+                 "log add: ([[Warning signal: #a. #body] on: Warning do: [:e | "
+                 "log add: e signal. e return: #ret]] on: Warning do: [:e | e resume: 7]). "
+                 "^log printString",
+                 "an OrderedCollection(7 ret )");
+    /*  An exception handled once can be signalled again, and returned from or resumed.  */
+    check_string("| e r | e := Warning new. [e signal] on: Warning do: [:x | x return: 1]. "
+                 "r := [e signal: #again] on: Warning do: [:x | x return: 2]. "
+                 "^{r. [e signal] on: Warning do: [:x | x resume: 3]} printString",
+                 "(2 3 )");
+
+    /*
+     *  KERNB-5: pass and resignalAs: resumed by the outer handler.  The
+     *  inner on:do: was switched off while its handler ran and put back
+     *  only when the handler finished normally; a resumption from the
+     *  outer handler discarded the inner handler's frames without that,
+     *  so the second Warning in the protected block skipped the inner
+     *  handler and went outside again.  resume: now puts back the frame
+     *  of every handler running in the frames it discards.  outer, which
+     *  resumes into the inner handler, was right already and still is.
+     */
+    check_string("| log | log := OrderedCollection new. "
+                 "[[Warning signal: #a. log add: #afterA. Warning signal: #b. log add: #afterB] "
+                 "on: Warning do: [:e | log add: e messageText. "
+                 "e messageText = #a ifTrue: [e pass] ifFalse: [e resume: nil]]] "
+                 "on: Warning do: [:e | log add: #outer. e resume: 7]. ^log printString",
+                 "an OrderedCollection(a outer afterA b afterB )");
+    check_string("| log | log := OrderedCollection new. "
+                 "[[Warning signal: #a. log add: #afterA. Warning signal: #b. log add: #afterB] "
+                 "on: Warning do: [:e | log add: e messageText. "
+                 "e messageText = #a ifTrue: [e resignalAs: Warning new] ifFalse: [e resume: nil]]] "
+                 "on: Warning do: [:e | log add: #outer. e resume: 7]. ^log printString",
+                 "an OrderedCollection(a outer afterA b afterB )");
+    check_string("| log | log := OrderedCollection new. "
+                 "[[Warning signal: #a. log add: #afterA. Warning signal: #b. log add: #afterB] "
+                 "on: Warning do: [:e | log add: e messageText. "
+                 "e messageText = #a ifTrue: [log add: e outer. e resume: 1] ifFalse: [e resume: nil]]] "
+                 "on: Warning do: [:e | log add: #outer. e resume: 7]. ^log printString",
+                 "an OrderedCollection(a outer 7 afterA b afterB )");
+    /*  A handler is still out of service while it runs; retry and ensure: still hold.  */
+    check_string("| n | n := 0. "
+                 "^{[[Error signal: #x] on: Error do: [:e | Error signal: #y]] on: Error do: [:e | e messageText]. "
+                 "[n := n + 1. n < 3 ifTrue: [Error signal]. n] on: Error do: [:e | e retry]. "
+                 "[[1/0] ensure: [n := n + 10]] on: ZeroDivide do: [:e | e return: n]. n} printString",
+                 "(y 3 3 13 )");
+
+    /*
+     *  KERNB-6: the writers of Undeclared take the globals lock.  The
+     *  eight-worker loss is tests/unit/test_serve_faults.c's to show;
+     *  here, that each writer still does its job on one thread: a compile
+     *  declares an unknown name, a class definition adopts the binding
+     *  out of Undeclared, and a class variable declared after a method
+     *  referred to it is the Association the method already holds.
+     */
+    check_string("| m | Undeclared removeKey: #Bugs6KbSix ifAbsent: []. "
+                 "Compiler evaluate: 'Bugs6KbSix isNil'. "
+                 "m := Undeclared includesKey: #Bugs6KbSix. "
+                 "Object subclass: #Bugs6KbSix instanceVariableNames: '' classVariableNames: '' "
+                 "poolDictionaries: '' category: 'Bugs6-Probe'. "
+                 "^{m. Undeclared includesKey: #Bugs6KbSix. (Smalltalk at: #Bugs6KbSix) name} printString",
+                 "(true false Bugs6KbSix )");
+    check_string("| cls binding | "
+                 "cls := Object subclass: #Bugs6KbSeven instanceVariableNames: '' classVariableNames: '' "
+                 "poolDictionaries: '' category: 'Bugs6-Probe'. "
+                 "Undeclared removeKey: #Bugs6KbVar ifAbsent: []. "
+                 "cls compile: 'readIt ^Bugs6KbVar' classified: #probe. "
+                 "binding := Undeclared associationAt: #Bugs6KbVar. "
+                 "cls declare: 'Bugs6KbVar'. "
+                 "(cls classPool associationAt: #Bugs6KbVar) value: 42. "
+                 "^{Undeclared includesKey: #Bugs6KbVar. (cls classPool associationAt: #Bugs6KbVar) == binding. "
+                 "cls new readIt} printString",
+                 "(false true 42 )");
+
+    test_dialect = ST_DIALECT_BLUE_BOOK;
+}
+
+/*
+ *  Bugs6 FILES-3, FILES-6, FILES-7 and FILES-8 (medium): a released
+ *  stream, a short page buffer, a remove that failed, and the connection
+ *  pool.  FILES-5 needs a snapshot resumed, and is in test_serve_faults.
+ */
+static void
+test_bugs6_medium_files(void)
+{
+    const char *released = st_test_path("bugs6-files3-released.txt");
+    const char *leak     = st_test_path("bugs6-files6-leak.dat");
+    const char *dir      = st_test_path("bugs6-files7-dir");
+    const char *kept     = st_test_path("bugs6-files7-kept.txt");
+    const char *plain    = st_test_path("bugs6-files7-plain.txt");
+    const char *db       = st_test_path("bugs6-files8.db");
+    char        expression[3072];
+    char        inside[1024];
+    struct stat st;
+
+    test_dialect = ST_DIALECT_CLOSURES;
+
+    /*
+     *  FILES-3.  release -- what a snapshot sends to every open stream --
+     *  writes out what the stream holds before it lets go of the file.
+     *  Before, the page was dropped: the file was empty, and the close
+     *  after it did nothing because the stream was already closed.
+     */
+    snprintf(expression, sizeof expression,
+             "| f | f := FileStream fileNamed: '%s'. "
+             "f nextPutAll: 'hello world'. f release. f close. "
+             "^(FileStream oldFileNamed: '%s') contentsOfEntireFile",
+             released, released);
+    check_string(expression, "hello world");
+    unlink(released);
+
+    /*
+     *  FILES-6.  A page whose buffer is shorter than its byte count writes
+     *  the buffer and no more.  Before, 512 bytes went to the disk, 504 of
+     *  them read from the object heap past the 8-byte buffer: '512 162'.
+     */
+    snprintf(expression, sizeof expression,
+             "| f page bytes | f := Disk file: '%s'. f nextPutAll: 'seed'; close. "
+             "f := Disk findKey: '%s'. f open. "
+             "page := f initPageNumber: 1. page page: (ByteArray new: 8). "
+             "page size: 512. f write: page. f close. "
+             "bytes := (FileStream oldFileNamed: '%s') contentsOfEntireFile. "
+             "^bytes size printString, ' ', "
+             "(bytes asByteArray select: [:b | b ~= 0]) size printString",
+             leak, leak, leak);
+    check_string(expression, "8 0");
+    unlink(leak);
+
+    /*
+     *  FILES-7.  removeKey: of a directory is refused with the system's
+     *  reason and the directory stays; of a file the system will not
+     *  delete, the same; of a plain file, the file goes.  Before, all
+     *  three answered the directory as though the name were gone -- and
+     *  an empty directory really was gone, since remove() is rmdir() too.
+     *  The read-only case is skipped for root, whom nothing refuses.
+     */
+    snprintf(expression, sizeof expression,
+             "| r | r := OrderedCollection new. "
+             "r add: ([Disk removeKey: '%s'. 'removed'] on: Error do: [:e | "
+             "(e messageText includesSubstring: 'cannot be removed: Is a directory') "
+             "ifTrue: ['refused'] ifFalse: [e messageText]]). "
+             "r add: (Disk isDirectoryNamed: '%s'). "
+             "r add: ([Disk removeKey: '%s'. 'removed'] on: Error do: [:e | e messageText]). "
+             "r add: (Disk includesKey: '%s'). "
+             "^r printString",
+             dir, dir, plain, plain);
+    if (mkdir(dir, 0755) == 0) {
+        FILE *f = fopen(plain, "w");
+
+        if (f)
+            fclose(f);
+        check_string(expression, "an OrderedCollection('refused' true 'removed' false )");
+        ++st_test_checks;
+        if (stat(dir, &st) != 0 || !S_ISDIR(st.st_mode)) {
+            ++st_test_failures;
+            printf("  FAIL FILES-7: the directory is gone\n");
+        }
+        if (geteuid() != 0) {
+            snprintf(inside, sizeof inside, "%s/keep.txt", dir);
+            f = fopen(inside, "w");
+            if (f) {
+                fputs("keep", f);
+                fclose(f);
+            }
+            chmod(dir, 0555);
+            snprintf(expression, sizeof expression,
+                     "^([Disk removeKey: '%s'. 'removed'] on: Error do: [:e | "
+                     "(e messageText includesSubstring: "
+                     "'cannot be removed: Permission denied') "
+                     "ifTrue: ['refused'] ifFalse: [e messageText]]), ' ', "
+                     "(Disk includesKey: '%s') printString",
+                     inside, inside);
+            check_string(expression, "refused true");
+            chmod(dir, 0755);
+            unlink(inside);
+        }
+        unlink(plain);
+        rmdir(dir);
+    }
+    (void) kept;
+
+    /*
+     *  FILES-8.  The pool.  Through SQLite, and skipped where there is no
+     *  driver, as the FILES-1 check is.  Every connection out: acquire
+     *  refuses after waitSeconds rather than waiting for ever (before: it
+     *  hung).  A replacement that cannot be opened -- the connection
+     *  string is pointed at a directory that is not there, which is what
+     *  a database that is down looks like to the pool -- leaves a place
+     *  in the pool, acquire refuses with the reason and puts the place
+     *  back, and once the database is back the next acquire opens a
+     *  connection for it (before: the pool was one smaller for good, and
+     *  at zero every request hung).  And isAlive, which release: asks:
+     *  true for an open connection, false for a closed one.
+     */
+    snprintf(expression, sizeof expression,
+             "[(DbConnection open: 'DRIVER=SQLITE3;Database=%s;') close. true] "
+             "on: Error do: [:e | false]", db);
+    if (evaluate(expression) == ST_TRUE) {
+        snprintf(expression, sizeof expression,
+                 "| r good pool c d | r := OrderedCollection new. "
+                 "good := 'DRIVER=SQLITE3;Database=%s;'. "
+                 "pool := RestConnectionPool on: good size: 1. "
+                 "pool waitSeconds: 0.2. pool open. c := pool acquire. "
+                 "r add: ([pool acquire. 'got'] on: RestError do: [:e | e messageText]). "
+                 "pool instVarAt: 1 put: 'DRIVER=SQLITE3;Database=%s/none/p.db;'. "
+                 "pool discard: c. r add: pool available. "
+                 "r add: ([pool acquire. 'got'] on: RestError do: [:e | "
+                 "(e messageText startsWith: 'cannot open a database connection') "
+                 "ifTrue: ['refused'] ifFalse: [e messageText]]). "
+                 "r add: pool available. "
+                 "pool instVarAt: 1 put: good. d := pool acquire. "
+                 "r add: d isOpen. r add: d isAlive. pool release: d. "
+                 "r add: pool available. d close. r add: d isAlive. "
+                 "pool closeAll. r add: pool available. ^r printString",
+                 db, db);
+        check_string(expression,
+                     "an OrderedCollection('every database connection was busy for "
+                     "0.2 seconds' 1 'refused' 1 true true 1 false 0 )");
+    } else
+        printf("  skipped FILES-8: no SQLITE3 driver\n");
+    unlink(db);
+
+    /*
+     *  The timed wait under the pool, on its own: a queue nobody feeds
+     *  answers the none-block after the time, one fed before the time
+     *  answers the item, and an item already there is answered at once.
+     */
+    check_string("| q r t | q := SharedQueue new. r := OrderedCollection new. "
+                 "t := Time millisecondsToRun: [r add: (q nextWithin: 200 ifNone: ['none'])]. "
+                 "r add: (t between: 150 and: 2000). "
+                 "[(Delay forMilliseconds: 50) wait. q nextPut: 7] fork. "
+                 "r add: (q nextWithin: 3000 ifNone: ['none']). "
+                 "q nextPut: 8. r add: (q nextWithin: 3000 ifNone: ['none']). "
+                 "r add: q size. ^r printString",
+                 "an OrderedCollection('none' true 7 8 0 )");
+
+    test_dialect = ST_DIALECT_BLUE_BOOK;
+}
+
 /*
  *  Bugs6 COMP-5, COMP-8 and KERNA-1 (medium): what an inlined block's
  *  temporaries mean, an arrow glued to the name after it, and the floor of
@@ -10416,6 +10711,8 @@ main(void)
     test_bugs6_medium();
     test_bugs6_medium_comp_kern();
     test_bugs6_medium_kerna();
+    test_bugs6_medium_kernb();
+    test_bugs6_medium_files();
 
     OM_shutdown();
     return ST_TEST_END();

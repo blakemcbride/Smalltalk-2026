@@ -55,7 +55,10 @@ beyond saying which end it came out of.
 \end{stnote}
 
 Everything comes back: windows where you left them, text you had not accepted,
-processes that were running.
+processes that were running. Open files come back closed, with everything
+written to them on the disk: a snapshot writes out what every open
+\ct{FileStream} holds before it lets go of the file, in the image saved and
+in the one that goes on running, where the stream reopens at its next use.
 
 A save writes the new image beside the old one, as \ct{name.im.tmp}, and
 replaces the old file with it only once the whole of the new one is on disk.
@@ -99,6 +102,10 @@ read in any editor and file back in.
 source in the image---it stores a pointer into a source file, and reads the
 text back when you select a method. That is why the changes file must travel
 with the image, and why it is created beside it automatically.
+\ct{snapshotAs:} copies it beside the new image as \ct{saveAs:} does, and an
+image that arrives without a changes file of its own---a copy made with
+\ct{cp}---gets a copy of the one it names at its first load, if that file is
+still where it was.
 
 \begin{stwarn}
 Move an image without its changes file and the Browser will show you nothing

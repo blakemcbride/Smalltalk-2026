@@ -302,23 +302,28 @@ bugs5_low_om(void)
      *  loaded image comes with were never put on the free chain, and a
      *  collection that could not lower the table's limit dropped every
      *  index sitting in a worker's magazine -- so a table three quarters
-     *  free collected for ever without reaching its OutOfMemory.  Half a
-     *  million: two runaways caught, about four seconds.  It was a
-     *  quarter of a million, the lowest ceiling accepted, until the
-     *  Bugs6 fixes grew the library past it -- the bootstrap's table
-     *  high-water mark, which a loaded image needs whole, passed 262,144
-     *  and the image could not be loaded under the ceiling at all.
+     *  free collected for ever without reaching its OutOfMemory.  A
+     *  million: two runaways caught, a few seconds.  The ceiling has to
+     *  clear the bootstrap's table high-water mark, which a loaded image
+     *  needs whole, and that mark moves in steps: the bootstrap collects
+     *  each time its fresh allocations double, so the mark sits just
+     *  under a power of two until the library grows past it and then
+     *  jumps by the next phase's allocations.  A quarter of a million,
+     *  the lowest ceiling accepted, was passed by the Bugs6 critical
+     *  fixes; half a million, by the three methods of KERNB-4 (the mark
+     *  went from 524,044 to 566,316 and the image could not be loaded
+     *  under the ceiling at all).
      */
     if (write_file(BATCH,
             "| a r1 r2 | r1 := [a := OrderedCollection new. [a add: (Array "
             "new: 1)] repeat] on: OutOfMemory do: [:e | e return: a size]. "
             "a := nil. Smalltalk garbageCollect. r2 := [a := OrderedCollection "
             "new. [a add: (Array new: 1)] repeat] on: OutOfMemory do: [:e | e "
-            "return: a size]. a := nil. (r1 between: 100000 and: 524288) & "
-            "(r2 between: 100000 and: 524288) ifTrue: ['survived twice'] "
+            "return: a size]. a := nil. (r1 between: 100000 and: 1048576) & "
+            "(r2 between: 100000 and: 1048576) ifTrue: ['survived twice'] "
             "ifFalse: [{r1. r2}]\n") == 0) {
         snprintf(command, sizeof command,
-                 "ST_MAX_OBJECTS=524288 " ST_TEST_TIMEOUT " -k 2 " SERVE_SECONDS " %s "
+                 "ST_MAX_OBJECTS=1048576 " ST_TEST_TIMEOUT " -k 2 " SERVE_SECONDS " %s "
                  "-serve %s -workers 4 \"$(cat %s)\" 2>&1",
                  st2026, IMAGE, BATCH);
         status = run(command, out, sizeof out);
@@ -1761,7 +1766,7 @@ bugs6_medium_om(void)
      *  the second process to reach the ceiling while the first's handler
      *  unwound found nothing to release and stopped the image, handler or
      *  no handler.  Four runaways at once, each handling OutOfMemory, must
-     *  all be caught.  Half a million, as the runaway check above.
+     *  all be caught.  A million, as the runaway check above.
      */
     if (write_file(oom,
             "| fin rs |\n"
@@ -1772,7 +1777,7 @@ bugs6_medium_om(void)
             "4 timesRepeat: [fin wait].\n"
             "^rs\n") == 0) {
         snprintf(command, sizeof command,
-                 "ST_MAX_OBJECTS=524288 " ST_TEST_TIMEOUT " -k 2 " SERVE_SECONDS " %s "
+                 "ST_MAX_OBJECTS=1048576 " ST_TEST_TIMEOUT " -k 2 " SERVE_SECONDS " %s "
                  "-serve %s -workers 8 \"$(cat %s)\" 2>&1",
                  st2026, IMAGE, oom);
         snprintf(batch, sizeof batch,
@@ -1780,7 +1785,7 @@ bugs6_medium_om(void)
                  "contentsOfEntireFile\n", oom);
         if (write_file(BATCH, batch) == 0) {
             snprintf(command, sizeof command,
-                     "ST_MAX_OBJECTS=524288 " ST_TEST_TIMEOUT " -k 2 " SERVE_SECONDS " %s "
+                     "ST_MAX_OBJECTS=1048576 " ST_TEST_TIMEOUT " -k 2 " SERVE_SECONDS " %s "
                      "-serve %s -workers 8 \"$(cat %s)\" 2>&1",
                      st2026, IMAGE, BATCH);
             status = run(command, out, sizeof out);
@@ -1844,6 +1849,203 @@ bugs6_medium_om(void)
             }
         }
     }
+}
+
+/*
+ *  Bugs6, the medium finding in the compiler's one shared dictionary.
+ */
+static void
+bugs6_medium_kern(void)
+{
+    static char out[65536];
+    const char *undeclared = fixture("bugs6-serve-undeclared.st");
+    char        batch[1024];
+    int         status;
+
+    /*
+     *  KERNB-6: eight workers compiling a hundred unknown names each.
+     *  Undeclared is a plain Dictionary, and the compiler stored into it
+     *  with no lock: two workers found the same empty slot, or one grew
+     *  the table under the other, and every run kept 600-700 of the 800
+     *  -- and a method compiled against a lost binding held an
+     *  Association no declaration could ever adopt.  The store is under
+     *  the globals lock now, and so are the class definitions that take
+     *  bindings out of Undeclared; eight workers defining classes with a
+     *  class variable each run alongside, and every name is where it
+     *  should be.  Short names, since each declaration says so on the
+     *  Transcript and all of it has to fit the buffer.
+     */
+    if (write_file(undeclared,
+            "| done lost |\n"
+            "done := Semaphore new. lost := 0.\n"
+            "1 to: 8 do: [:w | [1 to: 100 do: [:i | Compiler evaluate: "
+            "'KbU', w printString, 'x', i printString, ' isNil']. done signal] fork].\n"
+            "1 to: 8 do: [:w | [1 to: 50 do: [:i | [Object subclass: "
+            "('KbC', w printString, 'x', i printString) asSymbol "
+            "instanceVariableNames: '' classVariableNames: "
+            "'KbV', w printString, 'x', i printString "
+            "poolDictionaries: '' category: 'Bugs6-KbProbe'] "
+            "on: Error do: [:e | lost := lost + 1000. e return: nil]]. done signal] fork].\n"
+            "1 to: 16 do: [:i | done wait].\n"
+            "1 to: 8 do: [:w | 1 to: 100 do: [:i | (Undeclared includesKey: "
+            "('KbU', w printString, 'x', i printString) asSymbol) "
+            "ifFalse: [lost := lost + 1]]].\n"
+            "1 to: 8 do: [:w | 1 to: 50 do: [:i | (Smalltalk includesKey: "
+            "('KbC', w printString, 'x', i printString) asSymbol) "
+            "ifFalse: [lost := lost + 1]]].\n"
+            "^'undeclared lost ', lost printString\n") == 0) {
+        int     run_index;
+
+        snprintf(batch, sizeof batch,
+                 "Compiler evaluate: (FileStream oldFileNamed: '%s') "
+                 "contentsOfEntireFile\n", undeclared);
+        for (run_index = 0; run_index < 2; ++run_index) {
+            status = serve(batch, 8, out, sizeof out);
+            ++st_test_checks;
+            if (status < 0) {
+                ++st_test_failures;
+                printf("  FAIL KERNB-6: could not run the server\n");
+                break;
+            }
+            expect(out, "==> 'undeclared lost 0'",
+                   "KERNB-6 eight workers compiling unknown names");
+            expect_absent(out, "every process is blocked",
+                          "KERNB-6 the two locks are taken in one order");
+        }
+    }
+}
+
+/*
+ *  Bugs6, the file findings among the medium ones that need a snapshot.
+ */
+static void
+bugs6_medium_files(void)
+{
+    static char out[65536];
+    const char *held_probe = fixture("bugs6-serve-files3.st");
+    const char *held       = fixture("bugs6-files3-held.txt");
+    const char *held_snap  = fixture("bugs6-files3-snap");
+    const char *src_probe  = fixture("bugs6-serve-files5.st");
+    const char *src_snap   = fixture("bugs6-files5-snap");
+    const char *src_copy   = fixture("bugs6-files5-copy");
+    char        image[1024];
+    char        changes[1024];
+    char        copy[1024];
+    char        batch[512];
+    char        command[4096];
+    char        text[4096];
+    int         status;
+
+    /*
+     *  FILES-3.  A stream written and not flushed when a snapshot is
+     *  taken keeps its bytes: the snapshot releases every open stream,
+     *  and release writes out what it holds first.  Before: the file was
+     *  empty, in the process that went on as much as in the image saved.
+     */
+    snprintf(text, sizeof text,
+        "| f |\n"
+        "f := FileStream fileNamed: '%s'.\n"
+        "f nextPutAll: 'hello world'.\n"
+        "(Smalltalk snapshotAs: '%s' thenQuit: false) ifFalse: [^'resumed'].\n"
+        "f close.\n"
+        "^(FileStream oldFileNamed: '%s') contentsOfEntireFile\n",
+        held, held_snap, held);
+    snprintf(image, sizeof image, "%s.im", held_snap);
+    snprintf(changes, sizeof changes, "%s.changes", held_snap);
+    unlink(held);
+    if (write_file(held_probe, text) == 0) {
+        snprintf(batch, sizeof batch,
+                 "Compiler evaluate: (FileStream oldFileNamed: '%s') "
+                 "contentsOfEntireFile\n", held_probe);
+        status = serve(batch, 2, out, sizeof out);
+        ++st_test_checks;
+        if (status < 0) {
+            ++st_test_failures;
+            printf("  FAIL FILES-3: could not run the server\n");
+        } else
+            expect(out, "==> 'hello world'",
+                   "FILES-3 a stream written across a snapshot");
+    }
+    unlink(held);
+    unlink(image);
+    unlink(changes);
+
+    /*
+     *  FILES-5.  A method compiled before snapshotAs: has its source in
+     *  the image that resumes: the snapshot copies the changes file
+     *  beside the image, as saveAs: does.  And an image copied with cp,
+     *  which has no changes file of its own, gets a copy of the one it
+     *  names at its first load, rather than an empty one.  Before, both
+     *  read 'apshotAs: ...' -- the doit logged at that offset of the
+     *  empty file the VM had made -- or `position out of bounds'.
+     */
+    snprintf(text, sizeof text,
+        "Object compile: 'zorkA ^''source-of-zorkA''' classified: #probe "
+        "notifying: nil.\n"
+        "(Smalltalk snapshotAs: '%s' thenQuit: true) ifTrue: [^'saved'].\n"
+        "^'zorkA source ', ([(Object compiledMethodAt: #zorkA) getSource "
+        "asString = 'zorkA ^''source-of-zorkA'''] on: Error do: [:e | "
+        "e messageText]) printString\n",
+        src_snap);
+    snprintf(image, sizeof image, "%s.im", src_snap);
+    snprintf(changes, sizeof changes, "%s.changes", src_snap);
+    snprintf(copy, sizeof copy, "%s.im", src_copy);
+    unlink(image);
+    unlink(changes);
+    if (write_file(src_probe, text) == 0) {
+        snprintf(batch, sizeof batch,
+                 "Compiler evaluate: (FileStream oldFileNamed: '%s') "
+                 "contentsOfEntireFile\n", src_probe);
+        status = serve(batch, 2, out, sizeof out);
+        ++st_test_checks;
+        if (status < 0) {
+            ++st_test_failures;
+            printf("  FAIL FILES-5: could not run the server\n");
+        } else {
+            ++st_test_checks;
+            if (access(changes, R_OK) != 0) {
+                ++st_test_failures;
+                printf("  FAIL FILES-5: the snapshot made no %s\n", changes);
+            }
+            snprintf(command, sizeof command,
+                     ST_TEST_TIMEOUT " -k 2 " SERVE_SECONDS
+                     " %s -serve %s -workers 2 2>&1",
+                     st2026, image);
+            status = run(command, out, sizeof out);
+            if (status < 0) {
+                ++st_test_failures;
+                printf("  FAIL FILES-5: could not run the saved image\n");
+            } else
+                expect(out, "==> 'zorkA source true'",
+                       "FILES-5 a method's source after snapshotAs:");
+            /*  The cp case: the saved image under a name with nothing beside it.  */
+            snprintf(command, sizeof command, "cp %s %s", image, copy);
+            status = run(command, out, sizeof out);
+            if (status == 0) {
+                snprintf(command, sizeof command,
+                         ST_TEST_TIMEOUT " -k 2 " SERVE_SECONDS
+                         " %s -serve %s -workers 2 2>&1",
+                         st2026, copy);
+                status = run(command, out, sizeof out);
+                ++st_test_checks;
+                if (status < 0) {
+                    ++st_test_failures;
+                    printf("  FAIL FILES-5: could not run the copied image\n");
+                } else
+                    expect(out, "==> 'zorkA source true'",
+                           "FILES-5 a method's source in a copy of the image");
+            }
+        }
+    }
+    unlink(image);
+    unlink(changes);
+    snprintf(changes, sizeof changes, "%s.im.changes", src_snap);
+    unlink(changes);
+    unlink(copy);
+    snprintf(changes, sizeof changes, "%s.im.changes", src_copy);
+    unlink(changes);
+    snprintf(changes, sizeof changes, "%s.changes", src_copy);
+    unlink(changes);
 }
 
 int
@@ -2505,6 +2707,8 @@ main(void)
     bugs6_high_files();
     bugs6_high_kern();
     bugs6_medium_om();
+    bugs6_medium_kern();
+    bugs6_medium_files();
 
     unlink(IMAGE);
     unlink(BATCH);

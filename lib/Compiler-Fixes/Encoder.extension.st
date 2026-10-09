@@ -119,3 +119,21 @@ Encoder >> pragmaSpecs [
 				ifTrue: [^each pragmaSpecs]].
 	^Array new: 0
 ]
+
+{ #category : '*Compiler-Fixes' }
+Encoder >> declareUndeclared: name [
+	"1983's, with the store into Undeclared under the globals lock, like
+	 the one in Compiler class>>compileSource:for:noPattern:declaringUndeclared:
+	 (Bugs6 KERNB-6).  The Transcript line stays outside the lock, as it
+	 takes a lock of its own."
+	| sym binding fresh |
+	sym := name asSymbol.
+	fresh := false.
+	binding := LibraryLocks holdingGlobals: [
+		Undeclared associationAt: sym ifAbsent: [
+			fresh := true.
+			Undeclared at: sym put: nil.
+			Undeclared associationAt: sym]].
+	fresh ifTrue: [Transcript show: ' (' , name , ' is Undeclared) '].
+	^self global: binding name: sym
+]

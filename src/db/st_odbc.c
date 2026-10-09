@@ -831,6 +831,28 @@ ST_odbc_is_connected(st_odbc_handle connection)
     return open;
 }
 
+/*
+ *  SQL_ATTR_CONNECTION_DEAD is the one question ODBC lets a program ask
+ *  about a connection without sending anything down it, and it is what a
+ *  pool needs to know before it hands a connection to the next request
+ *  (Bugs6 FILES-8).  A driver that does not support the attribute is
+ *  believed alive: the next statement finds out, which is no worse than
+ *  before.
+ */
+int
+ST_odbc_is_alive(st_odbc_handle connection)
+{
+    SQLHDBC     dbc = connection_handle(connection);
+    SQLUINTEGER dead = SQL_CD_FALSE;
+
+    if (dbc == SQL_NULL_HDBC)
+        return 0;
+    if (!SQL_SUCCEEDED(SQLGetConnectAttr(dbc, SQL_ATTR_CONNECTION_DEAD,
+                                         &dead, 0, NULL)))
+        return 1;
+    return dead != SQL_CD_TRUE;
+}
+
 static int
 set_connect_attribute(st_odbc_handle connection, SQLINTEGER attribute, SQLUINTEGER value,
                       const char *what)
@@ -2001,6 +2023,7 @@ const char *ST_odbc_last_error(void)                    { return absent; }
 st_odbc_handle ST_odbc_connect(const char *s)                     { (void) s; return -1; }
 int  ST_odbc_disconnect(st_odbc_handle c)                          { (void) c; return -1; }
 int  ST_odbc_is_connected(st_odbc_handle c)                        { (void) c; return 0; }
+int  ST_odbc_is_alive(st_odbc_handle c)                            { (void) c; return 0; }
 int  ST_odbc_set_autocommit(st_odbc_handle c, int o)          { (void) c; (void) o; return -1; }
 int  ST_odbc_set_read_only(st_odbc_handle c, int o)           { (void) c; (void) o; return -1; }
 int  ST_odbc_commit(st_odbc_handle c)                              { (void) c; return -1; }

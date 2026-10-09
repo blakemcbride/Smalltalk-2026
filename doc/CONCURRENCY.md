@@ -94,8 +94,8 @@ The base library adds:
 | Class | Purpose |
 |---|---|
 | `Mutex` | Non-reentrant mutual exclusion. `aMutex critical: [ ... ]` |
-| `Monitor` | Reentrant lock with condition variables. `waitUntil:`, `waitForChange`, `signal`, `signalAll` |
-| `SharedQueue` | Multi-producer, multi-consumer, blocking |
+| `Monitor` | Reentrant lock with condition variables. `waitUntil:`, `waitForChange`, `signal`, `signalAll`; `waitUntil:within:` and `waitForChangeWithin:` give up after so many milliseconds |
+| `SharedQueue` | Multi-producer, multi-consumer, blocking. `next`, `nextWithin:ifNone:`, `nextOrNil` |
 | `Promise` | A value another process will supply. `aPromise value` |
 | `Processor>>#forkParallel:` | Fork onto the worker pool explicitly |
 

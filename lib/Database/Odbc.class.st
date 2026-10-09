@@ -134,6 +134,13 @@ Odbc class >> isConnected: handle [
 ]
 
 { #category : 'connections' }
+Odbc class >> isAlive: handle [
+	"Whether the server is still at the other end, as the driver sees it
+	 (SQL_ATTR_CONNECTION_DEAD); true for a driver that cannot say."
+	^self primCommand: 32 with: handle with: nil with: nil
+]
+
+{ #category : 'connections' }
 Odbc class >> connection: handle autoCommit: aBoolean [
 	^self primCommand: 5 with: handle with: aBoolean with: nil
 ]

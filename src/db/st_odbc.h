@@ -111,6 +111,13 @@ const char *ST_odbc_last_error(void);
 st_odbc_handle ST_odbc_connect(const char *connection_string);
 int         ST_odbc_disconnect(st_odbc_handle connection);
 int         ST_odbc_is_connected(st_odbc_handle connection);
+/*
+ *  Whether the server is still there, as the driver sees it: false for a
+ *  connection the server has dropped, true for a live one and for one
+ *  whose driver cannot say.  is_connected asks only whether the handle is
+ *  one of this process's.
+ */
+int         ST_odbc_is_alive(st_odbc_handle connection);
 
 int         ST_odbc_set_autocommit(st_odbc_handle connection, int on);
 int         ST_odbc_set_read_only(st_odbc_handle connection, int on);

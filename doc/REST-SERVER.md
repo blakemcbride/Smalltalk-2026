@@ -169,7 +169,12 @@ wants the connection gone sooner sends `request closeConnection: aBoolean`.
 The pool is a `SharedQueue` of open `DbConnection`s, which bounds the
 requests inside the database at once to the pool's size; `lib/Database` asks
 that a connection belong to one process at a time, and that is what the
-queue enforces. Login is required when the configuration says so, and
+queue enforces. A connection that is no longer alive (`DbConnection>>isAlive`)
+when a request hands it back is closed and replaced; when the replacement
+cannot be opened, the pool keeps a place for it that the next `acquire`
+fills, so the pool never shrinks; and an `acquire` that has waited
+`waitSeconds` (thirty) is refused with a `RestLogError` rather than left
+waiting for ever. Login is required when the configuration says so, and
 otherwise whenever there is a database — Kiss's rule.
 
 `lib/Rest-Server-Live-Tests`, in the `database-live` profile with the rest of

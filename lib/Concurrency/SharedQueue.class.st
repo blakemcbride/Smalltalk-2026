@@ -65,6 +65,24 @@ SharedQueue >> nextOrNil [
 ]
 
 { #category : 'accessing' }
+SharedQueue >> nextWithin: milliseconds ifNone: aBlock [
+	"The next item, waiting up to milliseconds for one; the value of aBlock
+	 if none came in that time.
+
+	 The wait is Monitor>>waitUntil:within:, which is woken by an arrival
+	 and by the timer alike and re-tests under the lock: an item that
+	 arrives as the time runs out is taken, and an item is never taken
+	 and then dropped, which a wait cut short from outside could do
+	 between removeFirst and the answer.  aBlock runs outside the lock."
+	| taken |
+	taken := monitor critical: [
+		(monitor waitUntil: [items isEmpty not] within: milliseconds)
+			ifTrue: [items removeFirst]
+			ifFalse: [self]].
+	^taken == self ifTrue: [aBlock value] ifFalse: [taken]
+]
+
+{ #category : 'accessing' }
 SharedQueue >> peek [
 	"Answer the next item without removing it, or nil if there is none.
 

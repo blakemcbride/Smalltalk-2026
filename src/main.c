@@ -547,6 +547,22 @@ store_named(st_oop object, const char *name, st_oop value)
  *  there, the second is used if that one is, and the first is made if
  *  neither is.
  *
+ *  MADE BY COPYING, when there is something to copy (Bugs6 FILES-5).  The
+ *  image's own methods point into the changes file it names: every method
+ *  accepted before `cp priv.im copy.im' has its source at an offset in
+ *  priv.im.changes, and so has every one in an image written by
+ *  snapshotAs:, whose copy of the changes file (see copyChangesFileTo:)
+ *  may have been left behind when the .im was moved.  An EMPTY file in
+ *  that place answered `position out of bounds' for every one of them,
+ *  and once a compile or a doit had been logged into it, the text at the
+ *  old offset -- another method's, or the doit's -- with no error at all.
+ *  So when the name this image gets has nothing behind it and the name it
+ *  carries still has the file, the file is copied over: the copy's source
+ *  follows it, and a snapshot's does too, wherever the .im went, as long
+ *  as the file it names is where it was.  An image moved WITHOUT its
+ *  changes file still gets an empty one, which the manual's warning
+ *  covers.
+ *
  *  The stream is marked closed, so that the first use reopens the File by
  *  its new name and re-reads its length rather than trusting the page and
  *  the lastPageNumber the old file left in the image (Bugs3 B20's fault,
@@ -559,6 +575,71 @@ file_is_there(const char *path)
     struct stat st;
 
     return stat(path, &st) == 0 && !S_ISDIR(st.st_mode);
+}
+
+/*  The length of the file at this path, or -1 when there is no file.  */
+static int64_t
+file_size_of(const char *path)
+{
+    struct stat st;
+
+    if (stat(path, &st) != 0 || S_ISDIR(st.st_mode))
+        return -1;
+    return (int64_t) st.st_size;
+}
+
+/*  Whether two paths name one file -- a copy onto itself empties it.  */
+static int
+same_file(const char *a, const char *b)
+{
+#ifdef ST_WINDOWS
+    return strcmp(a, b) == 0;
+#else
+    struct stat sa;
+    struct stat sb;
+
+    if (stat(a, &sa) != 0 || stat(b, &sb) != 0)
+        return 0;
+    return sa.st_dev == sb.st_dev && sa.st_ino == sb.st_ino;
+#endif
+}
+
+/*
+ *  The contents of `from' onto `to', which may exist already (it does:
+ *  hold_the_changes_file made it, empty, and holds a lock on it that a
+ *  write through the name keeps).  Zero, or -1 with errno.
+ */
+static int
+copy_file(const char *from, const char *to)
+{
+    static char buffer[65536];
+    FILE       *in;
+    FILE       *out;
+    size_t      n;
+    int         failed = 0;
+
+    in = fopen(from, "rb");
+    if (!in)
+        return -1;
+    out = fopen(to, "wb");
+    if (!out) {
+        int saved = errno;
+
+        fclose(in);
+        errno = saved;
+        return -1;
+    }
+    while ((n = fread(buffer, 1, sizeof buffer, in)) > 0)
+        if (fwrite(buffer, 1, n, out) != n) {
+            failed = 1;
+            break;
+        }
+    if (ferror(in))
+        failed = 1;
+    if (fclose(out) != 0)
+        failed = 1;
+    fclose(in);
+    return failed ? -1 : 0;
 }
 
 /*  Where the changes file of the image at this path is, or should be.  */
@@ -625,6 +706,18 @@ name_changes_file_after(const char *image_path)
         OM_string_of(name, have, sizeof have);
     if (strcmp(have, want) == 0)
         return;                         /*  already its own  */
+    /*
+     *  Nothing behind the new name yet, and the old one still has the
+     *  file the image's methods point into: copy it (see the comment at
+     *  the top).  A failure is said and not fatal, since the image runs
+     *  without its source; it is the Browser that will show nothing.
+     */
+    if (have[0] && file_size_of(want) <= 0 && file_size_of(have) > 0
+     && !same_file(have, want) && copy_file(have, want) != 0)
+        fprintf(stderr,
+                "st2026: cannot copy %s to %s: %s; the methods compiled\n"
+                "st2026: before this image was saved have no source here.\n",
+                have, want, strerror(errno));
     fresh = OM_instantiate_bytes(ST_CLASS_STRING, (uint32_t) n);
     if (!OM_is_present(fresh))
         return;

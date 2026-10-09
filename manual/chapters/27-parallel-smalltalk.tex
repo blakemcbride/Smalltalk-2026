@@ -95,7 +95,11 @@ m critical: [ queue add: x. m signalAll ].
 \toprule
 \ctp{critical:} & hold the monitor for the block; reentrant\\
 \ctp{waitUntil:} & release, wait for a signal, re-acquire, re-test\\
+\ctp{waitUntil:within:} & the same, giving up after so many milliseconds:
+  true or false\\
 \ctp{waitForChange} & release and wait for one signal\\
+\ctp{waitForChangeWithin:} & the same, or until the time runs out: true
+  for a signal\\
 \ctp{signal} \ctp{signalAll} & wake one, or all\\
 \ctp{hasWaiters} & \\
 \bottomrule
@@ -134,6 +138,7 @@ q := SharedQueue new.
 \toprule
 \ctp{nextPut:} & add\\
 \ctp{next} & remove, blocking\\
+\ctp{nextWithin:ifNone:} & remove, waiting at most so many milliseconds\\
 \ctp{nextOrNil} & remove, or nil if empty\\
 \ctp{peek} \ctp{isEmpty} \ctp{size} & \\
 \bottomrule

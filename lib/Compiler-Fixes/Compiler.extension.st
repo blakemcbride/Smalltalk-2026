@@ -98,7 +98,7 @@ Compiler class >> compileSource: code for: aBehavior noPattern: aBoolean declari
 	 already declared ends it -- otherwise a variable that cannot be
 	 declared for some other reason would spin."
 
-	| source answer name declared |
+	| source answer name sym declared |
 	source := self sourceTextOf: code.
 	declared := Set new.
 	[true] whileTrue: [
@@ -119,7 +119,24 @@ Compiler class >> compileSource: code for: aBehavior noPattern: aBoolean declari
 			ifTrue: [^answer].
 		declared add: name.
 		Transcript show: ' (' , name , ' is Undeclared) '.
-		Undeclared at: name asSymbol put: nil]
+		"Under the lock Smalltalk's writers hold.  Undeclared is a plain
+		 Dictionary written from every worker that compiles, and two
+		 stores at once -- both finding the same empty slot, or one
+		 growing the table under the other -- lost one of them: eight
+		 workers compiling a hundred unknown names each kept 600-700 of
+		 the 800 (Bugs6 KERNB-6).  The method compiled against a lost
+		 binding holds an Association in no dictionary, which no later
+		 declaration can ever adopt.  The same lock as Smalltalk's because
+		 lockedAt:put: reads Undeclared under it already; the other
+		 writers are Encoder>>declareUndeclared: and declare:from:.
+
+		 The Symbol is made BEFORE the lock is taken.  Interning takes
+		 the Symbol lock, and the compile above takes the globals lock
+		 inside the Symbol lock (associationFor: reads Smalltalk), so
+		 interning inside this one is the two locks in the other order:
+		 eight workers compiling stood still on the first try."
+		sym := name asSymbol.
+		LibraryLocks holdingGlobals: [Undeclared at: sym put: nil]]
 ]
 
 { #category : '*Compiler-Fixes' }

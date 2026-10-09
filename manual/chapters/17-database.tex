@@ -34,7 +34,9 @@ saved answers \ct{isOpen} false in the image that resumes, and every use of
 it raises \emph{no such database connection}; open a new one. The same is
 true of a connection after \ct{close}: its handle is never handed to another,
 so a stale object can neither read nor close the connection that took its
-place.
+place. \ct{isAlive} asks the driver whether the server is still at the other
+end, which \ct{isOpen} cannot tell: a connection the server has dropped is
+open and not alive.
 
 \section{One connection per process}
 

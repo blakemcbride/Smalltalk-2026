@@ -1774,6 +1774,13 @@ st_rename_noreplace(const char *from, const char *to)
     return rename(from, to);
 }
 
+/*  Delete a file, and only a file -- see the POSIX half.  */
+static int
+st_file_unlink(const char *path)
+{
+    return _unlink(path);
+}
+
 /*
  *  Rename, replacing -- see the POSIX half.  There is no changes-file lock
  *  on Windows to carry, so this is the port's replacing rename.
@@ -2034,6 +2041,24 @@ st_rename_noreplace(const char *from, const char *to)
         return -1;
     }
     return rename(from, to);
+}
+
+/*
+ *  Delete a file, and only a file (Bugs6 FILES-7).
+ *
+ *  This was remove(), which is unlink() for a file and rmdir() for a
+ *  directory, so FileDirectory>>removeKey: -- a method about files, whose
+ *  callers have just asked for one by name -- deleted an empty directory
+ *  without a word.  unlink() refuses a directory (EISDIR here, EPERM on
+ *  the BSDs, EACCES on Windows), and the refusal reaches the image as any
+ *  other failure of command 1 does: PosixFileDirectory>>removeOld: raises
+ *  with the system's reason rather than answering as though the file were
+ *  gone.
+ */
+static int
+st_file_unlink(const char *path)
+{
+    return unlink(path);
 }
 
 /*
@@ -2824,6 +2849,18 @@ primitive_file_command(void)
                                : OM_fetch_byte_length(buffer);
         if (len > sizeof bytes)
             len = sizeof bytes;
+        /*
+         *  And never more than the buffer holds (Bugs6 FILES-6).  The
+         *  count is the page's bytesInPage, which FilePage>>size: sets to
+         *  whatever it is told, and the buffer is whatever FilePage>>page:
+         *  was given; a count past the buffer's end read on into the
+         *  object heap, and up to 504 bytes of other objects' headers
+         *  went into the file.  The read, command 0, has always stopped
+         *  at the buffer's end; so does this, and so does the truncate
+         *  below, which has to agree with what was written.
+         */
+        if (len > OM_fetch_byte_length(buffer))
+            len = OM_fetch_byte_length(buffer);
         for (i = 0; i < len; ++i)
             bytes[i] = (char) OM_fetch_byte(i, buffer);
         if (n < 1)
@@ -2958,6 +2995,14 @@ primitive_file_command(void)
                 len = 0;
             if (len > POSIX_PAGE_SIZE)
                 len = POSIX_PAGE_SIZE;
+            /*  No further than the write above could have put bytes (FILES-6).  */
+            if (OM_fetch_word_length(page) > PAGE_BUFFER_FIELD) {
+                st_oop  buffer = OM_fetch_pointer(PAGE_BUFFER_FIELD, page);
+
+                if (OM_is_object(buffer) && !OM_pointer_bit(buffer)
+                 && len > (int64_t) OM_fetch_byte_length(buffer))
+                    len = (int64_t) OM_fetch_byte_length(buffer);
+            }
             end = (int64_t) (n - 1) * POSIX_PAGE_SIZE + len;
         }
         /*
@@ -3055,10 +3100,10 @@ primitive_directory_command(void)
     what = (long) OM_int_value(code);
 
     switch (what) {
-    case 1:                                     /*  remove  */
+    case 1:                                     /*  remove a file  */
         if (!c_from_string(arg1, a, sizeof a))
             return 0;
-        answer = remove(a) == 0 ? ST_TRUE : ST_FALSE;
+        answer = st_file_unlink(a) == 0 ? ST_TRUE : ST_FALSE;
         if (answer == ST_FALSE)
             posix_errno = errno;
         break;
@@ -6329,7 +6374,16 @@ enum {
      *  without a lookup that would have to survive a snapshot.  The caller
      *  knows, and says so by which command it sends (Bugs4 FILES-1).
      */
-    ODBC_BIND_BYTES         = 31
+    ODBC_BIND_BYTES         = 31,
+    /*
+     *  Whether the server is still at the other end of a connection, from
+     *  the driver (SQL_ATTR_CONNECTION_DEAD).  IS_CONNECTED answers only
+     *  whether the handle is one of this process's, which is true of a
+     *  connection the server dropped mid-request for as long as the object
+     *  lives; a pool that put such a connection back handed it to the
+     *  next request and the next (Bugs6 FILES-8).
+     */
+    ODBC_IS_ALIVE           = 32
 };
 
 /*
@@ -6714,6 +6768,10 @@ primitive_odbc_command(void)
 
     case ODBC_IS_CONNECTED:
         return odbc_answer(ST_odbc_is_connected(odbc_handle_arg(a))
+                           ? ST_TRUE : ST_FALSE);
+
+    case ODBC_IS_ALIVE:
+        return odbc_answer(ST_odbc_is_alive(odbc_handle_arg(a))
                            ? ST_TRUE : ST_FALSE);
 
     case ODBC_SET_AUTOCOMMIT:

@@ -258,3 +258,23 @@ PosixFileDirectory >> addNew: aFile [
 	aFile readWrite: Write.
 	^aFile
 ]
+
+{ #category : '*Files-Fixes' }
+PosixFileDirectory >> removeOld: aFile [
+	"Remove aFile from the disk, or raise with the system's reason.
+
+	 1983 threw the primitive's answer away, so `Disk removeKey: name'
+	 answered as though the file were gone when the directory was
+	 read-only, when the file was busy, and -- since remove() is rmdir()
+	 as well -- when the name was a directory, which it then deleted if
+	 empty and left if not, silently either way (Bugs6 FILES-7).
+	 FileList's delete, add:'s rename-away of an old version and
+	 everything else that removes a file went on as if it had.  Command 1
+	 unlinks now, so a directory is refused with `Is a directory'; the
+	 check is rename:newName:'s (Bugs5 FILES-8), and the message has the
+	 same shape.  Answers the file, as removeKey: promises."
+	(self doPrimitive: 1 arg1: aFile fileName arg2: nil) == true
+		ifFalse: [^aFile error: 'cannot be removed: '
+			, (aFile errorString: aFile lastError)].
+	^aFile
+]

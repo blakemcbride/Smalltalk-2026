@@ -72,6 +72,18 @@ DbConnection >> isOpen [
 ]
 
 { #category : 'accessing' }
+DbConnection >> isAlive [
+	"Whether the server is still at the other end.  isOpen says only that
+	 my handle is one of this process's, which stays true of a connection
+	 the server has dropped for as long as I live; this asks the driver,
+	 without sending anything down the connection, and is what a pool
+	 asks before handing me to the next request (Bugs6 FILES-8).  A
+	 driver that cannot say answers true, and the next statement finds
+	 out."
+	^handle notNil and: [Odbc isAlive: handle]
+]
+
+{ #category : 'accessing' }
 DbConnection >> kind [
 	"Which database this is, as a Symbol: #PostgreSQL, #MySQL, #SQLite,
 	 #Oracle, #SQLServer, or #unknown.
