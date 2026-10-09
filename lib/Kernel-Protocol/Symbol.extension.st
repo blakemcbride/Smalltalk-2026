@@ -38,3 +38,48 @@ Symbol class >> lookup: aString [
 	self hasInterned: aString ifTrue: [:existing | ^existing].
 	^nil
 ]
+
+{ #category : '*Kernel-Protocol' }
+Symbol >> isLiteral [
+	"Whether I can be stored as # followed by my characters and read back
+	 as me by the compiler this system has.  Two spellings read: a binary
+	 selector made only of the characters its lexer calls binary, and a
+	 name -- an ASCII letter, then ASCII letters, digits and colons, with
+	 no two colons together.  Everything else takes the quoted form,
+	 `'a::' asSymbol', which reads back as itself.
+
+	 1983 asked its own Scanner's TypeTable, which calls every byte above
+	 127 and every control byte binary; the compiler here calls the high
+	 bytes letters and the control bytes errors.  So `('>' , 'ü') asSymbol
+	 storeString' was `#>ü', read back as #> and a send of ü; a control
+	 byte was a syntax error; #'a::' was `#a::', unexpected token (Bugs6
+	 KERNA-7).  An underscore takes the quoted form too: it is a letter in
+	 one dialect and an assignment in the other."
+	| previous |
+	self size = 0 ifTrue: [^false].
+	(self first isLetter and: [self first asciiValue < 128]) ifTrue: [
+		previous := nil.
+		self do: [:c |
+			((c isLetter and: [c asciiValue < 128])
+				or: [(c isDigit and: [c asciiValue < 128]) or: [c = $:]])
+					ifFalse: [^false].
+			(c = $: and: [previous = $:]) ifTrue: [^false].
+			previous := c].
+		^true].
+	self do: [:c | ('+-*/~<>=&|@%,?!\' includes: c) ifFalse: [^false]].
+	^true
+]
+
+{ #category : '*Kernel-Protocol' }
+Symbol >> basicAt: anInteger put: anObject [
+	"Symbols are not modified: at:put: has always said so, and the
+	 primitives refuse a Symbol since Bugs5 INTERP-7; the fallback then
+	 explained the refusal as a bad index (Bugs6 FIXES-5)."
+	^self errorNoModification
+]
+
+{ #category : '*Kernel-Protocol' }
+Symbol >> primReplaceFrom: start to: stop with: replacement startingAt: repStart [
+	"As basicAt:put:: the refusal, in the Symbol's own words."
+	^self errorNoModification
+]

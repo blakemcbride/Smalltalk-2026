@@ -804,6 +804,11 @@ Integer class >> readFrom: aStream radix: radix [
 	 B51 gave readFrom: and readFrom:ifFail: that courtesy and left this
 	 one, two lines below them, sending peekFor: to a String."
 	| stream neg buf count c dv |
+	"A radix from 2 to 36 and an Integer: `Integer readFrom: '10' radix:
+	 2.5' answered 2.5, and any radix at all was taken (Bugs6 KERNA-10);
+	 printString: refuses the same ones."
+	(radix isInteger and: [radix between: 2 and: 36])
+		ifFalse: [^self error: 'the radix must be an Integer from 2 to 36'].
 	stream := aStream isString ifTrue: [ReadStream on: aStream] ifFalse: [aStream].
 	neg := stream peekFor: $-.
 	buf := String new: 24.

@@ -363,10 +363,13 @@ broken.
 Scripted, the whole gesture is:
 
 ```sh
-./st2026 -inject "m 320 240; w 20; d 129; w 40; m 320 271; w 40; u 129; w 60;
+./st2026 -inject "m 320 240; w 20; d 129; w 40; m 320 332; w 40; u 129; w 60;
                 m 60 60; w 20; d 130; w 20; m 900 1400; w 20; u 130; w 200" \
        -screenshot /tmp/browser.pbm -run st2026.image
 ```
 
 `m X Y` moves, `d`/`u` press and release a button (128 blue, 129 yellow, 130 red), `k`
 types a key, and `w N` waits N bytecode slices so the image has time to respond.
+The menu's items are 26 pixels apart and `browser` is the fifth; a menu opened
+before opens with its last choice under the pointer, so a script that opens one
+twice has to allow for where the first choice left it.

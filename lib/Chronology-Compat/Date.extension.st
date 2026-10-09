@@ -31,3 +31,18 @@ Date class >> leapYear: yearInteger [
 			ifTrue: [^0].
 	^1
 ]
+
+{ #category : '*Chronology-Compat' }
+Date >> subtractDate: aDate [
+	"The number of days between self and aDate -- rounded, not truncated
+	 toward zero, so two Dates a zone offset apart (one from a day count,
+	 at UTC midnight; one by name, at local midnight) are still whole
+	 days apart: 45,000 days minus five hours was 44999 (Bugs6 KERNA-29).
+
+	 Only this much of KERNA-29.  fromDays: and fromSeconds: stay Pharo's
+	 -- a Date at UTC midnight, and the local day an instant falls on --
+	 because Pharo's own DateTest pins both, and that suite's recorded
+	 score is the gate; so a Date from a day count and the same Date by
+	 name are still not =, as they are not in Pharo."
+	^((self start - aDate asDateAndTime) asNanoSeconds / 86400000000000) rounded
+]

@@ -328,6 +328,14 @@ typedef struct {
      *  that answered nil on purpose.
      */
     unsigned    unhandled_errors;
+    /*
+     *  Set when the scheduler found every process blocked and stopped the
+     *  run.  -eval printed the verdict, then nil, and exited 0 -- a hung
+     *  evaluation read as success to any script that asked (Bugs6
+     *  SCHED-5); -serve already counted it as the image stopping on its
+     *  own.  -eval and -run turn this into an exit status of 1.
+     */
+    unsigned    blocked_verdict;
 
     st_oop      message_selector;
     uint32_t    argument_count;

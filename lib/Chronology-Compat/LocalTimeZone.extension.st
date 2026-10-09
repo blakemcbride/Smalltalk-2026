@@ -28,3 +28,12 @@ LocalTimeZone >> primOffset [
 	"The host's offset from UTC in minutes, positive towards the east."
 	^Time localOffsetSeconds quo: 60
 ]
+
+{ #category : '*Chronology-Compat' }
+LocalTimeZone >> abbreviation [
+	"LT, the hours with their sign, and the minutes without one: a
+	 negative half-hour zone printed as LT-2:-30 (Bugs6 KERNA-32)."
+	^String streamContents: [:s |
+		s nextPutAll: 'LT'; print: self offset hours; nextPut: $:.
+		s nextPutAll: (self offset minutes abs printPaddedWith: $0 to: 2)]
+]

@@ -372,7 +372,10 @@ tools/          make_font.py — rasterises an outline face into the strike
 
 The tree is not all one licence, and the distinction matters:
 
-- **Ours** — `src/`, `lib/`, `tests/`, `tools/`, `doc/`: BSD 2-Clause.
+- **Ours** — `src/`, `lib/`, `tests/` (with `tests/bench/`), `tools/`,
+  `manual/`, `profiles/`, `doc/`: BSD 2-Clause, granted in `LICENSE` at the
+  root. `demo/` is ours too except for the third-party files its
+  `frontend/PROVENANCE.md` names.
 - **`lib/Database`** — ours and BSD 2-Clause too, and a port of
   `org.kissweb.database` from [Kiss](https://github.com/blakemcbride/Kiss), by
   the same author under the same licence. No Java was copied: the query

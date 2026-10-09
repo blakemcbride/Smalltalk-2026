@@ -115,7 +115,12 @@ Number class >> readFrom: aStream [
 				or: [(aStream peek digitValue between: 0 and: value - 1) not
 					and: [aStream peek ~= $-]])
 				ifTrue: [aStream skip: -1. ^signed value: value].
-			(radix := value) < 2 ifTrue: [^self error: 'INVALID RADIX'].
+			"A radix from 2 to 36, as the compiler and printString: have
+			 it: `'37r10' asNumber' was 37 and `'99rZZ' asNumber' 3500,
+			 numbers the compiler refuses (Bugs6 KERNA-10)."
+			(value between: 2 and: 36)
+				ifFalse: [^self error: 'the radix must be from 2 to 36'].
+			radix := value.
 			"16r-0.8: the sign may come after the radix instead."
 			(aStream peekFor: $-) ifTrue: [negative := negative not].
 			value := Integer readFrom: aStream radix: radix].
@@ -150,24 +155,24 @@ Number class >> readFrom: aStream [
 					^signed value: value]].
 	"
 	 An e is an exponent marker only when an exponent follows it: a digit,
-	 or a minus and then a digit.  Anything else and the e is given back
+	 or a sign and then a digit.  Anything else and the e is given back
 	 and the number is the one before it, as the r and the period above
 	 are given back.  1983 took the e unconditionally and read the empty
 	 exponent as 0, so `'12e' asNumber' was 12.0, `'5east' asNumber' 5.0
 	 and `'1e+5' asNumber' 1.0 -- a Float where the text held an Integer,
 	 and the stream left past a letter that belonged to whatever came next
-	 (Bugs5 KERN-10).  The plus is not an exponent sign here any more than
-	 it is in the compiler's grammar, which has an optional minus and
-	 nothing else.
+	 (Bugs5 KERN-10).  The plus IS a sign here, as it is in the compiler's
+	 grammar: `1e+5' compiled to 100000.0 and read as 1 (Bugs6 KERNA-10).
 	"
 	(aStream atEnd not and: [aStream peek = $e]) ifTrue: [
 		start := aStream position.
 		aStream next.
-		(aStream atEnd not and: [aStream peek = $-]) ifTrue: [aStream next].
+		(aStream atEnd not and: [aStream peek = $- or: [aStream peek = $+]])
+			ifTrue: [aStream next].
 		exponentFollows := aStream atEnd not and: [aStream peek isDigit].
 		aStream position: start].
 	(exponentFollows and: [aStream peekFor: $e])
-		ifTrue: [
+		ifTrue: [ | exponentNegative |
 			"
 			 The size of the answer is estimated, in bits, BEFORE the power
 			 is computed.  `value * (radix raisedTo: exponent)' with no
@@ -180,7 +185,10 @@ Number class >> readFrom: aStream [
 			 is the zero IEEE 754 rounds it to.  Everything nearer is still
 			 done exactly, and its size is bounded by the length of the text.
 			"
+			exponentNegative := aStream peekFor: $-.
+			exponentNegative ifFalse: [aStream peekFor: $+].
 			exponent := Integer readFrom: aStream.
+			exponentNegative ifTrue: [exponent := exponent negated].
 			value = 0 ifFalse: [
 				bits := value highBit + ((scale + exponent) * (radix ln / 2 ln)).
 				bits > 1100 ifTrue: [

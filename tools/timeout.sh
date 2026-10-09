@@ -60,16 +60,34 @@ fi
 #
 fired=$(mktemp "${TMPDIR:-/tmp}/st2026-timeout.XXXXXX") || exit 125
 
+#
+#  The command can be interrupted.  A background command of a
+#  non-interactive shell has INT and QUIT set to ignore, so a Ctrl-C that
+#  reached the whole foreground group killed this wrapper and left st2026
+#  running out the limit; the subshell puts the two back to their defaults
+#  before it becomes the command.  And the wrapper forwards what it is sent
+#  -- INT, TERM or HUP -- to the command and the watchdog, as GNU timeout
+#  does, and takes its marker file with it (Bugs6 DOCS-1).
+#
 exec 3<&0
-"$@" 0<&3 3<&- &
+( trap - INT QUIT; exec "$@" ) 0<&3 3<&- &
 child=$!
 exec 3<&-
+trap 'kill -TERM $child $watchdog 2>/dev/null; rm -f "$fired"; exit 143' INT TERM HUP
 
 (
     exec >/dev/null 2>&1
+    #
+    #  The trap before the sleep: a TERM from the main shell -- the
+    #  command finished first -- that arrived between the two killed the
+    #  subshell by the default action and left the sleep to run out the
+    #  whole limit on its own (Bugs6 DOCS-2).  Now a TERM that early finds
+    #  nothing to kill and nothing started.
+    #
+    nap=
+    trap 'kill $nap 2>/dev/null; exit 0' TERM
     sleep "$seconds" &
     nap=$!
-    trap 'kill $nap 2>/dev/null; exit 0' TERM
     wait $nap
     echo fired > "$fired"
     kill -TERM $child 2>/dev/null || exit 0

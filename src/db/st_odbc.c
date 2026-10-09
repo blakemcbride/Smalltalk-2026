@@ -15,6 +15,7 @@
 
 #include "worker.h"
 #include "st_port.h"
+#include "st_atomic.h"
 
 #include <sql.h>
 #include <sqlext.h>
@@ -85,7 +86,7 @@ typedef struct {
     SQLLEN          size;
     SQLSMALLINT     decimal_digits;
     SQLSMALLINT     nullable;
-    char            name[128];
+    char            name[256];      /*  SQL Server's limit is 128 (Bugs6 FILES-10)  */
 } st_odbc_column;
 
 typedef struct {
@@ -112,7 +113,7 @@ typedef struct {
 } st_odbc_connection;
 
 static SQLHENV              environment;
-static int                  environment_ready;
+static st_atomic_int        environment_ready;      /*  0, or 1 once the environment is up (Bugs6 FILES-9)  */
 
 static st_odbc_connection   connections[ST_ODBC_MAX_CONNECTIONS];
 static st_odbc_statement    statements[ST_ODBC_MAX_STATEMENTS];
@@ -185,7 +186,7 @@ make_handle(int slot, uint64_t serial)
  *  point of this system.
  */
 static st_mutex             table_lock;
-static int                  table_lock_ready;
+static st_atomic_int        table_lock_state;       /*  0 fresh, 1 being made, 2 up (Bugs6 FILES-9)  */
 
 /*
  *  Per thread, because the failure a caller wants explained is the one their
@@ -243,6 +244,17 @@ record_diagnostic(SQLSMALLINT type, SQLHANDLE handle, const char *what)
                                         "reported no diagnostic", what);
     }
     set_error(buffer);
+}
+
+/*
+ *  Record an error the caller found before any driver was asked -- a
+ *  text with a NUL in it, which prim.c refuses on the way in (Bugs6
+ *  FILES-10) -- so that ST_odbc_last_error says what was wrong.
+ */
+void
+ST_odbc_set_error(const char *text)
+{
+    set_error(text);
 }
 
 const char *
@@ -451,14 +463,14 @@ typedef SQLRETURN (*catalogue_call)(SQLHSTMT, SQLCHAR *, SQLCHAR *, SQLCHAR *,
 static void
 lock_tables(void)
 {
-    if (table_lock_ready)
+    if (ST_load_acquire(&table_lock_state) == 2)
         ST_mutex_lock(&table_lock);
 }
 
 static void
 unlock_tables(void)
 {
-    if (table_lock_ready)
+    if (ST_load_acquire(&table_lock_state) == 2)
         ST_mutex_unlock(&table_lock);
 }
 
@@ -475,19 +487,37 @@ ensure_environment(void)
 {
     SQLHENV     env = SQL_NULL_HENV;
 
-    if (environment_ready)
+    if (ST_load_acquire(&environment_ready))
         return 0;
 
-    if (!table_lock_ready) {
-        if (ST_mutex_init(&table_lock) != 0) {
-            set_error("could not create the ODBC table lock");
-            return -1;
+    /*
+     *  The table lock is made exactly once, by whichever worker wins a
+     *  compare-and-swap on a three-state flag -- 0 fresh, 1 being made,
+     *  2 up -- and every other worker waits for 2.  It was a plain int
+     *  read and written outside any lock, so two workers whose first
+     *  connect ran at the same instant could both initialise the mutex,
+     *  the second after the first had taken it (Bugs6 FILES-9).  The
+     *  same shape as NET_init's.
+     */
+    for (;;) {
+        int     expected = 0;
+
+        if (ST_load_acquire(&table_lock_state) == 2)
+            break;
+        if (ST_cas_strong(&table_lock_state, &expected, 1)) {
+            if (ST_mutex_init(&table_lock) != 0) {
+                ST_store_release(&table_lock_state, 0);
+                set_error("could not create the ODBC table lock");
+                return -1;
+            }
+            ST_store_release(&table_lock_state, 2);
+            break;
         }
-        table_lock_ready = 1;
+        ST_thread_yield();
     }
 
     lock_tables();
-    if (environment_ready) {                    /*  another worker won  */
+    if (ST_load_acquire(&environment_ready)) {  /*  another worker won  */
         unlock_tables();
         return 0;
     }
@@ -511,7 +541,7 @@ ensure_environment(void)
         return -1;
     }
     environment = env;
-    environment_ready = 1;
+    ST_store_release(&environment_ready, 1);
     unlock_tables();
     return 0;
 }
@@ -1412,7 +1442,7 @@ describe_columns(st_odbc_handle statement)
         return -1;
     }
     for (i = 0; i < count; ++i) {
-        SQLCHAR         name[128];
+        SQLCHAR         name[256];
         SQLSMALLINT     name_length = 0;
         SQLSMALLINT     type = 0, digits = 0, nullable = 0;
         SQLULEN         size = 0;
@@ -2019,6 +2049,7 @@ static const char   absent[] =
 
 int         ST_odbc_available(void)                     { return 0; }
 const char *ST_odbc_last_error(void)                    { return absent; }
+void        ST_odbc_set_error(const char *t)            { (void) t; }
 
 st_odbc_handle ST_odbc_connect(const char *s)                     { (void) s; return -1; }
 int  ST_odbc_disconnect(st_odbc_handle c)                          { (void) c; return -1; }

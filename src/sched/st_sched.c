@@ -1807,6 +1807,7 @@ SCHED_suspend_active(void)
          *  is holding.
          */
         ST_interp_dump_processes();
+        st_vm.blocked_verdict = 1;      /*  an exit status, not just a line (Bugs6 SCHED-5)  */
         st_vm.running = 0;
         return;
     }
@@ -1950,8 +1951,7 @@ SCHED_synchronous_signal(st_oop semaphore)
      *  the one consumer every registration primitive feeds, and the
      *  fields below are read and written in whatever arrives.
      */
-    if (!OM_is_object(semaphore)
-     || OM_fetch_class(semaphore) != ST_CLASS_SEMAPHORE)
+    if (!SCHED_is_semaphore(semaphore))
         return;
     /*
      *  Under the semaphore's stripe lock, exactly as SCHED_primitive_signal
@@ -2524,6 +2524,33 @@ SCHED_first_ready_process_at(st_int priority)
 
 /*  ----------  Primitives 85 to 88  ----------  */
 
+/*
+ *  A Semaphore, or an instance of a subclass of one.
+ *
+ *  The layout is inherited -- firstLink, lastLink, excessSignals come first
+ *  whatever a subclass adds after them -- and the primitives read and link
+ *  exactly those fields, so a subclass is as good a receiver as the class.
+ *  They used to ask for the exact class, and 1983's fallback bodies are
+ *  `self primitiveFailed', so `Semaphore subclass: #X' gave instances whose
+ *  first signal was 'a primitive has failed' (Bugs6 SCHED-4).  Pharo's
+ *  Mutex and plenty of libraries subclass Semaphore.
+ */
+int
+SCHED_is_semaphore(st_oop object)
+{
+    st_oop  cls;
+
+    if (!OM_is_object(object))
+        return 0;
+    cls = OM_fetch_class(object);
+    while (OM_is_object(cls)) {
+        if (cls == ST_CLASS_SEMAPHORE)
+            return 1;
+        cls = OM_fetch_pointer(ST_CLASS_SUPERCLASS, cls);
+    }
+    return 0;
+}
+
 int
 SCHED_primitive_signal(void)
 {
@@ -2531,9 +2558,7 @@ SCHED_primitive_signal(void)
     st_mutex   *lock;
     st_oop      woken;
 
-    if (!OM_is_object(semaphore))
-        return 0;
-    if (OM_fetch_class(semaphore) != ST_CLASS_SEMAPHORE)
+    if (!SCHED_is_semaphore(semaphore))
         return 0;
 
     /*
@@ -2628,9 +2653,7 @@ SCHED_primitive_wait(void)
     st_oop  semaphore = ST_stack_top();
     st_oop  excess;
 
-    if (!OM_is_object(semaphore))
-        return 0;
-    if (OM_fetch_class(semaphore) != ST_CLASS_SEMAPHORE)
+    if (!SCHED_is_semaphore(semaphore))
         return 0;
     /*
      *  The whole of the fix.  Reading excessSignals and either spending it

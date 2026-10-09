@@ -270,7 +270,15 @@ doctest_method(const char *class_name, int class_side, const char *category,
     st_doctest_list    *l = (st_doctest_list *) user;
     char                where[192];
     const char         *p = source;
-    unsigned            at_line = line;
+    /*
+     *  The Tonel reader puts a carriage return of its own between the
+     *  pattern and the body, which the count below sees as a line the
+     *  file has not got; counted from one line earlier, every example
+     *  lands on its own line (Bugs6 COMP-9).  The chunk reader's source
+     *  begins with the chunk's own line end and is counted as it comes.
+     */
+    unsigned            at_line = line
+        - (line > 0 && strcmp(SRC_format_of(file), "tonel") == 0 ? 1 : 0);
 
     (void) category;
 

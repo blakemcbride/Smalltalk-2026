@@ -264,3 +264,52 @@ OrderedCollection >> addAllFirst: aCollection [
 	aCollection reverseDo: [:each | self addFirst: each].
 	^aCollection
 ]
+
+{ #category : '*Collections-Protocol' }
+OrderedCollection >> at: anInteger [
+	"Answer with my element at index anInteger.  at: is used by a
+	 knowledgeable client to access an existing element.
+
+	 1983's, asking first that the index be an Integer: `at: 'x'' died in
+	 the arithmetic with `+ sent to a String' (Bugs6 KERNA-14), and a
+	 Float reached the primitive's own refusal.  Both are refused here, in
+	 the primitive's words."
+	anInteger isInteger ifFalse: [^self errorNonIntegerIndex].
+	(anInteger < 1 or: [anInteger + firstIndex - 1 > lastIndex])
+		ifTrue: [^self errorNoSuchElement].
+	^super at: anInteger + firstIndex - 1
+]
+
+{ #category : '*Collections-Protocol' }
+OrderedCollection >> at: anInteger put: anObject [
+	"Put anObject at element index anInteger.  at:put: can not be used to
+	 append, front or back, to an ordered collection; it is used by a
+	 knowledgeable client to replace an element.
+
+	 1983 truncated the index itself before the primitive could refuse
+	 it, so `at: 1.5 put: 9' stored where `at: 1.5' then refused to read
+	 -- the half of Bugs1 B17 the method's own arithmetic had undone
+	 (Bugs6 KERNA-14)."
+	anInteger isInteger ifFalse: [^self errorNonIntegerIndex].
+	(anInteger < 1 or: [anInteger + firstIndex - 1 > lastIndex])
+		ifTrue: [^self errorNoSuchElement].
+	^super at: anInteger + firstIndex - 1 put: anObject
+]
+
+{ #category : '*Collections-Protocol' }
+OrderedCollection >> do: aBlock [
+	"Over my elements, first to last, with the last fixed when the walk
+	 begins.  1983 compared its index against lastIndex at every step, so
+	 a block that added to the receiver moved the goal one further each
+	 time and the walk never ended: `s do: [:x | s add: x + 10]' on a
+	 SortedCollection of three did not finish (Bugs6 KERNA-20).  Pharo's
+	 walk is bounded like this; what a block that changes the collection
+	 it is walking sees is unspecified either way, and the manual says so."
+	firstIndex to: lastIndex do: [:index | aBlock value: (self basicAt: index)]
+]
+
+{ #category : '*Collections-Protocol' }
+OrderedCollection >> reverseDo: aBlock [
+	"Over my elements, last to first, the bounds fixed as do: fixes them."
+	lastIndex to: firstIndex by: -1 do: [:index | aBlock value: (self basicAt: index)]
+]

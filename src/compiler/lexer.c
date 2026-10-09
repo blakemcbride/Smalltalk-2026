@@ -283,6 +283,24 @@ peek_char(st_lexer *lx, size_t ahead)
  *  statement after it gone, nothing said.  1983's Scanner refuses with
  *  "Unmatched comment quote" and so does this one now.  Bugs3 B31.
  */
+/*
+ *  A line ends at the current position on CR, on LF, or on a CRLF pair
+ *  counted once -- the rule skip_blanks applies between tokens.  Inside a
+ *  comment or a string the loops counted only LF, and both readers hand
+ *  the compiler source whose line ends are carriage returns, so every
+ *  multi-line comment or string before an error went uncounted and the
+ *  error named a line too early (Bugs6 COMP-9).
+ */
+static void
+count_line_end(st_lexer *lx)
+{
+    char    c = lx->source[lx->pos];
+
+    if (c == '\r' || (c == '\n' && (lx->pos == 0
+                                    || lx->source[lx->pos - 1] != '\r')))
+        ++lx->line;
+}
+
 static int
 skip_blanks(st_lexer *lx, unsigned *unclosed_line)
 {
@@ -323,8 +341,7 @@ skip_blanks(st_lexer *lx, unsigned *unclosed_line)
                 ++lx->pos;
                 break;
             }
-            if (lx->source[lx->pos] == '\n')
-                ++lx->line;
+            count_line_end(lx);
             ++lx->pos;
         }
     }
@@ -344,6 +361,16 @@ radix_digit_value(int c, int radix)
         value = c - '0';
     else if (c >= 'A' && c <= 'Z')
         value = c - 'A' + 10;
+    /*
+     *  Lower case too, as Number class>>readFrom: reads it and as Squeak
+     *  and Pharo write it.  The two readers disagreed about `16r1e3':
+     *  483 to the reader, whose e is a hex digit, and 4096.0 here, where
+     *  e was an exponent after a radix number (Bugs6 KERNA-10).  A digit
+     *  of the radix is a digit first; an exponent is what an e means
+     *  only where it is not one.
+     */
+    else if (c >= 'a' && c <= 'z')
+        value = c - 'a' + 10;
     else
         return -1;
     return value < radix ? value : -1;
@@ -448,11 +475,9 @@ scan_number(st_lexer *lx, st_token *out, int negative)
             char    c = lx->source[lx->pos];
             int     digit;
 
-            if (isdigit((unsigned char) c))
-                digit = c - '0';
-            else if (c >= 'A' && c <= 'Z')
-                digit = c - 'A' + 10;
-            else
+            /*  Either case, as radix_digit_value reads it (Bugs6 KERNA-10).  */
+            digit = radix_digit_value((unsigned char) c, 36);
+            if (digit < 0)
                 break;
             if (digit >= radix)
                 break;
@@ -466,10 +491,9 @@ scan_number(st_lexer *lx, st_token *out, int negative)
          *  Something must have been read.  The loop above stops at the
          *  first byte that is not a digit of the radix, and when that is
          *  the very first byte the number has no digits at all -- `16r'
-         *  by itself, or `16rff' in lower case, which the Blue Book does
-         *  not allow.  Both used to fall through with value 0 and hand the
-         *  rest of the text on as the next token, so `16r' was zero and
-         *  `16rff' was `0 ff'.  Bugs3 B26.
+         *  by itself, or `16rG'.  Both used to fall through with value 0
+         *  and hand the rest of the text on as the next token, so `16r'
+         *  was zero and `16rG' was `0 G'.  Bugs3 B26.
          */
         if (lx->pos == digits_start) {
             lex_fail(lx, out, "line %u: digits expected after %dr",
@@ -923,8 +947,7 @@ lex_token(st_lexer *lx, st_token *out)
                 ++lx->pos;
                 break;
             }
-            if (lx->source[lx->pos] == '\n')
-                ++lx->line;
+            count_line_end(lx);
             buffer_push(&buf, lx->source[lx->pos]);
             ++lx->pos;
         }

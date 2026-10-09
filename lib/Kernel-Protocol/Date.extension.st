@@ -364,3 +364,18 @@ Date >> subtractDate: aDate [
 	^(Date daysFrom1901ToStartOfYear: self year) + self day
 		- ((Date daysFrom1901ToStartOfYear: aDate year) + aDate day)
 ]
+
+{ #category : '*Kernel-Protocol' }
+Date >> printOn: aStream [
+	"5 April 1982 -- and 1 January 0050 for a year under a hundred, so
+	 that readFrom: takes the year as written: its two-digit shorthand
+	 (`82' is 1982) is a rule about text of one or two digits, and
+	 `1 January 50' read back as 1950 (Bugs6 FIXES-3).  A negative year
+	 prints with its sign, as it always has."
+	| y |
+	y := self year.
+	aStream print: self dayOfMonth; space; nextPutAll: self monthName; space.
+	(y between: 0 and: 99)
+		ifTrue: [aStream nextPutAll: (y printPaddedWith: $0 to: 4)]
+		ifFalse: [aStream print: y]
+]

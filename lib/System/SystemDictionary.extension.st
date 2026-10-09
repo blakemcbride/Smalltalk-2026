@@ -32,8 +32,16 @@ SystemDictionary >> at: aKey put: anObject [
 SystemDictionary >> lockedAt: aKey put: anObject [
 	"1983's at:put:, to be run with the globals lock held: a name found in
 	 Undeclared is adopted rather than duplicated, so a method compiled
-	 against the forward reference sees the value."
+	 against the forward reference sees the value.
+
+	 A global's name is a Symbol.  nil was taken, and turned up in
+	 Smalltalk keys (Bugs6 KERNB-12); a String is made the Symbol it
+	 spells, so the key is the one a method compiled against the name
+	 holds."
 	| index element |
+	aKey isSymbol ifFalse: [
+		(aKey isString and: [aKey size > 0])
+			ifFalse: [^self error: 'a global''s name is a Symbol, not ', aKey printString]].
 	index := self findKeyOrNil: aKey.
 	element := self basicAt: index.
 	element == nil
@@ -57,8 +65,31 @@ SystemDictionary >> add: anAssociation [
 { #category : '*System' }
 SystemDictionary >> removeKey: key ifAbsent: aBlock [
 	"Under the same lock as at:put:: removal closes the gap it leaves by
-	 moving later entries back, which a concurrent declare would land in."
-	^LibraryLocks holdingGlobals: [super removeKey: key ifAbsent: aBlock]
+	 moving later entries back, which a concurrent declare would land in.
+
+	 The binding goes to Undeclared with its value nilled, as Pharo's
+	 removeKey: moves it: a compiled method holds the global's
+	 Association, and dropping it on the floor left every such method
+	 answering the removed value for ever, through a later `at:put:' of
+	 the same name that made a new binding (Bugs6 KERNB-11).  Now
+	 lockedAt:put: adopts the binding from Undeclared again, and the
+	 method sees the new value.  Answers key -> the old value, as 1983
+	 answered the Association."
+	^LibraryLocks holdingGlobals: [ | binding old |
+		"The Association first, by Dictionary's own associationAt:ifAbsent:
+		 (super: the one on this class takes the lock this block already
+		 holds), which both Dictionaries answer alike; what
+		 removeKey:ifAbsent: answers is the Association here and the VALUE
+		 under profiles/pharo-collections."
+		binding := super associationAt: key ifAbsent: [nil].
+		binding isNil
+			ifTrue: [aBlock value]
+			ifFalse: [
+				super removeKey: key ifAbsent: [nil].
+				old := binding value.
+				binding value: nil.
+				Undeclared add: binding.
+				key -> old]]
 ]
 
 { #category : '*System' }

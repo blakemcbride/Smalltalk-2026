@@ -23,6 +23,30 @@
 #include <string.h>
 #include <ctype.h>
 
+/*
+ *  The line of a file that a compile error is on.
+ *
+ *  The compiler's error_line is one-based within the source it was handed,
+ *  and the chunk reader's source begins on the line the reader names, so
+ *  the file line is line + error_line - 1.  The Tonel reader puts a
+ *  carriage return of its own between the pattern and the body, and the
+ *  body begins with the file's own line end, so from the body on its
+ *  count is one more than the file's.  The two were simply added before,
+ *  which named a line two past the Tonel error and one past a chunk one
+ *  -- and with the lexer not counting line ends inside comments and
+ *  strings, the two mistakes cancelled or compounded at random (Bugs6
+ *  COMP-9).
+ */
+static unsigned
+file_line_of(const char *file, unsigned line, unsigned error_line)
+{
+    unsigned    at = line + (error_line ? error_line - 1 : 0);
+
+    if (error_line > 1 && strcmp(SRC_format_of(file), "tonel") == 0)
+        --at;
+    return at;
+}
+
 #define MAX_IVARS       256
 /*
  *  Initial sizes, not ceilings.  Every table below this line grows; the
@@ -621,9 +645,20 @@ live_symbol_table(uint32_t *buckets)
 st_oop
 BOOT_intern_symbol(const char *text, void *user)
 {
+    return BOOT_intern_symbol_n(text, strlen(text), user);
+}
+
+/*
+ *  The same, for text of a given length -- a Symbol may hold a NUL.  The
+ *  128 single-character Symbols are interned this way: as C strings, the
+ *  NUL character's was the empty string, so `(String with: (Character
+ *  value: 0)) asSymbol' was #'' (Bugs6 KERNA-11).
+ */
+st_oop
+BOOT_intern_symbol_n(const char *text, size_t n, void *user)
+{
     unsigned    i;
     st_oop      s;
-    size_t      n = strlen(text);
 
     (void) user;
     ensure_symbol_table();
@@ -2133,11 +2168,13 @@ compile_into(boot_class *c, int class_side, const char *source,
     ctx.dialect            = current_dialect;
 
     if (COMPILE_method(source, &ctx, &res) != 0) {
-        boot_fail("%s:%u: in %s%s: %s", file, line + res.error_line,
+        unsigned    at = file_line_of(file, line, res.error_line);
+
+        boot_fail("%s:%u: in %s%s: %s", file, at,
                   c->name, class_side ? " class" : "", res.error);
         if (result) {
             snprintf(result->error_file, sizeof result->error_file, "%s", file);
-            result->error_line = line + res.error_line;
+            result->error_line = at;
         }
         return 0;
     }
@@ -4543,7 +4580,7 @@ seed_symbol_table(st_boot_init_report *out)
 
         text[0] = (char) i;
         text[1] = '\0';
-        OM_store_pointer(i, single, BOOT_intern_symbol(text, NULL));
+        OM_store_pointer(i, single, BOOT_intern_symbol_n(text, 1, NULL));
     }
     for (i = 0; i < USTABLE_BUCKETS; ++i) {
         st_oop  bucket = OM_instantiate_pointers(ST_CLASS_ARRAY, 0);

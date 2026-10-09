@@ -515,13 +515,16 @@ all: $(BIN)
 FLAGS_FILE := $(BUILD_DIR)/flags
 FLAGS_TEXT := $(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) $(LIBS)
 
-.PHONY: FORCE
-FORCE:
-
-$(FLAGS_FILE): FORCE
-	@mkdir -p $(dir $@)
-	@printf '%s\n' '$(subst ','\'',$(FLAGS_TEXT))' > $@.new
-	@if cmp -s $@.new $@; then rm -f $@.new; else mv -f $@.new $@; fi
+#
+#  Written when the makefile is READ, and replaced only when its text
+#  changed, so that the file's date is the date the flags last changed and
+#  `make -n' sees real dates: as a FORCE'd target whose recipe ran every
+#  time, a dry run believed it newer than everything and reported a full
+#  rebuild on an up-to-date tree (Bugs6 DOCS-5).
+#
+$(shell mkdir -p $(BUILD_DIR); \
+	printf '%s\n' '$(subst ','\'',$(FLAGS_TEXT))' > $(FLAGS_FILE).new; \
+	if cmp -s $(FLAGS_FILE).new $(FLAGS_FILE); then rm -f $(FLAGS_FILE).new; else mv -f $(FLAGS_FILE).new $(FLAGS_FILE); fi)
 
 $(OBJ_DIR)/%.o: %.c $(FLAGS_FILE)
 	@mkdir -p $(dir $@)
@@ -576,12 +579,21 @@ $(VARIANT_BIN): $(MAIN_OBJ) $(LIB_AR) $(FLAGS_FILE)
 #
 WINDOWED_BIN := $(subst -headless,,$(BUILD_DIR))/st2026
 
+#
+#  Nor is the Blue Book harness copied (Bugs6 DOCS-4): it refuses every
+#  image, and its tests run $(VARIANT_BIN) from build/bb/.  And a HEADLESS
+#  build is copied only when NO windowed build exists -- not merely the one
+#  of the same flags, which `make HEADLESS=1 NODB=1' looked for under
+#  build/mt-nodb/ and did not find (Bugs6 DOCS-3).
+#
 .PHONY: $(BIN)
 $(BIN): $(VARIANT_BIN)
 ifneq ($(strip $(TSAN)$(ASAN)),)
 	@echo "  $(BUILD_VARIANT) build left in $(VARIANT_BIN); ./st2026 untouched"
+else ifeq ($(OM),bb)
+	@echo "  $(BUILD_VARIANT) build left in $(VARIANT_BIN); ./st2026 untouched (the Blue Book harness runs no image)"
 else ifdef HEADLESS
-	@if [ -x $(WINDOWED_BIN) ]; then \
+	@if ls build/mt/st2026 build/mt-*/st2026 2>/dev/null | grep -v -- '-headless' | grep -q .; then \
 	    echo "  $(BUILD_VARIANT) build left in $(VARIANT_BIN); ./st2026 untouched"; \
 	else \
 	    cp -f $< $@; \
@@ -704,11 +716,20 @@ endif
 #  whatever was linked last -- after a source edit the tests ran before the
 #  relink (Bugs5 DOCS-4).  ST2026_BIN and ST_TEST_DIR tell them which binary
 #  and which scratch directory are this build's; see st_test_binary().
+#  Each suite under a wall-clock limit, as the profile runs are (Bugs6
+#  DOCS-10): a suite that hangs is stopped and named rather than holding
+#  `make test' for ever.
+UNIT_SECONDS := $(if $(strip $(TSAN)$(ASAN)),14400,900)
+
 unit-test: $(UNIT_BIN) $(VARIANT_BIN)
 	@status=0; \
 	for t in $(UNIT_BIN); do \
 	    echo "==> $$t"; \
-	    ST2026_BIN=$(VARIANT_BIN) ST_TEST_DIR=$(TEST_DIR) "$$t" || status=1; \
+	    ST2026_BIN=$(VARIANT_BIN) ST_TEST_DIR=$(TEST_DIR) \
+	        sh tools/timeout.sh -k 5 $(UNIT_SECONDS) "$$t"; \
+	    s=$$?; \
+	    if [ $$s -eq 124 ]; then echo "  $$t did not finish in $(UNIT_SECONDS) s"; fi; \
+	    [ $$s -eq 0 ] || status=1; \
 	done; \
 	exit $$status
 

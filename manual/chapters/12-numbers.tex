@@ -158,8 +158,9 @@ underneath are \ct{printStringRadix:}, \ct{storeStringRadix:} and
 5 timesRepeat: [ ... ]
 \end{st}
 
-\ct{to:do:} and \ct{to:by:do:} are compiled to jumps, so they cost no more
-than a \ct{for} loop would. \ct{timesRepeat:} is a real send, which almost
+\ct{to:do:}, \ct{to:by:do:} and \ct{timesRepeat:} are ordinary sends of a
+block---the compiler inlines \ct{ifTrue:}, \ct{and:}, \ct{whileTrue:} and
+their relatives (Chapter~\ref{ch:control}) and nothing else---which almost
 never matters.
 
 \ct{(1 to: 5)} without \ct{do:} is an \ct{Interval}---a real collection you can

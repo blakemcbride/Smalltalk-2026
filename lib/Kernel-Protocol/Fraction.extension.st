@@ -33,8 +33,18 @@ Fraction class >> floatOfNumerator: n denominator: d [
 	 the mantissa and one to round on -- the remainder supplies the sticky
 	 bit that decides a tie, and timesTwoPower: applies the exponent without
 	 touching the mantissa.  Nothing here converts to Float until the
-	 mantissa is small enough to convert exactly."
-	| a b shift quotient remainder guard |
+	 mantissa is small enough to convert exactly.
+
+	 ONCE, below the normal range too.  A Float under 2^-1022 has fewer
+	 than 53 bits of mantissa, so a quotient rounded to 53 and then scaled
+	 by timesTwoPower: was rounded a second time by the scaling -- the
+	 classic double rounding, one ulp off whenever the first landed on the
+	 second's tie: `'2.2250738585072011e-308' asNumber' was the smallest
+	 normal, `'2.4703282292062328e-324' asNumber' was 0.0 (Bugs6 FIXES-6).
+	 The number of bits kept is chosen from where the value will land --
+	 53 for a normal, 1075 + the top bit's exponent for a subnormal -- so
+	 that the scaling is exact."
+	| a b shift quotient remainder top keep drop guard sticky |
 	n = 0 ifTrue: [^0.0].
 	a := n abs.
 	b := d abs.
@@ -50,15 +60,26 @@ Fraction class >> floatOfNumerator: n denominator: d [
 		(quotient bitAnd: 1) = 1 ifTrue: [remainder := remainder + b].
 		quotient := quotient bitShift: -1.
 		shift := shift - 1].
-	guard := quotient bitAnd: 1.
-	quotient := quotient bitShift: -1.
-	shift := shift - 1.
+	"The quotient has 54 bits and the value is quotient * 2^(shift negated),
+	 so its top bit is 2^top.  A normal keeps 53 of the 54; a subnormal
+	 keeps as many as fit above 2^-1074; below 2^-1075 nothing fits."
+	top := 53 - shift.
+	top < -1075 ifTrue: [^n negative ~= d negative ifTrue: [-0.0] ifFalse: [0.0]].
+	keep := top < -1022 ifTrue: [top + 1075] ifFalse: [53].
+	drop := 54 - keep.
+	guard := (quotient bitShift: (drop - 1) negated) bitAnd: 1.
+	sticky := remainder > 0
+		or: [(quotient bitAnd: (1 bitShift: drop - 1) - 1) > 0].
+	quotient := quotient bitShift: drop negated.
+	shift := shift - drop.
 	"Nearest, ties to even: round up on a guard bit only when something is
-	 left over or the mantissa would otherwise end odd."
-	(guard = 1 and: [remainder > 0 or: [quotient odd]])
+	 left over or the mantissa would otherwise end odd.  A carry out of
+	 the top bit is still exact -- 2^53 is a Float -- so only the normal
+	 case needs its exponent put right."
+	(guard = 1 and: [sticky or: [quotient odd]])
 		ifTrue: [
 			quotient := quotient + 1.
-			quotient highBit > 53 ifTrue: [
+			(keep = 53 and: [quotient highBit > 53]) ifTrue: [
 				quotient := quotient bitShift: -1.
 				shift := shift - 1]].
 	^(n negative ~= d negative

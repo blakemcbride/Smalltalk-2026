@@ -178,6 +178,22 @@ print_version(void)
     printf("  instrumented  : %s\n", ST_SANITIZER);
 #endif
     printf("  CPUs          : %d\n", ST_cpu_count());
+    /*  The build configuration, which the sentence in -help promises (Bugs6 DOCS-20).  */
+#ifdef ST_HAVE_SDL3
+    printf("  display       : SDL3\n");
+#else
+    printf("  display       : none (HEADLESS)\n");
+#endif
+#ifdef ST_HAVE_ODBC
+    printf("  database      : ODBC\n");
+#else
+    printf("  database      : none (NODB)\n");
+#endif
+#ifdef ST_HAVE_TLS
+    printf("  TLS           : OpenSSL\n");
+#else
+    printf("  TLS           : none (NOTLS)\n");
+#endif
 #if defined(ST_WINDOWS)
     printf("  platform      : Windows\n");
 #elif defined(__APPLE__)
@@ -884,6 +900,7 @@ screen_follows_display(int width, int height)
     st_oop  rect;
     st_oop  origin;
     st_oop  corner;
+    st_oop  old_window;
 
     if (!is_instance(manager))
         return screen_refused("the image has no ScheduledControllers");
@@ -894,19 +911,44 @@ screen_follows_display(int width, int height)
     if (!fetch_named(screen, "view", &view) || !is_instance(view))
         return screen_refused("the screen controller has no view");
 
-    origin = make_point(0, 0);
-    corner = make_point(width, height);
-    rect   = OM_instantiate_pointers(rect_class, 2);
-    if (!OM_is_present(origin) || !OM_is_present(corner)
-     || !OM_is_present(rect))
+    /*
+     *  Each object is stored where the image can see it BEFORE the next
+     *  one is made (Bugs6 OM-7): the Rectangle into the view's window
+     *  field as soon as it exists, each Point into the Rectangle as it is
+     *  allocated.  The two Points used to sit in C locals across two more
+     *  allocations, and a threshold collection landing in either would
+     *  have freed them -- the walk rebuilds counts from the roots, and a C
+     *  local is not one -- leaving the window Rectangle with a dangling
+     *  origin: OM-1's shape, one allocation wide, on a resize.  The old
+     *  window goes back if anything fails, so a refusal changes nothing.
+     */
+    if (!fetch_named(view, "window", &old_window))
+        return screen_refused("View has no window field");
+    rect = OM_instantiate_pointers(rect_class, 2);
+    if (!OM_is_present(rect))
         return screen_refused("no room for the new window rectangle");
-    if (!store_named(rect, "origin", origin)
-     || !store_named(rect, "corner", corner))
-        return screen_refused("Rectangle has no origin and corner fields");
-
-    /*  View>>setWindow: -- window, then the two caches it invalidates.  */
     if (!store_named(view, "window", rect))
         return screen_refused("View has no window field");
+    origin = make_point(0, 0);
+    if (!OM_is_present(origin)) {
+        store_named(view, "window", old_window);
+        return screen_refused("no room for the new window rectangle");
+    }
+    if (!store_named(rect, "origin", origin)) {
+        store_named(view, "window", old_window);
+        return screen_refused("Rectangle has no origin and corner fields");
+    }
+    corner = make_point(width, height);
+    if (!OM_is_present(corner)) {
+        store_named(view, "window", old_window);
+        return screen_refused("no room for the new window rectangle");
+    }
+    if (!store_named(rect, "corner", corner)) {
+        store_named(view, "window", old_window);
+        return screen_refused("Rectangle has no origin and corner fields");
+    }
+
+    /*  View>>setWindow: -- the window is in; now the two caches it invalidates.  */
     store_named(view, "viewport", ST_NIL);
     unlock_view(view, 0);
     return 1;
@@ -1034,7 +1076,7 @@ do_run(const char *path, uint64_t max_cycles)
      *  the one case where the reason is the whole of what you want to know.
      */
     const char *why = "the image stopped";
-
+    int         window_tried = 0;       /*  see the injection below  */
 
     if (!hold_the_changes_file(path))
         return 1;
@@ -1057,7 +1099,14 @@ do_run(const char *path, uint64_t max_cycles)
          *  before that would fill the queue and signal a semaphore nobody is
          *  waiting on yet.
          */
-        if (inject_script && total >= SLICE_BYTECODES)
+        /*
+         *  And not before the window has been opened -- or tried: a
+         *  script's leading `m X Y' was clamped to the image's 640x480
+         *  because the first injection came one block before the open
+         *  that fits the screen to the window (Bugs6 GUI-4).
+         */
+        if (inject_script && total >= SLICE_BYTECODES
+         && (GFX_is_open() || window_tried))
             run_inject_script();
         /*
          *  Move the pointer, and nothing else.
@@ -1091,6 +1140,7 @@ do_run(const char *path, uint64_t max_cycles)
         if (!GFX_is_open() && GFX_display_form() != ST_NIL) {
             gfx_form    form;
 
+            window_tried = 1;
             if (GFX_form_from_oop(GFX_display_form(), &form)) {
                 if (GFX_open("Smalltalk-2026", form.width, form.height,
                              err, sizeof err) != 0) {
@@ -1147,6 +1197,8 @@ do_run(const char *path, uint64_t max_cycles)
                 GFX_events_dropped());
     if (ST_quit_requested)
         why = "the image quit";
+    if (st_vm.blocked_verdict)
+        why = "every process was blocked; nothing could run";
     fprintf(stderr, "st2026: %s\n", why);
     fprintf(stderr, "st2026: stopped after %llu bytecodes; "
                     "%u collections reclaimed %u objects; "
@@ -1283,7 +1335,8 @@ do_run(const char *path, uint64_t max_cycles)
         GFX_close();
     SCHED_timer_stop();
     OM_shutdown();
-    return 0;
+    /*  A run the scheduler stopped for want of anything to run is a failed run (Bugs6 SCHED-5).  */
+    return st_vm.blocked_verdict ? 1 : 0;
 }
 
 /*
@@ -2195,6 +2248,13 @@ do_bootstrap(const char *const *sources, const int *dialects, unsigned count,
             for (k = 0; k < n; ++k)
                 putchar((char) OM_fetch_byte(k, value));
             putchar('\n');
+        }  else if (value == ST_TRUE) {
+            /*
+             *  ST_print_object says `aTrue', faithfully to the Xerox
+             *  traces it reproduces (see trace.c); the answer to an
+             *  expression is `true', as false's is `false' (Bugs6 COMP-4).
+             */
+            printf("true\n");
         }  else  {
             ST_print_object(value, text, sizeof text);
             printf("%s\n", text);
@@ -2215,6 +2275,16 @@ do_bootstrap(const char *const *sources, const int *dialects, unsigned count,
                             "evaluating the expression\n",
                     st_vm.unhandled_errors,
                     st_vm.unhandled_errors == 1 ? "" : "s");
+            return 1;
+        }
+        /*
+         *  And so is an evaluation the scheduler had to stop because
+         *  every process was blocked (Bugs6 SCHED-5): the verdict was
+         *  printed, `nil' followed, and the exit code said 0.
+         */
+        if (st_vm.blocked_verdict) {
+            fprintf(stderr, "st2026: the expression did not finish: every "
+                            "process was blocked\n");
             return 1;
         }
     }
@@ -2428,8 +2498,15 @@ survey_arguments(st_survey *survey, int argc, char **argv)
             fprintf(stderr, "st2026: %s\n", err);
             return 0;
         }
+        /*
+         *  In the dialect the profile gives each file, not the one its
+         *  format suggests: a chunk file in lib/ is closures source under
+         *  a closures profile, and the survey read it as the Blue Book
+         *  (Bugs6 COMP-16).
+         */
         for (k = 0; k < expanded.count; ++k)
-            SURVEY_file(survey, expanded.items[k]);
+            SURVEY_file_in_dialect(survey, expanded.items[k],
+                                   expanded_dialects ? expanded_dialects[k] : -1);
         SRC_names_free(&expanded);
         free(expanded_dialects);
     }
@@ -2442,9 +2519,12 @@ do_syntax(int argc, char **argv)
     st_survey   survey;
 
     SURVEY_init(&survey);
-    if (!survey_arguments(&survey, argc, argv))
+    if (!survey_arguments(&survey, argc, argv)) {
+        SURVEY_free(&survey);
         return 1;
+    }
     SURVEY_report(&survey, stdout);
+    SURVEY_free(&survey);
     return (survey.failed || survey.unreadable) ? 1 : 0;
 }
 
@@ -2468,6 +2548,7 @@ do_primitives(int argc, char **argv)
     if (!survey_arguments(&survey, argc, argv))
         return 1;
     SURVEY_primitive_report(&survey, stdout);
+    SURVEY_free(&survey);
     return survey.unreadable ? 1 : 0;
 }
 
@@ -2631,8 +2712,15 @@ count_argument(const char *text, uint64_t *out)
      */
     if (!isdigit((unsigned char) text[0]))
         return 0;
+    /*
+     *  Base ten, said so.  With base 0 a leading zero meant octal and `0x'
+     *  hex, so `-workers 010' started eight workers and `-run img 010' ran
+     *  eight bytecodes, while `-workers 08' was refused as not a number
+     *  (Bugs6 COMP-11).  Every other number this system reads from a
+     *  person is decimal.
+     */
     errno = 0;
-    value = strtoull(text, &end, 0);
+    value = strtoull(text, &end, 10);
     if (errno != 0 || end == text || *end != '\0')
         return 0;
     *out = value;

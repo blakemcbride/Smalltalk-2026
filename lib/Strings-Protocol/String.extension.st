@@ -76,7 +76,8 @@ String >> indexOfSubstring: aString startingAt: start [
 	| limit |
 	aString size = 0 ifTrue: [^start].
 	limit := self size - aString size + 1.
-	start to: limit do: [:i |
+	"A start before the beginning means the beginning (Bugs6 KERNA-12)."
+	(start max: 1) to: limit do: [:i |
 		| j |
 		j := 1.
 		[j <= aString size and: [(self at: i + j - 1) = (aString at: j)]]
@@ -400,12 +401,19 @@ String >> asNumber [
 	 asNumber' is 12, as it is in Pharo -- because that is the reader's
 	 documented behaviour and callers rely on it.  Only text with no
 	 number at the front at all answers nil."
-	| stream |
-	stream := ReadStream on: self trimLeft.
-	(stream atEnd not and: [stream peek = $- or: [stream peek = $+]])
+	| stream text |
+	text := self trimLeft.
+	stream := ReadStream on: text.
+	"A plus is a sign to asInteger and to the compiler, and the reader does
+	 not read one: the guard let `'+5'' through and the reader answered 0,
+	 the one answer this method exists never to give (Bugs6 KERNA-9).  So
+	 the plus is dropped here and the rest is read."
+	(stream atEnd not and: [stream peek = $+])
+		ifTrue: [stream next. text := text copyFrom: 2 to: text size].
+	(stream atEnd not and: [stream peek = $-])
 		ifTrue: [stream next].
 	(stream atEnd not and: [stream peek isDigit]) ifFalse: [^nil].
-	^Number readFromString: self trimLeft
+	^Number readFromString: text
 ]
 
 { #category : '*Strings-Protocol' }
@@ -476,4 +484,17 @@ String >> findString: subString startingAt: start [
 				index = subString size ifTrue: [^startIndex].
 				index := index + 1]]].
 	^0
+]
+
+{ #category : '*Strings-Protocol' }
+String >> = aCollection [
+	"Equal to a Text with my characters, as it is to me.
+
+	 Text>>= compares strings, so `'abc' asText = 'abc'' was true while
+	 `'abc' = 'abc' asText' was false -- SequenceableCollection's rule,
+	 the same species -- and a Set holding the one found the other by one
+	 direction of the probe and not the other (Bugs6 KERNA-13).  Anything
+	 that is not a Text is compared as 1983 compared it."
+	(aCollection isMemberOf: Text) ifTrue: [^self = aCollection string].
+	^super = aCollection
 ]

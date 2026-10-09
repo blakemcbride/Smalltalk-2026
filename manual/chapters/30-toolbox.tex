@@ -16,11 +16,13 @@ Compiles every method in the named files and reports failures, without
 building an image or running anything. The fastest check there is, and the
 right thing to put in an editor's save hook.
 
-It is a \emph{grammar} check and deliberately nothing more: every identifier
-resolves, and its stand-in literals are shared rather than allocated, so it
-sees neither an undefined global nor a method that overruns the 63-literal
-frame. Those are the bootstrap's business, and \ct{-tests} is the next step
-in the workflow below for exactly that reason.
+It is a \emph{grammar} check and deliberately little more: every identifier
+resolves, so it sees no undefined global---that is the bootstrap's business,
+and \ct{-tests} is the next step in the workflow below for exactly that
+reason. It does count literals as the bootstrap will, so a method that
+overruns the 63-literal frame is reported here first; and given a profile it
+reads each file in the dialect the profile gives it, where a file on its own
+is read by its format---Tonel as closures, chunk as the Blue Book.
 
 \section{\texttt{-primitives}: what does this source ask of the VM?}
 

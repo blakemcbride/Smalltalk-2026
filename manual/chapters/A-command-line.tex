@@ -87,7 +87,8 @@ Zero when the thing asked for was done, and when nothing was asked for:
 
 One when the work was attempted and failed---an image that cannot be opened,
 a bootstrap that will not compile, \ct{-tests} with a test that did not pass,
-an \ct{-eval} whose expression ended in an unhandled error.
+an \ct{-eval} whose expression ended in an unhandled error or that the
+scheduler had to stop because every process was blocked.
 
 Two when the command line itself is wrong: an option this system does not
 have, or one whose argument is missing. The message names the option and goes
@@ -106,6 +107,7 @@ For \ct{-inject}, semicolon-separated:
 \ctp{u CODE} & release it\\
 \ctp{k CODE} & type a key\\
 \ctp{w N} & wait N bytecode slices\\
+\ctp{W N} & roll the wheel N notches (negative is up)\\
 \ctp{x} & post a window-exposed event\\
 \bottomrule
 \end{tabular}
@@ -125,7 +127,7 @@ For \ct{-inject}, semicolon-separated:
   \ctp{stretch}\\
 \ctp{ST\_DISPLAY\_TRACE=1} & report why a resize was refused; draw and present
   counts at exit\\
-\ctp{ST\_EVAL\_TRACE=1} & trace the bytecodes an \ctp{-eval} runs\\
+\ctp{ST\_EVAL\_TRACE=1} & trace the bytecodes an \ctp{-eval} runs; \ctp{=s} traces its sends\\
 \ctp{ST\_NET\_TRACE=1} & narrate the network thread: arms, deliveries, closes\\
 \ctp{ST\_BOTTOM\_LOG=1} & report a return off the bottom of a stack\\
 \ctp{ST\_ERROR\_BACKTRACE=1} & print the sender chain under every error

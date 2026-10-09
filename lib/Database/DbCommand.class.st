@@ -55,6 +55,10 @@ DbCommand >> prepare: sqlString [
 	 reusing a plan for the wrong SQL is not an error the database can
 	 catch -- the parameters would simply go to the wrong places."
 
+	connection isNil ifTrue: [
+		"After close, as every other use-after-close here is answered
+		 (Bugs6 FILES-10); it was `handle' sent to nil."
+		^DbError signal: 'this command has been closed'].
 	self closeCursor.
 	(statement notNil and: [sql = sqlString]) ifTrue:
 		[Odbc clearParameters: statement.

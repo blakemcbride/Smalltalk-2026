@@ -747,8 +747,17 @@ read_chunks(const char *path, const st_source_sink *sink, void *user,
                                   &class_side, protocol, sizeof protocol)) {
                 in_methods = 1;
                 have_class = 1;
+                continue;
             }
-            continue;
+            /*
+             *  Not a methodsFor:.  The chunk after an empty one is READ as
+             *  a reader expression, but 1983's fileIn evaluates whatever
+             *  is there, so a `Foo comment: '...'!' written after a method
+             *  category -- the `! !' that closes the category leaves the
+             *  empty chunk -- was dropped here while the same line before
+             *  the methods was kept (Bugs6 COMP-15).  It falls through to
+             *  the three recognisers, as every other chunk does.
+             */
         }
         if (in_methods) {
             if (have_class && sink->method

@@ -97,6 +97,8 @@ typedef int64_t st_odbc_handle;
  *  empty string when nothing has failed.
  */
 const char *ST_odbc_last_error(void);
+/*  Record an error found before any driver was asked (Bugs6 FILES-10).  */
+void        ST_odbc_set_error(const char *text);
 
 /*  ----------  Connections  ----------  */
 

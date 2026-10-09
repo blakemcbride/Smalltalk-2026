@@ -794,16 +794,17 @@ NET_accept(int64_t listener)
         return -1;
     }
     lfd = s->fd;
-    ST_mutex_unlock(&net_lock);
-
     /*
-     *  Outside the lock: accept cannot block on a non-blocking listener,
-     *  but it is a system call, and the lock is the I/O thread's too.
+     *  Under the lock: accept cannot block on a non-blocking listener, so
+     *  the lock is held for one system call, and a close of the listener
+     *  from another process cannot slip between the look at the table
+     *  and the call (Bugs6 NET-2).
      */
     do {
         fd    = accept(lfd, NULL, NULL);
         saved = net_errno();
     } while (!NET_FD_IS_VALID(fd) && saved == NET_EINTR);
+    ST_mutex_unlock(&net_lock);
     if (!NET_FD_IS_VALID(fd)) {
         if (saved == NET_EWOULDBLOCK
 #if defined(EAGAIN) && EAGAIN != EWOULDBLOCK
@@ -964,6 +965,19 @@ fd_of(int64_t handle)
     if (!NET_FD_IS_VALID(fd))
         set_error_text("no such socket");
     return fd;
+}
+
+/*
+ *  Whether the slot a handle names still holds that descriptor.  Asked
+ *  under net_lock, just before the descriptor is used, by the plain paths
+ *  (Bugs6 NET-2).
+ */
+static int
+slot_still_holds(int64_t handle, net_fd fd)
+{
+    net_socket *s = slot_for(handle);
+
+    return s != NULL && s->fd == fd && NET_FD_IS_VALID(fd);
 }
 
 /*  The descriptor and whether TLS is on it, in one look at the table.  */
@@ -1203,10 +1217,27 @@ NET_recv(int64_t handle, void *buffer, size_t max)
         return n;
     }
 #endif
+    /*
+     *  Under net_lock, with the slot looked at again: the descriptor was
+     *  captured above, and a close from another process between that
+     *  capture and the call would have had this recv on a closed
+     *  descriptor -- or, since the kernel reissues numbers at once, on
+     *  somebody else's socket (Bugs6 NET-2).  The TLS path has always
+     *  re-checked under a lock; this is the same guard for the plain
+     *  one.  A non-blocking recv cannot block, so the lock is held for
+     *  one system call.
+     */
+    ST_mutex_lock(&net_lock);
+    if (!slot_still_holds(handle, fd)) {
+        ST_mutex_unlock(&net_lock);
+        set_error_text("no such socket");
+        return -1;
+    }
     do {
         n     = (long) recv(fd, (char *) buffer, (int) max, 0);
         saved = net_errno();
     } while (n < 0 && saved == NET_EINTR);
+    ST_mutex_unlock(&net_lock);
     if (n < 0) {
         if (would_block(saved))
             return NET_WOULD_BLOCK;
@@ -1246,10 +1277,18 @@ NET_send(int64_t handle, const void *buffer, size_t count)
         return n;
     }
 #endif
+    /*  Under the lock and re-checked, as NET_recv is (Bugs6 NET-2).  */
+    ST_mutex_lock(&net_lock);
+    if (!slot_still_holds(handle, fd)) {
+        ST_mutex_unlock(&net_lock);
+        set_error_text("no such socket");
+        return -1;
+    }
     do {
         n     = (long) send(fd, (const char *) buffer, (int) count, send_flags());
         saved = net_errno();
     } while (n < 0 && saved == NET_EINTR);
+    ST_mutex_unlock(&net_lock);
     if (n < 0) {
         if (would_block(saved))
             return NET_WOULD_BLOCK;

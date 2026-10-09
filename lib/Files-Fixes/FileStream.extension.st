@@ -222,3 +222,58 @@ FileStream >> release [
 		readLimit := writeLimit := 0.
 		self file release]
 ]
+
+{ #category : '*Files-Fixes' }
+FileStream >> next: anInteger into: aCollection [
+	"Copy the next anInteger bytes from the receiver into aCollection --
+	 or as many as are left, answering the collection either way.  1983
+	 filled the rest with `self next', which is nil past the end, so a
+	 short file died inside at:put: with `Strings only store Characters'
+	 (Bugs6 FILES-10); next: was given the same end by Bugs3 B51."
+	| howManyRead increment |
+	howManyRead := 0.
+	[howManyRead < anInteger] whileTrue: [
+		self atEnd ifTrue: [^aCollection].
+		increment := (readLimit - position) min: (anInteger - howManyRead).
+		aCollection
+			replaceFrom: howManyRead + 1
+			to: (howManyRead := howManyRead + increment)
+			with: collection
+			startingAt: position + 1.
+		position := position + increment].
+	^aCollection
+]
+
+{ #category : '*Files-Fixes' }
+FileStream >> nextPutAll: aCollection [
+	"1983's, with nothing at all done for an empty collection.
+
+	 A write through the default mode shortens the file at close to
+	 where the writing stopped (Bugs5 FILES-1 kept that), and the mode
+	 is set here, by the first write.  An empty nextPutAll: wrote no
+	 byte and still set the mode, so `oldFileNamed:' then `next: 5' then
+	 `nextPutAll: \'\'' then `close' cut a 33-byte file to 5 -- a program
+	 joining possibly-empty strings destroyed the tail of a file it had
+	 not written to (Bugs6 FIXES-4).  Nothing written, nothing set."
+	| dmax howManyWritten increment collectionSize |
+	((aCollection isKindOf: ByteArray) or: [aCollection isKindOf: String])
+		ifFalse: [^super nextPutAll: aCollection].
+	aCollection size = 0 ifTrue: [^aCollection].
+	rwmode == nil
+		ifTrue: [self readWriteShorten "default mode"].
+	(rwmode bitAnd: Write) = 0
+		ifTrue: [^self error: 'no writing allowed!'].
+	closed ifTrue: [self reopen].
+	howManyWritten := 0.
+	collectionSize := aCollection size.
+	dmax := page dataMaxEnd.
+	[increment := (dmax - position) min: (collectionSize - howManyWritten).
+	 collection replaceFrom: position + 1 to: (position := position + increment)
+		with: aCollection startingAt: howManyWritten + 1.
+	 howManyWritten := howManyWritten + increment.
+	 howManyWritten < collectionSize] whileTrue: [
+		self nextPage isNil ifTrue: [^self error: 'cannot write!!!'].
+		position = readLimit ifTrue: [writeLimit := dmax]].
+	position > writeLimit ifTrue: [writeLimit := dmax].
+	^aCollection
+]

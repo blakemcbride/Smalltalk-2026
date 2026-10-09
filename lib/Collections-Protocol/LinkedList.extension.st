@@ -118,3 +118,77 @@ LinkedList >> copy [
 	self do: [:each | copy addLast: (each shallowCopy nextLink: nil; yourself)].
 	^copy
 ]
+
+{ #category : '*Collections-Protocol' }
+LinkedList >> collect: aBlock [
+	"An OrderedCollection of the answers, as Pharo gives for a LinkedList:
+	 the SequenceableCollection method builds its answer with `species
+	 new:', which no LinkedList has, so collect:, select:, reject:,
+	 reverse, first:, copyFrom:to: and , all died with `a primitive has
+	 failed' (Bugs6 KERNA-21).  An OrderedCollection holds whatever the
+	 block answers; a LinkedList could hold only Links, and adding a Link
+	 to a second list unlinks it from the first."
+	^self asOrderedCollection collect: aBlock
+]
+
+{ #category : '*Collections-Protocol' }
+LinkedList >> select: aBlock [
+	"An OrderedCollection of the links that pass; see collect:."
+	^self asOrderedCollection select: aBlock
+]
+
+{ #category : '*Collections-Protocol' }
+LinkedList >> reject: aBlock [
+	"An OrderedCollection of the links that do not pass; see collect:."
+	^self asOrderedCollection reject: aBlock
+]
+
+{ #category : '*Collections-Protocol' }
+LinkedList >> reverse [
+	"An OrderedCollection of my links, last first; see collect:."
+	^self asOrderedCollection reverse
+]
+
+{ #category : '*Collections-Protocol' }
+LinkedList >> first: anInteger [
+	"An OrderedCollection of my first anInteger links; see collect:."
+	^self asOrderedCollection first: anInteger
+]
+
+{ #category : '*Collections-Protocol' }
+LinkedList >> copyFrom: start to: stop [
+	"An OrderedCollection of my links from start to stop; see collect:."
+	^self asOrderedCollection copyFrom: start to: stop
+]
+
+{ #category : '*Collections-Protocol' }
+LinkedList >> , aCollection [
+	"An OrderedCollection of my links then aCollection's elements; see
+	 collect:."
+	^self asOrderedCollection , aCollection
+]
+
+{ #category : '*Collections-Protocol' }
+LinkedList >> remove: aLink ifAbsent: aBlock [
+	"Remove aLink from the receiver.  If it is not there, answer the
+	 result of evaluating aBlock.
+
+	 1983's, asking first that aLink be a Link: `remove: nil ifAbsent:'
+	 on an empty list found nil == firstLink true and sent nextLink to
+	 nil (Bugs6 KERNA-21)."
+	| tempLink |
+	(aLink isKindOf: Link) ifFalse: [^aBlock value].
+	aLink == firstLink
+		ifTrue: [firstLink := aLink nextLink.
+				aLink == lastLink
+					ifTrue: [lastLink := nil]]
+		ifFalse: [tempLink := firstLink.
+				[tempLink == nil ifTrue: [^aBlock value].
+				 tempLink nextLink == aLink]
+					whileFalse: [tempLink := tempLink nextLink].
+				tempLink nextLink: aLink nextLink.
+				aLink == lastLink
+					ifTrue: [lastLink := tempLink]].
+	aLink nextLink: nil.
+	^aLink
+]

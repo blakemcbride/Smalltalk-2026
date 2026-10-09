@@ -369,6 +369,8 @@ test: sdl3_ok $(BIN)
 	$(BUILD)\test_parallel_db.exe
 	$(BUILDTEST) tests\unit\test_odbc_parallel.c $(OBJ) $(SDLLIBS) $(LINKOPT)
 	$(BUILD)\test_odbc_parallel.exe
+	$(BUILDTEST) tests\unit\test_odbc_no_total.c $(OBJ) $(SDLLIBS) $(LINKOPT)
+	$(BUILD)\test_odbc_no_total.exe
 	$(BUILDTEST) tests\unit\test_crypto.c $(OBJ) $(SDLLIBS) $(LINKOPT)
 	$(BUILD)\test_crypto.exe
 	$(BUILDTEST) tests\unit\test_socket.c $(OBJ) $(SDLLIBS) $(LINKOPT)

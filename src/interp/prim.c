@@ -2156,7 +2156,19 @@ st_file_mtime(int fd)
 static int
 st_file_truncate(int fd, int64_t end)
 {
-    return ftruncate(fd, (off_t) end) == 0 ? 0 : -1;
+    struct stat st;
+
+    if (ftruncate(fd, (off_t) end) == 0)
+        return 0;
+    /*
+     *  A character device -- /dev/null, a terminal -- has no length to
+     *  set and says EINVAL; a close that shortens nothing has nothing to
+     *  refuse, and `(FileStream oldFileNamed: '/dev/null') nextPutAll:
+     *  'abc'; close' died in endFile: (Bugs6 FILES-10).
+     */
+    if (errno == EINVAL && fstat(fd, &st) == 0 && !S_ISREG(st.st_mode))
+        return 0;
+    return -1;
 }
 
 static int64_t
@@ -2282,7 +2294,20 @@ int ST_changes_lock_fd = -1;
  *  is the VM's half of what 1983 called external references: the image
  *  cannot be expected to know its file handles died.
  */
-#define POSIX_MAX_FD    4096
+/*
+ *  Sixty-four thousand descriptors, up from 4,096: the layer vouches for a
+ *  descriptor by number, and a server that had four thousand connections
+ *  open was handed numbers past the table and told "Too many open files"
+ *  for every file it opened, under a limit of half a million (Bugs6
+ *  FILES-10).  Six words a descriptor; a megabyte and a half in all.
+ */
+#define POSIX_MAX_FD    65536
+/*  A path buffer: PATH_MAX where the OS says, 4,096 where it does not.  */
+#ifdef PATH_MAX
+#define ST_PATH_BUFFER  (PATH_MAX > 4096 ? PATH_MAX : 4096)
+#else
+#define ST_PATH_BUFFER  4096
+#endif
 /*
  *  Atomic, not because two workers ever own one descriptor -- the kernel
  *  hands each number out once -- but because the number comes back: a
@@ -2438,16 +2463,28 @@ c_from_string(st_oop s, char *out, size_t max)
     uint32_t    n;
     uint32_t    i;
 
-    if (!OM_is_object(s) || OM_pointer_bit(s))
+    if (!OM_is_object(s) || OM_pointer_bit(s)) {
+        posix_errno = EINVAL;
         return 0;
+    }
     n = OM_fetch_byte_length(s);
-    if (n >= max)
+    /*
+     *  Said as the OS would say it.  The buffers are PATH_MAX now; a name
+     *  that does not fit even so is "File name too long", not "Invalid
+     *  argument" -- which is what every name between 1,024 and 4,095
+     *  bytes got when the buffers were 1,024 (Bugs6 FILES-10).
+     */
+    if (n >= max) {
+        posix_errno = ENAMETOOLONG;
         return 0;
+    }
     for (i = 0; i < n; ++i) {
         uint8_t     byte = OM_fetch_byte(i, s);
 
-        if (byte == 0)
+        if (byte == 0) {
+            posix_errno = EINVAL;
             return 0;
+        }
         out[i] = (char) byte;
     }
     out[n] = '\0';
@@ -2585,7 +2622,7 @@ posix_fd_for(st_oop file, int for_writing)
 {
     int     fd = posix_fd_of(file);
     int     read_only = 0;
-    char    path[1024];
+    char    path[ST_PATH_BUFFER];
 
     if (fd >= 0)
         return fd;
@@ -2646,7 +2683,7 @@ primitive_file_command(void)
 
     switch (command) {
     case 4: {                                   /*  open  */
-        char    path[1024];
+        char    path[ST_PATH_BUFFER];
 
         /*
          *  A name C cannot carry -- longer than the buffer, or holding a
@@ -2661,8 +2698,7 @@ primitive_file_command(void)
          *  way it was reported was not.
          */
         if (!c_from_string(name, path, sizeof path)) {
-            posix_errno = EINVAL;
-            answer = ST_FALSE;
+            answer = ST_FALSE;      /*  posix_errno says why  */
             break;
         }
         /*
@@ -3104,8 +3140,8 @@ primitive_directory_command(void)
     st_oop      code = ST_stack_value(2);
     long        what;
     st_oop      answer = ST_FALSE;
-    char        a[1024];
-    char        b[1024];
+    char        a[ST_PATH_BUFFER];
+    char        b[ST_PATH_BUFFER];
 
     if (!OM_is_int(code))
         return 0;
@@ -3320,7 +3356,7 @@ primitive_directory_command(void)
  *  AccessProtect, which it keeps until the write is over, and the
  *  Semaphore that lock is made of orders the store here before the read.
  */
-static char     snapshot_path[1024];
+static char     snapshot_path[ST_PATH_BUFFER];
 
 static int
 primitive_be_snapshot_file(void)
@@ -3595,15 +3631,13 @@ primitive_cursor_loc_put(void)
  *  a String, and when it fired SCHED_synchronous_signal read and wrote the
  *  list and excess-signal fields of an object that has none -- heap
  *  corruption reported long after, as `munmap_chunk(): invalid pointer'.
- *  The test is primitive 85's: the class exactly, since nothing in the
- *  image subclasses Semaphore (Bugs5 INTERP-3).
+ *  The test is primitive 85's (Bugs5 INTERP-3): a Semaphore, or since
+ *  Bugs6 SCHED-4 an instance of a subclass of one.
  */
 static int
 semaphore_or_nil(st_oop semaphore)
 {
-    return semaphore == ST_NIL
-        || (OM_is_object(semaphore)
-            && OM_fetch_class(semaphore) == ST_CLASS_SEMAPHORE);
+    return semaphore == ST_NIL || SCHED_is_semaphore(semaphore);
 }
 
 static int
@@ -3829,6 +3863,15 @@ float_primitive(unsigned index)
     }
     case 51: {                          /*  truncated  */
         if (!float_value(ST_stack_value(0), &a))
+            return 0;
+        /*
+         *  A NaN first: both range comparisons are false for it, so the
+         *  guard let it through to a cast that C leaves undefined (Bugs6
+         *  INTERP-1).  x86-64 happened to answer INT64_MIN, which the
+         *  integer check then refused, so no wrong answer escaped -- by
+         *  the hardware's grace, not the code's.
+         */
+        if (a != a)
             return 0;
         if (a > (double) ST_INT_MAX || a < (double) ST_INT_MIN)
             return 0;                   /*  needs a LargeInteger: fail  */
@@ -4841,8 +4884,14 @@ primitive_index_of_substring(void)
      || !OM_is_int(start))
         return 0;
     from = OM_int_value(start);
+    /*
+     *  A start before the beginning means the beginning, as
+     *  findString:startingAt: has it (Bugs4 COLL-5): failing the
+     *  primitive sent `startingAt: 0' to the Smalltalk fallback, whose
+     *  loop raised SubscriptOutOfBounds (Bugs6 KERNA-12).
+     */
     if (from < 1)
-        return 0;
+        from = 1;
     text_size   = OM_fetch_byte_length(receiver);
     needle_size = OM_fetch_byte_length(pattern);
     if (needle_size == 0)
@@ -5913,8 +5962,7 @@ net_is_bytes(st_oop p)
 static int
 net_is_semaphore_or_nil(st_oop p)
 {
-    return p == ST_NIL
-        || (OM_is_object(p) && OM_fetch_class(p) == ST_CLASS_SEMAPHORE);
+    return p == ST_NIL || SCHED_is_semaphore(p);
 }
 
 /*
@@ -6410,6 +6458,28 @@ enum {
  *  ODBC as the pattern that matches any -- see the note on pattern() in
  *  st_odbc.c, where an empty string would instead match nothing.
  */
+static int      odbc_string_held_nul;   /*  why the last odbc_string refused  */
+static int      odbc_answer(st_oop value);
+
+/*
+ *  The answer for a text odbc_string refused: a NUL inside is a refusal
+ *  the caller is told about -- nil, with the last error saying what was
+ *  wrong -- where it used to fail the primitive like a wrong argument and
+ *  be reported as "the database primitive was called wrongly" (Bugs6
+ *  FILES-10).  Anything else still fails the primitive.
+ */
+static int
+odbc_refused_string(void)
+{
+    if (odbc_string_held_nul) {
+        odbc_string_held_nul = 0;
+        ST_odbc_set_error("the text holds a NUL character, which ODBC "
+                          "cannot carry");
+        return odbc_answer(ST_NIL);
+    }
+    return 0;
+}
+
 static char *
 odbc_string(st_oop s, int *ok)
 {
@@ -6418,6 +6488,7 @@ odbc_string(st_oop s, int *ok)
     char       *text;
 
     *ok = 0;
+    odbc_string_held_nul = 0;
     if (s == ST_NIL) {
         *ok = 1;
         return NULL;
@@ -6435,8 +6506,10 @@ odbc_string(st_oop s, int *ok)
      *  hold any byte, which is Bugs4 FILES-1 in odbc_bind_value.
      */
     for (i = 0; i < n; ++i) {
-        if (OM_fetch_byte(i, s) == 0)
+        if (OM_fetch_byte(i, s) == 0) {
+            odbc_string_held_nul = 1;
             return NULL;
+        }
     }
     text = malloc((size_t) n + 1);
     if (!text)
@@ -6765,7 +6838,7 @@ primitive_odbc_command(void)
         text = odbc_string(a, &ok);
         if (!ok || !text) {
             free(text);
-            return 0;
+            return odbc_refused_string();
         }
         handle = ST_odbc_connect(text);
         free(text);
@@ -6820,7 +6893,7 @@ primitive_odbc_command(void)
 
         text = odbc_string(b, &ok);
         if (!ok)
-            return 0;
+            return odbc_refused_string();
         result = ST_odbc_set_schema(odbc_handle_arg(a), text ? text : "");
         free(text);
         return odbc_answer(result == 0 ? ST_TRUE : ST_FALSE);
@@ -6842,7 +6915,7 @@ primitive_odbc_command(void)
         sql = odbc_string(b, &ok);
         if (!ok || !sql) {
             free(sql);
-            return 0;
+            return odbc_refused_string();
         }
         handle = ST_odbc_prepare(odbc_handle_arg(a), sql);
         free(sql);
@@ -6925,7 +6998,7 @@ primitive_odbc_command(void)
         sql = odbc_string(b, &ok);
         if (!ok || !sql) {
             free(sql);
-            return 0;
+            return odbc_refused_string();
         }
         result = ST_odbc_execute_direct(odbc_handle_arg(a), sql, &rows);
         free(sql);
@@ -6959,7 +7032,7 @@ primitive_odbc_command(void)
     }
 
     case ODBC_DESCRIBE_COLUMN: {
-        char        name[128];
+        char        name[256];      /*  SQL Server's limit is 128 (Bugs6 FILES-10)  */
         int         sql_type = 0;
         int64_t     size = 0;
         int         digits = 0;
@@ -7012,18 +7085,18 @@ primitive_odbc_command(void)
 
         schema = odbc_string(b, &ok);
         if (!ok)
-            return 0;
+            return odbc_refused_string();
         first = odbc_string(odbc_element(c, 0), &ok);
         if (!ok) {
             free(schema);
-            return 0;
+            return odbc_refused_string();
         }
         if (command == ODBC_TABLES || command == ODBC_COLUMNS) {
             second = odbc_string(odbc_element(c, 1), &ok);
             if (!ok) {
                 free(schema);
                 free(first);
-                return 0;
+                return odbc_refused_string();
             }
         }
         handle = command == ODBC_TABLES

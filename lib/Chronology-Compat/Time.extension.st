@@ -70,3 +70,12 @@ Time class >> timeWords [
 		bytes at: i put: ((seconds bitShift: (i - 4) * 8) bitAnd: 255)].
 	^bytes
 ]
+
+{ #category : '*Chronology-Compat' }
+Time >> = aTime [
+	"Equal to another Time of the same ticks, and to nothing else.  Pharo's
+	 compared ticks under a MessageNotUnderstood handler, so a Time equalled
+	 any Duration under a day of the same length while Duration>>= said no
+	 -- an asymmetric = that confused a Set holding both (Bugs6 KERNA-28)."
+	^self class == aTime class and: [self ticks = aTime ticks]
+]

@@ -52,9 +52,55 @@ SortedCollection >> sortBlock: aBlock [
 	 order, and it is what ported code writes; 1983 sent fixTemps to the
 	 nil and the collection died in a doesNotUnderstand at its first add:
 	 (Bugs3 B51).  fixTemps is kept because a BlockContext -- the bluebook
-	 dialect's block -- still has to copy its home."
-	sortBlock := (aBlock ifNil: [[:x :y | x <= y]]) fixTemps.
+	 dialect's block -- still has to copy its home.
+
+	 A Symbol is a sort block too: it answers value:value:, which is why
+	 `sort: #<=' sorts, and it was refused only here, with `fixTemps' sent
+	 to it (Bugs6 KERNA-22)."
+	sortBlock := aBlock isSymbol
+		ifTrue: [aBlock]
+		ifFalse: [(aBlock ifNil: [[:x :y | x <= y]]) fixTemps].
 	self size > 0 ifTrue: [self reSort]
+]
+
+{ #category : '*Collections-Protocol' }
+SortedCollection >> hasDefaultSortBlock [
+	"Whether my order is the default `<=': the block 1983's new: makes,
+	 or the one sortBlock: makes for nil.  Known by the method the block
+	 was made in, which is the one thing a block says about itself that a
+	 copy of the text cannot."
+	| home |
+	sortBlock isNil ifTrue: [^true].
+	sortBlock isSymbol ifTrue: [^false].
+	home := [sortBlock method] on: Error do: [:e | e return: nil].
+	^home == (SortedCollection class compiledMethodAt: #new:)
+		or: [home == (SortedCollection compiledMethodAt: #sortBlock:)]
+]
+
+{ #category : '*Collections-Protocol' }
+SortedCollection >> storeOn: aStream [
+	"Text that reads back as me -- or a refusal.
+
+	 1983 wrote `((SortedCollection new) add: 3; add: 2; add: 1; yourself)'
+	 whatever the sort block, and the text read back ascending for a
+	 collection that was descending (Bugs6 KERNA-16).  The default order
+	 stores as it did; a Symbol stores as `sortBlock: #sym'; any other
+	 block is refused, since a block has no storeString and text that
+	 reads back as a different collection is worse than none."
+	| noneYet |
+	self hasDefaultSortBlock ifTrue: [^super storeOn: aStream].
+	sortBlock isSymbol ifFalse: [
+		^self error: 'a SortedCollection with a sort block of its own cannot be stored: the block has no source to write'].
+	aStream nextPutAll: '((SortedCollection sortBlock: '.
+	sortBlock storeOn: aStream.
+	aStream nextPut: $).
+	noneYet := true.
+	self do: [:each |
+		noneYet ifTrue: [noneYet := false] ifFalse: [aStream nextPut: $;].
+		aStream nextPutAll: ' add: '.
+		aStream store: each].
+	noneYet ifFalse: [aStream nextPutAll: '; yourself'].
+	aStream nextPut: $)
 ]
 
 { #category : '*Collections-Protocol' }

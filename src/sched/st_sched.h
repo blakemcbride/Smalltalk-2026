@@ -54,6 +54,8 @@ st_oop      SCHED_active_process(void);
 
 /*  Blue Book list operations.  */
 int         SCHED_is_empty_list(st_oop list);
+/*  A Semaphore, or an instance of a subclass of one (Bugs6 SCHED-4).  */
+int         SCHED_is_semaphore(st_oop object);
 st_oop      SCHED_remove_first_link(st_oop list);
 st_oop      SCHED_pending_process(void);
 /*  Executing, nominated, taken, named, or linked on a process list.  */

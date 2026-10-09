@@ -203,7 +203,7 @@ static int
 read_method(tonel *t, const char *category)
 {
     char        class_name[128];
-    char        pattern[512];
+    char       *pattern;
     char       *source;
     size_t      n = 0;
     size_t      body_start;
@@ -237,31 +237,51 @@ read_method(tonel *t, const char *category)
     }
     t->c.pos += 2;
 
-    /*  Everything up to the opening bracket is the message pattern.  */
+    /*
+     *  Everything up to the opening bracket is the message pattern -- as
+     *  long as it is.  It went into 512 bytes and the rest was dropped,
+     *  so a keyword pattern of long names was cut at the 511th byte: on a
+     *  word boundary that was a shorter, legal pattern, and the bootstrap
+     *  installed a method with fewer arguments than the one the image's
+     *  own reader installs from the same file; inside a word it was
+     *  "unexpected token after the end of the method" (Bugs6 COMP-10).
+     *  The body was always sized to its own length; now the pattern is.
+     */
     skip_separators(t, NULL, 0);
-    n = 0;
-    while (!at_end(t) && here(t) != '[') {
-        if (n + 1 < sizeof pattern)
-            pattern[n++] = here(t);
-        advance(t);
+    {
+        size_t  start = t->c.pos;
+
+        while (!at_end(t) && here(t) != '[')
+            advance(t);
+        n = t->c.pos - start;
+        while (n > 0 && isspace((unsigned char) t->c.text[start + n - 1]))
+            --n;
+        pattern = (char *) malloc(n + 1);
+        if (!pattern) {
+            fail(t, "out of memory reading a method");
+            return 0;
+        }
+        memcpy(pattern, t->c.text + start, n);
+        pattern[n] = '\0';
     }
-    while (n > 0 && isspace((unsigned char) pattern[n - 1]))
-        --n;
-    pattern[n] = '\0';
     if (at_end(t)) {
         fail(t, "expected [ to open the body of %s", pattern);
+        free(pattern);
         return 0;
     }
 
     body_start = t->c.pos + 1;
     body_end   = skip_method_body(t);
-    if (body_end == 0)
+    if (body_end == 0) {
+        free(pattern);
         return 0;
+    }
     --body_end;                     /*  drop the closing bracket  */
 
     source = (char *) malloc(strlen(pattern) + (body_end - body_start) + 3);
     if (!source) {
         fail(t, "out of memory reading a method");
+        free(pattern);
         return 0;
     }
     {
@@ -290,6 +310,7 @@ read_method(tonel *t, const char *category)
                              t->path, line_at_pattern, t->user)
            : 1;
     free(source);
+    free(pattern);
     return ok;
 }
 

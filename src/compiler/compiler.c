@@ -2146,6 +2146,12 @@ apply_pragma(st_compiler *c, const char *selector,
                                                          : MAX_PRAGMA_ARGS;
         for (i = 0; i < c->pragmas[slot].argc; ++i)
             c->pragmas[slot].args[i] = args[i].value;
+    }  else  {
+        /*
+         *  Refused by name, as every other ceiling in this compiler is.
+         *  The seventeenth was dropped without a word (Bugs6 COMP-7).
+         */
+        fail(c, "more than %d pragmas in one method", MAX_PRAGMAS);
     }
 }
 
@@ -2978,8 +2984,23 @@ selector_after_block(st_compiler *c, char *out, size_t out_len,
                      *  inlined -- "cond ifTrue: [a] ifFalse: aBlock" is an
                      *  ordinary send, not a malformed conditional.
                      */
-                    if (argument_is_block && LEX_next(c->lx, &tok))
+                    if (argument_is_block && LEX_next(c->lx, &tok)) {
                         *argument_is_block = tok.kind == ST_TOK_LBRACKET;
+                        /*
+                         *  And a block with arguments is not one the loop
+                         *  can inline -- it needs a frame of its own -- so
+                         *  it is not "a block" here.  `whileTrue: [:x |
+                         *  ...]' used to be tried inlined, abandoned once
+                         *  the body was reached, and the abandoned reading
+                         *  of the test block had already recorded what its
+                         *  inner blocks captured; the real reading then
+                         *  failed with "a shared name's vector is not in
+                         *  scope" (Bugs6 COMP-6).
+                         */
+                        if (*argument_is_block && LEX_next(c->lx, &tok)
+                         && tok.kind == ST_TOK_COLON)
+                            *argument_is_block = 0;
+                    }
                 }
                 break;
             }
@@ -3629,15 +3650,25 @@ compile_expression_body(st_compiler *c)
              *  it was this compiler mistaking its own optimisation for a
              *  rule of the language.
              */
-            if ((strncmp(next, "whileTrue", 9) == 0
-              || strncmp(next, "whileFalse", 10) == 0)
-             /*
-              *  A body block is required only by the keyword forms.
-              *  "[...] whileTrue" takes no argument at all, so asking
-              *  whether ITS argument is a literal block asks about the
-              *  token after the loop and answers about someone else.
-              */
-             && (body_is_block || next[strlen(next) - 1] != ':')) {
+            /*
+             *  The four selectors exactly, not anything that begins with
+             *  them: `whileTrueish' and `whileTrueDo:' are ordinary sends,
+             *  and trying them inlined parsed the test block under a
+             *  reading that was then thrown away, with its capture facts
+             *  kept and its undeclared names put into Undeclared (Bugs6
+             *  COMP-6).  Nothing is parsed twice under two readings now:
+             *  the decision is made from the tokens alone.
+             *
+             *  A body block -- a literal block without arguments -- is
+             *  required only by the keyword forms.  "[...] whileTrue"
+             *  takes no argument at all, so asking whether ITS argument is
+             *  a literal block asks about the token after the loop and
+             *  answers about someone else.
+             */
+            if (strcmp(next, "whileTrue") == 0
+             || strcmp(next, "whileFalse") == 0
+             || ((strcmp(next, "whileTrue:") == 0
+               || strcmp(next, "whileFalse:") == 0) && body_is_block)) {
                 if (compile_inline_while(c))
                     return;
                 /*

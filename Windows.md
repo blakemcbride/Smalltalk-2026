@@ -254,7 +254,8 @@ rectangle. Neither is a bug and both will read as one.
 nmake /f Makefile.msvc test
 ```
 
-That builds and runs all twenty-five unit suites in `tests/unit/`. Each is
+That builds and runs every unit suite in `tests/unit/` -- twenty-six, the
+same list the GNU makefile finds by wildcard. Each is
 wrapped in `#ifdef ST_OM_MT` or `#ifdef ST_OM_BB` and reports itself skipped
 under the other memory, so the same list is right for both builds. nmake
 stops at the first suite that fails, at the suite that failed. Several
@@ -367,7 +368,7 @@ Listed rather than smoothed over, because a first Windows build should know
 which surprises are already accounted for.
 
 1. **The suites have not been run there.** `nmake /f Makefile.msvc test`
-   builds and runs twenty-five executables and no one has watched it do so. That
+   builds and runs twenty-six executables and no one has watched it do so. That
    is now the largest untested claim in this file.
 2. **Paths are the only thing `-bootstrap` has been seen to get wrong**, and
    that is fixed: `profile.c` now splits on either separator. It is listed
@@ -520,7 +521,7 @@ now named outright, after `/link` because `cl` has no `/SUBSYSTEM` of its own.
   `SO_EXCLUSIVEADDRUSE` — and `Makefile.msvc` links `ws2_32.lib bcrypt.lib`
   for it. It compiles for Windows and has never been run there; neither
   has the server mode or `SetConsoleCtrlHandler` in place of `SIGINT`.
-- **`nmake /f Makefile.msvc test` has not been run.** Sixteen suites build
+- **`nmake /f Makefile.msvc test` has not been run.** Twenty-six suites build
   and run from that target and nobody has watched them. It is the largest
   untested claim left in this file.
 - **`nmake /f Makefile.msvc clean` has not been run** since it was changed

@@ -169,7 +169,11 @@ ContextPart >> runUnwindBlock [
 	| block |
 	block := self tempAt: 1.
 	block isNil ifTrue: [^nil].
-	self tempAt: 1 put: nil.
+	"Disarmed by a compare-and-swap, not a read then a write: two
+	 workers unwinding the same frame three bytecodes apart could both
+	 read the block and both run it (Bugs6 KERNB-13).  The first
+	 temporary is slot 7 -- after a MethodContext's six named fields."
+	(self compareAndSwapSlot: 7 from: block to: nil) ifFalse: [^nil].
 	^block value
 ]
 

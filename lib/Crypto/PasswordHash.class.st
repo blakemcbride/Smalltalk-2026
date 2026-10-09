@@ -91,6 +91,10 @@ PasswordHash class >> verify: aPassword against: aStoredString [
 
 	| parts salt expected actual |
 	(aPassword isNil or: [aStoredString isNil]) ifTrue: [^false].
+	"A stored value that is not text -- an Integer or a ByteArray from a
+	 column of the wrong type -- is not a hash, and verify never raises
+	 (Bugs6 FILES-10)."
+	(aPassword isString and: [aStoredString isString]) ifFalse: [^false].
 	parts := self partsOf: aStoredString.
 	parts isNil ifTrue: [^false].
 	(parts at: 1) > Crypto maxIterations ifTrue: [^false].

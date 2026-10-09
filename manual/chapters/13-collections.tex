@@ -202,10 +202,10 @@ d at: #two put: 2.
 d at: #one                       "1"
 d at: #three ifAbsent: [0]       "0"
 d at: #three ifAbsentPut: [3]    "3, and now it is in there"
-d removeKey: #one                "answers the ASSOCIATION #one->1"
+d removeKey: #one                "answers the ASSOCIATION #one->1 (the value, 1, under pharo-collections)"
 d includesKey: #two              "true"
-d keys                           "a Set of the keys"
-d values                         "a Bag of the values"
+d keys                           "a Set of the keys (an Array under pharo-collections)"
+d values                         "a Bag of the values (an Array under pharo-collections)"
 d associations                   "key -> value pairs"
 d keysAndValuesDo: [:k :v | ... ]
 d keysDo: [:k | ... ]
@@ -213,7 +213,10 @@ d associationsDo: [:a | ... ]
 \end{st}
 
 \ct{do:} on a Dictionary iterates the \emph{values}, not the keys and not the
-associations. That trips everyone once.
+associations. That trips everyone once. Three answers differ under
+\ct{profiles/pharo-collections}, where the Dictionary is Pharo's, and the
+comments above say which; \ct{keyAtValue:} compares with \ct{==} here and
+with \ct{=} there, so ask it only for a value you put in.
 
 An \ct{Association} is an ordinary object made with \ct{->}:
 
@@ -233,6 +236,9 @@ An \ct{Association} is an ordinary object made with \ct{->}:
 \item Do not mutate an object while it is a key in a \ct{Dictionary} or an
   element of a \ct{Set}. It is filed under its old hash and will not be found
   again.
+\item Do not add to or remove from a collection inside its own \ct{do:}.
+  What the walk then visits is unspecified; it is bounded when it starts, so
+  it ends, and that is all that is promised.
 \end{enumerate}
 
 \section{And one rule about threads}

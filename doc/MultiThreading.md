@@ -29,11 +29,13 @@ protocol problems.
 ## The thread map
 
 ```
-Thread 0        The SDL pump.  Owns the window, the renderer, the texture and
-                the event queue.  NEVER executes a Smalltalk bytecode.
+Thread 0        Owns SDL: the only thread that reads events or presents
+                pixels.  Under -run it also runs the desktop's interpreter,
+                in slices, pumping SDL between them.
 
-Threads 1..N    Smalltalk workers, N = CPUs - 1.  Run bytecodes, allocate,
-                poll safepoints.  NEVER call SDL video.
+Threads 1..N    Under -serve: Smalltalk workers, N = 4 x CPUs (at most 63,
+                -workers N to choose).  Run bytecodes, allocate, poll
+                safepoints.  NEVER call SDL video.
 ```
 
 Thread 0 is not a worker, and that is not a stylistic choice:

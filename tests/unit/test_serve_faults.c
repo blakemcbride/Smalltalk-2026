@@ -104,7 +104,7 @@ static const char *st2026;
  *  not open it.  Names derived from one fixture (`.im', `.im.changes')
  *  are made with snprintf by their users rather than registered here.
  */
-static struct { const char *name; char *path; } fixtures_made[64];
+static struct { const char *name; char *path; } fixtures_made[160];
 
 static const char *
 fixture(const char *name)
@@ -879,7 +879,7 @@ bugs5_low_docs(void)
            "DOCS-11 clean removes the suites' fixtures");
     expect(out, "demo/DB.sqlite", "DOCS-11 clean removes the demo database");
     run(DOCS_MAKE "-n HEADLESS=1 st2026 2>&1 | tail -5", out, sizeof out);
-    expect(out, "if [ -x build/mt/st2026 ]",
+    expect(out, "ls build/mt/st2026 build/mt-*/st2026",
            "DOCS-12 HEADLESS keeps a windowed ./st2026");
     expect(out, "./st2026 untouched", "DOCS-12 HEADLESS says so");
 }
@@ -2173,6 +2173,378 @@ bugs6_medium_eval(void)
     unlink(lacks);
 }
 
+/*
+ *  A profile in the fixture directory that adds one package directory to
+ *  st2026: what the bootstrap and the survey are asked about below.
+ */
+static void
+write_probe_profile(const char *path, const char *name, const char *package)
+{
+    char    cwd[2048];
+    char    text[4096];
+
+    if (!getcwd(cwd, sizeof cwd))
+        cwd[0] = '\0';
+    /*
+     *  Absolute, both of them: a profile's paths are relative to the
+     *  profile's own directory, and the test directory is named relative
+     *  to the tree.
+     */
+    snprintf(text, sizeof text,
+             "Profile {\n\t#name : '%s',\n\t#requires : [ '%s/profiles/st2026' ],\n"
+             "\t#dialect : 'closures',\n\t#packages : [ '%s%s%s' ]\n}\n",
+             name, cwd, package[0] == '/' ? "" : cwd,
+             package[0] == '/' ? "" : "/", package);
+    write_file(path, text);
+}
+
+/*
+ *  Bugs6, the low findings that are the binary's own paths: SCHED-5,
+ *  COMP-4, COMP-9, COMP-10, COMP-11, COMP-15 and COMP-16.
+ */
+static void
+bugs6_low_vm(void)
+{
+    static char out[65536];
+    static char text[8192];
+    const char *dir_a    = fixture("bugs6-comp9a");
+    const char *dir_b    = fixture("bugs6-comp9b");
+    const char *dir_c    = fixture("bugs6-comp9c");
+    const char *dir_lp   = fixture("bugs6-comp10");
+    const char *dir_ck   = fixture("bugs6-comp15");
+    const char *dir_lit  = fixture("bugs6-comp16");
+    const char *prof_a   = fixture("bugs6-comp9a.profile");
+    const char *prof_b   = fixture("bugs6-comp9b.profile");
+    const char *prof_c   = fixture("bugs6-comp9c.profile");
+    const char *prof_lp  = fixture("bugs6-comp10.profile");
+    const char *prof_ck  = fixture("bugs6-comp15.profile");
+    char        file[1024];
+    char        file2[1024];
+    char        command[4096];
+    int         status;
+    unsigned    i;
+    size_t      n;
+
+    /*
+     *  SCHED-5.  An -eval the scheduler stopped for want of anything to
+     *  run exits 1 and says so; it printed the verdict, then nil, and
+     *  exited 0.
+     */
+    snprintf(command, sizeof command,
+             "%s -bootstrap -profile profiles/st2026.profile "
+             "-eval 'Semaphore new wait. 1' 2>&1", st2026);
+    status = run(command, out, sizeof out);
+    ++st_test_checks;
+    if (status != 1) {
+        ++st_test_failures;
+        printf("  FAIL SCHED-5 a blocked -eval exited %d, want 1\n", status);
+    }
+    expect(out, "every process is blocked", "SCHED-5 the verdict");
+    expect(out, "the expression did not finish: every process was blocked",
+           "SCHED-5 the exit's reason");
+
+    /*  COMP-4.  -eval prints true as true.  */
+    snprintf(command, sizeof command,
+             "%s -bootstrap -profile profiles/st2026.profile "
+             "-eval '^3 < 4' 2>/dev/null", st2026);
+    status = run(command, out, sizeof out);
+    ++st_test_checks;
+    if (status != 0 || strcmp(out, "true\n") != 0) {
+        ++st_test_failures;
+        printf("  FAIL COMP-4 -eval '^3 < 4': exit %d, output '%s', want true\n",
+               status, out);
+    }
+
+    /*
+     *  COMP-9.  A bootstrap syntax error names the file line it is on:
+     *  the same bad line alone, after a three-line comment, and after a
+     *  two-line string.  Before: 16, 17 and 18 for 14, 17 and 17.
+     */
+    mkdir(dir_a, 0755);
+    mkdir(dir_b, 0755);
+    mkdir(dir_c, 0755);
+    snprintf(file, sizeof file, "%s/Lc.class.st", dir_a);
+    write_file(file,
+        "Class {\n\t#name : 'Lc',\n\t#superclass : 'Object',\n\t#category : 'Lc'\n}\n\n"
+        "{ #category : 'x' }\nLc >> good [\n\t^1\n]\n\n"
+        "{ #category : 'x' }\nLc >> bad [\n\t^1 foo: )\n]\n");
+    snprintf(file, sizeof file, "%s/Lc.class.st", dir_b);
+    write_file(file,
+        "Class {\n\t#name : 'Lc',\n\t#superclass : 'Object',\n\t#category : 'Lc'\n}\n\n"
+        "{ #category : 'x' }\nLc >> good [\n\t^1\n]\n\n"
+        "{ #category : 'x' }\nLc >> bad [\n\t\"one\n\t two\n\t three\"\n\t^1 foo: )\n]\n");
+    snprintf(file, sizeof file, "%s/Lc.class.st", dir_c);
+    write_file(file,
+        "Class {\n\t#name : 'Lc',\n\t#superclass : 'Object',\n\t#category : 'Lc'\n}\n\n"
+        "{ #category : 'x' }\nLc >> good [\n\t^1\n]\n\n"
+        "{ #category : 'x' }\nLc >> bad [\n\t| s |\n\ts := 'one\n\t two'.\n\t^1 foo: )\n]\n");
+    write_probe_profile(prof_a, "zzlca", dir_a);
+    write_probe_profile(prof_b, "zzlcb", dir_b);
+    write_probe_profile(prof_c, "zzlcc", dir_c);
+    snprintf(command, sizeof command,
+             "%s -bootstrap -profile %s -eval '^1' 2>&1", st2026, prof_a);
+    run(command, out, sizeof out);
+    expect(out, "Lc.class.st:14: in Lc: unexpected token",
+           "COMP-9 the bad line alone");
+    snprintf(command, sizeof command,
+             "%s -bootstrap -profile %s -eval '^1' 2>&1", st2026, prof_b);
+    run(command, out, sizeof out);
+    expect(out, "Lc.class.st:17: in Lc: unexpected token",
+           "COMP-9 after a three-line comment");
+    snprintf(command, sizeof command,
+             "%s -bootstrap -profile %s -eval '^1' 2>&1", st2026, prof_c);
+    run(command, out, sizeof out);
+    expect(out, "Lc.class.st:17: in Lc: unexpected token",
+           "COMP-9 after a two-line string");
+
+    /*
+     *  COMP-10.  A method pattern longer than 511 bytes is read whole by
+     *  the C reader: eleven keywords, a 209-byte selector, 571 bytes in
+     *  all, with the 512th byte inside an argument name.
+     */
+    mkdir(dir_lp, 0755);
+    snprintf(file, sizeof file, "%s/Lp.class.st", dir_lp);
+    n = (size_t) snprintf(text, sizeof text,
+             "Class {\n\t#name : 'Lp',\n\t#superclass : 'Object',\n"
+             "\t#category : 'Lp'\n}\n\n{ #category : 'x' }\nLp >> ");
+    for (i = 0; i < 11; ++i)
+        n += (size_t) snprintf(text + n, sizeof text - n,
+                               "k%02uwwwwwwwwwwwwwww: a%02uxxxxxxxxxxxxxxxxxxxxxxxxxxxx%s",
+                               i, i, i < 10 ? " " : "");
+    snprintf(text + n, sizeof text - n,
+             " [\n\t^a00xxxxxxxxxxxxxxxxxxxxxxxxxxxx\n]\n");
+    write_file(file, text);
+    write_probe_profile(prof_lp, "zzlp", dir_lp);
+    snprintf(command, sizeof command, "%s -syntax %s 2>&1", st2026, file);
+    status = run(command, out, sizeof out);
+    expect(out, "1 files, 1 methods, 1 compiled, 0 failed",
+           "COMP-10 the survey reads the whole pattern");
+    snprintf(command, sizeof command,
+             "%s -bootstrap -profile %s -eval '^((Smalltalk at: #Lp) selectors "
+             "collect: [:s | s numArgs]) printString' 2>&1", st2026, prof_lp);
+    run(command, out, sizeof out);
+    expect(out, "a Set(11 )", "COMP-10 the bootstrap installs eleven arguments");
+
+    /*  COMP-11.  Counts are decimal: 010 is ten, and 0x8 is not a number.  */
+    snprintf(command, sizeof command,
+             ST_TEST_TIMEOUT " -k 2 20 %s -serve %s -workers 010 /dev/null 2>&1",
+             st2026, IMAGE);
+    run(command, out, sizeof out);
+    expect(out, "on 10 workers", "COMP-11 -workers 010 is ten");
+    snprintf(command, sizeof command,
+             ST_TEST_TIMEOUT " -k 2 20 %s -serve %s -workers 0x8 /dev/null 2>&1",
+             st2026, IMAGE);
+    run(command, out, sizeof out);
+    expect(out, "not `0x8'", "COMP-11 -workers 0x8 is refused");
+
+    /*
+     *  COMP-15.  A chunk-format class comment written after a method
+     *  category is kept.  The same directory holds a chunk file with a
+     *  three-character binary selector, for COMP-16 below.
+     */
+    mkdir(dir_ck, 0755);
+    snprintf(file, sizeof file, "%s/Ck4.st", dir_ck);
+    write_file(file,
+        "Object subclass: #Ck4\n  instanceVariableNames: ''\n  classVariableNames: ''\n"
+        "  poolDictionaries: ''\n  category: 'Ck'!\n\n!Ck4 methodsFor: 'x'!\nfoo\n\t^1! !\n\n"
+        "Ck4 comment: 'after the methods, no bang'!\n");
+    snprintf(file2, sizeof file2, "%s/Bin.st", dir_ck);
+    write_file(file2,
+        "Object subclass: #Bin\n  instanceVariableNames: ''\n  classVariableNames: ''\n"
+        "  poolDictionaries: ''\n  category: 'Ck'!\n\n!Bin methodsFor: 'x'!\nthree\n\t^3 <=> 4! !\n");
+    write_probe_profile(prof_ck, "zzck", dir_ck);
+    snprintf(command, sizeof command,
+             "%s -bootstrap -profile %s -eval '^(Smalltalk at: #Ck4) comment printString' 2>&1",
+             st2026, prof_ck);
+    run(command, out, sizeof out);
+    expect(out, "'after the methods, no bang'", "COMP-15 the comment after the methods");
+
+    /*
+     *  COMP-16.  The survey counts literals as the bootstrap will -- a
+     *  method of seventy distinct Symbols fails, one of seventy of the
+     *  same Symbol passes -- and under -profile reads each file in the
+     *  dialect the profile gives it: a chunk file with a three-character
+     *  binary selector fails on its own and passes in a closures profile.
+     */
+    mkdir(dir_lit, 0755);
+    snprintf(file, sizeof file, "%s/Lit.class.st", dir_lit);
+    n = (size_t) snprintf(text, sizeof text,
+             "Class {\n\t#name : 'Lit',\n\t#superclass : 'Object',\n"
+             "\t#category : 'Lit'\n}\n\n{ #category : 'x' }\nLit >> many [\n\t^{");
+    for (i = 0; i < 70; ++i)
+        n += (size_t) snprintf(text + n, sizeof text - n, "#s%u%s", i,
+                               i < 69 ? ". " : "");
+    snprintf(text + n, sizeof text - n, "}\n]\n");
+    write_file(file, text);
+    snprintf(command, sizeof command, "%s -syntax %s 2>&1", st2026, file);
+    status = run(command, out, sizeof out);
+    ++st_test_checks;
+    if (status != 1) {
+        ++st_test_failures;
+        printf("  FAIL COMP-16 a 70-Symbol method surveyed with exit %d, want 1\n",
+               status);
+    }
+    expect(out, "more than 63 literals referenced", "COMP-16 the ceiling is counted");
+    snprintf(file, sizeof file, "%s/Lit2.class.st", dir_lit);
+    n = (size_t) snprintf(text, sizeof text,
+             "Class {\n\t#name : 'Lit2',\n\t#superclass : 'Object',\n"
+             "\t#category : 'Lit'\n}\n\n{ #category : 'x' }\nLit2 >> same [\n\t^{");
+    for (i = 0; i < 70; ++i)
+        n += (size_t) snprintf(text + n, sizeof text - n, "#same%s",
+                               i < 69 ? ". " : "");
+    snprintf(text + n, sizeof text - n, "}\n]\n");
+    write_file(file, text);
+    snprintf(command, sizeof command, "%s -syntax %s 2>&1", st2026, file);
+    status = run(command, out, sizeof out);
+    ++st_test_checks;
+    if (status != 0) {
+        ++st_test_failures;
+        printf("  FAIL COMP-16 seventy of one Symbol surveyed with exit %d, want 0\n",
+               status);
+    }
+    snprintf(command, sizeof command, "%s -syntax %s 2>&1", st2026, file2);
+    run(command, out, sizeof out);
+    expect(out, "1 files, 1 methods, 0 compiled, 1 failed",
+           "COMP-16 a chunk file alone is Blue Book");
+    snprintf(command, sizeof command, "%s -syntax -profile %s 2>&1", st2026, prof_ck);
+    status = run(command, out, sizeof out);
+    ++st_test_checks;
+    if (status != 0) {
+        ++st_test_failures;
+        printf("  FAIL COMP-16 the closures profile's survey exited %d, want 0\n",
+               status);
+    }
+    expect(out, " 0 failed", "COMP-16 the profile's dialect for a chunk file");
+}
+
+/*
+ *  Bugs6 KERNA-24 to KERNA-30, KERNA-32 and KERNA-33: the chronology
+ *  findings, which are pharo/System-Time's and so the pharo-time profile's.
+ *  Each doIt is run by the binary under that profile, two of them under a
+ *  named time zone, since a Date's zone is the host's.
+ */
+static void
+bugs6_low_chron(void)
+{
+    static char out[65536];
+    char        command[4096];
+
+    /*
+     *  KERNA-24 and KERNA-25.  A four-digit year is the year it says, the
+     *  century rule applies only to one or two digits; leap years agree
+     *  with the Julian-day arithmetic.
+     */
+    snprintf(command, sizeof command,
+             "TZ=America/Chicago %s -bootstrap -profile profiles/pharo-time.profile -eval "
+             "\"^{(DateAndTime fromString: '0050-01-02T00:00:00Z') printString. "
+             "((DateAndTime fromString: (DateAndTime year: 50 month: 1 day: 2 hour: 0 "
+             "minute: 0 second: 0 offset: Duration zero) printString) year). "
+             "((Date readFrom: '0050-01-02' pattern: 'yyyy-mm-dd') year). "
+             "((Date readFrom: '50-01-02' pattern: 'yy-mm-dd') year). "
+             "((Date readFrom: '50-01-02' pattern: 'y-mm-dd') year). "
+             "((Date readFrom: '2050-01-02' pattern: 'y-mm-dd') year). "
+             "(DateAndTime year: 0 month: 3 day: 1) - (DateAndTime year: 0 month: 2 day: 1). "
+             "Year isLeapYear: 0. Year isLeapYear: -1. Year isLeapYear: 2024. "
+             "Year isLeapYear: 1900. Year isLeapYear: 2000. "
+             "[(Date year: -1 month: 2 day: 29) printString] on: Error do: [:e | 'refused']. "
+             "(Year year: -1) daysInYear. (DateAndTime year: -1 month: 12 day: 31) dayOfYear} "
+             "printString\" 2>&1", st2026);
+    run(command, out, sizeof out);
+    expect(out, "('0050-01-02T00:00:00+00:00' 50 50 2050 2050 2050 29:00:00:00 "
+                "true false true false true 'refused' 365 365 )",
+           "KERNA-24 and KERNA-25 years and leap years");
+
+    /*
+     *  KERNA-26, 27, 28 and 30.  A weekday for a negative Julian day,
+     *  working days Monday to Friday, a Time equal to no Duration, and
+     *  the deprecated methods doing their work.
+     */
+    snprintf(command, sizeof command,
+             "TZ=America/Chicago %s -bootstrap -profile profiles/pharo-time.profile -eval "
+             "\"^{(DateAndTime year: -4714 month: 1 day: 1) dayOfWeek. "
+             "(DateAndTime year: -5000 month: 6 day: 15) asDate weekday. "
+             "(DateAndTime year: 2026 month: 10 day: 9) dayOfWeekName. "
+             "((Timespan starting: (DateAndTime year: 2026 month: 10 day: 5) duration: 7 days) "
+             "workDates collect: [:d | d weekday]) asArray. "
+             "(Time seconds: 5) = (Duration seconds: 5). (Duration seconds: 5) = (Time seconds: 5). "
+             "(Time seconds: 5) = (Time seconds: 5). "
+             "[(DateAndTime now + 60) class name] on: Error do: [:e | e messageText]. "
+             "['0:01:00:00' asDuration printString] on: Error do: [:e | e messageText]. "
+             "['2026-10-09T00:00:00Z' asDateAndTime year] on: Error do: [:e | e messageText]} "
+             "printString\" 2>&1", st2026);
+    run(command, out, sizeof out);
+    expect(out, "(3 Friday Friday (Monday Tuesday Wednesday Thursday Friday ) false false "
+                "true DateAndTime '0:01:00:00' 2026 )",
+           "KERNA-26, 27, 28 and 30");
+
+    /*
+     *  KERNA-29 and KERNA-33.  A Date from a day count is Pharo's UTC
+     *  midnight, as Pharo's DateTest pins it, but it is a whole number of
+     *  days from a Date by name west of Greenwich; the Unix time of an
+     *  instant before the epoch is its floor.
+     */
+    snprintf(command, sizeof command,
+             "TZ=America/Chicago %s -bootstrap -profile profiles/pharo-time.profile -eval "
+             "\"^{(Date fromDays: 0) start printString. "
+             "(Date fromDays: 45000) subtractDate: (Date year: 1901 month: 1 day: 1). "
+             "(Date year: 1901 month: 1 day: 1) subtractDate: (Date fromDays: 45000). "
+             "(Date fromDays: 0) printString. "
+             "(DateAndTime fromString: '1969-12-31T23:59:59.5Z') asUnixTime. "
+             "(DateAndTime fromString: '1900-12-31T23:59:59.5Z') asSeconds. "
+             "(DateAndTime fromString: '1970-01-01T00:00:00.5Z') asUnixTime. "
+             "(DateAndTime fromString: '1970-01-01T00:00:01Z') asUnixTime. "
+             "(DateAndTime fromUnixTime: -1) printString} printString\" 2>&1", st2026);
+    run(command, out, sizeof out);
+    expect(out, "('1901-01-01T00:00:00+00:00' 45000 -45000 '1 January 1901' "
+                "-1 -1 0 1 '1969-12-31T18:59:59-05:00' )",
+           "KERNA-29 and KERNA-33 under TZ=America/Chicago");
+
+    /*  KERNA-32.  A negative half-hour zone prints its minutes unsigned.  */
+    snprintf(command, sizeof command,
+             "TZ=America/St_Johns %s -bootstrap -profile profiles/pharo-time.profile -eval "
+             "\"DateAndTime localTimeZone abbreviation\" 2>&1", st2026);
+    run(command, out, sizeof out);
+    expect(out, "\nLT-2:30\n", "KERNA-32 LT-2:30");
+}
+
+/*
+ *  Bugs6 KERNB-9: eight workers restarting the finalizer at once leave one
+ *  finalization process, and the one from before is gone.
+ */
+static void
+bugs6_low_kernb(void)
+{
+    static char out[65536];
+    const char *probe = fixture("bugs6-serve-kernb9.st");
+    char        batch[1024];
+    int         status;
+
+    if (write_file(probe,
+            "| done before after procs |\n"
+            "done := Semaphore new. before := Finalizer process.\n"
+            "1 to: 8 do: [:w | [Finalizer restart. done signal] fork]. "
+            "1 to: 8 do: [:i | done wait].\n"
+            "(Delay forMilliseconds: 200) wait. after := Finalizer process.\n"
+            "procs := Process allInstances select: [:p | p suspendedContext notNil "
+            "and: [p ~~ after and: [p ~~ before and: [p priority = Processor "
+            "userInterruptPriority]]]].\n"
+            "^'finalizers: ', procs size printString, ' before alive: ', "
+            "before suspendedContext notNil printString\n") != 0)
+        return;
+    snprintf(batch, sizeof batch,
+             "Compiler evaluate: (FileStream oldFileNamed: '%s') contentsOfEntireFile\n",
+             probe);
+    status = serve(batch, 8, out, sizeof out);
+    ++st_test_checks;
+    if (status < 0) {
+        ++st_test_failures;
+        printf("  FAIL KERNB-9: could not run the server\n");
+    }  else
+        expect(out, "==> 'finalizers: 0 before alive: false'",
+               "KERNB-9 one finalization process after eight restarts");
+    unlink(probe);
+}
+
 int
 main(void)
 {
@@ -2835,6 +3207,9 @@ main(void)
     bugs6_medium_kern();
     bugs6_medium_files();
     bugs6_medium_eval();
+    bugs6_low_vm();
+    bugs6_low_chron();
+    bugs6_low_kernb();
 
     unlink(IMAGE);
     unlink(BATCH);

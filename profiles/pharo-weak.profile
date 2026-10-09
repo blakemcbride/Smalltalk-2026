@@ -8,7 +8,8 @@ does nil them when what they pointed at goes away.
 
 It comes with Pharo's own tests, which is the whole point.  A class that loads
 proves the loader; a class that passes the tests its authors wrote proves the
-system underneath it.  32 of 32 pass.  It was 12 of 32 for a long time, and
+system underneath it.  The recorded score is in tests/profiles.expected.  The
+weak tests were 12 of 32 for a long time, and
 every one of the twenty failures had the same shape: this profile was running
 Pharo's weak collections on classes that were not the ones they are written
 against.
@@ -68,8 +69,8 @@ Collection had select:thenCollect: and collect:thenSelect: and none of
 collect:thenDo:, select:thenDo:, reject:thenDo:, reject:thenCollect: or
 sumNumbers:.  They are in lib/Collections-Protocol now.
 
-One test fails and is left failing, deliberately, because it is a statement
-about a scheduler rather than about weak keys.  WeakKeyDictionaryTest
+One test is Pharo's with one assertion fewer, because that assertion is a
+statement about a scheduler rather than about weak keys.  WeakKeyDictionaryTest
 >>testClearing collects, then asserts on the next line that the dictionary is
 still full -- "keys are gone but not yet finalized" -- and on the line after
 that that it is empty.  Both are true only if #mourn is sent to a thousand
@@ -77,9 +78,12 @@ associations in the gap between two consecutive sends.  On Cog it is: the
 interrupt check falls on a method return, so `dict size' has already answered
 1001 when the finalization process takes over.  Here SCHED_check_process_switch
 runs once per BYTECODE, so the finalization process gets the processor before
-`size' is sent and answers 1.  Nothing about the fix is wrong and nothing about
-the test is wrong; they disagree about where a preemption lands.  The other
-1035 pass.
+`size' is sent and answers 1.  Nothing about the finalization is wrong and
+nothing about the test is wrong; they disagree about where a preemption lands.
+So lib/Collections-Weak-Compat-Tests, loaded last, has the test asserting what
+a weak dictionary promises: the keys gone once collected, the size adjusted
+once they are mourned.  Every test in the profile passes; tests/profiles.expected
+has the count.
 "
 Profile {
 	#name     : 'pharo-weak',
@@ -102,5 +106,6 @@ Profile {
 	              '../lib/Collections-Weak-Compat',
 	              '../pharo/Collections-Abstract-Tests',
 	              '../pharo/Collections-Unordered-Tests',
-	              '../pharo/Collections-Weak-Tests' ]
+	              '../pharo/Collections-Weak-Tests',
+	              '../lib/Collections-Weak-Compat-Tests' ]
 }

@@ -65,8 +65,10 @@ Set >> collect: aBlock [
 	 slots directly rather than going through do:, which is why overriding
 	 do: alone is not enough."
 	| newSet size index element |
-	tally = 0 ifTrue: [^Set new: 2].
-	newSet := Set new: (size := self basicSize).
+	tally = 0 ifTrue: [^self species new: 2].
+	"My species, not Set: an IdentitySet's collect: answered a Set and
+	 merged elements that were = but not == (Bugs6 KERNA-19)."
+	newSet := self species new: (size := self basicSize).
 	index := 0.
 	[(index := index + 1) <= size] whileTrue: [
 		(element := self basicAt: index) == nil

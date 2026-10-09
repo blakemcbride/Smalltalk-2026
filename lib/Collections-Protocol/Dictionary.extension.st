@@ -265,3 +265,17 @@ Dictionary >> declare: key from: aDictionary [
 		ifTrue: [self at: key put: nil]
 		ifFalse: [self add: pending]
 ]
+
+{ #category : '*Collections-Protocol' }
+Dictionary >> addAll: aCollection [
+	"Every binding of another Dictionary, or every Association of any
+	 other collection, added to me; answer the argument as 1983 does.
+
+	 A Dictionary's do: yields values, so `d addAll: otherDictionary'
+	 handed each VALUE to add:, which sent it key (Bugs6 KERNA-23).  Pharo
+	 walks the associations; so does this."
+	(aCollection isKindOf: Dictionary)
+		ifTrue: [aCollection keysAndValuesDo: [:key :value | self at: key put: value]]
+		ifFalse: [super addAll: aCollection].
+	^aCollection
+]

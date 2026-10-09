@@ -83,9 +83,11 @@ Decompiler >> decompile: aSelector in: aClass method: aMethod using: aConstructo
 			block := self blockTo: method endPC + 1.
 			stack isEmpty ifFalse: [self error: 'stack not empty']].
 	vars := OrderedCollection new.
+	"Every vector in the frame, the prologue's and an inlined block's alike
+	 (pushNewArray:), declares the variables it holds."
 	1 to: 256 do: [:i | | each |
 		each := tempVars at: i.
-		(vectorSlot notNil and: [i = (vectorSlot + 1)])
+		(each isKindOf: Array)
 			ifTrue: [self vector: each do: [:node |
 						(vars includes: node) ifFalse: [vars addLast: node]]]
 			ifFalse: [(each isKindOf: ParseNode) ifTrue: [vars addLast: each]]].
@@ -229,10 +231,19 @@ Decompiler >> interpretNextInstructionFor: client [
 Decompiler >> pushNewArray: operand [
 	"A brace array: the elements are on the stack.  It decompiles as the
 	 cascade Parser>>braceExpression builds for the same source,
-	 `(Array new: n) at: 1 put: a; ...; yourself'.  A vector is made only
-	 in a prologue, which is read before this could see it."
+	 `(Array new: n) at: 1 put: a; ...; yourself'.
+
+	 Or a vector -- the operand's top bit clear -- made where an inlined
+	 block that declares temporaries its closures share begins: the
+	 compiler makes one afresh on every entry (Bugs6 COMP-5), and that is
+	 not a prologue, which is read before this could see it.  The vector
+	 goes on the stack as what it is, and the store that follows puts it
+	 in its frame slot, as popIntoTemporaryVariable: knows to.  Three
+	 methods of the image -- joinUsing:, reduceRight:, partNamed: -- were
+	 refused here as `a temporary vector outside a prologue' (Bugs5
+	 COMP-7's one remaining count)."
 	| count elements receiver messages |
-	operand < 128 ifTrue: [^self error: 'a temporary vector outside a prologue'].
+	operand < 128 ifTrue: [^stack addLast: (Array new: operand)].
 	count := operand - 128.
 	elements := Array new: count.
 	count to: 1 by: -1 do: [:i | elements at: i put: stack removeLast].
@@ -251,6 +262,15 @@ Decompiler >> pushNewArray: operand [
 		codeCascadedMessage: (constructor codeAnySelector: #yourself)
 		arguments: #()).
 	stack addLast: (constructor codeCascade: receiver messages: messages asArray)
+]
+
+{ #category : '*Compiler-Fixes' }
+Decompiler >> popIntoTemporaryVariable: offset [
+	"1983's -- unless what is popped is a vector just made (see
+	 pushNewArray:), which belongs in the frame slot and is no statement."
+	(stack notEmpty and: [stack last isKindOf: Array]) ifTrue: [
+		^tempVars at: offset + 1 put: stack removeLast].
+	self pushTemporaryVariable: offset; doStore: statements
 ]
 
 { #category : '*Compiler-Fixes' }
@@ -291,10 +311,16 @@ Decompiler >> closureCopying: copiedCount arguments: argumentCount size: size [
 	locals := OrderedCollection new.
 	base + 1 to: frame size do: [:i | | each |
 		each := frame at: i.
-		(each isKindOf: ParseNode) ifTrue: [locals addLast: each]].
+		(each isKindOf: ParseNode) ifTrue: [locals addLast: each].
+		"An inlined block's vector inside the closure (pushNewArray:)."
+		(each isKindOf: Array) ifTrue: [
+			self vector: each do: [:node |
+				((arguments includes: node) or: [locals includes: node])
+					ifFalse: [locals addLast: node]]]].
 	vectorSlot isNil ifFalse: [
 		self vector: (frame at: vectorSlot + 1) do: [:each |
-			(arguments includes: each) ifFalse: [locals addLast: each]]].
+			((arguments includes: each) or: [locals includes: each])
+				ifFalse: [locals addLast: each]]].
 	block declareTemporaries: locals.
 	tempVars := outerFrame.
 	pc := bodyEnd.

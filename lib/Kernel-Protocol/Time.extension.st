@@ -131,7 +131,15 @@ Time class >> readFrom: aStream [
 		(aStream peekFor: $:) ifTrue: [
 			(aStream atEnd not and: [aStream peek isDigit])
 				ifFalse: [^self notATime: aStream].
-			second := Integer readFrom: aStream]].
+			second := Integer readFrom: aStream.
+			"A fractional second is read past and dropped -- a Time holds
+			 whole seconds.  It used to stop the reader before the suffix,
+			 so `1:59:30.5 pm' was 1:59:30 am (Bugs6 KERNA-31)."
+			(aStream peekFor: $.) ifTrue: [
+				(aStream atEnd not and: [aStream peek isDigit])
+					ifFalse: [^self notATime: aStream].
+				[aStream atEnd not and: [aStream peek isDigit]]
+					whileTrue: [aStream next]]]].
 	aStream skipSeparators.
 	suffix := nil.
 	(aStream atEnd not and: [aStream peek isLetter]) ifTrue: [

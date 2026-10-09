@@ -48,16 +48,32 @@ TestResult >> runCase: aTestCase [
 	 TestFailure IS an Error: the inner, more specific one has to be the
 	 nearer of the two up the sender chain, or every failure would be
 	 counted as an error and the distinction the class exists for would
-	 quietly stop working."
-	| passed |
-	passed := false.
-	[[aTestCase runCase. passed := true]
+	 quietly stop working.
+
+	 The outcome is recorded in a temporary and the bucket chosen once,
+	 after both handlers: a failure's handler used to add to failures and
+	 return, the return unwound through runCase's ensure:, tearDown
+	 raised, and the outer handler added the same test to errors -- two
+	 buckets for one test (Bugs6 KERNB-10).  An error from tearDown after
+	 a failure is the failure's; one after a pass is an error."
+	| outcome text |
+	outcome := #passed.
+	[[aTestCase runCase]
 		on: TestFailure
-		do: [:e | failures add: aTestCase -> (e messageText ifNil: ['failed'])]]
+		do: [:e |
+			outcome := #failed.
+			text := e messageText ifNil: ['failed'].
+			e return]]
 		on: Error
-		do: [:e | errors add: aTestCase -> (e messageText ifNil: [e class name])].
+		do: [:e |
+			outcome == #passed ifTrue: [
+				outcome := #error.
+				text := e messageText ifNil: [e class name]].
+			e return].
 	runCount := runCount + 1.
-	passed ifTrue: [passedCount := passedCount + 1]
+	outcome == #passed ifTrue: [passedCount := passedCount + 1].
+	outcome == #failed ifTrue: [failures add: aTestCase -> text].
+	outcome == #error ifTrue: [errors add: aTestCase -> text]
 ]
 
 { #category : 'printing' }

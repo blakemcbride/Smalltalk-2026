@@ -245,7 +245,11 @@ timeout, multipart/form-data, and files under a document root for every path
 no handler claims — `..` refused, a directory answering its `index.html`,
 the content type by extension. Every reading is bounded: a line over 8,192
 bytes, more than a hundred headers, a body over the limit (64 MB by default)
-are refused before they are read. A multipart boundary is 1 to 70 characters
+are refused before they are read; a request not complete 120 seconds after
+its first byte is cut off, a client that takes nothing of its reply for 30
+seconds is dropped, and above 1,024 open connections the answer is 503
+(`requestSeconds`, `writeSeconds` and `maxConnections` in `server.json`
+change the three). A multipart boundary is 1 to 70 characters
 (RFC 2046) and a body has at most 10,000 parts, each refused with 400 past
 its limit, and the search for the boundary is linear in the body — it was
 body × boundary, scanned before authentication, until Bugs6 NET-1. Kiss's
@@ -323,9 +327,13 @@ has, are not here yet.
 { "port": 8080, "bindAddress": "0.0.0.0", "backendDirectory": "backend",
   "documentRoot": "frontend", "database": "DSN=shop;UID=app;PWD=secret",
   "requireAuthentication": true, "userInactiveSeconds": 3600,
-  "connectionPoolSize": 12, "keepAliveSeconds": 15,
+  "maxSessions": 10000, "connectionPoolSize": 12, "keepAliveSeconds": 15,
+  "requestSeconds": 120, "writeSeconds": 30, "maxConnections": 1024,
   "allowWithoutAuthentication": [ "services.Catalog:list" ] }
 ```
+
+`maxSessions` caps the users logged in at once (10,000); the three after
+`keepAliveSeconds` are the HTTP server's limits above, and may be left out.
 
 Every name in the file is also in `request environment`, so a service reads
 its own settings from the same place. `RestServer class>>serve` starts the

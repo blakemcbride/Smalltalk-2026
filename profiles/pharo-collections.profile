@@ -57,11 +57,11 @@ than a test to excuse:
 
 469 of 469 pass.
 
-The package's own tests are NOT loaded here.  They root on
-CollectionRootTest, which lives in Collections-Abstract-Tests, and pulling
-that in is the next package rather than part of this one.  What this profile
-proves is that the st2026 suites pass against Pharo's collections; what it
-does not yet prove is that Pharo's collections pass their own.
+The package's own tests are loaded here too, Collections-Abstract-Tests
+(CollectionRootTest and its kin, which they root on) and
+Collections-Unordered-Tests, so the profile proves both that the st2026
+suites pass against Pharo's collections and that Pharo's collections pass
+their own.  The recorded score is in tests/profiles.expected.
 "
 Profile {
 	#name     : 'pharo-collections',

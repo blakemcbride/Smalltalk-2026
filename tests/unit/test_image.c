@@ -608,8 +608,21 @@
  *  3289 -> 3298 with Bugs6 GUI-5, KERNA-5 and COMP-13: Form>>extent:
  *  and WordArray class>>maxSize, <= and >= on Float, Integer and
  *  Fraction, and TonelSource>>unwritableRefusal.
+ *
+ *  3298 -> 3334 with the Bugs6 lows: Symbol>>isLiteral, SmallInteger>>*,
+ *  Text>>replaceFrom:to:with:, String>>=, OrderedCollection>>at:, at:put:,
+ *  do: and reverseDo:, Array>>storeOn:, SortedCollection>>storeOn: and
+ *  hasDefaultSortBlock, PositionableStream>>through:, LinkedList's eight,
+ *  Dictionary>>addAll:, MessageTally>>spyEvery:on:, continueSpying,
+ *  defaultInterval and class>>spyOn:, FileStream>>next:into: and nextPutAll:,
+ *  ExternalStream>>nextNumber: and nextWord, CRFillInTheBlankController>>cr:,
+ *  Date>>printOn:, Symbol>>basicAt:put: and primReplaceFrom:to:with:startingAt:,
+ *  and RestServer's three limit setters.
+ *
+ *  3335: Decompiler>>popIntoTemporaryVariable:, for the vector an inlined
+ *  block makes (Bugs5 COMP-7's last three methods).
  */
-#define LIB_METHODS             3298
+#define LIB_METHODS             3335
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -686,6 +699,23 @@ static st_names     sources;
 static int         *source_dialects;
 static int          built;
 
+/*
+ *  An image that cannot be built is a failed suite, not a skipped one,
+ *  when the suite was run by make -- which sets ST2026_BIN.  The three
+ *  in-process suites took both exits as `return 0' and printed `ok: 0
+ *  checks' (Bugs6 DOCS-8).  Run by hand from the wrong directory, a skip
+ *  is still a skip.
+ */
+static void
+not_built_under_make(void)
+{
+    if (getenv("ST2026_BIN")) {
+        ++st_test_checks;
+        ++st_test_failures;
+        printf("  FAIL the image could not be built\n");
+    }
+}
+
 static int
 load_sources(void)
 {
@@ -694,6 +724,7 @@ load_sources(void)
     if (!PROFILE_expand(PROFILE, &sources, &source_dialects,
                         error, sizeof error)) {
         printf("skipped: %s\n", error);
+        not_built_under_make();
         return 0;
     }
     return sources.count > 0;
@@ -707,6 +738,7 @@ build_once(void)
     if (BOOT_build_dialects((const char *const *) sources.items,
                             source_dialects, sources.count, &res) != 0) {
         printf("  bootstrap failed: %s\n", res.error);
+        not_built_under_make();
         return 0;
     }
     printf("  %u classes, %u methods, %u symbols\n", res.classes_created,
@@ -2948,8 +2980,11 @@ test_browsing(void)
      *  2927980 -> 2933880 with Bugs6 GUI-5, KERNA-5 and COMP-13: a Form
      *  as big as its extent, the NaN that is unordered against an Integer,
      *  and the accept refused before the file that cannot be written.
+     *
+     *  2933880 -> 2961001 with the Bugs6 lows and the decompiler, the thirty-six methods the
+     *  LIB_METHODS note above lists.
      */
-    check_integer("(SourceFiles at: 1) contents size", 2933880);
+    check_integer("(SourceFiles at: 1) contents size", 2961001);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -2980,7 +3015,7 @@ test_browsing(void)
                                      "includesSubstring: 'Synthesized by the loader') "
                                      "not]) size");
         st_oop      text = evaluate("TonelWriter sourceFor: Mutex");
-        const char *path = "build/tonel-writer-check.class.st";
+        const char *path = st_test_path("tonel-writer-check.class.st");  /*  not a fixed name (Bugs6 DOCS-9)  */
 
         ++st_test_checks;
         if (!OM_is_object(text) || OM_pointer_bit(text) || !OM_is_int(count)) {
@@ -4995,15 +5030,24 @@ test_bugs3_interp(void)
                  " on: Error do: [:e | e messageText]",
                  "/nonexistent/bugs3-zz file not found, No such file or "
                  "directory");
-    check_string("[FileStream oldFileNamed: '/tmp/bugs3-not-here-either']"
-                 " on: Error do: [:e | e messageText]",
-                 "/tmp/bugs3-not-here-either file not found, No such file "
-                 "or directory");
-    ++st_test_checks;
-    if (access("/tmp/bugs3-not-here-either", F_OK) == 0) {
-        ++st_test_failures;
-        printf("  FAIL oldFileNamed: created the file it was asked for\n");
-        unlink("/tmp/bugs3-not-here-either");
+    {
+        /*  A name of this run's own, under the test directory (Bugs6 DOCS-9).  */
+        const char *absent = st_test_path("bugs3-not-here-either");
+        char        probe[1024];
+        char        wanted[1024];
+
+        snprintf(probe, sizeof probe,
+                 "[FileStream oldFileNamed: '%s'] on: Error do: [:e | e messageText]",
+                 absent);
+        snprintf(wanted, sizeof wanted,
+                 "%s file not found, No such file or directory", absent);
+        check_string(probe, wanted);
+        ++st_test_checks;
+        if (access(absent, F_OK) == 0) {
+            ++st_test_failures;
+            printf("  FAIL oldFileNamed: created the file it was asked for\n");
+            unlink(absent);
+        }
     }
     check_boolean("[:f | | answer | f open. answer := f isReadOnly. f close."
                   " answer] value: (Disk findKey: 'profiles/st2026.profile')",
@@ -5410,7 +5454,7 @@ test_bugs3_compiler(void)
     check_integer("-2r101", -5);
     check_boolean("16r-1.8 = -1.5", 1);
     check_refused("16r", "digits expected after 16r");
-    check_refused("16rff", "digits expected after 16r");
+    check_integer("16rff", 255);        /*  lower-case digits read since Bugs6 KERNA-10  */
     check_refused("-16r-FF", "one minus sign");
     check_integer("Compiler evaluate: (-255 storeStringRadix: 16)", -255);
     check_boolean("(Number readFrom: (ReadStream on: '16r-FF')) = 16r-FF", 1);
@@ -9498,7 +9542,7 @@ test_bugs5_low_kern(void)
      *  as e0: '12e' was 12.0, and the stream was left past the e.
      */
     check_string("^'12e' asNumber printString", "12");
-    check_string("^'1e+5' asNumber printString", "1");
+    check_string("^'1e+5' asNumber printString", "100000.0");   /*  a signed exponent, Bugs6 KERNA-10  */
     check_string("^'1.5e' asNumber printString", "1.5");
     check_string("| s | s := ReadStream on: '5east'. Number readFrom: s."
                  " ^s upToEnd", "east");
@@ -9613,6 +9657,23 @@ test_bugs5_low_comp(void)
     check_string("(Collection decompile: #select:thenDo:) decompileString",
                  "select: t1 thenDo: t2 \r\tself do: [:t3 | (t1 value: t3)"
                  "\r\t\t\tifTrue: [t2 value: t3]]");
+    /*
+     *  And a method whose inlined block declares a temporary its closure
+     *  shares -- the vector the compiler makes where the block begins,
+     *  not in the prologue (Bugs6 COMP-5) -- decompiles, and the text
+     *  compiles and answers what the original answers.  The three such
+     *  methods of the image were the count that would not go to nought.
+     */
+    check_integer("Object compile: 'zzInVec | x | x isNil ifTrue: [ | t | t := 1. "
+                  "x := [t + 1] ]. ^x value'. "
+                  "Object compile: ((Object decompile: #zzInVec) decompileString "
+                  "copyReplaceAll: 'zzInVec' with: 'zzInVecBack'). "
+                  "^nil zzInVecBack + nil zzInVec", 4);
+    evaluate("Object removeSelector: #zzInVec; removeSelector: #zzInVecBack. ^nil");
+    check_boolean("^{SequenceableCollection -> #joinUsing:. "
+                  "SequenceableCollection -> #reduceRight:. HttpRequest -> #partNamed:} "
+                  "inject: true into: [:ok :p | ok and: [[(p key decompile: p value) "
+                  "decompileString size > 0] on: Error do: [:e | false]]]", 1);
 
     if (!mkdtemp(dir)) {
         ++st_test_checks;
@@ -9684,8 +9745,8 @@ test_bugs5_low_comp(void)
              " [(Delay forMilliseconds: 10) wait]. Clipboard text: 'old'."
              " (Clipboard text: 'x', (String with: (Character value: 0)),"
              " 'y') printNl. Clipboard text printNl. Smalltalk quit\""
-             " -o %s/clip.im >/dev/null 2>&1 && SDL_VIDEODRIVER=dummy"
-             " timeout 60 \"$ST2026\" -run %s/clip.im 50000000", dir, dir);
+             " -o %s/clip.im >/dev/null 2>&1 && SDL_VIDEODRIVER=dummy "
+             ST_TEST_TIMEOUT " 60 \"$ST2026\" -run %s/clip.im 50000000", dir, dir);
     ++st_test_checks;
     if (!bugs5_sys_output_has(dir, command, "false\nnil\n")) {
         ++st_test_failures;
@@ -9918,7 +9979,7 @@ test_bugs6_high_netgui(void)
     check_integer("#'hello world' indexOfSubstring: 'wor' startingAt: 1", 7);
     check_boolean("'hello world' includesSubstring: 'lo w'", 1);
     check_string("[('hello' indexOfSubstring: 'h' startingAt: 0) printString]"
-                 " on: Error do: [:e | 'raised']", "raised");
+                 " on: Error do: [:e | 'raised']", "1");  /*  clamped since Bugs6 KERNA-12  */
     /*
      *  And the boundary is 1 to 70 characters (RFC 2046) before a byte of
      *  the body is scanned: 71 is 400, empty is 400, 70 parses.
@@ -10525,6 +10586,334 @@ test_bugs6_medium_gui_fixes(void)
 }
 
 /*
+ *  Bugs6, the low findings of the VM, the compiler and the kernel's value
+ *  classes that a doIt can reach: SCHED-4, INTERP-1, COMP-6, COMP-7 and
+ *  KERNA-7 to KERNA-23 (KERNA-18 is a sentence in the manual).  The rest
+ *  of the group -- SCHED-5, COMP-4, COMP-9, COMP-10, COMP-11, COMP-15 and
+ *  COMP-16 -- are the binary's own paths and are in test_serve_faults;
+ *  OM-7 is the desktop's resize hook, which test_desktop drives.
+ */
+static void
+test_bugs6_low_vm_kerna(void)
+{
+    test_dialect = ST_DIALECT_CLOSURES;
+
+    /*  SCHED-4.  A subclass of Semaphore signals, waits and takes a Delay.  */
+    check_string("Semaphore subclass: #Bugs6Sem2 instanceVariableNames: 'extra' "
+                 "classVariableNames: '' poolDictionaries: '' category: 'bugs6'. "
+                 "^[| s | s := (Smalltalk at: #Bugs6Sem2) new. s signal; wait. "
+                 "s signal. (Delay forMilliseconds: 10) delaySemaphore: s; schedule. "
+                 "s wait. 'ok'] on: Error do: [:e | e messageText]", "ok");
+    evaluate("(Smalltalk at: #Bugs6Sem2) removeFromSystem");
+
+    /*  INTERP-1.  A NaN is refused before the cast; a number still truncates.  */
+    check_string("^[Float nan truncated. 'answered'] on: Error do: [:e | 'refused']",
+                 "refused");
+    check_integer("2.5 truncated", 2);
+
+    /*
+     *  COMP-6.  A selector that merely begins with whileTrue, and a
+     *  whileTrue: whose body takes an argument, compile as ordinary
+     *  sends, and the abandoned attempt leaves nothing in Undeclared.
+     */
+    check_string("| a b c | "
+                 "a := [Object compile: 'zzW2 | x | [ | t | t := 1. [t] value ] "
+                 "whileTrueish. ^x'. 'compiled'] on: Error do: [:e | e messageText]. "
+                 "b := [Object compile: 'zzW3 | i | i := 0. [i < 3] whileTrue: "
+                 "[:x | i := i + 1]. ^i'. 'compiled'] on: Error do: [:e | e messageText]. "
+                 "c := [Object compile: 'zzW4 | i | i := 0. [i < 3] whileTrue: "
+                 "[i := i + 1]. ^i'. 'compiled'] on: Error do: [:e | e messageText]. "
+                 "^a, ' ', b, ' ', c, ' ', (Undeclared includesKey: #t) printString, "
+                 "' ', nil zzW4 printString, ' ', ([nil zzW3] on: Error do: [:e | 'sent']), "
+                 "' ', ([nil zzW2] on: Error do: [:e | 'sent'])",
+                 "compiled compiled compiled false 3 sent sent");
+    evaluate("Object removeSelector: #zzW2; removeSelector: #zzW3; "
+             "removeSelector: #zzW4. ^nil");
+
+    /*  COMP-7.  The seventeenth pragma is refused by name; sixteen are kept.  */
+    check_string("| a b | "
+                 "a := [Object compile: 'zzA10 <a: 1> <b: 2> <c: 3> <d: 4> <e: 5> "
+                 "<f: 6> <g: 7> <h: 8> <i: 9> <j: 10> <k: 11> <l: 12> <m: 13> <n: 14> "
+                 "<o: 15> <p: 16> <q: 17> ^8'. 'compiled'] on: Error do: [:e | e messageText]. "
+                 "b := [Object compile: 'zzA11 <a: 1> <b: 2> <c: 3> <d: 4> <e: 5> "
+                 "<f: 6> <g: 7> <h: 8> <i: 9> <j: 10> <k: 11> <l: 12> <m: 13> <n: 14> "
+                 "<o: 15> <p: 16> ^8'. (Object compiledMethodAt: #zzA11) pragmas size "
+                 "printString] on: Error do: [:e | e messageText]. "
+                 "Object removeSelector: #zzA11. ^a, ' | ', b",
+                 "more than 16 pragmas in one method | 16");
+
+    /*
+     *  KERNA-7.  A Symbol stores as #... only when the compiler reads that
+     *  back as the same Symbol; a high byte, a control byte, a doubled
+     *  colon and an underscore take the quoted form.
+     */
+    check_string("| s | s := ('>' , (String with: (Character value: 252))) asSymbol. "
+                 "^{s storeString. (Compiler evaluate: s storeString) == s. "
+                 "#'a::' storeString. (Compiler evaluate: #'a::' storeString) == #'a::'. "
+                 "#foo storeString. #foo:bar: storeString. #+ storeString. "
+                 "#'3' storeString. (String with: (Character value: 15)) asSymbol "
+                 "storeString size. #'a_b' storeString} printString",
+                 "('''>\xFC'' asSymbol' true '''a::'' asSymbol' true '#foo' "
+                 "'#foo:bar:' '#+' '''3'' asSymbol' 12 '''a_b'' asSymbol' )");
+
+    /*  KERNA-8.  0 * aFloat is a Float; the Integer shortcut stays for Integers.  */
+    check_string("^{0 * 2.5. 2.5 * 0. 0 * Float nan. (0 * 2.5) class. "
+                 "0.1 roundTo: 0.25. 0.3 roundTo: 0.25. 0.1 truncateTo: 0.25. "
+                 "0 * 3. 0 * (2 raisedTo: 70). 0 * (1/2). 3 * 0. 0 * 0} printString",
+                 "(0.0 0.0 nan Float 0.0 0.25 0.0 0 0 0 0 0 )");
+
+    /*  KERNA-9.  A leading plus is a sign, as it is to asInteger.  */
+    check_string("^{'+5' asNumber. '+5' asInteger. '+' asNumber. '-5' asNumber. "
+                 "'+5.5' asNumber. '5' asNumber. 'x' asNumber} printString",
+                 "(5 5 nil -5 5.5 5 nil )");
+
+    /*
+     *  KERNA-10.  One number grammar: the compiler and the reader agree
+     *  on lower-case radix digits, a signed exponent, and a radix that
+     *  is refused.
+     */
+    check_string("^{16r1e3. Number readFrom: '16r1e3'. 1e+5. Number readFrom: '1e+5'. "
+                 "[Number readFrom: '37r10'] on: Error do: [:e | 'refused']. "
+                 "[Integer readFrom: '10' radix: 2.5] on: Error do: [:e | 'refused']. "
+                 "1e3 class. 16rff. '16rff' asNumber. 2r1e3. Number readFrom: '2r1e3'. "
+                 "1e-3 = (Number readFrom: '1e-3'). 16r1F. 36rZZ. '36rzz' asNumber. "
+                 "1.5e2. '1.5e2' asNumber. 1e-5 = '1e-5' asNumber. '1e5' asNumber. "
+                 "[Compiler evaluate: '37r10'] on: Error do: [:e | 'refused']} printString",
+                 "(483 483 100000.0 100000.0 'refused' 'refused' Float 255 255 "
+                 "8.0 8.0 true 31 1295 1295 150.0 150.0 true 100000.0 'refused' )");
+
+    /*  KERNA-11 and KERNA-12.  The NUL character's Symbol; a start of 0.  */
+    check_string("^{(String with: (Character value: 0)) asSymbol size. "
+                 "(String with: (Character value: 0)) asSymbol == #''. "
+                 "((String with: (Character value: 0)) , 'a') asSymbol size. "
+                 "$a asSymbol == #a. (String with: (Character value: 0)) asSymbol == "
+                 "(String with: (Character value: 0)) asSymbol. "
+                 "'abc' findString: 'c' startingAt: 0. "
+                 "'abc' indexOfSubstring: 'c' startingAt: 0. "
+                 "'abc' indexOfSubstring: 'c' startingAt: -5. "
+                 "'abc' indexOfSubstring: 'c' startingAt: 3. "
+                 "'abc' indexOfSubstring: 'c' startingAt: 4} printString",
+                 "(1 false 2 true true 3 3 3 3 0 )");
+
+    /*  KERNA-13.  aText , aString; = the same in both directions.  */
+    check_string("^{('abc' asText , 'def') string. ('abc' asText , 'def') class. "
+                 "('abc' , 'def' asText) class. 'abc' asText = 'abc'. 'abc' = 'abc' asText. "
+                 "'abc' = 'abc'. 'abc' = 'abd'. "
+                 "('abc' asText copyReplaceAll: 'b' with: 'xx') string. "
+                 "(Set new add: 'abc'; yourself) includes: 'abc' asText} printString",
+                 "('abcdef' Text String true true true false 'axxc' true )");
+
+    /*  KERNA-14.  at:put: refuses what at: refuses, in the same words.  */
+    check_string("^{[(OrderedCollection withAll: #(1 2 3)) at: 1.5 put: 9] "
+                 "on: Error do: [:e | e messageText]. "
+                 "[(OrderedCollection withAll: #(1 2 3)) at: 1.5] on: Error do: [:e | e messageText]. "
+                 "[(OrderedCollection withAll: #(1 2 3)) at: 'x'] on: Error do: [:e | e messageText]. "
+                 "(OrderedCollection withAll: #(1 2 3)) at: 2 put: 9; yourself. "
+                 "(OrderedCollection withAll: #(1 2 3)) at: 3. "
+                 "[(OrderedCollection withAll: #(1 2 3)) at: 4] on: Error do: [:e | e messageText]} "
+                 "printString",
+                 "('only integers should be used as indices' "
+                 "'only integers should be used as indices' "
+                 "'only integers should be used as indices' "
+                 "an OrderedCollection(1 9 3 ) 3 "
+                 "'attempt to index non-existent element in an ordered collection' )");
+
+    /*  KERNA-15.  A literal Array stores its Symbols with their hash.  */
+    check_string("^{#(#nil #true #false) storeString. "
+                 "(Compiler evaluate: #(#nil #true #false) storeString) = #(#nil #true #false). "
+                 "#(1 $a 'b' #c #(1 2)) storeString. "
+                 "(Compiler evaluate: #(1 $a 'b' #c #(1 2)) storeString) = #(1 $a 'b' #c #(1 2))} "
+                 "printString",
+                 "('#(#nil #true #false )' true '#(1 $a ''b'' #c #(1 2 ) )' true )");
+
+    /*
+     *  KERNA-16 and KERNA-22.  A SortedCollection with a block of its own
+     *  refuses to be stored, the default and a Symbol store and read
+     *  back in their own order, and a Symbol is a sort block.
+     */
+    check_string("| x y z | x := #(3 1 2) asSortedCollection: [:a :b | a > b]. "
+                 "y := #(3 1 2) asSortedCollection. z := #(3 1 2) asSortedCollection: #>=. "
+                 "^{[x storeString] on: Error do: [:e | 'refused']. y storeString. "
+                 "(Compiler evaluate: y storeString) = y. z storeString. "
+                 "(Compiler evaluate: z storeString) asArray. "
+                 "(SortedCollection sortBlock: nil) storeString. "
+                 "((Compiler evaluate: z storeString) add: 0; yourself) asArray. "
+                 "((SortedCollection sortBlock: #>=) add: 1; add: 3; add: 2; yourself) asArray} "
+                 "printString",
+                 "('refused' '((SortedCollection new) add: 1; add: 2; add: 3; yourself)' true "
+                 "'((SortedCollection sortBlock: #>=) add: 3; add: 2; add: 1; yourself)' "
+                 "(3 2 1 ) '((SortedCollection new))' (3 2 1 0 ) (3 2 1 ) )");
+
+    /*  KERNA-17.  through: has no cap, and keeps the occurrence it found last.  */
+    check_string("| s | s := ReadStream on: (String new: 70000 withAll: $a). "
+                 "^{(s through: $b) size. s atEnd. "
+                 "(ReadStream on: 'aab') through: $b. "
+                 "(ReadStream on: 'aaa') through: $z. "
+                 "(ReadStream on: 'abc') through: $b} printString",
+                 "(70000 true 'aab' 'aaa' 'ab' )");
+
+    /*  KERNA-19.  An IdentitySet's collect: answers an IdentitySet.  */
+    check_string("| t | t := IdentitySet withAll: {(String new: 1 withAll: $a). "
+                 "(String new: 1 withAll: $a)}. "
+                 "^{t size. (t collect: [:x | x]) class. (t collect: [:x | x]) size. "
+                 "((Set withAll: #(1 2)) collect: [:x | x]) class. "
+                 "(IdentitySet new collect: [:x | x]) class} printString",
+                 "(2 IdentitySet 2 Set IdentitySet )");
+
+    /*  KERNA-20.  A walk that the block adds to still ends.  */
+    check_string("| n oc r | n := 0. oc := #(1 2 3) asSortedCollection. "
+                 "oc do: [:x | n := n + 1. oc add: x + 10]. "
+                 "r := OrderedCollection new. "
+                 "(OrderedCollection withAll: #(1 2 3)) reverseDo: [:x | r add: x]. "
+                 "^{n. oc size. r} printString",
+                 "(3 6 an OrderedCollection(3 2 1 ) )");
+
+    /*  KERNA-21.  A LinkedList's builders answer OrderedCollections.  */
+    check_string("| l | l := LinkedList new. l add: Link new; add: Link new. "
+                 "^{(l collect: [:x | x]) class. (l collect: [:x | x]) size. "
+                 "(l select: [:x | true]) size. (l reject: [:x | true]) size. "
+                 "l reverse size. (l first: 1) size. (l copyFrom: 1 to: 2) size. "
+                 "(l , #(1)) size. LinkedList new remove: nil ifAbsent: [#none]. l size} "
+                 "printString",
+                 "(OrderedCollection 2 2 0 2 1 2 3 none 2 )");
+
+    /*  KERNA-23.  addAll: of a Dictionary adds its bindings.  */
+    check_string("^{((Dictionary new at: 1 put: 2; yourself) addAll: "
+                 "(Dictionary new at: 3 put: 4; yourself); yourself) size. "
+                 "(Dictionary new addAll: {5->6}; yourself) printString} printString",
+                 "(2 'Dictionary (5->6 )' )");
+
+    test_dialect = ST_DIALECT_BLUE_BOOK;
+}
+
+/*
+ *  Bugs6, the low findings of the exception library, SUnit, lib/System,
+ *  finalization and the file layer that a doIt can reach: KERNB-8,
+ *  KERNB-10, KERNB-11, KERNB-12, KERNB-13's shape, FILES-10 and KERNA-31.
+ *  KERNB-9 needs eight workers and is in test_serve_faults; NET-2 and
+ *  FILES-9 were by reasoning and are covered by the socket and database
+ *  suites.
+ */
+static void
+test_bugs6_low_kernb_files(void)
+{
+    const char *db  = st_test_path("bugs6-files10.db");
+    char        expression[3072];
+
+    test_dialect = ST_DIALECT_CLOSURES;
+
+    /*
+     *  KERNB-8.  The profiler takes a closure, runs the block, and answers
+     *  its value with the report on the Transcript.  Before: 'spy needs a
+     *  block here', then nil is not a Boolean.
+     */
+    check_string("^[(MessageTally spyOn: [1 to: 20000 do: [:i | i printString]. 'ran']) "
+                 "printString] on: Error do: [:e | e return: e messageText]",
+                 "'ran'");
+
+    /*
+     *  KERNB-10.  A failing test whose tearDown raises is one failure,
+     *  not a failure and an error.
+     */
+    check_string("| res | TestCase subclass: #Bugs6KbT instanceVariableNames: '' "
+                 "classVariableNames: '' poolDictionaries: '' category: 'bugs6'. "
+                 "(Smalltalk at: #Bugs6KbT) compile: 'testFails self assert: false'. "
+                 "(Smalltalk at: #Bugs6KbT) compile: 'tearDown Error signal: ''td'''. "
+                 "res := (Smalltalk at: #Bugs6KbT) suite run. "
+                 "(Smalltalk at: #Bugs6KbT) removeFromSystem. ^res summary",
+                 "1 run, 0 passed, 1 failed, 0 errors");
+
+    /*
+     *  KERNB-11.  A removed global's binding goes to Undeclared and is
+     *  adopted again by the next at:put:, so a method compiled before the
+     *  removal sees nil after it and the new value after that.  Before:
+     *  (41 42 42 42).
+     */
+    check_string("| r | r := OrderedCollection new. Smalltalk at: #Bugs6Glob put: 41. "
+                 "Object subclass: #Bugs6User instanceVariableNames: '' "
+                 "classVariableNames: '' poolDictionaries: '' category: 'bugs6'. "
+                 "(Smalltalk at: #Bugs6User) compile: 'readIt ^Bugs6Glob'. "
+                 "r add: (Smalltalk at: #Bugs6User) new readIt. "
+                 "Smalltalk at: #Bugs6Glob put: 42. r add: (Smalltalk at: #Bugs6User) new readIt. "
+                 "r add: (Smalltalk removeKey: #Bugs6Glob) printString. "
+                 "r add: (Smalltalk at: #Bugs6User) new readIt printString. "
+                 "r add: (Undeclared includesKey: #Bugs6Glob). "
+                 "Smalltalk at: #Bugs6Glob put: 43. r add: (Smalltalk at: #Bugs6User) new readIt. "
+                 "r add: (Undeclared includesKey: #Bugs6Glob). "
+                 "r add: ([Smalltalk removeKey: #Bugs6Nope] on: Error do: [:e | e return: 'absent']). "
+                 "(Smalltalk at: #Bugs6User) removeFromSystem. Smalltalk removeKey: #Bugs6Glob. "
+                 "^r printString",
+                 "an OrderedCollection(41 42 'Bugs6Glob->42' 'nil' true 43 false 'absent' )");
+
+    /*  KERNB-12.  nil is not a global's name; a String is its Symbol.  */
+    check_string("^{[Smalltalk at: nil put: 3. 'took nil'] on: Error do: [:e | e return: e messageText]. "
+                 "[Smalltalk at: 'Bugs6StrKey' put: 3. (Smalltalk at: #Bugs6StrKey) printString, ' ', "
+                 "(Smalltalk keys includes: #Bugs6StrKey) printString] on: Error do: [:e | e return: e messageText]. "
+                 "Smalltalk removeKey: #Bugs6StrKey. (Smalltalk keys includes: nil)} printString",
+                 "('a global''s name is a Symbol, not nil' '3 true' Bugs6StrKey->3 false )");
+
+    /*
+     *  KERNB-13.  A terminate still runs the unwind blocks of the process
+     *  it takes -- the lock a parked critical: held is free afterwards --
+     *  with the stack now taken by a compare-and-swap.
+     */
+    check_string("| m p | m := Mutex new. p := [m critical: [Semaphore new wait]] fork. "
+                 "Processor yield. p terminate. ^m critical: ['lock free']", "lock free");
+
+    /*
+     *  FILES-10.  verify never raises; a stream on /dev/null closes after
+     *  a write; a name longer than the OS allows is File name too long;
+     *  the binary readers answer nil past the end and next:into: answers
+     *  what there was.
+     */
+    check_string("^{[PasswordHash verify: 'x' against: 42] on: Error do: [:e | e return: e messageText]. "
+                 "[PasswordHash verify: 42 against: 'x'] on: Error do: [:e | e return: e messageText]. "
+                 "[(FileStream oldFileNamed: '/dev/null') nextPutAll: 'abc'; close. 'closed'] "
+                 "on: Error do: [:e | e return: e messageText]. "
+                 "([FileStream fileNamed: '/tmp/', (String new: 1100 withAll: $n)] "
+                 "on: Error do: [:e | e return: e messageText]) includesSubstring: 'File name too long'} "
+                 "printString",
+                 "(false false 'closed' true )");
+    snprintf(expression, sizeof expression,
+             "| f r | f := FileStream fileNamed: '%s'. f nextPutAll: 'abc'; close. "
+             "f := FileStream oldFileNamed: '%s'. f readOnly. "
+             "r := {f next: 10 into: (String new: 10 withAll: $-). f atEnd. "
+             "f nextNumber: 2. f nextWord. "
+             "(FileStream oldFileNamed: '%s') readOnly; setToEnd; nextNumber: 4}. "
+             "f close. ^r printString",
+             db, db, db);
+    check_string(expression, "('abc-------' true nil nil nil )");
+    unlink(db);
+
+    /*
+     *  FILES-10, through SQLite where there is a driver: a DbCommand used
+     *  after close answers a DbError that names the closing.
+     */
+    snprintf(expression, sizeof expression,
+             "[(DbConnection open: 'DRIVER=SQLITE3;Database=%s;') close. true] "
+             "on: Error do: [:e | false]", db);
+    if (evaluate(expression) == ST_TRUE) {
+        snprintf(expression, sizeof expression,
+                 "| c q | c := DbConnection open: 'DRIVER=SQLITE3;Database=%s;'. "
+                 "q := c newCommand. q close. "
+                 "^[q execute: 'select 1'. 'ran'] on: DbError do: [:e | e return: e messageText]",
+                 db);
+        check_string(expression, "this command has been closed");
+        unlink(db);
+    }  else
+        printf("  skipped FILES-10 DbCommand: no SQLITE3 driver\n");
+
+    /*  KERNA-31.  A fractional second does not hide the suffix.  */
+    check_string("^{(Time readFrom: '1:59:30.5 pm' readStream) printString. "
+                 "(Time readFrom: '1:59:30 pm' readStream) printString. "
+                 "[(Time readFrom: '1:59:30. pm' readStream) printString] on: Error do: [:e | 'refused']. "
+                 "(Time readFrom: '12:00:00.25 am' readStream) printString} printString",
+                 "('1:59:30 pm' '1:59:30 pm' 'refused' '12:00:00 am' )");
+
+    test_dialect = ST_DIALECT_BLUE_BOOK;
+}
+
+/*
  *  Bugs6 COMP-5, COMP-8 and KERNA-1 (medium): what an inlined block's
  *  temporaries mean, an arrow glued to the name after it, and the floor of
  *  a Float's logarithm.
@@ -10891,6 +11280,8 @@ main(void)
     test_bugs6_medium_kernb();
     test_bugs6_medium_files();
     test_bugs6_medium_gui_fixes();
+    test_bugs6_low_vm_kerna();
+    test_bugs6_low_kernb_files();
 
     OM_shutdown();
     return ST_TEST_END();

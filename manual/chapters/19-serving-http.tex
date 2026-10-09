@@ -131,7 +131,12 @@ bytes, more than a hundred headers, a body over the server's limit (64 MB
 unless \ct{maxRequestBytes:} says otherwise) are refused before they are
 read, each with its own status; a body with no declared length---chunked---is
 refused with 411, because a JSON-RPC client always knows how long its document
-is. A multipart body is taken apart within limits of its own: a boundary longer
+is. Time and number are bounded too: a request not complete 120 seconds after
+its first byte is cut off, a client that takes nothing of its reply for 30
+seconds is dropped, and above 1,024 open connections the answer is 503.
+\ct{requestSeconds:}, \ct{writeSeconds:} and \ct{maxConnections:} on the
+server change the three, and \ct{server.json} takes them under the same names;
+\ct{maxSessions} there (10,000) caps the users logged in at once. A multipart body is taken apart within limits of its own: a boundary longer
 than the seventy characters RFC 2046 permits, or empty, is 400 before a byte of
 the body is looked at, a body of more than ten thousand parts is 400 where the
 cap is passed, and the search for each boundary is linear in the body, so a

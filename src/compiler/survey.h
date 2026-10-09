@@ -45,6 +45,32 @@ typedef struct {
     unsigned    count;
 } st_survey_failure;
 
+/*
+ *  Distinct texts, interned: the stand-in for a Symbol or a global is the
+ *  same value for the same text and a different one for a different text,
+ *  as the real literals are, so that a method's literal count comes out
+ *  as the bootstrap will count it (Bugs6 COMP-16).
+ */
+typedef struct {
+    char      **items;
+    unsigned    count;
+    unsigned    capacity;
+} st_survey_names;
+
+/*
+ *  A class the surveyed source defined: its superclass's name and its own
+ *  instance variables, on both sides.  A method's instance variables are
+ *  the chain's, and the compiler is told them so that it compiles a
+ *  reference to one as the slot it is rather than as a global -- which is
+ *  a literal, and counted against the ceiling (Bugs6 COMP-16).
+ */
+typedef struct {
+    char               *name;
+    char               *superclass;
+    st_survey_names     ivars;
+    st_survey_names     class_ivars;
+} st_survey_class;
+
 typedef struct {
     unsigned            methods;
     unsigned            failed;
@@ -56,12 +82,27 @@ typedef struct {
     unsigned            primitive_count;
     unsigned            primitives_overflowed;
     st_survey_primitive primitives[ST_SURVEY_MAX_PRIMITIVES];
+
+    st_survey_names     symbols;        /*  see above  */
+    st_survey_names     globals;
+    unsigned            fresh;          /*  one more each String, Float, ...  */
+    int                 dialect;        /*  ST_DIALECT_*, or -1: by the file's format  */
+    st_survey_class    *classes;        /*  every class the source defined  */
+    unsigned            class_count;
+    unsigned            class_capacity;
 } st_survey;
 
 void    SURVEY_init(st_survey *s);
+void    SURVEY_free(st_survey *s);
 
 /*  Compile every method in one fileIn.  Accumulates into s.  */
 void    SURVEY_file(st_survey *s, const char *path);
+/*
+ *  The same, in a given dialect (ST_DIALECT_*) rather than the one the
+ *  file's format suggests -- the dialect a profile gives the file, when
+ *  the survey is of a profile.  -1 means by the format, as SURVEY_file.
+ */
+void    SURVEY_file_in_dialect(st_survey *s, const char *path, int dialect);
 
 /*  A summary, most common failure first.  */
 void    SURVEY_report(st_survey *s, FILE *out);

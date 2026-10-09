@@ -215,7 +215,11 @@ Process >> terminate [
 	 unwinding notNil ifTrue: [^self finishUnwindBlock: unwinding waitingOn: where].
 	 section := self criticalSectionFrom: context stoppedAt: where.
 	 section notNil ifTrue: [^self finishSection: section].
-	 suspendedContext := nil]
+	 "The stack is taken by a compare-and-swap, so that two terminators
+	  cannot both take it and both run its unwind blocks (Bugs6 KERNB-13):
+	  the second finds nil and gives up.  Slot 2 is suspendedContext,
+	  after Link's nextLink."
+	 (self compareAndSwapSlot: 2 from: context to: nil) ifFalse: [^self]]
 		ensure: [self primRelease: false].
 	self runUnwindBlocksFrom: context
 ]

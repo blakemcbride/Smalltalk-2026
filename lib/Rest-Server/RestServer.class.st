@@ -55,7 +55,7 @@ and a class that defines only one of the two is sent only that one.
 Class {
 	#name : 'RestServer',
 	#superclass : 'Object',
-	#instVars : [ 'port', 'bindAddress', 'backendDirectory', 'documentRoot', 'connectionString', 'requireAuthentication', 'userInactiveSeconds', 'maxSessions', 'keepAliveSeconds', 'maxRequestBytes', 'poolSize', 'environment', 'environmentLock', 'allowed', 'allowedLock', 'bootId', 'httpServer', 'loader', 'userCache', 'pool', 'name' ],
+	#instVars : [ 'port', 'bindAddress', 'backendDirectory', 'documentRoot', 'connectionString', 'requireAuthentication', 'userInactiveSeconds', 'maxSessions', 'keepAliveSeconds', 'maxRequestBytes', 'poolSize', 'environment', 'environmentLock', 'allowed', 'allowedLock', 'bootId', 'httpServer', 'loader', 'userCache', 'pool', 'name', 'requestSeconds', 'writeSeconds', 'maxConnections' ],
 	#category : 'Rest-Server'
 }
 
@@ -112,6 +112,11 @@ RestServer class >> fromConfig: aJsonObject [
 	(aJsonObject at: 'maxSessions') notNil ifTrue: [server maxSessions: (aJsonObject integerAt: 'maxSessions')].
 	(aJsonObject at: 'keepAliveSeconds') notNil ifTrue: [server keepAliveSeconds: (aJsonObject numberAt: 'keepAliveSeconds')].
 	(aJsonObject at: 'maxRequestBytes') notNil ifTrue: [server maxRequestBytes: (aJsonObject integerAt: 'maxRequestBytes')].
+	"The HttpServer's three limits (Bugs5 NET-1), settable from the file
+	 since Bugs6 DOCS-13; left out, the HttpServer's defaults stand."
+	(aJsonObject at: 'requestSeconds') notNil ifTrue: [server requestSeconds: (aJsonObject numberAt: 'requestSeconds')].
+	(aJsonObject at: 'writeSeconds') notNil ifTrue: [server writeSeconds: (aJsonObject numberAt: 'writeSeconds')].
+	(aJsonObject at: 'maxConnections') notNil ifTrue: [server maxConnections: (aJsonObject integerAt: 'maxConnections')].
 	(aJsonObject at: 'connectionPoolSize') notNil ifTrue: [server connectionPoolSize: (aJsonObject integerAt: 'connectionPoolSize')].
 	(aJsonObject at: 'allowWithoutAuthentication') notNil ifTrue: [
 		(aJsonObject arrayAt: 'allowWithoutAuthentication') do: [:entry | | colon |
@@ -190,6 +195,24 @@ RestServer >> maxSessions: anInteger [
 ]
 
 { #category : 'configuration' }
+RestServer >> requestSeconds: aNumber [
+	"How long a request may take to arrive whole; the HttpServer's 120 by default."
+	requestSeconds := aNumber
+]
+
+{ #category : 'accessing' }
+RestServer >> writeSeconds: aNumber [
+	"How long a client may take nothing of its reply; the HttpServer's 30 by default."
+	writeSeconds := aNumber
+]
+
+{ #category : 'accessing' }
+RestServer >> maxConnections: anInteger [
+	"Connections open at once before the answer is 503; the HttpServer's 1,024 by default."
+	maxConnections := anInteger
+]
+
+{ #category : 'accessing' }
 RestServer >> keepAliveSeconds: aNumber [
 	keepAliveSeconds := aNumber
 ]
@@ -369,6 +392,9 @@ RestServer >> start [
 		maxRequestBytes: maxRequestBytes;
 		name: name;
 		yourself.
+	requestSeconds notNil ifTrue: [httpServer requestSeconds: requestSeconds].
+	writeSeconds notNil ifTrue: [httpServer writeSeconds: writeSeconds].
+	maxConnections notNil ifTrue: [httpServer maxConnections: maxConnections].
 	httpServer at: '/rest' put: (RestDispatcher on: self).
 	httpServer start.
 	userCache startPurging.

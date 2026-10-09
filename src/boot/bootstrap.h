@@ -132,6 +132,8 @@ st_oop  BOOT_smalltalk(void);
  *  expression can be compiled against a bootstrapped image after the fact.
  */
 st_oop  BOOT_intern_symbol(const char *text, void *user);
+/*  The same for text of a given length, which may hold a NUL.  */
+st_oop  BOOT_intern_symbol_n(const char *text, size_t n, void *user);
 st_oop  BOOT_make_string(const char *text, void *user);
 /*
  *  From bytes rather than a C string, so a NUL can be one of them.  The

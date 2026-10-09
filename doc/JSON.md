@@ -97,7 +97,7 @@ document usually arrives from somewhere else:
   and a recursive descent parser meets it with forty thousand activations. This
   system heap-allocates contexts, so there is no stack to overflow first — it
   allocates until the machine stops. `maxDepth:` raises the limit deliberately.
-- **An exponent of 4096.** `1e1000000000` is a twelve-character document asking
+- **An exponent of 400.** `1e1000000000` is a twelve-character document asking
   this process to compute a billion digits, and exact arithmetic will try.
 - **256 digits in a number**, counted separately in the whole part and in the
   fraction, and raised deliberately with `maxDigits:`. Reading a decimal into a

@@ -104,11 +104,13 @@ This is why the class library has to be audited rather than inherited.
 \section{The thread map}
 
 \begin{plain}
-Thread 0        Dedicated SDL pump.  Owns the window, renderer and texture.
-                Never executes Smalltalk bytecodes.
+Thread 0        Owns SDL: the only thread that reads events or presents
+                pixels.  Under -run it also runs the desktop's interpreter,
+                in slices, pumping SDL between them.
 
-Threads 1..N    Smalltalk workers, N ~ CPU count.  Run bytecodes, allocate
-                from thread-local buffers, poll safepoints.  Never call SDL.
+Threads 1..N    Under -serve: Smalltalk workers, N = 4 x CPUs (at most 63).
+                Run bytecodes, allocate from thread-local buffers, poll
+                safepoints.  Never call SDL.
 
 Delay timer     One request outstanding.  Sleeps on a condvar until the
                 deadline, then posts to the async signal queue.  Never

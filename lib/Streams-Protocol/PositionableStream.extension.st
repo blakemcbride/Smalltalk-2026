@@ -142,3 +142,24 @@ PositionableStream >> collect: aBlock [
 	[self atEnd] whileFalse: [collected add: (aBlock value: self next)].
 	^ReadStream on: collected asArray
 ]
+
+{ #category : '*Streams-Protocol' }
+PositionableStream >> through: anObject [
+	"Answer a subcollection from position to the occurrence (if any,
+	 inclusive) of anObject.  If not there, answer everything.
+
+	 1983's loop stopped by itself once the answer passed 64,000 elements
+	 -- the Alto's object limit, written into the method -- so on a longer
+	 stream with no occurrence it answered 64,002 elements and stopped in
+	 the middle, where upTo: answered all of it (Bugs6 KERNA-17).  And the
+	 occurrence was dropped when it was the stream's last element, since
+	 atEnd was by then true: `(ReadStream on: 'ab') through: $b' was 'a'.
+	 Found is found."
+	| newStream element found |
+	newStream := WriteStream on: (collection species new: 64).
+	found := false.
+	[self atEnd or: [(element := self next) = anObject and: [found := true]]]
+		whileFalse: [newStream nextPut: element].
+	found ifTrue: [newStream nextPut: element].
+	^newStream contents
+]

@@ -17,10 +17,6 @@ SOURCES  := $(DOC).tex preamble.tex $(wildcard chapters/*.tex)
 #  loads and the doit each doctest is compiled into alike, so the book is
 #  checked in the language it documents.  Point PROFILE at bluebook and the
 #  1983 answers are what the run demands.
-#
-#  Run from the repository root, not from here: a profile's package paths are
-#  relative to the profile file, but the 1983 MANIFEST's entries are relative
-#  to the tree root, so a bootstrap started anywhere else cannot find them.
 ROOT     := ..
 ST2026     ?= ./st2026
 PROFILE  ?= profiles/st2026.profile

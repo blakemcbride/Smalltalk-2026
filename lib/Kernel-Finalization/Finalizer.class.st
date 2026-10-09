@@ -54,7 +54,7 @@ change is not the one holding the reference.
 Class {
 	#name : 'Finalizer',
 	#superclass : 'Object',
-	#classVars : [ 'MournSemaphore', 'Worker' ],
+	#classVars : [ 'MournSemaphore', 'RestartLock', 'Worker' ],
 	#category : 'Kernel-Finalization'
 }
 
@@ -73,6 +73,7 @@ Finalizer class >> new [
 Finalizer class >> initialize [
 	"Called by the bootstrap, and safe to call again from a Workspace."
 	MournSemaphore isNil ifTrue: [MournSemaphore := Semaphore new].
+	RestartLock isNil ifTrue: [RestartLock := Mutex new].
 	self restart
 ]
 
@@ -98,12 +99,22 @@ Finalizer class >> restart [
 	 reason: mourning is the tail of a collection and every process in the
 	 image is waiting on the memory it releases, so it should not queue
 	 behind ordinary work -- and it is Smalltalk of unknown cost, so it
-	 must not sit above the clock."
-	Worker isNil ifFalse: [Worker terminate].
-	Worker := [[true] whileTrue: [
-			self drain.
-			MournSemaphore wait]]
-		forkAt: Processor userInterruptPriority
+	 must not sit above the clock.
+
+	 Under a lock, and the old process terminated AFTER the new one is
+	 stored: eight workers restarting at once each terminated whichever
+	 process Worker held when they read it and each forked a new one, so
+	 only the last store survived and the others went on draining (Bugs6
+	 KERNB-9).  One queue, one process, as the class comment says."
+	| old |
+	RestartLock isNil ifTrue: [RestartLock := Mutex new].
+	RestartLock critical: [
+		old := Worker.
+		Worker := [[true] whileTrue: [
+				self drain.
+				MournSemaphore wait]]
+			forkAt: Processor userInterruptPriority.
+		old isNil ifFalse: [old terminate]]
 ]
 
 { #category : 'private' }

@@ -5,9 +5,10 @@ terms. Which directory a file is in tells you which apply.
 
 | directory | origin | licence |
 |---|---|---|
-| `src/`, `tests/`, `lib/`, `bench/`, `doc/` | written for this project | BSD-2-Clause, © 2026 Blake McBride |
+| `src/`, `lib/`, `tests/` (with `tests/bench/`), `tools/`, `manual/`, `profiles/`, `doc/` | written for this project | BSD-2-Clause, © 2026 Blake McBride — the text is in `LICENSE` at the root |
 | `sources/` | Smalltalk-80 v2 sources, Mark Bush's transcription | MIT |
 | `pharo/` | imported from the Pharo project | **MIT, with parts under Apache-2.0** |
+| `demo/` | the project's own back end and pages, plus third-party files | BSD-2-Clause for the project's files; `demo/frontend/PROVENANCE.md` records the rest, among them `ckeditor.js` (GPL-2.0-or-later or commercial) |
 
 ## `sources/` is frozen
 

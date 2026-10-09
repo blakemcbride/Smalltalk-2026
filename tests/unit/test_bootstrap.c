@@ -39,6 +39,11 @@ build_once(void)
 
     if (BOOT_build(paths, 1, &res) != 0) {
         printf("  bootstrap failed: %s\n", res.error);
+        /*  A failed suite under make, which sets ST2026_BIN (Bugs6 DOCS-8).  */
+        if (getenv("ST2026_BIN")) {
+            ++st_test_checks;
+            ++st_test_failures;
+        }
         return 0;
     }
     printf("  %u classes, %u methods, %u symbols\n", res.classes_created,

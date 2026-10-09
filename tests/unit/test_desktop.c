@@ -74,11 +74,20 @@ build_desktop(void)
 
     if (!PROFILE_expand(PROFILE, &sources, &source_dialects, err, sizeof err)) {
         printf("skipped: %s\n", err);
+        /*  A failed suite under make, which sets ST2026_BIN (Bugs6 DOCS-8).  */
+        if (getenv("ST2026_BIN")) {
+            ++st_test_checks;
+            ++st_test_failures;
+        }
         return 0;
     }
     if (BOOT_build_dialects((const char *const *) sources.items,
                             source_dialects, sources.count, &res) != 0) {
         printf("  bootstrap failed: %s\n", res.error);
+        if (getenv("ST2026_BIN")) {
+            ++st_test_checks;
+            ++st_test_failures;
+        }
         return 0;
     }
     if (!BOOT_install_display(SCREEN_W, SCREEN_H)) {

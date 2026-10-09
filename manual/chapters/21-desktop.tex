@@ -421,7 +421,7 @@ For tests and screenshots, input can be injected from the command line rather
 than typed:
 
 \begin{sh}
-./st2026 -inject "m 320 240; w 20; d 129; w 40; m 320 271; w 40; u 129; w 60;
+./st2026 -inject "m 320 240; w 20; d 129; w 40; m 320 332; w 40; u 129; w 60;
                 m 60 60; w 20; d 130; w 20; m 900 1400; w 20; u 130; w 200" \
        -screenshot /tmp/browser.pbm -run st2026.image
 \end{sh}
@@ -430,4 +430,7 @@ than typed:
 (128 right, 129 middle, 130 left), \ct{k} types a key, \ct{w N} waits N bytecode
 slices so the image has time to respond, and \ct{x} posts a window-exposed
 event. That script opens the desktop menu, chooses \ct{browser}, frames a
-window, and screenshots the result.
+window, and screenshots the result. The menu's items are 26 pixels apart,
+and \ct{browser} is the fifth; a menu that has been opened before opens with
+its last choice under the pointer, so a script that opens one twice has to
+allow for where the first choice left it.
