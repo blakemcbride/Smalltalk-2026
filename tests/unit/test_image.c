@@ -2983,8 +2983,12 @@ test_browsing(void)
      *
      *  2933880 -> 2961001 with the Bugs6 lows and the decompiler, the thirty-six methods the
      *  LIB_METHODS note above lists.
+     *
+     *  2961001 -> 2961731 with the SCHED-7 addendum: criticalSectionFrom:stoppedAt:
+     *  no longer takes an ensure: frame whose block has already run for a
+     *  live section (found by the sanitizer runs).
      */
-    check_integer("(SourceFiles at: 1) contents size", 2961001);
+    check_integer("(SourceFiles at: 1) contents size", 2961731);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.

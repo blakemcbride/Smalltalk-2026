@@ -200,6 +200,7 @@ test_the_report_counts_what_source_asks_for(void)
     CHECK(r != NULL);
     if (r)
         CHECK_EQ_STR(r->example, "P>>three");
+    SURVEY_free(&s);
 }
 
 static void
@@ -233,6 +234,7 @@ test_a_named_primitive_is_not_just_117(void)
     CHECK(r != NULL);
     if (r)
         CHECK_EQ_INT((int) r->methods, 1);
+    SURVEY_free(&s);
 }
 
 static void
@@ -250,6 +252,7 @@ test_class_side_methods_are_labelled(void)
     CHECK(r != NULL);
     if (r)
         CHECK_EQ_STR(r->example, "S class>>make");
+    SURVEY_free(&s);
 }
 
 /*
@@ -293,6 +296,7 @@ test_the_1983_library(void)
     CHECK(row(&s, 96, "") != NULL);   /*  BitBlt copyBits  */
     /*  Nothing overflowed the table, so the totals mean what they say.  */
     CHECK_EQ_INT((int) s.primitives_overflowed, 0);
+    SURVEY_free(&s);
 }
 
 int

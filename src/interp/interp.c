@@ -876,9 +876,12 @@ ST_interp_dump_workers(void)
         if (OM_is_present(l))
             ST_print_object(l, list, sizeof list);
         fprintf(stderr, "       interpreter %u: running %d, parked %d, nominated %d, "
-                        "active process at priority %ld waiting on %s\n",
+                        "idling %d, active process at priority %ld waiting on %s\n",
                 i, vm->running, vm->disowned, vm->new_process_waiting,
-                priority, list);
+                vm->idling, priority, list);
+        if (vm->idling)
+            fprintf(stderr, "           idle for %lld ms\n",
+                    (long long) ((ST_time_monotonic_ns() - vm->idle_since_ns) / 1000000));
         /*
          *  And where that process is.  A verdict that names a semaphore
          *  and not the method waiting on it leaves the reader to guess

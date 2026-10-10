@@ -143,6 +143,14 @@ Reserving the range costs eight bytes of *address space* per possible object
 and nothing resident until a slot is touched, because the pages arrive on first
 write, so the ceiling itself costs nothing.
 
+One other knob lives in the environment: `ST_IDLE_BACKSTOP_SECONDS`. A worker
+with nothing to run decides that every process is blocked when every worker
+has been idle for ten milliseconds with no delay armed and no socket waited
+on; behind that criterion sits a five-minute backstop, counted only while no
+worker is running Smalltalk, for a pool that flickers in and out of idle
+without ever settling. The variable shortens the backstop so a test can reach
+it; nothing else should set it.
+
 The counts beside the table grow with it, through the same function, and that
 is not tidiness: the image loader used to double `st_om_table` until it covered
 the image's own limit and leave `st_om_refcounts` at the size `OM_init` gave

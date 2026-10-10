@@ -126,6 +126,7 @@ main(void)
 
     printf("  ");
     SURVEY_report(&survey, stdout);
+    SURVEY_free(&survey);       /*  the name tables; the counts stay  */
 
     /*
      *  226 vendored classes and 4517 methods, plus kernel/Bootstrap.st --

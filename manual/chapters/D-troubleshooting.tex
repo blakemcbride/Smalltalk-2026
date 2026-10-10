@@ -135,9 +135,10 @@ st2026: N input events were dropped
   detects that and raises rather than deadlocking.
 \item[\ctp{every process is blocked; nothing can run}] The scheduler found
   nothing ready, no timer armed and no signal queued, and prints what each
-  worker was holding. On one worker it usually means what it says. On many it
-  once meant a process the scheduler had lost, and the line under it is the
-  evidence to bring.
+  worker was holding. It is given only while no worker is running Smalltalk:
+  one worker computing for an hour while the rest idle is not it. On one
+  worker it usually means what it says. On many it once meant a process the
+  scheduler had lost, and the line under it is the evidence to bring.
 \item[The Transcript output is interleaved] Between sends, expected: lines
   from different workers arrive in the order they were sent. Within one
   send it cannot be---each \ct{show:} holds the Transcript's lock---so build

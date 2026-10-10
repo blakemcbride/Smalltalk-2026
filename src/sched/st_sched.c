@@ -1454,9 +1454,41 @@ SCHED_wake_highest_priority(void)
 #define IDLE_WAIT_SLICE_NS  INT64_C(100000)     /*  0.1 ms  */
 /*
  *  A backstop, not the criterion.  Five minutes is longer than any real
- *  wait and short enough that a wedged run still ends.
+ *  wait and short enough that a wedged run still ends.  Counted only
+ *  while nobody is running Smalltalk (see the loop): a worker computing
+ *  for six minutes while three others idle is not a wedged run, and the
+ *  backstop used to end it as one, at five minutes to the second, with
+ *  the verdict's own dump showing a worker still executing -- found under
+ *  the thread sanitizer, where a few seconds' test takes long enough.
+ *  ST_IDLE_BACKSTOP_SECONDS in the environment shortens it, so that a
+ *  test can reach it in seconds; read once, like the table ceiling.
  */
-#define IDLE_WAIT_SLICES    3000000
+#define IDLE_WAIT_SECONDS   300
+
+/*
+ *  Atomic because every idle worker asks, and the first ask on each may
+ *  be at the same moment: each computes the same number from the same
+ *  text, so whichever store lands is right, but the sanitizer is owed a
+ *  word that says so.
+ */
+static st_atomic_int    idle_slices;
+
+static unsigned
+idle_wait_slices(void)
+{
+    int     slices = ST_load_relaxed(&idle_slices);
+
+    if (slices == 0) {
+        const char *text = getenv("ST_IDLE_BACKSTOP_SECONDS");
+        long        seconds = text ? strtol(text, NULL, 10) : 0;
+
+        if (seconds < 1)
+            seconds = IDLE_WAIT_SECONDS;
+        slices = (int) (seconds * (1000000000L / IDLE_WAIT_SLICE_NS));
+        ST_store_relaxed(&idle_slices, slices);
+    }
+    return (unsigned) slices;
+}
 /*
  *  How many consecutive looks must agree that every worker is idle.  A
  *  hundred of them is ten milliseconds of a genuinely still system.
@@ -1610,7 +1642,9 @@ SCHED_suspend_active(void)
         unsigned    all_idle = 0;
 
         ST_fetch_add_relaxed(&idle_workers, 1);
-        for (slice = 0; slice < IDLE_WAIT_SLICES; ++slice) {
+        st_vm.idling        = 1;
+        st_vm.idle_since_ns = ST_time_monotonic_ns();
+        for (slice = 0; slice < idle_wait_slices(); ++slice) {
             if (SCHED_stop_requested())
                 break;
             /*
@@ -1647,7 +1681,17 @@ SCHED_suspend_active(void)
                 if (++all_idle >= ALL_IDLE_CONFIRMATIONS)
                     break;
             }  else {
+                /*
+                 *  Somebody is running Smalltalk, and what it does next
+                 *  can make anything ready: a wait of the same kind as a
+                 *  delay or a socket, which reset the backstop above, and
+                 *  this one used not to.  One worker computing past five
+                 *  minutes -- a long request, a batch under -serve with
+                 *  no listener and no Delay -- had the idle workers end
+                 *  the image under it as `every process is blocked'.
+                 */
                 all_idle = 0;
+                slice    = 0;
             }
             WORKER_poll();
             if (idle_hook)
@@ -1680,6 +1724,7 @@ SCHED_suspend_active(void)
             if (next != ST_NIL)
                 break;
         }
+        st_vm.idling = 0;
         ST_fetch_sub_relaxed(&idle_workers, 1);
     }
 
@@ -2543,7 +2588,14 @@ SCHED_is_semaphore(st_oop object)
     if (!OM_is_object(object))
         return 0;
     cls = OM_fetch_class(object);
-    while (OM_is_object(cls)) {
+    /*
+     *  Up the chain while there is one: the walk ends at nil, which is a
+     *  pointer object with no fields, and reading its superclass field
+     *  read past the smallest object in the image (ASAN, after Bugs6
+     *  SCHED-4 first wrote this with OM_is_object alone).
+     */
+    while (OM_is_present(cls) && OM_pointer_bit(cls)
+        && OM_fetch_word_length(cls) > ST_CLASS_SUPERCLASS) {
         if (cls == ST_CLASS_SEMAPHORE)
             return 1;
         cls = OM_fetch_pointer(ST_CLASS_SUPERCLASS, cls);

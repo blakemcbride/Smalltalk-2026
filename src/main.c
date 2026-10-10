@@ -1370,7 +1370,13 @@ do_run(const char *path, uint64_t max_cycles)
  */
 
 static st_atomic_int    serve_ready;        /*  worker 0 has the image up  */
-static int              serve_status;       /*  the exit code             */
+/*
+ *  The exit code.  Atomic because every worker whose run ends writes it
+ *  -- three gave the scheduler's verdict in one instant under the thread
+ *  sanitizer -- and the thread that started them reads it after they
+ *  have all gone.
+ */
+static st_atomic_int    serve_status;
 
 static void
 serve_worker(st_worker *self, void *user)
@@ -1386,7 +1392,7 @@ serve_worker(st_worker *self, void *user)
          */
         if (ST_interp_init(err, sizeof err) != 0) {
             fprintf(stderr, "st2026: %s\n", err);
-            serve_status = 1;
+            ST_store_relaxed(&serve_status, 1);
             SCHED_request_stop();
             ST_store_release(&serve_ready, 1);
             return;
@@ -1438,7 +1444,7 @@ serve_worker(st_worker *self, void *user)
      *  true for the rest, and they would wait for ever.
      */
     if (!SCHED_stop_requested() && !ST_quit_requested)
-        serve_status = 1;
+        ST_store_relaxed(&serve_status, 1);
     SCHED_request_stop();
     NET_wake();
     ST_interp_unregister();
@@ -1534,7 +1540,7 @@ do_serve(const char *path, unsigned workers, int argc, char **argv)
     NET_set_arguments(argc, argv);
     install_stop_handlers();
     ST_store_seq(&serve_ready, 0);
-    serve_status = 0;
+    ST_store_relaxed(&serve_status, 0);
 
     if (WORKER_start(workers, serve_worker, NULL) != 0) {
         fprintf(stderr, "st2026: cannot start the worker pool\n");
@@ -1552,10 +1558,10 @@ do_serve(const char *path, unsigned workers, int argc, char **argv)
     SCHED_timer_stop();
     fprintf(stderr, "st2026: %s\n",
             ST_quit_requested ? "the image quit"
-            : serve_status == 0 ? "stopped as asked"
+            : ST_load_relaxed(&serve_status) == 0 ? "stopped as asked"
             : "the image stopped on its own");
     OM_shutdown();
-    return serve_status;
+    return ST_load_relaxed(&serve_status);
 }
 
 /*
@@ -2995,6 +3001,7 @@ main(int argc, char **argv)
                                   &doctests);
             path_list_free(&sources);
             free(dialects.items);
+            SRC_names_free(&doctests);      /*  it was leaked, which LeakSanitizer counts as an exit of 1  */
             return status;
         }
         if (!strcmp(argv[i], "-screenshot")) {

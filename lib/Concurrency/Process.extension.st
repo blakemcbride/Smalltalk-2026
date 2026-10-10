@@ -244,7 +244,18 @@ Process >> criticalSectionFrom: aContext stoppedAt: where [
 	 OrderedCollection>>insert:before: inside Delay>>wait left a nil at
 	 the head of SuspendedDelays, the timing process raised on it, and no
 	 Delay in the image fired again -- three runs in three of a randomized
-	 stress; and SharedQueue's items were torn the same way."
+	 stress; and SharedQueue's items were torn the same way.
+
+	 Only a frame whose unwind block is still in it counts.  ensure: is
+	 `result := self value. thisContext runUnwindBlock. ^result', and a
+	 process can be stopped on the two bytecodes after runUnwindBlock has
+	 returned -- the lock given back, the frame disarmed, nothing left of
+	 the section but its return.  finishSection: put its block into that
+	 frame's first temporary, and nothing ever read it again: the process
+	 returned from ensure: and went on, untouched, and the forty-process
+	 Mutex stress left one running in two runs of thirty (found by the
+	 sanitizer runs of 2026-10-09).  A disarmed frame is past its section,
+	 and the process is unwound from outside as from anywhere else."
 	| sem mut mon ctx found |
 	(where = 1 or: [where = 2]) ifFalse: [^nil].
 	sem := Semaphore compiledMethodAt: #critical:.
@@ -253,8 +264,9 @@ Process >> criticalSectionFrom: aContext stoppedAt: where [
 	ctx := aContext.
 	[ctx isNil] whileFalse: [ | caller |
 		(ctx isUnwindContext
+		 and: [(ctx tempAt: 1) notNil
 		 and: [(caller := ctx sender) notNil
-		 and: [caller method == sem or: [caller method == mut or: [caller method == mon]]]])
+		 and: [caller method == sem or: [caller method == mut or: [caller method == mon]]]]])
 			ifTrue: [found := ctx].
 		ctx := ctx sender].
 	^found

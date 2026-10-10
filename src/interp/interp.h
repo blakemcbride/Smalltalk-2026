@@ -418,6 +418,14 @@ typedef struct {
      */
     int         disowned;
     /*
+     *  Set while this worker sits in the scheduler's idle loop with
+     *  nothing to run, with the time it went in: what the deadlock
+     *  verdict's dump needs to say which workers were really idle, since
+     *  the count it is decided by is one number for the pool.
+     */
+    int         idling;
+    int64_t     idle_since_ns;
+    /*
      *  Which row of the scheduler's `hands' table is this worker's: the
      *  registry slot plus one, so that zero -- what memset leaves, and
      *  what a thread that never registered has -- means no row.  The

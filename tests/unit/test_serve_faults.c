@@ -75,12 +75,15 @@ static const char *st2026;
  *  tens of times slower, and since these runs drive this build's own
  *  binary (Bugs5 DOCS-4) -- not the plain one they used to borrow -- the
  *  thirty-two-worker storms met the plain build's limit and were killed
- *  half way, which reported a hang that was only a slow binary.
+ *  half way, which reported a hang that was only a slow binary.  Forty
+ *  minutes under a sanitizer: the OutOfMemory-ceiling checks allocate a
+ *  million objects four times over, which the thread sanitizer runs in
+ *  twenty-five.
  */
 #if defined(__SANITIZE_THREAD__) || defined(__SANITIZE_ADDRESS__) \
  || (defined(__has_feature) && (__has_feature(thread_sanitizer) \
                              || __has_feature(address_sanitizer)))
-#define SERVE_SECONDS   "1200"
+#define SERVE_SECONDS   "2400"
 #else
 #define SERVE_SECONDS   "60"
 #endif
@@ -1731,6 +1734,14 @@ bugs6_medium_om(void)
      *  back to the allocator when their object dies; the resident size
      *  after the drop must be within 100 MB of the size before.
      */
+    /*
+     *  Not under a sanitizer: ASAN keeps freed memory in a quarantine and
+     *  TSAN in its own allocator, so the resident size does not come back
+     *  whatever the collector gave up.
+     */
+#if !(defined(__SANITIZE_THREAD__) || defined(__SANITIZE_ADDRESS__) \
+   || (defined(__has_feature) && (__has_feature(thread_sanitizer) \
+                               || __has_feature(address_sanitizer))))
     snprintf(command, sizeof command,
              "dd if=/dev/urandom of=%s bs=1M count=5 2>/dev/null", big);
     (void) run(command, out, sizeof out);
@@ -1760,6 +1771,7 @@ bugs6_medium_om(void)
         } else
             expect(out, "==> 'memory came back'", "OM-4 dead bodies are given back");
     }
+#endif
 
     /*
      *  OM-5: the emergency reserve was lifted once for the whole image, so
@@ -2242,6 +2254,36 @@ bugs6_low_vm(void)
     expect(out, "every process is blocked", "SCHED-5 the verdict");
     expect(out, "the expression did not finish: every process was blocked",
            "SCHED-5 the exit's reason");
+
+    /*
+     *  SCHED-5, found alongside by the thread sanitizer: the idle loop's
+     *  five-minute backstop gave the verdict while another worker was
+     *  still computing -- one process allocating for six minutes under
+     *  TSAN, three workers idle, and the image ended under it as blocked,
+     *  the dump showing interpreter 0 executing.  The backstop now counts
+     *  only while nobody runs Smalltalk.  ST_IDLE_BACKSTOP_SECONDS brings
+     *  it within reach of a test: two seconds, and a six-second loop on
+     *  one of four workers must finish, with no verdict printed.
+     */
+    if (write_file(BATCH,
+            "| start x | start := Time millisecondClockValue. x := 0. "
+            "[Time millisecondClockValue - start < 6000] whileTrue: [x := x + 1]. "
+            "'busy done'\n") == 0) {
+        snprintf(command, sizeof command,
+                 "ST_IDLE_BACKSTOP_SECONDS=2 " ST_TEST_TIMEOUT " -k 2 " SERVE_SECONDS
+                 " %s -serve %s -workers 4 \"$(cat %s)\" 2>&1",
+                 st2026, IMAGE, BATCH);
+        status = run(command, out, sizeof out);
+        ++st_test_checks;
+        if (status < 0) {
+            ++st_test_failures;
+            printf("  FAIL SCHED-5 backstop: could not run the server\n");
+        } else {
+            expect(out, "==> 'busy done'", "SCHED-5 one worker busy past the backstop");
+            expect_absent(out, "every process is blocked",
+                          "SCHED-5 no verdict while a worker runs");
+        }
+    }
 
     /*  COMP-4.  -eval prints true as true.  */
     snprintf(command, sizeof command,
