@@ -5,6 +5,7 @@
 #   test       build and run the unit tests
 #   deps       report on SDL3 and the other external requirements
 #   dist       a binary distribution for this machine, in distributions/
+#   dist-container  the Linux one built on Ubuntu 24.04, for an older glibc
 #   clean      remove build artifacts
 #   help       list targets and variables
 #
@@ -102,8 +103,8 @@ GOALS := $(if $(MAKECMDGOALS),$(MAKECMDGOALS),all)
 #  when something is missing, but only after it has said what.  `help' is in
 #  it because a reader whose build just refused to run is exactly the reader
 #  who types `make help' next.
-NO_PROBE_GOALS := clean font
-NO_STOP_GOALS  := clean font help deps
+NO_PROBE_GOALS := clean font dist-container
+NO_STOP_GOALS  := clean font help deps dist-container
 
 PROBE := $(if $(filter-out $(NO_PROBE_GOALS),$(GOALS)),yes)
 STOP  := $(if $(filter-out $(NO_STOP_GOALS),$(GOALS)),yes)
@@ -678,6 +679,7 @@ demo-image: $(BIN)
 comma    := ,
 DIST_OS  := $(if $(filter Darwin,$(UNAME_S)),macos,$(shell uname -s | tr A-Z a-z))
 DIST_DIR := distributions/$(DIST_OS)-$(shell uname -m)
+DIST_DTAGS := $(if $(filter Darwin,$(UNAME_S)),,-Wl$(comma)--disable-new-dtags)
 DIST_RPATH := $(if $(filter Darwin,$(UNAME_S)),-Wl$(comma)-rpath$(comma)@executable_path/lib,-Wl$(comma)--disable-new-dtags$(comma)-rpath$(comma)'$$ORIGIN/lib')
 
 .PHONY: dist
@@ -687,9 +689,15 @@ ifneq ($(strip $(OM:mt=)$(HEADLESS)$(TSAN)$(ASAN)),)
 else
 	rm -rf $(DIST_DIR) $(DIST_DIR).tar.gz
 	@mkdir -p $(DIST_DIR)
-	$(CC) $(CFLAGS) $(MAIN_OBJ) $(LIB_AR) -o $(DIST_DIR)/st2026 $(LDFLAGS) $(LIBS) $(DIST_RPATH)
+	$(CC) $(CFLAGS) $(MAIN_OBJ) $(LIB_AR) -o $(DIST_DIR)/st2026 $(DIST_RPATH) $(LDFLAGS) $(LIBS) $(DIST_DTAGS)
 	@sh tools/dist.sh $(DIST_DIR)
 endif
+
+# The same, built in an Ubuntu 24.04 container so that its glibc floor is
+# 2.39 and not this machine's: tools/dist-container.sh, Distributions.md.
+.PHONY: dist-container
+dist-container:
+	@sh tools/dist-container.sh
 
 test: unit-test suite-test snapshot-test
 
@@ -818,6 +826,7 @@ help:
 	@echo "  font         regenerate the built-in face (needs Pillow and a font)"
 	@echo "  demo-image   bootstrap the demo application's server image (demo/README.md)"
 	@echo "  dist         a binary distribution for this machine, in distributions/"
+	@echo "  dist-container  the Linux distribution, built on Ubuntu 24.04 (needs docker)"
 	@echo
 	@echo "Variables:"
 	@echo "  OM=mt        64-bit threaded object memory (default) -- the system"

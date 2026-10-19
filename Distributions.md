@@ -8,7 +8,7 @@ platform.
 
 | Platform | Command | Result |
 |---|---|---|
-| Linux | `make dist` | `distributions/linux-<arch>/` and `.tar.gz` |
+| Linux | `make dist-container` (recommended) or `make dist` | `distributions/linux-<arch>/` and `.tar.gz` |
 | macOS | `make dist` | `distributions/macos-<arch>/` and `.tar.gz` |
 | Windows | `nmake /f Makefile.msvc dist SDL3=C:\SDL3-x.y.z` | `distributions\windows-x86_64\` and `.zip` |
 
@@ -53,7 +53,11 @@ is.
 
 The binary is linked again with a run path of `$ORIGIN/lib`, as `DT_RPATH`
 (`-Wl,--disable-new-dtags`) and not `RUNPATH`. Only `DT_RPATH` is searched
-for a library's own dependencies, and libodbc's libltdl is one.
+for a library's own dependencies, and libodbc's libltdl is one. The run path
+is named before `$(LIBS)`, and `--disable-new-dtags` again after it,
+because an SDL3 in `/usr/local` brings a run path and `--enable-new-dtags`
+of its own through pkg-config: the first run path named is searched first,
+and the last dtags flag wins.
 
 Bundled: `libSDL3.so.0`, `libodbc.so.2`, `libltdl.so.7`, copied from where
 `ldd` resolves them. SDL3, because Ubuntu 24.04 and Debian 12 have no
@@ -74,9 +78,32 @@ newest `GLIBC_` symbol version that the binary and the bundled libraries
 ask for, and the README states it as the requirement. Built on Fedora 44,
 that floor is 2.43 — set by Fedora's SDL3, not by `st2026`, which asks for
 2.38 — and so the distribution does not run on Ubuntu 24.04 (2.39) or
-Debian 13 (2.41). To reach older systems, build the distribution on an
-older one, such as an Ubuntu 24.04 container with SDL3 built from source.
-The floor is then that system's.
+Debian 13 (2.41).
+
+### Built on Ubuntu 24.04: `make dist-container`
+
+`make dist-container` makes the same distribution in a Docker container of
+Ubuntu 24.04, so its floor is what that system's toolchain asks for —
+glibc 2.38 — and it runs on Ubuntu 24.04 and later, Debian 13, and every
+current Fedora. Unpacked into bare `ubuntu:24.04` and `debian:13`
+containers, with nothing installed, it starts, loads its image, and draws
+the same desktop it draws on Fedora 44. It needs only Docker on the host — not
+SDL3 or anything else the build wants — and `DOCKER=podman` uses podman
+instead.
+
+| | |
+|---|---|
+| `tools/dist/linux/Dockerfile` | Ubuntu 24.04 with the build tools, OpenSSL and unixODBC headers, and SDL3 built from its release tag (`SDL3_VERSION`, default 3.4.18) |
+| `tools/dist-container.sh` | builds that image, copies the tree into a container without `build/`, `distributions/`, `oracle/`, `.git` or anything built, runs `make dist` there, and copies the result back |
+
+The result replaces `distributions/linux-<arch>/` and its `.tar.gz`, owned
+by the caller. Docker keeps the image, so only the first run spends its
+minutes building SDL3; a new `SDL3_VERSION` in the Dockerfile builds it
+again. The SDL3 made there links only libc and libm and loads X11, Wayland
+and the sound systems with `dlopen`, as Ubuntu's own packages of it would.
+
+Releases should use `make dist-container`. `make dist` on Linux is for a
+distribution meant only for machines as new as the one that built it.
 
 ## macOS
 
