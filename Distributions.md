@@ -10,7 +10,7 @@ platform.
 |---|---|---|
 | Linux | `make dist-container` (recommended) or `make dist` | `distributions/linux-<arch>/` and `.tar.gz` |
 | macOS | `make dist` | `distributions/macos-<arch>/` and `.tar.gz` |
-| Windows | `nmake /f Makefile.msvc dist SDL3=C:\SDL3-x.y.z` | `distributions\windows-x86_64\` and `.zip` |
+| Windows | `nmake /f Makefile.msvc dist SDL3=%USERPROFILE%\SDL3-x.y.z` | `distributions\windows-x86_64\` and `.zip` |
 
 `<arch>` is `uname -m` on the building machine: `x86_64`, or `arm64` on Apple
 Silicon. Each run removes the previous directory and archive first.
@@ -109,18 +109,28 @@ distribution meant only for machines as new as the one that built it.
 
 The binary is linked again with an `LC_RPATH` of `@executable_path/lib`.
 Every library it loads from outside `/usr/lib` and `/System` — Homebrew's
-SDL3, and its OpenSSL when the build found one — is copied into `lib/`,
+SDL3, and its OpenSSL and unixODBC when the build found them — is copied
+into `lib/`,
 following each library's own dependencies too. Each copy is renamed to
 `@rpath/<name>`, every reference to it in the binary and in the other
 copies is rewritten to that name, and then all of them are signed again
 ad hoc (`codesign --force --sign -`), since `install_name_tool` breaks the
-signature and Apple Silicon will not run an unsigned binary. iODBC is part
-of macOS and is not bundled.
+signature and Apple Silicon will not run an unsigned binary. Every
+run path but `@executable_path/lib` is deleted from the binary, so the
+`-rpath /opt/homebrew/lib` that pkg-config adds cannot send it to the
+user's own Homebrew.
+
+Homebrew's OpenSSL is keg-only, so a plain `make dist` finds no OpenSSL
+and builds without `https`; and without unixODBC it builds without the
+database. The release recipe below says how to have both.
 
 The README's macOS floor is the building machine's `sw_vers
 -productVersion`, and its architecture is the building machine's. An
 `arm64` distribution does not run on an Intel Mac; an `x86_64` one runs on
-Apple Silicon under Rosetta 2.
+Apple Silicon under Rosetta 2. The floor is also the highest `minos` of anything bundled:
+Homebrew builds its bottles for the macOS they are installed on, so a
+Homebrew OpenSSL on macOS 27 makes the distribution macOS 27 or later, and
+a lower `MACOSX_DEPLOYMENT_TARGET` for `st2026` cannot lower it.
 
 The binary is not notarised, so a downloaded copy is quarantined and
 refused. The README gives the `xattr -dr com.apple.quarantine` that clears
@@ -129,9 +139,33 @@ it.
 ## Windows
 
 `nmake /f Makefile.msvc dist` builds `st2026.exe` if it needs to, then
-copies it and `SDL3.dll` into the distribution, bootstraps the image with
-the copy, copies the README and the rest, and packs the folder with
-PowerShell's `Compress-Archive`.
+copies it, `SDL3.dll` and OpenSSL's `libssl-3-x64.dll` and
+`libcrypto-3-x64.dll` into the distribution, bootstraps the image with
+the copy, copies the README and the rest, and packs the folder with the
+`tar.exe` that Windows 10 and 11 ship (`tar -a`, which writes a zip for a
+`.zip` name). Not Windows PowerShell's `Compress-Archive`: it stores the
+entries as `windows-x86_64\LICENSE`, which unzips anywhere but Windows as
+flat files with backslashes in their names.
+
+The files in the zip have CRLF line endings when git checked the tree out
+with `core.autocrlf=true`, and so does the source in the image. The readers
+treat CR, LF and CRLF alike (`Windows.md`, *Line endings*).
+
+**ODBC** is Windows' own: `sql.h` is in the SDK and `odbc32.dll` in every
+Windows, so the build defines `ST_HAVE_ODBC` and links `odbc32.lib` unless
+`NODB=1`, and nothing is bundled for it.
+
+**TLS** wants an OpenSSL 3.2 or later development package, which Windows
+does not have. `winget install ShiningLight.OpenSSL.Dev` installs one in
+`C:\Program Files\OpenSSL-Win64`, where `Makefile.msvc` finds it without
+being told; `OPENSSL=` names another, and `OPENSSLLIB=` its import
+libraries' directory when that is not `lib\VC\x64\MD`. 3.2 because on
+Windows `src/net/st_socket.c` verifies servers against the Windows
+certificate store, through OpenSSL's `org.openssl.winstore:` URI; OpenSSL's
+default paths there name a directory nobody fills. `dist` refuses a build
+with no OpenSSL unless `NOTLS=1` says to ship without `https`. A build
+without ODBC or TLS has its own build directory (`build\mt-nodb-msvc`,
+`build\mt-notls-msvc`), as a headless one does.
 
 `SDL3.dll` is taken from `$(SDL3)\lib\x64\SDL3.dll`, the layout of SDL's
 `-VC.zip` development package. For another layout, name it:
@@ -162,3 +196,98 @@ everything outside `/usr/lib` and `/System`.
 
 Best of all is a machine that has never built the tree: one with no SDL3,
 no unixODBC and no Homebrew, at the oldest system version the README claims.
+
+## Making a release
+
+A release is a tag on GitHub with the three archives attached, each built
+on its own platform from the same commit. The manual's PDF is not in git
+(`*.pdf` is ignored) and is built only where LaTeX is; it reaches the other
+two archives by the last step below.
+
+**1. Commit and push**, and pick the version. The binary reports
+`ST_VERSION` from `src/main.c`; the tag is `v` and the version, as in
+`v0.1.0`.
+
+**2. The manual, on Linux:**
+
+```sh
+make -C manual
+```
+
+**3. Linux, on Linux:**
+
+```sh
+make dist-container
+```
+
+`distributions/linux-x86_64.tar.gz`, built on Ubuntu 24.04, with the
+manual. `strings distributions/linux-x86_64/st2026 | grep 'GCC: ('` should
+name Ubuntu.
+
+**4. macOS, on the Mac:**
+
+```sh
+git pull
+brew install sdl3 unixodbc openssl pkg-config
+PKG_CONFIG_PATH=$(brew --prefix openssl)/lib/pkgconfig make dist
+distributions/macos-arm64/st2026 -version
+```
+
+`-version` must say `database : ODBC` and `TLS : OpenSSL`; `none` means
+the build did not find one, and the distribution goes out without it. Copy
+`distributions/macos-arm64.tar.gz` to the Linux machine's `distributions/`.
+
+**5. Windows, on the Windows machine**, in an *x64 Native Tools Command
+Prompt*:
+
+```bat
+git pull
+curl.exe -LO https://github.com/libsdl-org/SDL/releases/download/release-3.4.18/SDL3-devel-3.4.18-VC.zip
+tar -xf SDL3-devel-3.4.18-VC.zip -C %USERPROFILE%
+winget install ShiningLight.OpenSSL.Dev
+nmake /f Makefile.msvc dist SDL3=%USERPROFILE%\SDL3-3.4.18
+distributions\windows-x86_64\st2026.exe -version
+```
+
+`-version` must say `database : ODBC` and `TLS : OpenSSL`. The SDL3
+download and the OpenSSL install are once per machine. SDL3 goes into the
+user folder because an ordinary prompt cannot create one at the top of
+`C:\`; keep its version the same as the Dockerfile's `SDL3_VERSION`.
+`winget` asks for elevation itself.
+Copy `distributions\windows-x86_64.zip` to the
+Linux machine's `distributions/`.
+
+**6. The manual into the macOS and Windows archives**, on Linux:
+
+```sh
+cd distributions
+tar -xzf macos-arm64.tar.gz
+cp ../manual/smalltalk-2026-manual.pdf macos-arm64/
+tar --owner=0 --group=0 --numeric-owner -czf macos-arm64.tar.gz macos-arm64
+unzip -q windows-x86_64.zip
+cp ../manual/smalltalk-2026-manual.pdf windows-x86_64/
+rm windows-x86_64.zip && zip -qr windows-x86_64.zip windows-x86_64
+cd ..
+```
+
+**7. Check each archive** as the section above says, on a machine that has
+never built the tree when there is one.
+
+**8. Publish:**
+
+```sh
+gh release create v0.1.0 --target main --title "Smalltalk-2026 0.1.0" \
+    --notes-file notes.md \
+    distributions/linux-x86_64.tar.gz \
+    distributions/macos-arm64.tar.gz \
+    distributions/windows-x86_64.zip
+```
+
+`--target` takes a branch or a full commit hash, not a short one. To
+replace an archive on a release that exists, `gh release upload v0.1.0
+<file> --clobber`; to take one down, `gh release delete-asset v0.1.0
+<name>`; to change the notes, `gh release edit v0.1.0 --notes-file
+notes.md`. The notes should carry, per platform, the archive's name and
+what it runs on: the glibc floor from the Linux README, the macOS floor and
+processor from the macOS one, and the Visual C++ Redistributable for
+Windows.

@@ -1055,7 +1055,18 @@ tls_context_locked(void)
     }
     SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
     SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, NULL);
+    /*
+     *  Windows keeps its trusted roots in the system certificate store and
+     *  not in a file, and OpenSSL's default paths there name a directory
+     *  nobody fills -- so every peer failed verification.  OpenSSL 3.2
+     *  reads the store itself through the "org.openssl.winstore:" URI;
+     *  Makefile.msvc asks for 3.2 or later for this.
+     */
+#if defined(_WIN32) && OPENSSL_VERSION_NUMBER >= 0x30200000L
+    if (SSL_CTX_load_verify_store(ctx, "org.openssl.winstore:") != 1) {
+#else
     if (SSL_CTX_set_default_verify_paths(ctx) != 1) {
+#endif
         tls_set_error("the system's certificate store", NULL);
         SSL_CTX_free(ctx);
         return NULL;

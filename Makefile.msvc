@@ -12,6 +12,11 @@
 #   SDL3=path    root of an SDL3 development package
 #   SDL3LIB=path the import library, if it is not where SDL3= implies
 #   SDL3DLL=path the DLL `dist' ships, if it is not $(SDL3)\lib\x64\SDL3.dll
+#   NODB=1       build without ODBC; Windows' own driver manager is used otherwise
+#   OPENSSL=path an OpenSSL 3.2 or later development package, for https;
+#                found by itself where ShiningLight.OpenSSL.Dev installs it
+#   OPENSSLLIB=path  the directory of libssl.lib, if not $(OPENSSL)\lib\VC\x64\MD
+#   NOTLS=1      build without OpenSSL
 #   HEADLESS=1   build with no display at all; the graphics layer becomes
 #                a stub and this build stops asking for SDL3
 #
@@ -135,7 +140,9 @@ LDFLAGS  = /nologo
 #  src/net/st_socket.c.  Given here, after /link, for the reason the
 #  subsystem is.
 #
-LINKOPT  = /link ws2_32.lib bcrypt.lib /SUBSYSTEM:CONSOLE
+#  odbc32 and OpenSSL's two, when the build has them, go the same way.
+#
+LINKOPT  = /link ws2_32.lib bcrypt.lib $(ODBCLIBS) $(TLSLIBS) /SUBSYSTEM:CONSOLE
 
 !IF "$(OM)" == "bb"
 OMDEF = /DST_OM_BB
@@ -170,7 +177,46 @@ SDLDEF  =
 SDLLIBS =
 !ENDIF
 
-CPPFLAGS = $(INCLUDES) $(OMDEF) $(SDLDEF)
+#
+#  ODBC is part of Windows -- sql.h in the SDK, odbc32.dll in System32 --
+#  so it is on unless NODB=1 says otherwise, as the GNU makefile has it
+#  whenever a driver manager is found.
+#
+!IFNDEF NODB
+ODBCDEF  = /DST_HAVE_ODBC
+ODBCLIBS = odbc32.lib
+!ELSE
+ODBCDEF  =
+ODBCLIBS =
+!ENDIF
+
+#
+#  OpenSSL is not part of Windows.  `winget install ShiningLight.OpenSSL.Dev'
+#  puts one in C:\Program Files\OpenSSL-Win64, which is looked for when
+#  OPENSSL= is not given, so that the ordinary install needs nothing said;
+#  its import libraries are in lib\VC\x64\MD, the /MD flavour this build
+#  links.  A path with a space in it is quoted below, so OPENSSL= takes one
+#  unquoted -- or use the 8.3 name.  3.2 or later, for the Windows
+#  certificate store: see tls_context_locked in src/net/st_socket.c.
+#
+!IF !defined(OPENSSL) && !defined(NOTLS)
+!IF EXIST("C:\Program Files\OpenSSL-Win64\include\openssl\ssl.h")
+OPENSSL = C:\Program Files\OpenSSL-Win64
+!ENDIF
+!ENDIF
+!IF defined(OPENSSL) && !defined(NOTLS)
+!IFNDEF OPENSSLLIB
+OPENSSLLIB = $(OPENSSL)\lib\VC\x64\MD
+!ENDIF
+HAVE_TLS = 1
+TLSDEF  = /DST_HAVE_TLS /I"$(OPENSSL)\include"
+TLSLIBS = "$(OPENSSLLIB)\libssl.lib" "$(OPENSSLLIB)\libcrypto.lib"
+!ELSE
+TLSDEF  =
+TLSLIBS =
+!ENDIF
+
+CPPFLAGS = $(INCLUDES) $(OMDEF) $(SDLDEF) $(ODBCDEF) $(TLSDEF)
 
 #
 #  A build with no display has its own directory (Bugs5 DOCS-3), for the
@@ -181,10 +227,19 @@ CPPFLAGS = $(INCLUDES) $(OMDEF) $(SDLDEF)
 #  into a build that had been told to open a window.  "No SDL3" is the same
 #  build as HEADLESS=1, because SDLDEF above is empty for both.
 #
+#  And so does a build without ODBC or without TLS, for the same reason:
+#  the objects of one are not the objects of the other.
+#
+!IFDEF NODB
+VARIANT_DB = -nodb
+!ENDIF
+!IFNDEF HAVE_TLS
+VARIANT_TLS = -notls
+!ENDIF
 !IF defined(SDL3) && !defined(HEADLESS)
-BUILD    = build\$(OM)-msvc
+BUILD    = build\$(OM)$(VARIANT_DB)$(VARIANT_TLS)-msvc
 !ELSE
-BUILD    = build\$(OM)-headless-msvc
+BUILD    = build\$(OM)-headless$(VARIANT_DB)$(VARIANT_TLS)-msvc
 !ENDIF
 PDB      = $(BUILD)\st2026.pdb
 
@@ -405,6 +460,14 @@ dist: sdl3_ok $(BIN)
 !IF !defined(SDL3) || defined(HEADLESS) || "$(OM)" != "mt"
 	@echo dist: build the windowed OM=mt system -- nmake /f Makefile.msvc dist SDL3=C:\SDL3-3.4.14
 	@exit 1
+!ELSEIF !defined(HAVE_TLS) && !defined(NOTLS)
+	@echo dist: no OpenSSL, so this build has no https.  Install one --
+	@echo.
+	@echo     winget install ShiningLight.OpenSSL.Dev
+	@echo.
+	@echo and run nmake again, or name another with OPENSSL=, or say NOTLS=1 to
+	@echo ship without https.
+	@exit 1
 !ELSE
 	@if exist $(DIST) rmdir /s /q $(DIST)
 	@if exist $(DIST).zip del $(DIST).zip
@@ -412,6 +475,10 @@ dist: sdl3_ok $(BIN)
 	mkdir $(DIST)
 	copy /y $(BIN) $(DIST)\st2026.exe
 	copy /y "$(SDL3DLL)" $(DIST)\SDL3.dll
+!IFDEF HAVE_TLS
+	copy /y "$(OPENSSL)\bin\libssl-3-x64.dll" $(DIST)\
+	copy /y "$(OPENSSL)\bin\libcrypto-3-x64.dll" $(DIST)\
+!ENDIF
 	$(DIST)\st2026.exe -bootstrap -profile profiles\st2026.profile -o $(DIST)\st2026.image
 	copy /y tools\dist\README-windows.md $(DIST)\README.md
 	copy /y LICENSE $(DIST)\LICENSE

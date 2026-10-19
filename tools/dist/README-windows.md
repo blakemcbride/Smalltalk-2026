@@ -9,6 +9,7 @@ Source, documentation and issues: <https://github.com/blakemcbride/Smalltalk-202
 |---|---|
 | `st2026.exe` | the virtual machine |
 | `SDL3.dll` | the graphics library, bundled so you need not install it |
+| `libssl-3-x64.dll`, `libcrypto-3-x64.dll` | OpenSSL, for `https`, bundled likewise |
 | `st2026.image`, `st2026.image.changes` | a ready-to-run image: the class library, its source, and the desktop |
 | `smalltalk-2026-manual.pdf` | the manual |
 | `LICENSE`, `LICENSING.md` | the licence, and the provenance of the parts that are other people's |
@@ -39,7 +40,8 @@ Windows has ODBC built in. To reach a particular database, install that
 database's 64-bit ODBC driver (PostgreSQL's psqlODBC, SQLite ODBC, and so
 on) and, if you use a DSN, define it in **ODBC Data Sources (64-bit)**.
 
-Nothing else is needed. SDL3 does not have to be installed separately.
+Nothing else is needed. SDL3 and OpenSSL do not have to be installed
+separately; `https` checks servers against Windows' own certificate store.
 
 ## Install
 
@@ -48,7 +50,7 @@ Nothing else is needed. SDL3 does not have to be installed separately.
    Not `C:\Program Files`, which ordinary programs cannot write to.
 2. If Windows marked the zip as downloaded, unblock it *before* unzipping:
    right-click the zip → **Properties** → tick **Unblock** → **OK**.
-3. Keep `SDL3.dll` in the same folder as `st2026.exe`.
+3. Keep the `.dll` files in the same folder as `st2026.exe`.
 
 ## Run
 
@@ -86,7 +88,7 @@ st2026.exe -run st2026.image
 | Message | Cause and fix |
 |---|---|
 | `VCRUNTIME140.dll was not found` | install requirement 2 |
-| `SDL3.dll was not found` | `SDL3.dll` is not beside `st2026.exe` |
+| `SDL3.dll` or `libssl-3-x64.dll was not found` | the `.dll` files are not beside `st2026.exe` |
 | `0xc000007b` | a 32-bit `SDL3.dll` replaced the bundled one — unzip again |
 
 ## Uninstall
