@@ -590,7 +590,7 @@ file_is_there(const char *path)
 {
     struct stat st;
 
-    return stat(path, &st) == 0 && !S_ISDIR(st.st_mode);
+    return stat(path, &st) == 0 && (st.st_mode & S_IFMT) != S_IFDIR;
 }
 
 /*  The length of the file at this path, or -1 when there is no file.  */
@@ -599,7 +599,7 @@ file_size_of(const char *path)
 {
     struct stat st;
 
-    if (stat(path, &st) != 0 || S_ISDIR(st.st_mode))
+    if (stat(path, &st) != 0 || (st.st_mode & S_IFMT) == S_IFDIR)
         return -1;
     return (int64_t) st.st_size;
 }
