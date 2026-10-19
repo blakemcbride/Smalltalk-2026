@@ -79,6 +79,11 @@ Darwin)
             install_name_tool -change "$path" "@rpath/$(basename "$path")" "$f"
         done
     done
+    #  And no run path but lib/: pkg-config's -rpath /opt/homebrew/lib would
+    #  otherwise send the binary to whatever Homebrew the user has.
+    for rp in $(otool -l "$BIN" | awk '/LC_RPATH/ { getline; getline; print $2 }'); do
+        [ "$rp" = "@executable_path/lib" ] || install_name_tool -delete_rpath "$rp" "$BIN"
+    done
     #  install_name_tool breaks the signature, and Apple Silicon refuses to
     #  run an unsigned binary: an ad-hoc signature is what the linker gave
     #  them in the first place.
@@ -113,13 +118,15 @@ cp -f "$ROOT/doc/LICENSING.md" "$DIR/LICENSING.md"
     && cp -f "$ROOT/manual/smalltalk-2026-manual.pdf" "$DIR/"
 
 #  The template's @NAME@ fields; CONFIG is several lines, so it goes in by
-#  awk rather than sed.
-awk -v version="$VERSION" -v arch="$ARCH" -v dir="$(basename "$DIR")" \
-    -v glibc="${GLIBC:-}" -v macos="${MACOS:-}" -v config="$CONFIG" '
+#  awk rather than sed, and through the environment rather than -v, which
+#  macOS's awk refuses a newline in.
+D_VERSION=$VERSION D_ARCH=$ARCH D_DIR=$(basename "$DIR") \
+D_GLIBC=${GLIBC:-} D_MACOS=${MACOS:-} D_CONFIG=$CONFIG awk '
     {
-        gsub(/@VERSION@/, version); gsub(/@ARCH@/, arch); gsub(/@DIR@/, dir)
-        gsub(/@GLIBC@/, glibc);     gsub(/@MACOS@/, macos)
-        if ($0 == "@CONFIG@") print config; else print
+        gsub(/@VERSION@/, ENVIRON["D_VERSION"]); gsub(/@ARCH@/, ENVIRON["D_ARCH"])
+        gsub(/@DIR@/, ENVIRON["D_DIR"]);         gsub(/@GLIBC@/, ENVIRON["D_GLIBC"])
+        gsub(/@MACOS@/, ENVIRON["D_MACOS"])
+        if ($0 == "@CONFIG@") print ENVIRON["D_CONFIG"]; else print
     }' "$ROOT/tools/dist/$TEMPLATE" > "$DIR/README.md"
 
 #  And the same directory as one file to hand someone.
