@@ -3,12 +3,15 @@
 #   nmake /f Makefile.msvc
 #   nmake /f Makefile.msvc test
 #   nmake /f Makefile.msvc clean
+#   nmake /f Makefile.msvc dist SDL3=path   a binary distribution, in
+#                                           distributions\windows-x86_64
 #
 # Variables:
 #   OM=mt        64-bit threaded object memory (default; the real system)
 #   OM=bb        16-bit Blue Book object memory (the Xerox trace harness)
 #   SDL3=path    root of an SDL3 development package
 #   SDL3LIB=path the import library, if it is not where SDL3= implies
+#   SDL3DLL=path the DLL `dist' ships, if it is not $(SDL3)\lib\x64\SDL3.dll
 #   HEADLESS=1   build with no display at all; the graphics layer becomes
 #                a stub and this build stops asking for SDL3
 #
@@ -381,6 +384,38 @@ test: sdl3_ok $(BIN)
 	$(BUILD)\test_parallel_rest.exe
 	$(BUILDTEST) tests\unit\test_serve_faults.c $(OBJ) $(SDLLIBS) $(LINKOPT)
 	$(BUILD)\test_serve_faults.exe
+
+#
+#  A binary distribution, the Windows half of the GNU makefile's `make dist'
+#  (tools/dist.sh): the binary, the SDL3.dll it was linked against, an image
+#  bootstrapped by that binary, and tools\dist\README-windows.md as the
+#  README.  The C runtime is not copied; the README sends the user to
+#  Microsoft's redistributable instead.  Then the folder again as a .zip.
+#
+DIST = distributions\windows-x86_64
+!IFNDEF SDL3DLL
+SDL3DLL = $(SDL3)\lib\x64\SDL3.dll
+!ENDIF
+
+dist: sdl3_ok $(BIN)
+!IF !defined(SDL3) || defined(HEADLESS) || "$(OM)" != "mt"
+	@echo dist: build the windowed OM=mt system -- nmake /f Makefile.msvc dist SDL3=C:\SDL3-3.4.14
+	@exit 1
+!ELSE
+	@if exist $(DIST) rmdir /s /q $(DIST)
+	@if exist $(DIST).zip del $(DIST).zip
+	@if not exist distributions mkdir distributions
+	mkdir $(DIST)
+	copy /y $(BIN) $(DIST)\st2026.exe
+	copy /y "$(SDL3DLL)" $(DIST)\SDL3.dll
+	$(DIST)\st2026.exe -bootstrap -profile profiles\st2026.profile -o $(DIST)\st2026.image
+	copy /y tools\dist\README-windows.md $(DIST)\README.md
+	copy /y LICENSE $(DIST)\LICENSE
+	copy /y doc\LICENSING.md $(DIST)\LICENSING.md
+	@if exist manual\smalltalk-2026-manual.pdf copy /y manual\smalltalk-2026-manual.pdf $(DIST)
+	powershell -NoProfile -Command "Compress-Archive -Force -Path '$(DIST)' -DestinationPath '$(DIST).zip'"
+	@echo   distribution in $(DIST), and as $(DIST).zip
+!ENDIF
 
 clean:
 	@if exist build rmdir /s /q build

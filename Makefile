@@ -4,6 +4,7 @@
 #   all        (default) build the st2026 binary
 #   test       build and run the unit tests
 #   deps       report on SDL3 and the other external requirements
+#   dist       a binary distribution for this machine, in distributions/
 #   clean      remove build artifacts
 #   help       list targets and variables
 #
@@ -667,6 +668,29 @@ demo-image: $(BIN)
 	./st2026 -bootstrap -profile profiles/st2026.profile -startup 'RestServer serve' -o demo.im
 	@echo "built demo.im -- now: ./st2026 -serve demo.im demo/server.json"
 
+# A binary distribution for this machine: tools/dist.sh and tools/dist/.
+# distributions/linux-x86_64, distributions/macos-arm64 and so on, named by
+# the host; Windows is `nmake /f Makefile.msvc dist'.  The binary is linked
+# again rather than copied, with a run path into its own lib/, where
+# tools/dist.sh puts the libraries it bundles.  DT_RPATH and not RUNPATH on
+# Linux, because only DT_RPATH is searched for a library's own dependencies
+# -- libodbc's libltdl.
+comma    := ,
+DIST_OS  := $(if $(filter Darwin,$(UNAME_S)),macos,$(shell uname -s | tr A-Z a-z))
+DIST_DIR := distributions/$(DIST_OS)-$(shell uname -m)
+DIST_RPATH := $(if $(filter Darwin,$(UNAME_S)),-Wl$(comma)-rpath$(comma)@executable_path/lib,-Wl$(comma)--disable-new-dtags$(comma)-rpath$(comma)'$$ORIGIN/lib')
+
+.PHONY: dist
+dist: $(VARIANT_BIN)
+ifneq ($(strip $(OM:mt=)$(HEADLESS)$(TSAN)$(ASAN)),)
+	@echo "dist: build the default OM=mt windowed system -- plain \`make dist'"; exit 1
+else
+	rm -rf $(DIST_DIR) $(DIST_DIR).tar.gz
+	@mkdir -p $(DIST_DIR)
+	$(CC) $(CFLAGS) $(MAIN_OBJ) $(LIB_AR) -o $(DIST_DIR)/st2026 $(LDFLAGS) $(LIBS) $(DIST_RPATH)
+	@sh tools/dist.sh $(DIST_DIR)
+endif
+
 test: unit-test suite-test snapshot-test
 
 # A snapshot from a worker pool, resumed ----------------------------------------
@@ -793,6 +817,7 @@ help:
 	@echo "  clean        remove build artifacts"
 	@echo "  font         regenerate the built-in face (needs Pillow and a font)"
 	@echo "  demo-image   bootstrap the demo application's server image (demo/README.md)"
+	@echo "  dist         a binary distribution for this machine, in distributions/"
 	@echo
 	@echo "Variables:"
 	@echo "  OM=mt        64-bit threaded object memory (default) -- the system"
