@@ -390,7 +390,11 @@ test: sdl3_ok $(BIN)
 #  (tools/dist.sh): the binary, the SDL3.dll it was linked against, an image
 #  bootstrapped by that binary, and tools\dist\README-windows.md as the
 #  README.  The C runtime is not copied; the README sends the user to
-#  Microsoft's redistributable instead.  Then the folder again as a .zip.
+#  Microsoft's redistributable instead.  Then the folder again as a .zip,
+#  by the tar.exe Windows 10 and 11 ship, which picks the format from the
+#  name.  Not Windows PowerShell's Compress-Archive: it stores its entries
+#  as windows-x86_64\LICENSE, and an unzip anywhere else makes a flat file
+#  of that name rather than a folder.
 #
 DIST = distributions\windows-x86_64
 !IFNDEF SDL3DLL
@@ -413,7 +417,7 @@ dist: sdl3_ok $(BIN)
 	copy /y LICENSE $(DIST)\LICENSE
 	copy /y doc\LICENSING.md $(DIST)\LICENSING.md
 	@if exist manual\smalltalk-2026-manual.pdf copy /y manual\smalltalk-2026-manual.pdf $(DIST)
-	powershell -NoProfile -Command "Compress-Archive -Force -Path '$(DIST)' -DestinationPath '$(DIST).zip'"
+	tar -a -c -f $(DIST).zip -C distributions windows-x86_64
 	@echo   distribution in $(DIST), and as $(DIST).zip
 !ENDIF
 
