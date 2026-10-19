@@ -444,7 +444,10 @@ test: sdl3_ok $(BIN)
 #  A binary distribution, the Windows half of the GNU makefile's `make dist'
 #  (tools/dist.sh): the binary, the SDL3.dll it was linked against, an image
 #  bootstrapped by that binary, and tools\dist\README-windows.md as the
-#  README.  The C runtime is not copied; the README sends the user to
+#  README.  OpenSSL's two DLLs too, by wildcard: their names carry its
+#  major version, libssl-3-x64.dll or libssl-4-x64.dll.  And no line here
+#  ends in a backslash, which nmake reads as a continuation.  The C runtime
+#  is not copied; the README sends the user to
 #  Microsoft's redistributable instead.  Then the folder again as a .zip,
 #  by the tar.exe Windows 10 and 11 ship, which picks the format from the
 #  name.  Not Windows PowerShell's Compress-Archive: it stores its entries
@@ -476,8 +479,8 @@ dist: sdl3_ok $(BIN)
 	copy /y $(BIN) $(DIST)\st2026.exe
 	copy /y "$(SDL3DLL)" $(DIST)\SDL3.dll
 !IFDEF HAVE_TLS
-	copy /y "$(OPENSSL)\bin\libssl-3-x64.dll" $(DIST)\
-	copy /y "$(OPENSSL)\bin\libcrypto-3-x64.dll" $(DIST)\
+	copy /y "$(OPENSSL)\bin\libssl-*-x64.dll" $(DIST)
+	copy /y "$(OPENSSL)\bin\libcrypto-*-x64.dll" $(DIST)
 !ENDIF
 	$(DIST)\st2026.exe -bootstrap -profile profiles\st2026.profile -o $(DIST)\st2026.image
 	copy /y tools\dist\README-windows.md $(DIST)\README.md

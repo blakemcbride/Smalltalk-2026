@@ -9,7 +9,7 @@ Source, documentation and issues: <https://github.com/blakemcbride/Smalltalk-202
 |---|---|
 | `st2026.exe` | the virtual machine |
 | `SDL3.dll` | the graphics library, bundled so you need not install it |
-| `libssl-3-x64.dll`, `libcrypto-3-x64.dll` | OpenSSL, for `https`, bundled likewise |
+| `libssl-*-x64.dll`, `libcrypto-*-x64.dll` | OpenSSL, for `https`, bundled likewise |
 | `st2026.image`, `st2026.image.changes` | a ready-to-run image: the class library, its source, and the desktop |
 | `smalltalk-2026-manual.pdf` | the manual |
 | `LICENSE`, `LICENSING.md` | the licence, and the provenance of the parts that are other people's |
@@ -88,7 +88,7 @@ st2026.exe -run st2026.image
 | Message | Cause and fix |
 |---|---|
 | `VCRUNTIME140.dll was not found` | install requirement 2 |
-| `SDL3.dll` or `libssl-3-x64.dll was not found` | the `.dll` files are not beside `st2026.exe` |
+| `SDL3.dll` or `libssl-…-x64.dll was not found` | the `.dll` files are not beside `st2026.exe` |
 | `0xc000007b` | a 32-bit `SDL3.dll` replaced the bundled one — unzip again |
 
 ## Uninstall

@@ -139,8 +139,8 @@ it.
 ## Windows
 
 `nmake /f Makefile.msvc dist` builds `st2026.exe` if it needs to, then
-copies it, `SDL3.dll` and OpenSSL's `libssl-3-x64.dll` and
-`libcrypto-3-x64.dll` into the distribution, bootstraps the image with
+copies it, `SDL3.dll` and OpenSSL's `libssl-*-x64.dll` and
+`libcrypto-*-x64.dll` into the distribution, bootstraps the image with
 the copy, copies the README and the rest, and packs the folder with the
 `tar.exe` that Windows 10 and 11 ship (`tar -a`, which writes a zip for a
 `.zip` name). Not Windows PowerShell's `Compress-Archive`: it stores the
