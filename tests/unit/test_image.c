@@ -716,8 +716,11 @@
  *  3437 -> 3439 with Bugs07 FIXES-2: Finalizer class>>afterMourning: and
  *  finishMourning, which let a weak dictionary take out every entry one
  *  drain mourned in one rebuild of its table.
+ *
+ *  3439 -> 3440 with Bugs07 COMP-2: FileDirectory>>replaceTextFile:using:,
+ *  which every file out now writes through.
  */
-#define LIB_METHODS             3439
+#define LIB_METHODS             3440
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -3178,8 +3181,11 @@ test_browsing(void)
      *  says why the weak dictionaries' readers hold no lock and why nothing
      *  slow is done under theirs, and the Finalizer tells a weak dictionary
      *  when a drain is over.
+     *
+     *  3059719 -> 3062314 with Bugs07 COMP-2: a file out writes beside its
+     *  target and replaces it only once it has finished.
      */
-    check_integer("(SourceFiles at: 1) contents size", 3059719);
+    check_integer("(SourceFiles at: 1) contents size", 3062314);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -12314,6 +12320,96 @@ test_bugs7c_lib(void)
         check_string(expression,
                      "(2003 2003 1487 'xyz' false 2003 1603 1603 576 'xyz' false 1603 )");
         unlink(f);
+    }
+
+    /*
+     *  COMP-2: the loader's synthesized `new' was written with line feeds,
+     *  which TextFileStream>>nextChunkPut: refuses, so `file out' of every
+     *  class that has one raised partway through; and a file out stopped
+     *  partway left the stream open and the file it was written over
+     *  holding its new first pages in front of the old file's bytes.
+     */
+    {
+        const char *dir = st_test_path("bugs7c-comp2");
+        char        sub[1024];
+        static const char *const made[] = {
+            "TestSuite.st", "TestSuite.st.part", "Bugs7cLF.st", "Bugs7cLF.st.part",
+            "Bugs7cLF-a.st", "Bugs7cLF-a.st.part", "Bugs7cLF-b.st", "Bugs7cLF-b.st.part",
+        };
+        size_t      i;
+
+        mkdir(dir, 0755);
+        /*
+         *  The synthesized methods holding a line feed, and TestSuite --
+         *  one of them -- filed out, with Disk pointed at a scratch
+         *  directory, over an older 3,000-byte file of its name: the file
+         *  is the new one, whole, and no .part file is left.  Before:
+         *  `(153 refused false true false)' -- refused, and the old
+         *  file's bytes left past the new first pages.
+         */
+        snprintf(expression, sizeof expression,
+                 "| dir lf n old f r text | dir := '%s'. lf := Character value: 10. n := 0. "
+                 "Smalltalk allClassesDo: [:k | | s | (k class includesSelector: #new) ifTrue: "
+                 "[s := k class sourceCodeAt: #new. ((s includesSubstring: "
+                 "'Synthesized by the loader') and: [s includes: lf]) ifTrue: [n := n + 1]]]. "
+                 "f := FileStream fileNamed: dir, '/TestSuite.st'. "
+                 "f nextPutAll: (String new: 3000 withAll: $p). f close. old := Disk. "
+                 "[Smalltalk at: #Disk put: (old directoryNamed: dir). "
+                 "r := [TestSuite fileOut. #written] on: Error do: [:e | e return: #refused]] "
+                 "ensure: [Smalltalk at: #Disk put: old]. "
+                 "text := (FileStream oldFileNamed: dir, '/TestSuite.st') contentsOfEntireFile. "
+                 "^{n. r. (text includesSubstring: 'pppp') not. "
+                 "text includesSubstring: '^super new initialize'. "
+                 "Disk includesKey: dir, '/TestSuite.st.part'} printString", dir);
+        check_string(expression, "(0 written true true false )");
+        /*
+         *  A file out that is still refused -- a literal holding a line
+         *  feed, behind a method big enough that a page has been written
+         *  before the refusal -- leaves an older file of the same name
+         *  exactly as it was, no stream open and no .part file; as a class
+         *  and as the protocol holding it, while the other protocol files
+         *  out.  A first doIt makes the class and the older files.
+         *  Before: `(refused refused written false true 2 false true)' --
+         *  the class's old file damaged (the protocol's had no page written
+         *  yet) and both streams left open.
+         */
+        snprintf(expression, sizeof expression,
+                 "| dir lf put c | dir := '%s'. lf := Character value: 10. "
+                 "put := [:name :char | | f | f := FileStream fileNamed: dir, '/', name. "
+                 "f nextPutAll: (String new: 3000 withAll: char). f close]. "
+                 "put value: 'Bugs7cLF.st' value: $q. put value: 'Bugs7cLF-b.st' value: $r. "
+                 "Object subclass: #Bugs7cLF instanceVariableNames: '' classVariableNames: '' "
+                 "poolDictionaries: '' category: 'Bugs7c'. c := Smalltalk at: #Bugs7cLF. "
+                 "c compile: 'one \"', (String new: 1500 withAll: $x), '\" ^1' "
+                 "classified: 'a' notifying: nil. "
+                 "c compile: 'lf ^''a', (String with: lf), 'b''' classified: 'b' notifying: nil. "
+                 "^c name", dir);
+        check_string(expression, "Bugs7cLF");
+        snprintf(expression, sizeof expression,
+                 "| dir old c refs before r same | dir := '%s'. r := OrderedCollection new. "
+                 "c := Smalltalk at: #Bugs7cLF. "
+                 "same := [:name :char | (FileStream oldFileNamed: dir, '/', name) "
+                 "contentsOfEntireFile = (String new: 3000 withAll: char)]. "
+                 "refs := FileDirectory classPool at: #ExternalReferences. before := refs size. "
+                 "old := Disk. "
+                 "[Smalltalk at: #Disk put: (old directoryNamed: dir). "
+                 "#(nil 'b' 'a') do: [:each | r add: ([each isNil ifTrue: [c fileOut] "
+                 "ifFalse: [c fileOutCategory: each]. #written] "
+                 "on: Error do: [:e | e return: #refused])]] "
+                 "ensure: [Smalltalk at: #Disk put: old]. "
+                 "r add: (same value: 'Bugs7cLF.st' value: $q); "
+                 "add: (same value: 'Bugs7cLF-b.st' value: $r); add: refs size - before; "
+                 "add: (#('Bugs7cLF.st.part' 'Bugs7cLF-b.st.part' 'Bugs7cLF-a.st.part') "
+                 "anySatisfy: [:each | Disk includesKey: dir, '/', each]); "
+                 "add: (((FileStream oldFileNamed: dir, '/Bugs7cLF-a.st') contentsOfEntireFile) "
+                 "includesSubstring: 'one \"xxx'). "
+                 "c removeFromSystem. ^r asArray printString", dir);
+        check_string(expression, "(refused refused written true true 0 false true )");
+        for (i = 0; i < sizeof made / sizeof made[0]; i++) {
+            snprintf(sub, sizeof sub, "%s/%s", dir, made[i]);
+            unlink(sub);
+        }
+        rmdir(dir);
     }
 
     test_dialect = ST_DIALECT_BLUE_BOOK;

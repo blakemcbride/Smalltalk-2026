@@ -181,6 +181,51 @@ FileDirectory >> textFile: aFileName [
 ]
 
 { #category : '*Files-Fixes' }
+FileDirectory >> replaceTextFile: aFileName using: aBlock [
+	"Write the text file of that name through the stream aBlock is given,
+	 so that the file is replaced only if aBlock finishes; answer what
+	 aBlock answers.  What every file out writes with (Bugs07 COMP-2).
+
+	 1983's file outs opened the target itself and wrote into it page by
+	 page, and closed it as their last step.  One that stopped partway --
+	 a chunk TextFileStream>>nextChunkPut: refused, a source that could not
+	 be read, a full disk -- left the stream open and the file holding the
+	 pages flushed so far with whatever the file had held before past
+	 them: written over an earlier good file out of the same class, a
+	 first page new and the rest old, which reads like a file out and
+	 files in as neither.  So the writing goes to a file beside the
+	 target, its name with `.part' added, and that stream is closed
+	 whatever happens.  Only when aBlock has finished and the stream has
+	 been shortened and closed is the target removed and the new file
+	 renamed into its place; when aBlock does not finish, the part file is
+	 removed and the target is exactly as it was.
+
+	 Removed and then renamed, because rename:newName: refuses a name that
+	 is taken (Bugs5 FILES-8).  Between the two the target is absent for a
+	 moment, and a crash there leaves the finished file under its .part
+	 name rather than losing it.  The clean-up after a failure answers
+	 nothing of its own: an error while closing or removing the part file
+	 would otherwise replace the error that stopped aBlock, which is the
+	 one worth reading."
+
+	| partName stream finished answer |
+	partName := aFileName , '.part'.
+	(self includesKey: partName) ifTrue: [self removeKey: partName].
+	stream := self textFile: partName.
+	finished := false.
+	[answer := aBlock value: stream.
+	 stream shorten; close.
+	 finished := true]
+		ensure:
+			[finished ifFalse:
+				[[stream close] on: Error do: [:e | e return: nil].
+				 [self removeKey: partName] on: Error do: [:e | e return: nil]]].
+	(self includesKey: aFileName) ifTrue: [self removeKey: aFileName].
+	stream file rename: aFileName.
+	^answer
+]
+
+{ #category : '*Files-Fixes' }
 FileDirectory class >> addExternalReference: anElement [
 	"Remember an open directory, so a snapshot can release it.  Under
 	 LibraryLocks' files lock: the list is one OrderedCollection for the

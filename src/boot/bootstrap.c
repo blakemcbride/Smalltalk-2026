@@ -3361,10 +3361,22 @@ synthesize_initializing_new(void)
      *  loader" and leaves it out of the file, because the file never had
      *  it and a write-back that added it would not read back byte for
      *  byte.  Change the words here and there together.
+     *
+     *  And the lines end in carriage returns, as every other source in the
+     *  image does (Bugs07 COMP-2).  They were line feeds, and since Bugs5
+     *  FILES-5 TextFileStream>>nextChunkPut: refuses a chunk holding a line
+     *  feed -- fileIn would read it back as a carriage return -- so `file
+     *  out' of any class given this method (over 150 in the st2026 image:
+     *  TestSuite, HttpResponse, DbRecord, every Tonel class with initialize
+     *  and no new) raised partway through the class, with advice about a
+     *  string literal the method does not have.  The image's sources hold
+     *  CR because the C Tonel reader and the chunk reader turn the file's
+     *  line ends into CR; a source written here is written as they would
+     *  have left it.
      */
-    static const char   source[] = "new\n\t\"Synthesized by the loader: this "
+    static const char   source[] = "new\r\t\"Synthesized by the loader: this "
                                    "class defines initialize and no "
-                                   "new.\"\n\t^super new initialize";
+                                   "new.\"\r\t^super new initialize";
     unsigned            depth;
     unsigned            deepest = 0;
     unsigned            i;

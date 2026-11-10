@@ -6,12 +6,13 @@ Extension { #name : 'SystemOrganizer' }
 { #category : '*Files-Fixes' }
 SystemOrganizer >> fileOutCategory: category [
 	"File out every class in the category.  The 1983 method with
-	 `Disk file:' replaced by `Disk textFile:'; see TextFileStream."
+	 `Disk file:' replaced by `Disk textFile:'; see TextFileStream.  And
+	 written through FileDirectory>>replaceTextFile:using:, so that a file
+	 out stopped partway by any one class leaves an earlier file of the
+	 same name as it was (Bugs07 COMP-2)."
 
-	| aFileStream |
-	aFileStream := Disk textFile: (category , '.st.') asFileName.
-	self fileOutCategory: category on: aFileStream.
-	aFileStream shorten; close
+	Disk replaceTextFile: (category , '.st.') asFileName using:
+		[:aFileStream | self fileOutCategory: category on: aFileStream]
 ]
 
 { #category : '*Files-Fixes' }
