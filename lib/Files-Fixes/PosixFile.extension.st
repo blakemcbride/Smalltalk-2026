@@ -174,3 +174,49 @@ PosixFile >> read: aPage [
 	error := self errorString: self lastError.
 	^self error: 'read:'
 ]
+
+{ #category : '*Files-Fixes' }
+PosixFile >> write: aPage [
+	"Write aPage; answer it, or a fresh empty page after it when it filled
+	 my last page.  And a page with data past my last one makes it my last
+	 one (Bugs07 FILES-4).
+
+	 1983's method, with one line added.  File>>write: states the contract
+	 -- `If aFilePage pageNumber = (lastPageNumber+1), then update file
+	 length' -- and 1983's PosixFile kept only half of it: lastPageNumber
+	 rose when a FULL last page was written, to glue the next one on, and
+	 never for a page written past the end.  File>>readOrAdd: hands a
+	 writer just such a page: asked for page N+1 of an N-page file, it
+	 answers the page empty and leaves lastPageNumber at N, trusting this
+	 method to move it.  A stream positioned a page or more past the end
+	 -- setToEnd then position:, or skip: -- wrote there, and the File
+	 still said N pages.  While the stream stayed on that page FilePage>>
+	 lastPage (a >=) hid it; once it moved back, size answered N pages'
+	 worth, atEnd was true at the end of page N and contentsOfEntireFile
+	 was a truncated copy of a file this same stream had just written.  A
+	 513-byte file written at 2000 measured 1536 to its writer and 2003 to
+	 anyone else.
+
+	 Only a page with data moves the end.  A page reached by positioning
+	 and written while still empty -- a flush, or a page turned away from
+	 before anything was put on it -- puts nothing on the disk (primitive
+	 130 writes its size, which is none; Bugs07 FILES-2), and the page in
+	 front of it may not be on the disk either: the glue below adds a page
+	 in memory only.  Claiming it would make characterSize count a page of
+	 nothing and every page between.  The test is `greater than', not the
+	 contract's `equal to the next': a page further past is not something
+	 readOrAdd: makes, but if one is written the file reaches it all the
+	 same, and lastPageNumber must not claim less than the disk holds."
+	| returnPage |
+	self doCommand: 1 name: nil page: aPage error: 'write:'.
+	(aPage size > 0 and: [aPage pageNumber > lastPageNumber])
+		ifTrue: [lastPageNumber := aPage pageNumber].
+	returnPage := aPage.
+	(aPage lastPage and: [aPage isFull])
+		ifTrue: ["last page can't be full, so glue on another page"
+			returnPage := self initPageNumber: 0.
+			returnPage reinitialize.
+			returnPage pageNumber: (lastPageNumber := aPage pageNumber + 1)].
+	readWrite := Read + Write.
+	^returnPage
+]

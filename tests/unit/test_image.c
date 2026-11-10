@@ -682,8 +682,11 @@
  *
  *  3392 -> 3393 with Bugs07 GUI-3: CharacterScanner>>setStopConditions,
  *  which fills a table of the scanner's own instead of the font's.
+ *
+ *  3393 -> 3394 with Bugs07 FILES-4: PosixFile>>write:, 1983's with a page
+ *  written past the last one made the last one.
  */
-#define LIB_METHODS             3393
+#define LIB_METHODS             3394
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -3110,8 +3113,11 @@ test_browsing(void)
      *
      *  3023891 -> 3024896 with Bugs07 GUI-3: a scanner stops on a table of
      *  its own, not on its font's.
+     *
+     *  3024896 -> 3027266 with Bugs07 FILES-4: a page written past a file's
+     *  last page becomes its last page.
      */
-    check_integer("(SourceFiles at: 1) contents size", 3024896);
+    check_integer("(SourceFiles at: 1) contents size", 3027266);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -12200,6 +12206,46 @@ test_bugs7c_lib(void)
     } else
         printf("  skipped FILES-6b (Bugs07): no SQLITE3 driver\n");
     unlink(db);
+
+    /*
+     *  FILES-4: a page written past the end did not move the File's last
+     *  page, so the stream that wrote it -- once it had moved back off
+     *  that page -- measured and read the file as ending a page or more
+     *  early.  A 513-byte file written at 2000, and a 1024-byte one (its
+     *  end on a page boundary) written at 1600, each by a stream that is
+     *  then reset and asked one thing: its size; its contentsOfEntireFile
+     *  (the length, the zeros in the gap, the last three characters with
+     *  a NUL shown as 0); atEnd after the first 1536 characters.  Then
+     *  the size a new stream sees.  Each question on a fresh write,
+     *  because a page turn at a full last page glues on the next page and
+     *  hides the fault from whatever is asked after it.  Before:
+     *  `(1536 1536 1023 '000' true 2003 1536 1536 512 '000' true 1603)'
+     *  -- the last page, 'xyz' and all, invisible to its own writer.
+     */
+    {
+        const char *f = st_test_path("bugs7c-files4.txt");
+
+        snprintf(expression, sizeof expression,
+                 "| f write r | f := '%s'. r := OrderedCollection new. "
+                 "write := [:length :at :probe | | s answer | "
+                 "s := FileStream fileNamed: f. s nextPutAll: (String new: length withAll: $a). "
+                 "s close. s := FileStream oldFileNamed: f. s readWrite. s setToEnd. "
+                 "s position: at. s nextPutAll: 'xyz'. s reset. answer := probe value: s. "
+                 "s close. answer]. "
+                 "#(#(513 2000) #(1024 1600)) do: [:each | | length at all | "
+                 "length := each first. at := each last. "
+                 "r add: (write value: length value: at value: [:s | s size]). "
+                 "all := write value: length value: at value: [:s | s contentsOfEntireFile]. "
+                 "r add: all size; add: ((all copyFrom: length + 1 to: (at min: all size)) "
+                 "occurrencesOf: (Character value: 0)); "
+                 "add: ((all copyFrom: all size - 2 to: all size) "
+                 "collect: [:c | c = (Character value: 0) ifTrue: [$0] ifFalse: [c]]). "
+                 "r add: (write value: length value: at value: [:s | s next: 1536. s atEnd]). "
+                 "r add: (FileStream oldFileNamed: f) size]. ^r asArray printString", f);
+        check_string(expression,
+                     "(2003 2003 1487 'xyz' false 2003 1603 1603 576 'xyz' false 1603 )");
+        unlink(f);
+    }
 
     test_dialect = ST_DIALECT_BLUE_BOOK;
 }
