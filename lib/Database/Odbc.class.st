@@ -142,22 +142,42 @@ Odbc class >> isAlive: handle [
 
 { #category : 'connections' }
 Odbc class >> connection: handle autoCommit: aBoolean [
-	^self primCommand: 5 with: handle with: aBoolean with: nil
+	"Through checkStatus:, like commit: below and for the same reason
+	 (Bugs07 FILES-1): turning autocommit on commits whatever is open, and
+	 a refusal answered false into a caller that never looked."
+	^self
+		checkStatus: (self primCommand: 5 with: handle with: aBoolean with: nil)
+		saying: 'autocommit could not be turned ', (aBoolean == true ifTrue: ['on'] ifFalse: ['off'])
 ]
 
 { #category : 'connections' }
 Odbc class >> connection: handle readOnly: aBoolean [
-	^self primCommand: 6 with: handle with: aBoolean with: nil
+	^self
+		checkStatus: (self primCommand: 6 with: handle with: aBoolean with: nil)
+		saying: 'the connection could not be made ', (aBoolean == true ifTrue: ['read-only'] ifFalse: ['read-write'])
 ]
 
 { #category : 'connections' }
 Odbc class >> commit: handle [
-	^self primCommand: 7 with: handle with: nil with: nil
+	"Raise, with the driver's words, when the database refuses the COMMIT.
+
+	 It answered the primitive's Boolean raw, which is the shape the class
+	 comment's third answer describes, and DbConnection>>commit dropped
+	 it: a COMMIT refused -- a deferred foreign key, a serialization
+	 failure PostgreSQL reports only at commit, SQLITE_BUSY, a dropped
+	 connection -- was reported as success, the transaction stayed open,
+	 and every later transaction on the connection ran inside it and was
+	 lost with it, each one reported as success too (Bugs07 FILES-1)."
+	^self
+		checkStatus: (self primCommand: 7 with: handle with: nil with: nil)
+		saying: 'the database refused the commit'
 ]
 
 { #category : 'connections' }
 Odbc class >> rollback: handle [
-	^self primCommand: 8 with: handle with: nil with: nil
+	^self
+		checkStatus: (self primCommand: 8 with: handle with: nil with: nil)
+		saying: 'the database refused the rollback'
 ]
 
 { #category : 'connections' }
@@ -171,7 +191,9 @@ Odbc class >> connection: handle info: infoInteger [
 
 { #category : 'connections' }
 Odbc class >> connection: handle schema: aString [
-	^self primCommand: 10 with: handle with: aString with: nil
+	^self
+		checkStatus: (self primCommand: 10 with: handle with: aString with: nil)
+		saying: 'the schema could not be changed to ', aString printString
 ]
 
 { #category : 'connections' }

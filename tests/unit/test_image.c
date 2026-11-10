@@ -626,8 +626,11 @@
  *  3335 -> 3341 with Bugs07 KERNB-2: SystemDictionary>>at:ifAbsentPut:,
  *  checkGlobalName:, associationsDo:, do: and valuesDo:, and LibraryLocks
  *  class>>readingGlobals:.
+ *
+ *  3341 -> 3343 with Bugs07 FILES-1: DbConnection>>abandonTransaction and
+ *  closeQuietly.
  */
-#define LIB_METHODS             3341
+#define LIB_METHODS             3343
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -2997,8 +3000,12 @@ test_browsing(void)
      *  the globals lock with the caller's block after it, the copy its
      *  enumerations walk, and the reader that a grow inside a declaration
      *  may re-enter.
+     *
+     *  2967966 -> 2972888 with Bugs07 FILES-1: the transaction commands
+     *  through checkStatus:, a refused commit rolled back and raised, a
+     *  refused rollback closing its connection.
      */
-    check_integer("(SourceFiles at: 1) contents size", 2967966);
+    check_integer("(SourceFiles at: 1) contents size", 2972888);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -11245,6 +11252,9 @@ test_bugs7_vm(void)
 static void
 test_bugs7_lib(void)
 {
+    const char *db = st_test_path("bugs7-files1.db");
+    char        expression[2048];
+
     test_dialect = ST_DIALECT_CLOSURES;
 
     /*
@@ -11290,6 +11300,72 @@ test_bugs7_lib(void)
                  "#(#Bugs7KbA #Bugs7KbB #Bugs7KbH #Bugs7KbI) do: [:k | Smalltalk removeKey: k]. "
                  "^(Smalltalk includesKey: #Bugs7KbGrow1) printString",
                  "false");
+
+    /*
+     *  FILES-1: a COMMIT the database refuses.  SQLite refuses one with a
+     *  deferred foreign key that is still violated when it is checked,
+     *  which is at COMMIT.  Before: `1: ok 2: ok 3: ok (5 )' -- the
+     *  refused commit reported as success, the transaction left open, and
+     *  the valid third transaction run inside it and lost with it.  Now
+     *  the second raises with the driver's words, it is rolled back, and
+     *  the third is kept.  Skipped where there is no SQLITE3 driver.
+     */
+    unlink(db);
+    snprintf(expression, sizeof expression,
+             "[(DbConnection open: 'DRIVER=SQLITE3;Database=%s;') close. true] "
+             "on: Error do: [:e | false]", db);
+    if (evaluate(expression) == ST_TRUE) {
+        snprintf(expression, sizeof expression,
+                 "| c out try | out := WriteStream on: String new. "
+                 "c := DbConnection open: 'DRIVER=SQLITE3;Database=%s;'. "
+                 "c autoCommit: true. c execute: 'PRAGMA foreign_keys=ON'. "
+                 "c execute: 'create table p (id integer primary key)'. "
+                 "c execute: 'create table ch (id integer primary key, pid integer "
+                 "references p(id) deferrable initially deferred)'. c autoCommit: false. "
+                 "try := [:sql | [c transact: [c execute: sql]. 'ok'] on: DbError do: [:e | "
+                 "e return: ((e messageText includesSubstring: 'FOREIGN KEY') "
+                 "ifTrue: ['refused'] ifFalse: [e messageText])]]. "
+                 "out nextPutAll: '1: ', (try value: 'insert into p values (5)'); "
+                 "nextPutAll: ' 2: ', (try value: 'insert into ch values (1, 999)'); "
+                 "nextPutAll: ' 3: ', (try value: 'insert into p values (6)'). c close. "
+                 "c := DbConnection open: 'DRIVER=SQLITE3;Database=%s;'. "
+                 "out space; print: ((c fetchAll: 'select id from p order by id') "
+                 "collect: [:x | x at: 'id']) asArray. c close. ^out contents",
+                 db, db);
+        check_string(expression, "1: ok 2: refused 3: ok (5 6 )");
+        /*  A refused commit by hand: raised, rolled back, the connection
+         *  still usable; a commit on a closed connection raises, and a
+         *  rollback there has nothing to do.  */
+        snprintf(expression, sizeof expression,
+                 "| c r | c := DbConnection open: 'DRIVER=SQLITE3;Database=%s;'. "
+                 "c autoCommit: true. c execute: 'PRAGMA foreign_keys=ON'. c autoCommit: false. "
+                 "c execute: 'insert into ch values (2, 998)'. "
+                 "r := OrderedCollection new. "
+                 "r add: ([c commit. #committed] on: DbError do: [:e | "
+                 "(e messageText endsWith: 'the transaction has been rolled back') "
+                 "ifTrue: [#rolledBack] ifFalse: [e messageText]]). "
+                 "r add: c isOpen. "
+                 "r add: ((c fetchAll: 'select count(*) as n from ch') first at: 'n'). "
+                 "r add: ([c commit. #ok] on: DbError do: [:e | e messageText]). "
+                 "c close. r add: ([c commit. #ok] on: DbError do: [:e | #closed]). "
+                 "r add: ([c rollback. #ok] on: DbError do: [:e | e messageText]). "
+                 "^r printString", db);
+        check_string(expression,
+                     "an OrderedCollection(rolledBack true 0 ok closed ok )");
+        /*  A refused ROLLBACK closes the connection: the work it leaves
+         *  pending would be kept by the next commit.  Refused here by a
+         *  handle that names nothing; the real one is closed after.  */
+        snprintf(expression, sizeof expression,
+                 "| c h r | c := DbConnection open: 'DRIVER=SQLITE3;Database=%s;'. "
+                 "h := c handle. c instVarAt: 1 put: 99999. "
+                 "r := [c rollback. #ok] on: DbError do: [:e | "
+                 "(e messageText endsWith: 'the connection has been closed') "
+                 "ifTrue: [#closed] ifFalse: [e messageText]]. "
+                 "Odbc disconnect: h. ^{r. c isOpen. c handle} printString", db);
+        check_string(expression, "(closed false nil )");
+    } else
+        printf("  skipped FILES-1 (Bugs07): no SQLITE3 driver\n");
+    unlink(db);
 
     test_dialect = ST_DIALECT_BLUE_BOOK;
 }

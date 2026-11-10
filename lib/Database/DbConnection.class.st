@@ -35,7 +35,12 @@ DbConnection class >> open: connectionString [
 	"Open a connection.  The string is ODBC's -- `DSN=name;UID=u;PWD=p', or
 	 the driver-specific form for a driver that needs no DSN."
 
-	^self new setHandle: (Odbc connect: connectionString)
+	| handle |
+	handle := Odbc connect: connectionString.
+	"Turning autocommit off raises when the driver refuses it (Bugs07
+	 FILES-1), and the handle is nobody's yet: disconnected here, or it
+	 is a server-side connection nothing in this image can close."
+	^[self new setHandle: handle] ifCurtailed: [Odbc disconnect: handle]
 ]
 
 { #category : 'instance creation' }
@@ -128,12 +133,57 @@ DbConnection >> name: aString includes: aSubstring [
 
 { #category : 'transactions' }
 DbConnection >> commit [
-	Odbc commit: handle
+	"Make the open transaction's work durable -- or raise DbError, with
+	 the driver's words, and leave no transaction open.
+
+	 A COMMIT is the one statement whose refusal is routine: a deferred
+	 constraint checked only now, a serialization failure PostgreSQL
+	 reports only now, SQLITE_BUSY, a connection that has gone.  This
+	 ignored the refusal (Bugs07 FILES-1): the caller was told the work
+	 was kept, the transaction stayed open, and the next one on this
+	 connection ran inside it -- its own commit refused for the same
+	 reason, silently, and so on until something rolled back or closed,
+	 losing every write in between.  Through RestServer that was a client
+	 told its call succeeded, and a pooled connection handed to the next
+	 request still inside the failed transaction.
+
+	 So a refusal now raises, and before it does the transaction is
+	 ended the only way left, by rolling it back (see
+	 abandonTransaction): the work is gone either way, and saying so
+	 while leaving it pending would let the next commit -- anybody's, on
+	 this connection -- make it durable after all."
+	| refused closed |
+	handle isNil ifTrue: [^DbError signal: 'commit on a closed connection'].
+	refused := nil.
+	[Odbc commit: handle] on: DbError do: [:e | refused := e messageText. e return: nil].
+	refused isNil ifTrue: [^self].
+	closed := self abandonTransaction.
+	^DbError signal: refused, (closed
+		ifTrue: ['; the rollback was refused too, and the connection has been closed']
+		ifFalse: ['; the transaction has been rolled back'])
 ]
 
 { #category : 'transactions' }
 DbConnection >> rollback [
-	Odbc rollback: handle
+	"Undo the open transaction's work -- or, when the database refuses
+	 even that, close the connection and raise DbError with the driver's
+	 words.
+
+	 Closed, because a refused rollback leaves the work pending, and the
+	 next commit on this connection would keep it (Bugs07 FILES-1): a
+	 REST request that raised handed its connection back to the pool with
+	 its work still there for the next request's commit.  Closing is the
+	 one step that is sure to discard it -- the VM rolls back before it
+	 disconnects, and a server discards what a session it has lost left
+	 uncommitted -- and a pool replaces a closed connection.  A closed
+	 connection has nothing to roll back, and that is not an error."
+	| refused |
+	handle isNil ifTrue: [^self].
+	refused := nil.
+	[Odbc rollback: handle] on: DbError do: [:e | refused := e messageText. e return: nil].
+	refused isNil ifTrue: [^self].
+	self closeQuietly.
+	^DbError signal: refused, '; the connection has been closed'
 ]
 
 { #category : 'transactions' }
@@ -142,12 +192,39 @@ DbConnection >> transact: aBlock [
 
 	 The form to prefer over commit and rollback by hand.  An exception
 	 through a half-finished transaction leaves the connection holding locks
-	 the server will not release until somebody decides; this decides."
+	 the server will not release until somebody decides; this decides.
 
+	 A commit the database refuses raises from here, with the transaction
+	 already rolled back (see commit), so a transact: that returns is one
+	 whose work is in the database (Bugs07 FILES-1).  The roll-back on the
+	 way out of a block that raised never raises itself: it runs while
+	 the block's own error is unwinding, and one raised there would take
+	 that error's place."
 	| answer |
-	answer := [aBlock value] ifCurtailed: [self rollback].
+	answer := [aBlock value] ifCurtailed: [self abandonTransaction].
 	self commit.
 	^answer
+]
+
+{ #category : 'private' }
+DbConnection >> abandonTransaction [
+	"End the open transaction without keeping its work, and never raise:
+	 roll it back, or, when the database refuses that, close the
+	 connection, which ends it as surely (see rollback).  Answer whether
+	 the connection was closed."
+	handle isNil ifTrue: [^true].
+	[Odbc rollback: handle] on: DbError do: [:e |
+		self closeQuietly.
+		^true].
+	^false
+]
+
+{ #category : 'private' }
+DbConnection >> closeQuietly [
+	"close, for a connection already known to be in trouble: whatever the
+	 driver says while it goes is not what the caller is about to be
+	 told."
+	[self close] on: Error do: [:e | handle := nil. e return: nil]
 ]
 
 { #category : 'transactions' }

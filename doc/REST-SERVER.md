@@ -165,7 +165,10 @@ sends.
 
 A connection is taken from `RestConnectionPool` before the service runs and
 put back after; the service's method runs inside a transaction that is
-committed when it returns and rolled back when it raises. A service that
+committed when it returns and rolled back when it raises. A commit the
+database refuses is an error reply carrying the driver's message, with the
+transaction rolled back (`DbConnection>>commit` raises), never a success the
+database did not keep. A service that
 wants the connection gone sooner sends `request closeConnection: aBoolean`.
 The pool is a `SharedQueue` of open `DbConnection`s, which bounds the
 requests inside the database at once to the pool's size; `lib/Database` asks

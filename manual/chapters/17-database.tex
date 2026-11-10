@@ -84,6 +84,15 @@ Prefer it over \ct{commit} and \ct{rollback} by hand: an exception through a
 half-finished transaction otherwise leaves the connection holding locks the
 server will not release until somebody decides, and this decides.
 
+A database may refuse the \ct{COMMIT} itself---a deferred constraint is
+checked only then, PostgreSQL reports a serialization failure only then, and a
+connection can be lost at any moment. \ct{commit} then raises \ct{DbError}
+with the driver's message, after rolling the transaction back, so a
+\ct{transact:} that returns is one whose work is in the database, and the next
+transaction on the connection starts clean. A \ct{rollback} the database
+refuses raises too, and closes the connection first: closing is the one way
+left to be sure the work is discarded rather than kept by the next commit.
+
 Off by default is the safe direction. A program that forgets to commit loses
 work it did not mean to keep; autocommit loses the ability to undo work it did
 not mean to do.

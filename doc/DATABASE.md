@@ -286,6 +286,17 @@ a diagnostic useful:
   is not a bug, it is news, and `Odbc class>>lastError` carries the driver's own
   words, SQLSTATE and all.
 
+A command that produces no value — a bind, an execute, a commit, a rollback,
+setting autocommit, read-only or the schema — answers `true` or `false` instead,
+and every one of them goes through `Odbc class>>checkStatus:saying:`, which
+raises `DbError` with the driver's words on anything but `true`. For the
+transaction commands that is also a promise about the connection: a `COMMIT`
+the database refuses is rolled back before `DbConnection>>commit` raises, so a
+`transact:` that returns is one whose work was kept and the next transaction
+starts clean; and a rollback the database refuses closes the connection before
+it raises, since closing is the one way left to be sure the work is discarded
+rather than kept by the next commit.
+
 ## Building
 
 ODBC is optional and its absence is a first-class outcome. A build without it

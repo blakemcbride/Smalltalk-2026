@@ -2698,6 +2698,101 @@ bugs7_vm(void)
 }
 
 /*
+ *  Bugs07 FILES-1 through RestServer: a COMMIT the database refuses is an
+ *  error reply, and the pooled connection goes on to the next request
+ *  with no transaction open.  The refusal is SQLite's for a deferred
+ *  foreign key still violated at COMMIT.  Before: `('true' 'true' 'true'
+ *  0 0 )' -- the client was told the orphan went in, the connection went
+ *  back to the pool inside the failed transaction, the next request's
+ *  valid row was written into it and lost with it, and was reported as
+ *  committed too.  The backend is a fixture of its own, so that the
+ *  shared tests/rest-backend is not changed under the tests that count
+ *  its services.  Skipped where there is no SQLITE3 driver.
+ */
+static void
+bugs7_lib_files1(void)
+{
+    static char out[65536];
+    const char *backend = fixture("bugs7-files1-backend");
+    const char *dbfile  = fixture("bugs7-files1-rest.db");
+    const char *probe   = fixture("bugs7-serve-files1.st");
+    char        services[1024], service[1100], text[2048], batch[1024];
+    int         status;
+
+    snprintf(services, sizeof services, "%s/services", backend);
+    snprintf(service, sizeof service, "%s/Bugs7Tx.class.st", services);
+    mkdir(backend, 0777);
+    mkdir(services, 0777);
+    unlink(dbfile);
+    if (write_file(service,
+            "Class {\n"
+            "\t#name : 'Bugs7Tx',\n"
+            "\t#superclass : 'RestService',\n"
+            "\t#category : 'services'\n"
+            "}\n\n"
+            "{ #category : 'services' }\n"
+            "Bugs7Tx >> reset [\n"
+            "\tdb autoCommit: true.\n"
+            "\tdb executeImmediate: 'DROP TABLE IF EXISTS ch'.\n"
+            "\tdb executeImmediate: 'DROP TABLE IF EXISTS p'.\n"
+            "\tdb executeImmediate: 'CREATE TABLE p (id INTEGER PRIMARY KEY)'.\n"
+            "\tdb executeImmediate: 'CREATE TABLE ch (id INTEGER PRIMARY KEY, "
+            "pid INTEGER REFERENCES p(id) DEFERRABLE INITIALLY DEFERRED)'.\n"
+            "\tdb executeImmediate: 'PRAGMA foreign_keys=ON'.\n"
+            "\tdb autoCommit: false\n"
+            "]\n\n"
+            "{ #category : 'services' }\n"
+            "Bugs7Tx >> orphan [\n"
+            "\tdb executeImmediate: 'INSERT INTO ch VALUES (1, 999)'\n"
+            "]\n\n"
+            "{ #category : 'services' }\n"
+            "Bugs7Tx >> parent [\n"
+            "\tdb executeImmediate: 'INSERT INTO p VALUES (6)'\n"
+            "]\n") != 0)
+        return;
+    snprintf(text, sizeof text,
+            "| server url call r c |\n"
+            "c := [DbConnection open: 'DRIVER=SQLITE3;Database=%s;'] on: Error do: [:e | nil].\n"
+            "c isNil ifTrue: [^'no sqlite driver']. c close.\n"
+            "server := RestServer new port: 0; bindAddress: '127.0.0.1';\n"
+            "  backendDirectory: '%s'; database: 'DRIVER=SQLITE3;Database=%s;';\n"
+            "  connectionPoolSize: 1; requireAuthentication: false; name: 'bugs7'; yourself.\n"
+            "server start.\n"
+            "url := 'http://127.0.0.1:', server port printString, '/rest'.\n"
+            "call := [:m | ((HttpClient new post: url\n"
+            "  body: '{\"_class\":\"services.Bugs7Tx\",\"_method\":\"', m, '\"}'\n"
+            "  contentType: 'application/json') json booleanAt: '_Success') printString].\n"
+            "r := OrderedCollection new.\n"
+            "r add: (call value: 'reset'); add: (call value: 'orphan'); add: (call value: 'parent').\n"
+            "server stop.\n"
+            "c := DbConnection open: 'DRIVER=SQLITE3;Database=%s;'.\n"
+            "r add: ((c fetchAll: 'select count(*) as n from p') first at: 'n');\n"
+            "  add: ((c fetchAll: 'select count(*) as n from ch') first at: 'n').\n"
+            "c close.\n"
+            "^r printString\n", dbfile, backend, dbfile, dbfile);
+    if (write_file(probe, text) != 0)
+        return;
+    snprintf(batch, sizeof batch,
+             "Compiler evaluate: (FileStream oldFileNamed: '%s') contentsOfEntireFile\n",
+             probe);
+    status = serve(batch, 2, out, sizeof out);
+    ++st_test_checks;
+    if (status < 0) {
+        ++st_test_failures;
+        printf("  FAIL FILES-1: could not run the server\n");
+    } else if (strstr(out, "==> 'no sqlite driver'"))
+        printf("  skipped FILES-1 (Bugs07): no SQLITE3 driver\n");
+    else
+        expect(out, "==> 'an OrderedCollection(''true'' ''false'' ''true'' 1 0 )'",
+               "FILES-1 a refused COMMIT is an error reply, and the next request's is kept");
+    unlink(probe);
+    unlink(service);
+    rmdir(services);
+    rmdir(backend);
+    unlink(dbfile);
+}
+
+/*
  *  Bugs07, the library group.  KERNB-2: the blocks handed to Smalltalk
  *  run after its lock is given back.  An ifAbsent: block that interned a
  *  Symbol held the globals lock while it took the Symbol lock, and a
@@ -2748,6 +2843,8 @@ bugs7_lib(void)
         expect_absent(out, "every process is blocked", "KERNB-2 no deadlock");
     }
     unlink(probe);
+
+    bugs7_lib_files1();
 }
 
 int
