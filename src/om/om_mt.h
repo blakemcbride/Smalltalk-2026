@@ -265,12 +265,19 @@ int     OM_grow_table_to(uint32_t entries);
 /*
  *  Lift the ceiling by an emergency reserve so the image can raise an error
  *  about having run out of room -- once per process that reaches it, the
- *  process being the one about to be told.  Answers zero if that process
- *  has had its reserve already, or too many have.  The collector re-arms
- *  them once the image is comfortably back underneath.
+ *  process being the one about to be told, and `context' the frame it is
+ *  told in.  Answers zero if that process still holds a reserve, or too
+ *  many do.  A process holds its reserve while that frame is on its stack;
+ *  each collection drops the holders that no longer do, asking the judge,
+ *  and re-arms the ceiling once none is left and what is alive fits under
+ *  it.  The judge answers whether `context' is still on `process''s stack;
+ *  `current' answers the running process.  See om_mt.c (Bugs07 OM-2).
  */
-int     OM_release_table_reserve(st_oop process);
+typedef int (*om_reserve_judge)(st_oop process, st_oop context);
+
+int     OM_release_table_reserve(st_oop process, st_oop context);
 void    OM_rearm_table_reserve(void);
+void    OM_set_reserve_hooks(om_reserve_judge judge, st_oop (*current)(void));
 extern st_atomic_uint   st_om_table_limit;  /*  first index past the used range */
 
 static inline om_header *

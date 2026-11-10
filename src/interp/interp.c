@@ -1437,11 +1437,82 @@ ST_interp_forward_roots(st_oop from, st_oop to)
     forward_held(st_vm.held, from, to);
 }
 
+#ifdef ST_OM_MT
+/*
+ *  Whether `context' is on the chain that starts at `top'.  Bounded, and
+ *  shape-checked at each step, because the chain is read from fields the
+ *  image can write (a Process's suspendedContext is an instance variable).
+ */
+static int
+context_on_chain(st_oop top, st_oop context)
+{
+    uint32_t    hops = (uint32_t) ST_load_relaxed(&st_om_table_limit);
+
+    while (hops-- > 0 && OM_is_present(top) && OM_pointer_bit(top)
+           && OM_fetch_word_length(top) > ST_CTX_SENDER) {
+        if (top == context)
+            return 1;
+        top = OM_fetch_pointer(ST_CTX_SENDER, top);
+    }
+    return 0;
+}
+
+/*
+ *  Whether a process still holds the emergency reserve it was given in
+ *  `context' -- the frame whose send could not be made, where #outOfMemory
+ *  was sent and its answer goes -- which is whether that frame is still on
+ *  the process's stack (Bugs07 OM-2; om_mt.c says why the list asks).
+ *
+ *  Asked by the collector at its safepoint, with every worker parked, so
+ *  the registers in each interpreter's struct are the truth.  A process a
+ *  worker is running has its stack there and not in its suspendedContext,
+ *  which is only written when it is parked; one that no worker runs has it
+ *  in its suspendedContext, and nil there is a process that has ended.  A
+ *  worker that has never switched runs the image's own activeProcess with
+ *  a nil active_process, so for that process those workers' stacks are
+ *  searched too -- a frame is on one stack only, so finding it there is
+ *  finding it on this process's.
+ */
+static int
+reserve_still_spent(st_oop process, st_oop context)
+{
+    st_oop      image_active = OM_fetch_pointer(ST_SCHEDULER_ACTIVE_PROCESS,
+                                                SCHED_scheduler());
+    unsigned    i;
+
+    if (st_vm.active_process == process)
+        return context_on_chain(st_vm.active_context, context);
+    for (i = 0; i < MAX_INTERPRETERS; ++i) {
+        st_interp  *vm = (st_interp *) ST_load_acquire(&interpreters[i]);
+
+        if (vm && vm->active_process == process)
+            return context_on_chain(vm->active_context, context);
+    }
+    if (process == image_active) {
+        if (!OM_is_present(st_vm.active_process)
+         && context_on_chain(st_vm.active_context, context))
+            return 1;
+        for (i = 0; i < MAX_INTERPRETERS; ++i) {
+            st_interp  *vm = (st_interp *) ST_load_acquire(&interpreters[i]);
+
+            if (vm && !OM_is_present(vm->active_process)
+             && context_on_chain(vm->active_context, context))
+                return 1;
+        }
+    }
+    return context_on_chain(OM_fetch_pointer(ST_PROCESS_SUSPENDED_CONTEXT,
+                                             process), context);
+}
+#endif
+
 void
 ST_interp_install_roots(om_root_provider extra)
 {
     extra_roots = extra;
     OM_set_root_provider(provide_roots);
+#ifdef ST_OM_MT
+    OM_set_reserve_hooks(reserve_still_spent, SCHED_active_process);
+#endif
     OM_set_root_forwarder(ST_interp_forward_roots, ST_interp_forward_forbidden);
     OM_set_swap_guard(ST_interp_swap_forbidden);
 }
@@ -1913,8 +1984,10 @@ send_out_of_memory(void)
                                      &found)))
         return 0;
     /*  The reserve is this process's: a second process out of room gets
-     *  one of its own, and this one allocating on does not (Bugs6 OM-5).  */
-    if (!OM_release_table_reserve(SCHED_active_process()))
+     *  one of its own, and this one allocating on does not (Bugs6 OM-5)
+     *  -- for as long as this frame, where it is told, is on its stack
+     *  (Bugs07 OM-2).  */
+    if (!OM_release_table_reserve(SCHED_active_process(), st_vm.active_context))
         return 0;
     ST_pop_n(st_vm.argument_count);
     st_vm.argument_count = 0;

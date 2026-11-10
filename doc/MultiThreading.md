@@ -443,8 +443,14 @@ emergency reserve of 64K entries and releases it once for each process that
 runs out, for the signal (one for the whole image left every other process
 allocating from the first one's reserve and stopped the image although each
 handled the error -- Bugs6 OM-5; at most sixteen are outstanding).  A
-handler that unwinds gives the frames back and the collector re-arms the
-reserves below the ceiling they were lifted from; a process that ignores the
+process holds its reserve while the frame that could not be entered is still
+on its stack -- its handler is running -- and the collector drops it from the
+list once that frame is gone or the process has ended. A holder is the process
+and that frame, both counted while listed, so an entry freed and handed to the
+next process forked cannot pass for it (Bugs07 OM-2: a bare process oop did,
+and the third request in a row to run out stopped the server). Once no process
+holds one and what is alive fits under the ceiling, the reserves are re-armed,
+however high the last survivor sits in the table. A process that ignores the
 error and allocates on reaches the raised ceiling with its reserve spent, and
 that is where the process stops.
 

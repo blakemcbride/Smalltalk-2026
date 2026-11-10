@@ -727,6 +727,8 @@ OM_init(void)
     return 0;
 }
 
+static void reserve_reset(void);           /*  with the reserve, below  */
+
 void
 OM_shutdown(void)
 {
@@ -743,6 +745,7 @@ OM_shutdown(void)
     st_om_refcounts = NULL;
     st_om_table       = NULL;
     st_om_table_size  = 0;
+    reserve_reset();
     ST_store_seq(&st_om_table_limit, 0);
     free_head         = FREE_END;
     memset(magazines, 0, sizeof magazines);
@@ -887,34 +890,135 @@ grow_at_safepoint(void *user)
  *  which is the finite rope as before, and a process that was never told
  *  gets a reserve of its own.  Bounded, since the table is finite: more
  *  than OM_RESERVE_LIFTS processes out of room at once is the image out
- *  of room.  The collector re-arms them all together once the image is
- *  comfortably back under the ceiling the first lift was made from.
+ *  of room, and the ceiling is never lifted further than that many
+ *  reserves above the one the first was lifted from.
  *  Under the table lock, which is the lock the ceiling is read under.
+ *
+ *  Bugs07 OM-2: what a holder IS, and when it stops being one.
+ *
+ *  A holder was a bare process oop, counted by nothing and walked by
+ *  nothing, and it stayed on the list until every lift came back
+ *  together -- which needed nothing alive above the first ceiling.  Both
+ *  halves failed a server that handles OutOfMemory one request at a
+ *  time.  A request process that handled its error and finished was
+ *  freed, its entry was handed to the next Process forked -- a dead
+ *  Process body is exactly the size a new one needs -- and that process,
+ *  asking for a lift, found "itself" on the list: refused, and the image
+ *  stopped at the third runaway.  And anything kept after a runaway (a
+ *  session, a cached String) was allocated from the lifted region, which
+ *  kept the limit above the first ceiling and so every lift spent for
+ *  good: the seventeenth handled runaway stopped the image with the table
+ *  sixteen reserves larger than its ceiling.
+ *
+ *  So a holder is now the process AND the context it asked from -- the
+ *  frame whose send could not be made, which is where #outOfMemory was
+ *  sent and where its answer goes -- and it holds the reserve exactly as
+ *  long as that frame is still on the process's stack: its handler is
+ *  running, or it was resumed into the frame that failed.  Once the
+ *  stack has unwound past it, by a handler's return, or the process has
+ *  ended, the rope is the process's own again.  Each collection asks
+ *  (reserve_prune, through the interpreter's reserve_judge, at the
+ *  safepoint between the walk and the sweep), and an unreachable process
+ *  or frame is dropped by the collection that finds it unreachable,
+ *  before the sweep can free the entry -- so no entry can be reused while
+ *  it is still on the list.  Between collections the list holds a count
+ *  on both, which keeps a count reaching zero (with no workers running,
+ *  freed on the spot) from freeing them under it; the walk does not visit
+ *  the list, so the list alone keeps neither alive through a collection.
+ *
+ *  And the lifted region belongs to the holders.  A process that is not
+ *  one, needing an index past the ceiling, collects first
+ *  (table_alloc_locked): the runaway that has just unwound has left the
+ *  table full of garbage that only a collection turns back into free
+ *  entries, and what is allocated before that collection lands at the
+ *  top of the table -- above the ceiling, where one survivor holds the
+ *  limit up for as long as it lives.  Collected first, it lands low.  If
+ *  the collection frees nothing, the process is out of room, is refused,
+ *  and is told -- with a reserve of its own, as before.
  */
 #define OM_RESERVE_LIFTS    16
 
-static uint32_t     reserve_lifts;      /*  outstanding, 0 is armed  */
-static uint32_t     reserve_ceiling;    /*  what the first was lifted from  */
-static st_oop       reserve_holders[OM_RESERVE_LIFTS];
+typedef struct {
+    st_oop      process;
+    st_oop      context;
+} reserve_holder;
+
+static uint32_t         reserve_lifts;      /*  holders on the list  */
+static int              reserve_raised;     /*  st_om_table_max is lifted  */
+static uint32_t         reserve_ceiling;    /*  what it is lifted from  */
+static reserve_holder   reserve_holders[OM_RESERVE_LIFTS];
+static om_reserve_judge reserve_judge;
+static int              was_marked(st_oop p);   /*  with the collector  */
+static st_oop         (*reserve_current)(void);
+
+void
+OM_set_reserve_hooks(om_reserve_judge judge, st_oop (*current)(void))
+{
+    reserve_judge   = judge;
+    reserve_current = current;
+}
+
+static void
+reserve_reset(void)
+{
+    reserve_lifts  = 0;
+    reserve_raised = 0;
+    memset(reserve_holders, 0, sizeof reserve_holders);
+}
+
+/*  Whether the running process holds a lift.  Under the table lock.  */
+static int
+reserve_held_here(void)
+{
+    st_oop      process = reserve_current ? reserve_current() : ST_NIL;
+    uint32_t    i;
+
+    for (i = 0; i < reserve_lifts; ++i)
+        if (reserve_holders[i].process == process)
+            return 1;
+    return 0;
+}
 
 int
-OM_release_table_reserve(st_oop process)
+OM_release_table_reserve(st_oop process, st_oop context)
 {
     uint32_t    i;
+    uint32_t    base;
+    uint32_t    limit;
+    uint64_t    cap;
     int         lifted = 0;
 
     ST_mutex_lock(&table_lock);
     for (i = 0; i < reserve_lifts; ++i)
-        if (reserve_holders[i] == process)
+        if (reserve_holders[i].process == process)
             goto done;           /*  its rope is spent  */
     if (reserve_lifts >= OM_RESERVE_LIFTS)
         goto done;
-    if (st_om_table_max > UINT32_MAX - OM_TABLE_RESERVE)
-        goto done;
-    if (reserve_lifts == 0)
+    if (!reserve_raised)
         reserve_ceiling = st_om_table_max;
-    st_om_table_max += OM_TABLE_RESERVE;
-    reserve_holders[reserve_lifts++] = process;
+    /*
+     *  From the top of what is in use, when that is above the ceiling:
+     *  the reserve is room to signal in, and room starts at the limit.
+     *  Lifting from the ceiling alone gave nothing at all to a process
+     *  arriving while survivors held the limit above it (Bugs07 OM-2).
+     */
+    base  = st_om_table_max;
+    limit = (uint32_t) ST_load_relaxed(&st_om_table_limit);
+    if (limit > base)
+        base = limit;
+    cap = (uint64_t) reserve_ceiling
+        + (uint64_t) OM_RESERVE_LIFTS * OM_TABLE_RESERVE;
+    if (cap > UINT32_MAX)
+        cap = UINT32_MAX;
+    if ((uint64_t) base + OM_TABLE_RESERVE > cap)
+        goto done;
+    st_om_table_max = base + OM_TABLE_RESERVE;
+    reserve_raised  = 1;
+    reserve_holders[reserve_lifts].process = process;
+    reserve_holders[reserve_lifts].context = context;
+    ++reserve_lifts;
+    OM_increase_ref(process);
+    OM_increase_ref(context);
     lifted = 1;
 done:
     ST_mutex_unlock(&table_lock);
@@ -922,37 +1026,65 @@ done:
 }
 
 /*
- *  Re-arm once the image is comfortably back under the ceiling the reserve
- *  was lifted from.  Called by the collector, which is the only thing that
- *  can make the statement true.
+ *  Drop the holders that no longer hold (Bugs07 OM-2; see above).  In a
+ *  collection, after the walk and before the sweep: every count has just
+ *  been rebuilt from the walk, which does not visit the list, so a holder
+ *  kept is counted again here and a holder dropped has nothing to give
+ *  back; and nothing has been freed yet, so an unreached process or frame
+ *  is still what the list says it is.
+ */
+static void
+reserve_prune(void)
+{
+    uint32_t    i;
+    uint32_t    kept = 0;
+
+    ST_mutex_lock(&table_lock);
+    for (i = 0; i < reserve_lifts; ++i) {
+        reserve_holder  h = reserve_holders[i];
+
+        if (!was_marked(h.process) || !was_marked(h.context))
+            continue;           /*  dying in this collection  */
+        if (reserve_judge && !reserve_judge(h.process, h.context))
+            continue;           /*  ended, or unwound past the frame  */
+        OM_increase_ref(h.process);
+        OM_increase_ref(h.context);
+        reserve_holders[kept++] = h;
+    }
+    for (i = kept; i < reserve_lifts; ++i) {
+        reserve_holders[i].process = ST_NIL;
+        reserve_holders[i].context = ST_NIL;
+    }
+    reserve_lifts = kept;
+    ST_mutex_unlock(&table_lock);
+}
+
+/*
+ *  Re-arm once no process holds a lift and what is alive fits under the
+ *  ceiling the reserve was lifted from.  Called by the collector, after
+ *  reserve_prune, which is the only thing that can make the first half
+ *  true.
  *
- *  "Comfortably under" is two facts, and the test used to read one number
- *  for both.  It asked whether the table's LIMIT was below half the
- *  ceiling, but the limit is a high-water mark trimmed only of trailing
- *  free entries: one live object near the top holds it up however little
- *  is alive.  The booted image is exactly that -- 37,000 live objects with
- *  the limit at 255,177 -- so under ST_MAX_OBJECTS=262144 the reserve could
- *  never be re-armed at all, and the second runaway in such an image went
- *  through the spent reserve and stopped it instead of being told (Bugs5
- *  OM-8, found alongside).
- *
- *  So: what is ALIVE is under half the ceiling, which is what makes the
- *  next runaway a long way off; and nothing lives above the ceiling, which
- *  is what makes the whole reserve fresh again -- every index past the
- *  ceiling is then above the limit, unreachable through the free chain,
- *  and table_alloc_locked refuses it until the reserve is released.  An
- *  object that the signal allocated and that survived up there keeps the
- *  reserve spent, which is the honest answer: part of it IS spent.
+ *  "Fits under" is a count of what is ALIVE.  The limit -- a high-water
+ *  mark trimmed only of trailing free entries -- is not the question: one
+ *  live object near the top holds it up however little is alive, and
+ *  asking for nothing above the ceiling (Bugs5 OM-8's second fact) kept a
+ *  server whose runaway was followed by one cached String lifted for the
+ *  rest of its life (Bugs07 OM-2).  Re-armed with the limit still above
+ *  the ceiling, the table hands out the free entries below the limit as
+ *  ever and refuses a fresh one, and the next process out of room is
+ *  lifted from the limit (OM_release_table_reserve), so its reserve is
+ *  whole.  Bugs5 OM-8's first fact still holds: the test is what is
+ *  alive, not where.
  */
 void
 OM_rearm_table_reserve(void)
 {
     ST_mutex_lock(&table_lock);
-    if (reserve_lifts
-     && live_objects < reserve_ceiling / 2u
-     && (uint32_t) ST_load_relaxed(&st_om_table_limit) <= reserve_ceiling) {
+    if (reserve_raised && reserve_lifts == 0
+     && live_objects < reserve_ceiling) {
         st_om_table_max = reserve_ceiling;
-        reserve_lifts   = 0;
+        reserve_raised  = 0;
     }
     ST_mutex_unlock(&table_lock);
 }
@@ -1014,6 +1146,13 @@ table_alloc_locked(void)
          */
         if (next >= gc_threshold || next >= st_om_table_size
          || next >= st_om_table_max)
+            return 0;
+        /*
+         *  Past the ceiling the reserve was lifted from is the holders'
+         *  room; anyone else collects first (Bugs07 OM-2, see
+         *  OM_release_table_reserve).
+         */
+        if (reserve_raised && next >= reserve_ceiling && !reserve_held_here())
             return 0;
         return next;
     }
@@ -2743,6 +2882,12 @@ collect_at_safepoint(void *unused)
             ++st_om_weak_cleared;
         }
     }
+
+    /*
+     *  The reserve's holders, while what the walk reached is known and
+     *  nothing is freed yet (Bugs07 OM-2; see reserve_prune).
+     */
+    reserve_prune();
 
     if (report)
         t2 = ST_time_monotonic_ns();

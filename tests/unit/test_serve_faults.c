@@ -4466,6 +4466,87 @@ bugs7c_vm(void)
         }
         unlink(oom);
     }
+
+    /*
+     *  OM-2.  Handled OutOfMemory, one runaway at a time, each followed by
+     *  something kept and a collection.  The reserve's holders were bare
+     *  oops: the third round's Process was given the second's dead entry,
+     *  found "itself" on the list and was refused, and the image stopped.
+     *  With the processes kept alive -- no entry reused -- every lift
+     *  stayed spent because the kept Array lived above the ceiling, and
+     *  the seventeenth round stopped the image.  Six rounds of the first
+     *  and twenty of the second, each past where it stopped; a ceiling a
+     *  little above what the image needs to start, and a collection sized
+     *  for the runaway so growing it leaves no garbage to collect.  A round
+     *  still fills the table and collects some twenty times on the way, a
+     *  couple of seconds apiece, so the second form outlasts the usual
+     *  sixty-second limit on a busy machine: ten times that here.
+     */
+    {
+        static const struct {
+            int         rounds;
+            const char *temps;
+            const char *keep;
+            const char *what;
+        } forms[] = {
+            { 6, "", "", "OM-2 sequential handled runaways" },
+            { 20, " procs p", "p := ",
+              "OM-2 sequential handled runaways, processes kept" },
+        };
+        size_t  k;
+
+        for (k = 0; k < sizeof forms / sizeof forms[0]; ++k) {
+            char    text[2048];
+            char    want[64];
+
+            snprintf(text, sizeof text,
+                "| rs fin keep%s |\n"
+                "rs := OrderedCollection new. keep := OrderedCollection new.\n"
+                "%s\n"
+                "1 to: %d do: [:round |\n"
+                "    fin := Semaphore new.\n"
+                "    %s[ | a r | r := [a := OrderedCollection new: 1000000. "
+                "[a add: (Array new: 1)] repeat] on: OutOfMemory do: "
+                "[:e | e return: #caught].\n"
+                "      a := nil. rs add: r. fin signal] fork.\n"
+                "    %s\n"
+                "    fin wait.\n"
+                "    keep add: (Array new: 3).\n"
+                "    Smalltalk garbageCollect].\n"
+                "^'seq: ', (rs select: [:x | x == #caught]) size printString, "
+                "' caught'\n",
+                forms[k].temps,
+                *forms[k].keep ? "procs := OrderedCollection new." : "",
+                forms[k].rounds,
+                forms[k].keep,
+                *forms[k].keep ? "procs add: p." : "");
+            if (write_file(oom, text) != 0)
+                continue;
+            snprintf(batch, sizeof batch,
+                     "Compiler evaluate: (FileStream oldFileNamed: '%s') "
+                     "contentsOfEntireFile\n3 + 4\n", oom);
+            if (write_file(BATCH, batch) != 0)
+                continue;
+            snprintf(command, sizeof command,
+                     "ST_MAX_OBJECTS=655360 " ST_TEST_TIMEOUT " -k 2 "
+                     SERVE_SECONDS "0 %s -serve %s -workers 2 \"$(cat %s)\" 2>&1",
+                     st2026, IMAGE, BATCH);
+            status = run(command, out, sizeof out);
+            ++st_test_checks;
+            if (status < 0) {
+                ++st_test_failures;
+                printf("  FAIL OM-2: could not run the server\n");
+                continue;
+            }
+            snprintf(want, sizeof want, "==> 'seq: %d caught'",
+                     forms[k].rounds);
+            expect(out, want, forms[k].what);
+            expect_absent(out, "out of memory activating",
+                          "OM-2 no runaway was refused its reserve");
+            expect(out, "3 + 4 ==> 7", "OM-2 the pool carried on");
+        }
+        unlink(oom);
+    }
 }
 
 /*
