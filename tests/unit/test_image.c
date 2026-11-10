@@ -679,8 +679,11 @@
  *
  *  3391 -> 3392 with Bugs07 FILES-6b: DbCommand>>topLevelTextOf:, the
  *  statement with everything inside parentheses taken out.
+ *
+ *  3392 -> 3393 with Bugs07 GUI-3: CharacterScanner>>setStopConditions,
+ *  which fills a table of the scanner's own instead of the font's.
  */
-#define LIB_METHODS             3392
+#define LIB_METHODS             3393
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -3104,8 +3107,11 @@ test_browsing(void)
      *
      *  3021445 -> 3023891 with Bugs07 FILES-6b: a record's table is the
      *  one named by the FROM outside every parenthesis.
+     *
+     *  3023891 -> 3024896 with Bugs07 GUI-3: a scanner stops on a table of
+     *  its own, not on its font's.
      */
-    check_integer("(SourceFiles at: 1) contents size", 3023891);
+    check_integer("(SourceFiles at: 1) contents size", 3024896);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.

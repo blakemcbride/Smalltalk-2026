@@ -398,6 +398,20 @@ second identical menu. And a `WriteStream` shared by every worker loses
 characters (14,217 of 16,000 at eight), which is the contract above: base
 collections and streams are yours to guard.
 
+A scan of class variables cannot see shared state that is an instance variable
+of an object everybody reaches, and the seventh audit (Bugs07) found such a
+case in the text machinery. Every `CharacterScanner` -- the composer, the
+displayer and the hit test behind every `Paragraph` -- wrote its stop
+selectors into the stop-conditions `Array` of its `StrikeFont`, and every
+paragraph of a style shares the style's fonts, so all of them wrote one
+`Array`; a composer and a displayer disagree about the space slot, and on
+eight workers three compositions in four broke lines mid-word while displays
+died with `space` not understood (GUI-3). The fix is **replicate**: the table
+is the scanner's own, copied from the font once and refilled from it at each
+run (`lib/Graphics-Fixes/CharacterScanner.extension.st`; held by
+`bugs7c_gui` in `tests/unit/test_serve_faults.c`). Fonts, styles and the
+Forms a pool hands out are the kind of shared instance to look at next.
+
 ## Six faults in the scheduler, found by the same audit
 
 The Delay and yield kernels did not fail in the library. They failed in

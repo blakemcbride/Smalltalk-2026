@@ -3456,6 +3456,60 @@ bugs7b_vm(void)
     }
 }
 
+/*
+ *  Bugs07, round 3: the GUI group's thread-safety findings.  Each is a
+ *  piece of 1983 graphics state that every process shares and writes,
+ *  and that one green process at a time never caught out; so each check
+ *  is eight workers at once, each answering for what it alone did.
+ */
+static void
+bugs7c_gui(void)
+{
+    /*
+     *  GUI-3: every text scanner wrote its selectors into its FONT's
+     *  stop-conditions Array, and the scanners disagree about the space
+     *  slot -- #space for a composer, nil for a displayer or a hit test.
+     *  Four workers compose a paragraph in the image's own style and
+     *  compare the line starts with the ones composed alone first; four
+     *  display one and find a character in it.  Before: about three
+     *  compositions in four broke mid-word, and some twelve hundred
+     *  displays died with `space' not understood or `perform: nil'.
+     */
+    bugs7_probe("bugs7c-gui3-stops.st",
+        "| done text ref compose bad errs n |\n"
+        "done := Semaphore new. n := 150.\n"
+        "bad := Array new: 8 withAll: 0. errs := Array new: 8 withAll: 0.\n"
+        "text := 'the quick brown fox jumps over the lazy dog and keeps on "
+        "running past the old mill while nobody watches it go by at all' "
+        "asText.\n"
+        "compose := [Paragraph withText: text style: DefaultTextStyle\n"
+        "\tcompositionRectangle: (0@0 extent: 120@1000) "
+        "clippingRectangle: (0@0 extent: 120@1000)].\n"
+        "ref := [:p | (1 to: p numberOfLines) collect: [:i | "
+        "(p lineAt: i) first]] value: compose value.\n"
+        "1 to: 8 do: [:w | w odd\n"
+        "  ifTrue: [[1 to: n do: [:i | [ | p | p := compose value.\n"
+        "\t((1 to: p numberOfLines) collect: [:k | (p lineAt: k) first]) "
+        "= ref\n"
+        "\t\tifFalse: [bad at: w put: (bad at: w) + 1]]\n"
+        "\t\ton: Error do: [:e | errs at: w put: (errs at: w) + 1]]. "
+        "done signal] fork]\n"
+        "  ifFalse: [[ | p f | f := Form extent: 130@200. "
+        "p := compose value.\n"
+        "\t1 to: n * 2 do: [:i | [p displayOn: f. "
+        "(p characterBlockForIndex: 40) stringIndex = 40\n"
+        "\t\t\tifFalse: [bad at: w put: (bad at: w) + 1]]\n"
+        "\t\ton: Error do: [:e | errs at: w put: (errs at: w) + 1]]. "
+        "done signal] fork]].\n"
+        "8 timesRepeat: [done wait].\n"
+        "^'GUI-3 wrong ', (bad inject: 0 into: [:a :b | a + b]) "
+        "printString,\n"
+        "\t', errors ', (errs inject: 0 into: [:a :b | a + b]) "
+        "printString\n",
+        8, "==> 'GUI-3 wrong 0, errors 0'",
+        "GUI-3 text composed and displayed on eight workers at once");
+}
+
 int
 main(void)
 {
@@ -4126,6 +4180,7 @@ main(void)
     bugs7_sched();
     bugs7b_sched();
     bugs7b_vm();
+    bugs7c_gui();
 
     unlink(IMAGE);
     unlink(BATCH);
