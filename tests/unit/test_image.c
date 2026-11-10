@@ -12055,6 +12055,38 @@ test_bugs7b_vm(void)
                  "keep add: m; add: (String new: 1)]. keep := nil. "
                  "Smalltalk garbageCollect. ^#survived",
                  "survived");
+
+    /*
+     *  INTERP-5.  The instantiation primitives run on receivers that are
+     *  not classes -- withArgs:executeMethod: runs any method on anything.
+     *  70 and 71 read a format out of whatever lay where field 2 would be
+     *  and made an instance whose class was the receiver; 79 made a byte
+     *  body for a pointer class.  Classes, metaclasses, Metaclass and an
+     *  anonymous Behavior still instantiate.
+     */
+    check_string("| m m1 n r | m := Behavior compiledMethodAt: #basicNew. "
+                 "m1 := Behavior compiledMethodAt: #basicNew:. "
+                 "n := CompiledMethod class compiledMethodAt: #newMethod:header:. "
+                 "r := OrderedCollection new. "
+                 "r add: ([Object new withArgs: #() executeMethod: m. #made] "
+                 "on: Error do: [:e | #refused]). "
+                 "r add: ([(String new: 3) withArgs: #() executeMethod: m. #made] "
+                 "on: Error do: [:e | #refused]). "
+                 "r add: ([(Array with: nil with: nil with: 3) withArgs: #() "
+                 "executeMethod: m. #made] on: Error do: [:e | #refused]). "
+                 "r add: ([(Array with: nil with: nil with: 28672) withArgs: #(2) "
+                 "executeMethod: m1. #made] on: Error do: [:e | #refused]). "
+                 "r add: ([Array withArgs: #(0 0) executeMethod: n. #made] "
+                 "on: Error do: [:e | #refused]). "
+                 "r add: (Array withArgs: #() executeMethod: m) class name. "
+                 "r add: (Array withArgs: #(2) executeMethod: m1) size. "
+                 "r add: (Array class withArgs: #() executeMethod: m) class == Array class. "
+                 "r add: (Metaclass withArgs: #() executeMethod: m) class == Metaclass. "
+                 "r add: Behavior new new class class == Behavior. "
+                 "r add: (CompiledMethod newMethod: 2 header: 2) class name. "
+                 "^r asArray printString",
+                 "(refused refused refused refused refused Array 2 true true true "
+                 "CompiledMethod )");
 }
 
 int

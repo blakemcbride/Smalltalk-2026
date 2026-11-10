@@ -419,6 +419,26 @@ typedef struct {
     uint32_t    fixed;
 } om_shape;
 
+/*
+ *  Whether `cls' can be read as a class at all: a pointer object holding
+ *  at least the three fields every Behavior begins with -- superclass,
+ *  method dictionary, format.
+ *
+ *  Bugs07 INTERP-5.  shape_of_class read field 2 of whatever it was
+ *  given.  Its callers pass an object's class, which is a class, except
+ *  that the instantiation primitives pass their RECEIVER, and any method
+ *  can be run on any receiver (withArgs:executeMethod:, or a method that
+ *  declares <primitive: 70> itself): `Object new' has no field 2 and a
+ *  three-byte String has three bytes, so the format came from the memory
+ *  after the object.  The same test super_class_ok makes in interp.c.
+ */
+static int
+class_fields_ok(st_oop cls)
+{
+    return OM_is_object(cls) && OM_pointer_bit(cls)
+        && OM_fetch_word_length(cls) > ST_CLASS_FORMAT;
+}
+
 static om_shape
 shape_of_class(st_oop cls)
 {
@@ -426,7 +446,7 @@ shape_of_class(st_oop cls)
     st_oop      format;
 
     memset(&shape, 0, sizeof shape);
-    if (!OM_is_object(cls))
+    if (!class_fields_ok(cls))
         return shape;
     format = OM_fetch_pointer(ST_CLASS_FORMAT, cls);
     if (!OM_is_int(format))
@@ -647,6 +667,84 @@ primitive_size(void)
 
 /*  ----------  Instantiation, primitives 70 and 71  ----------  */
 
+/*
+ *  Whether the receiver of an instantiation primitive is a Behavior: a
+ *  class, a metaclass, or an instance of Behavior or of anything under it
+ *  (`Behavior new new' is a test of its own).
+ *
+ *  Bugs07 INTERP-5.  70 and 71 asked only that the receiver be an object,
+ *  on the premise that only Behavior>>new and new: send them.  Any method
+ *  runs on any receiver, though, and with a non-class one they made an
+ *  instance whose CLASS was that object -- `Object new' and `'abc' copy'
+ *  each became the class of something, laid out by a format word read
+ *  out of whatever lay where field 2 would be.
+ *
+ *  The interpreter knows no Behavior and no Metaclass by number, so they
+ *  are found from Array, which it does know: Array's class's class is
+ *  Metaclass, and an object is a class exactly when its class's class is
+ *  Metaclass, which is the test nearly every instantiation passes, in two
+ *  reads.  Metaclass itself answers there too, and a metaclass (whose
+ *  class IS Metaclass) in one.  What is left -- an anonymous Behavior or a
+ *  ClassDescription made with new, and every non-class -- walks its
+ *  class's chain looking for one of the classes Metaclass inherits from
+ *  and Array does not: Metaclass, ClassDescription and Behavior, the
+ *  classes whose instances are classes.  A memory whose metaclasses are
+ *  not built yet (the bootstrap, before it makes them) is given the
+ *  structural test alone.
+ */
+#define BEHAVIOR_CHAIN_MAX  64
+
+static uint32_t
+superclass_chain(st_oop cls, st_oop *out, uint32_t max)
+{
+    uint32_t    n = 0;
+
+    while (n < max && class_fields_ok(cls)) {
+        out[n++] = cls;
+        cls = OM_fetch_pointer(ST_CLASS_SUPERCLASS, cls);
+    }
+    return n;
+}
+
+static int
+is_behavior(st_oop cls)
+{
+    st_oop      metas[BEHAVIOR_CHAIN_MAX];
+    st_oop      plain[BEHAVIOR_CHAIN_MAX];
+    st_oop      meta;
+    st_oop      kind;
+    uint32_t    n_metas;
+    uint32_t    n_plain;
+    uint32_t    n_behaviors;
+    uint32_t    i;
+    uint32_t    hops;
+
+    if (!class_fields_ok(cls))
+        return 0;
+    kind = OM_fetch_class(cls);
+    meta = OM_fetch_class(OM_fetch_class(ST_CLASS_ARRAY));
+    if (!class_fields_ok(meta))
+        return 1;               /*  no metaclasses yet: the bootstrap  */
+    if (kind == meta || OM_fetch_class(kind) == meta)
+        return 1;               /*  a metaclass, or a class  */
+    n_metas = superclass_chain(meta, metas, BEHAVIOR_CHAIN_MAX);
+    n_plain = superclass_chain(ST_CLASS_ARRAY, plain, BEHAVIOR_CHAIN_MAX);
+    for (n_behaviors = 0; n_behaviors < n_metas; ++n_behaviors) {
+        for (i = 0; i < n_plain; ++i)
+            if (plain[i] == metas[n_behaviors])
+                break;
+        if (i < n_plain)
+            break;              /*  Object: everything inherits from it  */
+    }
+    for (hops = 0; hops < 4096 && class_fields_ok(kind); ++hops) {
+        for (i = 0; i < n_behaviors; ++i)
+            if (metas[i] == kind)
+                return 1;
+        kind = OM_fetch_pointer(ST_CLASS_SUPERCLASS, kind);
+    }
+    return 0;
+}
+
 static int
 primitive_new(void)
 {
@@ -654,7 +752,7 @@ primitive_new(void)
     st_oop      instance;
     om_shape    shape;
 
-    if (!OM_is_object(cls))
+    if (!is_behavior(cls))
         return 0;
     shape = shape_of_class(cls);
     if (shape.indexable)
@@ -692,8 +790,8 @@ primitive_new_with_arg(void)
     st_oop      instance;
     om_shape    shape;
 
-    if (!OM_is_object(cls) || !positive_16bit_value(ST_stack_value(0), &count))
-        return 0;
+    if (!is_behavior(cls) || !positive_16bit_value(ST_stack_value(0), &count))
+        return 0;               /*  Bugs07 INTERP-5: see is_behavior  */
     shape = shape_of_class(cls);
     if (!shape.indexable)
         return 0;
@@ -4076,7 +4174,19 @@ primitive_new_method(void)
 
     if (!OM_is_int(header) || !integer_arg(1, &bytecodes) || bytecodes < 0)
         return 0;
-    if (!OM_is_present(cls))
+    /*
+     *  CompiledMethod and nothing else (Bugs07 INTERP-5).  The receiver was
+     *  checked only for being present, and the result is a byte object
+     *  whose leading bytes are written below as an oop: run on Array
+     *  through withArgs:executeMethod:, it answered an Array with an
+     *  8-byte body that Array's format says holds pointers, and `at: 2
+     *  put:' wrote an oop at byte 8 of 8.  A byte subclass of CompiledMethod
+     *  would be no better: the collector walks the literal frame only of
+     *  an object whose class IS CompiledMethod, and objectAt: (68, 69)
+     *  serves only that class, so a subclass's literals would be counted
+     *  by nobody.  The only sender is CompiledMethod class itself.
+     */
+    if (cls != ST_CLASS_COMPILED_METHOD)
         return 0;
     literals = ST_header_literal_count(header);
     /*
