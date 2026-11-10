@@ -2988,6 +2988,33 @@ primitive_file_command(void)
                  *  bytes that are still at this offset are written -- the
                  *  rest of the page is elsewhere on the disk, and what is
                  *  at the offset past them is another writer's.
+                 *
+                 *  The end the stream believes in moves only as far as
+                 *  bytes actually went (Bugs07 FILES-2).  It moved to
+                 *  `end' whatever the count, and for an EMPTY page --
+                 *  one reached by positioning past the end and flushed,
+                 *  or turned away from, before anything was put on it
+                 *  -- `end' is the page's own offset, where nothing had
+                 *  been written: the page in front of it is often not on
+                 *  the disk at all, PosixFile>>write: having glued it on
+                 *  in memory and File>>readOrAdd: writing intermediate
+                 *  pages only from the one after it.  So a 100-byte file
+                 *  positioned to 1024 and flushed ended at 512 on the
+                 *  disk and at 1024 by this table, the first real write
+                 *  to the page passed the append test above as starting
+                 *  at the end, and its bytes went to the kernel's end --
+                 *  offset 512, not 1024 -- with everything after them
+                 *  following them there.  One stream, no other writer,
+                 *  the data at the wrong offset.  A write of nothing says
+                 *  nothing about where the file ends, and with no move
+                 *  here the page's first bytes are put at its offset by
+                 *  this branch, the gap in front of them reading as
+                 *  zeros.  (Requiring the kernel's end to equal the
+                 *  believed one before an append would also have caught
+                 *  it, and would have broken what the append is for: a
+                 *  stream that met a full last page has a believed end
+                 *  another writer may since have passed, and its next
+                 *  page MUST go to the kernel's end.)
                  */
                 uint32_t    count = relocated && len > at_offset ? at_offset
                                                                  : len;
@@ -2995,8 +3022,9 @@ primitive_file_command(void)
                 if (count > 0
                  && st_file_pwrite(fd, bytes, count, offset) != (int64_t) count)
                     failed = 1;
-                else if (!relocated && believed < end)
-                    ST_store_relaxed(&fd_believed[fd], end);
+                else if (!relocated && count > 0
+                      && believed < offset + (int64_t) count)
+                    ST_store_relaxed(&fd_believed[fd], offset + (int64_t) count);
             }
             if (failed) {
                 posix_errno = errno;

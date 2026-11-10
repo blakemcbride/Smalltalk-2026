@@ -11903,6 +11903,54 @@ test_bugs7b_lib(void)
     test_dialect = ST_DIALECT_BLUE_BOOK;
 }
 
+/*
+ *  Bugs07 round two, the files group: FILES-2 (an empty page moved the
+ *  end the stream believes in) and FILES-3 (a binary stream's gap filled
+ *  from the page before).
+ */
+static void
+test_bugs7b_files(void)
+{
+    const char *gap   = st_test_path("bugs7b-files2-gap.txt");
+    const char *turn  = st_test_path("bugs7b-files2-turn.txt");
+    char        expression[2048];
+
+    test_dialect = ST_DIALECT_CLOSURES;
+
+    /*
+     *  FILES-2.  A page reached by positioning past the end and written
+     *  while still empty -- a flush, or a page turned away from -- moved
+     *  the stream's believed end to that page's offset, with the page in
+     *  front of it never written; the next write passed the append test
+     *  and went to the kernel's end, 512 bytes early, and the file was
+     *  512 bytes short.  Before: (1112 513 412) and (518 513).  The gap
+     *  in front of the write reads as zeros, all 924 of them.
+     */
+    snprintf(expression, sizeof expression,
+             "| s b | s := FileStream fileNamed: '%s'. "
+             "s nextPutAll: (String new: 100 withAll: $a). s close. "
+             "s := FileStream oldFileNamed: '%s'. s readWrite. "
+             "s position: 1024. s flush. s nextPutAll: (String new: 600 withAll: $x). "
+             "s close. b := (FileStream oldFileNamed: '%s') contentsOfEntireFile. "
+             "^(Array with: b size with: (b indexOf: $x) "
+             "with: ((b copyFrom: 101 to: 1024) occurrencesOf: (Character value: 0))) "
+             "printString",
+             gap, gap, gap);
+    check_string(expression, "(1624 1025 924 )");
+    unlink(gap);
+    snprintf(expression, sizeof expression,
+             "| s b | s := FileStream fileNamed: '%s'. "
+             "s nextPutAll: (String new: 100 withAll: $a). s close. "
+             "s := FileStream oldFileNamed: '%s'. s readWrite. "
+             "s position: 1024. s position: 0. s position: 1024. "
+             "s nextPutAll: 'HEADER'. s close. "
+             "b := (FileStream oldFileNamed: '%s') contentsOfEntireFile. "
+             "^(Array with: b size with: (b indexOf: $H)) printString",
+             turn, turn, turn);
+    check_string(expression, "(1030 1025 )");
+    unlink(turn);
+}
+
 int
 main(void)
 {
@@ -12047,6 +12095,7 @@ main(void)
     test_bugs7_lib();
     test_bugs7_sched();
     test_bugs7b_lib();
+    test_bugs7b_files();
 
     OM_shutdown();
     return ST_TEST_END();
