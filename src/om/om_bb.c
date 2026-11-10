@@ -106,6 +106,22 @@ OM_increase_ref(st_oop p)
         OM_set_count_bits(p, count + 1);
 }
 
+/*
+ *  The threaded memory's rule, for the same thread (Bugs07 OM-1): the
+ *  delay timer releases its count on the Semaphore it has delivered and
+ *  is not stopped by a collection, so a count it takes to zero is left
+ *  for the collector rather than freed on that thread in the middle of a
+ *  collection the interpreter thread is running.  See
+ *  OM_decrease_ref_object in om_mt.c.
+ */
+static _Thread_local int    never_frees;
+
+void
+OM_thread_never_frees(void)
+{
+    never_frees = 1;
+}
+
 void
 OM_decrease_ref(st_oop p)
 {
@@ -130,7 +146,7 @@ OM_decrease_ref(st_oop p)
      *  which a marking collector would sidestep entirely.  Revisit if a
      *  workload ever proves otherwise.
      */
-    if (count == 1)
+    if (count == 1 && !never_frees)
         OM_deallocate(p);
 }
 

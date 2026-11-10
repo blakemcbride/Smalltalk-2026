@@ -479,6 +479,14 @@ void    OM_increase_ref_object(st_oop p);
 void    OM_decrease_ref_object(st_oop p);
 
 /*
+ *  Said once, at its start, by a thread that counts objects but is not a
+ *  mutator -- the delay timer.  A count such a thread takes to zero is
+ *  left for the collector and never freed on the spot (Bugs07 OM-1): see
+ *  OM_decrease_ref_object.
+ */
+void    OM_thread_never_frees(void);
+
+/*
  *  The guaranteed pointers, which are created once at bootstrap and never
  *  freed: nil, true, false, the fixed classes and the fixed selectors.
  *

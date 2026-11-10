@@ -339,6 +339,14 @@ static void
 timer_main(void *arg)
 {
     (void) arg;
+    /*
+     *  Its own count on the Semaphore it delivers is released below, at
+     *  whatever moment the deadline falls -- in the middle of a collection
+     *  included, which does not stop this thread.  A release that reaches
+     *  zero is the collector's to act on, never this thread's (Bugs07
+     *  OM-1; see OM_decrease_ref_object).
+     */
+    OM_thread_never_frees();
     ST_mutex_lock(&timer_lock);
     for (;;) {
         if (timer_stopping)

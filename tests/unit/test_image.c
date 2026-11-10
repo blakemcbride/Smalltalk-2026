@@ -31,6 +31,7 @@
 #include "finalize.h"
 #include "source.h"
 #include "tonel.h"
+#include "st_port.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -11184,6 +11185,46 @@ test_bugs7_vm(void)
     evaluate("Object removeSelector: #zzB7a; removeSelector: #zzB7b; "
              "removeSelector: #zzB7c; removeSelector: #zzB7d; "
              "removeSelector: #zzB7e. ^nil");
+
+    /*
+     *  OM-1.  With no workers -- this driver has none -- the delay timer
+     *  freed TimingSemaphore when its own release took the count to zero,
+     *  which happens when a collection on the interpreter thread has
+     *  zeroed every count and not yet rebuilt the Semaphore's from the
+     *  walk.  The race is one run in five of the audit's probe; here the
+     *  zeroing is done by hand, exactly as the collector's first pass does
+     *  it, while a Delay is pending, and the timer delivers into it.  The
+     *  Semaphore must still be a Semaphore, and after a real collection
+     *  rebuilds its count a Delay must still fire.
+     */
+    {
+        st_oop  sem = evaluate("(Delay forMilliseconds: 100) schedule. "
+                               "^Delay classPool at: #TimingSemaphore");
+
+        ++st_test_checks;
+        if (!OM_is_object(sem) || OM_fetch_class(sem) != ST_CLASS_SEMAPHORE) {
+            char    what[200];
+
+            ++st_test_failures;
+            ST_print_object(sem, what, sizeof what);
+            printf("  FAIL OM-1: TimingSemaphore is not a Semaphore to begin "
+                   "with: %s\n", what);
+        } else {
+            ST_store_relaxed(OM_refcount_of(sem), 0);
+            ST_sleep_ns(600LL * 1000 * 1000);      /*  the timer delivers  */
+            ++st_test_checks;
+            if (!OM_is_object(sem) || OM_fetch_class(sem) != ST_CLASS_SEMAPHORE) {
+                ++st_test_failures;
+                printf("  FAIL OM-1: the delay timer freed TimingSemaphore\n");
+            } else {
+                OM_collect();
+                check_string("| a | a := [(Delay forMilliseconds: 5) wait. 'ticked'] "
+                             "value. ^(Delay classPool at: #TimingSemaphore) class "
+                             "name, ' ', a",
+                             "Semaphore ticked");
+            }
+        }
+    }
 }
 
 int

@@ -2060,6 +2060,52 @@ OM_increase_ref_object(st_oop p)
     ST_fetch_add_relaxed(OM_refcount_of(p), 1);
 }
 
+/*
+ *  Whether this thread may free an object whose count it takes to zero.
+ *
+ *  The delay timer and the network I/O thread count the Semaphores they
+ *  signal, and neither is an interpreter: a collection does not stop them.
+ *  The I/O thread only ever adds a count (the async queue's, through its
+ *  hook); the timer also releases one, its own hold on the Semaphore it
+ *  has just delivered.
+ *  With a pool running that never mattered, because a zero count off a
+ *  worker is left for the collector (retire, below).  Without one --
+ *  -eval, -run, the bootstrap, -startup, every unit-test driver -- a zero
+ *  count was freed on the spot by whatever thread dropped it, and the
+ *  timer drops one at every Delay's expiry: `SCHED_asynchronous_signal'
+ *  (+1, the queue's) and then its own hold released (-1).  A collection on
+ *  the interpreter thread zeroes every count first and only then rebuilds
+ *  them from the walk; when both of the timer's steps landed between the
+ *  zeroing of the Semaphore's entry and the walk's visit to it, the -1
+ *  took the count from 1 to 0 and the timer thread freed the Semaphore
+ *  that Delay's TimingSemaphore, the async queue and the timing process
+ *  all still named.  The next allocation was handed the entry --
+ *  TimingSemaphore became a MethodContext -- the timing process died, and
+ *  every Delay in the image waited for ever: one run in five of a probe
+ *  that collected a hundred times beside a 1 ms ticker (Bugs07 OM-1).  The
+ *  sweep's was_marked guard describes exactly this hazard, but with no
+ *  workers the free happened in the decrement and the sweep never saw it;
+ *  and the free relinked free_head under table_lock while the sweep writes
+ *  it with no lock at all.
+ *
+ *  So such a thread says what it is, once, and its zero counts are left
+ *  for the collector exactly as retire leaves a non-worker's: the object
+ *  is unreachable or it is not, and the walk decides.  A zero count left
+ *  on a live object costs nothing -- the walk rebuilds it -- and one left
+ *  on a dead Semaphore is freed by the next collection.  A thread-local
+ *  rather than a test of "is this the interpreter's thread", because the
+ *  -eval path never registers its interpreter, and the threads that are
+ *  not mutators are known and few: the timer says so in timer_main, and
+ *  the I/O thread, which never releases a count, has no need to.
+ */
+static _Thread_local int    never_frees;
+
+void
+OM_thread_never_frees(void)
+{
+    never_frees = 1;
+}
+
 void
 OM_decrease_ref_object(st_oop p)
 {
@@ -2098,6 +2144,8 @@ OM_decrease_ref_object(st_oop p)
      *  a hint about when collecting is worthwhile rather than the mechanism
      *  that reclaims.
      */
+    if (never_frees)
+        return;                 /*  the collector's, never this thread's  */
     if (WORKER_count() == 0) {
         OM_deallocate(p);
         return;
