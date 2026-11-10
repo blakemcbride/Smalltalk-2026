@@ -167,11 +167,30 @@ HttpRequest >> readBodyFrom: aStream maxBodyBytes: limit [
 	text isNil ifTrue: [body := ''. ^self].
 	(text isEmpty or: [text anySatisfy: [:c | c isDigit not]])
 		ifTrue: [HttpError status: 400 reason: 'not a length: ', text].
+	"A length with more digits than the limit has is over it, and is
+	 refused before it is converted (Bugs07 NET-2).  The header line may
+	 be 8,192 bytes, and converting 8,150 nines held a worker for 38
+	 seconds -- before the 413 it was going to get, before the body, the
+	 handler or the session -- while requestSeconds, which bounds the
+	 reads, had already stopped counting.  Leading zeros do not count:
+	 RFC 7230's length is 1*DIGIT and `007' is seven."
+	(self significantDigitsIn: text) > limit printString size
+		ifTrue: [HttpError status: 413 reason: 'the body is larger than ', limit printString, ' bytes'].
 	length := text asInteger.
 	(length isNil or: [length < 0]) ifTrue: [HttpError status: 400 reason: 'not a length: ', text].
 	length > limit ifTrue: [HttpError status: 413 reason: 'the body is larger than ', limit printString, ' bytes'].
 	body := aStream next: length.
 	body size < length ifTrue: [HttpError status: 400 reason: 'the body was cut off']
+]
+
+{ #category : 'private' }
+HttpRequest >> significantDigitsIn: aString [
+	"How many digits aString has after its leading zeros; aString is all
+	 digits.  See readBodyFrom:maxBodyBytes:."
+	| first |
+	first := aString findFirst: [:c | c ~= $0].
+	first = 0 ifTrue: [^0].
+	^aString size - first + 1
 ]
 
 { #category : 'private' }

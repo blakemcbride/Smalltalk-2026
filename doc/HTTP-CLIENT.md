@@ -99,7 +99,10 @@ is refused rather than wrapped.
 **All four are bounded**, at 64 MB unless `maxBodyBytes:` says otherwise: the
 reply comes from a server this program did not write, and a
 `Content-Length: 100000000000` is a hundred gigabytes of `String`. A declared
-length over the limit is refused before a byte is read; the two that declare
+length over the limit is refused before a byte is read, and one with more
+digits than the limit has is refused by counting them, before any conversion:
+a header line may be 64 KB, and turning thousands of digits into an `Integer`
+is computing time that neither timeout counts. The two that declare
 nothing are refused as their total passes it. A chunk size that cannot be one
 — more than sixteen hex digits, or a size larger than the limit — is a
 `NetError` naming it, where `ffffffffffffffff` used to reach `String new:` and

@@ -248,7 +248,8 @@ timeout, multipart/form-data, and files under a document root for every path
 no handler claims — `..` refused, a directory answering its `index.html`,
 the content type by extension. Every reading is bounded: a line over 8,192
 bytes, more than a hundred headers, a body over the limit (64 MB by default)
-are refused before they are read; a request not complete 120 seconds after
+are refused before they are read — a `Content-Length` with more digits than
+the limit is 413 by its digit count, before it is converted; a request not complete 120 seconds after
 its first byte is cut off, a client that takes nothing of its reply for 30
 seconds is dropped, and above 1,024 open connections the answer is 503
 (`requestSeconds`, `writeSeconds` and `maxConnections` in `server.json`

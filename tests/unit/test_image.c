@@ -629,8 +629,11 @@
  *
  *  3341 -> 3343 with Bugs07 FILES-1: DbConnection>>abandonTransaction and
  *  closeQuietly.
+ *
+ *  3343 -> 3345 with Bugs07 NET-2: HttpRequest>>significantDigitsIn: and
+ *  HttpBodyStream>>significantDigitsIn:.
  */
-#define LIB_METHODS             3343
+#define LIB_METHODS             3345
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -3004,8 +3007,12 @@ test_browsing(void)
      *  2967966 -> 2972888 with Bugs07 FILES-1: the transaction commands
      *  through checkStatus:, a refused commit rolled back and raised, a
      *  refused rollback closing its connection.
+     *
+     *  2972888 -> 2975473 with Bugs07 NET-2: a Content-Length refused by
+     *  its digit count in the server and the client, and String>>asInteger
+     *  through the limb conversion.
      */
-    check_integer("(SourceFiles at: 1) contents size", 2972888);
+    check_integer("(SourceFiles at: 1) contents size", 2975473);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -11366,6 +11373,39 @@ test_bugs7_lib(void)
     } else
         printf("  skipped FILES-1 (Bugs07): no SQLITE3 driver\n");
     unlink(db);
+
+    /*
+     *  NET-2 (= KERNA-1): a Content-Length of thousands of digits.  The
+     *  server converted it with String>>asInteger before comparing it with
+     *  the limit, and asInteger folded the digits in one LargeInteger
+     *  multiplication at a time: 8,000 nines held a worker for 35 seconds
+     *  before the 413.  Now a length with more digits than the limit is
+     *  refused by its digit count, in the server and in the client, and
+     *  asInteger converts through limbs.  Each of the first three ran past
+     *  this harness's twenty million bytecodes before; leading zeros are
+     *  still a length.
+     */
+    check_string("| crlf | crlf := String with: Character cr with: Character lf. "
+                 "^([HttpRequest fromString: 'POST / HTTP/1.1', crlf, 'Host: x', crlf, "
+                 "'Content-Length: ', (String new: 8000 withAll: $9), crlf, crlf] "
+                 "on: HttpError do: [:e | e status]) printString",
+                 "413");
+    check_string("^([HttpBodyStream on: (ReadStream on: '') status: 200 "
+                 "headers: (Dictionary new at: 'content-length' put: (String new: 8000 withAll: $9); "
+                 "yourself) maxBodyBytes: 1000000] on: NetError do: [:e | e messageText])",
+                 "the reply declares a body of 8000 digits, over the 1000000 bytes this client reads");
+    check_boolean("| d | d := String new: 2000 withAll: $9. "
+                  "^d asInteger = ((10 raisedTo: 2000) - 1) "
+                  "and: [('-', d) asInteger = (1 - (10 raisedTo: 2000))]", 1);
+    check_string("| crlf | crlf := String with: Character cr with: Character lf. "
+                 "^{(HttpRequest fromString: 'POST / HTTP/1.1', crlf, 'Host: x', crlf, "
+                 "'Content-Length: 000000000000000000000000000005', crlf, crlf, 'hello') body. "
+                 "(HttpBodyStream on: (ReadStream on: 'hello') status: 200 "
+                 "headers: (Dictionary new at: 'content-length' put: '00000000000000000000000000005'; "
+                 "yourself) maxBodyBytes: 1000) upToEnd. "
+                 "'  -42x' asInteger. '+17' asInteger. 'abc' asInteger. '-' asInteger. "
+                 "'12345678901234567890' asInteger} printString",
+                 "('hello' 'hello' -42 17 nil nil 12345678901234567890 )");
 
     test_dialect = ST_DIALECT_BLUE_BOOK;
 }

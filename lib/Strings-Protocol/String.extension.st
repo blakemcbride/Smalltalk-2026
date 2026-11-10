@@ -186,24 +186,39 @@ String >> asInteger [
 	"The leading integer, or nil when there is not one.
 
 	 nil rather than 0, because '0' and 'banana' are different answers and
-	 a caller that cannot tell them apart has a bug waiting."
-	| stream negative digits value |
-	stream := ReadStream on: self trimBoth.
+	 a caller that cannot tell them apart has a bug waiting.
+
+	 The digits are found first and converted together, by Integer
+	 class>>valueOfDigits:radix:negated: -- the conversion Integer
+	 readFrom: uses, in an Array of SmallInteger limbs (Bugs4 NUMBERS-3).
+	 This folded them in one at a time, `value * 10 + digit', which is a
+	 LargeInteger multiplication per digit once the number passes
+	 SmallInteger: 1,000 digits took 0.55 s, 8,000 took 35, and a
+	 Content-Length header of 8,000 nines held a server worker for all of
+	 it before the length was compared with anything (Bugs07 NET-2 and
+	 KERNA-1).  The limb conversion is still quadratic -- every
+	 conversion here is, over a schoolbook multiply -- but forty times
+	 cheaper: 8,000 digits in about a quarter of a second.  A caller
+	 reading a stranger's numeral should still bound its digits before
+	 asking, as HttpRequest and HttpBodyStream do."
+	| text index start negative |
+	text := self trimBoth.
+	index := 1.
 	negative := false.
-	stream atEnd ifTrue: [^nil].
-	(stream peek = $-) ifTrue: [negative := true. stream next].
+	(index <= text size and: [(text at: index) = $-])
+		ifTrue: [negative := true. index := index + 1].
 	"An explicit plus is a sign too, and skipping it is not cosmetic:
 	 Duration's ANSI format writes '+0:01:02:55', and a reader that answers
 	 nil for the plus form makes every signed duration unparseable while
 	 the negative one works."
-	(stream peek = $+) ifTrue: [stream next].
-	digits := 0.
-	value := 0.
-	[stream atEnd not and: [stream peek isDigit]] whileTrue: [
-		value := value * 10 + (stream next asInteger - $0 asInteger).
-		digits := digits + 1].
-	digits = 0 ifTrue: [^nil].
-	^negative ifTrue: [value negated] ifFalse: [value]
+	(index <= text size and: [(text at: index) = $+]) ifTrue: [index := index + 1].
+	start := index.
+	[index <= text size and: [(text at: index) isDigit]] whileTrue: [index := index + 1].
+	index = start ifTrue: [^nil].
+	^Integer
+		valueOfDigits: (text copyFrom: start to: index - 1)
+		radix: 10
+		negated: negative
 ]
 
 { #category : '*Strings-Protocol' }

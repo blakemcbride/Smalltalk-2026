@@ -258,6 +258,15 @@ HttpBodyStream >> setStream: aSocketStream status: statusInteger headers: aDicti
 		length := length trimmed.
 		(length isEmpty or: [length anySatisfy: [:c | c isDigit not]])
 			ifTrue: [^NetError new signal: 'not a Content-Length: ', length printString].
+		"More digits than the limit has is over it, refused before it is
+		 converted (Bugs07 NET-2): a reply header may be 64 KB, and the
+		 conversion of 8,000 digits was 34 seconds of this process's CPU,
+		 which neither the read timeout nor totalTimeout counts, since
+		 both measure waiting.  Leading zeros do not count."
+		(self significantDigitsIn: length) > maxBody printString size ifTrue: [
+			^NetError new signal: 'the reply declares a body of ',
+				(self significantDigitsIn: length) printString, ' digits, over the ',
+				maxBody printString, ' bytes this client reads'].
 		mode := #length.
 		remaining := length asInteger.
 		remaining > maxBody ifTrue: [
@@ -265,6 +274,16 @@ HttpBodyStream >> setStream: aSocketStream status: statusInteger headers: aDicti
 				' bytes, over the ', maxBody printString, ' this client reads'].
 		^self].
 	mode := #close
+]
+
+{ #category : 'private' }
+HttpBodyStream >> significantDigitsIn: aString [
+	"How many digits aString has after its leading zeros; aString is all
+	 digits.  See setStream:status:headers:maxBodyBytes:method:."
+	| first |
+	first := aString findFirst: [:c | c ~= $0].
+	first = 0 ifTrue: [^0].
+	^aString size - first + 1
 ]
 
 { #category : 'private' }
