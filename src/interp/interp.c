@@ -1781,6 +1781,9 @@ depth_ceiling_reached(void)
     return limit > 0 && st_vm.call_depth > limit && !st_vm.depth_signalled;
 }
 
+/*  Ends the running process alone; defined with the other ends, below.  */
+static void abandon_active_process(const char *why);
+
 static int
 send_out_of_memory(void)
 {
@@ -1854,6 +1857,22 @@ activate_new_method(void)
          *  The send replaces the one that failed, so its answer is what that
          *  send answers.  Nothing else could be true: the method is exactly
          *  the one there was no room to enter.
+         *
+         *  And `the process stops' means the PROCESS (Bugs07 INTERP-3b).
+         *  Where the image could not be told, this cleared st_vm.running,
+         *  which ends the worker and with it the pool -- the end Bugs07
+         *  INTERP-3 took away from the two allocating bytecodes, left here:
+         *  one process handling its OutOfMemory and then allocating on in
+         *  its handler, under -serve, took every other process, request and
+         *  connection with it and the server exited `the image stopped on
+         *  its own'.  abandon_active_process ends this process alone, as
+         *  `Processor terminateActive' would, and the worker goes on to the
+         *  next; what the runaway held is garbage once nothing refers to
+         *  its stack, and the next collection takes it back.  With no pool
+         *  -- -eval, -run -- the scheduler finds nothing else to run and
+         *  the run ends as before, with the exit status of an unhandled
+         *  error.  The line below is kept: which process it was and how
+         *  full the table is are worth saying either way.
          */
         if (send_out_of_memory())
             return;
@@ -1870,7 +1889,7 @@ activate_new_method(void)
                         "%u words and %u object table entries free\n",
                 OM_core_left(), OM_oops_left());
 #endif
-        st_vm.running = 0;
+        abandon_active_process("out of memory activating a method");
         return;
     }
     OM_store_pointer(ST_CTX_SENDER, ctx, st_vm.active_context);

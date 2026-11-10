@@ -4403,6 +4403,71 @@ bugs7c_net(void)
     unlink(NET_LOG);
 }
 
+/*
+ *  Bugs07, round 3: the VM group's findings.
+ */
+static void
+bugs7c_vm(void)
+{
+    static char out[65536];
+    const char *oom = fixture("bugs7c-serve-oom.st");
+    char        batch[1024];
+    char        command[2048];
+    int         status;
+
+    /*
+     *  INTERP-3b.  A process that handles its OutOfMemory and then
+     *  allocates on in the handler has spent its reserve, and when it next
+     *  needs a context activate_new_method cleared the interpreter's
+     *  running flag -- the worker ended, and with it the pool: the batch
+     *  never printed another line and the server exited `the image stopped
+     *  on its own'.  Now that process alone is ended and the rest go on.
+     *  The batch waits for the runaway's handler without allocating (a
+     *  Semaphore, then primitives only: the Delay timing process would
+     *  have to allocate while the table is full), then forks a process so
+     *  that the worker the runaway ended on has something else to run --
+     *  until it does, its registers still hold the runaway's stack.  The
+     *  first line may itself be told OutOfMemory (the runaway's objects are
+     *  not reclaimed until that worker moves on); the second must answer.
+     */
+    if (write_file(oom,
+            "| t told |\n"
+            "told := Semaphore new.\n"
+            "[ | a | a := OrderedCollection new.\n"
+            "  [[a add: (Array new: 1)] repeat] on: OutOfMemory do: [:e | "
+            "told signal. [a add: (Array new: 1)] repeat]] fork.\n"
+            "told wait.\n"
+            "t := Time millisecondClockValue.\n"
+            "[Time millisecondClockValue - t < 4000] whileTrue: [Processor yield].\n"
+            "[nil] fork.\n"
+            "t := Time millisecondClockValue.\n"
+            "[Time millisecondClockValue - t < 1000] whileTrue: [Processor yield].\n"
+            "^#waited\n") == 0) {
+        snprintf(batch, sizeof batch,
+                 "Compiler evaluate: (FileStream oldFileNamed: '%s') "
+                 "contentsOfEntireFile\n3 + 4\n", oom);
+        if (write_file(BATCH, batch) == 0) {
+            snprintf(command, sizeof command,
+                     "ST_MAX_OBJECTS=1048576 " ST_TEST_TIMEOUT " -k 2 "
+                     SERVE_SECONDS " %s -serve %s -workers 2 \"$(cat %s)\" 2>&1",
+                     st2026, IMAGE, BATCH);
+            status = run(command, out, sizeof out);
+            ++st_test_checks;
+            if (status < 0) {
+                ++st_test_failures;
+                printf("  FAIL INTERP-3b: could not run the server\n");
+            } else {
+                expect(out, "out of memory activating a method; the process "
+                       "is ended", "INTERP-3b the runaway alone was ended");
+                expect(out, "contentsOfEntireFile ==> ",
+                       "INTERP-3b the batch line was answered");
+                expect(out, "3 + 4 ==> 7", "INTERP-3b the pool carried on");
+            }
+        }
+        unlink(oom);
+    }
+}
+
 int
 main(void)
 {
@@ -5076,6 +5141,7 @@ main(void)
     bugs7c_gui();
     bugs7c_net();
     bugs7c_sched();
+    bugs7c_vm();
 
     unlink(IMAGE);
     unlink(BATCH);

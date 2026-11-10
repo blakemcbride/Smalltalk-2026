@@ -217,7 +217,9 @@ Raising it costs objects at the moment there are none, so the object memory
 keeps an emergency reserve and releases it once, to each process that runs
 out, for the signal---which means a process that catches this and then
 allocates on regardless does eventually stop, while another process that runs
-out meanwhile is told in its turn. Very deep stacks are the exception: past sixteen thousand frames the
+out meanwhile is told in its turn. What stops is that process alone: the
+interpreter ends it with a line on the standard error, and every other
+process, and the server, goes on. Very deep stacks are the exception: past sixteen thousand frames the
 interpreter stops rather than signals, because delivering an exception is
 quadratic in the depth and a runaway recursion is millions of frames down.
 That case still prints a line and stops, in about four seconds.
