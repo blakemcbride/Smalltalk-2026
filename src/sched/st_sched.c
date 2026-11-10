@@ -2513,17 +2513,30 @@ remove_link_from_list(st_oop link, st_oop list)
  *  terminate unlinked it from a ready list under a stripe lock instead of
  *  the ready lock, and a terminate inside an unwind block put it back
  *  into "the same wait" by sending wait to a LinkedList.
+ *
+ *  Whether Processor is a scheduler yet is asked first (found by ASAN
+ *  after Bugs07 KERNB-1).  KERNB-1's fix made become:'s pin test ask this
+ *  of a list, and become: runs during the bootstrap -- install_pools sends
+ *  it -- before Processor's association holds a ProcessorScheduler: its
+ *  value is still nil, an object with no fields, and "nil's field 0" was
+ *  read from the next allocation.  Under ASAN every bootstrap stopped
+ *  there; without it the answer rested on whatever that word held.
  */
 static int
 is_ready_list(st_oop list)
 {
+    st_oop      scheduler;
     st_oop      lists;
     uint32_t    n;
     uint32_t    i;
 
     if (!OM_is_present(list))
         return 0;
-    lists = OM_fetch_pointer(ST_SCHEDULER_PROCESS_LISTS, SCHED_scheduler());
+    scheduler = SCHED_scheduler();
+    if (!OM_is_present(scheduler) || !OM_pointer_bit(scheduler)
+     || OM_fetch_word_length(scheduler) <= ST_SCHEDULER_PROCESS_LISTS)
+        return 0;
+    lists = OM_fetch_pointer(ST_SCHEDULER_PROCESS_LISTS, scheduler);
     if (!OM_is_present(lists) || !OM_pointer_bit(lists))
         return 0;
     n = OM_fetch_word_length(lists);
