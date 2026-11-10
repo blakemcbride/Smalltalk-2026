@@ -2554,6 +2554,53 @@ abandon_active_process(const char *why)
 }
 
 /*
+ *  An allocating bytecode found the object table at its ceiling.
+ *
+ *  Bugs07 INTERP-3.  138 (push a new Array: every `{a. b}' and every
+ *  shared-temporary vector) and 143 (push a closure: every `[...]' that is
+ *  not inlined) answered a refused allocation by clearing st_vm.running,
+ *  which ends the worker and, under -serve, the pool: every other process
+ *  stopped with the runaway, its `on: Error do:' never ran, and the server
+ *  exited with `the image stopped on its own'.  The same runaway
+ *  allocating through a send or a primitive was told, with an OutOfMemory
+ *  it could handle (Bugs5 OM-8, Bugs6 OM-5).  So the bytecodes are told
+ *  the same way: the operands are consumed by the caller, the receiver of
+ *  the running method takes the place of the Array or closure that could
+ *  not be made, and #outOfMemory is sent to it -- what that answers, a
+ *  handler's value or nil after an unhandled report, is the value of the
+ *  brace or block expression.  Where the image cannot be told (no
+ *  reserve left for this process, a stack too deep to unwind, no
+ *  #outOfMemory bound) it is this PROCESS that ends, never the run.
+ */
+static void
+bytecode_out_of_memory(const char *why)
+{
+    ST_push(st_vm.receiver);
+    st_vm.argument_count = 0;
+    if (send_out_of_memory())
+        return;
+    abandon_active_process(why);
+}
+
+/*
+ *  The same for the two objects a doesNotUnderstand: is delivered in
+ *  (Bugs07 INTERP-3).  Neither allocation was checked: at the ceiling the
+ *  Message was ST_OOP_INVALID, was pushed, and had the selector stored
+ *  through it -- a write through the object table's entry 0.  The send
+ *  that was not understood is replaced by #outOfMemory to its receiver,
+ *  its arguments discarded, as activate_new_method replaces a send there
+ *  was no room to enter.
+ */
+static void
+dnu_out_of_memory(void)
+{
+    if (send_out_of_memory())
+        return;
+    abandon_active_process("out of memory delivering a message not "
+                           "understood");
+}
+
+/*
  *  Abandon the running activation: its method cannot be executed (Bugs3
  *  B11).
  *
@@ -2813,17 +2860,35 @@ send_does_not_understand(st_oop receiver, st_oop selector, st_oop lookup_class)
             return;
         }
         message = OM_instantiate_pointers(ST_CLASS_MESSAGE, 2);
+        if (!OM_is_object(message)) {
+            dnu_out_of_memory();
+            return;
+        }
         ST_push(message);
         args = OM_instantiate_pointers(ST_CLASS_ARRAY, 0);
+        if (!OM_is_object(args)) {
+            ST_pop_n(1);
+            dnu_out_of_memory();
+            return;
+        }
         OM_store_pointer(ST_MESSAGE_SELECTOR, message, selector);
         OM_store_pointer(ST_MESSAGE_ARGUMENTS, message, args);
     }  else  {
         args = OM_instantiate_pointers(ST_CLASS_ARRAY, st_vm.argument_count);
+        if (!OM_is_object(args)) {
+            dnu_out_of_memory();
+            return;
+        }
         for (i = 0; i < st_vm.argument_count; ++i)
             OM_store_pointer(i, args,
                              ST_stack_value(st_vm.argument_count - 1 - i));
         ST_stack_put(st_vm.argument_count - 1, args);
         message = OM_instantiate_pointers(ST_CLASS_MESSAGE, 2);
+        if (!OM_is_object(message)) {
+            /*  The Array in the first argument's slot goes with the rest. */
+            dnu_out_of_memory();
+            return;
+        }
         /*
          *  Into the Message BEFORE the push: the push overwrites the slot
          *  that holds the Array's one count, and with no workers a count
@@ -3539,7 +3604,12 @@ ST_interp_run(uint64_t limit)
             st_oop      array = OM_instantiate_pointers(ST_CLASS_ARRAY, size);
 
             if (!OM_is_object(array)) {
-                st_vm.running = 0;
+                if (descriptor & 128) {
+                    if (!stack_depth_ok(size))
+                        break;
+                    ST_pop_n(size);
+                }
+                bytecode_out_of_memory("out of memory building an Array");
                 break;
             }
             if (descriptor & 128) {
@@ -3634,7 +3704,11 @@ ST_interp_run(uint64_t limit)
             closure = OM_instantiate_pointers(closure_class,
                                               ST_CLOSURE_FIRST_COPIED + copied);
             if (!OM_is_object(closure)) {
-                st_vm.running = 0;
+                /*  Past the body first: the answer of #outOfMemory comes
+                 *  back to the bytecode after it, as the closure would. */
+                ST_pop_n(copied);
+                st_vm.instruction_pointer += block_size;
+                bytecode_out_of_memory("out of memory building a closure");
                 break;
             }
             OM_store_pointer(ST_CLOSURE_OUTER_CONTEXT, closure,

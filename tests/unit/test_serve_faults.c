@@ -3355,6 +3355,107 @@ bugs7b_sched(void)
         "FIXES-3 a library section inside a given-up one is not torn");
 }
 
+/*
+ *  Bugs07, round 2: the VM group's medium findings that need a server.
+ */
+static void
+bugs7b_vm(void)
+{
+    static char out[65536];
+    const char *oom = fixture("bugs7b-serve-oom.st");
+    char        batch[1024];
+    char        command[2048];
+    int         status;
+    size_t      k;
+    static const struct {
+        const char *element;
+        const char *what;
+    } runaways[] = {
+        { "[:x | x + i]", "INTERP-3 a runaway building closures" },
+        { "{i. i}",       "INTERP-3 a runaway building brace Arrays" },
+    };
+
+    /*
+     *  INTERP-3: a runaway that ran the object table out while building
+     *  a closure (bytecode 143) or a brace Array (138) cleared the
+     *  interpreter's running flag -- the worker ended, and with it the
+     *  pool: the program's `on: Error do:' never ran, and the server
+     *  exited with `the image stopped on its own'.  The same runaway
+     *  allocating through a send was told.  Both bytecodes raise an
+     *  OutOfMemory now, and the pool carries on.  A million entries, as
+     *  the OM-5 check.
+     */
+    for (k = 0; k < sizeof runaways / sizeof runaways[0]; ++k) {
+        char    text[1024];
+
+        snprintf(text, sizeof text,
+            "| c i r |\n"
+            "c := Array new: 2000000. i := 1.\n"
+            "r := [[true] whileTrue: [c at: i put: %s. i := i + 1]] "
+            "on: Error do: [:e | c := nil. e class name].\n"
+            "^Array with: r with: #after\n", runaways[k].element);
+        if (write_file(oom, text) != 0)
+            continue;
+        snprintf(batch, sizeof batch,
+                 "Compiler evaluate: (FileStream oldFileNamed: '%s') "
+                 "contentsOfEntireFile\n3 + 4\n", oom);
+        if (write_file(BATCH, batch) != 0)
+            continue;
+        snprintf(command, sizeof command,
+                 "ST_MAX_OBJECTS=1048576 " ST_TEST_TIMEOUT " -k 2 " SERVE_SECONDS
+                 " %s -serve %s -workers 4 \"$(cat %s)\" 2>&1",
+                 st2026, IMAGE, BATCH);
+        status = run(command, out, sizeof out);
+        ++st_test_checks;
+        if (status < 0) {
+            ++st_test_failures;
+            printf("  FAIL INTERP-3: could not run the server\n");
+            continue;
+        }
+        expect(out, "==> (OutOfMemory after )", runaways[k].what);
+        expect(out, "3 + 4 ==> 7", "INTERP-3 the pool carried on");
+    }
+    unlink(oom);
+
+    /*
+     *  INTERP-3, the doesNotUnderstand: half.  Its argument Array and its
+     *  Message were never checked: at the ceiling the one that failed was
+     *  oop 0, and the selector or the arguments were stored through it.
+     *  A runaway that keeps every Message -- a doesNotUnderstand: that
+     *  answers it -- reaches the ceiling at exactly those two allocations,
+     *  since the context each one runs in is freed and taken again.  With
+     *  no workers, where that is deterministic.
+     */
+    {
+        static const char *const sends[] = { "zork", "zork: i" };
+
+        for (k = 0; k < sizeof sends / sizeof sends[0]; ++k) {
+            snprintf(command, sizeof command,
+                     "ST_MAX_OBJECTS=1048576 " ST_TEST_TIMEOUT " -k 2 "
+                     SERVE_SECONDS " %s -bootstrap -profile "
+                     "profiles/st2026.profile -eval \"| cls z c i r | "
+                     "cls := Object subclass: #Bugs7bEcho instanceVariableNames: '' "
+                     "classVariableNames: '' poolDictionaries: '' "
+                     "category: 'Bugs7b'. "
+                     "cls compile: 'doesNotUnderstand: aMessage ^aMessage'. "
+                     "z := cls new. c := Array new: 2000000. i := 1. "
+                     "r := [[true] whileTrue: [c at: i put: (z %s). i := i + 1]] "
+                     "on: Error do: [:e | c := nil. e class name]. "
+                     "^(Array with: r with: i > 1000 with: #after) printString\" "
+                     "2>&1", st2026, sends[k]);
+            status = run(command, out, sizeof out);
+            ++st_test_checks;
+            if (status != 0) {
+                ++st_test_failures;
+                printf("  FAIL INTERP-3 a doesNotUnderstand: at the ceiling "
+                       "(%s): exit %d\n", sends[k], status);
+            }
+            expect(out, "(OutOfMemory true after )",
+                   "INTERP-3 a doesNotUnderstand: at the ceiling");
+        }
+    }
+}
+
 int
 main(void)
 {
@@ -4024,6 +4125,7 @@ main(void)
     bugs7_lib();
     bugs7_sched();
     bugs7b_sched();
+    bugs7b_vm();
 
     unlink(IMAGE);
     unlink(BATCH);
