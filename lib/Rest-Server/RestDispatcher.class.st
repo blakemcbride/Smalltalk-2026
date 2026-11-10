@@ -105,32 +105,60 @@ RestDispatcher >> injsonFrom: anHttpRequest [
 	 where the boundary is capped at RFC 2046's seventy characters and the
 	 search for it is linear, since it once cost the body times the
 	 boundary and a 300 KB form held a worker for minutes (Bugs6 NET-1)."
-	| injson |
+	| injson work |
 	anHttpRequest isMultipart ifFalse: [
 		^anHttpRequest body isEmpty
 			ifTrue: [JSONObject new]
 			ifFalse: [JSONObject fromString: anHttpRequest body]].
 	injson := JSONObject new.
+	"ONE ALLOWANCE OF NUMBER ARITHMETIC FOR THE WHOLE FORM, carried from
+	 field to field (Bugs07 NET-1).  JSONParser bounds the large-integer
+	 arithmetic a document's numbers may ask for -- see its class comment
+	 -- and every field here is a document of its own to it: a form of a
+	 thousand fields, each `[1e400,1e400,...]', would get a thousand
+	 allowances, which is the attack the allowance is there to stop, sent
+	 with another Content-Type."
+	work := Array with: JSONParser new maxNumberWork.
 	anHttpRequest formParameters keysAndValuesDo: [:name :value |
-		injson at: name put: (self decodeFormValue: value named: name)].
+		injson at: name put: (self decodeFormValue: value named: name work: work)].
 	^injson
 ]
 
 { #category : 'private - envelope' }
 RestDispatcher >> decodeFormValue: aString named: aName [
+	"One field read on its own, with an allowance of its own; see
+	 decodeFormValue:named:work:."
+	^self decodeFormValue: aString named: aName work: (Array with: JSONParser new maxNumberWork)
+]
+
+{ #category : 'private - envelope' }
+RestDispatcher >> decodeFormValue: aString named: aName work: anArray [
+	"A field of a form as the value it encodes.  anArray holds what the
+	 form has left of JSONParser's allowance of number arithmetic, and is
+	 given back what this field leaves of it; see injsonFrom:."
 	(aName isEmpty not and: [aName first = $_]) ifTrue: [^aString].
 	aString isEmpty ifTrue: [^aString].
 	aString first = $S ifTrue: [^aString copyFrom: 2 to: aString size].
 	aString = 'true' ifTrue: [^true].
 	aString = 'false' ifTrue: [^false].
 	aString = 'null' ifTrue: [^nil].
-	aString first = ${ ifTrue: [^[JSONObject fromString: aString] on: JSONError do: [:e | aString]].
-	aString first = $[ ifTrue: [^[JSONArray fromString: aString] on: JSONError do: [:e | aString]].
-	^self numberFrom: aString
+	(aString first = ${ or: [aString first = $[])
+		ifTrue: [^self parse: (JSONParser on: aString) or: aString work: anArray].
+	^self numberFrom: aString work: anArray
 ]
 
 { #category : 'private - envelope' }
-RestDispatcher >> numberFrom: aString [
+RestDispatcher >> parse: aParser or: aString work: anArray [
+	"What aParser reads, or aString when it refuses, with the allowance in
+	 anArray handed in and what is left of it taken back -- refused or not,
+	 since what a refused parse spent was spent."
+	aParser maxNumberWork: (anArray at: 1).
+	^[[aParser parse] on: JSONError do: [:e | e return: aString]]
+		ensure: [anArray at: 1 put: aParser maxNumberWork]
+]
+
+{ #category : 'private - envelope' }
+RestDispatcher >> numberFrom: aString work: anArray [
 	"aString read as a number, when reading it is work this server is
 	 willing to do; aString itself when it is not.
 
@@ -180,14 +208,16 @@ RestDispatcher >> numberFrom: aString [
 	digits := 0.
 	aString do: [:c | c isDigit ifTrue: [digits := digits + 1]].
 	digits > self class maxFormNumberDigits ifTrue: [^aString].
-	^[(JSONParser on: aString) maxDigits: self class maxFormNumberDigits; parse]
-		on: JSONError do: [:e | aString]
+	^self
+		parse: ((JSONParser on: aString) maxDigits: self class maxFormNumberDigits; yourself)
+		or: aString
+		work: anArray
 ]
 
 { #category : 'private - envelope' }
 RestDispatcher class >> maxFormNumberDigits [
 	"How many digits a form field may be written with before this server
-	 stops reading it as a number.  JSONParser's maxDigits; see numberFrom:."
+	 stops reading it as a number.  JSONParser's maxDigits; see numberFrom:work:."
 	^256
 ]
 

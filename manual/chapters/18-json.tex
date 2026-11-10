@@ -195,27 +195,46 @@ somewhere that has never heard of this system. The sender of a malformed
 document is the party who can fix it, and the way to tell them is to refuse
 it.
 
-Three limits are refusals of a different kind. A document may not nest
+Four limits are refusals of a different kind. A document may not nest
 deeper than 512 levels, an exponent may not exceed 400, and a number may
 not be written with more than 256 digits---the first so that forty thousand
 open brackets cannot exhaust the heap, the second so that a twelve-character
 document cannot ask this process for a billion digits, the third because
 reading a decimal into a binary integer costs a multiplication per digit of
-a number that grows. All three matter because the document usually arrives
+a number that grows. All of them matter because the document usually arrives
 from somewhere else. 256 digits is past every number that is really a
 number: a 64-bit integer is 19 digits, the widest SQL \ct{DECIMAL} is 38,
 and a double carries 17 significant ones. The count is taken separately in
 the whole part and in the fraction.
 
-Two of the three can be raised deliberately:
+The fourth limit is on the whole document rather than on one number.
+\ct{1e400} is five characters asking for a 400-digit integer, and a
+document can hold as many of them as its size allows, so the numbers of one
+document share an allowance of large-integer arithmetic, counted in units of
+about a microsecond. Every character of a number adds 32 to it, every step
+of the arithmetic is charged before it is done, and the document is refused
+when the allowance runs out. It starts at 10,000. Ordinary numbers cost less
+than their characters bring in, and so does a double printed in full, at any
+negative exponent and at any positive one up to about 260; what spends the
+allowance is a short number with a long exponent, such as \ct{1e308} or
+\ct{5e-324}, of which a document may hold a dozen or more beyond what its
+other numbers pay for. No value is read differently: \ct{1e400} is exactly
+ten to the four hundredth.
+
+Three of the four can be raised deliberately:
 
 \begin{st}
 | parser |
 parser := JSONParser on: aVeryDeepDocument.
 parser maxDepth: 5000.
 parser maxDigits: 2000.
+parser maxNumberWork: 1000000.
 parser parse
 \end{st}
+
+\noindent After a parse, \ct{maxNumberWork} answers what is left of the
+allowance, so handing it to the next parser makes several documents one as
+far as this limit is concerned.
 
 \section{When it goes wrong}
 
@@ -377,7 +396,7 @@ reads one value and leaves the stream where it stopped.
 \ctp{JSONObject fromString:} & and it must be an object \\
 \ctp{JSONArray fromString:} & and it must be an array \\
 \ctp{JSONParser parse:} & a String or a stream \\
-\ctp{JSONParser on:} & a parser, for maxDepth:, maxDigits: and nextValue \\
+\ctp{JSONParser on:} & a parser, for its limits and nextValue \\
 \midrule
 \textbf{Writing} & \\
 \ctp{anObject asJsonString} & compact \\

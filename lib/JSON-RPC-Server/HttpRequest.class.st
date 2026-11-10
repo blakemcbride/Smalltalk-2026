@@ -393,7 +393,7 @@ HttpRequest >> parseParts [
 	 by maxRequestBytes, 64 MB unless the server says otherwise -- and this
 	 runs BEFORE ANYTHING IS AUTHENTICATED.  It has to: the session token
 	 is a field of the very form it is taking apart, the reason
-	 RestDispatcher>>numberFrom: gives for its own cap.  So the cost of
+	 RestDispatcher>>numberFrom:work: gives for its own cap.  So the cost of
 	 this scan is the cost of a request from anyone, and it was the body
 	 times the boundary: indexOfSubstring:startingAt: compared the whole
 	 pattern at every position, and a 300 KB body with a 2,000-character

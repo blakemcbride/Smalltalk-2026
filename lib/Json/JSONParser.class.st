@@ -91,11 +91,35 @@ There is no fix for this in the caller.  A REST request carries its session
 token INSIDE the JSON document (`_uuid'), so the document has to be parsed
 before there is anything to authenticate; the parser is the only place that
 can refuse the work.
+
+AND SO IS THE ARITHMETIC, PER DOCUMENT.  Every bound above is per number, and
+a document holds as many numbers as its size allows: `1e400,' is six bytes
+asking for a four-hundred-digit integer, which costs this image most of a
+millisecond, and the 64 MB a request may carry held a worker for hours at
+seven kilobytes a second (Bugs07 NET-1).  So the numbers of one document
+share one allowance of large-integer arithmetic.  Each character of a number
+adds workPerCharacter to it; each step of the arithmetic is charged against
+it BEFORE it is done, at a cost worked out from the lengths it is about to
+handle, in units of about a microsecond of this image's time; and the
+document is refused when the allowance goes below zero.  It starts at
+maxNumberWork, 10,000 by default.  An ordinary number costs less than its
+characters bring in, so ordinary documents only add to it, and so does a
+double printed in full at almost any exponent.  What draws it down is a
+short number with a long exponent, `1e308' or `5e-324', of which a document
+may hold a dozen or more beyond what its other numbers pay for.  The
+arithmetic of any document is then at most workPerCharacter microseconds a
+character, about what parsing an ordinary number costs anyway, plus
+maxNumberWork for a request with hardly any characters at all -- and no
+number is read differently: 1e400 is still exactly ten to the four
+hundredth.  A caller who trusts its documents and expects a great many such
+numbers raises maxNumberWork:; a caller reading several documents as one
+passes what each parse leaves to the next, which is how RestDispatcher
+reads the fields of a form.
 "
 Class {
 	#name : 'JSONParser',
 	#superclass : 'Object',
-	#instVars : [ 'stream', 'depth', 'maxDepth', 'maxDigits' ],
+	#instVars : [ 'stream', 'depth', 'maxDepth', 'maxDigits', 'numberWork' ],
 	#classVars : [ 'PowersOfTen', 'PowersOfTenBy64' ],
 	#category : 'Json'
 }
@@ -144,6 +168,22 @@ JSONParser class >> tenTo: n [
 	^(PowersOfTenBy64 at: q + 1) * (PowersOfTen at: n \\ 64 + 1)
 ]
 
+{ #category : 'private' }
+JSONParser class >> workPerCharacter [
+	"How much large-integer arithmetic each character of a number pays
+	 for, in the units spend: counts -- about a microsecond of this
+	 image's time each.  See the class comment, Bugs07 NET-1.
+
+	 Thirty-two because that is about what parsing an ordinary number
+	 already costs a character -- `12345,' is twenty microseconds a
+	 character, `1.5,' forty-five, `1e22,' fifty -- so a document built to
+	 spend all of it parses no slower than a list of prices does; and
+	 because at thirty-two a double printed in full, seventeen digits and
+	 an exponent, pays for itself at any negative exponent and at any
+	 positive one up to about 260."
+	^32
+]
+
 { #category : 'parsing' }
 JSONParser class >> parse: aStringOrStream [
 	"The one JSON value that text is, whatever kind it is.
@@ -184,7 +224,8 @@ JSONParser class >> on: aStringOrStream [
 JSONParser >> initialize [
 	depth := 0.
 	maxDepth := 512.
-	maxDigits := 256
+	maxDigits := 256.
+	numberWork := 10000
 ]
 
 { #category : 'accessing' }
@@ -209,6 +250,34 @@ JSONParser >> maxDigits: anInteger [
 	 work a document may ask for, not on the arithmetic, which is exact and
 	 would carry on."
 	maxDigits := anInteger
+]
+
+{ #category : 'accessing' }
+JSONParser >> maxNumberWork [
+	"The allowance of large-integer arithmetic not yet spent: what
+	 maxNumberWork: set, before a parse, and what is left of it -- with
+	 what the document's numbers paid in -- after one.  See
+	 maxNumberWork:."
+	^numberWork
+]
+
+{ #category : 'accessing' }
+JSONParser >> maxNumberWork: anInteger [
+	"How much large-integer arithmetic a document's numbers may do beyond
+	 what their own characters pay for, in units of about a microsecond of
+	 this image's time.  See the class comment, Bugs07 NET-1: like
+	 maxDigits:, a bound on the work a document may ask for and not on the
+	 arithmetic, which is exact and would carry on, and raised on purpose
+	 for documents known to need it.  10,000 by default, which is a dozen
+	 or more numbers like 1e400 beyond what the document's other numbers
+	 pay for.
+
+	 It is also how one allowance spans several parses.  maxNumberWork
+	 answers what a parse left, and handing that to the next parser makes
+	 the two documents one as far as this bound is concerned -- which is
+	 what RestDispatcher does with the fields of a form, each of them a
+	 document of its own and all of them one request."
+	numberWork := anInteger
 ]
 
 { #category : 'parsing' }
@@ -333,17 +402,17 @@ JSONParser >> nextNumber [
 	 Bugs3 B53, which the digit cap alone does not reach because the
 	 exponent may still be 400."
 
-	| negative whole digits exponent scale value |
+	| negative wholeText whole digits exponent scale value |
 	negative := stream peekFor: $-.
 	(stream atEnd not and: [stream peek isDigit])
 		ifFalse: [self error: 'a number needs at least one digit'].
 	(stream peek = $0)
 		ifTrue: [
 			stream next.
-			whole := 0.
+			wholeText := '0'.
 			(stream atEnd not and: [stream peek isDigit]) ifTrue: [
 				self error: 'a number may not have a leading zero']]
-		ifFalse: [whole := self nextDigits].
+		ifFalse: [wholeText := self nextDigitString].
 	digits := ''.
 	(stream peekFor: $.) ifTrue: [
 		(stream atEnd not and: [stream peek isDigit])
@@ -354,18 +423,88 @@ JSONParser >> nextNumber [
 		ifTrue: [
 			stream next.
 			exponent := self nextExponent].
+	"Paid for before anything is computed (Bugs07 NET-1; see the class
+	 comment and spend:).  First what this number's characters bring in:
+	 its digits, and its exponent by the digits of its value and the e, so
+	 that padding the exponent with zeros buys nothing.  Then what reading
+	 the digits will cost."
+	self earn: wholeText size + digits size
+		+ (exponent = 0 ifTrue: [0] ifFalse: [exponent abs printString size + 1]).
+	self spend: (self costToRead: wholeText size).
+	whole := self integerFrom: wholeText.
 	value := digits isEmpty
 		ifTrue: [whole]
-		ifFalse: [whole * (JSONParser tenTo: digits size) + (self integerFrom: digits)].
+		ifFalse: [
+			self spend: (self costToRead: digits size)
+				+ (self costOfTenTo: digits size times: wholeText size).
+			whole * (JSONParser tenTo: digits size) + (self integerFrom: digits)].
 	"Zero before anything is computed: `0e4096' is zero, and asking for
 	 a four-thousand-digit power of ten to multiply it by would be half a
 	 second spent to answer that."
 	value = 0 ifTrue: [^0].
 	scale := digits size - exponent.
 	value := scale <= 0
-		ifTrue: [value * (JSONParser tenTo: scale negated)]
+		ifTrue: [
+			self spend: (self costOfTenTo: scale negated times: wholeText size + digits size).
+			value * (JSONParser tenTo: scale negated)]
 		ifFalse: [self reduce: value over: scale].
 	^negative ifTrue: [value negated] ifFalse: [value]
+]
+
+{ #category : 'private' }
+JSONParser >> earn: characters [
+	"Add what that many characters of a number pay for to the allowance;
+	 see the class comment."
+	numberWork := numberWork + (characters * JSONParser workPerCharacter)
+]
+
+{ #category : 'private' }
+JSONParser >> spend: units [
+	"Take units of large-integer arithmetic out of the allowance BEFORE
+	 doing it, and refuse the document when there is not enough: a
+	 refusal that came after the work would cost what it refuses (Bugs07
+	 NET-1)."
+	numberWork := numberWork - units.
+	numberWork < 0 ifTrue: [
+		self error: 'the numbers in this document ask for more arithmetic ',
+			'than this parser will do (see maxNumberWork:)']
+]
+
+{ #category : 'private' }
+JSONParser >> costToRead: digitCount [
+	"What integerFrom: costs on that many digits, in spend:'s units.
+	 Quadratic, because each chunk it folds in multiplies everything read
+	 so far: measured, 256 digits are about three milliseconds and 512
+	 about ten."
+	^digitCount * digitCount // 24 + (digitCount * 3)
+]
+
+{ #category : 'private' }
+JSONParser >> costOfProduct: aDigitCount and: bDigitCount [
+	"What multiplying an integer of aDigitCount decimal digits by one of
+	 bDigitCount costs, in spend:'s units.  1983 multiplies large integers
+	 a byte at a time in Smalltalk: measured, 256 digits by 256 are about
+	 1.3 ms, and even a one-digit number times a 400-digit one is half a
+	 millisecond, which is the linear part."
+	^aDigitCount * bDigitCount // 64 + aDigitCount + bDigitCount
+]
+
+{ #category : 'private' }
+JSONParser >> costOfTenTo: n times: digitCount [
+	"What `x * (JSONParser tenTo: n)' costs for an x of digitCount
+	 digits: making the power, which is a multiply of its own past the
+	 first table, and the product."
+	^n + (self costOfProduct: digitCount and: n + 1)
+]
+
+{ #category : 'private' }
+JSONParser >> digitsIn: anInteger [
+	"About how many decimal digits anInteger has, for spend: -- two and a
+	 half to the byte, which is a little over.  None for a SmallInteger:
+	 its arithmetic is a bytecode, and its loops in reduce:over: are a few
+	 dozen of them at most."
+	anInteger class == SmallInteger ifTrue: [^0].
+	^anInteger digitLength * 5 // 2
 ]
 
 { #category : 'private' }
@@ -395,17 +534,41 @@ JSONParser >> reduce: anInteger over: k [
 	 numerator, or one not divisible by five -- each loop stops on its
 	 first test."
 
-	| n twos fives denominator |
+	| n twos fives power extra denominator |
 	n := anInteger.
+	"Each division is paid for before it is done (Bugs07 NET-1; see
+	 spend:): a numerator of 5^300 with an exponent of -400 divides by
+	 five three hundred times, and it is six characters of exponent that
+	 ask for it.  A test for five is a division too; a test for two is a
+	 bit."
 	twos := 0.
-	[twos < k and: [n even]] whileTrue: [n := n // 2. twos := twos + 1].
+	[twos < k and: [n even]] whileTrue: [
+		self spend: (self digitsIn: n) * 2.
+		n := n // 2. twos := twos + 1].
 	fives := 0.
-	[fives < k and: [n \\ 5 = 0]] whileTrue: [n := n // 5. fives := fives + 1].
+	[fives < k and: [self spend: (self digitsIn: n) * 3. n \\ 5 = 0]] whileTrue: [
+		self spend: (self digitsIn: n) * 3.
+		n := n // 5. fives := fives + 1].
 	"2^(k - twos) * 5^(k - fives), as a power of ten from the table and
-	 whichever factor is left over."
-	denominator := twos >= fives
-		ifTrue: [(JSONParser tenTo: k - twos) * (5 raisedTo: twos - fives)]
-		ifFalse: [(JSONParser tenTo: k - fives) * (2 raisedTo: fives - twos)].
+	 whichever factor is left over -- and no factor at all when nothing is
+	 left over, which is the usual case: multiplying a power of ten by 1
+	 was half of what reading `1e-400' cost, since 1983 walks the whole of
+	 a large integer to multiply it by anything."
+	power := k - (twos max: fives).
+	"The digits of the factor: a power of five has seven for every ten in
+	 its exponent, a power of two three, and raisedTo: costs about one
+	 product of that size."
+	extra := (twos - fives) abs * (twos >= fives ifTrue: [7] ifFalse: [3]) // 10 + 1.
+	self spend: (twos = fives
+		ifTrue: [power]
+		ifFalse: [power + (self costOfProduct: extra and: extra)
+			+ (self costOfProduct: power + 1 and: extra)]).
+	denominator := twos = fives
+		ifTrue: [JSONParser tenTo: power]
+		ifFalse: [
+			(JSONParser tenTo: power) * (twos > fives
+				ifTrue: [5 raisedTo: twos - fives]
+				ifFalse: [2 raisedTo: fives - twos])].
 	denominator = 1 ifTrue: [^n].
 	^Fraction coprimeNumerator: n denominator: denominator
 ]

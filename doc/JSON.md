@@ -90,7 +90,7 @@ over a third of `lib/Json-Tests` is documents the parser must refuse. A reader
 that quietly accepted all six of the above would pass every other test in the
 suite.
 
-Three limits are refusals of a different kind, and all three exist because the
+Four limits are refusals of a different kind, and all four exist because the
 document usually arrives from somewhere else:
 
 - **512 levels of nesting.** Forty thousand open brackets is a valid document
@@ -107,6 +107,22 @@ document usually arrives from somewhere else:
   the session token *inside the same document* had been looked at. 256 is far
   past every number that is really a number: a 64-bit integer is 19 digits, the
   widest SQL `DECIMAL` is 38, and a double carries 17 significant ones.
+- **An allowance of arithmetic for the whole document.** The two limits above
+  are per number, and a document holds as many numbers as its size allows:
+  `1e400,` is six bytes asking for a 400-digit integer, most of a millisecond,
+  so a body of them parsed at seven kilobytes a second. The numbers of one
+  document therefore share an allowance, in units of about a microsecond: each
+  character of a number adds 32 (`JSONParser workPerCharacter`), each step of
+  large-integer arithmetic is charged before it is done, and the document is
+  refused when the allowance runs out. It starts at 10,000, and
+  `maxNumberWork:` sets it. Ordinary numbers cost less than their characters
+  bring in, and so does a double printed in full at any negative exponent and
+  any positive one up to about 260; what spends it is a short number with a
+  long exponent, `1e308` or `5e-324`, of which a document may hold a dozen or
+  more beyond what its other numbers pay for. No value changes: `1e400` is
+  still exactly ten to the four hundredth. `maxNumberWork` answers what a
+  parse left, so one allowance can span several documents; `RestDispatcher`
+  reads the fields of a multipart form that way, as one request.
 
 The arithmetic under those digits is no longer one multiplication per digit
 either. A JSON number is one integer over one power of ten, so all three of its
@@ -272,7 +288,7 @@ three-element array with the names thrown away, in hash order, silently.
 |---|---|
 | `JSONObject` | names and values, in the order they were put; the seven typed accessors |
 | `JSONArray` | values in order; the same seven by index; enough collection protocol to be useful |
-| `JSONParser` | RFC 8259, recursive descent over a stream, bounded in depth, exponent and digits |
+| `JSONParser` | RFC 8259, recursive descent over a stream, bounded in depth, exponent, digits and arithmetic per document |
 | `JSONWriter` | compact and indented, exact decimals, the escaping |
 | `JSONError` | every refusal, carrying the character position |
 

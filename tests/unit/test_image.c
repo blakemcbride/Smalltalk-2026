@@ -636,8 +636,15 @@
  *  3345 -> 3350 with Bugs07 SCHED-1: Process>>detachTakingFromSemaphore:
  *  gives way to stopTakingFromSemaphore:thenDo:, with detach:thenDo:,
  *  undoStop:, endStoppedAt:, waitUntilTerminated and deliver:stoppedAt:.
+ *
+ *  3350 -> 3361 with Bugs07 NET-1: JSONParser's allowance of number
+ *  arithmetic (class>>workPerCharacter, maxNumberWork, maxNumberWork:,
+ *  earn:, spend:, costToRead:, costOfProduct:and:, costOfTenTo:times:,
+ *  digitsIn:) and RestDispatcher carrying it across a form's fields
+ *  (decodeFormValue:named:work:, parse:or:work:; numberFrom: became
+ *  numberFrom:work:).
  */
-#define LIB_METHODS             3350
+#define LIB_METHODS             3361
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -3018,8 +3025,12 @@ test_browsing(void)
      *
      *  2975473 -> 2981270 with Bugs07 SCHED-1: a stopper is not itself
      *  stopped between taking hold of its victim and letting it go.
+     *
+     *  2981270 -> 2989806 with Bugs07 NET-1: JSONParser's per-document
+     *  allowance of number arithmetic, and RestDispatcher sharing it across
+     *  the fields of a form.
      */
-    check_integer("(SourceFiles at: 1) contents size", 2981270);
+    check_integer("(SourceFiles at: 1) contents size", 2989806);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -11413,6 +11424,58 @@ test_bugs7_lib(void)
                  "'  -42x' asInteger. '+17' asInteger. 'abc' asInteger. '-' asInteger. "
                  "'12345678901234567890' asInteger} printString",
                  "('hello' 'hello' -42 17 nil nil 12345678901234567890 )");
+
+    /*
+     *  NET-1: `1e400,' is six bytes asking for a 400-digit integer, most
+     *  of a millisecond each, and nothing bounded how many a document
+     *  held: 7 KB/s of JSON before authentication.  Now one document's
+     *  numbers share an allowance of large-integer arithmetic, paid into
+     *  by their characters.  Two thousand of them are refused -- before,
+     *  this ran past the harness's twenty million bytecodes -- as are
+     *  fifty, which parsed; maxNumberWork: lets fifty through.
+     */
+    check_string("| s doc | s := WriteStream on: String new. s nextPut: $[. "
+                 "2000 timesRepeat: [s nextPutAll: '1e400,']. s nextPutAll: '0]'. doc := s contents. "
+                 "^[JSONParser parse: doc. #accepted] on: JSONError do: [:e | "
+                 "(e messageText includesSubstring: 'more arithmetic than this parser will do') "
+                 "ifTrue: [#refused] ifFalse: [e messageText]]",
+                 "refused");
+    check_string("| s doc | s := WriteStream on: String new. s nextPut: $[. "
+                 "50 timesRepeat: [s nextPutAll: '9e400,']. s nextPutAll: '0]'. doc := s contents. "
+                 "^{[JSONParser parse: doc. #accepted] on: JSONError do: [:e | #refused]. "
+                 "(((JSONParser on: doc) maxNumberWork: 1000000; parse) at: 1) = (9 * (10 raisedTo: 400))} "
+                 "printString",
+                 "(refused true )");
+    /*  Ordinary documents pay their own way, doubles printed in full at
+     *  the ends of the range included, and every value is still exact:
+     *  the reduction's new shortcut (no factor of 1) included.  */
+    check_string("| s doc r | s := WriteStream on: String new. s nextPut: $[. "
+                 "60 timesRepeat: [s nextPutAll: '1.2345678901234567e-300,1.7976931348623157e250,123.45,']. "
+                 "s nextPutAll: '0]'. doc := s contents. r := JSONParser parse: doc. "
+                 "^{r size. (r at: 1) = (Fraction numerator: 12345678901234567 denominator: (10 raisedTo: 316)). "
+                 "(r at: 2) = (17976931348623157 * (10 raisedTo: 234)). (r at: 3) = (2469 / 20)} printString",
+                 "(181 true true true )");
+    check_string("^({JSONParser parse: '1e400'. JSONParser parse: '5e-324'. JSONParser parse: '1024e-400'. "
+                 "JSONParser parse: '1.000000e+00'. JSONParser parse: '-2.5e-3'. JSONParser parse: '0e400'} "
+                 "= {10 raisedTo: 400. Fraction numerator: 5 denominator: (10 raisedTo: 324). "
+                 "Fraction numerator: 1024 denominator: (10 raisedTo: 400). 1. -1/400. 0}) printString",
+                 "true");
+    /*  A form is one request however many fields it has: the allowance
+     *  is carried from field to field, so forty fields of `[1e400,1e400]'
+     *  do not get forty of them.  Before, all forty were parsed.  */
+    check_string("| crlf body r inj parsed | crlf := String with: (Character value: 13) "
+                 "with: (Character value: 10). body := WriteStream on: String new. "
+                 "1 to: 40 do: [:i | body nextPutAll: '--b', crlf, "
+                 "'Content-Disposition: form-data; name=\"n', i printString, '\"', crlf, crlf, "
+                 "'[1e400,1e400]', crlf]. body nextPutAll: '--b--', crlf. body := body contents. "
+                 "r := HttpRequest fromString: 'POST /rest HTTP/1.1', crlf, "
+                 "'Content-Type: multipart/form-data; boundary=b', crlf, "
+                 "'Content-Length: ', body size printString, crlf, crlf, body. "
+                 "inj := RestDispatcher new injsonFrom: r. "
+                 "parsed := (inj values reject: [:v | v isString]) size. "
+                 "^{inj size. parsed > 0. parsed < 20. "
+                 "(RestDispatcher new decodeFormValue: '[1e400,1e400]' named: 'n') size} printString",
+                 "(40 true true 2 )");
 
     test_dialect = ST_DIALECT_BLUE_BOOK;
 }
