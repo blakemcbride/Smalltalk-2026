@@ -64,7 +64,7 @@ RestServer class >> serve [
 	"What a server image's startup runs: build a server from the file named
 	 by the first command-line argument -- server.json by default -- start
 	 it, and stay up until the operating system asks the image to stop."
-	| path server |
+	| path server left |
 	path := Smalltalk arguments isEmpty ifTrue: ['server.json'] ifFalse: [Smalltalk arguments first].
 	"A start that fails -- no configuration, a database that cannot be
 	 reached, the application's Init raising -- is logged and ends the
@@ -78,9 +78,17 @@ RestServer class >> serve [
 	[server start]
 		on: Error
 		do: [:e | RestLog error: 'cannot start: ', e messageText. ^self].
+	"Asking is what makes a signal a request rather than a stop of the pool
+	 (Socket class>>stopRequested), and the requests in flight are then
+	 given the grace the VM gives this image, less a second to quit in.
+	 Until Bugs07 NET-5 the signal stopped every worker at its next
+	 bytecode and nothing below this loop ever ran: each request in flight
+	 had its connection closed with no reply."
 	[Socket stopRequested] whileFalse: [(Delay forMilliseconds: 250) wait].
-	server stop.
 	RestLog info: 'stopping as asked'.
+	left := server stopWaitingAtMost: Socket stopGraceMilliseconds - 1000.
+	left > 0 ifTrue: [
+		RestLog warn: left printString, ' request(s) still in flight at the end of the grace; quitting without them'].
 	Smalltalk quitPrimitive
 ]
 
@@ -405,8 +413,22 @@ RestServer >> start [
 
 { #category : 'starting and stopping' }
 RestServer >> stop [
-	self isRunning ifFalse: [^self].
-	userCache stopPurging.
+	"Stop listening and close the pool, now."
+	self stopWaitingAtMost: 0
+]
+
+{ #category : 'starting and stopping' }
+RestServer >> stopWaitingAtMost: milliseconds [
+	"Stop listening, give the requests in flight up to milliseconds to
+	 finish and be answered, and then stop the rest: the session purge,
+	 and the database pool those requests were still using.  Answer how
+	 many requests were still in flight when the wait ended -- 0 when every
+	 one was answered.  What serve does when asked to stop (Bugs07 NET-5)."
+	| left |
+	self isRunning ifFalse: [^0].
 	httpServer stop.
-	self closePool
+	left := httpServer waitForRequestsAtMost: milliseconds.
+	userCache stopPurging.
+	self closePool.
+	^left
 ]

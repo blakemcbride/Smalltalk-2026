@@ -341,8 +341,13 @@ has, are not here yet.
 
 Every name in the file is also in `request environment`, so a service reads
 its own settings from the same place. `RestServer class>>serve` starts the
-server and stays up until `SIGINT` or `SIGTERM`, then stops it and quits with
-exit code 0. The log is standard error, one line per event, timestamped;
+server and stays up until `SIGINT` or `SIGTERM`. Then it closes the listener,
+lets the requests in flight finish and be answered (`stopWaitingAtMost:`),
+closes the database pool and quits with exit code 0. The wait is bounded by
+the grace `-serve` gives an image that has been asked to stop — thirty
+seconds, or `ST_STOP_GRACE_SECONDS` — less a second, and the log says how
+many requests were still in flight if any were. A second signal stops the
+process at once. The log is standard error, one line per event, timestamped;
 any byte from a client that is not printable ASCII is written as `\xHH`, so
 a request cannot forge a line of its own.
 

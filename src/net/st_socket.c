@@ -1942,3 +1942,58 @@ NET_environment(const char *name)
         return NULL;
     return getenv(name);
 }
+
+/*  ----------  Asking the image to stop  ----------
+ *
+ *  See st_socket.h (Bugs07 NET-5).  Two flags, both plain atomics so that
+ *  the signal handler may touch them: whether the image has ever asked,
+ *  and whether a request has arrived.  They are never cleared -- a server
+ *  is asked to stop once, and an image that asked once is an image that
+ *  looks.
+ */
+static st_atomic_int    stop_heeded;
+static st_atomic_int    stop_asked;
+
+int
+NET_stop_asked(void)
+{
+    /*
+     *  An image that asks just as a signal arrives is either seen to heed
+     *  it, and reads the request here at this look or its next, or is not,
+     *  and the handler stops the pool.  Never neither: the handler's
+     *  choice is made on what it read, not on anything read here.
+     */
+    ST_store_seq(&stop_heeded, 1);
+    return ST_load_acquire(&stop_asked) != 0;
+}
+
+int
+NET_ask_stop(void)
+{
+    if (!ST_load_seq(&stop_heeded))
+        return 0;
+    /*  The first request is passed on; the second is the caller's to act on.  */
+    return ST_exchange_acq_rel(&stop_asked, 1) == 0;
+}
+
+int
+NET_stop_pending(void)
+{
+    return ST_load_acquire(&stop_asked) != 0;
+}
+
+int64_t
+NET_stop_grace_ms(void)
+{
+    const char *text = getenv("ST_STOP_GRACE_SECONDS");
+    char       *end;
+    long        n;
+
+    if (!text || !*text)
+        return 30000;
+    errno = 0;
+    n = strtol(text, &end, 10);
+    if (errno != 0 || *end != '\0' || n < 0 || n > 3600)
+        return 30000;
+    return (int64_t) n * 1000;
+}

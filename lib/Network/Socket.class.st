@@ -262,9 +262,28 @@ Socket class >> arguments [
 Socket class >> stopRequested [
 	"Whether the operating system has asked this server to stop -- SIGINT,
 	 SIGTERM, a console control.  A listener loop that checks this can close
-	 itself and let the requests in flight finish."
+	 itself and let the requests in flight finish.
+
+	 Asking is also how the image says it will: from the first time this is
+	 sent, a signal to `-serve' is a request the image reads here, and the
+	 workers go on running so that it can act on it (Bugs07 NET-5).  An
+	 image that never asks is stopped by the signal at once, as there is
+	 nothing in it that would look.  Once asked, the image has
+	 stopGraceMilliseconds to quit -- `Smalltalk quitPrimitive' -- before the
+	 VM stops it anyway, and a second signal stops it at once."
 
 	^self primCommand: 18 with: nil with: nil with: nil
+]
+
+{ #category : 'services' }
+Socket class >> stopGraceMilliseconds [
+	"How long the image has, from the first stop request, to quit on its
+	 own before the VM stops it: thirty seconds, or ST_STOP_GRACE_SECONDS
+	 from the environment.  What a server gives its requests in flight is
+	 this less a margin, so that the requests it cuts off are cut off by
+	 it, logged, and not by the VM unannounced (Bugs07 NET-5)."
+
+	^self primCommand: 27 with: nil with: nil with: nil
 ]
 
 { #category : 'services' }

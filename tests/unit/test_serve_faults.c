@@ -38,6 +38,16 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/wait.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <poll.h>
+#include <signal.h>
+#include <time.h>
+#include <sys/resource.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 
 #define IMAGE       fixture("bugs3-serve.im")
 #define BATCH       fixture("bugs3-serve-batch.st")
@@ -3510,6 +3520,523 @@ bugs7c_gui(void)
         "GUI-3 text composed and displayed on eight workers at once");
 }
 
+/*  ----------  Bugs07 round 3, NET: a server and a client, by hand  ----------
+ *
+ *  The checks above talk to the image through the batch harness, which is
+ *  a server only in name.  The NET findings of this round are about what a
+ *  real RestServer does when a client is in the middle of a request and
+ *  the operating system says something -- a SIGTERM, a refused descriptor
+ *  -- so these run the production startup (`RestServer serve') as its own
+ *  process, speak HTTP to it from here over the loopback, and send the
+ *  signal to the st2026 process itself.  Not through tools/timeout.sh:
+ *  GNU timeout answers a SIGTERM by arming a SIGKILL for its -k grace,
+ *  which would end a server that is doing exactly what it should, which
+ *  is taking its time.  The deadlines are kept here instead.
+ */
+
+static int64_t
+net_now_ms(void)
+{
+    struct timespec ts;
+
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t) ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+static void
+net_sleep_ms(long ms)
+{
+    struct timespec ts;
+
+    ts.tv_sec  = ms / 1000;
+    ts.tv_nsec = (ms % 1000) * 1000000L;
+    while (nanosleep(&ts, &ts) != 0 && errno == EINTR)
+        ;
+}
+
+/*
+ *  Start st2026 with `args' (NULL-terminated, after the binary's own
+ *  name), its standard output and error in `log', its environment this
+ *  process's plus `env' (NAME=VALUE, or NULL), and -- when `nofile' is
+ *  not zero -- a soft descriptor limit of `nofile'.  The st2026 process's
+ *  own id, or -1.
+ */
+static pid_t
+net_spawn(const char *const *args, const char *log, const char *env,
+          unsigned long nofile)
+{
+    const char *argv[16];
+    pid_t       pid;
+    int         n;
+
+    argv[0] = st2026;
+    for (n = 0; args[n] && n < 14; ++n)
+        argv[n + 1] = args[n];
+    argv[n + 1] = NULL;
+    /*
+     *  The last run's log goes now, in this process: emptied by the child
+     *  it would still be read here, whole, by a caller that got in first.
+     */
+    unlink(log);
+    pid = fork();
+    if (pid != 0)
+        return pid;
+    {
+        int fd = open(log, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+
+        if (fd < 0)
+            _exit(126);
+        dup2(fd, 1);
+        dup2(fd, 2);
+        close(fd);
+    }
+    if (env)
+        putenv((char *) env);
+    if (nofile) {
+        struct rlimit   rl;
+
+        if (getrlimit(RLIMIT_NOFILE, &rl) == 0) {
+            rl.rlim_cur = (rlim_t) nofile;
+            setrlimit(RLIMIT_NOFILE, &rl);
+        }
+    }
+    execv(st2026, (char *const *) argv);
+    _exit(127);
+}
+
+/*  The log as it stands, into a static buffer.  */
+static const char *
+net_log(const char *log)
+{
+    static char text[262144];
+    FILE       *f = fopen(log, "r");
+    size_t      n = 0;
+
+    text[0] = '\0';
+    if (!f)
+        return text;
+    n = fread(text, 1, sizeof text - 1, f);
+    fclose(f);
+    text[n] = '\0';
+    return text;
+}
+
+static int
+net_count(const char *text, const char *what)
+{
+    int     n = 0;
+
+    while ((text = strstr(text, what)) != NULL) {
+        ++n;
+        text += strlen(what);
+    }
+    return n;
+}
+
+/*  Whether `what' appears `times' times in the log within `ms'.  */
+static int
+net_log_wait(const char *log, const char *what, int times, long ms)
+{
+    int64_t deadline = net_now_ms() + ms;
+
+    for (;;) {
+        if (net_count(net_log(log), what) >= times)
+            return 1;
+        if (net_now_ms() > deadline)
+            return 0;
+        net_sleep_ms(20);
+    }
+}
+
+/*  The port from `listening on port N', or -1.  */
+static int
+net_log_port(const char *log)
+{
+    const char *at = strstr(net_log(log), "listening on port ");
+
+    return at ? atoi(at + strlen("listening on port ")) : -1;
+}
+
+/*  A connection to 127.0.0.1:port, or -1 with errno.  */
+static int
+net_connect(int port)
+{
+    struct sockaddr_in  a;
+    int                 fd = socket(AF_INET, SOCK_STREAM, 0);
+
+    if (fd < 0)
+        return -1;
+    memset(&a, 0, sizeof a);
+    a.sin_family      = AF_INET;
+    a.sin_port        = htons((unsigned short) port);
+    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (connect(fd, (struct sockaddr *) &a, sizeof a) != 0) {
+        int saved = errno;
+
+        close(fd);
+        errno = saved;
+        return -1;
+    }
+    return fd;
+}
+
+/*  A /rest POST of `json', the connection to be closed after it.  */
+static int
+net_post(int fd, const char *json)
+{
+    char    request[4096];
+    int     n = snprintf(request, sizeof request,
+                         "POST /rest HTTP/1.1\r\nHost: x\r\n"
+                         "Content-Type: application/json\r\n"
+                         "Content-Length: %zu\r\nConnection: close\r\n\r\n%s",
+                         strlen(json), json);
+    int     sent = 0;
+
+    while (sent < n) {
+        ssize_t k = send(fd, request + sent, (size_t) (n - sent), MSG_NOSIGNAL);
+
+        if (k <= 0)
+            return -1;
+        sent += (int) k;
+    }
+    return 0;
+}
+
+/*
+ *  Everything the peer sends until it closes, or until `ms' have passed;
+ *  NUL-terminated.  The byte count, or -1 for a timeout.
+ */
+static long
+net_read_all(int fd, char *out, size_t len, long ms)
+{
+    int64_t deadline = net_now_ms() + ms;
+    size_t  got = 0;
+
+    out[0] = '\0';
+    for (;;) {
+        struct pollfd   p;
+        int64_t         left = deadline - net_now_ms();
+        ssize_t         k;
+
+        if (left <= 0)
+            return -1;
+        p.fd = fd;
+        p.events = POLLIN;
+        p.revents = 0;
+        if (poll(&p, 1, (int) left) <= 0)
+            continue;
+        k = recv(fd, out + got, len - 1 - got, 0);
+        if (k <= 0)
+            break;
+        got += (size_t) k;
+        out[got] = '\0';
+        if (got >= len - 1)
+            break;
+    }
+    return (long) got;
+}
+
+/*
+ *  Wait up to `ms' for the process to end; its exit status, or 128 plus
+ *  the signal that ended it.  -1 when it was still running and had to be
+ *  killed.
+ */
+static int
+net_reap(pid_t pid, long ms)
+{
+    int64_t deadline = net_now_ms() + ms;
+    int     status;
+
+    for (;;) {
+        pid_t   r = waitpid(pid, &status, WNOHANG);
+
+        if (r == pid)
+            return WIFEXITED(status) ? WEXITSTATUS(status)
+                 : 128 + (WIFSIGNALED(status) ? WTERMSIG(status) : 0);
+        if (r < 0)
+            return -1;
+        if (net_now_ms() > deadline) {
+            kill(pid, SIGKILL);
+            waitpid(pid, &status, 0);
+            return -1;
+        }
+        net_sleep_ms(20);
+    }
+}
+
+static void
+net_check(int ok, const char *what, const char *log)
+{
+    ++st_test_checks;
+    if (!ok) {
+        const char *text = log ? net_log(log) : "";
+        size_t      n    = strlen(text);
+
+        ++st_test_failures;
+        printf("  FAIL %s\n", what);
+        if (log)
+            printf("       server log ends:\n%s\n", n > 1500 ? text + n - 1500 : text);
+    }
+}
+
+/*
+ *  The RestServer image of this round's NET checks: the production startup,
+ *  `RestServer serve', baked in as the demo's is (Makefile, demo.im), with
+ *  a back end of one slow service that says on the log when it has begun.
+ *  Answers the port the server listens on, -1 when it did not come up.
+ */
+#define NET_RIMAGE      fixture("bugs7c-net-rest.im")
+#define NET_BACKEND     fixture("bugs7c-net-backend")
+#define NET_CONFIG      fixture("bugs7c-net.json")
+#define NET_LOG         fixture("bugs7c-net.log")
+
+static int
+net_build_rest_image(void)
+{
+    static char out[65536];
+    char        command[2048];
+    char        path[1024];
+
+    snprintf(command, sizeof command,
+             "%s -bootstrap -profile profiles/st2026.profile "
+             "-startup 'RestServer serve' -o %s 2>&1", st2026, NET_RIMAGE);
+    if (run(command, out, sizeof out) != 0) {
+        printf("  FAIL cannot build the RestServer image:\n%s\n", out);
+        return -1;
+    }
+    snprintf(path, sizeof path, "%s/services", NET_BACKEND);
+    snprintf(command, sizeof command, "mkdir -p %s", path);
+    if (system(command) != 0)
+        return -1;
+    snprintf(path, sizeof path, "%s/services/Slow.class.st", NET_BACKEND);
+    if (write_file(path,
+            "Class { #name : 'Slow', #superclass : 'RestService', "
+            "#category : 'services' }\n\n"
+            "{ #category : 'services' }\n"
+            "Slow >> wait [\n"
+            "\tRestLog info: 'slow: started'.\n"
+            "\t(Delay forMilliseconds: (injson integerAt: 'ms')) wait.\n"
+            "\toutjson at: 'done' put: true\n]\n") != 0)
+        return -1;
+    snprintf(command, sizeof command,
+             "{\"port\": 0, \"bindAddress\": \"127.0.0.1\", "
+             "\"backendDirectory\": \"%s\", \"requireAuthentication\": false}\n",
+             NET_BACKEND);
+    return write_file(NET_CONFIG, command);
+}
+
+static void
+net_remove_rest_image(void)
+{
+    char    command[1024];
+
+    snprintf(command, sizeof command, "rm -rf %s", NET_BACKEND);
+    (void) system(command);
+}
+
+/*  Start the RestServer image; its pid, with *port set, or -1.  */
+static pid_t
+net_start_rest(const char *env, unsigned long nofile, int *port)
+{
+    const char *args[] = { "-serve", NET_RIMAGE, "-workers", "2", NET_CONFIG, NULL };
+    pid_t       pid = net_spawn(args, NET_LOG, env, nofile);
+
+    *port = -1;
+    if (pid < 0)
+        return -1;
+    if (!net_log_wait(NET_LOG, "info: rest: serving", 1, 60000)) {
+        kill(pid, SIGKILL);
+        waitpid(pid, NULL, 0);
+        return -1;
+    }
+    *port = net_log_port(NET_LOG);
+    return pid;
+}
+
+/*
+ *  A request to the slow service on a connection of its own, answered only
+ *  when the service's `slow: started' has appeared `nth' times: the file
+ *  descriptor, or -1.
+ */
+static int
+net_slow_request(int port, long ms, int nth)
+{
+    char    json[256];
+    int     fd = net_connect(port);
+
+    if (fd < 0)
+        return -1;
+    snprintf(json, sizeof json,
+             "{\"_class\": \"services.Slow\", \"_method\": \"wait\", \"ms\": %ld}", ms);
+    if (net_post(fd, json) != 0
+     || !net_log_wait(NET_LOG, "slow: started", nth, 60000)) {
+        close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+/*
+ *  Bugs07 NET-5: SIGTERM to `-serve' cut every request in flight off with
+ *  no reply.  The signal stopped every worker at its next bytecode check,
+ *  so `RestServer serve' -- stop accepting, let the requests finish, quit
+ *  -- never ran past its polling loop.  The first signal is now a request
+ *  to an image that asks for one, and these check what that promises: the
+ *  request in flight answered, the listener closed meanwhile, the image
+ *  quitting by itself with exit code 0; a second signal and the grace
+ *  period each still stopping it; and an image that never asks still
+ *  stopped at once, as before.
+ */
+static void
+bugs7c_net_stop(void)
+{
+    static char reply[65536];
+    int         port;
+    int         fd;
+    int         status;
+    int         refused;
+    int64_t     t0;
+    pid_t       pid;
+
+    /*  The request in flight is answered, and only then does the image quit.  */
+    pid = net_start_rest(NULL, 0, &port);
+    net_check(pid > 0 && port > 0, "NET-5 the RestServer came up", NET_LOG);
+    if (pid <= 0 || port <= 0)
+        return;
+    fd = net_slow_request(port, 10, 1);             /*  loads the class  */
+    if (fd >= 0) {
+        net_read_all(fd, reply, sizeof reply, 30000);
+        close(fd);
+    }
+    fd = net_slow_request(port, 3000, 2);
+    net_check(fd >= 0, "NET-5 the slow request began", NET_LOG);
+    kill(pid, SIGTERM);
+    t0 = net_now_ms();
+    /*  The listener closes within a poll of the signal; the request does not.  */
+    refused = 0;
+    while (!refused && net_now_ms() - t0 < 2500) {
+        int probe = net_connect(port);
+
+        if (probe < 0 && errno == ECONNREFUSED)
+            refused = 1;
+        else {
+            if (probe >= 0)
+                close(probe);
+            net_sleep_ms(50);
+        }
+    }
+    net_check(refused, "NET-5 the listener is closed while the request finishes",
+              NET_LOG);
+    if (fd >= 0) {
+        net_read_all(fd, reply, sizeof reply, 30000);
+        close(fd);
+    }
+    net_check(fd >= 0 && strstr(reply, "\"done\":true") != NULL
+                      && strstr(reply, "HTTP/1.1 200") != NULL,
+              "NET-5 the request in flight at the SIGTERM is answered", NET_LOG);
+    status = net_reap(pid, 30000);
+    net_check(status == 0, "NET-5 the server exits 0 after the request", NET_LOG);
+    net_check(strstr(net_log(NET_LOG), "info: stopping as asked") != NULL
+           && strstr(net_log(NET_LOG), "st2026: the image quit") != NULL,
+              "NET-5 RestServer serve stopped the server and quit", NET_LOG);
+
+    /*  A second signal stops it at once, the request with it.  */
+    pid = net_start_rest(NULL, 0, &port);
+    if (pid > 0 && port > 0) {
+        fd = net_slow_request(port, 20000, 1);
+        kill(pid, SIGTERM);
+        net_sleep_ms(300);
+        t0 = net_now_ms();
+        kill(pid, SIGTERM);
+        status = net_reap(pid, 10000);
+        net_check(status == 0 && net_now_ms() - t0 < 5000,
+                  "NET-5 a second SIGTERM stops the server at once", NET_LOG);
+        net_check(strstr(net_log(NET_LOG), "st2026: stopped as asked") != NULL,
+                  "NET-5 ... and says it was asked", NET_LOG);
+        if (fd >= 0)
+            close(fd);
+    } else
+        net_check(0, "NET-5 the RestServer came up again", NET_LOG);
+
+    /*
+     *  The grace: two seconds of it, so RestServer gives its request one
+     *  and quits without it, saying so -- and not twenty seconds later.
+     */
+    pid = net_start_rest("ST_STOP_GRACE_SECONDS=2", 0, &port);
+    if (pid > 0 && port > 0) {
+        fd = net_slow_request(port, 20000, 1);
+        t0 = net_now_ms();
+        kill(pid, SIGTERM);
+        status = net_reap(pid, 15000);
+        net_check(status == 0 && net_now_ms() - t0 < 8000,
+                  "NET-5 a request longer than the grace does not keep the "
+                  "server up", NET_LOG);
+        net_check(strstr(net_log(NET_LOG), "1 request(s) still in flight") != NULL,
+                  "NET-5 ... and RestServer says what it left", NET_LOG);
+        if (fd >= 0)
+            close(fd);
+    } else
+        net_check(0, "NET-5 the RestServer came up a third time", NET_LOG);
+
+    /*
+     *  An image that asked and then never quits is stopped when the grace
+     *  runs out; one that never asked is stopped at once.  The batch
+     *  harness is both, according to whether its batch asks.
+     */
+    {
+        const char *log = fixture("bugs7c-net-batch.log");
+        const char *asks[] = { "-serve", IMAGE, "-workers", "2",
+                               "Socket stopRequested\n(Delay forSeconds: 600) wait\n",
+                               NULL };
+        const char *deaf[] = { "-serve", IMAGE, "-workers", "2",
+                               "'up'\n(Delay forSeconds: 600) wait\n", NULL };
+
+        pid = net_spawn(asks, log, "ST_STOP_GRACE_SECONDS=1", 0);
+        if (pid > 0 && net_log_wait(log, "==> false", 1, 60000)) {
+            t0 = net_now_ms();
+            kill(pid, SIGTERM);
+            status = net_reap(pid, 15000);
+            net_check(status == 0 && net_now_ms() - t0 >= 900
+                                  && net_now_ms() - t0 < 8000,
+                      "NET-5 an image that asks and never quits is stopped "
+                      "after the grace", log);
+            net_check(strstr(net_log(log), "did not stop within 1 s") != NULL,
+                      "NET-5 ... and the VM says so", log);
+        } else {
+            net_check(0, "NET-5 the asking batch ran", log);
+            if (pid > 0)
+                net_reap(pid, 0);
+        }
+
+        pid = net_spawn(deaf, log, NULL, 0);
+        if (pid > 0 && net_log_wait(log, "==> 'up'", 1, 60000)) {
+            t0 = net_now_ms();
+            kill(pid, SIGTERM);
+            status = net_reap(pid, 15000);
+            net_check(status == 0 && net_now_ms() - t0 < 3000,
+                      "NET-5 an image that never asks is stopped at once", log);
+        } else {
+            net_check(0, "NET-5 the deaf batch ran", log);
+            if (pid > 0)
+                net_reap(pid, 0);
+        }
+        unlink(log);
+    }
+}
+
+static void
+bugs7c_net(void)
+{
+    if (net_build_rest_image() != 0) {
+        net_check(0, "bugs7c_net: cannot set up the RestServer image", NULL);
+        net_remove_rest_image();
+        return;
+    }
+    bugs7c_net_stop();
+    net_remove_rest_image();
+    unlink(NET_LOG);
+}
+
 int
 main(void)
 {
@@ -4181,6 +4708,7 @@ main(void)
     bugs7b_sched();
     bugs7b_vm();
     bugs7c_gui();
+    bugs7c_net();
 
     unlink(IMAGE);
     unlink(BATCH);

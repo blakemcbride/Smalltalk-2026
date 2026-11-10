@@ -6163,7 +6163,8 @@ enum {
     NET_CMD_TLS_HANDSHAKE   = 23,   /*  handle                     */
     NET_CMD_IS_TLS          = 24,   /*  handle                     */
     NET_CMD_ENVIRONMENT     = 25,   /*  name                       */
-    NET_CMD_DISARM          = 26    /*  handle, mask               */
+    NET_CMD_DISARM          = 26,   /*  handle, mask               */
+    NET_CMD_STOP_GRACE      = 27
 };
 
 #define NET_SCRATCH_BYTES   65536
@@ -6650,7 +6651,19 @@ primitive_net_command(void)
     }
 
     case NET_CMD_STOP_REQUESTED:
-        return net_answer(SCHED_stop_requested() ? ST_TRUE : ST_FALSE);
+        /*
+         *  Asking is also how an image says it takes stop requests, and
+         *  from then on a SIGTERM is passed to it here rather than stopping
+         *  the pool under it (Bugs07 NET-5, st_socket.h).  The scheduler's
+         *  own flag is still read: a stop that is already happening is a
+         *  stop to report.
+         */
+        return net_answer(NET_stop_asked() || SCHED_stop_requested()
+                          ? ST_TRUE : ST_FALSE);
+
+    case NET_CMD_STOP_GRACE:
+        /*  How long an asked image has before the pool is stopped.  */
+        return net_answer(OM_int_oop((st_int) NET_stop_grace_ms()));
 
     case NET_CMD_OPEN_COUNT:
         return net_answer(OM_int_oop((st_int) NET_open_count()));

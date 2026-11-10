@@ -1455,7 +1455,9 @@ static BOOL WINAPI
 on_console_control(DWORD kind)
 {
     (void) kind;
-    SCHED_request_stop();
+    /*  A request to an image that takes them; see on_stop_signal.  */
+    if (!NET_ask_stop())
+        SCHED_request_stop();
     NET_wake();
     return TRUE;
 }
@@ -1467,15 +1469,25 @@ install_stop_handlers(void)
 }
 #else
 /*
- *  Async-signal-safe by construction: one atomic store and one write(2)
- *  to the network thread's wake pipe.  Nothing here takes a lock or
- *  allocates.
+ *  Async-signal-safe by construction: atomic loads and stores, one
+ *  exchange, and one write(2) to the network thread's wake pipe.  Nothing
+ *  here takes a lock or allocates.
+ *
+ *  A REQUEST to an image that takes requests, and a stop of the pool
+ *  otherwise (Bugs07 NET-5).  This used to stop the pool every time, and
+ *  so no Smalltalk ever ran after the signal: `RestServer serve' never got
+ *  to close its listener or let a single request finish, and every client
+ *  with one in flight had its connection closed with no reply.  An image
+ *  that has asked `Socket stopRequested' is now told and left running;
+ *  one that never asked is stopped at once as before; a second signal is
+ *  a stop whichever it is.  watch_the_stop keeps the grace clock.
  */
 static void
 on_stop_signal(int sig)
 {
     (void) sig;
-    SCHED_request_stop();
+    if (!NET_ask_stop())
+        SCHED_request_stop();
     NET_wake();
 }
 
@@ -1497,6 +1509,49 @@ install_stop_handlers(void)
     signal(SIGPIPE, SIG_IGN);
 }
 #endif
+
+/*
+ *  The main thread's part of a stop the image was asked for (Bugs07 NET-5):
+ *  wait for the pool to wind down, and stop it if the image has not quit
+ *  within the grace period of being asked.
+ *
+ *  The image is given the request rather than stopped (on_stop_signal) so
+ *  that it can close its listener and let the requests in flight finish.
+ *  An image that asked and then never quits -- a request that never ends,
+ *  a loop that read the flag and forgot to act on it -- must still not
+ *  turn SIGTERM into a no-op: a service manager would wait out its own
+ *  timeout and SIGKILL, which takes the changes file and every reply with
+ *  it.  So the clock starts when the request is first seen here, and when
+ *  it runs out the pool is stopped as a signal used to stop it.
+ *
+ *  This thread is no worker and never touches the object memory, so it
+ *  sleeps in plain slices; a twentieth of a second is soon enough for a
+ *  clock counted in seconds and is nothing on an idle server.
+ */
+static void
+watch_the_stop(void)
+{
+    int64_t grace    = NET_stop_grace_ms() * 1000000;
+    int64_t asked_at = -1;
+
+    while (!SCHED_stop_requested()) {
+        if (NET_stop_pending()) {
+            int64_t now = ST_time_monotonic_ns();
+
+            if (asked_at < 0)
+                asked_at = now;
+            else if (now - asked_at >= grace) {
+                fprintf(stderr, "st2026: the image did not stop within %lld "
+                                "s of being asked; stopping it\n",
+                        (long long) (grace / 1000000000));
+                SCHED_request_stop();
+                NET_wake();
+                break;
+            }
+        }
+        ST_sleep_ns(50 * 1000000);
+    }
+}
 
 static int
 do_serve(const char *path, unsigned workers, int argc, char **argv)
@@ -1549,10 +1604,12 @@ do_serve(const char *path, unsigned workers, int argc, char **argv)
     fprintf(stderr, "st2026: serving %s on %u worker%s\n", path, WORKER_count(),
             WORKER_count() == 1 ? "" : "s");
     /*
-     *  WORKER_stop is the join.  Then the network, which the workers armed
-     *  sockets on until their last bytecode; then the timer; then the
-     *  memory -- do_run's order.
+     *  WORKER_stop is the join, after the grace clock of a stop the image
+     *  was asked for.  Then the network, which the workers armed sockets
+     *  on until their last bytecode; then the timer; then the memory --
+     *  do_run's order.
      */
+    watch_the_stop();
     WORKER_stop();
     NET_shutdown();
     SCHED_timer_stop();

@@ -39,6 +39,13 @@ flight finish their request and close.  A NetError from an accept whose
 listener is still open is NOT the end -- it is one connection lost, logged,
 and the loop goes round again after a back-off.  See acceptLoop.
 
+A request is IN FLIGHT from its first byte until its connection either goes
+back to waiting for the next one or closes, and the server counts them:
+waitForRequestsAtMost: is how a server that has been asked to stop lets
+those finish before its image quits (RestServer class>>serve).  An idle
+kept-alive connection is not one -- it has nothing to lose -- so a browser
+holding its connections open does not keep a stopping server up.
+
 ORIGINS.  A page served from this host on another port -- Kiss's
 development layout, the front end on 8000 and this server on 8001 -- is
 another origin to the browser, which then sends Origin with every request,
@@ -60,7 +67,7 @@ the comparison, and HttpRequest>>isPreflight the question.
 Class {
 	#name : 'HttpServer',
 	#superclass : 'Object',
-	#instVars : [ 'port', 'bindAddress', 'listener', 'acceptProcess', 'handlers', 'handlersLock', 'staticHandler', 'maxRequestBytes', 'keepAliveMilliseconds', 'requestMilliseconds', 'writeMilliseconds', 'maxConnections', 'standingHeaders', 'connections', 'connectionsLock', 'running', 'name' ],
+	#instVars : [ 'port', 'bindAddress', 'listener', 'acceptProcess', 'handlers', 'handlersLock', 'staticHandler', 'maxRequestBytes', 'keepAliveMilliseconds', 'requestMilliseconds', 'writeMilliseconds', 'maxConnections', 'standingHeaders', 'connections', 'connectionsLock', 'running', 'name', 'inFlight' ],
 	#category : 'JSON-RPC-Server'
 }
 
@@ -72,6 +79,7 @@ HttpServer >> initialize [
 	handlersLock := Mutex new.
 	connectionsLock := Mutex new.
 	connections := 0.
+	inFlight := 0.
 	maxRequestBytes := 64 * 1024 * 1024.
 	keepAliveMilliseconds := 15000.
 	"Bugs5 NET-1: see requestSeconds:, writeSeconds: and maxConnections:."
@@ -214,6 +222,13 @@ HttpServer >> connectionCount [
 ]
 
 { #category : 'accessing' }
+HttpServer >> requestsInFlight [
+	"How many requests are being read, handled or answered now -- the
+	 connections that are not idle.  See the class comment, STOPPING."
+	^connectionsLock critical: [inFlight]
+]
+
+{ #category : 'accessing' }
 HttpServer >> isRunning [
 	^running
 ]
@@ -241,6 +256,24 @@ HttpServer >> stop [
 	listener close.
 	listener := nil.
 	self log: 'stopped'
+]
+
+{ #category : 'starting and stopping' }
+HttpServer >> waitForRequestsAtMost: milliseconds [
+	"Wait until no request is in flight, or until milliseconds have passed,
+	 and answer how many still are: 0 when every one finished.
+
+	 For after stop (Bugs07 NET-5): the listener is closed, so nothing new
+	 arrives, and a request answered from here on ends its connection --
+	 see HttpConnection>>serveOne -- so the count only falls, apart from a
+	 kept-alive client that sends again on a connection that was idle,
+	 whose request is then answered too.  Polled rather than signalled:
+	 it runs once, at the end of a server's life, for a few seconds."
+	| deadline |
+	deadline := Time millisecondClockValue + (milliseconds max: 0).
+	[self requestsInFlight > 0 and: [Time millisecondClockValue < deadline]]
+		whileTrue: [(Delay forMilliseconds: 20) wait].
+	^self requestsInFlight
 ]
 
 { #category : 'private' }
@@ -341,6 +374,18 @@ HttpServer >> crlf [
 { #category : 'private' }
 HttpServer >> connectionClosed: aConnection [
 	connectionsLock critical: [connections := connections - 1]
+]
+
+{ #category : 'private' }
+HttpServer >> requestBegun [
+	"A connection has the first byte of a request."
+	connectionsLock critical: [inFlight := inFlight + 1]
+]
+
+{ #category : 'private' }
+HttpServer >> requestEnded [
+	"A connection has answered its request and is idle again, or is closed."
+	connectionsLock critical: [inFlight := inFlight - 1]
 ]
 
 { #category : 'handling' }

@@ -85,7 +85,9 @@ otherwise. A path with a \ct{..} segment in it is 403, and so is a file whose
 real name---every dot segment and every symbolic link resolved---is not under
 the root, since a link inside the root that points out of it leaves nothing in
 the path to see. \ct{stop} closes the listener; connections in flight finish
-what they are doing.
+the request they are in, answer it with \ct{Connection: close}, and close.
+\ct{requestsInFlight} counts those requests---an idle kept-alive connection
+is not one---and \ct{waitForRequestsAtMost: ms} waits for them to finish.
 
 A port of 0 asks the system for one, and \ct{server port} answers it once the
 server has started, which is how the tests avoid stepping on each other.
@@ -502,7 +504,12 @@ reads its configuration from the file named by the first argument---
 
 Every name in the file is also in \ct{request environment}, so a service can
 read its own settings from the same place. The server stays up until
-\ct{SIGINT} or \ct{SIGTERM}, then stops and quits with exit code 0. The log is
+\ct{SIGINT} or \ct{SIGTERM}. Then it closes its listener, lets the requests
+in flight finish and be answered, closes its database pool and quits with
+exit code 0. It waits for those requests for the grace \ct{-serve} gives an
+image that has been asked to stop---thirty seconds, or
+\ct{ST\_STOP\_GRACE\_SECONDS} from the environment---less a second, and logs
+how many it quit without. A second signal stops it at once. The log is
 standard error, one line per event.
 
 \begin{stnote}
@@ -617,8 +624,10 @@ make demo-image
   answer \ct{107}. Nothing was restarted; the file's time changed, and the
   next request read it again. Put it back the same way.
 
-\item \textbf{Stop the server} with Ctrl-C in its terminal. It prints
-  \ct{st2026: stopped as asked} and exits 0.
+\item \textbf{Stop the server} with Ctrl-C in its terminal. It logs
+  \ct{stopping as asked}, lets any request still being answered finish,
+  prints \ct{st2026: the image quit} and exits 0. A second Ctrl-C stops it
+  at once.
 
 \item \textbf{Start over}, when wanted, by deleting \ct{demo/DB.sqlite};
   the next start makes it again.

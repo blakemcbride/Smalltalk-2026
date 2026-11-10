@@ -685,8 +685,13 @@
  *
  *  3393 -> 3394 with Bugs07 FILES-4: PosixFile>>write:, 1983's with a page
  *  written past the last one made the last one.
+ *
+ *  3394 -> 3402 with Bugs07 NET-5: a stop request lets the requests in
+ *  flight finish -- Socket class>>stopGraceMilliseconds, HttpServer>>
+ *  requestsInFlight, waitForRequestsAtMost:, requestBegun, requestEnded,
+ *  HttpConnection>>beBusy, beIdle and RestServer>>stopWaitingAtMost:.
  */
-#define LIB_METHODS             3394
+#define LIB_METHODS             3402
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -3116,8 +3121,11 @@ test_browsing(void)
      *
      *  3024896 -> 3027266 with Bugs07 FILES-4: a page written past a file's
      *  last page becomes its last page.
+     *
+     *  3027266 -> 3032032 with Bugs07 NET-5: SIGTERM to a server is a
+     *  request it answers by letting its requests in flight finish.
      */
-    check_integer("(SourceFiles at: 1) contents size", 3027266);
+    check_integer("(SourceFiles at: 1) contents size", 3032032);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.

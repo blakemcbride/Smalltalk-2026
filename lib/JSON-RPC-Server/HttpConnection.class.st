@@ -18,7 +18,7 @@ that worker nothing.
 Class {
 	#name : 'HttpConnection',
 	#superclass : 'Object',
-	#instVars : [ 'socket', 'stream', 'server', 'served' ],
+	#instVars : [ 'socket', 'stream', 'server', 'served', 'busy' ],
 	#category : 'JSON-RPC-Server'
 }
 
@@ -32,7 +32,8 @@ HttpConnection >> setSocket: aSocket server: aServer [
 	socket := aSocket.
 	server := aServer.
 	stream := SocketStream on: aSocket.
-	served := 0
+	served := 0.
+	busy := false
 ]
 
 { #category : 'accessing' }
@@ -43,8 +44,13 @@ HttpConnection >> served [
 
 { #category : 'running' }
 HttpConnection >> run [
-	"Serve requests until the client stops sending them or something fails."
-	[[[self serveOne] whileTrue: []]
+	"Serve requests until the client stops sending them or something fails.
+
+	 The close-out is an ensure:, so that a connection whose process is
+	 ended some other way still gives back its place in the server's two
+	 counts: one left behind in the requests in flight would hold a
+	 stopping server for its whole grace (Bugs07 NET-5)."
+	[[[[self serveOne] whileTrue: []]
 		on: TimedOut
 		do: [:e | nil]]			"the keep-alive wait ran out: the ordinary end of a connection"
 		on: Error
@@ -52,9 +58,23 @@ HttpConnection >> run [
 			"A peer that went away is the other ordinary end; anything else
 			 is worth a line."
 			e class == NetError
-				ifFalse: [server log: 'connection: ', e class name, ': ', e messageText]].
-	[stream close] on: Error do: [:e | nil].
-	server connectionClosed: self
+				ifFalse: [server log: 'connection: ', e class name, ': ', e messageText]]]
+		ensure: [
+			[stream close] on: Error do: [:e | nil].
+			self beIdle.
+			server connectionClosed: self]
+]
+
+{ #category : 'private' }
+HttpConnection >> beBusy [
+	"The first byte of a request is here: it is in flight until this
+	 connection is idle again or closed."
+	busy ifFalse: [busy := true. server requestBegun]
+]
+
+{ #category : 'private' }
+HttpConnection >> beIdle [
+	busy ifTrue: [busy := false. server requestEnded]
 ]
 
 { #category : 'running' }
@@ -71,6 +91,7 @@ HttpConnection >> serveOne [
 	stream deadlineIn: nil.
 	stream writeTimeout: server writeMilliseconds.
 	stream atEnd ifTrue: [^false].
+	self beBusy.
 	stream deadlineIn: server requestMilliseconds.
 	request := [HttpRequest readFrom: stream maxBodyBytes: server maxRequestBytes]
 		on: HttpError
@@ -80,7 +101,11 @@ HttpConnection >> serveOne [
 	request isNil ifTrue: [^false].
 	stream deadlineIn: nil.
 	request remoteAddress: ([socket peerAddress] on: NetError do: [:e | nil]).
-	keepAlive := request isKeepAlive.
+	"A server that has stopped answers this request and no more: the reply
+	 says Connection: close and the connection ends after it, so a stopping
+	 server's requests in flight fall to none instead of being renewed by a
+	 kept-alive client for as long as it keeps sending (Bugs07 NET-5)."
+	keepAlive := request isKeepAlive and: [server isRunning].
 	response := [server handle: request]
 		on: HttpError
 		do: [:e | HttpResponse error: e status reason: e messageText].
@@ -95,6 +120,9 @@ HttpConnection >> serveOne [
 	request method = 'HEAD' ifTrue: [response omitBody].
 	served := served + 1.
 	self write: response keepAlive: keepAlive.
+	"Answered and kept alive: idle, until the next request's first byte.
+	 Answered and ending: in flight until run has closed the socket."
+	keepAlive ifTrue: [self beIdle].
 	^keepAlive
 ]
 

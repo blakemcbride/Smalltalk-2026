@@ -222,11 +222,23 @@ This is the first run mode that starts the worker pool. Before it, only the
 parallel test suites and `make bench` ever called `WORKER_start`; `-run` and
 `-bootstrap -eval` are single-threaded and still are.
 
-A stop request is one atomic store — `SCHED_request_stop`, async-signal-safe
-— seen by every worker at its next process-switch check or idle slice. The
-exit code is 0 for a stop that was asked for and 1 for an image that stopped
-on its own: the scheduler's verdict, a frame that overflowed, memory that ran
-out.
+`SIGINT` and `SIGTERM` are a request to an image that takes requests, and a
+stop otherwise. An image takes them by asking: the first `Socket
+stopRequested` it sends says so, and from then on the signal handler sets the
+flag that method reads (`NET_ask_stop`) and leaves the workers running, so
+that the image can close its listener, let its requests in flight finish and
+quit — `RestServer class>>serve` does exactly that. An image that never asks
+is stopped at once. Either way a second signal stops the pool at once, and an
+image that has been asked and has not quit within the grace —
+`ST_STOP_GRACE_SECONDS` from the environment, 0 to 3600, thirty by default;
+`Socket stopGraceMilliseconds` answers it — is stopped by the main thread,
+which says so on standard error.
+
+Stopping the pool is one atomic store — `SCHED_request_stop`,
+async-signal-safe — seen by every worker at its next process-switch check or
+idle slice. The exit code is 0 for a stop that was asked for, and for an image
+that quit; 1 for an image that stopped on its own: the scheduler's verdict, a
+frame that overflowed, memory that ran out.
 
 ## Testing
 

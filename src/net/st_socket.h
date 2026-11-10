@@ -318,6 +318,52 @@ const char *NET_argument(int index);
  */
 const char *NET_environment(const char *name);
 
+/*  ----------  Asking the image to stop  ----------
+ *
+ *  SIGINT and SIGTERM to `-serve' are a REQUEST to the image when the image
+ *  has said it takes requests, and a stop of the pool when it has not
+ *  (Bugs07 NET-5).
+ *
+ *  They used to be a stop, always: the handler set the scheduler's stop
+ *  flag and every worker fell out of its interpreter loop at its next
+ *  bytecode check.  RestServer class>>serve was written for the other
+ *  reading -- poll `Socket stopRequested', close the listener, let the
+ *  requests in flight finish, quit -- and none of it ever ran, because no
+ *  Smalltalk ran again after the signal: a request three seconds long was
+ *  cut off one second in with its connection closed and no reply, on
+ *  every `systemctl restart', every container stop and every Ctrl-C.
+ *
+ *  An image SAYS it takes requests by asking: the first NET_stop_asked is
+ *  that.  An image that never asks -- a script under -serve, a test
+ *  harness -- is stopped at once, as before, since nothing in it would
+ *  ever look.  For one that asks, the first signal sets the flag it reads
+ *  and leaves the pool running; a SECOND signal stops the pool at once
+ *  (Ctrl-C twice, for the impatient), and so does the grace period
+ *  running out with the image still up -- see do_serve -- so a request
+ *  can never keep a server from stopping for longer than that.
+ *
+ *  NET_ask_stop is the signal handler's half and is async-signal-safe:
+ *  atomic loads and one exchange, nothing else.  It answers 1 when the
+ *  request was passed to the image and 0 when the caller is to stop the
+ *  pool itself.  NET_stop_pending is the same flag NET_stop_asked answers,
+ *  for the thread that keeps the grace clock, without counting as the
+ *  image asking.
+ */
+int         NET_stop_asked(void);
+int         NET_ask_stop(void);
+int         NET_stop_pending(void);
+
+/*
+ *  How long an image that has been asked to stop is given to quit on its
+ *  own before the pool is stopped under it: ST_STOP_GRACE_SECONDS from the
+ *  environment when it holds a whole number from 0 to 3600, thirty
+ *  seconds otherwise.  The image reads it too (Socket class>>
+ *  stopGraceMilliseconds), so that RestServer gives its requests in flight
+ *  the time the process will actually be given, and not a number of its
+ *  own that a shorter grace would cut off unannounced.
+ */
+int64_t     NET_stop_grace_ms(void);
+
 #ifdef __cplusplus
 }
 #endif
