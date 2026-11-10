@@ -8,8 +8,12 @@ insensitively, because SQL identifiers are.
 EVERY VALUE GOES AS A BOUND PARAMETER.  Not one value written through this
 class is ever pasted into SQL text, so there is nothing for a quote in a
 surname to break and nothing for an attacker to close early.  The only things
-built into the text are table and column names, and those come from the
-schema rather than from a caller.
+built into the text are table and column names, which SQL has no parameter
+for, and before any statement is built every one of them is checked against
+the catalogue: a column the table does not have is refused, and so is a table
+name that is not a name.  A record's column names are whatever at:put: was
+given, and a service that copies a request's field names into a record would
+otherwise be handing its client the SQL -- see checkColumns:.
 
 UPDATE WRITES ONLY WHAT CHANGED, and the Java this was ported from writes
 every column.  Writing every column means two processes updating two
@@ -250,6 +254,7 @@ DbRecord >> insert [
 	self mustHaveTable.
 	names := values keys asSortedCollection asArray.
 	names isEmpty ifTrue: [^DbError signal: 'nothing to insert'].
+	self checkColumns: names.
 	statement := WriteStream on: (String new: 128).
 	statement nextPutAll: 'INSERT INTO '; nextPutAll: tableName;
 		nextPutAll: ' ('.
@@ -300,6 +305,8 @@ DbRecord >> insertReturning: keyColumnName [
 
 	| names statement |
 	names := values keys asSortedCollection asArray.
+	names isEmpty ifTrue: [^DbError signal: 'nothing to insert'].
+	self checkColumns: (names copyWith: keyColumnName).
 	statement := WriteStream on: (String new: 128).
 	statement nextPutAll: 'INSERT INTO '; nextPutAll: tableName;
 		nextPutAll: ' ('.
@@ -327,6 +334,7 @@ DbRecord >> update [
 	| keys statement arguments command |
 	self mustHaveTable.
 	changed isEmpty ifTrue: [^0].
+	self checkColumns: changed.
 	keys := self keyColumns.
 	statement := WriteStream on: (String new: 128).
 	arguments := OrderedCollection new.
@@ -399,7 +407,46 @@ DbRecord >> mustHaveTable [
 	tableName isNil ifTrue:
 		[^DbError signal: 'this row did not come from a single table, so ',
 			'there is nowhere to write it back to -- select from one table, ',
-			'or set the table name']
+			'or set the table name'].
+	"Written into the statement as it is, like the column names, and as
+	 much the caller's as they are -- newRecord: and tableName: take any
+	 String (Bugs07 FILES-5).  A name is letters, digits, `_', `$' and `#',
+	 with dots between a schema and a table; nothing in that set can end
+	 a name early in any SQL.  Characters past ASCII are letters to the
+	 databases that allow them in a name and are let through."
+	(tableName isEmpty or: [tableName anySatisfy: [:c |
+			(c isLetter or: [c isDigit or: ['_$#.' includes: c]]) not
+				and: [c asInteger < 128]]])
+		ifTrue: [^DbError signal: 'not a table name: ', tableName printString]
+]
+
+{ #category : 'private' }
+DbRecord >> checkColumns: names [
+	"Refuse, before any statement is built, a name that is not a column of
+	 this record's table (Bugs07 FILES-5).
+
+	 SQL has no parameter for an identifier, so column names are written
+	 into the statement's text -- and a record's names are whatever at:put:
+	 was given.  A generic `save these fields' service, copying the names
+	 of a request's fields into a record, handed its client the SQL: a name
+	 of `name, admin) select ''mallory'', 1 union select ?, 0 --' turned an
+	 INSERT into an INSERT ... SELECT that added an administrator, and
+	 `name = (select 1), admin' set a column the client was never offered.
+	 So every name written must be one the catalogue gave, which the
+	 connection has cached.
+
+	 A name the cache does not have is looked up again before it is
+	 refused: the cache is filled once per table, and a column added by an
+	 ALTER TABLE on this connection since is a column all the same."
+	| columns |
+	columns := connection columnsOf: tableName.
+	(names allSatisfy: [:each | columns includesKey: each asUppercase]) ifTrue: [^self].
+	connection forgetColumnsOf: tableName.
+	columns := connection columnsOf: tableName.
+	columns isEmpty ifTrue: [^DbError signal: 'there is no table named ', tableName printString].
+	names do: [:each |
+		(columns includesKey: each asUppercase) ifFalse: [
+			^DbError signal: 'table ', tableName, ' has no column named ', each printString]]
 ]
 
 { #category : 'printing' }

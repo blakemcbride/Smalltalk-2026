@@ -315,7 +315,12 @@ so moving a clause moves its parameters with it.
 Not one value written through this package is ever put into SQL text. Every
 one goes as a bound parameter, so there is nothing for a quote in a surname to
 break and nothing for an attacker to close early. The only things built into
-the text are table and column names, and those come from the schema.
+the text are table and column names, which SQL has no parameter for, and a
+record checks every one of them against the catalogue before it builds a
+statement: a column its table does not have raises \ct{DbError}, and so
+does a table name with anything in it but letters, digits, underscores,
+dollar and hash signs, and dots. A record filled from a request's field names therefore
+cannot be handed SQL in a name.
 
 That is why every method taking a value takes it separately:
 

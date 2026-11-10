@@ -663,8 +663,11 @@
  *  withdraw:from:, DeferredStop class>>graceMilliseconds and
  *  DeferredStop>>giveUp, hasGivenUp, isPending:, withdraw:; less
  *  Monitor>>isHeldBy:, which nothing asks any more.
+ *
+ *  3382 -> 3384 with Bugs07 FILES-5: DbRecord>>checkColumns: and
+ *  DbConnection>>forgetColumnsOf:.
  */
-#define LIB_METHODS             3382
+#define LIB_METHODS             3384
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -3070,8 +3073,11 @@ test_browsing(void)
      *  3001950 -> 3007846 with Bugs07 FIXES-3: a critical: section is let
      *  finish for a grace and then given up, so that terminate and
      *  signalException: reach a loop inside one.
+     *
+     *  3007846 -> 3010699 with Bugs07 FILES-5: a record's table and column
+     *  names checked before they are written into a statement.
      */
-    check_integer("(SourceFiles at: 1) contents size", 3007846);
+    check_integer("(SourceFiles at: 1) contents size", 3010699);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -11688,6 +11694,68 @@ test_bugs7_sched(void)
                  "((in cut after got ) true true )");
 }
 
+/*
+ *  Bugs07 round two, the library group: FILES-5 (a record's column names
+ *  written into SQL unchecked), FILES-6 (a UNION's rows written back to
+ *  its first table) and COMP-1 (an extension file's write-back losing the
+ *  methods outside its package's prefix).
+ */
+static void
+test_bugs7b_lib(void)
+{
+    const char *db = st_test_path("bugs7b-files5.db");
+    char        expression[4096];
+
+    test_dialect = ST_DIALECT_CLOSURES;
+
+    /*
+     *  FILES-5: a record's column names went into INSERT and UPDATE as
+     *  the caller gave them.  Before: `(done done ...)' and the table
+     *  holding ('1:''1'':1' '2:''MALLORY'':1' '3:''bob'':0') -- an
+     *  administrator added by the INSERT, and alice's name and admin flag
+     *  overwritten by the UPDATE.  Now both, and a table name that is not
+     *  one, raise DbError and the table is as it was; a column added by
+     *  ALTER TABLE since the catalogue was cached is still a column.
+     *  Skipped where there is no SQLITE3 driver.
+     */
+    unlink(db);
+    snprintf(expression, sizeof expression,
+             "[(DbConnection open: 'DRIVER=SQLITE3;Database=%s;') close. true] "
+             "on: Error do: [:e | false]", db);
+    if (evaluate(expression) == ST_TRUE) {
+        snprintf(expression, sizeof expression,
+                 "| c r out try | out := OrderedCollection new. "
+                 "try := [:blk | out add: ([blk value. #done] on: DbError do: [:e | "
+                 "(e messageText includesSubstring: 'no column named') | "
+                 "(e messageText includesSubstring: 'not a table name') ifTrue: [#refused] "
+                 "ifFalse: [e messageText]])]. "
+                 "c := DbConnection open: 'DRIVER=SQLITE3;Database=%s;'. "
+                 "c execute: 'create table users (id integer primary key, name text, admin integer default 0)'. "
+                 "c execute: 'insert into users (name) values (''alice'')'. c commit. "
+                 "r := c newRecord: 'users'. "
+                 "r at: 'name, admin) select ''mallory'', 1 union select ?, 0 --' put: 'bob'. "
+                 "try value: [r insert]. c commit. "
+                 "r := c fetchOne: 'select * from users where id = 1'. "
+                 "r at: 'name = (select 1), admin' put: 1. try value: [r update]. c commit. "
+                 "r := c newRecord: 'users (name) values (''x''); --'. r at: 'name' put: 'y'. "
+                 "try value: [r insert]. "
+                 "r := c newRecord: 'users'. r at: 'name' put: 'carol'. try value: [r insert]. "
+                 "c columnsOf: 'users'. c execute: 'alter table users add column email text'. "
+                 "r := c newRecord: 'users'. r at: 'name' put: 'dave'; at: 'email' put: 'd@x'. "
+                 "try value: [r insert]. c commit. "
+                 "out add: ((c fetchAll: 'select id, name, admin from users') collect: [:x | "
+                 "(x at: 'id') printString, ':', (x at: 'name'), ':', (x at: 'admin') printString]) asArray. "
+                 "c close. ^out printString", db);
+        check_string(expression,
+                     "an OrderedCollection(refused refused refused done done "
+                     "('1:alice:0' '2:carol:0' '3:dave:0' ) )");
+    } else
+        printf("  skipped FILES-5 (Bugs07): no SQLITE3 driver\n");
+    unlink(db);
+
+    test_dialect = ST_DIALECT_BLUE_BOOK;
+}
+
 int
 main(void)
 {
@@ -11831,6 +11899,7 @@ main(void)
     test_bugs7_vm();
     test_bugs7_lib();
     test_bugs7_sched();
+    test_bugs7b_lib();
 
     OM_shutdown();
     return ST_TEST_END();

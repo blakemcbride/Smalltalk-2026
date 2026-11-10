@@ -221,7 +221,13 @@ a `Dictionary` whose invariants two writers have broken can have neither.
 Not one value written through this package is ever pasted into SQL text. Every
 one goes as a bound parameter, so there is nothing for a quote in a surname to
 break and nothing for an attacker to close early. The only things built into the
-text are table and column names, and those come from the schema.
+text are table and column names, which SQL has no parameter for, and a record
+checks every one of them before it builds a statement: a column its table does
+not have raises `DbError`, and so does a table name with anything in it but
+letters, digits, `_`, `$`, `#` and dots. So a service that copies a request's
+field names into a record (`injson keysAndValuesDo: [:k :v | rec at: k put: v]`)
+cannot be handed SQL in a field name; the worst it gets is an error naming the
+column.
 
 That is why every method taking a value takes it separately:
 

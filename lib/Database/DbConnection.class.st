@@ -435,6 +435,15 @@ DbConnection >> columnsOf: tableName [
 ]
 
 { #category : 'catalogue' }
+DbConnection >> forgetColumnsOf: tableName [
+	"Drop what is cached about a table's columns, so that the next
+	 columnsOf: asks the catalogue.  For a table whose columns this
+	 connection has just changed; see DbRecord>>checkColumns:."
+
+	lock critical: [columnCache removeKey: tableName asUppercase ifAbsent: [nil]]
+]
+
+{ #category : 'catalogue' }
 DbConnection >> columnSizeOf: tableName column: columnName [
 	| info |
 	info := (self columnsOf: tableName) at: columnName asUppercase ifAbsent: [nil].
