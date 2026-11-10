@@ -651,8 +651,11 @@
  *
  *  3361 -> 3371 with Bugs07 SCHED-5: DeferredStop's eight and the `new'
  *  synthesized for it, and Process>>deferredStopIn:.
+ *
+ *  3371 -> 3372 with Bugs07 KERNB-3: Process>>runUnwindBlockOf:, each of
+ *  a terminated process's unwind blocks run on its own.
  */
-#define LIB_METHODS             3371
+#define LIB_METHODS             3372
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -3047,8 +3050,11 @@ test_browsing(void)
      *  2990100 -> 2996003 with Bugs07 SCHED-5: a stop put off to the end of
      *  a critical: section is kept in a DeferredStop, not written into the
      *  section's unwind block as a signal or a terminate.
+     *
+     *  2996003 -> 2997921 with Bugs07 KERNB-3: an error raised by an
+     *  unwind block that terminate runs is reported, and the next runs.
      */
-    check_integer("(SourceFiles at: 1) contents size", 2996003);
+    check_integer("(SourceFiles at: 1) contents size", 2997921);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -11573,6 +11579,34 @@ test_bugs7_sched(void)
                  "^log asArray printString, ' loops after terminate: ', n printString, "
                  "' terminated: ', p suspendedContext isNil printString",
                  "(in terminateReturned out ) loops after terminate: 0 terminated: true");
+
+    /*
+     *  KERNB-3: the ensure: blocks of a process terminated from outside
+     *  run on the terminator, and an error one of them raised searched the
+     *  TERMINATOR's stack.  A handler round the terminate caught it and
+     *  its return: abandoned the rest of the victim's blocks -- the Mutex
+     *  release among them, so a later critical: never got in -- and with
+     *  no handler the terminator, a forked process, was ended by the
+     *  error's default action in the middle of the loop.  Each block now
+     *  runs on its own: an error is reported as unhandled and the next
+     *  block runs.
+     */
+    check_string("| log victim terminator m r | log := OrderedCollection new. m := Mutex new. "
+                 "victim := [m critical: [[Semaphore new wait] ensure: [log add: #victimEnsure. "
+                 "Error signal: 'boom in ensure']]] fork. (Delay forMilliseconds: 20) wait. "
+                 "terminator := [[victim terminate] on: Error do: [:e | log add: #terminatorCaught. "
+                 "e return: nil]. log add: #terminatorDone] fork. (Delay forMilliseconds: 50) wait. "
+                 "r := [m critical: [log add: #gotIt]] fork. (Delay forMilliseconds: 50) wait. "
+                 "^{log asArray. m isHeld. victim suspendedContext isNil. "
+                 "r suspendedContext isNil} printString",
+                 "((victimEnsure terminatorDone gotIt ) false true true )");
+    check_string("| log victim terminator m | log := OrderedCollection new. m := Mutex new. "
+                 "victim := [m critical: [[Semaphore new wait] ensure: [log add: #victimEnsure. "
+                 "Error signal: 'boom in ensure']]] fork. (Delay forMilliseconds: 20) wait. "
+                 "terminator := [[victim terminate. log add: #terminatorContinues] "
+                 "ensure: [log add: #terminatorEnsure]] fork. (Delay forMilliseconds: 50) wait. "
+                 "^{log asArray. m isHeld. terminator suspendedContext isNil} printString",
+                 "((victimEnsure terminatorContinues terminatorEnsure ) false true )");
 }
 
 int

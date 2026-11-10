@@ -251,13 +251,53 @@ Process >> runUnwindBlocksFrom: aContext [
 	"Run every ensure: and ifCurtailed: block from aContext outwards to
 	 the bottom of its stack, innermost first, on the process sending
 	 this.  aContext itself first, since a process stopped between two
-	 bytecodes can stop with the ensure: frame on top."
+	 bytecodes can stop with the ensure: frame on top.  Each block on its
+	 own: an error one of them raises is reported and the next one runs
+	 (see runUnwindBlockOf:)."
 	| ctx |
 	ctx := aContext.
 	ctx isNil ifTrue: [^self].
-	ctx isUnwindContext ifTrue: [ctx runUnwindBlock].
+	ctx isUnwindContext ifTrue: [self runUnwindBlockOf: ctx].
 	[ctx := ctx findNextUnwindUpTo: nil.
-	 ctx isNil] whileFalse: [ctx runUnwindBlock]
+	 ctx isNil] whileFalse: [self runUnwindBlockOf: ctx]
+]
+
+{ #category : '*Concurrency' }
+Process >> runUnwindBlockOf: anUnwindContext [
+	"Run anUnwindContext's unwind block for terminate, and let no Error
+	 it raises out: report it, as an error nobody handled, and carry on.
+
+	 Bugs07 KERNB-3.  The blocks of a process terminated from outside run
+	 on the TERMINATOR, and an error one of them raised searched the
+	 terminator's stack.  A handler there -- `[p terminate] on: Error do:',
+	 the ordinary way to stop something that may fail -- caught it, and
+	 its return: unwound out of the loop in runUnwindBlocksFrom:, so
+	 every block further out on the victim's stack was skipped, and since
+	 that stack had already been taken nobody ever ran them: a victim
+	 terminated inside `aMutex critical:' whose own ensure: failed left
+	 the Mutex locked for ever.  With no handler, Error>>defaultAction
+	 unwound the terminator's own stack and, the terminator being a
+	 forked process, ended it in the middle of the loop: the terminator
+	 was killed by its victim's cleanup, and the Mutex lost the same way.
+	 The same held for a process terminating itself: a handler of its own
+	 below the failing block caught the error and the process went on,
+	 not terminated at all.
+
+	 What fails in a cleanup block cannot be handed back to anyone -- the
+	 process it belonged to is being ended -- so it is said, the way an
+	 unhandled error is said, and counted as one (Error>>noteUnhandled,
+	 which -eval's exit status reads), and the rest of the cleanup runs.
+	 Only Error: a Warning or a Notification raised there is resumed by
+	 its own default action, as anywhere."
+	[anUnwindContext runUnwindBlock]
+		on: Error
+		do: [:e |
+			e noteUnhandled.
+			[e reportAsText]
+				on: Error
+				do: [:inner | e reportOnStandardError:
+					'an error was raised that could not describe itself'].
+			e return: nil]
 ]
 
 { #category : '*Concurrency' }
