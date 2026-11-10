@@ -676,8 +676,11 @@
  *
  *  3390 -> 3391 with Bugs07 FILES-3: FilePage>>asFileStream:, which clears
  *  a binary page's buffer past its data before a stream takes it.
+ *
+ *  3391 -> 3392 with Bugs07 FILES-6b: DbCommand>>topLevelTextOf:, the
+ *  statement with everything inside parentheses taken out.
  */
-#define LIB_METHODS             3391
+#define LIB_METHODS             3392
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -3098,8 +3101,11 @@ test_browsing(void)
      *
      *  3019078 -> 3021445 with Bugs07 FILES-3: a page handed to a binary
      *  stream holds nothing past its data.
+     *
+     *  3021445 -> 3023891 with Bugs07 FILES-6b: a record's table is the
+     *  one named by the FROM outside every parenthesis.
      */
-    check_integer("(SourceFiles at: 1) contents size", 3021445);
+    check_integer("(SourceFiles at: 1) contents size", 3023891);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -12126,6 +12132,72 @@ test_bugs7b_vm(void)
                  "((refused ) 9 3 true )");
 }
 
+/*
+ *  Bugs07 round three, the library group: FILES-6b (tableNameIn: took
+ *  the first FROM in the text), FILES-4 (a stream that wrote a page past
+ *  the end could not see it), COMP-2 (file out of a class with the
+ *  loader's synthesized `new'), and the portable halves of the two
+ *  Windows-only findings, KERNA-3 and FILES-7, which are checked in C by
+ *  tests/unit/test_port.c.
+ */
+static void
+test_bugs7c_lib(void)
+{
+    const char *db = st_test_path("bugs7c-files6b.db");
+    char        expression[4096];
+
+    test_dialect = ST_DIALECT_CLOSURES;
+
+    /*
+     *  FILES-6b: the FROM is the one outside every parenthesis.  Before:
+     *  `('b' nil 'b' 'a' nil 'a' 'a' nil nil nil nil)' -- a subquery in
+     *  the select list named the table, `extract(year from d)' and a FROM
+     *  inside a string literal hid it, and a WITH's inner FROM was taken
+     *  for the outer one.  A subquery in the FROM, a
+     *  join, an alias and a set operation are still no single table; a
+     *  parenthesis inside a string literal is not one.
+     */
+    check_string("| c | c := DbCommand new. ^({"
+                 "'select (select max(x) from b where b.k = a.k) as m, id from a'. "
+                 "'select extract(year from d) as y, id from a'. "
+                 "'with x as (select id from b where id > 0) select * from x'. "
+                 "'select id from a where id in (select id from b)'. "
+                 "'select * from (select * from b) t'. "
+                 "'select count(*) from a where id > 0'. "
+                 "'select '')'' as p, id from a where id = 1'. "
+                 "'select ''x from y'' as t, id from a'. "
+                 "'select * from a join b on a.id = b.id'. 'select * from a x'. "
+                 "'select * from a where id in (select id from b union select id from c)'} "
+                 "collect: [:each | c tableNameIn: each]) printString",
+                 "('a' 'a' nil 'a' nil 'a' 'a' 'a' nil nil nil )");
+    unlink(db);
+    snprintf(expression, sizeof expression,
+             "[(DbConnection open: 'DRIVER=SQLITE3;Database=%s;') close. true] "
+             "on: Error do: [:e | false]", db);
+    if (evaluate(expression) == ST_TRUE) {
+        /*  End to end: a row of a with a column computed from b, edited
+         *  and written back.  Before, `UPDATE b SET name = ? WHERE id = ?'
+         *  overwrote b's row with a's key: `(1 ('alice' 'ALICE2' ))'.  */
+        snprintf(expression, sizeof expression,
+                 "| c r out | c := DbConnection open: 'DRIVER=SQLITE3;Database=%s;'. "
+                 "c execute: 'create table a (id integer primary key, name text)'. "
+                 "c execute: 'create table b (id integer primary key, name text)'. "
+                 "c execute: 'insert into a (id, name) values (1, ''alice'')'. "
+                 "c execute: 'insert into b (id, name) values (1, ''bob'')'. c commit. "
+                 "r := c fetchOne: 'select (select max(name) from b where b.id = a.id) as other, "
+                 "id, name from a where id = 1'. "
+                 "r at: 'name' put: 'ALICE2'. out := OrderedCollection new. "
+                 "out add: r update. c commit. "
+                 "out add: ((c fetchAll: 'select name from a union all select name from b') "
+                 "collect: [:x | x at: 'name']) asArray. c close. ^out printString", db);
+        check_string(expression, "an OrderedCollection(1 ('ALICE2' 'bob' ) )");
+    } else
+        printf("  skipped FILES-6b (Bugs07): no SQLITE3 driver\n");
+    unlink(db);
+
+    test_dialect = ST_DIALECT_BLUE_BOOK;
+}
+
 int
 main(void)
 {
@@ -12272,6 +12344,7 @@ main(void)
     test_bugs7b_lib();
     test_bugs7b_files();
     test_bugs7b_vm();
+    test_bugs7c_lib();
 
     OM_shutdown();
     return ST_TEST_END();

@@ -222,11 +222,13 @@ update matches nothing---or, worse, matches a different row that has since
 taken the new value.
 \end{stnote}
 
-A record from a join, or from a \ctp{UNION}, \ctp{INTERSECT} or
-\ctp{EXCEPT}, has no single table to be written back to, and says so rather
-than guessing. So does a table with no primary key: there is no way to
-name one row of it, and an update built without a key would match every row in
-the table.
+A record from a join, a subquery in the \ctp{FROM}, a \ctp{WITH} query, or
+a \ctp{UNION}, \ctp{INTERSECT} or \ctp{EXCEPT}, has no single table to be
+written back to, and says so rather than guessing. So does a table with no
+primary key: there is no way to name one row of it, and an update built without
+a key would match every row in the table. A subquery anywhere else---a computed
+column in the select list, a condition in the \ctp{WHERE}---leaves the record
+with the table named by the statement's own \ctp{FROM}.
 
 \section{The query builder}
 

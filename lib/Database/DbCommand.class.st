@@ -175,8 +175,9 @@ DbCommand >> fetchAll: sqlString with: anArrayOfValues [
 DbCommand >> tableNameIn: sqlString [
 	"The single table this SQL selects from, or nil.
 
-	 Nil for anything with a join, a comma, or a subquery in the FROM, and
-	 for a UNION, INTERSECT, EXCEPT or MINUS anywhere.  That is the point: a
+	 Nil for anything with a join, a comma, or a subquery in the FROM, for
+	 a statement that opens with WITH, and for a UNION, INTERSECT, EXCEPT or
+	 MINUS anywhere.  That is the point: a
 	 Record knows which table to write itself back to only when there is
 	 exactly one candidate, and a guess here would produce an UPDATE against
 	 the wrong one.  Answering nil makes DbRecord>>update refuse with a
@@ -192,14 +193,29 @@ DbCommand >> tableNameIn: sqlString [
 	 WHERE, an ORDER BY or a closing parenthesis, so no one position will
 	 do.  Text in quotes is left out of the search -- a note that says
 	 `union dues' is not a set operation -- and a word is compared without
-	 the parentheses that may be stuck to it."
+	 the parentheses that may be stuck to it.
+
+	 THE FROM IS THE ONE OUTSIDE EVERY PARENTHESIS (Bugs07 FILES-6b).  The
+	 first FROM in the text was taken, so `select (select max(x) from b
+	 where b.k = a.k) as m, id from a' -- a row of a, with one computed
+	 column -- was stamped with table b, the table of a subquery in its
+	 select list, and its update went to b by a's key.  The words are now
+	 read from the statement with everything inside parentheses taken out
+	 (topLevelTextOf:), so a subquery or a function's arguments anywhere --
+	 the select list, `extract(year from d)', the WHERE -- cannot supply the
+	 FROM, and a subquery IN the FROM still shows as a parenthesis where the
+	 table should be.  A statement that opens with WITH is refused as well:
+	 its outer FROM may name one of its own common table expressions, which
+	 is no table at all, and finding which real table stands behind one is
+	 more than this can promise."
 
 	| words fromIndex table |
 	((self wordsOf: (self withoutQuotedText: sqlString)) anySatisfy: [:each |
 		#('UNION' 'INTERSECT' 'EXCEPT' 'MINUS') includes:
 			(each reject: [:c | c = $( or: [c = $)]]) asUppercase])
 		ifTrue: [^nil].
-	words := self wordsOf: sqlString.
+	words := self wordsOf: (self topLevelTextOf: sqlString).
+	(words notEmpty and: [words first asUppercase = 'WITH']) ifTrue: [^nil].
 	fromIndex := nil.
 	words keysAndValuesDo:
 		[:i :word |
@@ -217,6 +233,49 @@ DbCommand >> tableNameIn: sqlString [
 		 (#('WHERE' 'ORDER' 'GROUP' 'HAVING' 'LIMIT' 'FETCH' 'FOR' 'OFFSET')
 			includes: next) ifFalse: [^nil]].
 	^table
+]
+
+{ #category : 'private' }
+DbCommand >> topLevelTextOf: aString [
+	"aString with everything inside parentheses taken out, for
+	 tableNameIn:.  The outermost parentheses themselves are kept, so that
+	 `from (select ...) t' still shows a parenthesis where a table name
+	 should be, and `count(*)' becomes `count()'.  Quoted text is not
+	 searched for parentheses: a string literal at the top level becomes a
+	 space, as withoutQuotedText: does it, and a double-quoted identifier is
+	 kept as it is written.  An unmatched closing parenthesis is ignored;
+	 an unmatched opening one takes out the rest of the text, which leaves
+	 no FROM to find and so no table."
+
+	| out quote depth |
+	out := WriteStream on: (String new: aString size).
+	quote := nil.
+	depth := 0.
+	aString do:
+		[:each |
+		quote isNil
+			ifTrue:
+				[each = $(
+					ifTrue:
+						[depth = 0 ifTrue: [out nextPut: each].
+						 depth := depth + 1]
+					ifFalse:
+						[each = $)
+							ifTrue:
+								[depth > 0 ifTrue:
+									[depth := depth - 1.
+									 depth = 0 ifTrue: [out nextPut: each]]]
+							ifFalse:
+								[(each = $' or: [each = $"])
+									ifTrue:
+										[quote := each.
+										 depth = 0 ifTrue:
+											[each = $' ifTrue: [out space] ifFalse: [out nextPut: each]]]
+									ifFalse: [depth = 0 ifTrue: [out nextPut: each]]]]]
+			ifFalse:
+				[(depth = 0 and: [quote = $"]) ifTrue: [out nextPut: each].
+				 each = quote ifTrue: [quote := nil]]].
+	^out contents
 ]
 
 { #category : 'private' }
