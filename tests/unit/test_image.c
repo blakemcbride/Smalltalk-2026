@@ -666,8 +666,10 @@
  *
  *  3382 -> 3384 with Bugs07 FILES-5: DbRecord>>checkColumns: and
  *  DbConnection>>forgetColumnsOf:.
+ *
+ *  3384 -> 3385 with Bugs07 FILES-6: DbCommand>>withoutQuotedText:.
  */
-#define LIB_METHODS             3384
+#define LIB_METHODS             3385
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -3076,8 +3078,12 @@ test_browsing(void)
      *
      *  3007846 -> 3010699 with Bugs07 FILES-5: a record's table and column
      *  names checked before they are written into a statement.
+     *
+     *  3010699 -> 3012259 with Bugs07 FILES-6: a UNION, INTERSECT, EXCEPT
+     *  or MINUS anywhere in a query leaves its rows with no table to be
+     *  written back to.
      */
-    check_integer("(SourceFiles at: 1) contents size", 3010699);
+    check_integer("(SourceFiles at: 1) contents size", 3012259);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -11751,6 +11757,51 @@ test_bugs7b_lib(void)
                      "('1:alice:0' '2:carol:0' '3:dave:0' ) )");
     } else
         printf("  skipped FILES-5 (Bugs07): no SQLITE3 driver\n");
+    unlink(db);
+
+    /*
+     *  FILES-6: tableNameIn: looked only at the word after the first
+     *  FROM's table, and UNION was allowed there, so a UNION's rows were
+     *  written back to its first table.  Now a set operation anywhere
+     *  outside quotes means no single table.  Before: `('a' 'a' nil 'a'
+     *  'a)' 'a' 'a' 'a')' -- only INTERSECT, right after the table and not
+     *  on its list, was refused.
+     */
+    check_string("| c | c := DbCommand new. ^({'select * from a union select * from b'. "
+                 "'select id from a where id > 0 union all select id from b'. "
+                 "'select * from a intersect select * from b'. "
+                 "'select * from a where x = 1 except select * from b'. "
+                 "'(select * from a) UNION (select * from b)'. "
+                 "'select * from a where note = ''union dues'''. "
+                 "'select * from a order by id'. 'SELECT name FROM a WHERE id = ?'} "
+                 "collect: [:each | c tableNameIn: each]) printString",
+                 "(nil nil nil nil nil 'a' 'a' 'a' )");
+    unlink(db);
+    snprintf(expression, sizeof expression,
+             "[(DbConnection open: 'DRIVER=SQLITE3;Database=%s;') close. true] "
+             "on: Error do: [:e | false]", db);
+    if (evaluate(expression) == ST_TRUE) {
+        /*  The audit's case end to end: the row from b, edited, was
+         *  written over a's row with the same key.  Before:
+         *  `(done ('BOB2' 'bob' ))'.  */
+        snprintf(expression, sizeof expression,
+                 "| c rs r out | c := DbConnection open: 'DRIVER=SQLITE3;Database=%s;'. "
+                 "c execute: 'create table a (id integer primary key, name text)'. "
+                 "c execute: 'create table b (id integer primary key, name text)'. "
+                 "c execute: 'insert into a (id, name) values (1, ''alice'')'. "
+                 "c execute: 'insert into b (id, name) values (1, ''bob'')'. c commit. "
+                 "rs := c fetchAll: 'select id, name from a where id = 0 union all select id, name from b'. "
+                 "r := rs first. r at: 'name' put: 'BOB2'. "
+                 "out := OrderedCollection new. "
+                 "out add: ([r update. #done] on: DbError do: [:e | "
+                 "(e messageText includesSubstring: 'single table') ifTrue: [#refused] ifFalse: [e messageText]]). "
+                 "c commit. r := c fetchOne: 'select id, name from b where id = 1'. "
+                 "r at: 'name' put: 'bob3'. r update. c commit. "
+                 "out add: ((c fetchAll: 'select name from a union all select name from b') "
+                 "collect: [:x | x at: 'name']) asArray. c close. ^out printString", db);
+        check_string(expression, "an OrderedCollection(refused ('alice' 'bob3' ) )");
+    } else
+        printf("  skipped FILES-6 (Bugs07): no SQLITE3 driver\n");
     unlink(db);
 
     test_dialect = ST_DIALECT_BLUE_BOOK;

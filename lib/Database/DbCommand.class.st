@@ -175,13 +175,30 @@ DbCommand >> fetchAll: sqlString with: anArrayOfValues [
 DbCommand >> tableNameIn: sqlString [
 	"The single table this SQL selects from, or nil.
 
-	 Nil for anything with a join, a comma, or a subquery in the FROM.  That
-	 is the point: a Record knows which table to write itself back to only
-	 when there is exactly one candidate, and a guess here would produce an
-	 UPDATE against the wrong one.  Answering nil makes DbRecord>>update
-	 refuse with a sentence instead."
+	 Nil for anything with a join, a comma, or a subquery in the FROM, and
+	 for a UNION, INTERSECT, EXCEPT or MINUS anywhere.  That is the point: a
+	 Record knows which table to write itself back to only when there is
+	 exactly one candidate, and a guess here would produce an UPDATE against
+	 the wrong one.  Answering nil makes DbRecord>>update refuse with a
+	 sentence instead.
+
+	 THE SET OPERATIONS ARE LOOKED FOR IN THE WHOLE STATEMENT (Bugs07
+	 FILES-6).  Only the word after the table was looked at, and UNION was
+	 one of the words allowed there, so every row of `select ... from a
+	 union all select ... from b' was stamped with table a: a row that came
+	 from b, changed and sent update, became `UPDATE a ... WHERE id = <the
+	 id in b>', which overwrote whichever row of a shared the key, left b
+	 as it was, and raised nothing.  A set operation can come after a
+	 WHERE, an ORDER BY or a closing parenthesis, so no one position will
+	 do.  Text in quotes is left out of the search -- a note that says
+	 `union dues' is not a set operation -- and a word is compared without
+	 the parentheses that may be stuck to it."
 
 	| words fromIndex table |
+	((self wordsOf: (self withoutQuotedText: sqlString)) anySatisfy: [:each |
+		#('UNION' 'INTERSECT' 'EXCEPT' 'MINUS') includes:
+			(each reject: [:c | c = $( or: [c = $)]]) asUppercase])
+		ifTrue: [^nil].
 	words := self wordsOf: sqlString.
 	fromIndex := nil.
 	words keysAndValuesDo:
@@ -197,9 +214,30 @@ DbCommand >> tableNameIn: sqlString [
 	fromIndex + 2 <= words size ifTrue:
 		[| next |
 		 next := (words at: fromIndex + 2) asUppercase.
-		 (#('WHERE' 'ORDER' 'GROUP' 'HAVING' 'LIMIT' 'FETCH' 'FOR' 'UNION' 'OFFSET')
+		 (#('WHERE' 'ORDER' 'GROUP' 'HAVING' 'LIMIT' 'FETCH' 'FOR' 'OFFSET')
 			includes: next) ifFalse: [^nil]].
 	^table
+]
+
+{ #category : 'private' }
+DbCommand >> withoutQuotedText: aString [
+	"aString with whatever is between single or double quotes taken out
+	 and a space left in its place, for tableNameIn:.  A doubled quote
+	 inside a literal closes it and opens it again, which takes out the
+	 same characters."
+
+	| out quote |
+	out := WriteStream on: (String new: aString size).
+	quote := nil.
+	aString do:
+		[:each |
+		quote isNil
+			ifTrue:
+				[(each = $' or: [each = $"])
+					ifTrue: [quote := each. out space]
+					ifFalse: [out nextPut: each]]
+			ifFalse: [each = quote ifTrue: [quote := nil]]].
+	^out contents
 ]
 
 { #category : 'private' }
