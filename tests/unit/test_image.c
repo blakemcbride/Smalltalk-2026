@@ -673,8 +673,11 @@
  *  keyFor:meta:, lostRefusalWriting:of: and TonelWriter>>writeExtensionOf:
  *  selecting:comment:; noteType:prefix:comment: became
  *  noteType:prefix:categories:comment:.
+ *
+ *  3390 -> 3391 with Bugs07 FILES-3: FilePage>>asFileStream:, which clears
+ *  a binary page's buffer past its data before a stream takes it.
  */
-#define LIB_METHODS             3390
+#define LIB_METHODS             3391
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -3092,8 +3095,11 @@ test_browsing(void)
      *  starred category it was read with, prefixes compare without regard
      *  to case, and a write-back that would drop a method the file held is
      *  refused.
+     *
+     *  3019078 -> 3021445 with Bugs07 FILES-3: a page handed to a binary
+     *  stream holds nothing past its data.
      */
-    check_integer("(SourceFiles at: 1) contents size", 3019078);
+    check_integer("(SourceFiles at: 1) contents size", 3021445);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -11913,6 +11919,7 @@ test_bugs7b_files(void)
 {
     const char *gap   = st_test_path("bugs7b-files2-gap.txt");
     const char *turn  = st_test_path("bugs7b-files2-turn.txt");
+    const char *stale = st_test_path("bugs7b-files3-stale.bin");
     char        expression[2048];
 
     test_dialect = ST_DIALECT_CLOSURES;
@@ -11949,6 +11956,66 @@ test_bugs7b_files(void)
              turn, turn, turn);
     check_string(expression, "(1030 1025 )");
     unlink(turn);
+
+    /*
+     *  FILES-3.  A binary stream works on its page's own buffer, and a
+     *  writer positioned past the end wrote whatever that buffer held past
+     *  the page's data -- the tail of the page read into it before.  Every
+     *  way the buffer came to be stale, each from a file of 66s, and each
+     *  gap must read as zeros:
+     *    a short last page read into page one's buffer, the gap within it
+     *      (before: 701 612 88 0) and across the page's end (1501 936 88 476);
+     *    a page past the end that readOrAdd: renumbers without reading
+     *      (before: 1101 66 1100);
+     *    a page re-read short after a page turn (before: 601 67 66 599);
+     *    a page the file claims and the disk lacks, answered empty by
+     *      PosixFile>>read: (before: 601 66 600 1).
+     */
+    snprintf(expression, sizeof expression,
+             "| f s b r | f := '%s'. r := OrderedCollection new. "
+             "#(700 1500) do: [:at | s := FileStream fileNamed: f. s binary. "
+             "s nextPutAll: ((ByteArray new: 512) atAllPut: 66; yourself); "
+             "nextPutAll: ((ByteArray new: 88) atAllPut: 65; yourself). s close. "
+             "s := FileStream oldFileNamed: f. s binary; readWrite. s next: 600. "
+             "s position: at. s nextPut: 1. s close. "
+             "b := (FileStream oldFileNamed: f) binary; readOnly; contentsOfEntireFile. "
+             "r add: (Array with: b size with: (b occurrencesOf: 66) "
+             "with: (b occurrencesOf: 65) with: (b occurrencesOf: 0))]. "
+             "^r asArray printString",
+             stale);
+    check_string(expression, "((701 512 88 100 ) (1501 512 88 900 ) )");
+    snprintf(expression, sizeof expression,
+             "| f s b | f := '%s'. s := FileStream fileNamed: f. s binary. "
+             "s nextPutAll: ((ByteArray new: 1024) atAllPut: 66; yourself). s close. "
+             "s := FileStream oldFileNamed: f. s binary; readWrite. "
+             "s position: 1100. s nextPut: 1. s close. "
+             "b := (FileStream oldFileNamed: f) binary; readOnly; contentsOfEntireFile. "
+             "^(Array with: b size with: (b at: 1025) with: (b occurrencesOf: 66)) "
+             "printString",
+             stale);
+    check_string(expression, "(1101 0 1024 )");
+    snprintf(expression, sizeof expression,
+             "| f s b | f := '%s'. s := FileStream fileNamed: f. s binary. "
+             "s nextPutAll: ((ByteArray new: 512) atAllPut: 66; yourself). s close. "
+             "s := FileStream oldFileNamed: f. s binary; readWrite. "
+             "s setToEnd. s nextPut: 67. s position: 0. s position: 600. "
+             "s nextPut: 1. s close. "
+             "b := (FileStream oldFileNamed: f) binary; readOnly; contentsOfEntireFile. "
+             "^(Array with: b size with: (b at: 513) with: (b at: 514) "
+             "with: (b occurrencesOf: 66)) printString",
+             stale);
+    check_string(expression, "(601 67 0 512 )");
+    snprintf(expression, sizeof expression,
+             "| f s b | f := '%s'. s := FileStream fileNamed: f. s binary. "
+             "s nextPutAll: ((ByteArray new: 512) atAllPut: 66; yourself). s close. "
+             "s := FileStream oldFileNamed: f. s binary; readWrite. "
+             "s position: 512. s position: 0. s position: 600. s nextPut: 1. s close. "
+             "b := (FileStream oldFileNamed: f) binary; readOnly; contentsOfEntireFile. "
+             "^(Array with: b size with: (b at: 513) with: (b occurrencesOf: 66) "
+             "with: (b at: 601)) printString",
+             stale);
+    check_string(expression, "(601 0 512 1 )");
+    unlink(stale);
 }
 
 int
