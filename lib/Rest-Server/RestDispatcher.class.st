@@ -120,8 +120,28 @@ RestDispatcher >> injsonFrom: anHttpRequest [
 	 with another Content-Type."
 	work := Array with: JSONParser new maxNumberWork.
 	anHttpRequest formParameters keysAndValuesDo: [:name :value |
+		self checkUtf8: name.
+		self checkUtf8: value.
 		injson at: name put: (self decodeFormValue: value named: name work: work)].
 	^injson
+]
+
+{ #category : 'private - envelope' }
+RestDispatcher >> checkUtf8: aString [
+	"A form field's name or value, refused unless it is UTF-8 -- the rule
+	 JSONParser holds a JSON body to, for the field that arrives by the
+	 other road (Bugs07 NET-4).  A service stores what it was sent and
+	 answers it later, often to somebody else, and the writer refuses
+	 bytes that are not UTF-8: taken here, one such field made every later
+	 reply that held it `The reply could not be written as JSON.'  The
+	 refusal is a JSONError, which handle: answers as the JSON body's is."
+
+	| at |
+	at := JSONWriter firstNonUtf8In: aString.
+	at = 0 ifTrue: [^self].
+	JSONError signal: 'the byte ', ((aString at: at) asInteger printString: 16),
+		' at position ', at printString,
+		' of a form field is not UTF-8, which is the only encoding JSON has'
 ]
 
 { #category : 'private - envelope' }

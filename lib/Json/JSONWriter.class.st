@@ -212,7 +212,22 @@ JSONWriter >> writeString: aString [
 JSONWriter >> writeUtf8: aString at: anIndex [
 	"The one UTF-8 sequence beginning at anIndex, written as the bytes it
 	 is; answer the index after it.  Raise if the bytes there are not a
-	 sequence.
+	 sequence: RFC 3629's grammar, as JSONWriter class>>utf8LengthOf:then:
+	 states it for this class and JSONParser both."
+
+	| length |
+	length := self class utf8SizeIn: aString at: anIndex.
+	length = 0 ifTrue: [^self notUtf8At: anIndex in: aString].
+	stream nextPutAll: (aString copyFrom: anIndex to: anIndex + length - 1).
+	^anIndex + length
+]
+
+{ #category : 'utf-8' }
+JSONWriter class >> utf8LengthOf: aLeadByte then: aSecondByte [
+	"How many bytes long the UTF-8 sequence is that begins with these two
+	 byte values -- 2, 3 or 4 -- or 0 when no sequence begins with them.
+	 The bytes after the second, if the answer says there are any, must
+	 each be 80 to BF; nothing else is asked of them.
 
 	 RFC 3629's grammar and not `a lead byte plus n continuations': the
 	 ranges below are what exclude the three things a naive check lets
@@ -221,31 +236,69 @@ JSONWriter >> writeUtf8: aString at: anIndex [
 	 that decode to a character one byte can hold -- is how a filter that
 	 looks for a byte gets past.  A SURROGATE half, ED A0 80, is a code
 	 point UTF-8 has no encoding for and UTF-16 readers turn into
-	 something else.  And anything above U+10FFFF, F5 and up, is not a
-	 character at all."
+	 something else.  And anything above U+10FFFF, F4 90 and up, is not a
+	 character at all.
 
-	| lead length second i code |
-	lead := (aString at: anIndex) asInteger.
-	lead < 194 ifTrue: [^self notUtf8At: anIndex in: aString].
-	lead < 224 ifTrue: [length := 2] ifFalse: [
-	lead < 240 ifTrue: [length := 3] ifFalse: [
-	lead < 245 ifTrue: [length := 4] ifFalse: [
-		^self notUtf8At: anIndex in: aString]]].
-	anIndex + length - 1 > aString size ifTrue: [^self notUtf8At: anIndex in: aString].
-	second := (aString at: anIndex + 1) asInteger.
+	 THE ONE STATEMENT OF THE RULE, for the writer and the parser both
+	 (Bugs07 NET-4).  The writer refused these bytes and the parser took
+	 them, so a value was accepted on the way in and unwritable on the
+	 way out -- and in a server the way out is somebody else's reply: one
+	 phone record holding the byte FF made the demo's list answer `The
+	 reply could not be written as JSON.' to every user."
+
+	| length |
+	(aSecondByte between: 128 and: 191) ifFalse: [^0].
+	aLeadByte < 194 ifTrue: [^0].
+	aLeadByte < 224 ifTrue: [length := 2] ifFalse: [
+	aLeadByte < 240 ifTrue: [length := 3] ifFalse: [
+	aLeadByte < 245 ifTrue: [length := 4] ifFalse: [^0]]].
 	"The second byte's range is narrower than 80..BF for four lead bytes,
 	 and that narrowing is the whole of the overlong and surrogate rules."
-	(lead = 224 and: [second < 160]) ifTrue: [^self notUtf8At: anIndex in: aString].
-	(lead = 237 and: [second > 159]) ifTrue: [^self notUtf8At: anIndex in: aString].
-	(lead = 240 and: [second < 144]) ifTrue: [^self notUtf8At: anIndex in: aString].
-	(lead = 244 and: [second > 143]) ifTrue: [^self notUtf8At: anIndex in: aString].
-	i := anIndex + 1.
+	(aLeadByte = 224 and: [aSecondByte < 160]) ifTrue: [^0].
+	(aLeadByte = 237 and: [aSecondByte > 159]) ifTrue: [^0].
+	(aLeadByte = 240 and: [aSecondByte < 144]) ifTrue: [^0].
+	(aLeadByte = 244 and: [aSecondByte > 143]) ifTrue: [^0].
+	^length
+]
+
+{ #category : 'utf-8' }
+JSONWriter class >> utf8SizeIn: aString at: anIndex [
+	"How many bytes long the UTF-8 sequence beginning at anIndex is, or 0
+	 when the bytes there are not one.  See utf8LengthOf:then:."
+
+	| length i code |
+	anIndex + 1 > aString size ifTrue: [^0].
+	length := self
+		utf8LengthOf: (aString at: anIndex) asInteger
+		then: (aString at: anIndex + 1) asInteger.
+	length = 0 ifTrue: [^0].
+	anIndex + length - 1 > aString size ifTrue: [^0].
+	i := anIndex + 2.
 	[i < (anIndex + length)] whileTrue: [
 		code := (aString at: i) asInteger.
-		(code < 128 or: [code > 191]) ifTrue: [^self notUtf8At: anIndex in: aString].
+		(code between: 128 and: 191) ifFalse: [^0].
 		i := i + 1].
-	stream nextPutAll: (aString copyFrom: anIndex to: anIndex + length - 1).
-	^anIndex + length
+	^length
+]
+
+{ #category : 'utf-8' }
+JSONWriter class >> firstNonUtf8In: aString [
+	"The index of the first byte of aString that does not belong to a
+	 UTF-8 sequence, or 0 when every byte does -- the question asked of
+	 text that reaches a document by a road that is not the parser's, a
+	 field of a multipart form (Bugs07 NET-4)."
+
+	| i size length |
+	i := 1.
+	size := aString size.
+	[i <= size] whileTrue: [
+		(aString at: i) asInteger < 128
+			ifTrue: [i := i + 1]
+			ifFalse: [
+				length := self utf8SizeIn: aString at: i.
+				length = 0 ifTrue: [^i].
+				i := i + length]].
+	^0
 ]
 
 { #category : 'private' }

@@ -273,6 +273,15 @@ Going the other way, a byte above 126 is written as itself. Turning it back
 into an escape would double the size of every document not written in English
 to no purpose, since the two spellings are the same text to every reader.
 
+Bytes that are not UTF-8 are refused both ways, by the one rule RFC 3629
+gives: a Latin-1 byte, an overlong form such as \ct{C0 80}, an encoded
+surrogate such as \ct{ED A0 80}, or anything past U+10FFFF. The writer raises
+\ct{JSONError} rather than write them, and the parser refuses a document whose
+strings hold them, so anything the parser answers can be written back
+out---which is what a server storing one request's values and answering them
+in another depends on. \ct{JSONWriter class>>utf8LengthOf:then:} is the rule,
+and the REST server applies it to the fields of a multipart form too.
+
 \begin{stwarn}
 \ct{\n} in a document is a line feed, 10, and it stays one. This image's text
 panes break lines on the carriage return, 13, because that is what the Alto

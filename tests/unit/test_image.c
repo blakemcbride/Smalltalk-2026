@@ -696,8 +696,16 @@
  *
  *  3404 -> 3407 with Bugs07 NET-3: Socket class>>descriptorLimit, Socket>>
  *  isOverDescriptorLimit and HttpServer class>>defaultMaxConnections.
+ *
+ *  3402 -> 3408 with Bugs07 NET-4: JSONWriter class>>utf8LengthOf:then:,
+ *  utf8SizeIn:at: and firstNonUtf8In:, JSONParser>>nextUtf8From:on: and
+ *  notUtf8:, and RestDispatcher>>checkUtf8:.
+ *
+ *  3407 -> 3413 with Bugs07 NET-4: JSONWriter class>>utf8LengthOf:then:,
+ *  utf8SizeIn:at: and firstNonUtf8In:, JSONParser>>nextUtf8From:on: and
+ *  notUtf8:, and RestDispatcher>>checkUtf8:.
  */
-#define LIB_METHODS             3407
+#define LIB_METHODS             3413
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -3142,8 +3150,16 @@ test_browsing(void)
      *  3036930 -> 3039719 with Bugs07 NET-3: a server's default connection
      *  cap leaves room in the descriptor limit, and a connection past the
      *  descriptors there are is answered 503.
+     *
+     *  3029000 -> 3032985 with Bugs07 NET-4: the parser holds a string's
+     *  bytes to the UTF-8 rule the writer holds them to, and a form's
+     *  fields are held to it too.
+     *
+     *  3039719 -> 3043704 with Bugs07 NET-4: the parser holds a string's
+     *  bytes to the UTF-8 rule the writer holds them to, and a form's
+     *  fields are held to it too.
      */
-    check_integer("(SourceFiles at: 1) contents size", 3039719);
+    check_integer("(SourceFiles at: 1) contents size", 3043704);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -12456,6 +12472,88 @@ test_bugs7c_gui(void)
     }
 }
 
+/*
+ *  Bugs07 round 3, NET.  NET-4: JSONParser took any bytes inside a string
+ *  -- a Latin-1 FF, the overlong C0 80, the encoded surrogate ED A0 80,
+ *  F4 90 80 80 past U+10FFFF -- and JSONWriter refused every one of them,
+ *  so a value was accepted on the way in and unwritable on the way out:
+ *  in the demo, one phone record holding FF made getRecords answer `The
+ *  reply could not be written as JSON.' to every user.  The parser now
+ *  holds a string's bytes to the writer's rule, stated once
+ *  (JSONWriter class>>utf8LengthOf:then:), and RestDispatcher holds a
+ *  multipart form's fields to it too.  Before: every refusal below was
+ *  `taken'.
+ */
+static void
+test_bugs7c_net(void)
+{
+    test_dialect = ST_DIALECT_CLOSURES;
+
+    /*  What the writer refuses, the parser refuses: in a value, in a name,
+     *  and cut short by the closing quote or the end of the text.  */
+    check_string("| r doc | r := OrderedCollection new. "
+                 "#(#(255) #(192 128) #(193 191) #(224 128 128) #(237 160 128) #(237 191 191) "
+                 "#(240 143 191 191) #(244 144 128 128) #(245 128 128 128) #(195) #(128) "
+                 "#(226 130) #(240 159 152)) do: [:bytes | "
+                 "doc := String new: bytes size + 2. doc at: 1 put: $\". doc at: doc size put: $\". "
+                 "1 to: bytes size do: [:i | doc at: i + 1 put: (Character value: (bytes at: i))]. "
+                 "r add: ([JSONParser parse: doc. #taken] on: JSONError do: [:e | #refused]). "
+                 "r add: ([JSONParser parse: '{', doc, ': 1}'. #taken] on: JSONError do: [:e | #refused])]. "
+                 "r add: ([JSONParser parse: (String with: $\" with: (Character value: 195))] "
+                 "on: JSONError do: [:e | #refused]). "
+                 "^(r asSet asArray) printString",
+                 "(refused )");
+    check_string("^([JSONParser parse: (String with: $\" with: (Character value: 255) with: $\")] "
+                 "on: JSONError do: [:e | e messageText])",
+                 "the byte FF does not begin a UTF-8 sequence there, and UTF-8 is the only "
+                 "encoding JSON has at character 2");
+    /*  And what the writer writes, the parser reads, and the two agree
+     *  byte for byte: the edges of each length, U+FFFF and U+10FFFF.  */
+    check_string("^(#(#(194 128) #(195 169) #(223 191) #(224 160 128) #(226 130 172) #(237 159 191) "
+                 "#(238 128 128) #(239 191 191) #(240 144 128 128) #(240 159 152 128) "
+                 "#(244 143 191 191)) collect: [:bytes | | doc | "
+                 "doc := String new: bytes size + 2. doc at: 1 put: $\". doc at: doc size put: $\". "
+                 "1 to: bytes size do: [:i | doc at: i + 1 put: (Character value: (bytes at: i))]. "
+                 "(JSONParser parse: doc) asJsonString = doc]) printString",
+                 "(true true true true true true true true true true true )");
+    /*  The rule is one rule: every lead byte against the second bytes at
+     *  the edges of every range, written and read.  */
+    check_string("| bad | bad := 0. 128 to: 255 do: [:a | #(0 127 128 143 144 159 160 191 192 255) do: [:b | | s w p | "
+                 "s := String with: (Character value: a) with: (Character value: b) "
+                 "with: (Character value: 128) with: (Character value: 128). "
+                 "w := [JSONWriter write: s. true] on: JSONError do: [:e | false]. "
+                 "p := [JSONParser parse: '\"', s, '\"'. true] on: JSONError do: [:e | false]. "
+                 "w = p ifFalse: [bad := bad + 1]]]. ^bad printString",
+                 "0");
+
+    /*  A JSON body with such a string is refused as malformed, at the
+     *  request that carried it; so is a form field, by the other road.  */
+    check_string("| crlf body r | crlf := String with: (Character value: 13) "
+                 "with: (Character value: 10). "
+                 "body := '{\"_class\": \"services.Crud\", \"_method\": \"addRecord\", \"firstName\": \"Mallory', "
+                 "(String with: (Character value: 255)), '\"}'. "
+                 "r := HttpRequest fromString: 'POST /rest HTTP/1.1', crlf, "
+                 "'Content-Type: application/json', crlf, "
+                 "'Content-Length: ', body size printString, crlf, crlf, body. "
+                 "^(RestDispatcher new handle: r) body",
+                 "{\"_Success\":false,\"_ErrorCode\":-1,\"_ErrorMessage\":\"Invalid JSON format\"}");
+    check_string("| crlf body r f | crlf := String with: (Character value: 13) "
+                 "with: (Character value: 10). "
+                 "f := [:value | body := '--b', crlf, "
+                 "'Content-Disposition: form-data; name=\"firstName\"', crlf, crlf, "
+                 "value, crlf, '--b--', crlf. "
+                 "r := HttpRequest fromString: 'POST /rest HTTP/1.1', crlf, "
+                 "'Content-Type: multipart/form-data; boundary=b', crlf, "
+                 "'Content-Length: ', body size printString, crlf, crlf, body. "
+                 "[(RestDispatcher new injsonFrom: r) at: 'firstName'] on: JSONError do: [:e | #refused]]. "
+                 "^{f value: 'SMallory', (String with: (Character value: 255)). "
+                 "f value: 'SMallory', (String with: (Character value: 195) with: (Character value: 169))} "
+                 "printString",
+                 "(refused 'Mallory\303\251' )");
+
+    test_dialect = ST_DIALECT_BLUE_BOOK;
+}
+
 int
 main(void)
 {
@@ -12605,6 +12703,7 @@ main(void)
     test_bugs7c_lib();
     test_bugs7c_vm();
     test_bugs7c_gui();
+    test_bugs7c_net();
 
     OM_shutdown();
     return ST_TEST_END();

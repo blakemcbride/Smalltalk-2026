@@ -249,6 +249,16 @@ Going the other way, a byte above 126 is written as itself. Escaping it again
 would double the size of every document not written in English, to no purpose:
 the two spellings are the same text to every reader.
 
+Both directions hold a string's bytes to one rule, RFC 3629's UTF-8, stated
+once in `JSONWriter class>>utf8LengthOf:then:`: a Latin-1 byte, an overlong form
+(`C0 80`), an encoded surrogate (`ED A0 80`) or anything past U+10FFFF
+(`F4 90 80 80`) is refused by the writer as a `JSONError` and by the parser as
+malformed JSON. So whatever the parser answers can be written back. A server
+leans on that: a value it stores from one request and returns in another
+cannot make the later reply unwritable. `RestDispatcher` holds the fields of a
+multipart form, which do not pass through the parser, to the same rule
+(`JSONWriter class>>firstNonUtf8In:`).
+
 `\n` is a line feed, 10, and stays one. This image's `Paragraph` breaks lines on
 the carriage return, 13, because the Alto did — but translating would be
 indefensible in both directions, since the document said 10 and a document

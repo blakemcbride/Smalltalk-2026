@@ -31,6 +31,14 @@ characters the sender thinks it sent.  A surrogate pair is read as the one
 character it encodes; a lone surrogate is refused, because there is no
 encoding of one.
 
+And text that arrives as bytes is held to the same rule as text that
+arrives as escapes: a string whose bytes are not UTF-8 -- a Latin-1 byte, an
+overlong form, an encoded surrogate, anything past U+10FFFF -- is refused,
+by the rule JSONWriter refuses to write it by (JSONWriter class>>
+utf8LengthOf:then:).  It used to be taken as it came, so a value was
+accepted on the way in that could not be written on the way out, and in a
+server the way out is somebody else's reply (Bugs07 NET-4).
+
 \n IS A LINE FEED, 10, and not the carriage return this system's Paragraph
 breaks lines on.  Translating it would be indefensible in both directions:
 the document said 10, and a document written back out after translation
@@ -375,8 +383,38 @@ JSONParser >> nextString [
 				character asInteger < 32 ifTrue: [
 					self error: 'a control character in a string must be ',
 						'written as an escape'].
-				out nextPut: character]].
+				character asInteger > 127
+					ifTrue: [self nextUtf8From: character on: out]
+					ifFalse: [out nextPut: character]]].
 	^out contents
+]
+
+{ #category : 'private' }
+JSONParser >> nextUtf8From: aLeadCharacter on: aStream [
+	"The UTF-8 sequence aLeadCharacter begins, the rest of it read from the
+	 document, onto aStream -- or a refusal when the bytes are not one.
+	 The writer's rule, from the one place it is stated; see the class
+	 comment, TEXT IS UTF-8 (Bugs07 NET-4)."
+
+	| lead length |
+	lead := aLeadCharacter asInteger.
+	stream atEnd ifTrue: [^self notUtf8: lead].
+	"Peeked, not read, so that a refusal names the position of the lead."
+	length := JSONWriter utf8LengthOf: lead then: stream peek asInteger.
+	length = 0 ifTrue: [^self notUtf8: lead].
+	aStream nextPut: aLeadCharacter.
+	length - 1 timesRepeat: [
+		(stream atEnd not and: [stream peek asInteger between: 128 and: 191])
+			ifFalse: [^self notUtf8: lead].
+		aStream nextPut: stream next]
+]
+
+{ #category : 'private' }
+JSONParser >> notUtf8: aLeadByte [
+	"The refusal of a string's bytes, in the writer's words."
+
+	^self error: 'the byte ', (aLeadByte printString: 16),
+		' does not begin a UTF-8 sequence there, and UTF-8 is the only encoding JSON has'
 ]
 
 { #category : 'parsing' }
