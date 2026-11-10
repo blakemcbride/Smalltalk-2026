@@ -12058,9 +12058,9 @@ test_bugs7b_vm(void)
     check_string("| m r | r := OrderedCollection new. m := CompiledMethod basicNew: 6. "
                  "r add: ([m objectAt: 1 put: 5. #wrote] on: Error do: [:e | #refused]). "
                  "m := CompiledMethod basicNew: 8. "
-                 "r add: ([m objectAt: 1 put: 5. m objectAt: 1] on: Error do: [:e | #refused]). "
+                 "r add: ([m objectAt: 1 put: 64. m objectAt: 1] on: Error do: [:e | #refused]). "
                  "^r asArray printString",
-                 "(refused 5 )");
+                 "(refused 64 )");
     check_string("| keep | keep := OrderedCollection new. 1 to: 2000 do: [:i | | m | "
                  "m := CompiledMethod new: 7. "
                  "[m objectAt: 3 put: i] on: Error do: [:e | nil]. "
@@ -12202,6 +12202,73 @@ test_bugs7c_lib(void)
     unlink(db);
 
     test_dialect = ST_DIALECT_BLUE_BOOK;
+}
+
+/*
+ *  Bugs07, round 3: the VM group's findings.
+ */
+static void
+test_bugs7c_vm(void)
+{
+    test_dialect = ST_DIALECT_CLOSURES;
+
+    /*
+     *  INTERP-1b.  objectAt: answered whatever word was in a method's slot,
+     *  and reached every whole oop of the body.  A fresh `basicNew: 8'
+     *  answered oop 0 from its header, a fresh newMethod:header: answered
+     *  zeros for its literals (printing them segfaulted), and a slot past
+     *  the literal frame -- which no collection counts -- was written,
+     *  freed under the method and read back.  Now: the header and the
+     *  literal frame only, literals start as nil, a word that is neither a
+     *  SmallInteger nor an object is refused, and a header keeps its
+     *  literal count.
+     */
+    check_string("| r m | r := OrderedCollection new. "
+                 "r add: ([(CompiledMethod basicNew: 8) objectAt: 1] "
+                 "on: Error do: [:e | #refused]). "
+                 "r add: ([(CompiledMethod new: 16) objectAt: 2] "
+                 "on: Error do: [:e | #refused]). "
+                 "r add: (CompiledMethod newMethod: 8 header: 2) literals. "
+                 "m := CompiledMethod newMethod: 64 header: 2. "
+                 "r add: ([m objectAt: 4 put: 'abc' copy. #wrote] "
+                 "on: Error do: [:e | #refused]). "
+                 "r add: ([m objectAt: 4] on: Error do: [:e | #refused]). "
+                 "r add: (m objectAt: 3 put: 7); add: (m literalAt: 2). "
+                 "r add: ([m objectAt: 1 put: 5. #wrote] on: Error do: [:e | #refused]). "
+                 "r add: ([m objectAt: 1 put: #(2). #wrote] on: Error do: [:e | #refused]). "
+                 "r add: (m objectAt: 1 put: 66); add: m numLiterals. "
+                 "m at: 16 put: 1. "
+                 "r add: ([m objectAt: 2] on: Error do: [:e | #refused]). "
+                 "m objectAt: 2 put: #x. r add: (m objectAt: 2). "
+                 "^r asArray printString",
+                 "(refused refused (nil nil ) refused refused 7 7 refused refused "
+                 "66 2 refused x )");
+    /*
+     *  The store past the frame, then a collection, then the read: the
+     *  read segfaulted.  The store is refused now, so there is nothing to
+     *  read back.
+     */
+    check_string("| m s | m := CompiledMethod newMethod: 64 header: 2. "
+                 "s := String new: 5. "
+                 "[m objectAt: 6 put: s] on: Error do: [:e | nil]. s := nil. "
+                 "Smalltalk garbageCollect. "
+                 "^([m objectAt: 6] on: Error do: [:e | #refused]) printString",
+                 "refused");
+    /*
+     *  A copied method's frame is copied as bytes, so the copy's literals
+     *  are counted by nobody; literalAt:put: on the copy released a count
+     *  the copy never had, the original's only literal was freed, and the
+     *  original then answered with whatever had the entry next.
+     */
+    check_string("Object compile: 'zzB7cLit ^#(1 2 3 $a 4.5) , #(9)'. "
+                 "^[| c keep | "
+                 "c := (Object compiledMethodAt: #zzB7cLit) shallowCopy. "
+                 "1 to: c numLiterals do: [:i | c literalAt: i put: nil]. "
+                 "keep := (1 to: 3000) collect: [:i | Array new: 5]. "
+                 "Smalltalk garbageCollect. "
+                 "nil zzB7cLit printString] "
+                 "ensure: [Object removeSelector: #zzB7cLit]",
+                 "(1 2 3 $a 4.5 9 )");
 }
 
 int
@@ -12351,6 +12418,7 @@ main(void)
     test_bugs7b_files();
     test_bugs7b_vm();
     test_bugs7c_lib();
+    test_bugs7c_vm();
 
     OM_shutdown();
     return ST_TEST_END();

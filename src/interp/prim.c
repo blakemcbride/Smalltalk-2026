@@ -4122,8 +4122,9 @@ float_primitive(unsigned index)
  */
 
 /*
- *  How many whole oops a method's body holds: the bound on objectAt: and
- *  objectAt:put:, which read and write with the memory's oop stride.
+ *  How many leading words of a method primitives 68 and 69 reach: the
+ *  header and the literal frame the header states, and never more than the
+ *  body holds.
  *
  *  Bugs07 INTERP-1.  This answered byte_length / 2 whenever the oop count
  *  came out 0 -- the Blue Book memory's 16-bit word count, carried into
@@ -4131,15 +4132,36 @@ float_primitive(unsigned index)
  *  slot is 8 bytes, so `(CompiledMethod new: 6) objectAt: 3 put: x' wrote
  *  bytes 16..23 of a 6-byte body: into the next malloc chunk's header,
  *  with a count released on whatever oop those bytes had held, and the
- *  image died in malloc a little later.  The one division is right for
- *  both memories -- an oop is two bytes in the Blue Book one, so it IS
- *  the word count there -- and a method shorter than one oop has no slot
- *  at all.
+ *  image died in malloc a little later.  The division is right for both
+ *  memories -- an oop is two bytes in the Blue Book one, so it IS the word
+ *  count there -- and a method shorter than one oop has no slot at all.
+ *
+ *  Bugs07 INTERP-1b.  The bound was every whole oop in the body, so the
+ *  two primitives reached the bytecodes as well, and those words refer to
+ *  nothing.  The collector walks a method's header and the literal frame
+ *  its header states (drain_mark_stack), and nothing past them: an object
+ *  stored past the frame was counted by the store and by no collection
+ *  after it, so `objectAt: 6 put: aString' on a method with two literals
+ *  left the slot naming a String the next collection freed, and reading
+ *  the slot back segfaulted -- or, once the entry had been given out
+ *  again, answered whatever had been given it.  The Blue Book bounds both
+ *  primitives by exactly these slots -- objectPointerCountOf:, the literal
+ *  count plus one -- and so does this now, with the collector's own cap
+ *  at the end of the body: the slots 68 and 69 touch are the slots the
+ *  memory treats as references.
  */
 static uint32_t
 method_word_slots(st_oop method)
 {
-    return OM_fetch_byte_length(method) / (uint32_t) sizeof(st_oop);
+    uint32_t    whole = OM_fetch_byte_length(method) / (uint32_t) sizeof(st_oop);
+    uint32_t    framed;
+
+    if (whole == 0)
+        return 0;
+    framed = ST_header_literal_count(OM_fetch_pointer(ST_METHOD_HEADER_INDEX,
+                                                      method))
+           + ST_METHOD_LITERAL_START;
+    return framed < whole ? framed : whole;
 }
 
 /*
@@ -4162,6 +4184,16 @@ method_word_slots(st_oop method)
  *  and 69, and its fallback is `self primitiveFailed', so restricting them
  *  to it costs nothing any sender has: the reflective write the 1983
  *  compiler needs stays, and everything else raises.
+ *
+ *  Even within the frame, a slot holds whatever word was put there, and
+ *  not every word was put there as a reference (Bugs07 INTERP-1b).  The
+ *  frame is the front of a byte object, so at:put: and replaceFrom:to:
+ *  with:startingAt: write it as bytes like the rest -- 1983's shallowCopy
+ *  of a method is copyFrom:to:, which copies the frame that way -- and a
+ *  method made by `CompiledMethod new: n' is all zeros.  The two
+ *  primitives below are written so that no such word can do harm: 68
+ *  answers only a SmallInteger or a live object, and 69 never releases a
+ *  count on the word it replaces.
  */
 static int
 object_at_receiver_ok(st_oop method)
@@ -4170,33 +4202,83 @@ object_at_receiver_ok(st_oop method)
         && OM_fetch_class(method) == ST_CLASS_COMPILED_METHOD;
 }
 
+/*
+ *  Bugs07 INTERP-1b.  The word in the slot was answered whatever it was:
+ *  the header slot of `CompiledMethod basicNew: 8' answered oop 0, which
+ *  is no object at all -- printed it was garbage, and an Array holding it
+ *  segfaulted when it was printed.  A slot holding neither a SmallInteger
+ *  nor a live object has nothing in it to answer, so the primitive fails
+ *  and the image's fallback raises.
+ */
 static int
 primitive_object_at(void)
 {
     st_oop      method = ST_stack_value(1);
+    st_oop      word;
     st_int      index;
 
     if (!object_at_receiver_ok(method) || !integer_arg(0, &index))
         return 0;
     if (index < 1 || (uint32_t) index > method_word_slots(method))
         return 0;
+    word = OM_fetch_pointer((uint32_t) index - 1, method);
+    if (!OM_is_int(word) && !OM_is_object(word))
+        return 0;
     ST_pop_n(2);
-    ST_push(OM_fetch_pointer((uint32_t) index - 1, method));
+    ST_push(word);
     return 1;
 }
 
+/*
+ *  Bugs07 INTERP-1b, twice.
+ *
+ *  The header is the one slot whose value decides which OTHER slots are
+ *  references: its literal count is the length of the frame the
+ *  collector walks, become: forwards and these two primitives reach.  A
+ *  header with a larger count turned bytecodes into literal slots, words
+ *  nothing had stored as references; a smaller one left stored references
+ *  outside every walk.  So a header written here must be a SmallInteger
+ *  -- every reader decodes it as one -- with the literal count the method
+ *  already has; the rest of it (the primitive index, the argument and
+ *  temporary counts, the frame size) may change as before.
+ *  newMethod:header: is how a method with a different frame is made.
+ *
+ *  And the word replaced is not released.  A store releases one count on
+ *  what it overwrites, which is right only if that word was counted when
+ *  it went in -- and a frame copied as bytes was not.  `(aMethod
+ *  shallowCopy) literalAt: 1 put: nil' released a count the copy never
+ *  had, on a literal only the original method held; with no workers
+ *  running a count that reaches zero frees on the spot, and the original
+ *  method's next run sent its message to whatever had been given the
+ *  entry (a BlockClosure, in the test).  Nothing here can tell a counted
+ *  word from an uncounted one, so the old word is counted once more
+ *  before the store releases it: a count left too high is the safe side
+ *  of the error -- every collection rebuilds the counts from its walk,
+ *  and the walk decides what lives -- where one too low frees a live
+ *  object.  Concurrent stores into one slot keep that property: each
+ *  release is of a word some store took out of the slot, after the
+ *  increment of the storer that read it.
+ */
 static int
 primitive_object_at_put(void)
 {
     st_oop      method = ST_stack_value(2);
     st_oop      value  = ST_stack_value(0);
     st_int      index;
+    uint32_t    field;
 
     if (!object_at_receiver_ok(method) || !integer_arg(1, &index))
         return 0;
     if (index < 1 || (uint32_t) index > method_word_slots(method))
         return 0;
-    OM_store_pointer((uint32_t) index - 1, method, value);
+    field = (uint32_t) index - 1;
+    if (field == ST_METHOD_HEADER_INDEX
+     && (!OM_is_int(value)
+      || ST_header_literal_count(value)
+         != ST_header_literal_count(OM_fetch_pointer(field, method))))
+        return 0;
+    OM_increase_ref(OM_fetch_pointer(field, method));
+    OM_store_pointer(field, method, value);
     ST_pop_n(3);
     ST_push(value);
     return 1;
@@ -4209,6 +4291,7 @@ primitive_new_method(void)
     st_oop      cls    = ST_stack_value(2);
     st_int      bytecodes;
     uint32_t    literals;
+    uint32_t    i;
     st_oop      method;
 
     if (!OM_is_int(header) || !integer_arg(1, &bytecodes) || bytecodes < 0)
@@ -4250,6 +4333,16 @@ primitive_new_method(void)
     if (!OM_is_present(method))
         return 0;
     OM_store_pointer(0, method, header);
+    /*
+     *  The literal frame starts as nils for the compiler to replace, as
+     *  Squeak's does (Bugs07 INTERP-1b).  It was left as the allocation's
+     *  zeros, and zero is no object: `(CompiledMethod newMethod: 8 header:
+     *  2) literals' answered an Array of two of them, and printing it
+     *  segfaulted.  objectAt: refuses such a word now, so without the nils
+     *  reading a fresh method's literals would raise instead.
+     */
+    for (i = 1; i <= literals; ++i)
+        OM_store_pointer(i, method, ST_NIL);
     ST_pop_n(3);
     ST_push(method);
     return 1;
