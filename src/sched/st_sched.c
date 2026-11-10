@@ -2870,17 +2870,30 @@ SCHED_primitive_wait(void)
  *  The order of the checks is the order of their cost.  The scan of the
  *  hands table is sixty-four rows of three loads, paid on every fork;
  *  it is nothing beside making the process.
+ *
+ *  Bugs07 SCHED-3.  The checks were five reads with no lock and no claim,
+ *  and then the resume: two workers resuming one suspended process both
+ *  read `parked and free' and both resumed it.  If it did not outrank
+ *  them it was queued twice, and the ready list's guard said `a process
+ *  already on a list was queued again'; if it did, both NOMINATED it --
+ *  the nomination refuses only a process on a list, and neither had put
+ *  it on one -- and two native threads ran one context, overwriting each
+ *  other's stack slots: `+ sent to a True', a counter turned to nil.  Two
+ *  event sources waking one parked process is the ordinary way there.
+ *  So the decision and the resume are one act under held_lock, which is
+ *  also the lock primitive 231 takes hold of a process under: a second
+ *  resume waits for the first, and finds the process on its ready list
+ *  or nominated, which it refuses; a stopper's detach either holds the
+ *  process before the decision, which then refuses it, or after the
+ *  resume, which it then takes off its list as it would any ready
+ *  process.  SCHED_resume takes the ready lock inside this one, and
+ *  nothing takes them the other way round.
  */
-int
-SCHED_primitive_resume(void)
+static int
+parked_and_free(st_oop process)
 {
-    st_oop  process = ST_stack_top();
-    st_oop  context;
+    st_oop  context = OM_fetch_pointer(ST_PROCESS_SUSPENDED_CONTEXT, process);
 
-    if (!OM_is_object(process) || !OM_pointer_bit(process)
-     || OM_fetch_word_length(process) <= ST_PROCESS_MY_LIST)
-        return 0;
-    context = OM_fetch_pointer(ST_PROCESS_SUSPENDED_CONTEXT, process);
     if (!OM_is_object(context)
      || (OM_fetch_class(context) != ST_CLASS_METHOD_CONTEXT
       && OM_fetch_class(context) != ST_CLASS_BLOCK_CONTEXT))
@@ -2891,10 +2904,27 @@ SCHED_primitive_resume(void)
         return 0;               /*  running: here  */
     if (in_anyones_hands(process) || is_named(process))
         return 0;               /*  running, or being stopped: elsewhere  */
-    if (is_held(process))
-        return 0;               /*  stopped, and its stopper not done  */
-    SCHED_resume(process);
     return 1;
+}
+
+int
+SCHED_primitive_resume(void)
+{
+    st_oop  process = ST_stack_top();
+    int     resumed = 0;
+
+    if (!OM_is_object(process) || !OM_pointer_bit(process)
+     || OM_fetch_word_length(process) <= ST_PROCESS_MY_LIST)
+        return 0;
+    held_lock_init();
+    ST_mutex_lock(&held_lock);
+    /*  Held: stopped, and its stopper not done.  */
+    if (held_slot(process) < 0 && parked_and_free(process)) {
+        SCHED_resume(process);
+        resumed = 1;
+    }
+    ST_mutex_unlock(&held_lock);
+    return resumed;
 }
 
 /*

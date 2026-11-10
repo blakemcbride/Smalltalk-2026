@@ -3125,6 +3125,48 @@ bugs7_sched(void)
         "^'SCHED-1 new processes refused: ', bad printString\n",
         1, "==> 'SCHED-1 new processes refused: 0'",
         "SCHED-1 a held process is not reclaimed");
+
+    /*
+     *  SCHED-3: two resumes of one suspended process at the same instant.
+     *  Primitive 87 decided `parked and free' by reads with no lock and
+     *  no claim, so two workers could both decide it and both resume it:
+     *  queued twice, or -- outranking them, as here -- nominated on two
+     *  workers and run by two native threads through one context.  Four
+     *  resumers released together at a process that, once running, is
+     *  busy for two milliseconds before it suspends itself again: at most
+     *  one of the four can find it suspended.  The old binary ran it on
+     *  two threads within a few hundred rounds -- its counter turned to
+     *  nil, `an index past the shared-temporary vector', and the image
+     *  stopped -- so the answer below never came.
+     */
+    bugs7_probe("bugs7-sched3-resume.st",
+        "| p count rs oks go many rounds fin spin |\n"
+        "fin := Semaphore new.\n"
+        "count := 0. many := 0. rounds := 0.\n"
+        "spin := [:ms | | end | end := Time millisecondClockValue + ms. "
+        "[Time millisecondClockValue < end] whileTrue: []].\n"
+        "p := [[true] whileTrue: [count := count + 1. spin value: 2. "
+        "Processor activeProcess suspend]] forkAt: 5.\n"
+        "spin value: 5.\n"
+        "[1 to: 1500 do: [:i |\n"
+        "\tgo := false. oks := Array new: 4.\n"
+        "\trs := (1 to: 4) collect: [:k | [[go] whileFalse: []. "
+        "oks at: k put: ([p resume. true] on: Error do: "
+        "[:e | e return: false])] forkAt: 4].\n"
+        "\tspin value: 1.\n"
+        "\tgo := true.\n"
+        "\tspin value: 4.\n"
+        "\t(oks select: [:ok | ok == true]) size > 1 "
+        "ifTrue: [many := many + 1].\n"
+        "\trounds := rounds + 1].\n"
+        " fin signal] forkAt: 6.\n"
+        "fin wait.\n"
+        "p terminate.\n"
+        "^'SCHED-3 rounds ', rounds printString, ', two resumes accepted: ', "
+        "many printString, ', count ', count class name\n",
+        8, "==> 'SCHED-3 rounds 1500, two resumes accepted: 0, "
+        "count SmallInteger'",
+        "SCHED-3 one resume of a suspended process at a time");
 }
 
 int

@@ -518,7 +518,13 @@ the shape of each is the argument for it:
   terminating each other must not both be let go on to do it. A stopper used to
   release in an `ensure:` entered several bytecodes after the detach, and
   one terminated in between left its victim held for good, or let go of
-  it without resuming it.
+  it without resuming it. `resume` (primitive 87) decides "parked and
+  free" and resumes in one act under the held table's lock, the lock a
+  hold is taken under (Bugs07 SCHED-3): its five reads used to be made
+  with no lock, so two workers resuming one suspended process both found
+  it free, and both queued it -- or, when it outranked them, both
+  nominated it and two threads ran one context. Now the second waits for
+  the first and finds the process on its ready list or nominated.
 
 `terminate` then runs the process's `ensure:` blocks, innermost first, *on
 the terminating process*, the way `Exception>>unwindTo:` and Squeak's
