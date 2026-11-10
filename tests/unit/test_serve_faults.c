@@ -3368,6 +3368,49 @@ bugs7b_sched(void)
 }
 
 /*
+ *  As bugs7_probe, on an image other than the st2026 one: the weak
+ *  dictionaries are the pharo-weak profile's.
+ */
+static void
+bugs7c_probe_on(const char *image, const char *name, const char *text,
+                unsigned workers, const char *wanted, const char *what)
+{
+    static char out[65536];
+    const char *probe = fixture(name);
+    char        batch[1024];
+    char        command[2048];
+    int         status;
+
+    ++st_test_checks;
+    if (write_file(probe, text) != 0) {
+        ++st_test_failures;
+        printf("  FAIL %s: could not write the probe\n", what);
+        return;
+    }
+    snprintf(batch, sizeof batch,
+             "Compiler evaluate: (FileStream oldFileNamed: '%s') "
+             "contentsOfEntireFile\n3 + 4\n", probe);
+    if (write_file(BATCH, batch) != 0) {
+        ++st_test_failures;
+        printf("  FAIL %s: could not write the batch\n", what);
+        unlink(probe);
+        return;
+    }
+    snprintf(command, sizeof command,
+             ST_TEST_TIMEOUT " -k 2 " SERVE_SECONDS " %s -serve %s -workers %u"
+             " \"$(cat %s)\" 2>&1", st2026, image, workers, BATCH);
+    status = run(command, out, sizeof out);
+    if (status < 0) {
+        ++st_test_failures;
+        printf("  FAIL %s: could not run the server\n", what);
+    }  else  {
+        expect(out, wanted, what);
+        expect(out, "3 + 4 ==> 7", what);
+    }
+    unlink(probe);
+}
+
+/*
  *  Bugs07, round 3: the scheduler group's findings -- Delay's lock across
  *  a snapshot (SCHED-6), the weak dictionaries' mourning (FIXES-2,
  *  FIXES-4) and pharo-time's timeout (KERNB-5).
@@ -3381,6 +3424,7 @@ bugs7c_sched(void)
     char        changes[1024];
     char        command[2048];
     const char *snap = fixture("bugs7c-sched6-snap");
+    const char *wimg = fixture("bugs7c-serve-weak.im");
     int         status;
 
     /*
@@ -3453,6 +3497,111 @@ bugs7c_sched(void)
     unlink(changes);
     snprintf(changes, sizeof changes, "%s.im.changes", snap);
     unlink(changes);
+
+    /*
+     *  The weak dictionaries are the pharo-weak profile's, so that image
+     *  is built here for the checks that follow.
+     */
+    snprintf(command, sizeof command,
+             "%s -bootstrap -profile profiles/pharo-weak.profile "
+             "-startup \"$(cat %s)\" -o %s 2>&1", st2026, STARTUP, wimg);
+    status = run(command, out, sizeof out);
+    ++st_test_checks;
+    if (status != 0) {
+        ++st_test_failures;
+        printf("  FAIL FIXES-4: cannot build the weak image (exit %d)\n",
+               status);
+        return;
+    }
+
+    /*
+     *  FIXES-4: the Finalizer removed a mourned entry from the live table
+     *  -- a nil, then the rest of the cluster swapped back one entry at a
+     *  time -- and an owner probing on another worker for a key further
+     *  down the cluster stopped at the nil and answered absent, although
+     *  the key was held the whole time.  The audit's probe: every key
+     *  hashes alike, so all five hundred are one cluster; four hundred
+     *  die each round, and a reader asks for the hundred that live until
+     *  the size says the dead are mourned.  Before: misses in the
+     *  thousands (20683 of 88600), never 0.  And the same with a
+     *  WeakIdentityKeyDictionary, whose keys are made to fall in the
+     *  first 64 slots of a table that does not grow: it had no lock at
+     *  all, and missed 12880 of 58900.
+     */
+    bugs7c_probe_on(wimg, "bugs7c-fixes4-read.st",
+        "| cls d keep fin misses reads |\n"
+        "cls := Object subclass: #Bugs7cHKey instanceVariableNames: '' "
+        "classVariableNames: '' poolDictionaries: '' category: 'Probe'.\n"
+        "cls compile: 'hash ^1'.\n"
+        "misses := 0. reads := 0.\n"
+        "d := WeakKeyDictionary new.\n"
+        "keep := (1 to: 100) collect: [:i | cls new].\n"
+        "1 to: 20 do: [:r |\n"
+        "\t1 to: 400 do: [:j | d at: cls new put: 2].\n"
+        "\tkeep do: [:k | d at: k put: 1].\n"
+        "\tfin := Semaphore new.\n"
+        "\t[[d size > 100] whileTrue: [\n"
+        "\t\tkeep do: [:k | reads := reads + 1. (d includesKey: k) "
+        "ifFalse: [misses := misses + 1]]].\n"
+        "\t fin signal] fork.\n"
+        "\tSmalltalk garbageCollect.\n"
+        "\tfin wait].\n"
+        "^'FIXES-4 misses: ', misses printString, ' size: ', "
+        "d size printString\n",
+        4, "==> 'FIXES-4 misses: 0 size: 100'",
+        "FIXES-4 a live key is never absent while a neighbour is mourned");
+    bugs7c_probe_on(wimg, "bugs7c-fixes4-identity.st",
+        "| d cap keep fin misses mk |\n"
+        "misses := 0.\n"
+        "d := WeakIdentityKeyDictionary new: 3000. cap := d capacity.\n"
+        "mk := [ | o | [o := Object new. o identityHash \\\\ cap < 64] "
+        "whileFalse. o].\n"
+        "keep := (1 to: 100) collect: [:i | mk value].\n"
+        "1 to: 10 do: [:r |\n"
+        "\t1 to: 300 do: [:j | d at: mk value put: 2].\n"
+        "\tkeep do: [:k | d at: k put: 1].\n"
+        "\tfin := Semaphore new.\n"
+        "\t[[d size > 100] whileTrue: [\n"
+        "\t\tkeep do: [:k | (d at: k ifAbsent: [nil]) isNil "
+        "ifTrue: [misses := misses + 1]]].\n"
+        "\t fin signal] fork.\n"
+        "\tSmalltalk garbageCollect.\n"
+        "\tfin wait].\n"
+        "^'FIXES-4 identity misses: ', misses printString, ' size: ', "
+        "d size printString, ' same table size: ', "
+        "(d capacity = cap) printString\n",
+        4, "==> 'FIXES-4 identity misses: 0 size: 100 same table size: true'",
+        "FIXES-4 the same for a WeakIdentityKeyDictionary");
+
+    /*
+     *  FIXES-2: each mourn took its entry out under the lock every weak
+     *  dictionary's writers share, walking the rest of its cluster with
+     *  Pharo's fixCollisionsFrom:, which probes every entry again from
+     *  its home.  Thirty thousand dead keys in a table near its growth
+     *  threshold made clusters thousands long; every removal cost
+     *  seconds, and the owner's next at:put: -- the one that would have
+     *  grown the table -- waited on the lock for all of them.  The
+     *  audit's program: three hundred rounds of three hundred keys that
+     *  die, with three thousand that live read back after each.  Before:
+     *  five seconds on one worker, and on eight a stall the server's
+     *  time limit kills.  Now a mourn marks its entry and each drain
+     *  rebuilds the table once.
+     */
+    bugs7c_probe_on(wimg, "bugs7c-fixes2-perf.st",
+        "| d keep fin |\n"
+        "d := WeakKeyDictionary new.\n"
+        "keep := (1 to: 3000) collect: [:i | Object new].\n"
+        "keep do: [:k | d at: k put: 1].\n"
+        "fin := Semaphore new.\n"
+        "[1 to: 300 do: [:round |\n"
+        "\t1 to: 300 do: [:j | d at: Object new put: 2].\n"
+        "\tkeep do: [:k | d includesKey: k]]. fin signal] fork.\n"
+        "fin wait.\n"
+        "^'FIXES-2 finished, all kept: ', "
+        "(keep allSatisfy: [:k | (d at: k ifAbsent: [0]) = 1]) printString\n",
+        8, "==> 'FIXES-2 finished, all kept: true'",
+        "FIXES-2 an owner's writes do not wait out the mourning");
+    unlink(wimg);
 }
 
 /*

@@ -50,11 +50,19 @@ reason it took an audit to notice this was missing.  They are `#type :
 correct the instant the sweep ends, with nobody to tell.  An ephemeron is
 the case where nilling a slot is not enough, because the object that has to
 change is not the one holding the reference.
+
+And an object a #mourn changes can ask to be told when the drain is over,
+which is how a WeakKeyDictionary takes out every entry one collection
+killed in one pass instead of one at a time (afterMourning:, Bugs07
+FIXES-2).  Each removal on its own walked the rest of its cluster with the
+owner's writes waiting on the lock; thirty thousand of them at once, in a
+table whose clusters had grown thousands long, stalled the owner for
+minutes.
 "
 Class {
 	#name : 'Finalizer',
 	#superclass : 'Object',
-	#classVars : [ 'MournSemaphore', 'RestartLock', 'Worker' ],
+	#classVars : [ 'FinishLock', 'MournSemaphore', 'RestartLock', 'Unfinished', 'Worker' ],
 	#category : 'Kernel-Finalization'
 }
 
@@ -74,6 +82,8 @@ Finalizer class >> initialize [
 	"Called by the bootstrap, and safe to call again from a Workspace."
 	MournSemaphore isNil ifTrue: [MournSemaphore := Semaphore new].
 	RestartLock isNil ifTrue: [RestartLock := Mutex new].
+	FinishLock isNil ifTrue: [FinishLock := Mutex new].
+	Unfinished isNil ifTrue: [Unfinished := IdentitySet new].
 	self restart
 ]
 
@@ -159,7 +169,45 @@ Finalizer class >> drainSignalling: aSemaphoreOrNil [
 					'st2026: ', e class name, ' mourning ',
 					each class name, ': ',
 					(e messageText ifNil: ['<no message>'])]].
+	self finishMourning.
 	^count
+]
+
+{ #category : 'mourning' }
+Finalizer class >> afterMourning: anObject [
+	"Send anObject #finishMourning once the drain that is running has sent
+	 its last #mourn -- once, however many of its #mourns ask.
+
+	 For a #mourn whose work is cheaper done for the whole of a collection
+	 at once: a weak dictionary marks each dead entry as it is mourned and
+	 rebuilds its table once, when told, rather than closing a gap in the
+	 table per entry (Bugs07 FIXES-2).  Any drain that ends after this
+	 sends it -- this one, or another running beside it -- so nothing
+	 asked for is left waiting for a collection that may never come."
+	FinishLock critical: [Unfinished add: anObject]
+]
+
+{ #category : 'private' }
+Finalizer class >> finishMourning [
+	"Send #finishMourning to everything afterMourning: was given since the
+	 last time.  The set is taken and replaced under the lock and sent to
+	 outside it, so that a #mourn on another drain is never kept waiting
+	 by a rebuild; an error in one is said as an error in a #mourn is,
+	 and the rest are still told."
+	| pending |
+	FinishLock critical: [
+		Unfinished isEmpty ifFalse: [
+			pending := Unfinished.
+			Unfinished := IdentitySet new]].
+	pending isNil ifTrue: [^self].
+	pending do: [:each |
+		[each finishMourning]
+			on: Error
+			do: [:e |
+				self reportOnStandardError:
+					'st2026: ', e class name, ' finishing the mourning of ',
+					each class name, ': ',
+					(e messageText ifNil: ['<no message>'])]]
 ]
 
 { #category : 'private' }

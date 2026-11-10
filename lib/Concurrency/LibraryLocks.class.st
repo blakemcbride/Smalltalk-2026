@@ -207,7 +207,8 @@ LibraryLocks class >> holdingClasses: aBlock [
 LibraryLocks class >> holdingMourning: aBlock [
 	"Evaluate aBlock holding the lock on every weak-keyed dictionary's
 	 table: what WeakKeyDictionary>>at:put: and removeKey:ifAbsent: take,
-	 and so what WeakKeyAssociation>>mourn takes through the latter.
+	 and what the Finalizer takes through removeMourned: and
+	 finishMourning.
 
 	 The second writer to a WeakKeyDictionary is the system.  When a key
 	 dies the collector queues the association and the finalization
@@ -222,8 +223,24 @@ LibraryLocks class >> holdingMourning: aBlock [
 	 unsynchronised collections to their owner, but an owner cannot lock
 	 against a process it cannot see, so the dictionary's writers and the
 	 mourning take one lock here.  A Monitor, because grow re-adds through
-	 the same methods.  Readers are not held: a probe sees the old array
-	 or the new one, both consistent, as with every other lock here."
+	 the same methods.  The same for WeakIdentityKeyDictionary, which is
+	 not a WeakKeyDictionary and had no lock at all.
+
+	 Readers are not held, and the reason is not the one the other locks
+	 here give.  Mourning used to edit the table in place -- a nil, then
+	 the rest of the cluster swapped back one entry at a time -- and a
+	 reader probing for a live key further down stopped at the nil and
+	 answered absent (Bugs07 FIXES-4).  The Finalizer's removal now builds
+	 a new table and puts it in place with one store, and the readers in
+	 lib/Collections-Weak-Compat read the table once, so a reader sees one
+	 whole table or the other.
+
+	 One lock for every weak dictionary means nothing slow is done under
+	 it.  A mourn holds it for one store, the mark on its entry, and the
+	 marked entries are taken out of each table once per drain of the
+	 Finalizer, in one rebuild; removing them one at a time, each walking
+	 its cluster, stalled the owner's writes for minutes on eight workers
+	 (Bugs07 FIXES-2)."
 	^(Mourning isNil or: [Processor activeProcess isNil])
 		ifTrue: [aBlock value]
 		ifFalse: [Mourning critical: aBlock]

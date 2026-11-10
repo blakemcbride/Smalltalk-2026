@@ -712,8 +712,12 @@
  *  return: and resume:, the three method returns and returnFromMethod:,
  *  runSimulated:contextAtEachStep:); MethodContext>>blockReturnTop;
  *  BlockClosure>>hasMethodReturn; and six in InstructionPrinter.
+ *
+ *  3437 -> 3439 with Bugs07 FIXES-2: Finalizer class>>afterMourning: and
+ *  finishMourning, which let a weak dictionary take out every entry one
+ *  drain mourned in one rebuild of its table.
  */
-#define LIB_METHODS             3437
+#define LIB_METHODS             3439
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -3169,8 +3173,13 @@ test_browsing(void)
      *
      *  3043704 -> 3056902 with Bugs07 GUI-5: the Debugger's simulator steps
      *  through closures.
+     *
+     *  3056902 -> 3059719 with Bugs07 FIXES-4 and FIXES-2: LibraryLocks
+     *  says why the weak dictionaries' readers hold no lock and why nothing
+     *  slow is done under theirs, and the Finalizer tells a weak dictionary
+     *  when a drain is over.
      */
-    check_integer("(SourceFiles at: 1) contents size", 3056902);
+    check_integer("(SourceFiles at: 1) contents size", 3059719);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
