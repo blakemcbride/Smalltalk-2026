@@ -92,8 +92,12 @@ Process >> primRelease: resumeIt [
 	"Let go of me, having stopped me with primDetach:; and first put me
 	 back to work if resumeIt is true -- resumed and THEN released, so
 	 that there is no instant at which a stray resume could take me.
-	 With false, harmless when I am not held.  Sent once per stop, by
-	 stopTakingFromSemaphore:thenDo:."
+	 Only the process holding me lets go (Bugs07 SCHED-2): with false,
+	 from anyone else or when I am not held, nothing happens; with true
+	 from anyone else, the primitive fails and I stay as I am.  It used
+	 to let anyone go of me, and a stopper's late second release took
+	 away the hold the next stopper had just taken.  Sent once per stop,
+	 by detach:thenDo: -- or by undoStop: in its place."
 	<primitive: 235>
 	^self primitiveFailed
 ]

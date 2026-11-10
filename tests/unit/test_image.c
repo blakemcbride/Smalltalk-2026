@@ -3029,8 +3029,11 @@ test_browsing(void)
      *  2981270 -> 2989806 with Bugs07 NET-1: JSONParser's per-document
      *  allowance of number arithmetic, and RestDispatcher sharing it across
      *  the fields of a form.
+     *
+     *  2989806 -> 2990100 with Bugs07 SCHED-2: primRelease:'s comment
+     *  says only the holder lets go.
      */
-    check_integer("(SourceFiles at: 1) contents size", 2989806);
+    check_integer("(SourceFiles at: 1) contents size", 2990100);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.

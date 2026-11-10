@@ -3167,6 +3167,85 @@ bugs7_sched(void)
         8, "==> 'SCHED-3 rounds 1500, two resumes accepted: 0, "
         "count SmallInteger'",
         "SCHED-3 one resume of a suspended process at a time");
+
+    /*
+     *  SCHED-2: only the holder lets go.  Primitive 235 released whatever
+     *  it was given, whoever sent it, so a stopper's late second release
+     *  took away the hold the next stopper had just taken; that one's
+     *  own release then failed and left the victim parked by nobody in
+     *  the middle of its critical: section, holding the Mutex.  Here a
+     *  second process tries to let go of -- and then to resume -- a
+     *  process the first holds: neither may touch the hold, so its own
+     *  detach still answers 6, and the holder's release resumes the
+     *  process.  The old binary let the second process take the hold
+     *  away and then take its own (0), and the holder's release failed.
+     */
+    bugs7_probe("bugs7-sched2-holder.st",
+        "| x b r done fin |\n"
+        "fin := Semaphore new.\n"
+        "[done := false.\n"
+        " x := [done := true] newProcess.\n"
+        " r := Array new: 6.\n"
+        " r at: 1 put: (x primDetach: false).\n"
+        " b := [r at: 2 put: ([x primRelease: false. #released] "
+        "on: Error do: [:e | #failed]).\n"
+        "\tr at: 3 put: ([x primRelease: true. #resumed] "
+        "on: Error do: [:e | #failed]).\n"
+        "\tr at: 4 put: (x primDetach: false).\n"
+        "\t(r at: 4) = 0 ifTrue: [x primRelease: false]] forkAt: 5.\n"
+        " (Delay forMilliseconds: 50) wait.\n"
+        " r at: 5 put: ([x primRelease: true. #resumed] "
+        "on: Error do: [:e | #failed]).\n"
+        " (Delay forMilliseconds: 50) wait.\n"
+        " r at: 6 put: done.\n"
+        " fin signal] forkAt: 6.\n"
+        "fin wait.\n"
+        "^r\n",
+        1, "==> (0 released failed 6 resumed true )",
+        "SCHED-2 only the holder lets go");
+
+    /*
+     *  And the audit's own case: two processes terminating one that is
+     *  running inside a Mutex section, a thousand times on eight workers.
+     *  Both terminates return, the victim is gone, and the Mutex is free.
+     *  The old binary raised `a primitive has failed' out of one of the
+     *  terminates in some 44% of rounds and lost the Mutex in 28%.  (On
+     *  two workers this probe proves nothing: the main loop spins on one
+     *  and the victim never lets the terminators onto the other.)
+     */
+    bugs7_probe("bugs7-sched2-twoterm.st",
+        "| p m t1 t2 go fin spin rounds failed alive lost msg1 msg2 |\n"
+        "fin := Semaphore new. rounds := 0. failed := 0. alive := 0. "
+        "lost := 0.\n"
+        "spin := [:ms | | end | end := Time millisecondClockValue + ms. "
+        "[Time millisecondClockValue < end] whileTrue: []].\n"
+        "[1 to: 1000 do: [:i | | ok |\n"
+        "\tm := Mutex new.\n"
+        "\tp := [[true] whileTrue: [m critical: "
+        "[1 to: 200 do: [:k | k * k]]]] forkAt: 4.\n"
+        "\tspin value: 1.\n"
+        "\tgo := false. msg1 := msg2 := nil.\n"
+        "\tt1 := [[go] whileFalse: []. msg1 := [p terminate. nil] "
+        "on: Error do: [:e | e return: e messageText]] forkAt: 4.\n"
+        "\tt2 := [[go] whileFalse: []. msg2 := [p terminate. nil] "
+        "on: Error do: [:e | e return: e messageText]] forkAt: 4.\n"
+        "\tspin value: 1.\n"
+        "\tgo := true.\n"
+        "\tspin value: 5.\n"
+        "\t(msg1 notNil or: [msg2 notNil]) ifTrue: [failed := failed + 1].\n"
+        "\tp suspendedContext notNil ifTrue: [alive := alive + 1].\n"
+        "\tok := false. [m critical: [ok := true]] forkAt: 4. "
+        "spin value: 5.\n"
+        "\tok ifFalse: [lost := lost + 1].\n"
+        "\trounds := rounds + 1].\n"
+        " fin signal] forkAt: 6.\n"
+        "fin wait.\n"
+        "^'SCHED-2 rounds ', rounds printString, ', a terminate raised: ', "
+        "failed printString, ', victim alive: ', alive printString, "
+        "', Mutex lost: ', lost printString\n",
+        8, "==> 'SCHED-2 rounds 1000, a terminate raised: 0, "
+        "victim alive: 0, Mutex lost: 0'",
+        "SCHED-2 two terminators of a process inside a Mutex section");
 }
 
 int

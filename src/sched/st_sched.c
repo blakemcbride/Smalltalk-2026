@@ -848,18 +848,6 @@ held_slot(st_oop process)
     return -1;
 }
 
-static int
-is_held(st_oop process)
-{
-    int     found;
-
-    held_lock_init();
-    ST_mutex_lock(&held_lock);
-    found = held_slot(process) >= 0;
-    ST_mutex_unlock(&held_lock);
-    return found;
-}
-
 /*
  *  Take hold of the process for the holder.  Answers 0 when it is
  *  already held -- by anyone, the holder included -- or the table is
@@ -2890,7 +2878,7 @@ SCHED_primitive_wait(void)
  *  nothing takes them the other way round.
  */
 static int
-parked_and_free(st_oop process)
+parked(st_oop process)
 {
     st_oop  context = OM_fetch_pointer(ST_PROCESS_SUSPENDED_CONTEXT, process);
 
@@ -2902,9 +2890,15 @@ parked_and_free(st_oop process)
         return 0;               /*  already waiting somewhere  */
     if (process == SCHED_active_process())
         return 0;               /*  running: here  */
-    if (in_anyones_hands(process) || is_named(process))
-        return 0;               /*  running, or being stopped: elsewhere  */
+    if (in_anyones_hands(process))
+        return 0;               /*  running, or about to: elsewhere  */
     return 1;
+}
+
+static int
+parked_and_free(st_oop process)
+{
+    return parked(process) && !is_named(process);   /*  named: being stopped  */
 }
 
 int
@@ -2945,45 +2939,66 @@ SCHED_release_process(st_oop process)
  *  two it is on its ready list, or nominated, and primitive 87 refuses
  *  both.
  *
- *  With false, a receiver that is not held is left alone and the
- *  primitive answers: the Smalltalk side releases in an ensure: as well
- *  as on each path, and the second release must be harmless.  With
- *  true, a receiver that is not held, or cannot be resumed -- no
- *  context, on a list -- is a fault, and the primitive fails; the hold
- *  is given up first either way, since a process nobody can release is
- *  one nobody can resume or stop again.
+ *  Only the holder lets go (Bugs07 SCHED-2).  Any process could, and a
+ *  stopper's late second release -- terminate released once in the
+ *  section it rewrote and again in an ensure: -- took away the hold the
+ *  NEXT stopper had just taken.  That one's own release then found
+ *  nothing held and failed, and the victim, parked by the detach, was
+ *  on no list and in nobody's hands: suspended for good in the middle of
+ *  a critical: section, holding its Mutex.  Two terminators of one
+ *  process lost the Mutex in more than a quarter of the rounds.  So a
+ *  release with false from anyone but the holder -- a second release, or
+ *  a stray one -- is a no-op, as one of a process nobody holds always
+ *  was; and with true it fails, touching nothing, since the process is
+ *  not the caller's to resume.
+ *
+ *  The holder's release with true resumes the process if it is parked,
+ *  and its being NAMED is not a reason to refuse: nothing can take a
+ *  held process anywhere, and a namer that has not yet found it parked
+ *  takes it off its ready list as it would any other.  The test of the
+ *  name is what made the second mechanism of SCHED-2: a waiting
+ *  stopper's every retry named the process for an instant, and a release
+ *  that met the name failed.  The retries no longer name a held process
+ *  (primitive 231 takes the hold before it names), but a release that
+ *  can be failed by somebody else's flicker is wrong whatever flickers.
+ *  If the process is not parked at all -- terminated, already on a list,
+ *  in somebody's hands -- there is nothing to resume; the hold is given
+ *  up and the primitive fails, which leaves no process both unheld and
+ *  parked by nobody.  The decision and the resume are made under
+ *  held_lock, as primitive 87's are.
  */
 int
 SCHED_primitive_release(void)
 {
     st_oop  resume  = ST_stack_value(0);
     st_oop  process = ST_stack_value(1);
-    st_oop  context;
+    int     slot;
+    int     resumed = 0;
 
     if (!OM_is_object(process) || !OM_pointer_bit(process)
      || OM_fetch_word_length(process) <= ST_PROCESS_MY_LIST)
         return 0;
     if (resume != ST_TRUE && resume != ST_FALSE)
         return 0;
-    if (resume == ST_FALSE) {
-        unhold_process(process);
+    held_lock_init();
+    ST_mutex_lock(&held_lock);
+    slot = held_slot(process);
+    if (slot < 0
+     || (st_oop) ST_load_relaxed(&held_by[slot]) != SCHED_active_process()) {
+        ST_mutex_unlock(&held_lock);
+        if (resume == ST_TRUE)
+            return 0;           /*  not the caller's to resume  */
         ST_pop_n(1);
-        return 1;
+        return 1;               /*  not the caller's to let go: no-op  */
     }
-    if (!is_held(process))
-        return 0;
-    context = OM_fetch_pointer(ST_PROCESS_SUSPENDED_CONTEXT, process);
-    if (!OM_is_object(context)
-     || (OM_fetch_class(context) != ST_CLASS_METHOD_CONTEXT
-      && OM_fetch_class(context) != ST_CLASS_BLOCK_CONTEXT)
-     || OM_is_present(OM_fetch_pointer(ST_PROCESS_MY_LIST, process))
-     || process == SCHED_active_process()
-     || in_anyones_hands(process) || is_named(process)) {
-        unhold_process(process);
-        return 0;
+    if (resume == ST_TRUE && parked(process)) {
+        SCHED_resume(process);
+        resumed = 1;
     }
-    SCHED_resume(process);
+    ST_mutex_unlock(&held_lock);
     unhold_process(process);
+    if (resume == ST_TRUE && !resumed)
+        return 0;               /*  nothing there to resume  */
     ST_pop_n(1);
     return 1;
 }

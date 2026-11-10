@@ -508,7 +508,14 @@ the shape of each is the argument for it:
   retries (Bugs6 SCHED-7). The hold is taken first, before the process is
   named, so a stopper that finds it held leaves no trace; a full table
   answers 6 too; and each entry counts the process it holds and its
-  holder, and is visited by the root walk. And the stopper cannot itself
+  holder, and is visited by the root walk. Only the holder lets go
+  (Bugs07 SCHED-2): a release with false from anyone else does nothing,
+  and one with true fails without touching the hold. Any process could,
+  and a stopper's late second release took away the hold the next stopper
+  had just taken; that stopper's own release then failed and left the
+  victim parked by nobody inside its section, holding its Mutex. Nor does
+  the holder's release refuse a process for being named: nothing can take
+  a held process anywhere. And the stopper cannot itself
   be stopped while it holds (Bugs07 SCHED-1): the detach and everything
   done with its answer run in `Process>>detach:thenDo:`, whose frame,
   once past the primitive, a `terminate` or `signalException:` of the
