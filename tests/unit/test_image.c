@@ -622,8 +622,12 @@
  *
  *  3335: Decompiler>>popIntoTemporaryVariable:, for the vector an inlined
  *  block makes (Bugs5 COMP-7's last three methods).
+ *
+ *  3335 -> 3341 with Bugs07 KERNB-2: SystemDictionary>>at:ifAbsentPut:,
+ *  checkGlobalName:, associationsDo:, do: and valuesDo:, and LibraryLocks
+ *  class>>readingGlobals:.
  */
-#define LIB_METHODS             3335
+#define LIB_METHODS             3341
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -2988,8 +2992,13 @@ test_browsing(void)
      *  2961001 -> 2961731 with the SCHED-7 addendum: criticalSectionFrom:stoppedAt:
      *  no longer takes an ensure: frame whose block has already run for a
      *  live section (found by the sanitizer runs).
+     *
+     *  2961731 -> 2967966 with Bugs07 KERNB-2: Smalltalk's look-ups under
+     *  the globals lock with the caller's block after it, the copy its
+     *  enumerations walk, and the reader that a grow inside a declaration
+     *  may re-enter.
      */
-    check_integer("(SourceFiles at: 1) contents size", 2961731);
+    check_integer("(SourceFiles at: 1) contents size", 2967966);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -11227,6 +11236,64 @@ test_bugs7_vm(void)
     }
 }
 
+/*
+ *  Bugs07, the library group: KERNB-2 (Smalltalk's blocks outside its
+ *  lock), FILES-1 (a refused COMMIT), NET-2 (a numeral of thousands of
+ *  digits) and NET-1 (JSON exponents).  What needs workers is in
+ *  tests/unit/test_serve_faults.c, bugs7_lib.
+ */
+static void
+test_bugs7_lib(void)
+{
+    test_dialect = ST_DIALECT_CLOSURES;
+
+    /*
+     *  KERNB-2: every block handed to Smalltalk runs after the globals
+     *  lock is given back.  Each of these touched Smalltalk again from
+     *  inside the lock, which is a Mutex and refuses re-entry: `Mutex is
+     *  already held by this process', and at:ifAbsentPut: -- the idiom
+     *  for a lazily made global -- every time.  The deadlock against a
+     *  compile needs two workers and is in test_serve_faults.
+     */
+    check_string("| r | r := OrderedCollection new. "
+                 "r add: (Smalltalk at: #Bugs7KbA ifAbsentPut: [4]). "
+                 "r add: (Smalltalk at: #Bugs7KbA ifAbsentPut: [5]). "
+                 "r add: (Smalltalk at: #Bugs7KbNoB ifAbsent: [Smalltalk at: #Bugs7KbB put: 6]). "
+                 "r add: (Smalltalk at: #Bugs7KbNoC ifAbsent: [Smalltalk includesKey: #Bugs7KbB]). "
+                 "r add: (Smalltalk at: #Bugs7KbNoD ifAbsent: [Compiler evaluate: '3 + 4']). "
+                 "^r printString",
+                 "an OrderedCollection(4 4 6 true 7 )");
+    check_string("| r | r := OrderedCollection new. "
+                 "r add: (Smalltalk removeKey: #Bugs7KbNoE ifAbsent: [Smalltalk at: #Bugs7KbA]). "
+                 "r add: (Smalltalk associationAt: #Bugs7KbNoF ifAbsent: [Smalltalk associationAt: #Bugs7KbB]) value. "
+                 "r add: (Smalltalk keyAtValue: #Bugs7KbNoValue ifAbsent: [Smalltalk at: #Bugs7KbB]). "
+                 "^r printString",
+                 "an OrderedCollection(4 6 6 )");
+    /*  A handler runs on top of the signal: the error from a missing key
+     *  and from a name that is not one are raised with the lock free.  */
+    check_string("^{[Smalltalk at: #Bugs7KbNoG] on: Error do: [:e | e return: (Smalltalk at: #Bugs7KbA)]. "
+                 "[Smalltalk at: nil put: 3] on: Error do: [:e | e return: (Smalltalk at: #Bugs7KbH put: 8)]. "
+                 "[Smalltalk at: 42 ifAbsentPut: [9]] on: Error do: [:e | e return: #refused]} printString",
+                 "(4 8 refused )");
+    /*  Enumeration walks a copy taken under the lock, so its block may
+     *  declare; and a declaration that grows the table, whose grow walks
+     *  the table from inside the lock, still works.  */
+    check_string("| n before | before := Smalltalk size. "
+                 "Smalltalk keysAndValuesDo: [:k :v | k == #Bugs7KbA ifTrue: [Smalltalk at: #Bugs7KbI put: v]]. "
+                 "1 to: 600 do: [:i | Smalltalk at: ('Bugs7KbGrow', i printString) asSymbol put: i]. "
+                 "n := 0. Smalltalk do: [:v | n := n + 1]. "
+                 "^{Smalltalk at: #Bugs7KbI. Smalltalk size - before. n = Smalltalk size. "
+                 "Smalltalk keys size = Smalltalk size. "
+                 "(1 to: 600) inject: 0 into: [:a :i | a + (Smalltalk at: ('Bugs7KbGrow', i printString) asSymbol)]} printString",
+                 "(4 601 true true 180300 )");
+    check_string("1 to: 600 do: [:i | Smalltalk removeKey: ('Bugs7KbGrow', i printString) asSymbol]. "
+                 "#(#Bugs7KbA #Bugs7KbB #Bugs7KbH #Bugs7KbI) do: [:k | Smalltalk removeKey: k]. "
+                 "^(Smalltalk includesKey: #Bugs7KbGrow1) printString",
+                 "false");
+
+    test_dialect = ST_DIALECT_BLUE_BOOK;
+}
+
 int
 main(void)
 {
@@ -11368,6 +11435,7 @@ main(void)
     test_bugs6_low_vm_kerna();
     test_bugs6_low_kernb_files();
     test_bugs7_vm();
+    test_bugs7_lib();
 
     OM_shutdown();
     return ST_TEST_END();

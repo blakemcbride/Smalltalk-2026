@@ -24,24 +24,41 @@ SystemDictionary >> at: aKey put: anObject [
 	 once both found the same empty slot: eight workers declaring 200
 	 globals each lost 245 of the 1,600.  The body is lockedAt:put:, which
 	 is 1983's here and Pharo's in lib/Collections-Compat, where Dictionary
-	 is Pharo's and the 1983 insides mean nothing."
+	 is Pharo's and the 1983 insides mean nothing.
+
+	 The name is checked BEFORE the lock is taken (Bugs07 KERNB-2).  An
+	 error raised inside it runs its handler inside it -- a handler runs
+	 on top of the signal, before anything unwinds -- so a handler that
+	 so much as declared another global raised `Mutex is already held',
+	 and in the desktop an unhandled one stopped the faulting process
+	 with the lock still held, and the next look-up anywhere in the image
+	 waited for it for ever."
+	self checkGlobalName: aKey.
 	^LibraryLocks holdingGlobals: [self lockedAt: aKey put: anObject]
+]
+
+{ #category : '*System' }
+SystemDictionary >> checkGlobalName: aKey [
+	"Refuse what cannot be a global's name, with no lock held; see
+	 at:put:.
+
+	 A global's name is a Symbol.  nil was taken, and turned up in
+	 Smalltalk keys (Bugs6 KERNB-12).  A non-empty String is let through
+	 as 1983 let it through: it is equal to the Symbol it spells and
+	 hashes with it, so the binding is the one a method compiled against
+	 the name finds."
+	aKey isSymbol ifTrue: [^self].
+	(aKey isString and: [aKey size > 0]) ifTrue: [^self].
+	^self error: 'a global''s name is a Symbol, not ', aKey printString
 ]
 
 { #category : '*System' }
 SystemDictionary >> lockedAt: aKey put: anObject [
 	"1983's at:put:, to be run with the globals lock held: a name found in
 	 Undeclared is adopted rather than duplicated, so a method compiled
-	 against the forward reference sees the value.
-
-	 A global's name is a Symbol.  nil was taken, and turned up in
-	 Smalltalk keys (Bugs6 KERNB-12); a String is made the Symbol it
-	 spells, so the key is the one a method compiled against the name
-	 holds."
+	 against the forward reference sees the value.  The name was checked
+	 by checkGlobalName: before the lock was taken."
 	| index element |
-	aKey isSymbol ifFalse: [
-		(aKey isString and: [aKey size > 0])
-			ifFalse: [^self error: 'a global''s name is a Symbol, not ', aKey printString]].
 	index := self findKeyOrNil: aKey.
 	element := self basicAt: index.
 	element == nil
@@ -74,8 +91,13 @@ SystemDictionary >> removeKey: key ifAbsent: aBlock [
 	 the same name that made a new binding (Bugs6 KERNB-11).  Now
 	 lockedAt:put: adopts the binding from Undeclared again, and the
 	 method sees the new value.  Answers key -> the old value, as 1983
-	 answered the Association."
-	^LibraryLocks holdingGlobals: [ | binding old |
+	 answered the Association.
+
+	 aBlock runs after the lock is given back, not inside it (Bugs07
+	 KERNB-2); see at:ifAbsent:."
+	| absent removed |
+	absent := false.
+	removed := LibraryLocks holdingGlobals: [ | binding old |
 		"The Association first, by Dictionary's own associationAt:ifAbsent:
 		 (super: the one on this class takes the lock this block already
 		 holds), which both Dictionaries answer alike; what
@@ -83,13 +105,15 @@ SystemDictionary >> removeKey: key ifAbsent: aBlock [
 		 under profiles/pharo-collections."
 		binding := super associationAt: key ifAbsent: [nil].
 		binding isNil
-			ifTrue: [aBlock value]
+			ifTrue: [absent := true. nil]
 			ifFalse: [
 				super removeKey: key ifAbsent: [nil].
 				old := binding value.
 				binding value: nil.
 				Undeclared add: binding.
-				key -> old]]
+				key -> old]].
+	absent ifTrue: [^aBlock value].
+	^removed
 ]
 
 { #category : '*System' }
@@ -140,20 +164,108 @@ SystemDictionary >> at: key ifAbsent: aBlock [
 	 globals answered nil for a key that was there.  Globals compiled into
 	 methods are bindings and never come through here, so the lock costs
 	 the tools and the tests, and buys every reader a table that is not
-	 being replaced under it."
-	^LibraryLocks holdingGlobals: [super at: key ifAbsent: aBlock]
+	 being replaced under it.
+
+	 The LOOK-UP is under the lock; aBlock is not (Bugs07 KERNB-2).  It
+	 was handed to Dictionary's at:ifAbsent: inside the lock, which ran
+	 the caller's code with the lock held, and two things follow from
+	 that.  The lock is a Mutex and refuses re-entry, so a block that
+	 touched Smalltalk at all raised `Mutex is already held by this
+	 process' -- `Smalltalk at: #X ifAbsentPut: [...]', the standard
+	 idiom for a lazily made global, raised every time.  And the order of
+	 the two system locks is Symbols -> Globals (a compile holds the
+	 Symbol lock and reads Smalltalk inside it), so a block that interned
+	 a Symbol took them the other way round: one worker doing that while
+	 another compiled anything stopped both, and with them every later
+	 compile and intern in the image.  Every method on this class that
+	 takes a caller's block does what this one does: the table under the
+	 lock, the block after it.  readingGlobals: is the lock unless this
+	 process holds it already, which it does when Dictionary's own grow
+	 sends associationsDo: from inside a declaration."
+	| value absent |
+	absent := false.
+	value := LibraryLocks readingGlobals: [
+		super at: key ifAbsent: [absent := true. nil]].
+	absent ifTrue: [^aBlock value].
+	^value
 ]
 
 { #category : '*System' }
 SystemDictionary >> associationAt: key ifAbsent: aBlock [
-	"Under the globals lock; see at:ifAbsent:."
-	^LibraryLocks holdingGlobals: [super associationAt: key ifAbsent: aBlock]
+	"Under the globals lock, and aBlock after it; see at:ifAbsent:."
+	| binding |
+	binding := LibraryLocks readingGlobals: [
+		super associationAt: key ifAbsent: [nil]].
+	binding isNil ifTrue: [^aBlock value].
+	^binding
+]
+
+{ #category : '*System' }
+SystemDictionary >> at: key ifAbsentPut: aBlock [
+	"The value at key, declaring it as aBlock's value first if there is
+	 none.
+
+	 Dictionary's is `self at: key ifAbsent: [self at: key put: aBlock
+	 value]', which on Smalltalk was a declaration inside the look-up's
+	 lock and raised every time (Bugs07 KERNB-2).  aBlock runs with no
+	 lock held, for the reasons at:ifAbsent: gives; the look-up before it
+	 and the declaration after it are each under the lock, and the second
+	 one looks again, so that when two processes both find the name
+	 missing and both make a value, the first declaration stands and
+	 both answer it -- the second value is dropped rather than replacing
+	 one the first process has already handed out."
+	| value absent made |
+	self checkGlobalName: key.
+	absent := false.
+	value := LibraryLocks readingGlobals: [
+		super at: key ifAbsent: [absent := true. nil]].
+	absent ifFalse: [^value].
+	made := aBlock value.
+	^LibraryLocks holdingGlobals: [
+		super at: key ifAbsent: [self lockedAt: key put: made]]
 ]
 
 { #category : '*System' }
 SystemDictionary >> includesKey: key [
 	"Under the globals lock; see at:ifAbsent:."
-	^LibraryLocks holdingGlobals: [super includesKey: key]
+	^LibraryLocks readingGlobals: [super includesKey: key]
+]
+
+{ #category : '*System' }
+SystemDictionary >> associationsDo: aBlock [
+	"Evaluate aBlock with each of my Associations: the ones there when
+	 this began, taken under the globals lock, and the block run on them
+	 after it is given back (Bugs07 KERNB-2).
+
+	 Walking the table itself is torn by the same grow at:ifAbsent:
+	 describes -- 1983's do: reads basicSize once and goes on indexing
+	 whatever the table has become, so a declaration on another worker
+	 part way through skipped some globals and showed others twice -- and
+	 holding the lock for the walk would run the caller's block inside
+	 it.  So the walk is of a copy.  Every other enumeration of Smalltalk
+	 -- keysDo:, keysAndValuesDo:, select:, keyAtValue:, includes:, keys,
+	 allClassesDo: -- comes through here or through do: below, in both
+	 Dictionaries."
+	| all |
+	all := LibraryLocks readingGlobals: [ | stream |
+		stream := WriteStream on: (Array new: self size).
+		super associationsDo: [:each | stream nextPut: each].
+		stream contents].
+	all do: aBlock
+]
+
+{ #category : '*System' }
+SystemDictionary >> do: aBlock [
+	"My values, from the copy associationsDo: takes.  1983's Dictionary
+	 walks the table here through Set's do:, and Pharo's through
+	 valuesDo:, neither of them through associationsDo:."
+	self associationsDo: [:each | aBlock value: each value]
+]
+
+{ #category : '*System' }
+SystemDictionary >> valuesDo: aBlock [
+	"As do:; Pharo's walks its array directly."
+	self associationsDo: [:each | aBlock value: each value]
 ]
 
 { #category : '*System-Snapshot' }

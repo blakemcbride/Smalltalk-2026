@@ -35,11 +35,18 @@ run.  Once it has, the check is never true again, so the check-then-act
 that doc/CONCURRENCY.md forbids is not one here -- nothing else runs until
 every initializer has.
 
-Reads are not locked.  A reader probing a Dictionary while a writer grows
-it sees the old table or the new one, both consistent, because growth
-copies into a fresh object and become:s it -- and a Symbol table bucket is
-replaced by a copy, never edited.  What the locks prevent is two WRITERS
-each seeing the same empty slot.
+Reads are not locked, with one exception.  A reader probing a Dictionary
+while a writer grows it sees the old table or the new one, both consistent,
+because growth copies into a fresh object and become:s it -- and a Symbol
+table bucket is replaced by a copy, never edited.  What the locks prevent
+is two WRITERS each seeing the same empty slot.  The exception is
+Smalltalk, whose readers hold the globals lock too: a reader that had
+computed its probe from the table before the become: went on probing the
+one after it, and missed (see SystemDictionary>>at:ifAbsent: in
+lib/System).  Smalltalk's methods run only their own code inside that
+lock, never a block they were handed: the lock is a Mutex, which refuses
+re-entry, and a caller's block can do anything, including take the Symbol
+lock, which is ordered before this one.
 "
 Class {
 	#name : 'LibraryLocks',
@@ -94,6 +101,32 @@ LibraryLocks class >> holdingSymbols: aBlock [
 LibraryLocks class >> holdingGlobals: aBlock [
 	"Evaluate aBlock holding the lock on Smalltalk's entries."
 	^Globals isNil ifTrue: [aBlock value] ifFalse: [Globals critical: aBlock]
+]
+
+{ #category : 'holding' }
+LibraryLocks class >> readingGlobals: aBlock [
+	"Evaluate aBlock holding the lock on Smalltalk's entries, or without
+	 taking it when the active process holds it already.
+
+	 For Smalltalk's readers, and only for blocks of their own that read
+	 the table -- never a caller's block (Bugs07 KERNB-2).  A reader runs
+	 inside a writer in one ordinary case: 1983's Dictionary>>grow, sent
+	 from the middle of a declaration, copies the table with `self
+	 associationsDo:', and Smalltalk's associationsDo: is a reader.  The
+	 lock is a Mutex and refuses re-entry, so without this the first
+	 declaration that grew the table raised.  Nothing is lost by it: the
+	 lock keeps OTHER processes' writes out, and the process holding it
+	 is the only one that can be writing.
+
+	 Asking the Mutex for its owner is safe for this one question even
+	 though the answer to it can be stale in general: no process but
+	 this one ever makes this process the owner or stops it being one,
+	 so `owner == me' is true exactly while this process holds it."
+	| me |
+	me := Processor activeProcess.
+	(me notNil and: [Globals notNil and: [Globals owner == me]])
+		ifTrue: [^aBlock value].
+	^self holdingGlobals: aBlock
 ]
 
 { #category : 'holding' }

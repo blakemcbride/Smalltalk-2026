@@ -2697,6 +2697,59 @@ bugs7_vm(void)
     unlink(loops);
 }
 
+/*
+ *  Bugs07, the library group.  KERNB-2: the blocks handed to Smalltalk
+ *  run after its lock is given back.  An ifAbsent: block that interned a
+ *  Symbol held the globals lock while it took the Symbol lock, and a
+ *  compile takes them the other way round, so four workers doing the one
+ *  while four did the other stopped the image -- `every process is
+ *  blocked; nothing can run', three runs in three.  The second half is
+ *  at:ifAbsentPut: raced eight ways: every process gets the one value
+ *  that was declared, the first, and nobody's raises.  test_image holds
+ *  the one-thread checks.
+ */
+static void
+bugs7_lib(void)
+{
+    static char out[65536];
+    const char *probe = fixture("bugs7-serve-kernb2.st");
+    char        batch[1024];
+    int         status;
+
+    if (write_file(probe,
+            "| done n answers lazy same |\n"
+            "done := Semaphore new. n := 0. answers := Array new: 8.\n"
+            "1 to: 4 do: [:w | [1 to: 2000 do: [:i | Smalltalk at: #Bugs7KbNoSuchGlobal "
+            "ifAbsent: [('bugs7kbsym', i printString, 'w', w printString) asSymbol]]. "
+            "done signal] fork].\n"
+            "1 to: 4 do: [:w | [1 to: 200 do: [:i | Compiler evaluate: '3 + 4']. "
+            "done signal] fork].\n"
+            "1 to: 8 do: [:i | done wait. n := n + 1].\n"
+            "1 to: 8 do: [:w | [answers at: w put: ([Smalltalk at: #Bugs7KbLazy "
+            "ifAbsentPut: [Object new]] on: Error do: [:e | e messageText]). "
+            "done signal] fork].\n"
+            "1 to: 8 do: [:i | done wait].\n"
+            "lazy := Smalltalk at: #Bugs7KbLazy. same := true.\n"
+            "answers do: [:x | x == lazy ifFalse: [same := false]].\n"
+            "Smalltalk removeKey: #Bugs7KbLazy.\n"
+            "^'finished ', n printString, ' same: ', same printString\n") != 0)
+        return;
+    snprintf(batch, sizeof batch,
+             "Compiler evaluate: (FileStream oldFileNamed: '%s') contentsOfEntireFile\n",
+             probe);
+    status = serve(batch, 8, out, sizeof out);
+    ++st_test_checks;
+    if (status < 0) {
+        ++st_test_failures;
+        printf("  FAIL KERNB-2: could not run the server\n");
+    } else {
+        expect(out, "==> 'finished 8 same: true'",
+               "KERNB-2 interning in an ifAbsent: block beside compiles");
+        expect_absent(out, "every process is blocked", "KERNB-2 no deadlock");
+    }
+    unlink(probe);
+}
+
 int
 main(void)
 {
@@ -3363,6 +3416,7 @@ main(void)
     bugs6_low_chron();
     bugs6_low_kernb();
     bugs7_vm();
+    bugs7_lib();
 
     unlink(IMAGE);
     unlink(BATCH);

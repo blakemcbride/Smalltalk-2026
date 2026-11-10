@@ -367,7 +367,7 @@ kept. What it found in the library, and what was done:
 | Shared state | What eight workers did to it | Taxonomy | Where |
 |---|---|---|---|
 | `Symbol class>>intern:` — `USTable`, read-modify-write | 1,170 of 2,400 symbols not identical across workers; 132 of 600 at two | serialize | `lib/Concurrency/Symbol.extension.st`, under `LibraryLocks` |
-| `Smalltalk at:put:` — a `Dictionary` that grows by `become:` | 245 of 1,600 globals lost; and an unlocked *reader* mid-probe when the table was replaced missed a key that was there | serialize, readers too | `lib/System/SystemDictionary.extension.st` |
+| `Smalltalk at:put:` — a `Dictionary` that grows by `become:` | 245 of 1,600 globals lost; and an unlocked *reader* mid-probe when the table was replaced missed a key that was there | serialize, readers too; a caller's block (`ifAbsent:`, `ifAbsentPut:`, an enumeration's) runs after the lock is given back, enumerations walk a copy taken under it | `lib/System/SystemDictionary.extension.st` |
 | `Object>>addDependent:` — `DependentsFields`, one `IdentityDictionary` for every model | 143 of 1,600 dependents lost; 18 of 400 at two | serialize; `dependents` answers a copy | `lib/Concurrency/Object.extension.st` |
 | `Compiler evaluate:` — installs `#DoIt` in the receiver's class, sends it, removes it | 138 of 800 answers nil, each a worker whose `DoIt` another had removed | reorganize: primitive 188, `withArgs:executeMethod:` | `lib/Concurrency/Compiler.extension.st`, `src/interp/prim.c` |
 | `Delay` — the timing process, `initSignals`, a cancelled timer | two workers hung every run | reorganize: a stale signal is a look at the clock | `lib/Concurrency/Delay.extension.st` |
