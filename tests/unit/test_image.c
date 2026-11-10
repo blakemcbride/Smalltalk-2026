@@ -690,8 +690,11 @@
  *  flight finish -- Socket class>>stopGraceMilliseconds, HttpServer>>
  *  requestsInFlight, waitForRequestsAtMost:, requestBegun, requestEnded,
  *  HttpConnection>>beBusy, beIdle and RestServer>>stopWaitingAtMost:.
+ *
+ *  3402 -> 3404 with Bugs07 GUI-4: Form>>valueAt: and valueAt:put:, through
+ *  a 1x1 Form of the call's own instead of the class variable.
  */
-#define LIB_METHODS             3402
+#define LIB_METHODS             3404
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -3129,8 +3132,11 @@ test_browsing(void)
      *  lock inside the block whose ensure: gives it back, and the queue is
      *  moved by one clock shift after the write instead of walked onto the
      *  wall clock before it.
+     *
+     *  3036008 -> 3036930 with Bugs07 GUI-4: a Form's pixel accessors blit
+     *  through a pixel of their own.
      */
-    check_integer("(SourceFiles at: 1) contents size", 3036008);
+    check_integer("(SourceFiles at: 1) contents size", 3036930);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -12337,6 +12343,38 @@ test_bugs7c_vm(void)
                  "(1 2 3 $a 4.5 9 )");
 }
 
+/*
+ *  Bugs07, round 3: the GUI group's findings that one process can show.
+ *  The thread-safety halves are in test_serve_faults.c (bugs7c_gui),
+ *  since they need workers.
+ */
+static void
+test_bugs7c_gui(void)
+{
+    test_dialect = ST_DIALECT_CLOSURES;
+
+    /*
+     *  GUI-4.  valueAt: and valueAt:put: no longer go through one shared
+     *  1x1 Form.  What one process can see of that: valueAt: of a point
+     *  outside the form answered whatever the shared pixel held from the
+     *  call before -- 1 after reading a black pixel anywhere -- and reads
+     *  0 now; and the pixel accessors still read and write the right bit
+     *  of the right word, inside the form and on a word boundary.
+     */
+    check_string("| f g r | f := Form extent: 8@8. f black. "
+                 "g := Form extent: 20@3. r := OrderedCollection new. "
+                 "r add: (f valueAt: 3@3). r add: (f valueAt: 20@20). "
+                 "r add: (f valueAt: -1@0). "
+                 "g valueAt: 17@2 put: 1. g valueAt: 15@1 put: 1. "
+                 "g valueAt: 40@1 put: 1. "
+                 "r add: ((g bits asArray collect: [:w | w printString: 16]) "
+                 "inject: '' into: [:a :b | a, b, ' ']). "
+                 "r add: (g valueAt: 17@2). r add: (g valueAt: 16@2). "
+                 "g valueAt: 17@2 put: 0. r add: (g valueAt: 17@2). "
+                 "^r asArray printString",
+                 "(1 0 0 '0 0 1 0 0 4000 ' 1 0 0 )");
+}
+
 int
 main(void)
 {
@@ -12485,6 +12523,7 @@ main(void)
     test_bugs7b_vm();
     test_bugs7c_lib();
     test_bugs7c_vm();
+    test_bugs7c_gui();
 
     OM_shutdown();
     return ST_TEST_END();

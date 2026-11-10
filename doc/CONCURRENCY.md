@@ -412,6 +412,17 @@ run (`lib/Graphics-Fixes/CharacterScanner.extension.st`; held by
 `bugs7c_gui` in `tests/unit/test_serve_faults.c`). Fonts, styles and the
 Forms a pool hands out are the kind of shared instance to look at next.
 
+The same audit found a class variable the scan above passed over because
+nothing ever assigns it: `Form`'s `OneBitForm`, one 1x1 `Form` made by
+`Form class>>initialize` and only ever written through. `Form>>valueAt:`
+blitted a pixel into it and then read its word, and `valueAt:put:` painted it
+and then blitted it out -- two steps with nothing held between them, so on
+eight workers one read in eight and half the writes came back with another
+worker's pixel (GUI-4). The fix is **replicate**: each call blits through a
+1x1 `Form` of its own (`lib/Graphics-Fixes/Form.extension.st`; the same
+test). Mutated in place is the other half of that scan's question, and the
+one it did not ask.
+
 ## Six faults in the scheduler, found by the same audit
 
 The Delay and yield kernels did not fail in the library. They failed in

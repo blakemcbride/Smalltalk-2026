@@ -3606,6 +3606,35 @@ bugs7c_gui(void)
         "printString\n",
         8, "==> 'GUI-3 wrong 0, errors 0'",
         "GUI-3 text composed and displayed on eight workers at once");
+
+    /*
+     *  GUI-4: Form>>valueAt: and valueAt:put: blitted through one 1x1
+     *  Form in a class variable, two steps with nothing held between.
+     *  Each worker reads a pixel of a form it shares with three others,
+     *  black for the odd workers and white for the even, and writes the
+     *  same pixel of a form of its own and reads the word back.  Before:
+     *  about 25,000 of the 80,000 answers wrong.
+     */
+    bugs7_probe("bugs7c-gui4-onebit.st",
+        "| done bad blk wht n |\n"
+        "done := Semaphore new. n := 5000. bad := Array new: 8 withAll: 0.\n"
+        "blk := Form extent: 8@8. blk black. wht := Form extent: 8@8. "
+        "wht white.\n"
+        "1 to: 8 do: [:w | [ | f e own |\n"
+        "\tf := w odd ifTrue: [blk] ifFalse: [wht]. "
+        "e := w odd ifTrue: [1] ifFalse: [0].\n"
+        "\town := Form extent: 8@8.\n"
+        "\t1 to: n do: [:i |\n"
+        "\t\t(f valueAt: 3@3) = e ifFalse: [bad at: w put: (bad at: w) + 1].\n"
+        "\t\town valueAt: 3@3 put: e.\n"
+        "\t\t((own bits at: 4) bitAnd: 16r1000) = (e * 16r1000)\n"
+        "\t\t\tifFalse: [bad at: w put: (bad at: w) + 1]].\n"
+        "\tdone signal] fork].\n"
+        "8 timesRepeat: [done wait].\n"
+        "^'GUI-4 wrong ', (bad inject: 0 into: [:a :b | a + b]) "
+        "printString\n",
+        8, "==> 'GUI-4 wrong 0'",
+        "GUI-4 pixels read and written on eight workers at once");
 }
 
 /*  ----------  Bugs07 round 3, NET: a server and a client, by hand  ----------
