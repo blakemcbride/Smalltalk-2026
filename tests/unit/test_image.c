@@ -657,8 +657,14 @@
  *
  *  3372 -> 3375 with Bugs07 SCHED-4: Process>>stopIfDeferred,
  *  DeferredStop>>takeEffect and Monitor>>isHeldBy:.
+ *
+ *  3375 -> 3382 with Bugs07 FIXES-3: a section is let finish for a grace
+ *  only -- Process>>restoreStoppedAt:, waitAtMostGraceFor:,
+ *  withdraw:from:, DeferredStop class>>graceMilliseconds and
+ *  DeferredStop>>giveUp, hasGivenUp, isPending:, withdraw:; less
+ *  Monitor>>isHeldBy:, which nothing asks any more.
  */
-#define LIB_METHODS             3375
+#define LIB_METHODS             3382
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -3060,8 +3066,12 @@ test_browsing(void)
      *  2997921 -> 3001950 with Bugs07 SCHED-4: a Mutex's or a Monitor's
      *  section counts only while its lock is held, and Monitor's waits act
      *  on a stop put off to the end of the section.
+     *
+     *  3001950 -> 3007846 with Bugs07 FIXES-3: a critical: section is let
+     *  finish for a grace and then given up, so that terminate and
+     *  signalException: reach a loop inside one.
      */
-    check_integer("(SourceFiles at: 1) contents size", 3001950);
+    check_integer("(SourceFiles at: 1) contents size", 3007846);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -11528,18 +11538,26 @@ test_bugs7_sched(void)
      *  and the victim's outer ensure: never ran.  Now the request is kept
      *  in a DeferredStop and acted on only by the process it was made
      *  for; a terminator unwinding the section drops it.
+     *
+     *  signalException: waits through the section's grace for the
+     *  exception to be raised (Bugs07 FIXES-3), and this section goes on
+     *  to wait for good, so the signal is sent from a process of its own
+     *  -- above this one, so that it is sent while the victim is still
+     *  running in the section -- and the terminate comes inside the grace,
+     *  with the exception still put off.
      */
     check_string("| m log p gate r | m := Mutex new. gate := Semaphore new. "
                  "log := OrderedCollection new. "
                  "p := [[[m critical: [log add: #in. Processor yield. log add: #mid. "
                  "gate wait. log add: #out]] ensure: [log add: #outerEnsure]] "
                  "on: Error do: [:e | log add: e messageText]] fork. "
-                 "Processor yield. p signalException: (Error new messageText: #timeout). "
+                 "Processor yield. [p signalException: (Error new messageText: #timeout)] "
+                 "forkAt: Processor activePriority + 1. "
                  "Processor yield. Processor yield. "
                  "r := [p terminate. #terminateReturned] on: Error do: [:e | "
                  "log add: #terminatorGot -> e messageText. #terminatorRaised]. "
                  "log add: r; add: m owner printString; add: p suspendedContext isNil. "
-                 "^log asArray printString",
+                 "(Delay forMilliseconds: 20) wait. ^log asArray printString",
                  "(in mid outerEnsure terminateReturned 'nil' true )");
     /*  The same through forkParallel:, whose Promise was left pending for ever.  */
     check_string("| m p gate task r | m := Mutex new. gate := Semaphore new. "
@@ -11560,14 +11578,17 @@ test_bugs7_sched(void)
      *  left by another exception's unwind is dropped there.  (The audit's
      *  probe kept the process alive afterwards by spinning on yield; here
      *  it waits, so that a Delay firing late on a loaded machine cannot
-     *  run this doIt out of bytecodes and leave a spinner for the rest.)
+     *  run this doIt out of bytecodes and leave a spinner for the rest.
+     *  The first is sent from a process of its own, as above, for the
+     *  second to come while it is still put off.)
      */
     check_string("| m log p gate r | m := Mutex new. gate := Semaphore new. "
                  "log := OrderedCollection new. "
                  "p := [[m critical: [log add: #in. Processor yield. log add: #mid. "
                  "gate wait. log add: #out]] on: Error do: [:e | log add: e messageText]. "
                  "log add: #after. Semaphore new wait] fork. "
-                 "Processor yield. p signalException: (Error new messageText: #one). "
+                 "Processor yield. [p signalException: (Error new messageText: #one)] "
+                 "forkAt: Processor activePriority + 1. "
                  "Processor yield. Processor yield. log add: #main. "
                  "p signalException: (Error new messageText: #two). "
                  "Processor yield. Processor yield. (Delay forMilliseconds: 10) wait. "
@@ -11578,17 +11599,21 @@ test_bugs7_sched(void)
      *  the wrapped block once more; the handler for the exception unwound
      *  past the outer wrapping and the terminate was lost -- the process
      *  looped on.  A terminate now beats a signal put off to the same
-     *  section, which is never raised.
+     *  section, which is never raised.  The signal is sent from a process
+     *  of its own, as above: sent from this one, it would wait for the
+     *  section to end and raise it.  The terminate waits for the section
+     *  to end too (Bugs07 FIXES-3), hence #out before #terminateReturned.
      */
     check_string("| m log p n | m := Mutex new. n := 0. log := OrderedCollection new. "
                  "p := [[[m critical: [log add: #in. Processor yield. log add: #out]] "
                  "on: Error do: [:e | log add: e messageText]. n := n + 1. "
                  "Processor yield] repeat] fork. Processor yield. "
-                 "p signalException: (Error new messageText: #timeout). p terminate. "
+                 "[p signalException: (Error new messageText: #timeout)] "
+                 "forkAt: Processor activePriority + 1. p terminate. "
                  "log add: #terminateReturned. (Delay forMilliseconds: 20) wait. "
                  "^log asArray printString, ' loops after terminate: ', n printString, "
                  "' terminated: ', p suspendedContext isNil printString",
-                 "(in terminateReturned out ) loops after terminate: 0 terminated: true");
+                 "(in out terminateReturned ) loops after terminate: 0 terminated: true");
 
     /*
      *  KERNB-3: the ensure: blocks of a process terminated from outside

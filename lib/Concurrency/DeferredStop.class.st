@@ -44,13 +44,41 @@ SharedQueue>>next is the next item, taken and thrown away (Bugs07 SCHED-4).
 Monitor's waits ask Process>>stopIfDeferred, which finds this in the
 section's frame and acts on it there, at a stable point, through
 takeEffect.
+
+And the section is let finish for a grace of graceMilliseconds, no longer
+(Bugs07 FIXES-3).  Every section in the library is a few sends long, and
+the deferral exists for those; a user's is not bounded at all, and a loop
+inside `aMutex critical:' made its process unkillable -- terminate
+returned at once, the process ran on, and the Mutex stayed held for ever;
+a timeout on work done under a lock never fired.  Which sections are the
+library's cannot be told from the frames: the same Monitor>>critical:
+runs SharedQueue's two stores and a user's loop, and LibraryLocks runs
+whatever block it is handed.  How long a section has run can.  So terminate
+and signalException: wait for the grace, and if the process is still in the
+section then, this gives up (hasGivenUp): the stopper stops it again, the
+section no longer counts, and the process is unwound from outside -- its
+ensure: releasing the lock -- or the exception is withdrawn and delivered
+where the process stands.  A section entered inside the one given up is a
+section of its own, with a grace of its own, so a library section the loop
+was in at that moment is still let finish.
 "
 Class {
 	#name : 'DeferredStop',
 	#superclass : 'Object',
-	#instVars : [ 'process', 'guarded', 'section', 'terminating', 'exceptions' ],
+	#instVars : [ 'process', 'guarded', 'section', 'terminating', 'exceptions', 'givenUp' ],
 	#category : 'Concurrency'
 }
+
+{ #category : 'accessing' }
+DeferredStop class >> graceMilliseconds [
+	"How long a process is let finish a critical: section before a stop
+	 put off to its end gives up and takes effect from outside (Bugs07
+	 FIXES-3).  A library section is microseconds long; a tenth of a
+	 second leaves room for the process to wait its turn for a worker on
+	 a loaded machine, and is short enough that a timeout or a shutdown
+	 is not held up by it noticeably."
+	^100
+]
 
 { #category : 'instance creation' }
 DeferredStop class >> for: aProcess guarding: aBlock in: anUnwindContext [
@@ -64,7 +92,8 @@ DeferredStop >> setProcess: aProcess guarding: aBlock in: anUnwindContext [
 	process := aProcess.
 	guarded := aBlock.
 	section := anUnwindContext.
-	terminating := false
+	terminating := false.
+	givenUp := false
 ]
 
 { #category : 'accessing' }
@@ -76,6 +105,39 @@ DeferredStop >> process [
 DeferredStop >> terminate [
 	"End the process when the section ends.  Beats any signal."
 	terminating := true
+]
+
+{ #category : 'requesting' }
+DeferredStop >> giveUp [
+	"The grace has run out with the section unfinished: from now on the
+	 section does not count (Process>>criticalSectionFrom:stoppedAt:), and
+	 the stopper takes effect from outside."
+	givenUp := true
+]
+
+{ #category : 'testing' }
+DeferredStop >> hasGivenUp [
+	^givenUp
+]
+
+{ #category : 'testing' }
+DeferredStop >> isPending: anException [
+	"Whether anException is still waiting to be raised at the section's
+	 end."
+	^exceptions notNil and: [exceptions identityIncludes: anException]
+]
+
+{ #category : 'requesting' }
+DeferredStop >> withdraw: anException [
+	"Take anException back out, if it is still waiting, and give up;
+	 answer whether it was there.  Sent with the process stopped
+	 (Process>>withdraw:from:).  Removed from the collection in place:
+	 a process stopped between taking the collection to raise from and
+	 clearing it holds the same one, and must not raise it as well."
+	(self isPending: anException) ifFalse: [^false].
+	exceptions removeAll: (exceptions select: [:each | each == anException]).
+	givenUp := true.
+	^true
 ]
 
 { #category : 'requesting' }

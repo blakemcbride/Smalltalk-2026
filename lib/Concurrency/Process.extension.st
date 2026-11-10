@@ -56,9 +56,13 @@ to, or by the same DeferredStop, which raises where the section's unwind
 block returns to.  The DeferredStop acts only in the process it was made
 for, never in a terminator unwinding the section, and keeps the requests
 rather than nesting them: a terminate beats a signal (Bugs07 SCHED-5).
-A process WAITING inside a section is not let
-out first: a wait is a stable point, and a consumer blocked in
-SharedQueue>>next must not be made to take an item on its way out.
+A section is let finish for a grace -- a tenth of a second -- and no
+longer: one still running then is given up, and the process is unwound
+from outside after all (Bugs07 FIXES-3); without the bound, a loop inside
+`aMutex critical:' could not be stopped.  A process WAITING inside a
+section is not let out first: a wait is a stable point, and a consumer
+blocked in SharedQueue>>next must not be made to take an item on its way
+out.
 "
 Extension { #name : 'Process' }
 
@@ -185,15 +189,25 @@ Process >> undoStop: where [
 	 Semaphore had been signalled, which inside Mutex>>critical: is a
 	 second process in the section; the wait is put back the way
 	 finishUnwindBlock:waitingOn: puts it back."
+	self primRelease: (self restoreStoppedAt: where)
+]
+
+{ #category : '*Concurrency' }
+Process >> restoreStoppedAt: where [
+	"Put me back as a stop at where found me, and answer whether I am to
+	 be resumed: running or ready again if I was, back in the wait I was
+	 taken out of, left alone if I was suspended or have ended.  What
+	 undoStop: lets go of me with, and what a stopper answers when it
+	 stopped me only to look (see withdraw:from:)."
 	| frame |
-	suspendedContext isNil ifTrue: [^self primRelease: false].
-	(where = 1 or: [where = 2]) ifTrue: [^self primRelease: true].
-	where isInteger ifTrue: [^self primRelease: false].
+	suspendedContext isNil ifTrue: [^false].
+	(where = 1 or: [where = 2]) ifTrue: [^true].
+	where isInteger ifTrue: [^false].
 	frame := [where wait] asContext.
 	suspendedContext pop.
 	frame instVarAt: 1 put: suspendedContext.
 	suspendedContext := frame.
-	self primRelease: true
+	^true
 ]
 
 { #category : '*Concurrency' }
@@ -328,32 +342,51 @@ Process >> terminate [
 	 to find its victim let go when terminate returns, as it was when
 	 the stopper's own unwind blocks did the letting go.
 
+	 A process stopped running inside a critical: section is let finish
+	 the section, and this waits until it has ended -- but only for the
+	 grace a DeferredStop allows (Bugs07 FIXES-3).  The section that has
+	 not ended by then is given up: I am stopped again, the section no
+	 longer counts, and I am unwound from outside, its ensure: giving the
+	 lock back.  A loop inside `aMutex critical:' used to make me
+	 unkillable: this returned at once, as though it had worked, and I
+	 ran on for ever with the lock.  A section nested inside the one
+	 given up -- a library's, say, entered from the loop -- is a section
+	 of its own and is let finish in its turn.
+
 	 And the stack I leave behind is unwound even if the process doing it
 	 is stopped part-way: the ifCurtailed: goes on from where the loop
 	 was, since every block the loop has already run is disarmed.  A
 	 supervisor terminated while it was running a child's unwind blocks
 	 used to abandon the rest of them, and the child's Mutex with them."
-	| outcome |
+	| outcome stop again |
 	Processor activeProcess == self ifTrue: [
 		self runUnwindBlocksFrom: thisContext.
 		^self primTerminateActive].
+	again := false.
 	[self stopTakingFromSemaphore: true thenDo: [:where |
 		outcome := self endStoppedAt: where.
-		outcome == true or: [outcome == #stopping]].
+		(outcome isKindOf: DeferredStop) ifTrue: [stop := outcome].
+		outcome == true or: [outcome == #stopping or: [stop notNil]]].
 	 outcome == #stopping ifTrue: [self waitUntilTerminated].
+	 stop notNil ifTrue: [
+		(self waitAtMostGraceFor: [suspendedContext isNil]) ifFalse: [
+			stop giveUp.
+			again := true]].
 	 (outcome isKindOf: ContextPart) ifTrue: [self runUnwindBlocksFrom: outcome]]
 		ifCurtailed: [
-			(outcome isKindOf: ContextPart) ifTrue: [self runUnwindBlocksFrom: outcome]]
+			(outcome isKindOf: ContextPart) ifTrue: [self runUnwindBlocksFrom: outcome]].
+	again ifTrue: [self terminate]
 ]
 
 { #category : '*Concurrency' }
 Process >> endStoppedAt: where [
 	"I have been stopped at where and am held, for terminate.  Answer
-	 true if I am to be resumed to finish what I was in -- an unwind
-	 block, a critical: section -- and end when I have; #stopping for the
-	 same when what I was in is a stop of my own, which terminate waits
-	 out; my stack, taken, for the terminator to unwind; or nil, when
-	 there is nothing left to do."
+	 true if I am to be resumed to finish the unwind block I was in, and
+	 end when I have; #stopping for the same when what I was in is a stop
+	 of my own, which terminate waits out; the DeferredStop of the
+	 critical: section I was running in, to be resumed to finish it, for
+	 as long as its grace lasts; my stack, taken, for the terminator to
+	 unwind; or nil, when there is nothing left to do."
 	| context unwinding section |
 	context := suspendedContext.
 	context isNil ifTrue: [^nil].
@@ -372,6 +405,21 @@ Process >> endStoppedAt: where [
 	 after Link's nextLink."
 	(self compareAndSwapSlot: 2 from: context to: nil) ifFalse: [^nil].
 	^context
+]
+
+{ #category : '*Concurrency' }
+Process >> waitAtMostGraceFor: aBlock [
+	"Wait until aBlock answers true -- I have ended, or an exception put
+	 off to the end of a section has been raised -- and answer true; or
+	 answer false once a DeferredStop's grace has passed and it still has
+	 not.  Polled by a Delay, as waitUntilTerminated is and for the same
+	 reason."
+	| deadline |
+	deadline := Time millisecondClockValue + DeferredStop graceMilliseconds.
+	[aBlock value] whileFalse: [
+		Time millisecondClockValue >= deadline ifTrue: [^false].
+		(Delay forMilliseconds: 1) wait].
+	^true
 ]
 
 { #category : '*Concurrency' }
@@ -398,8 +446,13 @@ Process >> criticalSectionFrom: aContext stoppedAt: where [
 	 -- where is that Semaphore -- is at a stable point and is unwound
 	 from there as it always was; the one suspended on purpose (0) is
 	 left as whoever suspended it left it.  Outermost, because a section
-	 inside a section is part of finishing the outer one, and because
-	 Monitor>>critical: is Mutex>>critical: one frame in.
+	 inside a section is part of finishing the outer one.  A Monitor's
+	 section is its Mutex's: Monitor>>critical: is Mutex>>critical: one
+	 frame in, and its own ensure: inside that only keeps its books.
+
+	 A section whose DeferredStop has given up -- its grace ran out with
+	 the section unfinished (Bugs07 FIXES-3) -- does not count any more;
+	 a section inside it still does.
 
 	 Bugs6 SCHED-7: a process terminated between the two halves of
 	 OrderedCollection>>insert:before: inside Delay>>wait left a nil at
@@ -408,9 +461,9 @@ Process >> criticalSectionFrom: aContext stoppedAt: where [
 	 stress; and SharedQueue's items were torn the same way.
 
 	 And only a section whose lock I hold at the moment I was stopped
-	 counts (Bugs07 SCHED-4), for a Mutex's or a Monitor's, which know
-	 their holder; a Semaphore's does not, and counts whenever its frame
-	 does.  Monitor>>waitForChange gives the lock up in the middle of the
+	 counts (Bugs07 SCHED-4), for a Mutex's -- and so a Monitor's -- which
+	 knows its holder; a Semaphore's does not, and counts whenever its
+	 frame does.  Monitor>>waitForChange gives the lock up in the middle of the
 	 section and waits: SharedQueue>>next, Promise>>value and every
 	 condition wait are a Monitor's critical: around one, and a consumer
 	 woken and not yet running again -- the ordinary state of every
@@ -432,19 +485,18 @@ Process >> criticalSectionFrom: aContext stoppedAt: where [
 	 Mutex stress left one running in two runs of thirty (found by the
 	 sanitizer runs of 2026-10-09).  A disarmed frame is past its section,
 	 and the process is unwound from outside as from anywhere else."
-	| sem mut mon ctx found |
+	| sem mut ctx found |
 	(where = 1 or: [where = 2]) ifFalse: [^nil].
 	sem := Semaphore compiledMethodAt: #critical:.
 	mut := Mutex compiledMethodAt: #critical:.
-	mon := Monitor compiledMethodAt: #critical:.
 	ctx := aContext.
-	[ctx isNil] whileFalse: [ | caller |
+	[ctx isNil] whileFalse: [ | caller block |
 		(ctx isUnwindContext
-		 and: [(ctx tempAt: 1) notNil
+		 and: [(block := ctx tempAt: 1) notNil
+		 and: [((block isKindOf: DeferredStop) and: [block hasGivenUp]) not
 		 and: [(caller := ctx sender) notNil
 		 and: [caller method == sem
-			or: [(caller method == mut and: [caller receiver owner == self])
-			or: [caller method == mon and: [caller receiver isHeldBy: self]]]]]])
+			or: [caller method == mut and: [caller receiver owner == self]]]]]])
 			ifTrue: [found := ctx].
 		ctx := ctx sender].
 	^found
@@ -489,9 +541,12 @@ Process >> finishSection: anUnwindContext [
 	 I run it myself; run by a terminator that has already taken my
 	 stack, it releases the lock and does nothing more.  A section
 	 already holding one has the terminate added to it (Bugs07 SCHED-5).
-	 Answers true: I am to be resumed."
-	(self deferredStopIn: anUnwindContext) terminate.
-	^true
+	 Answers the DeferredStop: I am to be resumed, and terminate waits
+	 for me through its grace (Bugs07 FIXES-3)."
+	| stop |
+	stop := self deferredStopIn: anUnwindContext.
+	stop terminate.
+	^stop
 ]
 
 { #category : '*Concurrency' }
@@ -634,17 +689,52 @@ Process >> signalException: anException [
 	 worker's registers, where a frame spliced under its stale
 	 suspendedContext would never be seen.  Once stopped it is resumed
 	 with the frame on top, unless it was suspended on purpose, in which
-	 case the frame waits for whoever resumes it."
+	 case the frame waits for whoever resumes it.
+
+	 Stopped running inside a critical: section, it is let finish the
+	 section and raises anException as it leaves -- for the grace a
+	 DeferredStop allows, and this waits that long at most (Bugs07
+	 FIXES-3).  If anException has not been raised by then, it is taken
+	 back out of the section's DeferredStop, the section gives up, and it
+	 is delivered again, the section no longer counting.  A timeout on
+	 work done under a lock used to wait for the work to end, which for a
+	 loop inside `aMutex critical:' was never."
+	| stop |
 	self == Processor activeProcess ifTrue: [^anException signal].
+	[stop := nil.
+	 self stopTakingFromSemaphore: true thenDo: [:where | | answer |
+		answer := self deliver: anException stoppedAt: where.
+		(answer isKindOf: DeferredStop)
+			ifTrue: [stop := answer. true]
+			ifFalse: [answer]].
+	 stop notNil
+	 and: [(self waitAtMostGraceFor: [
+			suspendedContext isNil or: [(stop isPending: anException) not]]) not
+	 and: [self withdraw: anException from: stop]]] whileTrue
+]
+
+{ #category : '*Concurrency' }
+Process >> withdraw: anException from: aDeferredStop [
+	"Stop me, and if anException is still waiting in aDeferredStop to be
+	 raised at the end of its section, take it out and have the section
+	 give up; then put me back as the stop found me.  Answers whether it
+	 was taken out, and so has still to be delivered.  Done with me
+	 stopped, so that I cannot be raising it at the same moment
+	 (signalException:, Bugs07 FIXES-3)."
+	| taken |
+	taken := false.
 	self stopTakingFromSemaphore: true thenDo: [:where |
-		self deliver: anException stoppedAt: where]
+		taken := aDeferredStop withdraw: anException.
+		self restoreStoppedAt: where].
+	^taken
 ]
 
 { #category : '*Concurrency' }
 Process >> deliver: anException stoppedAt: where [
 	"I have been stopped at where and am held, for signalException:.
 	 Arrange for anException to be raised in me, and answer whether I am
-	 to be resumed."
+	 to be resumed -- or, when it is put off to the end of a critical:
+	 section, the section's DeferredStop, and I am to be resumed."
 	| frame unwinding section |
 	suspendedContext isNil ifTrue: [^false].
 	"Stopped in Mutex>>waitFor: with the lock already handed over: record
@@ -712,9 +802,13 @@ Process >> signal: anException leaving: anUnwindContext [
 	 another exception's unwind, never once a terminate has been asked
 	 for (Bugs07 SCHED-5).  The handler search walks out from the end of
 	 the section to whatever on:do: is below, as it would from anywhere
-	 in the section.  Answers true: I am to be resumed."
-	(self deferredStopIn: anUnwindContext) signal: anException.
-	^true
+	 in the section.  Answers the DeferredStop: I am to be resumed, and
+	 signalException: waits for the exception through its grace (Bugs07
+	 FIXES-3)."
+	| stop |
+	stop := self deferredStopIn: anUnwindContext.
+	stop signal: anException.
+	^stop
 ]
 
 { #category : '*Concurrency' }

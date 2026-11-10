@@ -557,6 +557,21 @@ which it took and nobody received. And the request is not written into the
 section's unwind block as code; it is kept in a `DeferredStop` there, acted
 on only by the process it was made for (Bugs07 SCHED-5): run by a
 terminator, the unwind block only releases the lock.
+A section is let finish for a grace -- `DeferredStop graceMilliseconds`, a
+tenth of a second -- and no longer (Bugs07 FIXES-3). `terminate` and
+`signalException:` wait for it that long; a section still running then
+*gives up*: it no longer counts, the process is stopped again and unwound
+from outside (its `ensure:` releasing the lock), or the exception is taken
+back out of the `DeferredStop` and delivered where the process stands. A
+section entered inside the one given up is one of its own, with its own
+grace, so a library section the process happens to be in is still let
+finish. Without the bound, a loop inside a user's `aMutex critical:` could
+not be stopped: `terminate` returned at once and the process ran on holding
+the lock. The bound is a time and not a list of the library's sections
+because the frames cannot tell them apart -- `Monitor>>critical:` runs
+`SharedQueue`'s two stores and a user's loop alike, and `LibraryLocks` runs
+whatever block it is handed -- and what made the deferral wrong was never
+who wrote the section but that nothing ended it.
 A terminated process has a nil `suspendedContext`, primitive 87 refuses to
 resume one, and the switch drops one that a racing signal delivers anyway
 rather than stopping the image on it.

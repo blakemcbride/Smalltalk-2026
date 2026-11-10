@@ -3248,6 +3248,113 @@ bugs7_sched(void)
         "SCHED-2 two terminators of a process inside a Mutex section");
 }
 
+/*
+ *  Bugs07 FIXES-3: a stop put off to the end of a critical: section waits
+ *  a grace for it, and no longer.  SCHED-6/7's deferral let a process
+ *  caught RUNNING in any critical: finish the section first, which for a
+ *  loop inside a user's `aMutex critical:' was never: terminate returned
+ *  at once, the process ran on holding the lock, and a timeout signalled
+ *  into it never fired.  Now terminate and signalException: wait for the
+ *  section through DeferredStop's grace, and a section still running
+ *  then is given up -- the process is unwound from outside, or the
+ *  exception delivered where it stands -- while a section entered inside
+ *  it, a library's, is still let finish.
+ */
+static void
+bugs7b_sched(void)
+{
+    /*
+     *  The audit's probe, as a check: a loop inside a Mutex's and inside a
+     *  Semaphore's critical: is terminated, terminate returns with it
+     *  gone, it counts no further, and the lock is free.  The old image:
+     *  ((false false true true ) (false false true false )).
+     */
+    bugs7_probe("bugs7b-fixes3-terminate.st",
+        "| m p n t q s r1 r2 free e1 e2 |\n"
+        "m := Mutex new. n := 0.\n"
+        "p := [m critical: [[true] whileTrue: [n := n + 1]]] fork.\n"
+        "(Delay forMilliseconds: 100) wait.\n"
+        "p terminate. e1 := p suspendedContext isNil.\n"
+        "(Delay forMilliseconds: 200) wait. t := n. (Delay forMilliseconds: 200) wait.\n"
+        "r1 := {e1. p suspendedContext isNil. n > t. m isHeld}.\n"
+        "s := Semaphore forMutualExclusion. n := 0.\n"
+        "q := [s critical: [[true] whileTrue: [n := n + 1]]] fork.\n"
+        "(Delay forMilliseconds: 100) wait.\n"
+        "q terminate. e2 := q suspendedContext isNil.\n"
+        "(Delay forMilliseconds: 200) wait. t := n. (Delay forMilliseconds: 200) wait.\n"
+        "free := false. [s critical: [free := true]] fork. (Delay forMilliseconds: 50) wait.\n"
+        "r2 := {e2. q suspendedContext isNil. n > t. free}.\n"
+        "^{r1. r2}\n",
+        3, "==> ((true true false false ) (true true false true ) )",
+        "FIXES-3 a loop inside a critical: section is terminated");
+
+    /*
+     *  A timeout signalled into such a loop fires, and the lock is given
+     *  back; a Monitor's section is its Mutex's, given up once.  The old
+     *  image: ((nil true false ) (false nil )).
+     */
+    bugs7_probe("bugs7b-fixes3-signal.st",
+        "| m p n got mon q r |\n"
+        "m := Mutex new. n := 0.\n"
+        "p := [[m critical: [[true] whileTrue: [n := n + 1]]] on: Error do: [:e | got := e messageText]] fork.\n"
+        "(Delay forMilliseconds: 100) wait.\n"
+        "p signalException: (Error new messageText: #timeout).\n"
+        "(Delay forMilliseconds: 300) wait.\n"
+        "r := {got. m isHeld. p suspendedContext isNil}.\n"
+        "mon := Monitor new. got := nil.\n"
+        "q := [mon critical: [[true] whileTrue: [n := n + 1]]] fork.\n"
+        "(Delay forMilliseconds: 100) wait.\n"
+        "q terminate.\n"
+        "[mon critical: [got := #in]] fork. (Delay forMilliseconds: 50) wait.\n"
+        "^{r. {q suspendedContext isNil. got}}\n",
+        3, "==> ((timeout false true ) (true in ) )",
+        "FIXES-3 a timeout reaches a loop inside a critical: section");
+
+    /*
+     *  A short section is still let finish, and terminate now returns only
+     *  when it has: one worker, the victim stopped inside its section on
+     *  the ready list, 20 ms of work left in it.  The old image answered
+     *  at once, with the section half done: (1 nil false true ).
+     */
+    bugs7_probe("bugs7b-fixes3-short.st",
+        "| m p x y spin |\n"
+        "spin := [:ms | | end | end := Time millisecondClockValue + ms. [Time millisecondClockValue < end] whileTrue: []].\n"
+        "m := Mutex new.\n"
+        "p := [m critical: [x := 1. Processor yield. spin value: 20. y := 2]] fork.\n"
+        "Processor yield.\n"
+        "p terminate.\n"
+        "^{x. y. p suspendedContext isNil. m isHeld}\n",
+        1, "==> (1 2 true false )",
+        "FIXES-3 a short section is still let finish");
+
+    /*
+     *  And the library's own sections, entered from inside the loop that
+     *  is given up, are not torn: a loop under a user's Mutex feeding a
+     *  SharedQueue and sleeping on a Delay, killed ten times; each time
+     *  the queue still hands over an item, the Mutex is free and the
+     *  process gone.  The old image left it running seven times in ten.
+     */
+    bugs7_probe("bugs7b-fixes3-library.st",
+        "| bad m q p fin |\n"
+        "bad := 0. fin := Semaphore new.\n"
+        "[1 to: 10 do: [:i | | got |\n"
+        "\tm := Mutex new. q := SharedQueue new.\n"
+        "\tp := [m critical: [[true] whileTrue: [q nextPut: i. q next. (Delay forMilliseconds: 1) wait]]] fork.\n"
+        "\t(Delay forMilliseconds: 20) wait.\n"
+        "\tp terminate.\n"
+        "\tgot := nil.\n"
+        "\t[[q isEmpty] whileFalse: [q next]. q nextPut: #probe. got := q next] fork.\n"
+        "\t(Delay forMilliseconds: 30) wait.\n"
+        "\t(p suspendedContext isNil and: [got == #probe and: [q isEmpty and: [m isHeld not]]])\n"
+        "\t\tifFalse: [bad := bad + 1]].\n"
+        " fin signal] fork.\n"
+        "fin wait.\n"
+        "^'FIXES-3 a killed loop that uses a SharedQueue and a Delay, 10 rounds, bad ', bad printString\n",
+        3, "==> 'FIXES-3 a killed loop that uses a SharedQueue and a Delay, "
+        "10 rounds, bad 0'",
+        "FIXES-3 a library section inside a given-up one is not torn");
+}
+
 int
 main(void)
 {
@@ -3916,6 +4023,7 @@ main(void)
     bugs7_vm();
     bugs7_lib();
     bugs7_sched();
+    bugs7b_sched();
 
     unlink(IMAGE);
     unlink(BATCH);

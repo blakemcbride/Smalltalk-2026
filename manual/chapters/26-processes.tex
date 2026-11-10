@@ -102,7 +102,12 @@ blocks outside it still run; it does not reach the process that sent
 \ct{terminate}.
 A process caught running inside a \ct{critical:} section, or inside an
 \ct{ensure:} block, is let finish it first: the section or the block
-completes, and then the process ends, or the exception is raised. A process
+completes, and then the process ends, or the exception is raised.
+\ct{terminate} and \ct{signalException:} wait for the section, but for a
+tenth of a second at most: a section that has not ended by then---a loop
+inside \ct{aMutex critical:}, say---is unwound from outside after all, its
+\ct{ensure:} releasing the lock, or the exception is raised where the process
+stands. A process
 that would wait inside the section instead---in \ct{Monitor>>waitUntil:},
 and so in \ct{SharedQueue>>next} and \ct{Promise>>value}---ends, or has the
 exception raised, there, without taking anything.

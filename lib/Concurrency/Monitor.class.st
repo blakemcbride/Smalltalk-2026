@@ -251,18 +251,6 @@ Monitor >> hasWaiters [
 ]
 
 { #category : 'testing' }
-Monitor >> isHeldBy: aProcess [
-	"Whether aProcess holds my mutex at this moment -- the question
-	 Process>>criticalSectionFrom:stoppedAt: asks of a process it has
-	 stopped, which is parked and cannot change the answer.  The mutex
-	 and not owner: owner is cleared before waitForChange releases the
-	 mutex and set again after it has taken it back, and in both gaps
-	 the process still holds the lock and is in the middle of changing
-	 me."
-	^mutex owner == aProcess
-]
-
-{ #category : 'testing' }
 Monitor >> isHeldByActiveProcess [
 	"Whether the process asking holds me -- what a method that must be
 	 sent from inside critical: can assert.  Exact for the asker, since
