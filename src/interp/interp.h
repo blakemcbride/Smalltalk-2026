@@ -237,9 +237,22 @@ ST_context_slots_for(st_oop header)
      *  floor has been quietly covering for it.  Finding out what is worth
      *  doing; guessing at it while removing the floor is not.  The floor
      *  stays and this only lifts the ceiling, which is the bug at hand.
+     *
+     *  And one slot more than the compiler states, for the one push the
+     *  VM makes that no bytecode accounts for (Bugs07 FIXES-1): a unary
+     *  send that is not understood leaves its receiver AND the Message on
+     *  the stack where the bytecode left only the receiver, so a method
+     *  whose deepest point is such a send -- eleven temporaries and `^nil
+     *  zork' -- has no room for the Message in a frame sized exactly.  The
+     *  push was refused, and the not-understood send went to the method's
+     *  last temporary with the receiver for its argument.  A send with
+     *  arguments needs nothing extra: the Message takes the place of the
+     *  arguments (see send_does_not_understand).  Below the floor the floor
+     *  already leaves the slot, so this costs one slot in the contexts of
+     *  the few methods whose frame is larger than a small context.
      */
     if (stated) {
-        uint32_t    want = (uint32_t) (ST_CTX_TEMP_FRAME_START + stated);
+        uint32_t    want = (uint32_t) (ST_CTX_TEMP_FRAME_START + stated + 1);
 
         return want > ST_SMALL_CONTEXT_SLOTS ? want : ST_SMALL_CONTEXT_SLOTS;
     }

@@ -11146,6 +11146,46 @@ test_bugs6_medium(void)
     }
 }
 
+/*
+ *  Bugs07, the virtual machine's in-process findings.
+ */
+static void
+test_bugs7_vm(void)
+{
+    test_dialect = ST_DIALECT_CLOSURES;
+
+    /*
+     *  FIXES-1.  A send not understood at the deepest point of a method,
+     *  whose frame is therefore full: nine temporaries and two arguments,
+     *  twenty and three, eleven and none.  The Message was pushed onto the
+     *  full frame, the push refused, and doesNotUnderstand: went to the
+     *  method's last temporary with the arguments shifted; a handler that
+     *  resumed got a CorruptMethod.
+     */
+    check_string("Object compile: 'zzB7a | a b c d e f g h i | i := ''the temp''. "
+                 "^3 foo: 4 bar: 5'. "
+                 "Object compile: 'zzB7b | a b c d e f g h i | 3 foo: 4 bar: 5. ^#after'. "
+                 "Object compile: 'zzB7c | t1 t2 t3 t4 t5 t6 t7 t8 t9 t10 t11 t12 t13 "
+                 "t14 t15 t16 t17 t18 t19 t20 | t20 := 0. ^3 foo: 4 bar: 5 baz: 6'. "
+                 "Object compile: 'zzB7d | a b c d e f g h i j k | k := ''the temp''. "
+                 "^nil zork'. "
+                 "Object compile: 'zzB7e | a b c d e f g h i j k | k := 1. nil zork. "
+                 "^#after'. "
+                 "^{[nil zzB7a] on: MessageNotUnderstood do: [:ex | "
+                 "{ex receiver. ex message arguments}]. "
+                 "[nil zzB7b] on: MessageNotUnderstood do: [:ex | ex resume: 7]. "
+                 "[nil zzB7c] on: MessageNotUnderstood do: [:ex | "
+                 "{ex receiver. ex message arguments}]. "
+                 "[nil zzB7d] on: MessageNotUnderstood do: [:ex | "
+                 "{ex receiver. ex message selector}]. "
+                 "[nil zzB7e] on: MessageNotUnderstood do: [:ex | ex resume: 7]} "
+                 "printString",
+                 "((3 (4 5 ) ) after (3 (4 5 6 ) ) (nil zork ) after )");
+    evaluate("Object removeSelector: #zzB7a; removeSelector: #zzB7b; "
+             "removeSelector: #zzB7c; removeSelector: #zzB7d; "
+             "removeSelector: #zzB7e. ^nil");
+}
+
 int
 main(void)
 {
@@ -11286,6 +11326,7 @@ main(void)
     test_bugs6_medium_gui_fixes();
     test_bugs6_low_vm_kerna();
     test_bugs6_low_kernb_files();
+    test_bugs7_vm();
 
     OM_shutdown();
     return ST_TEST_END();

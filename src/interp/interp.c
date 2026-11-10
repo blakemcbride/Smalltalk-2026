@@ -2676,9 +2676,9 @@ send_does_not_understand(st_oop receiver, st_oop selector, st_oop lookup_class)
     uint32_t i;
 
     /*
-     *  The Message first, and pushed, and only then the Array of
-     *  arguments (Bugs6 OM-1).  It was the other way round -- the Array
-     *  built and filled, then the Message allocated -- and between the
+     *  Whichever of the two is made first is rooted on the stack before
+     *  the second is allocated (Bugs6 OM-1).  It used to be the Array
+     *  built and filled, then the Message allocated, and between the
      *  two the Array was held in a C local and nowhere else: count zero,
      *  on no stack, in no root.  Any allocation can run a collection,
      *  and the walk rebuilds counts from the roots, so a collection
@@ -2690,25 +2690,67 @@ send_does_not_understand(st_oop receiver, st_oop selector, st_oop lookup_class)
      *  object that had the entry by then.  Every unhandled send goes
      *  through here, so a server reached it by itself in minutes.
      *
-     *  With the Message on the context's stack -- marked up to the stack
-     *  pointer, so one push is all it takes -- the Array is stored into
-     *  it before anything else is allocated, and the walk reaches both.
-     *  The arguments are read one slot deeper while the Message is on
-     *  top of them.  This is the order doc/CONCURRENCY.md asks for under
-     *  "Roots are the walk, not the count", and the order
-     *  primitive_compile_method already keeps.
+     *  With the first of them in a slot of the context's stack -- marked
+     *  up to the stack pointer -- the second can be allocated, the Array
+     *  is stored into the Message before anything else is, and the walk
+     *  reaches both.  This is the order doc/CONCURRENCY.md asks for under "Roots are the
+     *  walk, not the count", and the order primitive_compile_method
+     *  already keeps.
+     *
+     *  But never by growing the sender's stack (Bugs07 FIXES-1).  A
+     *  context is sized to the compiler's `temporaries + max_stack_depth',
+     *  and the deepest point of a method is usually a send with its
+     *  arguments pushed, so when that send is the one not understood the
+     *  frame is already full: the push of the Message was refused (setting
+     *  corrupt_reason and moving the instruction pointer to the end), and
+     *  this carried on as if it had happened -- the arguments were read
+     *  one slot too deep, the pop took the receiver's slot too, and
+     *  doesNotUnderstand: went to the method's last temporary with the
+     *  receiver as its first argument; a handler that resumed came back to
+     *  an activation already condemned, and got a CorruptMethod.
+     *
+     *  So the Message goes where the stack already has a slot.  With
+     *  arguments, the Array is made first, while nothing unrooted is held,
+     *  filled, and stored over the first argument's slot -- the stack
+     *  roots it there and the first argument is safe inside it -- and only
+     *  then is the Message made; the arguments are popped and the Message
+     *  pushed into the first argument's place.  Without arguments the
+     *  Message has to be pushed above the receiver, which is the one slot
+     *  the bytecode did not count, and ST_context_slots_for gives every
+     *  compiled method that slot; a context that still has no room -- one
+     *  sized by hand, or from a header with no frame size in it -- is
+     *  abandoned as a CorruptMethod rather than sent to a temporary.
      */
-    message = OM_instantiate_pointers(ST_CLASS_MESSAGE, 2);
-    ST_push(message);
-    args = OM_instantiate_pointers(ST_CLASS_ARRAY, st_vm.argument_count);
-    for (i = 0; i < st_vm.argument_count; ++i)
-        OM_store_pointer(i, args,
-                         ST_stack_value(st_vm.argument_count - i));
-    OM_store_pointer(ST_MESSAGE_SELECTOR, message, selector);
-    OM_store_pointer(ST_MESSAGE_ARGUMENTS, message, args);
-
-    ST_pop_n(st_vm.argument_count + 1);
-    ST_push(message);
+    if (st_vm.argument_count == 0) {
+        if (ST_stack_room() == 0) {
+            if (!st_vm.corrupt_reason)
+                st_vm.corrupt_reason = "a unary send not understood with no "
+                                       "slot in its frame for the Message";
+            st_vm.instruction_pointer = st_vm.method_end;
+            return;
+        }
+        message = OM_instantiate_pointers(ST_CLASS_MESSAGE, 2);
+        ST_push(message);
+        args = OM_instantiate_pointers(ST_CLASS_ARRAY, 0);
+        OM_store_pointer(ST_MESSAGE_SELECTOR, message, selector);
+        OM_store_pointer(ST_MESSAGE_ARGUMENTS, message, args);
+    }  else  {
+        args = OM_instantiate_pointers(ST_CLASS_ARRAY, st_vm.argument_count);
+        for (i = 0; i < st_vm.argument_count; ++i)
+            OM_store_pointer(i, args,
+                             ST_stack_value(st_vm.argument_count - 1 - i));
+        ST_stack_put(st_vm.argument_count - 1, args);
+        message = OM_instantiate_pointers(ST_CLASS_MESSAGE, 2);
+        /*
+         *  Into the Message BEFORE the push: the push overwrites the slot
+         *  that holds the Array's one count, and with no workers a count
+         *  that reaches zero frees on the spot.
+         */
+        OM_store_pointer(ST_MESSAGE_SELECTOR, message, selector);
+        OM_store_pointer(ST_MESSAGE_ARGUMENTS, message, args);
+        ST_pop_n(st_vm.argument_count);
+        ST_push(message);
+    }
     st_vm.argument_count = 1;
 
     method = lookup_method(ST_SELECTOR_DOES_NOT_UNDERSTAND, lookup_class, &found);
