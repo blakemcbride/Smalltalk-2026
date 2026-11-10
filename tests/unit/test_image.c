@@ -693,8 +693,11 @@
  *
  *  3402 -> 3404 with Bugs07 GUI-4: Form>>valueAt: and valueAt:put:, through
  *  a 1x1 Form of the call's own instead of the class variable.
+ *
+ *  3404 -> 3407 with Bugs07 NET-3: Socket class>>descriptorLimit, Socket>>
+ *  isOverDescriptorLimit and HttpServer class>>defaultMaxConnections.
  */
-#define LIB_METHODS             3404
+#define LIB_METHODS             3407
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -3135,8 +3138,12 @@ test_browsing(void)
      *
      *  3036008 -> 3036930 with Bugs07 GUI-4: a Form's pixel accessors blit
      *  through a pixel of their own.
+     *
+     *  3036930 -> 3039719 with Bugs07 NET-3: a server's default connection
+     *  cap leaves room in the descriptor limit, and a connection past the
+     *  descriptors there are is answered 503.
      */
-    check_integer("(SourceFiles at: 1) contents size", 3036930);
+    check_integer("(SourceFiles at: 1) contents size", 3039719);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.

@@ -85,7 +85,9 @@ extern "C" {
  *  It is not the only ceiling: a host with the usual `ulimit -n 1024' runs
  *  out of DESCRIPTORS first, and the failure then reads as EMFILE from the
  *  operating system instead of "no free socket slot" from here.  Both are
- *  now one accept refused rather than a server that has stopped.
+ *  now one accept refused rather than a server that has stopped -- and the
+ *  descriptor limit is raised when the network starts, where the hard
+ *  limit allows; see `Descriptors' below (Bugs07 NET-3).
  */
 #define NET_MAX_SOCKETS     4096
 
@@ -317,6 +319,41 @@ const char *NET_argument(int index);
  *  a key should be.
  */
 const char *NET_environment(const char *name);
+
+/*  ----------  Descriptors  ----------
+ *
+ *  The socket table is not the ceiling a server meets first; the process's
+ *  descriptor limit is (Bugs07 NET-3).  RLIMIT_NOFILE's soft limit is 1,024
+ *  under systemd and in an Ubuntu login shell and 256 on macOS, and st2026
+ *  never raised it, so about a thousand idle connections -- fewer than
+ *  HttpServer's maxConnections -- used every descriptor: accept failed with
+ *  EMFILE, the 503 that maxConnections promises never came, fresh clients
+ *  waited in the listen backlog for an answer that never came either, and
+ *  every request in flight that needed a descriptor -- a service file to
+ *  load, a database connection, an outgoing call -- failed with "Too many
+ *  open files".  Three things answer that:
+ *
+ *  NET_init raises the soft limit toward the hard one, to the socket
+ *  table's size and a thousand more, the way a server that expects
+ *  thousands of connections is expected to.  Nothing here or in the
+ *  libraries the VM calls uses select(), whose FD_SETSIZE is the usual
+ *  reason not to, and the VM starts no child that would inherit it.
+ *
+ *  NET_descriptor_limit is the limit then in force, or -1 where there is
+ *  none to speak of (Windows, an unlimited one).  HttpServer takes its
+ *  default maxConnections from it, leaving room for everything else.
+ *
+ *  And one descriptor is kept SPARE, open on /dev/null and never used,
+ *  so that when the process does run out -- something other than
+ *  connections took the descriptors -- an accept can still be made: the
+ *  spare is closed, the connection accepted into its number, and the
+ *  handle marked; NET_is_reserve says so, the image answers it 503 and
+ *  closes it, and the close opens the spare again.  A client is then told,
+ *  instead of waiting for ever.  POSIX only: a Windows socket is not a
+ *  C runtime descriptor and has no such limit.
+ */
+long        NET_descriptor_limit(void);
+int         NET_is_reserve(int64_t handle);
 
 /*  ----------  Asking the image to stop  ----------
  *

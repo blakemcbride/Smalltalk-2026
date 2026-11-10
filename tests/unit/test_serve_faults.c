@@ -49,6 +49,8 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
+#include "st_socket.h"              /*  NET_MAX_SOCKETS  */
+
 #define IMAGE       fixture("bugs3-serve.im")
 #define BATCH       fixture("bugs3-serve-batch.st")
 #define STARTUP     fixture("bugs3-serve-startup.st")
@@ -3674,13 +3676,13 @@ net_sleep_ms(long ms)
 /*
  *  Start st2026 with `args' (NULL-terminated, after the binary's own
  *  name), its standard output and error in `log', its environment this
- *  process's plus `env' (NAME=VALUE, or NULL), and -- when `nofile' is
- *  not zero -- a soft descriptor limit of `nofile'.  The st2026 process's
- *  own id, or -1.
+ *  process's plus `env' (NAME=VALUE, or NULL), and the soft and hard
+ *  descriptor limits `soft' and `hard' where they are not zero.  The
+ *  st2026 process's own id, or -1.
  */
 static pid_t
 net_spawn(const char *const *args, const char *log, const char *env,
-          unsigned long nofile)
+          unsigned long soft, unsigned long hard)
 {
     const char *argv[16];
     pid_t       pid;
@@ -3709,12 +3711,16 @@ net_spawn(const char *const *args, const char *log, const char *env,
     }
     if (env)
         putenv((char *) env);
-    if (nofile) {
+    if (soft || hard) {
         struct rlimit   rl;
 
         if (getrlimit(RLIMIT_NOFILE, &rl) == 0) {
-            rl.rlim_cur = (rlim_t) nofile;
-            setrlimit(RLIMIT_NOFILE, &rl);
+            if (hard)
+                rl.rlim_max = (rlim_t) hard;
+            if (soft)
+                rl.rlim_cur = (rlim_t) soft;
+            if (setrlimit(RLIMIT_NOFILE, &rl) != 0)
+                _exit(125);
         }
     }
     execv(st2026, (char *const *) argv);
@@ -3951,12 +3957,16 @@ net_remove_rest_image(void)
     (void) system(command);
 }
 
-/*  Start the RestServer image; its pid, with *port set, or -1.  */
+/*
+ *  Start the RestServer image on `config' (NET_CONFIG unless another is
+ *  given); its pid, with *port set, or -1.
+ */
 static pid_t
-net_start_rest(const char *env, unsigned long nofile, int *port)
+net_start_rest_on(const char *config, const char *env, unsigned long soft,
+                  unsigned long hard, int *port)
 {
-    const char *args[] = { "-serve", NET_RIMAGE, "-workers", "2", NET_CONFIG, NULL };
-    pid_t       pid = net_spawn(args, NET_LOG, env, nofile);
+    const char *args[] = { "-serve", NET_RIMAGE, "-workers", "2", config, NULL };
+    pid_t       pid = net_spawn(args, NET_LOG, env, soft, hard);
 
     *port = -1;
     if (pid < 0)
@@ -3968,6 +3978,12 @@ net_start_rest(const char *env, unsigned long nofile, int *port)
     }
     *port = net_log_port(NET_LOG);
     return pid;
+}
+
+static pid_t
+net_start_rest(const char *env, unsigned long nofile, int *port)
+{
+    return net_start_rest_on(NET_CONFIG, env, nofile, 0, port);
 }
 
 /*
@@ -4108,7 +4124,7 @@ bugs7c_net_stop(void)
         const char *deaf[] = { "-serve", IMAGE, "-workers", "2",
                                "'up'\n(Delay forSeconds: 600) wait\n", NULL };
 
-        pid = net_spawn(asks, log, "ST_STOP_GRACE_SECONDS=1", 0);
+        pid = net_spawn(asks, log, "ST_STOP_GRACE_SECONDS=1", 0, 0);
         if (pid > 0 && net_log_wait(log, "==> false", 1, 60000)) {
             t0 = net_now_ms();
             kill(pid, SIGTERM);
@@ -4125,7 +4141,7 @@ bugs7c_net_stop(void)
                 net_reap(pid, 0);
         }
 
-        pid = net_spawn(deaf, log, NULL, 0);
+        pid = net_spawn(deaf, log, NULL, 0, 0);
         if (pid > 0 && net_log_wait(log, "==> 'up'", 1, 60000)) {
             t0 = net_now_ms();
             kill(pid, SIGTERM);
@@ -4141,6 +4157,238 @@ bugs7c_net_stop(void)
     }
 }
 
+
+/*
+ *  A /rest POST on a kept-alive connection, and its whole response: the
+ *  head, then as many bytes as Content-Length says.  The byte count, or -1.
+ */
+static long
+net_request_keep(int fd, const char *json, char *out, size_t len, long ms)
+{
+    char        request[4096];
+    int         n = snprintf(request, sizeof request,
+                             "POST /rest HTTP/1.1\r\nHost: x\r\n"
+                             "Content-Type: application/json\r\n"
+                             "Content-Length: %zu\r\n\r\n%s", strlen(json), json);
+    int64_t     deadline = net_now_ms() + ms;
+    size_t      got = 0;
+
+    if (send(fd, request, (size_t) n, MSG_NOSIGNAL) != n)
+        return -1;
+    out[0] = '\0';
+    for (;;) {
+        const char     *end = strstr(out, "\r\n\r\n");
+        const char     *cl  = strstr(out, "Content-Length: ");
+        struct pollfd   p;
+        int64_t         left = deadline - net_now_ms();
+        ssize_t         k;
+
+        if (end && cl && cl < end
+         && got >= (size_t) (end + 4 - out) + (size_t) atol(cl + 16))
+            return (long) got;
+        if (left <= 0 || got >= len - 1)
+            return -1;
+        p.fd = fd;
+        p.events = POLLIN;
+        p.revents = 0;
+        if (poll(&p, 1, (int) left) <= 0)
+            continue;
+        k = recv(fd, out + got, len - 1 - got, 0);
+        if (k <= 0)
+            return -1;
+        got += (size_t) k;
+        out[got] = '\0';
+    }
+}
+
+/*
+ *  `n' connections that each send one byte of a request and then nothing,
+ *  so that the server holds each one for its whole request deadline; the
+ *  count made.
+ */
+static int
+net_open_idle(int port, int *fds, int n)
+{
+    int     i;
+
+    for (i = 0; i < n; ++i) {
+        fds[i] = net_connect(port);
+        if (fds[i] < 0)
+            break;
+        (void) send(fds[i], "G", 1, MSG_NOSIGNAL);
+    }
+    return i;
+}
+
+static void
+net_close_all(int *fds, int n)
+{
+    int     i;
+
+    for (i = 0; i < n; ++i)
+        if (fds[i] >= 0)
+            close(fds[i]);
+}
+
+/*  A fresh client's first line, within `ms': "HTTP/1.1 503" or the like.  */
+static int
+net_fresh_status(int port, char *out, size_t len, long ms)
+{
+    int     fd = net_connect(port);
+
+    out[0] = '\0';
+    if (fd < 0)
+        return -1;
+    (void) send(fd, "GET / HTTP/1.1\r\nHost: x\r\n\r\n", 27, MSG_NOSIGNAL);
+    net_read_all(fd, out, len, ms);
+    close(fd);
+    return 0;
+}
+
+/*
+ *  Bugs07 NET-3: under the usual soft descriptor limit -- 1,024 under
+ *  systemd and in an Ubuntu shell, 256 on macOS -- idle connections used
+ *  every descriptor while there were still fewer than maxConnections of
+ *  them.  The documented 503 never came, a fresh client waited in the
+ *  backlog with no answer, and a request in flight that needed a
+ *  descriptor failed with `Too many open files'.  Here, at 256 soft and
+ *  hard so that nothing can be raised: the default maxConnections leaves
+ *  room, so the fresh client is told 503 and the request in flight loads
+ *  its service file; with maxConnections set past the descriptors, the
+ *  spare descriptor still answers 503, twice, and the server serves again
+ *  once the connections have gone.  And where the hard limit allows, the
+ *  soft one is raised and the default is the full 1,024.
+ */
+static void
+bugs7c_net_descriptors(void)
+{
+    static char reply[65536];
+    static int  idle[300];
+    const char *max = fixture("bugs7c-net-max.json");
+    char        text[1024];
+    int         port;
+    int         keep;
+    int         n;
+    int         status;
+    pid_t       pid;
+    struct rlimit   own;
+
+    /*  This process holds three hundred client sockets of its own.  */
+    if (getrlimit(RLIMIT_NOFILE, &own) == 0 && own.rlim_cur != RLIM_INFINITY
+     && own.rlim_cur < 1024) {
+        own.rlim_cur = own.rlim_max == RLIM_INFINITY || own.rlim_max >= 1024
+                     ? 1024 : own.rlim_max;
+        (void) setrlimit(RLIMIT_NOFILE, &own);
+    }
+
+    /*  The default maxConnections: the fresh client is told, the work in flight done.  */
+    pid = net_start_rest_on(NET_CONFIG, NULL, 256, 256, &port);
+    net_check(pid > 0 && port > 0, "NET-3 the RestServer came up at 256 descriptors",
+              NET_LOG);
+    if (pid > 0 && port > 0) {
+        keep = net_connect(port);
+        net_request_keep(keep, "{\"_class\": \"\", \"_method\": \"LoginRequired\"}",
+                         reply, sizeof reply, 20000);
+        net_check(strstr(reply, "\"_Success\":true") != NULL,
+                  "NET-3 a kept-alive connection is served", NET_LOG);
+        n = net_open_idle(port, idle, 250);
+        net_fresh_status(port, reply, sizeof reply, 10000);
+        net_check(strncmp(reply, "HTTP/1.1 503", 12) == 0,
+                  "NET-3 past the default maxConnections a fresh client is told 503",
+                  NET_LOG);
+        /*  The service file is first read now, in a descriptor of its own.  */
+        net_request_keep(keep, "{\"_class\": \"services.Slow\", \"_method\": \"wait\", "
+                         "\"ms\": 10}", reply, sizeof reply, 20000);
+        net_check(strstr(reply, "\"done\":true") != NULL,
+                  "NET-3 a request in flight still has a descriptor for its work",
+                  NET_LOG);
+        net_check(strstr(net_log(NET_LOG), "Too many open files") == NULL,
+                  "NET-3 no descriptor ran out", NET_LOG);
+        net_close_all(idle, n);
+        close(keep);
+        kill(pid, SIGTERM);
+        status = net_reap(pid, 30000);
+        net_check(status == 0, "NET-3 the server stops as asked", NET_LOG);
+    }
+
+    /*  maxConnections past the descriptors: the spare still says 503, again and again.  */
+    snprintf(text, sizeof text,
+             "{\"port\": 0, \"bindAddress\": \"127.0.0.1\", \"backendDirectory\": \"%s\", "
+             "\"requireAuthentication\": false, \"maxConnections\": 4000}\n", NET_BACKEND);
+    if (write_file(max, text) == 0
+     && (pid = net_start_rest_on(max, NULL, 256, 256, &port)) > 0 && port > 0) {
+        int     round;
+
+        net_check(strstr(net_log(NET_LOG), "maxConnections 4000 is more than the 256") != NULL,
+                  "NET-3 a maxConnections past the descriptors is said at start",
+                  NET_LOG);
+        for (round = 1; round <= 2; ++round) {
+            int64_t t0;
+
+            n = net_open_idle(port, idle, 270);
+            net_fresh_status(port, reply, sizeof reply, 10000);
+            net_check(strncmp(reply, "HTTP/1.1 503", 12) == 0,
+                      round == 1 ? "NET-3 out of descriptors a fresh client is told 503"
+                                 : "NET-3 ... and told 503 again: the spare came back",
+                      NET_LOG);
+            net_close_all(idle, n);
+            /*  Served again once the connections have gone.  */
+            t0 = net_now_ms();
+            do {
+                int fd = net_connect(port);
+
+                reply[0] = '\0';
+                if (fd >= 0) {
+                    net_request_keep(fd, "{\"_class\": \"\", \"_method\": \"LoginRequired\"}",
+                                     reply, sizeof reply, 3000);
+                    close(fd);
+                }
+                if (strstr(reply, "\"_Success\":true") == NULL)
+                    net_sleep_ms(200);
+            } while (strstr(reply, "\"_Success\":true") == NULL
+                     && net_now_ms() - t0 < 10000);
+            net_check(strstr(reply, "\"_Success\":true") != NULL,
+                      "NET-3 the server serves again when the connections close",
+                      NET_LOG);
+        }
+        kill(pid, SIGTERM);
+        net_reap(pid, 30000);
+    } else
+        net_check(0, "NET-3 the RestServer came up with maxConnections 4000", NET_LOG);
+    unlink(max);
+
+    /*
+     *  The limit, as the image sees it: raised from a soft 1,024 to the
+     *  socket table and a thousand more where the hard limit allows, with
+     *  the full default then; left at a hard 256, with a quarter kept.
+     */
+    {
+        const char *log = fixture("bugs7c-net-limit.log");
+        const char *line = "{Socket descriptorLimit. HttpServer new maxConnections}\n";
+        const char *args[] = { "-serve", IMAGE, "-workers", "1", line, NULL };
+        struct rlimit   rl;
+        unsigned long   want = NET_MAX_SOCKETS + 1024;
+        char            expected[128];
+
+        if (getrlimit(RLIMIT_NOFILE, &rl) == 0 && rl.rlim_max != RLIM_INFINITY
+         && rl.rlim_max < (rlim_t) want)
+            want = (unsigned long) rl.rlim_max;
+        pid = net_spawn(args, log, NULL, 1024, 0);
+        status = pid > 0 ? net_reap(pid, 60000) : -1;
+        snprintf(expected, sizeof expected, "==> (%lu %lu )", want,
+                 want < 1024 ? want : 1024);
+        /*  A batch that ends is an image that stopped on its own: exit 1.  */
+        net_check(status >= 0 && strstr(net_log(log), expected) != NULL,
+                  want > 1024 ? "NET-3 a soft limit of 1,024 is raised"
+                              : "NET-3 a soft limit of 1,024 is kept", log);
+        pid = net_spawn(args, log, NULL, 256, 256);
+        status = pid > 0 ? net_reap(pid, 60000) : -1;
+        net_check(status >= 0 && strstr(net_log(log), "==> (256 192 )") != NULL,
+                  "NET-3 a hard limit of 256 gives 192 connections", log);
+        unlink(log);
+    }
+}
+
 static void
 bugs7c_net(void)
 {
@@ -4150,6 +4398,7 @@ bugs7c_net(void)
         return;
     }
     bugs7c_net_stop();
+    bugs7c_net_descriptors();
     net_remove_rest_image();
     unlink(NET_LOG);
 }

@@ -6164,7 +6164,9 @@ enum {
     NET_CMD_IS_TLS          = 24,   /*  handle                     */
     NET_CMD_ENVIRONMENT     = 25,   /*  name                       */
     NET_CMD_DISARM          = 26,   /*  handle, mask               */
-    NET_CMD_STOP_GRACE      = 27
+    NET_CMD_STOP_GRACE      = 27,
+    NET_CMD_IS_RESERVE      = 28,   /*  handle                     */
+    NET_CMD_DESCRIPTOR_LIMIT = 29
 };
 
 #define NET_SCRATCH_BYTES   65536
@@ -6660,6 +6662,22 @@ primitive_net_command(void)
          */
         return net_answer(NET_stop_asked() || SCHED_stop_requested()
                           ? ST_TRUE : ST_FALSE);
+
+    case NET_CMD_IS_RESERVE: {
+        /*  Accepted only in the spare descriptor's room (Bugs07 NET-3).  */
+        int64_t handle = net_handle_arg(a);
+
+        if (handle < 0)
+            return 0;
+        return net_answer(NET_is_reserve(handle) ? ST_TRUE : ST_FALSE);
+    }
+
+    case NET_CMD_DESCRIPTOR_LIMIT: {
+        /*  The descriptor limit in force, or nil (Bugs07 NET-3).  */
+        long    limit = NET_descriptor_limit();
+
+        return net_answer(limit < 0 ? ST_NIL : OM_int_oop((st_int) limit));
+    }
 
     case NET_CMD_STOP_GRACE:
         /*  How long an asked image has before the pool is stopped.  */

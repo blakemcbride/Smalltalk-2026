@@ -53,6 +53,8 @@ typedef WSAPOLLFD       net_pollfd;
 #include <poll.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <limits.h>
+#include <sys/resource.h>
 #if defined(__linux__) || defined(__APPLE__)
 #include <sys/random.h>
 #endif
@@ -99,6 +101,7 @@ typedef struct {
     unsigned char   listening;
     unsigned char   want_read;      /*  one-shot interest, see NET_arm  */
     unsigned char   want_write;
+    unsigned char   reserve;        /*  accepted in the spare's room: see NET_is_reserve  */
     uintptr_t       read_token;
     uintptr_t       write_token;
     void           *ssl;            /*  the TLS state, or NULL: see NET_tls_start  */
@@ -144,6 +147,16 @@ static int              io_started;
 static st_atomic_int    io_stopping;
 static net_fd           wake_read  = NET_FD_INVALID;
 static net_fd           wake_write = NET_FD_INVALID;
+
+#ifndef ST_WINDOWS
+/*
+ *  The spare descriptor (Bugs07 NET-3, st_socket.h `Descriptors'), and
+ *  whether a slot holds the connection it made room for -- while one does,
+ *  there is no spare to open.  Both under net_lock.
+ */
+static net_fd           spare_fd = NET_FD_INVALID;
+static int              spare_lent;
+#endif
 
 /*  What Smalltalk asks for after -serve <image>.  */
 static int              argument_count;
@@ -271,6 +284,7 @@ claim_slot(net_fd fd, int listening)
         s->generation  = next_generation;
         s->in_use      = 1;
         s->listening   = (unsigned char) listening;
+        s->reserve     = 0;
         s->want_read   = 0;
         s->want_write  = 0;
         s->read_token  = 0;
@@ -426,6 +440,79 @@ make_wake_pipe(void)
 #endif
 }
 
+/*  ----------  Descriptors  ----------  (st_socket.h, Bugs07 NET-3)  */
+
+/*
+ *  The soft descriptor limit raised toward the hard one: to the socket
+ *  table's size and a thousand more, which leaves a full table room for
+ *  files, database connections and outgoing calls beside it.  Never
+ *  lowered, and a refusal is not an error -- the limit stays what it was
+ *  and HttpServer sizes itself to that.  macOS refuses a soft limit above
+ *  OPEN_MAX whatever the hard limit says.
+ */
+static void
+raise_descriptor_limit(void)
+{
+#ifndef ST_WINDOWS
+    struct rlimit   rl;
+    rlim_t          want = (rlim_t) NET_MAX_SOCKETS + 1024;
+
+    if (getrlimit(RLIMIT_NOFILE, &rl) != 0 || rl.rlim_cur == RLIM_INFINITY
+     || rl.rlim_cur >= want)
+        return;
+    if (rl.rlim_max != RLIM_INFINITY && rl.rlim_max < want)
+        want = rl.rlim_max;
+#if defined(__APPLE__) && defined(OPEN_MAX)
+    if (want > (rlim_t) OPEN_MAX)
+        want = (rlim_t) OPEN_MAX;
+#endif
+    if (want <= rl.rlim_cur)
+        return;
+    rl.rlim_cur = want;
+    (void) setrlimit(RLIMIT_NOFILE, &rl);
+#endif
+}
+
+#ifndef ST_WINDOWS
+/*  Open the spare if there is none and no slot holds its room.  Under net_lock.  */
+static void
+spare_open_locked(void)
+{
+    if (NET_FD_IS_VALID(spare_fd) || spare_lent)
+        return;
+    spare_fd = open("/dev/null", O_RDONLY);
+#if defined(FD_CLOEXEC)
+    if (NET_FD_IS_VALID(spare_fd))
+        fcntl(spare_fd, F_SETFD, FD_CLOEXEC);
+#endif
+}
+
+/*  A connection in the spare's room is gone: open the spare again.  */
+static void
+spare_returned(void)
+{
+    ST_mutex_lock(&net_lock);
+    spare_lent = 0;
+    spare_open_locked();
+    ST_mutex_unlock(&net_lock);
+}
+#endif
+
+long
+NET_descriptor_limit(void)
+{
+#ifdef ST_WINDOWS
+    return -1;
+#else
+    struct rlimit   rl;
+
+    if (getrlimit(RLIMIT_NOFILE, &rl) != 0 || rl.rlim_cur == RLIM_INFINITY
+     || rl.rlim_cur > (rlim_t) LONG_MAX)
+        return -1;
+    return (long) rl.rlim_cur;
+#endif
+}
+
 int
 NET_init(int (*hook)(uintptr_t token))
 {
@@ -465,6 +552,11 @@ NET_init(int (*hook)(uintptr_t token))
         signal_hook = hook;
         ST_store_seq(&io_stopping, 0);
         io_started = 0;
+        raise_descriptor_limit();
+#ifndef ST_WINDOWS
+        spare_lent = 0;
+        spare_open_locked();        /*  nobody else is here yet  */
+#endif
         ST_store_release(&net_state, 2);
         return 0;
     }
@@ -708,6 +800,12 @@ NET_shutdown(void)
 #endif
     ST_store_seq(&net_armed, 0);
     ST_store_seq(&net_open, 0);
+#ifndef ST_WINDOWS
+    if (NET_FD_IS_VALID(spare_fd))
+        close(spare_fd);
+    spare_fd   = NET_FD_INVALID;
+    spare_lent = 0;
+#endif
     ST_mutex_unlock(&net_lock);
     if (NET_FD_IS_VALID(wake_read))
         net_close_fd(wake_read);
@@ -783,6 +881,7 @@ NET_accept(int64_t listener)
     net_fd      fd;
     int64_t     handle;
     int         saved;
+    int         reserve = 0;
 
     if (!ready())
         return -1;
@@ -804,6 +903,30 @@ NET_accept(int64_t listener)
         fd    = accept(lfd, NULL, NULL);
         saved = net_errno();
     } while (!NET_FD_IS_VALID(fd) && saved == NET_EINTR);
+#ifndef ST_WINDOWS
+    /*
+     *  Out of descriptors: take this one connection in the spare's room,
+     *  so that it can be told 503 rather than left in the backlog for ever
+     *  (Bugs07 NET-3).  Its slot is marked, and closing it opens the spare
+     *  again.  A spare lost to another thread's open between the close
+     *  and the accept is opened again by a later accept.
+     */
+    if (!NET_FD_IS_VALID(fd) && (saved == EMFILE || saved == ENFILE)
+     && NET_FD_IS_VALID(spare_fd)) {
+        close(spare_fd);
+        spare_fd = NET_FD_INVALID;
+        do {
+            fd    = accept(lfd, NULL, NULL);
+            saved = net_errno();
+        } while (!NET_FD_IS_VALID(fd) && saved == NET_EINTR);
+        if (NET_FD_IS_VALID(fd)) {
+            reserve    = 1;
+            spare_lent = 1;
+        } else
+            spare_open_locked();
+    } else
+        spare_open_locked();
+#endif
     ST_mutex_unlock(&net_lock);
     if (!NET_FD_IS_VALID(fd)) {
         if (saved == NET_EWOULDBLOCK
@@ -818,14 +941,25 @@ NET_accept(int64_t listener)
     if (set_nonblocking(fd) != 0) {
         set_error(net_errno(), "accept: non-blocking");
         net_close_fd(fd);
+#ifndef ST_WINDOWS
+        if (reserve)
+            spare_returned();
+#endif
         return -1;
     }
     quiet_sigpipe(fd);
     ST_mutex_lock(&net_lock);
     handle = claim_slot(fd, 0);
+    if (handle >= 0)
+        table[(uint64_t) handle & NET_INDEX_MASK].reserve = (unsigned char) reserve;
     ST_mutex_unlock(&net_lock);
-    if (handle < 0)
+    if (handle < 0) {
         net_close_fd(fd);
+#ifndef ST_WINDOWS
+        if (reserve)
+            spare_returned();
+#endif
+    }
     return handle;
 }
 
@@ -1356,6 +1490,7 @@ NET_close(int64_t handle, uintptr_t *old_read, uintptr_t *old_write)
     net_socket *s;
     net_fd      fd;
     void       *tls;
+    int         reserve;
 
     if (old_read)
         *old_read = 0;
@@ -1382,8 +1517,9 @@ NET_close(int64_t handle, uintptr_t *old_read, uintptr_t *old_write)
         ST_fetch_sub_relaxed(&net_armed, 1);
     if (s->want_write)
         ST_fetch_sub_relaxed(&net_armed, 1);
-    fd  = s->fd;
-    tls = s->ssl;
+    fd      = s->fd;
+    tls     = s->ssl;
+    reserve = s->reserve;
     memset(s, 0, sizeof *s);
     s->fd = NET_FD_INVALID;
     ST_fetch_sub_relaxed(&net_open, 1);
@@ -1427,6 +1563,12 @@ NET_close(int64_t handle, uintptr_t *old_read, uintptr_t *old_write)
      *  socket.
      */
     net_close_fd(fd);
+#ifndef ST_WINDOWS
+    if (reserve)
+        spare_returned();       /*  into the number just freed  */
+#else
+    (void) reserve;
+#endif
     NET_wake();
     return 0;
 }
@@ -1557,6 +1699,21 @@ NET_open_count(void)
 }
 
 /*  ----------  Asking about a socket  ----------  */
+
+int
+NET_is_reserve(int64_t handle)
+{
+    net_socket *s;
+    int         answer;
+
+    if (!ready())
+        return 0;
+    ST_mutex_lock(&net_lock);
+    s = slot_for(handle);
+    answer = s != NULL && s->reserve;
+    ST_mutex_unlock(&net_lock);
+    return answer;
+}
 
 int
 NET_local_port(int64_t handle)

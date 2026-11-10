@@ -287,6 +287,18 @@ Socket class >> stopGraceMilliseconds [
 ]
 
 { #category : 'services' }
+Socket class >> descriptorLimit [
+	"How many descriptors this process may have open -- the soft
+	 RLIMIT_NOFILE, which the VM raises toward the hard limit when the
+	 network starts -- or nil where there is no such number: Windows, an
+	 unlimited one, a build with no sockets.  What HttpServer sizes its
+	 default maxConnections by (Bugs07 NET-3)."
+
+	self isAvailable ifFalse: [^nil].
+	^self primCommand: 29 with: nil with: nil with: nil
+]
+
+{ #category : 'services' }
 Socket class >> openCount [
 	"How many sockets the VM holds open, listeners included."
 	^self primCommand: 19 with: nil with: nil with: nil
@@ -646,6 +658,18 @@ Socket >> close [
 	self class primCommand: 7 with: old with: nil with: nil.
 	readSemaphore signal.
 	writeSemaphore signal
+]
+
+{ #category : 'testing' }
+Socket >> isOverDescriptorLimit [
+	"Whether this connection was accepted only by giving up the descriptor
+	 the VM keeps spare: the process had no other one free.  All there is
+	 to do with it is to say so and close it, which gives the spare back
+	 for the next one (Bugs07 NET-3).  A listener that left it open would
+	 hold the last descriptor there is, and the next client would wait in
+	 the backlog for ever again."
+
+	^self class primCommand: 28 with: handle with: nil with: nil
 ]
 
 { #category : 'accessing' }

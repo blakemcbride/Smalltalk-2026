@@ -93,6 +93,22 @@ generation also settles the kernel's habit of reissuing a descriptor number
 the instant it is closed: the I/O thread attributes every `poll()` result by
 `(slot, generation)` captured when it built its set, never by number.
 
+**Descriptors.** The socket table holds 4,096 (`NET_MAX_SOCKETS`), but the
+limit a server meets first is the process's descriptor limit: 1,024 soft under
+systemd and in an Ubuntu login shell, 256 on macOS. So when the network starts
+the soft limit is raised toward the hard one, to the table's size and a
+thousand more (nothing in the VM uses `select()`, and it starts no child that
+would inherit the limit). `Socket class>>descriptorLimit` answers the limit
+then in force, and `HttpServer` takes its default `maxConnections` from it:
+1,024, or fewer where that would not leave a quarter of the limit (at most
+256) for everything else. And one descriptor is kept spare, open on
+`/dev/null`: an accept that fails with `EMFILE` closes it, accepts the
+connection into its number and marks the handle, `Socket>>isOverDescriptorLimit`
+says so, `HttpServer` answers it 503 and closes it, and the close opens the
+spare again. A client of a server that has run out is told so rather than left
+in the listen backlog. POSIX only; a Windows socket is not a C runtime
+descriptor.
+
 `SCHED_asynchronous_signal` now answers whether it queued the signal. Its
 queue was 64 entries and dropped on overflow, which for a keystroke is a lost
 keystroke and for a socket is a request that never wakes; it is 1024 now, and

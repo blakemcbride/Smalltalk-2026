@@ -251,9 +251,13 @@ bytes, more than a hundred headers, a body over the limit (64 MB by default)
 are refused before they are read — a `Content-Length` with more digits than
 the limit is 413 by its digit count, before it is converted; a request not complete 120 seconds after
 its first byte is cut off, a client that takes nothing of its reply for 30
-seconds is dropped, and above 1,024 open connections the answer is 503
+seconds is dropped, and above 1,024 open connections the answer is 503 —
+fewer where the process's descriptor limit, raised toward its hard limit at
+start, would not leave room for the rest; and a connection the process has no
+descriptor for is answered 503 too, by a descriptor kept spare for it
 (`requestSeconds`, `writeSeconds` and `maxConnections` in `server.json`
-change the three). A multipart boundary is 1 to 70 characters
+change the three; a `maxConnections` past the descriptor limit is logged at
+start). A multipart boundary is 1 to 70 characters
 (RFC 2046) and a body has at most 10,000 parts, each refused with 400 past
 its limit, and the search for the boundary is linear in the body — it was
 body × boundary, scanned before authentication, until Bugs6 NET-1. Kiss's

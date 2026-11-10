@@ -85,7 +85,7 @@ HttpServer >> initialize [
 	"Bugs5 NET-1: see requestSeconds:, writeSeconds: and maxConnections:."
 	requestMilliseconds := 120000.
 	writeMilliseconds := 30000.
-	maxConnections := 1024.
+	maxConnections := self class defaultMaxConnections.
 	running := false.
 	name := 'http'.
 	"The headers Kiss's SecurityHeadersFilter added to every response."
@@ -164,9 +164,33 @@ HttpServer >> maxConnections: anInteger [
 	"How many connections may be open at once; one more is answered 503
 	 and closed.  Without a cap, slow clients filled the VM's table of
 	 4,096 sockets and the server stopped accepting at all (Bugs5 NET-1).
-	 1,024 by default, which leaves room in that table for everything else
-	 the image opens -- database connections, outgoing HTTP, files."
+	 See HttpServer class>>defaultMaxConnections for the default."
 	maxConnections := anInteger
+]
+
+{ #category : 'configuration' }
+HttpServer class >> defaultMaxConnections [
+	"1,024, or fewer when the process's descriptor limit would not leave
+	 room beside them for everything else the image opens -- database
+	 connections, outgoing HTTP, service files, the image's own.
+
+	 1,024 was the whole of it, counted against the VM's table of 4,096
+	 sockets, and the limit that binds first is usually the descriptor
+	 limit: 1,024 under systemd and in an Ubuntu login shell, 256 on macOS.
+	 About a thousand idle connections then used every descriptor while
+	 there were still fewer than 1,024 of them, so the 503 never came, a
+	 fresh client waited in the backlog with no answer, and each request in
+	 flight that needed a descriptor failed with `Too many open files'
+	 (Bugs07 NET-3).  The VM now raises the limit where the hard limit
+	 allows, which on most hosts leaves this at 1,024; where it cannot, a
+	 quarter of the limit, at most 256, is kept for the rest, and a 256
+	 limit gives 192 connections.  maxConnections: overrides it, and a
+	 connection accepted past the descriptors there are is still answered
+	 503 -- see serve:."
+	| limit |
+	limit := Socket descriptorLimit.
+	limit isNil ifTrue: [^1024].
+	^1024 min: (limit - (limit // 4 min: 256) max: 16)
 ]
 
 { #category : 'configuration' }
@@ -241,11 +265,20 @@ HttpServer >> standingHeadersDo: aBlock [
 { #category : 'starting and stopping' }
 HttpServer >> start [
 	"Listen, and accept in a process of this server's own."
+	| limit |
 	running ifTrue: [^self].
 	listener := ServerSocket listenOn: port address: bindAddress backlog: 128.
 	running := true.
 	acceptProcess := [self acceptLoop] fork.
-	self log: 'listening on port ', self port printString
+	self log: 'listening on port ', self port printString.
+	"A maxConnections: the descriptors cannot hold is said once, here,
+	 rather than discovered as `Too many open files' in somebody's request
+	 (Bugs07 NET-3)."
+	limit := Socket descriptorLimit.
+	(limit notNil and: [maxConnections >= limit]) ifTrue: [
+		self log: 'maxConnections ', maxConnections printString,
+			' is more than the ', limit printString,
+			' descriptors this process may open; past them a connection is answered 503']
 ]
 
 { #category : 'starting and stopping' }
@@ -346,15 +379,19 @@ HttpServer >> serve: aSocket [
 	"One connection, in a process of its own.  The socket is this method's
 	 argument and therefore this activation's -- see the class comment.
 
-	 Over maxConnections it is answered 503 and closed here, before a
-	 process is forked for it: the reply is a few dozen bytes into a socket
-	 nothing has been written to, so it does not wait, and the write
-	 timeout is there in case it would."
+	 Over maxConnections, or over the process's descriptors, it is
+	 answered 503 and closed here, before a process is forked for it: the
+	 reply is a few dozen bytes into a socket nothing has been written to,
+	 so it does not wait, and the write timeout is there in case it would."
 	| admitted |
-	admitted := connectionsLock critical: [
-		connections < maxConnections
-			ifTrue: [connections := connections + 1. true]
-			ifFalse: [false]].
+	"A connection the VM could accept only in its spare descriptor's room
+	 is answered the same way: the process has no descriptor left for the
+	 work, and the close gives the spare back (Bugs07 NET-3)."
+	admitted := aSocket isOverDescriptorLimit not and: [
+		connectionsLock critical: [
+			connections < maxConnections
+				ifTrue: [connections := connections + 1. true]
+				ifFalse: [false]]].
 	admitted ifFalse: [
 		[[aSocket
 			send: 'HTTP/1.1 503 Service Unavailable', self crlf,
