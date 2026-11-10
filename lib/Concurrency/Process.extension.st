@@ -49,10 +49,14 @@ update, and Delay's queue was left with a nil at its head, which stopped
 the timing process and with it every Delay in the image.  In both cases
 the process is resumed to finish what it was in, and what terminate or
 signalException: wanted happens when it has: terminate by a frame spliced
-under the unwind block, or by the section's own unwind block made to end
-the process after it has run; signalException: by a frame that raises
-where the unwind block returns to, or by the section's unwind block made
-to raise once it has run.  A process WAITING inside a section is not let
+under the unwind block, or by a DeferredStop put in the place of the
+section's own unwind block, which runs it and then ends the process;
+signalException: by a frame that raises where the unwind block returns
+to, or by the same DeferredStop, which raises where the section's unwind
+block returns to.  The DeferredStop acts only in the process it was made
+for, never in a terminator unwinding the section, and keeps the requests
+rather than nesting them: a terminate beats a signal (Bugs07 SCHED-5).
+A process WAITING inside a section is not let
 out first: a wait is a stable point, and a consumer blocked in
 SharedQueue>>next must not be made to take an item on its way out.
 "
@@ -393,22 +397,35 @@ Process >> criticalSectionFrom: aContext stoppedAt: where [
 Process >> finishSection: anUnwindContext [
 	"I was stopped running inside the critical: section anUnwindContext
 	 guards.  Let me finish it, and end when it ends: the section's
-	 unwind block is replaced by one that runs it and then terminates me.
+	 unwind block is replaced by a DeferredStop that runs it and then
+	 terminates me.
 
 	 In the unwind block, and not in a frame spliced under the section
 	 (which is what finishUnwindBlock:waitingOn: does for a block already
 	 running), because a section can end by a ^ or an exception out
 	 through it, and those discard a spliced frame without running it; an
 	 unwind block runs however the section ends, once, since
-	 runUnwindBlock disarms it first.  `self terminate' from the block is
-	 the active-process path when I run it myself, which runs the unwind
-	 blocks outside the section and ends me; run by a second terminator
-	 that has already taken my stack, it finds no suspendedContext and
-	 does nothing.  Answers true: I am to be resumed."
-	| guarded |
-	guarded := anUnwindContext tempAt: 1.
-	anUnwindContext tempAt: 1 put: [guarded value. self terminate].
+	 runUnwindBlock disarms it first.  The DeferredStop ends me only when
+	 I run it myself; run by a terminator that has already taken my
+	 stack, it releases the lock and does nothing more.  A section
+	 already holding one has the terminate added to it (Bugs07 SCHED-5).
+	 Answers true: I am to be resumed."
+	(self deferredStopIn: anUnwindContext) terminate.
 	^true
+]
+
+{ #category : '*Concurrency' }
+Process >> deferredStopIn: anUnwindContext [
+	"The DeferredStop in the critical: section frame anUnwindContext,
+	 put there in place of its unwind block if it is not there already.
+	 A second request for the same section is added to the first rather
+	 than wrapped round it (Bugs07 SCHED-5)."
+	| block |
+	block := anUnwindContext tempAt: 1.
+	(block isKindOf: DeferredStop) ifTrue: [^block].
+	block := DeferredStop for: self guarding: block in: anUnwindContext.
+	anUnwindContext tempAt: 1 put: block.
+	^block
 ]
 
 { #category : '*Concurrency' }
@@ -607,14 +624,16 @@ Process >> signal: anException after: aContext waitingOn: where [
 Process >> signal: anException leaving: anUnwindContext [
 	"I was stopped running inside the critical: section anUnwindContext
 	 guards.  Let me finish it, and raise anException as it ends: the
-	 section's unwind block is replaced by one that runs it -- releasing
-	 the lock -- and then signals.  See finishSection: for why the unwind
-	 block and not a spliced frame.  The handler search walks out from
-	 the block through the section's frames to whatever on:do: is below,
-	 as it would from anywhere in the section."
-	| guarded |
-	guarded := anUnwindContext tempAt: 1.
-	anUnwindContext tempAt: 1 put: [guarded value. anException signal].
+	 section's unwind block is replaced by a DeferredStop that runs it --
+	 releasing the lock -- and then has anException raised where the
+	 section returns to.  See finishSection: for why the unwind block and
+	 not a spliced frame, and DeferredStop for when the exception is
+	 raised and when it is dropped: never in a terminator, never inside
+	 another exception's unwind, never once a terminate has been asked
+	 for (Bugs07 SCHED-5).  The handler search walks out from the end of
+	 the section to whatever on:do: is below, as it would from anywhere
+	 in the section.  Answers true: I am to be resumed."
+	(self deferredStopIn: anUnwindContext) signal: anException.
 	^true
 ]
 

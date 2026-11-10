@@ -191,8 +191,13 @@
  *
  *  154 -> 155 with St80CompilerTest, which asks what a `do it' is given: a
  *  ReadStream positioned at the selection, and nothing above it.
+ *
+ *  155 -> 156 with Bugs07 SCHED-5: DeferredStop, the terminate or the
+ *  exceptions put off to the end of a critical: section, kept in the
+ *  section's unwind block in place of a block that raised or terminated
+ *  wherever the section happened to be unwound.
  */
-#define LIB_CLASSES             155
+#define LIB_CLASSES             156
 /*
  *  This number is a ratchet and is meant to move: lib/ is where every
  *  divergence from the frozen 1983 sources lives, so it grows whenever a
@@ -643,8 +648,11 @@
  *  digitsIn:) and RestDispatcher carrying it across a form's fields
  *  (decodeFormValue:named:work:, parse:or:work:; numberFrom: became
  *  numberFrom:work:).
+ *
+ *  3361 -> 3371 with Bugs07 SCHED-5: DeferredStop's eight and the `new'
+ *  synthesized for it, and Process>>deferredStopIn:.
  */
-#define LIB_METHODS             3361
+#define LIB_METHODS             3371
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -861,8 +869,11 @@ build_once(void)
      *  ProcessTest and St80ExceptionTest, none of which defines one.
      *
      *  151 -> 152 with St80CompilerTest, which does not define one either.
+     *
+     *  152 -> 153 with DeferredStop (Bugs07 SCHED-5), which is made by
+     *  basicNew from its own for:guarding:in: and does not define one.
      */
-    CHECK_EQ_INT(res.news_synthesized, 152);
+    CHECK_EQ_INT(res.news_synthesized, 153);
     built = 1;
     return 1;
 }
@@ -3032,8 +3043,12 @@ test_browsing(void)
      *
      *  2989806 -> 2990100 with Bugs07 SCHED-2: primRelease:'s comment
      *  says only the holder lets go.
+     *
+     *  2990100 -> 2996003 with Bugs07 SCHED-5: a stop put off to the end of
+     *  a critical: section is kept in a DeferredStop, not written into the
+     *  section's unwind block as a signal or a terminate.
      */
-    check_integer("(SourceFiles at: 1) contents size", 2990100);
+    check_integer("(SourceFiles at: 1) contents size", 2996003);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -11483,6 +11498,83 @@ test_bugs7_lib(void)
     test_dialect = ST_DIALECT_BLUE_BOOK;
 }
 
+/*
+ *  Bugs07, the scheduler's findings that one worker shows.
+ */
+static void
+test_bugs7_sched(void)
+{
+    test_dialect = ST_DIALECT_CLOSURES;
+
+    /*
+     *  SCHED-5: a signalException: put off to the end of a critical:
+     *  section was a `signal' written into the section's unwind block,
+     *  and an unwind block runs wherever the section is unwound.  The
+     *  process waited inside the section and was terminated from outside:
+     *  the exception was raised in the TERMINATOR, out of `p terminate',
+     *  and the victim's outer ensure: never ran.  Now the request is kept
+     *  in a DeferredStop and acted on only by the process it was made
+     *  for; a terminator unwinding the section drops it.
+     */
+    check_string("| m log p gate r | m := Mutex new. gate := Semaphore new. "
+                 "log := OrderedCollection new. "
+                 "p := [[[m critical: [log add: #in. Processor yield. log add: #mid. "
+                 "gate wait. log add: #out]] ensure: [log add: #outerEnsure]] "
+                 "on: Error do: [:e | log add: e messageText]] fork. "
+                 "Processor yield. p signalException: (Error new messageText: #timeout). "
+                 "Processor yield. Processor yield. "
+                 "r := [p terminate. #terminateReturned] on: Error do: [:e | "
+                 "log add: #terminatorGot -> e messageText. #terminatorRaised]. "
+                 "log add: r; add: m owner printString; add: p suspendedContext isNil. "
+                 "^log asArray printString",
+                 "(in mid outerEnsure terminateReturned 'nil' true )");
+    /*  The same through forkParallel:, whose Promise was left pending for ever.  */
+    check_string("| m p gate task r | m := Mutex new. gate := Semaphore new. "
+                 "p := Processor forkParallel: [m critical: [task := Processor activeProcess. "
+                 "Processor yield. gate wait. 42]]. Processor yield. "
+                 "task signalException: (Error new messageText: #timeout). "
+                 "Processor yield. Processor yield. "
+                 "r := [task terminate. #terminateReturned] on: Error do: [:e | "
+                 "e return: #terminatorGot -> e messageText]. "
+                 "^(Array with: r with: p printString with: task suspendedContext isNil) "
+                 "printString",
+                 "(terminateReturned 'a Promise(broken)' true )");
+    /*
+     *  A second exception handled outside the section unwound it, and the
+     *  first was raised inside that unwind, where the handler that would
+     *  have caught it was out of service: the process died of it, and
+     *  #after never ran.  An exception put off to a section that is being
+     *  left by another exception's unwind is dropped there.
+     */
+    check_string("| m log p gate r | m := Mutex new. gate := Semaphore new. "
+                 "log := OrderedCollection new. "
+                 "p := [[m critical: [log add: #in. Processor yield. log add: #mid. "
+                 "gate wait. log add: #out]] on: Error do: [:e | log add: e messageText]. "
+                 "log add: #after. [true] whileTrue: [Processor yield]] fork. "
+                 "Processor yield. p signalException: (Error new messageText: #one). "
+                 "Processor yield. Processor yield. log add: #main. "
+                 "p signalException: (Error new messageText: #two). "
+                 "Processor yield. Processor yield. (Delay forMilliseconds: 10) wait. "
+                 "r := log asArray printString. p terminate. ^r",
+                 "(in mid main two after )");
+    /*
+     *  A terminate after a signalException: of the same section wrapped
+     *  the wrapped block once more; the handler for the exception unwound
+     *  past the outer wrapping and the terminate was lost -- the process
+     *  looped on.  A terminate now beats a signal put off to the same
+     *  section, which is never raised.
+     */
+    check_string("| m log p n | m := Mutex new. n := 0. log := OrderedCollection new. "
+                 "p := [[[m critical: [log add: #in. Processor yield. log add: #out]] "
+                 "on: Error do: [:e | log add: e messageText]. n := n + 1. "
+                 "Processor yield] repeat] fork. Processor yield. "
+                 "p signalException: (Error new messageText: #timeout). p terminate. "
+                 "log add: #terminateReturned. (Delay forMilliseconds: 20) wait. "
+                 "^log asArray printString, ' loops after terminate: ', n printString, "
+                 "' terminated: ', p suspendedContext isNil printString",
+                 "(in terminateReturned out ) loops after terminate: 0 terminated: true");
+}
+
 int
 main(void)
 {
@@ -11625,6 +11717,7 @@ main(void)
     test_bugs6_low_kernb_files();
     test_bugs7_vm();
     test_bugs7_lib();
+    test_bugs7_sched();
 
     OM_shutdown();
     return ST_TEST_END();

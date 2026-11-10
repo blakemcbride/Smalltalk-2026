@@ -1,0 +1,132 @@
+"
+A stop put off to the end of a critical: section.
+
+A process caught RUNNING inside a Semaphore's, Mutex's or Monitor's
+critical: is let finish the section before a terminate or a
+signalException: takes effect (Bugs6 SCHED-6 and SCHED-7): the lock's
+ensure: would otherwise give the lock back around a half-done update.  What
+was asked for is recorded here, and this object takes the place of the
+section's own unwind block -- an ensure: frame's first temporary -- so that
+it runs however the section ends, once, since runUnwindBlock disarms the
+frame first.  It runs the block it replaced, and then does what was asked:
+ends the process, or raises the exceptions in it.
+
+It replaced a block that did the same in one line -- `[guarded value. self
+terminate]', `[guarded value. anException signal]' -- and the line was wrong
+in three ways (Bugs07 SCHED-5).  An unwind block is not a place in the
+process's control flow: it runs wherever, and on whichever process, the
+section happens to be unwound.  Unwound by a TERMINATOR -- the process
+waited inside the section after the signal was put off, and was terminated
+from outside -- the exception was raised in the terminator, out of its
+`terminate', and the rest of the victim's unwind blocks were abandoned: an
+outer ensure: that released another lock, or forkParallel:'s, whose Promise
+then stayed pending for ever.  Unwound by ANOTHER EXCEPTION's handler, the
+first exception was raised inside that unwind, where the handler that would
+have caught it was out of service, and the process died of it.  And two
+requests nested: a terminate after a signalException: wrapped the wrapped
+block once more, the handler for the exception unwound past the outer
+wrapping, and the terminate was lost -- the process ran on.
+
+So the requests are kept, not wrapped: a terminate beats any signal, and
+signals queue in the order they came.  They are acted on only by the
+process they were made for, never by a terminator unwinding it -- that one
+is ending it anyway -- and never from inside the process's own terminate.
+An exception is not raised from inside another exception's unwind; it is
+dropped there, as the unwind is leaving the place it was aimed at.  And it
+is raised in the frame the section's unwind block returns to, after the
+block has returned, not inside it: inside, the process would count as
+running an unwind block for as long as the handler ran, and a terminate
+sent meanwhile would be put off to a point the handler's return: skips.
+"
+Class {
+	#name : 'DeferredStop',
+	#superclass : 'Object',
+	#instVars : [ 'process', 'guarded', 'section', 'terminating', 'exceptions' ],
+	#category : 'Concurrency'
+}
+
+{ #category : 'instance creation' }
+DeferredStop class >> for: aProcess guarding: aBlock in: anUnwindContext [
+	"The stop to put into anUnwindContext, a critical: section's ensure:
+	 frame on aProcess's stack, in place of its unwind block aBlock."
+	^self basicNew setProcess: aProcess guarding: aBlock in: anUnwindContext
+]
+
+{ #category : 'private' }
+DeferredStop >> setProcess: aProcess guarding: aBlock in: anUnwindContext [
+	process := aProcess.
+	guarded := aBlock.
+	section := anUnwindContext.
+	terminating := false
+]
+
+{ #category : 'accessing' }
+DeferredStop >> process [
+	^process
+]
+
+{ #category : 'requesting' }
+DeferredStop >> terminate [
+	"End the process when the section ends.  Beats any signal."
+	terminating := true
+]
+
+{ #category : 'requesting' }
+DeferredStop >> signal: anException [
+	"Raise anException in the process when the section ends, after any
+	 already asked for."
+	exceptions isNil ifTrue: [exceptions := OrderedCollection new].
+	exceptions addLast: anException
+]
+
+{ #category : 'evaluating' }
+DeferredStop >> value [
+	"Run as the section's unwind block, by runUnwindBlock: run the block
+	 this replaced -- the lock's release -- and then do what was asked,
+	 if this is the process it was asked of and the section is ending in
+	 that process's own course (see the class comment)."
+	| unwinder how |
+	guarded value.
+	Processor activeProcess == process ifFalse: [^nil].
+	unwinder := thisContext sender.
+	how := self howLeftFrom: unwinder.
+	how == #terminating ifTrue: [^nil].
+	terminating ifTrue: [^process terminate].
+	how == #unwinding ifTrue: [exceptions := nil. ^nil].
+	self raiseAfter: unwinder
+]
+
+{ #category : 'private' }
+DeferredStop >> howLeftFrom: anUnwinder [
+	"How the section is being left, read from the frames between the
+	 runUnwindBlock running me and the section's own frame: #terminating
+	 if by the process's own terminate, #unwinding if by an exception's
+	 return:, retry or default action, and #ending otherwise -- normally,
+	 or by a ^ through it, both of which are the process's own course."
+	| ctx terminator unwinder |
+	terminator := Process compiledMethodAt: #runUnwindBlocksFrom:.
+	unwinder := Exception compiledMethodAt: #unwindTo:.
+	ctx := anUnwinder sender.
+	[ctx isNil or: [ctx == section]] whileFalse: [
+		ctx method == terminator ifTrue: [^#terminating].
+		ctx method == unwinder ifTrue: [^#unwinding].
+		ctx := ctx sender].
+	^#ending
+]
+
+{ #category : 'private' }
+DeferredStop >> raiseAfter: anUnwinder [
+	"Raise the exceptions asked for in the frame anUnwinder -- the
+	 runUnwindBlock running me -- returns to, once it has: the shape of
+	 Process>>signal:after:waitingOn:.  The frame answers nil to
+	 anUnwinder's sender, which every sender of runUnwindBlock discards."
+	| pending frame |
+	exceptions isNil ifTrue: [^nil].
+	pending := exceptions.
+	exceptions := nil.
+	frame := [pending do: [:each | each signal]. nil] asContext.
+	"Field one of any context is its sender."
+	frame instVarAt: 1 put: anUnwinder sender.
+	anUnwinder instVarAt: 1 put: frame.
+	^nil
+]
