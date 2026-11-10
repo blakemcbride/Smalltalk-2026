@@ -483,6 +483,45 @@ shape_of_class(st_oop cls)
     return shape;
 }
 
+/*
+ *  The shape an indexing primitive uses for `object': its class's format
+ *  for the named-field count, and the object's OWN header for whether its
+ *  body holds pointers, 16-bit words or bytes.
+ *
+ *  Bugs07 INTERP-2.  60 to 64 and 223 took the storage kind from the class
+ *  alone, and nothing keeps a class's format in step with instances that
+ *  already exist: `ByteArray instVarAt: 3 put: (Array instVarAt: 3)', or a
+ *  become: between two classes, which leaves every instance of one naming
+ *  the other's format.  A 3-byte instance was then indexed as three
+ *  POINTERS, and `at: 3 put:' wrote eight bytes at offset 16 of a 3-byte
+ *  body; a byte object under a word class was read and written to twice
+ *  its length.  The header is what the memory allocated, so it is what
+ *  the stride must come from; the class's format still says how many of
+ *  a pointer object's fields are named rather than indexed, and a wrong
+ *  count there can only move the boundary inside the body, never past it
+ *  (indexable_length subtracts it from the body's own length).
+ *
+ *  The Blue Book header has a pointer bit but no word bit: a word object
+ *  of n words and a byte object of 2n bytes are the same chunk, so there
+ *  words-or-bytes still comes from the class, and either reading stays
+ *  inside the chunk.
+ */
+static om_shape
+shape_of_object(st_oop object)
+{
+    om_shape    shape = shape_of_class(OM_fetch_class(object));
+
+    shape.pointers = OM_pointer_bit(object) != 0;
+#if defined(ST_OM_MT)
+    shape.words    = !shape.pointers && OM_words_bit(object);
+#else
+    shape.words    = !shape.pointers && shape.words;
+#endif
+    if (!shape.pointers)
+        shape.fixed = 0;        /*  named fields are pointers, always  */
+    return shape;
+}
+
 /*  ----------  Indexed access, primitives 60 to 62  ----------  */
 
 /*
@@ -521,7 +560,7 @@ primitive_at(void)
     if (!OM_is_object(object)
      || !positive_16bit_value(ST_stack_value(0), &index))
         return 0;
-    shape  = shape_of_class(OM_fetch_class(object));
+    shape  = shape_of_object(object);
     length = indexable_length(object, &shape);
     if (index < 1 || index > length)
         return 0;
@@ -552,7 +591,7 @@ primitive_at_put(void)
     if (!OM_is_object(object)
      || !positive_16bit_value(ST_stack_value(1), &index))
         return 0;
-    shape  = shape_of_class(OM_fetch_class(object));
+    shape  = shape_of_object(object);
     length = indexable_length(object, &shape);
     if (index < 1 || index > length)
         return 0;
@@ -606,7 +645,7 @@ primitive_string_at(void)
     if (!OM_is_object(object)
      || !positive_16bit_value(ST_stack_value(0), &index))
         return 0;
-    shape  = shape_of_class(OM_fetch_class(object));
+    shape  = shape_of_object(object);
     length = indexable_length(object, &shape);
     if (shape.pointers || shape.words || index < 1 || index > length)
         return 0;
@@ -635,7 +674,7 @@ primitive_string_at_put(void)
     if (!OM_is_object(object)
      || !positive_16bit_value(ST_stack_value(1), &index))
         return 0;
-    shape  = shape_of_class(OM_fetch_class(object));
+    shape  = shape_of_object(object);
     length = indexable_length(object, &shape);
     if (shape.pointers || shape.words || index < 1 || index > length)
         return 0;
@@ -661,7 +700,7 @@ primitive_size(void)
 
     if (!OM_is_object(object))
         return 0;
-    shape = shape_of_class(OM_fetch_class(object));
+    shape = shape_of_object(object);
     return answer_positive_16bit(indexable_length(object, &shape), 1);
 }
 
@@ -4980,7 +5019,7 @@ primitive_string_hash(void)
 
     if (!OM_is_object(receiver))
         return 0;
-    shape = shape_of_class(OM_fetch_class(receiver));
+    shape = shape_of_object(receiver);  /*  Bugs07 INTERP-2  */
     if (shape.pointers || shape.words || !shape.indexable)
         return 0;
     return answer_positive(ST_string_hash_object(receiver), 1);

@@ -12087,6 +12087,43 @@ test_bugs7b_vm(void)
                  "^r asArray printString",
                  "(refused refused refused refused refused Array 2 true true true "
                  "CompiledMethod )");
+
+    /*
+     *  INTERP-2.  The indexing primitives took pointers-words-or-bytes
+     *  from the class, and a class's format can change under instances
+     *  that already exist.  A 3-byte instance whose class was given
+     *  Array's format was indexed as three pointers -- `at: 3 put:' wrote
+     *  eight bytes at offset 16 -- and given a word format, at twice its
+     *  length.  The object's own header decides now.
+     */
+    check_string("| c b r | c := Object variableByteSubclass: #Bugs7bBytes "
+                 "instanceVariableNames: '' classVariableNames: '' "
+                 "poolDictionaries: '' category: 'Bugs7b'. "
+                 "b := c new: 3. r := OrderedCollection new. "
+                 "c instVarAt: 3 put: (Array instVarAt: 3). "
+                 "r add: b size. "
+                 "r add: ([b at: 3 put: b. #wrote] on: Error do: [:e | #refused]). "
+                 "r add: ([b at: 4] on: Error do: [:e | #refused]). "
+                 "r add: (b at: 3 put: 200); add: (b at: 3). "
+                 "c instVarAt: 3 put: (Float instVarAt: 3). "
+                 "r add: b size. "
+                 "r add: ([b at: 3 put: 65535. #wrote] on: Error do: [:e | #refused]). "
+                 "r add: (b basicAt: 3). "
+                 "^r asArray printString",
+                 "(3 refused refused 200 200 3 refused 200 )");
+    check_string("| c d keep r | c := Object variableByteSubclass: #Bugs7bB1 "
+                 "instanceVariableNames: '' classVariableNames: '' "
+                 "poolDictionaries: '' category: 'Bugs7b'. "
+                 "d := Object variableSubclass: #Bugs7bP1 "
+                 "instanceVariableNames: '' classVariableNames: '' "
+                 "poolDictionaries: '' category: 'Bugs7b'. "
+                 "keep := (1 to: 50) collect: [:i | c new: 3]. c become: d. "
+                 "r := keep collect: [:b | [b at: 3 put: b. #wrote] "
+                 "on: Error do: [:e | #refused]]. "
+                 "keep first at: 3 put: 9. "
+                 "^{r asSet asArray. keep first at: 3. keep first size. "
+                 "(String new: 2) hash isInteger} printString",
+                 "((refused ) 9 3 true )");
 }
 
 int
