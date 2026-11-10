@@ -3984,12 +3984,25 @@ float_primitive(unsigned index)
  *  compiler in the image does -- so newMethod:header: is essential.
  */
 
+/*
+ *  How many whole oops a method's body holds: the bound on objectAt: and
+ *  objectAt:put:, which read and write with the memory's oop stride.
+ *
+ *  Bugs07 INTERP-1.  This answered byte_length / 2 whenever the oop count
+ *  came out 0 -- the Blue Book memory's 16-bit word count, carried into
+ *  the 64-bit memory as a fallback for methods of 1 to 7 bytes.  There a
+ *  slot is 8 bytes, so `(CompiledMethod new: 6) objectAt: 3 put: x' wrote
+ *  bytes 16..23 of a 6-byte body: into the next malloc chunk's header,
+ *  with a count released on whatever oop those bytes had held, and the
+ *  image died in malloc a little later.  The one division is right for
+ *  both memories -- an oop is two bytes in the Blue Book one, so it IS
+ *  the word count there -- and a method shorter than one oop has no slot
+ *  at all.
+ */
 static uint32_t
 method_word_slots(st_oop method)
 {
-    return OM_fetch_byte_length(method) / (uint32_t) sizeof(st_oop) == 0
-            ? OM_fetch_byte_length(method) / 2
-            : OM_fetch_byte_length(method) / (uint32_t) sizeof(st_oop);
+    return OM_fetch_byte_length(method) / (uint32_t) sizeof(st_oop);
 }
 
 /*
@@ -4004,8 +4017,9 @@ method_word_slots(st_oop method)
  *  AND released a reference count on whatever those characters decoded to --
  *  a free of an object nobody freed, waiting for the object table to hand
  *  the number out again (Bugs4 PRIM-1; the read is bounded by
- *  method_word_slots so it never left the allocation, which is why only the
- *  write is a memory fault).
+ *  method_word_slots so it never left the allocation -- for a method of
+ *  at least one oop; see method_word_slots for the shorter ones -- which
+ *  is why only the write is a memory fault).
  *
  *  CompiledMethod is the only class in the image that declares primitives 68
  *  and 69, and its fallback is `self primitiveFailed', so restricting them

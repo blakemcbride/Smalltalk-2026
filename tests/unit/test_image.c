@@ -12018,6 +12018,45 @@ test_bugs7b_files(void)
     unlink(stale);
 }
 
+/*
+ *  Bugs07, round 2: the VM group's medium findings.
+ */
+static void
+test_bugs7b_vm(void)
+{
+    test_dialect = ST_DIALECT_CLOSURES;
+
+    /*
+     *  INTERP-1.  objectAt: on a CompiledMethod shorter than one oop.  The
+     *  bound fell back to the Blue Book's 16-bit word count, so a 6-byte
+     *  method admitted indexes 1 to 3 at an 8-byte stride: reads of the
+     *  neighbouring memory, and writes into the next malloc chunk's header
+     *  that killed the image in malloc a few allocations later.  An
+     *  8-byte method has exactly one slot.
+     */
+    check_string("| m r | r := OrderedCollection new. m := CompiledMethod basicNew: 6. "
+                 "r add: ([m objectAt: 1. #read] on: Error do: [:e | #refused]). "
+                 "r add: ([m objectAt: 3. #read] on: Error do: [:e | #refused]). "
+                 "m := CompiledMethod newMethod: 8 header: 2. "
+                 "r add: ([m objectAt: 1] on: Error do: [:e | #refused]). "
+                 "m := CompiledMethod basicNew: 8. "
+                 "r add: ([m objectAt: 2. #read] on: Error do: [:e | #refused]). "
+                 "^r asArray printString",
+                 "(refused refused 2 refused )");
+    check_string("| m r | r := OrderedCollection new. m := CompiledMethod basicNew: 6. "
+                 "r add: ([m objectAt: 1 put: 5. #wrote] on: Error do: [:e | #refused]). "
+                 "m := CompiledMethod basicNew: 8. "
+                 "r add: ([m objectAt: 1 put: 5. m objectAt: 1] on: Error do: [:e | #refused]). "
+                 "^r asArray printString",
+                 "(refused 5 )");
+    check_string("| keep | keep := OrderedCollection new. 1 to: 2000 do: [:i | | m | "
+                 "m := CompiledMethod new: 7. "
+                 "[m objectAt: 3 put: i] on: Error do: [:e | nil]. "
+                 "keep add: m; add: (String new: 1)]. keep := nil. "
+                 "Smalltalk garbageCollect. ^#survived",
+                 "survived");
+}
+
 int
 main(void)
 {
@@ -12163,6 +12202,7 @@ main(void)
     test_bugs7_sched();
     test_bugs7b_lib();
     test_bugs7b_files();
+    test_bugs7b_vm();
 
     OM_shutdown();
     return ST_TEST_END();
