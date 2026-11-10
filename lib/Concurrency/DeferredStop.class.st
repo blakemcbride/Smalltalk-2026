@@ -37,6 +37,13 @@ is raised in the frame the section's unwind block returns to, after the
 block has returned, not inside it: inside, the process would count as
 running an unwind block for as long as the handler ran, and a terminate
 sent meanwhile would be put off to a point the handler's return: skips.
+
+A process that has been let finish a section must not go to sleep in it:
+the stop would then wait for whatever wakes it, which for a consumer in
+SharedQueue>>next is the next item, taken and thrown away (Bugs07 SCHED-4).
+Monitor's waits ask Process>>stopIfDeferred, which finds this in the
+section's frame and acts on it there, at a stable point, through
+takeEffect.
 "
 Class {
 	#name : 'DeferredStop',
@@ -129,4 +136,21 @@ DeferredStop >> raiseAfter: anUnwinder [
 	frame instVarAt: 1 put: anUnwinder sender.
 	anUnwinder instVarAt: 1 put: frame.
 	^nil
+]
+
+{ #category : 'evaluating' }
+DeferredStop >> takeEffect [
+	"Do now what was asked, in the process it was asked of, from a stable
+	 point inside the section -- Process>>stopIfDeferred, where the
+	 process is about to wait or has just come back from waiting.  A
+	 terminate ends it from here, through the section's unwind block,
+	 which is still me and then finds the process's own terminate under
+	 way; the exceptions are raised here, once each, and a handler that
+	 resumes one lets the wait go on."
+	| pending |
+	terminating ifTrue: [^process terminate].
+	exceptions isNil ifTrue: [^nil].
+	pending := exceptions.
+	exceptions := nil.
+	pending do: [:each | each signal]
 ]

@@ -654,8 +654,11 @@
  *
  *  3371 -> 3372 with Bugs07 KERNB-3: Process>>runUnwindBlockOf:, each of
  *  a terminated process's unwind blocks run on its own.
+ *
+ *  3372 -> 3375 with Bugs07 SCHED-4: Process>>stopIfDeferred,
+ *  DeferredStop>>takeEffect and Monitor>>isHeldBy:.
  */
-#define LIB_METHODS             3372
+#define LIB_METHODS             3375
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -3053,8 +3056,12 @@ test_browsing(void)
      *
      *  2996003 -> 2997921 with Bugs07 KERNB-3: an error raised by an
      *  unwind block that terminate runs is reported, and the next runs.
+     *
+     *  2997921 -> 3001950 with Bugs07 SCHED-4: a Mutex's or a Monitor's
+     *  section counts only while its lock is held, and Monitor's waits act
+     *  on a stop put off to the end of the section.
      */
-    check_integer("(SourceFiles at: 1) contents size", 2997921);
+    check_integer("(SourceFiles at: 1) contents size", 3001950);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -11550,13 +11557,16 @@ test_bugs7_sched(void)
      *  first was raised inside that unwind, where the handler that would
      *  have caught it was out of service: the process died of it, and
      *  #after never ran.  An exception put off to a section that is being
-     *  left by another exception's unwind is dropped there.
+     *  left by another exception's unwind is dropped there.  (The audit's
+     *  probe kept the process alive afterwards by spinning on yield; here
+     *  it waits, so that a Delay firing late on a loaded machine cannot
+     *  run this doIt out of bytecodes and leave a spinner for the rest.)
      */
     check_string("| m log p gate r | m := Mutex new. gate := Semaphore new. "
                  "log := OrderedCollection new. "
                  "p := [[m critical: [log add: #in. Processor yield. log add: #mid. "
                  "gate wait. log add: #out]] on: Error do: [:e | log add: e messageText]. "
-                 "log add: #after. [true] whileTrue: [Processor yield]] fork. "
+                 "log add: #after. Semaphore new wait] fork. "
                  "Processor yield. p signalException: (Error new messageText: #one). "
                  "Processor yield. Processor yield. log add: #main. "
                  "p signalException: (Error new messageText: #two). "
@@ -11607,6 +11617,50 @@ test_bugs7_sched(void)
                  "ensure: [log add: #terminatorEnsure]] fork. (Delay forMilliseconds: 50) wait. "
                  "^{log asArray. m isHeld. terminator suspendedContext isNil} printString",
                  "((victimEnsure terminatorContinues terminatorEnsure ) false true )");
+
+    /*
+     *  SCHED-4: a SharedQueue consumer woken by nextPut: and not yet
+     *  running again is inside Monitor>>critical: with the lock given up.
+     *  It was taken for one RUNNING in the section and let finish it: it
+     *  went round waitUntil:, slept again, and was ended only when the
+     *  next item came -- which it took, and nobody received; a timeout
+     *  signalled into it fired only then.  A section whose lock the
+     *  process does not hold no longer counts, and a process let finish a
+     *  section that goes on to wait in it acts on the stop there.
+     */
+    check_string("| q c got log | log := OrderedCollection new. q := SharedQueue new. "
+                 "c := [got := q next. log add: got] fork. Processor yield. q nextPut: 1. "
+                 "log add: q next. c terminate. log add: (c suspendedContext isNil). "
+                 "Processor yield. q nextPut: 2. Processor yield. "
+                 "(Delay forMilliseconds: 20) wait. "
+                 "log add: q size; add: (c suspendedContext isNil); add: got. "
+                 "^log asArray printString",
+                 "(1 true 1 true nil )");
+    check_string("| q c got log | log := OrderedCollection new. q := SharedQueue new. "
+                 "c := [got := [q next] on: Error do: [:e | log add: #timedOut. #none]. "
+                 "log add: got] fork. Processor yield. q nextPut: 1. log add: q next. "
+                 "c signalException: (Error new messageText: #timeout). "
+                 "(Delay forMilliseconds: 50) wait. log add: #after50ms; add: log size. "
+                 "q nextPut: 2. (Delay forMilliseconds: 20) wait. log add: q size; add: got. "
+                 "^log asArray printString",
+                 "(1 timedOut none after50ms 4 1 none )");
+    /*  Stopped holding the lock, let finish, and then waiting: the stop lands at the wait.  */
+    check_string("| m c d log | log := OrderedCollection new. m := Monitor new. "
+                 "c := [m critical: [log add: #in. Processor yield. m waitUntil: [false]. "
+                 "log add: #woke]] fork. Processor yield. c terminate. "
+                 "(Delay forMilliseconds: 20) wait. d := [m critical: [log add: #got]] fork. "
+                 "(Delay forMilliseconds: 20) wait. "
+                 "^{log asArray. c suspendedContext isNil. d suspendedContext isNil} printString",
+                 "((in got ) true true )");
+    check_string("| m c d log | log := OrderedCollection new. m := Monitor new. "
+                 "c := [[m critical: [log add: #in. Processor yield. m waitUntil: [false]. "
+                 "log add: #woke]] on: Error do: [:e | log add: e messageText]. "
+                 "log add: #after] fork. Processor yield. "
+                 "c signalException: (Error new messageText: #cut). "
+                 "(Delay forMilliseconds: 20) wait. d := [m critical: [log add: #got]] fork. "
+                 "(Delay forMilliseconds: 20) wait. "
+                 "^{log asArray. c suspendedContext isNil. d suspendedContext isNil} printString",
+                 "((in cut after got ) true true )");
 }
 
 int

@@ -122,18 +122,23 @@ Monitor >> waitForChange [
 	self isHeldByActiveProcess ifFalse: [
 		^Error new signal: 'waitForChange must be sent from inside critical:'].
 	mine := Semaphore new.
-	waiters addLast: mine.
-	savedDepth := depth.
-	depth := 0.
-	owner := nil.
-	mutex release.
-	"Curtailed here -- terminated, or unwound by a timeout -- this process
-	 holds nothing, and Mutex>>critical: outside will not release what it
-	 does not hold.  What is left is the waiters list (abandonWait:)."
-	[mine wait] ifCurtailed: [self abandonWait: mine].
+	"Curtailed in here -- terminated, or unwound by a timeout -- this
+	 process holds nothing once the mutex is released, and Mutex>>critical:
+	 outside will not release what it does not hold.  What is left is the
+	 waiters list (abandonWait:).  From the add, not from the wait: a
+	 process stopped between the two was unwound with its Semaphore still
+	 listed, and a later signal was spent on it."
+	[waiters addLast: mine.
+	 savedDepth := depth.
+	 depth := 0.
+	 owner := nil.
+	 mutex release.
+	 Processor activeProcess stopIfDeferred.
+	 mine wait] ifCurtailed: [self abandonWait: mine].
 	mutex acquire.
 	owner := Processor activeProcess.
-	depth := savedDepth
+	depth := savedDepth.
+	Processor activeProcess stopIfDeferred
 ]
 
 { #category : 'waiting' }
@@ -159,12 +164,16 @@ Monitor >> waitForChangeWithin: milliseconds [
 	mine := Semaphore new.
 	timer := Delay forMilliseconds: milliseconds.
 	timer delaySemaphore: mine.
-	waiters addLast: mine.
-	savedDepth := depth.
-	depth := 0.
-	owner := nil.
-	mutex release.
-	[timer schedule.
+	"As waitForChange: everything from the add to the wait is curtailed
+	 into abandonWait:, and a stop put off to the end of the section is
+	 taken before the wait, not after it."
+	[waiters addLast: mine.
+	 savedDepth := depth.
+	 depth := 0.
+	 owner := nil.
+	 mutex release.
+	 Processor activeProcess stopIfDeferred.
+	 timer schedule.
 	 mine wait] ifCurtailed: [timer retire. self abandonWait: mine].
 	timer retire.
 	mutex acquire.
@@ -172,6 +181,7 @@ Monitor >> waitForChangeWithin: milliseconds [
 	depth := savedDepth.
 	signalled := (waiters includes: mine) not.
 	signalled ifFalse: [waiters remove: mine].
+	Processor activeProcess stopIfDeferred.
 	^signalled
 ]
 
@@ -238,6 +248,18 @@ Monitor >> signal [
 { #category : 'testing' }
 Monitor >> hasWaiters [
 	^waiters isEmpty not
+]
+
+{ #category : 'testing' }
+Monitor >> isHeldBy: aProcess [
+	"Whether aProcess holds my mutex at this moment -- the question
+	 Process>>criticalSectionFrom:stoppedAt: asks of a process it has
+	 stopped, which is parked and cannot change the answer.  The mutex
+	 and not owner: owner is cleared before waitForChange releases the
+	 mutex and set again after it has taken it back, and in both gaps
+	 the process still holds the lock and is in the middle of changing
+	 me."
+	^mutex owner == aProcess
 ]
 
 { #category : 'testing' }

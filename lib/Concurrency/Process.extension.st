@@ -407,6 +407,21 @@ Process >> criticalSectionFrom: aContext stoppedAt: where [
 	 Delay in the image fired again -- three runs in three of a randomized
 	 stress; and SharedQueue's items were torn the same way.
 
+	 And only a section whose lock I hold at the moment I was stopped
+	 counts (Bugs07 SCHED-4), for a Mutex's or a Monitor's, which know
+	 their holder; a Semaphore's does not, and counts whenever its frame
+	 does.  Monitor>>waitForChange gives the lock up in the middle of the
+	 section and waits: SharedQueue>>next, Promise>>value and every
+	 condition wait are a Monitor's critical: around one, and a consumer
+	 woken and not yet running again -- the ordinary state of every
+	 consumer of a busy queue, since nextPut: wakes them all -- is inside
+	 the section with the lock given up.  Taken for one running in it,
+	 it was let finish the section: it went round waitUntil:, slept
+	 again, and was terminated only when the NEXT item came, which it
+	 then took and threw away; a timeout signalled into it did not fire
+	 until data came.  Without the lock it is at a stable point and is
+	 unwound from there, as a waiter is.
+
 	 Only a frame whose unwind block is still in it counts.  ensure: is
 	 `result := self value. thisContext runUnwindBlock. ^result', and a
 	 process can be stopped on the two bytecodes after runUnwindBlock has
@@ -427,10 +442,35 @@ Process >> criticalSectionFrom: aContext stoppedAt: where [
 		(ctx isUnwindContext
 		 and: [(ctx tempAt: 1) notNil
 		 and: [(caller := ctx sender) notNil
-		 and: [caller method == sem or: [caller method == mut or: [caller method == mon]]]]])
+		 and: [caller method == sem
+			or: [(caller method == mut and: [caller receiver owner == self])
+			or: [caller method == mon and: [caller receiver isHeldBy: self]]]]]])
 			ifTrue: [found := ctx].
 		ctx := ctx sender].
 	^found
+]
+
+{ #category : '*Concurrency' }
+Process >> stopIfDeferred [
+	"Sent by the active process -- me -- where it is about to wait inside
+	 a critical: section, and again where it has come back from waiting:
+	 if a terminate or signalException: of me was put off to the end of a
+	 section I am in (a DeferredStop in its frame), it takes effect here
+	 instead, at a stable point.
+
+	 Bugs07 SCHED-4.  A process let finish a section must not go to sleep
+	 in it: the stop then waits for whatever wakes it, and for a consumer
+	 in SharedQueue>>next that is the next item, which it takes on its way
+	 out and nobody ever receives; a timeout signalled into it fires only
+	 when data comes.  Monitor's waits send this, with the waiter's own
+	 Semaphore already listed and the lock already given up, inside the
+	 block whose curtailing takes the Semaphore off the list again."
+	| ctx stop |
+	ctx := thisContext.
+	[(ctx := ctx findNextUnwindUpTo: nil) isNil] whileFalse: [
+		stop := ctx tempAt: 1.
+		((stop isKindOf: DeferredStop) and: [stop process == self])
+			ifTrue: [^stop takeEffect]]
 ]
 
 { #category : '*Concurrency' }

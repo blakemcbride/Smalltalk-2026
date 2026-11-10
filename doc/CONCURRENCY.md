@@ -546,7 +546,17 @@ was left with a nil at its head, Bugs6 SCHED-7). The process is resumed to
 finish, and the terminate or the `signalException:` takes effect when it
 has -- for a section, through the section's own unwind block, which runs
 however the section ends. A process *waiting* inside a section is unwound
-as before: a wait is a stable point.
+as before: a wait is a stable point. So is a process inside a Mutex's or a
+Monitor's section that does not hold its lock at that moment -- woken in
+`Monitor>>waitForChange` and not yet holding the mutex again, the ordinary
+state of a consumer of a busy `SharedQueue` (Bugs07 SCHED-4) -- and a
+process let finish a section does not go to sleep in it: Monitor's waits
+send `Process>>stopIfDeferred`, which acts on the put-off request there.
+Let finish and then waiting, a consumer was ended only by the next item,
+which it took and nobody received. And the request is not written into the
+section's unwind block as code; it is kept in a `DeferredStop` there, acted
+on only by the process it was made for (Bugs07 SCHED-5): run by a
+terminator, the unwind block only releases the lock.
 A terminated process has a nil `suspendedContext`, primitive 87 refuses to
 resume one, and the switch drops one that a racing signal delivers anyway
 rather than stopping the image on it.
