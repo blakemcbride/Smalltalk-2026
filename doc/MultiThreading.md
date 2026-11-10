@@ -396,6 +396,9 @@ The roots are:
   thread's,
 - the display `Form` and the input `Semaphore`, which are genuinely held by C,
 - the scheduler's pending-process nomination,
+- every registered interpreter's compiles in flight (`compile_roots`) and the C
+  variables its thread holds across an allocation (`held`, see `ST_hold` in
+  `interp.h`), and the collecting thread's last answer (`return_value`),
 - the VM-state slots carried in the snapshot,
 - whatever provider the embedder installed, which must chain to the
   bootstrap's.

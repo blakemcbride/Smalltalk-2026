@@ -281,6 +281,8 @@ ST_extension_primitive_index(st_oop ext)
 
 /*  ----------  Interpreter state  ----------  */
 
+struct st_held;                 /*  see ST_hold, below  */
+
 typedef struct {
     st_oop      active_context;
     st_oop      home_context;
@@ -423,6 +425,13 @@ typedef struct {
      */
     struct st_compile_roots *compile_roots;
     /*
+     *  The C variables this thread holds objects in across an allocation,
+     *  innermost frame first, or NULL: the same arrangement as
+     *  compile_roots, for everything that is not a compile.  See ST_hold
+     *  below.  Bugs07 OM-5.
+     */
+    struct st_held          *held;
+    /*
      *  Set once this worker has parked its active process -- registers
      *  into the context, context into the process -- and so no longer
      *  owns it: another worker may take it from wherever it waits, and
@@ -493,6 +502,89 @@ int         ST_interp_forward_forbidden(st_oop p);
  */
 int         ST_interp_swap_forbidden(st_oop p);
 void        ST_interp_forward_roots(st_oop from, st_oop to);
+
+/*
+ *  ----------  Objects C holds across an allocation  ----------
+ *
+ *  Any allocation can run a collection, and a collection frees whatever its
+ *  walk does not reach -- the counts are rebuilt from the walk, so a count
+ *  C took protects nothing (doc/CONCURRENCY.md, "Roots are the walk, not
+ *  the count").  C code that makes an object and then makes another before
+ *  the first is stored somewhere the walk can see has a window in which the
+ *  first can be freed; the store that follows then writes a dead entry into
+ *  the image, and the next allocation is handed that entry.
+ *
+ *  The bootstrap, -startup and -eval had at least fifteen such windows
+ *  (Bugs07 OM-5, found independently as COMP-3): a class's first
+ *  class-side method freed by the collection its MethodDictionary ran and
+ *  the dictionary then mapping the selector to itself, a DisplayScreen
+ *  freed for its own origin Point, a Processor whose lists were freed, the
+ *  -eval method freed under its context.  And the image's own compile
+ *  primitive had one inside BOOT_intern_symbol, where a fresh Symbol was
+ *  held while its symbol-table bucket was copied one longer: `Object
+ *  compile:' of a new selector answered a random object as the selector.
+ *  The windows were found by forcing collections: at every allocation of
+ *  one class (ST_GC_AT_CLASS, om_mt.c), and, in a build made to find
+ *  them, at every allocation C made.  Reordering each to make the
+ *  object reachable before the next allocation is possible in some of
+ *  them and not in others -- a value the image answered, kept across the
+ *  next send, has nowhere to go -- and a rule that has to be re-derived at
+ *  every site is the rule that was broken at fifteen of them.
+ *
+ *  So C says which of its variables hold objects, and the walk reads them:
+ *
+ *      st_held     held;
+ *      st_oop      dict = ST_NIL;
+ *
+ *      ST_hold_enter(&held);
+ *      ST_hold(&held, &dict);
+ *      dict = ...;                 any number of allocations
+ *      ST_hold_leave(&held);       on EVERY way out
+ *
+ *  The ADDRESS is held, not the value, so whatever the variable holds when
+ *  a collection runs is what is kept, and a later assignment needs nothing
+ *  more.  A variable must hold an oop -- nil, an object, a SmallInteger or
+ *  ST_OOP_INVALID -- from the moment it is held: the walk ignores anything
+ *  that is not an object, but it does read the variable.  ST_hold_n holds n
+ *  consecutive slots of a C array the same way.
+ *
+ *  Frames nest and are left in the reverse order: the chain is this
+ *  thread's (st_vm.held), written by this thread alone and read by the
+ *  collector with the thread parked, exactly as compile_roots is, so it
+ *  works for a worker in a primitive as for the bootstrap.  A frame left
+ *  out of order is fatal, because the chain would then name a C frame
+ *  that has returned.  A one-way become rewrites held variables as it
+ *  does the registers, so a held variable never names a forwarded object.
+ *
+ *  What the walk finds counts once, like every root, and nothing takes
+ *  that count back: an object stored and then dropped after a collection
+ *  is reclaimed by the next collection rather than at once, which is the
+ *  trade compile_roots already makes.
+ */
+#define ST_HELD_RANGES  8
+
+typedef struct st_held {
+    struct st_held     *outer;
+    unsigned            count;
+    struct {
+        st_oop         *first;
+        unsigned        n;
+    }                   range[ST_HELD_RANGES];
+} st_held;
+
+void        ST_hold_enter(st_held *held);
+void        ST_hold(st_held *held, st_oop *variable);
+void        ST_hold_n(st_held *held, st_oop *first, unsigned n);
+void        ST_hold_leave(st_held *held);
+
+/*
+ *  Clear this thread's interpreter state for a fresh run -- every register
+ *  -- but not the chains of objects C holds (held, compile_roots).  Those
+ *  belong to C frames that are still running: run_method_with is called
+ *  from the middle of a function holding what the method is to be sent
+ *  to, and a memset of st_vm there unlinked them.
+ */
+void        ST_interp_clear_registers(void);
 
 /*  ----------  API  ----------  */
 

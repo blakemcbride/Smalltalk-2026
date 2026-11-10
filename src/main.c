@@ -1634,8 +1634,9 @@ evaluate(const char *expression, char *errbuf, size_t errlen)
 {
     st_compile_context  ctx;
     st_compile_result   res;
-    st_oop              context;
-    st_oop              method;
+    st_oop              context = ST_NIL;
+    st_oop              method = ST_NIL;
+    st_held             held;
 
     memset(&ctx, 0, sizeof ctx);
     ctx.intern_symbol      = BOOT_intern_symbol;
@@ -1678,10 +1679,22 @@ evaluate(const char *expression, char *errbuf, size_t errlen)
         snprintf(errbuf, errlen, "%s", res.error);
         return ST_OOP_INVALID;
     }
+    /*
+     *  The method is held while its context is made, and the context while
+     *  its Process is, until the interpreter has both: nothing else the
+     *  walk sees refers to either, and with every bootstrap window closed
+     *  the forced collections found this one last -- the -eval method
+     *  freed under its context, and a SIGSEGV naming method 0 (Bugs07
+     *  OM-5, COMP-3).
+     */
+    ST_hold_enter(&held);
+    ST_hold(&held, &method);
+    ST_hold(&held, &context);
     method = res.method;
 
     context = OM_instantiate_pointers(ST_CLASS_METHOD_CONTEXT, 32);
     if (!OM_is_object(context)) {
+        ST_hold_leave(&held);
         snprintf(errbuf, errlen, "out of memory building a context");
         return ST_OOP_INVALID;
     }
@@ -1712,7 +1725,9 @@ evaluate(const char *expression, char *errbuf, size_t errlen)
      *  forgotten.
      */
     ST_interp_register();
-    memset(&st_vm, 0, sizeof st_vm);
+    /*  Not a memset: the frame holding the method and context is linked
+     *  into st_vm (see ST_interp_clear_registers).  */
+    ST_interp_clear_registers();
     st_vm.active_context = ST_NIL;
     /*
      *  Give the expression a green Process to be, before it runs.
@@ -1753,6 +1768,7 @@ evaluate(const char *expression, char *errbuf, size_t errlen)
         }
     }
     ST_set_active_context(context);
+    ST_hold_leave(&held);           /*  the interpreter holds them now  */
     st_vm.running      = 1;
     st_vm.return_value = ST_NIL;
     {

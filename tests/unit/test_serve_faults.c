@@ -4468,6 +4468,129 @@ bugs7c_vm(void)
     }
 }
 
+/*
+ *  Bugs07 round 3, the object memory's: OM-5, found independently as
+ *  COMP-3 -- the bootstrap, -startup, -eval and the image's compile
+ *  primitive held fresh objects in C variables across further
+ *  allocations, and a collection in any of those windows freed them.
+ *  C now says which variables hold objects (ST_hold, interp.h) and the
+ *  root walk reads them.
+ *
+ *  The oracle is ST_GC_AT_CLASS, a collection at every allocation of one
+ *  class.  Each class below opened a window the old binary died in on
+ *  its first forced collection: MethodDictionary in compile_into (a
+ *  class's first class-side method freed and its dictionary mapping #new
+ *  to itself), Point in BOOT_install_display (the DisplayScreen freed for
+ *  its own origin), Process in install_processor_object (the scheduler
+ *  freed for its first process).  The expression then asks after exactly
+ *  those objects.  Two of the classes have no fixed oop, so the image is
+ *  asked for them first.  Array and String opened more windows still and
+ *  now pass the same way, but a collection at every one the initializers
+ *  make is six to nine minutes of bootstrap each; the served compile
+ *  below takes Array instead.
+ */
+static void
+bugs7c_om(void)
+{
+    static char out[65536];
+    char        command[2048];
+    char        md[32] = "";
+    char        process[32] = "";
+    int         status;
+    unsigned    k;
+    struct { const char *name; const char *oop; } forced[] = {
+        { "MethodDictionary", md },
+        { "Point",            "26" },
+        { "Process",          process },
+    };
+
+    snprintf(command, sizeof command,
+             ST_TEST_TIMEOUT " -k 2 " SERVE_SECONDS
+             " %s -bootstrap -profile profiles/st2026.profile -eval "
+             "\"^'oops ', (MethodDictionary asOop * 2) printString, ' ', "
+             "(Process asOop * 2) printString\" 2>/dev/null", st2026);
+    status = run(command, out, sizeof out);
+    ++st_test_checks;
+    {
+        const char *at = strstr(out, "oops ");
+
+        if (status != 0 || !at
+         || sscanf(at, "oops %31s %31s", md, process) != 2) {
+            ++st_test_failures;
+            printf("  FAIL OM-5: cannot ask the image for its class oops "
+                   "(exit %d):\n%s\n", status, out);
+            return;
+        }
+    }
+
+    for (k = 0; k < sizeof forced / sizeof forced[0]; ++k) {
+        char    what[128];
+
+        snprintf(command, sizeof command,
+                 "ST_GC_AT_CLASS=%s " ST_TEST_TIMEOUT " -k 2 900"
+                 " %s -bootstrap -profile profiles/st2026.profile -eval "
+                 "\"^'held ', (3 + 4) printString, ' ', "
+                 "(ArrayedCollection class compiledMethodAt: #new) class name, ' ', "
+                 "Array new size printString, ' ', "
+                 "Display class name, ' ', Display bits size printString, ' ', "
+                 "Display offset printString, ' ', Processor class name, ' ', "
+                 "Processor activeProcess class name, ' ', "
+                 "(Object instVarNames isEmpty and: [Point instVarNames = #('x' 'y')]) "
+                 "printString\" 2>&1",
+                 forced[k].oop, st2026);
+        status = run(command, out, sizeof out);
+        snprintf(what, sizeof what,
+                 "OM-5/COMP-3 a bootstrap with a collection at every %s",
+                 forced[k].name);
+        ++st_test_checks;
+        if (status != 0) {
+            ++st_test_failures;
+            printf("  FAIL %s: exit %d\n", what, status);
+        }
+        expect(out, "held 7 CompiledMethod 0 DisplayScreen 19200 0@0 "
+                    "ProcessorScheduler Process true", what);
+    }
+
+    /*
+     *  The `Object compile:' finding: in a loaded image the new selector's
+     *  Symbol was held in C alone while its symbol-table bucket was copied
+     *  into an Array one longer, and a collection there freed it.  The old
+     *  binary answered a random object for the selector -- `FilePage
+     *  class(Behavior)>>superclasses' -- and the send that followed did
+     *  not understand itself.  A collection at every Array, one worker.
+     */
+    if (write_file(BATCH,
+                   "(Object compile: 'bugs7cOmBrace ^{3. 4}') == #bugs7cOmBrace\n"
+                   "nil bugs7cOmBrace\n"
+                   "(Object compile: 'bugs7cOmLits ^#(1 $a 2.5 (3 4))') size\n"
+                   "nil bugs7cOmLits\n"
+                   "Object removeSelector: #bugs7cOmBrace; removeSelector: #bugs7cOmLits\n"
+                   "3 + 4\n") != 0) {
+        ++st_test_checks;
+        ++st_test_failures;
+        printf("  FAIL OM-5: cannot write the batch\n");
+        return;
+    }
+    snprintf(command, sizeof command,
+             "ST_GC_AT_CLASS=16 " ST_TEST_TIMEOUT " -k 2 " SERVE_SECONDS
+             " %s -serve %s -workers 1 \"$(cat %s)\" 2>&1",
+             st2026, IMAGE, BATCH);
+    status = run(command, out, sizeof out);
+    ++st_test_checks;
+    if (status < 0) {
+        ++st_test_failures;
+        printf("  FAIL OM-5 compile: could not run the server\n");
+        return;
+    }
+    expect(out, "== #bugs7cOmBrace ==> true",
+           "OM-5 a compiled selector's Symbol survives a collection");
+    expect(out, "nil bugs7cOmBrace ==> (3 4 )",
+           "OM-5 the method compiled under a collection at every Array");
+    expect(out, "nil bugs7cOmLits ==> (1 $a 2.5 (3 4 ) )",
+           "OM-5 a literal-array method compiled under the same");
+    expect(out, "3 + 4 ==> 7", "OM-5 the server carried on");
+}
+
 int
 main(void)
 {
@@ -5142,6 +5265,7 @@ main(void)
     bugs7c_net();
     bugs7c_sched();
     bugs7c_vm();
+    bugs7c_om();
 
     unlink(IMAGE);
     unlink(BATCH);

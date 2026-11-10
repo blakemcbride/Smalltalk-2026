@@ -225,10 +225,46 @@ oracle for this class of fault is `ST_GC_AT_CLASS=<class oop>` (see
 `doc/MultiThreading.md`), which forces a collection at every allocation of one
 class; with it set to 14, String, a `-serve` compile of a 300-string literal
 array answers the strings it was given, where the guard-only version answered
-freed objects for 299 of them. The bootstrap itself does not survive that
-oracle: it dies in `link_class_objects`, which holds an instance-variable-name
-Array in C while it makes the Strings that go into it — a builder fault of the
-same family, outside the compiler, still open.
+freed objects for 299 of them.
+
+The bootstrap did not survive that oracle. It died in `link_class_objects`,
+which held an instance-variable-name Array in C while it made the Strings that
+go into it, and that was the first of at least fifteen such windows in the
+builder, `-startup` and `-eval` (Bugs07 OM-5, found independently as COMP-3):
+a class's first class-side method freed by the collection its
+MethodDictionary ran, after which the dictionary mapped `#new` to itself; the
+DisplayScreen freed by the collection its own origin Point ran; the Processor
+freed for its first Process; an organization or a pool the image had just
+answered, held across the next send; the `-eval` method freed under its
+context. The image's compile primitive had one too, inside the symbol table:
+a new selector's Symbol was held while its bucket was copied one longer, and
+under a collection at every Array allocation `Object compile:` answered a
+random object as the selector. Reordering closes some of these and not
+others — a value the image answered and C keeps across the next send has
+nowhere to be stored — so C now says which of its variables hold objects:
+
+```c
+st_held held;
+st_oop  dict = ST_NIL;
+
+ST_hold_enter(&held);
+ST_hold(&held, &dict);
+...                         /*  any number of allocations  */
+ST_hold_leave(&held);       /*  on every way out  */
+```
+
+The frame is linked onto the running interpreter's `held` chain, beside
+`compile_roots` and for the same reasons (only its thread writes it; the walk
+reads it with that thread parked), and the walk reads the variable — its
+address is held, not its value — so whatever it holds when a collection runs
+is kept. A frame left out of order stops the process: the chain would name a C
+frame that has returned. The collecting thread's `return_value` is a root as
+well, since the bootstrap reads it after each run and allocates before
+storing it. `ST_interp_clear_registers` replaces the `memset` of the
+interpreter's registers, which unlinked both chains in the middle of the
+functions that hold them. With every window held, the bootstrap answers the
+same under `ST_GC_AT_CLASS` at MethodDictionary, Array, String, Point and
+Process as it does with no collection at all.
 
 The same rule reaches into every primitive that makes more than one object,
 because an allocation can run a full collection — the table fills, or another

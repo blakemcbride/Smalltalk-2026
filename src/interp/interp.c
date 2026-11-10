@@ -1073,6 +1073,104 @@ visit_token(uintptr_t token, void *user)
     token_visitor((st_oop) token);
 }
 
+/*
+ *  ----------  Objects C holds across an allocation  ----------
+ *
+ *  See ST_hold in interp.h for why; this is the how.  A frame is linked
+ *  onto this thread's chain on entry and off it on the way out, and the
+ *  walk below reads every variable every frame names.  Bugs07 OM-5.
+ */
+void
+ST_hold_enter(st_held *held)
+{
+    held->count = 0;
+    held->outer = st_vm.held;
+    st_vm.held  = held;
+}
+
+void
+ST_hold_n(st_held *held, st_oop *first, unsigned n)
+{
+    /*
+     *  A frame with no room left is a programming error at one call site,
+     *  found the first time it runs; quietly not holding the variable is
+     *  the fault this exists to close.
+     */
+    if (held->count >= ST_HELD_RANGES) {
+        fprintf(stderr, "st2026: more than %u variables held in one C frame; "
+                        "give the frame more room\n", (unsigned) ST_HELD_RANGES);
+        abort();
+    }
+    held->range[held->count].first = first;
+    held->range[held->count].n     = n;
+    ++held->count;
+}
+
+void
+ST_hold(st_held *held, st_oop *variable)
+{
+    ST_hold_n(held, variable, 1);
+}
+
+void
+ST_hold_leave(st_held *held)
+{
+    /*
+     *  Out of order means an inner frame was not left -- a return that
+     *  skipped its ST_hold_leave -- and the chain now names a C frame that
+     *  has returned, whose slots the next collection would read as
+     *  variables.  Stopping here names the fault; carrying on would turn it
+     *  into a heap corruption somewhere else.
+     */
+    if (st_vm.held != held) {
+        fprintf(stderr, "st2026: a held C frame was left out of order; an "
+                        "inner frame returned without ST_hold_leave\n");
+        abort();
+    }
+    st_vm.held = held->outer;
+}
+
+static void
+visit_held(const st_held *chain, om_visit_fn visit)
+{
+    for (; chain; chain = chain->outer) {
+        unsigned    r;
+        unsigned    k;
+
+        for (r = 0; r < chain->count && r < ST_HELD_RANGES; ++r) {
+            for (k = 0; k < chain->range[r].n; ++k)
+                visit(chain->range[r].first[k]);
+        }
+    }
+}
+
+static void
+forward_held(st_held *chain, st_oop from, st_oop to)
+{
+    for (; chain; chain = chain->outer) {
+        unsigned    r;
+        unsigned    k;
+
+        for (r = 0; r < chain->count && r < ST_HELD_RANGES; ++r) {
+            for (k = 0; k < chain->range[r].n; ++k) {
+                if (chain->range[r].first[k] == from)
+                    chain->range[r].first[k] = to;
+            }
+        }
+    }
+}
+
+void
+ST_interp_clear_registers(void)
+{
+    st_held                    *held    = st_vm.held;
+    struct st_compile_roots    *compile = st_vm.compile_roots;
+
+    memset(&st_vm, 0, sizeof st_vm);
+    st_vm.held          = held;
+    st_vm.compile_roots = compile;
+}
+
 static void
 provide_roots(om_visit_fn visit)
 {
@@ -1093,6 +1191,8 @@ provide_roots(om_visit_fn visit)
             visit(vm->new_process);
             /*  And the literals of a compile it is in the middle of.  */
             COMPILE_visit_roots(vm->compile_roots, visit);
+            /*  And whatever its C is holding across an allocation.  */
+            visit_held(vm->held, visit);
         }
     }
     /*
@@ -1113,6 +1213,16 @@ provide_roots(om_visit_fn visit)
      */
     visit(st_vm.active_context);
     COMPILE_visit_roots(st_vm.compile_roots, visit);
+    visit_held(st_vm.held, visit);
+    /*
+     *  And what the last run answered.  A run that returned off the bottom
+     *  of its stack leaves its answer here and nowhere else the walk can
+     *  see -- the context it was popped from is no longer the active one
+     *  -- and the bootstrap reads it after the run and goes on allocating
+     *  (Bugs07 OM-5).  A caller that keeps it past the next run holds it
+     *  in a variable of its own, because the next run clears this.
+     */
+    visit(st_vm.return_value);
     visit(GFX_display_form());
     visit(SCHED_input_semaphore());
     visit(SCHED_timer_semaphore());
@@ -1312,6 +1422,7 @@ ST_interp_forward_roots(st_oop from, st_oop to)
         forward_register(&vm->return_value, from, to);
         forward_register(&vm->active_process, from, to);
         forward_register(&vm->new_process, from, to);
+        forward_held(vm->held, from, to);
     }
     /*
      *  And this thread's, registered or not: the -eval path never registers
@@ -1323,6 +1434,7 @@ ST_interp_forward_roots(st_oop from, st_oop to)
     forward_register(&st_vm.return_value, from, to);
     forward_register(&st_vm.active_process, from, to);
     forward_register(&st_vm.new_process, from, to);
+    forward_held(st_vm.held, from, to);
 }
 
 void
@@ -3260,7 +3372,7 @@ ST_interp_init(char *errbuf, size_t errlen)
     st_oop  process;
     st_oop  context;
 
-    memset(&st_vm, 0, sizeof st_vm);
+    ST_interp_clear_registers();
 
     scheduler = OM_fetch_pointer(ST_ASSOCIATION_VALUE, ST_SCHEDULER_ASSOCIATION);
     if (!OM_is_present(scheduler)) {

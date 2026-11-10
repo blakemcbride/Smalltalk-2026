@@ -658,7 +658,8 @@ st_oop
 BOOT_intern_symbol_n(const char *text, size_t n, void *user)
 {
     unsigned    i;
-    st_oop      s;
+    st_oop      s = ST_NIL;
+    st_held     held;
 
     (void) user;
     ensure_symbol_table();
@@ -730,9 +731,24 @@ BOOT_intern_symbol_n(const char *text, size_t n, void *user)
     }
 
 make_it:
+    /*
+     *  Held until the symbol table has it.  Placing it copies its bucket
+     *  into an Array one longer, and that allocation can collect; in a
+     *  loaded image nothing else holds the new Symbol -- the C table
+     *  below is a root only while an image is being built -- so the
+     *  collection freed it and the bucket was given a dead entry.  It is
+     *  the compile primitive's window: under a collection forced at every
+     *  Array, `Object compile:' of a new selector answered a random object
+     *  as the selector and installed the method under it (Bugs07 OM-5, the
+     *  `Object compile:' finding).
+     */
+    ST_hold_enter(&held);
+    ST_hold(&held, &s);
     s = OM_instantiate_bytes(BOOT_global("Symbol"), (uint32_t) n);
-    if (!OM_is_object(s))
+    if (!OM_is_object(s)) {
+        ST_hold_leave(&held);
         return ST_NIL;
+    }
     for (i = 0; i < n; ++i)
         OM_store_byte(i, s, (uint8_t) text[i]);
     if (symbol_remember(s) && result)
@@ -744,6 +760,7 @@ make_it:
      *  second Symbol with the same characters waiting to happen.
      */
     place_in_symbol_table(s);
+    ST_hold_leave(&held);
     return s;
 }
 
@@ -1193,11 +1210,20 @@ define_global(const char *name, st_oop value)
 {
     st_oop      association = global_association(name);
     st_oop      key;
+    st_held     held;
 
     if (association != ST_OOP_INVALID) {
         OM_store_pointer(ST_ASSOCIATION_VALUE, association, value);
         return association;
     }
+    /*
+     *  The value is often the caller's fresh object -- the Display, the
+     *  Processor, a pool the image just answered -- and the binding array's
+     *  growth, the name's Symbol and the Association are all allocations
+     *  made before it is stored (Bugs07 OM-5).
+     */
+    ST_hold_enter(&held);
+    ST_hold(&held, &value);
     /*
      *  Grow the binding array when it fills.
      *
@@ -1215,6 +1241,7 @@ define_global(const char *name, st_oop value)
 
         if (!OM_is_object(grown)) {
             boot_fail("out of memory for global number %u", global_count + 1);
+            ST_hold_leave(&held);
             return ST_NIL;
         }
         for (i = 0; i < have; ++i)
@@ -1239,6 +1266,7 @@ define_global(const char *name, st_oop value)
      *  it one once there is one to give.
      */
     association = OM_instantiate_pointers(BOOT_global("Association"), 2);
+    ST_hold_leave(&held);
     if (!OM_is_object(association))
         return ST_OOP_INVALID;
     OM_increase_ref(association);
@@ -1764,17 +1792,27 @@ resolve_ivars(boot_class *c, unsigned depth)
 static st_oop
 make_method_dictionary(unsigned capacity)
 {
-    st_oop  dict;
+    st_oop  dict = ST_NIL;
     st_oop  values;
+    st_held held;
 
     if (capacity < 4)
         capacity = 4;
+    /*
+     *  The dictionary is held while its value Array is made, which can
+     *  collect it; the Array is stored the moment it exists.  The caller
+     *  is answered an object nothing holds yet and stores it before it
+     *  allocates again (Bugs07 OM-5).
+     */
+    ST_hold_enter(&held);
+    ST_hold(&held, &dict);
     dict = OM_instantiate_pointers(BOOT_global("MethodDictionary"),
                                    ST_MD_FIRST_KEY + capacity);
-    if (!OM_is_object(dict))
-        return ST_NIL;
-    values = OM_instantiate_pointers(BOOT_global("Array"), capacity);
-    if (!OM_is_object(values))
+    values = OM_is_object(dict)
+                 ? OM_instantiate_pointers(BOOT_global("Array"), capacity)
+                 : ST_OOP_INVALID;
+    ST_hold_leave(&held);
+    if (!OM_is_object(dict) || !OM_is_object(values))
         return ST_NIL;
     OM_store_pointer(ST_MD_TALLY, dict, OM_int_oop(0));
     OM_store_pointer(ST_MD_VALUE_ARRAY, dict, values);
@@ -2009,11 +2047,22 @@ link_class_objects(void)
     for (i = 0; i < class_count; ++i) {
         boot_class *c = &classes[i];
         boot_class *super;
-        st_oop      ivar_array;
+        st_oop      ivar_array = ST_NIL;
+        st_held     held;
         unsigned    v;
 
         if (!resolve_ivars(c, 0))
             return 0;
+        /*
+         *  Each Array of names is held while its Strings are made: it is
+         *  stored into the class only once it is full, and every String is
+         *  an allocation that can collect it.  This was the first window
+         *  ST_GC_AT_CLASS=14 found in the bootstrap -- a freed Array stored
+         *  into every class and heap corruption at the next malloc (Bugs6
+         *  COMP-2, found alongside; Bugs07 OM-5).
+         */
+        ST_hold_enter(&held);
+        ST_hold(&held, &ivar_array);
 
         super = c->superclass[0] && strcmp(c->superclass, "nil") != 0
                     ? find_class(c->superclass) : NULL;
@@ -2078,6 +2127,7 @@ link_class_objects(void)
             OM_store_pointer(v, ivar_array,
                              make_string_object(c->class_ivars.items[v]));
         OM_store_pointer(CLASS_INSTANCE_VARS, c->metaclass_oop, ivar_array);
+        ST_hold_leave(&held);
 
         define_global(c->name, c->class_oop);
     }
@@ -2097,6 +2147,7 @@ compile_into(boot_class *c, int class_side, const char *source,
     st_oop              target = class_side ? c->metaclass_oop : c->class_oop;
     st_oop              dict;
     st_oop              selector;
+    st_held             held;
 
     memset(&ctx, 0, sizeof ctx);
     /*
@@ -2179,6 +2230,19 @@ compile_into(boot_class *c, int class_side, const char *source,
         return 0;
     }
 
+    /*
+     *  The method is held in C alone from here until the dictionary holds
+     *  it, and in between are the dictionary's two allocations, a grown
+     *  dictionary's two, and the selector's Symbol and its symbol-table
+     *  bucket.  A collection in any of them freed the method: the first
+     *  class-side method of ArrayedCollection had its entry handed to the
+     *  MethodDictionary made for it, which then mapped #new to itself and
+     *  had the source pointer written into its last fields -- and the next
+     *  class-side method grew a dictionary with a corrupt capacity (Bugs07
+     *  COMP-3).
+     */
+    ST_hold_enter(&held);
+    ST_hold(&held, &res.method);
     dict = OM_fetch_pointer(CLASS_METHOD_DICT, target);
     /*
      *  nil is a live object, so testing with OM_is_object alone would take
@@ -2205,6 +2269,7 @@ compile_into(boot_class *c, int class_side, const char *source,
         method_dictionary_at_put(grown, selector, res.method);
         OM_store_pointer(CLASS_METHOD_DICT, target, grown);
     }
+    ST_hold_leave(&held);           /*  the dictionary holds it now  */
     /*
      *  The source pointer, in the three bytes the compiler left for it.
      *  Chapter 27 reads them from the end: the last holds the top six bits
@@ -4245,37 +4310,52 @@ BOOT_install_display(unsigned width, unsigned height)
 {
     st_oop      screen_class = BOOT_global("DisplayScreen");
     st_oop      word_array   = BOOT_global("WordArray");
-    st_oop      screen;
-    st_oop      bits;
+    st_oop      screen = ST_NIL;
+    st_oop      bits   = ST_NIL;
     st_oop      origin;
     uint32_t    raster = (width + 15) / 16;
+    st_held     held;
+    int         made = 0;
 
     if (!OM_is_present(screen_class) || !OM_is_present(word_array)) {
         boot_fail("the sources must define DisplayScreen and WordArray");
         return 0;
     }
+    /*
+     *  The bits are held while the screen is made, and the screen while
+     *  its origin is: the collection run for the origin Point freed the
+     *  DisplayScreen, the Point was given its entry, and the stores below
+     *  went into a 24-byte body that BitBlt then wrote 38 KB into (Bugs07
+     *  OM-5).  define_global holds the screen from there.
+     */
+    ST_hold_enter(&held);
+    ST_hold(&held, &bits);
+    ST_hold(&held, &screen);
     bits = OM_instantiate_words(word_array, raster * height);
     if (!OM_is_present(bits))
-        return 0;
+        goto out;
     screen = OM_instantiate_pointers(screen_class, 4);
     if (!OM_is_present(screen))
-        return 0;
+        goto out;
     OM_increase_ref(screen);
+    OM_store_pointer(ST_FORM_BITS, screen, bits);
 
     origin = OM_instantiate_pointers(ST_CLASS_POINT, 2);
     if (!OM_is_present(origin))
-        return 0;
+        goto out;
     OM_store_pointer(0, origin, OM_int_oop(0));
     OM_store_pointer(1, origin, OM_int_oop(0));
 
-    OM_store_pointer(ST_FORM_BITS,   screen, bits);
     OM_store_pointer(ST_FORM_WIDTH,  screen, OM_int_oop((st_int) width));
     OM_store_pointer(ST_FORM_HEIGHT, screen, OM_int_oop((st_int) height));
     OM_store_pointer(ST_FORM_OFFSET, screen, origin);
 
     define_global("Display", screen);
     GFX_set_display(screen);
-    return 1;
+    made = 1;
+out:
+    ST_hold_leave(&held);
+    return made;
 }
 
 /*  ----------  Class-side initialisers  ----------  */
@@ -4337,14 +4417,30 @@ lookup_in_chain(st_oop class_oop, const char *selector)
  *  so a return with no sender simply stops the interpreter.
  */
 static int
-run_method_with(st_oop method, st_oop receiver, const st_oop *args,
+run_method_with(st_oop method, st_oop receiver, st_oop *args,
                 unsigned argc, uint64_t budget)
 {
-    st_oop      context = OM_instantiate_pointers(ST_CLASS_METHOD_CONTEXT, 64);
+    st_held     held;
+    st_oop      context;
     unsigned    i;
 
-    if (!OM_is_present(context))
+    /*
+     *  The method, the receiver and the arguments are the caller's, and are
+     *  often fresh: install_class_organization makes the protocol String
+     *  in args[1] the moment before it calls.  Until they are in the
+     *  context nothing the walk can see holds them, and the context is an
+     *  allocation -- one that runs a collection often enough (Bugs07 OM-5).
+     */
+    ST_hold_enter(&held);
+    ST_hold(&held, &method);
+    ST_hold(&held, &receiver);
+    if (argc)
+        ST_hold_n(&held, args, argc);
+    context = OM_instantiate_pointers(ST_CLASS_METHOD_CONTEXT, 64);
+    if (!OM_is_present(context)) {
+        ST_hold_leave(&held);
         return 0;
+    }
     OM_store_pointer(ST_CTX_SENDER, context, ST_NIL);
     OM_store_pointer(ST_CTX_METHOD, context, method);
     OM_store_pointer(ST_CTX_RECEIVER, context, receiver);
@@ -4359,8 +4455,14 @@ run_method_with(st_oop method, st_oop receiver, const st_oop *args,
     OM_store_pointer(ST_CTX_SP, context,
                      OM_int_oop((st_int) ST_header_temporary_count(
                                     OM_fetch_pointer(0, method))));
+    ST_hold_leave(&held);           /*  the context holds them now  */
 
-    memset(&st_vm, 0, sizeof st_vm);
+    /*
+     *  Every register, but not the chains of what C holds: the caller is
+     *  in the middle of a function and may be holding the very objects it
+     *  sends this to (see ST_interp_clear_registers).
+     */
+    ST_interp_clear_registers();
     st_vm.active_context = ST_NIL;
     ST_set_active_context(context);
     st_vm.running      = 1;
@@ -4559,19 +4661,32 @@ static int
 seed_symbol_table(st_boot_init_report *out)
 {
     boot_class *symbol = find_class("Symbol");
-    st_oop      single;
-    st_oop      table;
+    st_oop      single = ST_NIL;
+    st_oop      table  = ST_NIL;
     st_oop      assoc;
     st_oop      intern;
     unsigned    i;
+    st_held     held;
 
     if (!symbol || !OM_is_present(symbol->metaclass_oop))
         return 1;               /*  a kernel without Symbol: nothing to do */
 
+    /*
+     *  Both Arrays are held until the class variables have them: 128
+     *  Symbols and 512 buckets are made in between, and the collection the
+     *  second Array alone could run freed the first -- the check below then
+     *  failed and every initializer was silently skipped, or, past it, the
+     *  table was filled into freed bodies (Bugs07 OM-5).
+     */
+    ST_hold_enter(&held);
+    ST_hold(&held, &single);
+    ST_hold(&held, &table);
     single = OM_instantiate_pointers(ST_CLASS_ARRAY, 128);
     table  = OM_instantiate_pointers(ST_CLASS_ARRAY, USTABLE_BUCKETS);
-    if (!OM_is_present(single) || !OM_is_present(table))
+    if (!OM_is_present(single) || !OM_is_present(table)) {
+        ST_hold_leave(&held);
         return 0;
+    }
     OM_increase_ref(single);
     OM_increase_ref(table);
 
@@ -4585,8 +4700,10 @@ seed_symbol_table(st_boot_init_report *out)
     for (i = 0; i < USTABLE_BUCKETS; ++i) {
         st_oop  bucket = OM_instantiate_pointers(ST_CLASS_ARRAY, 0);
 
-        if (!OM_is_present(bucket))
+        if (!OM_is_present(bucket)) {
+            ST_hold_leave(&held);
             return 0;
+        }
         OM_store_pointer(i, table, bucket);
     }
 
@@ -4599,6 +4716,7 @@ seed_symbol_table(st_boot_init_report *out)
         symbol_table_assoc = assoc;
     }
     symbol_table = table;
+    ST_hold_leave(&held);           /*  BOOT_provide_roots visits it now  */
 
     /*  Now hand every symbol we interned to the library's own intern:.  */
     intern = method_in_dictionary(
@@ -4659,9 +4777,10 @@ install_system_dictionary(void)
     st_oop      cls = BOOT_global("SystemDictionary");
     st_oop      new_with;
     st_oop      add_to;
-    st_oop      dict;
+    st_oop      dict = ST_NIL;
     st_oop      arg;
     unsigned    i;
+    st_held     held;
 
     if (!OM_is_present(cls))
         cls = BOOT_global("Dictionary");
@@ -4677,9 +4796,18 @@ install_system_dictionary(void)
     arg = OM_int_oop((st_int) (global_count * 4 + 64));
     if (!run_method_with(new_with, cls, &arg, 1, 2000000))
         return 1;
+    /*
+     *  Held in C alone until the swap below makes it Smalltalk, across a
+     *  send of add: for every global -- each one a context and whatever
+     *  the dictionary's growth allocates (Bugs07 OM-5).
+     */
+    ST_hold_enter(&held);
+    ST_hold(&held, &dict);
     dict = st_vm.return_value;
-    if (!OM_is_present(dict))
+    if (!OM_is_present(dict)) {
+        ST_hold_leave(&held);
         return 1;
+    }
     OM_increase_ref(dict);
 
     for (i = 0; i < global_count; ++i) {
@@ -4709,6 +4837,7 @@ install_system_dictionary(void)
         fprintf(stderr, "  Smalltalk: %u globals into a %u-slot dictionary\n",
                 global_count, (unsigned) OM_fetch_word_length(dict));
     OM_swap_identities_at_boot(ST_SMALLTALK, dict);
+    ST_hold_leave(&held);
     smalltalk = ST_SMALLTALK;
     define_global("Smalltalk", ST_SMALLTALK);
     if (getenv("ST_BOOT_LOG")) {
@@ -4927,8 +5056,14 @@ install_user_interface(void)
             make = lookup_in_chain(OM_fetch_class(cls), "new");
             if (OM_is_present(make) && run_method_on(make, cls, 4000000)
              && OM_is_present(st_vm.return_value)) {
+                st_held held;
                 st_oop  workspace = st_vm.return_value;
-                st_oop  text = BOOT_make_string(
+                st_oop  text;
+
+                /*  In C alone until the binding has it (Bugs07 OM-5).  */
+                ST_hold_enter(&held);
+                ST_hold(&held, &workspace);
+                text = BOOT_make_string(
         /*
          *  Carriage returns, not newlines.  A Smalltalk-80 line ends with
          *  Character cr, which is 13, and the composition scanner breaks on
@@ -4966,6 +5101,7 @@ install_user_interface(void)
                 }
                 OM_increase_ref(workspace);
                 OM_store_pointer(ST_ASSOCIATION_VALUE, binding, workspace);
+                ST_hold_leave(&held);
             }
         }
     }
@@ -5197,6 +5333,8 @@ install_class_comments(void)
         boot_class *c = find_class(class_comments[i].class_name);
         st_oop      target;
         st_oop      organization;
+        st_held     held;
+        int         made;
         st_oop      args[2];
         unsigned    file_index = 0;
         size_t      position = 0;
@@ -5286,15 +5424,21 @@ install_class_comments(void)
         }
 
         /*  The file index is one-relative to the image; see remember_source. */
+        /*
+         *  The organization the image answered is held in C alone across
+         *  the send that makes the RemoteString (Bugs07 OM-5).
+         */
+        ST_hold_enter(&held);
+        ST_hold(&held, &organization);
         args[0] = OM_int_oop((st_int) file_index + 1);
         args[1] = OM_int_oop((st_int) position);
-        if (!run_method_with(maker, remote_class, args, 2, 2000000))
-            continue;
-        if (!OM_is_present(st_vm.return_value)
-         || st_vm.return_value == ST_NIL)
-            continue;
+        made = run_method_with(maker, remote_class, args, 2, 2000000)
+            && OM_is_present(st_vm.return_value)
+            && st_vm.return_value != ST_NIL;
         /*  globalComment is ClassOrganizer's first instance variable.  */
-        OM_store_pointer(0, organization, st_vm.return_value);
+        if (made)
+            OM_store_pointer(0, organization, st_vm.return_value);
+        ST_hold_leave(&held);
     }
     forget_class_comments();
     return 1;
@@ -5341,14 +5485,23 @@ install_sources(void)
     st_oop      array_class = BOOT_global("Array");
     st_oop      stream_class = BOOT_global("ReadWriteStream");
     st_oop      string_class = BOOT_global("String");
-    st_oop      files;
+    st_oop      files = ST_NIL;
     st_oop      text;
     st_oop      arg;
     size_t      i;
+    st_held     held;
+    int         answer = 1;
 
     if (!OM_is_present(array_class) || !OM_is_present(stream_class)
      || !OM_is_present(string_class) || source_length == 0)
         return 1;
+    /*
+     *  The Array of source streams is held in C alone until SourceFiles
+     *  names it, across every String and stream made to fill it (Bugs07
+     *  OM-5).
+     */
+    ST_hold_enter(&held);
+    ST_hold(&held, &files);
 
     /*
      *  Two entries unless a spill file was needed, which keeps the ordinary
@@ -5365,13 +5518,17 @@ install_sources(void)
         }
         files = OM_instantiate_pointers(array_class, used);
     }
-    if (!OM_is_present(files))
-        return 0;
+    if (!OM_is_present(files)) {
+        answer = 0;
+        goto out;
+    }
     OM_increase_ref(files);
 
     text = OM_instantiate_bytes(string_class, (uint32_t) source_length);
-    if (!OM_is_present(text))
-        return 0;
+    if (!OM_is_present(text)) {
+        answer = 0;
+        goto out;
+    }
     for (i = 0; i < source_length; ++i)
         OM_store_byte((uint32_t) i, text, (uint8_t) source_text[i]);
 
@@ -5387,11 +5544,11 @@ install_sources(void)
         st_oop  empty;
 
         if (!OM_is_present(on) || !OM_is_present(with))
-            return 1;
+            goto out;
         arg = text;
         if (!run_method_with(with, stream_class, &arg, 1, 4000000)
          || !OM_is_present(st_vm.return_value))
-            return 1;
+            goto out;
         OM_store_pointer(0, files, st_vm.return_value);
 
         empty = OM_instantiate_bytes(string_class, 0);
@@ -5412,8 +5569,10 @@ install_sources(void)
                     continue;
                 more = OM_instantiate_bytes(string_class,
                                     (uint32_t) source_files[k].length);
-                if (!OM_is_present(more))
-                    return 0;
+                if (!OM_is_present(more)) {
+                    answer = 0;
+                    goto out;
+                }
                 for (j = 0; j < source_files[k].length; ++j)
                     OM_store_byte((uint32_t) j, more,
                                   (uint8_t) source_files[k].text[j]);
@@ -5446,7 +5605,9 @@ install_sources(void)
         }
     }
     define_global("SourceFiles", files);
-    return 1;
+out:
+    ST_hold_leave(&held);
+    return answer;
 }
 
 /*
@@ -5464,17 +5625,28 @@ install_system_organization(void)
     st_oop      org_class = BOOT_global("SystemOrganizer");
     st_oop      make;
     st_oop      classify;
-    st_oop      organization;
+    st_oop      organization = ST_NIL;
     unsigned    i;
+    st_held     held;
 
     if (!OM_is_present(org_class))
         return 1;
     make = lookup_in_chain(OM_fetch_class(org_class), "new");
     if (!OM_is_present(make) || !run_method_on(make, org_class, 4000000))
         return 1;
+    /*
+     *  Held in C alone until SystemOrganization names it, across a Symbol,
+     *  a String and a send for every class: forcing a collection there
+     *  answered `categoryOfElement: sent to an Array' and then 381 index
+     *  errors (Bugs07 OM-5).
+     */
+    ST_hold_enter(&held);
+    ST_hold(&held, &organization);
     organization = st_vm.return_value;
-    if (!OM_is_present(organization))
+    if (!OM_is_present(organization)) {
+        ST_hold_leave(&held);
         return 1;
+    }
     OM_increase_ref(organization);
 
     classify = lookup_in_chain(org_class, "classify:under:");
@@ -5490,6 +5662,7 @@ install_system_organization(void)
         }
     }
     define_global("SystemOrganization", organization);
+    ST_hold_leave(&held);
     return 1;
 }
 
@@ -5614,10 +5787,11 @@ install_class_pools(void)
 
     for (i = 0; i < class_count; ++i) {
         boot_class *c = &classes[i];
-        st_oop      pool;
+        st_oop      pool = ST_NIL;
         st_oop      arg;
         unsigned    k;
         unsigned    present = 0;
+        st_held     held;
 
         if (!OM_is_present(c->class_oop) || c->cvars.count == 0)
             continue;
@@ -5635,6 +5809,9 @@ install_class_pools(void)
         if (!OM_is_present(pool))
             continue;
 
+        /*  Held in C alone until the class has it (Bugs07 OM-5).  */
+        ST_hold_enter(&held);
+        ST_hold(&held, &pool);
         for (k = 0; k < c->cvars.count; ++k) {
             st_oop  arg2;
 
@@ -5652,6 +5829,7 @@ install_class_pools(void)
             run_method_with(add_to, pool, &arg2, 1, 2000000);
         }
         OM_store_pointer(CLASS_POOL, c->class_oop, pool);
+        ST_hold_leave(&held);
     }
 }
 
@@ -5708,10 +5886,11 @@ install_shared_pools(void)
 
     for (i = 0; i < class_count; ++i) {
         boot_class *c = &classes[i];
-        st_oop      pools;
+        st_oop      pools = ST_NIL;
         st_oop      arg;
         unsigned    p;
         unsigned    added = 0;
+        st_held     held;
 
         if (!OM_is_present(c->class_oop) || c->pools.count == 0)
             continue;
@@ -5730,6 +5909,14 @@ install_shared_pools(void)
         pools = st_vm.return_value;
         if (!OM_is_present(pools))
             continue;
+        /*
+         *  Held in C alone, across an add: per pool, until the class has it
+         *  -- `pools = st_vm.return_value' was one of the windows forced
+         *  collections found: `value: sent to a MethodContext' (Bugs07
+         *  OM-5).
+         */
+        ST_hold_enter(&held);
+        ST_hold(&held, &pools);
         for (p = 0; p < c->pools.count; ++p) {
             st_oop  pool;
 
@@ -5742,10 +5929,11 @@ install_shared_pools(void)
             if (run_method_with(add_to, pools, &arg, 1, 2000000))
                 ++added;
         }
-        if (added == 0)
-            continue;
-        OM_store_pointer(CLASS_SHARED_POOLS, c->class_oop, pools);
-        ++recorded;
+        if (added != 0) {
+            OM_store_pointer(CLASS_SHARED_POOLS, c->class_oop, pools);
+            ++recorded;
+        }
+        ST_hold_leave(&held);
     }
     if (getenv("ST_BOOT_LOG"))
         fprintf(stderr, "  pools: %u class%s recorded sharing one\n",
@@ -5774,10 +5962,11 @@ install_processor_object(void)
     st_oop      array_class = BOOT_global("Array");
     st_oop      existing = OM_fetch_pointer(ST_ASSOCIATION_VALUE,
                                             ST_SCHEDULER_ASSOCIATION);
-    st_oop      scheduler;
-    st_oop      lists;
+    st_oop      scheduler = ST_NIL;
+    st_oop      lists     = ST_NIL;
     st_oop      process;
     unsigned    i;
+    st_held     held;
 
     if (OM_is_present(existing))
         return existing;
@@ -5785,10 +5974,21 @@ install_processor_object(void)
      || !OM_is_present(list_class) || !OM_is_present(array_class))
         return ST_NIL;
 
+    /*
+     *  The lists Array is held while its eight lists and the scheduler are
+     *  made, and the scheduler while its process is, until the scheduler
+     *  association has it: ST_GC_AT_CLASS at Process freed the scheduler
+     *  and the store of the process went into a freed body (Bugs07 OM-5,
+     *  COMP-3).
+     */
+    ST_hold_enter(&held);
+    ST_hold(&held, &lists);
+    ST_hold(&held, &scheduler);
+
     /*  Eight priorities, 1 to 8, each with an empty list of waiters.  */
     lists = OM_instantiate_pointers(array_class, 8);
     if (!OM_is_present(lists))
-        return ST_NIL;
+        goto refused;
     for (i = 0; i < 8; ++i) {
         /*
          *  Built here rather than with LinkedList new.  An empty list is two
@@ -5798,13 +5998,13 @@ install_processor_object(void)
         st_oop  list = OM_instantiate_pointers(list_class, 2);
 
         if (!OM_is_present(list))
-            return ST_NIL;
+            goto refused;
         OM_store_pointer(i, lists, list);
     }
 
     scheduler = OM_instantiate_pointers(sched_class, 2);
     if (!OM_is_present(scheduler))
-        return ST_NIL;
+        goto refused;
     OM_increase_ref(scheduler);
     OM_store_pointer(ST_SCHEDULER_PROCESS_LISTS, scheduler, lists);
 
@@ -5818,15 +6018,20 @@ install_processor_object(void)
      */
     process = OM_instantiate_pointers(process_class, 4);
     if (!OM_is_present(process))
-        return ST_NIL;
+        goto refused;
     OM_increase_ref(process);
     OM_store_pointer(ST_PROCESS_PRIORITY, process, OM_int_oop(8));
     OM_store_pointer(ST_PROCESS_MY_LIST, process, ST_NIL);
     OM_store_pointer(ST_SCHEDULER_ACTIVE_PROCESS, scheduler, process);
 
     OM_store_pointer(ST_ASSOCIATION_VALUE, ST_SCHEDULER_ASSOCIATION, scheduler);
+    ST_hold_leave(&held);           /*  the association holds it all now  */
     define_global("Processor", scheduler);
     return scheduler;
+
+refused:
+    ST_hold_leave(&held);
+    return ST_NIL;
 }
 
 int
@@ -5842,12 +6047,13 @@ BOOT_install_scheduler_dialect(const char *startup_source, int dialect)
     st_oop      process_class = BOOT_global("Process");
     st_oop      scheduler = install_processor_object();
     st_oop      process;
-    st_oop      context;
+    st_oop      context = ST_NIL;
     st_compile_context  ctx;
     st_compile_result   res;
     char       *source;
     size_t      source_size;
     int         compiled;
+    st_held     held;
 
     if (!OM_is_present(scheduler) || !OM_is_present(process_class)) {
         fprintf(stderr, "st2026: no scheduler: Processor=%d Process=%d\n",
@@ -5904,10 +6110,21 @@ BOOT_install_scheduler_dialect(const char *startup_source, int dialect)
     }
     OM_increase_ref(res.method);
 
+    /*
+     *  The method is held while its context is made, and the context while
+     *  its Process is, until the Processor has the process: the same two
+     *  windows as -eval's, and the -startup method was the third of the
+     *  holes Bugs6 COMP-2 found alongside and left (Bugs07 OM-5, COMP-3).
+     */
+    ST_hold_enter(&held);
+    ST_hold(&held, &res.method);
+    ST_hold(&held, &context);
     context = OM_instantiate_pointers(ST_CLASS_METHOD_CONTEXT,
                                       ST_LARGE_CONTEXT_SLOTS);
-    if (!OM_is_present(context))
+    if (!OM_is_present(context)) {
+        ST_hold_leave(&held);
         return 0;
+    }
     OM_store_pointer(ST_CTX_SENDER, context, ST_NIL);
     OM_store_pointer(ST_CTX_METHOD, context, res.method);
     OM_store_pointer(ST_CTX_RECEIVER, context, ST_NIL);
@@ -5919,8 +6136,10 @@ BOOT_install_scheduler_dialect(const char *startup_source, int dialect)
                                     OM_fetch_pointer(0, res.method))));
 
     process = OM_instantiate_pointers(process_class, 4);
-    if (!OM_is_present(process))
+    if (!OM_is_present(process)) {
+        ST_hold_leave(&held);
         return 0;
+    }
     OM_increase_ref(process);
     OM_store_pointer(ST_PROCESS_SUSPENDED_CONTEXT, process, context);
     OM_store_pointer(ST_PROCESS_MY_LIST, process, ST_NIL);
@@ -5934,6 +6153,7 @@ BOOT_install_scheduler_dialect(const char *startup_source, int dialect)
      */
     OM_store_pointer(ST_PROCESS_PRIORITY, process, OM_int_oop(8));
     OM_store_pointer(ST_SCHEDULER_ACTIVE_PROCESS, scheduler, process);
+    ST_hold_leave(&held);           /*  the Processor holds them now  */
 
     /*
      *  InputSensor class>>install makes the InputState that reads the
@@ -5989,22 +6209,38 @@ build_strike_font(void)
     st_oop      form_class = BOOT_global("Form");
     st_oop      word_array = BOOT_global("WordArray");
     st_oop      array_class = BOOT_global("Array");
-    st_oop      glyphs;
-    st_oop      bits;
-    st_oop      xtable;
-    st_oop      font;
-    st_oop      origin;
+    st_oop      glyphs = ST_NIL;
+    st_oop      bits   = ST_NIL;
+    st_oop      xtable = ST_NIL;
+    st_oop      font   = ST_NIL;
+    st_oop      origin = ST_NIL;
+    st_oop      stops  = ST_NIL;
     uint32_t    raster = FONT_STRIKE_W / 16;
     unsigned    row;
     unsigned    i;
+    st_held     held;
 
     if (!OM_is_present(font_class) || !OM_is_present(form_class)
      || !OM_is_present(word_array) || !OM_is_present(array_class))
         return ST_OOP_INVALID;
 
+    /*
+     *  Six objects, each made while the ones before it are held by nothing
+     *  but these variables until the font holds them all: forcing a
+     *  collection at String allocations from the second initializer pass
+     *  on found `corrupted size vs. prev_size' here (Bugs07 OM-5).
+     */
+    ST_hold_enter(&held);
+    ST_hold(&held, &bits);
+    ST_hold(&held, &origin);
+    ST_hold(&held, &glyphs);
+    ST_hold(&held, &xtable);
+    ST_hold(&held, &font);
+    ST_hold(&held, &stops);
+
     bits = OM_instantiate_words(word_array, raster * ST_FONT_HEIGHT);
     if (!OM_is_present(bits))
-        return ST_OOP_INVALID;
+        goto refused;
 
     /*
      *  The strike goes across as it is: two bytes to a word, the first of
@@ -6019,13 +6255,13 @@ build_strike_font(void)
 
     origin = OM_instantiate_pointers(ST_CLASS_POINT, 2);
     if (!OM_is_present(origin))
-        return ST_OOP_INVALID;
+        goto refused;
     OM_store_pointer(0, origin, OM_int_oop(0));
     OM_store_pointer(1, origin, OM_int_oop(0));
 
     glyphs = OM_instantiate_pointers(form_class, 4);
     if (!OM_is_present(glyphs))
-        return ST_OOP_INVALID;
+        goto refused;
     OM_store_pointer(ST_FORM_BITS,   glyphs, bits);
     OM_store_pointer(ST_FORM_WIDTH,  glyphs, OM_int_oop(FONT_STRIKE_W));
     OM_store_pointer(ST_FORM_HEIGHT, glyphs, OM_int_oop(ST_FONT_HEIGHT));
@@ -6045,7 +6281,7 @@ build_strike_font(void)
      */
     xtable = OM_instantiate_pointers(array_class, ST_FONT_CODES + 2);
     if (!OM_is_present(xtable))
-        return ST_OOP_INVALID;
+        goto refused;
     for (i = 0; i < ST_FONT_CODES + 2; ++i)
         OM_store_pointer(i, xtable,
                          OM_int_oop((st_int) ST_FONT_XTABLE[
@@ -6053,7 +6289,7 @@ build_strike_font(void)
 
     font = OM_instantiate_pointers(font_class, 16);
     if (!OM_is_present(font))
-        return ST_OOP_INVALID;
+        goto refused;
     /*  xTable glyphs name stopConditions type minAscii maxAscii maxWidth
      *  strikeLength ascent descent xOffset raster subscript superscript
      *  emphasis  */
@@ -6095,15 +6331,16 @@ build_strike_font(void)
          *  ever -- and the xTable's two spare entries above are what make it
          *  zero wide instead.  Marking therefore starts one past it, at 129.
          */
-        st_oop      stops = OM_instantiate_pointers(array_class, 258);
         st_oop      absent;
         unsigned    code;
 
+        stops = OM_instantiate_pointers(array_class, 258);
+
         if (!OM_is_present(stops))
-            return ST_OOP_INVALID;
+            goto refused;
         absent = BOOT_intern_symbol("characterNotInFont", NULL);
         if (!OM_is_present(absent))
-            return ST_OOP_INVALID;
+            goto refused;
         /*  The array index is the code plus one, so 129 is the 130th.  */
         for (code = FONT_CODES + 1; code <= 255; ++code)
             OM_store_pointer(code, stops, absent);
@@ -6128,7 +6365,12 @@ build_strike_font(void)
     OM_store_pointer(14, font, OM_int_oop(0));
     OM_store_pointer(15, font, OM_int_oop(0));
     OM_increase_ref(font);
-    return font;
+    ST_hold_leave(&held);
+    return font;                    /*  stored by the caller before it allocates  */
+
+refused:
+    ST_hold_leave(&held);
+    return ST_OOP_INVALID;
 }
 
 /*
@@ -6143,11 +6385,12 @@ install_text_style(void)
     st_oop      font = build_strike_font();
     st_oop      style_class = BOOT_global("TextStyle");
     st_oop      array_class = BOOT_global("Array");
-    st_oop      font_array;
+    st_oop      font_array = ST_NIL;
     unsigned    i;
     st_oop      make;
     st_oop      arg;
     st_oop      style;
+    st_held     held;
 
     if (!OM_is_present(font) || !OM_is_present(style_class)
      || !OM_is_present(array_class))
@@ -6164,22 +6407,33 @@ install_text_style(void)
      *  one and gets nil if no font claims to be bold, and then sends it
      *  #name.  Sharing one object four times looks tidier and does not work.
      */
+    /*
+     *  The Array of faces is held while the three faces are made, until
+     *  fontArray: has it as its argument (Bugs07 OM-5).
+     */
+    ST_hold_enter(&held);
+    ST_hold(&held, &font_array);
     font_array = OM_instantiate_pointers(array_class, 4);
-    if (!OM_is_present(font_array))
+    if (!OM_is_present(font_array)) {
+        ST_hold_leave(&held);
         return 1;
+    }
     OM_store_pointer(0, font_array, font);
     for (i = 1; i < 4; ++i) {
         st_oop      face = OM_instantiate_pointers(OM_fetch_class(font), 16);
         unsigned    k;
 
-        if (!OM_is_present(face))
+        if (!OM_is_present(face)) {
+            ST_hold_leave(&held);
             return 1;
+        }
         for (k = 0; k < 16; ++k)
             OM_store_pointer(k, face, OM_fetch_pointer(k, font));
         OM_store_pointer(15, face, OM_int_oop((st_int) i));   /*  emphasis  */
         OM_increase_ref(face);
         OM_store_pointer(i, font_array, face);
     }
+    ST_hold_leave(&held);           /*  run_method_with holds it as arg  */
 
     make = lookup_in_chain(OM_fetch_class(style_class), "fontArray:");
     if (!OM_is_present(make))
