@@ -3366,6 +3366,94 @@ bugs7b_sched(void)
 }
 
 /*
+ *  Bugs07, round 3: the scheduler group's findings -- Delay's lock across
+ *  a snapshot (SCHED-6), the weak dictionaries' mourning (FIXES-2,
+ *  FIXES-4) and pharo-time's timeout (KERNB-5).
+ */
+static void
+bugs7c_sched(void)
+{
+    static char out[65536];
+    char        text[4096];
+    char        image[1024];
+    char        changes[1024];
+    char        command[2048];
+    const char *snap = fixture("bugs7c-sched6-snap");
+    int         status;
+
+    /*
+     *  SCHED-6: Delay class>>preSnapshot took AccessProtect with a bare
+     *  wait, and the ifCurtailed: in snapshotAs:thenQuit: that gave it
+     *  back was entered only after the queue walk and the cursor: a
+     *  process terminated in between kept the lock, and every Delay in
+     *  the image waited for ever.  One worker, so that the snapshotter
+     *  is exactly where the probe puts it.  First it is handed the lock
+     *  and terminated on its ready list before it runs again: the lock
+     *  must come back (excess 1) and a Delay work.  Then it is
+     *  terminated while still waiting, with the lock held here: it never
+     *  got it and must not give it back (excess 0, then 1 once this
+     *  process lets go).  Before: the first terminate kept the lock,
+     *  the Delay never returned, and the image stopped with every
+     *  process blocked.
+     */
+    snprintf(text, sizeof text,
+        "| ap p r |\n"
+        "ap := Delay classPool at: #AccessProtect. ap wait.\n"
+        "p := [Smalltalk snapshotAs: '%s'] fork. Processor yield.\n"
+        "r := OrderedCollection new. r add: p suspendedContext method == "
+        "(Semaphore compiledMethodAt: #waitAndMark:).\n"
+        "ap signal. p terminate. r add: (ap instVarAt: 3); add: p suspendedContext isNil.\n"
+        "(Delay forMilliseconds: 5) wait.\n"
+        "p := [Smalltalk snapshotAs: '%s'] fork. ap wait. Processor yield.\n"
+        "p terminate. r add: (ap instVarAt: 3). ap signal. r add: (ap instVarAt: 3).\n"
+        "(Delay forMilliseconds: 5) wait. r add: #delayWorked.\n"
+        "^r asArray\n", snap, snap);
+    bugs7_probe("bugs7c-sched6-terminated.st", text, 1,
+        "==> (true 1 true 0 1 delayWorked )",
+        "SCHED-6 a snapshot terminated with Delay's lock gives it back");
+
+    /*
+     *  And the queue still crosses a snapshot.  The resumption times are
+     *  written on the writer's clock now and moved by postSnapshot: in
+     *  the run that resumes, by the time the file sat on disk: a process
+     *  waiting on a three-second Delay when the image was saved wakes in
+     *  the resumed image within those three seconds, and a fresh Delay
+     *  there works.  Saved without quitting, so that the run that wrote
+     *  the file goes through postSnapshot: as well and still answers.
+     */
+    snprintf(text, sizeof text,
+        "| s t0 |\n"
+        "s := Semaphore new.\n"
+        "[(Delay forMilliseconds: 3000) wait. s signal] fork.\n"
+        "(Delay forMilliseconds: 100) wait.\n"
+        "(Smalltalk snapshotAs: '%s' thenQuit: false) ifTrue: [^'saved'].\n"
+        "t0 := Time millisecondClockValue. s wait.\n"
+        "(Delay forMilliseconds: 20) wait.\n"
+        "^{'resumed'. (Time millisecondClockValue - t0) < 3200. "
+        "(Delay classPool at: #AccessProtect) instVarAt: 3}\n", snap);
+    snprintf(image, sizeof image, "%s.im", snap);
+    snprintf(changes, sizeof changes, "%s.changes", snap);
+    unlink(image);
+    bugs7_probe("bugs7c-sched6-save.st", text, 2, "==> 'saved'",
+                "SCHED-6 an image saved with a Delay pending");
+    snprintf(command, sizeof command,
+             ST_TEST_TIMEOUT " -k 2 " SERVE_SECONDS
+             " %s -serve %s -workers 2 2>&1", st2026, image);
+    status = run(command, out, sizeof out);
+    ++st_test_checks;
+    if (status < 0) {
+        ++st_test_failures;
+        printf("  FAIL SCHED-6: could not run the saved image\n");
+    } else
+        expect(out, "==> ('resumed' true 1 )",
+               "SCHED-6 a pending Delay wakes in the resumed image");
+    unlink(image);
+    unlink(changes);
+    snprintf(changes, sizeof changes, "%s.im.changes", snap);
+    unlink(changes);
+}
+
+/*
  *  Bugs07, round 2: the VM group's medium findings that need a server.
  */
 static void
@@ -4709,6 +4797,7 @@ main(void)
     bugs7b_vm();
     bugs7c_gui();
     bugs7c_net();
+    bugs7c_sched();
 
     unlink(IMAGE);
     unlink(BATCH);

@@ -69,7 +69,7 @@ disarmed; the head of the queue was by then a delay whose time had
 passed, so a fresh `wait' filed itself behind the head without arming
 anything, no timer was pending, and the VM stopped with `every process
 is blocked' (CHRON-2).  Two answers, because the fault has two halves:
-postSnapshot drains what is due and arms for the rest, which is the
+postSnapshot: drains what is due and arms for the rest, which is the
 right thing on the path snapshotAs:thenQuit: takes; and wait re-arms for
 the head every time, which costs one primitive call and is the answer
 for every other path, including a raw snapshotPrimitive.
@@ -152,31 +152,78 @@ Delay class >> initialize [
 ]
 
 { #category : '*Concurrency' }
-Delay class >> preSnapshot [
-	"About to be written to a file: put every resumption time on a clock
-	 the image can still recognise when it comes back.
+Delay class >> snapshotClocks [
+	"Both clocks at one instant, for postSnapshot: to measure a snapshot's
+	 absence by: this VM's monotonic millisecond clock, which every
+	 resumptionTime is a reading of, and the wall clock in milliseconds
+	 since 1 January 1901, UTC.
 
-	 resumptionTime is a reading of the VM's monotonic millisecond clock,
-	 which counts from when the MACHINE started, so it means nothing to the
-	 image that resumes this file -- another machine, or the same one after
-	 a reboot.  1983's answer, kept here: convert each one to milliseconds
-	 since 1 January 1901, which is a fact about the world rather than
-	 about this VM, and convert it back in postSnapshot.
+	 The monotonic clock counts from when the MACHINE started, so it means
+	 nothing to the image that resumes a file -- another machine, or the
+	 same one after a reboot.  The wall clock is a fact about the world.
+	 UTC, not `Time totalSeconds', which 1983 uses and which is corrected
+	 for the local zone: an image saved before a daylight-saving change and
+	 resumed after it would have every pending delay moved by an hour.
 
-	 AccessProtect is taken here and released in postSnapshot, so the queue
-	 cannot change while the image is being written.  1983 raises out of
-	 the middle of this on a Delay that is not waiting and leaves the lock
-	 held for ever; there is nothing to raise about, because a Delay in the
-	 queue is by definition waiting and one that is not is not in it."
-	AccessProtect wait.
-	ActiveDelay notNil ifTrue: [ActiveDelay preSnapshot].
-	SuspendedDelays do: [:delay | delay preSnapshot]
+	 Read once, by the run that writes the file, and any time in that run
+	 will do: the two clocks run together within one run of the VM, so the
+	 pair read now is as good a record of `then' as one read at the moment
+	 of the write."
+	^Array
+		with: Time millisecondClockValue
+		with: Time utcMicroseconds // 1000
 ]
 
 { #category : '*Concurrency' }
-Delay class >> postSnapshot [
-	"Written, or resumed: put every resumption time back on this VM's
-	 clock, resume whatever is already due, and arm the timer.
+Delay class >> preSnapshot: aCell [
+	"About to be written to a file: take AccessProtect, so that the queue
+	 cannot change while the image is being written, and note in aCell
+	 that it was taken.  postSnapshot: gives it back.
+
+	 Marked through Semaphore>>waitAndMark:, as Semaphore>>critical:
+	 marks, so that the caller's ensure: knows whether there is a lock to
+	 give back -- and so that Process>>noteMutexOwnerIn:waiting: marks the
+	 cell for a process stopped after the wait returned and before the
+	 mark, which is the place SCHED-2's probe stops a process in: handed
+	 the lock and taken off its ready list before it has run again.
+
+	 Bugs07 SCHED-6.  This was `AccessProtect wait' followed by a walk of
+	 the whole queue putting each resumption time on the wall clock, and
+	 the ifCurtailed: that gave the lock back was entered only after both.
+	 A process terminated anywhere in between -- handed the lock and
+	 stopped on its ready list, or anywhere in the walk -- kept
+	 AccessProtect for ever, and every Delay in the image waited on it:
+	 `every process is blocked', the timing process among them, the same
+	 fault Bugs6 SCHED-2 took out of Delay>>wait.  Stopped in the walk, it
+	 also left the queue half on the wall clock, some resumption times
+	 4*10^12 and never due.  So the lock is taken inside the caller's
+	 protected block, and nothing is converted here at all: the queue is
+	 written as it stands, on this VM's clock, and postSnapshot: moves it
+	 by how far the clocks moved, in one pass that runs as an unwind
+	 block, which a terminate lets finish."
+	AccessProtect waitAndMark: aCell
+]
+
+{ #category : '*Concurrency' }
+Delay class >> postSnapshot: clocks [
+	"Written, or resumed: put every resumption time on this VM's clock,
+	 resume whatever is already due, arm the timer, and give AccessProtect
+	 back.  clocks is what snapshotClocks answered in the run that wrote
+	 the file.
+
+	 Every delay is moved by one amount: how far this VM's clock has moved
+	 since clocks was read, less how far the wall clock has.  In the run
+	 that wrote the file the two have moved together and the shift is
+	 nothing; in a run that resumed it, the shift carries each resumption
+	 time from the old VM's clock to this one's and takes off the time the
+	 file sat on disk.  A time that has gone by is floored at now: the
+	 honest reading of a delay whose time went by while the image was not
+	 running is `due now', and resumeWhatIsDue, straight after, acts on it.
+	 One shift keeps the queue in order, so it needs no sorting again.
+	 1983 converted each delay to the wall clock in preSnapshot and back
+	 here, which is the same arithmetic done twice, reading the wall clock
+	 in whole seconds: a snapshot that straddled a second's tick woke
+	 every delay of the run that wrote it up to a second early.
 
 	 The arming is the part 1983 could take for granted and this system
 	 cannot.  The timer is in the VM, and an image resumed from a file gets
@@ -192,9 +239,12 @@ Delay class >> postSnapshot [
 	 drains a live one, and it arms for whatever is left.  1983 sent
 	 `ActiveDelay reactivate' instead, which arms for a head it does not
 	 first check the time of."
-	[ActiveDelay notNil ifTrue: [
-		ActiveDelay postSnapshot.
-		SuspendedDelays do: [:delay | delay postSnapshot].
+	[ActiveDelay notNil ifTrue: [ | now shift |
+		now := Time millisecondClockValue.
+		shift := now - (clocks at: 1)
+			- (Time utcMicroseconds // 1000 - (clocks at: 2)).
+		ActiveDelay shiftResumptionBy: shift notBefore: now.
+		SuspendedDelays do: [:delay | delay shiftResumptionBy: shift notBefore: now].
 		self resumeWhatIsDue]]
 			ensure: [AccessProtect signal]
 ]
@@ -416,37 +466,17 @@ Delay >> reactivate [
 ]
 
 { #category : '*Concurrency' }
-Delay >> preSnapshot [
-	"Put my resumption time on the wall clock, so that it survives being
-	 written to a file.  With AccessProtect held.
+Delay >> shiftResumptionBy: milliseconds notBefore: now [
+	"Move my resumption time by milliseconds, to no earlier than now, if
+	 I am waiting.  With AccessProtect held; for postSnapshot:.
 
-	 UTC, not `Time totalSeconds', which 1983 uses and which is corrected
-	 for the local zone: an image saved before a daylight-saving change and
-	 resumed after it would have every pending delay moved by an hour.  How
-	 long I have left to wait is not a fact about anybody's time zone.
-
-	 Answers quietly for a Delay that is not waiting, where 1983 raises
-	 `This Delay is not waiting' -- out of the middle of a class-side
-	 preSnapshot that holds AccessProtect and has no ensure:, which would
-	 leave the lock held and every later wait behind it."
+	 Answers quietly for a Delay that is not waiting, where 1983's
+	 preSnapshot raised `This Delay is not waiting' -- out of the middle
+	 of a class-side walk that held AccessProtect -- for nothing: a Delay
+	 in the queue is by definition waiting, and one that is not is not in
+	 it."
 	delayInProgress ifTrue: [
-		resumptionTime := Time utcSeconds * 1000
-			+ (resumptionTime - Time millisecondClockValue)]
-]
-
-{ #category : '*Concurrency' }
-Delay >> postSnapshot [
-	"Put my resumption time back on this VM's millisecond clock.  With
-	 AccessProtect held.
-
-	 The remainder is floored at zero because a snapshot can sit on a disk
-	 for a year: the honest reading of a delay whose time went by while the
-	 image was not running is `due now', and resumeWhatIsDue -- which the
-	 class-side postSnapshot sends straight after this -- is what acts on
-	 it (Bugs4 CHRON-2)."
-	delayInProgress ifTrue: [
-		resumptionTime := Time millisecondClockValue
-			+ ((resumptionTime - (Time utcSeconds * 1000)) max: 0)]
+		resumptionTime := resumptionTime + milliseconds max: now]
 ]
 
 { #category : '*Concurrency' }

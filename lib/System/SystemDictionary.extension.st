@@ -300,22 +300,41 @@ SystemDictionary >> snapshotAs: imageFilePrefix thenQuit: quitIfTrue [
 	 loaded is done by the VM and by the startup expression, before any
 	 Smalltalk of ours runs.
 
-	 What is left is exactly the 1983 sequence otherwise, and that includes
-	 Delay preSnapshot and postSnapshot -- the hooks that stop and restart
-	 the timing process across a snapshot.  They were unreachable while the
-	 line above them raised, which is why nothing had ever run them.
+	 What is left is the 1983 sequence otherwise, and that includes Delay's
+	 snapshot hooks -- preSnapshot: and postSnapshot: here -- which stop
+	 and restart the timing process across a snapshot.  They were
+	 unreachable while the line above them raised, which is why nothing had
+	 ever run them.
 
-	 And postSnapshot has to run however the write ends.  preSnapshot
-	 takes Delay's AccessProtect and only postSnapshot gives it back, and
+	 And postSnapshot: has to run however the write ends.  preSnapshot:
+	 takes Delay's AccessProtect and only postSnapshot: gives it back, and
 	 primitive 97 fails for ordinary reasons -- a .tmp it cannot write, a
 	 full disk, a worker that would not park within ten seconds.  1983 had
 	 no path out of the primitive but the normal one, so the failure left
 	 the lock held for ever: the caller's handler caught the error and went
 	 on, and the next Delay anyone waited on blocked on AccessProtect and
 	 stopped the image with `every process is blocked; nothing can run'
-	 (Bugs5 OM-7).  ifCurtailed: and not ensure:, because the normal path
-	 releases it already, in the ifFalse: branch below, and a second
-	 signal would leave the lock open to two holders at once.
+	 (Bugs5 OM-7).
+
+	 And from the instant the lock is taken, not from some later point
+	 (Bugs07 SCHED-6).  The hold was taken by a bare wait in preSnapshot,
+	 the queue was walked onto the wall clock, the cursor shown, and only
+	 then was the ifCurtailed: that gave it back entered: a terminate or a
+	 timeout's signalException: landing in between -- on a server that
+	 saves its image from a background process and is shut down, say --
+	 kept AccessProtect for ever and stopped every Delay in the image.  So
+	 the wait is the first thing inside the protected block, marked in
+	 `held' the way Semaphore>>critical: marks its own, and the ensure:
+	 gives the lock back only if the mark says this process got it:
+	 stopped while still waiting, it did not; stopped the moment the wait
+	 returned, Process>>noteMutexOwnerIn:waiting: marks it.  ensure: and
+	 not the ifCurtailed: this was, so that the normal path releases it in
+	 the same one place and no other branch has to; a quit leaves inside
+	 the block and releases nothing, as it always did.  The unwind block
+	 is also where the queue is put back on this VM's clock, and a
+	 terminate lets an unwind block finish, so that pass cannot be left
+	 half done either.  The clocks it measures by are read before the
+	 lock, where a stop costs nothing; see Delay class>>snapshotClocks.
 
 	 The file is named and not opened (Bugs5 SNAPSHOT-zero-byte).  1983
 	 opened it -- `FileStream fileNamed:' and then close -- because on the
@@ -326,10 +345,10 @@ SystemDictionary >> snapshotAs: imageFilePrefix thenQuit: quitIfTrue [
 	 .im behind that -run refuses as no image at all.  A File that only
 	 carries the name is all 128 reads.
 
-	 And it is named after Delay preSnapshot, inside the block the
+	 And it is named after Delay preSnapshot:, inside the block the
 	 primitive runs in, not before.  128 and 97 talk through one place in
-	 the VM, and preSnapshot holds Delay's AccessProtect until
-	 postSnapshot: naming the file under that lock is what keeps a second
+	 the VM, and preSnapshot: holds Delay's AccessProtect until
+	 postSnapshot:; naming the file under that lock is what keeps a second
 	 process's snapshotAs: from renaming the first one's image between the
 	 two sends.
 
@@ -357,7 +376,7 @@ SystemDictionary >> snapshotAs: imageFilePrefix thenQuit: quitIfTrue [
 	 keeps logging where it was.  The copy is made before the files are
 	 released and the image written, and is exactly the file the saved
 	 methods were written into, up to this moment."
-	| justSnapped imageFile finalizer |
+	| justSnapped imageFile finalizer clocks held |
 	Cursor execute show.
 	self logChange: '''----SNAPSHOT----'''.
 	Disk == nil ifFalse:
@@ -366,17 +385,16 @@ SystemDictionary >> snapshotAs: imageFilePrefix thenQuit: quitIfTrue [
 		 self copyChangesFileTo: imageFilePrefix , '.changes'].
 	self releaseExternalViews.
 	Transcript cr; show: 'Snapshot at: ', Time dateAndTimeNow printString.
-	Delay preSnapshot.
-	Cursor wait show.
-	justSnapped :=
-		["Name the file for primitive 97, which is how beSnapshotFile and
-		  snapshotPrimitive are one mechanism split across two sends."
-		 imageFile == nil ifFalse: [imageFile beSnapshotFile].
-		 self snapshotPrimitive isNil]
-			ifCurtailed: [Delay postSnapshot].
-	justSnapped & quitIfTrue
-		ifTrue: [self quitPrimitive]
-		ifFalse: [Delay postSnapshot].
+	clocks := Delay snapshotClocks.
+	held := Array new: 1.
+	[Delay preSnapshot: held.
+	 Cursor wait show.
+	 "Name the file for primitive 97, which is how beSnapshotFile and
+	  snapshotPrimitive are one mechanism split across two sends."
+	 imageFile == nil ifFalse: [imageFile beSnapshotFile].
+	 justSnapped := self snapshotPrimitive isNil.
+	 justSnapped & quitIfTrue ifTrue: [self quitPrimitive]]
+		ensure: [(held at: 1) == true ifTrue: [Delay postSnapshot: clocks]].
 	justSnapped ifFalse: [
 		finalizer := self at: #Finalizer ifAbsent: [nil].
 		(finalizer notNil and: [finalizer process notNil])

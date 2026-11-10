@@ -152,27 +152,38 @@ DelayTest >> testASnapshotRoundTripKeepsTheTimeLeft [
 	"Bugs4 CHRON-2, the arithmetic half.
 
 	 A resumption time is a reading of this machine's monotonic clock and
-	 means nothing to the image that resumes the file, so preSnapshot puts
-	 it on the wall clock and postSnapshot puts it back.  The two are far
-	 apart -- milliseconds since 1901 against milliseconds since the
-	 machine started -- so the middle assertion is not a formality.
+	 means nothing to the image that resumes the file, so postSnapshot:
+	 moves every one by how far this VM's clock has moved since the
+	 snapshot's clocks were read, less how far the wall clock has.  In the
+	 run that wrote the file that is nothing; in one that resumed it ten
+	 seconds of wall time after a clock that stood at a quite different
+	 count, it is the difference less the ten seconds.  The two cases are
+	 here as two clock pairs, the second made up.
 
-	 The class-side pair is done twice because preSnapshot takes
-	 AccessProtect and postSnapshot releases it: a postSnapshot that
+	 The class-side pair is done twice because preSnapshot: takes
+	 AccessProtect and postSnapshot: releases it: a postSnapshot: that
 	 raised on the way, as 1983's does for a Delay that is not waiting,
 	 would leave the lock held and the second pre would never return."
-	| delay before |
+	| delay before clocks shift |
 	delay := Delay forMilliseconds: 60000.
 	delay setResumption.
 	before := delay resumptionTime.
-	delay preSnapshot.
-	self assert: delay resumptionTime > (before * 100).
-	delay postSnapshot.
-	self assert: (delay resumptionTime - before) abs <= 3000.
-	Delay preSnapshot.
-	Delay postSnapshot.
-	Delay preSnapshot.
-	Delay postSnapshot.
+	clocks := Delay snapshotClocks.
+	shift := Time millisecondClockValue - (clocks at: 1)
+		- (Time utcMicroseconds // 1000 - (clocks at: 2)).
+	delay shiftResumptionBy: shift notBefore: Time millisecondClockValue.
+	self assert: (delay resumptionTime - before) abs <= 50.
+	"Written by a VM whose clock stood 10^9 further on, resumed ten
+	 seconds of wall time later: 50 of the 60 seconds are left."
+	shift := Time millisecondClockValue - ((clocks at: 1) + 1000000000) - 10000.
+	delay resumption: before + 1000000000.
+	delay setResumption.
+	delay shiftResumptionBy: shift notBefore: Time millisecondClockValue.
+	self assert: (delay resumptionTime - (before - 10000)) abs <= 50.
+	Delay preSnapshot: (Array new: 1).
+	Delay postSnapshot: Delay snapshotClocks.
+	Delay preSnapshot: (Array new: 1).
+	Delay postSnapshot: Delay snapshotClocks.
 	self assert: true
 ]
 

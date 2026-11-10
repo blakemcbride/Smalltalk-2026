@@ -3124,8 +3124,13 @@ test_browsing(void)
      *
      *  3027266 -> 3032032 with Bugs07 NET-5: SIGTERM to a server is a
      *  request it answers by letting its requests in flight finish.
+     *
+     *  3032032 -> 3036008 with Bugs07 SCHED-6: a snapshot takes Delay's
+     *  lock inside the block whose ensure: gives it back, and the queue is
+     *  moved by one clock shift after the write instead of walked onto the
+     *  wall clock before it.
      */
-    check_integer("(SourceFiles at: 1) contents size", 3032032);
+    check_integer("(SourceFiles at: 1) contents size", 3036008);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -8204,23 +8209,30 @@ test_bugs4_chron(void)
      *
      *  A Delay's resumption time is a reading of THIS machine's monotonic
      *  clock, so it means nothing to the image that resumes the file.
-     *  preSnapshot puts it on the wall clock and postSnapshot puts it
-     *  back, and a round trip has to land where it started.
+     *  postSnapshot: moves it by how far this VM's clock has moved since
+     *  snapshotClocks, less how far the wall clock has -- nothing, in the
+     *  run that wrote the file, so a round trip has to land where it
+     *  started.
      *
-     *  And the pair has to leave AccessProtect free: preSnapshot takes it
-     *  and postSnapshot releases it, so a postSnapshot that raised on the
-     *  way -- 1983's does, for a Delay that is not waiting -- would leave
-     *  the lock held and every later wait behind it.  The second pair
-     *  below is the check: if the first pair kept the lock, this
+     *  And the pair has to leave AccessProtect free: preSnapshot: takes it
+     *  and postSnapshot: releases it, so a postSnapshot: that raised on
+     *  the way -- 1983's does, for a Delay that is not waiting -- would
+     *  leave the lock held and every later wait behind it.  The second
+     *  pair below is the check: if the first pair kept the lock, this
      *  expression never finishes.
      */
-    check_boolean("| d before | "
+    check_boolean("| d before clocks | "
                   "d := Delay untilMilliseconds: Time millisecondClockValue + 60000. "
                   "d setResumption. before := d resumptionTime. "
-                  "d preSnapshot. d postSnapshot. "
-                  "^(d resumptionTime - before) abs <= 3000", 1);
-    check_integer("Delay preSnapshot. Delay postSnapshot. "
-                  "Delay preSnapshot. Delay postSnapshot. ^42", 42);
+                  "clocks := Delay snapshotClocks. "
+                  "d shiftResumptionBy: Time millisecondClockValue - (clocks at: 1)"
+                  " - (Time utcMicroseconds // 1000 - (clocks at: 2))"
+                  " notBefore: Time millisecondClockValue. "
+                  "^(d resumptionTime - before) abs <= 50", 1);
+    check_integer("Delay preSnapshot: (Array new: 1). "
+                  "Delay postSnapshot: Delay snapshotClocks. "
+                  "Delay preSnapshot: (Array new: 1). "
+                  "Delay postSnapshot: Delay snapshotClocks. ^42", 42);
 
     /*
      *  CHRON-6: a Delay whose wait is over leaves the queue.
