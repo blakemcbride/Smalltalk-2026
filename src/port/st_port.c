@@ -18,9 +18,10 @@
 #include <io.h>         /*  _commit and _fileno, for ST_file_sync  */
 #endif
 
+#include <time.h>
+
 #ifdef ST_POSIX
 #include <unistd.h>
-#include <time.h>
 /*
  *  sched_yield's own header.  Nothing here included it: glibc's
  *  <pthread.h> pulls it in, which is why this has always built, and
@@ -595,6 +596,65 @@ ST_sleep_ns(int64_t ns)
 }
 
 #endif
+
+/*
+ *  The offset from UTC of the local clock reading, from the two readings
+ *  of one instant (Bugs07 KERNA-3).
+ *
+ *  Windows has no tm_gmtoff, and primitive 219's Windows branch took the
+ *  offset as `now - mktime(&utc)' with utc.tm_isdst cleared, on the theory
+ *  that the zero kept mktime from correcting for daylight saving a second
+ *  time.  It does something else: tm_isdst 0 tells mktime that the
+ *  broken-down time IS standard time (C11 7.27.2.3; Microsoft's mktime
+ *  says the same), so whenever the host was in daylight saving the answer
+ *  was the standard offset, an hour short -- New York -18000 where it is
+ *  -14400 all summer, London 0 for 3600, Sydney 36000 for 39600 -- and
+ *  Time now, Date today and every DateAndTime on a Windows machine in a
+ *  daylight-saving zone ran an hour behind from spring to autumn, saying
+ *  nothing.  Setting tm_isdst to -1 instead lets mktime guess, and it
+ *  guesses wrong for the hour a transition repeats.
+ *
+ *  No guess is needed.  localtime and gmtime of the same time_t are two
+ *  readings of one instant, and the offset is simply how far apart the
+ *  readings are: the hours, minutes and seconds, plus a whole day when the
+ *  local date is the day before or the day after.  They are never further
+ *  apart than that -- no zone is more than fourteen hours from UTC -- and
+ *  across a year's end tm_yday jumps from 364 or 365 back to 0, so there
+ *  the years decide which way the day goes.
+ */
+long
+ST_utc_offset_between(const struct tm *local, const struct tm *utc)
+{
+    long    days;
+
+    if (local->tm_year != utc->tm_year)
+        days = local->tm_year > utc->tm_year ? 1 : -1;
+    else
+        days = (long) local->tm_yday - (long) utc->tm_yday;
+    return days * 86400L
+         + (long) (local->tm_hour - utc->tm_hour) * 3600L
+         + (long) (local->tm_min - utc->tm_min) * 60L
+         + (long) (local->tm_sec - utc->tm_sec);
+}
+
+int
+ST_local_utc_offset(long *offset)
+{
+    time_t      now = time(NULL);
+    struct tm   local;
+#ifdef ST_WINDOWS
+    struct tm   utc;
+
+    if (localtime_s(&local, &now) != 0 || gmtime_s(&utc, &now) != 0)
+        return 0;
+    *offset = ST_utc_offset_between(&local, &utc);
+#else
+    if (localtime_r(&now, &local) == NULL)
+        return 0;
+    *offset = (long) local.tm_gmtoff;
+#endif
+    return 1;
+}
 
 /*
  *  Bugs6 OM-4.  Freeing a body gives it back to the C allocator, not to

@@ -182,6 +182,24 @@ int64_t ST_time_smalltalk_ms(void);
 #define ST_EPOCH_OFFSET_SEC     INT64_C(2177452800)
 
 void    ST_sleep_ns(int64_t ns);
+
+/*
+ *  The host's offset from UTC at this moment, in seconds, positive east of
+ *  Greenwich: what primitive 219 answers.  Stored through `offset'; answers
+ *  0 when the C library cannot say, 1 otherwise.  tm_gmtoff where the C
+ *  library has it, ST_utc_offset_between on Windows, which has not.
+ */
+int     ST_local_utc_offset(long *offset);
+
+/*
+ *  The same offset, from the local and the UTC broken-down times of ONE
+ *  instant: the difference of the two clock readings, the dates included.
+ *  Portable C on purpose, so that the arithmetic the Windows build depends
+ *  on is exercised by tests/unit/test_port.c on every platform, under as
+ *  many zones as the host's database has (Bugs07 KERNA-3).
+ */
+struct tm;
+long    ST_utc_offset_between(const struct tm *local, const struct tm *utc);
 /*
  *  Give the C allocator's free pages back to the operating system, where
  *  the allocator has such a thing to do (glibc's malloc_trim); a no-op

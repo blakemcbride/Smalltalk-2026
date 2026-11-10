@@ -5415,31 +5415,19 @@ primitive_millisecond_clock(void)
 static int
 primitive_local_utc_offset(void)
 {
-    time_t      now = time(NULL);
     long        offset;
-#ifdef ST_WINDOWS
-    struct tm   local;
-    struct tm   utc;
 
-    if (localtime_s(&local, &now) != 0 || gmtime_s(&utc, &now) != 0)
-        return 0;
     /*
-     *  Windows has no tm_gmtoff, so the difference is taken between the two
-     *  broken-down times.  mktime interprets a struct tm as LOCAL time, so
-     *  applying it to the UTC one answers the instant that clock reading
-     *  would have been locally, and the gap between that and now is the
-     *  offset.  isdst is cleared so mktime does not apply the correction a
-     *  second time.
+     *  ST_local_utc_offset (src/port) is tm_gmtoff where the C library has
+     *  it; on Windows, which has not, it is the distance between the local
+     *  and the UTC reading of the same instant.  The Windows arithmetic
+     *  used to be here, as `now - mktime(&utc)' with tm_isdst cleared,
+     *  which answers the zone's STANDARD offset all summer (Bugs07
+     *  KERNA-3); it lives in the port layer now so that tests/unit/
+     *  test_port.c can run it on every platform under many zones.
      */
-    utc.tm_isdst = 0;
-    offset = (long) (now - mktime(&utc));
-#else
-    struct tm   local;
-
-    if (localtime_r(&now, &local) == NULL)
+    if (!ST_local_utc_offset(&offset))
         return 0;
-    offset = local.tm_gmtoff;
-#endif
     return answer_integer((st_int) offset, 1);
 }
 

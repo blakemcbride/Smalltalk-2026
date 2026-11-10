@@ -12,6 +12,8 @@
 #include "st_atomic.h"
 
 #include <stdlib.h>
+#include <string.h>
+#include <time.h>
 
 #define WORKERS         8
 #define INCREMENTS      50000
@@ -303,6 +305,95 @@ test_time(void)
     CHECK(stamp < INT64_C(6279811200000));      /*  1 Jan 2100  */
 }
 
+/*  ----------  Bugs07 round three, the library group  ----------  */
+
+/*
+ *  KERNA-3: primitive 219 on Windows answered the zone's standard offset
+ *  all summer.  Its arithmetic is ST_utc_offset_between now, which is
+ *  portable, so it is checked here against tm_gmtoff -- the answer the
+ *  other platforms give -- every three hours for two years and a day, in
+ *  zones with daylight saving north and south, with half- and
+ *  three-quarter-hour offsets, and on both sides of the date line, where
+ *  the local date is a day (and at New Year a year) away from UTC's.  The
+ *  audit's three instants are among them; the old formula answered
+ *  -18000, 0 and 36000 there for -14400, 3600 and 39600.  A host without
+ *  a zone's data reads it as UTC, which still agrees, so the check cannot
+ *  fail for want of tzdata; how many instants were in daylight saving is
+ *  printed to show what was covered.  Windows reads TZ in its own form, so
+ *  there the check is of the one zone the machine is in.
+ */
+static void
+test_bugs7c_lib(void)
+{
+    long    offset = 0;
+
+    CHECK(ST_local_utc_offset(&offset));
+    CHECK(offset >= -12L * 3600 && offset <= 14L * 3600);
+    CHECK(offset % 900 == 0);
+#ifdef ST_POSIX
+    {
+        static const char *const zones[] = {
+            "America/New_York", "Europe/London", "Australia/Sydney",
+            "Asia/Kolkata", "America/St_Johns", "Asia/Kathmandu",
+            "Pacific/Chatham", "Pacific/Kiritimati", "Pacific/Pago_Pago",
+            "America/Santiago", "UTC",
+        };
+        static const time_t audit[] = { 1783000000, 1767225600 };
+        const char *was = getenv("TZ");
+        char       *saved = was ? strdup(was) : NULL;
+        long        compared = 0;
+        long        in_dst = 0;
+        long        wrong = 0;
+        size_t      z;
+
+        for (z = 0; z < sizeof zones / sizeof zones[0]; z++) {
+            time_t  t;
+            size_t  a;
+
+            setenv("TZ", zones[z], 1);
+            tzset();
+            for (t = 1767225600; t <= 1767225600 + (2 * 365 + 1) * 86400L; t += 3 * 3600) {
+                struct tm   local;
+                struct tm   utc;
+
+                localtime_r(&t, &local);
+                gmtime_r(&t, &utc);
+                ++compared;
+                if (local.tm_isdst > 0)
+                    ++in_dst;
+                if (ST_utc_offset_between(&local, &utc) != (long) local.tm_gmtoff) {
+                    if (wrong++ < 5)
+                        printf("  FAIL KERNA-3 %s at %lld: %ld, tm_gmtoff %ld\n",
+                               zones[z], (long long) t,
+                               ST_utc_offset_between(&local, &utc),
+                               (long) local.tm_gmtoff);
+                }
+            }
+            for (a = 0; a < sizeof audit / sizeof audit[0]; a++) {
+                struct tm   local;
+                struct tm   utc;
+
+                localtime_r(&audit[a], &local);
+                gmtime_r(&audit[a], &utc);
+                ++compared;
+                if (ST_utc_offset_between(&local, &utc) != (long) local.tm_gmtoff)
+                    ++wrong;
+            }
+            CHECK(ST_local_utc_offset(&offset));
+        }
+        if (saved) {
+            setenv("TZ", saved, 1);
+            free(saved);
+        } else
+            unsetenv("TZ");
+        tzset();
+        CHECK(wrong == 0);
+        printf("  (KERNA-3: %ld instants in %d zones, %ld of them in daylight saving)\n",
+               compared, (int) (sizeof zones / sizeof zones[0]), in_dst);
+    }
+#endif
+}
+
 int
 main(void)
 {
@@ -318,6 +409,7 @@ main(void)
     test_cas_loop();
     test_cpu_count();
     test_time();
+    test_bugs7c_lib();
 
     return ST_TEST_END();
 }
