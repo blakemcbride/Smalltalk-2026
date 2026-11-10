@@ -3166,17 +3166,59 @@ SCHED_primitive_detach(void)
  *  Membership of the list is checked, not merely the myList slot: any
  *  object with four pointer fields has a fourth, and an object that is
  *  not a process must not be refused for what happens to be in it.
- *  Under the list's stripe lock, since the timer thread signals without
- *  being parked by a safepoint, and the forward path asks this before
- *  its safepoint in any case.  Answers 0 for the Blue Book memory's
- *  single thread as for the pool: the lists are the same.
+ *  Under the list's lock, since the timer thread signals without being
+ *  parked by a safepoint, and the forward path asks this before its
+ *  safepoint in any case.  Answers 0 for the Blue Book memory's single
+ *  thread as for the pool: the lists are the same.
+ *
+ *  And only a list the scheduler links processes on is walked (Bugs07
+ *  KERNB-1).  This is asked of BOTH objects of every become:, which means
+ *  of every collection that grows -- Set, Dictionary and OrderedCollection
+ *  all grow by become: -- and the first version walked whatever object
+ *  stood in field 3 the moment it had two fields.  For a collection that
+ *  is an element, and field 0 of an element is its first instance
+ *  variable, so the "list" was a chain of first instance variables.  A
+ *  chain that led back to the collection (a child whose first field is
+ *  its parent, whose first field is the collection of children; Pharo's
+ *  AnnouncementSubscription -> Announcer -> SubscriptionRegistry -> the
+ *  IdentitySet) made every grow a refused become:, so the Set stopped at
+ *  three elements and an Announcer at six subscriptions.  A chain that
+ *  closed on itself without passing the collection (an element whose
+ *  first field is itself) never ended, and it ran inside the safepoint
+ *  with every other worker parked waiting for it: the whole image stopped
+ *  in C, where not even SIGTERM reached it.
+ *
+ *  The scheduler links a process on exactly two kinds of list: one of
+ *  Processor's ready lists, known by identity, and a Semaphore (or an
+ *  instance of a subclass of one), known by class.  Anything else in
+ *  field 3 means this object is not linked by the scheduler, whatever it
+ *  is, so the answer is no and nothing is walked.  The class of p itself
+ *  is not tested: there is no fixed oop for Process, a subclass is a
+ *  process too, and the walk below is exact -- an object found linked on
+ *  a ready list or a Semaphore is linked through its own body, which is
+ *  the hazard, whatever its class says.
+ *
+ *  The walk is bounded as well, by Brent's cycle test, because even a real
+ *  list must not be able to spin a worker inside a safepoint: a Semaphore
+ *  is a LinkedList that Smalltalk can add: to and corrupt.  The hare steps
+ *  one link at a time and is the one compared with p, so every link of a
+ *  cyclic list -- the tail and the whole cycle -- has been looked at by the
+ *  time it meets the tortoise, and a cycle that does not hold p answers no
+ *  having checked all of it.  The tortoise jumps to the hare at each power
+ *  of two, so the cost is at most a few times the list's length and no
+ *  memory is needed.
  */
 int
 SCHED_holds_process(st_oop p)
 {
-    st_oop  list;
-    st_oop  link;
-    int     linked = 0;
+    st_oop      list;
+    st_oop      link;
+    st_oop      tortoise;
+    uint64_t    power = 1;
+    uint64_t    steps = 0;
+    int         linked = 0;
+    int         ready;
+    st_mutex   *lock;
 
     if (!OM_is_object(p) || !OM_pointer_bit(p)
      || OM_fetch_word_length(p) <= ST_PROCESS_MY_LIST)
@@ -3187,23 +3229,46 @@ SCHED_holds_process(st_oop p)
     if (!OM_is_present(list) || !OM_pointer_bit(list)
      || OM_fetch_word_length(list) <= ST_LIST_LAST_LINK)
         return 0;
-    {
-        st_mutex   *lock = stripe_for(list);
-
+    ready = is_ready_list(list);
+    if (!ready && !SCHED_is_semaphore(list))
+        return 0;
+    /*
+     *  Each kind under the lock its own operations take: the ready lists
+     *  under the ready lock, a Semaphore under its stripe.  Neither is
+     *  ever held across a safepoint, so taking either inside one cannot
+     *  wait on a parked worker.
+     */
+    if (ready) {
+        ready_lock_init();
+        lock = &ready_lock;
+        ST_mutex_lock(lock);
+    } else {
+        lock = stripe_for(list);
         stripe_lock(lock);
-        for (link = OM_fetch_pointer(ST_LIST_FIRST_LINK, list);
-             OM_is_present(link);
-             link = OM_fetch_pointer(ST_LINK_NEXT, link)) {
-            if (link == p) {
-                linked = 1;
-                break;
-            }
-            if (!OM_pointer_bit(link)
-             || OM_fetch_word_length(link) <= ST_LINK_NEXT)
-                break;
-        }
-        stripe_unlock(lock);
     }
+    tortoise = ST_NIL;
+    for (link = OM_fetch_pointer(ST_LIST_FIRST_LINK, list);
+         OM_is_present(link);
+         link = OM_fetch_pointer(ST_LINK_NEXT, link)) {
+        if (link == p) {
+            linked = 1;
+            break;
+        }
+        if (link == tortoise)
+            break;                  /*  a cycle, all of it looked at  */
+        if (!OM_pointer_bit(link)
+         || OM_fetch_word_length(link) <= ST_LINK_NEXT)
+            break;
+        if (++steps == power) {
+            tortoise = link;
+            power <<= 1;
+            steps = 0;
+        }
+    }
+    if (ready)
+        ST_mutex_unlock(lock);
+    else
+        stripe_unlock(lock);
     return linked;
 }
 

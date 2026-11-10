@@ -2587,6 +2587,116 @@ bugs6_low_kernb(void)
     unlink(probe);
 }
 
+/*
+ *  Bugs07, the virtual machine's findings: become:'s pin test, the
+ *  receiver that changes shape under its method, the Message pushed onto a
+ *  full frame, and the timer thread freeing TimingSemaphore.
+ */
+static void
+bugs7_vm(void)
+{
+    static char out[65536];
+    const char *pins  = fixture("bugs7-serve-pins.st");
+    const char *loops = fixture("bugs7-serve-loops.st");
+    char        batch[1024];
+    char        command[2048];
+    int         status;
+
+    /*
+     *  KERNB-1: become:'s pin test walked field 3 of ANY object as a
+     *  process list and field 0 of each "link" as nextLink.  A Set or an
+     *  OrderedCollection grows by become:, and an element whose first
+     *  instance variable names the collection's holder made every grow a
+     *  refused become: -- the Set stopped at 3 elements, the
+     *  OrderedCollection at 10.  A process on a ready list is still
+     *  refused, as Bugs6 OM-3 meant.
+     */
+    if (write_file(pins,
+            "| holder r out item p |\n"
+            "Object subclass: #Bugs7Holder instanceVariableNames: 'items name' "
+            "classVariableNames: '' poolDictionaries: '' category: 'Bugs7'.\n"
+            "Object subclass: #Bugs7Item instanceVariableNames: 'owner name' "
+            "classVariableNames: '' poolDictionaries: '' category: 'Bugs7'.\n"
+            "out := OrderedCollection new.\n"
+            "holder := (Smalltalk at: #Bugs7Holder) new. "
+            "holder instVarAt: 1 put: Set new.\n"
+            "r := [1 to: 200 do: [:i | item := (Smalltalk at: #Bugs7Item) new. "
+            "item instVarAt: 1 put: holder. (holder instVarAt: 1) add: item]. #ok] "
+            "on: Error do: [:e | e return: #refused].\n"
+            "out add: r; add: (holder instVarAt: 1) size.\n"
+            "holder := (Smalltalk at: #Bugs7Holder) new. "
+            "holder instVarAt: 1 put: OrderedCollection new.\n"
+            "r := [1 to: 200 do: [:i | item := (Smalltalk at: #Bugs7Item) new. "
+            "item instVarAt: 1 put: holder. (holder instVarAt: 1) addFirst: item]. "
+            "#ok] on: Error do: [:e | e return: #refused].\n"
+            "out add: r; add: (holder instVarAt: 1) size.\n"
+            "p := [3 + 4] forkAt: Processor systemBackgroundPriority.\n"
+            "out add: ([p become: Object new. #bad] on: Error do: [:e | #refused]).\n"
+            "p terminate.\n"
+            "^out asArray\n") == 0) {
+        snprintf(batch, sizeof batch,
+                 "Compiler evaluate: (FileStream oldFileNamed: '%s') "
+                 "contentsOfEntireFile\n3 + 4\n", pins);
+        status = serve(batch, 1, out, sizeof out);
+        ++st_test_checks;
+        if (status < 0) {
+            ++st_test_failures;
+            printf("  FAIL KERNB-1: could not run the server\n");
+        } else {
+            expect(out, "==> (ok 200 ok 200 refused )",
+                   "KERNB-1 collections whose elements name their holder grow");
+            expect(out, "3 + 4 ==> 7", "KERNB-1 the image survived");
+        }
+    }
+
+    /*
+     *  KERNB-1: an element whose first instance variable is itself made
+     *  the walk a cycle, run in C inside the safepoint with every other
+     *  worker parked behind it: the image stopped, deaf to SIGTERM.
+     */
+    if (write_file(loops,
+            "| s r item |\n"
+            "Object subclass: #Bugs7Loop instanceVariableNames: 'next name' "
+            "classVariableNames: '' poolDictionaries: '' category: 'Bugs7'.\n"
+            "s := Set new.\n"
+            "r := [1 to: 200 do: [:i | item := (Smalltalk at: #Bugs7Loop) new. "
+            "item instVarAt: 1 put: item. s add: item]. #ok] "
+            "on: Error do: [:e | e return: #refused].\n"
+            "^Array with: r with: s size\n") == 0) {
+        snprintf(batch, sizeof batch,
+                 "Compiler evaluate: (FileStream oldFileNamed: '%s') "
+                 "contentsOfEntireFile\n3 + 4\n", loops);
+        status = serve(batch, 2, out, sizeof out);
+        ++st_test_checks;
+        if (status < 0) {
+            ++st_test_failures;
+            printf("  FAIL KERNB-1: could not run the server\n");
+        } else {
+            expect(out, "==> (ok 200 )",
+                   "KERNB-1 a Set of self-referencing objects grows");
+            expect(out, "3 + 4 ==> 7", "KERNB-1 the pool survived the cycle");
+        }
+    }
+
+    /*
+     *  KERNB-1: Pharo's AnnouncementSubscription -> Announcer ->
+     *  SubscriptionRegistry -> its IdentitySet is such a chain, and an
+     *  Announcer took six subscriptions.
+     */
+    snprintf(command, sizeof command,
+             ST_TEST_TIMEOUT " -k 2 " SERVE_SECONDS " %s -bootstrap "
+             "-profile profiles/pharo-announcements.profile -eval "
+             "\"| ann sub r | ann := Announcer new. sub := Object new. "
+             "r := [1 to: 50 do: [:i | ann when: Announcement do: [:a | 1] "
+             "for: sub]. #ok] on: Error do: [:e | e return: #refused]. "
+             "^{r. ann numberOfSubscriptions} printString\" 2>&1", st2026);
+    run(command, out, sizeof out);
+    expect(out, "\n(ok 50 )\n", "KERNB-1 an Announcer takes fifty subscriptions");
+
+    unlink(pins);
+    unlink(loops);
+}
+
 int
 main(void)
 {
@@ -3252,6 +3362,7 @@ main(void)
     bugs6_low_vm();
     bugs6_low_chron();
     bugs6_low_kernb();
+    bugs7_vm();
 
     unlink(IMAGE);
     unlink(BATCH);
