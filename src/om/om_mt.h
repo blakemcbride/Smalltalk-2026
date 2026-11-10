@@ -123,6 +123,16 @@ typedef int64_t     st_int;
  *  point, which is why the collector walks ephemerons separately.
  */
 #define ST_FMT_EPHEMERON    0x0800
+/*
+ *  Bits 24..31 of a CONTEXT's flags: zero, or one more than the number of
+ *  its receiver's leading named fields that kept their offsets when the
+ *  receiver's class was reshaped under the running method (Bugs07
+ *  KERNB-4).  Written by primitive 234 inside its safepoint and read by
+ *  the interpreter at each context switch; see receiver_limit_for in
+ *  interp.c.  Bits 16..21 are a weak object's fixed-field count.
+ */
+#define ST_FMT_KEPT_SHIFT   24
+#define ST_FMT_KEPT_MASK    0xFF000000u
 
 typedef struct {
     st_oop          class_oop;
@@ -354,6 +364,37 @@ static inline unsigned
 OM_free_bit(st_oop p)
 {
     return (OM_head(p)->flags & ST_FMT_FREE) ? 1u : 0u;
+}
+
+/*
+ *  How many leading fields of its receiver a context's method may still
+ *  name, or UINT32_MAX for a context no reshape has marked.
+ */
+static inline uint32_t
+OM_kept_fields(st_oop p)
+{
+    uint32_t    k = (OM_head(p)->flags & ST_FMT_KEPT_MASK) >> ST_FMT_KEPT_SHIFT;
+
+    return k ? k - 1 : UINT32_MAX;
+}
+
+/*
+ *  Narrow the mark to `kept' fields, never widen it: a second reshape
+ *  before the method returns can only take more fields away from it.  A
+ *  count the eight bits cannot hold is clamped to 254, which only refuses
+ *  more.
+ */
+static inline void
+OM_narrow_kept_fields(st_oop p, uint32_t kept)
+{
+    om_header  *head = OM_head(p);
+
+    if (kept >= OM_kept_fields(p))
+        return;
+    if (kept > 254)
+        kept = 254;
+    head->flags = (head->flags & ~ST_FMT_KEPT_MASK)
+                | ((kept + 1) << ST_FMT_KEPT_SHIFT);
 }
 
 static inline unsigned

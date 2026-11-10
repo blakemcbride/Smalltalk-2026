@@ -2693,6 +2693,117 @@ bugs7_vm(void)
     run(command, out, sizeof out);
     expect(out, "\n(ok 50 )\n", "KERNB-1 an Announcer takes fifty subscriptions");
 
+    /*
+     *  KERNB-4: a method running on one worker while another reshapes its
+     *  receiver's class.  A variable added in front of `d' made the
+     *  running `d := d + 1' write into what was now `c' (28 million
+     *  increments landed there); one removed made `d' read past the new
+     *  body.  The old activation is abandoned with a CorruptMethod at its
+     *  first moved field, and `c' is untouched.  A variable appended at
+     *  the end moves nothing, and the same loop runs to the end.
+     */
+    {
+        static const struct {
+            const char *fields;
+            const char *want;
+            const char *what;
+        } reshapes[] = {
+            { "x a b c d", "==> (CorruptMethod 0 )",
+              "KERNB-4 a field inserted under a running method" },
+            { "b c d",     "==> (CorruptMethod 0 )",
+              "KERNB-4 a field removed under a running method" },
+            { "a b c d e", "==> (3000000 0 )",
+              "KERNB-4 a field appended under a running method" },
+        };
+        size_t  k;
+
+        for (k = 0; k < sizeof reshapes / sizeof reshapes[0]; ++k) {
+            char    text[2048];
+
+            snprintf(text, sizeof text,
+                "| cls obj done r |\n"
+                "Object subclass: #Bugs7R instanceVariableNames: 'a b c d' "
+                "classVariableNames: '' poolDictionaries: '' category: 'Bugs7'.\n"
+                "cls := Smalltalk at: #Bugs7R.\n"
+                "cls compile: 'init a := 0. b := 0. c := 0. d := 0'.\n"
+                "cls compile: 'spin: n | i | i := 0. [i < n] whileTrue: "
+                "[d := d + 1. i := i + 1]. ^d'.\n"
+                "obj := cls new init; yourself. done := Semaphore new.\n"
+                "[r := [obj spin: 3000000] on: Error do: [:e | e class name]. "
+                "done signal] fork.\n"
+                "(Delay forMilliseconds: 20) wait.\n"
+                "Object subclass: #Bugs7R instanceVariableNames: '%s' "
+                "classVariableNames: '' poolDictionaries: '' category: 'Bugs7'.\n"
+                "done wait.\n"
+                "^Array with: r with: (obj instVarAt: "
+                "((Smalltalk at: #Bugs7R) allInstVarNames indexOf: 'c'))\n",
+                reshapes[k].fields);
+            if (write_file(pins, text) != 0)
+                continue;
+            snprintf(batch, sizeof batch,
+                     "Compiler evaluate: (FileStream oldFileNamed: '%s') "
+                     "contentsOfEntireFile\n3 + 4\n", pins);
+            status = serve(batch, 4, out, sizeof out);
+            ++st_test_checks;
+            if (status < 0) {
+                ++st_test_failures;
+                printf("  FAIL KERNB-4: could not run the server\n");
+            } else {
+                expect(out, reshapes[k].want, reshapes[k].what);
+                expect(out, "3 + 4 ==> 7", "KERNB-4 the pool survived");
+            }
+        }
+    }
+
+    /*
+     *  KERNB-4 (INTERP-4): `self become:' a smaller object and then the
+     *  method's own instance variables, in the same frame.  The cached
+     *  bound was the old body's: the reads answered other objects' fields
+     *  and the writes killed the image.  Both are refused now.
+     */
+    if (write_file(pins,
+            "| cls r1 r2 |\n"
+            "Object subclass: #Bugs7B instanceVariableNames: 'a b c d e f g h' "
+            "classVariableNames: '' poolDictionaries: '' category: 'Bugs7'.\n"
+            "cls := Smalltalk at: #Bugs7B.\n"
+            "cls compile: 'shrinkAndRead self become: (Array new: 1). "
+            "^Array with: e with: f with: g with: h'.\n"
+            "cls compile: 'shrinkAndWrite self become: (Array new: 1). "
+            "e := 42. f := 43. g := 44. h := 45'.\n"
+            "r1 := [cls new shrinkAndRead] on: Error do: [:e | e class name].\n"
+            "r2 := [cls new shrinkAndWrite. #wrote] on: Error do: [:e | e class name].\n"
+            "Smalltalk garbageCollect.\n"
+            "^Array with: r1 with: r2\n") == 0) {
+        snprintf(batch, sizeof batch,
+                 "Compiler evaluate: (FileStream oldFileNamed: '%s') "
+                 "contentsOfEntireFile\n3 + 4\n", pins);
+        status = serve(batch, 2, out, sizeof out);
+        ++st_test_checks;
+        if (status < 0) {
+            ++st_test_failures;
+            printf("  FAIL KERNB-4: could not run the server\n");
+        } else {
+            expect(out, "==> (CorruptMethod CorruptMethod )",
+                   "KERNB-4 self become: a smaller object");
+            expect(out, "3 + 4 ==> 7", "KERNB-4 the pool survived the shrink");
+        }
+    }
+
+    /*  The same with no workers at all, three thousand times over.  */
+    snprintf(command, sizeof command,
+             ST_TEST_TIMEOUT " -k 2 " SERVE_SECONDS " %s -bootstrap "
+             "-profile profiles/st2026.profile -eval \"| c keep | "
+             "c := Object subclass: #Bugs7F instanceVariableNames: "
+             "'a b c d e f g h i j' classVariableNames: '' poolDictionaries: '' "
+             "category: 'Bugs7'. c compile: 'poke: v self become: Object new. "
+             "j := v. i := v. h := v'. keep := (1 to: 3000) collect: [:k | | o | "
+             "o := c new. [o poke: k] on: Error do: [:e | nil]. o]. keep := nil. "
+             "Smalltalk garbageCollect. ^#survived\" 2>/dev/null", st2026);
+    /*  stdout only: each refused poke says so on stderr, and three
+     *  thousand lines would push the answer past what run() keeps.  */
+    status = run(command, out, sizeof out);
+    expect(out, "survived\n", "KERNB-4 three thousand shrinks with no workers");
+
     unlink(pins);
     unlink(loops);
 }

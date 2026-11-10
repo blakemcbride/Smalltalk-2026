@@ -57,8 +57,11 @@
 #include "migrate.h"
 
 #include "om.h"
+#include "interp.h"
 #include "prim.h"
 #include "worker.h"
+
+#include <stdlib.h>
 
 typedef struct {
     st_oop      olds;           /*  Array of the instances as they are     */
@@ -171,6 +174,117 @@ copy_across(const migrate_args *a, st_oop old, st_oop fresh)
     }
 }
 
+/*
+ *  ----------  The activations a reshape leaves behind  ----------
+ *
+ *  Bugs07 KERNB-4.  Everything above moves the INSTANCES, and every method
+ *  of the new class is compiled for the new shape.  What it does not move
+ *  is an activation of an OLD method that is running at that moment --
+ *  on another worker, parked in a wait, or below in some chain -- whose
+ *  receiver is one of the instances.  Its bytecodes index instance
+ *  variables by the old offsets, and from the moment the safepoint lets
+ *  go they index the migrated body: a variable added in front of `d'
+ *  made the running `d := d + 1' write into what was now `c', twenty-eight
+ *  million times, silently; a variable removed made `d' read past the new
+ *  body.
+ *
+ *  Carrying such an activation on against the right field would mean
+ *  rewriting its method's bytecodes and its instruction pointer, or
+ *  carrying an offset map per activation, and a field that was removed
+ *  has no right field at all; neither is worth its weight for an event
+ *  that happens twice a year.  Refusing the reshape while one is live
+ *  would make reloading a class wait on every request that happens to be
+ *  in it, and the 1983 fallback below the primitive would do the damage
+ *  anyway.  So the activation is told:
+ *  each context whose receiver is a migrated instance is marked, inside
+ *  this safepoint, with how many leading fields kept their offsets
+ *  (OM_narrow_kept_fields), and the interpreter lets the method go on
+ *  naming those and abandons it with a CorruptMethod at the first that
+ *  moved (receiver_limit_for in interp.c).  A method inherited from an
+ *  unchanged superclass names only fields below the mark and never
+ *  notices; a reshape that only appends fields marks nothing.
+ *
+ *  Found by walking the heap, which is what allInstances does as well and
+ *  what only a safepoint makes exact: no context can be created or
+ *  return while it runs.  The migrated identities are sorted once so the
+ *  walk asks each context one binary search.
+ */
+
+#if defined(ST_OM_MT)
+/*  How many leading named fields are where they were.  */
+static uint32_t
+fields_kept(const migrate_args *a)
+{
+    uint32_t    named = OM_fetch_word_length(a->map);
+    uint32_t    k;
+
+    for (k = 0; k < named && k < a->old_named; ++k) {
+        st_oop  where = OM_fetch_pointer(k, a->map);
+
+        if (!OM_is_int(where) || OM_int_value(where) != (st_int) k + 1)
+            break;
+    }
+    return k;
+}
+
+static int
+compare_oops(const void *x, const void *y)
+{
+    st_oop  a = *(const st_oop *) x;
+    st_oop  b = *(const st_oop *) y;
+
+    return a < b ? -1 : (a > b ? 1 : 0);
+}
+
+static int
+is_migrated(const st_oop *sorted, const migrate_args *a, uint32_t n,
+            st_oop r)
+{
+    uint32_t    i;
+
+    if (sorted)
+        return bsearch(&r, sorted, n, sizeof *sorted, compare_oops) != NULL;
+    /*  No memory for the index: the slow way, which is still correct.  */
+    for (i = 0; i < n; ++i)
+        if (OM_fetch_pointer(i, a->olds) == r)
+            return 1;
+    return 0;
+}
+
+static void
+mark_reshaped_activations(const migrate_args *a, uint32_t n)
+{
+    uint32_t    kept = fields_kept(a);
+    st_oop     *sorted;
+    st_oop      p;
+    uint32_t    i;
+
+    if (kept >= a->old_named || n == 0)
+        return;                 /*  nothing an old method names has moved  */
+    sorted = (st_oop *) malloc(n * sizeof *sorted);
+    if (sorted) {
+        for (i = 0; i < n; ++i)
+            sorted[i] = OM_fetch_pointer(i, a->olds);
+        qsort(sorted, n, sizeof *sorted, compare_oops);
+    }
+    /*
+     *  MethodContexts only.  A closure's activation is one, with its
+     *  receiver in it; a Blue Book BlockContext takes its receiver from
+     *  its home, which is one, and the interpreter reads the mark from
+     *  the home.
+     */
+    for (p = OM_first_object(); p != ST_OOP_INVALID; p = OM_next_object(p)) {
+        if (OM_fetch_class(p) != ST_CLASS_METHOD_CONTEXT
+         || !OM_pointer_bit(p)
+         || OM_fetch_word_length(p) <= ST_CTX_RECEIVER)
+            continue;
+        if (is_migrated(sorted, a, n, OM_fetch_pointer(ST_CTX_RECEIVER, p)))
+            OM_narrow_kept_fields(p, kept);
+    }
+    free(sorted);
+}
+#endif
+
 static uint32_t
 migrate_locked(void *user)
 {
@@ -190,6 +304,9 @@ migrate_locked(void *user)
         copy_across(a, old, fresh);
         OM_swap_identities_at_boot(old, fresh);
     }
+#if defined(ST_OM_MT)
+    mark_reshaped_activations(a, n);
+#endif
     return 1;
 }
 
@@ -234,5 +351,8 @@ ST_prim_migrate_instances(void)
     }
 
     ST_pop_n(4);                /*  the arguments; the receiver answers  */
+    /*  The method that asked may itself be running on a migrated
+     *  instance -- a class reshaped by one of its own methods.  */
+    ST_refresh_receiver_limit();
     return 1;
 }

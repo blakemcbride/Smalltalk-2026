@@ -551,12 +551,18 @@ super_class_ok(st_oop cls)
  *  reading the word after the object.  The activation is abandoned with
  *  a CorruptMethod, as for a bad literal.
  */
+static uint32_t receiver_field_count(st_oop receiver);
+
 static int
 receiver_variable_ok(uint32_t index)
 {
     if (index >= st_vm.receiver_limit) {
-        corrupt_method("an instance-variable index past the receiver's "
-                       "fields");
+        corrupt_method(index < receiver_field_count(st_vm.receiver)
+                       ? "an instance variable whose offset changed when "
+                         "the receiver's class was reshaped under this "
+                         "method"
+                       : "an instance-variable index past the receiver's "
+                         "fields");
         return 0;
     }
     return 1;
@@ -657,6 +663,59 @@ receiver_field_count(st_oop receiver)
     return OM_fetch_word_length(receiver);
 }
 
+/*
+ *  How many of the receiver's fields the running method may name: the
+ *  receiver's field count, narrowed for an activation whose class was
+ *  reshaped under it.
+ *
+ *  Bugs07 KERNB-4.  The bound is cached (see receiver_variable_ok), and a
+ *  receiver can change shape while a method runs on it -- `self become:'
+ *  a smaller object in the method's own frame, or another worker's
+ *  become:, becomeForward: or class reshape (primitive 234) at a safepoint
+ *  this worker parked for.  The cache was refilled only at a context
+ *  switch, so after any of those the next instance-variable bytecode was
+ *  checked against the OLD count and read or wrote past the new, smaller
+ *  body: other objects' fields answered, and a write that killed the
+ *  image.  So the bound is recomputed wherever a shape can have changed
+ *  without a switch -- ST_refresh_receiver_limit, below.
+ *
+ *  The narrowing is the other half.  A reshape that moves a field leaves
+ *  the methods compiled for the old shape indexing by the old offsets, and
+ *  an activation of one that is running at that moment carries on with
+ *  them against the migrated body: `d := d + 1' wrote into what is now
+ *  `c', twenty-eight million times, with nothing raised.  Primitive 234
+ *  marks every such activation, inside its safepoint, with how many
+ *  leading fields kept their offsets (see migrate.c); this lets the method
+ *  go on using those and refuses the rest as a CorruptMethod.  A method
+ *  inherited from an unchanged superclass names only fields below the
+ *  mark, so it carries on untouched.  The Blue Book memory has no such
+ *  mark and no second worker to reshape a class under a running method.
+ */
+static uint32_t
+receiver_limit_for(st_oop home, st_oop receiver)
+{
+    uint32_t    n = receiver_field_count(receiver);
+
+#if defined(ST_OM_MT)
+    if (OM_is_object(home)) {
+        uint32_t    kept = OM_kept_fields(home);
+
+        if (kept < n)
+            n = kept;
+    }
+#else
+    (void) home;
+#endif
+    return n;
+}
+
+void
+ST_refresh_receiver_limit(void)
+{
+    st_vm.receiver_limit = receiver_limit_for(st_vm.home_context,
+                                              st_vm.receiver);
+}
+
 /*  ----------  Context registers  ----------  */
 
 static void
@@ -701,7 +760,8 @@ fetch_context_registers(void)
     st_vm.stack_limit = OM_fetch_word_length(ctx);
     /*  And the two an indexing bytecode is checked against; see
      *  receiver_variable_ok and temporary_ok.  */
-    st_vm.receiver_limit = receiver_field_count(st_vm.receiver);
+    st_vm.receiver_limit = receiver_limit_for(st_vm.home_context,
+                                              st_vm.receiver);
     st_vm.home_limit     = OM_fetch_word_length(st_vm.home_context);
 
     /*
@@ -1916,6 +1976,27 @@ ST_is_block_closure(st_oop p)
  *  BlockContext as its own home, so the temporary bytecodes address this
  *  frame rather than an enclosing one.
  */
+
+/*
+ *  A block activated from a context marked by a reshape (receiver_limit_for)
+ *  runs the same old method on the same migrated receiver, so it carries
+ *  the same mark (Bugs07 KERNB-4).  A closure made before the reshape and
+ *  first run after it -- the body of a loop the reshape interrupted -- is
+ *  a new context each time, and without this every iteration started
+ *  clean and indexed the migrated body by the old offsets.
+ */
+static void
+inherit_kept_fields(st_oop ctx, st_oop outer)
+{
+#if defined(ST_OM_MT)
+    if (OM_is_object(outer))
+        OM_narrow_kept_fields(ctx, OM_kept_fields(outer));
+#else
+    (void) ctx;
+    (void) outer;
+#endif
+}
+
 /*
  *  Build a closure's activation context WITHOUT entering it.
  *
@@ -1985,6 +2066,7 @@ ST_closure_as_context(st_oop closure)
     OM_store_pointer(ST_CTX_METHOD,   ctx, method);
     OM_store_pointer(ST_CTX_CLOSURE,  ctx, closure);
     OM_store_pointer(ST_CTX_RECEIVER, ctx, receiver);
+    inherit_kept_fields(ctx, outer);
     return ctx;
 }
 
@@ -2063,6 +2145,7 @@ ST_activate_closure(st_oop closure, uint32_t argc)
     OM_store_pointer(ST_CTX_METHOD,   ctx, method);
     OM_store_pointer(ST_CTX_CLOSURE,  ctx, closure);
     OM_store_pointer(ST_CTX_RECEIVER, ctx, receiver);
+    inherit_kept_fields(ctx, outer);
 
     store_context_registers();
     ++st_vm.call_depth;

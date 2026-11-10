@@ -827,6 +827,13 @@ primitive_become(void)
     if (!OM_swap_identities(a, b))
         return 0;
     ST_pop_n(1);
+    /*
+     *  `self become: smaller' returns to the frame that sent it, with no
+     *  context switch to refetch the receiver's field count: the method's
+     *  next instance-variable bytecode was checked against the old body
+     *  and read or wrote past the new one (Bugs07 KERNB-4).
+     */
+    ST_refresh_receiver_limit();
     return 1;
 }
 
@@ -871,6 +878,8 @@ primitive_elements_forward_identity(void)
     if (!OM_forward_elements(from_array, to_array))
         return 0;
     ST_pop_n(1);
+    /*  The receiver register may now name the target; see primitive 72.  */
+    ST_refresh_receiver_limit();
     return 1;
 }
 

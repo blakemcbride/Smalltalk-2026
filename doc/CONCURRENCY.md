@@ -59,7 +59,11 @@ for each piece of shared state, choose **serialize** (lock it), **replicate**
 
 5. **Method lookup is coherent.** A class recompiled on one worker becomes
    visible to all workers; sends in flight complete against a consistent method
-   dictionary.
+   dictionary. A class reshaped on one worker migrates its instances at a
+   safepoint; a method still running on one of them, on any worker, keeps
+   using the instance variables whose positions did not change, and the first
+   moved or removed one it names ends that activation with a `CorruptMethod`
+   error rather than reading or writing the wrong field.
 
 ## What is NOT guaranteed
 

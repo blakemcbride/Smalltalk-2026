@@ -91,6 +91,17 @@ WORKER_poll_slow(void)
     ST_store_relaxed(&self->at_safepoint, 0);
     ST_fetch_sub_acq_rel(&parked_count, 1);
     ST_mutex_unlock(&safepoint_lock);
+
+    /*
+     *  And read the receiver's shape again before the next bytecode.  The
+     *  safepoint may have been another worker's become:, becomeForward: or
+     *  class reshape, and the receiver of the method this worker is in the
+     *  middle of may be one of the objects it changed; the registers above
+     *  were stored, not refetched, and the cached field count was the old
+     *  body's -- the next `d := d + 1' wrote past a shrunken receiver, or
+     *  by an offset the reshape had moved (Bugs07 KERNB-4).
+     */
+    ST_refresh_receiver_limit();
 }
 
 /*
@@ -165,6 +176,9 @@ WORKER_leave_native(void)
     /*  Back in the epoch before the caller touches anything.  */
     OM_epoch_resume();
 #endif
+    /*  As the poll does, and for its reason: a reshape may have run while
+     *  this worker was out (Bugs07 KERNB-4).  */
+    ST_refresh_receiver_limit();
 }
 
 /*

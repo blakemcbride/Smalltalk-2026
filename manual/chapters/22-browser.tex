@@ -91,8 +91,17 @@ nothing, and the class object, its instances and its methods stay as they are.
 A definition that would reshape \ct{ContextPart}, \ct{MethodContext},
 \ct{BlockContext}, \ct{Process} or \ct{CompiledMethod}, or a class one of
 them inherits from, is refused with an error: the interpreter holds their
-instances in its registers, and nothing can move them. On a comment it stores
-the comment. On \ct{protocols} or \ct{edit all} it reorganizes.
+instances in its registers, and nothing can move them.
+
+Existing instances take the new shape at once, including an instance whose
+method is running at that moment, on any worker. Such a method was compiled
+for the old shape, and it carries on only while it names instance variables
+whose positions the new definition left alone; the first one it names that
+was moved or removed ends that activation with a \ct{CorruptMethod} error,
+which a handler around the send can catch. Adding variables after the existing
+ones moves nothing, so a running method never notices it.
+
+On a comment it stores the comment. On \ct{protocols} or \ct{edit all} it reorganizes.
 
 \begin{stwarn}
 A code pane you have edited and not accepted holds the only copy of that text.

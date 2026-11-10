@@ -514,6 +514,16 @@ void        ST_store_active_context(void);
 void        ST_set_active_context(st_oop ctx);
 
 /*
+ *  Recompute the bound the running method's instance-variable bytecodes
+ *  are checked against, from the receiver's body as it is now (Bugs07
+ *  KERNB-4).  For wherever a receiver can have changed shape with no
+ *  context switch: after a become:, becomeForward: or reshape on this
+ *  worker, and after every safepoint or native region this worker was
+ *  parked through, since another worker's may have moved it.
+ */
+void        ST_refresh_receiver_limit(void);
+
+/*
  *  How many frames the running stack really has, counted by walking it.
  *  st_vm.call_depth is the cheap running total; this is the truth, and is
  *  what puts the total right after a non-local move.
