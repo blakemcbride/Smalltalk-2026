@@ -632,8 +632,12 @@
  *
  *  3343 -> 3345 with Bugs07 NET-2: HttpRequest>>significantDigitsIn: and
  *  HttpBodyStream>>significantDigitsIn:.
+ *
+ *  3345 -> 3350 with Bugs07 SCHED-1: Process>>detachTakingFromSemaphore:
+ *  gives way to stopTakingFromSemaphore:thenDo:, with detach:thenDo:,
+ *  undoStop:, endStoppedAt:, waitUntilTerminated and deliver:stoppedAt:.
  */
-#define LIB_METHODS             3345
+#define LIB_METHODS             3350
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -3011,8 +3015,11 @@ test_browsing(void)
      *  2972888 -> 2975473 with Bugs07 NET-2: a Content-Length refused by
      *  its digit count in the server and the client, and String>>asInteger
      *  through the limb conversion.
+     *
+     *  2975473 -> 2981270 with Bugs07 SCHED-1: a stopper is not itself
+     *  stopped between taking hold of its victim and letting it go.
      */
-    check_integer("(SourceFiles at: 1) contents size", 2975473);
+    check_integer("(SourceFiles at: 1) contents size", 2981270);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.

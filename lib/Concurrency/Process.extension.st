@@ -17,7 +17,10 @@ The VM now does the part Smalltalk cannot.  primDetach: brings a process
 to a stop wherever it is -- taken off its list under that list's lock, or
 parked by the worker running it at its next bytecode -- and answers where
 it was; the methods below go on from a process that is parked, on no list,
-in nobody's hands.  primTerminateActive ends the active process itself.
+in nobody's hands, and held by the process stopping it until that lets it
+go.  primTerminateActive ends the active process itself.  The stopping
+process is not itself stopped in the middle of that: see
+stopTakingFromSemaphore:thenDo:.
 
 terminate also runs the ensure: blocks the process was inside (Bugs3 B13).
 1983's ran none: it predates unwind blocks, so a process terminated inside
@@ -89,15 +92,19 @@ Process >> primRelease: resumeIt [
 	"Let go of me, having stopped me with primDetach:; and first put me
 	 back to work if resumeIt is true -- resumed and THEN released, so
 	 that there is no instant at which a stray resume could take me.
-	 With false, harmless when I am not held: terminate and
-	 signalException: release in an ensure: as well as on each path."
+	 With false, harmless when I am not held.  Sent once per stop, by
+	 stopTakingFromSemaphore:thenDo:."
 	<primitive: 235>
 	^self primitiveFailed
 ]
 
 { #category : '*Concurrency' }
-Process >> detachTakingFromSemaphore: takeFromSemaphore [
-	"primDetach:, asked again for as long as it answers 5.
+Process >> stopTakingFromSemaphore: takeFromSemaphore thenDo: aBlock [
+	"Bring me to a stop, then evaluate aBlock with where I was and let go
+	 of me -- resumed first if aBlock answers true (see detach:thenDo:).
+	 Asked again for as long as the primitive answers 5 or 6.  Answers
+	 where I was.  What terminate, suspend and signalException: are
+	 written over.
 
 	 Two processes stopping each other at the same moment -- a worker and
 	 its watchdog, each terminating the other as both fire -- used to
@@ -109,11 +116,76 @@ Process >> detachTakingFromSemaphore: takeFromSemaphore [
 	 lands: it is parked at its next bytecode, and the other process goes
 	 on.  Only a process that is later resumed -- suspended rather than
 	 terminated, or handed an exception it survives -- comes back round
-	 the loop, and it still owes the stop it was asked for."
+	 the loop, and it still owes the stop it was asked for.  The yield
+	 and the asking again are outside detach:thenDo:, so that a stopper
+	 waiting for another stopper to let me go can itself be stopped."
 	| where |
-	[(where := self primDetach: takeFromSemaphore) = 5 or: [where = 6]]
-		whileTrue: [Processor yield].
+	[where := self detach: takeFromSemaphore thenDo: aBlock.
+	 where = 5 or: [where = 6]] whileTrue: [Processor yield].
 	^where
+]
+
+{ #category : '*Concurrency' }
+Process >> detach: takeFromSemaphore thenDo: aBlock [
+	"primDetach: me; and unless that did nothing, evaluate aBlock with
+	 where I was and let go of me, resumed first if aBlock answers true.
+	 Answers where I was.
+
+	 From the moment the primitive answers until I am let go, I am HELD
+	 by the process running this, and nothing else can resume me or stop
+	 me (Bugs6 SCHED-7) -- so the process running this must not itself be
+	 stopped in between (Bugs07 SCHED-1).  It was: the release was in an
+	 ensure: entered several bytecodes after the primitive had answered,
+	 and suspend had none at all, so a stopper terminated there -- a
+	 supervisor stopping its children and stopped in turn by its parent,
+	 a watchdog's timeout landing on a process busy terminating something
+	 -- was unwound with nothing to let me go.  I stayed held for good:
+	 resume refused me, every later terminate of me yielded and asked
+	 again for ever, and a Mutex I was inside was lost; and stopped a
+	 little later, between the stack walks and the resume, its ensure:
+	 let me go without resuming me, which left me on no list and in
+	 nobody's hands, suspended by nobody.  Sixty-four such leftovers
+	 filled the table and stopped every stop in the image.
+
+	 So a frame of this method that is past its first send -- the
+	 primitive -- counts as an unwind block in progress
+	 (unwindBlockInProgressFrom:): a terminate or signalException: of the
+	 process running it lets it finish, and takes effect where it
+	 returns; terminate waits for it.  Before the primitive the process
+	 holds nothing and is stopped like any other: let finish from there,
+	 a stopper stopped by its own victim went on to stop that victim
+	 while the victim waited for it to end, and both died.  If aBlock
+	 fails, undoStop: puts me back as the stop found me.  A suspend is not
+	 put off: a stopper suspended in here keeps me held until it is
+	 resumed, as it would keep a lock.  aBlock must not leave by ^, which
+	 would skip the frame a deferred stop puts under this one."
+	| where resumeIt |
+	where := self primDetach: takeFromSemaphore.
+	(where = 4 or: [where = 5 or: [where = 6]]) ifTrue: [^where].
+	resumeIt := [aBlock value: where] ifCurtailed: [self undoStop: where].
+	self primRelease: resumeIt == true.
+	^where
+]
+
+{ #category : '*Concurrency' }
+Process >> undoStop: where [
+	"Let go of me, having stopped me at where, as though the stop had
+	 never happened: running or ready again if I was, back in the wait I
+	 was taken out of, left alone if I was suspended -- for a stopper
+	 whose work on me failed part-way (Bugs07 SCHED-1).  A process taken
+	 out of a wait and simply resumed would go on past it as though the
+	 Semaphore had been signalled, which inside Mutex>>critical: is a
+	 second process in the section; the wait is put back the way
+	 finishUnwindBlock:waitingOn: puts it back."
+	| frame |
+	suspendedContext isNil ifTrue: [^self primRelease: false].
+	(where = 1 or: [where = 2]) ifTrue: [^self primRelease: true].
+	where isInteger ifTrue: [^self primRelease: false].
+	frame := [where wait] asContext.
+	suspendedContext pop.
+	frame instVarAt: 1 put: suspendedContext.
+	suspendedContext := frame.
+	self primRelease: true
 ]
 
 { #category : '*Concurrency' }
@@ -199,29 +271,70 @@ Process >> terminate [
 	 rest of a critical: that was releasing a lock, say.  That process is
 	 let finish the block itself and terminates when it returns; see
 	 finishUnwindBlock:waitingOn:.  A process that terminates ITSELF from
-	 an unwind block asked to stop there, and does."
-	| where context unwinding section |
+	 an unwind block asked to stop there, and does.
+
+	 A process stopped while it is itself stopping another -- inside
+	 detach:thenDo:, holding its own victim -- is let finish that too,
+	 and this waits until it has ended (Bugs07 SCHED-1): the stop it was
+	 making is a few bytecodes long, and whoever terminates it is entitled
+	 to find its victim let go when terminate returns, as it was when
+	 the stopper's own unwind blocks did the letting go.
+
+	 And the stack I leave behind is unwound even if the process doing it
+	 is stopped part-way: the ifCurtailed: goes on from where the loop
+	 was, since every block the loop has already run is disarmed.  A
+	 supervisor terminated while it was running a child's unwind blocks
+	 used to abandon the rest of them, and the child's Mutex with them."
+	| outcome |
 	Processor activeProcess == self ifTrue: [
 		self runUnwindBlocksFrom: thisContext.
 		^self primTerminateActive].
-	where := self detachTakingFromSemaphore: true.
-	"Held from here until released, on every path: by the resume that
-	 lets me finish what I was in, or explicitly once my stack is taken,
-	 and in the ensure: should anything in between fail."
-	[context := suspendedContext.
-	 context isNil ifTrue: [^self].
-	 self noteMutexOwnerIn: context waiting: where isInteger not.
-	 unwinding := self unwindBlockInProgressFrom: context.
-	 unwinding notNil ifTrue: [^self finishUnwindBlock: unwinding waitingOn: where].
-	 section := self criticalSectionFrom: context stoppedAt: where.
-	 section notNil ifTrue: [^self finishSection: section].
-	 "The stack is taken by a compare-and-swap, so that two terminators
-	  cannot both take it and both run its unwind blocks (Bugs6 KERNB-13):
-	  the second finds nil and gives up.  Slot 2 is suspendedContext,
-	  after Link's nextLink."
-	 (self compareAndSwapSlot: 2 from: context to: nil) ifFalse: [^self]]
-		ensure: [self primRelease: false].
-	self runUnwindBlocksFrom: context
+	[self stopTakingFromSemaphore: true thenDo: [:where |
+		outcome := self endStoppedAt: where.
+		outcome == true or: [outcome == #stopping]].
+	 outcome == #stopping ifTrue: [self waitUntilTerminated].
+	 (outcome isKindOf: ContextPart) ifTrue: [self runUnwindBlocksFrom: outcome]]
+		ifCurtailed: [
+			(outcome isKindOf: ContextPart) ifTrue: [self runUnwindBlocksFrom: outcome]]
+]
+
+{ #category : '*Concurrency' }
+Process >> endStoppedAt: where [
+	"I have been stopped at where and am held, for terminate.  Answer
+	 true if I am to be resumed to finish what I was in -- an unwind
+	 block, a critical: section -- and end when I have; #stopping for the
+	 same when what I was in is a stop of my own, which terminate waits
+	 out; my stack, taken, for the terminator to unwind; or nil, when
+	 there is nothing left to do."
+	| context unwinding section |
+	context := suspendedContext.
+	context isNil ifTrue: [^nil].
+	self noteMutexOwnerIn: context waiting: where isInteger not.
+	unwinding := self unwindBlockInProgressFrom: context.
+	unwinding notNil ifTrue: [
+		self finishUnwindBlock: unwinding waitingOn: where.
+		^unwinding method == (Process compiledMethodAt: #detach:thenDo:)
+			ifTrue: [#stopping]
+			ifFalse: [true]].
+	section := self criticalSectionFrom: context stoppedAt: where.
+	section notNil ifTrue: [^self finishSection: section].
+	"The stack is taken by a compare-and-swap, so that two terminators
+	 cannot both take it and both run its unwind blocks (Bugs6 KERNB-13):
+	 the second finds nil and gives up.  Slot 2 is suspendedContext,
+	 after Link's nextLink."
+	(self compareAndSwapSlot: 2 from: context to: nil) ifFalse: [^nil].
+	^context
+]
+
+{ #category : '*Concurrency' }
+Process >> waitUntilTerminated [
+	"Wait until I have ended, having been let finish a stop of my own
+	 first (see terminate).  By a Delay and not a yield: a yield runs
+	 only processes of the waiter's own priority, and I may be of a lower
+	 one on the same worker.  The stop is a few bytecodes long and my
+	 unwind blocks after it as long as they are; a terminate of me that
+	 ran them itself waited as long."
+	[suspendedContext isNil] whileFalse: [(Delay forMilliseconds: 1) wait]
 ]
 
 { #category : '*Concurrency' }
@@ -287,11 +400,11 @@ Process >> finishSection: anUnwindContext [
 	 the active-process path when I run it myself, which runs the unwind
 	 blocks outside the section and ends me; run by a second terminator
 	 that has already taken my stack, it finds no suspendedContext and
-	 does nothing."
+	 does nothing.  Answers true: I am to be resumed."
 	| guarded |
 	guarded := anUnwindContext tempAt: 1.
 	anUnwindContext tempAt: 1 put: [guarded value. self terminate].
-	self primRelease: true
+	^true
 ]
 
 { #category : '*Concurrency' }
@@ -314,12 +427,19 @@ Process >> unwindBlockInProgressFrom: aContext [
 
 	 Outermost, because everything above it is part of finishing that
 	 block: an unwind block that itself runs an ensure: is still running
-	 its own when the inner one is done."
-	| method ctx found |
+	 its own when the inner one is done.
+
+	 A frame of detach:thenDo: past its first send counts as one: it is
+	 where a stopper holds the process it stopped, and is let finish for
+	 the same reason an unwind block is (Bugs07 SCHED-1)."
+	| method detaching ctx found |
 	method := ContextPart compiledMethodAt: #runUnwindBlock.
+	detaching := Process compiledMethodAt: #detach:thenDo:.
 	ctx := aContext.
 	[ctx isNil] whileFalse: [
-		ctx method == method ifTrue: [found := ctx].
+		(ctx method == method
+		 or: [ctx method == detaching and: [ctx isPastFirstSend]])
+			ifTrue: [found := ctx].
 		ctx := ctx sender].
 	^found
 ]
@@ -347,7 +467,8 @@ Process >> finishUnwindBlock: aContext waitingOn: where [
 	 put back into the same wait rather than let past it: an unwind block
 	 waiting for a Mutex must still wait for it.  The frame doing the
 	 waiting answers what the interrupted wait would have, so the
-	 Semaphore the primitive left as its result is popped first."
+	 Semaphore the primitive left as its result is popped first.
+	 Answers true: I am to be resumed."
 	| frame |
 	self spliceTerminateUnder: aContext.
 	where isInteger ifFalse: [
@@ -355,7 +476,7 @@ Process >> finishUnwindBlock: aContext waitingOn: where [
 		suspendedContext pop.
 		frame instVarAt: 1 put: suspendedContext.
 		suspendedContext := frame].
-	self primRelease: true
+	^true
 ]
 
 { #category : '*Concurrency' }
@@ -367,13 +488,12 @@ Process >> suspend [
 	 on the ready lists, so a process running on another worker was 'not
 	 active'.  A process waiting on a Semaphore is still refused, as it
 	 was: taken out of its wait and resumed, it would go on past the wait
-	 as though the signal had come."
+	 as though the signal had come.  Stopped and held, it is let go
+	 without being resumed, and stays parked for a resume."
 	<primitive: 88>
 	Processor activeProcess == self ifTrue: [^self primitiveFailed].
-	(self detachTakingFromSemaphore: false) = 4 ifTrue: [
+	(self stopTakingFromSemaphore: false thenDo: [:where | false]) = 4 ifTrue: [
 		^self error: 'This process is waiting on a Semaphore and cannot be suspended'].
-	"Stopped and held: let go, and it stays parked for a resume."
-	self primRelease: false.
 	^self
 ]
 
@@ -414,34 +534,40 @@ Process >> signalException: anException [
 	 suspendedContext would never be seen.  Once stopped it is resumed
 	 with the frame on top, unless it was suspended on purpose, in which
 	 case the frame waits for whoever resumes it."
-	| frame where unwinding section |
 	self == Processor activeProcess ifTrue: [^anException signal].
-	where := self detachTakingFromSemaphore: true.
-	"Held from here until released on every path (see terminate)."
-	[suspendedContext isNil ifTrue: [^self].
-	 "Stopped in Mutex>>waitFor: with the lock already handed over: record
-	  the owner, or the unwind the signal may start leaves it held (Bugs5
-	  OM-5)."
-	 self noteMutexOwnerIn: suspendedContext waiting: where isInteger not.
-	 "Inside an unwind block, or running inside a critical: section: let
-	  that finish first, and raise where it ends (Bugs6 SCHED-6, SCHED-7).
-	  Delivered into the middle of Mutex>>release, which is two sends, the
-	  exception's own unwind skipped the disarmed ensure: and the signal
-	  was never sent: a Mutex with an owner long gone, every later
-	  critical: on it blocked for ever."
-	 unwinding := self unwindBlockInProgressFrom: suspendedContext.
-	 unwinding notNil ifTrue: [^self signal: anException after: unwinding waitingOn: where].
-	 section := self criticalSectionFrom: suspendedContext stoppedAt: where.
-	 section notNil ifTrue: [^self signal: anException leaving: section].
-	 frame := self signalFrameFor: anException over: suspendedContext waitingOn: where.
-	 "Field one of any context is its sender; splicing it in is what makes
-	  the signal appear to happen inside this process rather than beside
-	  it.  Resumed unless it was suspended on purpose, in which case the
-	  frame waits for whoever resumes it."
-	 frame instVarAt: 1 put: suspendedContext.
-	 suspendedContext := frame.
-	 self primRelease: where ~= 0]
-		ensure: [self primRelease: false]
+	self stopTakingFromSemaphore: true thenDo: [:where |
+		self deliver: anException stoppedAt: where]
+]
+
+{ #category : '*Concurrency' }
+Process >> deliver: anException stoppedAt: where [
+	"I have been stopped at where and am held, for signalException:.
+	 Arrange for anException to be raised in me, and answer whether I am
+	 to be resumed."
+	| frame unwinding section |
+	suspendedContext isNil ifTrue: [^false].
+	"Stopped in Mutex>>waitFor: with the lock already handed over: record
+	 the owner, or the unwind the signal may start leaves it held (Bugs5
+	 OM-5)."
+	self noteMutexOwnerIn: suspendedContext waiting: where isInteger not.
+	"Inside an unwind block, or running inside a critical: section: let
+	 that finish first, and raise where it ends (Bugs6 SCHED-6, SCHED-7).
+	 Delivered into the middle of Mutex>>release, which is two sends, the
+	 exception's own unwind skipped the disarmed ensure: and the signal
+	 was never sent: a Mutex with an owner long gone, every later
+	 critical: on it blocked for ever."
+	unwinding := self unwindBlockInProgressFrom: suspendedContext.
+	unwinding notNil ifTrue: [^self signal: anException after: unwinding waitingOn: where].
+	section := self criticalSectionFrom: suspendedContext stoppedAt: where.
+	section notNil ifTrue: [^self signal: anException leaving: section].
+	frame := self signalFrameFor: anException over: suspendedContext waitingOn: where.
+	"Field one of any context is its sender; splicing it in is what makes
+	 the signal appear to happen inside this process rather than beside
+	 it.  Resumed unless it was suspended on purpose, in which case the
+	 frame waits for whoever resumes it."
+	frame instVarAt: 1 put: suspendedContext.
+	suspendedContext := frame.
+	^where ~= 0
 ]
 
 { #category : '*Concurrency' }
@@ -458,7 +584,8 @@ Process >> signal: anException after: aContext waitingOn: where [
 	 aboutToReturn:through:, runUnwindBlocksFrom: -- discards its answer.
 	 A handler that resumes the exception lets the frame return there; one
 	 that returns, retries or passes unwinds from the frame outwards, and
-	 the ensure: this block belongs to has already been disarmed."
+	 the ensure: this block belongs to has already been disarmed.
+	 Answers whether I am to be resumed."
 	| frame |
 	frame := [anException signal. nil] asContext.
 	"Field one of any context is its sender."
@@ -469,7 +596,7 @@ Process >> signal: anException after: aContext waitingOn: where [
 		suspendedContext pop.
 		frame instVarAt: 1 put: suspendedContext.
 		suspendedContext := frame].
-	self primRelease: where ~= 0
+	^where ~= 0
 ]
 
 { #category : '*Concurrency' }
@@ -484,7 +611,7 @@ Process >> signal: anException leaving: anUnwindContext [
 	| guarded |
 	guarded := anUnwindContext tempAt: 1.
 	anUnwindContext tempAt: 1 put: [guarded value. anException signal].
-	self primRelease: true
+	^true
 ]
 
 { #category : '*Concurrency' }

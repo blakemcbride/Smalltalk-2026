@@ -2847,6 +2847,175 @@ bugs7_lib(void)
     bugs7_lib_files1();
 }
 
+/*
+ *  Bugs07, the scheduler's stop-and-wake findings: one probe file per
+ *  check, evaluated by the batch harness on the number of workers given,
+ *  and the answer looked for.  A hang is a failure here like any other:
+ *  serve kills the server after SERVE_SECONDS and the answer is missing.
+ */
+static void
+bugs7_probe(const char *name, const char *text, unsigned workers,
+            const char *wanted, const char *what)
+{
+    static char out[65536];
+    const char *probe = fixture(name);
+    char        batch[1024];
+    int         status;
+
+    ++st_test_checks;
+    if (write_file(probe, text) != 0) {
+        ++st_test_failures;
+        printf("  FAIL %s: could not write the probe\n", what);
+        return;
+    }
+    snprintf(batch, sizeof batch,
+             "Compiler evaluate: (FileStream oldFileNamed: '%s') "
+             "contentsOfEntireFile\n3 + 4\n", probe);
+    status = serve(batch, workers, out, sizeof out);
+    if (status < 0) {
+        ++st_test_failures;
+        printf("  FAIL %s: could not run the server\n", what);
+    }  else  {
+        expect(out, wanted, what);
+        expect(out, "3 + 4 ==> 7", what);
+    }
+    unlink(probe);
+}
+
+static void
+bugs7_sched(void)
+{
+    /*
+     *  SCHED-1: a stopper stopped part-way.  primDetach: left its target
+     *  HELD until the stopper released it in an ensure: entered several
+     *  bytecodes later (suspend had none), so a stopper terminated in
+     *  between left the target held for good -- resume refused it as
+     *  `running', every later terminate of it yielded and asked again for
+     *  ever -- or, stopped a little later, let it go without resuming it:
+     *  on no list, in nobody's hands, holding its Mutex.  Now the detach
+     *  and everything done with its answer run where a stop of the
+     *  stopper is put off until they are done, and terminate waits that
+     *  out.  One worker: a stopper suspending and resuming its target,
+     *  terminated every millisecond; nothing else can be running there,
+     *  so a refused resume is a leaked hold.  The old binary leaked one
+     *  within two kills.
+     */
+    bugs7_probe("bugs7-sched1-suspender.st",
+        "| w k kills bad msg fin |\n"
+        "fin := Semaphore new.\n"
+        "[w := [[true] whileTrue: [Processor yield]] forkAt: 4.\n"
+        " kills := 0. bad := 0.\n"
+        " [kills >= 300 or: [bad > 0]] whileFalse: [\n"
+        "\tk := [[true] whileTrue: [w suspend. w resume]] forkAt: 4.\n"
+        "\t(Delay forMilliseconds: 1) wait.\n"
+        "\tk terminate. kills := kills + 1.\n"
+        "\tmsg := [w resume. #ok] on: Error do: [:e | e messageText].\n"
+        "\tmsg = 'cannot resume a process that is running' "
+        "ifTrue: [bad := bad + 1]].\n"
+        " bad = 0 ifTrue: [w terminate].\n"
+        " fin signal] forkAt: 6.\n"
+        "fin wait.\n"
+        "^'SCHED-1 held after ', kills printString, ' kills: ', "
+        "bad printString\n",
+        1, "==> 'SCHED-1 held after 300 kills: 0'",
+        "SCHED-1 a terminated suspender leaves no hold");
+
+    /*
+     *  The terminating kind, on one worker and on eight: a stopper
+     *  forking Mutex users and terminating each, itself terminated every
+     *  millisecond.  Afterwards no victim may be held, and none may be
+     *  parked by nobody -- alive, on no list, in no hands.  The old binary
+     *  left one of the second kind, owning its Mutex, within two kills on
+     *  either count.
+     */
+    {
+        static const char *text =
+            "| m k kills ws held susp fin |\n"
+            "fin := Semaphore new.\n"
+            "[kills := 0. held := 0. susp := 0.\n"
+            " [kills >= 150 or: [held + susp > 0]] whileFalse: [\n"
+            "\tws := Array new: 10000. m := Mutex new.\n"
+            "\tk := [ | i | i := 0. [true] whileTrue: [ | w |\n"
+            "\t\tw := [[true] whileTrue: [m critical: [Processor yield]]] "
+            "forkAt: 4.\n"
+            "\t\tws at: (i := i + 1) put: w. Processor yield. "
+            "w terminate]] forkAt: 4.\n"
+            "\t(Delay forMilliseconds: 1) wait.\n"
+            "\tk terminate. kills := kills + 1.\n"
+            "\tws do: [:w | | where |\n"
+            "\t\t(w notNil and: [w suspendedContext notNil]) ifTrue: [\n"
+            "\t\t\twhere := w primDetach: false.\n"
+            "\t\t\twhere = 6 ifTrue: [held := held + 1].\n"
+            "\t\t\t(where = 0 and: [w suspendedContext notNil]) "
+            "ifTrue: [susp := susp + 1].\n"
+            "\t\t\twhere ~= 6 ifTrue: [w primRelease: false. "
+            "w terminate]]]].\n"
+            " fin signal] forkAt: 6.\n"
+            "fin wait.\n"
+            "^'SCHED-1 stoppers killed ', kills printString, "
+            "': victims held ', held printString, ', parked by nobody ', "
+            "susp printString\n";
+
+        bugs7_probe("bugs7-sched1-terminator.st", text, 1,
+            "==> 'SCHED-1 stoppers killed 150: victims held 0, "
+            "parked by nobody 0'",
+            "SCHED-1 a terminated terminator, one worker");
+        bugs7_probe("bugs7-sched1-terminator.st", text, 8,
+            "==> 'SCHED-1 stoppers killed 150: victims held 0, "
+            "parked by nobody 0'",
+            "SCHED-1 a terminated terminator, eight workers");
+    }
+
+    /*
+     *  A full held table answers 6, and the stopper yields and asks
+     *  again.  It waited in C for a slot instead, holding its worker, so
+     *  on one worker the holders could never run to free one and the
+     *  image stopped: three hundred never-started processes detached and
+     *  not released here fill it, an unrelated terminate must then wait,
+     *  and must finish once they are released.
+     */
+    bugs7_probe("bugs7-sched1-full.st",
+        "| ps answers x done before fin |\n"
+        "fin := Semaphore new.\n"
+        "[ps := (1 to: 300) collect: [:i | [Semaphore new wait] newProcess].\n"
+        " answers := ps collect: [:p | p primDetach: true].\n"
+        " x := [Semaphore new wait] forkAt: 4.\n"
+        " done := false.\n"
+        " [x terminate. done := true] forkAt: 5.\n"
+        " (Delay forMilliseconds: 100) wait.\n"
+        " before := done.\n"
+        " ps do: [:p | p primRelease: false].\n"
+        " (Delay forMilliseconds: 100) wait.\n"
+        " fin signal] forkAt: 6.\n"
+        "fin wait.\n"
+        "^{(answers includes: 6). before. done. x suspendedContext isNil}\n",
+        1, "==> (true false true true )",
+        "SCHED-1 a full held table makes a stopper wait, not the image");
+
+    /*
+     *  And an entry counts what it holds.  Sixty processes held and never
+     *  released, dropped, collected: their oops were reused and the new
+     *  Process that got one was refused its first resume -- fourteen of
+     *  two hundred thousand on the old binary.
+     */
+    bugs7_probe("bugs7-sched1-reuse.st",
+        "| ps bad fin |\n"
+        "fin := Semaphore new.\n"
+        "[ps := (1 to: 60) collect: [:i | [Semaphore new wait] newProcess].\n"
+        " ps do: [:p | p primDetach: true].\n"
+        " ps := nil.\n"
+        " Smalltalk garbageCollect.\n"
+        " bad := 0.\n"
+        " 1 to: 200000 do: [:i | | p | p := [nil] newProcess. "
+        "p priority: 5.\n"
+        "\t[p resume] on: Error do: [:e | bad := bad + 1]].\n"
+        " fin signal] forkAt: 6.\n"
+        "fin wait.\n"
+        "^'SCHED-1 new processes refused: ', bad printString\n",
+        1, "==> 'SCHED-1 new processes refused: 0'",
+        "SCHED-1 a held process is not reclaimed");
+}
+
 int
 main(void)
 {
@@ -3514,6 +3683,7 @@ main(void)
     bugs6_low_kernb();
     bugs7_vm();
     bugs7_lib();
+    bugs7_sched();
 
     unlink(IMAGE);
     unlink(BATCH);

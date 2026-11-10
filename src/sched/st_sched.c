@@ -787,17 +787,43 @@ unname_process(st_oop process)
  *  raise' within a run.
  *
  *  So a stopped process is HELD by its stopper until the stopper lets go:
- *  primDetach: puts it in this table before un-naming it, primitive 87
- *  refuses a held process, a second primDetach: of it answers 6 and the
- *  caller yields and asks again, and primitive 235 releases it -- after
- *  resuming it, when that is what the stopper wants, so that there is no
- *  instant at which it is free and not yet on a list.  A plain table
- *  under a plain lock: nothing on the hot path looks here, which is why
- *  this is not the detach table -- a name is scanned by every worker at
- *  every bytecode while any name is held, and a hold lasts for as long
+ *  primDetach: takes hold of it before it does anything else, primitive
+ *  87 refuses a held process, a second primDetach: of it answers 6 and
+ *  the caller yields and asks again, and primitive 235 releases it --
+ *  after resuming it, when that is what the stopper wants, so that there
+ *  is no instant at which it is free and not yet on a list.  A plain
+ *  table under a plain lock: nothing on the hot path looks here, which is
+ *  why this is not the detach table -- a name is scanned by every worker
+ *  at every bytecode while any name is held, and a hold lasts for as long
  *  as the Smalltalk side takes.
+ *
+ *  Bugs07 SCHED-1.  The hold outlasts the primitive, so it is an oop held
+ *  in C for as long as the Smalltalk side takes -- and it was neither
+ *  counted nor visited.  A stopper that never let go (one terminated
+ *  between the detach and its release, which
+ *  Process>>stopTakingFromSemaphore:thenDo: now
+ *  rules out) left an entry naming a process nothing else referred to;
+ *  the process was reclaimed, its oop was reused, and the new Process
+ *  that got it was refused its first resume -- the one inside fork.  So
+ *  each entry counts the process it holds and the process holding it,
+ *  and SCHED_visit_async_roots visits both, the way the nomination and
+ *  the async queue are counted and visited: a marking collection
+ *  recomputes every count from the roots, and a count with no root
+ *  behind it protects nothing.
+ *
+ *  The holder is recorded beside the process, because a release is only
+ *  the holder's to make (primitive 235), and two hundred and fifty-six
+ *  entries rather than one per worker: a hold belongs to a stopping
+ *  PROCESS, not to a worker, and a stopper preempted before it lets go
+ *  keeps its entry while its worker runs another stopper.  A full table
+ *  answers 6, as a held process does, and the stopper yields and asks
+ *  again -- it used to wait in C for a slot, and on one worker the
+ *  holders it was waiting for could never run to free one.
  */
-static st_atomic_ptr    held_table[DETACH_MAX];
+#define HELD_MAX            256
+
+static st_atomic_ptr    held_table[HELD_MAX];
+static st_atomic_ptr    held_by[HELD_MAX];
 static st_mutex         held_lock;
 static int              held_lock_ready;
 
@@ -810,33 +836,45 @@ held_lock_init(void)
     held_lock_ready = 1;
 }
 
+/*  The slot holding the process, or -1.  Under held_lock.  */
+static int
+held_slot(st_oop process)
+{
+    unsigned    i;
+
+    for (i = 0; i < HELD_MAX; ++i)
+        if ((st_oop) ST_load_relaxed(&held_table[i]) == process)
+            return (int) i;
+    return -1;
+}
+
 static int
 is_held(st_oop process)
 {
-    unsigned    i;
-    int         found = 0;
+    int     found;
 
     held_lock_init();
     ST_mutex_lock(&held_lock);
-    for (i = 0; i < DETACH_MAX; ++i)
-        if ((st_oop) ST_load_relaxed(&held_table[i]) == process) {
-            found = 1;
-            break;
-        }
+    found = held_slot(process) >= 0;
     ST_mutex_unlock(&held_lock);
     return found;
 }
 
-/*  Answers 0 when the process is already held, or the table is full.  */
+/*
+ *  Take hold of the process for the holder.  Answers 0 when it is
+ *  already held -- by anyone, the holder included -- or the table is
+ *  full.  Both counts are taken under the lock, before any other worker
+ *  can see the entry and release it.
+ */
 static int
-hold_process(st_oop process)
+hold_process(st_oop process, st_oop holder)
 {
     unsigned    i;
     int         slot = -1;
 
     held_lock_init();
     ST_mutex_lock(&held_lock);
-    for (i = 0; i < DETACH_MAX; ++i) {
+    for (i = 0; i < HELD_MAX; ++i) {
         st_oop  entry = (st_oop) ST_load_relaxed(&held_table[i]);
 
         if (entry == process) {
@@ -846,8 +884,12 @@ hold_process(st_oop process)
         if (entry == ST_OOP_INVALID && slot < 0)
             slot = (int) i;
     }
-    if (slot >= 0)
+    if (slot >= 0) {
+        OM_increase_ref(process);
+        OM_increase_ref(holder);
         ST_store_relaxed(&held_table[slot], (uintptr_t) process);
+        ST_store_relaxed(&held_by[slot], (uintptr_t) holder);
+    }
     ST_mutex_unlock(&held_lock);
     return slot >= 0;
 }
@@ -855,15 +897,45 @@ hold_process(st_oop process)
 static void
 unhold_process(st_oop process)
 {
+    st_oop  holder = ST_OOP_INVALID;
+    int     slot;
+
+    held_lock_init();
+    ST_mutex_lock(&held_lock);
+    slot = held_slot(process);
+    if (slot >= 0) {
+        holder = (st_oop) ST_load_relaxed(&held_by[slot]);
+        ST_store_relaxed(&held_table[slot], (uintptr_t) ST_OOP_INVALID);
+        ST_store_relaxed(&held_by[slot], (uintptr_t) ST_OOP_INVALID);
+    }
+    ST_mutex_unlock(&held_lock);
+    /*
+     *  The counts after the lock: dropping the last one frees the object,
+     *  and that is not something to do with every stopper in the image
+     *  waiting on this lock.
+     */
+    if (slot >= 0) {
+        OM_decrease_ref(process);
+        OM_decrease_ref(holder);
+    }
+}
+
+/*  For the root walk: every held process and every holder.  */
+static void
+visit_held(om_visit_fn visit)
+{
     unsigned    i;
 
     held_lock_init();
     ST_mutex_lock(&held_lock);
-    for (i = 0; i < DETACH_MAX; ++i)
-        if ((st_oop) ST_load_relaxed(&held_table[i]) == process) {
-            ST_store_relaxed(&held_table[i], (uintptr_t) ST_OOP_INVALID);
-            break;
+    for (i = 0; i < HELD_MAX; ++i) {
+        st_oop  entry = (st_oop) ST_load_relaxed(&held_table[i]);
+
+        if (entry != ST_OOP_INVALID) {
+            visit(entry);
+            visit((st_oop) ST_load_relaxed(&held_by[i]));
         }
+    }
     ST_mutex_unlock(&held_lock);
 }
 
@@ -1090,9 +1162,16 @@ SCHED_reset(void)
     {
         unsigned    i;
 
-        for (i = 0; i < DETACH_MAX; ++i) {
+        for (i = 0; i < DETACH_MAX; ++i)
             ST_store_release(&detach_table[i], (uintptr_t) ST_OOP_INVALID);
+        /*
+         *  The holds' counts are dropped with them, not given back: the
+         *  next marking collection recomputes every count from the
+         *  roots, and these are no longer among them.
+         */
+        for (i = 0; i < HELD_MAX; ++i) {
             ST_store_relaxed(&held_table[i], (uintptr_t) ST_OOP_INVALID);
+            ST_store_relaxed(&held_by[i], (uintptr_t) ST_OOP_INVALID);
         }
         ST_store_seq(&detach_count, 0);
         ST_store_seq(&frozen, 0);
@@ -2102,6 +2181,8 @@ SCHED_visit_async_roots(om_visit_fn visit)
 {
     int     i;
 
+    /*  The held table's processes and holders (Bugs07 SCHED-1).  */
+    visit_held(visit);
     async_lock_init();
     ST_mutex_lock(&async_lock);
     for (i = 0; i < ST_load_relaxed(&async_count); ++i)
@@ -2952,8 +3033,8 @@ SCHED_primitive_terminate_active(void)
  *          another worker's detach and gave way to it (below).  The
  *          caller yields and asks again, if it ever runs again
  *      6   nothing was done: another stopper holds the receiver (the
- *          held table above) and has not let go.  The caller yields and
- *          asks again
+ *          held table above) and has not let go, or the table is full.
+ *          The caller yields and asks again
  *
  *  and in every case but 4, 5 and 6 the receiver is afterwards parked,
  *  on no list, in nobody's hands, with its suspendedContext where it
@@ -3032,6 +3113,30 @@ SCHED_primitive_detach(void)
     if (process == SCHED_active_process())
         return 0;
     /*
+     *  Held FIRST, before the process is named or touched (Bugs07 SCHED-1
+     *  and SCHED-2).  Somebody else's, until they let go -- and a holder
+     *  resumes before it releases, so a held process can be on a list or
+     *  in a worker's hands for a moment, and must be left there.  This
+     *  was asked inside the loop below, after the process had been named,
+     *  so a second stopper waiting for the first named the process and
+     *  un-named it on every retry; with nothing else ready its yield
+     *  returned at once, the name flickered on and off continuously, and
+     *  the first stopper's primitive 235 found the process named and
+     *  refused to resume it -- `a primitive has failed' out of terminate,
+     *  the process left parked inside its critical: section with the
+     *  lock, in one round in five of two terminators.  Taken first, a
+     *  hold that is refused leaves nothing to undo.  And a full table is
+     *  answered here too, as 6: waiting for a slot used to happen at the
+     *  end, with the process already off its list, where giving up was
+     *  not possible, and it waited in C -- on one worker, for holders
+     *  that could never run to let go.
+     */
+    if (!hold_process(process, SCHED_active_process())) {
+        ST_pop_n(2);
+        ST_push(OM_int_oop(6));
+        return 1;
+    }
+    /*
      *  This worker's own nominee is the one case it can settle itself:
      *  the nomination goes back to the ready list, where the loop below
      *  finds it.
@@ -3042,9 +3147,12 @@ SCHED_primitive_detach(void)
     }
     while (!name_process(process)) {
         /*  Every slot taken by another worker's detach: wait for one.  */
-        if (SCHED_stop_requested())
+        if (SCHED_stop_requested()) {
+            unhold_process(process);
             return 0;
+        }
         if (must_give_way(process)) {
+            unhold_process(process);
             ST_pop_n(2);
             ST_push(OM_int_oop(5));
             return 1;
@@ -3057,16 +3165,6 @@ SCHED_primitive_detach(void)
 
         if (SCHED_stop_requested())
             break;
-        /*
-         *  Somebody else's, until they let go.  Asked every pass, before
-         *  the process is touched: a holder resumes before it releases,
-         *  so a held process can be on a list or in a worker's hands for
-         *  a moment, and must be left there.
-         */
-        if (is_held(process)) {
-            where = 6;
-            break;
-        }
         if (OM_is_present(list)) {
             /*  A ready list is known by identity, not by the priority
              *  field, which may say another list (Bugs6 SCHED-3).  */
@@ -3140,20 +3238,12 @@ SCHED_primitive_detach(void)
         break;
     }
     /*
-     *  Held before un-named, so that there is no instant at which the
-     *  process is neither.  The hold can be refused for a moment: a
-     *  previous holder resumes and THEN releases, and this pass may have
-     *  taken the process off the list that resume put it on before the
-     *  release landed -- or the table is full.  Nothing else can reach a
-     *  process that is named and off every list, so waiting is exact.
+     *  Held since before it was named, so there is no instant at which
+     *  the process is neither; and let go again here when nothing was
+     *  done to it -- left in its wait (4), or given way to (5).
      */
-    if (where <= 3)
-        while (!hold_process(process)) {
-            if (SCHED_stop_requested())
-                break;
-            WORKER_poll();
-            ST_sleep_ns(1000);
-        }
+    if (where >= 4)
+        unhold_process(process);
     unname_process(process);
     ST_pop_n(2);
     if (where == 3) {
