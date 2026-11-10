@@ -305,7 +305,7 @@ test_time(void)
     CHECK(stamp < INT64_C(6279811200000));      /*  1 Jan 2100  */
 }
 
-/*  ----------  Bugs07 round three, the library group  ----------  */
+/*  ----------  Bugs07 round three, the library group: KERNA-3, FILES-7  ----------  */
 
 /*
  *  KERNA-3: primitive 219 on Windows answered the zone's standard offset
@@ -394,6 +394,42 @@ test_bugs7c_lib(void)
 #endif
 }
 
+/*
+ *  FILES-7: Windows' ST_sleep_ns truncated to whole milliseconds, so every
+ *  sleep the scheduler takes -- all of them under a millisecond -- was
+ *  Sleep(0), and an idle worker spun a core.  Its two roundings are
+ *  portable and checked here: up, never to nothing, never to Sleep's
+ *  INFINITE.  Then the promise itself, on whatever this is: fifty sleeps
+ *  of the scheduler's 0.1 ms idle slice take at least five milliseconds.
+ *  On Windows before the fix they took next to nothing.
+ */
+static void
+test_bugs7c_lib_sleep(void)
+{
+    int64_t start;
+    int     i;
+
+    CHECK(ST_sleep_ms_rounded_up(0) == 0);
+    CHECK(ST_sleep_ms_rounded_up(-5) == 0);
+    CHECK(ST_sleep_ms_rounded_up(1) == 1);
+    CHECK(ST_sleep_ms_rounded_up(1000) == 1);
+    CHECK(ST_sleep_ms_rounded_up(100000) == 1);
+    CHECK(ST_sleep_ms_rounded_up(1000000) == 1);
+    CHECK(ST_sleep_ms_rounded_up(1000001) == 2);
+    CHECK(ST_sleep_ms_rounded_up(INT64_C(30000000000)) == 30000);
+    CHECK(ST_sleep_ms_rounded_up(INT64_MAX) == UINT32_C(0xFFFFFFFE));
+    CHECK(ST_sleep_100ns_ticks(0) == 0);
+    CHECK(ST_sleep_100ns_ticks(-1) == 0);
+    CHECK(ST_sleep_100ns_ticks(1) == 1);
+    CHECK(ST_sleep_100ns_ticks(1000) == 10);
+    CHECK(ST_sleep_100ns_ticks(100000) == 1000);
+    CHECK(ST_sleep_100ns_ticks(100001) == 1001);
+    start = ST_time_monotonic_ns();
+    for (i = 0; i < 50; i++)
+        ST_sleep_ns(100000);
+    CHECK(ST_time_monotonic_ns() - start >= 50 * INT64_C(100000));
+}
+
 int
 main(void)
 {
@@ -410,6 +446,7 @@ main(void)
     test_cpu_count();
     test_time();
     test_bugs7c_lib();
+    test_bugs7c_lib_sleep();
 
     return ST_TEST_END();
 }

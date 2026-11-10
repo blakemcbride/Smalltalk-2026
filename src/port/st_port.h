@@ -182,6 +182,14 @@ int64_t ST_time_smalltalk_ms(void);
 #define ST_EPOCH_OFFSET_SEC     INT64_C(2177452800)
 
 void    ST_sleep_ns(int64_t ns);
+/*
+ *  How Windows' ST_sleep_ns turns nanoseconds into what its waits take --
+ *  100 ns ticks for a waitable timer, milliseconds for Sleep -- rounding
+ *  UP, so that a positive sleep is never a sleep of nothing (Bugs07
+ *  FILES-7).  Portable, so tests/unit/test_port.c checks them everywhere.
+ */
+uint32_t ST_sleep_ms_rounded_up(int64_t ns);
+int64_t  ST_sleep_100ns_ticks(int64_t ns);
 
 /*
  *  The host's offset from UTC at this moment, in seconds, positive east of

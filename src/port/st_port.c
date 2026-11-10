@@ -553,12 +553,64 @@ ST_time_smalltalk_ms(void)
     return unix_ms + ST_EPOCH_OFFSET_SEC * 1000;
 }
 
+/*
+ *  Sleep for ns nanoseconds -- really sleep, however short (Bugs07 FILES-7).
+ *
+ *  This was `Sleep(ns / 1000000)', and every sleep the scheduler takes is
+ *  shorter than a millisecond: the idle slice is 0.1 ms, the waits for
+ *  another worker 1 us, and the main thread's poll 0.1 ms.  Each one
+ *  truncated to Sleep(0), which gives up the rest of the time slice to
+ *  another ready thread and returns AT ONCE when there is none -- the
+ *  normal state of an idle server.  So on Windows the idle loop polled
+ *  flat out: every worker of a -serve pool with no requests held a core
+ *  at a hundred percent, a single worker waiting on a Delay spun one for
+ *  the length of the wait, and the hundred confirmations the scheduler
+ *  takes as ten milliseconds of a genuinely still system before an
+ *  all-idle verdict shrank to a hundred back-to-back loads.  nanosleep on
+ *  the other platforms sleeps the 0.1 ms it is asked for.
+ *
+ *  A high-resolution waitable timer does the same here: due times are in
+ *  100 ns units, and CREATE_WAITABLE_TIMER_HIGH_RESOLUTION (Windows 10
+ *  1803 and later) makes it keep them rather than round them up to the
+ *  15.6 ms system tick.  One per thread, made on that thread's first
+ *  sleep and kept for its life -- the threads that sleep are the workers,
+ *  the main thread and the timer and I/O threads, which live as long as
+ *  the process, so the handle is not closed.  Where the flag is refused
+ *  (older Windows) the thread remembers and sleeps with Sleep, rounded UP
+ *  to whole milliseconds: a sleep longer than asked, at the tick's
+ *  granularity, but a sleep, and an idle pool no longer spins.  The two
+ *  roundings are ST_sleep_100ns_ticks and ST_sleep_ms_rounded_up, which
+ *  are portable so that tests/unit/test_port.c checks them everywhere.
+ */
+#ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
+#define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION   0x00000002
+#endif
+
+static _Thread_local HANDLE sleep_timer;
+static _Thread_local int    sleep_timer_refused;
+
 void
 ST_sleep_ns(int64_t ns)
 {
     if (ns <= 0)
         return;
-    Sleep((DWORD) (ns / ST_NS_PER_MS));
+    if (sleep_timer == NULL && !sleep_timer_refused) {
+        sleep_timer = CreateWaitableTimerExW(NULL, NULL,
+                                             CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+                                             TIMER_ALL_ACCESS);
+        if (sleep_timer == NULL)
+            sleep_timer_refused = 1;
+    }
+    if (sleep_timer != NULL) {
+        LARGE_INTEGER   due;
+
+        /*  Negative: relative to now, in 100 ns units.  */
+        due.QuadPart = -ST_sleep_100ns_ticks(ns);
+        if (SetWaitableTimer(sleep_timer, &due, 0, NULL, NULL, FALSE)
+         && WaitForSingleObject(sleep_timer, INFINITE) == WAIT_OBJECT_0)
+            return;
+    }
+    Sleep(ST_sleep_ms_rounded_up(ns));
 }
 
 #else
@@ -596,6 +648,32 @@ ST_sleep_ns(int64_t ns)
 }
 
 #endif
+
+/*
+ *  The two roundings Windows' ST_sleep_ns makes (Bugs07 FILES-7), here and
+ *  not inside it so that they are compiled, and tested, everywhere.  Both
+ *  round UP: a positive request is never a sleep of nothing, which is the
+ *  whole of the fault they replace.  The milliseconds stop one short of
+ *  0xFFFFFFFF, which Sleep reads as INFINITE.
+ */
+uint32_t
+ST_sleep_ms_rounded_up(int64_t ns)
+{
+    int64_t ms;
+
+    if (ns <= 0)
+        return 0;
+    ms = ns / ST_NS_PER_MS + (ns % ST_NS_PER_MS != 0);
+    return ms >= INT64_C(0xFFFFFFFE) ? UINT32_C(0xFFFFFFFE) : (uint32_t) ms;
+}
+
+int64_t
+ST_sleep_100ns_ticks(int64_t ns)
+{
+    if (ns <= 0)
+        return 0;
+    return ns / 100 + (ns % 100 != 0);
+}
 
 /*
  *  The offset from UTC of the local clock reading, from the two readings
