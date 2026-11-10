@@ -95,7 +95,7 @@ TonelWriter class >> typeOf: aClass [
 ]
 
 { #category : 'shapes' }
-TonelWriter class >> category: category isUnder: prefixString [
+TonelWriter class >> category: aCategory isUnder: prefixString [
 	"Whether a method category belongs to the package whose extension
 	 categories begin with prefixString: the prefix itself,
 	 `*Concurrency', or a tag under it, `*Concurrency-private'.
@@ -104,11 +104,20 @@ TonelWriter class >> category: category isUnder: prefixString [
 	 Foo-Bar writes `*Foo-Bar', which reads as Foo's tag Bar.  Pharo tells
 	 them apart by knowing every package's name; here the prefix comes
 	 from the package.st beside the file, which is the same knowledge for
-	 the one package that matters."
-	category = prefixString ifTrue: [^true].
-	^category size > prefixString size
-		and: [(category copyFrom: 1 to: prefixString size) = prefixString
-			and: [(category at: prefixString size + 1) = $-]]
+	 the one package that matters.
+
+	 WITHOUT REGARD TO CASE, as Pharo compares them (Bugs07 COMP-1):
+	 Pharo writes a package's extension categories in whatever case its
+	 author typed, and treats `*mystuff' as package MyStuff's own.
+	 Compared exactly, a file of `*mystuff' methods in package MyStuff
+	 owned none of them and was written back empty."
+	| category prefix |
+	category := aCategory asString asLowercase.
+	prefix := prefixString asLowercase.
+	category = prefix ifTrue: [^true].
+	^category size > prefix size
+		and: [(category copyFrom: 1 to: prefix size) = prefix
+			and: [(category at: prefix size + 1) = $-]]
 ]
 
 { #category : 'shapes' }
@@ -395,12 +404,23 @@ TonelWriter >> writeExtensionOf: aClass prefix: prefixString comment: commentOrN
 	 to carry, so the reader keeps what was at the top of the file and
 	 hands it back here -- the one-line header, and the methods under the
 	 package's prefix, class side first."
-	| mine |
+	self
+		writeExtensionOf: aClass
+		selecting: [:category | TonelWriter category: category isUnder: prefixString]
+		comment: commentOrNil
+]
+
+{ #category : 'writing' }
+TonelWriter >> writeExtensionOf: aClass selecting: aBlock comment: commentOrNil [
+	"The Extension file for the methods of aClass whose category aBlock
+	 accepts: the file's own comment, if it had one, the one-line header,
+	 and those methods, class side first.  TonelSource's entry for a file
+	 says which categories that file owns -- its prefix and every starred
+	 category it was read with (Bugs07 COMP-1)."
 	(commentOrNil notNil and: [commentOrNil isEmpty not])
 		ifTrue: [self writeComment: commentOrNil].
 	stream nextPutAll: 'Extension { #name : '. self quoted: aClass name. stream nextPutAll: ' }'.
 	self cr.
-	mine := [:category | TonelWriter category: category isUnder: prefixString].
-	self writeMethodsOf: aClass class named: aClass name, ' class' selecting: mine.
-	self writeMethodsOf: aClass named: aClass name selecting: mine
+	self writeMethodsOf: aClass class named: aClass name, ' class' selecting: aBlock.
+	self writeMethodsOf: aClass named: aClass name selecting: aBlock
 ]

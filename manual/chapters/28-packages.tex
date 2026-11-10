@@ -154,8 +154,10 @@ left alone. \ct{TonelSource} adds the registry: a class it loaded is written
 back to its file when a method is accepted or removed in the Browser
 (Chapter~\ref{ch:keeping}), and \ct{reloadIfChanged:} compares the file's
 time and size with what it saw last. A class loaded from an extension file
-is written back to that file as an extension, holding the package's methods
-and no others. \ct{TonelWriter} writes what the reader reads---a weak class as
+is written back to that file as an extension, holding the methods in the
+categories the file was read with and in any category under its package's
+name---compared without regard to case, so Pharo's \ct{*mystuff} is package
+\ct{MyStuff}'s---and no others. \ct{TonelWriter} writes what the reader reads---a weak class as
 \ct|#type : 'weak'|, a class that takes a trait as \ctp{\#traits} without
 the trait's methods---so a class can go out and come back byte for byte.
 

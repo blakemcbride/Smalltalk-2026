@@ -668,8 +668,13 @@
  *  DbConnection>>forgetColumnsOf:.
  *
  *  3384 -> 3385 with Bugs07 FILES-6: DbCommand>>withoutQuotedText:.
+ *
+ *  3385 -> 3390 with Bugs07 COMP-1: TonelSource>>owns:, noteHeldIn:,
+ *  keyFor:meta:, lostRefusalWriting:of: and TonelWriter>>writeExtensionOf:
+ *  selecting:comment:; noteType:prefix:comment: became
+ *  noteType:prefix:categories:comment:.
  */
-#define LIB_METHODS             3385
+#define LIB_METHODS             3390
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -3082,8 +3087,13 @@ test_browsing(void)
      *  3010699 -> 3012259 with Bugs07 FILES-6: a UNION, INTERSECT, EXCEPT
      *  or MINUS anywhere in a query leaves its rows with no table to be
      *  written back to.
+     *
+     *  3012259 -> 3019078 with Bugs07 COMP-1: an Extension file owns every
+     *  starred category it was read with, prefixes compare without regard
+     *  to case, and a write-back that would drop a method the file held is
+     *  refused.
      */
-    check_integer("(SourceFiles at: 1) contents size", 3012259);
+    check_integer("(SourceFiles at: 1) contents size", 3019078);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -11803,6 +11813,92 @@ test_bugs7b_lib(void)
     } else
         printf("  skipped FILES-6 (Bugs07): no SQLITE3 driver\n");
     unlink(db);
+
+    /*
+     *  COMP-1: an Extension file owned only the `*Package' prefix taken
+     *  from the package.st beside it, and a write-back wrote only the
+     *  methods under it.  Three files of one class, one of each shape the
+     *  audit found: A in package Bugs7b-Runtime holding `*Bugs7b' and
+     *  `*Bugs7b-Runtime' (lib/System/SystemDictionary.extension.st's
+     *  shape), B with no package.st holding `*Acme' and `*Zed-Extra', C
+     *  in package MyStuff holding Pharo's lower-case `*mystuff'.  Before,
+     *  one accept each left A with `runtime' alone, B without zedOne and C
+     *  with nothing, all of them `accepted'.  Now each keeps what it held
+     *  and gains what was accepted into it; a method moved into the
+     *  class's own categories goes to the Class file and leaves B; and
+     *  one moved where no file of the class can hold it is refused,
+     *  leaving B as it was.
+     */
+    {
+        const char *dir = st_test_path("bugs7b-comp1");
+        static const char *const files[][2] = {
+            { "Bugs7bC1.class.st",
+              "Class {\n\t#name : 'Bugs7bC1',\n\t#superclass : 'Object',\n"
+              "\t#category : 'Bugs7b-C1'\n}\n\n{ #category : 'probes' }\n"
+              "Bugs7bC1 >> one [\n\t^1\n]\n" },
+            { "a/package.st", "Package { #name : 'Bugs7b-Runtime' }\n" },
+            { "a/Bugs7bC1.extension.st",
+              "Extension { #name : 'Bugs7bC1' }\n\n{ #category : '*Bugs7b' }\n"
+              "Bugs7bC1 >> two [\n\t^2\n]\n\n{ #category : '*Bugs7b' }\n"
+              "Bugs7bC1 >> three [\n\t^3\n]\n\n{ #category : '*Bugs7b-Runtime' }\n"
+              "Bugs7bC1 >> runtime [\n\t^4\n]\n" },
+            { "b/Bugs7bC1.extension.st",
+              "Extension { #name : 'Bugs7bC1' }\n\n{ #category : '*Acme' }\n"
+              "Bugs7bC1 >> acmeOne [\n\t^1\n]\n\n{ #category : '*Acme' }\n"
+              "Bugs7bC1 >> acmeTwo [\n\t^2\n]\n\n{ #category : '*Zed-Extra' }\n"
+              "Bugs7bC1 >> zedOne [\n\t^3\n]\n" },
+            { "c/package.st", "Package { #name : 'MyStuff' }\n" },
+            { "c/Bugs7bC1.extension.st",
+              "Extension { #name : 'Bugs7bC1' }\n\n{ #category : '*mystuff' }\n"
+              "Bugs7bC1 >> myOne [\n\t^1\n]\n\n{ #category : '*mystuff' }\n"
+              "Bugs7bC1 >> myTwo [\n\t^2\n]\n" },
+        };
+        char   sub[1024];
+        size_t i;
+
+        mkdir(dir, 0755);
+        snprintf(sub, sizeof sub, "%s/a", dir);
+        mkdir(sub, 0755);
+        snprintf(sub, sizeof sub, "%s/b", dir);
+        mkdir(sub, 0755);
+        snprintf(sub, sizeof sub, "%s/c", dir);
+        mkdir(sub, 0755);
+        for (i = 0; i < sizeof files / sizeof files[0]; i++) {
+            FILE *f;
+
+            snprintf(sub, sizeof sub, "%s/%s", dir, files[i][0]);
+            f = fopen(sub, "w");
+            if (f) {
+                fputs(files[i][1], f);
+                fclose(f);
+            }
+        }
+        snprintf(expression, sizeof expression,
+                 "| d c out try has | d := '%s/'. out := OrderedCollection new. "
+                 "#('Bugs7bC1.class.st' 'a/Bugs7bC1.extension.st' 'b/Bugs7bC1.extension.st' "
+                 "'c/Bugs7bC1.extension.st') do: [:each | TonelSource loadFile: d, each]. "
+                 "c := Smalltalk at: #Bugs7bC1. "
+                 "try := [:source :category | out add: ([c compile: source classified: category "
+                 "notifying: nil. #accepted] on: TonelError do: [:e | "
+                 "(e messageText includesSubstring: 'Bugs7bC1>>zedOne') "
+                 "ifTrue: [#refused] ifFalse: [e messageText]])]. "
+                 "has := [:file | | text | text := (FileStream oldFileNamed: d, file) contentsOfEntireFile. "
+                 "(#(#one #two #three #runtime #acmeOne #acmeTwo #zedOne #myOne #myTwo #myThree) "
+                 "select: [:s | text includesSubstring: 'Bugs7bC1 >> ', s, ' [']) asArray]. "
+                 "try value: 'two ^22' value: '*Bugs7b'. "
+                 "try value: 'acmeOne ^11' value: '*Acme'. "
+                 "try value: 'myOne ^11' value: '*mystuff'. "
+                 "try value: 'myThree ^3' value: '*MyStuff-extra'. "
+                 "try value: 'acmeTwo ^12' value: 'probes'. "
+                 "try value: 'zedOne ^33' value: '*Nobody'. "
+                 "#('Bugs7bC1.class.st' 'a/Bugs7bC1.extension.st' 'b/Bugs7bC1.extension.st' "
+                 "'c/Bugs7bC1.extension.st') do: [:each | out add: (has value: each)]. "
+                 "TonelSource forget: c. ^out printString", dir);
+        check_string(expression,
+                     "an OrderedCollection(accepted accepted accepted accepted accepted refused "
+                     "(one acmeTwo ) (two three runtime ) (acmeOne zedOne ) "
+                     "(myOne myTwo myThree ) )");
+    }
 
     test_dialect = ST_DIALECT_BLUE_BOOK;
 }
