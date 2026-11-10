@@ -3425,6 +3425,7 @@ bugs7c_sched(void)
     char        command[2048];
     const char *snap = fixture("bugs7c-sched6-snap");
     const char *wimg = fixture("bugs7c-serve-weak.im");
+    const char *timg = fixture("bugs7c-serve-time.im");
     int         status;
 
     /*
@@ -3602,6 +3603,69 @@ bugs7c_sched(void)
         8, "==> 'FIXES-2 finished, all kept: true'",
         "FIXES-2 an owner's writes do not wait out the mourning");
     unlink(wimg);
+
+    /*
+     *  valueWithin:onTimeout: is the pharo-time profile's.
+     */
+    snprintf(command, sizeof command,
+             "%s -bootstrap -profile profiles/pharo-time.profile "
+             "-startup \"$(cat %s)\" -o %s 2>&1", st2026, STARTUP, timg);
+    status = run(command, out, sizeof out);
+    ++st_test_checks;
+    if (status != 0) {
+        ++st_test_failures;
+        printf("  FAIL KERNB-5: cannot build the time image (exit %d)\n",
+               status);
+        return;
+    }
+
+    /*
+     *  KERNB-5: the watchdog tested the shared theProcess and then read
+     *  it again to signal, while the caller's ensure: stored nil into it
+     *  on another worker: work that finished as its time ran out had
+     *  `nil signalException:' in the watchdog, or a TimedOut raised in
+     *  the caller after the call had returned -- in its next critical:,
+     *  in an unwind block.  The audit's probe: eight processes, three
+     *  hundred two-millisecond waits under two-millisecond timeouts
+     *  each, with an outer handler that records a TimedOut arriving
+     *  outside the call.  Before: 73-223 of 2400 calls came back, the
+     *  rest of each process lost to a late TimedOut.  And timeouts
+     *  still time out, nested either way, and the work that ends in
+     *  time still answers.
+     */
+    bugs7c_probe_on(timg, "bugs7c-kernb5-race.st",
+        "| done late lock n |\n"
+        "done := Semaphore new. late := OrderedCollection new.\n"
+        "lock := Mutex new. n := 0.\n"
+        "1 to: 8 do: [:w | [[[1 to: 300 do: [:i |\n"
+        "\t[[(Delay forMilliseconds: 2) wait] valueWithinMilliseconds: 2 "
+        "onTimeout: [nil]] on: Error do: [:e | e return: nil].\n"
+        "\tlock critical: [n := n + 1]]]\n"
+        "\t\ton: TimedOut do: [:e | lock critical: [late add: "
+        "e signalContext sender printString]]]\n"
+        "\t\tensure: [done signal]] fork].\n"
+        "1 to: 8 do: [:i | done wait].\n"
+        "^'KERNB-5 calls that returned: ', n printString, ' of 2400; late: ', "
+        "late asArray printString\n",
+        8, "==> 'KERNB-5 calls that returned: 2400 of 2400; late: ()'",
+        "KERNB-5 a TimedOut never arrives after its valueWithin: returned");
+    bugs7c_probe_on(timg, "bugs7c-kernb5-still.st",
+        "| r t |\n"
+        "r := OrderedCollection new. t := Time millisecondClockValue.\n"
+        "r add: ([(Delay forMilliseconds: 500) wait. #done] "
+        "valueWithinMilliseconds: 50 onTimeout: [#timedOut]).\n"
+        "r add: (Time millisecondClockValue - t) < 300.\n"
+        "r add: ([#fast] valueWithinMilliseconds: 500 onTimeout: [#timedOut]).\n"
+        "r add: ([[(Delay forMilliseconds: 500) wait. #inner] "
+        "valueWithinMilliseconds: 1000 onTimeout: [#innerT]] "
+        "valueWithinMilliseconds: 50 onTimeout: [#outerT]).\n"
+        "r add: ([[(Delay forMilliseconds: 500) wait. #inner] "
+        "valueWithinMilliseconds: 50 onTimeout: [#innerT]] "
+        "valueWithinMilliseconds: 1000 onTimeout: [#outerT]).\n"
+        "^r asArray\n",
+        4, "==> (timedOut true fast outerT innerT )",
+        "KERNB-5 a timeout still times out");
+    unlink(timg);
 }
 
 /*
