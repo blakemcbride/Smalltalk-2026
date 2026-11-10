@@ -704,8 +704,16 @@
  *  3407 -> 3413 with Bugs07 NET-4: JSONWriter class>>utf8LengthOf:then:,
  *  utf8SizeIn:at: and firstNonUtf8In:, JSONParser>>nextUtf8From:on: and
  *  notUtf8:, and RestDispatcher>>checkUtf8:.
+ *
+ *  3413 -> 3437 with Bugs07 GUI-5: the simulator the Debugger steps with,
+ *  taught closures -- InstructionStream>>interpretExtension:in:for:;
+ *  fifteen in ContextPart (the five instructions, a closure's activation,
+ *  doPrimitive:receiver:args:, tryPrimitiveFor:receiver:args:, the jump of
+ *  return: and resume:, the three method returns and returnFromMethod:,
+ *  runSimulated:contextAtEachStep:); MethodContext>>blockReturnTop;
+ *  BlockClosure>>hasMethodReturn; and six in InstructionPrinter.
  */
-#define LIB_METHODS             3413
+#define LIB_METHODS             3437
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -3158,8 +3166,11 @@ test_browsing(void)
      *  3039719 -> 3043704 with Bugs07 NET-4: the parser holds a string's
      *  bytes to the UTF-8 rule the writer holds them to, and a form's
      *  fields are held to it too.
+     *
+     *  3043704 -> 3056902 with Bugs07 GUI-5: the Debugger's simulator steps
+     *  through closures.
      */
-    check_integer("(SourceFiles at: 1) contents size", 3043704);
+    check_integer("(SourceFiles at: 1) contents size", 3056902);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -12470,6 +12481,93 @@ test_bugs7c_gui(void)
             check_string(text, "0");
         }
     }
+
+    /*
+     *  GUI-5.  The Debugger's step and send are ContextPart>>step, the
+     *  bytecode dispatch with the context as its client, and the dispatch
+     *  stopped at 1983's opcodes: the first block in the method stepped
+     *  raised `unusedBytecode'.  The audit's three steps over a collect:
+     *  first -- before, `unusedBytecode' on the third.
+     */
+    check_string("| ctx r | Object compile: 'bugs7cStep ^#(1 2 3) collect: "
+                 "[:x | x + 1]' classified: #probe. "
+                 "ctx := MethodContext sender: nil receiver: 3 "
+                 "method: (Object compiledMethodAt: #bugs7cStep) arguments: #(). "
+                 "r := [ctx step. ctx step. ctx step. #stepped] "
+                 "on: Error do: [:e | e messageText]. "
+                 "Object removeSelector: #bugs7cStep. ^r",
+                 "stepped");
+
+    /*
+     *  Then what the simulator has to do with what it now decodes: make a
+     *  closure and run it -- value:, value:value:, valueWithArguments:,
+     *  and the closures collect:, detect: and do: run, one of them
+     *  writing an outer temporary through its vector -- build a brace
+     *  array, and refuse a block holding a ^, which 1983 refused too.
+     *  Before, `unusedBytecode', and [3 + 4] alone was never answered: the
+     *  simulator's primitive test read a 64-bit method's flags as
+     *  negative, so no primitive ran and SmallInteger>>+ was simulated
+     *  into its fallback for ever.
+     */
+    check_string("| sim | sim := [:b | [ContextPart runSimulated: b] "
+                 "on: Error do: [:e | e messageText]]. "
+                 "^{sim value: [3 + 4]. "
+                 "sim value: [#(1 2 3) collect: [:x | x + 1]]. "
+                 "sim value: [#(1 2 3) detect: [:x | x > 1]]. "
+                 "sim value: [| t | t := 0. #(1 2 3) do: [:x | t := t + x]. t]. "
+                 "sim value: [{1. 2. 3 + 4}]. "
+                 "sim value: [[:a :b | a + b] value: 3 value: 4]. "
+                 "sim value: [[:a | a * 2] valueWithArguments: #(21)]. "
+                 "sim value: [^3]. "
+                 "[^3] hasMethodReturn. [3] hasMethodReturn} printString",
+                 "(7 (2 3 4 ) 2 6 (1 2 7 ) 7 42 "
+                 "'simulation of blocks with ^ can run loose' true false )");
+
+    /*
+     *  An exception handled inside the simulation leaves through return:
+     *  or resume:, primitives 246 and 247, which run for real refuse a
+     *  context on no real stack; an ensure: block runs on the way out;
+     *  and a ^ in a closure inside a method returns from that method,
+     *  through its ensure:, not to the block's caller.
+     */
+    check_string("| sim r | sim := [:b | [ContextPart runSimulated: b] "
+                 "on: Error do: [:e | e messageText]]. "
+                 "Object compile: 'bugs7cOut: log #(1 2) do: [:x | "
+                 "[^x] ensure: [log add: #ran]]. ^0' classified: #probe. "
+                 "r := {sim value: [[1/0] on: ZeroDivide do: [:e | e return: 5]]. "
+                 "sim value: [[(Warning signal: #w) + 1] "
+                 "on: Warning do: [:e | e resume: 6]]. "
+                 "sim value: [| l | l := OrderedCollection new. "
+                 "[l add: 1] ensure: [l add: 2]. l asArray]. "
+                 "sim value: [| l | l := OrderedCollection new. "
+                 "{nil bugs7cOut: l. l asArray}]}. "
+                 "Object removeSelector: #bugs7cOut:. ^r printString",
+                 "(5 7 (1 2 ) (1 (ran ) ) )");
+
+    /*
+     *  `send' steps INTO the block: each of collect:'s three value: calls
+     *  is a simulated activation of the closure, which a step can stop in.
+     *  And the instruction printer, the dispatch's third client, prints
+     *  the closure instructions where it raised `unusedBytecode'.
+     */
+    check_string("| seen r home | seen := IdentitySet new. "
+                 "home := thisContext method. "
+                 "r := thisContext runSimulated: "
+                 "[#(1 2 3) collect: [:x | x * 2]] "
+                 "contextAtEachStep: [:c | (c method == home "
+                 "and: [(c instVarAt: 5) notNil "
+                 "and: [(c instVarAt: 5) numArgs = 1]]) ifTrue: [seen add: c]]. "
+                 "^{r. seen size} printString",
+                 "((2 4 6 ) 3 )");
+    check_string("| s r | Object compile: 'bugs7cRemote | t | t := 0. "
+                 "#(1 2) do: [:x | t := t + x]. ^t' classified: #probe. "
+                 "s := (Object compiledMethodAt: #bugs7cRemote) symbolic. "
+                 "r := #('push: (Array new: 1)' 'storeIntoTemp: 0 inVectorAt: 0' "
+                 "'closureNumCopied: 1 numArgs: 1' "
+                 "'pushTemp: 0 inVectorAt: 1') "
+                 "collect: [:each | s includesSubstring: each]. "
+                 "Object removeSelector: #bugs7cRemote. ^r printString",
+                 "(true true true true )");
 }
 
 /*

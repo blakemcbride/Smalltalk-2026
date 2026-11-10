@@ -20,6 +20,15 @@ method that CREATES a context -- says plainly
 
 and that one agrees with the interpreter, which sets a new frame's stack
 pointer to the header's temporary count and nothing else.
+
+MethodContext>>blockReturnTop is also here, for the simulator (see
+ContextPart.extension.st beside this file).  The end of a block is
+bytecode 125, and 1983 simulated it only in BlockContext, the one place a
+block ran.  A closure runs in a MethodContext, so stepping off the end of
+any block in the Debugger sent a message no MethodContext understood
+(Bugs07 GUI-5).  A block's end returns its value to whoever sent it value
+-- the sender, not the home method's sender -- as the interpreter's 125
+does.
 "
 Extension { #name : 'MethodContext' }
 
@@ -29,4 +38,11 @@ MethodContext >> restart [
 	 creation."
 	pc := method initialPC.
 	stackp := method numTemps
+]
+
+{ #category : '*Kernel-Methods-Fixes' }
+MethodContext >> blockReturnTop [
+	"Simulate the end of a closure's body: return the top of the stack to
+	 my sender, which is whoever sent the closure value."
+	^self return: self pop to: sender
 ]

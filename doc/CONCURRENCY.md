@@ -459,6 +459,16 @@ worker's pixel (GUI-4). The fix is **replicate**: each call blits through a
 test). Mutated in place is the other half of that scan's question, and the
 one it did not ask.
 
+So is code written into. `ContextPart`'s simulator -- the Debugger's `step`
+and `send`, and `ContextPart class>>runSimulated:` -- ran a primitive for real
+by writing its number into a literal of one of five template methods in
+`Object`, held in the class variable `TryPrimitiveMethods`, and sending it:
+five methods every process shares, written and then run, so two workers
+simulating at once ran each other's primitives (found while fixing GUI-5).
+The fix is **replicate**: the number goes into a copy of the template, made
+for the call and run with `withArgs:executeMethod:`
+(`lib/Kernel-Methods/ContextPart.extension.st`; the same test).
+
 ## Six faults in the scheduler, found by the same audit
 
 The Delay and yield kernels did not fail in the library. They failed in

@@ -201,10 +201,13 @@ Decompiler >> remote: index in: vectorSlot [
 { #category : '*Compiler-Fixes' }
 Decompiler >> interpretNextInstructionFor: client [
 	"1983's dispatch, and the closure dialect's five instructions, which
-	 1983's answers `unusedBytecode'.  Here rather than in
-	 InstructionStream so that the other clients of the dispatch -- the
-	 debugger's simulation, the instruction printer -- go on failing as
-	 they always have and are not sent messages they do not implement."
+	 1983's answered `unusedBytecode'.  InstructionStream decodes them
+	 too now, for the debugger's simulation and the instruction printer
+	 (lib/Kernel-Methods/InstructionStream.extension.st), but into the
+	 messages those clients send; the Decompiler wants the operands in its
+	 own shape -- a remote temporary as the node it names, a closure as
+	 its body's extent -- so it reads them here before 1983's dispatch
+	 sees them."
 	| byte operand |
 	byte := method at: pc.
 	byte = 138 ifTrue: [

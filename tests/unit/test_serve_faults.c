@@ -3637,6 +3637,40 @@ bugs7c_gui(void)
         "printString\n",
         8, "==> 'GUI-4 wrong 0'",
         "GUI-4 pixels read and written on eight workers at once");
+
+    /*
+     *  GUI-5: the simulator the Debugger steps with ran a primitive for
+     *  real by writing its number into one of five template methods in
+     *  Object and sending it -- methods every process shares.  It writes
+     *  into a copy of its own now.  Eight workers each simulate a block
+     *  whose loop sends +, -, *, //, \\, max: and bitAnd:, and compare
+     *  the answer with the block run for real.  With the shared templates
+     *  put back the workers ran one another's primitives -- `Simulated
+     *  message + not understood', eqv: sent to a SmallInteger -- and the
+     *  probe never answered; before the GUI-5 fix nothing could be
+     *  simulated at all.
+     */
+    bugs7_probe("bugs7c-gui5-simulate.st",
+        "| done bad errs n blk |\n"
+        "done := Semaphore new. n := 30.\n"
+        "bad := Array new: 8 withAll: 0. errs := Array new: 8 withAll: 0.\n"
+        "blk := [:k | | s | s := 0.\n"
+        "\t1 to: 12 do: [:i | s := s + (i * k) - (i // 3) + (k \\\\ 5) "
+        "max: (k bitAnd: 7)].\n"
+        "\ts].\n"
+        "1 to: 8 do: [:w | [1 to: n do: [:i | [ | got |\n"
+        "\tgot := ContextPart runSimulated: [blk value: w * 7 + i].\n"
+        "\tgot = (blk value: w * 7 + i) "
+        "ifFalse: [bad at: w put: (bad at: w) + 1]]\n"
+        "\t\ton: Error do: [:e | errs at: w put: (errs at: w) + 1]].\n"
+        "\tdone signal] fork].\n"
+        "8 timesRepeat: [done wait].\n"
+        "^'GUI-5 wrong ', (bad inject: 0 into: [:a :b | a + b]) "
+        "printString,\n"
+        "\t', errors ', (errs inject: 0 into: [:a :b | a + b]) "
+        "printString\n",
+        8, "==> 'GUI-5 wrong 0, errors 0'",
+        "GUI-5 blocks simulated on eight workers at once");
 }
 
 /*  ----------  Bugs07 round 3, NET: a server and a client, by hand  ----------
