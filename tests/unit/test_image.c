@@ -12373,6 +12373,80 @@ test_bugs7c_gui(void)
                  "g valueAt: 17@2 put: 0. r add: (g valueAt: 17@2). "
                  "^r asArray printString",
                  "(1 0 0 '0 0 1 0 0 4000 ' 1 0 0 )");
+
+    /*
+     *  GUI-1.  A Form copied onto itself, along the same rows, rightward,
+     *  within one destination word: checkOverlap swapped the two edge
+     *  masks after they had been folded into one, the merge mask became 0
+     *  and the blit did nothing.  The audit's two cases first -- a 4-pixel
+     *  slide by one in a 16-wide form, and a 4x2 black form magnified by 2
+     *  -- then what Form builds on such a copy: shapeFill: spreading right
+     *  of its seed to an outline at column 5, and reflect: 1@0 and
+     *  rotateBy: 2 at the widths that were wrong, against the pixels.
+     *  Before: `F000', `10101010', `E400' and false.
+     */
+    check_string("| r f g s | r := OrderedCollection new. "
+                 "f := Form extent: 16@1. f bits at: 1 put: 16rF000. "
+                 "f copy: (1@0 extent: 4@1) from: 0@0 in: f rule: 3. "
+                 "r add: ((f bits at: 1) printString: 16). "
+                 "g := (Form extent: 4@2) black; yourself. g := g magnifyBy: 2@2. "
+                 "s := WriteStream on: String new. "
+                 "0 to: 7 do: [:x | s print: (g valueAt: x@0)]. r add: s contents. "
+                 "f := Form extent: 8@8. 0 to: 7 do: [:y | f valueAt: 5@y put: 1]. "
+                 "f shapeFill: Form black interiorPoint: 2@2. "
+                 "r add: (f bits asArray asSet asArray collect: [:w | w printString: 16]). "
+                 "^r asArray printString",
+                 "('F800' '11111111' ('FC00' ) )");
+    check_string("| ok | ok := true. "
+                 "#(7 8 15 16 31 32) do: [:w | | src rh r2 | "
+                 "src := Form extent: w@3. "
+                 "0 to: w - 1 do: [:x | 0 to: 2 do: [:y | "
+                 "(x * 7 + (y * 3)) \\\\ 5 < 2 ifTrue: [src valueAt: x@y put: 1]]]. "
+                 "rh := src reflect: 1@0. r2 := src rotateBy: 2. "
+                 "0 to: w - 1 do: [:x | 0 to: 2 do: [:y | "
+                 "(rh valueAt: x@y) = (src valueAt: (w - 1 - x)@y) ifFalse: [ok := false]. "
+                 "(r2 valueAt: x@y) = (src valueAt: (w - 1 - x)@(2 - y)) "
+                 "ifFalse: [ok := false]]]]. ^ok printString",
+                 "true");
+
+    /*
+     *  And every self-copy along one row of a two-word form -- each source
+     *  x, destination x and width that fits, left, right and in place --
+     *  against the row worked out as an integer, under rule 3 (over) and
+     *  rule 7 (under, the smear magnifyBy: and shapeFill: use).  The
+     *  rightward one-word cases are the ones that failed, several
+     *  thousand of these; all sixteen rules over two patterns were clean
+     *  with the fix when it was made.
+     */
+    {
+        static const char *const rules[][2] = {
+            { "3", "16r9C5A3E71" },
+            { "7", "16r0FF0A5C3" },
+        };
+        size_t  k;
+
+        for (k = 0; k < sizeof rules / sizeof rules[0]; ++k) {
+            char    text[2048];
+
+            snprintf(text, sizeof text,
+                "| f bad all row expected m s comb pat rule | "
+                "bad := 0. all := 16rFFFFFFFF. rule := %s. pat := %s. "
+                "0 to: 31 do: [:sx | 0 to: 31 do: [:dx | "
+                "1 to: 32 - (sx max: dx) do: [:w | "
+                "f := Form extent: 32@1. "
+                "f bits at: 1 put: (pat bitShift: -16); at: 2 put: (pat bitAnd: 16rFFFF). "
+                "f copy: (dx@0 extent: w@1) from: sx@0 in: f rule: rule. "
+                "row := ((f bits at: 1) bitShift: 16) + (f bits at: 2). "
+                "m := ((1 bitShift: w) - 1) bitShift: 32 - dx - w. "
+                "s := ((pat bitShift: sx + w - 32) bitAnd: (1 bitShift: w) - 1) "
+                "bitShift: 32 - dx - w. "
+                "comb := rule = 3 ifTrue: [s] ifFalse: [s bitOr: pat]. "
+                "expected := (pat bitAnd: (m bitXor: all)) bitOr: (comb bitAnd: m). "
+                "row = expected ifFalse: [bad := bad + 1]]]]. "
+                "^bad printString", rules[k][0], rules[k][1]);
+            check_string(text, "0");
+        }
+    }
 }
 
 int

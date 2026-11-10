@@ -212,7 +212,9 @@ warp too, and now work for the same reason.
 The display is one bit a pixel and has to stay that way. BitBlt is the Blue Book's, byte for
 byte against the Xerox traces, and every rule the image draws with — over, under, reverse,
 the grey halftones — is defined on single bits. Giving `Form` a depth would be a different
-system.
+system. (It departs from the book in one place, where the book's own simulation is wrong: a
+Form copied onto itself, rightward along the same rows and within one word, is moved here and
+was left unchanged there — Bugs07 GUI-1, which is what `magnifyBy:` of a narrow form relies on.)
 
 So the smooth text is not *in* the image. There is a second plane, ink coverage from 0 to
 255, and the window is painted from it wherever it has anything to say. It is filled by

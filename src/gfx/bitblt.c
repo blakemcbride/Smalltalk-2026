@@ -477,6 +477,21 @@ GFX_copy_bits(gfx_blit *b)
      *
      *  Copying a form onto itself downward or rightward would overwrite
      *  source words before reading them, so the loop runs backwards instead.
+     *
+     *  Running backwards along a row starts at the run's LAST word, so the
+     *  two edge masks trade places -- but only when there are two edges.
+     *  A run inside one destination word has had both folded into mask1
+     *  above and mask2 set to 0, and the Blue Book's checkOverlap swaps
+     *  regardless (its BitBltSimulation was never the Alto's microcode, and
+     *  carries the slip): mask1 became 0, the loop wrote its one word under
+     *  a merge mask of nothing, and the blit changed nothing at all.  A
+     *  Form copied onto itself, along the same rows, rightward, within one
+     *  word did not move (Bugs07 GUI-1): `magnifyBy:' smears each pixel
+     *  rightward that way, so every magnified form 16 pixels wide or less
+     *  came out striped; `reflect: 1@0' and `rotateBy: 2' build their masks
+     *  with such a copy and were wrong at widths up to 32; and
+     *  `shapeFill:interiorPoint:' on a narrow form never spread right of
+     *  its seed.  Squeak swaps only when nWords > 1, and so does this.
      */
     if (b->has_source && b->source.oop == b->dest.oop && b->dy >= b->sy) {
         if (b->dy > b->sy) {
@@ -484,15 +499,16 @@ GFX_copy_bits(gfx_blit *b)
             b->sy += b->h - 1;
             b->dy += b->h - 1;
         }  else if (b->dx > b->sx) {
-            uint16_t    t;
-
             h_dir     = -1;
             b->sx    += b->w - 1;
             b->dx    += b->w - 1;
             skew_mask = (uint16_t) ~skew_mask;
-            t         = mask1;
-            mask1     = mask2;
-            mask2     = t;
+            if (n_words > 1) {
+                uint16_t    t = mask1;
+
+                mask1 = mask2;
+                mask2 = t;
+            }
         }
     }
 
