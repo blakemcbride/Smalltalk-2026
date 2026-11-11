@@ -119,6 +119,21 @@ Rounding and truncation, which are four different questions:
 3.7 roundTo: 0.5            "3.5"
 \end{st}
 
+For Floats, \ct|\\| and \ct{rem:} answer the exact remainder, which two
+doubles always have, while \ct{//} and \ct{quo:} round the quotient to a
+Float before they floor or truncate it, as Pharo does. Where that rounding
+reaches a whole number, the two disagree:
+
+\begin{st}
+1.0 // 0.1                                  "10"
+1.0 \\ 0.1                                  "0.09999999999999995"
+1.0 asExactFraction // 0.1 asExactFraction  "9"
+\end{st}
+
+\ct{0.1} is a little more than a tenth, so ten of it do not fit in
+\ct{1.0}, but the quotient rounds up to \ct{10.0}. Divide exact fractions,
+as in the last line, when the quotient and the remainder must agree.
+
 \section{Everyday protocol}
 
 \begin{center}
