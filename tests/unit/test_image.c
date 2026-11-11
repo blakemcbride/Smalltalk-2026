@@ -3231,8 +3231,11 @@ test_browsing(void)
      *  3083313 -> 3086622 with Bugs07 SCHED-7: a socket wait cut short
      *  retires its watchdog and gives its interest back, and retiring the
      *  last Delay cancels the timer.
+     *
+     *  3086622 -> 3086923 with Bugs07 OM-4: elementsForwardIdentityTo:
+     *  says its pairs are forwarded at once.
      */
-    check_integer("(SourceFiles at: 1) contents size", 3086622);
+    check_integer("(SourceFiles at: 1) contents size", 3086923);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -13239,6 +13242,60 @@ test_bugs7e_om(void)
     /*  Registering nil gives the count back: the Semaphore is no longer
      *  held by C.  */
     CHECK_EQ_INT((int) (OM_mourn_semaphore() == ST_NIL), 1);
+
+    /*
+     *  OM-4.  elementsForwardIdentityTo: forwards every pair at once.  The
+     *  sweep ran once per pair, in order, so a slot the first pair had
+     *  rewritten was rewritten again by any later pair whose source was
+     *  the first one's target: {a. b} to {b. c} made every a a c, ('c'
+     *  'c' ); the same pairs the other way round gave ('b' 'c' ); and the
+     *  forwarding spelling of a swap left both naming a, ('a' 'a' ).  The
+     *  doIt's own temporaries are references too, and move with the rest.
+     */
+    check_string("| a b c x | a := 'a' copy. b := 'b' copy. c := 'c' copy. "
+                 "x := Array with: a with: b. "
+                 "(Array with: a with: b) elementsForwardIdentityTo: (Array with: b with: c). "
+                 "^x printString",
+                 "('b' 'c' )");
+    check_string("| a b c x | a := 'a' copy. b := 'b' copy. c := 'c' copy. "
+                 "x := Array with: a with: b. "
+                 "(Array with: b with: a) elementsForwardIdentityTo: (Array with: c with: b). "
+                 "^x printString",
+                 "('b' 'c' )");
+    check_string("| a b x | a := 'a' copy. b := 'b' copy. x := Array with: a with: b. "
+                 "(Array with: a with: b) elementsForwardIdentityTo: (Array with: b with: a). "
+                 "^x printString, ' ', a printString, ' ', b printString",
+                 "('b' 'a' ) 'b' 'a'");
+    /*
+     *  A chain of a hundred, which the binary search over the sorted
+     *  sources has to get right at every rung: each element moves exactly
+     *  one place along, where pair by pair every one of them ended at the
+     *  last.
+     */
+    check_string("| o x | o := (1 to: 101) collect: [:i | i printString]. "
+                 "x := o copyFrom: 1 to: 100. "
+                 "(o copyFrom: 1 to: 100) elementsForwardIdentityTo: (o copyFrom: 2 to: 101). "
+                 "^((x collect: [:e | e asNumber]) = (2 to: 101) asArray) printString",
+                 "true");
+    /*
+     *  A source listed twice goes to its first listing's target, and a pair
+     *  to itself moves nothing -- what pair by pair answered too whenever
+     *  no target was also a source.  And the class field is a reference
+     *  like any other: an instance of a forwarded class follows it.
+     */
+    check_string("| a b c x | a := 'a' copy. b := 'b' copy. c := 'c' copy. x := Array with: a. "
+                 "(Array with: a with: b with: a) elementsForwardIdentityTo: "
+                 "(Array with: b with: b with: c). ^x printString",
+                 "('b' )");
+    check_string("| c o | "
+                 "c := (1 to: 3) collect: [:i | Object subclass: ('Bugs7eFwd', i printString) asSymbol "
+                 "instanceVariableNames: '' classVariableNames: '' poolDictionaries: '' "
+                 "category: 'Bugs7e']. "
+                 "o := (c at: 1) basicNew. "
+                 "(Array with: (c at: 1) with: (c at: 2)) elementsForwardIdentityTo: "
+                 "(Array with: (c at: 2) with: (c at: 3)). "
+                 "^o class name",
+                 "Bugs7eFwd2");
 
     test_dialect = ST_DIALECT_BLUE_BOOK;
 }

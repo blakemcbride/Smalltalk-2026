@@ -41,6 +41,11 @@ ArrayedCollection class >> with: a with: b with: c with: d with: e with: f [
 ArrayedCollection >> elementsForwardIdentityTo: otherArray [
 	"Forward each of my elements to the element at the same index of that
 	 array: every reference to the first becomes a reference to the second.
+	 The pairs are forwarded at once, so a reference is moved once even
+	 when its new object is another pair's old one: {a. b} forwarded to
+	 {b. c} leaves what named a naming b, and {a. b} to {b. a} exchanges
+	 the two (Bugs07 OM-4).  An element listed twice goes to the object
+	 paired with it first.
 
 	 The primitive fails, and this reports why, when the two are not the
 	 same size or when an element cannot be forwarded.  An object cannot be

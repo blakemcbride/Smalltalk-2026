@@ -501,7 +501,7 @@ int         ST_interp_forward_forbidden(st_oop p);
  *  definition for why a swap asks less than a forward does.
  */
 int         ST_interp_swap_forbidden(st_oop p);
-void        ST_interp_forward_roots(st_oop from, st_oop to);
+void        ST_interp_forward_roots(om_forward_fn target, const void *forward);
 
 /*
  *  ----------  Objects C holds across an allocation  ----------

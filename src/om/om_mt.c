@@ -1848,28 +1848,84 @@ OM_set_swap_guard(om_root_pin_fn pinned)
 }
 
 /*
- *  The pair travels to the safepoint through its `user' argument, as the
- *  swap path's does, and is never a static.
+ *  A forward, as one mapping from every source to its target.
  *
- *  It was a pair of statics, written before the safepoint and cleared after
- *  it, and two workers forwarding at once overwrote each other's: one
- *  safepoint did the other's forward, or A's `from' with B's `to', and the
- *  clear turned the second into a sweep for ST_OOP_INVALID that found
- *  nothing -- both answering success.  MethodDictionary>>grow forwards, so
- *  any two concurrent compiles could lose a method dictionary that way.
- *  Eight processes doing thirty `a becomeForward: b' each lost 127 of the
- *  240 (Bugs5 OM-3); one worker lost none.
+ *  The pairs travel to the safepoint through its `user' argument, as the
+ *  swap path's do, and are never statics.  They were a pair of statics,
+ *  written before the safepoint and cleared after it, and two workers
+ *  forwarding at once overwrote each other's: one safepoint did the
+ *  other's forward, or A's `from' with B's `to', and the clear turned the
+ *  second into a sweep for ST_OOP_INVALID that found nothing -- both
+ *  answering success.  MethodDictionary>>grow forwards, so any two
+ *  concurrent compiles could lose a method dictionary that way.  Eight
+ *  processes doing thirty `a becomeForward: b' each lost 127 of the 240
+ *  (Bugs5 OM-3); one worker lost none.
+ *
+ *  And ALL the pairs of a bulk forward are applied in one sweep, each slot
+ *  looked up once (Bugs07 OM-4).  The sweep was run once per pair, in
+ *  order, so a slot one pair had just rewritten was looked at again by the
+ *  next: `{a. b} elementsForwardIdentityTo: {b. c}' turned every `a' into a
+ *  `b' and then every `b' -- the old ones and the new -- into a `c'; the
+ *  same pairs listed the other way round gave the right answer; and the
+ *  forwarding spelling of a swap, `{a. b}' to `{b. a}', left everything
+ *  naming `a'.  Pharo forwards the pairs simultaneously, and so does this.
+ *
+ *  The sources are sorted, so a slot is matched by a binary search, and a
+ *  slot that cannot be a source -- a SmallInteger, or outside the range the
+ *  sources span -- by two comparisons.  One sweep for the whole batch
+ *  where there used to be one per pair: MethodDictionary
+ *  class>>compactAllInstances forwards every method dictionary in the
+ *  image, and paid a pass over the heap for each.
  */
-struct forward_args {
-    st_oop  from;
-    st_oop  to;
+struct forward_pair {
+    st_oop      from;
+    st_oop      to;
+    uint32_t    order;          /*  its index in the request  */
 };
 
-static void
-forward_slot(st_oop *slot, const struct forward_args *args)
+struct forward_map {
+    const struct forward_pair  *pairs;      /*  by `from', no repeats  */
+    uint32_t                    n;
+    st_oop                      lowest;
+    st_oop                      highest;
+};
+
+static st_oop
+forward_target(const struct forward_map *map, st_oop p)
 {
-    if (ST_oop_load(slot) == args->from)
-        ST_oop_store(slot, args->to);
+    uint32_t    lo;
+    uint32_t    hi;
+
+    if ((p & 1) || p < map->lowest || p > map->highest)
+        return p;
+    lo = 0;
+    hi = map->n;
+    while (lo < hi) {
+        uint32_t    mid = lo + (hi - lo) / 2;
+
+        if (map->pairs[mid].from < p)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+    return lo < map->n && map->pairs[lo].from == p ? map->pairs[lo].to : p;
+}
+
+/*  The same, in the shape the root forwarder is handed.  */
+static st_oop
+forward_target_of(st_oop p, const void *forward)
+{
+    return forward_target((const struct forward_map *) forward, p);
+}
+
+static void
+forward_slot(st_oop *slot, const struct forward_map *map)
+{
+    st_oop  was = ST_oop_load(slot);
+    st_oop  now = forward_target(map, was);
+
+    if (now != was)
+        ST_oop_store(slot, now);
 }
 
 /*
@@ -1883,7 +1939,7 @@ forward_slot(st_oop *slot, const struct forward_args *args)
  *  this shape would be a long list of chances to be one out.
  */
 static void
-forward_one(const struct forward_args *args)
+forward_sweep(const struct forward_map *map)
 {
     uint32_t    index;
     uint32_t    limit;
@@ -1901,8 +1957,12 @@ forward_one(const struct forward_args *args)
 
         if (!head || (head->flags & ST_FMT_FREE))
             continue;
-        if (head->class_oop == args->from)
-            head->class_oop = args->to;
+        {
+            st_oop  cls = forward_target(map, head->class_oop);
+
+            if (cls != head->class_oop)
+                head->class_oop = cls;
+        }
         /*
          *  A CompiledMethod is a byte object whose leading words are the
          *  header and the literal frame, and those ARE pointers.  Same
@@ -1919,7 +1979,7 @@ forward_one(const struct forward_args *args)
             literals = (uint32_t)
                 ((ST_oop_load(&((st_oop *) (head + 1))[0]) >> 1) & 63);
             for (i = 1; i <= literals && i < slots; ++i)
-                forward_slot(&((st_oop *) (head + 1))[i], args);
+                forward_slot(&((st_oop *) (head + 1))[i], map);
             continue;
         }
         if (!(head->flags & ST_FMT_POINTERS))
@@ -1932,12 +1992,12 @@ forward_one(const struct forward_args *args)
          *  dead object rather than nil.
          */
         for (i = 0; i < head->size; ++i)
-            forward_slot(&((st_oop *) (head + 1))[i], args);
+            forward_slot(&((st_oop *) (head + 1))[i], map);
     }
     for (index = 0; index < ST_VM_STATE_SLOTS; ++index)
-        forward_slot(&st_om_vm_state[index], args);
+        forward_slot(&st_om_vm_state[index], map);
     if (root_forwarder)
-        root_forwarder(args->from, args->to);
+        root_forwarder(forward_target_of, map);
 }
 
 /*
@@ -1955,8 +2015,9 @@ forward_one(const struct forward_args *args)
  *  then forwarded them one safepoint at a time, so a pair refused at the
  *  third safepoint left the first two forwarded -- the half-done bulk
  *  become its own comment said it prevented.  Nothing runs between the
- *  sweeps now, so what the checks answered is still true when the last one
- *  is done.
+ *  checks and the sweep now, so what the checks answered is still true
+ *  when it is done -- and there is one sweep, for every pair at once (see
+ *  forward_map).
  */
 struct forward_batch {
     st_oop          from_array;     /*  ST_OOP_INVALID: use from/to  */
@@ -1966,23 +2027,70 @@ struct forward_batch {
     uint32_t        n;
 };
 
+static int
+forward_pair_order(const void *a, const void *b)
+{
+    const struct forward_pair  *x = a;
+    const struct forward_pair  *y = b;
+
+    if (x->from != y->from)
+        return x->from < y->from ? -1 : 1;
+    return x->order < y->order ? -1 : x->order > y->order;
+}
+
 static uint32_t
 forward_pairs(const st_oop *from, const st_oop *to, uint32_t n)
 {
-    uint32_t    i;
+    struct forward_pair     one;
+    struct forward_pair    *pairs;
+    struct forward_map      map;
+    uint32_t                kept;
+    uint32_t                i;
 
     for (i = 0; i < n; ++i) {
         if (!OM_can_forward_identity(from[i], to[i]))
             return 0;
     }
+    if (n == 0)
+        return 1;
+    /*
+     *  A pair to itself is left out, as it always was: it moves nothing.
+     *  becomeForward: is one pair and needs no allocation.
+     */
+    pairs = n == 1 ? &one : malloc((size_t) n * sizeof *pairs);
+    if (!pairs)
+        return 0;
+    kept = 0;
     for (i = 0; i < n; ++i) {
-        struct forward_args args;
-
-        args.from = from[i];
-        args.to   = to[i];
-        if (args.from != args.to)
-            forward_one(&args);
+        if (from[i] == to[i])
+            continue;
+        pairs[kept].from  = from[i];
+        pairs[kept].to    = to[i];
+        pairs[kept].order = i;
+        ++kept;
     }
+    if (kept > 0) {
+        uint32_t    unique = 1;
+
+        qsort(pairs, kept, sizeof *pairs, forward_pair_order);
+        /*
+         *  A source listed twice goes to the target of its first listing.
+         *  Pair by pair that was the result too, whenever no target was
+         *  also a source: the first sweep left nothing for the second to
+         *  find.
+         */
+        for (i = 1; i < kept; ++i) {
+            if (pairs[i].from != pairs[unique - 1].from)
+                pairs[unique++] = pairs[i];
+        }
+        map.pairs   = pairs;
+        map.n       = unique;
+        map.lowest  = pairs[0].from;
+        map.highest = pairs[unique - 1].from;
+        forward_sweep(&map);
+    }
+    if (pairs != &one)
+        free(pairs);
     return 1;
 }
 
@@ -1999,9 +2107,9 @@ forward_at_safepoint(void *user)
         return forward_pairs(batch->from, batch->to, batch->n);
     /*
      *  The elements are read here, with every worker stopped, and copied
-     *  out before the first sweep.  Read before the safepoint, another
-     *  worker could replace one -- and free it -- between the read and the
-     *  forward; read during the sweeps, the arrays would already have been
+     *  out before the sweep.  Read before the safepoint, another worker
+     *  could replace one -- and free it -- between the read and the
+     *  forward; read during the sweep, the arrays would already have been
      *  rewritten, since they are among the objects that hold each `from'.
      */
     n = OM_fetch_word_length(batch->from_array);

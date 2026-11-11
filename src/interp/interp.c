@@ -1145,7 +1145,7 @@ visit_held(const st_held *chain, om_visit_fn visit)
 }
 
 static void
-forward_held(st_held *chain, st_oop from, st_oop to)
+forward_held(st_held *chain, om_forward_fn target, const void *forward)
 {
     for (; chain; chain = chain->outer) {
         unsigned    r;
@@ -1153,8 +1153,11 @@ forward_held(st_held *chain, st_oop from, st_oop to)
 
         for (r = 0; r < chain->count && r < ST_HELD_RANGES; ++r) {
             for (k = 0; k < chain->range[r].n; ++k) {
-                if (chain->range[r].first[k] == from)
-                    chain->range[r].first[k] = to;
+                st_oop  was = chain->range[r].first[k];
+                st_oop  now = target(was, forward);
+
+                if (now != was)
+                    chain->range[r].first[k] = now;
             }
         }
     }
@@ -1390,15 +1393,23 @@ ST_interp_forward_forbidden(st_oop p)
     return 0;
 }
 
+/*
+ *  Each register is looked up once, in the whole forward, and written only
+ *  when it changes.  A forward is one mapping applied at once (Bugs07
+ *  OM-4): asked pair by pair, a register holding `a' in `{a. b}' forwarded
+ *  to `{b. c}' became `b' at the first pair and `c' at the second.
+ */
 static void
-forward_register(st_oop *reg, st_oop from, st_oop to)
+forward_register(st_oop *reg, om_forward_fn target, const void *forward)
 {
-    if (*reg == from)
-        *reg = to;
+    st_oop  now = target(*reg, forward);
+
+    if (now != *reg)
+        *reg = now;
 }
 
 void
-ST_interp_forward_roots(st_oop from, st_oop to)
+ST_interp_forward_roots(om_forward_fn target, const void *forward)
 {
     unsigned    i;
 
@@ -1409,32 +1420,32 @@ ST_interp_forward_roots(st_oop from, st_oop to)
      *
      *  active_context, home_context and method are not here: they are the
      *  set ST_interp_forward_forbidden refuses, so by the time this runs
-     *  none of them can be `from'.
+     *  none of them can be a source.
      */
     for (i = 0; i < MAX_INTERPRETERS; ++i) {
         st_interp  *vm = (st_interp *) ST_load_acquire(&interpreters[i]);
 
         if (!vm)
             continue;
-        forward_register(&vm->receiver, from, to);
-        forward_register(&vm->message_selector, from, to);
-        forward_register(&vm->new_method, from, to);
-        forward_register(&vm->return_value, from, to);
-        forward_register(&vm->active_process, from, to);
-        forward_register(&vm->new_process, from, to);
-        forward_held(vm->held, from, to);
+        forward_register(&vm->receiver, target, forward);
+        forward_register(&vm->message_selector, target, forward);
+        forward_register(&vm->new_method, target, forward);
+        forward_register(&vm->return_value, target, forward);
+        forward_register(&vm->active_process, target, forward);
+        forward_register(&vm->new_process, target, forward);
+        forward_held(vm->held, target, forward);
     }
     /*
      *  And this thread's, registered or not: the -eval path never registers
      *  and is exactly where a doIt sends becomeForward:.
      */
-    forward_register(&st_vm.receiver, from, to);
-    forward_register(&st_vm.message_selector, from, to);
-    forward_register(&st_vm.new_method, from, to);
-    forward_register(&st_vm.return_value, from, to);
-    forward_register(&st_vm.active_process, from, to);
-    forward_register(&st_vm.new_process, from, to);
-    forward_held(st_vm.held, from, to);
+    forward_register(&st_vm.receiver, target, forward);
+    forward_register(&st_vm.message_selector, target, forward);
+    forward_register(&st_vm.new_method, target, forward);
+    forward_register(&st_vm.return_value, target, forward);
+    forward_register(&st_vm.active_process, target, forward);
+    forward_register(&st_vm.new_process, target, forward);
+    forward_held(st_vm.held, target, forward);
 }
 
 #ifdef ST_OM_MT

@@ -421,7 +421,8 @@ void        OM_set_root_provider(om_root_provider provider);
  *  whose correctness is externally checked with no new code in it at all.
  *  The threaded memory implements it; see om_mt.h.
  */
-typedef void (*om_root_forwarder)(st_oop from, st_oop to);
+typedef st_oop (*om_forward_fn)(st_oop p, const void *forward);
+typedef void (*om_root_forwarder)(om_forward_fn target, const void *forward);
 typedef int  (*om_root_pin_fn)(st_oop p);
 
 void        OM_set_root_forwarder(om_root_forwarder forwarder,

@@ -715,8 +715,15 @@ void        OM_set_root_provider(om_root_provider provider);
  *  says here how to rewrite the ones it can, and which oops it holds
  *  somewhere it cannot.  Both are asked at a safepoint with every worker
  *  parked.
+ *
+ *  The forwarder is handed the whole forward at once, as a function that
+ *  answers what a reference to `p' becomes (`p' itself when `p' is not
+ *  being forwarded), and calls it once per reference it holds.  It was
+ *  called once per PAIR, and a bulk forward whose target is another
+ *  pair's source then rewrote a register twice (Bugs07 OM-4).
  */
-typedef void (*om_root_forwarder)(st_oop from, st_oop to);
+typedef st_oop (*om_forward_fn)(st_oop p, const void *forward);
+typedef void (*om_root_forwarder)(om_forward_fn target, const void *forward);
 typedef int  (*om_root_pin_fn)(st_oop p);
 
 void        OM_set_root_forwarder(om_root_forwarder forwarder,
