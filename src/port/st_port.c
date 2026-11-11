@@ -31,6 +31,8 @@
  *  first build of a new platform -- it is the end of it.
  */
 #include <sched.h>
+#include <fcntl.h>      /*  open, for ST_file_lock_for_life  */
+#include <sys/file.h>   /*  flock, the same  */
 #endif
 
 /*  ST_EPOCH_OFFSET_SEC is in st_port.h: the file primitives want it too.  */
@@ -823,6 +825,46 @@ ST_file_replace(const char *from, const char *to)
     return -1;
 }
 
+/*
+ *  See st_port.h.  LockFileEx on one byte of a file of its own, through a
+ *  handle that is never closed: a Windows lock belongs to the handle that
+ *  took it, so a second taker -- another process, or another handle of
+ *  this one -- is refused with ERROR_LOCK_VIOLATION, and the lock goes when
+ *  the process does, however it ends.  The file is shared for reading,
+ *  writing and deleting, so that a second st2026 can open it to be refused
+ *  rather than failing to open it, and it is not the changes file because
+ *  a Windows lock is mandatory: on the changes file it would refuse the
+ *  image's own reads and writes through its other handles, and the handle
+ *  holding it would make condenseChanges' replacing rename fail.  The
+ *  handle is not inheritable (no security attributes), so a program the
+ *  image starts does not keep the lock after st2026 has gone.
+ */
+int
+ST_file_lock_for_life(const char *path)
+{
+    HANDLE      h;
+    OVERLAPPED  ov;
+    DWORD       error;
+
+    h = CreateFileA(path, GENERIC_READ | GENERIC_WRITE,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                    NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) {
+        errno = GetLastError() == ERROR_ACCESS_DENIED ? EACCES : ENOENT;
+        return -1;
+    }
+    memset(&ov, 0, sizeof ov);
+    if (LockFileEx(h, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
+                   0, 1, 0, &ov))
+        return 1;
+    error = GetLastError();
+    CloseHandle(h);
+    if (error == ERROR_LOCK_VIOLATION || error == ERROR_IO_PENDING)
+        return 0;
+    errno = EIO;
+    return -1;
+}
+
 #else
 
 int
@@ -837,6 +879,28 @@ int
 ST_file_replace(const char *from, const char *to)
 {
     return rename(from, to) == 0 ? 0 : -1;
+}
+
+/*
+ *  See st_port.h.  An flock, on a descriptor kept open for the life of the
+ *  process: it belongs to the open file, so a second open of the same file
+ *  -- in another process or this one -- is refused it, and close-on-exec
+ *  keeps a program the image starts from holding it after st2026 is gone.
+ */
+int
+ST_file_lock_for_life(const char *path)
+{
+    int     fd = open(path, O_RDWR | O_CREAT | O_CLOEXEC, 0666);
+    int     saved;
+
+    if (fd < 0)
+        return -1;
+    if (flock(fd, LOCK_EX | LOCK_NB) == 0)
+        return 1;
+    saved = errno;
+    close(fd);
+    errno = saved;
+    return saved == EWOULDBLOCK || saved == EAGAIN ? 0 : -1;
 }
 
 #endif

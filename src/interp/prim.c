@@ -1941,7 +1941,9 @@ st_file_unlink(const char *path)
 
 /*
  *  Rename, replacing -- see the POSIX half.  There is no changes-file lock
- *  on Windows to carry, so this is the port's replacing rename.
+ *  to carry on Windows: the lock there is on `<changes file>.lock', which a
+ *  condense does not move (src/main.c, hold_the_changes_file; Bugs07
+ *  FILES-11), so this is the port's replacing rename.
  */
 static int
 st_replace_carrying_lock(const char *from, const char *to)

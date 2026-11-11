@@ -242,6 +242,24 @@ st2026.exe -run st2026.image
 
 `st2026.exe -help` lists the rest.
 
+### One st2026 per image
+
+Two `st2026.exe` on one image would both write its changes file, each with
+its own idea of where the file ends, and lose each other's method source. So
+the second is refused, as on Linux and macOS:
+
+```
+st2026: demo.image.changes is already open by another st2026; two of them writing
+st2026: one changes file lose each other's method source.  Copy
+st2026: the image (copy demo.image other.im) and serve the copy.
+```
+
+On Windows the lock is held on a file of its own beside the changes file,
+`demo.image.changes.lock`, because a Windows lock on the changes file itself
+would stop the image's own reads and writes of it. The `.lock` file is left
+behind when `st2026.exe` ends; the lock goes with the process, and the file
+can be deleted whenever no `st2026.exe` has the image open.
+
 ### Two habits of the interface
 
 Menus are press-and-hold, and a new window is placed by dragging out its
@@ -512,6 +530,14 @@ now named outright, after `/link` because `cl` has no `/SUBSYSTEM` of its own.
   recalled: the `_WIN32` branches in `st_port.h`/`.c` and `profile.c`, the
   `/`-only path splitting, the `fopen` modes, the `#ifdef ST_OM_*` guard in
   every unit suite.
+
+**Checked under Wine, on Linux:** a MinGW build of `st2026.exe`
+(`zig cc -target x86_64-windows-gnu`, headless, no TLS) under Wine 11
+bootstraps an image, serves a script, and refuses a second `-serve` of the
+same image with the message above, before and after a `condenseChanges`;
+the same build without the lock admitted the second. `test_port.exe` built
+the same way passes, the lock's checks with it. Wine is not Windows, and
+MinGW is not MSVC, so this is evidence and not confirmation.
 
 **Still not checked:**
 

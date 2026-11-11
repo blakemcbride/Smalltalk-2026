@@ -430,6 +430,32 @@ test_bugs7c_lib_sleep(void)
     CHECK(ST_time_monotonic_ns() - start >= 50 * INT64_C(100000));
 }
 
+/*
+ *  FILES-11: on Windows a second st2026 on an image another one has open was
+ *  admitted, because the changes-file lock was POSIX-only; it is now
+ *  ST_file_lock_for_life on `<changes file>.lock' there (src/main.c).  The
+ *  Windows half cannot run here; its contract can, through the POSIX half:
+ *  the first taker holds, every later one -- this process's own second
+ *  descriptor included, which on Windows is a second handle -- is refused
+ *  with 0, and a file that cannot be made is -1 rather than a refusal, which
+ *  main.c lets through to fail where the file is needed.  The lock is held
+ *  for the rest of the run, as it is for the life of st2026.
+ */
+static void
+test_bugs7e_files(void)
+{
+    const char *path = st_test_path("bugs7e-files11.lock");
+    char        nowhere[1024];
+
+    remove(path);
+    CHECK_EQ_INT(ST_file_lock_for_life(path), 1);
+    CHECK_EQ_INT(ST_file_lock_for_life(path), 0);
+    CHECK_EQ_INT(ST_file_lock_for_life(path), 0);
+    snprintf(nowhere, sizeof nowhere, "%s.no-such-directory/x.lock", path);
+    CHECK_EQ_INT(ST_file_lock_for_life(nowhere), -1);
+    remove(path);
+}
+
 int
 main(void)
 {
@@ -447,6 +473,7 @@ main(void)
     test_time();
     test_bugs7c_lib();
     test_bugs7c_lib_sleep();
+    test_bugs7e_files();
 
     return ST_TEST_END();
 }

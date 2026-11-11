@@ -229,6 +229,23 @@ void    ST_memory_trim(void);
  */
 int     ST_file_sync(FILE *f);
 int     ST_file_replace(const char *from, const char *to);
+/*
+ *  Take an exclusive lock on the file at `path', creating it if need be,
+ *  and keep it until the process ends: 1 when this process now holds it;
+ *  0 when it is held already -- by another process, or through another
+ *  descriptor of this one; -1, with errno, when the file cannot be opened
+ *  or the lock cannot be asked for.  Nothing ever lets it go but the end
+ *  of the process, which the system does whatever way the process ends.
+ *
+ *  For the Windows half of the one-st2026-per-image refusal (Bugs07
+ *  FILES-11): main.c locks `<changes file>.lock' with it there.  POSIX
+ *  locks the changes file itself, with an flock that condenseChanges
+ *  carries to the file that replaces it (src/main.c, prim.c), and does not
+ *  use this; the POSIX half is here so that the contract -- the first
+ *  taker holds, a second is refused -- is exercised by tests/unit/
+ *  test_port.c on every platform, as it cannot be on Windows here.
+ */
+int     ST_file_lock_for_life(const char *path);
 
 #ifdef __cplusplus
 }

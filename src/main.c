@@ -248,33 +248,58 @@ load(const char *path)
 /*
  *  The descriptor is ST_changes_lock_fd, in prim.c, so that condenseChanges
  *  can move the lock onto the file that replaces this one (Bugs5 FILES-9).
+ *
+ *  ON WINDOWS the lock is on a file beside the changes file, `<changes
+ *  file>.lock', taken with LockFileEx by ST_file_lock_for_life (Bugs07
+ *  FILES-11).  This returned 1 there without locking anything, so two
+ *  st2026 -serve or -run on one image were both admitted and corrupted each
+ *  other's method source exactly as Bugs4 FILES-B describes -- the refusal
+ *  above existed only on POSIX, and nothing told a Windows user so.  Not
+ *  the changes file itself, because a Windows lock is mandatory: it would
+ *  refuse the image's own reads and writes of the file through its other
+ *  handles, and condenseChanges could not rename a new file over a file
+ *  held open.  The .lock file keeps its name through a condense, so there
+ *  is nothing to carry across one, and it is left in place when st2026
+ *  ends: the lock goes with the process, and a file removed at exit could
+ *  be removed under a second st2026 that had just opened it.
  */
+
+#ifdef ST_WINDOWS
+#define ST_COPY_COMMAND "copy"
+#else
+#define ST_COPY_COMMAND "cp"
+#endif
 
 static int
 hold_the_changes_file(const char *image_path)
 {
-#ifdef ST_WINDOWS
-    (void) image_path;
-    return 1;
-#else
     char    path[1024];
 
     if (changes_file_of(image_path, path, sizeof path) <= 0)
         return 1;
+#ifdef ST_WINDOWS
+    {
+        char    lock[sizeof path + sizeof ".lock"];
+
+        snprintf(lock, sizeof lock, "%s.lock", path);
+        if (ST_file_lock_for_life(lock) != 0)
+            return 1;       /*  ours, or a file we cannot open: see above  */
+    }
+#else
     ST_changes_lock_fd = open(path, O_RDWR | O_CREAT, 0666);
     if (ST_changes_lock_fd < 0)
         return 1;
     if (flock(ST_changes_lock_fd, LOCK_EX | LOCK_NB) == 0)
         return 1;
+    close(ST_changes_lock_fd);
+    ST_changes_lock_fd = -1;
+#endif
     fprintf(stderr,
             "st2026: %s is already open by another st2026; two of them writing\n"
             "st2026: one changes file lose each other's method source.  Copy\n"
-            "st2026: the image (cp %s other.im) and serve the copy.\n",
+            "st2026: the image (" ST_COPY_COMMAND " %s other.im) and serve the copy.\n",
             path, image_path);
-    close(ST_changes_lock_fd);
-    ST_changes_lock_fd = -1;
     return 0;
-#endif
 }
 
 static int
