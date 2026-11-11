@@ -354,6 +354,43 @@ test_bugs7e_vm(void)
     CHECK(ST_primitive_fits(300, 0));
 }
 
+/*
+ *  ----------  The other direction (Bugs07 X-13)  ----------
+ *
+ *  test_bugs7e_vm holds every number the status table names to a count.
+ *  This holds every number with a count -- which is every number the
+ *  dispatch switch answers -- to a row in the status table, because that
+ *  table is what `st2026 -primitives' reads: twelve dispatched numbers had
+ *  no row, and the report called the snapshot, the file and directory
+ *  commands, the scheduler's own primitives and Crypto `not implemented
+ *  here -- this is the work'.  The two marks have no count and no answer,
+ *  so the walk passes them by.
+ */
+static void
+test_bugs7f_vm(void)
+{
+    static const unsigned   named[] = {
+        97, 128, 130, 131, 133, 207, 209, 220, 231, 232, 235, 237
+    };
+    unsigned                i;
+
+    for (i = 1; i <= 255; ++i) {
+        st_primitive_status status = ST_primitive_status_of(i, NULL);
+
+        if (ST_primitive_arity(i) != ST_PRIM_ARITY_UNKNOWN) {
+            if (status != ST_PRIM_PRESENT && status != ST_PRIM_ACCEPTED) {
+                ++st_test_failures;
+                printf("  FAIL primitive %u is dispatched and the status "
+                       "table has no row for it\n", i);
+            }
+            ++st_test_checks;
+        }
+    }
+    for (i = 0; i < sizeof named / sizeof named[0]; ++i)
+        CHECK_EQ_INT((int) ST_primitive_status_of(named[i], NULL),
+                     (int) ST_PRIM_PRESENT);
+}
+
 int
 main(void)
 {
@@ -361,6 +398,7 @@ main(void)
 
     test_the_four_answers();
     test_bugs7e_vm();
+    test_bugs7f_vm();
     test_the_report_counts_what_source_asks_for();
     test_a_named_primitive_is_not_just_117();
     test_class_side_methods_are_labelled();

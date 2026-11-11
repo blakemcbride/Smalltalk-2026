@@ -8113,7 +8113,8 @@ ST_primitive_dispatch(unsigned index)
  *  holds the count plus one, so that a number left out reads 0 and is not
  *  checked.  Every number the switch above dispatches is listed, and
  *  test_primitives checks that every number the status table below claims
- *  is; a number listed twice is an -Woverride-init warning (-Wextra).
+ *  is, and that every number listed here has a row there (Bugs07 X-13); a
+ *  number listed twice is an -Woverride-init warning (-Wextra).
  *  PRIMITIVE_ARGS_VARY marks the three that read the count themselves: 81
  *  (BlockContext value, value:, ...), 83 (perform:, perform:with:, ...)
  *  and 132 (lastError or instVarsInclude:, told apart by it).
@@ -8383,7 +8384,28 @@ static const primitive_entry primitive_table[] = {
     { 250, ST_PRIM_PRESENT,  "SystemDictionary garbageCollect -- this "
                              "system's own"                     },
     { 236, ST_PRIM_PRESENT,  "Finalizer class primNextMournedObject"
-                             "Signalling: -- this system's own" }
+                             "Signalling: -- this system's own" },
+    /*
+     *  Dispatched above and missing here, so -primitives listed them as
+     *  `not implemented here -- this is the work' while the VM answered
+     *  every one (Bugs07 X-13).  test_primitives now walks the other way
+     *  too: every number with a count in primitive_takes has a row.  The
+     *  names stay inside the report's 44 columns; 97 is the 64-bit
+     *  memory's alone -- the Blue Book one has no image writer and fails
+     *  it, as primitive_snapshot says.
+     */
+    {  97, ST_PRIM_PRESENT,  "SystemDictionary snapshotPrimitive" },
+    { 128, ST_PRIM_PRESENT,  "PosixFile beSnapshotFile"         },
+    { 130, ST_PRIM_PRESENT,  "PosixFile doPrimCommand:name:page: -- ours" },
+    { 131, ST_PRIM_PRESENT,  "PosixFileDirectory doPrimitive:arg1:arg2:" },
+    { 133, ST_PRIM_PRESENT,  "PosixFile errorString:"           },
+    { 207, ST_PRIM_PRESENT,  "BlockClosure asContext -- ours"   },
+    { 209, ST_PRIM_PRESENT,  "Crypto class primCommand:with:with:with:" },
+    { 220, ST_PRIM_PRESENT,  "String indexOfSubstring:startingAt: -- ours" },
+    { 231, ST_PRIM_PRESENT,  "Process primDetach: -- ours"      },
+    { 232, ST_PRIM_PRESENT,  "Process primTerminateActive -- ours" },
+    { 235, ST_PRIM_PRESENT,  "Process primRelease: -- ours"     },
+    { 237, ST_PRIM_PRESENT,  "Process primPriority: -- ours"    }
 };
 
 st_primitive_status
