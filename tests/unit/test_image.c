@@ -847,8 +847,11 @@
  *  streamedTextOfEvent:, and isEventStream and streamedTextOfEvent: in
  *  Anthropic and OpenAI, so that an event stream is read by the event and
  *  not by the line.
+ *
+ *  3546 -> 3547 with Bugs07 X-8: DeferredStop class>>graceMilliseconds:,
+ *  which lets a test ask about a section let finish on a loaded machine.
  */
-#define LIB_METHODS             3546
+#define LIB_METHODS             3547
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -3467,8 +3470,11 @@ test_browsing(void)
      *
      *  3183075 -> 3187088 with Bugs07 NET-11: a server-sent event is read
      *  whole, its data lines joined, a line ending at CR LF, LF or CR.
+     *
+     *  3187088 -> 3188413 with Bugs07 X-8: the deferred stop's grace can be
+     *  set, and a terminate pending keeps a signal from being given back.
      */
-    check_integer("(SourceFiles at: 1) contents size", 3187088);
+    check_integer("(SourceFiles at: 1) contents size", 3188413);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -11951,8 +11957,18 @@ test_bugs7_sched(void)
      *  -- above this one, so that it is sent while the victim is still
      *  running in the section -- and the terminate comes inside the grace,
      *  with the exception still put off.
+     *
+     *  Inside the grace however busy the machine is (Bugs07 X-8): the
+     *  grace is a time, and a run descheduled for a tenth of a second at
+     *  the wrong moment gave the section up and delivered the exception
+     *  where the process stood -- this and two of the three below failed
+     *  that way now and then under load.  Each that asks what happens
+     *  when a section is let finish sets a grace no run will outlast, and
+     *  puts the tenth of a second back; the forkParallel: one asks the
+     *  opposite, and has it.
      */
-    check_string("| m log p gate r | m := Mutex new. gate := Semaphore new. "
+    check_string("| m log p gate r | DeferredStop graceMilliseconds: 10000. ^["
+                 "m := Mutex new. gate := Semaphore new. "
                  "log := OrderedCollection new. "
                  "p := [[[m critical: [log add: #in. Processor yield. log add: #mid. "
                  "gate wait. log add: #out]] ensure: [log add: #outerEnsure]] "
@@ -11963,10 +11979,12 @@ test_bugs7_sched(void)
                  "r := [p terminate. #terminateReturned] on: Error do: [:e | "
                  "log add: #terminatorGot -> e messageText. #terminatorRaised]. "
                  "log add: r; add: m owner printString; add: p suspendedContext isNil. "
-                 "(Delay forMilliseconds: 20) wait. ^log asArray printString",
+                 "(Delay forMilliseconds: 20) wait. log asArray printString] "
+                 "ensure: [DeferredStop graceMilliseconds: nil]",
                  "(in mid outerEnsure terminateReturned 'nil' true )");
     /*  The same through forkParallel:, whose Promise was left pending for ever.  */
-    check_string("| m p gate task r | m := Mutex new. gate := Semaphore new. "
+    check_string("| m p gate task r | DeferredStop graceMilliseconds: nil. "
+                 "m := Mutex new. gate := Semaphore new. "
                  "p := Processor forkParallel: [m critical: [task := Processor activeProcess. "
                  "Processor yield. gate wait. 42]]. Processor yield. "
                  "task signalException: (Error new messageText: #timeout). "
@@ -11988,7 +12006,8 @@ test_bugs7_sched(void)
      *  The first is sent from a process of its own, as above, for the
      *  second to come while it is still put off.)
      */
-    check_string("| m log p gate r | m := Mutex new. gate := Semaphore new. "
+    check_string("| m log p gate r | DeferredStop graceMilliseconds: 10000. ^["
+                 "m := Mutex new. gate := Semaphore new. "
                  "log := OrderedCollection new. "
                  "p := [[m critical: [log add: #in. Processor yield. log add: #mid. "
                  "gate wait. log add: #out]] on: Error do: [:e | log add: e messageText]. "
@@ -11998,7 +12017,8 @@ test_bugs7_sched(void)
                  "Processor yield. Processor yield. log add: #main. "
                  "p signalException: (Error new messageText: #two). "
                  "Processor yield. Processor yield. (Delay forMilliseconds: 10) wait. "
-                 "r := log asArray printString. p terminate. ^r",
+                 "r := log asArray printString. p terminate. r] "
+                 "ensure: [DeferredStop graceMilliseconds: nil]",
                  "(in mid main two after )");
     /*
      *  A terminate after a signalException: of the same section wrapped
@@ -12010,15 +12030,17 @@ test_bugs7_sched(void)
      *  section to end and raise it.  The terminate waits for the section
      *  to end too (Bugs07 FIXES-3), hence #out before #terminateReturned.
      */
-    check_string("| m log p n | m := Mutex new. n := 0. log := OrderedCollection new. "
+    check_string("| m log p n | DeferredStop graceMilliseconds: 10000. ^["
+                 "m := Mutex new. n := 0. log := OrderedCollection new. "
                  "p := [[[m critical: [log add: #in. Processor yield. log add: #out]] "
                  "on: Error do: [:e | log add: e messageText]. n := n + 1. "
                  "Processor yield] repeat] fork. Processor yield. "
                  "[p signalException: (Error new messageText: #timeout)] "
                  "forkAt: Processor activePriority + 1. p terminate. "
                  "log add: #terminateReturned. (Delay forMilliseconds: 20) wait. "
-                 "^log asArray printString, ' loops after terminate: ', n printString, "
-                 "' terminated: ', p suspendedContext isNil printString",
+                 "log asArray printString, ' loops after terminate: ', n printString, "
+                 "' terminated: ', p suspendedContext isNil printString] "
+                 "ensure: [DeferredStop graceMilliseconds: nil]",
                  "(in out terminateReturned ) loops after terminate: 0 terminated: true");
 
     /*
@@ -15541,6 +15563,54 @@ test_bugs7f_comp(void)
     test_dialect = ST_DIALECT_BLUE_BOOK;
 }
 
+/*
+ *  Bugs07 round 6, the scheduler's that one worker shows.
+ */
+static void
+test_bugs7f_sched(void)
+{
+    test_dialect = ST_DIALECT_CLOSURES;
+
+    /*
+     *  X-8: a terminate beats a signal put off to the same section, and
+     *  went on beating it only for as long as the signaller's grace
+     *  lasted.  When that ran out first, DeferredStop>>withdraw: took the
+     *  exception back out and signalException: delivered it where the
+     *  process stood -- its handler ran, in a process a terminate had
+     *  already been asked of.  A terminating stop gives no exception back
+     *  now.  The old image: (true true ).
+     */
+    check_string("| d e | d := DeferredStop for: nil guarding: [] in: nil. "
+                 "e := Error new. d signal: e; terminate. "
+                 "^{d withdraw: e. d hasGivenUp} printString",
+                 "(false false )");
+    /*
+     *  And in a process.  The terminate is asked first, with a grace of
+     *  two seconds, and the signal second with one of twenty
+     *  milliseconds, so the signaller's runs out first however busy the
+     *  machine is; the section loops until the signaller has gone.  The
+     *  old image raised the timeout in the process, which never printed
+     *  #out: (in timeout terminateReturned ).
+     */
+    check_string("| m log p go s t | m := Mutex new. go := false. "
+                 "log := OrderedCollection new. "
+                 "p := [[m critical: [log add: #in. [go] whileFalse: [Processor yield]. "
+                 "log add: #out]] on: Error do: [:e | log add: e messageText]] fork. "
+                 "Processor yield. DeferredStop graceMilliseconds: 2000. "
+                 "^[t := [p terminate. log add: #terminateReturned] "
+                 "forkAt: Processor activePriority + 1. "
+                 "DeferredStop graceMilliseconds: 20. "
+                 "s := [p signalException: (Error new messageText: #timeout)] "
+                 "forkAt: Processor activePriority + 1. "
+                 "[[s suspendedContext isNil] whileFalse: [(Delay forMilliseconds: 1) wait]. "
+                 "go := true] forkAt: Processor activePriority + 1. "
+                 "[t suspendedContext isNil] whileFalse: [(Delay forMilliseconds: 1) wait]. "
+                 "log asArray printString] ensure: [DeferredStop graceMilliseconds: nil]",
+                 "(in out terminateReturned )");
+
+    test_dialect = ST_DIALECT_BLUE_BOOK;
+}
+
 int
 main(void)
 {
@@ -15705,6 +15775,7 @@ main(void)
     test_bugs7f_vm();
     test_bugs7f_files();
     test_bugs7f_comp();
+    test_bugs7f_sched();
 
     OM_shutdown();
     return ST_TEST_END();

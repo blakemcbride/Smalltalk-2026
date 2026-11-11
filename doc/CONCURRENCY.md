@@ -616,7 +616,12 @@ the shape of each is the argument for it:
   with no lock, so two workers resuming one suspended process both found
   it free, and both queued it -- or, when it outranked them, both
   nominated it and two threads ran one context. Now the second waits for
-  the first and finds the process on its ready list or nominated.
+  the first and finds the process on its ready list or nominated. The
+  reads are also made under the ready lock, and the workers' hands are
+  read on both sides of the list (Bugs07 X-8): a process moves between
+  lists and hands by itself and by signals too, with neither lock, and a
+  resume that read the list before a process linked itself onto a
+  Semaphore and the hands after it let go nominated a waiting process.
 
 `terminate` then runs the process's `ensure:` blocks, innermost first, *on
 the terminating process*, the way `Exception>>unwindTo:` and Squeak's
@@ -647,7 +652,13 @@ tenth of a second -- and no longer (Bugs07 FIXES-3). `terminate` and
 `signalException:` wait for it that long; a section still running then
 *gives up*: it no longer counts, the process is stopped again and unwound
 from outside (its `ensure:` releasing the lock), or the exception is taken
-back out of the `DeferredStop` and delivered where the process stands. A
+back out of the `DeferredStop` and delivered where the process stands --
+unless a terminate has been asked of the process too: that exception is
+never raised, and a signaller whose grace runs out first leaves the section
+to the terminator (Bugs07 X-8). `DeferredStop graceMilliseconds:` sets
+another grace, and nil puts the tenth of a second back; a test that asks
+what happens when a section is let finish sets one no run outlasts, since a
+run descheduled for a tenth of a second gives the section up. A
 section entered inside the one given up is one of its own, with its own
 grace, so a library section the process happens to be in is still let
 finish. Without the bound, a loop inside a user's `aMutex critical:` could

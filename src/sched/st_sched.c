@@ -3043,6 +3043,25 @@ SCHED_primitive_wait(void)
  *  resume, which it then takes off its list as it would any ready
  *  process.  SCHED_resume takes the ready lock inside this one, and
  *  nothing takes them the other way round.
+ *
+ *  Bugs07 X-8.  But held_lock orders resumes and stops, and a process
+ *  also moves between the lists and the workers' hands by itself and by
+ *  signals, which take no such lock -- so the checks in parked() are
+ *  five reads of fields other workers are writing, and they can see a
+ *  process in two different moments.  Seen so, a process running into
+ *  `aSemaphore wait' was on no list (read before it linked itself) and
+ *  in nobody's hands (read after it had let go), and a resume racing
+ *  the wait nominated a process that was waiting on the Semaphore: the
+ *  transfer's own check stopped the image with "a process still on a
+ *  list was nominated", and without that check two workers would have
+ *  run it.  A stress check that let its victim wait on a Semaphore while
+ *  four resumers tried it did that on every run with four or more cores.
+ *  parked() reads the hands on both sides of the list now, which catches
+ *  that direction and the opposite one; and the reads are made under
+ *  the ready lock, because a process landing on a ready list -- woken by
+ *  a signal, or preempted -- is put on the list and let go of in two
+ *  writes under that lock, which a reader in between the two would see
+ *  as neither.
  */
 static int
 parked(st_oop process)
@@ -3053,8 +3072,28 @@ parked(st_oop process)
      || (OM_fetch_class(context) != ST_CLASS_METHOD_CONTEXT
       && OM_fetch_class(context) != ST_CLASS_BLOCK_CONTEXT))
         return 0;               /*  terminated, or never given a context  */
+    /*
+     *  Hands, list, hands (Bugs07 X-8).  A process moves between a list
+     *  and a worker's hands in both directions, and each direction writes
+     *  the two in its own order: one taken from a list is published in
+     *  hand before it is unlinked, and one that waits on a Semaphore is
+     *  linked before it is let go of.  Read list-then-hands, the second
+     *  was missed: the list read while the process was still running
+     *  (none) and the hands read after it had linked itself and landed
+     *  (none), and a process waiting on a Semaphore was called parked and
+     *  free -- a resume racing the process's own `aSemaphore wait'
+     *  nominated it while it sat on the Semaphore.  Read hands-then-list,
+     *  the first is missed the same way.  Read on both sides, each
+     *  direction is caught by one of the two hands reads.  The ready
+     *  lists, whose landing is a list write and a hands write together,
+     *  are held still by primitive 87, which reads this under the ready
+     *  lock; primitive 235's process is held, and goes nowhere.
+     */
+    if (in_anyones_hands(process))
+        return 0;               /*  running, or about to: elsewhere  */
     if (OM_is_present(OM_fetch_pointer(ST_PROCESS_MY_LIST, process)))
         return 0;               /*  already waiting somewhere  */
+    ST_fence_acquire();
     if (process == SCHED_active_process())
         return 0;               /*  running: here  */
     if (in_anyones_hands(process))
@@ -3079,11 +3118,13 @@ SCHED_primitive_resume(void)
         return 0;
     held_lock_init();
     ST_mutex_lock(&held_lock);
+    ready_lock_init();
+    ST_mutex_lock(&ready_lock);
     /*  Held: stopped, and its stopper not done.  */
-    if (held_slot(process) < 0 && parked_and_free(process)) {
+    resumed = held_slot(process) < 0 && parked_and_free(process);
+    ST_mutex_unlock(&ready_lock);
+    if (resumed)
         SCHED_resume(process);
-        resumed = 1;
-    }
     ST_mutex_unlock(&held_lock);
     return resumed;
 }

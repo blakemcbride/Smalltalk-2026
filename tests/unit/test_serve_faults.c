@@ -3160,22 +3160,37 @@ bugs7_sched(void)
      *  no claim, so two workers could both decide it and both resume it:
      *  queued twice, or -- outranking them, as here -- nominated on two
      *  workers and run by two native threads through one context.  Four
-     *  resumers released together at a process that, once running, is
-     *  busy for two milliseconds before it suspends itself again: at most
-     *  one of the four can find it suspended.  The old binary ran it on
-     *  two threads within a few hundred rounds -- its counter turned to
-     *  nil, `an index past the shared-temporary vector', and the image
-     *  stopped -- so the answer below never came.
+     *  resumers released together at a suspended process: at most one of
+     *  the four can find it suspended.  The old binary ran it on two
+     *  threads within a few hundred rounds -- its counter turned to nil,
+     *  `an index past the shared-temporary vector', and the image stopped
+     *  -- so the answer below never came.
+     *
+     *  Once resumed, the process waits on a gate the round opens only
+     *  when all four resumers have answered, and only then suspends
+     *  itself again (Bugs07 X-8).  It used to be busy for two
+     *  milliseconds instead and then suspend, which made a SECOND resume
+     *  in the same round legitimate whenever a resumer was descheduled
+     *  for longer than that -- and on a loaded machine one was: `two
+     *  resumes accepted: 2', in a run the scheduler had got right.  Now a
+     *  second resume accepted in a round is two resumes of one
+     *  suspension, which is the fault, whatever the machine is doing.
+     *  And the gate found one: a resume racing the victim's own `gate
+     *  wait' read it as on no list and in nobody's hands, nominated it
+     *  while it waited on the gate, and the transfer's check stopped the
+     *  image -- every run, on four cores or more (parked() in
+     *  st_sched.c).
      */
     bugs7_probe("bugs7-sched3-resume.st",
-        "| p count rs oks go many rounds fin spin |\n"
-        "fin := Semaphore new.\n"
+        "| p count rs oks go many rounds fin spin gate |\n"
+        "fin := Semaphore new. gate := Semaphore new.\n"
         "count := 0. many := 0. rounds := 0.\n"
         "spin := [:ms | | end | end := Time millisecondClockValue + ms. "
         "[Time millisecondClockValue < end] whileTrue: []].\n"
-        "p := [[true] whileTrue: [count := count + 1. spin value: 2. "
+        "p := [[true] whileTrue: [count := count + 1. gate wait. "
         "Processor activeProcess suspend]] forkAt: 5.\n"
         "spin value: 5.\n"
+        "gate signal.\n"
         "[1 to: 1500 do: [:i |\n"
         "\tgo := false. oks := Array new: 4.\n"
         "\trs := (1 to: 4) collect: [:k | [[go] whileFalse: []. "
@@ -3183,9 +3198,10 @@ bugs7_sched(void)
         "[:e | e return: false])] forkAt: 4].\n"
         "\tspin value: 1.\n"
         "\tgo := true.\n"
-        "\tspin value: 4.\n"
+        "\t[oks includes: nil] whileTrue: [].\n"
         "\t(oks select: [:ok | ok == true]) size > 1 "
         "ifTrue: [many := many + 1].\n"
+        "\t(oks includes: true) ifTrue: [gate signal].\n"
         "\trounds := rounds + 1].\n"
         " fin signal] forkAt: 6.\n"
         "fin wait.\n"

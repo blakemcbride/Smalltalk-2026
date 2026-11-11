@@ -66,6 +66,7 @@ Class {
 	#name : 'DeferredStop',
 	#superclass : 'Object',
 	#instVars : [ 'process', 'guarded', 'section', 'terminating', 'exceptions', 'givenUp' ],
+	#classVars : [ 'Grace' ],
 	#category : 'Concurrency'
 }
 
@@ -76,8 +77,26 @@ DeferredStop class >> graceMilliseconds [
 	 FIXES-3).  A library section is microseconds long; a tenth of a
 	 second leaves room for the process to wait its turn for a worker on
 	 a loaded machine, and is short enough that a timeout or a shutdown
-	 is not held up by it noticeably."
-	^100
+	 is not held up by it noticeably.  graceMilliseconds: sets another."
+	^Grace ifNil: [100]
+]
+
+{ #category : 'accessing' }
+DeferredStop class >> graceMilliseconds: anIntegerOrNil [
+	"Let a section run this many milliseconds before a stop put off to
+	 its end gives up, or with nil a tenth of a second again.
+
+	 The grace is a time, and so how a stop turns out depends on how
+	 busy the machine is: a process descheduled for longer than the
+	 grace, or a collection that long in the middle of its section, has
+	 its section given up although nothing in it ran long.  That is the
+	 bound doing its job on a server, and a test asking what happens
+	 when a section is let finish -- not when it is given up -- cannot
+	 ask it on a loaded machine: Bugs07 X-8's check of a terminate
+	 beating a deferred signal failed one run in many that way.  So a
+	 test can set it, and a server whose sections are longer than the
+	 library's can too.  Global: every stopper reads it."
+	Grace := anIntegerOrNil
 ]
 
 { #category : 'instance creation' }
@@ -133,7 +152,15 @@ DeferredStop >> withdraw: anException [
 	 answer whether it was there.  Sent with the process stopped
 	 (Process>>withdraw:from:).  Removed from the collection in place:
 	 a process stopped between taking the collection to raise from and
-	 clearing it holds the same one, and must not raise it as well."
+	 clearing it holds the same one, and must not raise it as well.
+
+	 Not once a terminate has been asked for (Bugs07 X-8).  A terminate
+	 beats any signal, and an exception here will never be raised; taken
+	 out and delivered where the process stands it WAS raised -- its
+	 handler run, the process going on in it -- by a signaller whose
+	 grace ran out before the terminator's did.  The section is left to
+	 the terminator, who gives it up when its own grace does."
+	terminating ifTrue: [^false].
 	(self isPending: anException) ifFalse: [^false].
 	exceptions removeAll: (exceptions select: [:each | each == anException]).
 	givenUp := true.
