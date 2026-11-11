@@ -801,8 +801,11 @@
  *
  *  3509 -> 3510 with Bugs07 KERNA-10: Text>>=, which answers false for
  *  anything that is not text instead of sending it string.
+ *
+ *  3510 -> 3513 with Bugs07 FILES-15: PosixFile>>size, characterSize and
+ *  closingIfOpenedBy:, which close a File opened only to be measured.
  */
-#define LIB_METHODS             3510
+#define LIB_METHODS             3513
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -3375,8 +3378,11 @@ test_browsing(void)
      *
      *  3143632 -> 3144550 with Bugs07 KERNA-10: Text>>= answers false for
      *  what is not text, and Symbol>>= accepts a Text.
+     *
+     *  3144550 -> 3145860 with Bugs07 FILES-15: a File opened only to
+     *  answer its size is closed again.
      */
-    check_integer("(SourceFiles at: 1) contents size", 3144550);
+    check_integer("(SourceFiles at: 1) contents size", 3145860);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -10495,7 +10501,7 @@ test_bugs6_high_files(void)
     snprintf(expression, sizeof expression,
              "| f g p r | (FileStream fileNamed: '%s') nextPutAll: 'DATA-OF-F'; "
              "close. (FileStream fileNamed: '%s') nextPutAll: 'OTHER-FILE'; "
-             "close. f := Disk findKey: '%s'. f size. g := Disk findKey: '%s'. "
+             "close. f := Disk findKey: '%s'. f open. g := Disk findKey: '%s'. "
              "g fd: (f instVarAt: 9). p := g readPageNumber: 1. "
              "r := (p page copyFrom: 1 to: p size) asString. "
              "p page replaceFrom: 1 to: 9 with: 'WRITTEN-G' asByteArray "
@@ -13902,6 +13908,46 @@ test_bugs7e_net(void)
 }
 
 /*
+ *  Bugs07, round 6: FILES-15's leak.  Disk findKey: answers a File that
+ *  is not open, and asking its size opened it in the VM -- primitive 130
+ *  opens a File by its name on first use -- and nothing closed it: a File
+ *  is never finalized, so `(Disk findKey: name) size' kept a descriptor
+ *  per call, 197 of them under `ulimit -n 200' before every open in the
+ *  image failed.  Now size and characterSize close a File they opened
+ *  only to answer, and leave alone one that was open already.  Before:
+ *  "(1 5 false false true true )" -- the descriptor still held after each.
+ */
+static void
+test_bugs7f_files(void)
+{
+    const char *path = st_test_path("bugs7f-files15.txt");
+    char        expression[1024];
+    FILE       *f = fopen(path, "wb");
+
+    test_dialect = ST_DIALECT_CLOSURES;
+    CHECK(f != NULL);
+    if (f == NULL)
+        return;
+    fputs("hello", f);
+    fclose(f);
+    snprintf(expression, sizeof expression,
+             "| f g r | f := Disk findKey: '%s'. "
+             "r := OrderedCollection new. "
+             "r add: f size; add: f characterSize. "
+             "f := Disk findKey: '%s'. f size. "
+             "r add: (f instVarAt: 9) isNil. "
+             "f characterSize. r add: (f instVarAt: 9) isNil. "
+             "g := Disk findKey: '%s'. g open. g size. "
+             "r add: (g instVarAt: 9) notNil. "
+             "g characterSize. r add: (g instVarAt: 9) notNil. g close. "
+             "^r asArray printString",
+             path, path, path);
+    check_string(expression, "(1 5 true true true true )");
+    unlink(path);
+    test_dialect = ST_DIALECT_BLUE_BOOK;
+}
+
+/*
  *  Bugs07, round 5: the interpreter's findings one process can show.
  *  INTERP-7 needs workers and is in test_serve_faults.c (bugs7e_vm).
  */
@@ -14893,6 +14939,7 @@ main(void)
     test_bugs7f_kernb();
     test_bugs7f_om();
     test_bugs7f_vm();
+    test_bugs7f_files();
 
     OM_shutdown();
     return ST_TEST_END();

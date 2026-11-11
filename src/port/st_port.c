@@ -380,14 +380,21 @@ ST_cond_wait(st_cond *c, st_mutex *m)
     SleepConditionVariableSRW(c, m, INFINITE, 0);
 }
 
+/*
+ *  Milliseconds rounded UP, and clamped below INFINITE (Bugs07 FILES-15),
+ *  by the helper FILES-7 made for Sleep.  Rounded down, a wait of under a
+ *  millisecond was a wait of none: SleepConditionVariableSRW(..., 0)
+ *  returns at once, so the delay timer, whose last wait before a deadline
+ *  is always the fraction left, went round its loop without sleeping
+ *  until the deadline came -- a spin through the last millisecond of
+ *  every Delay.  And a wait of more than 49.7 days was taken modulo 2^32
+ *  milliseconds, a wake the timer's loop then had to recompute.
+ */
 int
 ST_cond_timedwait(st_cond *c, st_mutex *m, int64_t ns)
 {
-    DWORD   ms;
+    DWORD   ms = (DWORD) ST_sleep_ms_rounded_up(ns);
 
-    if (ns < 0)
-        ns = 0;
-    ms = (DWORD) (ns / ST_NS_PER_MS);
     if (SleepConditionVariableSRW(c, m, ms, 0))
         return 0;
     return -1;

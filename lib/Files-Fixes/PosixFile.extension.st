@@ -37,6 +37,40 @@ PosixFile >> isReadOnly [
 ]
 
 { #category : '*Files-Fixes' }
+PosixFile >> size [
+	"Answer my size in pages, as File>>size does -- and leave me closed if
+	 I was closed when asked (Bugs07 FILES-15).
+
+	 1983 does not open a File before it asks about it.  Disk findKey:
+	 answers one that has never been opened, and asking its size opens it
+	 in the VM -- primitive 130 opens a File by its name on first use, so
+	 that the question can be answered at all -- and nothing closed it
+	 again.  Nothing ever would: a File is not finalized.  So the natural
+	 `(Disk findKey: name) size' kept one descriptor per call until the
+	 process ran out, 197 calls under `ulimit -n 200', after which every
+	 file anybody in the image opened failed with `Too many open files'.
+	 A File that was open before the question stays open; one opened only
+	 to answer it is closed again, error or not, and the next question
+	 that needs it opens it again."
+	^self closingIfOpenedBy: [super size]
+]
+
+{ #category : '*Files-Fixes' }
+PosixFile >> characterSize [
+	"Answer my size in characters, leaving me closed if I was closed when
+	 asked, for the reason size does (Bugs07 FILES-15)."
+	^self closingIfOpenedBy: [super characterSize]
+]
+
+{ #category : '*Files-Fixes' }
+PosixFile >> closingIfOpenedBy: aBlock [
+	"Answer aBlock's value, and close me afterwards if I was not open before
+	 it ran (Bugs07 FILES-15; see size)."
+	fd notNil ifTrue: [^aBlock value].
+	^aBlock ensure: [fd notNil ifTrue: [self close]]
+]
+
+{ #category : '*Files-Fixes' }
 PosixFile >> findLastPageNumber [
 	"Set and answer the number of my last page.
 

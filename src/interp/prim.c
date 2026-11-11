@@ -7181,7 +7181,15 @@ enum {
  *  ODBC as the pattern that matches any -- see the note on pattern() in
  *  st_odbc.c, where an empty string would instead match nothing.
  */
-static int      odbc_string_held_nul;   /*  why the last odbc_string refused  */
+/*
+ *  Why the last odbc_string refused, per thread (Bugs07 FILES-15).  It was
+ *  one plain static shared by every worker, and two workers binding at
+ *  once raced on it -- a C11 data race, and one of them could report "a
+ *  NUL" for a different refusal or the general sentence for a NUL.  The
+ *  setter and its reader are the same primitive on the same thread, so a
+ *  thread of its own is all the flag ever needed.
+ */
+static _Thread_local int    odbc_string_held_nul;
 static int      odbc_answer(st_oop value);
 
 /*

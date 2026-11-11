@@ -621,6 +621,48 @@ test_bugs7e_files_text(void)
     free(makefile);
 }
 
+/*
+ *  FILES-15: on Windows a timed wait of less than a millisecond was a
+ *  wait of none -- the nanoseconds were rounded DOWN to milliseconds, and
+ *  SleepConditionVariableSRW(..., 0) returns at once -- so the delay timer
+ *  spun through the last fraction of every Delay.  A wait that times out
+ *  must have lasted what was asked, a fraction of a millisecond included,
+ *  on every platform; on Windows the old rounding fails the first one.
+ *  (A wait that ends early with 0 is a wakeup, which is allowed, and is
+ *  not counted.)
+ */
+static void
+test_bugs7f_files(void)
+{
+    static const int64_t    asked[] = {
+        INT64_C(1), INT64_C(250000), INT64_C(400000), INT64_C(999999),
+        INT64_C(1000001), INT64_C(1500000)
+    };
+    st_mutex    lock;
+    st_cond     never;
+    unsigned    i;
+    unsigned    short_waits = 0;
+
+    CHECK_EQ_INT(ST_mutex_init(&lock), 0);
+    CHECK_EQ_INT(ST_cond_init(&never), 0);
+    ST_mutex_lock(&lock);
+    for (i = 0; i < sizeof asked / sizeof asked[0]; ++i) {
+        int64_t start = ST_time_monotonic_ns();
+        int     rc = ST_cond_timedwait(&never, &lock, asked[i]);
+        int64_t took = ST_time_monotonic_ns() - start;
+
+        if (rc == -1 && took < asked[i]) {
+            ++short_waits;
+            printf("  (FILES-15: a %lld ns timed wait timed out after %lld ns)\n",
+                   (long long) asked[i], (long long) took);
+        }
+    }
+    CHECK_EQ_INT((int) short_waits, 0);
+    ST_mutex_unlock(&lock);
+    ST_cond_destroy(&never);
+    ST_mutex_destroy(&lock);
+}
+
 int
 main(void)
 {
@@ -641,6 +683,7 @@ main(void)
     test_bugs7e_files();
     test_bugs7e_sched();
     test_bugs7e_files_text();
+    test_bugs7f_files();
 
     return ST_TEST_END();
 }
