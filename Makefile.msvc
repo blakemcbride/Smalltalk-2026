@@ -142,7 +142,22 @@ LDFLAGS  = /nologo
 #
 #  odbc32 and OpenSSL's two, when the build has them, go the same way.
 #
-LINKOPT  = /link ws2_32.lib bcrypt.lib $(ODBCLIBS) $(TLSLIBS) /SUBSYSTEM:CONSOLE
+#  /MANIFEST:EMBED /MANIFESTINPUT:src\st2026.manifest puts src\st2026.manifest
+#  into the binary, merged with the manifest the linker writes anyway, and
+#  what it says is that this process's ANSI code page is UTF-8 (Bugs07
+#  FILES-10).  Every file name, every ODBC statement and every SQL_C_CHAR
+#  value goes to Windows as the bytes of a Smalltalk String, which are
+#  UTF-8, and Windows read them in the code page -- 1252 on a Western
+#  install -- so a name built from UTF-8 text named a different file, a
+#  listed name outside the code page could not be opened, and a Unicode
+#  ODBC driver stored text as mojibake.  The manifest makes every -A call,
+#  the C runtime's narrow file functions and the ODBC Driver Manager's
+#  conversion UTF-8, without a W call anywhere in the source.  Windows 10
+#  1903 and later honour it.  The suites link with it too, so they run as
+#  the program does.
+#
+LINKOPT  = /link ws2_32.lib bcrypt.lib $(ODBCLIBS) $(TLSLIBS) /SUBSYSTEM:CONSOLE \
+           /MANIFEST:EMBED /MANIFESTINPUT:src\st2026.manifest
 
 !IF "$(OM)" == "bb"
 OMDEF = /DST_OM_BB
@@ -352,7 +367,7 @@ $(OBJ): $(HEADERS)
 {src\crypto\}.c{$(BUILD)\}.obj::
 	$(CC) $(CFLAGS) $(CPPFLAGS) /c /Fo$(BUILD)\ $<
 
-$(BIN): $(BUILD) $(OBJ) src\main.c $(HEADERS)
+$(BIN): $(BUILD) $(OBJ) src\main.c src\st2026.manifest $(HEADERS)
 	$(CC) $(CFLAGS) $(CPPFLAGS) /c /Fo$(BUILD)\ src\main.c
 	$(CC) $(LDFLAGS) /Fe$(BIN) $(BUILD)\main.obj $(OBJ) $(SDLLIBS) $(LINKOPT)
 

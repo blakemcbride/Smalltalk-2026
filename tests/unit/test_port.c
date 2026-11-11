@@ -559,6 +559,68 @@ test_bugs7e_sched(void)
     ST_mutex_destroy(&lock);
 }
 
+/*
+ *  FILES-10: on Windows every file name and every ODBC string went to an
+ *  -A function, which reads its bytes in the ANSI code page, while the
+ *  bytes are UTF-8: a name with an e-acute in it was created with two
+ *  other characters in its place, on a Western install.  The fix is
+ *  the application manifest that makes UTF-8 the process's code page,
+ *  which Linux cannot load; so here the tree is checked to carry it where
+ *  Makefile.msvc takes it from, well-formed (no double hyphen inside its
+ *  comment, which the manifest tool refuses), and the link line is checked
+ *  to embed it.  On Windows -- the suites link with the same line -- this
+ *  process's own code page is checked to be UTF-8, which is the fix itself.
+ */
+static char *
+bugs7e_read_all(const char *path)
+{
+    FILE   *f = fopen(path, "rb");
+    char   *text = NULL;
+    long    n;
+
+    if (f == NULL)
+        return NULL;
+    if (fseek(f, 0, SEEK_END) == 0 && (n = ftell(f)) >= 0
+     && fseek(f, 0, SEEK_SET) == 0
+     && (text = (char *) malloc((size_t) n + 1)) != NULL) {
+        if (fread(text, 1, (size_t) n, f) != (size_t) n) {
+            free(text);
+            text = NULL;
+        } else
+            text[n] = '\0';
+    }
+    fclose(f);
+    return text;
+}
+
+static void
+test_bugs7e_files_text(void)
+{
+    char   *manifest = bugs7e_read_all("src/st2026.manifest");
+    char   *makefile = bugs7e_read_all("Makefile.msvc");
+
+    CHECK(manifest != NULL);
+    CHECK(makefile != NULL);
+    if (manifest != NULL) {
+        const char *open  = strstr(manifest, "<!--");
+        const char *close = open ? strstr(open + 4, "-->") : NULL;
+        const char *dash  = open ? strstr(open + 4, "--") : NULL;
+
+        CHECK(strstr(manifest, "<activeCodePage xmlns=\"http://schemas."
+                     "microsoft.com/SMI/2019/WindowsSettings\">UTF-8"
+                     "</activeCodePage>") != NULL);
+        CHECK(open == NULL || (close != NULL && dash == close));
+    }
+    if (makefile != NULL)
+        CHECK(strstr(makefile, "/MANIFEST:EMBED /MANIFESTINPUT:src\\st2026.manifest")
+              != NULL);
+#ifdef ST_WINDOWS
+    CHECK(GetACP() == CP_UTF8);
+#endif
+    free(manifest);
+    free(makefile);
+}
+
 int
 main(void)
 {
@@ -578,6 +640,7 @@ main(void)
     test_bugs7c_lib_sleep();
     test_bugs7e_files();
     test_bugs7e_sched();
+    test_bugs7e_files_text();
 
     return ST_TEST_END();
 }

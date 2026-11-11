@@ -196,6 +196,19 @@ print_version(void)
 #endif
 #if defined(ST_WINDOWS)
     printf("  platform      : Windows\n");
+    /*
+     *  Whether the manifest took (Bugs07 FILES-10): st2026.exe asks for
+     *  UTF-8 as its ANSI code page, so that file names and ODBC text are the
+     *  UTF-8 a String holds, and Windows before 10 version 1903 ignores the
+     *  request.  Said here because nothing else would say it: a name
+     *  outside ASCII then names a different file, without an error.
+     */
+    if (GetACP() == CP_UTF8)
+        printf("  text          : UTF-8\n");
+    else
+        printf("  text          : code page %u, not UTF-8 -- names and ODBC"
+               " text outside ASCII are not what the image holds (Windows.md)\n",
+               (unsigned) GetACP());
 #elif defined(__APPLE__)
     printf("  platform      : macOS\n");
 #else

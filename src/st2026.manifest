@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!--
+  The application manifest of st2026.exe, merged into it by the linker
+  (Makefile.msvc, /MANIFESTINPUT).  No double hyphen may appear inside an
+  XML comment, which is why this one has none.
+
+  activeCodePage UTF-8 makes UTF-8 this process's ANSI code page.  A
+  String in Smalltalk-2026 is bytes, and its text is UTF-8: JSON decodes
+  to UTF-8, the sources are UTF-8, a decoded URL path is UTF-8, and on
+  POSIX that is also what the kernel takes for a file name.  Windows reads
+  the bytes handed to every A function (CreateFileA, FindFirstFileA,
+  GetFileAttributesA, MoveFileExA, GetFullPathNameA), to the C runtime's
+  narrow file functions (fopen, _open, rename, _unlink) and to the ODBC
+  Driver Manager's ANSI entry points in the ANSI code page, 1252 on a
+  Western install.  So a name built from UTF-8 text named a different file
+  (the two bytes of e-acute became two characters), a name outside the code
+  page was listed with a question mark in it and could not be opened, and
+  text sent to a Unicode ODBC driver was stored as mojibake (Bugs07
+  FILES-10).  With this, all of them take and give UTF-8, as on Linux and
+  macOS, and so do the command line and the environment.
+
+  Windows 10 version 1903 and later honour it; earlier Windows ignore it
+  and keep the old behaviour.  See Windows.md, "Text is UTF-8".
+-->
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <activeCodePage xmlns="http://schemas.microsoft.com/SMI/2019/WindowsSettings">UTF-8</activeCodePage>
+    </windowsSettings>
+  </application>
+</assembly>

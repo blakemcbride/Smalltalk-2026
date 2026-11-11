@@ -242,6 +242,32 @@ st2026.exe -run st2026.image
 
 `st2026.exe -help` lists the rest.
 
+### Text is UTF-8
+
+A String is bytes, and the system's text is UTF-8: the sources, JSON, a
+decoded URL path. On Linux and macOS that is also what a file name is.
+Windows reads the bytes handed to its `A` functions, to the C runtime's
+`fopen` and `_open`, and to ODBC's ANSI calls in the process's *ANSI code
+page* — 1252 on a Western install — so `st2026.exe` declares UTF-8 as its
+code page, in an application manifest the linker embeds
+(`src/st2026.manifest`, `/MANIFESTINPUT` in `Makefile.msvc`). With it,
+`FileStream fileNamed:` of a name holding `é` creates `café.txt`, a name the
+directory lists can be opened again, the command line and the environment
+arrive as UTF-8, and ODBC sends a statement's text and its `SQL_C_CHAR`
+values on as UTF-8.
+
+Windows 10 version 1903 and later honour the manifest; earlier versions
+ignore it and use the code page as before, and then names and database text
+outside ASCII are not what the image holds. `st2026.exe -version` says which:
+
+```
+  platform      : Windows
+  text          : UTF-8
+```
+
+The console is another matter: it shows output in its own code page, so
+`chcp 65001` before running is what makes UTF-8 output legible there.
+
 ### One st2026 per image
 
 Two `st2026.exe` on one image would both write its changes file, each with
@@ -361,6 +387,7 @@ wrong is in this list.
 | `src/port/st_port.h`, `.c` | The whole threading layer forks here on `_WIN32`. Threads, mutexes and condition variables become `CreateThread`, `SRWLOCK` and `CONDITION_VARIABLE`. Thread-local storage is **fibre**-local: `FlsAlloc` is the only Win32 flavour that takes a destructor callback, which is what `pthread_key_create` provides on the other side. |
 | `src/boot/profile.c` | Directory walking forks on `_WIN32`: `FindFirstFileA`/`FindNextFileA` where POSIX gets `opendir`/`readdir`. Path *splitting* does not fork — see above. |
 | `src/interp/prim.c` | The 1983 File and FilePage primitives — open, close, size, read a page, write a page, truncate, list a directory. POSIX answers all seven directly; Windows answers none of them under those names, so they go through a shim at the top of the file's primitive section. `pread`/`pwrite` become `ReadFile`/`WriteFile` with the offset in an `OVERLAPPED`, which is positional in the same way and is not the same thing as seeking first. Every `_open` carries `_O_BINARY`: MSVC's defaults to text mode, and these primitives carry image pages. |
+| `src/st2026.manifest` | The application manifest the linker embeds in `st2026.exe`: UTF-8 as the process's ANSI code page, so that file names and ODBC text are the UTF-8 a String holds — see *Text is UTF-8* above. |
 | `src/port/st_atomic.h` | `<stdatomic.h>` directly. Two self-imposed limits keep every operation lock-free everywhere: only naturally-aligned int-, bool- and pointer-sized types, and never `_Atomic` on a struct. |
 | `src/main.c` | Includes `<SDL3/SDL_main.h>` so SDL can stand up the process entry point. Thread 0 is the only thread that calls SDL; under `-run` it also runs the interpreter between pumps, and under `-serve` threads 1..N are Smalltalk workers that never call SDL video. SDL3's main-thread rules force this shape. See [`doc/CONCURRENCY.md`](doc/CONCURRENCY.md). |
 | everywhere | Every file that holds binary — images, `.st` sources, chunk files, Tonel files, screenshots — is opened `"rb"` or `"wb"`. The two text-mode opens are the manifest readers in `main.c` and `profile.c`, one path per line, and both strip CR themselves anyway. |
@@ -535,9 +562,14 @@ now named outright, after `/link` because `cl` has no `/SUBSYSTEM` of its own.
 (`zig cc -target x86_64-windows-gnu`, headless, no TLS) under Wine 11
 bootstraps an image, serves a script, and refuses a second `-serve` of the
 same image with the message above, before and after a `condenseChanges`;
-the same build without the lock admitted the second. `test_port.exe` built
-the same way passes, the lock's checks with it. Wine is not Windows, and
-MinGW is not MSVC, so this is evidence and not confirmation.
+the same build without the lock admitted the second. With
+`src/st2026.manifest` linked in as a resource it reports `text : UTF-8`,
+creates `café.txt` from a name holding `é`, and lists and opens a `日本.txt`
+made beside it; without the manifest the same build reports code page 1252,
+creates `cafÃ©.txt`, and lists the other as `??.txt`, which it cannot open.
+`test_port.exe` built the same way passes, the lock's and the code page's
+checks with it. Wine is not Windows, and MinGW is not MSVC, so this is
+evidence and not confirmation.
 
 **Still not checked:**
 
@@ -550,6 +582,12 @@ MinGW is not MSVC, so this is evidence and not confirmation.
 - **`nmake /f Makefile.msvc test` has not been run.** Twenty-six suites build
   and run from that target and nobody has watched them. It is the largest
   untested claim left in this file.
+- **ODBC text outside ASCII.** Under the UTF-8 code page the Driver
+  Manager converts a statement's text and its `SQL_C_CHAR` values from UTF-8
+  for a Unicode driver; no driver has been run to see what it stores, and an
+  ANSI driver, which gets the bytes unconverted, reads them as it reads
+  them. Nor has `/MANIFESTINPUT` been run through `link`: the manifest has
+  been embedded by `zig rc` and `lld` only.
 - **`nmake /f Makefile.msvc clean` has not been run** since it was changed
   from a parse-time `!ERROR` to a rule, which is what let a machine without
   SDL3 refuse to clean its own build tree.
