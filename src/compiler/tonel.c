@@ -48,6 +48,7 @@
  */
 
 #include "tonel.h"
+#include "st_port.h"
 
 #include <ctype.h>
 #include <stdarg.h>
@@ -548,7 +549,7 @@ TONEL_read(const char *path, const st_source_sink *sink, void *user,
     int         is_extension = 0;
     int         is_trait = 0;
 
-    f = fopen(path, "rb");
+    f = ST_fopen(path, "rb");
     if (!f) {
         snprintf(error, error_len, "cannot open %s", path);
         return 0;

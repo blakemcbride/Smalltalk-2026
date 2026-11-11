@@ -6,6 +6,7 @@
  */
 
 #include "chunk.h"
+#include "st_port.h"
 
 #include <stdarg.h>
 #include <stdlib.h>
@@ -46,7 +47,7 @@ CHUNK_open(const char *path, char *errbuf, size_t errlen)
 
     if (errbuf && errlen)
         errbuf[0] = '\0';
-    f = fopen(path, "rb");
+    f = ST_fopen(path, "rb");
     if (!f) {
         if (errbuf)
             snprintf(errbuf, errlen, "cannot open %s", path);

@@ -198,16 +198,19 @@ print_version(void)
     printf("  platform      : Windows\n");
     /*
      *  Whether the manifest took (Bugs07 FILES-10): st2026.exe asks for
-     *  UTF-8 as its ANSI code page, so that file names and ODBC text are the
-     *  UTF-8 a String holds, and Windows before 10 version 1903 ignores the
-     *  request.  Said here because nothing else would say it: a name
-     *  outside ASCII then names a different file, without an error.
+     *  UTF-8 as its ANSI code page, so that ODBC text and the environment
+     *  are the UTF-8 a String holds, and Windows before 10 version 1903
+     *  ignores the request.  Said here because nothing else would say it:
+     *  a statement's text outside ASCII then reaches the database as other
+     *  characters, without an error.  File names and the command line no
+     *  longer depend on it -- they go through the -W calls (Bugs07 X-24).
      */
     if (GetACP() == CP_UTF8)
         printf("  text          : UTF-8\n");
     else
-        printf("  text          : code page %u, not UTF-8 -- names and ODBC"
-               " text outside ASCII are not what the image holds (Windows.md)\n",
+        printf("  text          : code page %u, not UTF-8 -- ODBC text and"
+               " environment variables outside ASCII are not what the image"
+               " holds (Windows.md)\n",
                (unsigned) GetACP());
 #elif defined(__APPLE__)
     printf("  platform      : macOS\n");
@@ -626,20 +629,18 @@ store_named(st_oop object, const char *name, st_oop value)
 static int
 file_is_there(const char *path)
 {
-    struct stat st;
-
-    return stat(path, &st) == 0 && (st.st_mode & S_IFMT) != S_IFDIR;
+    return ST_path_kind(path, NULL) == 0;
 }
 
 /*  The length of the file at this path, or -1 when there is no file.  */
 static int64_t
 file_size_of(const char *path)
 {
-    struct stat st;
+    int64_t size;
 
-    if (stat(path, &st) != 0 || (st.st_mode & S_IFMT) == S_IFDIR)
+    if (ST_path_kind(path, &size) != 0)
         return -1;
-    return (int64_t) st.st_size;
+    return size;
 }
 
 /*  Whether two paths name one file -- a copy onto itself empties it.  */
@@ -672,10 +673,10 @@ copy_file(const char *from, const char *to)
     size_t      n;
     int         failed = 0;
 
-    in = fopen(from, "rb");
+    in = ST_fopen(from, "rb");
     if (!in)
         return -1;
-    out = fopen(to, "wb");
+    out = ST_fopen(to, "wb");
     if (!out) {
         int saved = errno;
 
@@ -2235,7 +2236,7 @@ write_screenshot(void)
         return;
     if (!GFX_form_from_oop(GFX_display_form(), &form))
         return;
-    f = fopen(shot_path, "wb");
+    f = ST_fopen(shot_path, "wb");
     if (!f) {
         fprintf(stderr, "st2026: cannot write %s\n", shot_path);
         return;
@@ -2259,11 +2260,7 @@ write_screenshot(void)
 static int
 bootstrap_is_directory(const char *path)
 {
-    struct stat st;
-
-    if (stat(path, &st) != 0)
-        return 0;
-    return (st.st_mode & S_IFMT) == S_IFDIR;
+    return ST_path_kind(path, NULL) == 1;
 }
 
 /*
@@ -3098,7 +3095,7 @@ path_list_free(path_list *l)
 static int
 read_manifest(const char *path, path_list *l)
 {
-    FILE   *f = fopen(path, "r");
+    FILE   *f = ST_fopen(path, "r");
     char    line[1024];
 
     if (!f) {
@@ -3231,11 +3228,11 @@ image_path_is_writable(const char *out_path)
 
     if (snprintf(probe, sizeof probe, "%s.tmp", out_path) >= (int) sizeof probe)
         return 0;
-    f = fopen(probe, "wb");
+    f = ST_fopen(probe, "wb");
     if (!f)
         return 0;
     fclose(f);
-    remove(probe);
+    ST_remove(probe);
     return 1;
 }
 
@@ -3261,6 +3258,13 @@ main(int argc, char **argv)
      */
     signal(SIGXFSZ, SIG_IGN);
 #endif
+    /*
+     *  Paths are UTF-8 on every platform, and on Windows the C runtime
+     *  built argv in the ANSI code page: where the manifest is ignored
+     *  (before Windows 10 1903) an image path holding a character outside
+     *  it arrived as `?' (Bugs07 X-24).  Elsewhere this is argv.
+     */
+    argv = ST_utf8_arguments(argc, argv);
     for (i = 1; i < argc; ++i) {
         if (!strcmp(argv[i], "-help") || !strcmp(argv[i], "--help")) {
             usage(argv[0]);

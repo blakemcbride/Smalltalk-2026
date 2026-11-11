@@ -142,21 +142,22 @@ LDFLAGS  = /nologo
 #
 #  odbc32 and OpenSSL's two, when the build has them, go the same way.
 #
+#  shell32 is CommandLineToArgvW, which src/port/st_port.c uses to read the
+#  command line in UTF-16 when the code page is not UTF-8 (Bugs07 X-24).
+#
 #  /MANIFEST:EMBED /MANIFESTINPUT:src\st2026.manifest puts src\st2026.manifest
 #  into the binary, merged with the manifest the linker writes anyway, and
 #  what it says is that this process's ANSI code page is UTF-8 (Bugs07
-#  FILES-10).  Every file name, every ODBC statement and every SQL_C_CHAR
-#  value goes to Windows as the bytes of a Smalltalk String, which are
-#  UTF-8, and Windows read them in the code page -- 1252 on a Western
-#  install -- so a name built from UTF-8 text named a different file, a
-#  listed name outside the code page could not be opened, and a Unicode
-#  ODBC driver stored text as mojibake.  The manifest makes every -A call,
-#  the C runtime's narrow file functions and the ODBC Driver Manager's
-#  conversion UTF-8, without a W call anywhere in the source.  Windows 10
-#  1903 and later honour it.  The suites link with it too, so they run as
-#  the program does.
+#  FILES-10).  Every ODBC statement and every SQL_C_CHAR value goes to
+#  Windows as the bytes of a Smalltalk String, which are UTF-8, and Windows
+#  read them in the code page -- 1252 on a Western install -- so a Unicode
+#  ODBC driver stored text as mojibake.  The manifest makes the ODBC Driver
+#  Manager's conversion, and the environment, UTF-8.  Windows 10 1903 and
+#  later honour it.  File names and the command line do not depend on it:
+#  they go to the W calls, converted in src/port (Bugs07 X-24).  The suites
+#  link with it too, so they run as the program does.
 #
-LINKOPT  = /link ws2_32.lib bcrypt.lib $(ODBCLIBS) $(TLSLIBS) /SUBSYSTEM:CONSOLE \
+LINKOPT  = /link ws2_32.lib bcrypt.lib shell32.lib $(ODBCLIBS) $(TLSLIBS) /SUBSYSTEM:CONSOLE \
            /MANIFEST:EMBED /MANIFESTINPUT:src\st2026.manifest
 
 !IF "$(OM)" == "bb"

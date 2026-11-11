@@ -1832,9 +1832,15 @@ primitive_copy_bits(void)
  *  fstat, which spares us MSVC's struct _stat / struct _stat64 question and
  *  answers past 2 GB on both.
  *
- *  The directory walk is FindFirstFileA, the same one src/boot/profile.c
+ *  The directory walk is FindFirstFileW, the same one src/boot/profile.c
  *  already carries for #packages.  Two copies, and this is the second; if a
  *  third is ever wanted, that is the moment it belongs in src/port.
+ *
+ *  EVERY NAME IS UTF-8, AND GOES TO A -W CALL.  _wopen, GetFileAttributesW
+ *  and the rest, through ST_wide_from_utf8, and listed names come back
+ *  through ST_utf8_from_wide.  The narrow calls read a name in the ANSI
+ *  code page, and the manifest that makes that UTF-8 is ignored before
+ *  Windows 10 1903 (Bugs07 X-24; st_port.h).
  */
 
 #define ST_OPEN_RDONLY      0
@@ -1845,22 +1851,50 @@ primitive_copy_bits(void)
 
 typedef struct {
     HANDLE              h;
-    WIN32_FIND_DATAA    data;
+    WIN32_FIND_DATAW    data;
     int                 pending;    /*  FindFirstFile already fetched one  */
+    char               *name;       /*  the last one, as UTF-8; ours  */
 } st_dir;
 
 static int
 st_file_open(const char *path, int mode)
 {
+    wchar_t    *wpath = ST_wide_from_utf8(path);
+    int         fd;
+    int         saved;
+
+    if (!wpath)
+        return -1;
     switch (mode) {
     case ST_OPEN_RDONLY:
-        return _open(path, _O_RDONLY | _O_BINARY);
+        fd = _wopen(wpath, _O_RDONLY | _O_BINARY);
+        break;
     case ST_OPEN_RDWR:
-        return _open(path, _O_RDWR | _O_BINARY);
+        fd = _wopen(wpath, _O_RDWR | _O_BINARY);
+        break;
     default:
-        return _open(path, _O_RDWR | _O_CREAT | _O_BINARY,
-                     _S_IREAD | _S_IWRITE);
+        fd = _wopen(wpath, _O_RDWR | _O_CREAT | _O_BINARY,
+                    _S_IREAD | _S_IWRITE);
+        break;
     }
+    saved = errno;
+    free(wpath);
+    errno = saved;
+    return fd;
+}
+
+/*  The attributes of a UTF-8 name, or INVALID_FILE_ATTRIBUTES.  */
+static DWORD
+st_path_attributes(const char *path)
+{
+    wchar_t    *wpath = ST_wide_from_utf8(path);
+    DWORD       attr;
+
+    if (!wpath)
+        return INVALID_FILE_ATTRIBUTES;
+    attr = GetFileAttributesW(wpath);
+    free(wpath);
+    return attr;
 }
 
 static void st_file_close(int fd)    { _close(fd); }
@@ -1880,7 +1914,7 @@ st_file_mtime(int fd)
 static int
 st_path_is_directory(const char *path)
 {
-    DWORD   attr = GetFileAttributesA(path);
+    DWORD   attr = st_path_attributes(path);
 
     return attr != INVALID_FILE_ATTRIBUTES
         && (attr & FILE_ATTRIBUTE_DIRECTORY) != 0;
@@ -1898,9 +1932,9 @@ st_path_is_directory(const char *path)
  *  the resolved path of the root is the only test that catches it, and
  *  resolving is something only the file system can do.
  *
- *  GetFullPathNameA canonicalises `.' and `..' and makes the name absolute.
+ *  GetFullPathNameW canonicalises `.' and `..' and makes the name absolute.
  *  It does NOT follow a junction or a symbolic link the way realpath(3)
- *  does; GetFinalPathNameByHandleA would, at the cost of opening the file,
+ *  does; GetFinalPathNameByHandleW would, at the cost of opening the file,
  *  and Windows is not where this server is deployed.  Both platforms
  *  therefore refuse a path that climbs out by dot segments, and POSIX also
  *  refuses one that climbs out through a link.
@@ -1908,12 +1942,25 @@ st_path_is_directory(const char *path)
 static int
 st_real_path(const char *path, char *out, size_t size)
 {
-    DWORD   n;
+    wchar_t    *wpath = ST_wide_from_utf8(path);
+    wchar_t    *full  = NULL;
+    char       *utf8  = NULL;
+    DWORD       n;
+    int         fits  = 0;
 
-    if (GetFileAttributesA(path) == INVALID_FILE_ATTRIBUTES)
-        return 0;
-    n = GetFullPathNameA(path, (DWORD) size, out, NULL);
-    return n > 0 && n < size;
+    if (wpath && GetFileAttributesW(wpath) != INVALID_FILE_ATTRIBUTES
+     && (n = GetFullPathNameW(wpath, 0, NULL, NULL)) > 0
+     && (full = malloc(n * sizeof *full)) != NULL
+     && GetFullPathNameW(wpath, n, full, NULL) < n
+     && (utf8 = ST_utf8_from_wide(full)) != NULL
+     && strlen(utf8) < size) {
+        strcpy(out, utf8);
+        fits = 1;
+    }
+    free(utf8);
+    free(full);
+    free(wpath);
+    return fits;
 }
 
 /*
@@ -1923,7 +1970,7 @@ st_real_path(const char *path, char *out, size_t size)
 static int
 st_path_exists(const char *path)
 {
-    return GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES;
+    return st_path_attributes(path) != INVALID_FILE_ATTRIBUTES;
 }
 
 /*
@@ -1934,18 +1981,41 @@ st_path_exists(const char *path)
 static int
 st_rename_noreplace(const char *from, const char *to)
 {
+    wchar_t    *wfrom;
+    wchar_t    *wto;
+    int         answer = -1;
+    int         saved;
+
     if (st_path_exists(to)) {
         errno = EEXIST;
         return -1;
     }
-    return rename(from, to);
+    wfrom = ST_wide_from_utf8(from);
+    wto   = wfrom ? ST_wide_from_utf8(to) : NULL;
+    if (wto)
+        answer = _wrename(wfrom, wto);
+    saved = errno;
+    free(wfrom);
+    free(wto);
+    errno = saved;
+    return answer;
 }
 
 /*  Delete a file, and only a file -- see the POSIX half.  */
 static int
 st_file_unlink(const char *path)
 {
-    return _unlink(path);
+    wchar_t    *wpath = ST_wide_from_utf8(path);
+    int         answer;
+    int         saved;
+
+    if (!wpath)
+        return -1;
+    answer = _wunlink(wpath);
+    saved = errno;
+    free(wpath);
+    errno = saved;
+    return answer;
 }
 
 /*
@@ -2052,10 +2122,17 @@ st_file_append(int fd, const void *buf, size_t count)
 static int
 st_dir_open(st_dir *d, const char *path)
 {
-    char    pattern[1024];
+    char        pattern[1024];
+    wchar_t    *wpattern;
 
+    d->name = NULL;
+    d->h = INVALID_HANDLE_VALUE;
     snprintf(pattern, sizeof pattern, "%s\\*", path);
-    d->h = FindFirstFileA(pattern, &d->data);
+    wpattern = ST_wide_from_utf8(pattern);
+    if (wpattern) {
+        d->h = FindFirstFileW(wpattern, &d->data);
+        free(wpattern);
+    }
     if (d->h == INVALID_HANDLE_VALUE) {
         errno = ENOENT;
         return 0;
@@ -2064,21 +2141,30 @@ st_dir_open(st_dir *d, const char *path)
     return 1;
 }
 
+/*
+ *  The next name as UTF-8, good until the next call or st_dir_close; NULL
+ *  at the end.  NULL too if the copy cannot be made, which for a name the
+ *  system handed back means memory has run out -- the same NULL readdir
+ *  answers for an error on the POSIX side.
+ */
 static const char *
 st_dir_next(st_dir *d)
 {
-    if (d->pending) {
+    free(d->name);
+    d->name = NULL;
+    if (d->pending)
         d->pending = 0;
-        return d->data.cFileName;
-    }
-    if (!FindNextFileA(d->h, &d->data))
+    else if (!FindNextFileW(d->h, &d->data))
         return NULL;
-    return d->data.cFileName;
+    d->name = ST_utf8_from_wide(d->data.cFileName);
+    return d->name;
 }
 
 static void
 st_dir_close(st_dir *d)
 {
+    free(d->name);
+    d->name = NULL;
     if (d->h != INVALID_HANDLE_VALUE)
         FindClose(d->h);
 }

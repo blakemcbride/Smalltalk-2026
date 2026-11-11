@@ -267,6 +267,46 @@ int     ST_file_replace(const char *from, const char *to);
  */
 int     ST_file_lock_for_life(const char *path);
 
+/*
+ *  File names are UTF-8, on every platform.
+ *
+ *  A String holds the UTF-8 of its text, and POSIX file systems take
+ *  bytes, so there a name is passed as it is and these are fopen, remove
+ *  and stat.  Windows names files in UTF-16, and every narrow call --
+ *  fopen, the CRT's _open, the -A functions -- converts from the ANSI code
+ *  page, which is 1252 on a Western install: the bytes of `café' named
+ *  `cafÃ©', and a listed name outside the code page came back as `?'.
+ *  st2026.exe's manifest makes the code page UTF-8, but only Windows 10
+ *  1903 and later read it (Bugs07 FILES-10).  So on Windows every path
+ *  goes through these to the -W calls, converted here, and the code page
+ *  no longer matters (Bugs07 X-24).
+ *
+ *  ST_wide_from_utf8 answers a malloc'd UTF-16 copy, or NULL with errno.
+ *  Text that is not UTF-8 -- a String holding Latin-1 bytes, which named
+ *  the file it meant through the old -A calls on a 1252 system -- is read
+ *  in the ANSI code page instead, so that it still names that file.
+ *  ST_utf8_from_wide answers a malloc'd UTF-8 copy, or NULL.
+ *
+ *  ST_path_kind: 1 for a directory, 0 for anything else that is there,
+ *  -1 with errno when there is nothing; `size' (when not NULL) gets the
+ *  length.  stat() on POSIX, GetFileAttributesExW on Windows.
+ *
+ *  ST_utf8_arguments: the command line as UTF-8.  The CRT builds argv in
+ *  the ANSI code page; when that is not UTF-8 this rebuilds it from the
+ *  UTF-16 command line.  Elsewhere it answers argv.
+ */
+#ifdef ST_WINDOWS
+FILE   *ST_fopen(const char *path, const char *mode);
+int     ST_remove(const char *path);
+wchar_t *ST_wide_from_utf8(const char *text);
+char   *ST_utf8_from_wide(const wchar_t *text);
+#else
+#define ST_fopen        fopen
+#define ST_remove       remove
+#endif
+int     ST_path_kind(const char *path, int64_t *size);
+char  **ST_utf8_arguments(int argc, char **argv);
+
 #ifdef __cplusplus
 }
 #endif

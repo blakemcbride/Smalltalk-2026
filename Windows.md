@@ -289,19 +289,28 @@ st2026.exe -run st2026.image
 
 A String is bytes, and the system's text is UTF-8: the sources, JSON, a
 decoded URL path. On Linux and macOS that is also what a file name is.
-Windows reads the bytes handed to its `A` functions, to the C runtime's
-`fopen` and `_open`, and to ODBC's ANSI calls in the process's *ANSI code
-page* — 1252 on a Western install — so `st2026.exe` declares UTF-8 as its
-code page, in an application manifest the linker embeds
-(`src/st2026.manifest`, `/MANIFESTINPUT` in `Makefile.msvc`). With it,
-`FileStream fileNamed:` of a name holding `é` creates `café.txt`, a name the
-directory lists can be opened again, the command line and the environment
-arrive as UTF-8, and ODBC sends a statement's text and its `SQL_C_CHAR`
-values on as UTF-8.
+Windows names files in UTF-16, so every path is converted from UTF-8 in
+`src/port` and goes to a `W` function — `_wfopen`, `_wopen`,
+`GetFileAttributesW`, `FindFirstFileW`, `MoveFileExW`, `CreateFileW` — and
+every name a directory lists comes back as UTF-8. `FileStream fileNamed:` of
+a name holding `é` creates `café.txt`, and a name the directory lists can be
+opened again, on every Windows. Where the process's code page is not UTF-8
+the command line is read from its UTF-16 form too, so an image in a folder
+named `日本` opens. A name that is not UTF-8 — a String holding Latin-1
+bytes — is read in the *ANSI code page* instead, which is how the narrow
+calls read every name, so it names the file it always named.
+
+ODBC's ANSI calls and the environment are read in that code page — 1252 on a
+Western install — so `st2026.exe` also declares UTF-8 as its code page, in
+an application manifest the linker embeds (`src/st2026.manifest`,
+`/MANIFESTINPUT` in `Makefile.msvc`). With it, the environment arrives as
+UTF-8, and ODBC sends a statement's text and its `SQL_C_CHAR` values on as
+UTF-8.
 
 Windows 10 version 1903 and later honour the manifest; earlier versions
-ignore it and use the code page as before, and then names and database text
-outside ASCII are not what the image holds. `st2026.exe -version` says which:
+ignore it and use the code page, and then database text and environment
+variables outside ASCII are not what the image holds. File names and the
+command line are UTF-8 either way. `st2026.exe -version` says which:
 
 ```
   platform      : Windows
@@ -427,12 +436,12 @@ wrong is in this list.
 
 | Where | What |
 |---|---|
-| `src/port/st_port.h`, `.c` | The whole threading layer forks here on `_WIN32`. Threads, mutexes and condition variables become `CreateThread`, `SRWLOCK` and `CONDITION_VARIABLE`. Thread-local storage is **fibre**-local: `FlsAlloc` is the only Win32 flavour that takes a destructor callback, which is what `pthread_key_create` provides on the other side. |
-| `src/boot/profile.c` | Directory walking forks on `_WIN32`: `FindFirstFileA`/`FindNextFileA` where POSIX gets `opendir`/`readdir`. Path *splitting* does not fork — see above. |
-| `src/interp/prim.c` | The 1983 File and FilePage primitives — open, close, size, read a page, write a page, truncate, list a directory. POSIX answers all seven directly; Windows answers none of them under those names, so they go through a shim at the top of the file's primitive section. `pread`/`pwrite` become `ReadFile`/`WriteFile` with the offset in an `OVERLAPPED`, which is positional in the same way and is not the same thing as seeking first. Every `_open` carries `_O_BINARY`: MSVC's defaults to text mode, and these primitives carry image pages. |
+| `src/port/st_port.h`, `.c` | The whole threading layer forks here on `_WIN32`. Threads, mutexes and condition variables become `CreateThread`, `SRWLOCK` and `CONDITION_VARIABLE`. Thread-local storage is **fibre**-local: `FlsAlloc` is the only Win32 flavour that takes a destructor callback, which is what `pthread_key_create` provides on the other side. File names fork here too: `ST_fopen`, `ST_remove` and `ST_path_kind` are `fopen`, `remove` and `stat` on POSIX and the `W` calls on Windows, through `ST_wide_from_utf8` and `ST_utf8_from_wide`; `ST_utf8_arguments` rebuilds `argv` from the UTF-16 command line. |
+| `src/boot/profile.c` | Directory walking forks on `_WIN32`: `FindFirstFileW`/`FindNextFileW`, each name converted to UTF-8, where POSIX gets `opendir`/`readdir`. Path *splitting* does not fork — see above. |
+| `src/interp/prim.c` | The 1983 File and FilePage primitives — open, close, size, read a page, write a page, truncate, list a directory. POSIX answers all seven directly; Windows answers none of them under those names, so they go through a shim at the top of the file's primitive section. `pread`/`pwrite` become `ReadFile`/`WriteFile` with the offset in an `OVERLAPPED`, which is positional in the same way and is not the same thing as seeking first. Every `_wopen` carries `_O_BINARY`: MSVC's defaults to text mode, and these primitives carry image pages. Every name reaches a `W` function — see *Text is UTF-8*. |
 | `src/net/st_socket.c` | Sockets are Winsock on this side of `ST_WINDOWS` — `WSAPoll`, a loopback UDP socket to wake the I/O thread, `BCryptGenRandom`, `SO_EXCLUSIVEADDRUSE` — and the TLS client reads Windows' certificate store through OpenSSL 3.2's `org.openssl.winstore:`. `ws2_32.lib` and `bcrypt.lib` are linked for it. |
 | `src/db/st_odbc.c` | The same source on every platform, against Windows' own driver manager (`odbc32.lib`). |
-| `src/st2026.manifest` | The application manifest the linker embeds in `st2026.exe`: UTF-8 as the process's ANSI code page, so that file names and ODBC text are the UTF-8 a String holds — see *Text is UTF-8* above. |
+| `src/st2026.manifest` | The application manifest the linker embeds in `st2026.exe`: UTF-8 as the process's ANSI code page, so that ODBC text and the environment are the UTF-8 a String holds — see *Text is UTF-8* above. |
 | `src/port/st_atomic.h` | `<stdatomic.h>` directly. Two self-imposed limits keep every operation lock-free everywhere: only naturally-aligned int-, bool- and pointer-sized types, and never `_Atomic` on a struct. |
 | `src/main.c` | Includes `<SDL3/SDL_main.h>` so SDL can stand up the process entry point. Thread 0 is the only thread that calls SDL; under `-run` it also runs the interpreter between pumps, and under `-serve` threads 1..N are Smalltalk workers that never call SDL video. SDL3's main-thread rules force this shape. See [`doc/CONCURRENCY.md`](doc/CONCURRENCY.md). |
 | everywhere | Every file that holds binary — images, `.st` sources, chunk files, Tonel files, screenshots — is opened `"rb"` or `"wb"`. The two text-mode opens are the manifest readers in `main.c` and `profile.c`, one path per line, and both strip CR themselves anyway. |
@@ -613,8 +622,13 @@ creates `café.txt` from a name holding `é`, and lists and opens a `日本.txt`
 made beside it; without the manifest the same build reports code page 1252,
 creates `cafÃ©.txt`, and lists the other as `??.txt`, which it cannot open.
 `test_port.exe` built the same way passes, the lock's and the code page's
-checks with it. Wine is not Windows, and MinGW is not MSVC, so this is
-evidence and not confirmation.
+checks with it. Without the manifest, now that file names go to the `W`
+calls, the same build still creates `café.txt` and lists and opens
+`日本.txt`, sees a folder named `Ω` as a directory, renames a file to
+`Ω-café.txt`, and runs, condenses and locks an image in a folder named
+`日本Ω`; `test_port.exe` passes all but the code page's own check. Wine is
+not Windows, and MinGW is not MSVC, so this is evidence and not
+confirmation.
 
 **Still not checked:**
 
@@ -638,6 +652,15 @@ evidence and not confirmation.
   ANSI driver, which gets the bytes unconverted, reads them as it reads
   them. Nor has `/MANIFESTINPUT` been run through `link`: the manifest has
   been embedded by `zig rc` and `lld` only.
+- **ODBC before Windows 10 1903.** `src/db/st_odbc.c` uses the ANSI entry
+  points and `SQL_C_CHAR`, so where the manifest is ignored its text is read
+  in the code page. The `W` entry points and `SQL_C_WCHAR` would fix that
+  for a Unicode driver, but Windows' Driver Manager converts a `W` call to
+  the code page for an ANSI driver, which would take from an ANSI driver set
+  to UTF-8 the bytes it reads correctly today; and Wine's `odbc32` passes
+  calls to unixODBC, so it cannot show what Windows' Driver Manager does.
+  So they are not used. Nor is `_wgetenv`: environment variables are read
+  in the code page there too.
 - **`nmake /f Makefile.msvc clean` has not been run** since it was changed
   from a parse-time `!ERROR` to a rule, which is what let a machine without
   SDL3 refuse to clean its own build tree.
@@ -645,7 +668,7 @@ evidence and not confirmation.
   `ST_DISPLAY_PRESENTATION`, `ST_DISPLAY_THEME` — and the interface itself:
   menus, window framing, the keyboard. The desktop has been seen to draw, not
   to be used.
-- The `prim.c` shim's Windows half specifically: `_open` with `_O_BINARY`,
+- The `prim.c` shim's Windows half specifically: `_wopen` with `_O_BINARY`,
   `_chsize_s`, `_filelengthi64`, and `ReadFile`/`WriteFile` through an
   `OVERLAPPED`. The POSIX half is exercised by the whole test suite and by a
   direct end-to-end check; the Win32 half is exercised by nothing yet. If an

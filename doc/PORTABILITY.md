@@ -51,10 +51,17 @@ is compiled for and not yet run.
 `src/interp/prim.c`, where the 1983 File and FilePage primitives were written
 straight onto POSIX — `open`, `close`, `fstat`, `pread`, `pwrite`,
 `ftruncate`, `ssize_t`, `off_t`. They now go through a shim in that file with
-a Win32 half: `_open` with `_O_BINARY` because MSVC's defaults to text mode
+a Win32 half: `_wopen` with `_O_BINARY` because MSVC's defaults to text mode
 and these primitives carry image pages, `_filelengthi64`, `_chsize_s`, and
 `ReadFile`/`WriteFile` through an `OVERLAPPED`, which is positional the way
 `pread` is and the way seek-then-read is not.
+
+A file name is UTF-8 everywhere, and on Windows it goes to a `W` function:
+`src/port` has `ST_fopen`, `ST_remove` and `ST_path_kind` — `fopen`,
+`remove` and `stat` on POSIX — and `ST_wide_from_utf8`, which the `prim.c`
+shim, `profile.c`'s directory walk, `MoveFileExW` and `CreateFileW` use
+directly. A narrow call reads a name in the ANSI code page, which is UTF-8
+only where Windows honours `st2026.exe`'s manifest.
 
 **SDL3's main-thread rule is honoured by construction.** `SDL_PumpEvents`,
 `SDL_WaitEvent`, `SDL_CreateRenderer` and `SDL_LockTexture` are all

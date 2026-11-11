@@ -13,6 +13,7 @@
 #include "source.h"
 #include "chunk.h"
 #include "tonel.h"
+#include "st_port.h"
 
 #include <ctype.h>
 #include <stdio.h>
@@ -58,7 +59,7 @@ SRC_names_free(st_names *l)
 char *
 SRC_slurp(const char *path, size_t *length, char *error, size_t error_len)
 {
-    FILE   *f = fopen(path, "rb");
+    FILE   *f = ST_fopen(path, "rb");
     long    size;
     char   *text;
 

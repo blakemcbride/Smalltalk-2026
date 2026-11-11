@@ -1551,7 +1551,7 @@ GFX_write_coverage(const char *shot_path)
     n = strlen(path);
     if (n > 4 && strcmp(path + n - 4, ".pbm") == 0)
         snprintf(path + n - 4, 5, ".cov");
-    f = fopen(path, "wb");
+    f = ST_fopen(path, "wb");
     if (!f)
         return;
     fwrite(coverage, 1, (size_t) coverage_w * (size_t) coverage_h, f);

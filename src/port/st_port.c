@@ -16,6 +16,7 @@
 
 #ifdef ST_WINDOWS
 #include <io.h>         /*  _commit and _fileno, for ST_file_sync  */
+#include <shellapi.h>   /*  CommandLineToArgvW, for ST_utf8_arguments  */
 #endif
 
 #include <time.h>
@@ -37,6 +38,7 @@
 #if !defined(MAP_ANONYMOUS) && defined(MAP_ANON)
 #define MAP_ANONYMOUS   MAP_ANON    /*  the older BSD spelling  */
 #endif
+#include <sys/stat.h>   /*  stat, for ST_path_kind  */
 #endif
 
 /*  ST_EPOCH_OFFSET_SEC is in st_port.h: the file primitives want it too.  */
@@ -954,8 +956,20 @@ ST_file_replace(const char *from, const char *to)
      *  the target existing is the normal case for a snapshot.
      *  WRITE_THROUGH makes the call return only once the move is on disk.
      */
-    if (MoveFileExA(from, to,
-                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+    wchar_t    *wfrom = ST_wide_from_utf8(from);
+    wchar_t    *wto   = wfrom ? ST_wide_from_utf8(to) : NULL;
+    DWORD       error = 0;
+
+    if (!wto) {
+        free(wfrom);
+        return -1;
+    }
+    if (!MoveFileExW(wfrom, wto,
+                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+        error = GetLastError();
+    free(wfrom);
+    free(wto);
+    if (error == 0)
         return 0;
     /*
      *  Win32 reports through GetLastError and leaves errno alone, and the
@@ -963,7 +977,7 @@ ST_file_replace(const char *from, const char *to)
      *  errno so the message says "permission denied" rather than
      *  "success".
      */
-    switch (GetLastError()) {
+    switch (error) {
     case ERROR_ACCESS_DENIED:
     case ERROR_SHARING_VIOLATION:   errno = EACCES; break;
     case ERROR_FILE_NOT_FOUND:
@@ -991,15 +1005,20 @@ ST_file_replace(const char *from, const char *to)
 int
 ST_file_lock_for_life(const char *path)
 {
+    wchar_t    *wpath = ST_wide_from_utf8(path);
     HANDLE      h;
     OVERLAPPED  ov;
     DWORD       error;
 
-    h = CreateFileA(path, GENERIC_READ | GENERIC_WRITE,
+    if (!wpath)
+        return -1;
+    h = CreateFileW(wpath, GENERIC_READ | GENERIC_WRITE,
                     FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                     NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    error = h == INVALID_HANDLE_VALUE ? GetLastError() : 0;
+    free(wpath);
     if (h == INVALID_HANDLE_VALUE) {
-        errno = GetLastError() == ERROR_ACCESS_DENIED ? EACCES : ENOENT;
+        errno = error == ERROR_ACCESS_DENIED ? EACCES : ENOENT;
         return -1;
     }
     memset(&ov, 0, sizeof ov);
@@ -1012,6 +1031,177 @@ ST_file_lock_for_life(const char *path)
         return 0;
     errno = EIO;
     return -1;
+}
+
+/*
+ *  ----------  File names, UTF-8 on Windows too (Bugs07 X-24)  ----------
+ *
+ *  See st_port.h.  Strict UTF-8 first: with MB_ERR_INVALID_CHARS a byte
+ *  sequence that is not UTF-8 fails rather than becoming U+FFFD, and only
+ *  then is the text read in the ANSI code page -- the way the -A calls
+ *  read every name before, so that a name which worked then works now.
+ *  The price is a name that is valid UTF-8 but was meant in the code page
+ *  (`Ã©' typed for `é'), which is read as UTF-8; everywhere else in the
+ *  system a String's text is UTF-8, and a name now means the same.
+ */
+wchar_t *
+ST_wide_from_utf8(const char *text)
+{
+    UINT        page  = CP_UTF8;
+    DWORD       flags = MB_ERR_INVALID_CHARS;
+    int         n;
+    wchar_t    *wide;
+
+    n = MultiByteToWideChar(page, flags, text, -1, NULL, 0);
+    if (n == 0) {
+        page  = CP_ACP;
+        flags = 0;
+        n = MultiByteToWideChar(page, flags, text, -1, NULL, 0);
+    }
+    if (n == 0) {
+        errno = EINVAL;
+        return NULL;
+    }
+    wide = malloc((size_t) n * sizeof *wide);
+    if (!wide) {
+        errno = ENOMEM;
+        return NULL;
+    }
+    if (MultiByteToWideChar(page, flags, text, -1, wide, n) != n) {
+        free(wide);
+        errno = EINVAL;
+        return NULL;
+    }
+    return wide;
+}
+
+/*
+ *  Always UTF-8 on the way back.  A name holding half a surrogate pair,
+ *  which NTFS allows and UTF-8 cannot carry, comes back with U+FFFD in its
+ *  place, and so cannot be opened by what it is listed as -- the one name
+ *  this cannot round-trip.
+ */
+char *
+ST_utf8_from_wide(const wchar_t *text)
+{
+    int     n = WideCharToMultiByte(CP_UTF8, 0, text, -1, NULL, 0, NULL, NULL);
+    char   *utf8;
+
+    if (n == 0) {
+        errno = EINVAL;
+        return NULL;
+    }
+    utf8 = malloc((size_t) n);
+    if (!utf8) {
+        errno = ENOMEM;
+        return NULL;
+    }
+    if (WideCharToMultiByte(CP_UTF8, 0, text, -1, utf8, n, NULL, NULL) != n) {
+        free(utf8);
+        errno = EINVAL;
+        return NULL;
+    }
+    return utf8;
+}
+
+FILE *
+ST_fopen(const char *path, const char *mode)
+{
+    wchar_t     wmode[16];
+    wchar_t    *wpath;
+    FILE       *f;
+    size_t      i;
+    int         saved;
+
+    for (i = 0; mode[i] != '\0' && i + 1 < sizeof wmode / sizeof *wmode; ++i)
+        wmode[i] = (wchar_t) (unsigned char) mode[i];
+    wmode[i] = L'\0';
+    wpath = ST_wide_from_utf8(path);
+    if (!wpath)
+        return NULL;
+    f = _wfopen(wpath, wmode);
+    saved = errno;
+    free(wpath);
+    errno = saved;
+    return f;
+}
+
+int
+ST_remove(const char *path)
+{
+    wchar_t    *wpath = ST_wide_from_utf8(path);
+    int         answer;
+    int         saved;
+
+    if (!wpath)
+        return -1;
+    answer = _wremove(wpath);
+    saved = errno;
+    free(wpath);
+    errno = saved;
+    return answer;
+}
+
+int
+ST_path_kind(const char *path, int64_t *size)
+{
+    wchar_t                    *wpath = ST_wide_from_utf8(path);
+    WIN32_FILE_ATTRIBUTE_DATA   data;
+    DWORD                       error = 0;
+
+    if (!wpath)
+        return -1;
+    if (!GetFileAttributesExW(wpath, GetFileExInfoStandard, &data))
+        error = GetLastError();
+    free(wpath);
+    if (error != 0) {
+        errno = error == ERROR_ACCESS_DENIED ? EACCES : ENOENT;
+        return -1;
+    }
+    if (size)
+        *size = (int64_t) (((uint64_t) data.nFileSizeHigh << 32)
+                           | data.nFileSizeLow);
+    return (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+}
+
+/*
+ *  The CRT parsed the command line in the ANSI code page, so on a Windows
+ *  that ignored the manifest an image path holding a character outside it
+ *  arrived as `?'.  Parsed again from the UTF-16 line, each argument
+ *  converted; kept for the life of the process, as argv is.  Only when the
+ *  code page is not UTF-8 (when it is, argv is already right and is left
+ *  exactly as it was), and only when the two parses agree on the count --
+ *  CommandLineToArgvW and the CRT differ on a few quoting corner cases,
+ *  and the CRT's argv is the safer of two disagreeing answers.
+ */
+char **
+ST_utf8_arguments(int argc, char **argv)
+{
+    wchar_t   **wide;
+    char      **utf8;
+    int         n;
+    int         i;
+
+    if (GetACP() == CP_UTF8)
+        return argv;
+    wide = CommandLineToArgvW(GetCommandLineW(), &n);
+    if (!wide)
+        return argv;
+    utf8 = n == argc ? calloc((size_t) argc + 1, sizeof *utf8) : NULL;
+    if (!utf8) {
+        LocalFree(wide);
+        return argv;
+    }
+    for (i = 0; i < argc; ++i)
+        if ((utf8[i] = ST_utf8_from_wide(wide[i])) == NULL) {
+            while (i-- > 0)
+                free(utf8[i]);
+            free(utf8);
+            LocalFree(wide);
+            return argv;
+        }
+    LocalFree(wide);
+    return utf8;
 }
 
 #else
@@ -1050,6 +1240,26 @@ ST_file_lock_for_life(const char *path)
     close(fd);
     errno = saved;
     return saved == EWOULDBLOCK || saved == EAGAIN ? 0 : -1;
+}
+
+/*  See st_port.h: a POSIX name is its bytes, and argv is already them.  */
+int
+ST_path_kind(const char *path, int64_t *size)
+{
+    struct stat st;
+
+    if (stat(path, &st) != 0)
+        return -1;
+    if (size)
+        *size = (int64_t) st.st_size;
+    return S_ISDIR(st.st_mode) ? 1 : 0;
+}
+
+char **
+ST_utf8_arguments(int argc, char **argv)
+{
+    (void) argc;
+    return argv;
 }
 
 #endif

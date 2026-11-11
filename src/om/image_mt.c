@@ -234,7 +234,7 @@ write_objects(const char *tmp, const char *path, char *errbuf, size_t errlen)
 {
     FILE       *f;
     uint32_t    index;
-    f = fopen(tmp, "wb");
+    f = ST_fopen(tmp, "wb");
     if (!f) {
         fail(errbuf, errlen, "cannot write %s: %s", tmp, strerror(errno));
         return -1;
@@ -367,14 +367,14 @@ OM_image_save(const char *path, char *errbuf, size_t errlen)
     memcpy(tmp, path, len);
     memcpy(tmp + len, ".tmp", sizeof ".tmp");
     if (write_image(tmp, path, errbuf, errlen) != 0) {
-        (void) remove(tmp);
+        (void) ST_remove(tmp);
         free(tmp);
         return -1;
     }
     if (ST_file_replace(tmp, path) != 0) {
         fail(errbuf, errlen, "cannot replace %s with the new image: %s",
              path, strerror(errno));
-        (void) remove(tmp);
+        (void) ST_remove(tmp);
         free(tmp);
         return -1;
     }
@@ -623,7 +623,7 @@ OM_image_load(const char *path, char *errbuf, size_t errlen)
 
     if (errbuf && errlen)
         errbuf[0] = '\0';
-    f = fopen(path, "rb");
+    f = ST_fopen(path, "rb");
     if (!f) {
         fail(errbuf, errlen, "cannot open %s", path);
         return -1;

@@ -11,9 +11,11 @@
 #include "st_port.h"
 #include "st_atomic.h"
 
+#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <wchar.h>
 
 #if defined(__linux__)
 #include <sys/syscall.h>
@@ -663,6 +665,76 @@ test_bugs7f_files(void)
     ST_mutex_destroy(&lock);
 }
 
+/*
+ *  X-24: the other half of FILES-10.  The manifest makes the ANSI code
+ *  page UTF-8 only on Windows 10 1903 and later; before that every narrow
+ *  file call read a name's UTF-8 bytes in the code page.  Now every path
+ *  goes to a -W call through ST_wide_from_utf8, so a name means the same
+ *  whatever the code page.  Here a file is made, sized, found and removed
+ *  by a name holding an e-acute and a CJK character, through the port's
+ *  calls, and ST_path_kind tells a directory from a file from nothing.
+ *  On Windows the name it really got is asked of the system in UTF-16,
+ *  the conversions are checked both ways, and a name that is not UTF-8
+ *  (Latin-1 bytes, which named the right file through the -A calls on a
+ *  1252 system) is checked to be read in the code page, as it was.  Run
+ *  under Wine without the manifest -- code page 1252 -- this is the test
+ *  of the fix; on Linux the names are bytes and it checks the contract.
+ */
+static void
+test_bugs7f_files_names(void)
+{
+    const char *dir = st_test_path("bugs7f-x24");
+    char        name[1024];
+    char       *args[] = { "st2026", "caf\xC3\xA9", NULL };
+    FILE       *f;
+    int64_t     size = -1;
+
+    snprintf(name, sizeof name, "%s.caf\xC3\xA9-\xE6\x97\xA5.txt", dir);
+    ST_remove(name);
+    f = ST_fopen(name, "wb");
+    CHECK(f != NULL);
+    if (f != NULL) {
+        CHECK_EQ_INT(fwrite("abc", 1, 3, f), 3);
+        CHECK_EQ_INT(fclose(f), 0);
+    }
+    CHECK_EQ_INT(ST_path_kind(name, &size), 0);
+    CHECK_EQ_INT(size, 3);
+    f = ST_fopen(name, "rb");
+    CHECK(f != NULL);
+    if (f != NULL)
+        fclose(f);
+#ifdef ST_WINDOWS
+    {
+        wchar_t    *wide = ST_wide_from_utf8(name);
+        wchar_t    *latin = ST_wide_from_utf8("caf\xE9");
+        char       *back;
+        size_t      n = wide ? wcslen(wide) : 0;
+
+        /*  The file's real name ends in e-acute, `-', U+65E5, `.txt'.  */
+        CHECK(n > 7 && wcscmp(wide + n - 7, L"\u00e9-\u65e5.txt") == 0);
+        CHECK(wide != NULL
+              && GetFileAttributesW(wide) != INVALID_FILE_ATTRIBUTES);
+        back = wide ? ST_utf8_from_wide(wide) : NULL;
+        CHECK(back != NULL && strcmp(back, name) == 0);
+        if (GetACP() == 1252)
+            CHECK(latin != NULL && wcscmp(latin, L"caf\u00e9") == 0);
+        free(back);
+        free(latin);
+        free(wide);
+    }
+#endif
+    CHECK_EQ_INT(ST_remove(name), 0);
+    CHECK_EQ_INT(ST_path_kind(name, NULL), -1);
+    CHECK_EQ_INT(errno, ENOENT);
+    CHECK_EQ_INT(ST_path_kind(".", NULL), 1);
+    CHECK_EQ_INT(ST_path_kind("src/port/st_port.c", NULL), 0);
+    /*  argv is the CRT's when the code page is UTF-8, and always here.  */
+#ifdef ST_WINDOWS
+    if (GetACP() == CP_UTF8)
+#endif
+        CHECK(ST_utf8_arguments(2, args) == args);
+}
+
 int
 main(void)
 {
@@ -684,6 +756,7 @@ main(void)
     test_bugs7e_sched();
     test_bugs7e_files_text();
     test_bugs7f_files();
+    test_bugs7f_files_names();
 
     return ST_TEST_END();
 }

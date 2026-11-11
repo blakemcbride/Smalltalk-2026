@@ -6,8 +6,7 @@
  */
 
 #include "profile.h"
-
-#include <sys/stat.h>
+#include "st_port.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -303,20 +302,34 @@ add_directory(expansion *e, const char *dir, int dialect)
 
 #if defined(_WIN32)
     {
-        WIN32_FIND_DATAA    data;
-        HANDLE              h;
+        /*  UTF-8 names both ways, whatever the code page (Bugs07 X-24).  */
+        WIN32_FIND_DATAW    data;
+        HANDLE              h = INVALID_HANDLE_VALUE;
         char                pattern[1024];
+        wchar_t            *wpattern;
+        char               *name;
 
         snprintf(pattern, sizeof pattern, "%s\\*", dir);
-        h = FindFirstFileA(pattern, &data);
+        if ((wpattern = ST_wide_from_utf8(pattern)) != NULL) {
+            h = FindFirstFileW(wpattern, &data);
+            free(wpattern);
+        }
         if (h == INVALID_HANDLE_VALUE) {
             snprintf(e->error, e->error_len, "cannot read directory %s", dir);
             return 0;
         }
         do {
-            if (is_source_file(data.cFileName))
-                SRC_names_add(&found, data.cFileName);
-        } while (FindNextFileA(h, &data));
+            if ((name = ST_utf8_from_wide(data.cFileName)) == NULL) {
+                FindClose(h);
+                SRC_names_free(&found);
+                snprintf(e->error, e->error_len,
+                         "out of memory reading directory %s", dir);
+                return 0;
+            }
+            if (is_source_file(name))
+                SRC_names_add(&found, name);
+            free(name);
+        } while (FindNextFileW(h, &data));
         FindClose(h);
     }
 #else
@@ -474,7 +487,7 @@ fold_dots(char *path)
 static int
 add_manifest(expansion *e, const char *path, int dialect)
 {
-    FILE   *f = fopen(path, "r");
+    FILE   *f = ST_fopen(path, "r");
     char    line[1024];
     char    here[1024];
     char    root[1024];
@@ -739,11 +752,7 @@ PROFILE_expand(const char *path, st_names *out, int **dialects, char *error,
 static int
 is_directory(const char *path)
 {
-    struct stat st;
-
-    if (stat(path, &st) != 0)
-        return 0;
-    return (st.st_mode & S_IFMT) == S_IFDIR;
+    return ST_path_kind(path, NULL) == 1;
 }
 
 /*
@@ -778,20 +787,34 @@ PROFILE_expand_tree(const char *dir, st_names *out, char *error,
     memset(&here, 0, sizeof here);
 #ifdef _WIN32
     {
-        WIN32_FIND_DATAA    data;
-        HANDLE              h;
+        /*  UTF-8 names both ways, as in add_directory (Bugs07 X-24).  */
+        WIN32_FIND_DATAW    data;
+        HANDLE              h = INVALID_HANDLE_VALUE;
         char                pattern[1024];
+        wchar_t            *wpattern;
+        char               *name;
 
         snprintf(pattern, sizeof pattern, "%s\\*", dir);
-        h = FindFirstFileA(pattern, &data);
+        if ((wpattern = ST_wide_from_utf8(pattern)) != NULL) {
+            h = FindFirstFileW(wpattern, &data);
+            free(wpattern);
+        }
         if (h == INVALID_HANDLE_VALUE) {
             snprintf(error, error_len, "cannot read directory %s", dir);
             return 0;
         }
         do {
-            if (data.cFileName[0] != '.')
-                SRC_names_add(&here, data.cFileName);
-        } while (FindNextFileA(h, &data));
+            if ((name = ST_utf8_from_wide(data.cFileName)) == NULL) {
+                FindClose(h);
+                SRC_names_free(&here);
+                snprintf(error, error_len,
+                         "out of memory reading directory %s", dir);
+                return 0;
+            }
+            if (name[0] != '.')
+                SRC_names_add(&here, name);
+            free(name);
+        } while (FindNextFileW(h, &data));
         FindClose(h);
     }
 #else

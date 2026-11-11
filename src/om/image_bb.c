@@ -27,6 +27,7 @@
 
 #include "om_bb.h"
 #include "om.h"
+#include "st_port.h"
 
 #include <stdio.h>
 #include <stdarg.h>
@@ -106,7 +107,7 @@ OM_image_load(const char *path, char *errbuf, size_t errlen)
         fail(errbuf, errlen, "object memory not initialized");
         return -1;
     }
-    f = fopen(path, "rb");
+    f = ST_fopen(path, "rb");
     if (!f) {
         fail(errbuf, errlen, "cannot open %s", path);
         return -1;
