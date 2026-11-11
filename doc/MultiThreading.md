@@ -117,14 +117,18 @@ extern st_atomic_uint   st_om_table_limit;  /*  first index past the used range 
 Two properties matter, and both are threading requirements rather than
 simplifications:
 
-**The table starts at four million entries and grows at a safepoint.** A
-growable table has to be reallocated, and reallocation moves it — while other
-threads are indexing it without a lock, since taking one on every field access
-would defeat the point of having a table. That is a real objection and it is
-answered rather than argued away: growth runs through `WORKER_at_safepoint`,
-where every other worker is parked at a bytecode boundary and none of them
-holds a pointer into the array, which is the same mechanism the one-way
-`become:` and instance enumeration already use.
+**The table starts at four million entries and grows in place.** Other
+threads index it without a lock, since taking one on every field access would
+defeat the point of having a table, and not all of them are workers: the delay
+timer and the network thread look objects up and count them on every delivery,
+and no safepoint parks them. So the table never moves. Its two arrays — the
+slots and the counts beside them — are reserved whole, as address space, when
+the object memory starts, and growing commits more of that reservation
+(`ST_vm_reserve` and `ST_vm_commit` in the port layer: `mmap`/`mprotect`, or
+`VirtualAlloc`). Growth still runs through `WORKER_at_safepoint`, which is what
+lets two workers that both find the table full grow it one after the other. It
+used to be a `realloc` at that safepoint, which moved the arrays under the two
+threads the safepoint does not stop (Bugs07 OM-8).
 
 Four million *was* the ceiling, and it was the wrong one. A table of four
 million entries is four million live objects however much memory the machine
@@ -139,9 +143,13 @@ the starting size, and `ST_MAX_OBJECTS` in the environment moves it, down to a
 floor of 262144; a ceiling below the starting size starts the table there. A ceiling
 is wanted — growing until `malloc` says no means a runaway takes the machine
 rather than the image, and on a server that is other people's processes.
-Reserving the range costs eight bytes of *address space* per possible object
-and nothing resident until a slot is touched, because the pages arrive on first
-write, so the ceiling itself costs nothing.
+The whole range is reserved when the object memory starts — twelve bytes of
+*address space* per possible object, the table's slot and its count — and
+committed as the table grows, with nothing resident until a slot is touched,
+because the pages arrive on first write; so the ceiling itself costs nothing,
+and the table never moves. That matters beyond memory: the delay timer and the
+network thread, which no safepoint stops, look objects up and count them while
+the table grows.
 
 One other knob lives in the environment: `ST_IDLE_BACKSTOP_SECONDS`. A worker
 with nothing to run decides that every process is blocked when every worker
@@ -159,9 +167,8 @@ end of the counts. It was unreachable only because the fixed ceiling stopped
 such an image from being built.
 
 A segmented table — a fixed directory of fixed-size chunks, so growth adds a
-chunk and never moves an existing one — is still the shape to want, because it
-needs no safepoint at all. It is a change to the hot path in `OM_table_get`;
-this is not, and the wall is gone either way.
+chunk and never moves an existing one — would not move either, but it is a
+change to the hot path in `OM_table_get`; the reservation is not.
 
 **The slots are atomic**, because they are written under `table_lock` but read
 without it on every single dereference. Publishing a *new* entry is ordered by

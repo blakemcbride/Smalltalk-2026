@@ -33,6 +33,10 @@
 #include <sched.h>
 #include <fcntl.h>      /*  open, for ST_file_lock_for_life  */
 #include <sys/file.h>   /*  flock, the same  */
+#include <sys/mman.h>   /*  mmap and mprotect, for ST_vm_reserve  */
+#if !defined(MAP_ANONYMOUS) && defined(MAP_ANON)
+#define MAP_ANONYMOUS   MAP_ANON    /*  the older BSD spelling  */
+#endif
 #endif
 
 /*  ST_EPOCH_OFFSET_SEC is in st_port.h: the file primitives want it too.  */
@@ -805,6 +809,93 @@ ST_memory_trim(void)
 #endif
 }
 
+/*  ----------  Reserved address space  ----------  */
+
+static size_t
+vm_page_size(void)
+{
+    static size_t   page;
+
+    if (page == 0) {
+#ifdef ST_WINDOWS
+        SYSTEM_INFO info;
+
+        GetSystemInfo(&info);
+        page = (size_t) info.dwPageSize;
+#else
+        long        n = sysconf(_SC_PAGESIZE);
+
+        page = n > 0 ? (size_t) n : 4096u;
+#endif
+    }
+    return page;
+}
+
+static size_t
+vm_round_up(size_t bytes)
+{
+    size_t  page = vm_page_size();
+
+    if (bytes > SIZE_MAX - (page - 1))
+        return 0;
+    return (bytes + page - 1) / page * page;
+}
+
+void *
+ST_vm_reserve(size_t bytes)
+{
+    size_t  total = vm_round_up(bytes);
+
+    if (total == 0)
+        return NULL;
+#ifdef ST_WINDOWS
+    return VirtualAlloc(NULL, total, MEM_RESERVE, PAGE_NOACCESS);
+#else
+    {
+        /*
+         *  PROT_NONE, so the range costs no commit charge and a stray
+         *  access past what has been committed faults rather than reads
+         *  zeroes; MAP_NORESERVE where it exists says the same to a kernel
+         *  that would otherwise count it against overcommit.
+         */
+        int     flags = MAP_PRIVATE | MAP_ANONYMOUS;
+        void   *base;
+
+#ifdef MAP_NORESERVE
+        flags |= MAP_NORESERVE;
+#endif
+        base = mmap(NULL, total, PROT_NONE, flags, -1, 0);
+        return base == MAP_FAILED ? NULL : base;
+    }
+#endif
+}
+
+int
+ST_vm_commit(void *base, size_t bytes)
+{
+    size_t  total = vm_round_up(bytes);
+
+    if (!base || total == 0)
+        return bytes == 0 ? 0 : -1;
+#ifdef ST_WINDOWS
+    return VirtualAlloc(base, total, MEM_COMMIT, PAGE_READWRITE) ? 0 : -1;
+#else
+    return mprotect(base, total, PROT_READ | PROT_WRITE) == 0 ? 0 : -1;
+#endif
+}
+
+void
+ST_vm_release(void *base, size_t bytes)
+{
+    if (!base)
+        return;
+#ifdef ST_WINDOWS
+    (void) bytes;
+    VirtualFree(base, 0, MEM_RELEASE);
+#else
+    (void) munmap(base, vm_round_up(bytes));
+#endif
+}
 
 /*  Platform-independent: one clock for every caller.  See st_port.h.  */
 uint32_t

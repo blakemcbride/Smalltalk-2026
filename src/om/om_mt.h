@@ -210,23 +210,18 @@ OM_refcount_of(st_oop p)
  *  recursion about five million frames deep, and printString of a structure
  *  that contains itself.
  *
- *  It grows now, and the reason it could not before is real and is answered
- *  rather than argued away.  Reallocation MOVES the array while other
- *  threads are indexing it without a lock -- taking one on every field
- *  access would defeat the point of an object table -- so the growth is
- *  done at a SAFEPOINT, where every other worker is parked at a bytecode
- *  boundary and none of them is holding a pointer into it.  That is the
- *  same mechanism OM_forward_identity and OM_next_instance_after already
- *  use, and for the same reason.
+ *  It grows now, and in place.  Every thread indexes the table without a
+ *  lock -- taking one on every field access would defeat the point of an
+ *  object table -- and not every such thread is a worker a safepoint can
+ *  park: the delay timer and the network I/O thread look objects up and
+ *  count them on every delivery.  So the table never moves.  OM_init
+ *  reserves ADDRESS SPACE for every entry the ceiling and its reserve can
+ *  reach, and growth commits more of it (Bugs07 OM-8); a realloc at a
+ *  safepoint, which this was, moved the arrays under those two threads.
  *
- *  A segmented table -- a fixed directory of fixed-size chunks, so growth
- *  adds a chunk and never moves one -- is still the shape to want, because
- *  it needs no safepoint at all.  It is a change to the hot path in
- *  OM_table_get; this is not, and the wall is gone either way.
- *
- *  Reserving the range up front costs eight bytes of address space per
- *  possible object and nothing resident until an entry is touched, because
- *  the pages are only mapped on first write.
+ *  The reservation costs twelve bytes of address space per possible object
+ *  -- the slot and its count -- and nothing resident until an entry is
+ *  touched, because committed pages are only mapped on first write.
  */
 #define ST_OM_MAX_OBJECTS   (4u * 1024u * 1024u)
 

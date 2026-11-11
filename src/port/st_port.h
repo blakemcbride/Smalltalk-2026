@@ -215,6 +215,26 @@ long    ST_utc_offset_between(const struct tm *local, const struct tm *utc);
  */
 void    ST_memory_trim(void);
 
+/*
+ *  Address space reserved once and made usable a piece at a time, so that
+ *  an array can grow without ever moving.
+ *
+ *  ST_vm_reserve takes `bytes' of address space and nothing else -- no
+ *  memory, no commit charge, and every access to it faults -- answering
+ *  NULL when the platform will not give that much.  ST_vm_commit makes
+ *  the first `bytes' of a reservation readable and writable, zero-filled
+ *  where nothing has been written before; asking again for a longer
+ *  prefix extends it and leaves what was already there.  ST_vm_release
+ *  gives the whole reservation back.  `bytes' is rounded up to whole pages
+ *  by each of them.  mmap and mprotect on POSIX, VirtualAlloc with
+ *  MEM_RESERVE and then MEM_COMMIT on Windows.  The object table and its
+ *  counts are reserved this way so that a thread the safepoint does not
+ *  park can index them while they grow (Bugs07 OM-8).
+ */
+void   *ST_vm_reserve(size_t bytes);
+int     ST_vm_commit(void *base, size_t bytes);
+void    ST_vm_release(void *base, size_t bytes);
+
 /*  Files
  *
  *  The two operations a snapshot writer needs that C leaves to the

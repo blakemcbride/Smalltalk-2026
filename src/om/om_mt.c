@@ -20,6 +20,29 @@ uint32_t         st_om_table_size;
 uint32_t         st_om_table_max = ST_OM_MAX_OBJECTS_CEILING;
 
 /*
+ *  How many entries the two arrays have ADDRESS SPACE for: reserved once,
+ *  by OM_init, and never moved until OM_shutdown gives it back.
+ *  st_om_table_size is how much of it is committed and in use.
+ *
+ *  Bugs07 OM-8.  The arrays used to be calloc'd at the starting size and
+ *  realloc'd each time the table doubled, at a safepoint -- which parks
+ *  every WORKER and nothing else.  The delay timer and the network I/O
+ *  thread are not workers: on every delivery they read st_om_table (to
+ *  ask OM_is_object) and add to st_om_refcounts (OM_increase_ref and
+ *  OM_decrease_ref), so one that loaded the old pointer before the
+ *  realloc and added after it wrote into a freed block -- or an unmapped
+ *  one, where glibc moves a large block with mremap -- and an add that
+ *  landed while realloc copied was lost, a Semaphore's count one short.
+ *  With no workers the growth was not even at a safepoint.  Reserved
+ *  whole and committed a piece at a time (ST_vm_reserve, ST_vm_commit),
+ *  the arrays are where they were for the life of the memory, and a
+ *  thread that indexes them while they grow indexes the same memory.
+ */
+static uint32_t     table_reserved;
+static int          reserve_tables(void);  /*  with the reserve, below  */
+static void         release_tables(void);
+
+/*
  *  The ceiling, read once from the environment.
  *
  *  Called from OM_init rather than from a constructor so that a test can set
@@ -667,40 +690,38 @@ OM_init(void)
      */
     read_table_ceiling();
     read_forced_collection();
+    /*
+     *  The whole range first, as address space, and then the starting
+     *  size of it made usable.  Neither costs memory: the reservation is
+     *  PROT_NONE (MEM_RESERVE on Windows), and a committed page arrives
+     *  zeroed when it is first written.  The counts sit beside the table
+     *  rather than inside the objects, four bytes an object against the
+     *  forty that padding the header to a cache line would have cost.
+     */
+    if (reserve_tables() != 0)
+        return -1;
     initial = ST_OM_MAX_OBJECTS < st_om_table_max
                 ? ST_OM_MAX_OBJECTS : st_om_table_max;
+    if (initial > table_reserved)
+        initial = table_reserved;
     /*
-     *  calloc of this size is a lazy mapping on every platform we target:
-     *  the pages arrive as they are first written, so the cost here is
-     *  address space rather than memory.
+     *  (void *) said out loud, here and below.
+     *
+     *  st_om_table and st_om_refcounts point at _Atomic objects, and C
+     *  will not quietly drop a qualifier on the way to void * -- the
+     *  conversion is a constraint violation and a compiler is entitled to
+     *  say so.  gcc does not; MSVC answers C4090, "different '_Atomic'
+     *  qualifiers", once per call.  Nothing is wrong: the port layer wants
+     *  the memory, not the objects in it.  But "the object memory of a
+     *  threaded system discards an _Atomic qualifier" is not a line anyone
+     *  should learn to scroll past, so the cast makes it deliberate.
+     *  memset((void *) worker_epoch, ...) below already did.
      */
-    st_om_table = (st_atomic_ptr *) calloc(initial, sizeof *st_om_table);
-    if (!st_om_table)
-        return -1;
-    /*
-     *  The counts, beside the table rather than inside the objects.  Same
-     *  lazy mapping, and four bytes an object against the forty that
-     *  padding the header to a cache line would have cost.
-     */
-    st_om_refcounts = (st_atomic_uint *) calloc(initial,
-                                               sizeof *st_om_refcounts);
-    if (!st_om_refcounts) {
-        /*
-         *  (void *) said out loud, here and at the three below.
-         *
-         *  st_om_table and st_om_refcounts point at _Atomic objects, and C
-         *  will not quietly drop a qualifier on the way to void * -- the
-         *  conversion is a constraint violation and a compiler is entitled
-         *  to say so.  gcc does not; MSVC answers C4090, "different
-         *  '_Atomic' qualifiers", once per call.  Nothing is wrong: free
-         *  and realloc want the allocation, not the objects in it.  But
-         *  "the object memory of a threaded system discards an _Atomic
-         *  qualifier five times" is not a line anyone should learn to scroll
-         *  past, so the cast makes it deliberate.  memset((void *)
-         *  worker_epoch, ...) below already did.
-         */
-        free((void *) st_om_table);
-        st_om_table = NULL;
+    if (ST_vm_commit((void *) st_om_table,
+                     (size_t) initial * sizeof *st_om_table) != 0
+     || ST_vm_commit((void *) st_om_refcounts,
+                     (size_t) initial * sizeof *st_om_refcounts) != 0) {
+        release_tables();
         return -1;
     }
     st_om_table_size  = initial;
@@ -739,11 +760,8 @@ OM_shutdown(void)
 
         for (i = 0; i < limit; ++i)
             free(OM_table_get(i));
-        free((void *) st_om_table);
     }
-    free((void *) st_om_refcounts);
-    st_om_refcounts = NULL;
-    st_om_table       = NULL;
+    release_tables();
     st_om_table_size  = 0;
     reserve_reset();
     ST_store_seq(&st_om_table_limit, 0);
@@ -803,18 +821,20 @@ OM_is_object(st_oop p)
  *  be, which costs memory and breaks nothing; the reverse would leave a
  *  table whose upper entries have no count behind them, which is the fault
  *  this function exists to make impossible.
+ *
+ *  Growing is committing more of the reservation, in place (Bugs07 OM-8):
+ *  neither array moves, and the new entries are pages never written
+ *  before, so they read as zero -- an empty slot and a zero count --
+ *  without being cleared, and cost nothing until an entry is used.
  */
 static int
 grow_tables_to(uint32_t entries)
 {
     uint32_t        size = st_om_table_size;
-    uint32_t        old  = st_om_table_size;
-    st_atomic_ptr  *grown;
-    st_atomic_uint *counts;
 
     if (entries <= size)
         return 1;
-    if (entries > st_om_table_max)
+    if (entries > st_om_table_max || entries > table_reserved)
         return 0;
     while (size < entries) {
         if (size > UINT32_MAX / 2u) {
@@ -831,20 +851,14 @@ grow_tables_to(uint32_t entries)
      */
     if (size > st_om_table_max)
         size = st_om_table_max;
-    counts = (st_atomic_uint *) realloc((void *) st_om_refcounts,
-                                        (size_t) size * sizeof *counts);
-    if (!counts)
+    if (size > table_reserved)
+        size = table_reserved;
+    if (ST_vm_commit((void *) st_om_refcounts,
+                     (size_t) size * sizeof *st_om_refcounts) != 0)
         return 0;
-    memset((void *) (counts + old), 0,
-           (size_t) (size - old) * sizeof *counts);
-    st_om_refcounts = counts;
-
-    grown = (st_atomic_ptr *) realloc((void *) st_om_table,
-                                      (size_t) size * sizeof *grown);
-    if (!grown)
+    if (ST_vm_commit((void *) st_om_table,
+                     (size_t) size * sizeof *st_om_table) != 0)
         return 0;
-    memset((void *) (grown + old), 0, (size_t) (size - old) * sizeof *grown);
-    st_om_table      = grown;
     st_om_table_size = size;
     return 1;
 }
@@ -937,6 +951,61 @@ grow_at_safepoint(void *user)
  *  and is told -- with a reserve of its own, as before.
  */
 #define OM_RESERVE_LIFTS    16
+
+/*
+ *  The address space for both arrays: the ceiling and every lift above it
+ *  that OM_release_table_reserve can make, which is all the table can ever
+ *  reach (Bugs07 OM-8; see table_reserved).  Twelve bytes of address
+ *  space per entry -- under a gigabyte at the default ceiling -- and no
+ *  memory.  Where the platform will not give that much (a ulimit on
+ *  address space), half as much is asked for, down to the starting size,
+ *  and the ceiling comes down with it, leaving the lifts their room above
+ *  it: a ceiling the arrays could not reach would refuse an allocation
+ *  without the OutOfMemory a ceiling is there to give.
+ */
+static void
+release_tables(void)
+{
+    ST_vm_release((void *) st_om_table,
+                  (size_t) table_reserved * sizeof *st_om_table);
+    ST_vm_release((void *) st_om_refcounts,
+                  (size_t) table_reserved * sizeof *st_om_refcounts);
+    st_om_table     = NULL;
+    st_om_refcounts = NULL;
+    table_reserved  = 0;
+}
+
+static int
+reserve_tables(void)
+{
+    uint64_t    lifts = (uint64_t) OM_RESERVE_LIFTS * OM_TABLE_RESERVE;
+    uint64_t    want  = (uint64_t) st_om_table_max + lifts;
+    uint32_t    least = ST_OM_MAX_OBJECTS < st_om_table_max
+                          ? ST_OM_MAX_OBJECTS : st_om_table_max;
+
+    if (want > UINT32_MAX)
+        want = UINT32_MAX;
+    for (;;) {
+        table_reserved  = (uint32_t) want;
+        st_om_table     = (st_atomic_ptr *) ST_vm_reserve(
+                              (size_t) want * sizeof *st_om_table);
+        st_om_refcounts = (st_atomic_uint *) ST_vm_reserve(
+                              (size_t) want * sizeof *st_om_refcounts);
+        if (st_om_table && st_om_refcounts)
+            break;
+        release_tables();
+        if (want <= least)
+            return -1;
+        want /= 2;
+        if (want < least)
+            want = least;
+    }
+    if ((uint64_t) st_om_table_max + lifts > table_reserved)
+        st_om_table_max = table_reserved > lifts + least
+                            ? (uint32_t) (table_reserved - lifts)
+                            : table_reserved;
+    return 0;
+}
 
 typedef struct {
     st_oop      process;
@@ -1097,10 +1166,12 @@ OM_grow_table_to(uint32_t entries)
     if (entries > st_om_table_max)
         return 0;
     /*
-     *  At a safepoint, because realloc moves the array and every worker
-     *  dereferences it without a lock.  Parked at a bytecode boundary, no
-     *  worker holds a pointer into it and all of them re-read the global
-     *  when they resume.
+     *  At a safepoint, though the arrays no longer move (Bugs07 OM-8):
+     *  it is what lets two workers that both find the table full grow it
+     *  one after the other, and what orders the new size before every
+     *  worker's next read of it.  Nothing reading the table depends on it
+     *  any more -- which is as well, because the delay timer and the
+     *  network thread were never parked by it.
      */
     if (WORKER_count() > 0) {
         grow_wanted = entries;

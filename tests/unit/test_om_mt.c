@@ -19,6 +19,7 @@
 #include "om.h"
 #include "census.h"
 #include "finalize.h"
+#include "st_port.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -1314,6 +1315,79 @@ test_bugs7f_om(void)
     remove(bad);
 }
 
+/*
+ *  Bugs07 OM-8: growing the table leaves both arrays where they are, while
+ *  a thread that is not a worker counts through them.
+ *
+ *  Growth was a realloc of st_om_refcounts and st_om_table at a safepoint,
+ *  and a safepoint parks workers only: the delay timer and the network
+ *  thread count Semaphores on every delivery without being parked, so an
+ *  add that loaded the old pointer before the realloc wrote into a freed
+ *  block, or was lost while the block was copied.  Here a second thread
+ *  does what the timer does -- one up and one down on an object's count,
+ *  over and over -- while this one grows the table to four times its
+ *  size.  Afterwards the arrays are at the same addresses, every add and
+ *  every subtract has landed (the count is back where it started), and
+ *  the new top of the table reads as empty.
+ */
+static st_oop           counted;
+static st_atomic_int    counting_stop;
+static st_atomic_int    counting_rounds;
+
+static void
+count_like_the_timer(void *arg)
+{
+    (void) arg;
+    while (!ST_load_acquire(&counting_stop)) {
+        OM_increase_ref(counted);
+        OM_decrease_ref(counted);
+        ST_fetch_add_relaxed(&counting_rounds, 1);
+    }
+}
+
+static void
+test_bugs7f_om8(void)
+{
+    st_atomic_ptr  *table  = st_om_table;
+    st_atomic_uint *counts = st_om_refcounts;
+    uint32_t        size   = st_om_table_size;
+    uint32_t        before;
+    st_thread       thread;
+    int             started;
+
+    printf("  Bugs07 OM-8: the table grows in place\n");
+    counted = OM_instantiate_pointers(ST_CLASS_ARRAY, 1);
+    OM_increase_ref(counted);
+    OM_increase_ref(counted);
+    before = OM_count_bits(counted);
+    ST_store_seq(&counting_stop, 0);
+    ST_store_seq(&counting_rounds, 0);
+    started = ST_thread_create(&thread, count_like_the_timer, NULL) == 0;
+    CHECK(started);
+    while (started && ST_load_relaxed(&counting_rounds) < 1000)
+        ST_thread_yield();
+    CHECK(OM_grow_table_to(size * 2));
+    CHECK(OM_grow_table_to(size * 4));
+    if (started) {
+        int     at_growth = ST_load_relaxed(&counting_rounds);
+
+        while (ST_load_relaxed(&counting_rounds) < at_growth + 1000)
+            ST_thread_yield();
+        ST_store_seq(&counting_stop, 1);
+        ST_thread_join(thread);
+    }
+    CHECK(st_om_table == table);
+    CHECK(st_om_refcounts == counts);
+    CHECK(st_om_table_size >= size * 4);
+    CHECK_EQ_INT(OM_count_bits(counted), before);
+    CHECK(OM_table_get(st_om_table_size - 1) == NULL);
+    CHECK_EQ_INT(ST_load_relaxed(&st_om_refcounts[st_om_table_size - 1]), 0);
+    printf("  grown from %u to %u entries, %d rounds counted alongside\n",
+           size, st_om_table_size, ST_load_relaxed(&counting_rounds));
+    OM_decrease_ref(counted);
+    OM_decrease_ref(counted);
+}
+
 int
 main(void)
 {
@@ -1338,6 +1412,7 @@ main(void)
     test_snapshot_never_destroys_the_old_image();
     test_corrupt_image_is_refused();
     test_bugs7f_om();
+    test_bugs7f_om8();
     test_full_table_collects();
 
     printf("  table holds %u entries, %u free\n", st_om_table_limit,
