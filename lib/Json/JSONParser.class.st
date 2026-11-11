@@ -232,8 +232,24 @@ JSONParser class >> on: aStringOrStream [
 JSONParser >> initialize [
 	depth := 0.
 	maxDepth := 512.
-	maxDigits := 256.
+	maxDigits := JSONParser defaultMaxDigits.
 	numberWork := 10000
+]
+
+{ #category : 'accessing' }
+JSONParser class >> defaultMaxDigits [
+	"How many digits a number may have in its whole part, and again in its
+	 fraction, unless a parser is told otherwise (maxDigits:).  Named here
+	 because JSONWriter writes every number so that a parser with these
+	 limits reads it back; see JSONWriter>>writeDigits:exponent:."
+	^256
+]
+
+{ #category : 'accessing' }
+JSONParser class >> maxExponent [
+	"The largest exponent, either sign, a number may be written with; see
+	 nextExponent."
+	^400
 ]
 
 { #category : 'accessing' }
@@ -701,7 +717,7 @@ JSONParser >> nextExponent [
 	(stream atEnd not and: [stream peek isDigit])
 		ifFalse: [self error: 'an exponent needs at least one digit'].
 	value := self nextDigits.
-	value > 400 ifTrue: [
+	value > JSONParser maxExponent ifTrue: [
 		self error: 'an exponent of ', value printString,
 			' is larger than this parser will compute'].
 	^negative ifTrue: [value negated] ifFalse: [value]

@@ -756,8 +756,12 @@
  *  3471 -> 3474 with Bugs07 COMP-4: Decompiler>>openInlinedScope,
  *  close:declaringIn: and inlinedBlockTo:, which declare an inlined
  *  block's vector in that block.
+ *
+ *  3474 -> 3479 with Bugs07 NET-8: JSONParser class>>defaultMaxDigits and
+ *  maxExponent, and JSONWriter>>writeDigits:exponent:, twosIn: and
+ *  fivesIn:.
  */
-#define LIB_METHODS             3474
+#define LIB_METHODS             3479
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -3266,8 +3270,12 @@ test_browsing(void)
      *
      *  3097153 -> 3099025 with Bugs07 NET-7: a streamed answer ends at
      *  its service's end line, and a stream cut before it is an LLMError.
+     *
+     *  3099025 -> 3105407 with Bugs07 NET-8: the writer writes a number
+     *  with an exponent when the parser would not read it in full, and
+     *  finds a fraction's twos and fives without dividing them out.
      */
-    check_integer("(SourceFiles at: 1) contents size", 3099025);
+    check_integer("(SourceFiles at: 1) contents size", 3105407);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -13566,6 +13574,54 @@ test_bugs7e_net(void)
                  "run value: (t lines: {ev value: 'Hel' value: 'false'. ev value: 'lo' value: 'true'. "
                  "ev value: 'XX' value: 'false'})} printString",
                  "('LLMError Hel' '''Hello''' )");
+
+    /*
+     *  NET-8.  The parser reads an exponent up to 400 and builds the exact
+     *  number; the writer wrote that number digit by digit, and the parser
+     *  refuses more than 256 digits in a whole part or a fraction -- so
+     *  1e300, JavaScript's MAX_VALUE and MIN_VALUE, and the smallest normal
+     *  double read and then could not be read back.  Before: `('1e255'->true
+     *  '1e256'->257 '1e300'->301 '1.7976931348623157e308'->309 '5e-324'->326
+     *  '2.2250738585072014e-308'->326 '1e-256'->true '1e-257'->259 )', the
+     *  number being the length of what the parser then refused.  Now each
+     *  is written in the form it was read in, and the two ends of what the
+     *  parser builds -- 256 digits and 256 places at an exponent of 400,
+     *  and the smallest it reads -- come back too (before: `(false false
+     *  true )').  The fourth check passes before and after on purpose:
+     *  every number that had a readable form is written exactly as it
+     *  was.
+     */
+    check_string("^(#('1e255' '1e256' '1e300' '1.7976931348623157e308' '5e-324' "
+                 "'2.2250738585072014e-308' '1e-256' '1e-257' '-1.25e-300') collect: [:d | "
+                 "| w | w := JSONWriter write: (JSONParser parse: d). "
+                 "[(JSONParser parse: w) = (JSONParser parse: d)] on: JSONError do: [:e | w size]]) "
+                 "printString",
+                 "(true true true true true true true true true )");
+    check_string("^(#('1e300' '1.7976931348623157e308' '5e-324' '2.2250738585072014e-308' "
+                 "'1e-257' '-1.25e-300') collect: [:d | JSONWriter write: (JSONParser parse: d)]) "
+                 "printString",
+                 "('1e300' '1.7976931348623157e308' '5e-324' '2.2250738585072014e-308' "
+                 "'1e-257' '-1.25e-300' )");
+    check_string("| nines big small | nines := String new: 256 withAll: $9. "
+                 "big := JSONParser parse: nines, '.', nines, 'e400'. "
+                 "small := JSONParser parse: '0.', (String new: 255 withAll: $0), '1e-400'. "
+                 "^{[(JSONParser parse: (JSONWriter write: big)) = big] on: JSONError do: [:e | false]. "
+                 "[(JSONParser parse: (JSONWriter write: small)) = small] on: JSONError do: [:e | false]. "
+                 "small = (10 raisedTo: 656) reciprocal} printString",
+                 "(true true true )");
+    check_string("^((#(0 15 -7 1500 100000000000000000000 123456789012345678901234567890 "
+                 "1000000000000000000000) collect: [:x | JSONWriter write: x]), "
+                 "(#('1.5' '-0.001' '0.0000001' '0.5e-2' '-0' '1e200') collect: [:t | "
+                 "(JSONWriter write: (JSONParser parse: t)) size printString]), "
+                 "{JSONWriter write: 1/3}) printString",
+                 "('0' '15' '-7' '1500' '100000000000000000000' "
+                 "'123456789012345678901234567890' '1000000000000000000000' "
+                 "'3' '6' '9' '5' '1' '201' '0.3333333333333333' )");
+    /*  And written in a few milliseconds each: the denominator's twos and
+     *  fives were divided out one large division at a time, a second for
+     *  1.5e-400 -- these five ran out this harness's budget.  */
+    check_boolean("| p | p := JSONParser parse: '[1.5e-400,5e-324,1.25e-399,7e-350,3e-380]'. "
+                  "^(JSONParser parse: (JSONWriter write: p)) = p", 1);
 
     test_dialect = ST_DIALECT_BLUE_BOOK;
 }

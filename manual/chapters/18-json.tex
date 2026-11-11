@@ -159,6 +159,16 @@ survives the trip:
 A C or a JavaScript reader would have lost its low digits, because both read
 every number through a double.
 
+What comes in goes back out in a form the parser reads again. A number is
+written in full while that is at most 256 digits before the point and 256
+after it, and with an exponent past that:
+
+\begin{st}
+'1e300' asJson asJsonString.        "'1e300', not three hundred and one digits"
+'5e-324' asJson asJsonString.       "'5e-324'"
+'1e20' asJson asJsonString          "'100000000000000000000'"
+\end{st}
+
 When a Float is what you want, ask for one. \ct{floatAt:} is the lossy
 accessor and it is spelled out at every call site, which is the point:
 

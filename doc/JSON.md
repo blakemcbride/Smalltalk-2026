@@ -63,6 +63,16 @@ by a power of ten. The one lossy line in the package is the fallback for a
 fraction a *caller* computed — a third has to be written as
 `0.3333333333333333` or not at all, and not at all is worse.
 
+Every number is written in full — `1500`, `0.015` — unless that would have
+more digits in its whole part or its fraction than the parser reads (256), and
+then with an exponent: the significant digits once, the point placed so that
+the whole part, the fraction and the exponent are each inside the parser's
+limits. `1e300` reads and writes as `1e300`, `5e-324` as `5e-324`,
+`1.7976931348623157e308` as itself; whatever the parser accepted, the writer
+writes in a form it accepts again. The twos and fives of a fraction's
+denominator are read from its bits and its length rather than divided out, so
+writing the smallest number the parser builds takes a few milliseconds.
+
 `floatAt:` is how a caller asks for the lossy answer. It is spelled out at every
 call site, which is the point: converting is then a decision somebody made
 rather than something the reader did to them.

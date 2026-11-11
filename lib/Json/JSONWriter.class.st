@@ -10,7 +10,10 @@ all that can be said is that something in the tree could not be written.
 
 NUMBERS.  An Integer prints as itself.  A Fraction prints as the exact
 decimal it is, when it has one -- 3/2 is 1.5 and 1/10 is 0.1, which is how
-a document read by JSONParser comes back out unchanged.  A Fraction with no
+a document read by JSONParser comes back out unchanged.  Either is written
+with an exponent instead when written out in full it would have more digits
+than JSONParser reads: 1e300 is `1e300', not three hundred and one digits
+the parser refuses.  See writeDigits:exponent:.  A Fraction with no
 finite decimal, which only a caller can have produced because no JSON
 document contains one, is written as its Float.  1/3 has to become
 0.3333333333333333 or nothing, and nothing is worse.
@@ -331,7 +334,12 @@ JSONWriter >> writeUnicodeEscape: aCode [
 
 { #category : 'private' }
 JSONWriter >> writeNumber: aNumber [
-	aNumber isInteger ifTrue: [^stream nextPutAll: aNumber printString].
+	"A SmallInteger has nineteen digits at most and is always written in
+	 full; a larger one may need an exponent (writeDigits:exponent:)."
+	aNumber class == SmallInteger ifTrue: [^stream nextPutAll: aNumber printString].
+	aNumber isInteger ifTrue: [
+		aNumber < 0 ifTrue: [stream nextPut: $-].
+		^self writeDigits: aNumber abs printString exponent: 0].
 	(aNumber isKindOf: Fraction) ifTrue: [^self writeFraction: aNumber].
 	^self writeFloat: aNumber
 ]
@@ -359,31 +367,140 @@ JSONWriter >> writeFraction: aFraction [
 	 places needed is the larger of the two counts.  Everything a JSON
 	 document can contain qualifies -- the parser builds these by dividing
 	 by a power of ten -- so the fallback below is for fractions a caller
-	 computed, and it is the only lossy line in this class."
+	 computed, and it is the only lossy line in this class.
 
-	| denominator twos fives places scaled digits point |
+	 THE COUNTS ARE READ, NOT DIVIDED OUT.  They were found by dividing the
+	 denominator by two and then by five until it would not go, one large
+	 division per factor, and a number at the small end of what the parser
+	 reads has well over a thousand of them: 1.5e-400 took a second to
+	 write, 5e-324 seven tenths of one, so a service handing back a client's
+	 number paid for it again on the way out, past the work the parser
+	 bounds (Bugs07 NET-8, found while making such numbers readable).  The
+	 twos are the zero bits at the bottom of the denominator; what is left
+	 is five to the fives or nothing, which its length says and one power
+	 checks; and the digits are the numerator times what the denominator
+	 lacks of ten to the places, which is a power of two or of five and
+	 not a division at all.  A few milliseconds at any size the parser
+	 builds."
+
+	| denominator twos fives places scaled |
 	denominator := aFraction denominator.
-	twos := 0.
-	fives := 0.
-	[denominator \\ 2 = 0] whileTrue: [
-		denominator := denominator // 2.
-		twos := twos + 1].
-	[denominator \\ 5 = 0] whileTrue: [
-		denominator := denominator // 5.
-		fives := fives + 1].
-	denominator = 1 ifFalse: [^self writeFloat: aFraction asFloat].
+	twos := self twosIn: denominator.
+	fives := self fivesIn: (denominator bitShift: twos negated).
+	fives isNil ifTrue: [^self writeFloat: aFraction asFloat].
 	places := twos max: fives.
-	scaled := aFraction numerator * (10 raisedTo: places)
-		// aFraction denominator.
-	scaled < 0 ifTrue: [stream nextPut: $-].
-	digits := scaled abs printString.
-	digits size <= places ifTrue: [
-		digits := (String new: places - digits size + 1 withAll: $0), digits].
-	point := digits size - places.
-	stream nextPutAll: (digits copyFrom: 1 to: point).
-	places > 0 ifTrue: [
-		stream nextPut: $.;
-			nextPutAll: (digits copyFrom: point + 1 to: digits size)]
+	scaled := (aFraction numerator abs bitShift: places - twos) * (5 raisedTo: places - fives).
+	aFraction numerator < 0 ifTrue: [stream nextPut: $-].
+	self writeDigits: scaled printString exponent: places negated
+]
+
+{ #category : 'private' }
+JSONWriter >> twosIn: aPositiveInteger [
+	"How many times two divides aPositiveInteger: its zero bits from the
+	 bottom, a byte at a time and then a bit at a time."
+	| index byte count |
+	index := 1.
+	[(byte := aPositiveInteger digitAt: index) = 0] whileTrue: [index := index + 1].
+	count := index - 1 * 8.
+	[byte \\ 2 = 0] whileTrue: [byte := byte // 2. count := count + 1].
+	^count
+]
+
+{ #category : 'private' }
+JSONWriter >> fivesIn: anOddInteger [
+	"The n for which anOddInteger is five to the n, or nil when it is no
+	 power of five.  Its bits put n within one of their count over the
+	 bits of a five, log2 5, and a power each settles the two candidates."
+	| guess |
+	anOddInteger = 1 ifTrue: [^0].
+	guess := (anOddInteger highBit - 1 / 2.321928094887362) truncated.
+	guess to: guess + 1 do: [:n |
+		(n > 0 and: [(5 raisedTo: n) = anOddInteger]) ifTrue: [^n]].
+	^nil
+]
+
+{ #category : 'private' }
+JSONWriter >> writeDigits: aString exponent: anInteger [
+	"The number aString times ten to the anInteger, where aString is the
+	 decimal digits of a positive integer or zero: written out in full --
+	 `1500', `0.015' -- when JSONParser reads that, and with an exponent
+	 when it does not.
+
+	 THE PARSER READS WHAT THE WRITER WRITES, which it did not.  The parser
+	 takes an exponent up to 400 and builds the exact number, and the
+	 writer wrote that number out digit by digit; past 256 digits in its
+	 whole part or its fraction the parser refuses a number, so 1e300 read
+	 and then wrote as three hundred and one digits that could not be read
+	 back, and so did JavaScript's Number.MAX_VALUE, 1.7976931348623157e308,
+	 its MIN_VALUE, 5e-324 -- written as `0.' and 324 places -- and the
+	 smallest normal double: every value a client sends at the ends of a
+	 double's range, refused the moment a service stored it and answered
+	 it back, or one server here passed it to another (Bugs07 NET-8).
+
+	 Written out in full is still the form for every number that has one
+	 the parser reads, so nothing that came back out unchanged before
+	 comes out differently now, and an integer stays an integer to a
+	 reader that types its numbers.  Past that the digits are written once,
+	 significant ones only, with the point placed so that the whole part,
+	 the fraction and the exponent are each inside the parser's limits:
+	 after the first digit when that will do, `1.7976931348623157e308',
+	 and further along or further back for a number with more than 257
+	 significant digits or an exponent past 400.  Every number the parser
+	 can build has such a form.  One that has none -- more than 512
+	 significant digits, or too far past an exponent of 400 for the digits
+	 to make up the difference, which only a caller's arithmetic produces
+	 -- is written after its first digit anyway: JSON, and exact, for a
+	 reader without these limits."
+
+	| last digits exponent count whole fraction limit point low high |
+	last := aString size.
+	[last > 0 and: [(aString at: last) = $0]] whileTrue: [last := last - 1].
+	last = 0 ifTrue: [^stream nextPut: $0].
+	digits := last = aString size ifTrue: [aString] ifFalse: [aString copyFrom: 1 to: last].
+	exponent := anInteger + (aString size - last).
+	count := digits size.
+	limit := JSONParser defaultMaxDigits.
+	"In full: count digits and exponent zeros, or count digits of which
+	 the last exponent negated are the fraction, padded with zeros after
+	 the point when there are fewer digits than that."
+	whole := exponent >= 0 ifTrue: [count + exponent] ifFalse: [count + exponent max: 1].
+	fraction := exponent >= 0 ifTrue: [0] ifFalse: [exponent negated].
+	(whole <= limit and: [fraction <= limit]) ifTrue: [
+		exponent >= 0 ifTrue: [
+			stream nextPutAll: digits.
+			^exponent timesRepeat: [stream nextPut: $0]].
+		count + exponent > 0
+			ifTrue: [
+				stream nextPutAll: (digits copyFrom: 1 to: count + exponent);
+					nextPut: $.;
+					nextPutAll: (digits copyFrom: count + exponent + 1 to: count)]
+			ifFalse: [
+				stream nextPutAll: '0.'.
+				(count + exponent) negated timesRepeat: [stream nextPut: $0].
+				stream nextPutAll: digits].
+		^self].
+	"With an exponent: point digits before the point (none or fewer
+	 means zeros after it first, more than count means zeros before it),
+	 and the exponent that makes the value right.  The range is what keeps
+	 each part inside the limits; the first digit is the choice inside it."
+	low := (count - limit) max: exponent + count - JSONParser maxExponent.
+	high := limit min: exponent + count + JSONParser maxExponent.
+	point := low > high ifTrue: [1] ifFalse: [(1 max: low) min: high].
+	point <= 0
+		ifTrue: [
+			stream nextPutAll: '0.'.
+			point negated timesRepeat: [stream nextPut: $0].
+			stream nextPutAll: digits]
+		ifFalse: [
+			point >= count
+				ifTrue: [
+					stream nextPutAll: digits.
+					point - count timesRepeat: [stream nextPut: $0]]
+				ifFalse: [
+					stream nextPutAll: (digits copyFrom: 1 to: point);
+						nextPut: $.;
+						nextPutAll: (digits copyFrom: point + 1 to: count)]].
+	stream nextPut: $e; nextPutAll: (exponent + count - point) printString
 ]
 
 { #category : 'private' }
