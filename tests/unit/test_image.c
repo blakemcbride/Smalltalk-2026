@@ -13499,6 +13499,46 @@ test_bugs7e_om(void)
 }
 
 /*
+ *  Bugs07, round 6: the VM's leftovers.  Most of them are about the
+ *  st2026 driver itself -- -eval and what it prints -- so they run the
+ *  binary, in a scratch directory, and read what it said.
+ */
+
+/*  Run a shell command; its output and then `rc=<status>' land in text.  */
+static void
+bugs7f_shell(const char *dir, const char *command, char *text, size_t size)
+{
+    char    line[4096];
+    FILE   *f;
+    size_t  n = 0;
+
+    snprintf(line, sizeof line, "(%s) >%s/out.txt 2>&1; echo \"rc=$?\" >>%s/out.txt",
+             command, dir, dir);
+    (void) system(line);
+    text[0] = '\0';
+    snprintf(line, sizeof line, "%s/out.txt", dir);
+    f = fopen(line, "rb");
+    if (f) {
+        n = fread(text, 1, size - 1, f);
+        fclose(f);
+    }
+    text[n] = '\0';
+}
+
+static void
+bugs7f_expect(const char *text, const char *want, const char *what)
+{
+    size_t  n = strlen(text);
+
+    ++st_test_checks;
+    if (strstr(text, want))
+        return;
+    ++st_test_failures;
+    printf("  FAIL %s: wanted \"%s\"; the output ended\n%s\n", what, want,
+           n > 600 ? text + n - 600 : text);
+}
+
+/*
  *  Bugs07 round 6, OM.  Image-side, in-process doIts.
  */
 static void
@@ -14097,6 +14137,62 @@ test_bugs7f_kernb(void)
                  "none");
 }
 
+static void
+test_bugs7f_vm(void)
+{
+    char        dir[] = "/tmp/st2026-bugs7f-vm-XXXXXX";
+    char        command[2048];
+    static char text[65536];
+
+    if (!mkdtemp(dir)) {
+        ++st_test_checks;
+        ++st_test_failures;
+        printf("  FAIL cannot make a scratch directory for the Bugs7f vm"
+               " checks\n");
+        return;
+    }
+
+    /*
+     *  COMP-8.  Under the bluebook profile an unhandled error opens a
+     *  NotifierView, which suspends `Processor activeProcess' -- and 1983's
+     *  activeProcess read a field -eval never set, so the suspend failed,
+     *  failing opened another notifier, and the run spun out its two
+     *  hundred million bytecodes and said only that it did not finish.
+     *  It stops at the notifier now, names it, and exits 1.
+     */
+    bugs7f_shell(dir, "\"$ST2026\" -bootstrap -profile profiles/bluebook.profile"
+                      " -eval 'nil foo'", text, sizeof text);
+    bugs7f_expect(text, "stopped in a notifier: Message not understood: foo\n",
+                  "COMP-8 a bluebook -eval error names its notifier");
+    bugs7f_expect(text, "rc=1", "COMP-8 a bluebook -eval error exits 1");
+    /*  And a compile error with no requestor, which opens a SyntaxError.  */
+    bugs7f_shell(dir, "\"$ST2026\" -bootstrap -profile profiles/bluebook.profile"
+                      " -eval \"Compiler evaluate: '3 +'\"", text, sizeof text);
+    bugs7f_expect(text, "stopped in a notifier: syntax error: ",
+                  "COMP-8 a bluebook -eval syntax error names its notifier");
+    bugs7f_expect(text, "rc=1", "COMP-8 a bluebook -eval syntax error exits 1");
+    /*
+     *  And the Processor's field is put back after each evaluation: an
+     *  -eval that waited left its own finished process there, -o wrote
+     *  it, and the image resumed that instead of its startup ("the saved
+     *  process resumes at no bytecode").
+     */
+    snprintf(command, sizeof command,
+             "\"$ST2026\" -bootstrap -profile profiles/st2026.profile"
+             " -eval '(Delay forMilliseconds: 5) wait. 3'"
+             " -startup \"Transcript show: 'zzB7fStartup'; cr."
+             " Smalltalk quitPrimitive\" -o %s/w.im"
+             " && \"$ST2026\" -serve %s/w.im -workers 1", dir, dir);
+    bugs7f_shell(dir, command, text, sizeof text);
+    bugs7f_expect(text, "zzB7fStartup\n",
+                  "COMP-8 an image written after a waiting -eval resumes its"
+                  " startup");
+    bugs7f_expect(text, "rc=0", "COMP-8 that image quits cleanly");
+
+    snprintf(command, sizeof command, "rm -rf %s", dir);
+    (void) system(command);
+}
+
 int
 main(void)
 {
@@ -14258,6 +14354,7 @@ main(void)
     test_bugs7f_gui();
     test_bugs7f_kernb();
     test_bugs7f_om();
+    test_bugs7f_vm();
 
     OM_shutdown();
     return ST_TEST_END();

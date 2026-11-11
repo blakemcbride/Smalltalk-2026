@@ -1660,6 +1660,115 @@ do_serve(const char *path, unsigned workers, int argc, char **argv)
 }
 
 /*
+ *  An error the 1983 library reports the 1983 way, with nobody to see it.
+ *
+ *  Under the bluebook profile an unhandled error is not an exception.
+ *  Object>>error:, doesNotUnderstand:, halt and the rest open a NotifierView
+ *  -- NotifierView class>>openContext:label:contents: -- and a compiler
+ *  error with no requestor opens a SyntaxError view; each method's last act
+ *  is `Processor activeProcess suspend': the process waits, for ever if
+ *  need be, for somebody to choose proceed, debug or accept in the window.
+ *  Under -eval there is no window and no controller loop (the startup
+ *  process that would run one is not running), so nothing can ever answer
+ *  the notifier, and the expression has no answer to print.  Bugs07 COMP-8.
+ *
+ *  So the evaluation ends there, as an unhandled error, and says what the
+ *  window would have said: primitive 88 asks this hook before it parks a
+ *  process, and when the process is the expression's own and is
+ *  suspending inside one of the two methods below, the hook takes the
+ *  method's text argument and stops the run.  Any other suspend -- a
+ *  process that suspends itself for a fork to resume, or anything the
+ *  st2026 library does -- is left alone.
+ *
+ *  The methods are looked up afresh by every evaluate, in the image being
+ *  built, and held while the run lasts; a profile without these classes
+ *  simply has nothing to match.
+ */
+static const struct {
+    const char *class_name;
+    const char *selector;           /*  a class-side method  */
+    unsigned    text_argument;      /*  which argument says what happened  */
+    const char *prefix;
+} notifier_openers[] = {
+    { "NotifierView", "openContext:label:contents:",        1, "" },
+    { "SyntaxError",  "errorInClass:withCode:errorString:", 2, "syntax error: " },
+};
+
+#define NOTIFIER_OPENERS \
+    (sizeof notifier_openers / sizeof notifier_openers[0])
+
+static st_oop   notifier_methods[NOTIFIER_OPENERS] = { ST_NIL, ST_NIL };
+static char     notifier_text[256];
+static int      notifier_opened;
+
+static st_oop
+class_side_method(const char *class_name, const char *selector)
+{
+    st_oop      assoc = BOOT_lookup_global(class_name, NULL);
+    st_oop      cls;
+    st_oop      dict;
+    uint32_t    capacity;
+    uint32_t    slot;
+
+    if (!OM_is_object(assoc))
+        return ST_NIL;
+    cls = OM_fetch_pointer(ST_ASSOCIATION_VALUE, assoc);
+    if (!OM_is_object(cls))
+        return ST_NIL;
+    dict = OM_fetch_pointer(ST_CLASS_METHOD_DICT, OM_fetch_class(cls));
+    if (!OM_is_object(dict))
+        return ST_NIL;
+    capacity = OM_method_dict_capacity(dict);
+    for (slot = 0; slot < capacity; ++slot) {
+        st_oop  key = OM_method_dict_key(dict, slot);
+        char    text[64];
+
+        if (!OM_is_object(key))
+            continue;
+        OM_string_of(key, text, sizeof text);
+        if (strcmp(text, selector) == 0)
+            return OM_method_dict_value(dict, slot);
+    }
+    return ST_NIL;
+}
+
+static int
+eval_suspend_hook(st_oop process)
+{
+    st_oop      ctx = st_vm.active_context;
+    unsigned    depth;
+    unsigned    k;
+
+    if (process != st_vm.active_process)
+        return 0;
+    for (depth = 0; depth < 64 && OM_is_object(ctx); ++depth) {
+        st_oop  method = OM_fetch_class(ctx) == ST_CLASS_METHOD_CONTEXT
+                             ? OM_fetch_pointer(ST_CTX_METHOD, ctx) : ST_NIL;
+
+        for (k = 0; k < NOTIFIER_OPENERS; ++k) {
+            st_oop  text;
+            size_t  n;
+
+            if (!OM_is_object(method) || method != notifier_methods[k])
+                continue;
+            text = OM_fetch_pointer(ST_CTX_TEMP_FRAME_START
+                                    + notifier_openers[k].text_argument, ctx);
+            snprintf(notifier_text, sizeof notifier_text, "%s",
+                     notifier_openers[k].prefix);
+            n = strlen(notifier_text);
+            if (OM_is_object(text) && !OM_pointer_bit(text))
+                OM_string_of(text, notifier_text + n, sizeof notifier_text - n);
+            notifier_opened = 1;
+            ++st_vm.unhandled_errors;
+            st_vm.running = 0;
+            return 1;
+        }
+        ctx = OM_fetch_pointer(ST_CTX_SENDER, ctx);
+    }
+    return 0;
+}
+
+/*
  *  Build an image from source and, optionally, evaluate an expression in it.
  *
  *  Evaluating means compiling the expression as the body of a method,
@@ -1674,7 +1783,9 @@ evaluate(const char *expression, char *errbuf, size_t errlen)
     st_compile_result   res;
     st_oop              context = ST_NIL;
     st_oop              method = ST_NIL;
+    st_oop              image_active = ST_NIL;
     st_held             held;
+    st_held             kept;
 
     memset(&ctx, 0, sizeof ctx);
     ctx.intern_symbol      = BOOT_intern_symbol;
@@ -1807,6 +1918,54 @@ evaluate(const char *expression, char *errbuf, size_t errlen)
     }
     ST_set_active_context(context);
     ST_hold_leave(&held);           /*  the interpreter holds them now  */
+    /*
+     *  And say so in the Processor, for the length of the run.
+     *
+     *  The expression's Process was this worker's active process and not
+     *  the image's: Processor's activeProcess field still named the
+     *  startup process BOOT_install_scheduler put there.  The st2026
+     *  library never noticed, because its ProcessorScheduler>>activeProcess
+     *  asks the VM (primitive 241); 1983's reads the field.  So under the
+     *  bluebook profile `Processor activeProcess' was a process that was
+     *  not running, and every unhandled error ran for ever (Bugs07
+     *  COMP-8): Object>>error: opens a NotifierView, which ends in
+     *  `Processor activeProcess suspend', primitive 88 refuses to suspend
+     *  a process that is not the active one, primitiveFailed is an error:,
+     *  which opens another NotifierView, and so on, a notifier deeper each
+     *  time, until two hundred million bytecodes later the budget said
+     *  only that the expression did not finish.
+     *
+     *  The field is put back afterwards, counted and held while it is
+     *  out: it is what a written image resumes, and -o writes the image
+     *  after the evaluations -- including the one that closes its files.
+     *  A switch during the run (a Delay, a fork) writes the field too, so
+     *  this also stops an -eval that waited from leaving its own finished
+     *  process there for the image to resume.
+     */
+    ST_hold_enter(&kept);
+    ST_hold(&kept, &image_active);
+    ST_hold_n(&kept, notifier_methods, NOTIFIER_OPENERS);
+    if (OM_is_object(st_vm.active_process)) {
+        image_active = OM_fetch_pointer(ST_SCHEDULER_ACTIVE_PROCESS,
+                                        SCHED_scheduler());
+        OM_increase_ref(image_active);
+        OM_exchange_pointer(ST_SCHEDULER_ACTIVE_PROCESS, SCHED_scheduler(),
+                            st_vm.active_process);
+    }
+    /*
+     *  Which is what lets a 1983 notifier get as far as its suspend; the
+     *  hook ends the run there (see eval_suspend_hook).
+     */
+    {
+        unsigned    k;
+
+        for (k = 0; k < NOTIFIER_OPENERS; ++k)
+            notifier_methods[k] =
+                class_side_method(notifier_openers[k].class_name,
+                                  notifier_openers[k].selector);
+    }
+    notifier_opened = 0;
+    ST_set_suspend_hook(eval_suspend_hook);
     st_vm.running      = 1;
     st_vm.return_value = ST_NIL;
     {
@@ -1824,6 +1983,23 @@ evaluate(const char *expression, char *errbuf, size_t errlen)
      */
     ST_interp_run(evaluate_budget);
     ST_trace_set(ST_TRACE_OFF, NULL);
+    ST_set_suspend_hook(NULL);
+    {
+        unsigned    k;
+
+        for (k = 0; k < NOTIFIER_OPENERS; ++k)
+            notifier_methods[k] = ST_NIL;
+    }
+    if (OM_is_object(image_active)) {
+        OM_exchange_pointer(ST_SCHEDULER_ACTIVE_PROCESS, SCHED_scheduler(),
+                            image_active);
+        OM_decrease_ref(image_active);
+    }
+    ST_hold_leave(&kept);
+    if (notifier_opened) {
+        snprintf(errbuf, errlen, "stopped in a notifier: %s", notifier_text);
+        return ST_OOP_INVALID;
+    }
     if (st_vm.running) {
         snprintf(errbuf, errlen, "expression did not finish in %llu bytecodes",
                  (unsigned long long) evaluate_budget);

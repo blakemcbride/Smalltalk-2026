@@ -7784,6 +7784,15 @@ primitive_odbc_command(void)
 
 /*  ----------  Dispatch  ----------  */
 
+/*  See ST_set_suspend_hook in prim.h.  */
+static int  (*suspend_hook)(st_oop process);
+
+void
+ST_set_suspend_hook(int (*hook)(st_oop process))
+{
+    suspend_hook = hook;
+}
+
 int
 ST_primitive_dispatch(unsigned index)
 {
@@ -7821,7 +7830,17 @@ ST_primitive_dispatch(unsigned index)
     case 167: return SCHED_primitive_yield();
     case 86:  return SCHED_primitive_wait();
     case 87:  return SCHED_primitive_resume();
-    case 88:  return SCHED_primitive_suspend();
+    case 88:
+        /*
+         *  A driver with nobody to show a notifier to ends the run here
+         *  rather than park a process nothing will resume (Bugs07 COMP-8).
+         */
+        if (suspend_hook && suspend_hook(ST_stack_top())) {
+            ST_pop_n(1);
+            ST_push(ST_NIL);
+            return 1;
+        }
+        return SCHED_primitive_suspend();
     case 89:  return 1;         /*  flushCache: we keep no method cache yet  */
     case 90:  return primitive_mouse_point();
     case 91:  return primitive_cursor_loc_put();

@@ -50,6 +50,18 @@ extern int  ST_changes_lock_fd;
 int     ST_special_selector_primitive(uint8_t code);
 
 /*
+ *  Asked by primitive 88, before it suspends a process, whether the driver
+ *  that is running this one wants to end the run instead.  Answering 1
+ *  means the hook has stopped the run (st_vm.running is 0) and the process
+ *  is not to be parked; the primitive then answers nil as a suspend does.
+ *  -eval's, for an error the 1983 library reports by opening a notifier
+ *  and suspending -- see main.c (Bugs07 COMP-8).  NULL, the default, asks
+ *  nobody.  Set by a single-threaded driver around its run, never while
+ *  a worker pool is up.
+ */
+void    ST_set_suspend_hook(int (*hook)(st_oop process));
+
+/*
  *  ----------  What this VM actually implements  ----------
  *
  *  A porting effort's first question about a body of Smalltalk source is
