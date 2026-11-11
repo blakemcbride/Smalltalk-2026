@@ -134,7 +134,7 @@ needs at its head, as in \ct{| x | x := 3 + 4. x * 2}, and select the
 declaration along with the statements that use it. A name nobody declared
 is refused, and \ct{undeclared variable} is inserted into the text at that
 name. A value that must outlive one evaluation goes in a global:
-\ct{Smalltalk at: \#x put: 3 + 4}, after which a later selection reads
+\ct{Smalltalk at: #x put: 3 + 4}, after which a later selection reads
 \ct{x}.
 
 \item[\ctp{system transcript}] Sends

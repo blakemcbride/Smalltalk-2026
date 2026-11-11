@@ -202,7 +202,7 @@ d at: #two put: 2.
 d at: #one                       "1"
 d at: #three ifAbsent: [0]       "0"
 d at: #three ifAbsentPut: [3]    "3, and now it is in there"
-d removeKey: #one                "answers the ASSOCIATION #one->1 (the value, 1, under pharo-collections)"
+d removeKey: #one                "#one->1, the association (1 under pharo-collections)"
 d includesKey: #two              "true"
 d keys                           "a Set of the keys (an Array under pharo-collections)"
 d values                         "a Bag of the values (an Array under pharo-collections)"

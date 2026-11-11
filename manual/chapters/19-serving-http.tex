@@ -532,7 +532,7 @@ read its own settings from the same place. The server stays up until
 in flight finish and be answered, closes its database pool and quits with
 exit code 0. It waits for those requests for the grace \ct{-serve} gives an
 image that has been asked to stop---thirty seconds, or
-\ct{ST\_STOP\_GRACE\_SECONDS} from the environment---less a second, and logs
+\ct{ST_STOP_GRACE_SECONDS} from the environment---less a second, and logs
 how many it quit without. A second signal stops it at once. The log is
 standard error, one line per event.
 
