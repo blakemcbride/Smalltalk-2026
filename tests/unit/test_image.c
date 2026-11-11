@@ -3299,8 +3299,11 @@ test_browsing(void)
      *
      *  3110880 -> 3114292 with Bugs07 KERNA-6: Interval finds an element by
      *  arithmetic rather than by walking every one.
+     *
+     *  3114292 -> 3115872 with Bugs07 KERNB-8: a global named by a String
+     *  is filed under its Symbol (checkGlobalName: became globalNameFor:).
      */
-    check_integer("(SourceFiles at: 1) contents size", 3114292);
+    check_integer("(SourceFiles at: 1) contents size", 3115872);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -14021,6 +14024,49 @@ test_bugs7f_gui(void)
     test_dialect = ST_DIALECT_BLUE_BOOK;
 }
 
+/*
+ *  Bugs07, round 6: the KERNB group's lows -- Smalltalk's keys (KERNB-8).
+ *  What needs workers or another profile is in
+ *  tests/unit/test_serve_faults.c, bugs7f_kernb.
+ */
+static void
+test_bugs7f_kernb(void)
+{
+    test_dialect = ST_DIALECT_CLOSURES;
+
+    /*
+     *  KERNB-8: a global named by a String is filed under the Symbol it
+     *  spells, by every way in -- at:put:, at:ifAbsentPut:, add: and
+     *  declare:from:.  The name was checked and then filed as given, so
+     *  Smalltalk keys held the String.  Before: (false 4 false false
+     *  false 4 ); the look-ups by Symbol worked all along, because the
+     *  table asks the String it holds whether it equals the Symbol.
+     */
+    check_string("| r | r := OrderedCollection new. "
+                 "Smalltalk at: 'Bugs7fKbStrA' put: 3. "
+                 "r add: (Smalltalk associationAt: #Bugs7fKbStrA) key isSymbol. "
+                 "r add: (Smalltalk at: 'Bugs7fKbStrB' ifAbsentPut: [4]). "
+                 "r add: (Smalltalk associationAt: #Bugs7fKbStrB) key isSymbol. "
+                 "Smalltalk add: 'Bugs7fKbStrC' -> 5. "
+                 "r add: (Smalltalk associationAt: #Bugs7fKbStrC) key isSymbol. "
+                 "Smalltalk declare: 'Bugs7fKbStrD' from: Undeclared. "
+                 "r add: (Smalltalk associationAt: #Bugs7fKbStrD) key isSymbol. "
+                 "r add: (Smalltalk keys select: [:k | k isSymbol not]) size. "
+                 "#(#Bugs7fKbStrA #Bugs7fKbStrB #Bugs7fKbStrC #Bugs7fKbStrD) "
+                 "do: [:k | Smalltalk removeKey: k]. "
+                 "^r asArray printString",
+                 "(true 4 true true true 0 )");
+    /*  And what is not a name is refused by each of them, with no lock
+        held, so the handler may declare.  */
+    check_string("^{[Smalltalk add: nil -> 3] on: Error do: [:e | e return: #add]. "
+                 "[Smalltalk declare: 42 from: Undeclared] on: Error do: [:e | e return: #declare]. "
+                 "[Smalltalk at: '' put: 3] on: Error do: [:e | e return: (Smalltalk at: #Bugs7fKbE put: #empty)]} printString",
+                 "(add declare empty )");
+    check_string("Smalltalk removeKey: #Bugs7fKbE. "
+                 "^(Smalltalk keys detect: [:k | k isSymbol not] ifNone: [#none]) printString",
+                 "none");
+}
+
 int
 main(void)
 {
@@ -14180,6 +14226,7 @@ main(void)
     test_bugs7f_kern();
     test_bugs7f_net();
     test_bugs7f_gui();
+    test_bugs7f_kernb();
 
     OM_shutdown();
     return ST_TEST_END();

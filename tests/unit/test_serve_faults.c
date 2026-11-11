@@ -5383,6 +5383,42 @@ bugs7e_kern(void)
                   "KERNB-7 the forked handler's pass says nothing else");
 }
 
+/*
+ *  Bugs07, round 6: the KERNB group's lows that need workers or another
+ *  profile.  test_image's test_bugs7f_kernb holds the one-thread checks.
+ */
+static void
+bugs7f_kernb(void)
+{
+    static char out[65536];
+    char        command[2048];
+    int         status;
+
+    /*
+     *  KERNB-8, under profiles/pharo-collections, whose Dictionary is
+     *  Pharo's and whose lockedAt:put: is its own: nil is refused there
+     *  too, and a String is filed as its Symbol.  The check was in
+     *  lib/System's lockedAt:put:, which this profile replaces, so nil
+     *  was accepted and turned up in Smalltalk keys -- mended when
+     *  KERNB-2 moved the check into at:put:, which both profiles share --
+     *  and no profile made the String a Symbol.  Before: (refused 3 1 ).
+     */
+    snprintf(command, sizeof command,
+             "%s -bootstrap -profile profiles/pharo-collections.profile -eval "
+             "\"^{[Smalltalk at: nil put: 3. #accepted] on: Error do: [:e | #refused]. "
+             "Smalltalk at: 'Bugs7fKbPc' put: 3. "
+             "(Smalltalk keys reject: [:k | k isSymbol]) size} printString\" 2>&1",
+             st2026);
+    status = run(command, out, sizeof out);
+    ++st_test_checks;
+    if (status != 0) {
+        ++st_test_failures;
+        printf("  FAIL KERNB-8: the pharo-collections -eval exited %d\n", status);
+    }
+    expect(out, "\n(refused 3 0 )\n",
+           "KERNB-8 Smalltalk's keys under pharo-collections");
+}
+
 int
 main(void)
 {
@@ -6063,6 +6099,7 @@ main(void)
     bugs7e_files();
     bugs7e_sched();
     bugs7e_kern();
+    bugs7f_kernb();
 
     unlink(IMAGE);
     unlink(BATCH);

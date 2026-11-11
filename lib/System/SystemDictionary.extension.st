@@ -32,23 +32,42 @@ SystemDictionary >> at: aKey put: anObject [
 	 so much as declared another global raised `Mutex is already held',
 	 and in the desktop an unhandled one stopped the faulting process
 	 with the lock still held, and the next look-up anywhere in the image
-	 waited for it for ever."
-	self checkGlobalName: aKey.
-	^LibraryLocks holdingGlobals: [self lockedAt: aKey put: anObject]
+	 waited for it for ever.
+
+	 And a name spelt as a String is filed as the Symbol it spells,
+	 interned here, before the globals lock, because the system's lock
+	 order is Symbols -> Globals (Bugs07 KERNB-8); see globalNameFor:."
+	| name |
+	name := self globalNameFor: aKey.
+	^LibraryLocks holdingGlobals: [self lockedAt: name put: anObject]
 ]
 
 { #category : '*System' }
-SystemDictionary >> checkGlobalName: aKey [
-	"Refuse what cannot be a global's name, with no lock held; see
-	 at:put:.
+SystemDictionary >> globalNameFor: aKey [
+	"Answer the Symbol a global named aKey is filed under, or refuse
+	 aKey; with no lock held, see at:put:.
 
 	 A global's name is a Symbol.  nil was taken, and turned up in
-	 Smalltalk keys (Bugs6 KERNB-12).  A non-empty String is let through
-	 as 1983 let it through: it is equal to the Symbol it spells and
-	 hashes with it, so the binding is the one a method compiled against
-	 the name finds."
-	aKey isSymbol ifTrue: [^self].
-	(aKey isString and: [aKey size > 0]) ifTrue: [^self].
+	 Smalltalk keys (Bugs6 KERNB-12).  A non-empty String is taken as
+	 1983 took it, but filed as the Symbol it spells (Bugs07 KERNB-8).
+	 This was a check that let the String through and the caller filed
+	 aKey as given, so `Smalltalk at: ''X'' put: 3' put a String among
+	 the keys -- in every profile, though the comment here said
+	 otherwise.  Looking it up by its Symbol still worked, because 1983's
+	 look-up asks the key it holds, `''X'' = #X', which is true; but
+	 Smalltalk keys answered a String, a later declaration of #X itself
+	 found the String's binding, and anything that asked a key for
+	 isSymbol, or sent it as a selector, was told otherwise.
+
+	 The Symbol is interned HERE, before any sender takes the globals
+	 lock, and not inside it: intern: takes the Symbol lock, and the
+	 order of the two system locks is Symbols -> Globals (a compile
+	 holds the Symbol lock and reads Smalltalk inside it).  Every
+	 declaring method of mine -- at:put:, at:ifAbsentPut:, add: and
+	 declare:from: -- sends this first, and so neither profile's
+	 lockedAt:put: has to check anything."
+	aKey isSymbol ifTrue: [^aKey].
+	(aKey isString and: [aKey size > 0]) ifTrue: [^aKey asSymbol].
 	^self error: 'a global''s name is a Symbol, not ', aKey printString
 ]
 
@@ -56,8 +75,8 @@ SystemDictionary >> checkGlobalName: aKey [
 SystemDictionary >> lockedAt: aKey put: anObject [
 	"1983's at:put:, to be run with the globals lock held: a name found in
 	 Undeclared is adopted rather than duplicated, so a method compiled
-	 against the forward reference sees the value.  The name was checked
-	 by checkGlobalName: before the lock was taken."
+	 against the forward reference sees the value.  The name was made a
+	 Symbol by globalNameFor: before the lock was taken."
 	| index element |
 	index := self findKeyOrNil: aKey.
 	element := self basicAt: index.
@@ -75,7 +94,13 @@ SystemDictionary >> lockedAt: aKey put: anObject [
 
 { #category : '*System' }
 SystemDictionary >> add: anAssociation [
-	"Under the same lock as at:put:; the two are the only ways in."
+	"Under the same lock as at:put:; the two are the only ways in.
+
+	 The Association becomes the binding, so its key is the name, made
+	 a Symbol first as at:put: makes it (Bugs07 KERNB-8)."
+	| name |
+	name := self globalNameFor: anAssociation key.
+	name == anAssociation key ifFalse: [anAssociation key: name].
 	^LibraryLocks holdingGlobals: [super add: anAssociation]
 ]
 
@@ -129,14 +154,17 @@ SystemDictionary >> declare: key from: aDictionary [
 	 worker storing a new name into Undeclared at the same moment lost one
 	 entry or the other (Bugs6 KERNB-6).  The steps run together under the
 	 lock, through the unlocked insides, because the globals lock is a
-	 Mutex and does not nest."
+	 Mutex and does not nest.  The name is made a Symbol first, as
+	 at:put: makes it (Bugs07 KERNB-8)."
+	| name |
+	name := self globalNameFor: key.
 	^LibraryLocks holdingGlobals: [
-		(super includesKey: key) ifFalse: [
-			(aDictionary includesKey: key)
+		(super includesKey: name) ifFalse: [
+			(aDictionary includesKey: name)
 				ifTrue: [
-					super add: (aDictionary associationAt: key).
-					aDictionary removeKey: key]
-				ifFalse: [self lockedAt: key put: nil]]]
+					super add: (aDictionary associationAt: name).
+					aDictionary removeKey: name]
+				ifFalse: [self lockedAt: name put: nil]]]
 ]
 
 { #category : '*System' }
@@ -213,16 +241,17 @@ SystemDictionary >> at: key ifAbsentPut: aBlock [
 	 one looks again, so that when two processes both find the name
 	 missing and both make a value, the first declaration stands and
 	 both answer it -- the second value is dropped rather than replacing
-	 one the first process has already handed out."
-	| value absent made |
-	self checkGlobalName: key.
+	 one the first process has already handed out.  The name is made a
+	 Symbol first, as at:put: makes it (Bugs07 KERNB-8)."
+	| name value absent made |
+	name := self globalNameFor: key.
 	absent := false.
 	value := LibraryLocks readingGlobals: [
-		super at: key ifAbsent: [absent := true. nil]].
+		super at: name ifAbsent: [absent := true. nil]].
 	absent ifFalse: [^value].
 	made := aBlock value.
 	^LibraryLocks holdingGlobals: [
-		super at: key ifAbsent: [self lockedAt: key put: made]]
+		super at: name ifAbsent: [self lockedAt: name put: made]]
 ]
 
 { #category : '*System' }
