@@ -398,7 +398,8 @@ OM_image_save(const char *path, char *errbuf, size_t errlen)
  *  is not what the interpreter assumes about it.
  *
  *  What is assumed, and therefore checked, object by object: the format
- *  bits name one of the three formats; the class pointer names an object
+ *  bits name one of the three formats, and every other flag bit is one
+ *  that format defines (check_flags); the class pointer names an object
  *  that is present; every field of a pointer object is a SmallInteger or
  *  names a present object; a CompiledMethod's header is a SmallInteger and
  *  each literal it counts is a SmallInteger or a present object, which is
@@ -430,6 +431,86 @@ static int
 oop_valid(st_oop p, uint32_t limit)
 {
     return (p & 1) != 0 || oop_present(p, limit);
+}
+
+/*
+ *  The flag bits beside the format, which the collector and the
+ *  interpreter act on without asking the format first (Bugs07 OM-6).
+ *
+ *  This walk used to check the three format bits and keep every other bit
+ *  the file had.  The collector's weak pass picks its objects by the WEAK
+ *  bit alone and walks head->size eight-byte slots of each, so a byte
+ *  object of n bytes that a damaged file flagged weak was read for 8n
+ *  bytes -- 7n past its body -- and any word out there that happened to
+ *  name an object with a zero count was overwritten with nil: an
+ *  out-of-bounds read and write in the heap, done by this loader's own
+ *  collection before any Smalltalk ran, and a segfault on a 3 MB String.
+ *  Nothing in a running image makes such an object -- OM_instantiate_weak
+ *  is the only writer of the bit and it is given pointer objects -- so it
+ *  is the same class of fault as a class pointer aimed at a free entry
+ *  (Bugs3 B58), reached through the flags instead of a field.
+ *
+ *  So each bit is refused unless the object's format gives it a meaning.
+ *  A word or byte object has its format bit and nothing else.  A pointer
+ *  object may be weak (the fixed-field count beside it no larger than the
+ *  object, since the collector walks the fields past it) or an ephemeron
+ *  -- the writer flags a fired one still on the mourn queue that way, to
+ *  be mourned again -- but not both, which nothing allocates; and only a
+ *  context carries the reshape mark in the top byte (ST_FMT_KEPT_MASK).
+ *  The mark bit and the free bit are the collector's and the table's own
+ *  and are never written: a present object with either is not one this
+ *  memory saved.
+ */
+static int
+check_flags(const char *path, uint32_t index, const om_header *head,
+            uint32_t format, char *errbuf, size_t errlen)
+{
+    uint32_t    known  = format;
+    uint32_t    flags  = head->flags;
+    uint32_t    fixed;
+
+    if (format == ST_FMT_POINTERS)
+        known |= ST_FMT_WEAK | ST_FMT_EPHEMERON | ST_FMT_WEAK_FIXED_MASK
+               | ST_FMT_KEPT_MASK;
+    if (flags & ~known) {
+        fail(errbuf, errlen,
+             "%s: object %u has flag bits 0x%x, which its format (%s) "
+             "does not define",
+             path, index, (unsigned) (flags & ~known),
+             format == ST_FMT_POINTERS ? "pointers"
+             : format == ST_FMT_WORDS ? "words" : "bytes");
+        return -1;
+    }
+    if ((flags & ST_FMT_WEAK) && (flags & ST_FMT_EPHEMERON)) {
+        fail(errbuf, errlen,
+             "%s: object %u is flagged both weak and an ephemeron",
+             path, index);
+        return -1;
+    }
+    fixed = (flags & ST_FMT_WEAK_FIXED_MASK) >> ST_FMT_WEAK_FIXED_SHIFT;
+    if (fixed != 0 && !(flags & ST_FMT_WEAK)) {
+        fail(errbuf, errlen,
+             "%s: object %u has a weak fixed-field count of %u but is "
+             "not weak",
+             path, index, (unsigned) fixed);
+        return -1;
+    }
+    if (fixed > head->size) {
+        fail(errbuf, errlen,
+             "%s: object %u is weak with %u fixed fields of %u",
+             path, index, (unsigned) fixed, (unsigned) head->size);
+        return -1;
+    }
+    if ((flags & ST_FMT_KEPT_MASK)
+     && head->class_oop != ST_CLASS_METHOD_CONTEXT
+     && head->class_oop != ST_CLASS_BLOCK_CONTEXT) {
+        fail(errbuf, errlen,
+             "%s: object %u carries a context's reshape mark but is not "
+             "a context",
+             path, index);
+        return -1;
+    }
+    return 0;
 }
 
 static int
@@ -489,6 +570,8 @@ check_image(const char *path, uint32_t limit, char *errbuf, size_t errlen,
                  path, index, (unsigned long long) head->class_oop);
             return -1;
         }
+        if (check_flags(path, index, head, format, errbuf, errlen) != 0)
+            return -1;
         fields = (st_oop *) (head + 1);
         if (head->class_oop == ST_CLASS_COMPILED_METHOD) {
             uint32_t    slots = head->size / (uint32_t) sizeof(st_oop);

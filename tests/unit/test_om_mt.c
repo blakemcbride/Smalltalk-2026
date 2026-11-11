@@ -1092,6 +1092,174 @@ test_become_keeps_identity_hashes(void)
     OM_deallocate(b);
 }
 
+/*
+ *  Bugs07 OM-6: a flag bit the object's format does not define is refused
+ *  at load, before the loader's own collection acts on it.
+ *
+ *  The loader checked the three format bits and kept every other bit the
+ *  file had, and the collector's weak pass picks its objects by the WEAK
+ *  bit alone and walks head->size eight-byte slots: a byte object a
+ *  damaged file flagged weak was read and written past its body (a
+ *  segfault on a 3 MB String in the audit's probe; here, a load that
+ *  succeeded).  Each bad combination below on an object of a saved image,
+ *  refused with a message naming it; and the good image, with a real weak
+ *  object in it, still loads with its weakness intact.
+ */
+static uint32_t
+get_u32(const unsigned char *at)
+{
+    return (uint32_t) at[0] | ((uint32_t) at[1] << 8)
+         | ((uint32_t) at[2] << 16) | ((uint32_t) at[3] << 24);
+}
+
+static void
+put_u32(unsigned char *at, uint32_t v)
+{
+    int     i;
+
+    for (i = 0; i < 4; ++i)
+        at[i] = (unsigned char) (v >> (8 * i));
+}
+
+/*  Load `good' with `object''s flags changed, and expect a refusal.  */
+static void
+refused_with_flags(const char *bad, const unsigned char *good,
+                   unsigned char *copy, size_t len, st_oop object,
+                   uint32_t (*change)(uint32_t), const char *what,
+                   const char *says)
+{
+    long    body = 0;
+    long    at   = find_object(good, len, (uint32_t) (object >> 1), &body);
+    char    err[256];
+    int     r;
+
+    CHECK(at >= 0);
+    if (at < 0)
+        return;
+    memcpy(copy, good, len);
+    put_u32(copy + at + 12, change(get_u32(copy + at + 12)));
+    err[0] = '\0';
+    r = load_copy(bad, copy, len, err, sizeof err);
+    if (r != -1 || !strstr(err, says))
+        printf("  FAIL OM-6 %s: load answered %d, said \"%s\"\n", what, r,
+               err);
+    CHECK_EQ_INT(r, -1);
+    CHECK(strstr(err, says) != NULL);
+}
+
+static uint32_t set_weak(uint32_t f)      { return f | ST_FMT_WEAK; }
+static uint32_t set_ephemeron(uint32_t f) { return f | ST_FMT_EPHEMERON; }
+static uint32_t set_undefined(uint32_t f) { return f | 0x1000u; }
+static uint32_t set_marked(uint32_t f)    { return f | ST_FMT_MARKED; }
+static uint32_t set_kept(uint32_t f)      { return f | (3u << ST_FMT_KEPT_SHIFT); }
+static uint32_t set_fixed_two(uint32_t f)
+{
+    return f | (2u << ST_FMT_WEAK_FIXED_SHIFT);
+}
+static uint32_t set_fixed_nine(uint32_t f)
+{
+    return (f & ~ST_FMT_WEAK_FIXED_MASK) | (9u << ST_FMT_WEAK_FIXED_SHIFT);
+}
+
+static void
+test_bugs7f_om(void)
+{
+    const char     *path = st_test_path("test-bugs7f-om-source.image");
+    const char     *bad  = st_test_path("test-bugs7f-om-copy.image");
+    st_oop          array;
+    st_oop          text;
+    st_oop          plain;
+    st_oop          weak;
+    st_oop          named;
+    st_oop          held;
+    unsigned char  *good;
+    unsigned char  *copy;
+    size_t          len = 0;
+    char            err[256];
+
+    printf("  Bugs07 OM-6: flag bits a format does not define\n");
+    array = OM_instantiate_pointers(ST_CLASS_ARRAY, 3);
+    text  = OM_instantiate_bytes(ST_CLASS_STRING, 64);
+    memset(OM_body(text), 'x', 64);
+    plain = OM_instantiate_pointers(ST_CLASS_ARRAY, 2);
+    /*  Four fields, one named: a strong one and three weak ones.  */
+    weak  = OM_instantiate_weak(ST_CLASS_ARRAY, 4, 1);
+    named = OM_instantiate_bytes(ST_CLASS_STRING, 1);
+    held  = OM_instantiate_bytes(ST_CLASS_STRING, 1);
+    OM_store_pointer(0, weak, named);
+    OM_store_pointer(1, weak, held);
+    OM_store_pointer(0, plain, held);
+    OM_store_pointer(0, array, text);
+    OM_store_pointer(1, array, plain);
+    OM_store_pointer(2, array, weak);
+    root_object = array;
+    OM_set_root_provider(provide_root);
+
+    CHECK_EQ_INT(OM_image_save(path, err, sizeof err), 0);
+    good = slurp(path, &len);
+    CHECK(good != NULL);
+    copy = good ? (unsigned char *) malloc(len) : NULL;
+    CHECK(copy != NULL);
+    if (!good || !copy) {
+        free(good);
+        OM_set_root_provider(NULL);
+        return;
+    }
+
+    /*  A byte object flagged weak: the audit's segfault.  */
+    refused_with_flags(bad, good, copy, len, text, set_weak,
+                       "weak bytes", "flag bits");
+    refused_with_flags(bad, good, copy, len, text, set_ephemeron,
+                       "ephemeron bytes", "flag bits");
+    refused_with_flags(bad, good, copy, len, text, set_kept,
+                       "reshape mark on bytes", "flag bits");
+    /*  Bits no format defines, on a pointer object.  */
+    refused_with_flags(bad, good, copy, len, plain, set_undefined,
+                       "undefined bit", "flag bits");
+    refused_with_flags(bad, good, copy, len, plain, set_marked,
+                       "mark bit", "flag bits");
+    /*  A fixed-field count on an object that is not weak.  */
+    refused_with_flags(bad, good, copy, len, plain, set_fixed_two,
+                       "fixed count without weak", "not weak");
+    /*  A weak object counting more fixed fields than it has.  */
+    refused_with_flags(bad, good, copy, len, weak, set_fixed_nine,
+                       "fixed count past the size", "fixed fields");
+    /*  Both kinds at once, which nothing allocates.  */
+    refused_with_flags(bad, good, copy, len, weak, set_ephemeron,
+                       "weak and ephemeron", "both weak");
+    /*  The reshape mark on something that is not a context.  */
+    refused_with_flags(bad, good, copy, len, plain, set_kept,
+                       "reshape mark on an Array", "not a context");
+
+    /*
+     *  The good image loads, and the weak object is still weak with one
+     *  named field: `named' is held by nothing else and survives the
+     *  load's collection, `held' is held by `plain' and stays, and a third
+     *  object stored only in a weak slot is gone after the next one.
+     */
+    CHECK_EQ_INT(OM_image_load(path, err, sizeof err), 0);
+    if (err[0])
+        printf("  load said: %s\n", err);
+    CHECK(OM_weak_bit(weak));
+    CHECK_EQ_INT(OM_fetch_pointer(0, weak), named);
+    CHECK_EQ_INT(OM_fetch_pointer(1, weak), held);
+    {
+        st_oop  loose = OM_instantiate_bytes(ST_CLASS_STRING, 1);
+
+        OM_store_pointer(2, weak, loose);
+        OM_collect();
+        CHECK_EQ_INT(OM_fetch_pointer(2, weak), ST_NIL);
+        CHECK_EQ_INT(OM_fetch_pointer(0, weak), named);
+        CHECK_EQ_INT(OM_fetch_pointer(1, weak), held);
+    }
+
+    free(copy);
+    free(good);
+    OM_set_root_provider(NULL);
+    remove(path);
+    remove(bad);
+}
+
 int
 main(void)
 {
@@ -1115,6 +1283,7 @@ main(void)
     test_long_chain_frees_iteratively();
     test_snapshot_never_destroys_the_old_image();
     test_corrupt_image_is_refused();
+    test_bugs7f_om();
     test_full_table_collects();
 
     printf("  table holds %u entries, %u free\n", st_om_table_limit,

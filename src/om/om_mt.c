@@ -1408,7 +1408,7 @@ OM_instantiate_weak(st_oop class_pointer, uint32_t size, uint32_t fixed)
     head = OM_head(p);
     head->flags |= ST_FMT_WEAK;
     /*  Up to 63 named fields ahead of the weak part, which is ample.  */
-    head->flags |= (fixed & 0x3F) << 16;
+    head->flags |= (fixed << ST_FMT_WEAK_FIXED_SHIFT) & ST_FMT_WEAK_FIXED_MASK;
     return p;
 }
 
@@ -1429,7 +1429,7 @@ OM_instantiate_ephemeron(st_oop class_pointer, uint32_t size)
 static uint32_t
 weak_fixed_fields(const om_header *head)
 {
-    return (head->flags >> 16) & 0x3F;
+    return (head->flags & ST_FMT_WEAK_FIXED_MASK) >> ST_FMT_WEAK_FIXED_SHIFT;
 }
 
 st_oop

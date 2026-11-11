@@ -124,6 +124,13 @@ typedef int64_t     st_int;
  */
 #define ST_FMT_EPHEMERON    0x0800
 /*
+ *  Bits 16..21 of a WEAK object's flags: how many of its fields, from the
+ *  front, are named and therefore strong (OM_instantiate_weak).  Zero in
+ *  every other object.
+ */
+#define ST_FMT_WEAK_FIXED_SHIFT 16
+#define ST_FMT_WEAK_FIXED_MASK  0x003F0000u
+/*
  *  Bits 24..31 of a CONTEXT's flags: zero, or one more than the number of
  *  its receiver's leading named fields that kept their offsets when the
  *  receiver's class was reshaped under the running method (Bugs07
