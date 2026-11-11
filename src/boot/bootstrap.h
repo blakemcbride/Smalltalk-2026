@@ -204,8 +204,11 @@ typedef struct {
  *
  *  Each initializer gets its own bytecode budget, so one that cannot
  *  complete (because it wants a Display, or a file) costs one budget rather
- *  than the whole build.  Answers 0 always: a class that will not initialise
- *  is a fact to report, not a reason to refuse the image.
+ *  than the whole build.  A class that will not initialise is a fact to
+ *  report, not a reason to refuse the image, so that answers 0 too.
+ *  Answers -1 when there was no room to seed the symbol table the
+ *  initializers need, and then none has run: the caller must stop rather
+ *  than build on it (Bugs07 X-12; this said "Answers 0 always").
  */
 int BOOT_run_initializers(st_boot_init_report *out);
 

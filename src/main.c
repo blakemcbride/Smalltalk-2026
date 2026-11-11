@@ -2460,7 +2460,21 @@ do_bootstrap(const char *const *sources, const int *dialects, unsigned count,
             snprintf(changes, sizeof changes, "%s.changes", out_path);
             BOOT_set_changes_file(changes);
         }
-        BOOT_run_initializers(&init);
+        /*
+         *  Its failure is the end of the build (Bugs07 X-12).  It answers
+         *  -1 when there was no room to seed the symbol table -- before
+         *  Smalltalk, the pools or any initializer -- and this went on
+         *  regardless: `0 class initializers, 0 ran', a startup compiled
+         *  against a library with no Smalltalk, and an image written or
+         *  an expression evaluated in it as if nothing had happened.
+         */
+        if (BOOT_run_initializers(&init) != 0) {
+            fprintf(stderr, "st2026: the class initializers could not run:"
+                            " there was no room to set up the symbol table"
+                            " they need; no image is written and nothing is"
+                            " evaluated\n");
+            return 1;
+        }
         fprintf(stderr, "st2026: %u class initializers, %u ran, %u skipped,"
                         " %u unfinished",
                 init.defined, init.ran, init.skipped, init.unfinished);
