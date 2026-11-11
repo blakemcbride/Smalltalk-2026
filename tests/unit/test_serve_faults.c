@@ -5583,6 +5583,7 @@ bugs7f_comp(void)
     const char *own    = fixture("bugs7f-comp5-LdA.class.st");
     const char *wrap   = fixture("bugs7f-comp6-LnM.class.st");
     const char *cr     = fixture("bugs7f-comp6-Cr1.class.st");
+    const char *dw     = fixture("bugs7f-comp7-Dw.class.st");
 
     /*
      *  COMP-5.  A `[' on the line under the pattern: the `)' is on line 12
@@ -5649,6 +5650,27 @@ bugs7f_comp(void)
            "COMP-6 a file of CR line ends is counted line by line");
     unlink(wrap);
     unlink(cr);
+
+    /*
+     *  COMP-7.  An expected value over two lines put the examples after it
+     *  in its comment a line early: on 14 and 15, reported on 13 and 14.
+     */
+    write_file(dw,
+        "\"\nx\n\"\nClass {\n\t#name : #Dw,\n\t#superclass : #Object,\n"
+        "\t#category : #Dw\n}\n\n{ #category : #x }\nDw class >> one [\n"
+        "\t\"#(1 2 3) reversed >>> #(3\n\t  2 1).\n\t 2 + 2 >>> 5.\n"
+        "\t 3 + 3 >>> 7\"\n\t^1\n]\n");
+    snprintf(command, sizeof command,
+             "%s -bootstrap -profile profiles/st2026.profile -doctests %s 2>&1",
+             st2026, dw);
+    run(command, out, sizeof out);
+    expect(out, "Dw.class.st:14, Dw class)",
+           "COMP-7 the example after a two-line expected value");
+    expect(out, "Dw.class.st:15, Dw class)",
+           "COMP-7 the example after that");
+    expect(out, "3 doctests in 1 methods of 1 files: 1 passed, 2 wrong",
+           "COMP-7 the two-line expected value is read whole");
+    unlink(dw);
 }
 
 static void

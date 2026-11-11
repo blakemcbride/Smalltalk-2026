@@ -879,6 +879,29 @@ test_bugs7f_comp(void)
         CHECK_EQ_INT((int) SRC_file_line(&r.methods[0].lines, 1), 3);
         CHECK_EQ_INT((int) SRC_file_line(&r.methods[0].lines, 3), 5);
     }
+
+    /*
+     *  COMP-7.  An expected value over two lines, `#(3' and `2 1).': its
+     *  line end was counted by neither example, so the two after it were
+     *  reported on 13 and 14.  They are on 14 and 15; the first is on 12.
+     */
+    if (write_text("Dw.class.st",
+            "\"\nx\n\"\nClass {\n\t#name : #Dw,\n\t#superclass : #Object,\n"
+            "\t#category : #Dw\n}\n\n{ #category : #x }\nDw class >> one [\n"
+            "\t\"#(1 2 3) reversed >>> #(3\n\t  2 1).\n\t 2 + 2 >>> 5.\n"
+            "\t 3 + 3 >>> 7\"\n\t^1\n]\n", path, sizeof path)) {
+        memset(&examples, 0, sizeof examples);
+        CHECK(DOCTEST_scan(path, &examples, error, sizeof error));
+        CHECK_EQ_INT((int) examples.count, 3);
+        if (examples.count == 3) {
+            CHECK_EQ_INT((int) examples.items[0].line, 12);
+            CHECK_EQ_INT((int) examples.items[1].line, 14);
+            CHECK_EQ_INT((int) examples.items[2].line, 15);
+            CHECK_EQ_STR(examples.items[0].expected, "#(3\r\t  2 1)");
+        }
+        DOCTEST_free(&examples);
+        remove(path);
+    }
 }
 
 int

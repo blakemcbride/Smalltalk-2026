@@ -230,6 +230,23 @@ scan_comment(st_doctest_list *l, char *text, const char *where,
             if (line_end_at(scan))
                 ++at_line;
         example_line = at_line;
+        /*
+         *  And the lines of this example's expected value and its period,
+         *  up to where the next example's text begins.  They were never
+         *  counted: the next count starts at that text, so an expected
+         *  value over two lines -- `#(3' and `2 1).' -- put every later
+         *  example in the comment one line early per extra line (Bugs07
+         *  COMP-7).  Counted before the terminators below are written
+         *  over, since line_end_at looks one character ahead.
+         */
+        {
+            const char *resume = stop ? stop + 1 : next ? next + 3 : NULL;
+
+            if (resume)
+                for (scan = sep; scan < resume; ++scan)
+                    if (line_end_at(scan))
+                        ++at_line;
+        }
         *sep = '\0';
         if (stop) {
             *stop = '\0';
