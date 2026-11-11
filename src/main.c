@@ -928,6 +928,19 @@ pump_while_idle(void)
         idle_saw_close = 1;
 }
 
+/*
+ *  A refused resize puts the old window back -- read from where it was
+ *  parked, the new Rectangle's corner, which is reachable from the view
+ *  until this store replaces it.  See screen_follows_display.
+ */
+static int
+screen_keeps_old_window(st_oop view, st_oop rect, int corner_at,
+                        const char *why)
+{
+    store_named(view, "window", OM_fetch_pointer((uint32_t) corner_at, rect));
+    return screen_refused(why);
+}
+
 static int
 screen_follows_display(int width, int height)
 {
@@ -939,6 +952,8 @@ screen_follows_display(int width, int height)
     st_oop  origin;
     st_oop  corner;
     st_oop  old_window;
+    int     origin_at;
+    int     corner_at;
 
     if (!is_instance(manager))
         return screen_refused("the image has no ScheduledControllers");
@@ -948,6 +963,18 @@ screen_follows_display(int width, int height)
         return screen_refused("ControlManager has no screenController field");
     if (!fetch_named(screen, "view", &view) || !is_instance(view))
         return screen_refused("the screen controller has no view");
+    /*
+     *  Everything that can be refused for the SHAPE of things is refused
+     *  here, before anything is allocated or stored, so that only a failed
+     *  allocation is left to happen after the view has been changed.
+     *  The two fields must be among the two slots made below.
+     */
+    origin_at = instvar_index(rect_class, "origin");
+    corner_at = instvar_index(rect_class, "corner");
+    if (origin_at < 0 || origin_at > 1 || corner_at < 0 || corner_at > 1)
+        return screen_refused("Rectangle has no origin and corner fields");
+    if (!fetch_named(view, "window", &old_window))
+        return screen_refused("View has no window field");
 
     /*
      *  Each object is stored where the image can see it BEFORE the next
@@ -957,34 +984,43 @@ screen_follows_display(int width, int height)
      *  allocations, and a threshold collection landing in either would
      *  have freed them -- the walk rebuilds counts from the roots, and a C
      *  local is not one -- leaving the window Rectangle with a dangling
-     *  origin: OM-1's shape, one allocation wide, on a resize.  The old
-     *  window goes back if anything fails, so a refusal changes nothing.
+     *  origin: OM-1's shape, one allocation wide, on a resize.
+     *
+     *  The OLD window needs the same care, because a refusal puts it back
+     *  and the store that installs the new Rectangle is the one that
+     *  releases it.  The view's field was very likely its only reference:
+     *  that store freed it at once (the Blue Book memory, or this one with
+     *  no workers) or left it for the next collection, which the Points'
+     *  allocations are exactly where to land.  It was kept in a C local
+     *  and written back from there, so a refused resize could leave the
+     *  view's window a freed entry -- which the next collection threads
+     *  onto the free chain, and the window's class becomes a SmallInteger
+     *  (Bugs07 FIXES-5).  So it is parked in the new Rectangle's corner
+     *  before the Rectangle is published: from then until the corner Point
+     *  replaces it, it is reachable from the view through the very object
+     *  that displaced it, and the counted store that parks it holds it
+     *  under either memory.  A refusal reads it back from there.  No
+     *  Smalltalk runs while this does -- it is called from primitive 102
+     *  or from the pump, on the one thread that runs the desktop -- so
+     *  what the half-built Rectangle's corner holds meanwhile is this
+     *  function's business alone.
      */
-    if (!fetch_named(view, "window", &old_window))
-        return screen_refused("View has no window field");
     rect = OM_instantiate_pointers(rect_class, 2);
     if (!OM_is_present(rect))
         return screen_refused("no room for the new window rectangle");
+    OM_store_pointer((uint32_t) corner_at, rect, old_window);
     if (!store_named(view, "window", rect))
         return screen_refused("View has no window field");
     origin = make_point(0, 0);
-    if (!OM_is_present(origin)) {
-        store_named(view, "window", old_window);
-        return screen_refused("no room for the new window rectangle");
-    }
-    if (!store_named(rect, "origin", origin)) {
-        store_named(view, "window", old_window);
-        return screen_refused("Rectangle has no origin and corner fields");
-    }
+    if (!OM_is_present(origin))
+        return screen_keeps_old_window(view, rect, corner_at,
+                                       "no room for the new window rectangle");
+    OM_store_pointer((uint32_t) origin_at, rect, origin);
     corner = make_point(width, height);
-    if (!OM_is_present(corner)) {
-        store_named(view, "window", old_window);
-        return screen_refused("no room for the new window rectangle");
-    }
-    if (!store_named(rect, "corner", corner)) {
-        store_named(view, "window", old_window);
-        return screen_refused("Rectangle has no origin and corner fields");
-    }
+    if (!OM_is_present(corner))
+        return screen_keeps_old_window(view, rect, corner_at,
+                                       "no room for the new window rectangle");
+    OM_store_pointer((uint32_t) corner_at, rect, corner);
 
     /*  View>>setWindow: -- the window is in; now the two caches it invalidates.  */
     store_named(view, "viewport", ST_NIL);

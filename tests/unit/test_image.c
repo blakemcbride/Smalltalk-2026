@@ -14124,6 +14124,76 @@ test_bugs7f_gui(void)
                  "(true false true true true true true 1 "
                  "true false true true true true true 1 )");
 
+#ifdef ST_HAVE_SDL3
+    /*
+     *  FIXES-5.  The desktop's resize hook (src/main.c) put the old window
+     *  Rectangle back on a refusal from a C local, after the store that
+     *  had released it -- so a refused resize left the screen view's
+     *  window a freed entry, which the next collection put on the free
+     *  chain: its class a SmallInteger, its printString an error.  A
+     *  refusal for want of room cannot be forced from outside; a refusal
+     *  for the shape of Rectangle can, and took the same path: the image
+     *  binds the global Rectangle to a class with two fields of other
+     *  names for one primitive 102, so the hook makes one of those and
+     *  cannot store its origin.  Then three resizes that succeed, so the
+     *  parked old window is shown to come out of the way when the corner
+     *  goes in.  ST_GC_AT_CLASS=26 collects at every Point the hook makes,
+     *  which is where a collection hurts.  Before: `refused false'.
+     */
+    {
+        char    dir[] = "/tmp/st2026-bugs7f-gui-XXXXXX";
+        char    command[4096];
+
+        if (!mkdtemp(dir)) {
+            ++st_test_checks;
+            ++st_test_failures;
+            printf("  FAIL cannot make a scratch directory for FIXES-5\n");
+        } else {
+            snprintf(command, sizeof command,
+                "\"$ST2026\" -bootstrap -profile " PROFILE " -startup"
+                " \"| iv v i w old real f | Display beDisplay."
+                " [Clipboard isAvailable] whileFalse:"
+                " [(Delay forMilliseconds: 10) wait]."
+                " iv := [:o :n | o instVarAt: (o class allInstVarNames"
+                " indexOf: n)]. v := iv value: (iv value: ScheduledControllers"
+                " value: 'screenController') value: 'view'."
+                " i := v class allInstVarNames indexOf: 'window'."
+                " w := [Smalltalk garbageCollect. [(v instVarAt: i)"
+                " printString] on: Error do: [:e | 'freed']]. old := w value."
+                " Object subclass: #Bugs7fNotARectangle instanceVariableNames:"
+                " 'left right' classVariableNames: '' poolDictionaries: ''"
+                " category: 'bugs7f'. f := DisplayScreen new extent:"
+                " Display width @ (Display height - 80) offset: 0 @ 0 bits:"
+                " (DisplayBitmap new: Display width // 16"
+                " * (Display height - 80)). real := Smalltalk at: #Rectangle."
+                " Smalltalk at: #Rectangle put:"
+                " (Smalltalk at: #Bugs7fNotARectangle). f beDisplay."
+                " Smalltalk at: #Rectangle put: real."
+                " ('FIXES-5 refused ', (w value = old) printString) printNl."
+                " Display beDisplay. ('FIXES-5 kept ', w value) printNl."
+                " f beDisplay. ('FIXES-5 shrunk ', w value) printNl."
+                " Display beDisplay. ('FIXES-5 back ', w value) printNl."
+                " Smalltalk quit\""
+                " -o %s/resize.im >/dev/null 2>&1 && SDL_VIDEODRIVER=dummy"
+                " ST_GC_AT_CLASS=26 " ST_TEST_TIMEOUT " 60 \"$ST2026\" -run"
+                " %s/resize.im 50000000", dir, dir);
+            ++st_test_checks;
+            if (!bugs5_sys_output_has(dir, command,
+                    "'FIXES-5 refused true'\n"
+                    "'FIXES-5 kept 0@0 corner: 640@480'\n"
+                    "'FIXES-5 shrunk 0@0 corner: 640@400'\n"
+                    "'FIXES-5 back 0@0 corner: 640@480'\n")) {
+                ++st_test_failures;
+                printf("  FAIL FIXES-5: a refused resize should leave the"
+                       " old window in the view, and three that succeed"
+                       " the new one\n");
+            }
+            snprintf(command, sizeof command, "rm -rf %s", dir);
+            (void) system(command);
+        }
+    }
+#endif
+
     test_dialect = ST_DIALECT_BLUE_BOOK;
 }
 
