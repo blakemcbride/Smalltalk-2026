@@ -415,6 +415,12 @@ no longer alive when a request hands it back is closed and replaced; when
 the replacement cannot be opened, the pool keeps a place for it that the
 next request fills; and a request that has waited thirty seconds for a
 connection is refused with a logged error rather than left waiting.
+\ct{stop} closes the listener, waits up to ten seconds for the requests in
+flight (\ct{stopWaitingAtMost:} takes another bound), and then closes the
+pool for good: a connection still out in a request is closed when that
+request hands it back, after its transaction is decided, and a request that
+asks for one after that is refused with \ct{the server has stopped} before
+its service runs.
 
 \subsection{Startup}
 

@@ -339,12 +339,29 @@ RestServer >> initClass [
 
 { #category : 'database' }
 RestServer >> acquireConnection [
+	"A connection from the pool, or a RestLogError: the server has not
+	 started, or has stopped and closed its pool."
+	pool isNil ifTrue: [^RestLogError new signal: 'the server is not running'].
 	^pool acquire
 ]
 
 { #category : 'database' }
 RestServer >> releaseConnection: aConnection [
-	pool release: aConnection
+	"Hand a connection back -- to a pool that takes it in, or closes it
+	 when it is closed or did not lend it (RestConnectionPool's class
+	 comment).  This never raises.  Every sender is an ensure: or the last
+	 thing a request does with its database, after its transaction is
+	 decided, and an error escaping from here once turned a request that
+	 had committed into an HTTP 500 (Bugs07 NET-10); what goes wrong is a
+	 line in the log and a closed connection instead."
+	[pool isNil
+		ifTrue: [aConnection close]
+		ifFalse: [pool release: aConnection]]
+		on: Error
+		do: [:e |
+			RestLog error: 'a database connection could not be handed back: ',
+				e class name, ': ', (e messageText ifNil: ['']).
+			[aConnection close] on: Error do: [:e2 | nil]]
 ]
 
 { #category : 'database' }
@@ -367,7 +384,11 @@ RestServer >> withConnectionDo: aBlock [
 
 { #category : 'database' }
 RestServer >> closePool [
-	pool notNil ifTrue: [pool closeAll. pool := nil]
+	"Close the pool, and keep it: a request still in flight hands its
+	 connection back to it and the closed pool closes it, and a request
+	 after it is refused by it.  Setting pool to nil here is what made
+	 both a MessageNotUnderstood (Bugs07 NET-10).  start makes a new one."
+	pool notNil ifTrue: [pool closeAll]
 ]
 
 { #category : 'starting and stopping' }
@@ -413,8 +434,22 @@ RestServer >> start [
 
 { #category : 'starting and stopping' }
 RestServer >> stop [
-	"Stop listening and close the pool, now."
-	self stopWaitingAtMost: 0
+	"Stop listening, let the requests in flight finish for up to ten
+	 seconds, and close the pool; see stopWaitingAtMost:.
+
+	 Before Bugs07 NET-10 this waited for nothing and closed the pool
+	 under the requests it had just promised to let finish.  A service
+	 that stops its own server waits here for itself, the whole ten
+	 seconds: fork the stop, or send stopWaitingAtMost: 0."
+	self stopWaitingAtMost: self class stopWaitMilliseconds
+]
+
+{ #category : 'starting and stopping' }
+RestServer class >> stopWaitMilliseconds [
+	"How long stop waits for the requests in flight.  Ten seconds: past
+	 any ordinary request, short of what a person at a workspace waits
+	 for a doit to come back."
+	^10000
 ]
 
 { #category : 'starting and stopping' }
@@ -423,7 +458,14 @@ RestServer >> stopWaitingAtMost: milliseconds [
 	 finish and be answered, and then stop the rest: the session purge,
 	 and the database pool those requests were still using.  Answer how
 	 many requests were still in flight when the wait ended -- 0 when every
-	 one was answered.  What serve does when asked to stop (Bugs07 NET-5)."
+	 one was answered.  What serve does when asked to stop (Bugs07 NET-5).
+
+	 A request still running when the wait ends -- or every request in
+	 flight, for a wait of 0 -- is not broken by the pool's closing: the
+	 connection it holds is closed when it hands it back, after its
+	 transaction is decided, and its reply is the one it made; one that
+	 asks for a connection after the close is refused with `the server
+	 has stopped', and its service does not run (Bugs07 NET-10)."
 	| left |
 	self isRunning ifFalse: [^0].
 	httpServer stop.

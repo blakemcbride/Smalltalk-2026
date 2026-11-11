@@ -4976,6 +4976,139 @@ bugs7e_vm(void)
         "INTERP-7 a relinquish parks its worker, clamped to a second");
 }
 
+/*
+ *  Bugs07 round 5, NET-10: RestServer>>stop with a database.  It closed
+ *  the listener and then the pool -- `pool := nil' -- under the requests
+ *  in flight: a request that had committed sent release: to nil from its
+ *  ensure:, and the MessageNotUnderstood that escaped made its reply a
+ *  bare `500 internal server error'; its connection was never closed; and
+ *  a kept-alive connection's next request ran its service against the
+ *  nil pool and answered `Message not understood: acquire'.  Through HTTP,
+ *  as the audit drove it, in one -serve run on two workers with SQLite: a
+ *  kept-alive connection answered once; a 1.5 s request in flight across
+ *  `stop'; the kept-alive connection used again once stop has returned.
+ *  Before: `(true false false true '...Message not understood: acquire...'
+ *  (0 1500 ) )' -- stop returned at once, the request it cut across was
+ *  not answered `done' though its row is there, its connection was still
+ *  open, and the next request reached the nil pool.  Now stop waits for
+ *  the request (it takes more than a second), the request is answered
+ *  `done', its connection is closed when it comes back, and the request
+ *  after stop is refused with `the server has stopped' and its service
+ *  never runs (no row 7).  Skipped where there is no SQLITE3 driver.
+ */
+static void
+bugs7e_net_stop(void)
+{
+    static char out[65536];
+    const char *backend = fixture("bugs7e-net10-backend");
+    const char *dbfile  = fixture("bugs7e-net10.db");
+    const char *probe   = fixture("bugs7e-serve-net10.st");
+    char        services[1024], service[1100], text[4096], batch[1024];
+    int         status;
+
+    snprintf(services, sizeof services, "%s/services", backend);
+    snprintf(service, sizeof service, "%s/Net10.class.st", services);
+    mkdir(backend, 0777);
+    mkdir(services, 0777);
+    unlink(dbfile);
+    if (write_file(service,
+            "Class { #name : 'Net10', #superclass : 'RestService', "
+            "#category : 'services' }\n\n"
+            "{ #category : 'services' }\n"
+            "Net10 >> wait [\n"
+            "\tdb executeImmediate: 'CREATE TABLE IF NOT EXISTS t (ms INTEGER)'.\n"
+            "\tdb executeImmediate: 'INSERT INTO t VALUES (', "
+            "(injson integerAt: 'ms') printString, ')'.\n"
+            "\tSmalltalk at: #Bugs7eNetDb put: db.\n"
+            "\t(Delay forMilliseconds: (injson integerAt: 'ms')) wait.\n"
+            "\toutjson at: 'done' put: true\n]\n\n"
+            "{ #category : 'probe' }\n"
+            "Net10 class >> send: aSocket ms: anInteger [\n"
+            "\t| body crlf |\n"
+            "\tcrlf := String with: (Character value: 13) with: (Character value: 10).\n"
+            "\tbody := '{\"_class\":\"services.Net10\",\"_method\":\"wait\",\"ms\":', "
+            "anInteger printString, '}'.\n"
+            "\taSocket send: 'POST /rest HTTP/1.1', crlf, 'Host: x', crlf, "
+            "'Content-Type: application/json', crlf, 'Content-Length: ', "
+            "body size printString, crlf, crlf, body\n]\n\n"
+            "{ #category : 'probe' }\n"
+            "Net10 class >> read: aSocket [\n"
+            "\t| in status line len |\n"
+            "\tin := SocketStream on: aSocket. in readTimeout: 10000.\n"
+            "\t^[status := in nextLine. len := 0.\n"
+            "\t  [(line := in nextLine) isEmpty] whileFalse: [\n"
+            "\t\t(line asLowercase startsWith: 'content-length:')\n"
+            "\t\t\tifTrue: [len := (line copyFrom: 16 to: line size) trimmed asInteger]].\n"
+            "\t  status, ' ', (in next: len)] on: Error do: [:e | 'ERR ', e messageText]\n]\n\n"
+            "{ #category : 'probe' }\n"
+            "Net10 class >> stop: server database: aString [\n"
+            "\t| kept slow r c sem reply t0 |\n"
+            "\tr := OrderedCollection new.\n"
+            "\tkept := Socket connectTo: '127.0.0.1' port: server port.\n"
+            "\tself send: kept ms: 0. r add: ((self read: kept) includesSubstring: '\"done\":true').\n"
+            "\tSmalltalk removeKey: #Bugs7eNetDb ifAbsent: [].\n"
+            "\tsem := Semaphore new.\n"
+            "\tslow := Socket connectTo: '127.0.0.1' port: server port.\n"
+            "\t[self send: slow ms: 1500. reply := self read: slow. sem signal] fork.\n"
+            "\t[Smalltalk includesKey: #Bugs7eNetDb] whileFalse: [(Delay forMilliseconds: 20) wait].\n"
+            "\tt0 := Time millisecondClockValue. server stop.\n"
+            "\tr add: Time millisecondClockValue - t0 > 1000.\n"
+            "\tsem wait.\n"
+            "\tr add: ((reply startsWith: 'HTTP/1.1 200') and: [reply includesSubstring: '\"done\":true']).\n"
+            "\tr add: (Smalltalk at: #Bugs7eNetDb) isOpen.\n"
+            "\tself send: kept ms: 7. r add: (self read: kept).\n"
+            "\tkept close. slow close. Smalltalk removeKey: #Bugs7eNetDb ifAbsent: [].\n"
+            "\tc := DbConnection open: aString.\n"
+            "\tr add: ((c fetchAll: 'select ms from t order by ms') collect: [:row | row at: 'ms']) asArray.\n"
+            "\tc close.\n"
+            "\t^r\n]\n") != 0)
+        return;
+    snprintf(text, sizeof text,
+            "| server c |\n"
+            "c := [DbConnection open: 'DRIVER=SQLITE3;Database=%s;'] on: Error do: [:e | nil].\n"
+            "c isNil ifTrue: [^'no sqlite driver']. c close.\n"
+            "server := RestServer new port: 0; bindAddress: '127.0.0.1';\n"
+            "  backendDirectory: '%s'; database: 'DRIVER=SQLITE3;Database=%s;';\n"
+            "  connectionPoolSize: 2; requireAuthentication: false; name: 'bugs7e'; yourself.\n"
+            "server start.\n"
+            "^((server loader classFor: 'services.Net10') stop: server\n"
+            "  database: 'DRIVER=SQLITE3;Database=%s;') printString\n", dbfile, backend, dbfile, dbfile);
+    if (write_file(probe, text) != 0)
+        return;
+    snprintf(batch, sizeof batch,
+             "Compiler evaluate: (FileStream oldFileNamed: '%s') contentsOfEntireFile\n",
+             probe);
+    status = serve(batch, 2, out, sizeof out);
+    ++st_test_checks;
+    if (status < 0) {
+        ++st_test_failures;
+        printf("  FAIL NET-10: could not run the server\n");
+    } else if (strstr(out, "==> 'no sqlite driver'"))
+        printf("  skipped NET-10 (Bugs07): no SQLITE3 driver\n");
+    else {
+        expect(out, "==> 'an OrderedCollection(true true true false "
+                    "''HTTP/1.1 200 OK {\"_Success\":false,\"_ErrorCode\":-1,"
+                    "\"_ErrorMessage\":\"the server has stopped: its database "
+                    "connections are closed\"}'' (0 1500 ) )'",
+               "NET-10 stop lets the request in flight finish, then refuses");
+        expect_absent(out, "MessageNotUnderstood", "NET-10 nothing sent to a nil pool");
+    }
+    unlink(probe);
+    unlink(service);
+    rmdir(services);
+    rmdir(backend);
+    unlink(dbfile);
+}
+
+/*
+ *  Bugs07 round 5, NET: one function per finding, run in order.
+ */
+static void
+bugs7e_net(void)
+{
+    bugs7e_net_stop();
+}
+
 int
 main(void)
 {
@@ -5652,6 +5785,7 @@ main(void)
     bugs7c_vm();
     bugs7c_om();
     bugs7e_vm();
+    bugs7e_net();
 
     unlink(IMAGE);
     unlink(BATCH);

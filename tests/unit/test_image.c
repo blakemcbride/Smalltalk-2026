@@ -731,8 +731,12 @@
  *  3445 -> 3449 with Bugs07 GUI-6: MethodContext>>restartWith: and
  *  printOn:, which tell a block's frame from its method's, and the
  *  Debugger's restart and revertBlock.
+ *
+ *  3449 -> 3456 with Bugs07 NET-10: RestConnectionPool>>isClosed,
+ *  lentCount, putBack:, close:, closedMark and refuseClosed, and
+ *  RestServer class>>stopWaitMilliseconds.
  */
-#define LIB_METHODS             3449
+#define LIB_METHODS             3456
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -3211,8 +3215,12 @@ test_browsing(void)
      *
      *  3073455 -> 3073720 with Bugs07 OM-3: Finalizer says the VM keeps a
      *  registered mourn semaphore alive.
+     *
+     *  3073720 -> 3079383 with Bugs07 NET-10: a closed pool closes what
+     *  comes back to it and refuses what is asked of it, and RestServer
+     *  stop lets the requests in flight finish first.
      */
-    check_integer("(SourceFiles at: 1) contents size", 3073720);
+    check_integer("(SourceFiles at: 1) contents size", 3079383);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -13223,6 +13231,75 @@ test_bugs7e_om(void)
     test_dialect = ST_DIALECT_BLUE_BOOK;
 }
 
+/*
+ *  Bugs07 round 5, NET.  Image-side, in-process doIts.
+ */
+static void
+test_bugs7e_net(void)
+{
+    const char *db = st_test_path("bugs7e-net10.db");
+    char        expression[4096];
+
+    test_dialect = ST_DIALECT_CLOSURES;
+
+    /*
+     *  NET-10.  RestServer>>stop closed the pool under the requests in
+     *  flight and set it to nil: a request that had committed then sent
+     *  release: to nil from its ensure:, and the MessageNotUnderstood made
+     *  its reply an HTTP 500; its connection stayed open; and closeAll
+     *  closed only what was in the queue.  The pool now closes for good:
+     *  a connection lent across the close stays usable and is closed when
+     *  it comes back, an acquire waiting at the close is refused at once
+     *  (before: after waitSeconds, `every database connection was busy'),
+     *  one after it is refused, and a pool does not take in a connection
+     *  it never lent -- a request that outlived a stop handing its
+     *  connection to the next start's pool.  And the server's own two:
+     *  release never raises, acquire before start is a RestError.  Before:
+     *  the waiter was refused after its three seconds, both connections
+     *  stayed open, the closed pool handed the connection out again, and
+     *  the server's two raised MessageNotUnderstood.  The whole road
+     *  through HTTP is in test_serve_faults (bugs7e_net).  Through
+     *  SQLite, skipped where there is no driver.
+     */
+    unlink(db);
+    snprintf(expression, sizeof expression,
+             "[(DbConnection open: 'DRIVER=SQLITE3;Database=%s;') close. true] "
+             "on: Error do: [:e | false]", db);
+    if (evaluate(expression) == ST_TRUE) {
+        snprintf(expression, sizeof expression,
+                 "| r good pool c d p2 got done t0 | r := OrderedCollection new. "
+                 "good := 'DRIVER=SQLITE3;Database=%s;'. "
+                 "pool := RestConnectionPool on: good size: 2. pool waitSeconds: 3. pool open. "
+                 "c := pool acquire. d := pool acquire. done := Semaphore new. "
+                 "[got := [pool acquire. 'got'] on: RestError do: [:e | e messageText]. "
+                 "done signal] fork. "
+                 "(Delay forMilliseconds: 100) wait. "
+                 "t0 := Time millisecondClockValue. pool closeAll. done wait. "
+                 "r add: got; add: Time millisecondClockValue - t0 < 2000; add: c isOpen. "
+                 "pool release: c. r add: c isOpen. "
+                 "r add: ([pool acquire. 'got'] on: RestError do: [:e | e messageText]). "
+                 "r add: pool available. "
+                 "p2 := RestConnectionPool on: good size: 1. p2 open. "
+                 "p2 release: d. r add: d isOpen; add: p2 available. p2 closeAll. "
+                 "^r printString", db);
+        check_string(expression,
+                     "an OrderedCollection('the server has stopped: its database "
+                     "connections are closed' true true false 'the server has "
+                     "stopped: its database connections are closed' 0 false 1 )");
+        snprintf(expression, sizeof expression,
+                 "| s c good | good := 'DRIVER=SQLITE3;Database=%s;'. "
+                 "s := RestServer new database: good; yourself. "
+                 "c := DbConnection open: good. s releaseConnection: c. "
+                 "^{c isOpen. [s acquireConnection. 'got'] on: RestError do: [:e | e messageText]} "
+                 "printString", db);
+        check_string(expression, "(false 'the server is not running' )");
+    } else
+        printf("  skipped NET-10 in-process: no SQLITE3 driver\n");
+    unlink(db);
+
+    test_dialect = ST_DIALECT_BLUE_BOOK;
+}
+
 int
 main(void)
 {
@@ -13377,6 +13454,7 @@ main(void)
     test_bugs7d_gui();
     test_bugs7e_kern();
     test_bugs7e_om();
+    test_bugs7e_net();
 
     OM_shutdown();
     return ST_TEST_END();
