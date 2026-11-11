@@ -707,7 +707,7 @@ bugs5_low_files(void)
         snprintf(command, sizeof command,
                  ST_TEST_TIMEOUT " -k 2 " SERVE_SECONDS " %s -serve %s -workers 2"
                  " \"$(cat %s)\" >%s.first 2>&1 & first=$!;"
-                 " n=0; until grep -q \"==> 'condensed'\" %s.first"
+                 " n=0; until grep -qs \"==> 'condensed'\" %s.first"
                  " || [ $n -ge " SERVE_SECONDS "0 ]; do sleep 0.1; n=$((n+1));"
                  " done;"
                  " " ST_TEST_TIMEOUT " -k 2 " SERVE_SECONDS " %s -serve %s -workers 1"
@@ -5129,11 +5129,22 @@ bugs7e_files(void)
     char        text[2048];
 
     unlink(log);
+    /*
+     *  The log is made before the workers start, so that what is tested is
+     *  the appends and only the appends.  Eight first opens racing to
+     *  CREATE it meet a different fault: FileDirectory>>findOrAdd: finds
+     *  no file, another process makes it, and PosixFileDirectory>>addNew:
+     *  refuses with `already exists' -- that worker dies, its semaphore is
+     *  never signalled, and the run ends `every process is blocked' in
+     *  one run of ten to twenty-five.  That race is reported beside Bugs07
+     *  X-25, not fixed here: it is not what this test is for.
+     */
     snprintf(text, sizeof text,
         "| line sem expected lines torn |\n"
         "line := [:w :i | 'w', w printString, ' i', i printString, ' ', "
         "(String new: 20 + (i * 97 \\\\ 700) withAll: (Character value: 96 + w)), "
         "' end'].\n"
+        "(FileStream fileNamed: '%s') close.\n"
         "sem := Semaphore new.\n"
         "1 to: 8 do: [:w | Processor forkParallel: [1 to: 40 do: [:i | | f |\n"
         "  f := FileStream fileNamed: '%s'.\n"
@@ -5146,7 +5157,7 @@ bugs7e_files(void)
         "subStrings: (String with: Character cr).\n"
         "torn := lines reject: [:each | expected includes: each].\n"
         "^'lines ', lines size printString, ' torn ', torn size printString\n",
-        log, log);
+        log, log, log);
     bugs7_probe("bugs7e-files8.st", text, 8, "==> 'lines 320 torn 0'",
                 "FILES-8 eight workers' lines across page boundaries arrive whole");
     unlink(log);
