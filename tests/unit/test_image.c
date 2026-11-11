@@ -839,8 +839,11 @@
  *  3534 -> 3537 with Bugs07 NET-13: HttpConnection>>markBusy, isBusy and
  *  closeSocket, so that stop closes the connections waiting for their next
  *  request; HttpServer>>requestBegun became requestBegun:.
+ *
+ *  3537 -> 3539 with Bugs07 X-21: Integer class>>magnitudeOfDigits:radix:,
+ *  primitive 238, and limbMagnitudeOfDigits:radix:, its fallback.
  */
-#define LIB_METHODS             3537
+#define LIB_METHODS             3539
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -3452,8 +3455,12 @@ test_browsing(void)
      *  3177688 -> 3181348 with Bugs07 NET-13: stop closes the connections
      *  waiting for their next request, and keep-alive is decided after the
      *  handler.
+     *
+     *  3181348 -> 3183075 with Bugs07 X-21: digits become an Integer in
+     *  primitive 238, magnitudeOfDigits:radix:, with the Smalltalk loop as
+     *  its fallback.
      */
-    check_integer("(SourceFiles at: 1) contents size", 3181348);
+    check_integer("(SourceFiles at: 1) contents size", 3183075);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -14441,6 +14448,66 @@ test_bugs7f_kern(void)
             fclose(f);
         CHECK(seen >= 15);
     }
+
+    /*
+     *  X-21.  Every conversion of digits to an Integer -- String>>asInteger,
+     *  Integer readFrom:, Number readFrom: and asNumber -- ends in
+     *  Integer class>>valueOfDigits:radix:negated:, whose limb loop is
+     *  quadratic in the length and interpreted: twenty thousand digits
+     *  were over a second, so a caller converting a stranger's numeral
+     *  without bounding it first handed over a worker.  The loop is
+     *  primitive 238 now, magnitudeOfDigits:radix:, with the Smalltalk
+     *  loop as its fallback.  The first check converts twenty thousand
+     *  digits three ways, out of the old loop's reach within this
+     *  harness's budget, checked against the remainder and bit length
+     *  Python computes; the second holds the primitive to the Smalltalk
+     *  loop for every radix from 2 to 36 and lengths on either side of
+     *  each chunk and limb; the third is the edges: the largest
+     *  SmallInteger and the first LargeInteger, 2^64 on either side,
+     *  leading zeros, both cases of letter, a Symbol, and what the
+     *  primitive refuses -- a character that is not a digit of the
+     *  radix, a radix of 37, an Array -- answered by the Smalltalk loop
+     *  as before.
+     */
+    check_string("| s n | s := String new: 20000. "
+                 "1 to: 20000 do: [:i | s at: i put: (Character digitValue: (i - 1) * 7 + 3 \\\\ 10)]. "
+                 "n := s asInteger. "
+                 "^{n \\\\ 1000000007. n highBit. (Integer readFrom: s) = n. "
+                 "  (Integer valueOfDigits: s radix: 10 negated: true) = n negated. "
+                 "  (s copyFrom: 1 to: 12) asNumber} printString",
+                 "(297040226 66437 true true 307418529630 )");
+    check_string("| bad s | bad := OrderedCollection new. "
+                 "2 to: 36 do: [:b | #(1 9 10 11 18 19 20 40 61) do: [:len | "
+                 "  s := String new: len. "
+                 "  1 to: len do: [:i | s at: i put: "
+                 "    (Character digitValue: (i * 7919 + (b * 31) + len) \\\\ b)]. "
+                 "  (Integer magnitudeOfDigits: s radix: b) "
+                 "    = (Integer limbMagnitudeOfDigits: s radix: b) ifFalse: [bad add: {b. s}]. "
+                 "  s := s asLowercase. "
+                 "  (Integer magnitudeOfDigits: s radix: b) "
+                 "    = (Integer limbMagnitudeOfDigits: s radix: b) ifFalse: [bad add: {b. s}]]]. "
+                 "^bad asArray printString",
+                 "()");
+    check_string("^{Integer magnitudeOfDigits: '4611686018427387903' radix: 10. "
+                 "  (Integer magnitudeOfDigits: '4611686018427387903' radix: 10) class name. "
+                 "  (Integer magnitudeOfDigits: '4611686018427387904' radix: 10) class name. "
+                 "  Integer magnitudeOfDigits: '18446744073709551615' radix: 10. "
+                 "  Integer magnitudeOfDigits: '18446744073709551616' radix: 10. "
+                 "  Integer magnitudeOfDigits: '0000000000000000000000' radix: 10. "
+                 "  Integer magnitudeOfDigits: 'zzzzzzzzzzzzz' radix: 36. "
+                 "  Integer magnitudeOfDigits: 'ZZZZZZZZZZZZZ' radix: 36. "
+                 "  Integer magnitudeOfDigits: #'1111111111111111111111111111' radix: 2. "
+                 "  (Integer magnitudeOfDigits: '12345678901x' radix: 10) "
+                 "    = (Integer limbMagnitudeOfDigits: '12345678901x' radix: 10). "
+                 "  [Integer magnitudeOfDigits: '12345678901' radix: 37] "
+                 "    on: Error do: [:e | 'refused']. "
+                 "  Integer magnitudeOfDigits: '1234567890123' asArray radix: 10. "
+                 "  '-123456789012345678901234567890' asInteger. "
+                 "  Number readFrom: '36rZZZZZZZZZZZZZ'} printString",
+                 "(4611686018427387903 SmallInteger LargePositiveInteger 18446744073709551615 "
+                 "18446744073709551616 0 170581728179578208255 170581728179578208255 268435455 "
+                 "true 5079438276110758 1234567890123 -123456789012345678901234567890 "
+                 "170581728179578208255 )");
 
     test_dialect = ST_DIALECT_BLUE_BOOK;
 }

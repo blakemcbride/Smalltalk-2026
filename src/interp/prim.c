@@ -5614,6 +5614,163 @@ primitive_index_of_substring(void)
     return answer_integer(0, 3);
 }
 
+
+/*
+ *  ----------  Integer class>>magnitudeOfDigits:radix:, primitive 238  ----------
+ *
+ *  The value a run of digit characters spells in a radix from 2 to 36,
+ *  as a non-negative Integer: a SmallInteger when it fits one, else a
+ *  LargePositiveInteger.  The arithmetic of Integer class>>
+ *  valueOfDigits:radix:negated: in lib/Kernel-Protocol, done in C.
+ *
+ *  That method folds nine decimal digits at a time into an Array of
+ *  SmallInteger limbs, which is a pass over every limb so far for each
+ *  chunk of digits: quadratic in the length, and interpreted, so a numeral
+ *  of sixteen thousand digits took about a second and a hundred thousand
+ *  over half a minute -- the cost any caller pays that converts a
+ *  stranger's digits without bounding them first (Bugs07 X-21).  The loop
+ *  here is the same loop over 32-bit limbs with a 64-bit product, which is
+ *  still quadratic but over a thousand times cheaper: a hundred thousand
+ *  digits in 24 ms, a million in two and a half seconds.  A
+ *  divide-and-conquer conversion is only faster than this with a
+ *  multiplication faster than schoolbook, which this system does not
+ *  have.
+ *
+ *  The digits are copied out of the object memory and the work is done in
+ *  a WORKER_enter_native region (worker.h), so a long conversion holds up
+ *  no collection on another core; the answer is built after leaving it.
+ *
+ *  The primitive FAILS -- and the Smalltalk method below it runs, which
+ *  answers the same -- for anything it was not written for: digits that
+ *  are not a String or a Symbol, a character that is not a digit of the
+ *  radix (as Character>>digitValue reads them, either case of letter), a
+ *  radix outside 2 to 36, or no memory for the limbs.
+ */
+static int
+digit_value_of(unsigned c)
+{
+    if (c >= '0' && c <= '9')
+        return (int) (c - '0');
+    if (c >= 'A' && c <= 'Z')
+        return (int) (c - 'A') + 10;
+    if (c >= 'a' && c <= 'z')
+        return (int) (c - 'a') + 10;
+    return -1;
+}
+
+static int
+primitive_magnitude_of_digits(void)
+{
+    st_oop          digits = ST_stack_value(1);
+    st_oop          base   = ST_stack_value(0);
+    st_int          radix;
+    uint32_t        n, i, bits, chunk_digits;
+    uint64_t        chunk;
+    unsigned char  *text;
+    uint32_t       *limbs;
+    size_t          capacity, used = 0;
+    int             bad = 0;
+
+    if (!(is_a_string(digits) || is_a_symbol(digits)) || !OM_is_int(base))
+        return 0;
+    radix = OM_int_value(base);
+    if (radix < 2 || radix > 36)
+        return 0;
+    n = OM_fetch_byte_length(digits);
+
+    /*  The largest power of the radix below 2^32: a limb times it plus a
+     *  carry below it stays under 2^64.  */
+    chunk = (uint64_t) radix;
+    chunk_digits = 1;
+    while (chunk * (uint64_t) radix <= UINT32_MAX) {
+        chunk *= (uint64_t) radix;
+        ++chunk_digits;
+    }
+    /*  bits is at least log2(radix), so the limbs cannot run short.  */
+    for (bits = 0; (1u << bits) < (uint32_t) radix; ++bits)
+        ;
+    capacity = ((size_t) n * bits) / 32 + 2;
+
+    text  = (unsigned char *) malloc(n ? n : 1);
+    limbs = (uint32_t *) malloc(capacity * sizeof *limbs);
+    if (text == NULL || limbs == NULL) {
+        free(text);
+        free(limbs);
+        return 0;
+    }
+    for (i = 0; i < n; ++i)
+        text[i] = OM_fetch_byte(i, digits);
+
+    WORKER_enter_native();
+    for (i = 0; i < n && !bad; ) {
+        uint32_t    take = n - i < chunk_digits ? n - i : chunk_digits;
+        uint64_t    value = 0, scale = 1, carry;
+        uint32_t    j;
+        size_t      k;
+
+        for (j = 0; j < take; ++j) {
+            int     d = digit_value_of(text[i + j]);
+
+            if (d < 0 || d >= radix) {
+                bad = 1;
+                break;
+            }
+            value = value * (uint64_t) radix + (uint64_t) d;
+            scale *= (uint64_t) radix;
+        }
+        carry = value;
+        for (k = 0; k < used; ++k) {
+            uint64_t    t = (uint64_t) limbs[k] * scale + carry;
+
+            limbs[k] = (uint32_t) t;
+            carry = t >> 32;
+        }
+        while (carry != 0) {
+            limbs[used++] = (uint32_t) carry;
+            carry >>= 32;
+        }
+        i += take;
+    }
+    WORKER_leave_native();
+    free(text);
+    if (bad) {
+        free(limbs);
+        return 0;
+    }
+
+    if (used <= 2) {
+        uint64_t    value = used == 0 ? 0
+                          : (uint64_t) limbs[0]
+                            | (used == 2 ? (uint64_t) limbs[1] << 32 : 0);
+
+        free(limbs);
+        return answer_positive(value, 3);
+    }
+    {
+        uint32_t    top = limbs[used - 1];
+        uint32_t    bytes = (uint32_t) (used - 1) * 4;
+        st_oop      big;
+        size_t      k;
+
+        while (top != 0) {
+            ++bytes;
+            top >>= 8;
+        }
+        big = OM_instantiate_bytes(ST_CLASS_LARGE_POSITIVE_INTEGER, bytes);
+        if (!OM_is_present(big)) {
+            free(limbs);
+            return 0;
+        }
+        for (k = 0; k < bytes; ++k)
+            OM_store_byte((uint32_t) k, big,
+                          (uint8_t) (limbs[k / 4] >> ((k % 4) * 8)));
+        free(limbs);
+        ST_pop_n(3);
+        ST_push(big);
+        return 1;
+    }
+}
+
 /*
  *  163, 164, 183, 184: read-only objects, and pinned ones.
  *
@@ -8058,6 +8215,7 @@ ST_primitive_dispatch(unsigned index)
     case 226: return primitive_float_arc_sin();
     case 227: return primitive_float_arc_cos();
     case 233: return primitive_float_log10();
+    case 238: return primitive_magnitude_of_digits();
     case 229: return primitive_float_raised_to();
     case 228: return primitive_compile_method();
     case 234: return ST_prim_migrate_instances();
@@ -8193,7 +8351,7 @@ static const unsigned char primitive_takes[256] = {
     [ 61] = TAKES(2), [ 64] = TAKES(2), [ 69] = TAKES(2), [ 74] = TAKES(2),
     [ 79] = TAKES(2), [ 84] = TAKES(2), [100] = TAKES(2), [136] = TAKES(2),
     [174] = TAKES(2), [188] = TAKES(2), [203] = TAKES(2), [210] = TAKES(2),
-    [220] = TAKES(2),
+    [220] = TAKES(2), [238] = TAKES(2),
 
     /*  Three, four and five.  */
     [116] = TAKES(3), [130] = TAKES(3), [131] = TAKES(3), [204] = TAKES(3),
@@ -8347,6 +8505,7 @@ static const primitive_entry primitive_table[] = {
     { 229, ST_PRIM_PRESENT,  "Float raisedTo: -- ours; no Blue Book number" },
     { 228, ST_PRIM_PRESENT,  "Compiler class compile -- ours"    },
     { 234, ST_PRIM_PRESENT,  "Behavior migrate instances -- ours" },
+    { 238, ST_PRIM_PRESENT,  "Integer class magnitudeOfDigits:radix: -- ours" },
     { 132, ST_PRIM_PRESENT,  "PosixFile lastError; Object instVarsInclude:" },
     { 100, ST_PRIM_PRESENT,  "signal a semaphore at a time"     },
     { 135, ST_PRIM_PRESENT,  "millisecond clock -- unmasked; see "

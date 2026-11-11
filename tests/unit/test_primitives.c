@@ -391,6 +391,19 @@ test_bugs7f_vm(void)
                      (int) ST_PRIM_PRESENT);
 }
 
+/*
+ *  Bugs07 X-21: primitive 238, Integer class>>magnitudeOfDigits:radix:,
+ *  is answered, and held to its two arguments.
+ */
+static void
+test_bugs7f_kern(void)
+{
+    CHECK_EQ_INT(ST_primitive_status_of(238, NULL), ST_PRIM_PRESENT);
+    CHECK_EQ_INT(ST_primitive_arity(238), 2);
+    CHECK(ST_primitive_fits(238, 2));
+    CHECK(!ST_primitive_fits(238, 1));
+}
+
 int
 main(void)
 {
@@ -399,6 +412,7 @@ main(void)
     test_the_four_answers();
     test_bugs7e_vm();
     test_bugs7f_vm();
+    test_bugs7f_kern();
     test_the_report_counts_what_source_asks_for();
     test_a_named_primitive_is_not_just_117();
     test_class_side_methods_are_labelled();

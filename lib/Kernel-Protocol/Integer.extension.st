@@ -1082,13 +1082,66 @@ Integer class >> valueOfDigits: aString radix: b negated: neg [
 	 Zero for no digits, which is what 1983's reader answers and what
 	 Number class>>readFrom: is written against.
 
+	 Nine digits or fewer keep the plain loop.  Nine digits of base 36 is
+	 under 2^47, so on this build the whole thing stays a SmallInteger and
+	 costs nine multiplications, and nearly every number anybody reads is
+	 this one.  On a build too narrow to hold it the loop promotes to
+	 LargeInteger and is exactly 1983's, which is to say correct and slow.
+
+	 Anything longer is magnitudeOfDigits:radix:'s, primitive 238, which
+	 does in C the limb arithmetic limbMagnitudeOfDigits:radix: does here
+	 -- see both for why (Bugs07 X-21) -- and the sign goes on after."
+	| v |
+	aString isEmpty ifTrue: [^0].
+	aString size <= 9 ifTrue: [
+		v := 0.
+		1 to: aString size do: [:k | v := v * b + (aString at: k) digitValue].
+		neg ifTrue: [^v negated truncated].
+		^v].
+	v := self magnitudeOfDigits: aString radix: b.
+	neg ifTrue: [^v negated truncated].
+	^v
+]
+
+{ #category : '*Kernel-Protocol' }
+Integer class >> magnitudeOfDigits: aString radix: b [
+	"The non-negative Integer the digit characters of aString spell in
+	 base b, from 2 to 36.
+
+	 Primitive 238 is the limb loop of limbMagnitudeOfDigits:radix: in C:
+	 32-bit limbs and a 64-bit product, the digits copied out first and the
+	 arithmetic done where no collection waits for it.  The loop is
+	 quadratic in the length of the number however it is written --
+	 every chunk of digits is a pass over the limbs so far -- and a
+	 divide-and-conquer conversion is only faster with a multiplication
+	 faster than schoolbook, which this system does not have.  What can be
+	 changed is the constant, and interpreted it was the whole cost:
+	 sixteen thousand digits took about a second, a hundred thousand over
+	 half a minute, a million an hour, for any caller that converts a
+	 stranger's numeral without bounding it first -- String>>asInteger,
+	 Integer readFrom:, Number readFrom: and asNumber all come here (Bugs07
+	 X-21).  In C a hundred thousand digits take 24 ms and a million two
+	 and a half seconds.
+
+	 The primitive fails for what it was not written for -- digits that are
+	 not a String, a character that is not a digit of b, a radix outside 2
+	 to 36, no memory -- and then the Smalltalk loop answers, as it did."
+	<primitive: 238>
+	^self limbMagnitudeOfDigits: aString radix: b
+]
+
+{ #category : '*Kernel-Protocol' }
+Integer class >> limbMagnitudeOfDigits: aString radix: b [
+	"The non-negative Integer the digits of aString spell in base b, in
+	 Smalltalk: what primitive 238 computes, and what answers when it
+	 cannot (see magnitudeOfDigits:radix:).
+
 	 The mirror of Integer>>printOn:base:, and the reason is the same: the
 	 whole conversion happens in an Array of SmallInteger limbs, chunkDigits
 	 digits folded in per pass, so it costs a ninth as many passes over a
 	 quarter as many limbs as the digit-at-a-time loop it replaces.  It is
-	 still O(d squared) -- with a schoolbook multiply a divide-and-conquer
-	 split saves nothing worth the risk -- but the constant is thirty-odd
-	 times smaller, which is what the finding measured (Bugs4 NUMBERS-3).
+	 still O(d squared), but the constant is thirty-odd times smaller than
+	 1983's, which is what Bugs4 NUMBERS-3 measured.
 
 	 The limb array is sized from an upper bound on the answer's bit count:
 	 `b highBit' is at least the base-two logarithm of b for every b, so
@@ -1102,23 +1155,10 @@ Integer class >> valueOfDigits: aString radix: b negated: neg [
 	 COPYING the whole number and recurring, so handing it a magnitude
 	 with a dozen spare bytes would be a dozen copies; what it is asked
 	 for here is the other half of its job, normalising a magnitude that
-	 fits into a SmallInteger.
-
-	 Nine digits or fewer keep the plain loop.  Nine digits of base 36 is
-	 under 2^47, so on this build the whole thing stays a SmallInteger and
-	 costs nine multiplications; setting up limbs for it would cost more
-	 than the number is worth, and nearly every number anybody reads is
-	 this one.  On a build too narrow to hold it the loop promotes to
-	 LargeInteger and is exactly 1983's, which is to say correct and
-	 slow."
+	 fits into a SmallInteger."
 	| setup limbBits limbBase chunk chunkDigits limbBytes limbs nLimbs used
 	  i end v carry t j scale result nBytes topBytes idx |
 	aString isEmpty ifTrue: [^0].
-	aString size <= 9 ifTrue: [
-		v := 0.
-		1 to: aString size do: [:k | v := v * b + (aString at: k) digitValue].
-		neg ifTrue: [^v negated truncated].
-		^v].
 	setup := self limbSetupForBase: b.
 	limbBits := setup at: 1.
 	limbBase := setup at: 2.
@@ -1156,7 +1196,7 @@ Integer class >> valueOfDigits: aString radix: b negated: neg [
 		topBytes := topBytes + 1.
 		v := v bitShift: -8].
 	nBytes := (used - 1) * limbBytes + topBytes.
-	result := Integer new: nBytes neg: neg.
+	result := Integer new: nBytes neg: false.
 	1 to: used do: [:k |
 		v := limbs at: k.
 		1 to: limbBytes do: [:t2 |
