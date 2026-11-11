@@ -61,7 +61,12 @@ What makes this different from a debugger in another language:
 
 \begin{itemize}
 \item The source pane is \emph{editable}. Fix the method, \ct{accept}, and the
-  frame is restarted with the new code.
+  frame is restarted with the new code. A block's frame, which the stack lists
+  as \ct{[] in} followed by its method, cannot take new code itself: the
+  Debugger asks, then restarts the frame of the method the block was written in.
+\item \ct{restart} on the stack's menu runs the selected frame again from its
+  start---a method from its first statement, a block from the start of the
+  block.
 \item The receiver Inspector is live. Set the instance variable that was
   \ct{nil} and carry on.
 \item \ct{proceed} resumes from where the error was raised, so once you have

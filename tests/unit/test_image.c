@@ -724,8 +724,12 @@
  *  to:with:startingAt: (primitive 105 on the collection's own slots),
  *  moveBasicFrom:to:by: and makeRoomAtBothEnds, and 1983's makeRoomAtFirst
  *  and makeRoomAtLast moving through them.
+ *
+ *  3445 -> 3449 with Bugs07 GUI-6: MethodContext>>restartWith: and
+ *  printOn:, which tell a block's frame from its method's, and the
+ *  Debugger's restart and revertBlock.
  */
-#define LIB_METHODS             3445
+#define LIB_METHODS             3449
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -3193,8 +3197,12 @@ test_browsing(void)
      *  3062314 -> 3069383 with Bugs07 KERNA-2: an OrderedCollection's
      *  elements move with primitive 105, and an insertion into its middle
      *  leaves room at both ends.
+     *
+     *  3069383 -> 3071804 with Bugs07 GUI-6: restarting a block's frame
+     *  starts the block, and the Debugger tells a block's frame by its
+     *  closure.
      */
-    check_integer("(SourceFiles at: 1) contents size", 3069383);
+    check_integer("(SourceFiles at: 1) contents size", 3071804);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -12887,6 +12895,111 @@ test_bugs7d_kerna(void)
     test_dialect = ST_DIALECT_BLUE_BOOK;
 }
 
+/*
+ *  Bugs07, round 4: the GUI group's findings.
+ *
+ *  GUI-6.  With closures a block runs in a MethodContext of its own whose
+ *  method is the home method, and MethodContext>>restart read only the
+ *  method: restarting a block's frame put its pc at the METHOD's first
+ *  bytecode, and the frame, resumed, ran the whole method with the block's
+ *  argument where the method's first temporary belongs -- the audit's
+ *  probe sent `add: #method' to the 1 the block was given, and its log
+ *  came back (method block ).  The Debugger's restart and an accepted edit
+ *  both went that way, because it told a block's frame by its class.
+ */
+static void
+test_bugs7d_gui(void)
+{
+    test_dialect = ST_DIALECT_CLOSURES;
+
+    /*  The audit's probe: a process stopped inside a block, the block's
+     *  frame restarted and the process resumed.  The block runs again
+     *  from its start and stops again; and its frame prints as a block's.  */
+    check_string("| log p ctx s | "
+                 "Object compile: 'zzB7dRestart: log log add: #method. "
+                 "#(1) do: [:x | log add: #block. Processor activeProcess suspend. "
+                 "log add: #after]. log add: #done' classified: #probe. "
+                 "^[log := OrderedCollection new. "
+                 "p := [nil zzB7dRestart: log] newProcess. p resume. "
+                 "(Delay forMilliseconds: 30) wait. "
+                 "ctx := p suspendedContext. s := ctx printString. ctx restart. "
+                 "p resume. (Delay forMilliseconds: 30) wait. p terminate. "
+                 "s, ' ', log asArray printString] "
+                 "ensure: [Object removeSelector: #zzB7dRestart:]",
+                 "[] in UndefinedObject(Object)>>zzB7dRestart: (method block block )");
+
+    /*  What a block's frame starts with: its copied values, re-stored from
+     *  the closure (here overwritten before the restart); a temporary it
+     *  shares with its method, through the vector, which the restart
+     *  leaves alone; and an inner block's own temporary, nil again.  */
+    check_string("| run | "
+                 "Object compile: 'zzB7dCopied: log | k | k := 10. #(1) do: [:x | "
+                 "log add: x + k. Processor activeProcess suspend]' classified: #probe. "
+                 "Object compile: 'zzB7dRemote: log | n | n := 0. #(1) do: [:x | "
+                 "n := n + 1. log add: n. Processor activeProcess suspend]' classified: #probe. "
+                 "Object compile: 'zzB7dNested: log #(1) do: [:x | #(5) do: [:y | | t | "
+                 "log add: x + y; add: t. t := 7. Processor activeProcess suspend]]' "
+                 "classified: #probe. "
+                 "run := [:sel :tweak | | log p ctx | log := OrderedCollection new. "
+                 "p := [nil perform: sel with: log] newProcess. p resume. "
+                 "(Delay forMilliseconds: 30) wait. "
+                 "ctx := p suspendedContext. tweak value: ctx. ctx restart. "
+                 "p resume. (Delay forMilliseconds: 30) wait. p terminate. log asArray]. "
+                 "^[(Array with: (run value: #zzB7dCopied: value: [:c | c tempAt: 2 put: 99]) "
+                 "with: (run value: #zzB7dRemote: value: [:c | ]) "
+                 "with: (run value: #zzB7dNested: value: [:c | ])) printString] "
+                 "ensure: [#(zzB7dCopied: zzB7dRemote: zzB7dNested:) do: [:s | "
+                 "Object removeSelector: s]]",
+                 "((11 11 ) (1 2 ) (6 nil 6 nil ) )");
+
+    /*  A new method cannot go into a block's frame; restartWith: refuses.  */
+    check_string("| p ctx | "
+                 "Object compile: 'zzB7dWith #(1) do: [:x | "
+                 "Processor activeProcess suspend]' classified: #probe. "
+                 "^[p := [nil zzB7dWith] newProcess. p resume. "
+                 "(Delay forMilliseconds: 30) wait. ctx := p suspendedContext. "
+                 "[ctx restartWith: (Object compiledMethodAt: #zzB7dWith). #taken] "
+                 "on: Error do: [:e | e messageText]] "
+                 "ensure: [p terminate. Object removeSelector: #zzB7dWith]",
+                 "a block's frame cannot be restarted with a new method; "
+                 "restart the method it was written in");
+
+    /*
+     *  The Debugger's revertBlock, which an accepted edit goes through:
+     *  a block's frame reverts to its method's frame below it, after the
+     *  question 1983 asked (answered yes here); a block whose method has
+     *  returned -- the bottom of a forked process -- is refused with a
+     *  notifier; a method's frame is left as it is with no question.
+     *  Headless, confirm: and notify: are Warnings, and resume: true is
+     *  the answer.  Each is (answer, the frame selected afterwards is the
+     *  one expected, questions asked).  Before: (true false 0) for the
+     *  block -- passed through as a method's.
+     */
+    check_string("| run | "
+                 "Object compile: 'zzB7dRevert #(1) do: [:x | "
+                 "Processor activeProcess suspend]' classified: #probe. "
+                 "run := [:body :pick :want | | p ctx d n answer | n := 0. "
+                 "p := body newProcess. p resume. (Delay forMilliseconds: 30) wait. "
+                 "ctx := pick value: p suspendedContext. "
+                 "d := Debugger new process: p context: ctx interrupted: true. "
+                 "d openInspectors. "
+                 "d instVarAt: (Debugger allInstVarNames indexOf: 'context') put: ctx. "
+                 "answer := [d revertBlock] on: Warning do: [:w | n := n + 1. w resume: true]. "
+                 "p terminate. "
+                 "Array with: answer with: d context == (want value: ctx) with: n]. "
+                 "^[(Array "
+                 "with: (run value: [nil zzB7dRevert] value: [:c | c] "
+                 "value: [:c | c sender sender]) "
+                 "with: (run value: [Processor activeProcess suspend] value: [:c | c] "
+                 "value: [:c | c]) "
+                 "with: (run value: [nil zzB7dRevert] value: [:c | c sender sender] "
+                 "value: [:c | c])) printString] "
+                 "ensure: [Object removeSelector: #zzB7dRevert]",
+                 "((true true 1 ) (false true 1 ) (true true 0 ) )");
+
+    test_dialect = ST_DIALECT_BLUE_BOOK;
+}
+
 int
 main(void)
 {
@@ -13038,6 +13151,7 @@ main(void)
     test_bugs7c_gui();
     test_bugs7c_net();
     test_bugs7d_kerna();
+    test_bugs7d_gui();
 
     OM_shutdown();
     return ST_TEST_END();
