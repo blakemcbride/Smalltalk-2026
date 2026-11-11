@@ -7,13 +7,13 @@ rasterised into `src/gfx/font_face.c` and checked in; the class library is
 plain text in `sources/`, `lib/` and `pharo/`.
 
 **Read this first.** This built, linked, ran, bootstrapped an image and
-opened its desktop on Windows, all of it confirmed on a real MSVC. Since
-then `src/` has gained `image_compile.c`, `migrate.c` and `finalize.c`;
-`Makefile.msvc` names them, and the object list links with gcc on Linux,
-but no MSVC has built this tree since they arrived. What remains
-untested is narrower than it was and named exactly in the last section —
-chiefly `nmake test`, and the Win32 half of the file primitives under
-sustained use.
+opened its desktop on Windows, all of it confirmed on a real MSVC, and the
+Windows binary distribution is made there by `nmake /f Makefile.msvc dist`
+— a build that links ODBC and OpenSSL and bootstraps the distribution's
+image with the binary it has just built. What remains untested is
+narrower than it was and named exactly in the last section — chiefly
+`nmake test`, the server listening for clients, and the Win32 half of the
+file primitives under sustained use.
 
 ## The short version
 
@@ -150,10 +150,53 @@ tree.
 | `SDL3=` | root of an SDL3 development package: the directory holding `include\` and `lib\` |
 | `SDL3LIB=` | the import library itself, when it is not at `lib\x64\SDL3.lib` |
 | `HEADLESS=1` | no display; the graphics layer becomes a stub and the build stops asking for SDL3 |
+| `NODB=1` | no database: build without ODBC (it is on otherwise — see below) |
+| `OPENSSL=` | root of an OpenSSL 3.2 or later development package, for `https`; not needed when it is where winget installs it |
+| `OPENSSLLIB=` | the directory holding `libssl.lib`, when it is not `$(OPENSSL)\lib\VC\x64\MD` |
+| `NOTLS=1` | no `https`: build without OpenSSL even when one is installed |
 | `CC=clang-cl` | build with clang-cl instead of cl |
 
 Each `OM` gets its own build directory, so an `mt` object can never be
-linked against a `bb` one.
+linked against a `bb` one; so does a build without ODBC or without
+OpenSSL, whose objects are not the objects of one with them.
+
+### ODBC and OpenSSL
+
+**ODBC is part of Windows** — `sql.h` in the SDK, `odbc32.dll` in System32
+— so an ordinary build links `odbc32.lib` and has the Database package,
+with nothing to install. `NODB=1` leaves it out. A database is reached
+through its own 64-bit ODBC driver, registered in *ODBC Data Sources
+(64-bit)*.
+
+**OpenSSL is not part of Windows**, and it is what `https` — the HTTP
+client, and the language-model clients on top of it — needs. 3.2 or later,
+because the client checks servers against Windows' own certificate store
+through OpenSSL's `org.openssl.winstore:` URI, which 3.2 introduced:
+OpenSSL's default verify paths name a directory nobody fills on Windows,
+and against those every server fails verification.
+
+```bat
+winget install ShiningLight.OpenSSL.Dev
+nmake /f Makefile.msvc SDL3=C:\SDL3-3.2.20
+```
+
+That package installs to `C:\Program Files\OpenSSL-Win64`, and the
+makefile looks there when `OPENSSL=` is not given, so an ordinary install
+needs nothing said; with OpenSSL elsewhere, name it with `OPENSSL=`. With
+none found, the build is a valid one without `https`; `NOTLS=1` asks for
+that outright.
+
+**OpenSSL's two DLLs must be findable at run time**, exactly like
+`SDL3.dll`: `libssl-3-x64.dll` and `libcrypto-3-x64.dll` (`-4-` for
+OpenSSL 4) from the package's `bin\`, beside `st2026.exe` or on `PATH`.
+Without them the program does not start, with *"The code execution cannot
+proceed because libssl-3-x64.dll was not found"* — whether or not anything
+asks for `https`. `st2026.exe -version` says what the build has:
+
+```
+  database      : ODBC
+  TLS           : OpenSSL
+```
 
 `nmake /f Makefile.msvc clean` removes `build\`, `st2026.exe`, and the `.pdb`
 and `.ilk` beside it. It needs no SDL3 and no `HEADLESS=1`, which took a
@@ -387,6 +430,8 @@ wrong is in this list.
 | `src/port/st_port.h`, `.c` | The whole threading layer forks here on `_WIN32`. Threads, mutexes and condition variables become `CreateThread`, `SRWLOCK` and `CONDITION_VARIABLE`. Thread-local storage is **fibre**-local: `FlsAlloc` is the only Win32 flavour that takes a destructor callback, which is what `pthread_key_create` provides on the other side. |
 | `src/boot/profile.c` | Directory walking forks on `_WIN32`: `FindFirstFileA`/`FindNextFileA` where POSIX gets `opendir`/`readdir`. Path *splitting* does not fork — see above. |
 | `src/interp/prim.c` | The 1983 File and FilePage primitives — open, close, size, read a page, write a page, truncate, list a directory. POSIX answers all seven directly; Windows answers none of them under those names, so they go through a shim at the top of the file's primitive section. `pread`/`pwrite` become `ReadFile`/`WriteFile` with the offset in an `OVERLAPPED`, which is positional in the same way and is not the same thing as seeking first. Every `_open` carries `_O_BINARY`: MSVC's defaults to text mode, and these primitives carry image pages. |
+| `src/net/st_socket.c` | Sockets are Winsock on this side of `ST_WINDOWS` — `WSAPoll`, a loopback UDP socket to wake the I/O thread, `BCryptGenRandom`, `SO_EXCLUSIVEADDRUSE` — and the TLS client reads Windows' certificate store through OpenSSL 3.2's `org.openssl.winstore:`. `ws2_32.lib` and `bcrypt.lib` are linked for it. |
+| `src/db/st_odbc.c` | The same source on every platform, against Windows' own driver manager (`odbc32.lib`). |
 | `src/st2026.manifest` | The application manifest the linker embeds in `st2026.exe`: UTF-8 as the process's ANSI code page, so that file names and ODBC text are the UTF-8 a String holds — see *Text is UTF-8* above. |
 | `src/port/st_atomic.h` | `<stdatomic.h>` directly. Two self-imposed limits keep every operation lock-free everywhere: only naturally-aligned int-, bool- and pointer-sized types, and never `_Atomic` on a struct. |
 | `src/main.c` | Includes `<SDL3/SDL_main.h>` so SDL can stand up the process entry point. Thread 0 is the only thread that calls SDL; under `-run` it also runs the interpreter between pumps, and under `-serve` threads 1..N are Smalltalk workers that never call SDL video. SDL3's main-thread rules force this shape. See [`doc/CONCURRENCY.md`](doc/CONCURRENCY.md). |
@@ -573,12 +618,17 @@ evidence and not confirmation.
 
 **Still not checked:**
 
-- **The Winsock half of `src/net/st_socket.c` and `st2026 -serve`.** The
-  socket layer is POSIX on one side of `ST_WINDOWS` and Winsock on the other
-  — `WSAPoll`, a loopback UDP socket for the wake channel, `BCryptGenRandom`,
-  `SO_EXCLUSIVEADDRUSE` — and `Makefile.msvc` links `ws2_32.lib bcrypt.lib`
-  for it. It compiles for Windows and has never been run there; neither
-  has the server mode or `SetConsoleCtrlHandler` in place of `SIGINT`.
+- **A server listening on Windows.** The Winsock half of
+  `src/net/st_socket.c` is in every `st2026.exe`, MSVC builds it with ODBC
+  and OpenSSL linked, and the https client was carried as far as the
+  certificate-store question above; but `st2026 -serve` taking a request
+  from a client on Windows has not been recorded, nor has
+  `SetConsoleCtrlHandler` in place of `SIGINT` stopping it. Under Wine,
+  `-serve` has run a batch script (no listener).
+- **Where `dist` finds the licence texts** it ships for SDL3 and OpenSSL —
+  the SDL VC zip's `LICENSE.txt`, ShiningLight's `license.txt`, vcpkg's
+  `copyright` — is taken from those packages' documented layouts and has
+  not been seen on a Windows machine.
 - **`nmake /f Makefile.msvc test` has not been run.** Twenty-six suites build
   and run from that target and nobody has watched them. It is the largest
   untested claim left in this file.

@@ -11,9 +11,11 @@ maintained by hand against a second set of platform code. The macOS build is
 the Linux build with `-pthread` taken off the command line. Almost everything
 you compile here is the code that is tested every day.
 
-**Read this first.** No macOS machine has compiled it — see the last section,
-which says exactly what was checked and how. The gap is far narrower than on
-Windows, but it is a gap.
+**Read this first.** This has been built and run on an Apple Silicon Mac
+(arm64, macOS 27.0.1, Apple clang, Homebrew's SDL3, OpenSSL and unixODBC):
+`make` compiles it, an image bootstraps and its desktop opens, and the macOS
+binary distribution was made there by `make dist`. What a Mac has not been
+seen to do is narrower than that, and the last section names it.
 
 ## The short version
 
@@ -85,6 +87,13 @@ Homebrew's `openssl` is *keg-only* and puts its `.pc` files where nothing
 looks by default. `brew install openssl pkg-config` and then
 `PKG_CONFIG_PATH=$(brew --prefix openssl)/lib/pkgconfig make`; without it
 the build is a valid one with no TLS, and `make deps` says so.
+
+ODBC, which the Database package needs, comes from a driver manager. The
+makefile asks pkg-config for unixODBC (`odbc`) first and then for iODBC
+(`libiodbc`); `brew install unixodbc` gives it the first, and is what the
+release recipe in [`Distributions.md`](Distributions.md) builds with. With
+neither, the build has no database, and `-version` says so:
+`database : none (NODB)`.
 
 Anything not installed by Homebrew — MacPorts, a `cmake` build of SDL3 you
 installed yourself — works the same way as long as pkg-config can see it:
@@ -326,7 +335,9 @@ the shape they have to meet in.
 
 ## Known rough edges
 
-1. **No Mac has compiled this.** See below.
+1. **The test suites' results on a Mac are not recorded.** It builds, it
+   bootstraps and it runs its desktop there; `make test` is the next thing
+   to watch. See below.
 2. **`make bench` reads low on Apple Silicon.** Not a defect, but it will
    look like one. The section above says why. Making it right means a Darwin
    `pin_to_physical_cores` — `sysctl hw.perflevel0.logicalcpu` names the
@@ -347,9 +358,28 @@ the shape they have to meet in.
    Darwin rather than a promise POSIX makes — and with
    `-Werror=implicit-function-declaration` in the warning set, the first libc
    to stop doing it is a build that stops rather than a warning. Now included
-   explicitly. This is the only code change this document required.
+   explicitly. The first build on a Mac found the same shape once more:
+   `getentropy`, which the socket layer seeds its random source with, is
+   declared in `<sys/random.h>` on Darwin as on Linux, and
+   `src/net/st_socket.c` includes it for both.
 
 ## What has been checked, and how
+
+**Built and run on a Mac** — Apple Silicon, macOS 27.0.1, Apple clang, the
+Homebrew packages of the release recipe in
+[`Distributions.md`](Distributions.md):
+
+- **`make` builds it**, with SDL3, OpenSSL and unixODBC found through
+  pkg-config: `-version` reports `mt (64-bit threaded)`, `SDL3`, `ODBC`,
+  `OpenSSL` and `platform : macOS`.
+- **An image bootstraps, and its desktop opens.** `make dist` bootstraps the
+  distribution's own image with the binary it has just built, so every
+  macOS distribution is a bootstrap on a Mac.
+- **The two things a Mac needed.** `getentropy`'s header (above), and two in
+  the release recipe: BSD `awk` refuses a newline in a `-v` value, so
+  `tools/dist.sh` passes the `-version` report through the environment, and
+  pkg-config's `-rpath /opt/homebrew/lib` is deleted from the distributed
+  binary so that it loads its libraries from `lib/` and nowhere else.
 
 **Checked, on Linux:**
 
@@ -379,26 +409,21 @@ the shape they have to meet in.
 - The platform claims in the tables above were read out of the source, not
   recalled.
 
-**Not checked:**
+**Not recorded:**
 
-- **No macOS machine has compiled any of this**, and no Apple clang has seen
-  it — the closest available was gcc with `__linux__` undefined, which
-  exercises the same branches but not the same compiler.
-  `doc/PORTABILITY.md` has said so since the portability work landed and it
-  is still true.
-- Whether Darwin's `<pthread.h>` chain declares `sched_yield` — which is why
-  `<sched.h>` is now included rather than assumed.
-- Homebrew formula names and prefixes, the deps report's exact wording on a
-  Mac, and the Retina behaviour, all of which are reasoned from documented
-  behaviour rather than observed.
+- **`make test` on a Mac.** The unit suites and the imported packages' own
+  suites are the daily gate on Linux; no run of them on a Mac is written
+  down, so whether they are green there is not known from this document.
+- `make bench`, whose Apple Silicon reading is reasoned above rather than
+  measured.
 - Both sanitizers.
-- The socket layer and `st2026 -serve`. `src/net/st_socket.c`'s POSIX half is
-  what a Mac would run — `poll`, `pipe` where `pipe2` is missing,
-  `getentropy` — and those are the branches Linux with `__linux__` undefined
-  compiled, not a Mac; the server has never listened on one.
+- The deps report's exact wording on a Mac, and the Retina behaviour.
+- `st2026 -serve` listening for clients. `src/net/st_socket.c`'s POSIX half —
+  `poll`, `pipe` where `pipe2` is missing, `getentropy` — compiles on a Mac,
+  as the build shows; a server on one has not been recorded taking a
+  request.
 
-The gap here is real but narrow: the shared makefile and the shared source
-are exercised continuously, and the macOS-specific surface is the five rows
-of the table above. The first build will probably turn up something anyway.
-If it does, please report it at
+The gap here is narrow: the shared makefile and the shared source are
+exercised continuously, and the macOS-specific surface is the five rows of
+the table above. If a Mac turns up something, please report it at
 <https://github.com/blakemcbride/Smalltalk-2026>.

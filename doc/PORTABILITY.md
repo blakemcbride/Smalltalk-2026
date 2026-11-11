@@ -98,9 +98,13 @@ knew only `/`, and a parse-time `!ERROR` that refused to let a machine clean
 its own build tree. [`Windows.md`](../Windows.md) lists what is confirmed and
 what is still untested — chiefly `nmake test`.
 
-**macOS: still not verified.** No Mac was available. The Darwin branches are
-four: `-pthread` dropped, Apple's one-argument `pthread_setname_np`, no
-`sched_getaffinity`, and the benchmark's core pinning compiled out. All four
-were exercised on Linux with `__linux__` undefined, which is the same
-compiler taking the same branches and not the same compiler.
-[`macOS.md`](../macOS.md) says exactly what that does and does not prove.
+**macOS: built and run.** On an Apple Silicon Mac with Apple clang, `make`
+builds it with SDL3, OpenSSL and unixODBC, an image bootstraps and its
+desktop opens, and `make dist` makes the macOS distribution there. The
+Darwin branches are four: `-pthread` dropped, Apple's one-argument
+`pthread_setname_np`, no `sched_getaffinity`, and the benchmark's core
+pinning compiled out; they were first exercised on Linux with `__linux__`
+undefined, and the Mac then needed one more header — `<sys/random.h>` for
+`getentropy`. A run of the test suites on a Mac is not recorded.
+[`macOS.md`](../macOS.md) says exactly what has been seen and what has
+not.
