@@ -122,6 +122,13 @@ typedef struct {
      */
     size_t          offset;
     /*
+     *  And where it ENDS: the offset just past its last character.  What a
+     *  debugger highlights for a message runs from its selector to the end
+     *  of its last argument, and that end is the end of a token the parser
+     *  has already moved past (Bugs07 X-26).
+     */
+    size_t          end;
+    /*
      *  Whether anything -- space, tab, newline or a comment -- stood between
      *  this token and the one before it.
      *

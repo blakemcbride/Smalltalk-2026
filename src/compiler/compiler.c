@@ -105,6 +105,9 @@ typedef struct {
     unsigned        decl_count;
     unsigned        decl_visible;
     unsigned        decl_seen;
+    /*  The source map, which an abandoned parse must give back too.  */
+    size_t          last_end;
+    size_t          map_used;
 } compiler_mark;
 
 /*
@@ -370,6 +373,16 @@ typedef struct {
      */
     compiler_mark receiver_mark;
 
+    /*
+     *  For the source map (see note_source): where the token most recently
+     *  consumed ends, and how much of out->source_map is written.
+     *  map_full is sticky -- a map that did not fit once is not handed
+     *  back at all, rather than handed back with holes.
+     */
+    size_t      last_end;
+    size_t      map_used;
+    int         map_full;
+
     int         failed;
 } st_compiler;
 
@@ -425,6 +438,7 @@ advance(st_compiler *c)
 {
     if (c->failed)
         return;
+    c->last_end = c->token.end;
     LEX_next(c->lx, &c->token);
     if (c->token.kind == ST_TOK_ERROR) {
         fail(c, "%s", c->token.text);
@@ -726,6 +740,43 @@ emit_send(st_compiler *c, const char *selector, unsigned argc, int to_super)
     emit(c, (uint8_t) (to_super ? 134 : 132));
     emit(c, (uint8_t) argc);
     emit(c, (uint8_t) index);
+}
+
+/*
+ *  ----------  The source map  ----------
+ *
+ *  A debugger shows which send a frame is waiting on by selecting it in
+ *  the method's source, and to do that it needs, for each send, where the
+ *  send's bytes end and which characters it was compiled from.  1983's
+ *  Debugger asked the image's own compiler, which lays a method out the
+ *  Blue Book way: a block is a blockCopy: send and its body, a vector is
+ *  not there at all.  Once this compiler laid out the methods the
+ *  Debugger shows, every pc after the first block meant something else to
+ *  that map, and the selection landed on the wrong message -- `+ e' for a
+ *  frame suspended in `suspend', `suspend' for one waiting on inject:into:
+ *  (Bugs07 X-26).  So the compiler that emitted the bytes says where they
+ *  came from: after each send and each ^, the offset just past it and the
+ *  first and last character of its message, 1-based, as the image's
+ *  Interval for a selection is.  An abandoned parse gives back what it
+ *  wrote (mark and rewind_to), and a pass starts the map again.
+ */
+static void
+note_source(st_compiler *c, size_t start, size_t stop)
+{
+    char    entry[64];
+    int     n;
+
+    if (c->failed || c->map_full)
+        return;
+    n = snprintf(entry, sizeof entry, "%s%u %lu %lu",
+                 c->map_used > 0 ? " " : "", c->out->length,
+                 (unsigned long) start + 1, (unsigned long) stop);
+    if (n < 0 || c->map_used + (size_t) n + 1 > sizeof c->out->source_map) {
+        c->map_full = 1;
+        return;
+    }
+    memcpy(c->out->source_map + c->map_used, entry, (size_t) n + 1);
+    c->map_used += (size_t) n;
 }
 
 /*
@@ -3023,6 +3074,8 @@ mark(st_compiler *c, compiler_mark *m)
     m->decl_count    = c->decl_count;
     m->decl_visible  = c->decl_visible;
     m->decl_seen     = c->decl_seen;
+    m->last_end      = c->last_end;
+    m->map_used      = c->map_used;
 
 }
 
@@ -3043,6 +3096,9 @@ rewind_to(st_compiler *c, const compiler_mark *m)
     c->decl_count          = m->decl_count;
     c->decl_visible        = m->decl_visible;
     c->decl_seen           = m->decl_seen;
+    c->last_end            = m->last_end;
+    c->map_used            = m->map_used;
+    c->out->source_map[c->map_used] = '\0';
     /*
      *  Only in pass zero: pass one reads the analysis rather than building
      *  it, and giving any of it back there would delete conclusions.
@@ -3465,8 +3521,13 @@ compile_unary_sequence(st_compiler *c, int receiver_is_super)
                     "arrow needs a blank after it", selector);
             return sent;
         }
-        advance(c);
-        emit_send(c, selector, 0, receiver_is_super);
+        {
+            size_t  start = c->token.offset;
+
+            advance(c);
+            emit_send(c, selector, 0, receiver_is_super);
+            note_source(c, start, c->last_end);
+        }
         receiver_is_super = 0;
         sent = 1;
     }
@@ -3481,6 +3542,7 @@ compile_binary_sequence(st_compiler *c, int receiver_is_super)
     compiler_mark   receiver;
     int             binary_sent = 0;
     int             any_sent = 0;
+    size_t          start;
 
     /*
      *  A binary message to super is a super send too.  This passed a hard
@@ -3515,10 +3577,12 @@ compile_binary_sequence(st_compiler *c, int receiver_is_super)
          *  method or block body.  */
         snprintf(selector, sizeof selector, "%s",
                  at(c, ST_TOK_BAR) ? "|" : c->token.text);
+        start = c->token.offset;
         advance(c);
         compile_primary(c, NULL);
         compile_unary_sequence(c, 0);
         emit_send(c, selector, 1, receiver_is_super);
+        note_source(c, start, c->last_end);
         receiver_is_super = 0;
         binary_sent = 1;
         any_sent = 1;
@@ -3547,12 +3611,14 @@ compile_keyword_message(st_compiler *c, int receiver_is_super)
     char            selector[256] = "";
     unsigned        argc = 0;
     compiler_mark   receiver;
+    size_t          start;
 
     if (compile_binary_sequence(c, receiver_is_super))
         receiver_is_super = 0;
     if (!at(c, ST_TOK_KEYWORD))
         return;
     mark(c, &receiver);
+    start = c->token.offset;
 
     /*
      *  The inlined forms, tried before building a send.  Each rewinds if the
@@ -3591,6 +3657,7 @@ compile_keyword_message(st_compiler *c, int receiver_is_super)
         ++argc;
     }
     emit_send(c, selector, argc, receiver_is_super);
+    note_source(c, start, c->last_end);
     c->receiver_mark = receiver;
 }
 
@@ -3920,9 +3987,13 @@ compile_statements(st_compiler *c, int inside_block)
         if (accept(c, ST_TOK_PERIOD))
             continue;
 
-        if (accept(c, ST_TOK_RETURN)) {
+        if (at(c, ST_TOK_RETURN)) {
+            size_t  start = c->token.offset;
+
+            advance(c);
             compile_expression(c);
             emit(c, 124);               /*  return stack top from method  */
+            note_source(c, start, c->last_end);
             emitted = 1;
             accept(c, ST_TOK_PERIOD);
             if (at(c, ST_TOK_END) || at(c, ST_TOK_RBRACKET))
@@ -4539,6 +4610,10 @@ to_bytecodes(st_compiler *c, const char *source, size_t length,
         out->length        = 0;
         out->literal_count = 0;
         out->error[0]      = '\0';
+        out->source_map[0] = '\0';
+        c->map_used        = 0;
+        c->map_full        = 0;
+        c->last_end        = 0;
         c->decl_visible = 0;
         c->decl_seen    = 0;
         if (pass == 0) {
@@ -4705,6 +4780,8 @@ to_bytecodes(st_compiler *c, const char *source, size_t length,
     out->argument_count  = c->argument_count;
     if (c->dialect == ST_DIALECT_CLOSURES)
         describe_frames(c, out->frame_names);
+    if (c->map_full)
+        out->source_map[0] = '\0';     /*  none, rather than one with holes  */
     if (c->dialect == ST_DIALECT_CLOSURES) {
         /*
          *  The method's frame holds its arguments, whatever it copied (it
@@ -4834,6 +4911,7 @@ COMPILE_method_n(const char *source, size_t length,
     }
     snprintf(out->selector, sizeof out->selector, "%s", code.selector);
     memcpy(out->frame_names, code.frame_names, sizeof out->frame_names);
+    memcpy(out->source_map, code.source_map, sizeof out->source_map);
     out->argument_count  = code.argument_count;
     out->temporary_count = code.temporary_count;
     out->primitive       = code.primitive;

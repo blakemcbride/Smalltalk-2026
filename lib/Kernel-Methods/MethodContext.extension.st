@@ -165,27 +165,15 @@ MethodContext >> frameSlotWords [
 	"What the C compiler says each slot of my frame holds -- a name, or
 	 `[a,c]' for a vector -- or nil when that cannot be had for the bytes
 	 this frame runs: no source, a source that does not compile to them,
-	 the Blue Book dialect.  The answer of primitive 228 has a line per
-	 scope, the method's first and then each block's in the order their
-	 closures are made (describe_frames in src/compiler/compiler.c), so a
-	 closure's line is found by counting the closures made before its
-	 first bytecode."
-	| source answer compiled text lines start closure scope count scanner words |
+	 the Blue Book dialect (CompiledMethod>>recompiledFrom:in:).  The
+	 answer of primitive 228 has a line per scope, the method's first and
+	 then each block's in the order their closures are made
+	 (describe_frames in src/compiler/compiler.c), so a closure's line is
+	 found by counting the closures made before its first bytecode."
+	| source answer text lines start closure scope count scanner words |
 	source := [self sourceCode] on: Error do: [:e | e return: nil].
-	(source isString and: [source notEmpty]) ifFalse: [^nil].
-	answer := [Compiler
-			compileSource: source
-			for: self mclass
-			noPattern: false
-			declaringUndeclared: false]
-		on: Error do: [:e | e return: nil].
-	(answer isNil or: [answer size < 7]) ifTrue: [^nil].
-	compiled := answer at: 1.
-	(compiled isNil or: [(answer at: 7) isString not]) ifTrue: [^nil].
-	((compiled objectAt: 1) = (method objectAt: 1)
-		and: [compiled endPC = method endPC]) ifFalse: [^nil].
-	method initialPC to: method endPC do: [:i |
-		(compiled at: i) = (method at: i) ifFalse: [^nil]].
+	answer := method recompiledFrom: source in: self mclass.
+	answer isNil ifTrue: [^nil].
 	text := answer at: 7.
 	lines := OrderedCollection new.
 	start := 1.

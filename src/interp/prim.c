@@ -5266,7 +5266,7 @@ primitive_compile_method(void)
      *  and left the rest to be freed under a -serve compile by any other
      *  worker's allocation (Bugs6 COMP-2).
      */
-    answer = OM_instantiate_pointers(ST_CLASS_ARRAY, 7);
+    answer = OM_instantiate_pointers(ST_CLASS_ARRAY, 8);
     if (!OM_is_object(answer))
         return 0;
     ST_push(answer);
@@ -5286,6 +5286,14 @@ primitive_compile_method(void)
          */
         text = BOOT_make_string(res.frame_names, NULL);
         OM_store_pointer(6, answer, text);
+        /*
+         *  Eighth, where each send and each ^ came from in the source --
+         *  the debugger's map from a frame's pc to the message it shows
+         *  selected, which only the compiler that laid the bytes out can
+         *  give (see note_source in compiler.c; Bugs07 X-26).
+         */
+        text = BOOT_make_string(res.source_map, NULL);
+        OM_store_pointer(7, answer, text);
     }  else  {
         text = BOOT_make_string(res.error, NULL);
         OM_store_pointer(2, answer, text);

@@ -48,6 +48,12 @@ extern "C" {
  */
 #define ST_FRAME_NAMES_MAX  4096
 
+/*
+ *  And the longest source map (see st_compile_result): room for some six
+ *  hundred sends, which is more than any method in the library makes.
+ */
+#define ST_SOURCE_MAP_MAX   8192
+
 typedef struct {
     int                 dialect;
     /*
@@ -190,6 +196,16 @@ typedef struct {
      *  description does not fit; see describe_frames in compiler.c.
      */
     char        frame_names[ST_FRAME_NAMES_MAX];
+    /*
+     *  Where in the source each send and each ^ is, for a debugger to show
+     *  the one a frame is at: three numbers per instruction, separated by
+     *  spaces -- the offset just past it, counted from the method's first
+     *  bytecode, and the first and last character it came from, counted
+     *  from 1.  A send's characters run from its selector to the end of its
+     *  last argument; a ^'s from the ^ to the end of what it returns.
+     *  Empty when the map does not fit; see note_source in compiler.c.
+     */
+    char        source_map[ST_SOURCE_MAP_MAX];
 } st_compile_result;
 
 /*
@@ -256,6 +272,7 @@ typedef struct {
     size_t      error_offset;       /*  see st_compile_result  */
     char        undeclared[256];    /*  see st_compile_result  */
     char        frame_names[ST_FRAME_NAMES_MAX];    /*  likewise  */
+    char        source_map[ST_SOURCE_MAP_MAX];      /*  likewise  */
 } st_compiled_code;
 
 /*

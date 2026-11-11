@@ -52,12 +52,15 @@ Compiler >> sourceWithNotification: aString at: position [
 Compiler class >> primCompile: source class: aBehavior instVarNames: names classAssociation: anAssociation noPattern: aBoolean [
 	"Compile source with the C compiler -- the one that built this image.
 
-	 Answers an Array of seven: the CompiledMethod or nil, its selector,
+	 Answers an Array of eight: the CompiledMethod or nil, its selector,
 	 the error message, the line, the character position, the name of the
-	 undeclared variable if that is what went wrong, and a String saying
-	 what each frame of the method holds, slot by slot, which is what a
+	 undeclared variable if that is what went wrong, a String saying what
+	 each frame of the method holds, slot by slot, which is what a
 	 debugger names a context's temporaries by (MethodContext>>tempNames
-	 in lib/Kernel-Methods reads it).  It does not fail for
+	 in lib/Kernel-Methods reads it), and a String of numbers saying where
+	 in the source each send and each ^ came from, which is how a
+	 debugger selects the message a frame is at (Debugger>>
+	 computeSourceMap, also in lib/Kernel-Methods).  It does not fail for
 	 a compile error, because a compile error is an ordinary outcome; it
 	 fails only if the source is not a String.
 

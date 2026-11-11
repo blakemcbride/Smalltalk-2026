@@ -820,8 +820,12 @@
  *  3523 -> 3525 with Bugs07 X-28: PosixFileDirectory>>findOrAdd: and
  *  addNew:ifPresent:, so that an add finding the file another process has
  *  just made answers it.
+ *
+ *  3525 -> 3528 with Bugs07 X-26: CompiledMethod>>recompiledFrom:in:, and
+ *  Debugger>>computeSourceMap and pcRange, which select the message a frame
+ *  is at from the C compiler's map of the method.
  */
-#define LIB_METHODS             3525
+#define LIB_METHODS             3528
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -3407,8 +3411,11 @@ test_browsing(void)
      *
      *  3161386 -> 3162580 with Bugs07 X-28: fileNamed:'s add answers a file
      *  another process made after its find.
+     *
+     *  3162580 -> 3165909 with Bugs07 X-26: the Debugger selects the
+     *  message a frame is at from the C compiler's map of the method.
      */
-    check_integer("(SourceFiles at: 1) contents size", 3162580);
+    check_integer("(SourceFiles at: 1) contents size", 3165909);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -14605,6 +14612,56 @@ test_bugs7f_gui(void)
                  "r asArray printString] "
                  "ensure: [p terminate. Object removeSelector: #zzB7fOther]",
                  "(('[q]' ) ('q' 'x' ) )");
+
+    /*
+     *  X-26, the selection.  The Debugger selects the message a frame is
+     *  at from a map of pcs to source ranges, and 1983's map came from
+     *  the image's own compiler, which lays a block out as a blockCopy:
+     *  send: past the first block every pc meant something else in the
+     *  method that runs.  Now the C compiler's map (primitive 228's
+     *  eighth element).  A block's frame and its method's frame, each
+     *  waiting on a send; then a block inside a block, the outer block's
+     *  frame, the inner one interrupted (its next send, not one in some
+     *  other block's body) and the method's frame interrupted after its
+     *  last send.  Before: ('+ e' 'suspend' 'activeProcess' 'value: 10'
+     *  'suspend' 'do: [...]').
+     */
+    check_string("| hl run home | "
+                 "Object compile: 'zzB7fPc: log | a | "
+                 "a := #(1 2 3) collect: [:x | x + 1]. a do: [:y | log add: y]. "
+                 "^log inject: 0 into: [:s :e | s + e. "
+                 "Processor activeProcess suspend. s + e]' classified: #probe. "
+                 "Object compile: 'zzB7fPc2: log | a | "
+                 "a := OrderedCollection new add: 3; add: 4; yourself. "
+                 "#(1 2) do: [:i | [:j | log add: i + j. "
+                 "Processor activeProcess suspend. log add: j] value: 10]. ^a' "
+                 "classified: #probe. "
+                 "hl := [:p :c :int | | d r | "
+                 "d := Debugger new process: p context: c interrupted: int. "
+                 "d openInspectors. d context: c. r := d pcRange. "
+                 "d text string copyFrom: r first to: r last]. "
+                 "home := [:c | | m | m := c. "
+                 "[m closure notNil or: [m method ~~ c method]] "
+                 "whileTrue: [m := m sender]. m]. "
+                 "run := [:sel :picks | | p out | "
+                 "p := [nil perform: sel with: OrderedCollection new] newProcess. "
+                 "p resume. (Delay forMilliseconds: 30) wait. "
+                 "out := picks collect: [:pick | hl value: p "
+                 "value: (pick first value: p suspendedContext) value: pick last]. "
+                 "p terminate. out]. "
+                 "^[((run value: #zzB7fPc: value: (Array "
+                 "with: (Array with: [:c | c] with: false) "
+                 "with: (Array with: home with: false))) , "
+                 "(run value: #zzB7fPc2: value: (Array "
+                 "with: (Array with: [:c | c] with: false) "
+                 "with: (Array with: [:c | c sender] with: false) "
+                 "with: (Array with: [:c | c] with: true) "
+                 "with: (Array with: home with: true)))) printString] "
+                 "ensure: [#(zzB7fPc: zzB7fPc2:) do: [:s | "
+                 "Object removeSelector: s]]",
+                 "('suspend' 'inject: 0 into: [:s :e | s + e. "
+                 "Processor activeProcess suspend. s + e]' "
+                 "'suspend' 'value: 10' 'add: j' '^a' )");
 
 #ifdef ST_HAVE_SDL3
     /*

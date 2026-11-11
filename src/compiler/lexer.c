@@ -1228,6 +1228,7 @@ LEX_next(st_lexer *lx, st_token *out)
         return out->kind != ST_TOK_END;
     }
     result = lex_token(lx, out);
+    out->end = lx->pos;
     lx->last_kind = out->kind;
     return result;
 }
@@ -1239,6 +1240,7 @@ LEX_peek(st_lexer *lx, st_token *out)
         st_token_kind   before = lx->last_kind;
 
         lex_token(lx, &lx->peeked);
+        lx->peeked.end = lx->pos;
         lx->has_peek  = 1;
         /*
          *  Peeking must not disturb the minus rule; the peeked token is not
