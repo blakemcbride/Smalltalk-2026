@@ -1749,6 +1749,43 @@ store_active_for_suspension(void)
     }
 }
 
+/*
+ *  What a worker with nothing to run still holds of the process it last
+ *  ran, given up as it starts to wait (Bugs07 X-2).
+ *
+ *  Its active process and active context are collector roots and each
+ *  holds a count, and they used to be released only by the next switch.
+ *  A process that ended here -- terminated, or abandoned when the image
+ *  could not be told it was out of memory -- kept its stack and every
+ *  object its frames held alive for as long as this worker idled, which
+ *  on a quiet server is until the next request happens to land on it: a
+ *  runaway's objects were not reclaimed, and the next process to need
+ *  memory was told OutOfMemory instead.  A parked process loses nothing:
+ *  the list it waits on holds it, and its suspendedContext holds its
+ *  stack.  So this worker becomes what SCHED_enter_idle makes a new one:
+ *  no active process, disowned, its hands empty of it -- landed, which an
+ *  abandoned process never was, so that a later process given the same
+ *  entry is not taken for one in this worker's hands.
+ *
+ *  What still names the process is the image's own activeProcess field,
+ *  when this worker was the last to switch; a terminated process has nil
+ *  for a stack, so that holds the Process alone.
+ */
+static void
+let_go_while_idle(void)
+{
+    st_oop  process = st_vm.active_process;
+
+    if (!disowned)
+        return;
+    ST_interp_drop_context();
+    if (OM_is_present(process)) {
+        land(process);
+        st_vm.active_process = ST_NIL;
+        OM_decrease_ref(process);
+    }
+}
+
 void
 SCHED_suspend_active(void)
 {
@@ -1794,6 +1831,8 @@ SCHED_suspend_active(void)
      *  guarantee; this is the ordinary case not paying for it.
      */
     next = new_process_waiting ? ST_NIL : SCHED_wake_highest_priority();
+    if (next == ST_NIL && !new_process_waiting)
+        let_go_while_idle();
 
     /*
      *  Nothing ready HERE is not the same as nothing ready ANYWHERE.
@@ -3172,6 +3211,17 @@ SCHED_primitive_suspend(void)
 int
 SCHED_primitive_terminate_active(void)
 {
+    return SCHED_end_active();  /*  the receiver stays on the dead stack  */
+}
+
+/*
+ *  The same end from C, for a process the interpreter cannot go on with
+ *  and cannot tell (abandon_active_process): answers 0, changing nothing,
+ *  when this worker has no process of its own to end.
+ */
+int
+SCHED_end_active(void)
+{
     st_oop  process = SCHED_active_process();
 
     if (!OM_is_object(process) || disowned)
@@ -3180,7 +3230,7 @@ SCHED_primitive_terminate_active(void)
     OM_store_pointer(ST_PROCESS_SUSPENDED_CONTEXT, process, ST_NIL);
     land(process);
     SCHED_suspend_active();
-    return 1;               /*  the receiver stays on the dead stack  */
+    return 1;
 }
 
 /*

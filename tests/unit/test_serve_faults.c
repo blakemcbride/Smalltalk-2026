@@ -4689,9 +4689,10 @@ bugs7c_vm(void)
      *  Semaphore, then primitives only: the Delay timing process would
      *  have to allocate while the table is full), then forks a process so
      *  that the worker the runaway ended on has something else to run --
-     *  until it does, its registers still hold the runaway's stack.  The
-     *  first line may itself be told OutOfMemory (the runaway's objects are
-     *  not reclaimed until that worker moves on); the second must answer.
+     *  until it did, its registers held the runaway's stack, which an idle
+     *  worker now lets go of at once (Bugs07 X-2; bugs7f_om).  The first
+     *  line may itself be told OutOfMemory if the runaway is still filling
+     *  the table when it runs; the second must answer.
      */
     if (write_file(oom,
             "| t told |\n"
@@ -6048,6 +6049,84 @@ bugs7f_om(void)
             }
         }
         unlink(script);
+    }
+
+    /*
+     *  X-2.  A worker kept the process it last ran -- its active process
+     *  and active context, both counted roots -- until it ran something
+     *  else, so an idle worker held an ended process's whole stack.  Two
+     *  workers: the batch keeps one busy without yielding, the forked
+     *  process ends on the other, which then idles; a collection must
+     *  reclaim what only that process's frames held.  First a process that
+     *  terminates itself ('X-2 true false' before: ended, its Array kept);
+     *  then one the interpreter abandons -- a send with nothing anywhere
+     *  to deliver its doesNotUnderstand: to, the quick way to the path a
+     *  runaway's spent reserve takes -- which also left it parked with its
+     *  stack rather than ended ('X-2 abandoned false false' before).  The
+     *  batch waits for the end without allocating, and without a Delay,
+     *  whose timing process would have to run on the idle worker and so
+     *  release it anyway.  The second leaves the server without
+     *  doesNotUnderstand:, which is why it is a server of its own.
+     */
+    {
+        static const struct {
+            const char *text;
+            const char *wanted;
+            const char *what;
+        } forms[] = {
+            { "| w p t |\n"
+              "w := WeakArray new: 1.\n"
+              "p := [ | m | m := Array new: 3. w at: 1 put: m. "
+              "Processor terminateActive] fork.\n"
+              "t := Time millisecondClockValue.\n"
+              "[p suspendedContext isNil or: "
+              "[Time millisecondClockValue - t > 10000]] whileFalse.\n"
+              "Smalltalk garbageCollect.\n"
+              "^'X-2 ', p suspendedContext isNil printString, ' ', "
+              "(w at: 1) isNil printString\n",
+              "==> 'X-2 true true'",
+              "X-2 an idle worker lets go of a terminated process's stack" },
+            { "| w p t |\n"
+              "w := WeakArray new: 1.\n"
+              "Object removeSelector: #doesNotUnderstand:.\n"
+              "Object removeSelector: #cannotInterpret:.\n"
+              "p := [ | m | m := Array new: 3. w at: 1 put: m. 3 zork] fork.\n"
+              "t := Time millisecondClockValue.\n"
+              "[p suspendedContext isNil or: "
+              "[Time millisecondClockValue - t > 10000]] whileFalse.\n"
+              "Smalltalk garbageCollect.\n"
+              "^'X-2 abandoned ', p suspendedContext isNil printString, ' ', "
+              "(w at: 1) isNil printString\n",
+              "==> 'X-2 abandoned true true'",
+              "X-2 an abandoned process is ended and its objects reclaimed" },
+        };
+        size_t  k;
+
+        for (k = 0; k < sizeof forms / sizeof forms[0]; ++k) {
+            if (write_file(script, forms[k].text) != 0)
+                continue;
+            snprintf(batch, sizeof batch,
+                     "Compiler evaluate: (FileStream oldFileNamed: '%s') "
+                     "contentsOfEntireFile\n3 + 4\n", script);
+            if (write_file(BATCH, batch) == 0) {
+                snprintf(command, sizeof command,
+                         "ST_MAX_OBJECTS=1048576 " ST_TEST_TIMEOUT " -k 2 "
+                         SERVE_SECONDS " %s -serve %s -workers 2 "
+                         "\"$(cat %s)\" 2>&1",
+                         st2026, IMAGE, BATCH);
+                status = run(command, out, sizeof out);
+                ++st_test_checks;
+                if (status < 0) {
+                    ++st_test_failures;
+                    printf("  FAIL %s: could not run the server\n",
+                           forms[k].what);
+                } else {
+                    expect(out, forms[k].wanted, forms[k].what);
+                    expect(out, "3 + 4 ==> 7", "X-2 the server carried on");
+                }
+            }
+            unlink(script);
+        }
     }
 }
 

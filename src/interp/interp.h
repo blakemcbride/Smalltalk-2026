@@ -605,6 +605,8 @@ uint64_t    ST_interp_run(uint64_t limit);
  */
 void        ST_store_active_context(void);
 void        ST_set_active_context(st_oop ctx);
+/*  An idle worker lets go of a disowned process's context (Bugs07 X-2).  */
+void        ST_interp_drop_context(void);
 
 /*
  *  Recompute the bound the running method's instance-variable bytecodes

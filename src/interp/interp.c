@@ -1604,6 +1604,43 @@ ST_set_active_context(st_oop ctx)
     st_vm.depth_signalled = 0;
 }
 
+/*
+ *  Let go of the context of a process this worker has parked or ended and
+ *  is not going to run again: the scheduler's idle wait (Bugs07 X-2).
+ *
+ *  The active context is the one reference the interpreter counts, and it
+ *  was given up only by the next switch -- so a worker that had ended a
+ *  runaway kept the runaway's whole stack, and everything its frames
+ *  held, alive until it ran something else.  A parked process has its
+ *  stack in its suspendedContext already, which is the same object; an
+ *  ended one has nil there, and this was its stack's last holder.
+ *
+ *  Only for a disowned process, whose registers are stale by definition
+ *  and are never written back.  They are reset as well as the context,
+ *  since the context was what kept the method and the receiver they name
+ *  alive: the stack bound becomes zero, so a push before the next switch
+ *  is refused and reported rather than written into nil, and every path
+ *  out of the idle wait reaches the switch at the top of the dispatch
+ *  loop -- which fetches all of them again -- before it runs a bytecode.
+ */
+void
+ST_interp_drop_context(void)
+{
+    st_oop  ctx = st_vm.active_context;
+
+    if (!st_vm.disowned || !OM_is_present(ctx))
+        return;
+    st_vm.active_context      = ST_NIL;
+    st_vm.home_context        = ST_NIL;
+    st_vm.method              = ST_NIL;
+    st_vm.receiver            = ST_NIL;
+    st_vm.stack_pointer       = ST_STACK_FLOOR;
+    st_vm.stack_limit         = 0;
+    st_vm.instruction_pointer = 0;
+    st_vm.method_end          = 0;
+    OM_decrease_ref(ctx);
+}
+
 /*  ----------  Method lookup  ----------  */
 
 /*
@@ -2806,8 +2843,14 @@ lookup_for_vm(st_oop selector, st_oop receiver)
  *  true for the rest.
  *
  *  So this does what `Processor terminateActive' does, from C: the
- *  faulted send answers nil, the process is parked as if it had
- *  suspended itself, and the worker looks for something else to run.
+ *  process is ended -- a nil suspendedContext, as primitive 232 leaves
+ *  -- and the worker looks for something else to run.  It used to be
+ *  parked as if it had suspended itself, with its whole stack in its
+ *  suspendedContext: resumable by anything that held it, and the
+ *  image's activeProcess field, which names whatever a worker switched
+ *  to last, held it -- so a runaway ended for want of memory kept every
+ *  object it had made (Bugs07 X-2).  Unwind blocks are not run, as they
+ *  never were: nothing here can run Smalltalk.
  *  Under -serve that is the next request; with one process and no pool
  *  the scheduler finds nothing, says so, and the run ends as it would
  *  have -- with the report first, and the exit code of an unhandled
@@ -2823,7 +2866,9 @@ abandon_active_process(const char *why)
     ST_push(ST_NIL);
     st_vm.argument_count = 0;
     ++st_vm.unhandled_errors;
-    SCHED_suspend_active();
+    /*  With no process of its own to end, the old park.  */
+    if (!SCHED_end_active())
+        SCHED_suspend_active();
 }
 
 /*
