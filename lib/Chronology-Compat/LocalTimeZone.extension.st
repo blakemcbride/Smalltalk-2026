@@ -31,9 +31,21 @@ LocalTimeZone >> primOffset [
 
 { #category : '*Chronology-Compat' }
 LocalTimeZone >> abbreviation [
-	"LT, the hours with their sign, and the minutes without one: a
-	 negative half-hour zone printed as LT-2:-30 (Bugs6 KERNA-32)."
+	"LT, the offset's sign, then its hours and minutes without one:
+	 LT-2:30, LT5:30, LT-0:30.
+
+	 The sign belongs to the whole offset, not to either part.  Printing
+	 the hours with theirs and the minutes with theirs gave LT-2:-30 for a
+	 negative half-hour zone (Bugs6 KERNA-32); printing the minutes
+	 without theirs fixed that and lost the sign of every zone less than
+	 an hour west of UTC, whose hours are 0 -- UTC-0:30 and UTC+0:30 both
+	 printed LT0:30 (Bugs07 KERNA-12).  No zone in today's tz database is
+	 one, but a POSIX TZ string can say it."
+	| offset |
+	offset := self offset.
 	^String streamContents: [:s |
-		s nextPutAll: 'LT'; print: self offset hours; nextPut: $:.
-		s nextPutAll: (self offset minutes abs printPaddedWith: $0 to: 2)]
+		s nextPutAll: 'LT'.
+		offset negative ifTrue: [s nextPut: $-].
+		s print: offset hours abs; nextPut: $:.
+		s nextPutAll: (offset minutes abs printPaddedWith: $0 to: 2)]
 ]

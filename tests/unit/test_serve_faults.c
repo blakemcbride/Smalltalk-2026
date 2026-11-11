@@ -5869,6 +5869,40 @@ bugs7f_om(void)
     }
 }
 
+/*
+ *  Bugs07, round 6: the KERN group's findings that need a profile or a
+ *  time zone of their own.
+ */
+static void
+bugs7f_kern(void)
+{
+    static char out[65536];
+    char        command[4096];
+
+    /*
+     *  KERNA-12.  LocalTimeZone>>abbreviation printed the hours with their
+     *  sign and the minutes without one, so a zone less than an hour west
+     *  of UTC, whose hours are 0, lost its sign: UTC-0:30 and UTC+0:30
+     *  both printed LT0:30.  POSIX TZ strings count westward, so UTC+0:30
+     *  is half an hour WEST and is LT-0:30.  Each answer is printed after
+     *  the zone it was asked under, so a sign put on the wrong side shows;
+     *  the zone east of UTC with minutes of its own keeps the form it had,
+     *  and KERNA-32 above keeps one west by more than an hour.
+     */
+    snprintf(command, sizeof command,
+             "TZ=UTC+0:30 %s -bootstrap -profile profiles/pharo-time.profile -eval "
+             "\"'UTC+0:30 ', DateAndTime localTimeZone abbreviation\" 2>&1; "
+             "TZ=UTC-0:30 %s -bootstrap -profile profiles/pharo-time.profile -eval "
+             "\"'UTC-0:30 ', DateAndTime localTimeZone abbreviation\" 2>&1; "
+             "TZ=UTC-5:45 %s -bootstrap -profile profiles/pharo-time.profile -eval "
+             "\"'UTC-5:45 ', DateAndTime localTimeZone abbreviation\" 2>&1",
+             st2026, st2026, st2026);
+    run(command, out, sizeof out);
+    expect(out, "\nUTC+0:30 LT-0:30\n", "KERNA-12 half an hour west is LT-0:30");
+    expect(out, "\nUTC-0:30 LT0:30\n", "KERNA-12 half an hour east is LT0:30");
+    expect(out, "\nUTC-5:45 LT5:45\n", "KERNA-12 five and three quarters east is LT5:45");
+}
+
 int
 main(void)
 {
@@ -6554,6 +6588,7 @@ main(void)
     bugs7f_files();
     bugs7f_sched();
     bugs7f_om();
+    bugs7f_kern();
 
     unlink(IMAGE);
     unlink(BATCH);
