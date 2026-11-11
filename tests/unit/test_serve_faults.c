@@ -4935,6 +4935,47 @@ bugs7c_om(void)
     expect(out, "3 + 4 ==> 7", "OM-5 the server carried on");
 }
 
+/*
+ *  Bugs07 round 5, the interpreter's.
+ *
+ *  INTERP-7: primitive 230, relinquishProcessorForMicroseconds:, slept in
+ *  C without parking, so a collection asked for on another worker waited
+ *  out the whole sleep -- `Smalltalk garbageCollect' took 5.7 s behind a
+ *  six-second relinquish -- and a count of hours hung the image for hours.
+ *  The sleeper is now parked like a database call and its count clamped to
+ *  a second.  The collection must not wait for the sleeper (it has 800 ms
+ *  of its clamped second left, and 500 is the bar); a fifth of a second
+ *  must still be a real sleep; ten thousand seconds must come back within
+ *  the clamp (unfixed, the probe never answers and serve kills it); and
+ *  the primitive answers its receiver, refusing a count that is not a
+ *  SmallInteger.
+ */
+static void
+bugs7e_vm(void)
+{
+    bugs7_probe("bugs7e-relinquish.st",
+        "| t0 gc short long answer started |\n"
+        "Object compile: 'relinquish: n <primitive: 230> ^#failed' "
+        "classified: 'x'.\n"
+        "started := Semaphore new.\n"
+        "[started signal. nil relinquish: 6000000] fork.\n"
+        "started wait.\n"
+        "(Delay forMilliseconds: 200) wait.\n"
+        "t0 := Time millisecondClockValue.\n"
+        "Smalltalk garbageCollect.\n"
+        "gc := Time millisecondClockValue - t0.\n"
+        "t0 := Time millisecondClockValue.\n"
+        "answer := 7 relinquish: 200000.\n"
+        "short := Time millisecondClockValue - t0.\n"
+        "t0 := Time millisecondClockValue.\n"
+        "7 relinquish: 10000000000.\n"
+        "long := Time millisecondClockValue - t0.\n"
+        "^{gc < 500. short >= 150. answer. long < 3000. "
+        "3 relinquish: -5. 3 relinquish: 1.5} printString\n",
+        4, "'(true true 7 true 3 failed )'",
+        "INTERP-7 a relinquish parks its worker, clamped to a second");
+}
+
 int
 main(void)
 {
@@ -5610,6 +5651,7 @@ main(void)
     bugs7c_sched();
     bugs7c_vm();
     bugs7c_om();
+    bugs7e_vm();
 
     unlink(IMAGE);
     unlink(BATCH);

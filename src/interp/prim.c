@@ -5380,16 +5380,48 @@ primitive_character_as_integer(void)
  *  Pharo's idle loop calls it with a microsecond count.  Sleeping is the
  *  whole point: the alternative is a worker spinning a core to no purpose,
  *  which on this system means spinning one core out of however many.
+ *
+ *  THE SLEEP IS A BLOCKING REGION (Bugs07 INTERP-7).  It was a bare
+ *  ST_sleep_ns, and a worker asleep in C does not reach WORKER_poll: every
+ *  collection, become: and reshape on every other worker -- each needs all
+ *  workers parked -- waited out the whole sleep.  One process asking for
+ *  six seconds held `Smalltalk garbageCollect' on another worker for 5.7 s,
+ *  and a count in the billions hung the image, the sleep being retried on
+ *  EINTR so that nothing cut it short.  So the worker parks first, exactly
+ *  as the database and crypto calls do (worker.h, `Blocking outside the
+ *  object memory'), and the collector runs past it.  Nothing in the object
+ *  memory is touched while it sleeps: the count is copied into C before,
+ *  and the argument popped after.
+ *
+ *  And the count is CLAMPED to RELINQUISH_MAX_MICROS before it is turned
+ *  into nanoseconds.  `micros * 1000' overflowed int64_t for any
+ *  SmallInteger above 2^63 / 1000, which is undefined behaviour, not merely
+ *  a wrong number.  A second is the cap because that is all an idle loop
+ *  wants -- Pharo's asks for a millisecond or so -- and because a parked
+ *  worker still holds its process: a sleep of hours could not be
+ *  terminated, nor the image quit, until it ended.  Hand the processor back
+ *  for longer and the caller loops, which is what a Delay is for anyway.
+ *  A count of zero or less sleeps not at all; the primitive answers the
+ *  receiver either way.
  */
+#define RELINQUISH_MAX_MICROS   INT64_C(1000000)
+
 static int
 primitive_relinquish_processor(void)
 {
     st_oop  micros = ST_stack_value(0);
+    int64_t count;
 
     if (!OM_is_int(micros))
         return 0;
-    if (OM_int_value(micros) > 0)
-        ST_sleep_ns((int64_t) OM_int_value(micros) * 1000);
+    count = (int64_t) OM_int_value(micros);
+    if (count > RELINQUISH_MAX_MICROS)
+        count = RELINQUISH_MAX_MICROS;
+    if (count > 0) {
+        WORKER_enter_native();
+        ST_sleep_ns(count * 1000);
+        WORKER_leave_native();
+    }
     ST_pop_n(1);                /*  answers the receiver  */
     return 1;
 }
