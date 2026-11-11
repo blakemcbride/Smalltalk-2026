@@ -64,8 +64,13 @@ Date class >> readFrom: aStream [
 	 between them -- spaces, slashes, dashes, commas -- is skipped, as 1983
 	 skips it.  Which field is which is decided by where the letters are,
 	 and, when there are none, by the first number: a number no day or
-	 month can be is the year, which is how the year-first form is told
-	 from the month-first one without ambiguity.
+	 month can be is the year, and so is one written with more than two
+	 digits, which is how the year-first form is told from the
+	 month-first one without ambiguity.  The width matters as much as the
+	 value: `0012-03-04' is 4 March of the year 12 -- the text ISO 8601
+	 and Pharo's yyyymmdd write for that day -- not a month of twelve
+	 followed by a two-digit year (Bugs07 KERNA-5).  No month or day is
+	 written with three or four digits.
 
 	 A year of one or two digits is 1983's shorthand for the twentieth
 	 century -- `5APR82' is 1982 -- and the rule is applied HERE, to the
@@ -119,7 +124,7 @@ Date class >> readFrom: aStream [
 			(fields at: 2) isString
 				ifTrue: [day := fields at: 1. month := fields at: 2. year := fields at: 3]
 				ifFalse: [
-					(fields at: 1) > 31
+					((fields at: 1) > 31 or: [(widths at: 1) > 2])
 						ifTrue: [year := fields at: 1. month := fields at: 2. day := fields at: 3.
 							yearIndex := 1]
 						ifFalse: [month := fields at: 1. day := fields at: 2. year := fields at: 3]]].

@@ -3281,8 +3281,11 @@ test_browsing(void)
      *
      *  3105407 -> 3108207 with Bugs07 NET-9: a request that expects
      *  100-continue is told to send its body once its length is accepted.
+     *
+     *  3108207 -> 3108561 with Bugs07 KERNA-5: Date readFrom: takes a
+     *  first field of more than two digits as the year.
      */
-    check_integer("(SourceFiles at: 1) contents size", 3108207);
+    check_integer("(SourceFiles at: 1) contents size", 3108561);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -13861,6 +13864,36 @@ test_bugs7e_vm(void)
     }
 }
 
+/*
+ *  Bugs07 round 6, KERN.  Image-side, in-process doIts.
+ */
+static void
+test_bugs7f_kern(void)
+{
+    test_dialect = ST_DIALECT_CLOSURES;
+
+    /*
+     *  KERNA-5.  Date readFrom: told the year-first form from the
+     *  month-first one by the first number's value alone, so a four-digit
+     *  year from 1 to 31 was read as a month and the day as a two-digit
+     *  year in the 1900s: `0012-03-04' was 3 December 1904.  The width
+     *  decides too now; a two-digit first field is still a month, and a
+     *  four-digit year last is still read as written.
+     */
+    check_string("^({Date readFrom: '0012-03-04' readStream. "
+                 "  Date readFrom: '0007-11-20' readStream. "
+                 "  Date readFrom: '0100-03-04' readStream. "
+                 "  Date readFrom: '12/3/04' readStream. "
+                 "  Date readFrom: '04/05/0082' readStream. "
+                 "  (Date readFrom: '0012-03-04' readStream) year. "
+                 "  [Date readFrom: '0012-13-04' readStream] on: Error do: [:e | #refused]} "
+                 "collect: [:d | d isSymbol | d isInteger ifTrue: [d] "
+                 "  ifFalse: [{d dayOfMonth. d monthIndex. d year}]]) printString",
+                 "((4 3 12 ) (20 11 7 ) (4 3 100 ) (3 12 1904 ) (5 4 82 ) 12 refused )");
+
+    test_dialect = ST_DIALECT_BLUE_BOOK;
+}
+
 int
 main(void)
 {
@@ -14017,6 +14050,7 @@ main(void)
     test_bugs7e_om();
     test_bugs7e_net();
     test_bugs7e_vm();
+    test_bugs7f_kern();
 
     OM_shutdown();
     return ST_TEST_END();
