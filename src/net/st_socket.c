@@ -1054,6 +1054,9 @@ NET_connect_result(int64_t handle)
     int         error = 0;
     net_socklen len   = sizeof error;
     net_pollfd  pfd;
+    int         polled;
+    int         rc    = 0;
+    int         saved = 0;
 
     if (!ready())
         return -1;
@@ -1065,16 +1068,31 @@ NET_connect_result(int64_t handle)
         return -1;
     }
     fd = s->fd;
-    ST_mutex_unlock(&net_lock);
 
-    /*  Still connecting?  A zero-timeout poll says whether it is writable.  */
+    /*
+     *  Still connecting?  A zero-timeout poll says whether it is writable,
+     *  and SO_ERROR says how the attempt ended.  Both under net_lock, the
+     *  slot looked up in the same hold: the descriptor used to be copied
+     *  and the lock let go before either call, and a close from another
+     *  process in between had them ask about whatever socket the kernel
+     *  gave that number to next -- another connection's state reported
+     *  as this one's, and its SO_ERROR read and so cleared (Bugs07 NET-15,
+     *  the window Bugs6 NET-2 closed in recv, send and accept).  Neither
+     *  call blocks: the poll's timeout is zero.
+     */
     pfd.fd      = fd;
     pfd.events  = POLLOUT;
     pfd.revents = 0;
-    if (net_poll(&pfd, 1, 0) == 0)
+    polled      = net_poll(&pfd, 1, 0);
+    if (polled != 0) {
+        rc    = getsockopt(fd, SOL_SOCKET, SO_ERROR, (char *) &error, &len);
+        saved = net_errno();
+    }
+    ST_mutex_unlock(&net_lock);
+    if (polled == 0)
         return NET_WOULD_BLOCK;
-    if (getsockopt(fd, SOL_SOCKET, SO_ERROR, (char *) &error, &len) != 0) {
-        set_error(net_errno(), "connect");
+    if (rc != 0) {
+        set_error(saved, "connect");
         return -1;
     }
     if (error != 0) {
@@ -1086,19 +1104,34 @@ NET_connect_result(int64_t handle)
 
 /*  ----------  Reading and writing  ----------  */
 
+/*
+ *  The descriptor a handle names, answered with net_lock HELD -- the
+ *  caller makes its one call on it and then lets the lock go -- or
+ *  NET_FD_INVALID holding nothing, with the error set.
+ *
+ *  This used to answer the descriptor with the lock already let go, and
+ *  its callers then used it: getsockname, getpeername and setsockopt each
+ *  on a number that a close from another process could free in between,
+ *  and that the kernel hands at once to the next socket or accept on any
+ *  worker -- so the wrong client's address, a stranger's port, or Nagle
+ *  switched off on somebody else's connection (Bugs07 NET-15, what Bugs6
+ *  NET-2 closed in recv, send and accept).  Holding the lock across the
+ *  call is what makes the look at the table and the use one step; it is
+ *  held for one system call that cannot block.
+ */
 static net_fd
-fd_of(int64_t handle)
+held_fd_of(int64_t handle)
 {
     net_socket *s;
-    net_fd      fd;
 
     ST_mutex_lock(&net_lock);
-    s  = slot_for(handle);
-    fd = s ? s->fd : NET_FD_INVALID;
-    ST_mutex_unlock(&net_lock);
-    if (!NET_FD_IS_VALID(fd))
+    s = slot_for(handle);
+    if (!s || !NET_FD_IS_VALID(s->fd)) {
+        ST_mutex_unlock(&net_lock);
         set_error_text("no such socket");
-    return fd;
+        return NET_FD_INVALID;
+    }
+    return s->fd;
 }
 
 /*
@@ -1448,6 +1481,8 @@ NET_shutdown_write(int64_t handle)
 {
     net_fd  fd;
     void   *tls;
+    int     rc;
+    int     saved;
 
     if (!ready())
         return -1;
@@ -1473,12 +1508,29 @@ NET_shutdown_write(int64_t handle)
         tls_release(index);
     }
 #endif
+    /*
+     *  Under the lock and re-checked, as NET_recv is.  The descriptor was
+     *  captured above, and without this a close from another process in
+     *  between had the shutdown land on whatever socket the kernel gave
+     *  the number to next: a stranger's connection half-closed, its peer
+     *  reading end of stream in the middle of a reply (Bugs07 NET-15).
+     *  shutdown does not block.
+     */
+    ST_mutex_lock(&net_lock);
+    if (!slot_still_holds(handle, fd)) {
+        ST_mutex_unlock(&net_lock);
+        set_error_text("no such socket");
+        return -1;
+    }
 #ifdef ST_WINDOWS
-    if (shutdown(fd, SD_SEND) != 0) {
+    rc = shutdown(fd, SD_SEND);
 #else
-    if (shutdown(fd, SHUT_WR) != 0) {
+    rc = shutdown(fd, SHUT_WR);
 #endif
-        set_error(net_errno(), "shutdown");
+    saved = net_errno();
+    ST_mutex_unlock(&net_lock);
+    if (rc != 0) {
+        set_error(saved, "shutdown");
         return -1;
     }
     return 0;
@@ -1721,14 +1773,20 @@ NET_local_port(int64_t handle)
     net_fd                  fd;
     struct sockaddr_storage addr;
     net_socklen             len = sizeof addr;
+    int                     rc;
+    int                     saved;
 
     if (!ready())
         return -1;
-    fd = fd_of(handle);
+    /*  The lookup and the call in one hold of net_lock (Bugs07 NET-15).  */
+    fd = held_fd_of(handle);
     if (!NET_FD_IS_VALID(fd))
         return -1;
-    if (getsockname(fd, (struct sockaddr *) &addr, &len) != 0) {
-        set_error(net_errno(), "getsockname");
+    rc    = getsockname(fd, (struct sockaddr *) &addr, &len);
+    saved = net_errno();
+    ST_mutex_unlock(&net_lock);
+    if (rc != 0) {
+        set_error(saved, "getsockname");
         return -1;
     }
     if (addr.ss_family == AF_INET)
@@ -1745,16 +1803,28 @@ NET_peer_address(int64_t handle, char *out, size_t max)
     net_fd                  fd;
     struct sockaddr_storage addr;
     net_socklen             len = sizeof addr;
+    int                     rc;
+    int                     saved;
 
     if (max)
         out[0] = '\0';
     if (!ready())
         return -1;
-    fd = fd_of(handle);
+    /*
+     *  The lookup and getpeername in one hold of net_lock (Bugs07 NET-15):
+     *  HttpConnection keeps this as the request's remote address, and a
+     *  number reissued between a lookup and the call would have answered
+     *  some other client's.  The address is then turned into text from
+     *  the copy, outside the lock.
+     */
+    fd = held_fd_of(handle);
     if (!NET_FD_IS_VALID(fd))
         return -1;
-    if (getpeername(fd, (struct sockaddr *) &addr, &len) != 0) {
-        set_error(net_errno(), "getpeername");
+    rc    = getpeername(fd, (struct sockaddr *) &addr, &len);
+    saved = net_errno();
+    ST_mutex_unlock(&net_lock);
+    if (rc != 0) {
+        set_error(saved, "getpeername");
         return -1;
     }
     /*  Numeric only: no name lookup, so nothing here can block.  */
@@ -1772,10 +1842,12 @@ NET_set_option(int64_t handle, int option, int value)
     net_fd  fd;
     int     on = value ? 1 : 0;
     int     rc;
+    int     saved;
 
     if (!ready())
         return -1;
-    fd = fd_of(handle);
+    /*  The lookup and setsockopt in one hold of net_lock (Bugs07 NET-15).  */
+    fd = held_fd_of(handle);
     if (!NET_FD_IS_VALID(fd))
         return -1;
     switch (option) {
@@ -1788,11 +1860,14 @@ NET_set_option(int64_t handle, int option, int value)
                         sizeof on);
         break;
     default:
+        ST_mutex_unlock(&net_lock);
         set_error_text("no such socket option");
         return -1;
     }
+    saved = net_errno();
+    ST_mutex_unlock(&net_lock);
     if (rc != 0) {
-        set_error(net_errno(), "setsockopt");
+        set_error(saved, "setsockopt");
         return -1;
     }
     return 0;

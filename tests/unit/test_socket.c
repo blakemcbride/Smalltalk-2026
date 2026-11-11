@@ -139,6 +139,354 @@ test_addresses(void)
     NET_close(listener, &old_read, &old_write);
 }
 
+/*  ----------  Bugs07 NET-15: a number reissued in mid-call  ----------  */
+
+#if defined(__linux__)
+#include <sys/syscall.h>
+#endif
+
+#if defined(__linux__) && defined(__GLIBC__) && defined(SYS_shutdown) \
+ && defined(SYS_getsockname) && defined(SYS_getpeername) \
+ && defined(SYS_setsockopt) && defined(SYS_getsockopt)
+#define REISSUE_TEST 1
+
+#include <errno.h>
+#include <poll.h>
+#include <unistd.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+
+/*
+ *  Five calls in st_socket.c -- NET_shutdown_write, NET_local_port,
+ *  NET_peer_address, NET_set_option and NET_connect_result -- looked the
+ *  descriptor up under net_lock, let the lock go, and only then made
+ *  their system call on it.  A close from another thread in between
+ *  frees the number, the kernel gives it at once to the next socket
+ *  anybody opens, and the call then acts on that stranger: half-closes
+ *  its connection, reports its port or its connect error, sets Nagle on
+ *  it.  The window is a few instructions wide and no stress run hits it
+ *  on demand, so this test makes it as wide as it likes: it defines the
+ *  five system calls itself (the executable's definition is the one
+ *  libst.a's references bind to; the real call is made through syscall,
+ *  and glibc's own spelling of the address argument is kept so that the
+ *  definitions agree with its declarations),
+ *  and the one made on this thread while armed stops, starts a closer
+ *  thread -- close the handle, open a stranger in its number -- and
+ *  waits up to 300 ms for the closer to finish before it goes on with
+ *  the number it was given.
+ *
+ *  Before the fix the closer finishes inside that wait and the call
+ *  lands on the stranger.  After it the call holds net_lock, so the
+ *  closer's NET_close waits for it, the wait runs out, and the call is
+ *  made on the socket that was asked about; the close and the stranger
+ *  come after.  Every case then checks the stranger is untouched and the
+ *  answer is the asked-about socket's -- and that the stranger did get
+ *  the number, without which the case would prove nothing.
+ */
+enum { STOP_NONE, STOP_SHUTDOWN, STOP_GETSOCKNAME, STOP_GETPEERNAME,
+       STOP_SETSOCKOPT, STOP_GETSOCKOPT };
+enum { STRANGER_LISTENER, STRANGER_CONNECTED, STRANGER_REFUSED };
+
+static _Thread_local int    stop_armed;     /*  only the test's own thread stops  */
+static st_atomic_int        stop_fd;        /*  the number the stopped call was given, + 1  */
+static st_atomic_int        closer_go;
+static st_atomic_int        closer_done;
+static int64_t              reissue_victim;
+static int                  reissue_kind;
+static int                  reissue_port;
+static int64_t              reissue_stranger;
+static int                  reissue_raced;
+
+static void
+stop_point(int which, int fd)
+{
+    int64_t deadline;
+
+    if (stop_armed != which)
+        return;
+    stop_armed = STOP_NONE;
+    ST_store_release(&stop_fd, fd + 1);
+    ST_store_release(&closer_go, 1);
+    deadline = ST_time_monotonic_ns() + INT64_C(300000000);
+    while (!ST_load_acquire(&closer_done) && ST_time_monotonic_ns() < deadline)
+        ST_sleep_ns(1000000);
+    reissue_raced = ST_load_acquire(&closer_done);
+}
+
+int
+shutdown(int fd, int how)
+{
+    stop_point(STOP_SHUTDOWN, fd);
+    return (int) syscall(SYS_shutdown, fd, how);
+}
+
+/*  The address argument as a plain pointer, whichever form glibc gave it.  */
+static void *
+address_pointer(const void *argument)
+{
+    void   *p;
+
+    memcpy(&p, argument, sizeof p);
+    return p;
+}
+
+int
+getsockname(int fd, __SOCKADDR_ARG addr, socklen_t *len)
+{
+    stop_point(STOP_GETSOCKNAME, fd);
+    return (int) syscall(SYS_getsockname, fd, address_pointer(&addr), len);
+}
+
+int
+getpeername(int fd, __SOCKADDR_ARG addr, socklen_t *len)
+{
+    stop_point(STOP_GETPEERNAME, fd);
+    return (int) syscall(SYS_getpeername, fd, address_pointer(&addr), len);
+}
+
+int
+setsockopt(int fd, int level, int name, const void *value, socklen_t len)
+{
+    stop_point(STOP_SETSOCKOPT, fd);
+    return (int) syscall(SYS_setsockopt, fd, level, name, value, len);
+}
+
+int
+getsockopt(int fd, int level, int name, void *value, socklen_t *len)
+{
+    stop_point(STOP_GETSOCKOPT, fd);
+    return (int) syscall(SYS_getsockopt, fd, level, name, value, len);
+}
+
+/*  The port a number is bound to, asked of the kernel directly.  */
+static int
+port_of_number(int fd)
+{
+    struct sockaddr_storage addr;
+    socklen_t               len = sizeof addr;
+
+    if (syscall(SYS_getsockname, fd, (struct sockaddr *) &addr, &len) != 0)
+        return -1;
+    if (addr.ss_family == AF_INET)
+        return (int) ntohs(((struct sockaddr_in *) &addr)->sin_port);
+    return -1;
+}
+
+static void
+closer_main(void *arg)
+{
+    int64_t     deadline = ST_time_monotonic_ns() + INT64_C(5000000000);
+    uintptr_t   old_read;
+    uintptr_t   old_write;
+
+    (void) arg;
+    while (!ST_load_acquire(&closer_go)) {
+        if (ST_time_monotonic_ns() > deadline)
+            return;
+        ST_sleep_ns(1000000);
+    }
+    NET_close(reissue_victim, &old_read, &old_write);
+    if (reissue_kind == STRANGER_LISTENER)
+        reissue_stranger = NET_listen("127.0.0.1", 0, 4);
+    else
+        reissue_stranger = NET_connect("127.0.0.1", reissue_port, 0);
+    if (reissue_kind != STRANGER_LISTENER) {
+        /*  Connected, or refused, before the stopped call goes on.  */
+        struct pollfd   p;
+
+        p.fd      = ST_load_acquire(&stop_fd) - 1;
+        p.events  = POLLOUT;
+        p.revents = 0;
+        poll(&p, 1, 2000);
+    }
+    ST_store_release(&closer_done, 1);
+}
+
+/*  A connected pair on the listener: *client and *server, or 0.  */
+static int
+pair_on(int64_t listener, int port, int64_t *client, int64_t *server)
+{
+    int64_t deadline = ST_time_monotonic_ns() + INT64_C(5000000000);
+
+    *client = NET_connect("127.0.0.1", port, 0);
+    if (*client < 0)
+        return 0;
+    while ((*server = NET_accept(listener)) == NET_WOULD_BLOCK) {
+        if (ST_time_monotonic_ns() > deadline)
+            return 0;
+        ST_sleep_ns(1000000);
+    }
+    while (NET_connect_result(*client) == NET_WOULD_BLOCK) {
+        if (ST_time_monotonic_ns() > deadline)
+            return 0;
+        ST_sleep_ns(1000000);
+    }
+    return *server >= 0;
+}
+
+/*  Arm the stop, start the closer; the caller makes the call, then joins.  */
+static st_thread
+arm_reissue(int which, int64_t victim, int kind, int port)
+{
+    st_thread   t;
+
+    ST_store_relaxed(&stop_fd, 0);
+    ST_store_relaxed(&closer_go, 0);
+    ST_store_relaxed(&closer_done, 0);
+    reissue_victim   = victim;
+    reissue_kind     = kind;
+    reissue_port     = port;
+    reissue_stranger = -1;
+    reissue_raced    = 0;
+    ST_thread_create(&t, closer_main, NULL);
+    stop_armed = which;
+    return t;
+}
+
+static void
+test_bugs7f_net_reissue(void)
+{
+    int64_t     listener;
+    int         port;
+    int64_t     client;
+    int64_t     server;
+    int64_t     accepted;
+    int64_t     deadline;
+    st_thread   t;
+    int         number;
+    int         answer;
+    int         expected;
+    int         nodelay;
+    socklen_t   len;
+    char        text[64];
+    char        buffer[16];
+    uintptr_t   r;
+    uintptr_t   w;
+
+    listener = NET_listen("127.0.0.1", 0, 8);
+    CHECK(listener >= 0);
+    port = NET_local_port(listener);
+
+    /*
+     *  NET_shutdown_write.  The stranger is a new connection to the same
+     *  listener; its server side must not read end of stream.
+     */
+    CHECK(pair_on(listener, port, &client, &server));
+    t = arm_reissue(STOP_SHUTDOWN, client, STRANGER_CONNECTED, port);
+    CHECK_EQ_INT(NET_shutdown_write(client), 0);
+    stop_armed = STOP_NONE;
+    ST_thread_join(t);
+    CHECK_EQ_INT(reissue_raced, 0);
+    number = ST_load_acquire(&stop_fd) - 1;
+    CHECK(reissue_stranger >= 0);
+    CHECK_EQ_INT(port_of_number(number), NET_local_port(reissue_stranger));
+    deadline = ST_time_monotonic_ns() + INT64_C(5000000000);
+    while ((accepted = NET_accept(listener)) == NET_WOULD_BLOCK
+        && ST_time_monotonic_ns() < deadline)
+        ST_sleep_ns(1000000);
+    CHECK(accepted >= 0);
+    ST_sleep_ns(20000000);
+    CHECK_EQ_INT((int) NET_recv(accepted, buffer, sizeof buffer), NET_WOULD_BLOCK);
+    /*  And the socket asked about was the one shut: its peer reads the end.  */
+    CHECK_EQ_INT((int) NET_recv(server, buffer, sizeof buffer), 0);
+    NET_close(accepted, &r, &w);
+    NET_close(reissue_stranger, &r, &w);
+    NET_close(server, &r, &w);
+
+    /*
+     *  NET_local_port.  The stranger is a listener on a port of its own;
+     *  the answer must be the client's port, read before the stop.
+     */
+    CHECK(pair_on(listener, port, &client, &server));
+    expected = NET_local_port(client);
+    t = arm_reissue(STOP_GETSOCKNAME, client, STRANGER_LISTENER, 0);
+    answer = NET_local_port(client);
+    stop_armed = STOP_NONE;
+    ST_thread_join(t);
+    CHECK_EQ_INT(reissue_raced, 0);
+    number = ST_load_acquire(&stop_fd) - 1;
+    CHECK(reissue_stranger >= 0);
+    CHECK_EQ_INT(port_of_number(number), NET_local_port(reissue_stranger));
+    CHECK_EQ_INT(answer, expected);
+    NET_close(reissue_stranger, &r, &w);
+    NET_close(server, &r, &w);
+
+    /*
+     *  NET_peer_address.  The asked-about socket is the server side,
+     *  whose peer is 127.0.0.1; the stranger is a listener, which has no
+     *  peer at all.
+     */
+    CHECK(pair_on(listener, port, &client, &server));
+    t = arm_reissue(STOP_GETPEERNAME, server, STRANGER_LISTENER, 0);
+    answer = NET_peer_address(server, text, sizeof text);
+    stop_armed = STOP_NONE;
+    ST_thread_join(t);
+    CHECK_EQ_INT(reissue_raced, 0);
+    number = ST_load_acquire(&stop_fd) - 1;
+    CHECK(reissue_stranger >= 0);
+    CHECK_EQ_INT(port_of_number(number), NET_local_port(reissue_stranger));
+    CHECK_EQ_INT(answer, 0);
+    CHECK_EQ_STR(answer == 0 ? text : NET_last_error(), "127.0.0.1");
+    NET_close(reissue_stranger, &r, &w);
+    NET_close(client, &r, &w);
+
+    /*
+     *  NET_set_option.  Nagle off on the client; the stranger, a new
+     *  connection, must keep the default.
+     */
+    CHECK(pair_on(listener, port, &client, &server));
+    t = arm_reissue(STOP_SETSOCKOPT, client, STRANGER_CONNECTED, port);
+    CHECK_EQ_INT(NET_set_option(client, NET_OPTION_NODELAY, 1), 0);
+    stop_armed = STOP_NONE;
+    ST_thread_join(t);
+    CHECK_EQ_INT(reissue_raced, 0);
+    number = ST_load_acquire(&stop_fd) - 1;
+    CHECK(reissue_stranger >= 0);
+    CHECK_EQ_INT(port_of_number(number), NET_local_port(reissue_stranger));
+    nodelay = -1;
+    len     = sizeof nodelay;
+    syscall(SYS_getsockopt, number, IPPROTO_TCP, TCP_NODELAY, &nodelay, &len);
+    CHECK_EQ_INT(nodelay, 0);
+    NET_close(reissue_stranger, &r, &w);
+    NET_close(server, &r, &w);
+    deadline = ST_time_monotonic_ns() + INT64_C(2000000000);
+    while ((accepted = NET_accept(listener)) == NET_WOULD_BLOCK
+        && ST_time_monotonic_ns() < deadline)
+        ST_sleep_ns(1000000);
+    if (accepted >= 0)
+        NET_close(accepted, &r, &w);
+
+    /*
+     *  NET_connect_result.  The client's connect succeeded; the stranger's
+     *  is refused -- a port whose listener has gone -- and its SO_ERROR
+     *  must not be read as the client's.
+     */
+    {
+        int64_t gone      = NET_listen("127.0.0.1", 0, 1);
+        int     gone_port = NET_local_port(gone);
+
+        NET_close(gone, &r, &w);
+        CHECK(pair_on(listener, port, &client, &server));
+        t = arm_reissue(STOP_GETSOCKOPT, client, STRANGER_REFUSED, gone_port);
+        answer = NET_connect_result(client);
+        stop_armed = STOP_NONE;
+        ST_thread_join(t);
+        CHECK_EQ_INT(reissue_raced, 0);
+        CHECK(reissue_stranger >= 0);
+        CHECK_EQ_INT(answer, 0);
+        if (answer != 0)
+            printf("  NET-15 connect result: %s\n", NET_last_error());
+        NET_close(reissue_stranger, &r, &w);
+        NET_close(server, &r, &w);
+    }
+
+    NET_close(listener, &r, &w);
+    CHECK_EQ_INT(NET_open_count(), 0);
+}
+
+#endif  /*  REISSUE_TEST  */
+
 int
 main(void)
 {
@@ -158,6 +506,11 @@ main(void)
     test_addresses();
     CHECK_EQ_INT(NET_available(), 1);
     CHECK_EQ_INT(NET_open_count(), 0);
+#ifdef REISSUE_TEST
+    test_bugs7f_net_reissue();
+#else
+    printf("  skipped NET-15's reissue test: not Linux with glibc\n");
+#endif
     CHECK_EQ_INT(NET_waits_pending(), 0);
 
     /*  ----------  A listener, a connection  ----------  */
