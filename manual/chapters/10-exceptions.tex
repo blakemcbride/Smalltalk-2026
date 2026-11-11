@@ -188,6 +188,7 @@ Exception
         SyntaxErrorNotification
         OutOfMemory
         TestFailure          (SUnit)
+    UnhandledError
     Warning
     TimedOut
 \end{plain}
@@ -227,6 +228,16 @@ process, and the server, goes on. Very deep stacks are the exception: past sixte
 interpreter stops rather than signals, because delivering an exception is
 quadratic in the depth and a runaway recursion is millions of frames down.
 That case still prints a line and stops, in about four seconds.
+
+\ct{UnhandledError} is an error that no handler took, offered once more
+before it is reported: \ct{Error>>defaultAction} signals one carrying the
+error, so a handler for \ct{UnhandledError} catches exactly the errors that
+no other handler takes, wherever it stands, and \ct{e exception} is the error
+itself. Pharo code is written against it: its \ct{Announcer} delivers each
+announcement inside \ct{on: UnhandledError fork: [:ex | ex pass]}, so a
+subscriber that fails is reported from a process of its own and the
+subscribers after it are told anyway. An \ct{UnhandledError} nobody takes is
+the error unhandled after all, and is reported as one.
 
 \section{How it works, in one paragraph}
 

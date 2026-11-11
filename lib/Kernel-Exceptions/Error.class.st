@@ -15,7 +15,43 @@ Error >> description [
 
 { #category : 'handling' }
 Error >> defaultAction [
-	"Nobody was listening.
+	"Nobody was listening -- nearly.
+
+	 Before the error is reported it is offered once more, as an
+	 UnhandledError carrying it, and a handler for THAT takes it: so an
+	 `on: UnhandledError do:' catches exactly the errors that no other
+	 handler takes, wherever it stands on the stack.  That is Pharo's
+	 contract, and Pharo code is written against it.  Its Announcer
+	 delivers each announcement inside `on: UnhandledError fork:', so that
+	 a subscriber that fails is reported from a process of its own while
+	 the announcer goes on to the next subscriber and returns.  With no
+	 such class the guard was nil, nil handles nothing, and the error came
+	 here in the announcing process: the unwinding below ran the
+	 registry's ifCurtailed:, which delivered to the remaining subscribers
+	 from inside this report, and then a forked announcer was ended, so
+	 announce: never returned, and any other announcer carried on and
+	 delivered to the same subscribers a second time (Bugs07 KERNB-7).
+
+	 Looked for before it is signalled, so that an error nobody takes in
+	 either form costs one walk of the stack and no new frames before the
+	 report -- the same walk the signal would make.  When there IS a
+	 taker, the signal finds it again: an UnhandledError is not
+	 resumable, so the handler either returns from its on:do:, unwinding
+	 everything above it including this, or passes it on, and with nothing
+	 further out UnhandledError>>defaultAction comes back to
+	 unhandledErrorDefaultAction below.  A handler's frame is out of
+	 service while it runs, so an error raised inside an UnhandledError
+	 handler is not offered back to it."
+	| unhandled |
+	unhandled := UnhandledError new exception: self.
+	(unhandled findHandlerFrom: thisContext) isNil
+		ifFalse: [^unhandled signal].
+	^self unhandledErrorDefaultAction
+]
+
+{ #category : 'handling' }
+Error >> unhandledErrorDefaultAction [
+	"Nobody was listening, as an Error or as an UnhandledError.
 
 	 The text goes out FIRST and the window second, deliberately.  An
 	 unhandled error still reaches the same 1983 NotifierView on the same
@@ -117,9 +153,12 @@ Error >> isOnForkedProcess [
 Error >> noteUnhandled [
 	"Tell the VM that an Error went unhandled on this stack (Bugs3 B58).
 
-	 Sent from defaultAction and nowhere else, so what the VM counts is
-	 exactly the errors nobody caught: a handled Error never reaches
-	 defaultAction, and a Warning has its own.  -eval reads the count to
+	 Sent from unhandledErrorDefaultAction, and from UnhandledError's
+	 report of an error handled on another process, and nowhere else, so
+	 what the VM counts is exactly the errors nobody caught: a handled
+	 Error never gets that far, an Error an UnhandledError handler takes
+	 and keeps is handled, and a Warning has its own default action.  The
+	 count is the reporting worker's.  -eval reads the count to
 	 decide its exit code -- the answer to `3 zork' is nil, which a build
 	 script could not tell from an expression that answered nil on purpose.
 	 Primitive 239, this system's own; a build without it answers self."

@@ -5292,6 +5292,97 @@ bugs7e_sched(void)
     }
 }
 
+/*
+ *  Bugs07, round 5: the KERN group's findings that need a server or a
+ *  profile of their own.
+ */
+static void
+bugs7e_kern(void)
+{
+    static char out[65536];
+    char        command[2048];
+    const char *aimg = fixture("bugs7e-serve-ann.im");
+    const char *probe = fixture("bugs7e-kernb7.st");
+    const char *at;
+    int         status;
+    int         reports = 0;
+
+    /*
+     *  KERNB-7: the pharo-announcements Announcer, byte for byte Pharo's,
+     *  guards each delivery with `on: UnhandledError fork: [:ex | ex
+     *  pass]', and UnhandledError did not exist.  A subscriber's error
+     *  reached the default action in the announcing process: a forked
+     *  announcer was ended there, so announce: never returned, and one
+     *  that was not delivered to the later subscribers twice and let the
+     *  failing one carry on past its error.  Now each announce: returns,
+     *  every subscriber hears it once, and the error is reported once,
+     *  from the forked handler, which says nothing else.  The image runs
+     *  the probe file as its startup, NOT through the batch harness,
+     *  which evaluates each line inside an `on: Error do:' that would
+     *  take the second announcer's error first -- as it should.  The
+     *  subscribers' order is the registry's, so the log is sorted.
+     */
+    snprintf(command, sizeof command,
+             "%s -bootstrap -profile profiles/pharo-announcements.profile "
+             "-startup \"Compiler evaluate: (FileStream oldFileNamed: "
+             "Smalltalk arguments first) contentsOfEntireFile. Smalltalk quit\" "
+             "-o %s 2>&1", st2026, aimg);
+    status = run(command, out, sizeof out);
+    ++st_test_checks;
+    if (status != 0) {
+        ++st_test_failures;
+        printf("  FAIL KERNB-7: cannot build the announcements image "
+               "(exit %d)\n", status);
+        return;
+    }
+    ++st_test_checks;
+    if (write_file(probe,
+            "| mk a log done r |\n"
+            "mk := [:l | | an | an := Announcer new.\n"
+            "\tan when: Announcement do: [:x | l add: #s1] for: l.\n"
+            "\tan when: Announcement do: [:x | l add: #s2. 1/0. l add: #s2After] for: l.\n"
+            "\tan when: Announcement do: [:x | l add: #s3] for: l. an].\n"
+            "r := OrderedCollection new.\n"
+            "log := OrderedCollection new. a := mk value: log. done := Semaphore new.\n"
+            "[[a announce: Announcement new. log add: #returned] "
+            "ensure: [done signal]] fork.\n"
+            "done wait. r add: (log asSortedCollection: [:p :q | p <= q]) asArray.\n"
+            "log := OrderedCollection new. a := mk value: log.\n"
+            "a announce: Announcement new. log add: #returned.\n"
+            "r add: (log asSortedCollection: [:p :q | p <= q]) asArray.\n"
+            "(Delay forMilliseconds: 300) wait.\n"
+            "('KERNB-7 ', r asArray printString) displayNl.\n") != 0) {
+        ++st_test_failures;
+        printf("  FAIL KERNB-7: could not write the probe\n");
+        unlink(aimg);
+        return;
+    }
+    snprintf(command, sizeof command,
+             ST_TEST_TIMEOUT " -k 2 " SERVE_SECONDS " %s -serve %s -workers 2"
+             " %s 2>&1", st2026, aimg, probe);
+    status = run(command, out, sizeof out);
+    unlink(probe);
+    unlink(aimg);
+    if (status < 0) {
+        ++st_test_failures;
+        printf("  FAIL KERNB-7: could not run the server\n");
+        return;
+    }
+    expect(out, "KERNB-7 ((returned s1 s2 s3 ) (returned s1 s2 s3 ) )",
+           "KERNB-7 a failing subscriber is reported and the rest still hear it");
+    for (at = strstr(out, "ZeroDivide: 'division by 0'"); at;
+         at = strstr(at + 1, "ZeroDivide: 'division by 0'"))
+        ++reports;
+    ++st_test_checks;
+    if (reports != 2) {
+        ++st_test_failures;
+        printf("  FAIL KERNB-7: %d reports of the subscriber's error, "
+               "want one per announce:\n", reports);
+    }
+    expect_absent(out, "a primitive has failed",
+                  "KERNB-7 the forked handler's pass says nothing else");
+}
+
 int
 main(void)
 {
@@ -5971,6 +6062,7 @@ main(void)
     bugs7e_net();
     bugs7e_files();
     bugs7e_sched();
+    bugs7e_kern();
 
     unlink(IMAGE);
     unlink(BATCH);

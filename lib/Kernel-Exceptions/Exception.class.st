@@ -462,6 +462,32 @@ Exception >> resignalAs: replacementException [
 	^replacementException signalFrom: ctx
 ]
 
+{ #category : 'copying' }
+Exception >> detachedCopy [
+	"A copy of me that names no frame, for a handler that runs on another
+	 process (BlockClosure>>on:fork:).
+
+	 The frames I name are on the stack of the process that signalled me,
+	 not the handler's.  Nothing can act on them from another process --
+	 primitives 246 and 247 refuse a frame that is not on the active stack
+	 -- but pass, outer and the rest read and walk them, and the process
+	 they belong to may be running and returning through them on another
+	 worker at the same time (Bugs07 KERNB-7).  Without them, pass and
+	 outer find no handler further out and run my default action, return:
+	 answers its argument, retry and retryUsing: answer nil, resume: says
+	 there is no context to resume, and signal raises the copy afresh from
+	 where it is sent.  Everything else -- class, text, a subclass's own
+	 fields -- is shared with me."
+	^self shallowCopy forgetFrames
+]
+
+{ #category : 'private' }
+Exception >> forgetFrames [
+	"See detachedCopy."
+	signalContext := nil.
+	handlerContext := nil
+]
+
 { #category : 'private' }
 Exception >> signalContext: aContext [
 	"Where the search for my handler starts, and where a resumption goes.

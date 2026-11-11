@@ -200,8 +200,12 @@
  *  exceptions put off to the end of a critical: section, kept in the
  *  section's unwind block in place of a block that raised or terminated
  *  wherever the section happened to be unwound.
+ *
+ *  156 -> 157 with Bugs07 KERNB-7: UnhandledError, which Error>>
+ *  defaultAction offers an error as before it reports it, so that a
+ *  handler for it takes exactly the errors no other handler takes.
  */
-#define LIB_CLASSES             156
+#define LIB_CLASSES             157
 /*
  *  This number is a ratchet and is meant to move: lib/ is where every
  *  divergence from the frozen 1983 sources lives, so it grows whenever a
@@ -740,8 +744,13 @@
  *  next page with FilePage>>writeTurning, File>>writeTurning:, and
  *  PosixFile>>writeTurning: and write:command:, so that a line written
  *  across a page boundary reaches the file as one append.
+ *  3461 -> 3470 with Bugs07 KERNB-7: UnhandledError (class>>
+ *  signalForException:, exception, exception:, description, defaultAction
+ *  and its synthesized class-side new), Error>>unhandledErrorDefaultAction
+ *  (the report defaultAction made before), and Exception>>detachedCopy
+ *  and forgetFrames, the copy BlockClosure>>on:fork: hands its handler.
  */
-#define LIB_METHODS             3461
+#define LIB_METHODS             3470
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -961,8 +970,11 @@ build_once(void)
      *
      *  152 -> 153 with DeferredStop (Bugs07 SCHED-5), which is made by
      *  basicNew from its own for:guarding:in: and does not define one.
+     *
+     *  153 -> 154 with UnhandledError (Bugs07 KERNB-7), which does not
+     *  define one either.
      */
-    CHECK_EQ_INT(res.news_synthesized, 153);
+    CHECK_EQ_INT(res.news_synthesized, 154);
     built = 1;
     return 1;
 }
@@ -3234,8 +3246,12 @@ test_browsing(void)
      *
      *  3086622 -> 3086923 with Bugs07 OM-4: elementsForwardIdentityTo:
      *  says its pairs are forwarded at once.
+     *
+     *  3086923 -> 3093936 with Bugs07 KERNB-7: UnhandledError, offered by
+     *  Error>>defaultAction before its report, and the detached copy of an
+     *  exception BlockClosure>>on:fork: gives its handler.
      */
-    check_integer("(SourceFiles at: 1) contents size", 3086923);
+    check_integer("(SourceFiles at: 1) contents size", 3093936);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -13181,6 +13197,55 @@ test_bugs7e_kern(void)
                  "  [[1/0. 5] on: ZeroDivide do: [:e | e pass]] "
                  "    on: ZeroDivide do: [:e | e return: 6]} printString",
                  "(nil 6 )");
+
+    /*
+     *  KERNB-7.  Pharo's Announcer isolates a failing subscriber with
+     *  `on: UnhandledError fork: [:ex | ex pass]' inside a loop whose
+     *  ifCurtailed: delivers to the subscribers left.  UnhandledError did
+     *  not exist, so the guard was nil and the error reached the default
+     *  action in the announcing process, which ran the ifCurtailed: from
+     *  inside the report and then carried on into the loop again: s3
+     *  twice and s2 past its error.  The loop is Pharo's, written out;
+     *  the real Announcer, which is the pharo-announcements profile's, is
+     *  driven in test_serve_faults.c (bugs7e_kern).  An Error is offered
+     *  as an UnhandledError only when no handler takes it as itself, and
+     *  the handler it reaches returns from its own on:do: and unwinds
+     *  what is above it, its ensure: blocks included.
+     */
+    check_string("| log subs deliver | log := OrderedCollection new. "
+                 "subs := {[log add: #s1]. [log add: #s2. 1/0. log add: #s2After]. "
+                 "  [log add: #s3]}. "
+                 "deliver := nil. deliver := [:start | start to: subs size do: [:i | "
+                 "  [[(subs at: i) value] on: UnhandledError fork: [:ex | ex pass]] "
+                 "    ifCurtailed: [deliver value: i + 1]]]. "
+                 "deliver value: 1. log add: #returned. "
+                 "(Delay forMilliseconds: 20) wait. ^log asArray printString",
+                 "(s1 s2 s3 returned )");
+    check_string("| log r | log := OrderedCollection new. "
+                 "r := {[[1/0. 5] ensure: [log add: #ens]] "
+                 "    on: UnhandledError do: [:u | log add: u exception class name. 7]. "
+                 "  [[1/0] on: ZeroDivide do: [:e | #inner]] on: UnhandledError do: [:u | #outer]. "
+                 "  [[1/0] on: UnhandledError do: [:u | #unhandled]] on: Error do: [:e | #error]. "
+                 "  [[1/0] on: UnhandledError do: [:u | 1/0. #carriedOn]] "
+                 "    on: UnhandledError do: [:u | #outerTook]. "
+                 "  [nil foo. 6] on: UnhandledError do: [:u | u exception resume: 3]}. "
+                 "^{r. log asArray} printString",
+                 "((7 inner error outerTook 6 ) (ZeroDivide ens ) )");
+
+    /*
+     *  And the forked handler gets a copy of the exception that names no
+     *  frame of the raising process: `ex pass' there walked that process's
+     *  stack as it unwound and then tried to return to a frame on it,
+     *  which failed with `a primitive has failed'.  pass with nothing
+     *  further out now runs the default action and answers its value.
+     */
+    check_string("| log r | log := OrderedCollection new. "
+                 "r := [1/0. 5] on: ZeroDivide fork: [:ex | "
+                 "  log add: ex signalContext; add: ex handlerContext; "
+                 "    add: ex messageText; add: ([ex pass] on: Error do: [:e | e messageText]); "
+                 "    add: #after]. "
+                 "(Delay forMilliseconds: 20) wait. ^{r. log asArray} printString",
+                 "(nil (nil nil 'division by 0' nil after ) )");
 
     test_dialect = ST_DIALECT_BLUE_BOOK;
 }

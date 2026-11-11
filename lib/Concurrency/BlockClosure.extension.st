@@ -86,10 +86,25 @@ BlockClosure >> on: anExceptionClass fork: handlerBlock [
 	 ex resume: meaning anything afterwards.  A handler that needs to
 	 resume the signalling process wants on:do:, and should say so.
 
+	 The forked handler is given a copy of the exception that names no
+	 frame (Exception>>detachedCopy), not the exception itself.  The
+	 frames belong to the raising process, which is unwinding through them
+	 by the time the handler runs -- on another worker, at the same moment
+	 -- and `ex pass' looks for the next handler out by walking from the
+	 handler's frame: given the original, it walked that process's stack
+	 as it changed, could find an on:do: of that process and run its
+	 handler here, and with none found tried to return to a frame on
+	 another stack and said `a primitive has failed'.  Pharo's Announcer
+	 guards every delivery with `on: UnhandledError fork: [:ex | ex pass]'
+	 (Bugs07 KERNB-7).  With the copy, pass and outer find nothing further
+	 out and run the default action -- the report -- on the new process,
+	 and the handler sees the same class, text and fields.
+
 	 Written on fork and newProcess, which exist now, and on nothing else."
-	^self on: anExceptionClass do: [:ex |
+	^self on: anExceptionClass do: [:ex | | detached |
+		detached := ex detachedCopy.
 		[handlerBlock numArgs = 0
 			ifTrue: [handlerBlock value]
-			ifFalse: [handlerBlock value: ex]] fork.
+			ifFalse: [handlerBlock value: detached]] fork.
 		nil]
 ]
