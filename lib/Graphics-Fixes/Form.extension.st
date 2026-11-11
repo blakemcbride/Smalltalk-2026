@@ -45,6 +45,17 @@ window which part of the screen changed.  What a call costs beyond 1983's
 is one Form of one word, beside the BitBlt and Rectangle 1983 already makes
 for each.
 
+Form>>rotateBy: is here because 1983's reduced the angle and then forgot
+it.  Its first line is `angle4 _ angle \\ 4' and every test after it reads
+`angle': `angle = 0', `angle = 2', `angle = 1'.  So only 0, 1 and 2 meant
+what the comment promises, and every other angle took the last branch, a
+quarter turn counter-clockwise -- right for 3 and for -1, which is why the
+slip lasted, and wrong for the rest: `rotateBy: 4', a full turn, answered
+the form turned a quarter back, 5 was not 1 and 6 was not 2 (Bugs07
+GUI-7).  The method below is 1983's with `angle4' read wherever `angle'
+was, so the rotation is decided by the angle modulo four turns, as the
+comment always said.
+
 One answer changes, and becomes an answer: valueAt: of a point outside the
 receiver.  The blit is clipped to nothing there, so 1983 answered whatever
 the shared pixel held from the call before -- any process's.  A fresh pixel
@@ -106,4 +117,56 @@ Form >> valueAt: aPoint put: maskCode [
 		clippingBox: self boundingBox
 		rule: Form over
 		mask: Form black
+]
+
+{ #category : '*Graphics-Fixes' }
+Form >> rotateBy: angle [
+	"Answer a copied Form rotated clockwise by angle in units of 90 degrees.
+	 angle = 0 means unchanged, 1 means clockwise 90 degrees, etc.  1983's
+	 method deciding by angle modulo 4 everywhere instead of only where it
+	 computed it; see the comment above."
+
+	| angle4 rotSize newForm rotForm all destPt sourcePt sourceDelta destDelta rotOrigin |
+	angle4 := angle \\ 4.
+	angle4 = 0 ifTrue: [^self deepCopy].	"null rotation"
+	angle4 = 2 ifTrue: [^(self reflect: 0 @ 1) reflect: 1 @ 0].	"two reflections does 180 degrees"
+
+	"Break the problem up into squares of size 2^N, and rotate them"
+	rotSize := (width min: height)	"minimum rotation size"
+		max: 64.	"but faster if we do larger chunks"
+	rotSize := 2 raisedTo: ((rotSize - 1) asFloat floorLog: 2) + 1.	"force up to a power of 2"
+	newForm := Form extent: self extent transpose.
+	rotForm := Form extent: rotSize asPoint.
+	all := rotForm boundingBox.
+	sourcePt := 0 @ 0.
+	width >= height
+		ifTrue:
+			[sourceDelta := rotSize @ 0.
+			angle4 = 1
+				ifTrue:
+					[destPt := 0 @ 0.
+					destDelta := sourceDelta transpose.
+					rotOrigin := (rotSize - height) @ 0]
+				ifFalse:
+					[destPt := 0 @ (width - rotSize).
+					destDelta := (0 @ 0) - sourceDelta transpose.
+					rotOrigin := 0 @ 0]]
+		ifFalse:
+			[sourceDelta := 0 @ rotSize.
+			angle4 = 1
+				ifTrue:
+					[destPt := (height - rotSize) @ 0.
+					destDelta := (0 @ 0) - sourceDelta transpose.
+					rotOrigin := 0 @ 0]
+				ifFalse:
+					[destPt := 0 @ 0.
+					destDelta := sourceDelta transpose.
+					rotOrigin := 0 @ (rotSize - width)]].
+	(width max: height) - 1 // rotSize + 1 timesRepeat:
+		[rotForm copy: all from: sourcePt in: self rule: 3.
+		rotForm rotate2: (angle4 = 1 ifTrue: [1] ifFalse: [-1]).
+		newForm copy: (all translateBy: destPt) from: rotOrigin in: rotForm rule: 3.
+		sourcePt := sourcePt + sourceDelta.
+		destPt := destPt + destDelta].
+	^newForm
 ]

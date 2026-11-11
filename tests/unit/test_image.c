@@ -764,8 +764,11 @@
  *  3479 -> 3482 with Bugs07 NET-9: HttpRequest class>>readFrom:
  *  maxBodyBytes:continue:, HttpRequest>>expectsContinue and
  *  HttpConnection>>writeContinue, which answer Expect: 100-continue.
+ *
+ *  3482 -> 3483 with Bugs07 GUI-7: Form>>rotateBy:, which decides by the
+ *  angle modulo four turns everywhere it computed it.
  */
-#define LIB_METHODS             3482
+#define LIB_METHODS             3483
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -3287,8 +3290,11 @@ test_browsing(void)
      *
      *  3108561 -> 3108991 with Bugs07 NET-14: HttpClientResponse>>json
      *  sends body, which reads a body still on the wire.
+     *
+     *  3108991 -> 3110880 with Bugs07 GUI-7: Form>>rotateBy: decides by the
+     *  angle modulo four turns.
      */
-    check_integer("(SourceFiles at: 1) contents size", 3108991);
+    check_integer("(SourceFiles at: 1) contents size", 3110880);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -13929,6 +13935,46 @@ test_bugs7f_net(void)
     test_dialect = ST_DIALECT_BLUE_BOOK;
 }
 
+/*
+ *  Bugs07, round 6: the GUI group's low findings and the Debugger items
+ *  found while fixing GUI-5 and GUI-6.
+ */
+static void
+test_bugs7f_gui(void)
+{
+    test_dialect = ST_DIALECT_CLOSURES;
+
+    /*
+     *  GUI-7.  Form>>rotateBy: computed angle \\ 4 and then tested angle,
+     *  so every angle but 0, 1 and 2 turned the form a quarter
+     *  counter-clockwise: a full turn (4) answered a quarter turn back, 5
+     *  was not 1 and 6 was not 2.  Both shapes, wide and tall, since the
+     *  method lays its squares out differently for each; and one pixel to
+     *  show that 5 turns clockwise -- a black pixel one in from the top
+     *  left (3@1) lands one in from the top right.  Before: (false true
+     *  false false true false false 0) for each.
+     */
+    check_string("| f g same r | f := Form extent: 64@40. "
+                 "f black: (0@0 extent: 10@5). "
+                 "g := Form extent: 20@70. g black: (3@1 extent: 4@9). "
+                 "same := [:a :b | a extent = b extent and: [a bits = b bits]]. "
+                 "r := OrderedCollection new. "
+                 "{f. g} do: [:h | "
+                 "r add: (same value: (h rotateBy: 4) value: h); "
+                 "add: (same value: (h rotateBy: 4) value: (h rotateBy: 3)); "
+                 "add: (same value: (h rotateBy: 5) value: (h rotateBy: 1)); "
+                 "add: (same value: (h rotateBy: 6) value: (h rotateBy: 2)); "
+                 "add: (same value: (h rotateBy: -1) value: (h rotateBy: 3)); "
+                 "add: (same value: (h rotateBy: -3) value: (h rotateBy: 1)); "
+                 "add: (same value: (h rotateBy: 8) value: h); "
+                 "add: ((h rotateBy: 5) valueAt: (h height - 2)@3)]. "
+                 "^r asArray printString",
+                 "(true false true true true true true 1 "
+                 "true false true true true true true 1 )");
+
+    test_dialect = ST_DIALECT_BLUE_BOOK;
+}
+
 int
 main(void)
 {
@@ -14087,6 +14133,7 @@ main(void)
     test_bugs7e_vm();
     test_bugs7f_kern();
     test_bugs7f_net();
+    test_bugs7f_gui();
 
     OM_shutdown();
     return ST_TEST_END();
