@@ -3284,8 +3284,11 @@ test_browsing(void)
      *
      *  3108207 -> 3108561 with Bugs07 KERNA-5: Date readFrom: takes a
      *  first field of more than two digits as the year.
+     *
+     *  3108561 -> 3108991 with Bugs07 NET-14: HttpClientResponse>>json
+     *  sends body, which reads a body still on the wire.
      */
-    check_integer("(SourceFiles at: 1) contents size", 3108561);
+    check_integer("(SourceFiles at: 1) contents size", 3108991);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -13894,6 +13897,38 @@ test_bugs7f_kern(void)
     test_dialect = ST_DIALECT_BLUE_BOOK;
 }
 
+/*
+ *  Bugs07 round 6, NET.  Image-side, in-process doIts: an HttpServer of
+ *  the check's own on 127.0.0.1 and a port the system picks; no outside
+ *  host.
+ */
+static void
+test_bugs7f_net(void)
+{
+    test_dialect = ST_DIALECT_CLOSURES;
+
+    /*
+     *  NET-14.  HttpClientResponse>>json read the body variable rather
+     *  than sending body, and the body is read lazily: in get:do: the
+     *  block runs with it still on the wire, so `reply json' handed nil
+     *  to the parser and raised, while the plain get: (which reads the
+     *  body before answering) and `reply body. reply json' worked.
+     *  Before: ('{"a":[1]}' 'JSONError ...' '{"a":[1]}' ).
+     */
+    check_string("| s url | s := HttpServer new port: 0; bindAddress: '127.0.0.1'; yourself. "
+                 "s at: '/x' put: [:q | HttpResponse json: '{\"a\":[1]}']. "
+                 "s start. url := 'http://127.0.0.1:', s port printString, '/x'. "
+                 "^[{(HttpClient get: url) json printString. "
+                 "[HttpClient new get: url do: [:p | p json printString]] "
+                 "on: Error do: [:e | e class name]. "
+                 "[HttpClient new post: url body: '' contentType: 'text/plain' "
+                 "do: [:p | p status printString, (p json at: 'a') printString]] "
+                 "on: Error do: [:e | e class name]} printString] ensure: [s stop]",
+                 "('{\"a\":[1]}' '{\"a\":[1]}' '200[1]' )");
+
+    test_dialect = ST_DIALECT_BLUE_BOOK;
+}
+
 int
 main(void)
 {
@@ -14051,6 +14086,7 @@ main(void)
     test_bugs7e_net();
     test_bugs7e_vm();
     test_bugs7f_kern();
+    test_bugs7f_net();
 
     OM_shutdown();
     return ST_TEST_END();

@@ -187,8 +187,16 @@ HttpClientResponse >> bodyStream [
 
 { #category : 'accessing' }
 HttpClientResponse >> json [
-	"The body as a JSONObject; raises JSONError when it is not one."
-	^JSONObject fromString: body
+	"The body as a JSONObject; raises JSONError when it is not one.
+
+	 Through `self body', not the variable: the body is read lazily, and
+	 in the do: forms it is still on the wire when the block runs, so the
+	 variable is nil until something reads it.  Reading the variable here
+	 handed nil to the parser and raised for every reply a block parsed
+	 without first asking for `body' -- the plain get: and post: only
+	 escaped it because they read the body before answering (Bugs07
+	 NET-14)."
+	^JSONObject fromString: self body
 ]
 
 { #category : 'testing' }

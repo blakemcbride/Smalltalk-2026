@@ -64,7 +64,8 @@ without its ending and **nil at the end** — not an empty String, which is
 a blank line and means something in an event stream. The chunk boundaries
 are invisible: a line may span two chunks and does, since a server chunks
 by its buffer and not by the line. `reply body` in the block reads the
-rest whole; the two do not mix. This is what a model's streamed answer is
+rest whole, and `reply json` reads it whole and parses it; a whole body
+and the stream do not mix. This is what a model's streamed answer is
 read through — server-sent events from Anthropic and OpenAI, one JSON
 document a line from Ollama — and the plain `get:` and `post:` are the
 same call with a block that reads the body whole.
