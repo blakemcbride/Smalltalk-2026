@@ -14,7 +14,8 @@ The others are Pharo selectors that 1983's Dictionary does not have and that
 Pharo's implements by reading or writing its array directly, past the
 globals lock lib/System gives every reader and writer of Smalltalk.  Each is
 routed through lib/System's locked methods here, with the caller's block
-run after the lock is given back (Bugs07 KERNB-2).
+run after the lock is given back (Bugs07 KERNB-2), or run under the lock
+itself when it takes no block (removeAll and compact, Bugs07 X-22).
 "
 Extension { #name : 'SystemDictionary' }
 
@@ -126,4 +127,27 @@ SystemDictionary >> reject: rejectBlock thenCollect: collectBlock [
 		(rejectBlock value: assoc value)
 			ifFalse: [newDictionary at: assoc key put: (collectBlock value: assoc value)]].
 	^newDictionary
+]
+
+{ #category : '*Collections-Compat' }
+SystemDictionary >> removeAll [
+	"Pharo's, under the globals lock (Bugs07 X-22).
+
+	 HashedCollection>>removeAll puts an empty array in place of the
+	 table, with no lock: a declaration on another worker part way
+	 through went into the array being dropped.  Every global goes, as
+	 Pharo's says; the class names go with them."
+	LibraryLocks holdingGlobals: [super removeAll].
+	self flushClassNameCache
+]
+
+{ #category : '*Collections-Compat' }
+SystemDictionary >> compact [
+	"Pharo's, under the globals lock (Bugs07 X-22).
+
+	 HashedCollection>>compact puts a smaller array in place and refills
+	 it from the old one, with no lock: a declaration on another worker
+	 meanwhile went into the array being dropped, or was overwritten by
+	 the refill."
+	LibraryLocks holdingGlobals: [super compact]
 ]

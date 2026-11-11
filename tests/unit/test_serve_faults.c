@@ -5522,6 +5522,52 @@ bugs7f_kernb(void)
         "tables asSet size printString, ' held ', MeasureTable default size printString\n",
         8, "==> 'made 16000 defaults 1 held 16000'",
         "KERNB-10 lib/Probe's counter and default table on eight workers");
+
+    /*
+     *  X-22: Smalltalk rebuilt beside declarations.  1983's rehash copies
+     *  the table and become:s the copy, with no lock, so a global
+     *  declared on another worker after the copy went into the table
+     *  being dropped.  Four workers declaring two hundred globals each
+     *  beside four rehashing; and under pharo-collections, Pharo's rehash
+     *  and compact beside the same.  Before: 509 and 481 of the 800
+     *  missing, and under pharo-collections the server did not finish
+     *  in two hundred seconds.
+     */
+    {
+        static const char x22[] =
+            "| done stop missing |\n"
+            "done := Semaphore new. stop := false.\n"
+            "1 to: 4 do: [:w | [1 to: 200 do: [:i | Smalltalk at: ('Bugs7fX22w', "
+            "w printString, 'x', i printString) asSymbol put: i]. done signal] fork].\n"
+            "1 to: 4 do: [:w | [[stop] whileFalse: [w odd ifTrue: [Smalltalk rehash] "
+            "ifFalse: [(Smalltalk respondsTo: #compact) ifTrue: [Smalltalk perform: #compact] "
+            "ifFalse: [Smalltalk rehash]]]. done signal] fork].\n"
+            "1 to: 4 do: [:i | done wait]. stop := true. 1 to: 4 do: [:i | done wait].\n"
+            "missing := 0.\n"
+            "1 to: 4 do: [:w | 1 to: 200 do: [:i | (Smalltalk includesKey: ('Bugs7fX22w', "
+            "w printString, 'x', i printString) asSymbol) ifFalse: [missing := missing + 1]]].\n"
+            "^'rebuilt beside declarations, missing ', missing printString\n";
+        const char *pimg = fixture("bugs7f-serve-pc.im");
+
+        bugs7_probe("bugs7f-x22.st", x22, 8,
+                    "==> 'rebuilt beside declarations, missing 0'",
+                    "X-22 Smalltalk rehash beside declarations on eight workers");
+        snprintf(command, sizeof command,
+                 "%s -bootstrap -profile profiles/pharo-collections.profile "
+                 "-startup \"$(cat %s)\" -o %s 2>&1", st2026, STARTUP, pimg);
+        status = run(command, out, sizeof out);
+        ++st_test_checks;
+        if (status != 0) {
+            ++st_test_failures;
+            printf("  FAIL X-22: cannot build the pharo-collections image "
+                   "(exit %d)\n", status);
+        } else {
+            bugs7c_probe_on(pimg, "bugs7f-x22pc.st", x22, 8,
+                            "==> 'rebuilt beside declarations, missing 0'",
+                            "X-22 Pharo's rehash and compact beside declarations");
+        }
+        unlink(pimg);
+    }
 }
 
 /*

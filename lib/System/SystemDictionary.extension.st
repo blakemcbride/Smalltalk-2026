@@ -141,26 +141,85 @@ SystemDictionary >> removeKey: key ifAbsent: aBlock [
 	 removal, as at:put: flushes them (KERNB-9): 1983's
 	 removeClassNamed: flushed for itself, and a class taken out by
 	 removeKey: stayed in classNames."
-	| absent removed |
-	absent := false.
-	removed := LibraryLocks holdingGlobals: [ | binding old |
-		"The Association first, by Dictionary's own associationAt:ifAbsent:
-		 (super: the one on this class takes the lock this block already
-		 holds), which both Dictionaries answer alike; what
-		 removeKey:ifAbsent: answers is the Association here and the VALUE
-		 under profiles/pharo-collections."
-		binding := super associationAt: key ifAbsent: [nil].
-		binding isNil
-			ifTrue: [absent := true. nil]
-			ifFalse: [
-				super removeKey: key ifAbsent: [nil].
-				old := binding value.
-				binding value: nil.
-				Undeclared add: binding.
-				key -> old]].
-	absent ifTrue: [^aBlock value].
+	| removed |
+	removed := LibraryLocks holdingGlobals: [self lockedRemoveKey: key].
+	removed isNil ifTrue: [^aBlock value].
 	self flushClassNameCache.
 	^removed
+]
+
+{ #category : '*System' }
+SystemDictionary >> lockedRemoveKey: key [
+	"removeKey:ifAbsent:'s body, to be run with the globals lock held:
+	 move key's binding to Undeclared with its value nilled, and answer
+	 key -> the old value, or nil when I have no such key.
+
+	 The Association first, by Dictionary's own associationAt:ifAbsent:
+	 (super: the one on this class takes the lock this already holds),
+	 which both Dictionaries answer alike; what removeKey:ifAbsent:
+	 answers is the Association here and the VALUE under
+	 profiles/pharo-collections."
+	| binding old |
+	binding := super associationAt: key ifAbsent: [nil].
+	binding isNil ifTrue: [^nil].
+	super removeKey: key ifAbsent: [nil].
+	old := binding value.
+	binding value: nil.
+	Undeclared add: binding.
+	^key -> old
+]
+
+{ #category : '*System' }
+SystemDictionary >> removeAssociation: anAssociation ifAbsent: aBlock [
+	"Take out the global anAssociation names when I hold its key with an
+	 equal value, as removeKey: takes one out, and answer anAssociation;
+	 otherwise answer aBlock's value.
+
+	 1983's is Set's remove:ifAbsent:, which empties the slot and moves
+	 the rest of its cluster back one entry at a time, with no lock -- a
+	 writer to Smalltalk past the lock every other writer holds, so a
+	 declaration on another worker could land in a slot the move then
+	 filled, or be moved over (Bugs07 X-22).  And it took the binding out
+	 of the image, which removeKey: no longer does (Bugs6 KERNB-11): a
+	 method compiled against the name went on answering the removed
+	 value through any later declaration of it.  Under
+	 profiles/pharo-collections, whose Dictionary has no such method,
+	 this is the only one.
+
+	 The values are compared with the lock free, because a value's = is
+	 anybody's code (see at:ifAbsent:), and the removal is made only if
+	 the binding still holds the value that was compared."
+	| binding value removed |
+	binding := self associationAt: anAssociation key ifAbsent: [nil].
+	binding isNil ifTrue: [^aBlock value].
+	value := binding value.
+	value = anAssociation value ifFalse: [^aBlock value].
+	removed := LibraryLocks holdingGlobals: [
+		((super associationAt: binding key ifAbsent: [nil]) == binding
+				and: [binding value == value])
+			ifTrue: [self lockedRemoveKey: binding key]
+			ifFalse: [nil]].
+	removed isNil ifTrue: [^aBlock value].
+	self flushClassNameCache.
+	^anAssociation
+]
+
+{ #category : '*System' }
+SystemDictionary >> rehash [
+	"Rebuild my table, under the globals lock (Bugs07 X-22).
+
+	 1983's copies every Association into a new table and become:s it;
+	 Pharo's, under profiles/pharo-collections, copies them into a new
+	 Dictionary and takes its array.  Either way a declaration made on
+	 another worker after the copy went into the table that was about
+	 to be dropped, and was lost: four workers declaring two hundred
+	 globals each beside four rehashing lost about five hundred of the
+	 eight hundred, and under profiles/pharo-collections the run never
+	 finished.
+	 Inside, both send only Dictionary's own insides and
+	 associationsDo:, a reader, which does not take the lock again in
+	 the process that holds it."
+	LibraryLocks holdingGlobals: [super rehash]
 ]
 
 { #category : '*System' }

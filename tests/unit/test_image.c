@@ -788,8 +788,12 @@
  *
  *  3501 -> 3502 with Bugs07 X-14: Object>>instVarsInclude:, primitive 132
  *  with one argument, which the VM answered and nothing declared.
+ *
+ *  3502 -> 3505 with Bugs07 X-22: SystemDictionary>>rehash,
+ *  removeAssociation:ifAbsent: and lockedRemoveKey:, the last writers to
+ *  Smalltalk put under the globals lock.
  */
-#define LIB_METHODS             3502
+#define LIB_METHODS             3505
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -3347,8 +3351,11 @@ test_browsing(void)
      *
      *  3131538 -> 3132489 with Bugs07 X-14: Object>>instVarsInclude:, on
      *  primitive 132, which the VM answered and nothing declared.
+     *
+     *  3132489 -> 3134954 with Bugs07 X-22: Smalltalk's rehash and
+     *  removeAssociation:ifAbsent: under the globals lock.
      */
-    check_integer("(SourceFiles at: 1) contents size", 3132489);
+    check_integer("(SourceFiles at: 1) contents size", 3134954);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -14297,7 +14304,8 @@ test_bugs7f_gui(void)
 
 /*
  *  Bugs07, round 6: the KERNB group's lows -- Smalltalk's keys (KERNB-8),
- *  its class names (KERNB-9) and lib/Probe's class-side state (KERNB-10).
+ *  its class names (KERNB-9), lib/Probe's class-side state (KERNB-10) and
+ *  Smalltalk's last unlocked writers (X-22).
  *  What needs workers or another profile is in
  *  tests/unit/test_serve_faults.c, bugs7f_kernb.
  */
@@ -14396,6 +14404,37 @@ test_bugs7f_kernb(void)
                  "r add: t total; add: t size. "
                  "^r asArray printString",
                  "(4 true 7 2 5 1 )");
+
+    /*
+     *  X-22: Smalltalk's other writers.  removeAssociation:ifAbsent: was
+     *  Set's remove:ifAbsent:, unlocked, and it dropped the binding where
+     *  removeKey: moves it to Undeclared -- so a method compiled against
+     *  the name went on answering the removed value through a later
+     *  declaration.  Before: (unequal 3 false absent 1 ).  rehash is
+     *  under the lock now, and must not take it twice: its copy goes
+     *  through associationsDo:, a reader.
+     */
+    check_string("| r | r := OrderedCollection new. "
+                 "Smalltalk at: #Bugs7fX22A put: 3. "
+                 "r add: (Smalltalk removeAssociation: #Bugs7fX22A -> 4 ifAbsent: [#unequal]). "
+                 "r add: (Smalltalk removeAssociation: #Bugs7fX22A -> 3 ifAbsent: [#absent]) value. "
+                 "r add: (Smalltalk includesKey: #Bugs7fX22A). "
+                 "r add: (Smalltalk removeAssociation: #Bugs7fX22A -> 3 ifAbsent: [#absent]). "
+                 "Smalltalk at: #Bugs7fX22B put: 1. "
+                 "(Smalltalk at: #Bugs7fKbCnHolder) compile: 'x22b ^Bugs7fX22B' "
+                 "classified: 'probe' notifying: nil. "
+                 "Smalltalk removeAssociation: (Smalltalk associationAt: #Bugs7fX22B). "
+                 "Smalltalk at: #Bugs7fX22B put: 2. "
+                 "r add: (Smalltalk at: #Bugs7fKbCnHolder) new x22b. "
+                 "Smalltalk removeKey: #Bugs7fX22B. "
+                 "^r asArray printString",
+                 "(unequal 3 false absent 2 )");
+    check_string("| n | n := Smalltalk size. Smalltalk rehash. "
+                 "^{Smalltalk size = n. Smalltalk includesKey: #Object. "
+                 "(Smalltalk at: #Bugs7fX22C ifAbsentPut: [5])} printString",
+                 "(true true 5 )");
+    check_integer("Smalltalk removeKey: #Bugs7fX22C. ^Smalltalk size - "
+                  "(Smalltalk keys size)", 0);
 }
 
 static void
