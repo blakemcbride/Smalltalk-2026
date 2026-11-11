@@ -115,11 +115,21 @@ Number class >> readFrom: aStream [
 				or: [(aStream peek digitValue between: 0 and: value - 1) not
 					and: [aStream peek ~= $-]])
 				ifTrue: [aStream skip: -1. ^signed value: value].
-			"A radix from 2 to 36, as the compiler and printString: have
+			"
+			 A radix from 2 to 36, as the compiler and printString: have
 			 it: `'37r10' asNumber' was 37 and `'99rZZ' asNumber' 3500,
-			 numbers the compiler refuses (Bugs6 KERNA-10)."
+			 numbers in radixes that do not exist (Bugs6 KERNA-10).  But a
+			 number that cannot be a radix is not an error either: it is
+			 the number, and the r a letter after it, as above -- so
+			 `'50rpm' asNumber' is 50 and `'100rows' asNumber' 100, as
+			 `'5rpm' asNumber' is 5, and the reader keeps its promise of
+			 the leading number or nil.  It raised, from a method whose
+			 callers write `asNumber ifNil:' (Bugs07 KERNA-9).  `37r10' is
+			 still not a number to the compiler, which is where a syntax
+			 error belongs; here it is 37 followed by text.
+			"
 			(value between: 2 and: 36)
-				ifFalse: [^self error: 'the radix must be from 2 to 36'].
+				ifFalse: [aStream skip: -1. ^signed value: value].
 			radix := value.
 			"16r-0.8: the sign may come after the radix instead."
 			(aStream peekFor: $-) ifTrue: [negative := negative not].

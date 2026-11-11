@@ -3320,8 +3320,11 @@ test_browsing(void)
      *
      *  3122006 -> 3125384 with Bugs07 KERNB-9: classNames keeps no list
      *  computed across a flush, and answers a copy.
+     *
+     *  3125384 -> 3125895 with Bugs07 KERNA-9: a number that cannot be a
+     *  radix is the number, and the r is left.
      */
-    check_integer("(SourceFiles at: 1) contents size", 3125384);
+    check_integer("(SourceFiles at: 1) contents size", 3125895);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -11014,7 +11017,9 @@ test_bugs6_low_vm_kerna(void)
     /*
      *  KERNA-10.  One number grammar: the compiler and the reader agree
      *  on lower-case radix digits, a signed exponent, and a radix that
-     *  is refused.
+     *  is refused -- the compiler refuses `37r10', and the reader, which
+     *  reads the number at the front of its text, reads it as 37 and
+     *  leaves the r, as it does `12abc' (Bugs07 KERNA-9).
      */
     check_string("^{16r1e3. Number readFrom: '16r1e3'. 1e+5. Number readFrom: '1e+5'. "
                  "[Number readFrom: '37r10'] on: Error do: [:e | 'refused']. "
@@ -11023,7 +11028,7 @@ test_bugs6_low_vm_kerna(void)
                  "1e-3 = (Number readFrom: '1e-3'). 16r1F. 36rZZ. '36rzz' asNumber. "
                  "1.5e2. '1.5e2' asNumber. 1e-5 = '1e-5' asNumber. '1e5' asNumber. "
                  "[Compiler evaluate: '37r10'] on: Error do: [:e | 'refused']} printString",
-                 "(483 483 100000.0 100000.0 'refused' 'refused' Float 255 255 "
+                 "(483 483 100000.0 100000.0 37 'refused' Float 255 255 "
                  "8.0 8.0 true 31 1295 1295 150.0 150.0 true 100000.0 'refused' )");
 
     /*  KERNA-11 and KERNA-12.  The NUL character's Symbol; a start of 0.  */
@@ -14104,6 +14109,22 @@ test_bugs7f_kern(void)
                  "  [Float infinity \\\\ 2.0] on: Error do: [:e | #inf]. "
                  "  (3.0 \\\\ Float infinity) isNaN} printString",
                  "(2.0 0.5 2.0 0.2 1 1 1 (1/6) 2.0 0.0 0.0 zd zd inf true )");
+
+    /*
+     *  KERNA-9.  A number followed by a word that starts with r and a
+     *  letter that is a digit of that number as a radix -- `50rpm',
+     *  `100rows' -- committed to radix syntax and then raised `the radix
+     *  must be from 2 to 36', from asNumber, which promises the leading
+     *  number or nil.  A number that cannot be a radix is the number now,
+     *  and the r is left on the stream; 2 to 36 are still radixes.
+     */
+    check_string("| s | s := ReadStream on: '100rows'. "
+                 "^{'5rpm' asNumber. '30rpm' asNumber. '50rpm' asNumber. "
+                 "  '100rows' asNumber. '12abc' asNumber. 'abc' asNumber. "
+                 "  '-50rpm' asNumber. '40red' asNumber. '37r10' asNumber. "
+                 "  Number readFrom: '99rZZ'. Number readFrom: s. s upToEnd. "
+                 "  '36rZZ' asNumber. '16r-ff' asNumber} printString",
+                 "(5 772 50 100 12 nil -50 40 37 99 100 'rows' 1295 -255 )");
 
     test_dialect = ST_DIALECT_BLUE_BOOK;
 }
