@@ -5109,6 +5109,49 @@ bugs7e_net(void)
     bugs7e_net_stop();
 }
 
+/*
+ *  Bugs07 round 5, the file findings that need workers.
+ *
+ *  FILES-8: the streams chapter's own log -- any number of processes,
+ *  each `setToEnd; nextPutAll: line; cr; close' through a stream of its
+ *  own -- must come out with every line whole.  A line that crossed a
+ *  512-byte page boundary went to the file as two appends, the head when
+ *  the page turned and the tail at close, and another worker's line
+ *  landed between them.  Eight workers, forty lines each, of 30 to 730
+ *  bytes so that most cross a boundary somewhere: the old binary tore
+ *  about half of them (227 of 480 in a run of sixty each); one line not
+ *  in the set of lines written, or a line missing, fails.
+ */
+static void
+bugs7e_files(void)
+{
+    const char *log = fixture("bugs7e-files8.log");
+    char        text[2048];
+
+    unlink(log);
+    snprintf(text, sizeof text,
+        "| line sem expected lines torn |\n"
+        "line := [:w :i | 'w', w printString, ' i', i printString, ' ', "
+        "(String new: 20 + (i * 97 \\\\ 700) withAll: (Character value: 96 + w)), "
+        "' end'].\n"
+        "sem := Semaphore new.\n"
+        "1 to: 8 do: [:w | Processor forkParallel: [1 to: 40 do: [:i | | f |\n"
+        "  f := FileStream fileNamed: '%s'.\n"
+        "  f setToEnd; nextPutAll: (line value: w value: i); cr; close].\n"
+        "  sem signal]].\n"
+        "8 timesRepeat: [sem wait].\n"
+        "expected := Set new.\n"
+        "1 to: 8 do: [:w | 1 to: 40 do: [:i | expected add: (line value: w value: i)]].\n"
+        "lines := (FileStream oldFileNamed: '%s') contentsOfEntireFile "
+        "subStrings: (String with: Character cr).\n"
+        "torn := lines reject: [:each | expected includes: each].\n"
+        "^'lines ', lines size printString, ' torn ', torn size printString\n",
+        log, log);
+    bugs7_probe("bugs7e-files8.st", text, 8, "==> 'lines 320 torn 0'",
+                "FILES-8 eight workers' lines across page boundaries arrive whole");
+    unlink(log);
+}
+
 int
 main(void)
 {
@@ -5786,6 +5829,7 @@ main(void)
     bugs7c_om();
     bugs7e_vm();
     bugs7e_net();
+    bugs7e_files();
 
     unlink(IMAGE);
     unlink(BATCH);

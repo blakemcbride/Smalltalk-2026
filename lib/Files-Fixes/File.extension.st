@@ -134,3 +134,13 @@ File >> readOrAdd: aFilePage [
 	filePage size: 0.
 	^filePage
 ]
+
+{ #category : '*Files-Fixes' }
+File >> writeTurning: aFilePage [
+	"Write aFilePage, which a stream is leaving for the page after it.
+
+	 A File that can keep the new bytes of such a page back, to go out
+	 with the rest of the line in one append, does (PosixFile, Bugs07
+	 FILES-8); any other writes the page as it always did."
+	^self write: aFilePage
+]

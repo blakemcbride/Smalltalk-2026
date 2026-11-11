@@ -206,9 +206,38 @@ PosixFile >> write: aPage [
 	 nothing and every page between.  The test is `greater than', not the
 	 contract's `equal to the next': a page further past is not something
 	 readOrAdd: makes, but if one is written the file reaches it all the
-	 same, and lastPageNumber must not claim less than the disk holds."
+	 same, and lastPageNumber must not claim less than the disk holds.
+
+	 The work is write:command:, which writeTurning: shares."
+	^self write: aPage command: 1
+]
+
+{ #category : '*Files-Fixes' }
+PosixFile >> writeTurning: aPage [
+	"Write aPage, which a stream is leaving for the page after it, as
+	 write: does -- except that what it adds at the end of the file is
+	 kept back by the VM and goes out with the next write, in the same
+	 append (Bugs07 FILES-8).
+
+	 The difference is for a line that crosses a page boundary.  Written
+	 page by page, its head reached the file when the page filled and its
+	 tail at close, as two appends, and another stream's line could land
+	 between them: a log written by many processes, each through a stream
+	 of its own as the streams chapter of the manual shows, had one line
+	 in twenty-five to fifty cut in two by somebody else's.  Command 8 of
+	 primitive 130 is command 1 with the new bytes kept (prim.c, fd_held);
+	 the flush or close that ends the line sends them in front of its own,
+	 and so does anything else asked of the file in between.  Only
+	 FileStream>>read: sends this, and only for the next page."
+	^self write: aPage command: 8
+]
+
+{ #category : '*Files-Fixes' }
+PosixFile >> write: aPage command: anInteger [
+	"write: and writeTurning:, which differ only in the command they send
+	 primitive 130 (Bugs07 FILES-8).  See write: for the rest."
 	| returnPage |
-	self doCommand: 1 name: nil page: aPage error: 'write:'.
+	self doCommand: anInteger name: nil page: aPage error: 'write:'.
 	(aPage size > 0 and: [aPage pageNumber > lastPageNumber])
 		ifTrue: [lastPageNumber := aPage pageNumber].
 	returnPage := aPage.

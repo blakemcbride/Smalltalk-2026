@@ -736,8 +736,12 @@
  *  3449 -> 3456 with Bugs07 NET-10: RestConnectionPool>>isClosed,
  *  lentCount, putBack:, close:, closedMark and refuseClosed, and
  *  RestServer class>>stopWaitMilliseconds.
+ *  3456 -> 3461 with Bugs07 FILES-8: FileStream>>read:, which turns to the
+ *  next page with FilePage>>writeTurning, File>>writeTurning:, and
+ *  PosixFile>>writeTurning: and write:command:, so that a line written
+ *  across a page boundary reaches the file as one append.
  */
-#define LIB_METHODS             3456
+#define LIB_METHODS             3461
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -3220,8 +3224,11 @@ test_browsing(void)
      *  3073720 -> 3079383 with Bugs07 NET-10: a closed pool closes what
      *  comes back to it and refuses what is asked of it, and RestServer
      *  stop lets the requests in flight finish first.
+     *
+     *  3079383 -> 3083313 with Bugs07 FILES-8: a page a stream turns at the
+     *  end of its file is kept back to go out with the rest of the line.
      */
-    check_integer("(SourceFiles at: 1) contents size", 3079383);
+    check_integer("(SourceFiles at: 1) contents size", 3083313);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.

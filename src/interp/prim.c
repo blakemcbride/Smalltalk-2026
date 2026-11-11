@@ -2538,8 +2538,9 @@ static st_atomic_i64    fd_owner[POSIX_MAX_FD];
  *  puts the stream back into the file's coordinates and clears it.  What
  *  this guarantees, and what it does not, is written down in the manual's
  *  streams chapter: appends through setToEnd are safe between any number
- *  of writers, each flush or close of a page arriving whole; editing one
- *  file in place through two streams is not.
+ *  of writers, each flush or close arriving whole with the pages turned
+ *  before it (fd_held, Bugs07 FILES-8); editing one file in place through
+ *  two streams is not.
  *
  *  Atomic for the reason fd_is_ours is: the number comes back, and the
  *  worker that reset these for a new open is not the worker that last
@@ -2568,6 +2569,206 @@ static st_atomic_int    fd_relocated_bytes[POSIX_MAX_FD];
  *  reason fd_is_ours is.
  */
 static st_atomic_int    fd_read_only[POSIX_MAX_FD];
+
+/*
+ *  New bytes a stream has turned a page on, kept back to go out with the
+ *  rest of what it is writing in ONE append (Bugs07 FILES-8).
+ *
+ *  An append is atomic only as one write.  The chapter on streams shows
+ *  any number of processes logging to one file through streams of their
+ *  own -- `log setToEnd; nextPutAll: line; cr; close' -- and each page a
+ *  stream writes past the end went to the kernel's end as one O_APPEND
+ *  write, which kept every such page whole.  But a line is not a page.  A
+ *  line that crosses a 512-byte boundary of its stream's last page went
+ *  out as TWO writes: the head when nextPutAll: filled the page and turned
+ *  it, the tail at close.  Another worker's whole line landed between
+ *  them, so one line in twenty-five to fifty of a busy server's log was
+ *  cut in two by somebody else's -- eight workers writing sixty lines each
+ *  tore nineteen of the four hundred and eighty -- and the head was parted
+ *  from its own carriage return, so grep and every log shipper saw two
+ *  broken lines.  Nothing was lost; the bytes were interleaved.
+ *
+ *  So a page the stream is TURNING -- FileStream>>read: leaving a page for
+ *  the one after it, which is what nextPutAll: and nextPut: do when a page
+ *  fills, and is command 8 below rather than 1 -- does not send its new
+ *  bytes.  They are kept here, and the next write through the descriptor
+ *  that is not another such turn (the flush or close that ends the line,
+ *  or a page put back somewhere else) sends them in front of its own new
+ *  bytes, all in one append.  Any other command on the descriptor -- a
+ *  read, a size, a truncate, a close -- sends them first, so nothing this
+ *  stream asks of the file afterwards sees the file without them, and so
+ *  do the end of the process (posix_release_all_held, by atexit) and a
+ *  snapshot (FileStream>>release flushes).  What changes for a writer is
+ *  only WHEN a turned page reaches the disk: at the flush or close, which
+ *  is what the manual already promises, not a page at a time before it.
+ *
+ *  At most POSIX_HELD_MAX bytes are kept for a descriptor: a turn that
+ *  would keep more sends them all at once, there and then.  A stream
+ *  writing a large file therefore writes it in 64K appends rather than
+ *  512-byte ones, and a line longer than 64K is the only one that can
+ *  still be parted from its neighbours -- it was never one write anyway.
+ *
+ *  Each slot is owned by whoever has taken it out with an exchange: the
+ *  worker running the stream while it adds to the bytes or sends them,
+ *  or the exit handler.  A stream is used by one process at a time (the
+ *  manual says to share one only under a lock), so the exchange is there
+ *  for the exit handler and for the reason fd_is_ours is atomic: the
+ *  number comes back, to a stream on another worker.  `page' and
+ *  `at_offset' say which page the last kept bytes belong to and how many
+ *  of that page's bytes are at its own offset, for fd_relocated when the
+ *  kept bytes land somewhere other than where the stream thinks.
+ */
+#define POSIX_HELD_MAX  (64 * 1024)
+
+typedef struct {
+    uint32_t    len;
+    uint32_t    room;
+    int         page;
+    int         at_offset;
+    char        bytes[];
+} posix_held_bytes;
+
+static st_atomic_ptr    fd_held[POSIX_MAX_FD];
+static st_atomic_int    held_exit_handler;
+
+static void posix_release_all_held(void);
+
+/*  The bytes kept for fd, taken out of the table; NULL when there are none.  */
+static posix_held_bytes *
+posix_take_held(int fd)
+{
+    if (ST_load_relaxed(&fd_held[fd]) == 0)
+        return NULL;
+    return (posix_held_bytes *) ST_exchange_acq_rel(&fd_held[fd],
+                                                    (uintptr_t) 0);
+}
+
+/*  How many bytes are kept for fd.  Only the stream's own worker asks.  */
+static uint32_t
+posix_held_length(int fd)
+{
+    posix_held_bytes   *held = (posix_held_bytes *)
+                               ST_load_acquire(&fd_held[fd]);
+
+    return held ? held->len : 0;
+}
+
+/*
+ *  Keep count more bytes for fd, after what is kept already, as bytes of
+ *  page `page' of which at_offset are at the page's own offset.  0, or -1
+ *  when there is no memory for them (nothing is lost: what was kept stays
+ *  kept, and the caller writes these itself).
+ */
+static int
+posix_hold(int fd, const char *bytes, uint32_t count, int page, int at_offset)
+{
+    posix_held_bytes   *held = posix_take_held(fd);
+    uint32_t            len  = held ? held->len : 0;
+
+    if (held == NULL || held->room - len < count) {
+        uint32_t            room = held ? held->room : 0;
+        posix_held_bytes   *grown;
+
+        while (room < len + count)
+            room = room ? room * 2 : 4 * POSIX_PAGE_SIZE;
+        grown = (posix_held_bytes *) realloc(held, sizeof *held + room);
+        if (grown == NULL) {
+            if (held != NULL)
+                ST_store_release(&fd_held[fd], (uintptr_t) held);
+            return -1;
+        }
+        held = grown;
+        held->len  = len;
+        held->room = room;
+    }
+    memcpy(held->bytes + len, bytes, count);
+    held->len       = len + count;
+    held->page      = page;
+    held->at_offset = at_offset;
+    ST_store_release(&fd_held[fd], (uintptr_t) held);
+    {
+        int     expected = 0;
+
+        if (ST_load_relaxed(&held_exit_handler) == 0
+         && ST_cas_strong(&held_exit_handler, &expected, 1))
+            atexit(posix_release_all_held);
+    }
+    return 0;
+}
+
+/*
+ *  Send fd's kept bytes to the kernel's end in one write.  Answers where
+ *  they end, as st_file_append does; 0 when nothing was kept; -1 with
+ *  errno when the write failed, the bytes being dropped then -- a write
+ *  that failed is reported once, by the command that sent it, and not
+ *  again by every command after.  `page' and `at_offset', when given, are
+ *  set to what posix_hold was told with the last of the bytes.
+ */
+static int64_t
+posix_release_held(int fd, int *page, int *at_offset)
+{
+    posix_held_bytes   *held = posix_take_held(fd);
+    int64_t             landing;
+    int                 saved;
+
+    if (held == NULL)
+        return 0;
+    if (held->len == 0) {
+        free(held);
+        return 0;
+    }
+    landing = st_file_append(fd, held->bytes, held->len);
+    saved = errno;
+    if (page != NULL)
+        *page = held->page;
+    if (at_offset != NULL)
+        *at_offset = held->at_offset;
+    free(held);
+    errno = saved;
+    return landing;
+}
+
+/*
+ *  Send fd's kept bytes before a command that is not a write of the
+ *  stream's (Bugs07 FILES-8), and say so to fd_relocated if they landed
+ *  past where the stream believes its file ends, exactly as the write
+ *  that kept them would have.  0, or -1 with posix_errno.
+ */
+static int
+posix_settle_held(int fd)
+{
+    int64_t     believed = ST_load_relaxed(&fd_believed[fd]);
+    int         page = 0;
+    int         at_offset = 0;
+    int64_t     landing = posix_release_held(fd, &page, &at_offset);
+
+    if (landing < 0) {
+        posix_errno = errno;
+        return -1;
+    }
+    if (landing > 0 && landing != believed
+     && !ST_load_relaxed(&fd_relocated[fd])) {
+        ST_store_relaxed(&fd_relocated[fd], 1);
+        ST_store_relaxed(&fd_relocated_bytes[fd],
+                         ST_load_relaxed(&fd_page[fd]) == page ? at_offset : 0);
+    }
+    return 0;
+}
+
+/*
+ *  At the end of the process, whatever is still kept goes out: a stream
+ *  that was never closed has lost only its last page, as it always did,
+ *  and not every page it turned.  Registered by the first posix_hold.
+ */
+static void
+posix_release_all_held(void)
+{
+    int     fd;
+
+    for (fd = 0; fd < POSIX_MAX_FD; ++fd)
+        if (ST_load_relaxed(&fd_held[fd]) != 0)
+            (void) posix_release_held(fd, NULL, NULL);
+}
 
 /*  A Smalltalk String from C, and the reverse.  */
 static st_oop
@@ -2701,6 +2902,12 @@ posix_own(int fd, st_oop file)
     ST_store_relaxed(&fd_believed[fd], size < 0 ? 0 : size);
     ST_store_relaxed(&fd_relocated[fd], 0);
     ST_store_relaxed(&fd_relocated_bytes[fd], 0);
+    /*
+     *  Nothing kept from a descriptor of this number that went without a
+     *  close of ours -- every close of ours sends what was kept (Bugs07
+     *  FILES-8) -- belongs to this file, and none is written to it.
+     */
+    free(posix_take_held(fd));
     ST_store_relaxed(&fd_is_ours[fd], 1);
     ST_store_relaxed(&fd_read_only[fd], 0);     /*  a fresh open: not yet  */
     return fd;
@@ -2808,6 +3015,10 @@ posix_fd_for(st_oop file, int for_writing)
  *  the Smalltalk epoch so that it compares with what primitive 98 answers.
  *  A server that loads a service from a Tonel file on first use reloads it
  *  when the file changes, and "has it changed" is this number.
+ *
+ *  8 is this system's too: 1's write, of a page the stream is turning for
+ *  the page after it, whose new bytes at the end of the file are kept to
+ *  go out with the next write in one append (fd_held, Bugs07 FILES-8).
  */
 static int
 primitive_file_command(void)
@@ -2823,9 +3034,31 @@ primitive_file_command(void)
     if (!OM_is_int(cmd))
         return 0;
     command = (long) OM_int_value(cmd);
-    fd = (command == 1 || command == 2) ? posix_fd_for(file, 1)
+    fd = (command == 1 || command == 2 || command == 8) ? posix_fd_for(file, 1)
        : (command == 0 || command == 3 || command == 6) ? posix_fd_for(file, 0)
        : posix_fd_of(file);
+    /*
+     *  Bytes a page turn kept back go to the file before anything else is
+     *  done with it (Bugs07 FILES-8): a read, a size or a truncate must
+     *  see them, and a close must not leave them behind.  The writes, 1
+     *  and 8, send them themselves, with their own new bytes.  A failure
+     *  is reported by the command it fell to: a read fails the primitive,
+     *  which is how read: raises with errno; the others answer false,
+     *  except close, which closes all the same.
+     */
+    if (fd >= 0 && command != 1 && command != 8 && command != 7
+     && posix_settle_held(fd) != 0) {
+        if (command == 0)
+            return 0;
+        if (command == 5) {
+            st_file_close(fd);
+            posix_disown(fd);
+            posix_forget(file);
+        }
+        ST_pop_n(4);
+        ST_push(ST_FALSE);
+        return 1;
+    }
 
     switch (command) {
     case 4: {                                   /*  open  */
@@ -3020,7 +3253,8 @@ primitive_file_command(void)
         answer = ST_TRUE;
         break;
     }
-    case 1: {                                   /*  write a page  */
+    case 1:                                     /*  write a page  */
+    case 8: {                                   /*  ... and turn it  */
         st_oop      buffer;
         st_oop      number;
         st_oop      count;
@@ -3100,13 +3334,40 @@ primitive_file_command(void)
                  *  the stream's view of the file is still the file's.
                  */
                 int64_t     landing;
+                uint32_t    fresh = len - known;
 
                 if (at_offset > 0
                  && st_file_pwrite(fd, bytes, at_offset, offset)
                     != (int64_t) at_offset)
                     failed = 1;
+                /*
+                 *  And the new bytes go after whatever earlier pages
+                 *  kept back, in the same write -- or, for a page being
+                 *  turned, are kept back with them (fd_held, Bugs07
+                 *  FILES-8), so that a line written across a page
+                 *  boundary reaches the file as one append at its flush
+                 *  or close.  Kept, the bytes are counted as written: the
+                 *  stream's believed end moves past them, and the next
+                 *  page is the next append.  Where they land is settled
+                 *  when they are sent, against the same `end'.  With no
+                 *  memory to keep them, what was kept goes first and
+                 *  these after it, as two writes, which is no worse than
+                 *  before.
+                 */
                 if (!failed) {
-                    landing = st_file_append(fd, bytes + known, len - known);
+                    int     turning = command == 8
+                                   && posix_held_length(fd) + fresh
+                                      <= POSIX_HELD_MAX;
+
+                    if (posix_hold(fd, bytes + known, fresh, (int) n,
+                                   (int) at_offset) == 0)
+                        landing = turning ? end
+                                          : posix_release_held(fd, NULL, NULL);
+                    else {
+                        landing = posix_release_held(fd, NULL, NULL);
+                        if (landing >= 0)
+                            landing = st_file_append(fd, bytes + known, fresh);
+                    }
                     if (landing < 0)
                         failed = 1;
                     else {
@@ -3156,6 +3417,19 @@ primitive_file_command(void)
                 uint32_t    count = relocated && len > at_offset ? at_offset
                                                                  : len;
 
+                /*
+                 *  Anything a turn kept back is sent first (Bugs07
+                 *  FILES-8): it was written before this page, and the
+                 *  page may be one it covers.
+                 */
+                if (posix_settle_held(fd) != 0) {
+                    answer = ST_FALSE;
+                    break;
+                }
+                relocated = ST_load_relaxed(&fd_relocated[fd]);
+                if (relocated && same_page)
+                    at_offset = (uint32_t) ST_load_relaxed(&fd_relocated_bytes[fd]);
+                count = relocated && len > at_offset ? at_offset : len;
                 if (count > 0
                  && st_file_pwrite(fd, bytes, count, offset) != (int64_t) count)
                     failed = 1;

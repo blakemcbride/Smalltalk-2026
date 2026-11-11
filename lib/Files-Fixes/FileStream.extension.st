@@ -198,6 +198,62 @@ FileStream >> setToEnd [
 ]
 
 { #category : '*Files-Fixes' }
+FileStream >> read: pageNumber [
+	"Go to page pageNumber of my file, writing the page I am on first if I
+	 may write; answer me, or nil if there is no such page.
+
+	 1983's own method, with one change: the page I am leaving for the
+	 NEXT one is written with writeTurning rather than write (Bugs07
+	 FILES-8).  That is the page turn nextPutAll: and nextPut: make when a
+	 page fills, and its new bytes at the end of the file are kept back to
+	 go out with the next write -- the flush or close that ends what I am
+	 writing -- as ONE append.  Written with write, a line that crossed a
+	 page boundary reached the file as two appends, the head here and the
+	 tail at close, and another stream's line could land between them: the
+	 manual's own log-file example, eight workers each appending sixty
+	 lines through streams of their own, came out with nineteen of its four
+	 hundred and eighty lines cut in two.  Every other page I leave --
+	 going back, or further on -- is written as before; what comes next
+	 there is a read or a page put back in place, and the bytes would be
+	 sent at once anyway."
+	| p |
+	pageNumber < 1 ifTrue: [^nil].
+	closed ifTrue: [
+		"reopen the file, (re)read the page"
+		page reopen.
+		(p := page readPageNumber: pageNumber) isNil
+			ifTrue: [^nil]
+			ifFalse: [^self on: p]].
+	(pageNumber = page pageNumber
+	 and: [page size > 0 or: [position > page dataBeginning]]) ifTrue: [
+		self fixEnd.
+		position := page dataBeginning.
+		^self].
+	"current page has wrong page number or is empty (possibly from error)"
+	self writing
+		ifTrue: [
+			((pageNumber > page pageNumber and: [page isFull == false])
+				ifTrue: [
+					"fill up last page when positioning past it"
+					position := page dataMaxEnd.
+					true]
+				ifFalse: ["otherwise, fixEnd"
+					position > page dataEnd])
+				ifTrue: [page dataEnd: (readLimit := position)].
+			"write current page"
+			page fromFileStream: self.
+			p := pageNumber = (page pageNumber + 1)
+				ifTrue: [page writeTurning]
+				ifFalse: [page write].
+			p pageNumber = pageNumber ifFalse: [
+				"read it or create it"
+				p := page readOrAddPageNumber: pageNumber]]
+		ifFalse: [p := page readPageNumber: pageNumber].
+	p isNil ifTrue: [^nil].
+	(page := p) asFileStream: self
+]
+
+{ #category : '*Files-Fixes' }
 FileStream >> release [
 	"Let go of my file without closing it -- what a snapshot sends to every
 	 open stream, so that the image on the disk holds no open file -- having

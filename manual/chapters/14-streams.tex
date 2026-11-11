@@ -160,9 +160,12 @@ the same thing, and Chapter~\ref{ch:tools} covers it.
 Two streams on one file are two views of it, and the one thing they agree
 about is the end. \ct{setToEnd} goes to the end of the file as it is on disk
 at that moment, not as the stream last saw it, and what is written after it
-is appended at the end the file has when the page is flushed or
+is appended at the end the file has when the stream is flushed or
 closed---after whatever other writers have added in the meantime, never on
-top of it, and in one piece unless it crosses a page boundary. \ct{close}
+top of it, and in one piece. A stream keeps what it adds at the end of a
+file until the flush or close, so everything written between the
+\ct{setToEnd} and the \ct{close} reaches the file as one append however
+many pages it covers, up to 64 kilobytes at a time. \ct{close}
 shortens a file only when it is still the length the stream believes it is;
 a file another writer has appended to is left whole. That is enough for any
 number of processes to append lines to one log file through streams of their

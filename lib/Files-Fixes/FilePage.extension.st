@@ -54,3 +54,10 @@ FilePage >> asFileStream: aStream [
 	destData replaceFrom: 1 to: len withByteArray: sourceData startingAt: offset + 1.
 	^aStream on: destData from: 1 to: len
 ]
+
+{ #category : '*Files-Fixes' }
+FilePage >> writeTurning [
+	"Write me, as write does, for a stream that is leaving me for the page
+	 after me (File>>writeTurning:, Bugs07 FILES-8)."
+	^file writeTurning: self
+]
