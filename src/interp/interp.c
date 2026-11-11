@@ -446,11 +446,53 @@ next_byte(void)
 static st_oop
 literal_at(uint32_t index)
 {
+    st_oop  lit;
+
     if (index >= st_vm.literal_limit) {
         corrupt_method("a literal index past the method's literal frame");
         return ST_OOP_INVALID;
     }
-    return OM_fetch_pointer(ST_METHOD_LITERAL_START + index, st_vm.method);
+    lit = OM_fetch_pointer(ST_METHOD_LITERAL_START + index, st_vm.method);
+    /*
+     *  A word of zeros is ST_OOP_INVALID itself, which every caller reads
+     *  as `already abandoned' -- so it was skipped, with the activation
+     *  still running: a push that pushed nothing, a send that was never
+     *  made, and the bytecodes after it on a stack one short.  A method
+     *  made by `CompiledMethod new: n' has a frame of zeros, and so does
+     *  one whose frame was written as bytes (Bugs07 X-10).  Abandoned here,
+     *  so the callers' reading is true.  One comparison with zero.
+     */
+    if (lit == ST_OOP_INVALID)
+        corrupt_method("a literal frame word of zeros, which is no object");
+    return lit;
+}
+
+/*
+ *  A literal a bytecode PUSHES: 32-63, and 128's literal-constant kind.
+ *
+ *  Bugs07 X-10.  The bytecodes that dereference a literal check it
+ *  (literal_field_ok, selector_literal_at) and these pushed whatever word
+ *  the frame held.  The frame is the front of a byte object, so at:put:,
+ *  String at:put: and replaceFrom:to:with:startingAt: write it as bytes
+ *  like the rest of the method -- they cannot refuse to, because 1983's
+ *  shallowCopy of a method copies it a byte at a time through a frame
+ *  that is no object until the last byte of each word is in -- and a word
+ *  left that way was pushed as an oop and dereferenced by the next thing
+ *  to touch it: `aMethod at: 9 put: 254' a few times, run the method, and
+ *  the VM died with SIGSEGV.  A SmallInteger or a live object is pushed;
+ *  anything else abandons the activation as a CorruptMethod, the same way
+ *  a bad index is.  A SmallInteger costs the tag test; an object costs
+ *  OM_is_object, which every send already pays for its selector.
+ */
+static st_oop
+constant_literal_at(uint32_t index)
+{
+    st_oop  lit = literal_at(index);
+
+    if (lit == ST_OOP_INVALID || OM_is_int(lit) || OM_is_object(lit))
+        return lit;
+    corrupt_method("a literal constant that is not an object");
+    return ST_OOP_INVALID;
 }
 
 /*
@@ -3654,7 +3696,7 @@ ST_interp_run(uint64_t limit)
         case 46: case 47: case 48: case 49: case 50: case 51: case 52:
         case 53: case 54: case 55: case 56: case 57: case 58: case 59:
         case 60: case 61: case 62: case 63: {
-            st_oop  lit = literal_at(code - 32);
+            st_oop  lit = constant_literal_at(code - 32);
 
             if (lit != ST_OOP_INVALID)
                 ST_push(lit);
@@ -3732,7 +3774,8 @@ ST_interp_run(uint64_t limit)
                     ST_push(OM_fetch_pointer(ST_CTX_TEMP_FRAME_START + index,
                                              st_vm.home_context));
             } else {
-                st_oop  lit = literal_at(index);
+                st_oop  lit = kind == 2 ? constant_literal_at(index)
+                                        : literal_at(index);
 
                 if (lit == ST_OOP_INVALID)
                     break;

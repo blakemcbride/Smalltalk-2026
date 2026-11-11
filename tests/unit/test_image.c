@@ -14877,6 +14877,40 @@ test_bugs7f_vm(void)
                       "X-11 a deep class initializer has the room it needs");
     }
 
+    /*
+     *  X-10.  A method's literal frame written as bytes -- at:put: and
+     *  replaceFrom:to:with:startingAt: reach it like the rest of the
+     *  method -- held a word that is no object, and the push-literal
+     *  bytecodes pushed it: running the method was SIGSEGV.  It is
+     *  abandoned as a CorruptMethod now, which the caller can catch.  A
+     *  word of zeros was read as `already abandoned' and skipped, the
+     *  activation running on a stack one short; it is abandoned too.
+     */
+    snprintf(command, sizeof command,
+             "\"$ST2026\" -bootstrap -profile profiles/st2026.profile -eval"
+             " \"| m | Object compile: 'zzX10 ^#(1 2 3)' classified: 'zz'."
+             " m := Object compiledMethodAt: #zzX10."
+             " m replaceFrom: 9 to: 16 with: #[254 254 254 254 254 254 0 0]"
+             " startingAt: 1."
+             " {[nil zzX10] on: CorruptMethod do: [:e | #caught]. #after}\"");
+    bugs7f_shell(dir, command, text, sizeof text);
+    bugs7f_expect(text, "a literal constant that is not an object",
+                  "X-10 a frame word that is no object is not pushed");
+    bugs7f_expect(text, "\n(caught after )\n",
+                  "X-10 the corrupt method is a CorruptMethod");
+    bugs7f_expect(text, "rc=0", "X-10 and the run goes on");
+    snprintf(command, sizeof command,
+             "\"$ST2026\" -bootstrap -profile profiles/st2026.profile -eval"
+             " \"| m | Object compile: 'zzX10 ^#(1 2 3)' classified: 'zz'."
+             " m := Object compiledMethodAt: #zzX10."
+             " 9 to: 16 do: [:i | m at: i put: 0]."
+             " {[nil zzX10] on: CorruptMethod do: [:e | #caught]. #after}\"");
+    bugs7f_shell(dir, command, text, sizeof text);
+    bugs7f_expect(text, "a literal frame word of zeros",
+                  "X-10 a frame word of zeros abandons the method");
+    bugs7f_expect(text, "\n(caught after )\n",
+                  "X-10 a frame of zeros is a CorruptMethod");
+
     snprintf(command, sizeof command, "rm -rf %s", dir);
     (void) system(command);
 }
