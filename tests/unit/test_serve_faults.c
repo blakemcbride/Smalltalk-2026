@@ -5930,6 +5930,13 @@ bugs7f_sched(void)
      *  second later the room is given back, and the Delay must come due
      *  within five.  The old image reported the timing process's
      *  OutOfMemory and answered (false true ).
+     *
+     *  The second Delay is made only once the runaway has unwound: the
+     *  first can come due on the room the probe gave back while the
+     *  runaway still holds the rest -- its handler runs above the add:
+     *  that was refused, whose frame holds the collection until the
+     *  handler returns -- and a process forked then is told OutOfMemory
+     *  itself, rightly.  Under load that answered (true false ).
      */
     {
         static char out[65536];
@@ -5939,8 +5946,8 @@ bugs7f_sched(void)
         int         status;
 
         if (write_file(probe,
-                "| t told hold d1 d2 dl ts k r1 |\n"
-                "told := Semaphore new. hold := Semaphore new.\n"
+                "| t told hold gone d1 d2 dl ts k r1 |\n"
+                "told := Semaphore new. hold := Semaphore new. gone := false.\n"
                 "ts := Delay classPool at: #TimingSemaphore.\n"
                 "d1 := false. d2 := false.\n"
                 "dl := Delay forMilliseconds: 100.\n"
@@ -5950,7 +5957,7 @@ bugs7f_sched(void)
                 "k := OrderedCollection new: 200000.\n"
                 "[ | a | a := OrderedCollection new: 1100000.\n"
                 "  [[a add: (Array new: 1)] repeat] on: OutOfMemory do: "
-                "[:e | told signal. hold wait. a := nil]] fork.\n"
+                "[:e | told signal. hold wait. a := nil]. gone := true] fork.\n"
                 "told wait.\n"
                 "[[k add: (Array new: 1)] repeat] on: OutOfMemory do: "
                 "[:e | e return: nil].\n"
@@ -5965,6 +5972,9 @@ bugs7f_sched(void)
                 "[d1 or: [Time millisecondClockValue - t > 5000]] "
                 "whileFalse: [Processor yield].\n"
                 "r1 := d1.\n"
+                "t := Time millisecondClockValue.\n"
+                "[gone or: [Time millisecondClockValue - t > 5000]] "
+                "whileFalse: [Processor yield].\n"
                 "[(Delay forMilliseconds: 10) wait. d2 := true] fork.\n"
                 "t := Time millisecondClockValue.\n"
                 "[d2 or: [Time millisecondClockValue - t > 2000]] "
