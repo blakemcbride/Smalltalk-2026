@@ -578,7 +578,9 @@ the shape of each is the argument for it:
   the hot path -- until the stopper releases it with primitive 235, which
   resumes it first when that is wanted: `resume` from anyone else is
   refused meanwhile, and a second stopper's `primDetach:` answers 6 and
-  retries (Bugs6 SCHED-7). The hold is taken first, before the process is
+  retries -- by a one-millisecond Delay, not a yield, since the holder
+  may be of a lower priority on the same worker (Bugs6 SCHED-7, Bugs07
+  X-5). The hold is taken first, before the process is
   named, so a stopper that finds it held leaves no trace; a full table
   answers 6 too; and each entry counts the process it holds and its
   holder, and is visited by the root walk. Only the holder lets go
@@ -593,7 +595,10 @@ the shape of each is the argument for it:
   done with its answer run in `Process>>detach:thenDo:`, whose frame,
   once past the primitive, a `terminate` or `signalException:` of the
   stopper lets finish first, as it lets an unwind block finish -- and
-  `terminate` waits for it. Before the primitive the stopper holds
+  `terminate` waits for it. A `suspend` of the stopper waits for the
+  stop to end too, and suspends it outside (Bugs07 X-5): suspended
+  inside, it kept its victim held for as long as it slept. Before the
+  primitive the stopper holds
   nothing and is stopped like any other process: two processes
   terminating each other must not both be let go on to do it. A stopper used to
   release in an `ensure:` entered several bytecodes after the detach, and

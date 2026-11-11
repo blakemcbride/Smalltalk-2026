@@ -130,10 +130,21 @@ Process >> stopTakingFromSemaphore: takeFromSemaphore thenDo: aBlock [
 	 terminated, or handed an exception it survives -- comes back round
 	 the loop, and it still owes the stop it was asked for.  The yield
 	 and the asking again are outside detach:thenDo:, so that a stopper
-	 waiting for another stopper to let me go can itself be stopped."
+	 waiting for another stopper to let me go can itself be stopped.
+
+	 Held by another stopper (6), the sender waits a millisecond on a
+	 Delay rather than yielding (Bugs07 X-5): a yield runs only processes
+	 of the sender's own priority, and the holder may be of a lower one
+	 on the same worker -- a high-priority watchdog terminating a process
+	 that a lower one was in the middle of stopping went round this loop
+	 for ever on one worker, and the holder it was waiting for never ran
+	 again to let go.  The same reason waitUntilTerminated gives."
 	| where |
 	[where := self detach: takeFromSemaphore thenDo: aBlock.
-	 where = 5 or: [where = 6]] whileTrue: [Processor yield].
+	 where = 5 or: [where = 6]] whileTrue: [
+		where = 6
+			ifTrue: [(Delay forMilliseconds: 1) wait]
+			ifFalse: [Processor yield]].
 	^where
 ]
 
@@ -167,10 +178,10 @@ Process >> detach: takeFromSemaphore thenDo: aBlock [
 	 holds nothing and is stopped like any other: let finish from there,
 	 a stopper stopped by its own victim went on to stop that victim
 	 while the victim waited for it to end, and both died.  If aBlock
-	 fails, undoStop: puts me back as the stop found me.  A suspend is not
-	 put off: a stopper suspended in here keeps me held until it is
-	 resumed, as it would keep a lock.  aBlock must not leave by ^, which
-	 would skip the frame a deferred stop puts under this one."
+	 fails, undoStop: puts me back as the stop found me.  A suspend of
+	 the process running this waits for it to finish too (see suspend).
+	 aBlock must not leave by ^, which would skip the frame a deferred
+	 stop puts under this one."
 	| where resumeIt |
 	where := self primDetach: takeFromSemaphore.
 	(where = 4 or: [where = 5 or: [where = 6]]) ifTrue: [^where].
@@ -645,12 +656,45 @@ Process >> suspend [
 	 active'.  A process waiting on a Semaphore is still refused, as it
 	 was: taken out of its wait and resumed, it would go on past the wait
 	 as though the signal had come.  Stopped and held, it is let go
-	 without being resumed, and stays parked for a resume."
+	 without being resumed, and stays parked for a resume.
+
+	 Except in the middle of a stop of its own (Bugs07 X-5).  A process
+	 inside detach:thenDo: holds the process it stopped, and suspended
+	 there it went on holding it until somebody resumed it -- which might
+	 be never: resume refused the victim, and every terminate of it
+	 yielded and asked again for as long as the stopper slept.  A
+	 terminate of a stopper lets the stop finish first (Bugs07 SCHED-1);
+	 so does this.  Found inside one -- running, or ready -- it is put
+	 back to work and asked again a millisecond later, by a Delay since
+	 it may be of a lower priority on the same worker, until it is
+	 caught outside the stop; a stop is a few bytecodes long.  One found
+	 already suspended in there, by itself, is left as it is."
 	<primitive: 88>
+	| where stopping |
 	Processor activeProcess == self ifTrue: [^self primitiveFailed].
-	(self stopTakingFromSemaphore: false thenDo: [:where | false]) = 4 ifTrue: [
+	[stopping := false.
+	 where := self stopTakingFromSemaphore: false thenDo: [:at |
+		stopping := (at = 1 or: [at = 2]) and: [self isStoppingAnother].
+		stopping].
+	 stopping] whileTrue: [(Delay forMilliseconds: 1) wait].
+	where = 4 ifTrue: [
 		^self error: 'This process is waiting on a Semaphore and cannot be suspended'].
 	^self
+]
+
+{ #category : '*Concurrency' }
+Process >> isStoppingAnother [
+	"Whether I was stopped in the middle of stopping another process:
+	 a frame of detach:thenDo: past its first send -- the primitive -- is
+	 on my stack, and I hold the process it stopped.  Asked of a process
+	 that is stopped and held, whose suspendedContext is where it stands."
+	| detaching ctx |
+	detaching := Process compiledMethodAt: #detach:thenDo:.
+	ctx := suspendedContext.
+	[ctx isNil] whileFalse: [
+		(ctx method == detaching and: [ctx isPastFirstSend]) ifTrue: [^true].
+		ctx := ctx sender].
+	^false
 ]
 
 { #category : '*Concurrency' }

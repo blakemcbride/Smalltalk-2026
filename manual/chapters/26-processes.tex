@@ -91,8 +91,8 @@ running on another worker, in which case that worker parks it at its next
 bytecode and the sender waits for that before going on. Two processes that
 stop each other at the same moment do not wait for each other: one gives way
 and is stopped, and the other goes on. A process stopped while it is itself
-stopping another finishes that stop first, and \ct{terminate} waits for it to
-end. \ct{terminate} runs
+stopping another finishes that stop first: \ct{terminate} waits for it to
+end, and \ct{suspend} for the stop to be over. \ct{terminate} runs
 every \ct{ensure:} block the process is inside, innermost first, on the
 process that sends \ct{terminate}---so a process terminated inside
 \ct{aMutex critical:} releases the mutex on its way out---and leaves

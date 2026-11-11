@@ -5662,6 +5662,77 @@ bugs7f_files(void)
         "FILES-12 a write the limit cuts short says File too large");
 }
 
+/*
+ *  Bugs07 round 6, the scheduler's.
+ */
+static void
+bugs7f_sched(void)
+{
+    /*
+     *  X-5: a stopper SUSPENDED in the middle of its stop -- inside
+     *  detach:thenDo:, holding the process it stopped -- went on holding
+     *  it until somebody resumed it: resume refused the victim and every
+     *  terminate of it yielded and asked again for as long as the stopper
+     *  slept.  A suspend now lets the stop finish first, as a terminate
+     *  does, and catches the stopper outside it.  One worker: a stopper
+     *  whose stop takes fifty milliseconds is suspended ten into it; the
+     *  suspend must leave it suspended (its counter still), and a
+     *  terminate of its victim must then finish.  The old image:
+     *  (false false true true ).
+     */
+    bugs7_probe("bugs7f-x5-suspend.st",
+        "| v s t done fin r n1 n2 count |\n"
+        "fin := Semaphore new. count := 0.\n"
+        "[v := [[true] whileTrue: [Processor yield]] forkAt: 4.\n"
+        " s := [v stopTakingFromSemaphore: true thenDo: [:where | | end |\n"
+        "\tend := Time millisecondClockValue + 50.\n"
+        "\t[Time millisecondClockValue < end] whileTrue: [Processor yield].\n"
+        "\ttrue].\n"
+        "\t[true] whileTrue: [count := count + 1. Processor yield]] "
+        "forkAt: 4.\n"
+        " (Delay forMilliseconds: 10) wait.\n"
+        " s suspend.\n"
+        " n1 := count. (Delay forMilliseconds: 50) wait. n2 := count.\n"
+        " done := false.\n"
+        " t := [v terminate. done := true] forkAt: 4.\n"
+        " (Delay forMilliseconds: 200) wait.\n"
+        " r := {done. v suspendedContext isNil. n1 = n2. "
+        "s suspendedContext notNil}.\n"
+        " s terminate. t terminate.\n"
+        " fin signal] forkAt: 6.\n"
+        "fin wait.\n"
+        "^r\n",
+        1, "==> (true true true true )",
+        "X-5 a stopper suspended in its stop lets its victim go first");
+
+    /*
+     *  And the retry itself.  A stopper that finds its victim held by
+     *  another (answer 6) yielded and asked again, and a yield runs only
+     *  processes of the sender's priority: a terminator above the holder
+     *  on one worker went round for ever and the holder never ran to let
+     *  go -- the old image never answered here at all.  It waits on a
+     *  Delay now, which lets the holder finish.
+     */
+    bugs7_probe("bugs7f-x5-priority.st",
+        "| v s t done fin r |\n"
+        "fin := Semaphore new.\n"
+        "[v := [[true] whileTrue: [Processor yield]] forkAt: 3.\n"
+        " s := [v stopTakingFromSemaphore: true thenDo: [:where | | end |\n"
+        "\tend := Time millisecondClockValue + 30.\n"
+        "\t[Time millisecondClockValue < end] whileTrue: [Processor yield].\n"
+        "\ttrue]] forkAt: 3.\n"
+        " (Delay forMilliseconds: 10) wait.\n"
+        " done := false.\n"
+        " t := [v terminate. done := true] forkAt: 5.\n"
+        " (Delay forMilliseconds: 300) wait.\n"
+        " r := {done. v suspendedContext isNil}.\n"
+        " fin signal] forkAt: 6.\n"
+        "fin wait.\n"
+        "^r\n",
+        1, "==> (true true )",
+        "X-5 a held victim's terminator lets a lower-priority holder run");
+}
+
 int
 main(void)
 {
@@ -6345,6 +6416,7 @@ main(void)
     bugs7f_kernb();
     bugs7f_comp();
     bugs7f_files();
+    bugs7f_sched();
 
     unlink(IMAGE);
     unlink(BATCH);

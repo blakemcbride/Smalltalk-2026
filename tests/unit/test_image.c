@@ -792,8 +792,11 @@
  *  3502 -> 3505 with Bugs07 X-22: SystemDictionary>>rehash,
  *  removeAssociation:ifAbsent: and lockedRemoveKey:, the last writers to
  *  Smalltalk put under the globals lock.
+ *
+ *  3505 -> 3506 with Bugs07 X-5: Process>>isStoppingAnother, which suspend
+ *  asks so as to let a stopper finish its stop first.
  */
-#define LIB_METHODS             3505
+#define LIB_METHODS             3506
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -3354,8 +3357,11 @@ test_browsing(void)
      *
      *  3132489 -> 3134954 with Bugs07 X-22: Smalltalk's rehash and
      *  removeAssociation:ifAbsent: under the globals lock.
+     *
+     *  3134954 -> 3136925 with Bugs07 X-5: a suspend lets a stopper finish
+     *  its stop first, and a stopper waits for a held process on a Delay.
      */
-    check_integer("(SourceFiles at: 1) contents size", 3134954);
+    check_integer("(SourceFiles at: 1) contents size", 3136925);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
