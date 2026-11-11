@@ -117,6 +117,28 @@ Object >> shallowCopy [
 ]
 
 { #category : '*Kernel-Protocol' }
+Object >> instVarsInclude: anObject [
+	"Whether one of my fields, named or indexed, holds anObject itself --
+	 identity, not equality.  Fields of bytes hold no objects, so a String
+	 or a ByteArray answers false whatever it is asked about, and so does a
+	 SmallInteger, which has no fields at all.
+
+	 Squeak's name for primitive 132.  The VM has answered 132 with one
+	 argument since Pharo's Kernel asked for it, and its status table named
+	 it Object instVarsInclude:, but no method in the library declared it,
+	 so `(3 @ 4) instVarsInclude: 4' was a doesNotUnderstand (Bugs07 X-14).
+	 The fallback says the same thing a field at a time; the primitive
+	 fails only for a method of another shape, which this one is not."
+	<primitive: 132>
+	1 to: self class instSize do: [:i |
+		(self instVarAt: i) == anObject ifTrue: [^true]].
+	self class isPointers ifFalse: [^false].
+	1 to: self basicSize do: [:i |
+		(self basicAt: i) == anObject ifTrue: [^true]].
+	^false
+]
+
+{ #category : '*Kernel-Protocol' }
 Object >> isString [
 	^false
 ]

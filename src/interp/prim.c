@@ -8322,7 +8322,7 @@ static const primitive_entry primitive_table[] = {
     { 229, ST_PRIM_PRESENT,  "Float raisedTo: -- ours; no Blue Book number" },
     { 228, ST_PRIM_PRESENT,  "Compiler class compile -- ours"    },
     { 234, ST_PRIM_PRESENT,  "Behavior migrate instances -- ours" },
-    { 132, ST_PRIM_PRESENT,  "Object instVarsInclude:"          },
+    { 132, ST_PRIM_PRESENT,  "PosixFile lastError; Object instVarsInclude:" },
     { 100, ST_PRIM_PRESENT,  "signal a semaphore at a time"     },
     { 135, ST_PRIM_PRESENT,  "millisecond clock -- unmasked; see "
                              "ST_time_ms_wide"                  },

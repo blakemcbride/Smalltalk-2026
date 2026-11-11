@@ -785,8 +785,11 @@
  *
  *  3499 -> 3501 with Bugs07 KERNB-10: Measure class>>countMade and
  *  MeasureTable>>lock, lib/Probe's shared state made safe on workers.
+ *
+ *  3501 -> 3502 with Bugs07 X-14: Object>>instVarsInclude:, primitive 132
+ *  with one argument, which the VM answered and nothing declared.
  */
-#define LIB_METHODS             3501
+#define LIB_METHODS             3502
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -3341,8 +3344,11 @@ test_browsing(void)
      *
      *  3129110 -> 3131538 with Bugs07 KERNB-10: lib/Probe's counter and
      *  default table are safe on workers.
+     *
+     *  3131538 -> 3132489 with Bugs07 X-14: Object>>instVarsInclude:, on
+     *  primitive 132, which the VM answered and nothing declared.
      */
-    check_integer("(SourceFiles at: 1) contents size", 3131538);
+    check_integer("(SourceFiles at: 1) contents size", 3132489);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -14467,6 +14473,19 @@ test_bugs7f_vm(void)
     bugs7f_expect(text, "\na ZzB7fBad\n",
                   "COMP-10 a failing printOn: falls back to the class");
     bugs7f_expect(text, "rc=1", "COMP-10 a failing printOn: exits 1");
+
+    /*
+     *  X-14.  The VM answered primitive 132 with one argument and no
+     *  method declared it, so instVarsInclude: was a doesNotUnderstand.
+     *  Identity, not equality: a second 3 @ 4 is not in the Array.  Bytes
+     *  and a SmallInteger have no fields that hold objects.
+     */
+    check_string("{(3 @ 4) instVarsInclude: 4. (3 @ 4) instVarsInclude: 5."
+                 " #(1 $a) instVarsInclude: $a."
+                 " (Array with: 3 @ 4) instVarsInclude: 3 @ 4."
+                 " 'abc' instVarsInclude: $a. 3 instVarsInclude: 3."
+                 " Object new instVarsInclude: nil} printString",
+                 "(true false true false false false false )");
 
     snprintf(command, sizeof command, "rm -rf %s", dir);
     (void) system(command);
