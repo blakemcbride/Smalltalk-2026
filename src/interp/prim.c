@@ -4363,6 +4363,8 @@ primitive_replace_from_to_with_starting_at(void)
     int         target_bytes;
     int         source_bytes;
     int         downwards;
+    om_shape    target_shape;
+    om_shape    source_shape;
 
     if (!OM_is_present(target) || !OM_is_present(source))
         return 0;
@@ -4377,6 +4379,33 @@ primitive_replace_from_to_with_starting_at(void)
         return 0;               /*  no mixing pointers and bytes  */
     if (target_bytes && symbol_is_sealed(target))
         return 0;               /*  Bugs5 INTERP-7: see symbol_is_sealed  */
+
+    /*
+     *  A pointer object's indices start after its named instance
+     *  variables, where at: and at:put: start them (Bugs07 KERNA-2).  This
+     *  counted from the first field, which was right for the one pointer
+     *  class it was ever meant for -- Array, with none -- and would have
+     *  written index 1 of an OrderedCollection into its firstIndex, and
+     *  index 1 of a Point into its x.  Nothing declared the primitive on
+     *  a pointer class until OrderedCollection needed a block move in C:
+     *  every insertion into the middle of one, and so every
+     *  SortedCollection>>add: of data not already in order, moved the
+     *  elements on one side of the slot one basicAt:put: at a time, and
+     *  ten thousand random adds took 18 seconds.  Each object is offset by
+     *  its OWN class's count, since the replacement need not be of the
+     *  receiver's class, and an object with named fields and no indexed
+     *  ones has no range at all; a byte object has no named fields.  The
+     *  stores are still one counted exchange a slot, as at:put:'s are --
+     *  a raw memmove would turn two workers racing on one collection, a
+     *  fault in the program, into a reference count gone wrong, a fault
+     *  in the memory.
+     */
+    memset(&target_shape, 0, sizeof target_shape);
+    memset(&source_shape, 0, sizeof source_shape);
+    if (!target_bytes) {
+        target_shape = shape_of_object(target);
+        source_shape = shape_of_object(source);
+    }
 
     /*
      *  Both ranges are checked before anything moves, so that a request
@@ -4401,10 +4430,10 @@ primitive_replace_from_to_with_starting_at(void)
     if (count) {
         uint64_t    target_length = target_bytes
                                   ? OM_fetch_byte_length(target)
-                                  : OM_fetch_word_length(target);
+                                  : indexable_length(target, &target_shape);
         uint64_t    source_length = source_bytes
                                   ? OM_fetch_byte_length(source)
-                                  : OM_fetch_word_length(source);
+                                  : indexable_length(source, &source_shape);
 
         if (from < 1 || (uint64_t) (start - 1) + count > target_length
          || (uint64_t) (from - 1) + count > source_length)
@@ -4419,8 +4448,9 @@ primitive_replace_from_to_with_starting_at(void)
         if (target_bytes)
             OM_store_byte(to_index, target, OM_fetch_byte(from_index, source));
         else
-            OM_store_pointer(to_index, target,
-                             OM_fetch_pointer(from_index, source));
+            OM_store_pointer(target_shape.fixed + to_index, target,
+                             OM_fetch_pointer(source_shape.fixed + from_index,
+                                              source));
     }
     ST_pop_n(4);
     return 1;                   /*  answers the receiver  */

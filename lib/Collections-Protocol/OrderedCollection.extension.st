@@ -42,15 +42,29 @@ OrderedCollection >> removeAt: anInteger [
 { #category : '*Collections-Protocol' }
 OrderedCollection >> removeBasicIndex: removedIndex [
 	"Close up the gap at removedIndex, an index into my underlying Array.
-	 This is 1983's removeIndex:, renamed for what its argument is."
-	| index |
-	index := removedIndex.
-	[index < lastIndex]
-		whileTrue:
-			[self basicAt: index put: (self basicAt: index + 1).
-			index := index + 1].
-	self basicAt: lastIndex put: nil.
-	lastIndex := lastIndex - 1
+	 This is 1983's removeIndex:, renamed for what its argument is.
+
+	 1983 closed it by moving every element after the gap down one, a
+	 basicAt:put: at a time: removing from the middle of ten thousand
+	 elements was five thousand stores in the interpreter, and five
+	 thousand such removals took eight seconds (Bugs07 KERNA-2).  The elements now move
+	 in one primitive, and from whichever side of the gap is shorter, as
+	 insert:before: has always chosen its side -- so taking out an element
+	 near the front costs what removeFirst does.  A tie moves the tail, as
+	 1983 did.
+
+	 Which side moved is not something a caller can see through my own
+	 indices, which are counted from firstIndex; removeAllSuchThat: walks
+	 the underlying Array and so had to stop assuming it was the tail."
+	(removedIndex - firstIndex) < (lastIndex - removedIndex)
+		ifTrue: [
+			self basicReplaceFrom: firstIndex + 1 to: removedIndex with: self startingAt: firstIndex.
+			self basicAt: firstIndex put: nil.
+			firstIndex := firstIndex + 1]
+		ifFalse: [
+			self basicReplaceFrom: removedIndex to: lastIndex - 1 with: self startingAt: removedIndex + 1.
+			self basicAt: lastIndex put: nil.
+			lastIndex := lastIndex - 1]
 ]
 
 { #category : '*Collections-Protocol' }
@@ -72,8 +86,15 @@ OrderedCollection >> remove: oldObject ifAbsent: absentBlock [
 OrderedCollection >> removeAllSuchThat: aBlock [
 	"Evaluate aBlock for each element of the receiver.  Remove each element
 	 for which aBlock evaluates to true, and answer them.  1983's, sending
-	 removeBasicIndex: where it sent removeIndex:."
-	| index element newCollection |
+	 removeBasicIndex: where it sent removeIndex:.
+
+	 1983 stayed where it was after a removal, because its removeIndex:
+	 always moved the tail down into the gap and the next element to look
+	 at arrived there.  removeBasicIndex: moves whichever side is shorter
+	 now (Bugs07 KERNA-2), so this counts the elements still to be looked
+	 at -- they are the last ones, whichever side moved -- and finds the
+	 next from lastIndex."
+	| index element newCollection after |
 	newCollection := self species new.
 	index := firstIndex.
 	[index <= lastIndex]
@@ -82,7 +103,9 @@ OrderedCollection >> removeAllSuchThat: aBlock [
 			(aBlock value: element)
 				ifTrue:
 					[newCollection add: element.
-					self removeBasicIndex: index]
+					after := lastIndex - index.
+					self removeBasicIndex: index.
+					index := lastIndex - after + 1]
 				ifFalse: [index := index + 1]].
 	^newCollection
 ]
@@ -148,17 +171,34 @@ OrderedCollection >> insert: anObject before: spot [
 	 whichever side is nearer, so no insertion ever moves more than half
 	 the collection.  The two shifting arms are 1983's own front-shift and
 	 its mirror; each takes the distance to the slot from firstIndex
-	 BEFORE making room, because makeRoomAtFirst and makeRoomAtLast both
-	 slide the elements inside the Array and grow may replace the object
-	 entirely with become:.
+	 BEFORE making room, because making room slides the elements inside
+	 the Array and grow may replace the object entirely with become:.
 
 	 The two ends are 1983's addFirst: and addLast: written out rather than
 	 sent, because SortedCollection is an OrderedCollection and refuses
 	 both by name -- where an element goes is its sortBlock's decision --
 	 and it is SortedCollection>>add: that arrives here most.  Its own add:
 	 reaches OrderedCollection's addLast: with a super send for the same
-	 reason."
-	| delta spotIndex index |
+	 reason.
+
+	 That made the two ends cheap and left the middle as it was, which is
+	 where a SortedCollection given data in no particular order -- what one
+	 is FOR -- puts nearly everything.  The shifting arms moved a quarter of
+	 the collection on average, a basicAt:put: at a time in the
+	 interpreter, and ten thousand random adds took 18 seconds where
+	 asSortedCollection of the same numbers took 0.2 (Bugs07 KERNA-2).  The
+	 move is one primitive now, the C loop behind replaceFrom:to:with:
+	 startingAt:.
+
+	 And a middle insertion that finds no room on its side no longer sends
+	 makeRoomAtFirst or makeRoomAtLast.  Those slide the whole collection
+	 to the far end of the Array, which suits addFirst: and addLast: --
+	 they keep coming back to the same end -- and is the worst thing to do
+	 here: the next insertion on the other side finds no room there and
+	 slides it all back, and on random data about every other add moved
+	 the entire collection that way.  makeRoomAtBothEnds leaves half the
+	 free slots on each side instead."
+	| delta spotIndex |
 	spot > lastIndex ifTrue: [
 		lastIndex = self basicSize ifTrue: [self makeRoomAtLast].
 		lastIndex := lastIndex + 1.
@@ -172,22 +212,138 @@ OrderedCollection >> insert: anObject before: spot [
 	delta := spot - firstIndex.
 	delta <= (lastIndex - spot)
 		ifTrue: [
-			firstIndex = 1 ifTrue: [self makeRoomAtFirst].
+			firstIndex = 1 ifTrue: [self makeRoomAtBothEnds].
 			spotIndex := firstIndex + delta.
-			index := firstIndex := firstIndex - 1.
-			[index < (spotIndex - 1)] whileTrue: [
-				self basicAt: index put: (self basicAt: index + 1).
-				index := index + 1].
-			self basicAt: index put: anObject]
+			self basicReplaceFrom: firstIndex - 1 to: spotIndex - 2 with: self startingAt: firstIndex.
+			firstIndex := firstIndex - 1.
+			self basicAt: spotIndex - 1 put: anObject]
 		ifFalse: [
-			lastIndex = self basicSize ifTrue: [self makeRoomAtLast].
+			lastIndex = self basicSize ifTrue: [self makeRoomAtBothEnds].
 			spotIndex := firstIndex + delta.
-			index := lastIndex := lastIndex + 1.
-			[index > spotIndex] whileTrue: [
-				self basicAt: index put: (self basicAt: index - 1).
-				index := index - 1].
+			self basicReplaceFrom: spotIndex + 1 to: lastIndex + 1 with: self startingAt: spotIndex.
+			lastIndex := lastIndex + 1.
 			self basicAt: spotIndex put: anObject].
 	^anObject
+]
+
+{ #category : '*Collections-Protocol' }
+OrderedCollection >> makeRoomAtFirst [
+	"Free a slot before my first element: slide every element to the top
+	 of my Array, so that all the free slots are at the front, growing
+	 first if there are none.
+
+	 1983's, with its rule unchanged -- where the elements end up is what
+	 makes a run of addFirst: cheap, and is the same as it always was --
+	 and the slide done by moveBasicFrom:to:by: in one primitive rather
+	 than two basicAt:put:s an element (Bugs07 KERNA-2)."
+	| delta |
+	delta := self basicSize - self size.
+	delta = 0 ifTrue: [
+		self grow.
+		delta := self basicSize - self size].
+	lastIndex = self basicSize ifTrue: [^self].
+	self moveBasicFrom: firstIndex to: lastIndex by: delta + 1 - firstIndex.
+	firstIndex := delta + 1.
+	lastIndex := self basicSize
+]
+
+{ #category : '*Collections-Protocol' }
+OrderedCollection >> makeRoomAtLast [
+	"Free a slot after my last element: slide every element to the bottom
+	 of my Array, growing first if there is no free slot at all.  1983's
+	 rule and moveBasicFrom:to:by:'s move; see makeRoomAtFirst."
+	| newLast |
+	newLast := self size.
+	self basicSize - self size = 0 ifTrue: [self grow].
+	firstIndex = 1 ifTrue: [^self].
+	self moveBasicFrom: firstIndex to: lastIndex by: 1 - firstIndex.
+	firstIndex := 1.
+	lastIndex := newLast
+]
+
+{ #category : '*Collections-Protocol' }
+OrderedCollection >> makeRoomAtBothEnds [
+	"Leave free slots before my first element AND after my last: half of
+	 what is free on each side, growing first if that would leave either
+	 side none.
+
+	 For an insertion into my middle, which may shift either side and
+	 cannot know which the next one will (Bugs07 KERNA-2; see insert:
+	 before:).  Each call moves my elements once and buys at least half
+	 my free slots on both sides, so a run of insertions that alternates
+	 sides at random pays for it at most once per half of the free space,
+	 where sliding everything to one end paid for it on every change of
+	 side."
+	| size newFirst |
+	self basicSize - self size < 2 ifTrue: [self grow].
+	size := self size.
+	newFirst := (self basicSize - size) // 2 + 1.
+	self moveBasicFrom: firstIndex to: lastIndex by: newFirst - firstIndex.
+	firstIndex := newFirst.
+	lastIndex := newFirst + size - 1
+]
+
+{ #category : '*Collections-Protocol' }
+OrderedCollection >> moveBasicFrom: first to: last by: distance [
+	"Move my slots first to last -- indices into my underlying Array, as
+	 basicAt: takes them -- distance places, towards the end when it is
+	 positive, and put nil into the slots the move leaves behind.
+
+	 A slot outside firstIndex..lastIndex holds nil, which is what keeps
+	 an element I no longer hold from being kept alive by me; 1983's
+	 makeRoomAtFirst and makeRoomAtLast nilled each source slot as they
+	 went, and this does it after the move for the ones nothing was moved
+	 into."
+	| vacatedFirst vacatedLast |
+	(last < first or: [distance = 0]) ifTrue: [^self].
+	self basicReplaceFrom: first + distance to: last + distance with: self startingAt: first.
+	distance > 0
+		ifTrue: [
+			vacatedFirst := first.
+			vacatedLast := first + distance - 1 min: last]
+		ifFalse: [
+			vacatedFirst := last + distance + 1 max: first.
+			vacatedLast := last].
+	vacatedFirst = vacatedLast
+		ifTrue: [self basicAt: vacatedFirst put: nil]
+		ifFalse: [
+			self
+				basicReplaceFrom: vacatedFirst
+				to: vacatedLast
+				with: (Array new: vacatedLast - vacatedFirst + 1)
+				startingAt: 1]
+]
+
+{ #category : '*Collections-Protocol' }
+OrderedCollection >> basicReplaceFrom: start to: stop with: replacement startingAt: repStart [
+	"Put replacement's slots repStart onwards into my slots start to stop,
+	 and answer me.  Every index here is a BASIC one -- into my underlying
+	 Array, as basicAt: takes it -- and into replacement's the same way;
+	 replacement may be me, and an overlapping move comes out as if the
+	 slots had been copied somewhere else first.
+
+	 This is how my elements move in C rather than a basicAt:put: at a
+	 time (Bugs07 KERNA-2).  Primitive 105 is String's and ByteArray's
+	 replaceFrom:to:with:startingAt:, and it counts a pointer object's
+	 indices from the first field after its named instance variables, as
+	 at: does, so my firstIndex and lastIndex -- and a SortedCollection's
+	 sortBlock -- are not among the slots it can reach.  Pharo moves an
+	 OrderedCollection's elements with the same primitive, on the Array
+	 it keeps them in.
+
+	 What follows runs only when the primitive refuses: an index outside
+	 either object, or a replacement that holds bytes rather than
+	 pointers.  It does the same thing a slot at a time, so a bad index is
+	 refused by basicAt:, in basicAt:'s words; copying downwards when the
+	 replacement is me and the slots move up is the primitive's rule too."
+	<primitive: 105>
+	(replacement == self and: [repStart < start])
+		ifTrue: [
+			stop to: start by: -1 do: [:index |
+				self basicAt: index put: (replacement basicAt: index - start + repStart)]]
+		ifFalse: [
+			start to: stop do: [:index |
+				self basicAt: index put: (replacement basicAt: index - start + repStart)]]
 ]
 
 { #category : '*Collections-Protocol' }

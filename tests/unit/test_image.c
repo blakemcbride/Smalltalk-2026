@@ -719,8 +719,13 @@
  *
  *  3439 -> 3440 with Bugs07 COMP-2: FileDirectory>>replaceTextFile:using:,
  *  which every file out now writes through.
+ *
+ *  3440 -> 3445 with Bugs07 KERNA-2: OrderedCollection>>basicReplaceFrom:
+ *  to:with:startingAt: (primitive 105 on the collection's own slots),
+ *  moveBasicFrom:to:by: and makeRoomAtBothEnds, and 1983's makeRoomAtFirst
+ *  and makeRoomAtLast moving through them.
  */
-#define LIB_METHODS             3440
+#define LIB_METHODS             3445
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -3184,8 +3189,12 @@ test_browsing(void)
      *
      *  3059719 -> 3062314 with Bugs07 COMP-2: a file out writes beside its
      *  target and replaces it only once it has finished.
+     *
+     *  3062314 -> 3069383 with Bugs07 KERNA-2: an OrderedCollection's
+     *  elements move with primitive 105, and an insertion into its middle
+     *  leaves room at both ends.
      */
-    check_integer("(SourceFiles at: 1) contents size", 3062314);
+    check_integer("(SourceFiles at: 1) contents size", 3069383);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -12757,6 +12766,127 @@ test_bugs7c_net(void)
     test_dialect = ST_DIALECT_BLUE_BOOK;
 }
 
+/*
+ *  Bugs07 round 4, KERNA.  Image-side, in-process doIts.
+ */
+static void
+test_bugs7d_kerna(void)
+{
+    test_dialect = ST_DIALECT_CLOSURES;
+
+    /*
+     *  KERNA-2.  An insertion into the middle of an OrderedCollection, and
+     *  so every SortedCollection>>add: of data not already in order, moved
+     *  the elements on the nearer side of the slot one basicAt:put: at a
+     *  time, and slid the whole collection from one end of its Array to
+     *  the other whenever the side it needed was full: ten thousand random
+     *  adds took 18 seconds where asSortedCollection of the same numbers
+     *  took 0.2.  Removing from the middle moved the tail the same way.
+     *  The elements move with primitive 105 now, which counts a pointer
+     *  object's indices past its named instance variables.
+     *
+     *  The first three are trip-wires on this harness's budget of twenty
+     *  million bytecodes: each needed hundreds of millions before (five
+     *  thousand random adds, five thousand removals from the middle of ten
+     *  thousand, five thousand insertions at the middle), and each is a
+     *  few million now.
+     */
+    check_boolean("| r a s | a := OrderedCollection new. r := 12345. "
+                  "1 to: 5000 do: [:i | r := r * 1103515245 + 12345 \\\\ 2147483648. "
+                  "  a addLast: r \\\\ 100000]. "
+                  "s := SortedCollection new. a do: [:x | s add: x]. "
+                  "^s asArray = a asSortedCollection asArray", 1);
+    check_boolean("| oc | oc := (1 to: 10000) asOrderedCollection. "
+                  "5000 timesRepeat: [oc removeIndex: 2500]. "
+                  "^oc asArray = ((1 to: 2499) asArray, (7500 to: 10000) asArray)", 1);
+    check_string("| oc | oc := OrderedCollection new. "
+                 "1 to: 5000 do: [:i | oc add: i beforeIndex: oc size // 2 + 1]. "
+                 "^{oc size. oc first. oc last. oc at: 2500. oc at: 2501. "
+                 "  oc inject: 0 into: [:a :x | a * 31 + x \\\\ 1000003]} printString",
+                 "(5000 2 1 5000 4999 539145 )");
+
+    /*
+     *  Equal keys keep the order they were added in -- 1983's binary
+     *  search puts a new element after every element its block calls
+     *  equal, and asSortedCollection: sorts stably -- under a block of the
+     *  caller's own, which is a named instance variable the moves must
+     *  not reach: it is the same block afterwards.
+     */
+    check_boolean("| r a s blk | blk := [:p :q | p key >= q key]. "
+                  "a := OrderedCollection new. r := 777. "
+                  "1 to: 1500 do: [:i | r := r * 1103515245 + 12345 \\\\ 2147483648. "
+                  "  a addLast: r \\\\ 50 -> i]. "
+                  "s := SortedCollection sortBlock: blk. a do: [:x | s add: x]. "
+                  "^s sortBlock == blk and: [(s asArray collect: [:p | p value]) "
+                  "  = ((a asSortedCollection: blk) asArray collect: [:p | p value])]", 1);
+
+    /*
+     *  Every way in and out, against an Array that is rebuilt by copying
+     *  for each step: two thousand random insertions by index, removals by
+     *  index, both ends and remove:, at sizes that grow and shrink through
+     *  several growths.  And after each step the slots outside
+     *  firstIndex..lastIndex hold nil, which is what keeps a removed or
+     *  moved element from being held by the collection.
+     */
+    check_string("| r c m bad next | c := OrderedCollection new. m := #(). r := 99. bad := 0. "
+                 "next := [:k | r := r * 1103515245 + 12345 \\\\ 2147483648. r // 65536 \\\\ k]. "
+                 "1 to: 2000 do: [:step | | op p | "
+                 "  op := next value: (m size > 70 ifTrue: [4] ifFalse: [7]). "
+                 "  (op >= 4 or: [m isEmpty]) "
+                 "    ifTrue: [p := (next value: m size + 1) + 1. "
+                 "      (op = 5 or: [op = 6]) "
+                 "        ifTrue: [op = 5 ifTrue: [c addFirst: step. p := 1] "
+                 "          ifFalse: [c addLast: step. p := m size + 1]] "
+                 "        ifFalse: [c add: step beforeIndex: p]. "
+                 "      m := (m copyFrom: 1 to: p - 1), (Array with: step), (m copyFrom: p to: m size)] "
+                 "    ifFalse: [p := (next value: m size) + 1. "
+                 "      op = 0 ifTrue: [(c removeIndex: p) = (m at: p) ifFalse: [bad := bad + 1]]. "
+                 "      op = 1 ifTrue: [p := 1. c removeFirst]. "
+                 "      op = 2 ifTrue: [p := m size. c removeLast]. "
+                 "      op = 3 ifTrue: [c remove: (m at: p)]. "
+                 "      m := (m copyFrom: 1 to: p - 1), (m copyFrom: p + 1 to: m size)]. "
+                 "  c asArray = m ifFalse: [bad := bad + 1]. "
+                 "  1 to: c basicSize do: [:i | "
+                 "    ((i between: (c instVarAt: 1) and: (c instVarAt: 2)) or: [(c basicAt: i) isNil]) "
+                 "      ifFalse: [bad := bad + 1]]]. "
+                 "^{bad. c size = m size} printString",
+                 "(0 true )");
+
+    /*
+     *  removeAllSuchThat: walks the Array behind the collection, and
+     *  removeBasicIndex: moves whichever side of the gap is shorter now,
+     *  not always the tail.  The block still sees every element once, in
+     *  order, and the answer and the remainder are the two halves.
+     */
+    check_string("| c seen gone | c := (1 to: 30) asOrderedCollection. seen := OrderedCollection new. "
+                 "gone := c removeAllSuchThat: [:x | seen addLast: x. x \\\\ 3 ~= 0]. "
+                 "^{seen asArray = (1 to: 30) asArray. gone asArray. c asArray} printString",
+                 "(true (1 2 4 5 7 8 10 11 13 14 16 17 19 20 22 23 25 26 28 29 ) "
+                 "(3 6 9 12 15 18 21 24 27 30 ) )");
+
+    /*
+     *  Primitive 105 on pointer objects counts from the first indexed
+     *  field: an OrderedCollection's firstIndex and lastIndex are not
+     *  slots 1 and 2 of it, as receiver or as replacement, and an object
+     *  with named fields and no indexed ones -- a Point -- has no range to
+     *  write; the primitive refuses and leaves it as it was.  Before, the
+     *  first wrote over firstIndex and lastIndex and the last over x.
+     */
+    check_string("| oc a p r | Object compile: 'b7dReplace: s to: e with: x startingAt: f "
+                 "<primitive: 105> ^#refused'. "
+                 "oc := OrderedCollection new: 4. "
+                 "r := {oc instVarAt: 1. oc instVarAt: 2}. "
+                 "oc b7dReplace: 1 to: 3 with: #(7 8 9) startingAt: 1. "
+                 "a := Array new: 2. a b7dReplace: 1 to: 2 with: oc startingAt: 2. "
+                 "p := 3 @ 4. "
+                 "r := {r = {oc instVarAt: 1. oc instVarAt: 2}. oc basicAt: 1. oc basicAt: 3. a. "
+                 "  p b7dReplace: 1 to: 1 with: #(5) startingAt: 1. p}. "
+                 "Object removeSelector: #b7dReplace:to:with:startingAt:. ^r printString",
+                 "(true 7 9 (8 9 ) refused 3@4 )");
+
+    test_dialect = ST_DIALECT_BLUE_BOOK;
+}
+
 int
 main(void)
 {
@@ -12907,6 +13037,7 @@ main(void)
     test_bugs7c_vm();
     test_bugs7c_gui();
     test_bugs7c_net();
+    test_bugs7d_kerna();
 
     OM_shutdown();
     return ST_TEST_END();
