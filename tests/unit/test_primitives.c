@@ -404,6 +404,19 @@ test_bugs7f_kern(void)
     CHECK(!ST_primitive_fits(238, 1));
 }
 
+/*
+ *  Bugs07 KERNA-11, Blake's call of 2026-11-11: primitive 211,
+ *  Integer>>raisedTo:modulo:, is answered, and held to its two arguments.
+ */
+static void
+test_bugs7g_kern(void)
+{
+    CHECK_EQ_INT(ST_primitive_status_of(211, NULL), ST_PRIM_PRESENT);
+    CHECK_EQ_INT(ST_primitive_arity(211), 2);
+    CHECK(ST_primitive_fits(211, 2));
+    CHECK(!ST_primitive_fits(211, 1));
+}
+
 int
 main(void)
 {
@@ -413,6 +426,7 @@ main(void)
     test_bugs7e_vm();
     test_bugs7f_vm();
     test_bugs7f_kern();
+    test_bugs7g_kern();
     test_the_report_counts_what_source_asks_for();
     test_a_named_primitive_is_not_just_117();
     test_class_side_methods_are_labelled();

@@ -160,17 +160,13 @@ Integer >> isPrime [
 	 and at random so that a number built to fool fixed bases cannot know
 	 which ones it will meet.
 
-	 Every step is a modular power, whose cost grows with the cube of my
-	 length rather than with my square root: below 2^30 a SmallInteger
-	 product reduced by \\, above it Montgomery multiplication over
-	 30-bit limbs, which never leaves SmallInteger arithmetic, where a
-	 LargeInteger product reduced by \\ -- 1983's division, a byte at a
-	 time -- made 2^61 - 1 twenty times slower.  10^14 + 31 takes 8 ms,
-	 2^61 - 1 30 ms, 2^127 - 1 0.4 s, a 100-digit prime 3 s and a
-	 300-digit one a minute, so by the same cube a thousand digits is
-	 most of an hour of interpreted arithmetic; a composite usually stops
-	 at its first base."
-	| d s limit bases bounds one minusOne power square ctx k witness random bits |
+	 Every step is a modular power, raisedTo:modulo:, whose cost grows
+	 with the cube of my length rather than with my square root, and
+	 which primitive 211 does in C: 2^127 - 1 takes 14 ms, a 100-digit
+	 prime 40 ms, a 300-digit one 0.2 s and a thousand digits 2 s; a
+	 composite usually stops at its first base.  Interpreted, over
+	 Montgomery multiplication, the 300-digit prime took a minute."
+	| d s limit bases bounds minusOne power square witness random bits |
 	self < 2 ifTrue: [^false].
 	self < 4 ifTrue: [^true].
 	self even ifTrue: [^false].
@@ -190,29 +186,13 @@ Integer >> isPrime [
 	d := self - 1.
 	s := 0.
 	[d even] whileTrue: [d := d bitShift: -1. s := s + 1].
-	self <= 16r3FFFFFFF
-		ifTrue: [
-			one := 1.
-			minusOne := self - 1.
-			power := [:a | a raisedTo: d modulo: self].
-			square := [:x | x * x \\ self]]
-		ifFalse: [
-			ctx := self montgomeryContext.
-			k := (ctx at: 1) size.
-			one := ctx at: 4.
-			minusOne := Integer
-				montgomery: ((self - 1) montgomeryLimbs: k) times: (ctx at: 3) context: ctx.
-			power := [:a |
-				Integer
-					montgomeryPower: (Integer
-						montgomery: (a montgomeryLimbs: k) times: (ctx at: 3) context: ctx)
-					to: d
-					context: ctx].
-			square := [:x | Integer montgomery: x times: x context: ctx]].
+	minusOne := self - 1.
+	power := [:a | a raisedTo: d modulo: self].
+	square := [:x | x raisedTo: 2 modulo: self].
 	"Whether the base a, 1 < a < me - 1, proves me composite."
 	witness := [:a | | x r |
 		x := power value: a.
-		(x = one or: [x = minusOne])
+		(x = 1 or: [x = minusOne])
 			ifTrue: [false]
 			ifFalse: [
 				r := 1.
@@ -243,11 +223,16 @@ Integer >> raisedTo: anInteger modulo: aModulus [
 	 Pharo's selector, for the modular arithmetic isPrime is built on
 	 (Bugs07 KERNA-11).
 
-	 An odd modulus above 2^30 is done by Montgomery multiplication, as
-	 isPrime does it, because there a product no longer fits a
-	 SmallInteger and reducing it by \\ is 1983's LargeInteger division,
-	 a byte at a time; any other modulus by \\ after each product."
+	 Primitive 211 does it in C for a receiver that is a SmallInteger or
+	 a LargePositiveInteger, an exponent of at least 0 and a modulus
+	 above 0 -- every power isPrime asks for -- several hundred times
+	 faster than the Smalltalk below.  What it fails for comes here: an
+	 odd modulus above 2^30 by Montgomery multiplication, because there a
+	 product no longer fits a SmallInteger and reducing it by \\ is
+	 1983's LargeInteger division, a byte at a time; any other modulus
+	 by \\ after each product."
 	| base exponent result ctx k |
+	<primitive: 211>
 	(anInteger isInteger and: [anInteger >= 0]) ifFalse: [
 		^self error: 'the exponent of a modular power must be an Integer of at least 0'].
 	(aModulus isInteger and: [aModulus odd and: [aModulus > 16r3FFFFFFF]]) ifTrue: [
@@ -276,7 +261,7 @@ Integer >> raisedTo: anInteger modulo: aModulus [
 Integer >> montgomeryLimbs: count [
 	"My magnitude, which is less than 2^(30 * count), as an Array of count
 	 30-bit limbs, least significant first: the form Montgomery
-	 multiplication works in, for isPrime and raisedTo:modulo:."
+	 multiplication works in, for raisedTo:modulo:'s Smalltalk."
 	| limbs v |
 	limbs := Array new: count.
 	v := self.

@@ -5746,6 +5746,43 @@ digit_value_of(unsigned c)
     return -1;
 }
 
+/*
+ *  Answer the non-negative Integer whose 32-bit limbs, least significant
+ *  first, are limbs[0 .. used - 1] -- a SmallInteger when it fits one,
+ *  else a LargePositiveInteger with no zero byte on top -- popping pop.
+ *  Fails only for want of memory.  For 238 and 211.
+ */
+static int
+answer_magnitude_limbs(const uint32_t *limbs, size_t used, uint32_t pop)
+{
+    uint32_t    top, bytes;
+    st_oop      big;
+    size_t      k;
+
+    while (used > 0 && limbs[used - 1] == 0)
+        --used;
+    if (used <= 2)
+        return answer_positive(used == 0 ? 0
+                               : (uint64_t) limbs[0]
+                                 | (used == 2 ? (uint64_t) limbs[1] << 32 : 0),
+                               pop);
+    top = limbs[used - 1];
+    bytes = (uint32_t) (used - 1) * 4;
+    while (top != 0) {
+        ++bytes;
+        top >>= 8;
+    }
+    big = OM_instantiate_bytes(ST_CLASS_LARGE_POSITIVE_INTEGER, bytes);
+    if (!OM_is_present(big))
+        return 0;
+    for (k = 0; k < bytes; ++k)
+        OM_store_byte((uint32_t) k, big,
+                      (uint8_t) (limbs[k / 4] >> ((k % 4) * 8)));
+    ST_pop_n(pop);
+    ST_push(big);
+    return 1;
+}
+
 static int
 primitive_magnitude_of_digits(void)
 {
@@ -5826,37 +5863,288 @@ primitive_magnitude_of_digits(void)
         return 0;
     }
 
-    if (used <= 2) {
-        uint64_t    value = used == 0 ? 0
-                          : (uint64_t) limbs[0]
-                            | (used == 2 ? (uint64_t) limbs[1] << 32 : 0);
-
-        free(limbs);
-        return answer_positive(value, 3);
-    }
     {
-        uint32_t    top = limbs[used - 1];
-        uint32_t    bytes = (uint32_t) (used - 1) * 4;
-        st_oop      big;
-        size_t      k;
+        int     ok = answer_magnitude_limbs(limbs, used, 3);
 
-        while (top != 0) {
-            ++bytes;
-            top >>= 8;
-        }
-        big = OM_instantiate_bytes(ST_CLASS_LARGE_POSITIVE_INTEGER, bytes);
-        if (!OM_is_present(big)) {
-            free(limbs);
-            return 0;
-        }
-        for (k = 0; k < bytes; ++k)
-            OM_store_byte((uint32_t) k, big,
-                          (uint8_t) (limbs[k / 4] >> ((k % 4) * 8)));
         free(limbs);
-        ST_pop_n(3);
-        ST_push(big);
-        return 1;
+        return ok;
     }
+}
+
+/*
+ *  ----------  Integer>>raisedTo:modulo:, primitive 211  ----------
+ *
+ *  (receiver raisedTo: exponent) \\ modulus, by square-and-multiply over
+ *  32-bit limbs, each product reduced by long division -- Knuth's
+ *  Algorithm D -- before the next is made.  The arithmetic of
+ *  Integer>>raisedTo:modulo: in lib/Kernel-Protocol, done in C, for
+ *  isPrime, which is twenty-five such powers and their squarings.
+ *
+ *  Interpreted, every product was a LargeInteger reduced by Montgomery
+ *  multiplication over 30-bit SmallInteger limbs, and isPrime took 3 s
+ *  for a hundred-digit prime and a minute for one of three hundred
+ *  digits (Bugs07 KERNA-11).  Here they take 40 ms and 0.2 s, and a
+ *  thousand digits 2 s: the cost still grows with the cube of the
+ *  modulus's length, from a far smaller start.
+ *
+ *  The operands are copied out of the object memory and the work is done
+ *  in a WORKER_enter_native region (worker.h), as 238's is, so a long
+ *  power holds up no collection on another core; the answer is built
+ *  after leaving it.
+ *
+ *  The primitive FAILS -- and the Smalltalk method below it runs, which
+ *  answers the same -- for anything it was not written for: a receiver
+ *  that is neither a SmallInteger nor a LargePositiveInteger, an exponent
+ *  that is not one of those and at least 0, a modulus that is not one of
+ *  those and above 0 (the method answers in a negative modulus's sign,
+ *  and refuses a negative exponent), or no memory for the limbs.
+ */
+
+/*  The magnitude of a SmallInteger or a LargePositiveInteger as 32-bit
+ *  limbs, least significant first, with no zero limb on top: a malloc'd
+ *  array the caller frees, its length in *count (0 for zero), and in
+ *  *negative whether it was a SmallInteger below 0.  NULL for any other
+ *  object, or no memory.  */
+static uint32_t *
+magnitude_limbs_of(st_oop p, size_t *count, int *negative)
+{
+    uint32_t   *limbs;
+    size_t      n, k;
+
+    *negative = 0;
+    if (OM_is_int(p)) {
+        st_int      v = OM_int_value(p);
+        uint64_t    magnitude;
+
+        if (v < 0) {
+            *negative = 1;
+            magnitude = (uint64_t) 0 - (uint64_t) v;
+        } else
+            magnitude = (uint64_t) v;
+        limbs = (uint32_t *) malloc(2 * sizeof *limbs);
+        if (limbs == NULL)
+            return NULL;
+        limbs[0] = (uint32_t) magnitude;
+        limbs[1] = (uint32_t) (magnitude >> 32);
+        n = 2;
+    } else {
+        uint32_t    bytes;
+
+        if (!OM_is_object(p)
+         || OM_fetch_class(p) != ST_CLASS_LARGE_POSITIVE_INTEGER)
+            return NULL;
+        bytes = OM_fetch_byte_length(p);
+        n = ((size_t) bytes + 3) / 4;
+        limbs = (uint32_t *) calloc(n ? n : 1, sizeof *limbs);
+        if (limbs == NULL)
+            return NULL;
+        for (k = 0; k < bytes; ++k)
+            limbs[k / 4] |= (uint32_t) OM_fetch_byte((uint32_t) k, p)
+                            << ((k % 4) * 8);
+    }
+    while (n > 0 && limbs[n - 1] == 0)
+        --n;
+    *count = n;
+    return limbs;
+}
+
+static unsigned
+leading_zeros_32(uint32_t x)
+{
+    unsigned    n = 0;
+
+    while (n < 32 && !(x & 0x80000000u)) {
+        x <<= 1;
+        ++n;
+    }
+    return n;
+}
+
+/*
+ *  r = u mod v by Knuth's Algorithm D (TAOCP 4.3.1; the shape of Hacker's
+ *  Delight's divmnu), over 32-bit limbs with 64-bit products: u has m
+ *  limbs, v has n, 1 <= n <= m, and v's top limb is not zero; r gets n
+ *  limbs.  un (m + 1 limbs) and vn (n) are scratch.  The quotient is
+ *  made a limb at a time and thrown away.
+ */
+static void
+limbs_mod(const uint32_t *u, size_t m, const uint32_t *v, size_t n,
+          uint32_t *r, uint32_t *un, uint32_t *vn)
+{
+    const uint64_t  base = (uint64_t) 1 << 32;
+    unsigned        s;
+    size_t          i, j;
+
+    if (n == 1) {
+        uint64_t    rem = 0;
+
+        for (i = m; i-- > 0; )
+            rem = ((rem << 32) | u[i]) % v[0];
+        r[0] = (uint32_t) rem;
+        return;
+    }
+    /*  Shift both left until v's top bit is set, so that an estimate of
+     *  a quotient limb from the top two limbs is at most two too large.  */
+    s = leading_zeros_32(v[n - 1]);
+    for (i = n - 1; i > 0; --i)
+        vn[i] = (v[i] << s) | (s ? v[i - 1] >> (32 - s) : 0);
+    vn[0] = v[0] << s;
+    un[m] = s ? u[m - 1] >> (32 - s) : 0;
+    for (i = m - 1; i > 0; --i)
+        un[i] = (u[i] << s) | (s ? u[i - 1] >> (32 - s) : 0);
+    un[0] = u[0] << s;
+
+    for (j = m - n + 1; j-- > 0; ) {
+        uint64_t    num  = ((uint64_t) un[j + n] << 32) | un[j + n - 1];
+        uint64_t    qhat = num / vn[n - 1];
+        uint64_t    rhat = num - qhat * vn[n - 1];
+        uint64_t    carry = 0, borrow = 0, t;
+
+        /*  Knuth's test, which leaves the estimate at most one too large
+         *  and below the base.  */
+        while (qhat >= base
+            || qhat * vn[n - 2] > ((rhat << 32) | un[j + n - 2])) {
+            --qhat;
+            rhat += vn[n - 1];
+            if (rhat >= base)
+                break;
+        }
+        /*  un[j .. j+n] -= qhat * vn.  */
+        for (i = 0; i < n; ++i) {
+            uint64_t    p = qhat * vn[i] + carry;
+
+            carry = p >> 32;
+            t = (uint64_t) un[i + j] - (uint32_t) p - borrow;
+            un[i + j] = (uint32_t) t;
+            borrow = (t >> 32) & 1;
+        }
+        t = (uint64_t) un[j + n] - carry - borrow;
+        un[j + n] = (uint32_t) t;
+        /*  One too large -- rarely, about two times in 2^32: it went
+         *  below zero, and v is added back.  */
+        if (t >> 63) {
+            carry = 0;
+            for (i = 0; i < n; ++i) {
+                uint64_t    sum = (uint64_t) un[i + j] + vn[i] + carry;
+
+                un[i + j] = (uint32_t) sum;
+                carry = sum >> 32;
+            }
+            un[j + n] = (uint32_t) (un[j + n] + carry);
+        }
+    }
+    /*  The remainder is un's low n limbs, shifted back.  */
+    for (i = 0; i + 1 < n; ++i)
+        r[i] = (un[i] >> s) | (s ? un[i + 1] << (32 - s) : 0);
+    r[n - 1] = un[n - 1] >> s;
+}
+
+/*  p = a * b, schoolbook: a and b have n limbs each, p gets 2n.  */
+static void
+limbs_multiply(const uint32_t *a, const uint32_t *b, size_t n, uint32_t *p)
+{
+    size_t  i, j;
+
+    memset(p, 0, 2 * n * sizeof *p);
+    for (i = 0; i < n; ++i) {
+        uint64_t    carry = 0;
+
+        if (a[i] == 0)
+            continue;
+        for (j = 0; j < n; ++j) {
+            uint64_t    t = (uint64_t) a[i] * b[j] + p[i + j] + carry;
+
+            p[i + j] = (uint32_t) t;
+            carry = t >> 32;
+        }
+        p[i + n] = (uint32_t) carry;
+    }
+}
+
+static int
+primitive_raised_to_modulo(void)
+{
+    uint32_t   *b, *e, *m, *work;
+    uint32_t   *x, *r, *product, *un, *vn;
+    size_t      nb = 0, ne = 0, nm = 0, nun, i;
+    int         negative_b, negative_e, negative_m, started, ok;
+    unsigned    bit;
+
+    b = magnitude_limbs_of(ST_stack_value(2), &nb, &negative_b);
+    e = magnitude_limbs_of(ST_stack_value(1), &ne, &negative_e);
+    m = magnitude_limbs_of(ST_stack_value(0), &nm, &negative_m);
+    nun = (nb > 2 * nm ? nb : 2 * nm) + 1;
+    work = b && e && m && nm > 0 && !negative_e && !negative_m
+         ? (uint32_t *) malloc((nm * 5 + nun) * sizeof *work)
+         : NULL;
+    if (work == NULL) {
+        free(b);
+        free(e);
+        free(m);
+        free(work);
+        return 0;
+    }
+    x       = work;             /*  the base, below m           */
+    r       = x + nm;           /*  the answer so far           */
+    vn      = r + nm;           /*  limbs_mod's scratch         */
+    product = vn + nm;          /*  2 nm                        */
+    un      = product + 2 * nm; /*  nun                         */
+
+    WORKER_enter_native();
+    if (nb >= nm)
+        limbs_mod(b, nb, m, nm, x, un, vn);
+    else {
+        memset(x, 0, nm * sizeof *x);
+        if (nb > 0)
+            memcpy(x, b, nb * sizeof *x);
+    }
+    /*  A negative base: m - (|b| mod m), unless that is 0.  */
+    if (negative_b) {
+        int     zero = 1;
+
+        for (i = 0; i < nm; ++i)
+            zero = zero && x[i] == 0;
+        if (!zero) {
+            uint64_t    borrow = 0;
+
+            for (i = 0; i < nm; ++i) {
+                uint64_t    t = (uint64_t) m[i] - x[i] - borrow;
+
+                x[i] = (uint32_t) t;
+                borrow = (t >> 32) & 1;
+            }
+        }
+    }
+    /*  r := 1 \\ m, which is 0 for a modulus of 1.  */
+    memset(r, 0, nm * sizeof *r);
+    r[0] = nm == 1 && m[0] == 1 ? 0 : 1;
+    /*  Left to right over the exponent's bits: square, and multiply by
+     *  the base for a 1.  The first 1 is the base itself.  */
+    started = 0;
+    for (i = ne; i-- > 0; )
+        for (bit = 32; bit-- > 0; ) {
+            if (started) {
+                limbs_multiply(r, r, nm, product);
+                limbs_mod(product, 2 * nm, m, nm, r, un, vn);
+            }
+            if ((e[i] >> bit) & 1) {
+                if (started) {
+                    limbs_multiply(r, x, nm, product);
+                    limbs_mod(product, 2 * nm, m, nm, r, un, vn);
+                } else {
+                    memcpy(r, x, nm * sizeof *r);
+                    started = 1;
+                }
+            }
+        }
+    WORKER_leave_native();
+
+    ok = answer_magnitude_limbs(r, nm, 3);
+    free(b);
+    free(e);
+    free(m);
+    free(work);
+    return ok;
 }
 
 /*
@@ -8304,6 +8592,7 @@ ST_primitive_dispatch(unsigned index)
     case 227: return primitive_float_arc_cos();
     case 233: return primitive_float_log10();
     case 238: return primitive_magnitude_of_digits();
+    case 211: return primitive_raised_to_modulo();
     case 229: return primitive_float_raised_to();
     case 228: return primitive_compile_method();
     case 234: return ST_prim_migrate_instances();
@@ -8439,7 +8728,7 @@ static const unsigned char primitive_takes[256] = {
     [ 61] = TAKES(2), [ 64] = TAKES(2), [ 69] = TAKES(2), [ 74] = TAKES(2),
     [ 79] = TAKES(2), [ 84] = TAKES(2), [100] = TAKES(2), [136] = TAKES(2),
     [174] = TAKES(2), [188] = TAKES(2), [203] = TAKES(2), [210] = TAKES(2),
-    [220] = TAKES(2), [238] = TAKES(2),
+    [211] = TAKES(2), [220] = TAKES(2), [238] = TAKES(2),
 
     /*  Three, four and five.  */
     [116] = TAKES(3), [130] = TAKES(3), [131] = TAKES(3), [204] = TAKES(3),
@@ -8594,6 +8883,7 @@ static const primitive_entry primitive_table[] = {
     { 228, ST_PRIM_PRESENT,  "Compiler class compile -- ours"    },
     { 234, ST_PRIM_PRESENT,  "Behavior migrate instances -- ours" },
     { 238, ST_PRIM_PRESENT,  "Integer class magnitudeOfDigits:radix: -- ours" },
+    { 211, ST_PRIM_PRESENT,  "Integer raisedTo:modulo: -- ours" },
     { 132, ST_PRIM_PRESENT,  "PosixFile lastError; Object instVarsInclude:" },
     { 100, ST_PRIM_PRESENT,  "signal a semaphore at a time"     },
     { 135, ST_PRIM_PRESENT,  "millisecond clock -- unmasked; see "

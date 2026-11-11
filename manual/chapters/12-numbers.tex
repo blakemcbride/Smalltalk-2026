@@ -143,7 +143,8 @@ Rounding and truncation, which are four different questions:
 above that it is a Miller--Rabin test with randomly chosen bases, whose
 chance of calling a composite number prime is below one in $10^{14}$. Its
 cost grows with the cube of the number's length: milliseconds up to
-\ct{SmallInteger maxVal}, a few seconds at a hundred digits.
+\ct{SmallInteger maxVal}, a few hundredths of a second at a hundred digits,
+two seconds at a thousand.
 \ct{a raisedTo: n modulo: m} is \ct|(a raisedTo: n) \\ m| without the power:
 every product is reduced as it is made.
 

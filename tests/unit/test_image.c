@@ -3491,8 +3491,11 @@ test_browsing(void)
      *
      *  3195189 -> 3195626 with Bugs07 X-6: exceptions held to the end of
      *  a section are raised newest first, as outside one.
+     *
+     *  3195626 -> 3195169 with Bugs07 KERNA-11: raisedTo:modulo: is
+     *  primitive 211, and isPrime uses it at every size.
      */
-    check_integer("(SourceFiles at: 1) contents size", 3195626);
+    check_integer("(SourceFiles at: 1) contents size", 3195169);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -14374,7 +14377,7 @@ test_bugs7f_kern(void)
      *  KERNA-11.  Integer>>isPrime was trial division to the square root:
      *  half a second for a fifteen-digit prime, 83 seconds for 2^61 - 1,
      *  hours for twenty digits.  It is Miller-Rabin above a million now,
-     *  over Montgomery multiplication above 2^30, exact below 3.3e24 and
+     *  over primitive 211's modular powers, exact below 3.3e24 and
      *  probabilistic above.  The first two checks are out of the old
      *  method's reach within this harness's budget; the third holds the
      *  new answer to trial division over two ranges, one on each side of
@@ -14408,13 +14411,16 @@ test_bugs7f_kern(void)
                  "(false false false false false false false false false false false )");
 
     /*
-     *  raisedTo:modulo:, which isPrime is built on: by \\ for a modulus
-     *  up to 2^30 or an even or negative one, by Montgomery multiplication
+     *  raisedTo:modulo:, which isPrime is built on: primitive 211 for a
+     *  receiver that is a SmallInteger or a LargePositiveInteger and a
+     *  modulus above 0; the Smalltalk otherwise, by \\ for a modulus up
+     *  to 2^30 or an even or negative one, by Montgomery multiplication
      *  for an odd one above.  The first check is fixed values; the others
-     *  hold the Montgomery answer to square-and-multiply by \\ for
-     *  moduli on either side of each change in the count of 30-bit limbs,
-     *  with every limb full and with a lone top bit, and for bases larger
-     *  than the modulus, negative, zero and one.
+     *  hold both to square-and-multiply by \\ for moduli on either side
+     *  of each change in the count of 30-bit limbs (and so of 32-bit
+     *  ones), with every limb full and with a lone top bit, and for bases
+     *  larger than the modulus, negative (a LargeNegativeInteger is the
+     *  Smalltalk's), zero and one.
      */
     check_string("^{3 raisedTo: 200 modulo: 1000007. (3 raisedTo: 200) \\\\ 1000007. "
                  "  2 raisedTo: 0 modulo: 7. 5 raisedTo: 3 modulo: 1. -3 raisedTo: 3 modulo: 7. "
@@ -14448,6 +14454,35 @@ test_bugs7f_kern(void)
                  "    ifFalse: [bad add: {b. e. m}]]]]. "
                  "^bad asArray printString",
                  "()");
+    /*
+     *  Primitive 211 against Python's pow(b, e, m), over moduli of 300
+     *  digits, 2^256 + 2^64 + 1 and 2^1278 (even, so no Montgomery could
+     *  take it), with exponents of 1279 bits, a negative SmallInteger
+     *  base, an exponent of 0 and Fermat's little theorem; and isPrime at
+     *  sizes that took the Smalltalk a minute: the first prime above
+     *  10^299, and a product of two Mersenne primes.
+     */
+    check_string("^{((3 raisedTo: 200) + 12345) raisedTo: (2 raisedTo: 521) + 999 "
+                 "    modulo: (10 raisedTo: 299) + 669. "
+                 "  -7 raisedTo: (10 raisedTo: 80) + 3 modulo: (2 raisedTo: 256) + (2 raisedTo: 64) + 1. "
+                 "  ((2 raisedTo: 1000) - 1) raisedTo: (2 raisedTo: 1279) - 1 modulo: (2 raisedTo: 1278). "
+                 "  12345678901234567890 raisedTo: 0 modulo: (10 raisedTo: 40). "
+                 "  (10 raisedTo: 299) + 668 raisedTo: (10 raisedTo: 299) + 668 "
+                 "    modulo: (10 raisedTo: 299) + 669} printString",
+                 "(2618434181003358345569417291936883355591862078560264737712515832574452386"
+                 "81211778475651461031890117508910260515508655453780429249061606357197353229"
+                 "94512412455422051299803627367496327192688789320583692138091271820415290109"
+                 "45796161871494094950702032259616889045246285699584665455292405692006936905"
+                 "3531 819119493322659551218003650624252470681713690066336802750769419779316"
+                 "39536943 52039660973321995409626201636820427693076311236333524026595561752"
+                 "01804029836680148995404634794299419211726556486540485790077735007106396379"
+                 "63244941913514987021270352976262638472963309355484504606094824202197345274"
+                 "89236981377896618587826758882845623710419434572345058092068371506361736201"
+                 "80065940961877459656135343542404716567272154829795282536752483267207663618"
+                 "704735968440645916295167 1 1 )");
+    check_string("^{((10 raisedTo: 299) + 669) isPrime. "
+                 "  (((2 raisedTo: 521) - 1) * ((2 raisedTo: 607) - 1)) isPrime} printString",
+                 "(true false )");
 
     /*
      *  KERNA-13.  The manual's figure of the collection hierarchy put
