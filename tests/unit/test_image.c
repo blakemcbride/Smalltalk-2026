@@ -831,8 +831,12 @@
  *  3529 -> 3533 with Bugs07 X-26: ContextPart>>simulateRestartOf: and
  *  completeCallee:, Debugger>>step and reachedBy:, for a retry under
  *  simulation and a step that unwinds past the frame stepped.
+ *
+ *  3533 -> 3534 with Bugs07 X-29: ProcessorScheduler>>forkParallel:
+ *  reportingErrors:, so that forkParallel: reports what its block does not
+ *  handle and parallelCollect: leaves it to the asker.
  */
-#define LIB_METHODS             3533
+#define LIB_METHODS             3534
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -3434,8 +3438,11 @@ test_browsing(void)
      *  3171082 -> 3174727 with Bugs07 X-26: the simulator retries, finds a
      *  nested block's home and ends where its simulation began, and the
      *  Debugger's step follows a send that unwinds past the frame.
+     *
+     *  3174727 -> 3177039 with Bugs07 X-29: an error a forkParallel: block
+     *  does not handle is reported, as fork's is.
      */
-    check_integer("(SourceFiles at: 1) contents size", 3174727);
+    check_integer("(SourceFiles at: 1) contents size", 3177039);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.

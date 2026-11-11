@@ -5441,8 +5441,8 @@ bugs7f_files_limit(const char *name, const char *body, const char *what)
 
 /*
  *  Bugs07, round 6: the KERNB group's lows that need workers or another
- *  profile, and X-28's fileNamed: race.  test_image's test_bugs7f_kernb
- *  holds the one-thread checks.
+ *  profile, X-28's fileNamed: race and X-29's forkParallel: reports.
+ *  test_image's test_bugs7f_kernb holds the one-thread checks.
  */
 static void
 bugs7f_kernb(void)
@@ -5605,6 +5605,61 @@ bugs7f_kernb(void)
             (void) unlink(path);
         }
         (void) rmdir(dir);
+    }
+
+    /*
+     *  X-29: an error a forkParallel: block does not handle is reported
+     *  where it is raised, as fork's is, and the process ends there --
+     *  the promise holds the failure, and the block does not go on.  It
+     *  was only kept in the promise, so a promise nobody asked for said
+     *  nothing at all.  parallelCollect: asks every promise, and its
+     *  tasks still leave the error to it: handled there, it is reported
+     *  nowhere.  Before: not one of the four reports; the ending, the
+     *  lock and the promise were already as they are.
+     */
+    {
+        const char *at;
+        int         reports = 0;
+
+        status = serve("Processor forkParallel: [1/0]. "
+                       "(Delay forMilliseconds: 500) wait. 6\n"
+                       "Processor forkParallel: [nil bugs7fX29]. "
+                       "(Delay forMilliseconds: 500) wait. 7\n"
+                       "Processor forkParallel: [self error: 'bugs7f plain']. "
+                       "(Delay forMilliseconds: 500) wait. 8\n"
+                       "| p log m | log := OrderedCollection new. m := Mutex new. "
+                       "p := Processor forkParallel: [m critical: [1/0. log add: #after]]. "
+                       "(Delay forMilliseconds: 500) wait. {p isBroken. log size. "
+                       "m isHeld. [p value] on: ZeroDivide do: [:e | e class name]}\n"
+                       "[Processor parallelCollect: #(2 0) do: [:x | 10 / x]] "
+                       "on: ZeroDivide do: [:e | #caughtByTheAsker]\n"
+                       "3 + 4\n", 2, out, sizeof out);
+        ++st_test_checks;
+        if (status < 0) {
+            ++st_test_failures;
+            printf("  FAIL X-29: could not run the server\n");
+        } else {
+            expect(out, "MessageNotUnderstood: 'Message not understood: bugs7fX29",
+                   "X-29 a forkParallel: doesNotUnderstand is reported");
+            expect(out, "Error: 'bugs7f plain'",
+                   "X-29 a forkParallel: error: is reported");
+            expect(out, "==> (true 0 false ZeroDivide )",
+                   "X-29 the process ends at the error, its lock released and "
+                   "its promise broken with it");
+            expect(out, "==> caughtByTheAsker",
+                   "X-29 parallelCollect: hands the error to its asker");
+            expect(out, "3 + 4 ==> 7", "X-29 the server goes on");
+            for (at = strstr(out, "ZeroDivide: 'division by 0'"); at;
+                 at = strstr(at + 1, "ZeroDivide: 'division by 0'"))
+                ++reports;
+            ++st_test_checks;
+            if (reports != 2) {
+                ++st_test_failures;
+                printf("  FAIL X-29: %d reports of ZeroDivide, want two -- one "
+                       "per forkParallel:, none from the handled parallelCollect:\n",
+                       reports);
+            }
+        }
     }
 }
 

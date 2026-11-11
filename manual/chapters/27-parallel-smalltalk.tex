@@ -20,6 +20,14 @@ The value comes back, and so does the failure: if the block raises, the
 exception is re-signalled in whoever asks for the value---the process able to
 do something about it.
 
+An error the block does not handle is also reported on the standard error
+where it is raised, as \ct{fork}'s is, and the process ends there, its unwind
+blocks having run. Nothing can know whether a promise will ever be asked for,
+and one that nobody asks keeps its failure to itself. A caller that will
+always ask, and wants the error for itself alone, forks with
+\ct{forkParallel:reportingErrors:} and \ct{false}, as
+\ct{parallelCollect:do:} does.
+
 \begin{center}
 \small
 \begin{tabular}{@{}ll@{}}

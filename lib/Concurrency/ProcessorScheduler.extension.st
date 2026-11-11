@@ -95,12 +95,51 @@ ProcessorScheduler >> forkParallel: aBlock [
 	 terminate runs the unwind blocks of the process it ends, so an ensure:
 	 here is reached on that path as well as on a non-local return out of the
 	 block, and breakIfUnsettled: says nothing when the two lines above have
-	 already had their say."
+	 already had their say.
+
+	 An error the block does not handle is also REPORTED, where it is
+	 raised, as fork's is (Bugs07 X-29).  It was only kept in the promise,
+	 and a promise nobody asks for keeps it for ever: `Processor
+	 forkParallel: [1/0]' said nothing at all where `[1/0] fork' printed
+	 ZeroDivide, and a share of a computation that failed that way left
+	 whoever was counting the shares waiting, with nothing to say why.
+	 Nothing here can know whether the promise will be asked for, so the
+	 report is made either way; an asker that then handles the error has
+	 had it reported once already.  forkParallel:reportingErrors: with
+	 false is for an asker that will always ask, as parallelCollect: does."
+	^self forkParallel: aBlock reportingErrors: true
+]
+
+{ #category : '*Concurrency' }
+ProcessorScheduler >> forkParallel: aBlock reportingErrors: aBoolean [
+	"Run aBlock as its own Process and answer a Promise for its value,
+	 reporting what it raises and does not handle when aBoolean is true.
+
+	 The report is the one an unhandled error gets, made by passing the
+	 error on from the handler that caught it, once the promise holds it:
+	 there is no handler further out on a process this has just made, so
+	 it reaches Error>>defaultAction as it would have with no handler here
+	 at all.  The line goes to the standard error, the notifier opens
+	 where there is a screen for it, and the unwinding runs every ensure:
+	 down to this one's.  That is something torn down, so by fork's rule
+	 the process then ENDS rather than carrying on from the failed send --
+	 as it must here, because the promise already holds the failure, and a
+	 block that went on would only have a second answer that a settled
+	 promise refuses.  The promise is settled first, so an asker is never
+	 kept waiting by the report.  (An `on: UnhandledError do:' inside the
+	 block never sees the error, now or before: the `on: Error do:' here
+	 takes it first, and a handler runs where its own on:do: stands, out
+	 of reach of the handlers inside the block.)
+
+	 With false, the error goes to the asker alone: the promise holds it
+	 and the process ends, and nothing is said unless the asker says it."
 	| promise |
 	promise := Promise new.
 	[[[promise fulfill: aBlock value]
 		on: Error
-		do: [:e | promise signalError: e]]
+		do: [:e |
+			promise signalError: e.
+			aBoolean ifTrue: [e pass]]]
 			ensure: [promise breakIfUnsettled: (Error new messageText:
 				'the process computing this Promise ended without settling it')]] fork.
 	^promise
@@ -110,10 +149,12 @@ ProcessorScheduler >> forkParallel: aBlock [
 ProcessorScheduler >> parallelCollect: aCollection do: aBlock [
 	"Evaluate aBlock for each element, possibly at the same time, and
 	 answer the results in order.  Every promise is asked for, so a
-	 failure anywhere arrives here rather than being lost."
+	 failure anywhere arrives here rather than being lost -- which is why
+	 the tasks do not report their errors themselves: the first failure in
+	 order is raised here, and reported here if nothing here handles it."
 	| promises |
 	promises := aCollection collect: [:each |
-		self forkParallel: [aBlock value: each]].
+		self forkParallel: [aBlock value: each] reportingErrors: false].
 	^promises collect: [:each | each value]
 ]
 
