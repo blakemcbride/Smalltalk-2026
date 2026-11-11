@@ -61,6 +61,15 @@ still has is refused with the file's name and the methods, before anything
 reaches the disk: a method moved in the Browser into a category no file
 owns would otherwise be written nowhere and gone at the next load.
 
+A CLASS FILE IS HELD TO THE SAME RULE.  It owns the class's own categories,
+the ones without a star, and its write-back writes those and no others; so a
+method the file held, moved in the Browser into a starred category that no
+extension file of the class owns, was written to no file at all, and the
+accept answered as if all were well (Bugs07 X-19, the half of COMP-1 that
+covered extension files only).  The methods a Class file held at its last
+load or write are remembered as an extension file's are, and the same
+refusal names them.
+
 WHAT IS SHARED.  One Dictionary from class name to entries, for the image, read
 by every request and written by the loads; so every access takes the Mutex,
 the reads too, for the reason doc/CONCURRENCY.md gives about Set>>grow.  A
@@ -222,9 +231,9 @@ TonelSource class >> lockedLoad: pathString [
 				noteType: reader fileType
 				prefix: (self prefixFor: pathString categories: reader categoriesRead)
 				categories: (reader categoriesRead reject: [:each | TonelWriter isOwnCategory: each])
-				comment: reader fileComment.
-			entry noteHeldIn: class]
+				comment: reader fileComment]
 		ifFalse: [entry noteType: reader fileType prefix: nil categories: nil comment: nil].
+	entry noteHeldIn: class.
 	entry recordStamp: stamp.
 	^class
 ]
@@ -356,19 +365,22 @@ TonelSource >> noteType: aString prefix: prefixOrNil categories: aCollectionOrNi
 
 { #category : 'private' }
 TonelSource >> owns: category [
-	"Whether a method in category belongs in my file, which is an
-	 Extension file: one of the starred categories it was read with, or
-	 my prefix or a tag under it (Bugs07 COMP-1; see the class comment)."
+	"Whether a method in category belongs in my file.  A Class file owns
+	 the class's own categories, those that do not begin with a star, as
+	 TonelWriter>>writeClass: writes them.  An Extension file owns the
+	 starred categories it was read with, and my prefix and the tags under
+	 it (Bugs07 COMP-1; see the class comment)."
+	self isExtension ifFalse: [^TonelWriter isOwnCategory: category].
 	^(categories notNil and: [categories includes: category])
 		or: [prefix notNil and: [TonelWriter category: category isUnder: prefix]]
 ]
 
 { #category : 'private' }
 TonelSource >> noteHeldIn: aClass [
-	"Remember the methods my Extension file holds, as the class has them
-	 just after the file was read: every method in a category I own, but
-	 the bootstrap's synthesized new, which no file holds.  See
-	 lostRefusalWriting:."
+	"Remember the methods my file holds, as the class has them just after
+	 the file was read: every method in a category I own, but the
+	 bootstrap's synthesized new, which no file holds.  A Class file as
+	 well as an Extension file (Bugs07 X-19).  See lostRefusalWriting:."
 	| writer |
 	writer := TonelWriter new.
 	held := Set new.
@@ -390,14 +402,15 @@ TonelSource >> keyFor: selector meta: aBoolean [
 
 { #category : 'writing back' }
 TonelSource >> lostRefusalWriting: pairs of: aClass [
-	"nil, or the reason my Extension file must not be written with only
-	 pairs -- the behavior and selector of each method the writer wrote --
-	 in it: a method the file held at its last load or write that the
-	 class still has, and that the writer left out because its category is
-	 not one the file owns, nor one that another file of the class owns
-	 (Bugs07 COMP-1).  A method the class no longer has was removed, and
-	 leaving it out is the point; one moved into the class's own
-	 categories, or another package's, is written by that file.
+	"nil, or the reason my file must not be written with only pairs -- the
+	 behavior and selector of each method the writer wrote -- in it: a
+	 method the file held at its last load or write that the class still
+	 has, and that the writer left out because its category is not one
+	 the file owns, nor one that another file of the class owns (Bugs07
+	 COMP-1 for an Extension file, X-19 for a Class file).  A method the
+	 class no longer has was removed, and leaving it out is the point; one
+	 moved into the class's own categories, or another package's, is
+	 written by that file.
 
 	 Checked before the file is written, after the change it reports: the
 	 Browser's hooks ask before they compile, but what they ask with is a
@@ -416,10 +429,7 @@ TonelSource >> lostRefusalWriting: pairs of: aClass [
 		(writtenKeys includes: key)
 			or: [(side includesSelector: selector) not
 			or: [category := (side organization categoryOfElement: selector) asString.
-				siblings anySatisfy: [:each |
-					each ~~ self and: [each isExtension
-						ifTrue: [each owns: category]
-						ifFalse: [TonelWriter isOwnCategory: category]]]]]]) asSortedCollection.
+				siblings anySatisfy: [:each | each ~~ self and: [each owns: category]]]]]) asSortedCollection.
 	lost isEmpty ifTrue: [^nil].
 	^path, ' holds ', (lost inject: '' into: [:all :each | | method |
 			method := (each size > 6 and: [(each copyFrom: 1 to: 6) = 'class '])
@@ -432,10 +442,12 @@ TonelSource >> lostRefusalWriting: pairs of: aClass [
 		name, ' to it would leave ', (lost size = 1 ifTrue: ['it'] ifFalse: ['them']),
 		' out, and nothing was written.',
 		'  Put ', (lost size = 1 ifTrue: ['it'] ifFalse: ['them']),
-		' back in one of the file''s categories -- ',
-		((categories isNil ifTrue: [#()] ifFalse: [categories asSortedCollection asArray])
-			copyWith: prefix) printString,
-		' -- or send TonelSource forget: ', name, ' to stop writing the class to it.'
+		(self isExtension
+			ifTrue: [' back in one of the file''s categories -- ',
+				((categories isNil ifTrue: [#()] ifFalse: [categories asSortedCollection asArray])
+					copyWith: prefix) printString, ' --']
+			ifFalse: [' back in one of the class''s own categories, whose names have no star,']),
+		' or send TonelSource forget: ', name, ' to stop writing the class to it.'
 ]
 
 { #category : 'private' }
@@ -457,8 +469,8 @@ TonelSource >> writeBack: aClass [
 	 not written: it has changed on disk since it was loaded or last
 	 written, and writing would throw that change away (Bugs5 FILES-4);
 	 or it cannot be written at all (Bugs6 COMP-13); or TonelWriter
-	 refused the text (Bugs5 FILES-5); or an Extension file would lose a
-	 method it held (Bugs07 COMP-1); or the text would not read back as
+	 refused the text (Bugs5 FILES-5); or the file would lose a method it
+	 held (Bugs07 COMP-1, X-19); or the text would not read back as
 	 the methods it was written from (Bugs6 COMP-14).  The text is built,
 	 and read back, before the file is opened, so a refusal leaves the
 	 file as it was.
@@ -490,15 +502,13 @@ TonelSource >> writeBack: aClass [
 			ifFalse: [writer writeClass: aClass; contents]]
 		on: TonelError do: [:e | why := e messageText. e return: nil].
 	why notNil ifTrue: [^why].
-	self isExtension ifTrue: [
-		why := self lostRefusalWriting: writer written of: aClass.
-		why notNil ifTrue: [^why]].
+	why := self lostRefusalWriting: writer written of: aClass.
+	why notNil ifTrue: [^why].
 	why := TonelReader refusalReading: text named: path holding: writer written.
 	why notNil ifTrue: [^'the file would not read back as written, so it was not written: ', why].
 	TonelWriter writeText: text toFile: path.
-	self isExtension ifTrue: [
-		held := (writer written collect: [:pair |
-			self keyFor: (pair at: 2) meta: (pair at: 1) isMeta]) asSet].
+	held := (writer written collect: [:pair |
+		self keyFor: (pair at: 2) meta: (pair at: 1) isMeta]) asSet.
 	file := TonelSource fileFor: path.
 	file notNil ifTrue: [self recordStamp: (TonelSource stampFrom: file)].
 	^nil

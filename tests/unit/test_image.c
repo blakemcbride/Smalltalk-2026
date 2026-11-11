@@ -3417,8 +3417,11 @@ test_browsing(void)
      *
      *  3165909 -> 3166258 with Bugs07 FILES-15: an open File answers its
      *  size without making a block.
+     *
+     *  3166258 -> 3167044 with Bugs07 X-19: a Class file's write-back
+     *  refuses to leave out a method it held, as an extension file's does.
      */
-    check_integer("(SourceFiles at: 1) contents size", 3166258);
+    check_integer("(SourceFiles at: 1) contents size", 3167044);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -15161,6 +15164,89 @@ test_bugs7f_vm(void)
     (void) system(command);
 }
 
+/*
+ *  Bugs07 round six, COMP: X-19 (a Class file's write-back left out a
+ *  method moved into a starred category no file owns, and said nothing).
+ */
+static void
+test_bugs7f_comp(void)
+{
+    const char *dir = st_test_path("bugs7f-comp");
+    char        expression[4096];
+    char        command[1200];
+
+    test_dialect = ST_DIALECT_CLOSURES;
+    mkdir(dir, 0755);
+
+    /*
+     *  X-19.  A Class file and an Extension file of one class, loaded
+     *  through TonelSource.  An accept into the class's own category goes
+     *  to the Class file; one into the extension's category moves the
+     *  method to the extension file; one into `*Nobody', which no file of
+     *  the class owns, would write the Class file without it.  That was
+     *  accepted and the method was gone from every file -- the Class file
+     *  after it read `(three)'.  Now it is refused with the method named,
+     *  the file keeps it, and putting it back in an own category writes
+     *  again.
+     */
+    {
+        static const char *const files[][2] = {
+            { "Bugs7fX19.class.st",
+              "Class {\n\t#name : 'Bugs7fX19',\n\t#superclass : 'Object',\n"
+              "\t#category : 'Bugs7f-X19'\n}\n\n{ #category : 'probes' }\n"
+              "Bugs7fX19 >> one [\n\t^1\n]\n\n{ #category : 'probes' }\n"
+              "Bugs7fX19 >> two [\n\t^2\n]\n" },
+            { "e/package.st", "Package { #name : 'Bugs7f-Ext' }\n" },
+            { "e/Bugs7fX19.extension.st",
+              "Extension { #name : 'Bugs7fX19' }\n\n{ #category : '*Bugs7f-Ext' }\n"
+              "Bugs7fX19 >> ext [\n\t^9\n]\n" },
+        };
+        char   sub[1024];
+        size_t i;
+
+        snprintf(sub, sizeof sub, "%s/e", dir);
+        mkdir(sub, 0755);
+        for (i = 0; i < sizeof files / sizeof files[0]; i++) {
+            FILE *f;
+
+            snprintf(sub, sizeof sub, "%s/%s", dir, files[i][0]);
+            f = fopen(sub, "w");
+            if (f) {
+                fputs(files[i][1], f);
+                fclose(f);
+            }
+        }
+        snprintf(expression, sizeof expression,
+                 "| d c out try has | d := '%s/'. out := OrderedCollection new. "
+                 "#('Bugs7fX19.class.st' 'e/Bugs7fX19.extension.st') "
+                 "do: [:each | TonelSource loadFile: d, each]. "
+                 "c := Smalltalk at: #Bugs7fX19. "
+                 "try := [:source :category | out add: ([c compile: source classified: category "
+                 "notifying: nil. #accepted] on: TonelError do: [:e | "
+                 "((e messageText includesSubstring: 'Bugs7fX19>>two') "
+                 "and: [e messageText includesSubstring: 'own categories']) "
+                 "ifTrue: [#refused] ifFalse: [e messageText]])]. "
+                 "has := [:file | | text | text := (FileStream oldFileNamed: d, file) "
+                 "contentsOfEntireFile. (#(#one #two #three #ext) select: [:s | "
+                 "text includesSubstring: 'Bugs7fX19 >> ', s, ' [']) asArray]. "
+                 "try value: 'three ^3' value: 'probes'. "
+                 "try value: 'one ^11' value: '*Bugs7f-Ext'. "
+                 "try value: 'two ^22' value: '*Nobody'. "
+                 "out add: (has value: 'Bugs7fX19.class.st'). "
+                 "try value: 'two ^23' value: 'probes'. "
+                 "out add: (has value: 'Bugs7fX19.class.st'); "
+                 "add: (has value: 'e/Bugs7fX19.extension.st'). "
+                 "TonelSource forget: c. ^out printString", dir);
+        check_string(expression,
+                     "an OrderedCollection(accepted accepted refused (two three ) "
+                     "accepted (two three ) (one ext ) )");
+    }
+
+    snprintf(command, sizeof command, "rm -rf %s", dir);
+    (void) system(command);
+    test_dialect = ST_DIALECT_BLUE_BOOK;
+}
+
 int
 main(void)
 {
@@ -15324,6 +15410,7 @@ main(void)
     test_bugs7f_om();
     test_bugs7f_vm();
     test_bugs7f_files();
+    test_bugs7f_comp();
 
     OM_shutdown();
     return ST_TEST_END();
