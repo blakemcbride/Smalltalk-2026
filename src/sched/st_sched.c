@@ -268,6 +268,13 @@ milliseconds_until(uint32_t target_ms)
 }
 
 static void drain_async_signals(void);
+static int  async_enqueue(st_oop semaphore, int take_count);
+
+/*
+ *  How long the delay timer waits before offering a signal again when the
+ *  async queue is full (Bugs07 X-1; see timer_main).
+ */
+#define TIMER_RETRY_NS      INT64_C(1000000)
 
 static void
 timer_init(void)
@@ -373,11 +380,11 @@ timer_main(void *arg)
 {
     (void) arg;
     /*
-     *  Its own count on the Semaphore it delivers is released below, at
-     *  whatever moment the deadline falls -- in the middle of a collection
-     *  included, which does not stop this thread.  A release that reaches
-     *  zero is the collector's to act on, never this thread's (Bugs07
-     *  OM-1; see OM_decrease_ref_object).
+     *  This thread changes no count: the one it delivers with is handed to
+     *  the async queue whole (Bugs07 X-1, below).  Marked anyway, so that
+     *  a release added here later is left for the collector rather than
+     *  freeing in the middle of a collection this thread is not stopped
+     *  by (Bugs07 OM-1; see OM_decrease_ref_object).
      */
     OM_thread_never_frees();
     ST_mutex_lock(&timer_lock);
@@ -430,33 +437,54 @@ timer_main(void *arg)
              */
             ST_mutex_unlock(&timer_lock);
             /*
-             *  Queued or not, this thread's count goes first and the root
-             *  after, while the root still stands for the count.
+             *  The count this thread holds -- taken by SCHED_signal_at_ms,
+             *  on the worker that armed it -- is HANDED to the queue, not
+             *  matched by a new one there and then released here.
              *
-             *  A collection does not trust counts: it zeroes them all and
-             *  rebuilds each from the heap and the root walk, and the timer
-             *  thread is not parked by a safepoint, so a collection really
-             *  can land between these two lines.  Root first, it recounts
-             *  the semaphore without the root that stood for this thread's
-             *  count -- the class variable, plus the queue's slot if it was
-             *  queued -- and the decrement after it leaves the semaphore
-             *  one short.  The drain's release then takes it to zero while
-             *  Delay's TimingSemaphore still names it: MEM-6 again, through
-             *  the other door.  The queued branch used to clear the root
-             *  first on the reasoning that the queue's own count made the
-             *  release safe, which holds between collections and not across
-             *  one (Bugs5 OM-13).  Count first, a collection in between
-             *  finds one root too many and counts the semaphore one high,
-             *  which costs nothing: the next collection rebuilds it again.
+             *  Bugs07 X-1.  The queue used to take a count of its own and
+             *  this thread then gave its count back: one increment and one
+             *  decrement of the Semaphore on a thread that is not the
+             *  heap's mutator.  The threaded memory's counts are atomic,
+             *  so that only had to be ordered against a collection (count
+             *  first, root after -- Bugs5 OM-13; Bugs07 OM-1 for a release
+             *  reaching zero).  The Blue Book memory's are not: its count
+             *  is the high byte of an object-table word that the
+             *  interpreter thread reads, modifies and writes back with no
+             *  atomics, so an update from here landing between the
+             *  interpreter's read and its write of the same Semaphore was
+             *  lost -- a count one high, or one low and a live Semaphore
+             *  freed.  Handed over, this thread touches no count and no
+             *  object at all, in either memory.
              *
-             *  So whether the queue took it no longer decides the order.
-             *  If it did, it took a count of its own; if it was full, the
-             *  order is the one this branch always had, for the same reason.
+             *  The root still goes after the queue has the Semaphore, for
+             *  the old reason: a collection between the two finds it in
+             *  both places and counts it one high, which the next one
+             *  repairs; the other order could find it in neither.
+             *
+             *  And a full queue is waited out instead of dropping the
+             *  signal, since the count has nowhere else to go and a Delay
+             *  whose signal is dropped never wakes (nor does anything
+             *  queued behind it).  timer_delivering stays set, so to every
+             *  waiter the timer has not fired yet -- which is the truth --
+             *  and the workers' idle loops drain the queue meanwhile.  A
+             *  stop gives up and leaves the Semaphore in the delivering
+             *  slot, a root still, for SCHED_timer_stop to release.
              */
-            (void) SCHED_asynchronous_signal(semaphore);
-            OM_decrease_ref(semaphore);
-            ST_store_release(&timer_delivering_semaphore, (uintptr_t) ST_NIL);
-            ST_mutex_lock(&timer_lock);
+            {
+                int     queued = async_enqueue(semaphore, 0);
+
+                ST_mutex_lock(&timer_lock);
+                while (!queued && !timer_stopping) {
+                    (void) ST_cond_timedwait(&timer_cond, &timer_lock,
+                                             TIMER_RETRY_NS);
+                    ST_mutex_unlock(&timer_lock);
+                    queued = async_enqueue(semaphore, 0);
+                    ST_mutex_lock(&timer_lock);
+                }
+                if (queued)
+                    ST_store_release(&timer_delivering_semaphore,
+                                     (uintptr_t) ST_NIL);
+            }
             /*
              *  Cleared here and not before.  A re-arm during the delivery
              *  above sets timer_armed again, so this must not touch it.
@@ -528,6 +556,23 @@ SCHED_timer_stop(void)
         OM_decrease_ref(timer_semaphore);
     timer_semaphore = ST_NIL;
     timer_armed     = 0;
+    /*
+     *  A delivery the stop interrupted while the queue was full (Bugs07
+     *  X-1): the timer's count is still on it.  Released here, on the
+     *  thread that stopped the timer, count first and root after for the
+     *  reason timer_main gives.
+     */
+    {
+        st_oop  undelivered =
+            (st_oop) ST_load_acquire(&timer_delivering_semaphore);
+
+        if (undelivered != ST_NIL) {
+            OM_decrease_ref(undelivered);
+            ST_store_release(&timer_delivering_semaphore,
+                             (uintptr_t) ST_NIL);
+        }
+    }
+    timer_delivering = 0;
 }
 
 static st_oop   input_semaphore = ST_NIL;
@@ -2167,10 +2212,23 @@ SCHED_synchronous_signal(st_oop semaphore)
 int
 SCHED_asynchronous_signal(st_oop semaphore)
 {
-    int queued = 0;
-
     if (!OM_is_present(semaphore))
         return 1;                       /*  nothing to deliver: not owed  */
+    return async_enqueue(semaphore, 1);
+}
+
+/*
+ *  Queue a signal, with the count the queue then holds on it: taken here
+ *  when `take_count', or handed over by a caller that held one and no
+ *  longer does -- the delay timer, which must not change a count itself
+ *  (Bugs07 X-1).  Answers whether it was queued; a caller that offered
+ *  its count still owns it when the answer is no.
+ */
+static int
+async_enqueue(st_oop semaphore, int take_count)
+{
+    int queued = 0;
+
     async_lock_init();
     ST_mutex_lock(&async_lock);
     {
@@ -2182,12 +2240,12 @@ SCHED_asynchronous_signal(st_oop semaphore)
              *  visited by the root walk, which is what a collection needs;
              *  what it did not have was a reference of its own, so between
              *  collections the only thing keeping a queued semaphore alive
-             *  was whatever the CALLER still held -- and the timer thread
-             *  lets go of its hold on the next line (Bugs4 MEM-6).  The
+             *  was whatever the CALLER still held (Bugs4 MEM-6).  The
              *  drain releases this again once the signal has been
              *  delivered.
              */
-            OM_increase_ref(semaphore);
+            if (take_count)
+                OM_increase_ref(semaphore);
             async_queue[n] = semaphore;
             ST_store_release(&async_count, n + 1);
             queued = 1;

@@ -6,6 +6,7 @@
  */
 
 #include "om_bb.h"
+#include "st_atomic.h"
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -94,6 +95,22 @@ OM_next_object(st_oop p)
  *  hatch for a field too narrow to hold the true count.
  */
 
+/*
+ *  Count changes made on a thread marked OM_thread_never_frees -- which in
+ *  this memory is a data race with the interpreter thread, whose
+ *  read-modify-write of the same object-table word can lose the update
+ *  (Bugs07 X-1).  The delay timer, the only such thread, makes none now;
+ *  the number is how a test says so.
+ */
+static _Thread_local int    never_frees;
+static st_atomic_uint       foreign_count_changes;
+
+unsigned
+OM_foreign_count_changes(void)
+{
+    return (unsigned) ST_load_relaxed(&foreign_count_changes);
+}
+
 void
 OM_increase_ref(st_oop p)
 {
@@ -101,6 +118,8 @@ OM_increase_ref(st_oop p)
 
     if (OM_is_int(p) || !OM_is_object(p))
         return;
+    if (never_frees)
+        ST_fetch_add_relaxed(&foreign_count_changes, 1);
     count = OM_count_bits(p);
     if (count < ST_HUGE_SIZE - 1)
         OM_set_count_bits(p, count + 1);
@@ -114,8 +133,6 @@ OM_increase_ref(st_oop p)
  *  collection the interpreter thread is running.  See
  *  OM_decrease_ref_object in om_mt.c.
  */
-static _Thread_local int    never_frees;
-
 void
 OM_thread_never_frees(void)
 {
@@ -129,6 +146,8 @@ OM_decrease_ref(st_oop p)
 
     if (OM_is_int(p) || !OM_is_object(p))
         return;
+    if (never_frees)
+        ST_fetch_add_relaxed(&foreign_count_changes, 1);
     count = OM_count_bits(p);
     if (count >= ST_HUGE_SIZE - 1)
         return;                     /*  stuck at the ceiling  */

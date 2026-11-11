@@ -491,6 +491,8 @@ void    OM_decrease_ref(st_oop p);
 
 /*  A counting thread that is not the mutator; see om_bb.c (Bugs07 OM-1).  */
 void    OM_thread_never_frees(void);
+/*  How many count changes such a thread has made (Bugs07 X-1): none.  */
+unsigned OM_foreign_count_changes(void);
 
 /*  Store with the correct count adjustments; the interpreter uses this.  */
 void    OM_store_pointer(uint32_t field, st_oop p, st_oop value);

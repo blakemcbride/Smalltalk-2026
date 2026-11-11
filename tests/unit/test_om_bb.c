@@ -30,6 +30,8 @@
 
 #include "om.h"
 #include "census.h"
+#include "st_port.h"
+#include "st_sched.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -575,6 +577,47 @@ test_allocation_churn(void)
     }
 }
 
+/*
+ *  Bugs07 X-1: the delay timer changes no count in this memory.
+ *
+ *  A count here is the high byte of an object-table word that the
+ *  interpreter thread reads, modifies and writes back without atomics, so
+ *  a change made on the timer thread at the same moment as one made by the
+ *  interpreter loses one of them.  The timer used to make two at every
+ *  Delay's expiry: the async queue's increment and the release of its own
+ *  count.  It hands its count to the queue now, and the memory counts the
+ *  changes any thread marked OM_thread_never_frees makes -- which must
+ *  stay at none while the timer fires and delivers.  The Semaphore ends
+ *  with the arming count, held by the queue, and a reset gives it back.
+ */
+static void
+test_bugs7f_om(void)
+{
+    st_oop      sem = OM_instantiate_pointers(ST_CLASS_SEMAPHORE, 3);
+    unsigned    before;
+    unsigned    changes;
+    int         waited;
+
+    printf("  Bugs07 X-1: the delay timer touches no count\n");
+    CHECK(OM_is_object(sem));
+    if (!OM_is_object(sem))
+        return;
+    OM_increase_ref(sem);
+    SCHED_reset();
+    before  = OM_count_bits(sem);
+    changes = OM_foreign_count_changes();
+    SCHED_signal_at_ms(sem, ST_time_ms_clock());
+    for (waited = 0; waited < 2000 && SCHED_timer_pending(); ++waited)
+        ST_sleep_ns(INT64_C(1000000));
+    CHECK(!SCHED_timer_pending());
+    CHECK_EQ_INT(OM_foreign_count_changes() - changes, 0);
+    CHECK_EQ_INT(OM_count_bits(sem), before + 1);
+    SCHED_timer_stop();
+    SCHED_reset();
+    CHECK_EQ_INT(OM_count_bits(sem), before);
+    OM_decrease_ref(sem);
+}
+
 int
 main(void)
 {
@@ -598,6 +641,7 @@ main(void)
     test_method_oops();
     test_allocation();
     test_allocation_churn();
+    test_bugs7f_om();
 
     status = ST_TEST_END();
     OM_shutdown();

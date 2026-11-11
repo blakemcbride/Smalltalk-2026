@@ -20,6 +20,7 @@
 #include "census.h"
 #include "finalize.h"
 #include "st_port.h"
+#include "st_sched.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -1388,6 +1389,50 @@ test_bugs7f_om8(void)
     OM_decrease_ref(counted);
 }
 
+/*
+ *  Bugs07 X-1, the half this memory can see: the delay timer hands the
+ *  count it delivers with to the async queue, so with the queue full it
+ *  has nowhere to put it and waits, instead of giving the count back and
+ *  dropping the signal -- a dropped TimingSemaphore signal is every Delay
+ *  in the image asleep for ever.  (The other half, that the timer thread
+ *  changes no count at all, is test_om_bb's: it is the Blue Book memory
+ *  whose counts are not atomic.)  Here: the queue filled, the timer fired
+ *  at a Semaphore-shaped object, and thirty milliseconds later the timer
+ *  is still delivering and the object still has the timer's count; then a
+ *  stop gives that count back.  Before, the signal was dropped at once:
+ *  nothing pending and the count already returned.
+ */
+static void
+test_bugs7f_om_timer(void)
+{
+    st_oop      filler = OM_instantiate_pointers(ST_CLASS_ARRAY, 3);
+    st_oop      timed  = OM_instantiate_pointers(ST_CLASS_ARRAY, 3);
+    unsigned    before;
+    int         i;
+    int         queued = 0;
+
+    printf("  Bugs07 X-1: a full queue does not drop the timer's signal\n");
+    OM_increase_ref(filler);
+    OM_increase_ref(timed);
+    SCHED_reset();
+    for (i = 0; i < 1024; ++i)
+        queued += SCHED_asynchronous_signal(filler);
+    CHECK_EQ_INT(queued, 1024);
+    CHECK_EQ_INT(SCHED_asynchronous_signal(filler), 0);
+    before = OM_count_bits(timed);
+    SCHED_signal_at_ms(timed, ST_time_ms_clock());
+    ST_sleep_ns(INT64_C(30000000));
+    CHECK(SCHED_timer_pending());
+    CHECK_EQ_INT(OM_count_bits(timed), before + 1);
+    SCHED_timer_stop();
+    CHECK(!SCHED_timer_pending());
+    CHECK_EQ_INT(OM_count_bits(timed), before);
+    SCHED_reset();
+    CHECK_EQ_INT(OM_count_bits(filler), 1);
+    OM_decrease_ref(filler);
+    OM_decrease_ref(timed);
+}
+
 int
 main(void)
 {
@@ -1413,6 +1458,7 @@ main(void)
     test_corrupt_image_is_refused();
     test_bugs7f_om();
     test_bugs7f_om8();
+    test_bugs7f_om_timer();
     test_full_table_collects();
 
     printf("  table holds %u entries, %u free\n", st_om_table_limit,
