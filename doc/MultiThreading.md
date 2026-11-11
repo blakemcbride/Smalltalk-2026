@@ -461,18 +461,18 @@ however high the last survivor sits in the table. A process that ignores the
 error and allocates on reaches the raised ceiling with its reserve spent, and
 that is where the process stops.
 
-There is a measured limit on when the error can be raised at all, and it is
-worth stating because it is a property of the *exception* design rather than of
-this path. Signalling walks the sender chain to find a handler and unwinding
-walks it again per frame, so delivering an exception is quadratic in the depth:
-timed here, an `Error` raised 10,000 frames down and caught at the top is
-instant, and the same thing 100,000 frames down had not finished after five
-minutes. Past `ST_OOM_MAX_UNWIND_DEPTH` — 16,384 frames — the interpreter does
-not signal, because an error nothing can deliver would turn a process that dies
-in four seconds with a message into one that hangs. A runaway recursion takes
-about five million frames to exhaust the table and so is always on that side of
-the line; a worker that runs out of room with an ordinary stack, which is what a
-REST request or a test is, gets the error and the other workers keep working.
+The depth of the stack does not limit when the error can be raised. Delivering
+an exception is linear in the depth: timed here, an `Error` raised 100,000
+frames down and caught at the top takes 82 ms, and a million frames down 853 ms.
+(It once looked quadratic -- 100,000 frames had not finished after five minutes
+-- but that was a guard in `context_is_live` giving up after 100,000 hops and
+turning every handler's return into a fresh error; Bugs2 removed it.) A runaway
+recursion never reaches the table's end: past `ST_MAX_CALL_DEPTH` frames
+(200,000 by default) the interpreter signals `RecursionDepthExceeded` instead,
+in about a tenth of a second. `ST_OOM_MAX_UNWIND_DEPTH` -- 16M frames, where
+the interpreter stops rather than signals -- stays only as a backstop for a
+stack nothing could walk, and with the depth check on, no stack gets near it
+(Bugs07 X-17).
 
 ---
 

@@ -224,10 +224,12 @@ out meanwhile is told in its turn. A handler that returns gives the
 reserve back, so a server whose requests run out one after another tells
 every one of them. What stops is that process alone: the
 interpreter ends it with a line on the standard error, and every other
-process, and the server, goes on. Very deep stacks are the exception: past sixteen thousand frames the
-interpreter stops rather than signals, because delivering an exception is
-quadratic in the depth and a runaway recursion is millions of frames down.
-That case still prints a line and stops, in about four seconds.
+process, and the server, goes on. The depth of the stack does not change
+this: delivering an exception costs time in proportion to the depth, and an
+error raised a million frames down is caught in under a second. A runaway
+recursion never gets that far, because past two hundred thousand frames the
+interpreter signals \ct{RecursionDepthExceeded} instead (\S\ref{sec:runaway}),
+long before the object table runs out.
 
 \ct{UnhandledError} is an error that no handler took, offered once more
 before it is reported: \ct{Error>>defaultAction} signals one carrying the
