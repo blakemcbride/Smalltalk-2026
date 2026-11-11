@@ -4422,6 +4422,7 @@ run_method_with(st_oop method, st_oop receiver, st_oop *args,
     st_held     held;
     st_oop      context;
     unsigned    i;
+    uint32_t    slots;
 
     /*
      *  The method, the receiver and the arguments are the caller's, and are
@@ -4435,7 +4436,16 @@ run_method_with(st_oop method, st_oop receiver, st_oop *args,
     ST_hold(&held, &receiver);
     if (argc)
         ST_hold_n(&held, args, argc);
-    context = OM_instantiate_pointers(ST_CLASS_METHOD_CONTEXT, 64);
+    /*
+     *  Sixty-four slots, or the method's own frame when that is larger:
+     *  a class initializer is ordinary source, and one whose stack goes
+     *  deeper than a fixed context overflowed it (Bugs07 X-11, found with
+     *  -eval's and -startup's).
+     */
+    slots = ST_context_slots_for(
+                OM_fetch_pointer(ST_METHOD_HEADER_INDEX, method));
+    context = OM_instantiate_pointers(ST_CLASS_METHOD_CONTEXT,
+                                      slots > 64 ? slots : 64);
     if (!OM_is_present(context)) {
         ST_hold_leave(&held);
         return 0;
@@ -6053,6 +6063,7 @@ BOOT_install_scheduler_dialect(const char *startup_source, int dialect)
     size_t      source_size;
     int         compiled;
     st_held     held;
+    uint32_t    slots;
 
     if (!OM_is_present(scheduler) || !OM_is_present(process_class)) {
         fprintf(stderr, "st2026: no scheduler: Processor=%d Process=%d\n",
@@ -6118,8 +6129,17 @@ BOOT_install_scheduler_dialect(const char *startup_source, int dialect)
     ST_hold_enter(&held);
     ST_hold(&held, &res.method);
     ST_hold(&held, &context);
+    /*
+     *  As large as the method's frame says, never smaller than the large
+     *  context it always had: a startup whose stack went deeper than
+     *  thirty-two overflowed it, as -eval's fixed context did (Bugs07
+     *  X-11).
+     */
+    slots = ST_context_slots_for(
+                OM_fetch_pointer(ST_METHOD_HEADER_INDEX, res.method));
     context = OM_instantiate_pointers(ST_CLASS_METHOD_CONTEXT,
-                                      ST_LARGE_CONTEXT_SLOTS);
+                                      slots > ST_LARGE_CONTEXT_SLOTS
+                                        ? slots : ST_LARGE_CONTEXT_SLOTS);
     if (!OM_is_present(context)) {
         ST_hold_leave(&held);
         return 0;

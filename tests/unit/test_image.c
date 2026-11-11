@@ -14658,6 +14658,75 @@ test_bugs7f_vm(void)
                  " Object new instVarsInclude: nil} printString",
                  "(true false true false false false false )");
 
+    /*
+     *  X-11.  The three contexts the driver makes by hand -- -eval's,
+     *  -startup's and each class initializer's -- had fixed sizes, 32, 38
+     *  and 64 slots, and a stack deeper than that overflowed them: a brace
+     *  of twenty-eight in -eval printed nil.  Each is now as large as its
+     *  method's frame.  Braces of nils, so that no literal limit is near.
+     */
+    {
+        char    brace[512];
+        char    cwd[1024];
+        char    path[1200];
+        size_t  n = 0;
+        int     i;
+        FILE   *f;
+
+        for (i = 0; i < 70; ++i)
+            n += (size_t) snprintf(brace + n, sizeof brace - n, "%snil",
+                                   i ? ". " : "{");
+        snprintf(brace + n, sizeof brace - n, "} size");
+
+        snprintf(command, sizeof command,
+                 "\"$ST2026\" -bootstrap -profile profiles/st2026.profile"
+                 " -eval '%s'", brace);
+        bugs7f_shell(dir, command, text, sizeof text);
+        bugs7f_expect(text, "\n70\n", "X-11 a deep -eval has the room it needs");
+
+        snprintf(command, sizeof command,
+                 "\"$ST2026\" -bootstrap -profile profiles/st2026.profile"
+                 " -eval 3 -startup \"Transcript show: 'zzX11 ',"
+                 " %s printString; cr. Smalltalk quitPrimitive\""
+                 " -o %s/x11.im && \"$ST2026\" -serve %s/x11.im -workers 1",
+                 brace, dir, dir);
+        bugs7f_shell(dir, command, text, sizeof text);
+        bugs7f_expect(text, "zzX11 70\n",
+                      "X-11 a deep -startup has the room it needs");
+
+        /*  A class initializer, through a profile of one package.  */
+        snprintf(path, sizeof path, "%s/pkg", dir);
+        (void) mkdir(path, 0755);
+        snprintf(path, sizeof path, "%s/pkg/ZzX11.class.st", dir);
+        f = fopen(path, "w");
+        if (f) {
+            fprintf(f, "Class {\n\t#name : 'ZzX11',\n\t#superclass : 'Object',\n"
+                       "\t#classVars : [ 'Deep' ],\n\t#category : 'ZzX11'\n}\n\n"
+                       "{ #category : 'x' }\nZzX11 class >> initialize [\n"
+                       "\tDeep := %s\n]\n\n"
+                       "{ #category : 'x' }\nZzX11 class >> deep [\n\t^Deep\n]\n",
+                    brace);
+            fclose(f);
+        }
+        if (!getcwd(cwd, sizeof cwd))
+            cwd[0] = '\0';
+        snprintf(path, sizeof path, "%s/zz.profile", dir);
+        f = fopen(path, "w");
+        if (f) {
+            fprintf(f, "Profile {\n\t#name : 'zzx11',\n"
+                       "\t#requires : [ '%s/profiles/st2026' ],\n"
+                       "\t#dialect : 'closures',\n\t#packages : [ '%s/pkg' ]\n}\n",
+                    cwd, dir);
+            fclose(f);
+        }
+        snprintf(command, sizeof command,
+                 "\"$ST2026\" -bootstrap -profile %s/zz.profile"
+                 " -eval 'ZzX11 deep'", dir);
+        bugs7f_shell(dir, command, text, sizeof text);
+        bugs7f_expect(text, "\n70\n",
+                      "X-11 a deep class initializer has the room it needs");
+    }
+
     snprintf(command, sizeof command, "rm -rf %s", dir);
     (void) system(command);
 }

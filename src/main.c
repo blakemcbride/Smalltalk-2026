@@ -1828,6 +1828,7 @@ evaluate_with(const char *expression, st_oop receiver,
     st_held             given;
     st_held             held;
     st_held             kept;
+    uint32_t            slots;
 
     memset(&ctx, 0, sizeof ctx);
     ctx.intern_symbol      = BOOT_intern_symbol;
@@ -1892,7 +1893,19 @@ evaluate_with(const char *expression, st_oop receiver,
     ST_hold(&held, &context);
     method = res.method;
 
-    context = OM_instantiate_pointers(ST_CLASS_METHOD_CONTEXT, 32);
+    /*
+     *  As large as the method's own frame says, and never smaller than the
+     *  32 slots this always had.  A fixed 32 was too few for any
+     *  expression whose stack goes deeper than that: a brace of
+     *  twenty-eight elements stopped with `a method overflowed its frame at
+     *  32 slots' and -eval printed nil (Bugs07 X-11).  The interpreter
+     *  sizes every context it makes for a send by ST_context_slots_for;
+     *  this one is made by hand and now asks the same question.
+     */
+    slots = ST_context_slots_for(
+                OM_fetch_pointer(ST_METHOD_HEADER_INDEX, method));
+    context = OM_instantiate_pointers(ST_CLASS_METHOD_CONTEXT,
+                                      slots > 32 ? slots : 32);
     if (!OM_is_object(context)) {
         ST_hold_leave(&held);
         ST_hold_leave(&given);
