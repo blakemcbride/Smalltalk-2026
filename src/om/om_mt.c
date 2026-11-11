@@ -1396,19 +1396,31 @@ OM_instantiate_pointers(st_oop class_pointer, uint32_t size)
  *  from the class at collection time, because the collector runs at a
  *  safepoint over the raw table and asking a class for its shape there
  *  would mean following pointers it is in the middle of recounting.
+ *
+ *  Refused, before anything is allocated, when the bits cannot hold it
+ *  (Bugs07 OM-7).  This used to keep `fixed & 0x3F' -- "up to 63 named
+ *  fields, which is ample" -- and a class may have 64, so a weak class
+ *  with exactly 64 named instance variables wrapped to 0 and every named
+ *  field was weak: silent loss of the object's strong state at the next
+ *  collection.  The field is eight bits now (ST_FMT_WEAK_FIXED_MASK),
+ *  four times what the class builder makes whole -- a class of 65 named
+ *  fields or more does not come out of it working -- and past that the
+ *  primitive fails, which says so where a wrapped count said nothing.
  */
 st_oop
 OM_instantiate_weak(st_oop class_pointer, uint32_t size, uint32_t fixed)
 {
-    st_oop      p = OM_instantiate_pointers(class_pointer, size);
+    st_oop      p;
     om_header  *head;
 
+    if (fixed > ST_FMT_WEAK_FIXED_MAX || fixed > size)
+        return ST_OOP_INVALID;
+    p = OM_instantiate_pointers(class_pointer, size);
     if (p == ST_OOP_INVALID)
         return p;
     head = OM_head(p);
     head->flags |= ST_FMT_WEAK;
-    /*  Up to 63 named fields ahead of the weak part, which is ample.  */
-    head->flags |= (fixed << ST_FMT_WEAK_FIXED_SHIFT) & ST_FMT_WEAK_FIXED_MASK;
+    head->flags |= fixed << ST_FMT_WEAK_FIXED_SHIFT;
     return p;
 }
 

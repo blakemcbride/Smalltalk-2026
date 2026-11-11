@@ -1255,6 +1255,60 @@ test_bugs7f_om(void)
 
     free(copy);
     free(good);
+
+    /*
+     *  Bugs07 OM-7: a weak object with 64 named fields keeps all 64
+     *  strong.  The count was kept in six bits and 64 wrapped to 0, so
+     *  every named field was weak and the collection below nilled both of
+     *  them.  It survives a save and a load too: 64 needs bit 22, which
+     *  the loader must take as part of the count (OM-6's check).
+     */
+    printf("  Bugs07 OM-7: 64 named fields ahead of the weak part\n");
+    {
+        st_oop  w64   = OM_instantiate_weak(ST_CLASS_ARRAY, 65, 64);
+        st_oop  first = OM_instantiate_bytes(ST_CLASS_STRING, 1);
+        st_oop  last  = OM_instantiate_bytes(ST_CLASS_STRING, 1);
+        st_oop  loose = OM_instantiate_bytes(ST_CLASS_STRING, 1);
+        st_oop  w255;
+
+        CHECK(OM_is_object(w64));
+        OM_store_pointer(0, w64, first);
+        OM_store_pointer(63, w64, last);
+        OM_store_pointer(64, w64, loose);
+        OM_store_pointer(2, array, w64);
+        OM_collect();
+        CHECK_EQ_INT(OM_fetch_pointer(0, w64), first);
+        CHECK_EQ_INT(OM_fetch_pointer(63, w64), last);
+        CHECK_EQ_INT(OM_fetch_pointer(64, w64), ST_NIL);
+
+        CHECK_EQ_INT(OM_image_save(path, err, sizeof err), 0);
+        CHECK_EQ_INT(OM_image_load(path, err, sizeof err), 0);
+        if (err[0])
+            printf("  load said: %s\n", err);
+        CHECK_EQ_INT(OM_fetch_pointer(2, array), w64);
+        loose = OM_instantiate_bytes(ST_CLASS_STRING, 1);
+        OM_store_pointer(64, w64, loose);
+        OM_collect();
+        CHECK_EQ_INT(OM_fetch_pointer(0, w64), first);
+        CHECK_EQ_INT(OM_fetch_pointer(63, w64), last);
+        CHECK_EQ_INT(OM_fetch_pointer(64, w64), ST_NIL);
+
+        /*  The most the field holds, and one more, which is refused.  */
+        w255 = OM_instantiate_weak(ST_CLASS_ARRAY, 256, 255);
+        CHECK(OM_is_object(w255));
+        if (OM_is_object(w255)) {
+            st_oop  kept = OM_instantiate_bytes(ST_CLASS_STRING, 1);
+
+            OM_store_pointer(254, w255, kept);
+            OM_store_pointer(2, array, w255);
+            OM_collect();
+            CHECK_EQ_INT(OM_fetch_pointer(254, w255), kept);
+        }
+        CHECK_EQ_INT(OM_instantiate_weak(ST_CLASS_ARRAY, 300, 256),
+                     ST_OOP_INVALID);
+        OM_store_pointer(2, array, ST_NIL);
+    }
+
     OM_set_root_provider(NULL);
     remove(path);
     remove(bad);

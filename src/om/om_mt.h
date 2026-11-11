@@ -124,19 +124,28 @@ typedef int64_t     st_int;
  */
 #define ST_FMT_EPHEMERON    0x0800
 /*
- *  Bits 16..21 of a WEAK object's flags: how many of its fields, from the
+ *  Bits 16..23 of a WEAK object's flags: how many of its fields, from the
  *  front, are named and therefore strong (OM_instantiate_weak).  Zero in
  *  every other object.
+ *
+ *  Eight bits, 0 to 255.  It was six, and a class may have 64 named
+ *  instance variables, so a weak class with exactly 64 was allocated with
+ *  a count of 0: the marker traced none of its named fields and the weak
+ *  pass nilled every one nothing else held (Bugs07 OM-7).  The two bits
+ *  that widen it were unused, and an image written before them has zeroes
+ *  there and reads the same.  A weak class with more named fields than
+ *  this holds is refused at allocation rather than wrapped.
  */
 #define ST_FMT_WEAK_FIXED_SHIFT 16
-#define ST_FMT_WEAK_FIXED_MASK  0x003F0000u
+#define ST_FMT_WEAK_FIXED_MASK  0x00FF0000u
+#define ST_FMT_WEAK_FIXED_MAX   255u
 /*
  *  Bits 24..31 of a CONTEXT's flags: zero, or one more than the number of
  *  its receiver's leading named fields that kept their offsets when the
  *  receiver's class was reshaped under the running method (Bugs07
  *  KERNB-4).  Written by primitive 234 inside its safepoint and read by
  *  the interpreter at each context switch; see receiver_limit_for in
- *  interp.c.  Bits 16..21 are a weak object's fixed-field count.
+ *  interp.c.  Bits 16..23 are a weak object's fixed-field count.
  */
 #define ST_FMT_KEPT_SHIFT   24
 #define ST_FMT_KEPT_MASK    0xFF000000u

@@ -13498,6 +13498,35 @@ test_bugs7e_om(void)
 }
 
 /*
+ *  Bugs07 round 6, OM.  Image-side, in-process doIts.
+ */
+static void
+test_bugs7f_om(void)
+{
+    test_dialect = ST_DIALECT_CLOSURES;
+
+    /*
+     *  OM-7.  A weak class with 64 named instance variables keeps every
+     *  one of them strong.  The header kept the count in six bits, 64
+     *  wrapped to 0, and the collection nilled both named fields:
+     *  (nil nil nil ).  With 63 the answer was always the one below.
+     */
+    check_string("| names c w | names := WriteStream on: String new. "
+                 "1 to: 64 do: [:i | names nextPutAll: 'a', i printString; space]. "
+                 "c := Object weakSubclass: #Bugs7fWeak64 "
+                 "instanceVariableNames: names contents classVariableNames: '' "
+                 "poolDictionaries: '' category: 'Bugs7f'. "
+                 "w := c new: 1. w instVarAt: 1 put: 'named one' copy. "
+                 "w instVarAt: 64 put: 'named last' copy. w at: 1 put: 'weak' copy. "
+                 "Smalltalk garbageCollect. "
+                 "^(Array with: (w instVarAt: 1) with: (w instVarAt: 64) with: (w at: 1)) "
+                 "printString",
+                 "('named one' 'named last' nil )");
+
+    test_dialect = ST_DIALECT_BLUE_BOOK;
+}
+
+/*
  *  Bugs07 round 5, NET.  Image-side, in-process doIts.
  */
 static void
@@ -14227,6 +14256,7 @@ main(void)
     test_bugs7f_net();
     test_bugs7f_gui();
     test_bugs7f_kernb();
+    test_bugs7f_om();
 
     OM_shutdown();
     return ST_TEST_END();
