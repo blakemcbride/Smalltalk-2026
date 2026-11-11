@@ -85,7 +85,9 @@ otherwise. A path with a \ct{..} segment in it is 403, and so is a file whose
 real name---every dot segment and every symbolic link resolved---is not under
 the root, since a link inside the root that points out of it leaves nothing in
 the path to see. \ct{stop} closes the listener; connections in flight finish
-the request they are in, answer it with \ct{Connection: close}, and close.
+the request they are in, answer it with \ct{Connection: close}, and close,
+and a kept-alive connection waiting for its next request is closed at once,
+so no request is read after the stop.
 \ct{requestsInFlight} counts those requests---an idle kept-alive connection
 is not one---and \ct{waitForRequestsAtMost: ms} waits for them to finish.
 

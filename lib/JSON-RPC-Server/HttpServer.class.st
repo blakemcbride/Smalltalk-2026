@@ -35,7 +35,16 @@ the reads too.
 
 STOPPING.  stop closes the listener, which wakes the accept loop with a
 NetError; the loop sees a listener that is gone and ends; connections in
-flight finish their request and close.  A NetError from an accept whose
+flight finish their request and close, and every connection waiting for its
+next request is closed there and then.  A request that arrives on a kept
+connection after the stop is not read: the connection ends, as it would at
+the end of its keep-alive time.  Without that, a browser that kept its
+connection busy -- a page polling more often than the fifteen-second
+keep-alive -- went on being served by a server that answered isRunning
+false, and after a restart by the old server, with its old configuration
+and sessions (Bugs07 NET-13).  The server knows its open connections for
+this, and a connection's change from idle to busy is made under the same
+lock stop looks at them under: see requestBegun:.  A NetError from an accept whose
 listener is still open is NOT the end -- it is one connection lost, logged,
 and the loop goes round again after a back-off.  See acceptLoop.
 
@@ -67,7 +76,7 @@ the comparison, and HttpRequest>>isPreflight the question.
 Class {
 	#name : 'HttpServer',
 	#superclass : 'Object',
-	#instVars : [ 'port', 'bindAddress', 'listener', 'acceptProcess', 'handlers', 'handlersLock', 'staticHandler', 'maxRequestBytes', 'keepAliveMilliseconds', 'requestMilliseconds', 'writeMilliseconds', 'maxConnections', 'standingHeaders', 'connections', 'connectionsLock', 'running', 'name', 'inFlight' ],
+	#instVars : [ 'port', 'bindAddress', 'listener', 'acceptProcess', 'handlers', 'handlersLock', 'staticHandler', 'maxRequestBytes', 'keepAliveMilliseconds', 'requestMilliseconds', 'writeMilliseconds', 'maxConnections', 'standingHeaders', 'connections', 'connectionsLock', 'running', 'name', 'inFlight', 'live' ],
 	#category : 'JSON-RPC-Server'
 }
 
@@ -80,6 +89,7 @@ HttpServer >> initialize [
 	connectionsLock := Mutex new.
 	connections := 0.
 	inFlight := 0.
+	live := IdentitySet new.
 	maxRequestBytes := 64 * 1024 * 1024.
 	keepAliveMilliseconds := 15000.
 	"Bugs5 NET-1: see requestSeconds:, writeSeconds: and maxConnections:."
@@ -283,11 +293,27 @@ HttpServer >> start [
 
 { #category : 'starting and stopping' }
 HttpServer >> stop [
-	"Stop accepting.  Connections in flight finish what they are doing."
+	"Stop accepting.  Connections in flight finish what they are doing and
+	 close; connections waiting for their next request are closed now.
+
+	 Closing the listener used to be all of it, and a kept-alive
+	 connection went on reading and answering requests for as long as its
+	 client kept it busy (Bugs07 NET-13).  A connection answers its
+	 request with Connection: close once running is false (HttpConnection
+	 >>serveOne); one that is idle is closed here, which wakes its
+	 process from its wait for the next request.  Which connections are
+	 idle is decided under connectionsLock, the lock a connection becomes
+	 busy under (requestBegun:), so none is closed in the middle of a
+	 request it has begun reading; one whose next request comes after
+	 running is false is refused there instead.  Nothing here waits: the
+	 requests in flight are waitForRequestsAtMost:'s."
+	| idle |
 	running ifFalse: [^self].
 	running := false.
 	listener close.
 	listener := nil.
+	idle := connectionsLock critical: [(live reject: [:each | each isBusy]) asArray].
+	idle do: [:each | each closeSocket].
 	self log: 'stopped'
 ]
 
@@ -298,9 +324,9 @@ HttpServer >> waitForRequestsAtMost: milliseconds [
 
 	 For after stop (Bugs07 NET-5): the listener is closed, so nothing new
 	 arrives, and a request answered from here on ends its connection --
-	 see HttpConnection>>serveOne -- so the count only falls, apart from a
-	 kept-alive client that sends again on a connection that was idle,
-	 whose request is then answered too.  Polled rather than signalled:
+	 see HttpConnection>>serveOne -- and a request that begins after the
+	 stop is not read (requestBegun:), so the count only falls (Bugs07
+	 NET-13).  Polled rather than signalled:
 	 it runs once, at the end of a server's life, for a few seconds."
 	| deadline |
 	deadline := Time millisecondClockValue + (milliseconds max: 0).
@@ -383,7 +409,7 @@ HttpServer >> serve: aSocket [
 	 answered 503 and closed here, before a process is forked for it: the
 	 reply is a few dozen bytes into a socket nothing has been written to,
 	 so it does not wait, and the write timeout is there in case it would."
-	| admitted |
+	| admitted connection stopped |
 	"A connection the VM could accept only in its spare descriptor's room
 	 is answered the same way: the process has no descriptor left for the
 	 work, and the close gives the spare back (Bugs07 NET-3)."
@@ -400,7 +426,15 @@ HttpServer >> serve: aSocket [
 			timeout: 1000] ensure: [aSocket close]]
 			on: Error do: [:e | nil].
 		^self].
-	[(HttpConnection on: aSocket server: self) run] fork
+	"Known to the server before its process starts, so that stop can
+	 close it while it waits for its first request (Bugs07 NET-13).  One
+	 accepted as stop ran, too late for stop to see, is closed here, so
+	 that it does not wait out a keep-alive for a request it will not
+	 read; its process still runs, to give its place back."
+	connection := HttpConnection on: aSocket server: self.
+	stopped := connectionsLock critical: [live add: connection. running not].
+	stopped ifTrue: [connection closeSocket].
+	[connection run] fork
 ]
 
 { #category : 'private' }
@@ -410,13 +444,24 @@ HttpServer >> crlf [
 
 { #category : 'private' }
 HttpServer >> connectionClosed: aConnection [
-	connectionsLock critical: [connections := connections - 1]
+	connectionsLock critical: [
+		connections := connections - 1.
+		live remove: aConnection ifAbsent: [nil]]
 ]
 
 { #category : 'private' }
-HttpServer >> requestBegun [
-	"A connection has the first byte of a request."
-	connectionsLock critical: [inFlight := inFlight + 1]
+HttpServer >> requestBegun: aConnection [
+	"A connection has the first byte of a request: mark it busy and count
+	 it in flight, and answer true -- or answer false, marking nothing,
+	 when the server has stopped, and the connection ends without reading
+	 the request.  Under connectionsLock, which is what stop decides which
+	 connections are idle under, so a connection is either busy before
+	 stop looks, and finishes its request, or refused here after it
+	 (Bugs07 NET-13)."
+	^connectionsLock critical: [
+		running
+			ifTrue: [inFlight := inFlight + 1. aConnection markBusy. true]
+			ifFalse: [false]]
 ]
 
 { #category : 'private' }

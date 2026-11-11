@@ -68,8 +68,34 @@ HttpConnection >> run [
 { #category : 'private' }
 HttpConnection >> beBusy [
 	"The first byte of a request is here: it is in flight until this
-	 connection is idle again or closed."
-	busy ifFalse: [busy := true. server requestBegun]
+	 connection is idle again or closed.  Answer false when the server
+	 has stopped, and the request is not to be read (Bugs07 NET-13; see
+	 HttpServer>>requestBegun:)."
+	busy ifTrue: [^true].
+	^server requestBegun: self
+]
+
+{ #category : 'private' }
+HttpConnection >> markBusy [
+	"Sent by the server, under the lock its stop looks at connections
+	 under: see HttpServer>>requestBegun:."
+	busy := true
+]
+
+{ #category : 'accessing' }
+HttpConnection >> isBusy [
+	"Whether a request is being read, handled or answered on this
+	 connection -- false while it waits for the next one."
+	^busy
+]
+
+{ #category : 'private' }
+HttpConnection >> closeSocket [
+	"Close the connection from outside its process: what a stopping
+	 server does to a connection waiting for its next request.  The
+	 process parked in that wait is woken and finds the socket closed,
+	 which ends it as a client going away would (Bugs07 NET-13)."
+	[socket close] on: Error do: [:e | nil]
 ]
 
 { #category : 'private' }
@@ -91,7 +117,9 @@ HttpConnection >> serveOne [
 	stream deadlineIn: nil.
 	stream writeTimeout: server writeMilliseconds.
 	stream atEnd ifTrue: [^false].
-	self beBusy.
+	"A request that begins after the server has stopped is not read: the
+	 connection ends here (Bugs07 NET-13)."
+	self beBusy ifFalse: [^false].
 	stream deadlineIn: server requestMilliseconds.
 	request := [HttpRequest readFrom: stream maxBodyBytes: server maxRequestBytes
 			continue: [self writeContinue]]
@@ -102,14 +130,18 @@ HttpConnection >> serveOne [
 	request isNil ifTrue: [^false].
 	stream deadlineIn: nil.
 	request remoteAddress: ([socket peerAddress] on: NetError do: [:e | nil]).
-	"A server that has stopped answers this request and no more: the reply
-	 says Connection: close and the connection ends after it, so a stopping
-	 server's requests in flight fall to none instead of being renewed by a
-	 kept-alive client for as long as it keeps sending (Bugs07 NET-5)."
-	keepAlive := request isKeepAlive and: [server isRunning].
 	response := [server handle: request]
 		on: HttpError
 		do: [:e | HttpResponse error: e status reason: e messageText].
+	"A server that has stopped answers this request and no more: the reply
+	 says Connection: close and the connection ends after it, so a stopping
+	 server's requests in flight fall to none instead of being renewed by a
+	 kept-alive client for as long as it keeps sending (Bugs07 NET-5).
+	 Asked AFTER the handler, not before it: a stop that came while the
+	 handler ran used to find the answer already decided, and the reply
+	 said keep-alive and left the connection open after it (Bugs07
+	 NET-13)."
+	keepAlive := request isKeepAlive and: [server isRunning].
 	"A HEAD is a GET without the bytes, and the response for one is built
 	 exactly as the GET's is and then sent without its body -- so the
 	 Content-Length it carries is the length the GET would have.  This is

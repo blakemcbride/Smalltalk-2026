@@ -4994,8 +4994,13 @@ bugs7e_vm(void)
  *  open, and the next request reached the nil pool.  Now stop waits for
  *  the request (it takes more than a second), the request is answered
  *  `done', its connection is closed when it comes back, and the request
- *  after stop is refused with `the server has stopped' and its service
- *  never runs (no row 7).  Skipped where there is no SQLITE3 driver.
+ *  after stop gets no reply and its service never runs (no row 7): the
+ *  kept-alive connection it was sent on was idle at the stop, and since
+ *  Bugs07 NET-13 stop closes such a connection (before that it was read
+ *  and refused with `the server has stopped', its pool being closed).
+ *  Whether the send or the read then fails, or the read finds the end,
+ *  is the network's timing; none of them is a reply.  Skipped where there
+ *  is no SQLITE3 driver.
  */
 static void
 bugs7e_net_stop(void)
@@ -5057,7 +5062,8 @@ bugs7e_net_stop(void)
             "\tsem wait.\n"
             "\tr add: ((reply startsWith: 'HTTP/1.1 200') and: [reply includesSubstring: '\"done\":true']).\n"
             "\tr add: (Smalltalk at: #Bugs7eNetDb) isOpen.\n"
-            "\tself send: kept ms: 7. r add: (self read: kept).\n"
+            "\tr add: (([self send: kept ms: 7. self read: kept] on: Error do: [:e | 'ERR'])\n"
+            "\t\tbeginsWith: 'HTTP/') not.\n"
             "\tkept close. slow close. Smalltalk removeKey: #Bugs7eNetDb ifAbsent: [].\n"
             "\tc := DbConnection open: aString.\n"
             "\tr add: ((c fetchAll: 'select ms from t order by ms') collect: [:row | row at: 'ms']) asArray.\n"
@@ -5087,10 +5093,8 @@ bugs7e_net_stop(void)
     } else if (strstr(out, "==> 'no sqlite driver'"))
         printf("  skipped NET-10 (Bugs07): no SQLITE3 driver\n");
     else {
-        expect(out, "==> 'an OrderedCollection(true true true false "
-                    "''HTTP/1.1 200 OK {\"_Success\":false,\"_ErrorCode\":-1,"
-                    "\"_ErrorMessage\":\"the server has stopped: its database "
-                    "connections are closed\"}'' (0 1500 ) )'",
+        expect(out, "==> 'an OrderedCollection(true true true false true "
+                    "(0 1500 ) )'",
                "NET-10 stop lets the request in flight finish, then refuses");
         expect_absent(out, "MessageNotUnderstood", "NET-10 nothing sent to a nil pool");
     }

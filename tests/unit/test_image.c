@@ -835,8 +835,12 @@
  *  3533 -> 3534 with Bugs07 X-29: ProcessorScheduler>>forkParallel:
  *  reportingErrors:, so that forkParallel: reports what its block does not
  *  handle and parallelCollect: leaves it to the asker.
+ *
+ *  3534 -> 3537 with Bugs07 NET-13: HttpConnection>>markBusy, isBusy and
+ *  closeSocket, so that stop closes the connections waiting for their next
+ *  request; HttpServer>>requestBegun became requestBegun:.
  */
-#define LIB_METHODS             3534
+#define LIB_METHODS             3537
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -3444,8 +3448,12 @@ test_browsing(void)
      *
      *  3177039 -> 3177688 with Bugs07 X-18: 1983's reshape fallback asks
      *  primitive 234 to mark the activations it migrated.
+     *
+     *  3177688 -> 3181348 with Bugs07 NET-13: stop closes the connections
+     *  waiting for their next request, and keep-alive is decided after the
+     *  handler.
      */
-    check_integer("(SourceFiles at: 1) contents size", 3177688);
+    check_integer("(SourceFiles at: 1) contents size", 3181348);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -14556,6 +14564,56 @@ test_bugs7f_net(void)
                  "^r asArray printString",
                  "('HTTP/1.1 200 OK' true 'HTTP/1.1 204 No Content' false "
                  "'HTTP/1.1 200 OK' 'closed' )");
+
+    /*
+     *  NET-13.  stop closed the listener and nothing else: a kept-alive
+     *  connection idle at the stop stayed open for its fifteen seconds,
+     *  and a request on it was read and answered by the stopped server --
+     *  `hello running=false' -- for as long as the client kept it busy.
+     *  Now stop closes every idle connection at once (the client's read
+     *  sees the close, not a two-second timeout), and a connection in the
+     *  middle of a request is not closed: it answers with Connection:
+     *  close and then ends -- which it did not either, since whether to
+     *  keep it was decided before the handler ran and the stop came
+     *  during it.  Before: ('hello running=true' 'open' 'hello
+     *  running=false' 0 ) and (true false 'open' ).
+     */
+    check_string("| s c crlf buf n read r get | "
+                 "crlf := String with: (Character value: 13) with: (Character value: 10). "
+                 "s := HttpServer new port: 0; bindAddress: '127.0.0.1'; yourself. "
+                 "s at: '/x' put: [:q | HttpResponse text: 'hello running=', s isRunning printString]. "
+                 "s start. r := OrderedCollection new. buf := String new: 4096. "
+                 "get := 'GET /x HTTP/1.1', crlf, 'Host: x', crlf, crlf. "
+                 "read := [:sock :want | | all | all := ''. "
+                 "[(all includesSubstring: want) not and: "
+                 "[(n := sock receiveInto: buf timeout: 2000) notNil and: [n > 0]]] whileTrue: "
+                 "[all := all, (buf copyFrom: 1 to: n)]. "
+                 "n := all size. [n > 0 and: [(all at: n) ~= (Character value: 10)]] "
+                 "whileTrue: [n := n - 1]. all copyFrom: n + 1 to: all size]. "
+                 "[c := Socket connectTo: '127.0.0.1' port: s port. "
+                 "c send: get. r add: (read value: c value: 'running='). "
+                 "s stop. "
+                 "n := [c receiveInto: buf timeout: 2000] on: NetError do: [:e | 0]. "
+                 "r add: (n isNil ifTrue: ['open'] ifFalse: [n = 0 ifTrue: ['closed'] ifFalse: ['data']]). "
+                 "r add: ([c send: get. read value: c value: 'running='] on: NetError do: [:e | '']). "
+                 "c close. (Delay forMilliseconds: 100) wait. "
+                 "r add: s connectionCount] ensure: [s stop]. "
+                 "^r asArray printString",
+                 "('hello running=true' 'closed' '' 0 )");
+    check_string("| s c crlf buf n all r | "
+                 "crlf := String with: (Character value: 13) with: (Character value: 10). "
+                 "s := HttpServer new port: 0; bindAddress: '127.0.0.1'; yourself. "
+                 "s at: '/slow' put: [:q | (Delay forMilliseconds: 600) wait. HttpResponse text: 'done']. "
+                 "s start. r := OrderedCollection new. buf := String new: 4096. "
+                 "[c := Socket connectTo: '127.0.0.1' port: s port. "
+                 "c send: 'GET /slow HTTP/1.1', crlf, 'Host: x', crlf, crlf. "
+                 "(Delay forMilliseconds: 200) wait. s stop. all := ''. "
+                 "[(n := c receiveInto: buf timeout: 3000) notNil and: [n > 0]] whileTrue: "
+                 "[all := all, (buf copyFrom: 1 to: n)]. "
+                 "r add: (all endsWith: 'done'); add: (all includesSubstring: 'Connection: close'); "
+                 "add: (n isNil ifTrue: ['open'] ifFalse: ['closed']). c close] ensure: [s stop]. "
+                 "^r asArray printString",
+                 "(true true 'closed' )");
 
     test_dialect = ST_DIALECT_BLUE_BOOK;
 }

@@ -178,8 +178,10 @@ when a request hands it back is closed and replaced; when the replacement
 cannot be opened, the pool keeps a place for it that the next `acquire`
 fills, so the pool never shrinks; and an `acquire` that has waited
 `waitSeconds` (thirty) is refused with a `RestLogError` rather than left
-waiting for ever. `stop` closes the listener, waits up to ten seconds for the
-requests in flight (`stopWaitingAtMost:` takes another bound), and then
+waiting for ever. `stop` closes the listener and every kept-alive connection
+waiting for its next request (a request that begins after the stop is not
+read; one in flight is answered with `Connection: close`), waits up to ten
+seconds for the requests in flight (`stopWaitingAtMost:` takes another bound), and then
 closes the pool for good: a connection still out in a request is closed when
 that request hands it back, after its transaction is decided, and a request
 that asks for one after the close is refused with `the server has stopped`
