@@ -3768,8 +3768,10 @@ primitive_directory_command(void)
          *  Like 2, but taking the place of a file already called arg1,
          *  in one step, and carrying this process's changes-file lock
          *  across if arg1 is the file it locks -- see
-         *  st_replace_carrying_lock (Bugs5 FILES-9).  condenseChanges is
-         *  what sends it; 2 stays the rename that never replaces.
+         *  st_replace_carrying_lock (Bugs5 FILES-9).  condenseChanges
+         *  sends it, and so does PosixFileDirectory>>replaceFileNamed:with:,
+         *  which puts a finished file out in the old file's place
+         *  (Bugs07 X-20); 2 stays the rename that never replaces.
          */
         if (!c_from_string(arg1, b, sizeof b)
          || !OM_is_object(arg2) || !OM_pointer_bit(arg2)

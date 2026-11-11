@@ -162,8 +162,10 @@ time instead --- \ct{(String with: (Character value: 10))}.
 
 A refused file out costs nothing already on disk. The new file is written
 beside the old one, under its name with \ctp{.part} added, and takes the old
-one's place only once the file out has finished; a file out that stops partway
-removes its \ctp{.part} file and leaves the old file exactly as it was.
+one's place in one step, only once the file out has finished, so the name
+always names one whole file or the other; a file out that stops partway
+removes its \ctp{.part} file and leaves the old file exactly as it was. The
+change list's \ct{file out} is written the same way.
 \end{stnote}
 
 \section{What to do instead}

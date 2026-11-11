@@ -207,6 +207,30 @@ PosixFileDirectory >> rename: aFile newName: newFileName [
 ]
 
 { #category : '*Files-Fixes' }
+PosixFileDirectory >> replaceFileNamed: aFileName with: aFile [
+	"Give aFile, which is closed, the name aFileName in place of any file
+	 already called that, in one step, and tell aFile its new name.
+
+	 Command 7 of primitive 131 renames over the name -- rename(2) on
+	 POSIX, MoveFileEx replacing on Windows -- so at every instant the
+	 name is the old file or the new one, and a rename that fails leaves
+	 the old file where it was.  FileDirectory>>replaceTextFile:using:
+	 removed the old file first and then renamed, and a crash, or a
+	 rename that failed, between the two lost the old file and left the
+	 new one under its .part name (Bugs07 X-20).  It is the command
+	 condenseChanges replaces the changes file with (Bugs5 FILES-9); a
+	 file that is not the changes file has no lock to carry across, and
+	 for it the command is the replacing rename and nothing more.
+	 rename:newName: stays the rename that refuses a name that is taken
+	 (Bugs5 FILES-8)."
+
+	(self doPrimitive: 7 arg1: (self pathFor: aFileName) arg2: aFile) == true
+		ifFalse: [^aFile error: 'cannot take the place of ' , aFileName , ': '
+			, (aFile errorString: aFile lastError)].
+	aFile fileName: (self pathFor: aFileName)
+]
+
+{ #category : '*Files-Fixes' }
 PosixFileDirectory >> find: aFile ifAbsentDo: aBlock [
 	"Answer aFile if there is a file of its name, otherwise the value of
 	 aBlock with it.

@@ -850,8 +850,12 @@
  *
  *  3546 -> 3547 with Bugs07 X-8: DeferredStop class>>graceMilliseconds:,
  *  which lets a test ask about a section let finish on a loaded machine.
+ *
+ *  3547 -> 3551 with Bugs07 X-20: ChangeListController>>fileOut,
+ *  ChangeList>>fileOutNamed:, FileDirectory>>replaceFileNamed:with: and
+ *  PosixFileDirectory>>replaceFileNamed:with:.
  */
-#define LIB_METHODS             3547
+#define LIB_METHODS             3551
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -3473,8 +3477,12 @@ test_browsing(void)
      *
      *  3187088 -> 3188413 with Bugs07 X-8: the deferred stop's grace can be
      *  set, and a terminate pending keeps a signal from being given back.
+     *
+     *  3188413 -> 3191940 with Bugs07 X-20: the change list's file out
+     *  writes through replaceTextFile:using:, which replaces the old file
+     *  in one rename.
      */
-    check_integer("(SourceFiles at: 1) contents size", 3188413);
+    check_integer("(SourceFiles at: 1) contents size", 3191940);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -15482,7 +15490,10 @@ test_bugs7f_vm(void)
 
 /*
  *  Bugs07 round six, COMP: X-19 (a Class file's write-back left out a
- *  method moved into a starred category no file owns, and said nothing).
+ *  method moved into a starred category no file owns, and said nothing)
+ *  and X-20 (the change list's file out wrote over its target in place,
+ *  and every replacing file out removed the old file before the new one
+ *  had its name).
  */
 static void
 test_bugs7f_comp(void)
@@ -15557,6 +15568,88 @@ test_bugs7f_comp(void)
                      "an OrderedCollection(accepted accepted refused (two three ) "
                      "accepted (two three ) (one ext ) )");
     }
+
+    /*
+     *  X-20.  The change list's `file out' opened its file with `Disk
+     *  file:' and wrote into it, so one that stopped partway -- here a
+     *  change whose text cannot be read, behind one of 1,500 bytes --
+     *  left an older file of the name with new bytes in front of its own,
+     *  and the stream open.  It writes through replaceTextFile:using: now,
+     *  so the older file is untouched and no .part file is left; a file
+     *  out that finishes replaces it.  The menu item itself is driven, by
+     *  a controller whose controlTerminate and controlInitialize do
+     *  nothing, as it has no view to redisplay: FillInTheBlank is, for
+     *  the length of the call, a class that answers the name at once by
+     *  either of the prompts the two versions ask with, and Disk the
+     *  test's directory.  And the replacing is one rename: a File whose
+     *  name is not there cannot take the target's place, and the target
+     *  is still there afterwards, where the remove that came first took
+     *  it away for good.
+     *
+     *  Split in five, each well under a doIt's 63 literals: the older
+     *  file, the prompt and a way to put a change into a list; the
+     *  controller; a file out that stops partway; one that finishes; and
+     *  the replace on its own.
+     */
+    snprintf(expression, sizeof expression,
+             "| f c | f := FileStream fileNamed: '%s/bugs7f.cs'. "
+             "f nextPutAll: (String new: 3000 withAll: $q). f close. "
+             "Object subclass: #Bugs7fFill instanceVariableNames: '' "
+             "classVariableNames: '' poolDictionaries: '' category: 'Bugs7f'. "
+             "c := Smalltalk at: #Bugs7fFill. "
+             "c class compile: 'request: m displayAt: p centered: x action: b "
+             "initialAnswer: s b value: ''bugs7f.cs''. ^''bugs7f.cs''' "
+             "classified: 'bugs7f' notifying: nil. "
+             "c class compile: 'request: m initialAnswer: s ^''bugs7f.cs''' "
+             "classified: 'bugs7f' notifying: nil. "
+             "ChangeList compile: 'bugs7fAdd: aChange changes add: aChange. self updateList' "
+             "classified: 'bugs7f' notifying: nil. ^#ready", dir);
+    check_string(expression, "ready");
+    check_string("| c | ChangeListController subclass: #Bugs7fCLC instanceVariableNames: '' "
+                 "classVariableNames: '' poolDictionaries: '' category: 'Bugs7f'. "
+                 "c := Smalltalk at: #Bugs7fCLC. "
+                 "c compile: 'controlTerminate' classified: 'bugs7f' notifying: nil. "
+                 "c compile: 'controlInitialize' classified: 'bugs7f' notifying: nil. "
+                 "^#ready", "ready");
+    snprintf(expression, sizeof expression,
+             "| d old fill cl r | r := OrderedCollection new. "
+             "old := Disk. fill := FillInTheBlank. d := old directoryNamed: '%s'. "
+             "cl := ChangeList new. cl bugs7fAdd: ((OtherChange file: nil position: 0) "
+             "text: 'Transcript show: ''', (String new: 1500 withAll: $g), ''''; yourself); "
+             "bugs7fAdd: (OtherChange file: nil position: 0). "
+             "[Smalltalk at: #Disk put: d. Smalltalk at: #FillInTheBlank put: (Smalltalk at: #Bugs7fFill). "
+             "r add: ([((Smalltalk at: #Bugs7fCLC) new model: cl; yourself) fileOut. #written] "
+             "on: Error do: [:e | e return: #refused])] "
+             "ensure: [Smalltalk at: #Disk put: old. Smalltalk at: #FillInTheBlank put: fill]. "
+             "r add: (d includesKey: 'bugs7f.cs.part'); "
+             "add: ((FileStream oldFileNamed: '%s/bugs7f.cs') contentsOfEntireFile "
+             "= (String new: 3000 withAll: $q)). ^r printString", dir, dir);
+    check_string(expression, "an OrderedCollection(refused false true )");
+    snprintf(expression, sizeof expression,
+             "| d old fill cl r text | r := OrderedCollection new. "
+             "old := Disk. fill := FillInTheBlank. d := old directoryNamed: '%s'. "
+             "cl := ChangeList new. cl bugs7fAdd: ((OtherChange file: nil position: 0) "
+             "text: 'Transcript show: ''', (String new: 1500 withAll: $g), ''''; yourself). "
+             "[Smalltalk at: #Disk put: d. Smalltalk at: #FillInTheBlank put: (Smalltalk at: #Bugs7fFill). "
+             "r add: ([((Smalltalk at: #Bugs7fCLC) new model: cl; yourself) fileOut. #written] "
+             "on: Error do: [:e | e return: #refused])] "
+             "ensure: [Smalltalk at: #Disk put: old. Smalltalk at: #FillInTheBlank put: fill]. "
+             "text := (FileStream oldFileNamed: '%s/bugs7f.cs') contentsOfEntireFile. "
+             "r add: (text includesSubstring: 'ggggg'); add: (text includesSubstring: 'qqqqq'); "
+             "add: (d includesKey: 'bugs7f.cs.part'). ^r printString", dir, dir);
+    check_string(expression, "an OrderedCollection(written true false false )");
+    snprintf(expression, sizeof expression,
+             "| d f r before | r := OrderedCollection new. d := Disk directoryNamed: '%s'. "
+             "before := (FileStream oldFileNamed: '%s/bugs7f.cs') contentsOfEntireFile. "
+             "f := d findOrAddKey: 'bugs7f-ghost.part'. "
+             "r add: ([d replaceFileNamed: 'bugs7f.cs' with: f. #replaced] "
+             "on: Error do: [:e | e return: #refused]); "
+             "add: ((d includesKey: 'bugs7f.cs') and: [(FileStream oldFileNamed: "
+             "'%s/bugs7f.cs') contentsOfEntireFile = before]). "
+             "ChangeList removeSelector: #bugs7fAdd:. "
+             "(Smalltalk at: #Bugs7fFill) removeFromSystem. "
+             "(Smalltalk at: #Bugs7fCLC) removeFromSystem. ^r printString", dir, dir, dir);
+    check_string(expression, "an OrderedCollection(refused true )");
 
     snprintf(command, sizeof command, "rm -rf %s", dir);
     (void) system(command);

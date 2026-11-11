@@ -196,17 +196,20 @@ FileDirectory >> replaceTextFile: aFileName using: aBlock [
 	 files in as neither.  So the writing goes to a file beside the
 	 target, its name with `.part' added, and that stream is closed
 	 whatever happens.  Only when aBlock has finished and the stream has
-	 been shortened and closed is the target removed and the new file
-	 renamed into its place; when aBlock does not finish, the part file is
-	 removed and the target is exactly as it was.
+	 been shortened and closed does the new file take the target's place;
+	 when aBlock does not finish, the part file is removed and the target
+	 is exactly as it was.
 
-	 Removed and then renamed, because rename:newName: refuses a name that
-	 is taken (Bugs5 FILES-8).  Between the two the target is absent for a
-	 moment, and a crash there leaves the finished file under its .part
-	 name rather than losing it.  The clean-up after a failure answers
-	 nothing of its own: an error while closing or removing the part file
-	 would otherwise replace the error that stopped aBlock, which is the
-	 one worth reading."
+	 The new file takes the target's place through replaceFileNamed:with:,
+	 which on this system's directories is one rename that replaces, so
+	 the name names the old file or the new one at every instant.  It was
+	 a remove and then a rename, because rename:newName: refuses a name
+	 that is taken (Bugs5 FILES-8), and a crash between the two left no
+	 file of the name and the finished one under its .part name (Bugs07
+	 X-20).  The clean-up after a failure answers nothing of its own: an
+	 error while closing or removing the part file would otherwise
+	 replace the error that stopped aBlock, which is the one worth
+	 reading."
 
 	| partName stream finished answer |
 	partName := aFileName , '.part'.
@@ -220,9 +223,23 @@ FileDirectory >> replaceTextFile: aFileName using: aBlock [
 			[finished ifFalse:
 				[[stream close] on: Error do: [:e | e return: nil].
 				 [self removeKey: partName] on: Error do: [:e | e return: nil]]].
-	(self includesKey: aFileName) ifTrue: [self removeKey: aFileName].
-	stream file rename: aFileName.
+	self replaceFileNamed: aFileName with: stream file.
 	^answer
+]
+
+{ #category : '*Files-Fixes' }
+FileDirectory >> replaceFileNamed: aFileName with: aFile [
+	"Give aFile, which is closed, the name aFileName in place of any file
+	 already called that, and tell aFile its new name.
+
+	 Here, for a directory that has no rename that replaces -- 1983's
+	 Alto directory -- the old file is removed and then aFile renamed, and
+	 between the two there is no file of the name.  PosixFileDirectory,
+	 which is every directory this system opens, does it in one step
+	 (Bugs07 X-20)."
+
+	(self includesKey: aFileName) ifTrue: [self removeKey: aFileName].
+	aFile rename: aFileName
 ]
 
 { #category : '*Files-Fixes' }
