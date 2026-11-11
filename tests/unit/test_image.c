@@ -3360,8 +3360,11 @@ test_browsing(void)
      *
      *  3134954 -> 3136925 with Bugs07 X-5: a suspend lets a stopper finish
      *  its stop first, and a stopper waits for a held process on a Delay.
+     *
+     *  3136925 -> 3138012 with Bugs07 DOCS-5: LibraryLocks' class comment
+     *  says which locks' readers are held, and why.
      */
-    check_integer("(SourceFiles at: 1) contents size", 3136925);
+    check_integer("(SourceFiles at: 1) contents size", 3138012);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.

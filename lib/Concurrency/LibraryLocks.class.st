@@ -35,18 +35,36 @@ run.  Once it has, the check is never true again, so the check-then-act
 that doc/CONCURRENCY.md forbids is not one here -- nothing else runs until
 every initializer has.
 
-Reads are not locked, with one exception.  A reader probing a Dictionary
-while a writer grows it sees the old table or the new one, both consistent,
-because growth copies into a fresh object and become:s it -- and a Symbol
-table bucket is replaced by a copy, never edited.  What the locks prevent
-is two WRITERS each seeing the same empty slot.  The exception is
-Smalltalk, whose readers hold the globals lock too: a reader that had
-computed its probe from the table before the become: went on probing the
-one after it, and missed (see SystemDictionary>>at:ifAbsent: in
-lib/System).  Smalltalk's methods run only their own code inside that
-lock, never a block they were handed: the lock is a Mutex, which refuses
-re-entry, and a caller's block can do anything, including take the Symbol
-lock, which is ordered before this one.
+What the locks prevent first is two WRITERS each seeing the same empty
+slot.  Whether a lock's READERS hold it too depends on how its table
+changes, and the answer is not the same for every lock.
+
+A 1983 Dictionary or Set that grows copies itself into a bigger object and
+become:s it, and that does not give a reader the old table or the new one,
+both consistent, as it may seem to: a reader that had read the old
+basicSize and computed its probe from it goes on probing the NEW table
+with the old arithmetic, and misses a key that is there (Bugs6 DOCS-22).
+So Smalltalk's readers hold the globals lock, as its writers do (see
+SystemDictionary>>at:ifAbsent: in lib/System), and Object>>dependents
+holds the dependents lock while it copies a model's dependents; the
+organizers' and the source files' readers hold their locks for reasons
+of their own, given in holdingClasses: and holdingSources:.  Smalltalk's
+methods run only their own code inside that lock, never a block they
+were handed: the lock is a Mutex, which refuses re-entry, and a caller's
+block can do anything, including take the Symbol lock, which is ordered
+before this one.
+
+Three are read with no lock, each for a reason that is its own.  Symbol
+class>>hasInterned:ifTrue:, the fast path of every asSymbol, reads the
+Symbol table once into a temporary: growTable puts a complete new table in
+place with one store, and a bucket is replaced by a copy and never edited,
+so a reader looks in one whole table and one whole bucket, and a name it
+misses is looked for again under the lock.  Sends read the method
+dictionaries in the VM, not in Smalltalk; why they need no lock is in
+lib/Concurrency/Behavior.extension.st.  And a weak dictionary, which its
+owner shares with the Finalizer, is read whole by the owner because the
+Finalizer puts its rebuilt table in place with one store; see
+holdingMourning:.
 "
 Class {
 	#name : 'LibraryLocks',
@@ -226,12 +244,13 @@ LibraryLocks class >> holdingMourning: aBlock [
 	 the same methods.  The same for WeakIdentityKeyDictionary, which is
 	 not a WeakKeyDictionary and had no lock at all.
 
-	 Readers are not held, and the reason is not the one the other locks
-	 here give.  Mourning used to edit the table in place -- a nil, then
-	 the rest of the cluster swapped back one entry at a time -- and a
-	 reader probing for a live key further down stopped at the nil and
-	 answered absent (Bugs07 FIXES-4).  The Finalizer's removal now builds
-	 a new table and puts it in place with one store, and the readers in
+	 Readers are not held, for a reason of this lock's own; the class
+	 comment says which locks' readers are held, and why.  Mourning used
+	 to edit the table in place -- a nil, then the rest of the cluster
+	 swapped back one entry at a time -- and a reader probing for a live
+	 key further down stopped at the nil and answered absent (Bugs07
+	 FIXES-4).  The Finalizer's removal now builds a new table and puts
+	 it in place with one store, and the readers in
 	 lib/Collections-Weak-Compat read the table once, so a reader sees one
 	 whole table or the other.
 
