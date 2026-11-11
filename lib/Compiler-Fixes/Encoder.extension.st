@@ -137,3 +137,55 @@ Encoder >> declareUndeclared: name [
 	fresh ifTrue: [Transcript show: ' (' , name , ' is Undeclared) '].
 	^self global: binding name: sym
 ]
+
+{ #category : '*Compiler-Fixes' }
+Encoder >> init: aClass context: aContext notifying: req [
+	"1983's, which binds each name aContext's tempNames answers to a
+	 tempAt: of the context, for a doIt in a Debugger's code pane -- and
+	 binds as well each name inside a slot that holds a vector, to an at:
+	 of that slot, so that `a' there is the variable a method shares with
+	 its blocks and not the Array it is kept in.  MethodContext>>tempNames
+	 names such a slot `[a c]', after what it holds, and a name inside it
+	 is bound to `(homeContext tempAt: n) at: k' (Bugs07 X-27).
+	 MessageNode>>store:from: turns either into its put:, so the names can
+	 be assigned as well as read.  Every other line is Xerox's."
+	| node n homeNode indexNode slotNode inner |
+	requestor := req.
+	class := aClass.
+	nTemps := 0.
+	supered := false.
+	self initScopeAndLiteralTables.
+	n := -1.
+	class allInstVarNames do: [:variable |
+		node := VariableNode new
+			name: variable
+			index: (n := n + 1)
+			type: LdInstType.
+		scopeTable at: variable put: node].
+	aContext == nil ifFalse: [
+		homeNode := self bindTemp: 'homeContext'.
+		"first temp = aContext passed as arg"
+		n := 0.
+		aContext tempNames do: [:variable |
+			indexNode := self encodeLiteral: (n := n + 1).
+			slotNode := MessageNode new
+				receiver: homeNode
+				selector: #tempAt:
+				arguments: (Array with: indexNode)
+				precedence: 3
+				from: self.
+			scopeTable at: variable put: slotNode.
+			(variable size > 2 and: [variable first = $[ and: [variable last = $]]])
+				ifTrue: [
+					inner := (variable copyFrom: 2 to: variable size - 1) substrings.
+					1 to: inner size do: [:k |
+						scopeTable
+							at: (inner at: k)
+							put: (MessageNode new
+								receiver: slotNode
+								selector: #at:
+								arguments: (Array with: (self encodeLiteral: k))
+								precedence: 3
+								from: self)]]]].
+	sourceRanges := Dictionary new: 32
+]

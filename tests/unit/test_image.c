@@ -804,8 +804,14 @@
  *
  *  3510 -> 3513 with Bugs07 FILES-15: PosixFile>>size, characterSize and
  *  closingIfOpenedBy:, which close a File opened only to be measured.
+ *
+ *  3513 -> 3517 with Bugs07 X-27: MethodContext>>tempNames and
+ *  frameSlotWords, which name a frame's slots as the C compiler laid them
+ *  out; Encoder>>init:context:notifying: and MessageNode>>store:from:,
+ *  which bind and assign the names inside a vector in the Debugger's code
+ *  pane.
  */
-#define LIB_METHODS             3513
+#define LIB_METHODS             3517
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -3381,8 +3387,12 @@ test_browsing(void)
      *
      *  3144550 -> 3145860 with Bugs07 FILES-15: a File opened only to
      *  answer its size is closed again.
+     *
+     *  3145860 -> 3151731 with Bugs07 X-27: a method's frame restarts with
+     *  its temporaries nil, and a frame's slots are named as the C compiler
+     *  laid them out.
      */
-    check_integer("(SourceFiles at: 1) contents size", 3145860);
+    check_integer("(SourceFiles at: 1) contents size", 3151731);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -14406,6 +14416,100 @@ test_bugs7f_gui(void)
                  "^r asArray printString",
                  "(true false true true true true true 1 "
                  "true false true true true true true 1 )");
+
+    /*
+     *  X-27, restart.  A method's frame started again kept whatever its
+     *  first run had left in its temporaries, so a method that tests one
+     *  for nil saw the first run's value: the Debugger's restart
+     *  (MethodContext>>restart) and an exception's retry (primitive 251,
+     *  through restartAndJump) both.  Before: ((fresh 42 ) (nil seen
+     *  seen )).
+     */
+    check_string("| log p r | "
+                 "Object compile: 'zzB7fNil: log | t | t isNil ifTrue: "
+                 "[log add: #fresh] ifFalse: [log add: t]. t := 42. "
+                 "Processor activeProcess suspend' classified: #probe. "
+                 "Object compile: 'zzB7fRestart: log | t | log add: t. "
+                 "t := #seen. log size < 3 ifTrue: [self zzB7fJump: thisContext]. "
+                 "^log' classified: #probe. "
+                 "Object compile: 'zzB7fJump: ctx ctx restartAndJump' "
+                 "classified: #probe. "
+                 "^[log := OrderedCollection new. "
+                 "p := [nil zzB7fNil: log] newProcess. p resume. "
+                 "(Delay forMilliseconds: 30) wait. p suspendedContext restart. "
+                 "p resume. (Delay forMilliseconds: 30) wait. "
+                 "r := Array with: log asArray "
+                 "with: (nil zzB7fRestart: OrderedCollection new) asArray. "
+                 "r printString] "
+                 "ensure: [p terminate. #(zzB7fNil: zzB7fRestart: zzB7fJump:) "
+                 "do: [:s | Object removeSelector: s]]",
+                 "((fresh fresh ) (nil nil nil ) )");
+
+    /*
+     *  X-27, names.  The context inspector, and a doIt in the Debugger's
+     *  code pane, named a frame's slots by the image's own Encoder, which
+     *  lays every block's names into the home method's frame: a block's
+     *  frame was listed with the method's temporaries, and a method's
+     *  frame showed the vector holding what it shares with its blocks
+     *  under the first name declared.  Now the C compiler's description
+     *  of each frame: the inner block, the outer block and the method,
+     *  the inspector's list and one value from it, then four doIts that
+     *  read and write variables through the vectors.  Before: each frame
+     *  ('log' 'a' 'b' 'c' 'x' 'z' ), the inspector's w nil, and every
+     *  doIt failing or naming an undeclared variable -- the vector (9 5 )
+     *  was not written.
+     */
+    check_string("| log p ctxs r insp ev | "
+                 "Object compile: 'zzB7fNames: log | a b c | a := 0. c := 5. "
+                 "#(1 2) do: [:x | | t u | t := x + c. u := t. a := a + t. "
+                 "[:z | | w | w := z + u. a := w. log add: thisContext. "
+                 "Processor activeProcess suspend] value: 3. log add: u]. "
+                 "true ifTrue: [| k | k := 1. b := k]. "
+                 "false ifFalse: [| k | k := 2. b := a + k]. ^b' "
+                 "classified: #probe. "
+                 "^[log := OrderedCollection new. "
+                 "p := [nil zzB7fNames: log] newProcess. p resume. "
+                 "(Delay forMilliseconds: 30) wait. "
+                 "ctxs := Array with: log first with: log first sender "
+                 "with: log first sender sender sender. "
+                 "r := OrderedCollection new. "
+                 "ctxs do: [:c | r add: c tempNames asArray]. "
+                 "insp := ContextInspector new inspect: ctxs first. "
+                 "r add: insp fieldList asArray. insp field: 'w'. "
+                 "r add: insp fieldValue. "
+                 "ev := [:s :c | Compiler new evaluate: s in: c to: c receiver "
+                 "notifying: nil ifFail: [#fail]]. "
+                 "r add: (ev value: 'a + c' value: (ctxs at: 3)); "
+                 "add: (ev value: 'c := 7. x + t + u + c' value: (ctxs at: 2)); "
+                 "add: ((ctxs at: 3) tempAt: 2); "
+                 "add: (ev value: 'z + w + u + a' value: (ctxs at: 1)). "
+                 "r asArray printString] "
+                 "ensure: [p terminate. Object removeSelector: #zzB7fNames:]",
+                 "(('z' '[u]' '[a c]' 'log' 'w' ) ('x' '[a c]' 'log' '[u]' 't' ) "
+                 "('log' '[a c]' 'b' 'k' 'k(2)' ) ('z' '[u]' '[a c]' 'log' 'w' ) "
+                 "9 14 20 (9 7 ) 27 )");
+
+    /*
+     *  And when the method's source no longer compiles to the bytes the
+     *  frame runs -- here one byte of the running method changed, push 1
+     *  to push 2 -- the names are 1983's, as before, rather than a
+     *  layout that may not be this frame's.
+     */
+    check_string("| p m i r | "
+                 "Object compile: 'zzB7fOther | q | q := 1. "
+                 "#(5) do: [:x | q := q + x]. Processor activeProcess suspend. "
+                 "^q' classified: #probe. "
+                 "^[r := OrderedCollection new. "
+                 "p := [nil zzB7fOther] newProcess. p resume. "
+                 "(Delay forMilliseconds: 30) wait. "
+                 "r add: p suspendedContext tempNames asArray. "
+                 "m := Object compiledMethodAt: #zzB7fOther. "
+                 "i := (m initialPC to: m endPC) detect: [:j | (m at: j) = 118]. "
+                 "m at: i put: 119. "
+                 "r add: p suspendedContext tempNames asArray. "
+                 "r asArray printString] "
+                 "ensure: [p terminate. Object removeSelector: #zzB7fOther]",
+                 "(('[q]' ) ('q' 'x' ) )");
 
 #ifdef ST_HAVE_SDL3
     /*

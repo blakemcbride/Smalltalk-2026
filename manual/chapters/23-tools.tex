@@ -55,7 +55,12 @@ small window with the error and the top few frames.
 
 \ct{debug} gives you a window with the call stack at the top, the source of
 the selected frame in the middle, and two Inspectors at the bottom---one on
-the receiver, one on the method's own variables.
+the receiver, one on the method's own variables. For a block's frame the
+second lists the block's own: its arguments, the variables it uses from
+around it, and its temporaries. A variable that a method shares with its
+blocks lives in a small Array, which the list shows under the names it holds,
+such as \ct{[a c]}; in the code pane \ct{a} and \ct{c} are the variables
+themselves.
 
 What makes this different from a debugger in another language:
 
@@ -65,8 +70,8 @@ What makes this different from a debugger in another language:
   as \ct{[] in} followed by its method, cannot take new code itself: the
   Debugger asks, then restarts the frame of the method the block was written in.
 \item \ct{restart} on the stack's menu runs the selected frame again from its
-  start---a method from its first statement, a block from the start of the
-  block.
+  start---a method from its first statement with its temporaries \ct{nil}
+  again, a block from the start of the block.
 \item The receiver Inspector is live. Set the instance variable that was
   \ct{nil} and carry on.
 \item \ct{proceed} resumes from where the error was raised, so once you have

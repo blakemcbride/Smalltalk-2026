@@ -2483,6 +2483,22 @@ ST_restart_at(st_oop ctx)
                      OM_int_oop((st_int) method_initial_ip(method) + 1));
     OM_store_pointer(ST_CTX_SP, ctx,
                      OM_int_oop((st_int) method_temporary_count(method)));
+    /*
+     *  And the temporaries nil again, as a new activation has them.  The
+     *  arguments are kept -- they are the pattern being redone -- but
+     *  everything the first run left in a temporary was still there when
+     *  the second began, so a method that tests a temporary for nil before
+     *  setting it saw the first run's value and the restart was not a
+     *  restart.  Pharo's privRefresh nils them, and MethodContext>>restart,
+     *  the Debugger's, now does the same (Bugs07 X-27).
+     */
+    {
+        unsigned    temps = method_temporary_count(method);
+        unsigned    i;
+
+        for (i = method_argument_count(method); i < temps; ++i)
+            OM_store_pointer(ST_CTX_TEMP_FRAME_START + i, ctx, ST_NIL);
+    }
     OM_store_pointer(ST_CTX_SENDER, st_vm.active_context, ST_NIL);
     OM_store_pointer(ST_CTX_IP, st_vm.active_context, ST_NIL);
     set_active_context(ctx);

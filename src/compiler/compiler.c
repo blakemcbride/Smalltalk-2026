@@ -1145,6 +1145,132 @@ plan_frames(st_compiler *c)
     }
 }
 
+/*
+ *  ----------  What the frames hold, for a debugger  ----------
+ *
+ *  The layout above is this compiler's alone: nothing in a CompiledMethod
+ *  records which slot of which frame holds which name, and the image's
+ *  own Encoder, which 1983's Debugger asks, lays every block's names into
+ *  the home method's frame, the Blue Book way.  So a debugger shown a
+ *  closure's frame named its slots with the home method's temporaries --
+ *  the block's argument under the method's first temporary's name -- and
+ *  a method frame holding a vector showed the vector under the name of
+ *  the first variable declared (Bugs07 X-27).  The compiler that laid the
+ *  frames out says what is in them instead.
+ *
+ *  One line per scope, the method's first and then each block's in the
+ *  order the blocks were met -- which is the order their closures are made
+ *  in the bytecode, so a frame's line is found by counting closures.  One
+ *  word per frame slot, in slot order: the name an argument, a copied
+ *  value or a local has, or `[a,b]' for a slot holding a vector, naming
+ *  what the vector holds in its order.  A slot nothing claims is `?'.  An
+ *  empty answer means no description (the Blue Book dialect, or one that
+ *  does not fit), and a debugger falls back on what it did before.
+ */
+static int
+describe_append(char *out, size_t *used, const char *text)
+{
+    size_t  n = strlen(text);
+
+    if (*used + n + 1 > ST_FRAME_NAMES_MAX)
+        return 0;
+    memcpy(out + *used, text, n + 1);
+    *used += n;
+    return 1;
+}
+
+static int
+describe_vector(const st_compiler *c, unsigned v, char *out, size_t *used)
+{
+    unsigned    k;
+    unsigned    i;
+
+    if (!describe_append(out, used, "["))
+        return 0;
+    for (k = 0; k < c->vectors[v].size; ++k) {
+        for (i = 0; i < c->decl_count; ++i) {
+            if (c->decls[i].remote && c->decls[i].vector == v
+             && c->decls[i].slot == k) {
+                if ((k > 0 && !describe_append(out, used, ","))
+                 || !describe_append(out, used, c->decls[i].name))
+                    return 0;
+                break;
+            }
+        }
+    }
+    return describe_append(out, used, "]");
+}
+
+static void
+describe_frames(const st_compiler *c, char *out)
+{
+    size_t      used = 0;
+    unsigned    s;
+
+    out[0] = '\0';
+    for (s = 0; s < c->scope_count; ++s) {
+        const scope_info   *scope = &c->scopes[s];
+        unsigned            slot;
+
+        if (s > 0 && !describe_append(out, &used, "\n"))
+            goto too_long;
+        for (slot = 0; slot < scope->frame_size; ++slot) {
+            unsigned    i;
+            unsigned    k;
+            unsigned    argument = 0;
+            int         said = 0;
+
+            if (slot > 0 && !describe_append(out, &used, " "))
+                goto too_long;
+            /*
+             *  An argument's slot is its place among the scope's arguments,
+             *  remote or not: a remote one still arrives there.
+             */
+            for (i = 0; i < c->decl_count && !said; ++i) {
+                if (c->decls[i].scope != s || !c->decls[i].is_argument)
+                    continue;
+                if (argument++ == slot) {
+                    if (!describe_append(out, &used, c->decls[i].name))
+                        goto too_long;
+                    said = 1;
+                }
+            }
+            for (k = 0; k < scope->copied_count && !said; ++k) {
+                if (scope->copied[k].slot != slot)
+                    continue;
+                if (scope->copied[k].is_vector
+                        ? !describe_vector(c, scope->copied[k].which,
+                                           out, &used)
+                        : !describe_append(out, &used,
+                                c->decls[scope->copied[k].which].name))
+                    goto too_long;
+                said = 1;
+            }
+            for (k = 0; k < c->vector_count && !said; ++k) {
+                if (c->vectors[k].scope != s || c->vectors[k].slot != slot)
+                    continue;
+                if (!describe_vector(c, k, out, &used))
+                    goto too_long;
+                said = 1;
+            }
+            for (i = 0; i < c->decl_count && !said; ++i) {
+                if (c->decls[i].scope != s || c->decls[i].is_argument
+                 || c->decls[i].remote || c->decls[i].slot != slot)
+                    continue;
+                if (!describe_append(out, &used, c->decls[i].name))
+                    goto too_long;
+                said = 1;
+            }
+            if (!said && !describe_append(out, &used, "?"))
+                goto too_long;
+        }
+    }
+    return;
+
+too_long:
+    out[0] = '\0';
+}
+
 /*  Where scope `s` keeps vector `v`, as a frame slot of s.  */
 static int
 copied_vector_slot(const st_compiler *c, unsigned s, unsigned v,
@@ -4577,6 +4703,8 @@ to_bytecodes(st_compiler *c, const char *source, size_t length,
     }
 
     out->argument_count  = c->argument_count;
+    if (c->dialect == ST_DIALECT_CLOSURES)
+        describe_frames(c, out->frame_names);
     if (c->dialect == ST_DIALECT_CLOSURES) {
         /*
          *  The method's frame holds its arguments, whatever it copied (it
@@ -4705,6 +4833,7 @@ COMPILE_method_n(const char *source, size_t length,
         return -1;
     }
     snprintf(out->selector, sizeof out->selector, "%s", code.selector);
+    memcpy(out->frame_names, code.frame_names, sizeof out->frame_names);
     out->argument_count  = code.argument_count;
     out->temporary_count = code.temporary_count;
     out->primitive       = code.primitive;

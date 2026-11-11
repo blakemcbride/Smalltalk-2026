@@ -41,6 +41,13 @@ extern "C" {
  *  only when a caller asks for it, so none of them can be affected by it.
  */
 
+/*
+ *  The longest description of a method's frames a compile hands back (see
+ *  st_compile_result).  Every method in the library fits in a few hundred
+ *  bytes; one that does not simply has no description.
+ */
+#define ST_FRAME_NAMES_MAX  4096
+
 typedef struct {
     int                 dialect;
     /*
@@ -174,6 +181,15 @@ typedef struct {
      *  how to write a Smalltalk Dictionary.
      */
     char        undeclared[256];    /*  as long as a token's text  */
+    /*
+     *  What each frame of the method holds, slot by slot, for a debugger:
+     *  one line per scope -- the method's first, then each block in the
+     *  order its closure is made -- and on each line one word per frame
+     *  slot: a name, or `[a,b]' for a slot holding the vector of the names
+     *  shared with blocks.  Empty in the Blue Book dialect, or when the
+     *  description does not fit; see describe_frames in compiler.c.
+     */
+    char        frame_names[ST_FRAME_NAMES_MAX];
 } st_compile_result;
 
 /*
@@ -239,6 +255,7 @@ typedef struct {
     unsigned    error_line;
     size_t      error_offset;       /*  see st_compile_result  */
     char        undeclared[256];    /*  see st_compile_result  */
+    char        frame_names[ST_FRAME_NAMES_MAX];    /*  likewise  */
 } st_compiled_code;
 
 /*

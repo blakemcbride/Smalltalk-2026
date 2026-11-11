@@ -5266,7 +5266,7 @@ primitive_compile_method(void)
      *  and left the rest to be freed under a -serve compile by any other
      *  worker's allocation (Bugs6 COMP-2).
      */
-    answer = OM_instantiate_pointers(ST_CLASS_ARRAY, 6);
+    answer = OM_instantiate_pointers(ST_CLASS_ARRAY, 7);
     if (!OM_is_object(answer))
         return 0;
     ST_push(answer);
@@ -5277,6 +5277,15 @@ primitive_compile_method(void)
         OM_store_pointer(0, answer, res.method);
         text = BOOT_intern_symbol(res.selector, NULL);
         OM_store_pointer(1, answer, text);
+        /*
+         *  Seventh, what each frame of the method holds, slot by slot --
+         *  the debugger's names for a context's temporaries, which only
+         *  this compiler knows (see describe_frames in compiler.c; Bugs07
+         *  X-27).  Made after the method is safe in the Array, as the
+         *  selector is.
+         */
+        text = BOOT_make_string(res.frame_names, NULL);
+        OM_store_pointer(6, answer, text);
     }  else  {
         text = BOOT_make_string(res.error, NULL);
         OM_store_pointer(2, answer, text);
