@@ -75,7 +75,7 @@ HttpRequestTest >> testAGet [
 { #category : 'tests' }
 HttpRequestTest >> testAPost [
 	| r |
-	r := HttpRequest fromString: (self request: #('POST /rest HTTP/1.1' 'Content-Type: application/json' 'Content-Length: 13') body: '{"num1": 3}  ').
+	r := HttpRequest fromString: (self request: #('POST /rest HTTP/1.1' 'Host: here' 'Content-Type: application/json' 'Content-Length: 13') body: '{"num1": 3}  ').
 	self assert: r method equals: 'POST'.
 	self assert: r isJson.
 	self assert: r contentType equals: 'application/json'.
@@ -86,14 +86,14 @@ HttpRequestTest >> testAPost [
 { #category : 'tests' }
 HttpRequestTest >> testAPercentEncodedPath [
 	| r |
-	r := HttpRequest fromString: (self request: #('GET /a%20b/c+d.html HTTP/1.1') body: '').
+	r := HttpRequest fromString: (self request: #('GET /a%20b/c+d.html HTTP/1.1' 'Host: here') body: '').
 	self assert: r path equals: '/a b/c+d.html'
 ]
 
 { #category : 'tests' }
 HttpRequestTest >> testKeepAlive [
-	self assert: (HttpRequest fromString: (self request: #('GET / HTTP/1.1') body: '')) isKeepAlive.
-	self deny: (HttpRequest fromString: (self request: #('GET / HTTP/1.1' 'Connection: close') body: '')) isKeepAlive.
+	self assert: (HttpRequest fromString: (self request: #('GET / HTTP/1.1' 'Host: here') body: '')) isKeepAlive.
+	self deny: (HttpRequest fromString: (self request: #('GET / HTTP/1.1' 'Host: here' 'Connection: close') body: '')) isKeepAlive.
 	self deny: (HttpRequest fromString: (self request: #('GET / HTTP/1.0') body: '')) isKeepAlive.
 	self assert: (HttpRequest fromString: (self request: #('GET / HTTP/1.0' 'Connection: Keep-Alive') body: '')) isKeepAlive
 ]
@@ -108,10 +108,10 @@ HttpRequestTest >> testEndOfStreamBeforeARequestIsNil [
 HttpRequestTest >> testRefusals [
 	self should: [HttpRequest fromString: (self request: #('not a request line') body: '')] raise: HttpError.
 	self should: [HttpRequest fromString: (self request: #('GET / FTP/9') body: '')] raise: HttpError.
-	self should: [HttpRequest fromString: (self request: #('GET / HTTP/1.1' 'no colon here') body: '')] raise: HttpError.
+	self should: [HttpRequest fromString: (self request: #('GET / HTTP/1.1' 'Host: here' 'no colon here') body: '')] raise: HttpError.
 	self should: [HttpRequest fromString: (self request: #('POST / HTTP/1.1' 'Transfer-Encoding: chunked') body: '5', self crlf, 'hello')] raise: HttpError.
 	self should: [HttpRequest fromString: (self request: #('POST / HTTP/1.1' 'Content-Length: abc') body: '')] raise: HttpError.
-	self should: [HttpRequest fromString: (self request: #('POST / HTTP/1.1' 'Content-Length: 100') body: 'short')] raise: HttpError.
+	self should: [HttpRequest fromString: (self request: #('POST / HTTP/1.1' 'Host: here' 'Content-Length: 100') body: 'short')] raise: HttpError.
 	self should: [HttpRequest fromString: 'GET / HTTP/1.1', self crlf, 'Host: here'] raise: HttpError
 ]
 
@@ -131,14 +131,14 @@ HttpRequestTest >> testRefusalsCarryTheirStatus [
 { #category : 'tests' }
 HttpRequestTest >> testABodyAtTheLimitIsAccepted [
 	| r |
-	r := HttpRequest fromString: (self request: #('POST / HTTP/1.1' 'Content-Length: 1000') body: (String new: 1000 withAll: $x)) maxBodyBytes: 1000.
+	r := HttpRequest fromString: (self request: #('POST / HTTP/1.1' 'Host: here' 'Content-Length: 1000') body: (String new: 1000 withAll: $x)) maxBodyBytes: 1000.
 	self assert: r body size equals: 1000
 ]
 
 { #category : 'tests' }
 HttpRequestTest >> testTooManyHeadersAreRefused [
 	| lines |
-	lines := OrderedCollection with: 'GET / HTTP/1.1'.
+	lines := OrderedCollection with: 'GET / HTTP/1.1' with: 'Host: here'.
 	1 to: 101 do: [:i | lines add: 'X-H', i printString, ': v'].
 	self should: [HttpRequest fromString: (self request: lines body: '')] raise: HttpError
 ]
@@ -167,7 +167,7 @@ HttpRequestTest >> multipartBody [
 HttpRequestTest >> testAMultipartBody [
 	| body r parts |
 	body := self multipartBody.
-	r := HttpRequest fromString: (self request: (Array with: 'POST /rest HTTP/1.1'
+	r := HttpRequest fromString: (self request: (Array with: 'POST /rest HTTP/1.1' with: 'Host: here'
 		with: 'Content-Type: multipart/form-data; boundary=----WebKitFormBoundaryTEST'
 		with: 'Content-Length: ', body size printString) body: body).
 	self assert: r isMultipart.
@@ -193,7 +193,7 @@ HttpRequestTest >> testAMultipartBody [
 { #category : 'tests' }
 HttpRequestTest >> testAMultipartBodyWithoutABoundaryIsRefused [
 	| r |
-	r := HttpRequest fromString: (self request: #('POST /rest HTTP/1.1' 'Content-Type: multipart/form-data' 'Content-Length: 4') body: 'abcd').
+	r := HttpRequest fromString: (self request: #('POST /rest HTTP/1.1' 'Host: here' 'Content-Type: multipart/form-data' 'Content-Length: 4') body: 'abcd').
 	self should: [r parts] raise: HttpError
 ]
 
@@ -227,7 +227,7 @@ HttpRequestTest >> testAnEscapeIsDecodedInEitherCase [
 	self assert: (HttpCodec percentDecodePath: '/caf%c3%a9') size equals: 6.
 	self assert: (HttpCodec percentDecodePath: '/caf%C3%A9') equals: (HttpCodec percentDecodePath: '/caf%c3%a9').
 	self assert: ((HttpCodec parseQuery: 'v=%7bx%7d') at: 'v') equals: '{x}'.
-	self assert: (HttpRequest fromString: (self request: #('GET /sub%2findex.html HTTP/1.1') body: '')) path
+	self assert: (HttpRequest fromString: (self request: #('GET /sub%2findex.html HTTP/1.1' 'Host: here') body: '')) path
 		equals: '/sub/index.html'
 ]
 
@@ -269,7 +269,7 @@ HttpRequestTest >> testTwoContentLengthsAreRefused [
 		raise: HttpError.
 	self should: [HttpRequest fromString: (self request: #('POST / HTTP/1.1' 'Content-Length: 5' 'content-length: 25') body: 'hello')]
 		raise: HttpError.
-	self assert: (HttpRequest fromString: (self request: #('POST / HTTP/1.1' 'Content-Length: 5') body: 'hello')) body
+	self assert: (HttpRequest fromString: (self request: #('POST / HTTP/1.1' 'Host: here' 'Content-Length: 5') body: 'hello')) body
 		equals: 'hello'
 ]
 
@@ -281,11 +281,11 @@ HttpRequestTest >> testWhitespaceInAHeaderNameIsRefused [
 	 connection.  That is a smuggled request, and it worked."
 	self should: [HttpRequest fromString: (self request: #('POST / HTTP/1.1' 'Content-Length : 25') body: 'GET /x HTTP/1.1')]
 		raise: HttpError.
-	self should: [HttpRequest fromString: (self request: #('GET / HTTP/1.1' 'X Y: 1') body: '')] raise: HttpError.
+	self should: [HttpRequest fromString: (self request: #('GET / HTTP/1.1' 'Host: here' 'X Y: 1') body: '')] raise: HttpError.
 	"a space AFTER the colon is ordinary and stays ordinary"
-	self assert: (HttpRequest fromString: (self request: #('GET / HTTP/1.1' 'X-Thing:    spaced   ') body: '')) headers
-		size equals: 1.
-	self assert: ((HttpRequest fromString: (self request: #('GET / HTTP/1.1' 'X-Thing:    spaced   ') body: ''))
+	self assert: (HttpRequest fromString: (self request: #('GET / HTTP/1.1' 'Host: here' 'X-Thing:    spaced   ') body: '')) headers
+		size equals: 2.
+	self assert: ((HttpRequest fromString: (self request: #('GET / HTTP/1.1' 'Host: here' 'X-Thing:    spaced   ') body: ''))
 		headerAt: 'x-thing') equals: 'spaced'
 ]
 

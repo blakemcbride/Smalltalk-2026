@@ -2,8 +2,14 @@
 An HTTP response: a status, headers, and a body, written to a stream in one
 piece.
 
-Content-Length is always sent and the body is always whole, so a client knows
-where the response ends and the connection can carry the next request.  Date
+Content-Length is sent and the body is always whole, so a client knows
+where the response ends and the connection can carry the next request --
+except for a status that has no body at all: 1xx, 204 and 304 end at their
+blank line, RFC 7230 section 3.3.2 says a server MUST NOT send
+Content-Length with a 1xx or a 204 (and with a 304 only the length a 200
+would have had, which this response does not know), and every preflight
+reply is a 204.  For those neither the header nor a body is written
+(Bugs07 NET-12).  Date
 is sent because HTTP/1.1 says a server with a clock must.  The server adds its
 own standing headers -- the security ones Kiss's filter added -- before
 writing; a handler's own headers win over those.
@@ -181,6 +187,14 @@ HttpResponse >> isBodyOmitted [
 	^bodyOmitted == true
 ]
 
+{ #category : 'testing' }
+HttpResponse >> hasNoBody [
+	"Whether the status is one whose response ends at its blank line --
+	 1xx, 204, 304 -- and so carries neither a body nor its length.  See
+	 the class comment."
+	^(status between: 100 and: 199) or: [status = 204 or: [status = 304]]
+]
+
 { #category : 'accessing' }
 HttpResponse >> headers [
 	^headers
@@ -203,12 +217,13 @@ HttpResponse >> writeOn: aStream keepAlive: aBoolean [
 	crlf := String with: (Character value: 13) with: (Character value: 10).
 	aStream nextPutAll: 'HTTP/1.1 '; nextPutAll: status printString; space; nextPutAll: self reason; nextPutAll: crlf.
 	(self headerAt: 'Date') isNil ifTrue: [aStream nextPutAll: 'Date: '; nextPutAll: HttpCodec httpDate; nextPutAll: crlf].
-	aStream nextPutAll: 'Content-Length: '; nextPutAll: body size printString; nextPutAll: crlf.
+	self hasNoBody ifFalse: [
+		aStream nextPutAll: 'Content-Length: '; nextPutAll: body size printString; nextPutAll: crlf].
 	aStream nextPutAll: 'Connection: '; nextPutAll: (aBoolean ifTrue: ['keep-alive'] ifFalse: ['close']); nextPutAll: crlf.
 	headers do: [:pair |
 		aStream nextPutAll: pair key; nextPutAll: ': '; nextPutAll: pair value asString; nextPutAll: crlf].
 	aStream nextPutAll: crlf.
-	self isBodyOmitted ifFalse: [aStream nextPutAll: body]
+	(self isBodyOmitted or: [self hasNoBody]) ifFalse: [aStream nextPutAll: body]
 ]
 
 { #category : 'printing' }

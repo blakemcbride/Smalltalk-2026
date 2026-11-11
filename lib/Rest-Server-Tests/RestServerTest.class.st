@@ -736,7 +736,7 @@ RestServerTest >> testManyUploadsAreCountedInLinearTime [
 			nextPutAll: 'x'; nextPutAll: crlf].
 	out nextPutAll: '--B--'; nextPutAll: crlf.
 	body := out contents.
-	http := HttpRequest fromString: 'POST /rest HTTP/1.1', crlf,
+	http := HttpRequest fromString: 'POST /rest HTTP/1.1', crlf, 'Host: t', crlf,
 		'Content-Type: multipart/form-data; boundary=B', crlf,
 		'Content-Length: ', body size printString, crlf, crlf, body.
 	self assert: http parts size equals: 2000.

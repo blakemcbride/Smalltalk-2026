@@ -1361,7 +1361,7 @@ bugs6_high_netgui(void)
             "  nextPutAll: crlf; nextPutAll: crlf; nextPutAll: '1'; nextPutAll: crlf].\n"
             "body nextPutAll: '--b--'; nextPutAll: crlf. body := body contents.\n"
             "^'parts cap ', ([(HttpRequest fromString: 'POST /rest HTTP/1.1', crlf,\n"
-            "  'Content-Type: multipart/form-data; boundary=b', crlf,\n"
+            "  'Host: x', crlf, 'Content-Type: multipart/form-data; boundary=b', crlf,\n"
             "  'Content-Length: ', body size printString, crlf, crlf, body)\n"
             "    parts size printString] on: HttpError do: [:e | e status printString])\n")
         == 0) {

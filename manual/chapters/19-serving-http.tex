@@ -157,7 +157,15 @@ bare line feed, a field name with whitespace in it, a second
 \ct{Content-Length}, a \ct{Content-Length} that is not all digits, a
 \ct{Transfer-Encoding} beside a \ct{Content-Length}, and a malformed percent
 escape in the target are each 400---a proxy in front that divided those bytes
-differently would be a second opinion about where one request ends. A handler
+differently would be a second opinion about where one request ends. An
+HTTP/1.1 request with no \ct{Host}, and any request with two, is 400 as well,
+as RFC 7230 requires. A target in absolute form,
+\ct{http://host:8001/rest}, is served by its path, and its authority is the
+request's \ct{Host}. A header sent on two lines is one value, the lines
+joined by a comma, so \ct{Connection: close} on one line and
+\ct{keep-alive} on the next closes the connection. A 204---every
+preflight's answer---and any 1xx or 304 reply carries neither
+\ct{Content-Length} nor a body. A handler
 that raises \ct{HttpError} answers with that status; a handler that raises
 anything else answers 500, and the fault goes to standard error, not to the
 client.

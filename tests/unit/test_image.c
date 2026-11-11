@@ -795,8 +795,11 @@
  *
  *  3505 -> 3506 with Bugs07 X-5: Process>>isStoppingAnother, which suspend
  *  asks so as to let a stopper finish its stop first.
+ *
+ *  3506 -> 3509 with Bugs07 NET-12: HttpRequest>>addHeader:value: and
+ *  refuseWithoutAHost, and HttpResponse>>hasNoBody.
  */
-#define LIB_METHODS             3506
+#define LIB_METHODS             3509
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -3363,8 +3366,11 @@ test_browsing(void)
      *
      *  3136925 -> 3138012 with Bugs07 DOCS-5: LibraryLocks' class comment
      *  says which locks' readers are held, and why.
+     *
+     *  3138012 -> 3143632 with Bugs07 NET-12: one Host, the absolute form,
+     *  a repeated header as one list, and no length on a 204.
      */
-    check_integer("(SourceFiles at: 1) contents size", 3138012);
+    check_integer("(SourceFiles at: 1) contents size", 3143632);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -7366,7 +7372,7 @@ test_bugs3_web(void)
                   411);
     /*  And a well-formed request is read as it always was.  */
     check_string("[:nl | (HttpRequest fromString: 'POST /rest HTTP/1.1', nl, "
-                 "'Content-Length: 5', nl, nl, 'hello') body] "
+                 "'Host: x', nl, 'Content-Length: 5', nl, nl, 'hello') body] "
                  "value: (String with: (Character value: 13) with: (Character value: 10))",
                  "hello");
 
@@ -10376,7 +10382,7 @@ test_bugs6_high_netgui(void)
         " with: (Character value: 10). b := String new: 71 withAll: $A."
         " body := '--', b, crlf, 'Content-Disposition: form-data; name=\"x\"',"
         " crlf, crlf, '1', crlf, '--', b, '--', crlf."
-        " r := HttpRequest fromString: 'POST /rest HTTP/1.1', crlf,"
+        " r := HttpRequest fromString: 'POST /rest HTTP/1.1', crlf, 'Host: x', crlf,"
         " 'Content-Type: multipart/form-data; boundary=', b, crlf,"
         " 'Content-Length: ', body size printString, crlf, crlf, body."
         " ^[r parts size] on: HttpError do: [:e | e status]", 400);
@@ -10385,7 +10391,7 @@ test_bugs6_high_netgui(void)
         " with: (Character value: 10). b := ''."
         " body := '--', b, crlf, 'Content-Disposition: form-data; name=\"x\"',"
         " crlf, crlf, '1', crlf, '--', b, '--', crlf."
-        " r := HttpRequest fromString: 'POST /rest HTTP/1.1', crlf,"
+        " r := HttpRequest fromString: 'POST /rest HTTP/1.1', crlf, 'Host: x', crlf,"
         " 'Content-Type: multipart/form-data; boundary=', b, crlf,"
         " 'Content-Length: ', body size printString, crlf, crlf, body."
         " ^[r parts size] on: HttpError do: [:e | e status]", 400);
@@ -10394,7 +10400,7 @@ test_bugs6_high_netgui(void)
         " with: (Character value: 10). b := String new: 70 withAll: $A."
         " body := '--', b, crlf, 'Content-Disposition: form-data; name=\"x\"',"
         " crlf, crlf, '1', crlf, '--', b, '--', crlf."
-        " r := HttpRequest fromString: 'POST /rest HTTP/1.1', crlf,"
+        " r := HttpRequest fromString: 'POST /rest HTTP/1.1', crlf, 'Host: x', crlf,"
         " 'Content-Type: multipart/form-data; boundary=', b, crlf,"
         " 'Content-Length: ', body size printString, crlf, crlf, body."
         " ^[r parts size] on: HttpError do: [:e | e status]", 1);
@@ -11811,7 +11817,7 @@ test_bugs7_lib(void)
                  "1 to: 40 do: [:i | body nextPutAll: '--b', crlf, "
                  "'Content-Disposition: form-data; name=\"n', i printString, '\"', crlf, crlf, "
                  "'[1e400,1e400]', crlf]. body nextPutAll: '--b--', crlf. body := body contents. "
-                 "r := HttpRequest fromString: 'POST /rest HTTP/1.1', crlf, "
+                 "r := HttpRequest fromString: 'POST /rest HTTP/1.1', crlf, 'Host: x', crlf, "
                  "'Content-Type: multipart/form-data; boundary=b', crlf, "
                  "'Content-Length: ', body size printString, crlf, crlf, body. "
                  "inj := RestDispatcher new injsonFrom: r. "
@@ -12916,7 +12922,7 @@ test_bugs7c_net(void)
                  "with: (Character value: 10). "
                  "body := '{\"_class\": \"services.Crud\", \"_method\": \"addRecord\", \"firstName\": \"Mallory', "
                  "(String with: (Character value: 255)), '\"}'. "
-                 "r := HttpRequest fromString: 'POST /rest HTTP/1.1', crlf, "
+                 "r := HttpRequest fromString: 'POST /rest HTTP/1.1', crlf, 'Host: x', crlf, "
                  "'Content-Type: application/json', crlf, "
                  "'Content-Length: ', body size printString, crlf, crlf, body. "
                  "^(RestDispatcher new handle: r) body",
@@ -12926,7 +12932,7 @@ test_bugs7c_net(void)
                  "f := [:value | body := '--b', crlf, "
                  "'Content-Disposition: form-data; name=\"firstName\"', crlf, crlf, "
                  "value, crlf, '--b--', crlf. "
-                 "r := HttpRequest fromString: 'POST /rest HTTP/1.1', crlf, "
+                 "r := HttpRequest fromString: 'POST /rest HTTP/1.1', crlf, 'Host: x', crlf, "
                  "'Content-Type: multipart/form-data; boundary=b', crlf, "
                  "'Content-Length: ', body size printString, crlf, crlf, body. "
                  "[(RestDispatcher new injsonFrom: r) at: 'firstName'] on: JSONError do: [:e | #refused]]. "
@@ -14197,6 +14203,97 @@ test_bugs7f_net(void)
                  "do: [:p | p status printString, (p json at: 'a') printString]] "
                  "on: Error do: [:e | e class name]} printString] ensure: [s stop]",
                  "('{\"a\":[1]}' '{\"a\":[1]}' '200[1]' )");
+
+    /*
+     *  NET-12.  Four of RFC 7230's MUSTs the parser skipped.  An HTTP/1.1
+     *  request with no Host, and one with two, were served (the second
+     *  Host winning, which allowsOrigin: compares against); now 400, and
+     *  HTTP/1.0 without a Host is still read.  An absolute-form target
+     *  was taken whole as the path; now its path and query are read and
+     *  its authority is the Host.  A repeated header was last-wins, so
+     *  `Connection: close' then `keep-alive' kept the connection; now
+     *  the lines are one list and close wins.  Before: ('/x' '/x' '/x'
+     *  '/x' 'http:///x' 'http://u@a/x' 'HTTP://a'
+     *  'http://Example.com:8001/rest' 'a=1' 'other' 'hi' true true
+     *  ('cookie'->'b=2' 'host'->'a' 'x-a'->'2' ) ).
+     */
+    check_string("| crlf run req | "
+                 "crlf := String with: (Character value: 13) with: (Character value: 10). "
+                 "run := [:lines | [(HttpRequest fromString: (lines inject: '' into: "
+                 "[:a :l | a, l, crlf]), crlf) path] on: HttpError do: [:e | e status]]. "
+                 "req := HttpRequest fromString: 'POST http://Example.com:8001/rest?a=1 HTTP/1.1', crlf, "
+                 "'Host: other', crlf, 'Content-Length: 2', crlf, crlf, 'hi'. "
+                 "^{run value: #('GET /x HTTP/1.1'). "
+                 "run value: #('GET /x HTTP/1.1' 'Host: a' 'Host: b'). "
+                 "run value: #('GET /x HTTP/1.0'). "
+                 "run value: #('GET /x HTTP/1.1' 'Host: '). "
+                 "run value: #('GET http:///x HTTP/1.1' 'Host: a'). "
+                 "run value: #('GET http://u@a/x HTTP/1.1' 'Host: a'). "
+                 "run value: #('GET HTTP://a HTTP/1.1' 'Host: a'). "
+                 "req path. req queryString. (req headerAt: 'host'). req body. "
+                 "(HttpRequest fromString: 'GET / HTTP/1.1', crlf, 'Host: a', crlf, "
+                 "'Connection: close', crlf, 'Connection: keep-alive', crlf, crlf) isKeepAlive. "
+                 "(HttpRequest fromString: 'GET / HTTP/1.0', crlf, "
+                 "'Connection: keep-alive, close', crlf, crlf) isKeepAlive. "
+                 "(HttpRequest fromString: 'GET / HTTP/1.1', crlf, 'Host: a', crlf, "
+                 "'X-A: 1', crlf, 'x-a: 2', crlf, 'Cookie: a=1', crlf, 'Cookie: b=2', crlf, crlf) "
+                 "headers associations asSortedCollection asArray} printString",
+                 "(400 400 '/x' '/x' 400 400 '/' '/rest' 'a=1' 'Example.com:8001' 'hi' "
+                 "false false ('cookie'->'a=1; b=2' 'host'->'a' 'x-a'->'1, 2' ) )");
+    /*
+     *  NET-12, the reply.  A 204 -- every preflight's status -- carried
+     *  `Content-Length: 0', which RFC 7230 section 3.3.2 forbids with a
+     *  1xx or a 204; a 304 written with a body would have put that body
+     *  where the next response begins.  Now neither the header nor a body
+     *  is written for 1xx, 204 and 304; a 200 is as it was.  Before:
+     *  (true true true true ).
+     */
+    check_string("| text | "
+                 "text := [:r | | w | w := WriteStream on: (String new: 200). "
+                 "r writeOn: w keepAlive: true. w contents]. "
+                 "^{(text value: (HttpResponse status: 204)) includesSubstring: 'Content-Length'. "
+                 "(text value: ((HttpResponse status: 304) body: 'xyz'; yourself)) includesSubstring: 'Content-Length'. "
+                 "(text value: ((HttpResponse status: 304) body: 'xyz'; yourself)) endsWith: 'xyz'. "
+                 "(text value: (HttpResponse text: 'xyz')) includesSubstring: 'Content-Length: 3'} printString",
+                 "(false false false true )");
+    /*
+     *  NET-12 through a socket: an absolute-form POST reaches its
+     *  handler (before: 404), a preflight's 204 has no Content-Length,
+     *  and a request that says close on one Connection line and
+     *  keep-alive on the next is answered and closed.  Before:
+     *  ('HTTP/1.1 404 Not Found' false 'HTTP/1.1 204 No Content' true
+     *  'HTTP/1.1 200 OK' 'open' ) -- the connection stayed open and the
+     *  read timed out.
+     */
+    check_string("| s c crlf buf n read first r got | "
+                 "crlf := String with: (Character value: 13) with: (Character value: 10). "
+                 "s := HttpServer new port: 0; bindAddress: '127.0.0.1'; yourself. "
+                 "s at: '/rest' put: [:q | HttpResponse text: 'got ', q body]. "
+                 "s start. r := OrderedCollection new. buf := String new: 4096. "
+                 "read := [:sock | | all | all := ''. "
+                 "[(n := sock receiveInto: buf timeout: 2000) notNil and: [n > 0]] whileTrue: "
+                 "[all := all, (buf copyFrom: 1 to: n)]. "
+                 "{all. n isNil ifTrue: ['open'] ifFalse: ['closed']}]. "
+                 "first := [:t | t copyFrom: 1 to: (t indexOf: (Character value: 13)) - 1]. "
+                 "[c := Socket connectTo: '127.0.0.1' port: s port. "
+                 "c send: 'POST http://127.0.0.1:', s port printString, '/rest HTTP/1.1', crlf, "
+                 "'Host: 127.0.0.1', crlf, 'Content-Length: 2', crlf, 'Connection: close', crlf, crlf, 'hi'. "
+                 "got := (read value: c) first. c close. "
+                 "r add: (first value: got); add: (got endsWith: 'got hi'). "
+                 "c := Socket connectTo: '127.0.0.1' port: s port. "
+                 "c send: 'OPTIONS /rest HTTP/1.1', crlf, 'Host: 127.0.0.1:', s port printString, crlf, "
+                 "'Origin: http://127.0.0.1:8000', crlf, 'Access-Control-Request-Method: POST', crlf, "
+                 "'Connection: close', crlf, crlf. "
+                 "got := (read value: c) first. c close. "
+                 "r add: (first value: got); add: (got includesSubstring: 'Content-Length'). "
+                 "c := Socket connectTo: '127.0.0.1' port: s port. "
+                 "c send: 'GET /rest HTTP/1.1', crlf, 'Host: 127.0.0.1', crlf, "
+                 "'Connection: close', crlf, 'Connection: keep-alive', crlf, crlf. "
+                 "got := read value: c. c close. "
+                 "r add: (first value: got first); add: got last] ensure: [s stop]. "
+                 "^r asArray printString",
+                 "('HTTP/1.1 200 OK' true 'HTTP/1.1 204 No Content' false "
+                 "'HTTP/1.1 200 OK' 'closed' )");
 
     test_dialect = ST_DIALECT_BLUE_BOOK;
 }

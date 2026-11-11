@@ -26,6 +26,20 @@ Content-Length is 400 rather than one of them being preferred.  Each of
 those was accepted here, and each was a request whose bytes a proxy in front
 could have divided differently (Bugs3 B56).
 
+THE HOST, AND THE REST OF RFC 7230'S MUSTS.  An HTTP/1.1 request with no
+Host header is 400, and so is a request of any version with two: RFC 7230
+section 5.4 requires both refusals, and with two Hosts a Dictionary kept
+the last, which is the one HttpServer>>allowsOrigin: compares the Origin
+against, while a proxy in front may have routed by the first -- two
+parsers disagreeing about which host the request is for.  A target in
+absolute form, `POST http://host:8001/rest HTTP/1.1', is read as the path
+and query after its authority, as section 5.3.2 says a server must, and
+the authority is then the request's Host, as RFC 9112 says an origin
+server must take it.  Any other header that comes twice is one value, the
+lines joined by `, ' in order (section 3.2.2), so `Connection: close' on
+one line and `keep-alive' on the next is a request that asked to close --
+the last line no longer overwrites the first (Bugs07 NET-12).
+
 A multipart/form-data body is taken apart on request, into HttpParts, by the
 boundary the content type names; formParameters answers the fields among
 them as a Dictionary and parts answers everything.  That is the shape a Kiss
@@ -119,7 +133,7 @@ HttpRequest >> nextLineFrom: aStream limit: anInteger status: statusForTooLong [
 
 { #category : 'private - reading' }
 HttpRequest >> readFrom: aStream maxBodyBytes: limit continue: aBlockOrNil [
-	| line words count |
+	| line words count authority |
 	headers := Dictionary new.
 	line := self nextLineFrom: aStream limit: 8192 status: 414.
 	line isNil ifTrue: [^nil].
@@ -134,7 +148,7 @@ HttpRequest >> readFrom: aStream maxBodyBytes: limit continue: aBlockOrNil [
 	target := words at: 2.
 	version := words at: 3.
 	(version beginsWith: 'HTTP/1.') ifFalse: [HttpError status: 400 reason: 'not HTTP/1: ', version].
-	self setTarget: target.
+	authority := self setTarget: target.
 	count := 0.
 	[line := self nextLineFrom: aStream limit: 8192 status: 431.
 	 line isNil ifTrue: [HttpError status: 400 reason: 'the headers were cut off'].
@@ -161,9 +175,34 @@ HttpRequest >> readFrom: aStream maxBodyBytes: limit continue: aBlockOrNil [
 		 the two answers a proxy in front might not have kept."
 		(name = 'content-length' and: [headers includesKey: name])
 			ifTrue: [HttpError status: 400 reason: 'two Content-Length headers'].
+		"Two Hosts are two answers to which host the request is for: see
+		 the class comment, THE HOST (Bugs07 NET-12)."
+		(name = 'host' and: [headers includesKey: name])
+			ifTrue: [HttpError status: 400 reason: 'two Host headers'].
 		value := (line copyFrom: colon + 1 to: line size) trimmed.
-		headers at: name put: value].
-	self readBodyFrom: aStream maxBodyBytes: limit continue: aBlockOrNil
+		self addHeader: name value: value].
+	self readBodyFrom: aStream maxBodyBytes: limit continue: aBlockOrNil.
+	"An absolute-form target names the host itself, and RFC 9112 says an
+	 origin server uses that and not the Host header.  Only now, after the
+	 body: a request that lacked a Host is refused for it whatever its
+	 target says, as RFC 7230 section 5.4 requires."
+	authority notNil ifTrue: [headers at: 'host' put: authority]
+]
+
+{ #category : 'private - reading' }
+HttpRequest >> addHeader: aName value: aString [
+	"A header line, by its lower-cased name.  A name seen before has this
+	 value joined to what it had, after a comma -- RFC 7230 section 3.2.2's
+	 combination, which a list-valued field such as Connection means and
+	 which leaves a field that is not one plainly malformed rather than
+	 silently the last of its lines (Bugs07 NET-12).  Cookie, the field
+	 that may not be repeated in HTTP/1.1 but is by HTTP/2 gateways, is
+	 joined with the `; ' its own syntax separates pairs with."
+	| previous |
+	previous := headers at: aName ifAbsent: [nil].
+	headers at: aName put: (previous isNil
+		ifTrue: [aString]
+		ifFalse: [previous, (aName = 'cookie' ifTrue: ['; '] ifFalse: [', ']), aString])
 ]
 
 { #category : 'private - reading' }
@@ -188,7 +227,10 @@ HttpRequest >> readBodyFrom: aStream maxBodyBytes: limit continue: aBlockOrNil [
 			ifTrue: [HttpError status: 400 reason: 'both Transfer-Encoding and Content-Length'].
 		HttpError status: 411 reason: 'a body must declare its length'].
 	text := self headerAt: 'content-length'.
-	text isNil ifTrue: [body := ''. ^self].
+	text isNil ifTrue: [
+		self refuseWithoutAHost.
+		body := ''.
+		^self].
 	(text isEmpty or: [text anySatisfy: [:c | c isDigit not]])
 		ifTrue: [HttpError status: 400 reason: 'not a length: ', text].
 	"A length with more digits than the limit has is over it, and is
@@ -203,12 +245,26 @@ HttpRequest >> readBodyFrom: aStream maxBodyBytes: limit continue: aBlockOrNil [
 	length := text asInteger.
 	(length isNil or: [length < 0]) ifTrue: [HttpError status: 400 reason: 'not a length: ', text].
 	length > limit ifTrue: [HttpError status: 413 reason: 'the body is larger than ', limit printString, ' bytes'].
+	self refuseWithoutAHost.
 	"The headers are read and the length is accepted: a client waiting to
 	 be told to send its body is told now (see the class comment, EXPECT)."
 	(self expectsContinue and: [length > 0 and: [aBlockOrNil notNil]])
 		ifTrue: [aBlockOrNil value].
 	body := aStream next: length.
 	body size < length ifTrue: [HttpError status: 400 reason: 'the body was cut off']
+]
+
+{ #category : 'private - reading' }
+HttpRequest >> refuseWithoutAHost [
+	"An HTTP/1.1 request -- any version after 1.0 -- must say which host
+	 it is for, and RFC 7230 section 5.4 says the server MUST answer 400
+	 when it does not (Bugs07 NET-12).  Asked once the body's framing is
+	 settled, so that each framing refusal keeps the status that names
+	 it, and before a client holding its body back is told to send it.
+	 An empty Host is a Host: the RFC allows one for a target with no
+	 authority."
+	(version ~= 'HTTP/1.0' and: [(headers includesKey: 'host') not])
+		ifTrue: [HttpError status: 400 reason: 'an HTTP/1.1 request must have a Host header']
 ]
 
 { #category : 'private - reading' }
@@ -237,13 +293,40 @@ HttpRequest >> significantDigitsIn: aString [
 
 { #category : 'private' }
 HttpRequest >> setTarget: aString [
-	| q |
+	"The path and the query of the target; answer the authority of an
+	 absolute-form target, or nil.
+
+	 THE ABSOLUTE FORM, `http://host:8001/rest?x=1', is what a client
+	 sends a proxy and what RFC 7230 section 5.3.2 says a server MUST
+	 accept as well.  It used to be taken whole as the path, which no
+	 handler matched: 404, or 405 from the static files (Bugs07 NET-12).
+	 The scheme is http or https in any case; the authority runs to the
+	 first `/', `?' or `#'; an empty one, or one holding userinfo, which
+	 an http URI may not carry, is 400.  Nothing after the authority is
+	 the path `/'.  Every other target is the origin form, as before."
+	| q rest lower start end authority |
 	target := aString.
-	q := aString indexOf: $?.
+	rest := aString.
+	authority := nil.
+	lower := aString asLowercase.
+	start := (lower beginsWith: 'http://')
+		ifTrue: [8]
+		ifFalse: [(lower beginsWith: 'https://') ifTrue: [9] ifFalse: [0]].
+	start > 0 ifTrue: [
+		end := start.
+		[end <= aString size and: [('/?#' includes: (aString at: end)) not]]
+			whileTrue: [end := end + 1].
+		authority := aString copyFrom: start to: end - 1.
+		(authority isEmpty or: [authority includes: $@])
+			ifTrue: [HttpError status: 400 reason: 'not a request target: ', aString].
+		rest := aString copyFrom: end to: aString size.
+		(rest isEmpty or: [rest first ~= $/]) ifTrue: [rest := '/', rest]].
+	q := rest indexOf: $?.
 	q = 0
-		ifTrue: [path := HttpCodec percentDecodePath: aString. queryString := '']
-		ifFalse: [path := HttpCodec percentDecodePath: (aString copyFrom: 1 to: q - 1).
-				  queryString := aString copyFrom: q + 1 to: aString size]
+		ifTrue: [path := HttpCodec percentDecodePath: rest. queryString := '']
+		ifFalse: [path := HttpCodec percentDecodePath: (rest copyFrom: 1 to: q - 1).
+				  queryString := rest copyFrom: q + 1 to: rest size].
+	^authority
 ]
 
 { #category : 'accessing' }
@@ -254,7 +337,8 @@ HttpRequest >> method [
 
 { #category : 'accessing' }
 HttpRequest >> target [
-	"The request target as sent: the path and the query, still encoded."
+	"The request target as sent, still encoded: the path and the query,
+	 or for the absolute form the whole URI they were taken from."
 	^target
 ]
 
@@ -343,12 +427,19 @@ HttpRequest >> parameterAt: aName [
 { #category : 'testing' }
 HttpRequest >> isKeepAlive [
 	"Whether the client expects the connection to stay open: HTTP/1.1
-	 unless it says close, HTTP/1.0 only if it says keep-alive."
-	| connection |
+	 unless it says close, HTTP/1.0 only if it says keep-alive -- and in
+	 either, close wins over keep-alive, as RFC 7230 section 6.3 orders
+	 them.  The header is a list of options, read by its comma-separated
+	 items: repeated lines are one list (addHeader:value:), and an HTTP/1.0
+	 `keep-alive, close' is a close (Bugs07 NET-12)."
+	| connection options |
 	connection := self headerAt: 'connection'.
-	connection := connection isNil ifTrue: [''] ifFalse: [connection asLowercase].
-	version = 'HTTP/1.0' ifTrue: [^connection includesSubstring: 'keep-alive'].
-	^(connection includesSubstring: 'close') not
+	options := connection isNil
+		ifTrue: [#()]
+		ifFalse: [(connection asLowercase substrings: ',') collect: [:each | each trimmed]].
+	(options includes: 'close') ifTrue: [^false].
+	version = 'HTTP/1.0' ifTrue: [^options includes: 'keep-alive'].
+	^true
 ]
 
 { #category : 'origins' }

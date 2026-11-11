@@ -61,7 +61,8 @@ HttpServerTest >> readResponseFrom: in [
 		colon := line indexOf: $:.
 		headers at: (line copyFrom: 1 to: colon - 1) asLowercase
 			put: (line copyFrom: colon + 1 to: line size) trimmed].
-	length := (headers at: 'content-length') asInteger.
+	"A 204 carries no Content-Length and no body (Bugs07 NET-12)."
+	length := (headers at: 'content-length' ifAbsent: ['0']) asInteger.
 	body := in next: length.
 	^Array with: status with: headers with: body
 ]
@@ -118,6 +119,7 @@ HttpServerTest >> testAPreflightFromThisHostIsAnswered [
 		with: 'Access-Control-Request-Headers: content-type'
 		with: 'Connection: close')).
 	self assert: (reply at: 1) equals: 'HTTP/1.1 204 No Content'.
+	self deny: ((reply at: 2) includesKey: 'content-length').
 	self assert: ((reply at: 2) at: 'access-control-allow-origin') equals: 'http://127.0.0.1:8000'.
 	self assert: (((reply at: 2) at: 'access-control-allow-methods') includesSubstring: 'POST').
 	self assert: ((reply at: 2) at: 'access-control-allow-headers') equals: 'content-type'.

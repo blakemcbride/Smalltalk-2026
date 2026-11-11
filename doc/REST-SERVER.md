@@ -278,7 +278,16 @@ by a bare line feed, a field name with whitespace in it (`Content-Length : 25`),
 a second `Content-Length`, a `Content-Length` that is not all digits
 (`5, 5`), and `Transfer-Encoding` together with `Content-Length`. A malformed
 percent escape in the target — `%zz`, `%2`, a trailing `%` — is 400 as well,
-rather than passed through as the characters that spell it.
+rather than passed through as the characters that spell it. So is an HTTP/1.1
+request with no `Host`, and a request with two (RFC 7230 §5.4): with two, a
+proxy routing by one and the origin rule reading the other would disagree
+about which host the request is for. A target in absolute form —
+`POST http://host:8001/rest HTTP/1.1` — is served by its path, and its
+authority is the request's `Host`. A header sent on two lines is one value,
+the lines joined by `, ` (`; ` for `Cookie`), so `Connection: close` on one
+line and `keep-alive` on the next closes the connection. A `204` — every
+preflight's answer — and any `1xx` or `304` reply carries neither
+`Content-Length` nor a body.
 
 **A header is one header.** A response header value holding a CR, an LF or a
 NUL, and a header name holding whitespace or a colon, raise — so a handler that
