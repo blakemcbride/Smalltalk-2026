@@ -174,9 +174,11 @@ st2026: more than 63 literals referenced; split this method
 Loop over a collection of cases rather than writing them out.
 \end{stnote}
 
-An expression containing a caret is treated as a whole method body, temporary
-declarations and all. Anything else is a single expression whose value is
-wanted, and the system supplies the \ct|^| for you.
+The text is compiled as the body of a method: it may declare temporaries and
+hold several statements, as the program above does. The value of its last
+statement is what is printed, and a \ct|^| anywhere in it---inside a block as
+well---answers at once with its value, so \ct!#(4 5 6) do: [:x | ^x]. 0! prints
+4.
 
 \section{Building an image and running the desktop}
 
