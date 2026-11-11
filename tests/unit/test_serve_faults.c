@@ -5733,6 +5733,82 @@ bugs7f_sched(void)
         "X-5 a held victim's terminator lets a lower-priority holder run");
 }
 
+/*
+ *  Bugs07, round 6: the object memory group's findings.
+ */
+static void
+bugs7f_om(void)
+{
+    static char out[65536];
+    const char *script = fixture("bugs7f-serve-symbols.st");
+    char        batch[1024];
+    char        command[2048];
+    int         status;
+
+    /*
+     *  X-3.  The bootstrap's C cache of Symbols is a root only in a process
+     *  that built its image, and a loaded image's compiles went on filling
+     *  and reading it.  A selector whose method is removed is held by
+     *  USTable alone; `Symbol rehash' drops it and the entry is freed.
+     *  Filling the table with Strings of the same characters, up to the
+     *  ceiling, hands that entry to one of them -- and the cache, which
+     *  compares bytes, took it for the Symbol: the method compiled next was
+     *  installed under a String, `selector class' answered String and the
+     *  send was not understood ('X-3 true String ''DNU''', every run).  The
+     *  room the second compile needs is ballast made before the Symbol was
+     *  freed, so it cannot be the entry in question; the name is built at
+     *  run time so that no literal in the batch holds the Symbol.
+     */
+    if (write_file(script,
+            "| name sym dropped ballast keep r |\n"
+            "ballast := (1 to: 5000) collect: [:i | Array new: 1].\n"
+            "name := 'zorkQ987', '6'.\n"
+            "Object compile: name, ' ^42' classified: 'bugs7f'.\n"
+            "sym := Object selectors detect: [:s | s size = 9 and: "
+            "[(s copyFrom: 1 to: 5) = 'zorkQ']] ifNone: [nil].\n"
+            "Object removeSelector: sym.\n"
+            "sym := nil.\n"
+            "Smalltalk garbageCollect. Symbol rehash.\n"
+            "Smalltalk garbageCollect. Symbol rehash.\n"
+            "Smalltalk garbageCollect.\n"
+            "dropped := (Symbol hasInterned: name ifTrue: [:s | ]) not.\n"
+            "keep := OrderedCollection new: 1100000.\n"
+            "[[keep addLast: name copy] repeat] on: OutOfMemory do: "
+            "[:e | e return: nil].\n"
+            "ballast := nil.\n"
+            "Object compile: name, ' ^43' classified: 'bugs7f'.\n"
+            "sym := Object selectors detect: [:s | s size = 9 and: "
+            "[(s copyFrom: 1 to: 5) = 'zorkQ']] ifNone: [nil].\n"
+            "r := [Object new perform: name asSymbol] on: MessageNotUnderstood "
+            "do: [:e | e return: 'DNU'].\n"
+            "keep := nil.\n"
+            "Object removeSelector: sym.\n"
+            "^'X-3 ', dropped printString, ' ', sym class name, ' ', "
+            "r printString\n") == 0) {
+        snprintf(batch, sizeof batch,
+                 "Compiler evaluate: (FileStream oldFileNamed: '%s') "
+                 "contentsOfEntireFile\n3 + 4\n", script);
+        if (write_file(BATCH, batch) == 0) {
+            snprintf(command, sizeof command,
+                     "ST_MAX_OBJECTS=1048576 " ST_TEST_TIMEOUT " -k 2 "
+                     SERVE_SECONDS " %s -serve %s -workers 1 \"$(cat %s)\" 2>&1",
+                     st2026, IMAGE, BATCH);
+            status = run(command, out, sizeof out);
+            ++st_test_checks;
+            if (status < 0) {
+                ++st_test_failures;
+                printf("  FAIL X-3: could not run the server\n");
+            } else {
+                expect(out, "==> 'X-3 true Symbol 43'",
+                       "X-3 a loaded image's compile interns a Symbol, not "
+                       "a String in a reused entry");
+                expect(out, "3 + 4 ==> 7", "X-3 the server carried on");
+            }
+        }
+        unlink(script);
+    }
+}
+
 int
 main(void)
 {
@@ -6417,6 +6493,7 @@ main(void)
     bugs7f_comp();
     bugs7f_files();
     bugs7f_sched();
+    bugs7f_om();
 
     unlink(IMAGE);
     unlink(BATCH);

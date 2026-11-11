@@ -284,6 +284,24 @@ static uint32_t    *symbol_index;       /*  slot -> position + 1, 0 empty  */
 static unsigned     symbol_index_size;  /*  a power of two                 */
 
 /*
+ *  Whether the array above is a root -- which it is only in a process that
+ *  built its image, where BOOT_build_dialects installs BOOT_provide_roots.
+ *
+ *  Bugs07 X-3.  A loaded image (-serve, -run) never installs it, and its
+ *  compiles intern through here all the same: IMGC_compile and the
+ *  compile primitive.  So the array went on caching Symbols nothing
+ *  counted it for.  A selector whose method was removed is held by USTable
+ *  alone, `Symbol rehash' drops what only USTable holds, and the entry is
+ *  freed and handed out again -- and symbol_is, which reads only the
+ *  bytes, took a String with the same characters in that entry for the
+ *  Symbol.  The next compile of that selector installed its method under
+ *  the String, which no send can find.  In a loaded image USTable is the
+ *  only table: it is what the image's own asSymbol reads, and it is
+ *  searched below on every miss anyway.
+ */
+static int          symbol_cache_rooted;
+
+/*
  *  The index hashes with ST_string_hash_text directly, NOT with
  *  BOOT_string_hash_of_text below.  That one answers whatever the image's
  *  own String>>hash answers, and which method that is cannot be known until
@@ -656,7 +674,7 @@ BOOT_intern_symbol_n(const char *text, size_t n, void *user)
      *  same text is a thing to keep in step, and this one had already
      *  drifted; the Symbol itself cannot.
      */
-    {
+    if (symbol_cache_rooted) {
         long    found = symbol_find(text, n);
 
         if (found >= 0)
@@ -700,7 +718,8 @@ BOOT_intern_symbol_n(const char *text, size_t n, void *user)
             }
             if (k == n) {
                 /*  Remember it so the next lookup is the quick one.  */
-                symbol_remember(candidate);
+                if (symbol_cache_rooted)
+                    symbol_remember(candidate);
                 return candidate;
             }
         }
@@ -727,7 +746,7 @@ make_it:
     }
     for (i = 0; i < n; ++i)
         OM_store_byte(i, s, (uint8_t) text[i]);
-    if (symbol_remember(s) && result)
+    if (symbol_cache_rooted && symbol_remember(s) && result)
         ++result->symbols_interned;
     /*  Symbols are permanent; nothing else keeps the table alive.  */
     OM_increase_ref(s);
@@ -4092,6 +4111,7 @@ BOOT_build_dialects(const char *const *paths, const int *dialects,
      *  flight.
      */
     ST_interp_install_roots(BOOT_provide_roots);
+    symbol_cache_rooted = 1;            /*  Bugs07 X-3  */
     status = boot_build_locked(paths, dialects, path_count, out);
 
     result = NULL;
