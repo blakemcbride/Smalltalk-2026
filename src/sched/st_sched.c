@@ -16,6 +16,46 @@
 #include <string.h>
 
 /*
+ *  ----------  Made once, whoever arrives first  ----------
+ *
+ *  Every lock in this file is made on first use, and first use can be two
+ *  workers at once.  A plain int saying "made" is a data race and not a
+ *  guard: two workers both read 0 and both run ST_mutex_init on one mutex,
+ *  the second possibly while the first already holds it -- undefined for
+ *  pthread, a corrupted critical section for Windows -- and an image saved
+ *  with several ready processes starts them on several workers in the same
+ *  instant (Bugs07 SCHED-8).  The test harnesses start workers without
+ *  SCHED_reset, so "SCHED_reset made it first" is not a promise either.
+ *
+ *  So the state is three-valued and atomic, as the timer's always was: 0
+ *  not made, 1 being made by the worker that won the exchange, 2 made.  A
+ *  loser waits for 2 rather than going on to lock a mutex that does not
+ *  exist yet.  The fast path is one acquire load, which on x86 is the
+ *  plain load it replaces.  once_begin answers 1 to the one caller that
+ *  must make the thing and then call once_end; everybody else gets 0 once
+ *  it is made.
+ */
+static int
+once_begin(st_atomic_int *state)
+{
+    int     expected = 0;
+
+    if (ST_load_acquire(state) == 2)
+        return 0;
+    if (ST_cas_strong(state, &expected, 1))
+        return 1;
+    while (ST_load_acquire(state) != 2)
+        ST_sleep_ns(1000);
+    return 0;
+}
+
+static void
+once_end(st_atomic_int *state)
+{
+    ST_store_release(state, 2);
+}
+
+/*
  *  Asynchronous signals are queued rather than applied where they arise.
  *  An event can land while the interpreter is midway through a bytecode, and
  *  switching processes at that moment would leave the stack inconsistent, so
@@ -52,7 +92,7 @@ static st_oop   async_queue[ASYNC_QUEUE_MAX];
  */
 static st_atomic_int    async_count;
 static st_mutex async_lock;
-static int      async_lock_ready;
+static st_atomic_int    async_lock_ready;   /*  see once_begin  */
 
 /*
  *  Lazily, like the stripes, and for a reason found the hard way: making
@@ -64,10 +104,10 @@ static int      async_lock_ready;
 static void
 async_lock_init(void)
 {
-    if (async_lock_ready)
-        return;
-    ST_mutex_init(&async_lock);
-    async_lock_ready = 1;
+    if (once_begin(&async_lock_ready)) {
+        ST_mutex_init(&async_lock);
+        once_end(&async_lock_ready);
+    }
 }
 
 /*
@@ -232,24 +272,17 @@ static void drain_async_signals(void);
 static void
 timer_init(void)
 {
-    int     expected = 0;
-
     /*
      *  Once, whoever arrives first, and the rest wait for it: the first
      *  arming worker used to write the flag plainly while idle workers read
      *  it in SCHED_timer_pending, and two workers arming at once would both
      *  have initialised the lock.
      */
-    if (ST_load_acquire(&timer_ready) == 2)
-        return;
-    if (ST_cas_strong(&timer_ready, &expected, 1)) {
+    if (once_begin(&timer_ready)) {
         ST_mutex_init(&timer_lock);
         ST_cond_init(&timer_cond);
-        ST_store_release(&timer_ready, 2);
-        return;
+        once_end(&timer_ready);
     }
-    while (ST_load_acquire(&timer_ready) != 2)
-        ST_sleep_ns(1000);
 }
 
 /*
@@ -832,15 +865,22 @@ unname_process(st_oop process)
 static st_atomic_ptr    held_table[HELD_MAX];
 static st_atomic_ptr    held_by[HELD_MAX];
 static st_mutex         held_lock;
-static int              held_lock_ready;
+static st_atomic_int    held_lock_ready;    /*  see once_begin  */
 
+/*
+ *  Made by SCHED_reset, before any worker exists, like every other lock
+ *  here -- it used to be the one left to its first user, which in a fresh
+ *  -serve of a saved image is whichever two workers first resume or stop
+ *  a process (Bugs07 SCHED-8) -- and made once regardless, for the
+ *  harnesses that never reset.
+ */
 static void
 held_lock_init(void)
 {
-    if (held_lock_ready)
-        return;
-    ST_mutex_init(&held_lock);
-    held_lock_ready = 1;
+    if (once_begin(&held_lock_ready)) {
+        ST_mutex_init(&held_lock);
+        once_end(&held_lock_ready);
+    }
 }
 
 /*  The slot holding the process, or -1.  Under held_lock.  */
@@ -1067,21 +1107,21 @@ take_first_runnable(st_oop list)
  *  lock allocates, sends, or polls a safepoint.
  */
 static st_mutex     ready_lock;
-static int          ready_lock_ready;
+static st_atomic_int    ready_lock_ready;   /*  see once_begin  */
 
 static void
 ready_lock_init(void)
 {
-    if (ready_lock_ready)
-        return;
-    ST_mutex_init(&ready_lock);
-    ready_lock_ready = 1;
+    if (once_begin(&ready_lock_ready)) {
+        ST_mutex_init(&ready_lock);
+        once_end(&ready_lock_ready);
+    }
 }
 
 #define SEMAPHORE_STRIPES   64
 
 static st_mutex     semaphore_stripe[SEMAPHORE_STRIPES];
-static int          semaphore_stripes_ready;
+static st_atomic_int    semaphore_stripes_ready;    /*  see once_begin  */
 
 #ifndef NDEBUG
 static _Thread_local int    stripes_held;
@@ -1098,11 +1138,11 @@ semaphore_stripes_init(void)
 {
     unsigned    i;
 
-    if (semaphore_stripes_ready)
+    if (!once_begin(&semaphore_stripes_ready))
         return;
     for (i = 0; i < SEMAPHORE_STRIPES; ++i)
         ST_mutex_init(&semaphore_stripe[i]);
-    semaphore_stripes_ready = 1;
+    once_end(&semaphore_stripes_ready);
 }
 
 static st_mutex *
@@ -1137,6 +1177,7 @@ SCHED_reset(void)
     semaphore_stripes_init();
     async_lock_init();
     ready_lock_init();
+    held_lock_init();
     /*  Whatever is queued is dropped, and its counts with it.  */
     {
         int     i;
@@ -1173,6 +1214,15 @@ SCHED_reset(void)
         if (my_hands())
             clear_hands(my_hands());
     }
+}
+
+int
+SCHED_locks_made(void)
+{
+    return ST_load_acquire(&semaphore_stripes_ready) == 2
+        && ST_load_acquire(&async_lock_ready) == 2
+        && ST_load_acquire(&ready_lock_ready) == 2
+        && ST_load_acquire(&held_lock_ready) == 2;
 }
 
 st_oop

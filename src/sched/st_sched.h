@@ -221,6 +221,12 @@ st_oop      SCHED_input_semaphore(void);
 void        SCHED_set_idle_hook(void (*hook)(void));
 
 void        SCHED_reset(void);
+/*
+ *  For the tests: true once every lock SCHED_reset makes has been made.
+ *  SCHED_reset makes them all before any worker exists, and each is made
+ *  exactly once whoever gets there first (Bugs07 SCHED-8).
+ */
+int         SCHED_locks_made(void);
 
 #ifdef __cplusplus
 }

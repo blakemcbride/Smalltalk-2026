@@ -457,6 +457,28 @@ detach_and_take_worker(st_worker *self, void *user)
     ST_interp_unregister();
 }
 
+/*
+ *  Bugs07 SCHED-8.  The lock over the held table was made by whichever
+ *  worker first resumed or stopped a process, behind a plain int: two
+ *  arriving together both read "not made" and both ran ST_mutex_init on
+ *  one mutex, the second possibly while the first held it.  Every lock
+ *  the scheduler owns is now made once whoever arrives first -- the
+ *  timer's three-state, shared -- and SCHED_reset makes them all before
+ *  any worker exists.
+ *
+ *  The race is one ST_mutex_init wide and no run can be made to hit it,
+ *  so what is checked is what the reset promises: called before anything
+ *  in this process has touched a process or a semaphore, it leaves every
+ *  lock made.  The held table's was not, and this is the check that fails
+ *  on the old reset.
+ */
+static void
+test_bugs7f_sched(void)
+{
+    SCHED_reset();
+    CHECK(SCHED_locks_made());
+}
+
 int
 main(void)
 {
@@ -479,7 +501,7 @@ main(void)
     ST_interp_install_roots(provide_test_roots);
     ST_interp_register();
     give_this_worker_a_frame();
-    SCHED_reset();
+    test_bugs7f_sched();               /*  the first reset, on purpose  */
 
     /*  ----------  Signals with no waiter must all be remembered  ---------- */
 
