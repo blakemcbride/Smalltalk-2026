@@ -391,6 +391,8 @@ DbQueryBuilder >> writeOn: aStream parameters: values [
 	self writeCommonTablesOn: aStream parameters: values.
 	aStream nextPutAll: 'SELECT '.
 	distinct ifTrue: [aStream nextPutAll: 'DISTINCT '].
+	self limitsAtFront ifTrue:
+		[aStream nextPutAll: 'TOP '; print: maxRows; nextPut: $ ].
 	selectColumns isEmpty
 		ifTrue: [aStream nextPut: $*]
 		ifFalse:
@@ -425,7 +427,8 @@ DbQueryBuilder >> writeOn: aStream parameters: values [
 			[:each :i |
 			i > 1 ifTrue: [aStream nextPutAll: ', '].
 			aStream nextPutAll: each]].
-	maxRows > 0 ifTrue: [self writeLimitOn: aStream]
+	(maxRows > 0 and: [self limitsAtFront not]) ifTrue:
+		[self writeLimitOn: aStream]
 ]
 
 { #category : 'private' }
@@ -444,22 +447,54 @@ DbQueryBuilder >> writeCommonTablesOn: aStream parameters: values [
 ]
 
 { #category : 'private' }
+DbQueryBuilder >> databaseKind [
+	"Which database the SQL is for, as DbConnection>>kind answers it, or
+	 #unknown when there is no connection to ask."
+
+	^connection isNil ifTrue: [#unknown] ifFalse: [connection kind]
+]
+
+{ #category : 'private' }
+DbQueryBuilder >> limitsAtFront [
+	"Whether the row limit is SQL Server's TOP, written straight after
+	 SELECT (and DISTINCT), rather than a clause at the end.
+
+	 T-SQL's clause at the end, OFFSET ... FETCH, is part of ORDER BY and
+	 is a syntax error without one, so a limit: with no orderBy: failed on
+	 every SQL Server (Bugs07 FILES-13).  TOP needs no ordering and takes
+	 any n rows, which is what such a limit: asks for.  Not with a UNION:
+	 TOP belongs to the SELECT it is written in, so it would limit the
+	 first arm and leave the others whole, where every other database's
+	 LIMIT after the arms limits the result; writeLimitOn: orders that
+	 case by its first column instead, which makes the clause legal."
+
+	^maxRows > 0
+		and: [orderByColumns isEmpty
+		and: [unions isEmpty
+		and: [self databaseKind == #SQLServer]]]
+]
+
+{ #category : 'private' }
 DbQueryBuilder >> writeLimitOn: aStream [
-	"How a database spells `only this many rows'.
+	"How a database spells `only this many rows' at the end of the
+	 statement.
 
 	 Three spellings and no standard one anybody implements the same way.
-	 SQL Server puts it at the front, Oracle before 12c had no syntax at all
-	 and used ROWNUM in the WHERE clause, and the rest say LIMIT.  Asking the
-	 connection what it is talking to is the only way to be right, which is
-	 why a builder with no connection refuses rather than guesses."
+	 Oracle (12c and later) and SQL Server take OFFSET/FETCH, the rest say
+	 LIMIT, and SQL Server without an ORDER BY takes TOP at the front
+	 instead (limitsAtFront), its FETCH being part of ORDER BY.  Asking the
+	 connection what it is talking to is the only way to be right; with no
+	 connection the common spelling is written, and the builder refuses to
+	 run (fetchAll) rather than run a guess."
 
 	| kind |
-	kind := connection isNil ifTrue: [#unknown] ifFalse: [connection kind].
+	kind := self databaseKind.
 	kind == #Oracle ifTrue:
 		[^aStream nextPutAll: ' FETCH FIRST '; print: maxRows;
 			nextPutAll: ' ROWS ONLY'].
 	kind == #SQLServer ifTrue:
-		[^aStream nextPutAll: ' OFFSET 0 ROWS FETCH NEXT '; print: maxRows;
+		[orderByColumns isEmpty ifTrue: [aStream nextPutAll: ' ORDER BY 1'].
+		 ^aStream nextPutAll: ' OFFSET 0 ROWS FETCH NEXT '; print: maxRows;
 			nextPutAll: ' ROWS ONLY'].
 	aStream nextPutAll: ' LIMIT '; print: maxRows
 ]

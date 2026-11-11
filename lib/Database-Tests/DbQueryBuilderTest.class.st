@@ -218,6 +218,60 @@ DbQueryBuilderTest >> testLimitWithoutAConnection [
 		equals: 'SELECT * FROM employee LIMIT 10'
 ]
 
+{ #category : 'private' }
+DbQueryBuilderTest >> on: aTable kind: aSymbol [
+	"A builder whose connection says it talks to the database aSymbol,
+	 with no database: a DbConnection never opened, holding the kind it
+	 would have asked the driver for as though already cached.  The only
+	 way to see another dialect's SQL here, and what limit: writes is
+	 nothing but dialect."
+
+	| connection builder |
+	connection := DbConnection basicNew.
+	connection instVarAt: (DbConnection allInstVarNames indexOf: 'kind')
+		put: aSymbol.
+	builder := self on: aTable.
+	builder instVarAt: (DbQueryBuilder allInstVarNames indexOf: 'connection')
+		put: connection.
+	^builder
+]
+
+{ #category : 'tests' }
+DbQueryBuilderTest >> testLimitOnSQLServerWithoutAnOrderIsTop [
+	"T-SQL's OFFSET ... FETCH belongs to ORDER BY and is refused without
+	 one; TOP needs none.  DISTINCT comes before TOP in its grammar."
+
+	self assert: ((self on: 'employee' kind: #SQLServer) limit: 10; build)
+		equals: 'SELECT TOP 10 * FROM employee'.
+	self assert: ((self on: 'employee' kind: #SQLServer)
+			distinct; select: 'employee.last_name'; limit: 5; build)
+		equals: 'SELECT DISTINCT TOP 5 employee.last_name FROM employee'
+]
+
+{ #category : 'tests' }
+DbQueryBuilderTest >> testLimitOnSQLServerWithAnOrderIsFetch [
+	self assert: ((self on: 'employee' kind: #SQLServer)
+			orderBy: 'employee.last_name'; limit: 10; build)
+		equals: 'SELECT * FROM employee ORDER BY employee.last_name OFFSET 0 ROWS FETCH NEXT 10 ROWS ONLY'
+]
+
+{ #category : 'tests' }
+DbQueryBuilderTest >> testLimitOnSQLServerAfterAUnion [
+	"TOP would limit the first arm only; the clause at the end limits the
+	 whole result, as LIMIT does elsewhere, and needs an ORDER BY to be
+	 legal -- the first column will do."
+
+	self assert: ((self on: 'employee' kind: #SQLServer)
+			union: (self on: 'department'); limit: 3; build)
+		equals: 'SELECT * FROM employee UNION SELECT * FROM department ORDER BY 1 OFFSET 0 ROWS FETCH NEXT 3 ROWS ONLY'
+]
+
+{ #category : 'tests' }
+DbQueryBuilderTest >> testLimitOnOracle [
+	self assert: ((self on: 'employee' kind: #Oracle) limit: 10; build)
+		equals: 'SELECT * FROM employee FETCH FIRST 10 ROWS ONLY'
+]
+
 { #category : 'tests' }
 DbQueryBuilderTest >> testCommonTableExpression [
 	self assert: ((self on: 'employee')

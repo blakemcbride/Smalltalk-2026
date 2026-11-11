@@ -778,8 +778,12 @@
  *  3490 -> 3492 with Bugs07 KERNB-9: SystemDictionary>>flushClassNameCache
  *  and newClassNames, 1983's replaced, so that a list computed across a
  *  flush is not kept.
+ *
+ *  3492 -> 3499 with Bugs07 FILES-13: DbQueryBuilder>>databaseKind and
+ *  limitsAtFront (SQL Server's TOP), and DbQueryBuilderTest>>on:kind: and
+ *  its four tests of the SQL Server and Oracle spellings.
  */
-#define LIB_METHODS             3492
+#define LIB_METHODS             3499
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -2962,8 +2966,12 @@ test_sunit(void)
      *
      *  560 -> 572 with the twelve Bugs5 NET-9 to NET-15 tests in
      *  HttpClientTest, SocketTest, RestServerTest and OllamaTest.
+     *
+     *  572 -> 576 with Bugs07 FILES-13's four in DbQueryBuilderTest: how
+     *  limit: is spelled for SQL Server, with and without an ORDER BY and
+     *  after a UNION, and for Oracle.
      */
-    check_integer("TestCase allTests tests size", 572);
+    check_integer("TestCase allTests tests size", 576);
 
     /*
      *  And the three buckets, from the outside as well as from within
@@ -3323,8 +3331,12 @@ test_browsing(void)
      *
      *  3125384 -> 3125895 with Bugs07 KERNA-9: a number that cannot be a
      *  radix is the number, and the r is left.
+     *
+     *  3125895 -> 3129110 with Bugs07 FILES-13: limit: on SQL Server is TOP
+     *  after SELECT when there is no ORDER BY, which its OFFSET ... FETCH
+     *  needs, and the tests that say so.
      */
-    check_integer("(SourceFiles at: 1) contents size", 3125895);
+    check_integer("(SourceFiles at: 1) contents size", 3129110);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.

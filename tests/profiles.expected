@@ -348,9 +348,13 @@
 # that is not a JSON number stays a String, session idle time is on the
 # monotonic clock, and Ollama's toHtml: escapes the reply.
 #
+# Every row moved by four with Bugs07 FILES-13's tests in DbQueryBuilderTest:
+# limit: on SQL Server is TOP without an ORDER BY and OFFSET ... FETCH with
+# one (ordered by the first column after a UNION), and Oracle's FETCH FIRST.
+#
 # profile               run  passed
-st2026                  572  572
-pharo-announcements     603  603
-pharo-time              1196 1196
-pharo-weak              1104 1104
-pharo-collections       1029 1029
+st2026                  576  576
+pharo-announcements     607  607
+pharo-time              1200 1200
+pharo-weak              1108 1108
+pharo-collections       1033 1033
