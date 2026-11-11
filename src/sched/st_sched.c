@@ -363,6 +363,13 @@ timer_main(void *arg)
                  *  Timed, not indefinite: re-arming while this waits must
                  *  be able to shorten the deadline, and a spurious wake
                  *  costs one trip round the loop.
+                 *
+                 *  And timed on the monotonic clock, as `remaining' was
+                 *  measured: the port layer's condition variables never
+                 *  read the wall clock (Bugs07 FILES-9).  When they did, a
+                 *  wall clock stepped back during this wait put off the
+                 *  next Delay, and every Delay queued behind it, by the
+                 *  size of the step.
                  */
                 ST_cond_timedwait(&timer_cond, &timer_lock, remaining);
                 continue;

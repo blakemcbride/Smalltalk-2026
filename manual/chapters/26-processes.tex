@@ -164,6 +164,10 @@ $2^{29}-1$ milliseconds or a little over six days; a longer delay, or one
 made from something that is not a number, is refused there with an error
 that says so, rather than discovered inside \ct{wait}.
 
+A delay is timed on the monotonic clock, the one
+\ct{Time millisecondClockValue} reads. Setting the machine's clock, or a time
+server stepping it, neither shortens nor lengthens a delay already waiting.
+
 A delay expires while nothing is running, so it cannot be implemented by
 polling in the idle loop---with every process waiting on one, every worker is
 idle and a loop that only looks at what is already ready would look forever.

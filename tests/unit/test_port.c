@@ -15,6 +15,11 @@
 #include <string.h>
 #include <time.h>
 
+#if defined(__linux__)
+#include <sys/syscall.h>
+#include <unistd.h>
+#endif
+
 #define WORKERS         8
 #define INCREMENTS      50000
 
@@ -456,6 +461,104 @@ test_bugs7e_files(void)
     remove(path);
 }
 
+/*
+ *  FILES-9: a wall clock stepped back stalled every Delay by the size of
+ *  the step.  The delay timer measures what is left of a wait on the
+ *  monotonic clock and hands it to ST_cond_timedwait, which turned it
+ *  into an absolute deadline on CLOCK_REALTIME for a condition variable
+ *  made with the default (real-time) attribute -- so a step back during
+ *  the wait moved the deadline away by the step.
+ *
+ *  The machine's clock is not this test's to change, so the step is
+ *  simulated: on Linux this binary carries its own clock_gettime, in front
+ *  of the C library's, which while `realtime_skew_ns' is set reads
+ *  CLOCK_REALTIME that far AHEAD of the kernel's.  That is exactly the
+ *  state of a process just after its wall clock was stepped back by the
+ *  skew: a deadline worked out on the wall clock is that much further off
+ *  than the clock the kernel compares it with.  Every other clock, and
+ *  every read while the skew is zero, goes straight to the kernel.  The
+ *  first check makes sure the simulation reaches st_port.c at all -- its
+ *  wall-clock reading must jump by the skew -- so the second cannot pass
+ *  for want of a skew.  Before the fix the 100 ms wait took the skew too,
+ *  five seconds and a hundred milliseconds; now the wall clock is not
+ *  read for it and it takes 100 ms.
+ *
+ *  Everywhere, the plain wait must last about what was asked -- at least
+ *  half of it, since a Windows wait may end a clock tick early.  The
+ *  condition variable and the deadline have to be on one clock, and a
+ *  deadline on one compared with the other is decades out, which ends
+ *  the wait at once (or never): this is the check that they agree.
+ *  macOS waits relative and Windows takes milliseconds, neither reading
+ *  the wall clock, so the skewed half is Linux's alone.
+ */
+#if defined(__linux__)
+
+static int64_t  realtime_skew_ns;
+
+int
+clock_gettime(clockid_t id, struct timespec *ts)
+{
+    long    rc = syscall(SYS_clock_gettime, id, ts);
+
+    if (rc == 0 && id == CLOCK_REALTIME && realtime_skew_ns != 0) {
+        int64_t n = (int64_t) ts->tv_sec * INT64_C(1000000000)
+                  + (int64_t) ts->tv_nsec + realtime_skew_ns;
+
+        ts->tv_sec  = (time_t) (n / INT64_C(1000000000));
+        ts->tv_nsec = (long) (n % INT64_C(1000000000));
+    }
+    return (int) rc;
+}
+
+#endif
+
+static void
+test_bugs7e_sched(void)
+{
+    const int64_t   asked = INT64_C(100000000);         /*  100 ms  */
+    st_mutex        lock;
+    st_cond         never;
+    int64_t         start;
+    int64_t         took;
+
+    CHECK_EQ_INT(ST_mutex_init(&lock), 0);
+    CHECK_EQ_INT(ST_cond_init(&never), 0);
+    ST_mutex_lock(&lock);
+
+    start = ST_time_monotonic_ns();
+    CHECK_EQ_INT(ST_cond_timedwait(&never, &lock, asked), -1);
+    took = ST_time_monotonic_ns() - start;
+    CHECK(took >= asked / 2);
+    CHECK(took < INT64_C(2000000000));
+
+#if defined(__linux__)
+    {
+        const int64_t   skew = INT64_C(5000000000);     /*  5 s  */
+        int64_t         wall_before;
+        int64_t         wall_after;
+
+        wall_before = ST_time_smalltalk_ms();
+        realtime_skew_ns = skew;
+        wall_after = ST_time_smalltalk_ms();
+        start = ST_time_monotonic_ns();
+        CHECK_EQ_INT(ST_cond_timedwait(&never, &lock, asked), -1);
+        took = ST_time_monotonic_ns() - start;
+        realtime_skew_ns = 0;
+        /*  The simulation reached the port layer's wall-clock reads.  */
+        CHECK(wall_after - wall_before >= skew / 1000000 - 100);
+        /*  And the wait did not care.  */
+        CHECK(took >= asked / 2);
+        CHECK(took < INT64_C(2000000000));
+        printf("  (FILES-9: a 100 ms timed wait with the wall clock 5 s behind "
+               "the deadline's took %lld ms)\n", (long long) (took / 1000000));
+    }
+#endif
+
+    ST_mutex_unlock(&lock);
+    ST_cond_destroy(&never);
+    ST_mutex_destroy(&lock);
+}
+
 int
 main(void)
 {
@@ -474,6 +577,7 @@ main(void)
     test_bugs7c_lib();
     test_bugs7c_lib_sleep();
     test_bugs7e_files();
+    test_bugs7e_sched();
 
     return ST_TEST_END();
 }

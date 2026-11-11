@@ -403,10 +403,50 @@ ST_cond_broadcast(st_cond *c)
 
 #else
 
+/*
+ *  Every timed wait here is on the MONOTONIC clock, never the wall clock
+ *  (Bugs07 FILES-9).
+ *
+ *  A timed wait is how long to wait, and the caller has already measured
+ *  it on the monotonic clock: the delay timer works out what is left as
+ *  `deadline - ST_time_monotonic_ns()'.  pthread_cond_timedwait takes an
+ *  ABSOLUTE deadline, though, and with a default condattr that deadline is
+ *  read on CLOCK_REALTIME -- so the wait was turned into a wall-clock time
+ *  and the wall clock was then trusted to get there.  A wall clock stepped
+ *  back while the timer waited (an NTP step after a resume from suspend, a
+ *  VM restored from a snapshot, `date -s', somebody correcting a clock that
+ *  ran fast) moved the deadline away by the size of the step: the Delay
+ *  due next fired that much late, and every Delay behind it with it, since
+ *  one timer serves them all.  A ten-minute step back stopped every
+ *  timeout, retry pause and `Delay' in the image for ten minutes.
+ *
+ *  So the condition variable is made on CLOCK_MONOTONIC, and the deadline
+ *  below is read on the same clock; the two must agree, which is why every
+ *  st_cond is made here.  A deadline on one clock compared against the
+ *  other is never out by a little: monotonic time counts from boot and the
+ *  wall clock from 1970, so the wait would end at once, or not for decades.
+ *
+ *  macOS has no pthread_condattr_setclock.  It has a RELATIVE timed wait
+ *  instead, pthread_cond_timedwait_relative_np, which hands the kernel an
+ *  interval and never reads the wall clock at all, so there the condvar is
+ *  made plainly and the wait is relative.
+ */
 int
 ST_cond_init(st_cond *c)
 {
+#if defined(__APPLE__)
     return pthread_cond_init(c, NULL) == 0 ? 0 : -1;
+#else
+    pthread_condattr_t  attr;
+    int                 rc;
+
+    if (pthread_condattr_init(&attr) != 0)
+        return -1;
+    rc = pthread_condattr_setclock(&attr, CLOCK_MONOTONIC) == 0
+      && pthread_cond_init(c, &attr) == 0 ? 0 : -1;
+    pthread_condattr_destroy(&attr);
+    return rc;
+#endif
 }
 
 void
@@ -424,21 +464,32 @@ ST_cond_wait(st_cond *c, st_mutex *m)
 int
 ST_cond_timedwait(st_cond *c, st_mutex *m, int64_t ns)
 {
+#if defined(__APPLE__)
+    struct timespec relative;
+
+    if (ns < 0)
+        ns = 0;
+    relative.tv_sec  = (time_t) (ns / ST_NS_PER_SEC);
+    relative.tv_nsec = (long) (ns % ST_NS_PER_SEC);
+    return pthread_cond_timedwait_relative_np(c, m, &relative) == 0 ? 0 : -1;
+#else
     struct timespec deadline;
     int64_t         total;
 
     /*
-     *  pthread_cond_timedwait wants an absolute deadline, and with a default
-     *  condattr that deadline is on CLOCK_REALTIME.  Convert here rather
-     *  than making every caller think about it.
+     *  pthread_cond_timedwait wants an absolute deadline, on the clock the
+     *  condition variable was made with -- CLOCK_MONOTONIC, see
+     *  ST_cond_init.  Convert here rather than making every caller think
+     *  about it.
      */
     if (ns < 0)
         ns = 0;
-    clock_gettime(CLOCK_REALTIME, &deadline);
+    clock_gettime(CLOCK_MONOTONIC, &deadline);
     total = (int64_t) deadline.tv_nsec + ns;
     deadline.tv_sec  += (time_t) (total / ST_NS_PER_SEC);
     deadline.tv_nsec  = (long) (total % ST_NS_PER_SEC);
     return pthread_cond_timedwait(c, m, &deadline) == 0 ? 0 : -1;
+#endif
 }
 
 void
