@@ -91,7 +91,12 @@ document a line from Ollama---and the whole is answered at the end. The
 wait is the same wait as before, and parks the process and not the worker,
 so a server answering many requests can have many of these in flight on a
 few threads. The timeout bounds each piece rather than the whole: a model
-that keeps talking is allowed to.
+that keeps talking is allowed to. The answer ends where the service says it
+does---Anthropic's \ct{message_stop}, OpenAI's \ct{data: [DONE]},
+Ollama's \ct{done: true}---and nothing after that is read. A stream that
+stops before it is an \ct{LLMError} whose \ct{body} is the text that did
+come, which the block has already been given; the conversation does not
+keep it as the model's answer.
 
 \section{A conversation}
 

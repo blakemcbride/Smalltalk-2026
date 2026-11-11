@@ -3263,8 +3263,11 @@ test_browsing(void)
      *
      *  3094894 -> 3097153 with Bugs07 COMP-4: the Decompiler declares an
      *  inlined block's vector in that block.
+     *
+     *  3097153 -> 3099025 with Bugs07 NET-7: a streamed answer ends at
+     *  its service's end line, and a stream cut before it is an LLMError.
      */
-    check_integer("(SourceFiles at: 1) contents size", 3097153);
+    check_integer("(SourceFiles at: 1) contents size", 3099025);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -13523,6 +13526,46 @@ test_bugs7e_net(void)
     } else
         printf("  skipped NET-10 in-process: no SQLITE3 driver\n");
     unlink(db);
+
+    /*
+     *  NET-7.  A streamed answer ended where the bytes did: a stream cut
+     *  before the service's own end -- Anthropic's message_stop, OpenAI's
+     *  `data: [DONE]', Ollama's `done: true' -- was answered as the whole
+     *  answer, and text sent after that end was appended.  Each service
+     *  here from a listener of the check's own (LLMTestCase's), a body
+     *  that stops after `Hel' and one that goes on past the end.  Before:
+     *  `('''Hel''' '''HelXX''' )' for the two SSE services and
+     *  `('''Hel''' '''HelloXX''' )' for Ollama, whose last line carries
+     *  text of its own.  Now the first is an LLMError carrying what came,
+     *  and the second stops at the end.
+     */
+    check_string("| t run ev | t := AnthropicTest new. "
+                 "run := [:reply | t serving: reply do: [:url | [((Anthropic apiKey: 'k' model: 'm') "
+                 "url: url; send: 'hi' do: [:p | ]) printString] "
+                 "on: LLMError do: [:e | e class name, ' ', e body]]]. "
+                 "ev := [:x | '{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"', "
+                 "x, '\"}}']. "
+                 "^{run value: (t events: {ev value: 'Hel'}). "
+                 "run value: (t events: {ev value: 'Hel'. '{\"type\":\"message_stop\"}'. ev value: 'XX'})} "
+                 "printString",
+                 "('LLMError Hel' '''Hel''' )");
+    check_string("| t run ev | t := OpenAITest new. "
+                 "run := [:reply | t serving: reply do: [:url | [((OpenAI apiKey: 'k' model: 'm') "
+                 "url: url; send: 'hi' do: [:p | ]) printString] "
+                 "on: LLMError do: [:e | e class name, ' ', e body]]]. "
+                 "ev := [:x | '{\"choices\":[{\"delta\":{\"content\":\"', x, '\"}}]}']. "
+                 "^{run value: (t events: {ev value: 'Hel'}). "
+                 "run value: (t events: {ev value: 'Hel'. '[DONE]'. ev value: 'XX'})} printString",
+                 "('LLMError Hel' '''Hel''' )");
+    check_string("| t run ev | t := OllamaTest new. "
+                 "run := [:reply | t serving: reply do: [:url | [((Ollama model: 'm') "
+                 "url: url; send: 'hi' do: [:p | ]) printString] "
+                 "on: LLMError do: [:e | e class name, ' ', e body]]]. "
+                 "ev := [:x :done | '{\"message\":{\"content\":\"', x, '\"},\"done\":', done, '}']. "
+                 "^{run value: (t lines: {ev value: 'Hel' value: 'false'}). "
+                 "run value: (t lines: {ev value: 'Hel' value: 'false'. ev value: 'lo' value: 'true'. "
+                 "ev value: 'XX' value: 'false'})} printString",
+                 "('LLMError Hel' '''Hello''' )");
 
     test_dialect = ST_DIALECT_BLUE_BOOK;
 }

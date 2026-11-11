@@ -182,14 +182,18 @@ Ollama >> stopReasonOf: aReply [
 { #category : 'the wire' }
 Ollama >> streamedTextOf: aLine [
 	"One JSON document a line; a blank or a non-JSON keep-alive line is
-	 nothing; `error' is an error; the piece is message.content."
+	 nothing; `error' is an error; the piece is message.content.  The
+	 document with `done: true' is the last, and may carry text of its
+	 own, so it answers that text and marks the end itself (see
+	 LLM>>streamFor:do:) rather than answering nil."
 	| document |
 	(aLine trimmed startsWith: '{') ifFalse: [^''].
 	document := self documentFrom: aLine.
 	(document includesKey: 'error') ifTrue: [
 		^(LLMError new) body: aLine; signal: 'Ollama: ', (document at: 'error') printString].
 	(document at: 'done' ifAbsent: [false]) == true ifTrue: [
-		lastStopReason := self string: 'done_reason' of: document].
+		lastStopReason := self string: 'done_reason' of: document.
+		streamEnded := true].
 	^self textOf: document
 ]
 

@@ -63,7 +63,13 @@ twenty times; when the reply is text, append it and answer it. A block
 with no tools streams instead: `streamFor:do:` posts with `stream: true`
 and hands each line of the body to `streamedTextOf:`, which answers the
 piece of text the line carries, `''` for none, `nil` for the end, and
-raises for a line that reports an error.
+raises for a line that reports an error; Ollama's last line, which can
+carry text too, answers its text and sets `streamEnded` instead of
+answering `nil`. Reading stops at the end, so nothing a server sends after
+it is taken, and a body that runs out before it is an `LLMError` whose
+`body` is the text that did come: the end line is the only evidence a
+streamed answer is whole, since a body cut off cleanly looks to HTTP like
+any other.
 
 ## What is sent
 

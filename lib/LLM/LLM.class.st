@@ -66,7 +66,7 @@ class-side state to share.
 Class {
 	#name : 'LLM',
 	#superclass : 'Object',
-	#instVars : [ 'url', 'model', 'apiKey', 'systemPrompt', 'temperature', 'topP', 'maxTokens', 'timeoutSeconds', 'lastStatus', 'lastResponse', 'lastStopReason' ],
+	#instVars : [ 'url', 'model', 'apiKey', 'systemPrompt', 'temperature', 'topP', 'maxTokens', 'timeoutSeconds', 'lastStatus', 'lastResponse', 'lastStopReason', 'streamEnded' ],
 	#category : 'LLM'
 }
 
@@ -349,7 +349,9 @@ LLM >> sseDataOf: aLine [
 LLM >> streamedTextOf: aLine [
 	"The text one line of a streamed reply carries: '' for a line with
 	 none, nil for the line that ends the stream, and an LLMError for a
-	 line that reports one."
+	 line that reports one.  A service whose last line can carry text as
+	 well -- Ollama's `done: true' -- answers the text and sets
+	 streamEnded; see streamFor:do:."
 	^self subclassResponsibility
 ]
 
@@ -413,17 +415,40 @@ LLM >> complete: messages tools: toolsOrNil [
 { #category : 'the loop' }
 LLM >> streamFor: messages do: aBlock [
 	"The answer as it comes, line by line off the wire, each piece of
-	 text to aBlock; the whole is answered and added to messages."
+	 text to aBlock; the whole is answered and added to messages.
+
+	 THE ANSWER ENDS WHERE THE SERVICE SAYS IT DOES, not where the bytes
+	 do.  Each service ends a streamed answer with a line of its own --
+	 Anthropic's message_stop, OpenAI's `data: [DONE]', Ollama's `done:
+	 true' -- and that line is the only evidence the answer is whole: a
+	 body that is closed or chunk-ended early looks to HTTP like any
+	 other, and a body ended by the close has no other end at all.  This
+	 read to the end of the bytes and never asked whether the line had
+	 come, so a stream cut off after `Hel' was answered as `Hel', no
+	 error anywhere and the conversation keeping it as the model's turn;
+	 and text a server sent after its end was appended (Bugs07 NET-7).
+	 Now reading stops at the end line -- nothing after it is read, and
+	 the connection is closed -- and a body that runs out first is an
+	 LLMError, carrying in its body what had come, which aBlock has
+	 already been given.  The conversation is not told an answer that
+	 was not given."
 	| out piece |
 	lastResponse := nil.
 	lastStopReason := nil.
+	streamEnded := false.
 	out := WriteStream on: (String new: 256).
 	self postJson: (self requestBodyFor: messages tools: nil stream: true) to: self chatUrl
-		linesDo: [:line |
+		linesUntil: [:line |
 			piece := self streamedTextOf: line.
+			piece isNil ifTrue: [streamEnded := true].
 			(piece notNil and: [piece notEmpty]) ifTrue: [
 				out nextPutAll: piece.
-				aBlock value: piece]].
+				aBlock value: piece].
+			streamEnded].
+	streamEnded ifFalse: [
+		^(LLMError new) status: lastStatus; body: out contents;
+			signal: self class name, '''s stream ended before the end of the answer: ',
+				'what came is not the whole of it (', out contents size printString, ' characters)'].
 	messages add: (self assistantMessage: out contents).
 	^out contents
 ]
@@ -505,13 +530,17 @@ LLM >> malformed: aReply because: aReason [
 ]
 
 { #category : 'http' }
-LLM >> postJson: aJSONObject to: aUrl linesDo: aBlock [
-	"A streamed reply, each line of its body to aBlock as it arrives.  An
-	 error reply is not a stream: it is read whole and raised."
+LLM >> postJson: aJSONObject to: aUrl linesUntil: aBlock [
+	"A streamed reply, each line of its body to aBlock as it arrives,
+	 until aBlock answers true or the body ends; the connection is closed
+	 either way, with whatever was after that line unread.  An error
+	 reply is not a stream: it is read whole and raised."
 	self client post: aUrl body: aJSONObject asJsonString contentType: 'application/json' do: [:reply |
+		| body line |
 		lastStatus := reply status.
 		reply isSuccess ifFalse: [self failed: reply status body: reply body].
-		reply bodyStream linesDo: aBlock]
+		body := reply bodyStream.
+		[(line := body nextLine) notNil and: [(aBlock value: line) not]] whileTrue]
 ]
 
 { #category : 'private' }
