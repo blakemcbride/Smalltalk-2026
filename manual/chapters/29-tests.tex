@@ -165,11 +165,11 @@ and holds the scores against \ct{tests/profiles.expected}:
 
 \begin{plain}
 # profile               run  passed
-st2026                  560  560
-pharo-announcements     591  591
-pharo-time              1181 1181
-pharo-weak              1092 1091
-pharo-collections       1017 1017
+st2026                  572  572
+pharo-announcements     603  603
+pharo-time              1196 1196
+pharo-weak              1104 1104
+pharo-collections       1029 1029
 \end{plain}
 
 The numbers are whatever the last recorded run scored, and the file is the
@@ -179,12 +179,11 @@ requires \ct{st2026} and so inherits its suites; a row that moves by a
 different amount from the others has gained or lost tests of its own, and
 the file says which and why in prose beside the numbers.
 
-Two numbers per row, and they are not always equal. A test that cannot pass
+Two numbers per row, because they need not be equal. A test that cannot pass
 here is recorded failing rather than removed or excluded, with the reason
-written in the profile it belongs to --- \ct{pharo-weak} carries one, a test
-whose two assertions hold only if a finalizer takes the processor between two
-consecutive sends. Recording it keeps the ratchet working in both directions:
-a second failure makes the passing number fall.
+written in the profile it belongs to, and recording it keeps the ratchet
+working in both directions: a second failure makes the passing number fall.
+In the table above every row passes all it runs.
 
 Both directions fail:
 

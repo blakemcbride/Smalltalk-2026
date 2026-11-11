@@ -187,14 +187,21 @@ Exception
         NonBooleanReceiver
         SyntaxErrorNotification
         OutOfMemory
+        RecursionDepthExceeded
+        CorruptMethod
+        TimedOut
         TestFailure          (SUnit)
     UnhandledError
     Warning
-    TimedOut
 \end{plain}
 
-The last two are raised by the VM and by the compiler rather than by library
-code, and both replaced something that could not be caught at all.
+The packages add errors of their own beside these---\ct{DbError},
+\ct{JSONError}, \ct{NetError} and the rest---each in its own chapter.
+
+\ct{NonBooleanReceiver}, \ct{SyntaxErrorNotification}, \ct{OutOfMemory},
+\ct{RecursionDepthExceeded} and \ct{CorruptMethod} are raised by the VM or by
+the compiler rather than by library code, and each replaced something that
+could not be caught at all.
 
 \ct{NonBooleanReceiver} is what \ct|x ifTrue: [...] ifFalse: [...]| raises
 when \ct{x} is neither \ct{true} nor \ct{false}. The interpreter used to
@@ -230,6 +237,17 @@ error raised a million frames down is caught in under a second. A runaway
 recursion never gets that far, because past two hundred thousand frames the
 interpreter signals \ct{RecursionDepthExceeded} instead (\S\ref{sec:runaway}),
 long before the object table runs out.
+
+\ct{RecursionDepthExceeded} is raised when a stack passes the interpreter's
+call-depth limit, two hundred thousand frames unless \ctp{ST\_MAX\_CALL\_DEPTH}
+says otherwise (\S\ref{sec:runaway}): a runaway recursion costs the request
+it is in, not the process. It is an \ct{Error} and not an \ct{OutOfMemory},
+and not resumable, because the right response is the opposite one---more
+room may well let a program that ran out succeed, and a program that went
+too deep does the same thing again. \ct{CorruptMethod} is raised in place of
+running a method the interpreter cannot execute---a literal past its frame,
+an instruction pointer past its end---and is not resumable either: the
+activation is already gone.
 
 \ct{UnhandledError} is an error that no handler took, offered once more
 before it is reported: \ct{Error>>defaultAction} signals one carrying the

@@ -190,7 +190,7 @@ the profile beside it:
 | `st2026` | — | all |
 | `pharo-announcements` | 31 | all |
 | `pharo-time` | 621 | all |
-| `pharo-weak` | 532 | all but one |
+| `pharo-weak` | 532 | all |
 | `pharo-collections` | 457 | all |
 
 **1,641 are Pharo's own tests**, run unmodified against this system.
