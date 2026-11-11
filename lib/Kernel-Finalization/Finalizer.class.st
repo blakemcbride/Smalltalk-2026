@@ -32,8 +32,9 @@ whichever process happened to allocate the object that triggered one.
 
 Where the semaphore lives is worth one paragraph, because it is the one
 thing about this that an image file does not carry.  The collector holds the
-Semaphore as a bare oop in C, told to it by primNextMournedObjectSignalling:,
-and the image format stores objects and not the VM's variables -- so an image
+Semaphore in C, counted for as long as it is registered, told to it by
+primNextMournedObjectSignalling:, and the image format stores objects and not
+the VM's variables -- so an image
 written by -bootstrap comes back with the process still on the ready list,
 which runs a drain and re-arms it before anything else happens, while an image
 snapshotted from a LIVE run comes back with the process asleep and the VM with
@@ -143,7 +144,10 @@ Finalizer class >> drain [
 { #category : 'private' }
 Finalizer class >> drainSignalling: aSemaphoreOrNil [
 	"As drain, but arming the collector to signal aSemaphoreOrNil rather
-	 than the one this class waits on.
+	 than the one this class waits on.  The VM keeps the Semaphore alive
+	 until the next registration replaces it, so the caller need not
+	 (Bugs07 OM-3): an entry freed while the collector still named it was
+	 reused, and the next Semaphore allocated there took its signals.
 
 	 nil disarms it: the collector queues as before and wakes nobody, so
 	 the only thing that will ever mourn is whoever calls this again.  That

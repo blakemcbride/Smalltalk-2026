@@ -64,9 +64,9 @@ st_oop      OM_take_mourned(void);  /*  with the queue's count: release it  */
 
 /*
  *  The Semaphore the collector signals when it queues something, as the
- *  image hands it over.  Held as a root for as long as it is registered,
- *  since the only other reference is an instance variable of a process that
- *  is asleep on it.
+ *  image hands it over.  Counted, and visited as a root, for as long as it
+ *  is registered: the only other reference may be an instance variable of a
+ *  process that is asleep on it, or none at all (Bugs07 OM-3).
  */
 void        OM_set_mourn_semaphore(st_oop semaphore);
 st_oop      OM_mourn_semaphore(void);

@@ -40,6 +40,25 @@ static uint32_t     queue_capacity;
 static st_oop       mourn_semaphore = ST_NIL;
 static int          signal_owed;
 
+/*
+ *  The Semaphore is COUNTED while it is registered, as every other one C
+ *  keeps is -- the input semaphore, the timer's, the async queue's, the
+ *  socket tokens (Bugs07 OM-3).  The walk below visits it, which keeps it
+ *  alive across a collection, but not between two: when the image dropped
+ *  its last reference to a Semaphore it had registered -- `Finalizer
+ *  drainSignalling:' offers exactly that to callers that drive the queue
+ *  themselves -- its count reached zero, its entry was freed and reused,
+ *  and `mourn_semaphore' named the new occupant.  The class check in
+ *  SCHED_synchronous_signal (Bugs6 INTERP-2) dropped the wake when that was
+ *  a MethodContext, but the commonest short-lived object in a server is a
+ *  Semaphore -- every critical:, Delay and SharedQueue makes one -- and
+ *  such an occupant passed it and took a signal nobody sent: a second
+ *  excess signal on a forMutualExclusion Semaphore lets two processes into
+ *  the section together from then on.  The walk's visit rebuilds this same
+ *  count at a collection, as it does for the queued ephemerons, so nothing
+ *  is counted twice.
+ */
+
 static st_mutex     mourn_lock;
 static int          mourn_lock_ready;
 
@@ -194,10 +213,22 @@ OM_take_mourned(void)
 void
 OM_set_mourn_semaphore(st_oop semaphore)
 {
+    st_oop  old;
     int     owed;
 
     mourn_lock_init();
     ST_mutex_lock(&mourn_lock);
+    /*
+     *  The new one counted before the old one is released, so registering
+     *  the same Semaphore again -- the finalization process does it on every
+     *  pass -- never takes its count through zero.  The release is made
+     *  after the lock is dropped: without workers a count that reaches zero
+     *  is freed on the spot, on this thread, and freeing a Semaphore
+     *  releases whatever its fields hold, which is no work to do under the
+     *  lock the collector takes to visit the queue.
+     */
+    OM_increase_ref(semaphore);
+    old             = mourn_semaphore;
     mourn_semaphore = semaphore;
     /*
      *  A debt run up while nobody was listening is paid the moment somebody
@@ -210,6 +241,7 @@ OM_set_mourn_semaphore(st_oop semaphore)
      */
     owed = signal_owed && queue_head < queue_count;
     ST_mutex_unlock(&mourn_lock);
+    OM_decrease_ref(old);
     if (owed)
         OM_mourn_wake();
 }
@@ -243,6 +275,15 @@ OM_mourn_wake(void)
      && OM_is_present(mourn_semaphore)) {
         semaphore   = mourn_semaphore;
         signal_owed = 0;
+        /*
+         *  A count of this call's own, for the moment between the unlock
+         *  and the async queue's increment: a worker registering another
+         *  Semaphore in that moment releases the registration's count, and
+         *  if that was the last one the signal below would go to a freed
+         *  entry -- the reuse this file's count exists to prevent (Bugs07
+         *  OM-3).
+         */
+        OM_increase_ref(semaphore);
     }
     ST_mutex_unlock(&mourn_lock);
     /*
@@ -251,14 +292,17 @@ OM_mourn_wake(void)
      *  anything about this one; taking them in one order here and the
      *  other there is the shape of a deadlock nobody would reproduce.
      */
-    if (OM_is_present(semaphore))
+    if (OM_is_present(semaphore)) {
         SCHED_asynchronous_signal(semaphore);
+        OM_decrease_ref(semaphore);
+    }
 }
 
 void
 OM_mourn_reset(void)
 {
     uint32_t    i;
+    st_oop      semaphore;
 
     mourn_lock_init();
     ST_mutex_lock(&mourn_lock);
@@ -269,9 +313,11 @@ OM_mourn_reset(void)
     queue_count     = 0;
     queue_head      = 0;
     queue_capacity  = 0;
+    semaphore       = mourn_semaphore;
     mourn_semaphore = ST_NIL;
     signal_owed     = 0;
     ST_mutex_unlock(&mourn_lock);
+    OM_decrease_ref(semaphore);         /*  the registration's (OM-3)  */
 }
 
 /*

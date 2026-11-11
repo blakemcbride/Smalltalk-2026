@@ -3208,8 +3208,11 @@ test_browsing(void)
      *  3071804 -> 3073455 with Bugs07 KERNB-6: `e pass' with no handler
      *  further out resumes a resumable exception with the default action's
      *  value.
+     *
+     *  3073455 -> 3073720 with Bugs07 OM-3: Finalizer says the VM keeps a
+     *  registered mourn semaphore alive.
      */
-    check_integer("(SourceFiles at: 1) contents size", 3073455);
+    check_integer("(SourceFiles at: 1) contents size", 3073720);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -13159,6 +13162,67 @@ test_bugs7e_kern(void)
     test_dialect = ST_DIALECT_BLUE_BOOK;
 }
 
+/*
+ *  Bugs07 round 5, the object memory.
+ */
+static void
+test_bugs7e_om(void)
+{
+    test_dialect = ST_DIALECT_CLOSURES;
+
+    /*
+     *  OM-3.  The Semaphore primitive 236 registers is counted while C
+     *  names it.  It used to be only visited by the walk, which keeps it
+     *  across a collection but not between two: a Semaphore the image
+     *  registered and then dropped before the next collection was freed on
+     *  the spot (this driver has no workers), and `mourn_semaphore' named a
+     *  free entry -- the next Semaphore allocated there took the
+     *  collector's next wake.  Dropped here by a store, not by a
+     *  collection, which is the window.
+     */
+    {
+        st_oop  sem;
+
+        evaluate("| holder | holder := Array new: 1. holder at: 1 put: Semaphore new. "
+                 "Finalizer drainSignalling: (holder at: 1). holder at: 1 put: nil. ^nil");
+        sem = OM_mourn_semaphore();
+        ++st_test_checks;
+        if (!OM_is_object(sem) || OM_fetch_class(sem) != ST_CLASS_SEMAPHORE
+         || ST_load_relaxed(OM_refcount_of(sem)) < 1) {
+            ++st_test_failures;
+            printf("  FAIL OM-3: the registered mourn semaphore was freed when "
+                   "the image dropped it\n");
+        }
+    }
+    /*
+     *  And what that cost: a forMutualExclusion Semaphore allocated into
+     *  the dead registration's entry took the collector's wake as a second
+     *  excess signal, (1 2 ).  The ephemeron's key is made inside a method
+     *  that has returned, so no stack slot of the doIt still names it.
+     */
+    check_string("| cls holder m e before | "
+                 "Finalizer drainSignalling: nil. "
+                 "cls := Object ephemeronSubclass: #Bugs7eMournProbe "
+                 "instanceVariableNames: 'key value' classVariableNames: '' "
+                 "poolDictionaries: '' category: 'Bugs7e'. "
+                 "cls compile: 'fill key := Object new' classified: 'x' notifying: nil. "
+                 "cls compile: 'mourn ^self' classified: 'x' notifying: nil. "
+                 "holder := Array new: 1. holder at: 1 put: Semaphore new. "
+                 "Finalizer drainSignalling: (holder at: 1). holder at: 1 put: nil. "
+                 "m := Semaphore basicNew. m instVarAt: 3 put: 1. "
+                 "before := m instVarAt: 3. "
+                 "e := cls new. e fill. Smalltalk garbageCollect. "
+                 "1 to: 1000 do: [:i | i + 1]. "
+                 "Finalizer drainSignalling: nil. "
+                 "^{before. m instVarAt: 3} printString",
+                 "(1 1 )");
+    /*  Registering nil gives the count back: the Semaphore is no longer
+     *  held by C.  */
+    CHECK_EQ_INT((int) (OM_mourn_semaphore() == ST_NIL), 1);
+
+    test_dialect = ST_DIALECT_BLUE_BOOK;
+}
+
 int
 main(void)
 {
@@ -13312,6 +13376,7 @@ main(void)
     test_bugs7d_kerna();
     test_bugs7d_gui();
     test_bugs7e_kern();
+    test_bugs7e_om();
 
     OM_shutdown();
     return ST_TEST_END();
