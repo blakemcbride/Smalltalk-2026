@@ -126,6 +126,13 @@ methods were loaded, which globals were left undeclared, how many class
 initialisers ran. The answer goes to standard output, so \ct{2>/dev/null}
 gives you just the answer.
 
+The answer is printed as its \ct{printString}: \ct|#(1 2)| prints
+\ct{(1 2 )} and \ct{3/4} prints \ct{(3/4)}. A String or a Symbol is the
+exception, printed as its own text without quotes, because that is how a
+program hands back a report it has built. When the answer's own
+\ct{printOn:} fails, the error is reported, the answer is named by its class
+instead, and the exit status is 1.
+
 This takes about nine seconds, nearly all of it building the image. There is
 no way to keep one warm between invocations, so when you have several
 questions, ask them in one program:

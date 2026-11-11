@@ -14292,6 +14292,30 @@ test_bugs7f_vm(void)
                   " startup");
     bugs7f_expect(text, "rc=0", "COMP-8 that image quits cleanly");
 
+    /*
+     *  COMP-10.  -eval printed the Xerox tracer's `aArray', `aFraction'
+     *  for anything but text, nil, a Boolean or a SmallInteger.  It prints
+     *  the answer's printString; and when a printOn: fails, the error is
+     *  reported, the answer is named by its class, and the exit is 1.
+     */
+    bugs7f_shell(dir, "\"$ST2026\" -bootstrap -profile profiles/st2026.profile"
+                      " -eval '{3/4. #(1 $a). 1.5. Object new. Object}'",
+                 text, sizeof text);
+    bugs7f_expect(text, "\n((3/4) (1 $a ) 1.5 an Object Object )\n",
+                  "COMP-10 -eval prints the answer's printString");
+    bugs7f_expect(text, "rc=0", "COMP-10 a printed answer exits 0");
+    bugs7f_shell(dir, "\"$ST2026\" -bootstrap -profile profiles/st2026.profile"
+                      " -eval \"| c | c := Object subclass: #ZzB7fBad"
+                      " instanceVariableNames: '' classVariableNames: ''"
+                      " poolDictionaries: '' category: 'Zz'."
+                      " c compile: 'printOn: s self zork'. c new\"",
+                 text, sizeof text);
+    bugs7f_expect(text, "Message not understood: zork",
+                  "COMP-10 a failing printOn: is reported");
+    bugs7f_expect(text, "\na ZzB7fBad\n",
+                  "COMP-10 a failing printOn: falls back to the class");
+    bugs7f_expect(text, "rc=1", "COMP-10 a failing printOn: exits 1");
+
     snprintf(command, sizeof command, "rm -rf %s", dir);
     (void) system(command);
 }

@@ -1811,15 +1811,21 @@ eval_suspend_hook(st_oop process)
  *  standing up a context whose sender is nil, and running until it returns.
  *  A return with no sender has nowhere to push its answer, so the
  *  interpreter keeps it and stops -- see st_vm.return_value.
+ *
+ *  `self' in the expression is `receiver': nil for everything the command
+ *  line asks, and the answer itself when -eval asks that answer for its
+ *  printString (Bugs07 COMP-10).
  */
 static st_oop
-evaluate(const char *expression, char *errbuf, size_t errlen)
+evaluate_with(const char *expression, st_oop receiver,
+              char *errbuf, size_t errlen)
 {
     st_compile_context  ctx;
     st_compile_result   res;
     st_oop              context = ST_NIL;
     st_oop              method = ST_NIL;
     st_oop              image_active = ST_NIL;
+    st_held             given;
     st_held             held;
     st_held             kept;
 
@@ -1860,7 +1866,16 @@ evaluate(const char *expression, char *errbuf, size_t errlen)
      *  complained of an unterminated string the program does not contain.
      *  With no pattern to prepend there was never anything to copy for.
      */
+    /*
+     *  The receiver can be an object only the caller's C frame names -- the
+     *  answer of the evaluation before this one, which the next one's
+     *  register clear forgets -- and the compile allocates.  Held until
+     *  the context has it.
+     */
+    ST_hold_enter(&given);
+    ST_hold(&given, &receiver);
     if (COMPILE_method(expression, &ctx, &res) != 0) {
+        ST_hold_leave(&given);
         snprintf(errbuf, errlen, "%s", res.error);
         return ST_OOP_INVALID;
     }
@@ -1880,12 +1895,13 @@ evaluate(const char *expression, char *errbuf, size_t errlen)
     context = OM_instantiate_pointers(ST_CLASS_METHOD_CONTEXT, 32);
     if (!OM_is_object(context)) {
         ST_hold_leave(&held);
+        ST_hold_leave(&given);
         snprintf(errbuf, errlen, "out of memory building a context");
         return ST_OOP_INVALID;
     }
     OM_store_pointer(ST_CTX_SENDER, context, ST_NIL);
     OM_store_pointer(ST_CTX_METHOD, context, method);
-    OM_store_pointer(ST_CTX_RECEIVER, context, ST_NIL);
+    OM_store_pointer(ST_CTX_RECEIVER, context, receiver);
     /*
      *  The instruction pointer is stored one-relative and counts bytes from
      *  the start of the method, so it begins past the header and literals.
@@ -1954,6 +1970,7 @@ evaluate(const char *expression, char *errbuf, size_t errlen)
     }
     ST_set_active_context(context);
     ST_hold_leave(&held);           /*  the interpreter holds them now  */
+    ST_hold_leave(&given);          /*  and the context the receiver  */
     /*
      *  And say so in the Processor, for the length of the run.
      *
@@ -2042,6 +2059,12 @@ evaluate(const char *expression, char *errbuf, size_t errlen)
         return ST_OOP_INVALID;
     }
     return st_vm.return_value;
+}
+
+static st_oop
+evaluate(const char *expression, char *errbuf, size_t errlen)
+{
+    return evaluate_with(expression, ST_NIL, errbuf, errlen);
 }
 
 /*
@@ -2228,6 +2251,113 @@ bootstrap_is_directory(const char *path)
     if (stat(path, &st) != 0)
         return 0;
     return (st.st_mode & S_IFMT) == S_IFDIR;
+}
+
+/*
+ *  What -eval prints: the answer's printString (Bugs07 COMP-10).
+ *
+ *  It printed the Xerox tracer's name for anything but a String, a Symbol,
+ *  a SmallInteger, nil, true or false -- `aArray', `aFraction',
+ *  `aOrderedCollection' -- which is neither the answer nor English, and
+ *  every probe and every example had to end in `printString' by hand to
+ *  see what it had asked for.  So the answer is asked, in the image, as a
+ *  print it would ask it: `^self printString' evaluated with the answer as
+ *  self.  A String or Symbol still prints as its own text, and nil, true,
+ *  false and a SmallInteger as they always did, which is also what their
+ *  printString says.
+ *
+ *  A printOn: of the user's can fail.  Its error is reported where it
+ *  happens -- by the library's unhandled-error report under the st2026
+ *  profile, by the notifier hook under bluebook -- and the answer is named
+ *  by its class instead, with an article, the way Object>>printOn: would
+ *  have.  print_answer answers whether the printString was what was
+ *  printed, and -eval exits 1 when it was not.
+ */
+static void
+print_text(st_oop text)
+{
+    uint32_t    n = OM_fetch_byte_length(text);
+    uint32_t    k;
+
+    for (k = 0; k < n; ++k)
+        putchar((char) OM_fetch_byte(k, text));
+    putchar('\n');
+}
+
+static int
+is_text(st_oop p)
+{
+    return OM_is_object(p)
+        && (OM_fetch_class(p) == ST_CLASS_STRING
+         || OM_fetch_class(p) == BOOT_global("Symbol"));
+}
+
+static void
+print_by_class(st_oop value)
+{
+    char    name[256];
+
+    if (OM_class_name_of(value, name, sizeof name))
+        printf("%s\n", name);          /*  a class names itself  */
+    else if (OM_class_name_of(OM_fetch_class(value), name, sizeof name))
+        printf("%s %s\n", strchr("AEIOU", name[0]) && name[0] ? "an" : "a",
+               name);
+    else {
+        char    text[256];
+
+        ST_print_object(value, text, sizeof text);
+        printf("%s\n", text);
+    }
+}
+
+static int
+print_answer(st_oop value)
+{
+    char        err[512];
+    char        text[256];
+    st_oop      printed;
+    st_held     shown;
+    int         ok;
+
+    if (is_text(value)) {
+        print_text(value);
+        return 1;
+    }
+    if (value == ST_TRUE) {
+        /*
+         *  ST_print_object says `aTrue', faithfully to the Xerox traces it
+         *  reproduces (see trace.c); the answer to an expression is
+         *  `true', as false's is `false' (Bugs6 COMP-4).
+         */
+        printf("true\n");
+        return 1;
+    }
+    if (value == ST_NIL || value == ST_FALSE || OM_is_int(value)
+     || !OM_is_object(value)) {
+        ST_print_object(value, text, sizeof text);
+        printf("%s\n", text);
+        return 1;
+    }
+    /*
+     *  Held across the second evaluation: its register clear forgets the
+     *  first one's answer, and the fallback below still needs it.
+     */
+    ST_hold_enter(&shown);
+    ST_hold(&shown, &value);
+    printed = evaluate_with("^self printString", value, err, sizeof err);
+    ok = printed != ST_OOP_INVALID && is_text(printed)
+      && st_vm.unhandled_errors == 0 && !st_vm.blocked_verdict;
+    if (ok)
+        print_text(printed);
+    else {
+        if (printed == ST_OOP_INVALID)
+            fprintf(stderr, "st2026: printing the answer: %s\n", err);
+        else
+            fprintf(stderr, "st2026: the answer's printString failed\n");
+        print_by_class(value);
+    }
+    ST_hold_leave(&shown);
+    return ok;
 }
 
 static int
@@ -2555,39 +2685,23 @@ do_bootstrap(const char *const *sources, const int *dialects, unsigned count,
     }
 
     if (expression) {
-        st_oop  value = evaluate(expression, err, sizeof err);
-        char    text[256];
+        st_oop      value = evaluate(expression, err, sizeof err);
+        unsigned    unhandled;
+        unsigned    blocked;
+        int         printed_ok;
 
         if (value == ST_OOP_INVALID) {
             fprintf(stderr, "st2026: %s\n", err);
             return 1;
         }
         /*
-         *  A String or Symbol answers its own text.  ST_print_object names
-         *  the class, which is right for an object with no obvious reading
-         *  and useless for the one kind that has one -- and the one kind
-         *  that has one is how the image reports anything at all.
+         *  The evaluation's own verdicts, taken now: asking the answer for
+         *  its printString is an evaluation too, and each one starts from
+         *  clear registers.
          */
-        if (OM_is_object(value)
-         && (OM_fetch_class(value) == ST_CLASS_STRING
-          || OM_fetch_class(value) == BOOT_global("Symbol"))) {
-            uint32_t    n = OM_fetch_byte_length(value);
-            uint32_t    k;
-
-            for (k = 0; k < n; ++k)
-                putchar((char) OM_fetch_byte(k, value));
-            putchar('\n');
-        }  else if (value == ST_TRUE) {
-            /*
-             *  ST_print_object says `aTrue', faithfully to the Xerox
-             *  traces it reproduces (see trace.c); the answer to an
-             *  expression is `true', as false's is `false' (Bugs6 COMP-4).
-             */
-            printf("true\n");
-        }  else  {
-            ST_print_object(value, text, sizeof text);
-            printf("%s\n", text);
-        }
+        unhandled = st_vm.unhandled_errors;
+        blocked   = st_vm.blocked_verdict;
+        printed_ok = print_answer(value);
         /*
          *  An Error nobody handled is a failed evaluation, whatever the
          *  expression went on to answer (Bugs3 B58).  Error>>defaultAction
@@ -2599,11 +2713,10 @@ do_bootstrap(const char *const *sources, const int *dialects, unsigned count,
          *  Counted by the VM, on this worker, from the one method every
          *  unhandled Error reaches; a handled one never gets there.
          */
-        if (st_vm.unhandled_errors) {
+        if (unhandled) {
             fprintf(stderr, "st2026: %u error%s went unhandled while "
                             "evaluating the expression\n",
-                    st_vm.unhandled_errors,
-                    st_vm.unhandled_errors == 1 ? "" : "s");
+                    unhandled, unhandled == 1 ? "" : "s");
             return 1;
         }
         /*
@@ -2611,11 +2724,18 @@ do_bootstrap(const char *const *sources, const int *dialects, unsigned count,
          *  every process was blocked (Bugs6 SCHED-5): the verdict was
          *  printed, `nil' followed, and the exit code said 0.
          */
-        if (st_vm.blocked_verdict) {
+        if (blocked) {
             fprintf(stderr, "st2026: the expression did not finish: every "
                             "process was blocked\n");
             return 1;
         }
+        /*
+         *  And an answer whose printString failed: the error was reported
+         *  as it happened, the answer was named by its class instead, and
+         *  what was asked for -- the answer, printed -- was not done.
+         */
+        if (!printed_ok)
+            return 1;
     }
     write_screenshot();
     GFX_write_coverage(shot_path);
