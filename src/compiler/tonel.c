@@ -83,10 +83,21 @@ static int  at_end(const tonel *t) { return t->c.pos >= t->c.length; }
 static char here(const tonel *t)
 { return t->c.pos < t->c.length ? t->c.text[t->c.pos] : '\0'; }
 
+/*
+ *  A line ends on LF, on CR, and on a CR LF pair once -- as the lexer and
+ *  the doctest scanner count them, and as the chunk reader does.  Only LF
+ *  was counted, so in a file whose lines end in CR alone every line was
+ *  line 1 and every compile error was reported near the top of the file
+ *  (Bugs07 COMP-6).  SRC_skip_separators, which the reader also steps
+ *  with, counts the same way (source.c).
+ */
 static void
 advance(tonel *t)
 {
-    if (t->c.pos < t->c.length && t->c.text[t->c.pos] == '\n')
+    if (t->c.pos < t->c.length
+     && (t->c.text[t->c.pos] == '\n'
+      || (t->c.text[t->c.pos] == '\r'
+       && (t->c.pos + 1 >= t->c.length || t->c.text[t->c.pos + 1] != '\n'))))
         ++t->c.line;
     ++t->c.pos;
 }
@@ -272,18 +283,37 @@ read_method(tonel *t, const char *category)
             fail(t, "out of memory reading a method");
             return 0;
         }
-        memcpy(pattern, t->c.text + start, n);
-        pattern[n] = '\0';
         /*
-         *  The body begins on the source line after the pattern's last,
-         *  counting line ends as the lexer does: CR, LF, and a CR LF pair
-         *  once.
+         *  A pattern may be written over several lines -- a long keyword
+         *  pattern wraps -- and its line ends are turned into the image's
+         *  carriage return as the body's are below, a CR LF pair into one.
+         *  They were copied as they stood, so the bootstrapped method held
+         *  the file's line feed where the image's own TonelReader, which
+         *  converts the whole text first, puts a carriage return: the two
+         *  readers built different sources from one file, against chapter
+         *  24's promise that they read alike, and a line feed in a source
+         *  is what TextFileStream>>nextChunkPut: refuses, so the class
+         *  could not be filed out (Bugs07 COMP-6).
+         *
+         *  The body begins on the source line after the pattern's last.
          */
         lines.body = 2;
-        for (i = 0; i < n; ++i)
-            if (pattern[i] == '\n'
-             || (pattern[i] == '\r' && pattern[i + 1] != '\n'))
-                ++lines.body;
+        {
+            size_t  k = 0;
+
+            for (i = 0; i < n; ++i) {
+                char    c = t->c.text[start + i];
+
+                if (c == '\r' && i + 1 < n && t->c.text[start + i + 1] == '\n')
+                    continue;
+                if (c == '\r' || c == '\n') {
+                    c = '\r';
+                    ++lines.body;
+                }
+                pattern[k++] = c;
+            }
+            pattern[k] = '\0';
+        }
     }
     lines.body_line = t->c.line;    /*  the line the `[' is on  */
     if (at_end(t)) {

@@ -847,6 +847,38 @@ test_bugs7f_comp(void)
         DOCTEST_free(&examples);
         remove(path);
     }
+
+    /*
+     *  COMP-6.  A pattern written over two lines keeps its line end as the
+     *  image's carriage return, as the body's are kept and as the image's
+     *  own TonelReader keeps it; the line feed was copied as it stood.  A
+     *  CR LF pair is one carriage return.
+     */
+    CHECK(read_text("wrap.class.st",
+        "Class { #name : 'LnM', #superclass : 'Object' }\n"
+        "LnM >> m1: a\n\twith: b [\n\t^a + b\n]\n"
+        "LnM >> m2: a\r\n\twith: b [\r\n\t^a\r\n]\r\n", &r, error, sizeof error));
+    CHECK_EQ_INT((int) r.method_count, 2);
+    if (r.method_count == 2) {
+        CHECK_EQ_STR(r.methods[0].source, "m1: a\r\twith: b\r\r\t^a + b\r");
+        CHECK_EQ_STR(r.methods[1].source, "m2: a\r\twith: b\r\r\t^a\r");
+        CHECK_EQ_INT((int) SRC_file_line(&r.methods[1].lines, 2), 7);
+        CHECK_EQ_INT((int) SRC_file_line(&r.methods[1].lines, 4), 8);
+    }
+
+    /*
+     *  And a file whose lines end in carriage returns alone is counted
+     *  line by line: every line was line 1.  The method's pattern is on
+     *  line 3 and its `^' on 5.
+     */
+    CHECK(read_text("cr.class.st",
+        "Class { #name : 'Cr1', #superclass : 'Object' }\r\r"
+        "Cr1 >> m1\r[\r\t^1\r]\r", &r, error, sizeof error));
+    CHECK_EQ_INT((int) r.method_count, 1);
+    if (r.method_count == 1) {
+        CHECK_EQ_INT((int) SRC_file_line(&r.methods[0].lines, 1), 3);
+        CHECK_EQ_INT((int) SRC_file_line(&r.methods[0].lines, 3), 5);
+    }
 }
 
 int

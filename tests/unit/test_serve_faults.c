@@ -5430,6 +5430,8 @@ bugs7f_comp(void)
     char        command[2048];
     const char *allman = fixture("bugs7f-comp5-LnA.class.st");
     const char *own    = fixture("bugs7f-comp5-LdA.class.st");
+    const char *wrap   = fixture("bugs7f-comp6-LnM.class.st");
+    const char *cr     = fixture("bugs7f-comp6-Cr1.class.st");
 
     /*
      *  COMP-5.  A `[' on the line under the pattern: the `)' is on line 12
@@ -5462,6 +5464,40 @@ bugs7f_comp(void)
            "COMP-5 a doctest of a method whose class name stands alone");
     unlink(allman);
     unlink(own);
+
+    /*
+     *  COMP-6.  A pattern over two lines: the bootstrapped source held the
+     *  file's line feed, which the image's TonelReader turns into a
+     *  carriage return, so the two readers made different methods of one
+     *  file and the class could not be filed out.  Before: `(true 7
+     *  false)'.  And a file whose lines end in CR alone: the `)' on line
+     *  16 was reported on line 1's count.
+     */
+    write_file(wrap,
+        "Class {\n\t#name : 'LnM',\n\t#superclass : 'Object',\n"
+        "\t#category : 'Ln'\n}\n\n{ #category : 'x' }\nLnM >> m1: a\n"
+        "\twith: b [\n\t^a + b\n]\n");
+    snprintf(command, sizeof command,
+             "%s -bootstrap -profile profiles/st2026.profile %s -eval \"| a b | "
+             "a := (LnM sourceCodeAt: #m1:with:) asString. "
+             "TonelReader loadFile: '%s'. b := (LnM sourceCodeAt: #m1:with:) asString. "
+             "^{a includes: (Character value: 10). LnM new m1: 3 with: 4. a = b} "
+             "printString\" 2>&1", st2026, wrap, wrap);
+    run(command, out, sizeof out);
+    expect(out, "(false 7 true )",
+           "COMP-6 a two-line pattern is read alike by both readers");
+    write_file(cr,
+        "Class {\r\t#name : 'Cr1',\r\t#superclass : 'Object',\r"
+        "\t#category : 'Ln'\r}\r\r{ #category : 'x' }\rCr1 >> m1 [\r"
+        "\t| x |\r\tx := 1.\r\r\r\r\r\r\tx := ) .\r\t^x\r]\r");
+    snprintf(command, sizeof command,
+             "%s -bootstrap -profile profiles/st2026.profile %s -eval 1 2>&1",
+             st2026, cr);
+    run(command, out, sizeof out);
+    expect(out, "Cr1.class.st:16: in Cr1: unexpected token",
+           "COMP-6 a file of CR line ends is counted line by line");
+    unlink(wrap);
+    unlink(cr);
 }
 
 int

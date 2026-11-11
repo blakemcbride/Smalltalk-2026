@@ -101,10 +101,19 @@ static int  cur_at_end(const st_cursor *c) { return c->pos >= c->length; }
 static char cur_here(const st_cursor *c)
 { return c->pos < c->length ? c->text[c->pos] : '\0'; }
 
+/*
+ *  A line ends on LF, on CR, and on a CR LF pair once.  LF alone was
+ *  counted, and the Tonel reader steps through its separators and headers
+ *  here, so a file whose lines end in CR alone was all line 1 (Bugs07
+ *  COMP-6).
+ */
 static void
 cur_advance(st_cursor *c)
 {
-    if (c->pos < c->length && c->text[c->pos] == '\n')
+    if (c->pos < c->length
+     && (c->text[c->pos] == '\n'
+      || (c->text[c->pos] == '\r'
+       && (c->pos + 1 >= c->length || c->text[c->pos + 1] != '\n'))))
         ++c->line;
     ++c->pos;
 }
