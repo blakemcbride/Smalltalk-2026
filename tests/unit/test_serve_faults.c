@@ -2536,9 +2536,20 @@ bugs6_low_chron(void)
      *  midnight, as Pharo's DateTest pins it, but it is a whole number of
      *  days from a Date by name west of Greenwich; the Unix time of an
      *  instant before the epoch is its floor.
+     *
+     *  Under TZ=CST6, a zone six hours west with no daylight-saving rule
+     *  (Bugs07 DOCS-1).  This ran under America/Chicago and expected
+     *  `-05:00', the offset of the October day it was written: Pharo's
+     *  DateAndTime stamps an instant, even one in 1969, with TODAY's local
+     *  offset (Time class>>localOffsetSeconds asks about now, as Pharo's
+     *  LocalTimeZone does), so from November to March the same doIt
+     *  answers `-06:00' and `make test' failed every winter with nothing
+     *  wrong.  What the check is about -- the epoch floor and a Date a
+     *  whole day west of Greenwich -- holds under any western offset; a
+     *  zone with no rule answers the same on every day of the year.
      */
     snprintf(command, sizeof command,
-             "TZ=America/Chicago %s -bootstrap -profile profiles/pharo-time.profile -eval "
+             "TZ=CST6 %s -bootstrap -profile profiles/pharo-time.profile -eval "
              "\"^{(Date fromDays: 0) start printString. "
              "(Date fromDays: 45000) subtractDate: (Date year: 1901 month: 1 day: 1). "
              "(Date year: 1901 month: 1 day: 1) subtractDate: (Date fromDays: 45000). "
@@ -2550,15 +2561,20 @@ bugs6_low_chron(void)
              "(DateAndTime fromUnixTime: -1) printString} printString\" 2>&1", st2026);
     run(command, out, sizeof out);
     expect(out, "('1901-01-01T00:00:00+00:00' 45000 -45000 '1 January 1901' "
-                "-1 -1 0 1 '1969-12-31T18:59:59-05:00' )",
-           "KERNA-29 and KERNA-33 under TZ=America/Chicago");
+                "-1 -1 0 1 '1969-12-31T17:59:59-06:00' )",
+           "KERNA-29 and KERNA-33 under TZ=CST6");
 
-    /*  KERNA-32.  A negative half-hour zone prints its minutes unsigned.  */
+    /*
+     *  KERNA-32.  A negative half-hour zone prints its minutes unsigned.
+     *  Under TZ=NST3:30, Newfoundland's standard offset with no daylight-
+     *  saving rule, for the reason above (Bugs07 DOCS-1): America/St_Johns
+     *  is LT-2:30 in summer and LT-3:30 in winter.
+     */
     snprintf(command, sizeof command,
-             "TZ=America/St_Johns %s -bootstrap -profile profiles/pharo-time.profile -eval "
+             "TZ=NST3:30 %s -bootstrap -profile profiles/pharo-time.profile -eval "
              "\"DateAndTime localTimeZone abbreviation\" 2>&1", st2026);
     run(command, out, sizeof out);
-    expect(out, "\nLT-2:30\n", "KERNA-32 LT-2:30");
+    expect(out, "\nLT-3:30\n", "KERNA-32 LT-3:30");
 }
 
 /*
