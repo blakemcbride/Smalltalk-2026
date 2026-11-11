@@ -3303,8 +3303,11 @@ test_browsing(void)
      *
      *  3114292 -> 3115872 with Bugs07 KERNB-8: a global named by a String
      *  is filed under its Symbol (checkGlobalName: became globalNameFor:).
+     *
+     *  3115872 -> 3116969 with Bugs07 KERNA-7: two Intervals are equal when
+     *  their elements are, empty and single ones included.
      */
-    check_integer("(SourceFiles at: 1) contents size", 3115872);
+    check_integer("(SourceFiles at: 1) contents size", 3116969);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -14016,6 +14019,36 @@ test_bugs7f_kern(void)
                  "    a := iv indexOf: v. b := arr indexOf: v. "
                  "    (a = b and: [(iv includes: v) = (b > 0)]) "
                  "      ifFalse: [bad add: {iv. v. a. b}]]]. "
+                 "^bad asArray printString",
+                 "()");
+
+    /*
+     *  KERNA-7.  Interval>>= compared start, step and size, which is a
+     *  sufficient condition for equal elements and not the definition: an
+     *  empty Interval's start is not an element, a one-element Interval's
+     *  step is never used, and an Integer and a Float of the same value
+     *  step alike only while the Float arithmetic is exact.  So `(1 to: 0)
+     *  = (2 to: 1)' was false though both equal #(), with equal hashes, and
+     *  `(2 raisedTo: 60) to: ... by: 1.0' equalled the Integer Interval
+     *  whose elements it does not have.  The sweep holds = to the elements'
+     *  equality, and equal hashes to =, over every pair of a list.
+     */
+    check_string("^{(1 to: 0) = (2 to: 1). (1 to: 0) = #(). #() = (2 to: 1). "
+                 "  (1 to: 1) = (1 to: 1 by: 2). (1 to: 1) hash = (1 to: 1 by: 2) hash. "
+                 "  (Set with: (1 to: 1)) includes: (1 to: 1 by: 2). "
+                 "  (Set with: #(1)) includes: (1 to: 1 by: 2). "
+                 "  (1 to: 0) = (1 to: 0 by: 2). (0.5 to: 0.4) = (1 to: 0). "
+                 "  (1 to: 3) = (1 to: 3)} printString",
+                 "(true true true true true true true true true true )");
+    check_string("| ivs bad big | big := 2 raisedTo: 60. "
+                 "ivs := {1 to: 0. 2 to: 1. 0.5 to: 0.4. 1 to: 1. 1 to: 1 by: 2. 1.0 to: 1.0. "
+                 "  1 to: 3. 1.0 to: 3.0. 1 to: 3 by: 1.0. 1 to: 5 by: 2. 1 to: 6 by: 2. "
+                 "  1/2 to: 3/2. 0.5 to: 1.5. big to: big + 4. big to: big + 4 by: 1.0. "
+                 "  0 to: 1 by: 0.1. 0 to: 1.05 by: 0.1}. "
+                 "bad := OrderedCollection new. "
+                 "ivs do: [:a | ivs do: [:b | "
+                 "  ((a = b) = (a asArray = b asArray) and: [(a = b) not or: [a hash = b hash]]) "
+                 "    ifFalse: [bad add: {a. b}]]]. "
                  "^bad asArray printString",
                  "()");
 

@@ -21,12 +21,30 @@ Interval >> = anObject [
 	 comparison, which is the one that was already deciding the other
 	 direction, and the two now agree.
 
-	 The Interval case stays as its own arm because it is O(1): two
-	 Intervals are equal when their first, increment and size are, without
-	 looking at an element."
+	 The Interval case stays as its own arm because it is O(1) for the
+	 usual case: two Intervals of one size whose first and increment are
+	 equal, and of the same classes, compute every element the same way
+	 from the same numbers, so their elements are equal without looking at
+	 one.  That is a sufficient condition, not the definition, and 1983
+	 used it as the definition: an empty Interval has no elements, so its
+	 start is not one of them, and a one-element Interval never uses its
+	 step -- `(1 to: 0) = (2 to: 1)' and `(1 to: 1) = (1 to: 1 by: 2)' were
+	 false although each is equal to `#()' or `#(1)' and the hashes agreed,
+	 so = was not transitive and a Set holding one did not find the other
+	 (Bugs07 KERNA-7).  The same goes for a start or step that is equal in
+	 value but not in kind: `1' and `1.0' step alike, but elements
+	 computed in Floats round where Integer ones do not, so past 2^53 they
+	 part.  Every other pair of the same size is compared element by
+	 element, as an Array would be, which stops at the first that differs:
+	 the first or the second, for two whose arithmetic is exact."
 	(anObject isKindOf: Interval) ifFalse: [^super = anObject].
-	^start = anObject first
-		and: [step = anObject increment and: [self size = anObject size]]
+	self size = anObject size ifFalse: [^false].
+	(start = anObject first
+	 and: [step = anObject increment
+	 and: [start class == anObject first class
+	 and: [step class == anObject increment class]]])
+		ifTrue: [^true].
+	^super = anObject
 ]
 
 { #category : '*Collections-Protocol' }
