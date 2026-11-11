@@ -354,12 +354,43 @@ Exception >> retryUsing: aBlock [
 
 { #category : 'handling' }
 Exception >> pass [
-	"Give the next handler out a chance at me."
-	| outer |
+	"Give the next handler out a chance at me.
+
+	 As though the handler that passes were not there: what happens next
+	 is what would have happened had it never caught me.  With a handler
+	 further out, that handler runs.  With none, the default action runs,
+	 and its value goes where an unhandled signal sends it -- back to the
+	 signaller, as the value of signal, when I am resumable.
+
+	 It used to be RETURNED from the passing handler's on:do: in both
+	 cases, which for a resumable exception cut the protected block short
+	 at a signal nobody outside handled.  A handler that resumes the
+	 Warnings it understands and passes the rest,
+	     [...] on: Warning do: [:w | (self knows: w)
+	         ifTrue: [w resume: x] ifFalse: [w pass]]
+	 abandoned its block at the first Warning nobody else took, where with
+	 no handler at all the Warning would have been printed and the block
+	 carried on (Bugs07 KERNB-6).  signal (signalFrom:) and outer already
+	 answer the default action's value to whoever is waiting for it; pass
+	 now does the same, through resume:, which unwinds the handler's
+	 frames and puts every on:do: between here and the signal back into
+	 service, mine included.  Pharo gets there the same way, through
+	 `UndefinedObject>>handleSignal:', which resumes with the default
+	 action.
+
+	 Not resumable, or never signalled, there is nowhere to resume, and the
+	 default action's value is returned from my on:do: as before -- for an
+	 Error that has unwound the stack to the bottom already, so the return
+	 only reaches anything on a process the default action let go on."
+	| outer value |
 	outer := handlerContext isNil
 		ifTrue: [nil]
 		ifFalse: [self findHandlerFrom: handlerContext sender].
-	outer isNil ifTrue: [^self return: self defaultAction].
+	outer isNil ifTrue: [
+		value := self defaultAction.
+		(self isResumable and: [signalContext notNil])
+			ifTrue: [^self resume: value].
+		^self return: value].
 	handlerContext := outer.
 	^self return: self runHandler
 ]

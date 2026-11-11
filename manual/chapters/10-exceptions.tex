@@ -61,7 +61,9 @@ is the interesting part of exception handling; catching is the easy part.
   becomes the protected one and the handler stays in place for it\\
 \ctp{e resume: x} & carry on from where \ctp{signal} was sent, which answers
   \ctp{x}. Only for resumable exceptions\\
-\ctp{e pass} & decline: look for an outer handler\\
+\ctp{e pass} & decline, as though this handler were not there: an outer
+  handler takes it, or with none the default action does, and a resumable
+  exception then carries on from the signal with that action's value\\
 \ctp{e outer} & run the enclosing handler and, if it resumes, carry on
   here with its value\\
 \ctp{e resignalAs: another} & look again from the point of the signal, for

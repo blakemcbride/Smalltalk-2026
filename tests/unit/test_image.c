@@ -3204,8 +3204,12 @@ test_browsing(void)
      *  3069383 -> 3071804 with Bugs07 GUI-6: restarting a block's frame
      *  starts the block, and the Debugger tells a block's frame by its
      *  closure.
+     *
+     *  3071804 -> 3073455 with Bugs07 KERNB-6: `e pass' with no handler
+     *  further out resumes a resumable exception with the default action's
+     *  value.
      */
-    check_integer("(SourceFiles at: 1) contents size", 3071804);
+    check_integer("(SourceFiles at: 1) contents size", 3073455);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -13106,6 +13110,55 @@ test_bugs7d_gui(void)
     test_dialect = ST_DIALECT_BLUE_BOOK;
 }
 
+/*
+ *  Bugs07 round 5, KERN.  Image-side, in-process doIts.
+ */
+static void
+test_bugs7e_kern(void)
+{
+    test_dialect = ST_DIALECT_CLOSURES;
+
+    /*
+     *  KERNB-6.  `e pass' of a resumable exception with no handler further
+     *  out RETURNED the default action's value from the passing handler's
+     *  on:do:, so the protected block stopped at the signal: `(h nil )'.
+     *  Passing is declining, and with no handler at all the Warning is
+     *  reported and signal answers nil to the block, which carries on --
+     *  so the block carries on here too, and the on:do: answers the
+     *  block's own value.  The second Warning is caught by the same
+     *  handler, so passing put it back into service; the handler's
+     *  ensure: runs as the resumption leaves it, before the block goes on.
+     *  A non-resumable exception still returns from the on:do: (an Error's
+     *  default action has unwound everything below it already).
+     */
+    check_string("| log r | log := OrderedCollection new. "
+                 "r := [log add: (Warning signal: #p). log add: #continued. 7] "
+                 "  on: Warning do: [:e | log add: #h. e pass]. "
+                 "log add: r. ^log asArray printString",
+                 "(h nil continued 7 )");
+    check_string("| log r | log := OrderedCollection new. "
+                 "r := [[log add: (Warning signal: #p). log add: (Warning signal: #q). "
+                 "    log add: #continued. 7] ensure: [log add: #ens]] "
+                 "  on: Warning do: [:e | [log add: e messageText. e pass] "
+                 "    ensure: [log add: #hens]]. "
+                 "log add: r. ^log asArray printString",
+                 "(p hens nil q hens nil continued ens 7 )");
+    check_string("| log r | log := OrderedCollection new. "
+                 "r := [log add: (Warning signal: #p). log add: #continued. 7] "
+                 "  on: Warning do: [:e | e messageText = #p ifTrue: [e resume: 5]. e pass]. "
+                 "log add: r. "
+                 "r := [log add: (Warning signal: #q). log add: #continued. 8] "
+                 "  on: Warning do: [:e | e messageText = #p ifTrue: [e resume: 5]. e pass]. "
+                 "log add: r. ^log asArray printString",
+                 "(5 continued 7 nil continued 8 )");
+    check_string("^{[1/0. 5] on: ZeroDivide do: [:e | e pass]. "
+                 "  [[1/0. 5] on: ZeroDivide do: [:e | e pass]] "
+                 "    on: ZeroDivide do: [:e | e return: 6]} printString",
+                 "(nil 6 )");
+
+    test_dialect = ST_DIALECT_BLUE_BOOK;
+}
+
 int
 main(void)
 {
@@ -13258,6 +13311,7 @@ main(void)
     test_bugs7c_net();
     test_bugs7d_kerna();
     test_bugs7d_gui();
+    test_bugs7e_kern();
 
     OM_shutdown();
     return ST_TEST_END();
