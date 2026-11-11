@@ -3217,6 +3217,23 @@ main(int argc, char **argv)
 {
     int     i;
 
+#ifndef ST_WINDOWS
+    /*
+     *  A write that would take a file past the process's size limit
+     *  (`ulimit -f', systemd's LimitFSIZE=, a container's RLIMIT_FSIZE)
+     *  raises SIGXFSZ, and the default action is to end the process with
+     *  a core (Bugs07 FILES-12).  One image's one write to one log file
+     *  took every worker and every request of a -serve pool with it.
+     *  Ignored, the same write fails with EFBIG, which primitive 130
+     *  already turns into "File too large" in the process that wrote --
+     *  something the image can handle, as it handles a full disk.  Every
+     *  mode, not only -serve: a -run or -eval that fills its limit should
+     *  say so and let its ensure: blocks run, not dump core.  Nothing here
+     *  starts another program, so the ignored disposition is inherited by
+     *  nothing.
+     */
+    signal(SIGXFSZ, SIG_IGN);
+#endif
     for (i = 1; i < argc; ++i) {
         if (!strcmp(argv[i], "-help") || !strcmp(argv[i], "--help")) {
             usage(argv[0]);

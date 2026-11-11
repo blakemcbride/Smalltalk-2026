@@ -5384,6 +5384,62 @@ bugs7e_kern(void)
 }
 
 /*
+ *  Bugs07, round 6: the file group's low findings.
+ *
+ *  FILES-12: a write past the process's file-size limit raised SIGXFSZ,
+ *  whose default action ended the whole pool with a core.  Now it is
+ *  ignored and the write fails as "File too large" in the process that
+ *  wrote, which handles it, and the pool carries on.  Two ways of meeting
+ *  the limit: page-sized appends, one of which STARTS at the limit -- the
+ *  signal, on the old binary -- and one write far longer than the limit,
+ *  which the kernel cuts short at it and which used to be reported as
+ *  "Input/output error".  `ulimit -f' counts 512- or 1024-byte blocks by
+ *  shell; sixteen of either is a multiple of the 512-byte page, which is
+ *  what makes the first probe start a write exactly at the limit.
+ */
+static void
+bugs7f_files_limit(const char *name, const char *body, const char *what)
+{
+    static char out[65536];
+    const char *probe = fixture(name);
+    const char *big   = fixture("bugs7f-files12.txt");
+    char        text[2048];
+    char        batch[1024];
+    char        command[2048];
+    int         status;
+
+    unlink(big);
+    snprintf(text, sizeof text,
+        "| f |\n"
+        "f := FileStream fileNamed: '%s'.\n"
+        "^[[%s. 'no error'] ensure: [f close]]\n"
+        "  on: Error do: [:e | e return: 'FILES-12 ', e messageText]\n",
+        big, body);
+    snprintf(batch, sizeof batch,
+             "Compiler evaluate: (FileStream oldFileNamed: '%s') "
+             "contentsOfEntireFile\n3 + 4\n", probe);
+    ++st_test_checks;
+    if (write_file(probe, text) != 0 || write_file(BATCH, batch) != 0) {
+        ++st_test_failures;
+        printf("  FAIL %s: could not write the probe\n", what);
+        return;
+    }
+    snprintf(command, sizeof command,
+             "ulimit -c 0; ulimit -f 16; "
+             ST_TEST_TIMEOUT " -k 2 " SERVE_SECONDS " %s -serve %s -workers 2"
+             " \"$(cat %s)\" 2>&1", st2026, IMAGE, BATCH);
+    status = run(command, out, sizeof out);
+    if (status < 0 || status >= 128) {
+        ++st_test_failures;
+        printf("  FAIL %s: the server ended with status %d\n", what, status);
+    }
+    expect(out, "File too large", what);
+    expect(out, "3 + 4 ==> 7", what);
+    unlink(probe);
+    unlink(big);
+}
+
+/*
  *  Bugs07, round 6: the KERNB group's lows that need workers or another
  *  profile.  test_image's test_bugs7f_kernb holds the one-thread checks.
  */
@@ -5523,6 +5579,17 @@ bugs7f_comp(void)
            "COMP-6 a file of CR line ends is counted line by line");
     unlink(wrap);
     unlink(cr);
+}
+
+static void
+bugs7f_files(void)
+{
+    bugs7f_files_limit("bugs7f-files12a.st",
+        "200 timesRepeat: [f nextPutAll: (String new: 512 withAll: $x); flush]",
+        "FILES-12 a write that starts at the file-size limit is an Error");
+    bugs7f_files_limit("bugs7f-files12b.st",
+        "f nextPutAll: (String new: 100000 withAll: $x)",
+        "FILES-12 a write the limit cuts short says File too large");
 }
 
 int
@@ -6207,6 +6274,7 @@ main(void)
     bugs7e_kern();
     bugs7f_kernb();
     bugs7f_comp();
+    bugs7f_files();
 
     unlink(IMAGE);
     unlink(BATCH);

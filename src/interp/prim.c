@@ -2334,10 +2334,37 @@ st_file_pread(int fd, void *buf, size_t count, int64_t off)
     return (int64_t) pread(fd, buf, count, (off_t) off);
 }
 
+/*
+ *  All of it or -1 with errno.  A write to a regular file comes back short
+ *  only when it met a limit part of the way -- the file-size limit, a full
+ *  disk, a quota -- and the count it answers says nothing about which: the
+ *  caller saw a short count and reported whatever errno held from some
+ *  earlier call, or "Input/output error" (Bugs07 FILES-12).  So the rest is
+ *  written, and the write that cannot place a byte fails with the reason:
+ *  EFBIG (SIGXFSZ is ignored, main.c), ENOSPC, EDQUOT.  A write that does
+ *  place the rest -- one cut short by a signal -- has done what was asked.
+ */
 static int64_t
 st_file_pwrite(int fd, const void *buf, size_t count, int64_t off)
 {
-    return (int64_t) pwrite(fd, buf, count, (off_t) off);
+    const char *at  = (const char *) buf;
+    size_t      put = 0;
+
+    while (put < count) {
+        ssize_t n = pwrite(fd, at + put, count - put, (off_t) (off + (int64_t) put));
+
+        if (n < 0) {
+            if (errno == EINTR)
+                continue;
+            return -1;
+        }
+        if (n == 0) {
+            errno = EIO;
+            return -1;
+        }
+        put += (size_t) n;
+    }
+    return (int64_t) put;
 }
 
 /*
@@ -2366,15 +2393,38 @@ st_file_append(int fd, const void *buf, size_t count)
     if (fcntl(fd, F_SETFL, flags | O_APPEND) != 0)
         return -1;
     put = write(fd, buf, count);
+    /*
+     *  A short append is finished as st_file_pwrite finishes a short write
+     *  (Bugs07 FILES-12): the next write either places the rest or fails
+     *  with the reason the first one stopped -- EFBIG at the file-size
+     *  limit, where this said EIO.  The rest is a second append, and so not
+     *  atomic with the first part; but the first part is on the disk
+     *  already, and a regular file comes back short only at a limit, where
+     *  the second write places nothing.
+     */
+    while (put >= 0 && (size_t) put < count) {
+        ssize_t more = write(fd, (const char *) buf + put, count - (size_t) put);
+
+        if (more < 0 && errno == EINTR)
+            continue;
+        if (more <= 0) {
+            if (more == 0)
+                errno = EIO;
+            put = -1;
+            break;
+        }
+        put += more;
+    }
     if (put >= 0)
         end = lseek(fd, 0, SEEK_CUR);
-    (void) fcntl(fd, F_SETFL, flags);
+    {
+        int     saved = errno;
+
+        (void) fcntl(fd, F_SETFL, flags);
+        errno = saved;
+    }
     if (put < 0 || end < 0)
         return -1;
-    if ((size_t) put != count) {
-        errno = EIO;
-        return -1;
-    }
     return (int64_t) end;
 }
 
