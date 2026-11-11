@@ -127,7 +127,7 @@ Rounding and truncation, which are four different questions:
 \toprule
 \ctp{abs} \ctp{negated} \ctp{sign} & magnitude, negation, and
   \ct|-1|/\ct|0|/\ct|1|\\
-\ctp{squared} \ctp{sqrt} \ctp{raisedTo:} \ctp{**} & powers\\
+\ctp{squared} \ctp{sqrt} \ctp{raisedTo:} \ctp{raisedTo:modulo:} \ctp{**} & powers\\
 \ctp{min:} \ctp{max:} \ctp{between:and:} & comparison\\
 \ctp{even} \ctp{odd} \ctp{isPrime} & testing\\
 \ctp{gcd:} \ctp{lcm:} \ctp{factorial} & integers\\
@@ -138,6 +138,14 @@ Rounding and truncation, which are four different questions:
 \bottomrule
 \end{tabular}
 \end{center}
+
+\ct{isPrime} is exact for every integer below about $3.3\times10^{24}$;
+above that it is a Miller--Rabin test with randomly chosen bases, whose
+chance of calling a composite number prime is below one in $10^{14}$. Its
+cost grows with the cube of the number's length: milliseconds up to
+\ct{SmallInteger maxVal}, a few seconds at a hundred digits.
+\ct{a raisedTo: n modulo: m} is \ct|(a raisedTo: n) \\ m| without the power:
+every product is reduced as it is made.
 
 \begin{stnote}[Printing in a base]
 \ct{255 printString: 16} is \ct{'FF'} and \ct{255 radix: 16} is

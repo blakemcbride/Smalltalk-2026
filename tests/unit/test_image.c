@@ -810,8 +810,14 @@
  *  out; Encoder>>init:context:notifying: and MessageNode>>store:from:,
  *  which bind and assign the names inside a vector in the Debugger's code
  *  pane.
+ *
+ *  3517 -> 3523 with Bugs07 KERNA-11: Integer>>raisedTo:modulo:, and the
+ *  Montgomery multiplication isPrime and it are built on:
+ *  Integer>>montgomeryLimbs: and montgomeryContext, and Integer
+ *  class>>fromMontgomeryLimbs:, montgomery:times:context: and
+ *  montgomeryPower:to:context:.
  */
-#define LIB_METHODS             3517
+#define LIB_METHODS             3523
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -3391,8 +3397,11 @@ test_browsing(void)
      *  3145860 -> 3151731 with Bugs07 X-27: a method's frame restarts with
      *  its temporaries nil, and a frame's slots are named as the C compiler
      *  laid them out.
+     *
+     *  3151731 -> 3161386 with Bugs07 KERNA-11: isPrime is Miller-Rabin
+     *  over Montgomery multiplication, and raisedTo:modulo: is new.
      */
-    check_integer("(SourceFiles at: 1) contents size", 3151731);
+    check_integer("(SourceFiles at: 1) contents size", 3161386);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -14253,6 +14262,85 @@ test_bugs7f_kern(void)
                  "  'abc' asText = 'abd' asText. 'abc' asText = #(1 2). 'abc' asText = nil. "
                  "  #abd = 'abc' asText} printString",
                  "(false 0 true true true true true true true true false false false false )");
+
+    /*
+     *  KERNA-11.  Integer>>isPrime was trial division to the square root:
+     *  half a second for a fifteen-digit prime, 83 seconds for 2^61 - 1,
+     *  hours for twenty digits.  It is Miller-Rabin above a million now,
+     *  over Montgomery multiplication above 2^30, exact below 3.3e24 and
+     *  probabilistic above.  The first two checks are out of the old
+     *  method's reach within this harness's budget; the third holds the
+     *  new answer to trial division over two ranges, one on each side of
+     *  the million; the fourth is the strong pseudoprimes to the first
+     *  four, five, six, seven and nine prime bases, each equal to the
+     *  bound up to which those bases decide, every one of them composite,
+     *  with a Carmichael number and products of two large primes.
+     */
+    check_string("^{((2 raisedTo: 61) - 1) isPrime. ((10 raisedTo: 14) + 31) isPrime. "
+                 "  ((10 raisedTo: 12) + 39) isPrime. ((2 raisedTo: 89) - 1) isPrime. "
+                 "  ((2 raisedTo: 67) - 1) isPrime. ((2 raisedTo: 64) + 13) isPrime. "
+                 "  (((2 raisedTo: 61) - 1) * ((2 raisedTo: 89) - 1)) isPrime. "
+                 "  (1000000007 * 998244353) isPrime. 1073741827 isPrime. "
+                 "  1073741823 isPrime} printString",
+                 "(true true true true false true false false true false )");
+    check_string("^{((2 raisedTo: 127) - 1) isPrime. "
+                 "  (((2 raisedTo: 127) - 1) * ((2 raisedTo: 61) - 1)) isPrime} printString",
+                 "(true false )");
+    check_string("| trial bad | "
+                 "trial := [:n | | d | n < 2 ifTrue: [false] ifFalse: [ "
+                 "  d := 2. [d * d <= n and: [n \\\\ d ~= 0]] whileTrue: [d := d + 1]. "
+                 "  d * d > n]]. "
+                 "bad := ((0 to: 1200) , (999000 to: 1001500)) "
+                 "  reject: [:n | n isPrime = (trial value: n)]. "
+                 "^bad asArray printString",
+                 "()");
+    check_string("^(#(3215031751 2152302898747 3474749660383 341550071728321 "
+                 "  3825123056546413051 561 1373653 25326001 1000000016000000063 "
+                 "  318665857834031151167461 3317044064679887385961981) "
+                 "  collect: [:n | n isPrime]) printString",
+                 "(false false false false false false false false false false false )");
+
+    /*
+     *  raisedTo:modulo:, which isPrime is built on: by \\ for a modulus
+     *  up to 2^30 or an even or negative one, by Montgomery multiplication
+     *  for an odd one above.  The first check is fixed values; the others
+     *  hold the Montgomery answer to square-and-multiply by \\ for
+     *  moduli on either side of each change in the count of 30-bit limbs,
+     *  with every limb full and with a lone top bit, and for bases larger
+     *  than the modulus, negative, zero and one.
+     */
+    check_string("^{3 raisedTo: 200 modulo: 1000007. (3 raisedTo: 200) \\\\ 1000007. "
+                 "  2 raisedTo: 0 modulo: 7. 5 raisedTo: 3 modulo: 1. -3 raisedTo: 3 modulo: 7. "
+                 "  (2 raisedTo: 100) raisedTo: (2 raisedTo: 70) modulo: (10 raisedTo: 30) + 57. "
+                 "  3 raisedTo: 5 modulo: -7. 3 raisedTo: 100 modulo: (2 raisedTo: 64). "
+                 "  [3 raisedTo: -1 modulo: 7] on: Error do: [:e | 'refused']} printString",
+                 "(959082 959082 1 0 1 161418758359441318358990758875 -2 "
+                 "15462121228172006353 'refused' )");
+    check_string("| plain moduli bases bad | "
+                 "plain := [:b :e :m | | r x y | r := 1. x := b \\\\ m. y := e. "
+                 "  [y > 0] whileTrue: [y odd ifTrue: [r := r * x \\\\ m]. "
+                 "    y := y bitShift: -1. x := x * x \\\\ m]. r]. "
+                 "moduli := {(2 raisedTo: 30) + 1. (2 raisedTo: 31) - 1. (2 raisedTo: 60) - 1. "
+                 "  (2 raisedTo: 60) + 1. (2 raisedTo: 61) - 1}. "
+                 "bases := {0. 1. 2. -5. 123456789. (2 raisedTo: 95) + 7. (3 raisedTo: 70) negated}. "
+                 "bad := OrderedCollection new. "
+                 "moduli do: [:m | bases do: [:b | #(0 1 2 12345 65537) do: [:e | "
+                 "  (b raisedTo: e modulo: m) = (plain value: b value: e value: m) "
+                 "    ifFalse: [bad add: {b. e. m}]]]]. "
+                 "^bad asArray printString",
+                 "()");
+    check_string("| plain moduli bases bad | "
+                 "plain := [:b :e :m | | r x y | r := 1. x := b \\\\ m. y := e. "
+                 "  [y > 0] whileTrue: [y odd ifTrue: [r := r * x \\\\ m]. "
+                 "    y := y bitShift: -1. x := x * x \\\\ m]. r]. "
+                 "moduli := {(2 raisedTo: 90) - 1. (2 raisedTo: 90) + 1. (10 raisedTo: 40) + 3}. "
+                 "bases := {0. 1. 2. -5. 123456789. (2 raisedTo: 95) + 7. (3 raisedTo: 70) negated}. "
+                 "bad := OrderedCollection new. "
+                 "moduli do: [:m | bases do: [:b | #(0 1 2 12345 65537) do: [:e | "
+                 "  (b raisedTo: e modulo: m) = (plain value: b value: e value: m) "
+                 "    ifFalse: [bad add: {b. e. m}]]]]. "
+                 "^bad asArray printString",
+                 "()");
 
     test_dialect = ST_DIALECT_BLUE_BOOK;
 }

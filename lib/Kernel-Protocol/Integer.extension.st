@@ -135,19 +135,267 @@ Integer >> | anInteger [
 
 { #category : '*Kernel-Protocol' }
 Integer >> isPrime [
-	"Trial division up to my square root, which is all HashTableSizes needs
-	 of it -- the table it builds is a fixed list of hash-table capacities,
-	 computed once at class-initialization time."
-	| limit d |
+	"Whether I am a prime: exactly, for every Integer below
+	 3,317,044,064,679,887,385,961,981 (about 3.3 x 10^24), and above that
+	 with a chance of under one in 10^14 of calling a composite prime.
+
+	 It was trial division up to my square root, which is all
+	 HashTableSizes needs of it, but the manual offers isPrime beside even
+	 and odd as everyday protocol, and the cost of trial division is the
+	 square root: half a second for a fifteen-digit prime, 83 seconds for
+	 2^61 - 1, hours for twenty digits -- a worker held for as long as
+	 whoever chose the number liked (Bugs07 KERNA-11).
+
+	 Trial division is kept below a million, where it is a few hundred
+	 steps at most.  Above, after a screen by the first primes, this is
+	 the Miller-Rabin test: write me - 1 as d * 2^s with d odd; a base a
+	 for which a^d is not 1 and no a^(d * 2^r), r < s, is me - 1 proves me
+	 composite, and a prime has no such base.  A composite can fool some
+	 bases, but none below a bound in bounds fools all of the primes in
+	 bases up to the same place (Jaeschke, 1993; Sorenson and Webster,
+	 2015), so below the last bound the answer is exact, and a smaller
+	 number stops at its own bound.  Beyond it the fixed bases prove
+	 nothing, so after 2, which most composites fail, twenty-four bases
+	 are drawn at random, each fooled by at most a quarter of composites,
+	 and at random so that a number built to fool fixed bases cannot know
+	 which ones it will meet.
+
+	 Every step is a modular power, whose cost grows with the cube of my
+	 length rather than with my square root: below 2^30 a SmallInteger
+	 product reduced by \\, above it Montgomery multiplication over
+	 30-bit limbs, which never leaves SmallInteger arithmetic, where a
+	 LargeInteger product reduced by \\ -- 1983's division, a byte at a
+	 time -- made 2^61 - 1 twenty times slower.  10^14 + 31 takes 8 ms,
+	 2^61 - 1 30 ms, 2^127 - 1 0.4 s, a 100-digit prime 3 s and a
+	 300-digit one a minute, so by the same cube a thousand digits is
+	 most of an hour of interpreted arithmetic; a composite usually stops
+	 at its first base."
+	| d s limit bases bounds one minusOne power square ctx k witness random bits |
 	self < 2 ifTrue: [^false].
-	self = 2 ifTrue: [^true].
+	self < 4 ifTrue: [^true].
 	self even ifTrue: [^false].
-	limit := self sqrt truncated.
-	d := 3.
-	[d <= limit] whileTrue: [
-		self \\ d = 0 ifTrue: [^false].
-		d := d + 2].
+	self < 1000000 ifTrue: [
+		limit := self sqrt truncated.
+		d := 3.
+		[d <= limit] whileTrue: [
+			self \\ d = 0 ifTrue: [^false].
+			d := d + 2].
+		^true].
+	bases := #(2 3 5 7 11 13 17 19 23 29 31 37 41).
+	bases do: [:p | self \\ p = 0 ifTrue: [^false]].
+	bounds := #(2047 1373653 25326001 3215031751 2152302898747 3474749660383
+		341550071728321 341550071728321 3825123056546413051
+		3825123056546413051 3825123056546413051 318665857834031151167461
+		3317044064679887385961981).
+	d := self - 1.
+	s := 0.
+	[d even] whileTrue: [d := d bitShift: -1. s := s + 1].
+	self <= 16r3FFFFFFF
+		ifTrue: [
+			one := 1.
+			minusOne := self - 1.
+			power := [:a | a raisedTo: d modulo: self].
+			square := [:x | x * x \\ self]]
+		ifFalse: [
+			ctx := self montgomeryContext.
+			k := (ctx at: 1) size.
+			one := ctx at: 4.
+			minusOne := Integer
+				montgomery: ((self - 1) montgomeryLimbs: k) times: (ctx at: 3) context: ctx.
+			power := [:a |
+				Integer
+					montgomeryPower: (Integer
+						montgomery: (a montgomeryLimbs: k) times: (ctx at: 3) context: ctx)
+					to: d
+					context: ctx].
+			square := [:x | Integer montgomery: x times: x context: ctx]].
+	"Whether the base a, 1 < a < me - 1, proves me composite."
+	witness := [:a | | x r |
+		x := power value: a.
+		(x = one or: [x = minusOne])
+			ifTrue: [false]
+			ifFalse: [
+				r := 1.
+				[r < s and: [x ~= minusOne]] whileTrue: [
+					x := square value: x.
+					r := r + 1].
+				x ~= minusOne]].
+	self < bounds last ifTrue: [
+		1 to: bases size do: [:i |
+			(witness value: (bases at: i)) ifTrue: [^false].
+			self < (bounds at: i) ifTrue: [^true]]].
+	(witness value: 2) ifTrue: [^false].
+	random := Random new.
+	24 timesRepeat: [
+		bits := 0.
+		self highBit + 64 // 32 + 1 timesRepeat: [
+			bits := (bits bitShift: 32) + (random nextBits: 32)].
+		(witness value: bits \\ (self - 3) + 2) ifTrue: [^false]].
 	^true
+]
+
+{ #category : '*Kernel-Protocol' }
+Integer >> raisedTo: anInteger modulo: aModulus [
+	"(self raisedTo: anInteger) \\ aModulus, without the power: each
+	 product is reduced as it is made, so the numbers stay as long as the
+	 modulus and the work is one or two multiplications per bit of the
+	 exponent, where the power itself would be anInteger times my length.
+	 Pharo's selector, for the modular arithmetic isPrime is built on
+	 (Bugs07 KERNA-11).
+
+	 An odd modulus above 2^30 is done by Montgomery multiplication, as
+	 isPrime does it, because there a product no longer fits a
+	 SmallInteger and reducing it by \\ is 1983's LargeInteger division,
+	 a byte at a time; any other modulus by \\ after each product."
+	| base exponent result ctx k |
+	(anInteger isInteger and: [anInteger >= 0]) ifFalse: [
+		^self error: 'the exponent of a modular power must be an Integer of at least 0'].
+	(aModulus isInteger and: [aModulus odd and: [aModulus > 16r3FFFFFFF]]) ifTrue: [
+		ctx := aModulus montgomeryContext.
+		k := (ctx at: 1) size.
+		result := Integer
+			montgomeryPower: (Integer
+				montgomery: ((self \\ aModulus) montgomeryLimbs: k)
+				times: (ctx at: 3)
+				context: ctx)
+			to: anInteger
+			context: ctx.
+		^Integer fromMontgomeryLimbs: (Integer
+			montgomery: result times: (1 montgomeryLimbs: k) context: ctx)].
+	result := 1 \\ aModulus.
+	base := self \\ aModulus.
+	exponent := anInteger.
+	[exponent > 0] whileTrue: [
+		exponent odd ifTrue: [result := result * base \\ aModulus].
+		exponent := exponent bitShift: -1.
+		exponent > 0 ifTrue: [base := base * base \\ aModulus]].
+	^result
+]
+
+{ #category : '*Kernel-Protocol' }
+Integer >> montgomeryLimbs: count [
+	"My magnitude, which is less than 2^(30 * count), as an Array of count
+	 30-bit limbs, least significant first: the form Montgomery
+	 multiplication works in, for isPrime and raisedTo:modulo:."
+	| limbs v |
+	limbs := Array new: count.
+	v := self.
+	1 to: count do: [:i |
+		limbs at: i put: (v bitAnd: 16r3FFFFFFF).
+		v := v bitShift: -30].
+	^limbs
+]
+
+{ #category : '*Kernel-Protocol' }
+Integer class >> fromMontgomeryLimbs: limbs [
+	"The Integer whose 30-bit limbs, least significant first, limbs is."
+	| v |
+	v := 0.
+	limbs size to: 1 by: -1 do: [:i | v := (v bitShift: 30) + (limbs at: i)].
+	^v
+]
+
+{ #category : '*Kernel-Protocol' }
+Integer >> montgomeryContext [
+	"What Montgomery multiplication modulo me needs, for an odd me above
+	 1: {my limbs. n'. R^2 mod me. R mod me}, with W = 2^30 the limb, k
+	 my count of limbs, R = W^k and n' = -1/me mod W.  R mod me is 1 in
+	 Montgomery form, and a number is put into the form by multiplying it
+	 by R^2 mod me, which is the one LargeInteger division here.
+
+	 n' is found by Newton's iteration: an odd n0 is its own inverse
+	 modulo 8, and each step x := x * (2 - n0 * x) doubles the number of
+	 correct low bits, so four reach thirty.  2 - n0 * x is taken as
+	 W + 2 - (n0 * x mod W), which is the same modulo W and never
+	 negative."
+	| k limbs n0 x r2 ctx |
+	k := self highBit + 29 // 30.
+	limbs := self montgomeryLimbs: k.
+	n0 := limbs at: 1.
+	x := n0.
+	4 timesRepeat: [
+		x := x * (16r40000002 - (n0 * x bitAnd: 16r3FFFFFFF)) bitAnd: 16r3FFFFFFF].
+	r2 := ((1 bitShift: 60 * k) \\ self) montgomeryLimbs: k.
+	ctx := Array with: limbs with: 16r40000000 - x with: r2 with: nil.
+	ctx at: 4 put: (Integer montgomery: (1 montgomeryLimbs: k) times: r2 context: ctx).
+	^ctx
+]
+
+{ #category : '*Kernel-Protocol' }
+Integer class >> montgomery: a times: b context: ctx [
+	"a * b / R modulo n, for a and b below n, all three as k 30-bit limbs,
+	 and ctx n's montgomeryContext.  The word-by-word form (coarsely
+	 integrated operand scanning): for each limb of a, add that limb
+	 times b, then add the multiple of n that clears the lowest limb and
+	 drop it.  Every partial sum is below 2^61 -- a limb, a product of
+	 two limbs and a carry of at most a limb -- so it all stays a
+	 SmallInteger.  The total is below 2n, and one subtraction of n
+	 leaves it below n.  The answer is the working Array itself, k limbs
+	 and two zero ones above them, so that every Montgomery number has
+	 the same shape and one is equal to another exactly when they are
+	 the same number."
+	| n np k t c v ai u ge i |
+	n := ctx at: 1.
+	np := ctx at: 2.
+	k := n size.
+	t := Array new: k + 2 withAll: 0.
+	1 to: k do: [:j |
+		ai := a at: j.
+		c := 0.
+		1 to: k do: [:m |
+			v := (t at: m) + (ai * (b at: m)) + c.
+			t at: m put: (v bitAnd: 16r3FFFFFFF).
+			c := v bitShift: -30].
+		v := (t at: k + 1) + c.
+		t at: k + 1 put: (v bitAnd: 16r3FFFFFFF).
+		t at: k + 2 put: (v bitShift: -30).
+		u := (t at: 1) * np bitAnd: 16r3FFFFFFF.
+		c := (t at: 1) + (u * (n at: 1)) bitShift: -30.
+		2 to: k do: [:m |
+			v := (t at: m) + (u * (n at: m)) + c.
+			t at: m - 1 put: (v bitAnd: 16r3FFFFFFF).
+			c := v bitShift: -30].
+		v := (t at: k + 1) + c.
+		t at: k put: (v bitAnd: 16r3FFFFFFF).
+		t at: k + 1 put: (t at: k + 2) + (v bitShift: -30)].
+	ge := (t at: k + 1) > 0.
+	ge ifFalse: [
+		i := k.
+		[i > 0 and: [(t at: i) = (n at: i)]] whileTrue: [i := i - 1].
+		ge := i = 0 or: [(t at: i) > (n at: i)]].
+	ge ifTrue: [
+		c := 0.
+		1 to: k do: [:m |
+			v := (t at: m) - (n at: m) - c.
+			v < 0
+				ifTrue: [t at: m put: v + 16r40000000. c := 1]
+				ifFalse: [t at: m put: v. c := 0]]].
+	t at: k + 1 put: 0; at: k + 2 put: 0.
+	^t
+]
+
+{ #category : '*Kernel-Protocol' }
+Integer class >> montgomeryPower: a to: anInteger context: ctx [
+	"a raised to anInteger, both a and the answer in Montgomery form
+	 modulo the n of ctx: square for each bit of the exponent from the
+	 top, and multiply by a for each bit that is set.  The exponent is
+	 read a byte at a time with digitAt:, which costs the same for a
+	 LargeInteger as for a SmallInteger, where shifting a LargeInteger
+	 right a bit at a time would copy it once per bit."
+	| result started byte mask |
+	result := ctx at: 4.
+	started := false.
+	anInteger digitLength to: 1 by: -1 do: [:i |
+		byte := anInteger digitAt: i.
+		mask := 128.
+		[mask > 0] whileTrue: [
+			started ifTrue: [result := self montgomery: result times: result context: ctx].
+			(byte bitAnd: mask) = 0 ifFalse: [
+				started
+					ifTrue: [result := self montgomery: result times: a context: ctx]
+					ifFalse: [result := a. started := true]].
+			mask := mask bitShift: -1]].
+	^result
 ]
 
 { #category : '*Kernel-Protocol' }
