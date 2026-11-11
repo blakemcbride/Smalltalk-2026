@@ -252,11 +252,41 @@ PosixFileDirectory >> addNew: aFile [
 	 open would take it -- the window every create-if-absent without
 	 O_EXCL has."
 
+	^self addNew: aFile ifPresent: [aFile error: 'already exists']
+]
+
+{ #category : '*Files-Fixes' }
+PosixFileDirectory >> addNew: aFile ifPresent: aBlock [
+	"Add aFile as a new file, or answer the value of aBlock if there is a
+	 file of its name already: addNew:'s refusal and findOrAdd:'s second
+	 look are the one question, asked once."
+
 	(self doPrimitive: 6 arg1: aFile fileName arg2: nil) == true
-		ifTrue: [^aFile error: 'already exists'].
+		ifTrue: [^aBlock value].
 	aFile fd: nil.
 	aFile readWrite: Write.
 	^aFile
+]
+
+{ #category : '*Files-Fixes' }
+PosixFileDirectory >> findOrAdd: aFile [
+	"The old file of aFile's name, or aFile added as a new one.
+
+	 1983's FileDirectory>>findOrAdd: is a find and then an addNew:, and
+	 addNew: refuses a name that is there (Bugs5 FILES-8).  Between the
+	 two, another process or another worker can make the file -- and
+	 fileNamed:, which asks for the old file or a new one and so cannot be
+	 wrong either way, raised `already exists' on the first open of a log
+	 that eight workers were creating at once (Bugs07 X-28).  An add that
+	 finds the file there now answers it, as the find would have: the
+	 find answers aFile with its name set, and so does this.
+
+	 No window is left behind it.  Whichever way this answers, nothing is
+	 open yet; asFileStream opens, creating the file if it is still not
+	 there, with O_CREAT and not O_EXCL, so the open takes the file
+	 whoever made it."
+
+	^self find: aFile ifAbsentDo: [:file | self addNew: file ifPresent: [file]]
 ]
 
 { #category : '*Files-Fixes' }

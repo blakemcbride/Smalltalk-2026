@@ -5441,7 +5441,8 @@ bugs7f_files_limit(const char *name, const char *body, const char *what)
 
 /*
  *  Bugs07, round 6: the KERNB group's lows that need workers or another
- *  profile.  test_image's test_bugs7f_kernb holds the one-thread checks.
+ *  profile, and X-28's fileNamed: race.  test_image's test_bugs7f_kernb
+ *  holds the one-thread checks.
  */
 static void
 bugs7f_kernb(void)
@@ -5567,6 +5568,43 @@ bugs7f_kernb(void)
                             "X-22 Pharo's rehash and compact beside declarations");
         }
         unlink(pimg);
+    }
+
+    /*
+     *  X-28: eight workers opening the same five hundred new names with
+     *  fileNamed:, so that most names are made by one worker between
+     *  another's find and its add.  The add refused a name that was
+     *  there, and the open raised `already exists' -- one first open in
+     *  fifteen runs of bugs7e_files's probe, whose writer then wrote
+     *  nothing and the probe hung.  Before: eight to thirteen of the four
+     *  thousand opens refused, in every one of six runs.
+     */
+    {
+        static char text[2048];
+        const char *dir = fixture("bugs7f-x28-dir");
+        char        path[1024];
+        int         i;
+
+        (void) mkdir(dir, 0755);
+        snprintf(text, sizeof text,
+            "| sem errs mtx first |\n"
+            "sem := Semaphore new. errs := 0. mtx := Semaphore forMutualExclusion.\n"
+            "1 to: 8 do: [:w | Processor forkParallel: [\n"
+            "  1 to: 500 do: [:i | [| f | f := FileStream fileNamed: '%s/f', "
+            "i printString, '.txt'.\n"
+            "    f setToEnd; nextPutAll: 'w'; close]\n"
+            "      on: Error do: [:e | mtx critical: [errs := errs + 1.\n"
+            "        first isNil ifTrue: [first := e messageText]]]].\n"
+            "  sem signal]].\n"
+            "8 timesRepeat: [sem wait].\n"
+            "^'opens refused ', errs printString, ' ', first printString\n", dir);
+        bugs7_probe("bugs7f-x28.st", text, 8, "==> 'opens refused 0 nil'",
+                    "X-28 fileNamed: on names eight workers are making at once");
+        for (i = 1; i <= 500; ++i) {
+            snprintf(path, sizeof path, "%s/f%d.txt", dir, i);
+            (void) unlink(path);
+        }
+        (void) rmdir(dir);
     }
 }
 

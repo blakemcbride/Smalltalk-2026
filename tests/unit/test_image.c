@@ -816,8 +816,12 @@
  *  Integer>>montgomeryLimbs: and montgomeryContext, and Integer
  *  class>>fromMontgomeryLimbs:, montgomery:times:context: and
  *  montgomeryPower:to:context:.
+ *
+ *  3523 -> 3525 with Bugs07 X-28: PosixFileDirectory>>findOrAdd: and
+ *  addNew:ifPresent:, so that an add finding the file another process has
+ *  just made answers it.
  */
-#define LIB_METHODS             3523
+#define LIB_METHODS             3525
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -3400,8 +3404,11 @@ test_browsing(void)
      *
      *  3151731 -> 3161386 with Bugs07 KERNA-11: isPrime is Miller-Rabin
      *  over Montgomery multiplication, and raisedTo:modulo: is new.
+     *
+     *  3161386 -> 3162580 with Bugs07 X-28: fileNamed:'s add answers a file
+     *  another process made after its find.
      */
-    check_integer("(SourceFiles at: 1) contents size", 3161386);
+    check_integer("(SourceFiles at: 1) contents size", 3162580);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -14674,8 +14681,9 @@ test_bugs7f_gui(void)
 
 /*
  *  Bugs07, round 6: the KERNB group's lows -- Smalltalk's keys (KERNB-8),
- *  its class names (KERNB-9), lib/Probe's class-side state (KERNB-10) and
- *  Smalltalk's last unlocked writers (X-22).
+ *  its class names (KERNB-9), lib/Probe's class-side state (KERNB-10),
+ *  Smalltalk's last unlocked writers (X-22) and a file made between
+ *  fileNamed:'s find and its add (X-28).
  *  What needs workers or another profile is in
  *  tests/unit/test_serve_faults.c, bugs7f_kernb.
  */
@@ -14805,6 +14813,48 @@ test_bugs7f_kernb(void)
                  "(true true 5 )");
     check_integer("Smalltalk removeKey: #Bugs7fX22C. ^Smalltalk size - "
                   "(Smalltalk keys size)", 0);
+
+    /*
+     *  X-28: fileNamed: on a name another process makes between the find
+     *  and the add.  1983's findOrAdd: is a find and then an addNew:, and
+     *  addNew: refuses a name that is there (Bugs5 FILES-8), so the first
+     *  open of a log eight workers were creating at once raised `already
+     *  exists'.  A directory whose find makes the file just before it
+     *  reports it absent is that moment, every time.  The add answers the
+     *  file now, and the open takes what the other process wrote.
+     *  Before: '<the name> already exists, '.  The many-worker form is in
+     *  test_serve_faults, bugs7f_kernb.
+     */
+    {
+        char    dir[] = "/tmp/st2026-bugs7f-x28-XXXXXX";
+        char    expression[2048];
+        char    path[256];
+
+        if (mkdtemp(dir)) {
+            snprintf(expression, sizeof expression,
+                     "| dir name | name := '%s/x28.txt'. "
+                     "PosixFileDirectory subclass: #Bugs7fX28Dir instanceVariableNames: '' "
+                     "classVariableNames: '' poolDictionaries: '' category: 'Bugs7f'. "
+                     "(Smalltalk at: #Bugs7fX28Dir) compile: 'find: aFile ifAbsentDo: aBlock "
+                     "^super find: aFile ifAbsentDo: [:f | (FileStream newFileNamed: "
+                     "f fileName) nextPutAll: ''first''; close. aBlock value: f]' "
+                     "classified: 'probe' notifying: nil. "
+                     "dir := (Smalltalk at: #Bugs7fX28Dir) new. "
+                     "^[| s | s := (dir findOrAddKey: name) asFileStream. "
+                     "s setToEnd; nextPutAll: ' second'; close. "
+                     "(FileStream oldFileNamed: name) contentsOfEntireFile] "
+                     "on: Error do: [:e | e messageText]",
+                     dir);
+            check_string(expression, "first second");
+            snprintf(path, sizeof path, "%s/x28.txt", dir);
+            (void) unlink(path);
+            (void) rmdir(dir);
+        }  else  {
+            ++st_test_checks;
+            ++st_test_failures;
+            printf("  FAIL X-28: cannot make a directory for the probe\n");
+        }
+    }
 }
 
 static void
