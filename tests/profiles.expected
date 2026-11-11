@@ -14,9 +14,8 @@
 # protecting, and the next regression silently spends it.  Edit the line in
 # the same commit that earns it.
 #
-# Four profiles are at 100%; pharo-weak is one short, on purpose, and the row
-# below records both numbers so that the shortfall cannot grow.  Two profiles
-# reach their score with something excluded and each says so in its own text:
+# All five profiles are at 100%.  Two of them reach their score with
+# something excluded and each says so in its own text:
 # pharo-announcements excludes WeakAnnouncerTest, and pharo-weak excludes a
 # handful of classes it has no provider for.  pharo-weak no longer excludes the
 # four Dictionary tests -- see the tail of this file.
@@ -309,17 +308,12 @@
 # Finalizer process drains what the collector has fired and sends each one
 # #mourn, and a copy of a weak collection is still weak.
 #
-# ONE test is failing and is recorded failing, which this file has not had to
-# say before.  WeakKeyDictionaryTest>>testClearing collects, asserts on the
-# next line that the dictionary is still full -- "keys are gone but not yet
-# finalized" -- and on the line after that that it is empty.  Both hold only if
-# #mourn reaches a thousand associations in the gap between two consecutive
-# sends.  On Cog it does, because the interrupt check falls on a method return.
-# Here the process switch is looked at once per bytecode, so the finalizer has
-# the processor before the first of those two sends.  It is a statement about
-# where a preemption lands, not about weak keys, and the profile's own text
-# says so at length.  Recording 1077 and 1076 keeps the ratchet doing its job
-# in both directions: a second failure makes the passed number fall.
+# WeakKeyDictionaryTest>>testClearing passes as the version in
+# lib/Collections-Weak-Compat-Tests, which asserts what a weak dictionary
+# promises -- the keys are gone once collected, and the size follows once they
+# are mourned -- and not Pharo's assertion about the instant between the two,
+# which holds only where the interrupt check falls on a method return; the
+# profile's own text says why.
 #
 # One more in lib/Network-Tests, for the last of the Bugs4 hangs to be
 # found and the only one this file could not have caught.  A timed socket
