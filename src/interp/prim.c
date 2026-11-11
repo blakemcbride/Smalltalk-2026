@@ -1232,12 +1232,14 @@ copy_block_for_activation(st_oop block)
  *  cannot be tested there either.
  *
  *  Squeak's number for this is 130 and it is not available: PosixFile
- *  declares 130 and PosixFileDirectory declares 131 in this very library.
- *  Neither is implemented, so both fail today and their Smalltalk bodies
- *  run; taking the number would make a file method quietly collect garbage
- *  instead, which is the kind of silent difference this system spends most
- *  of its comments avoiding.  250 is in the block reserved for this
- *  system's own primitives.
+ *  declares 130 and PosixFileDirectory declares 131 in this very library,
+ *  and both are this system's file commands (primitive_file_command and
+ *  primitive_directory_command); taking the number would make a file
+ *  method quietly collect garbage instead, which is the kind of silent
+ *  difference this system spends most of its comments avoiding.  250 was
+ *  free.  (No block of numbers is set aside for this system's own
+ *  primitives: 240-255 hold a clock, the mouse wheel, a bulk become: and
+ *  Float printString as well as the parallel operations -- Bugs07 X-16.)
  */
 static int
 primitive_full_collect(void)
@@ -1359,12 +1361,19 @@ primitive_report_on_standard_error(void)
 /*
  *  239: Error>>noteUnhandled -- an Error found no handler on this stack.
  *
- *  Sent from Error>>defaultAction and nowhere else, so what is counted is
- *  exactly the errors nobody caught: a handled Error never gets there and
- *  a Warning has its own defaultAction.  The count is this worker's, kept
- *  in its registers, and -eval reads it to decide its exit code (Bugs3
- *  B58).  Nothing else reads it yet; a server that wanted to count its
- *  unhandled errors per request would read the same field.
+ *  Sent from the three places an Error is reported because nobody caught
+ *  it, and from nowhere else: Error>>unhandledErrorDefaultAction (where
+ *  Error>>defaultAction goes when no UnhandledError handler takes it),
+ *  UnhandledError>>defaultAction (an UnhandledError nobody took, Bugs07
+ *  KERNB-7), and Process>>runUnwindBlockOf: (an Error raised in a cleanup
+ *  block of a process being ended, which there is no one left to hand
+ *  to).  So what is counted is exactly the errors nobody caught: a handled
+ *  Error never gets there and a Warning has its own defaultAction.  (This
+ *  said `Error>>defaultAction and nowhere else' after the sends had moved
+ *  -- Bugs07 X-15.)  The count is this worker's, kept in its registers,
+ *  and -eval reads it to decide its exit code (Bugs3 B58).  Nothing else
+ *  reads it yet; a server that wanted to count its unhandled errors per
+ *  request would read the same field.
  */
 static int
 primitive_note_unhandled_error(void)
@@ -3808,7 +3817,7 @@ primitive_directory_command(void)
  *  snapshot_path is one for the process and NOT per thread, though Bugs5
  *  FILES-10 suggested making it so beside posix_errno.  The two sends that
  *  share it are a Process's, not a thread's: between them snapshotAs:
- *  waits in Delay preSnapshot, and a process that waits may resume on
+ *  waits in Delay preSnapshot:, and a process that waits may resume on
  *  any worker, where a thread-local would be empty and the snapshot would
  *  fail as `nobody said where'.  What keeps two snapshots from crossing
  *  here is that snapshotAs: names the file only once it holds Delay's
@@ -7892,10 +7901,11 @@ ST_primitive_dispatch(unsigned index)
         return 1;
     /*
      *  246 and 247: jumping to a context, which the exception library
-     *  cannot say in Smalltalk.  This system's own numbers -- the reserved
-     *  240-255 block, documented in doc/CONCURRENCY.md -- because Squeak
-     *  builds Context>>return: out of process machinery this VM does not
-     *  have and ported source never names a number for it.
+     *  cannot say in Smalltalk.  This system's own numbers (240-255 is not
+     *  a reserved block -- it holds a clock and Float printString too,
+     *  Bugs07 X-16) because Squeak builds Context>>return: out of process
+     *  machinery this VM does not have and ported source never names a
+     *  number for it.
      */
     case 195: return primitive_find_next_unwind_up_to();
     case 197: return primitive_find_next_handler();

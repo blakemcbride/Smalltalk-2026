@@ -335,12 +335,13 @@ typedef struct {
     const char *corrupt_reason;
     /*
      *  How many Errors went unhandled on this worker's stack: raised, found
-     *  no handler, and reached Error>>defaultAction (Bugs3 B58).  The
-     *  image tells the VM through primitive 239 from that one method, so
-     *  a handled error is never counted and neither is a Warning.  -eval
-     *  reads it to decide its exit code: the answer to `3 zork' was nil and
-     *  the exit was 0, which a build script cannot tell from an expression
-     *  that answered nil on purpose.
+     *  no handler, and were reported as unhandled (Bugs3 B58).  The image
+     *  tells the VM through primitive 239 from the methods that report one
+     *  -- listed at primitive_note_unhandled_error in prim.c (Bugs07
+     *  X-15) -- so a handled error is never counted and neither is a
+     *  Warning.  -eval reads it to decide its exit code: the answer to
+     *  `3 zork' was nil and the exit was 0, which a build script cannot
+     *  tell from an expression that answered nil on purpose.
      */
     unsigned    unhandled_errors;
     /*

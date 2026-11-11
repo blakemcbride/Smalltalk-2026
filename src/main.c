@@ -2710,8 +2710,10 @@ do_bootstrap(const char *const *sources, const int *dialects, unsigned count,
          *  build script could not tell it from an expression that answered
          *  nil on purpose.  The answer is still printed -- it is what was
          *  asked for -- and the exit code says what happened on the way.
-         *  Counted by the VM, on this worker, from the one method every
-         *  unhandled Error reaches; a handled one never gets there.
+         *  Counted by the VM, on this worker, from the methods that report
+         *  an Error as unhandled (primitive 239; prim.c names them -- there
+         *  are three, not the one this said, Bugs07 X-15); a handled one
+         *  never gets there.
          */
         if (unhandled) {
             fprintf(stderr, "st2026: %u error%s went unhandled while "

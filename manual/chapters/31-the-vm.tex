@@ -110,7 +110,12 @@ and 199 mark unwind and handler frames, and nothing implements them, so they
 always fail and the Smalltalk body runs. Signalling finds them by walking the
 sender chain. That is how exceptions are written in Smalltalk.
 
-Primitives 240--255 are reserved for this system's parallel operations.
+The numbers above the Blue Book's are not grouped by purpose. Within 240--255
+alone, 240 is the UTC clock, 242 the mouse wheel, 241 and 243--245 the
+parallel operations (the worker's active process, its index, the worker count,
+compare-and-swap), 249 a bulk \ct{become:}, 254 the host's line end and 255
+\ct{Float>>printString}. \ct{-primitives} (Chapter~\ref{ch:toolbox}) says which
+numbers a source file declares and whether each one is here.
 
 \section{Method lookup}
 
