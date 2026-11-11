@@ -221,15 +221,31 @@ OpenAI >> stopReasonOf: aReply [
 ]
 
 { #category : 'the wire' }
+OpenAI >> isEventStream [
+	^true
+]
+
+{ #category : 'the wire' }
 OpenAI >> streamedTextOf: aLine [
-	"`data: {chunk}' lines and a last `data: [DONE]'; a comment line --
-	 OpenRouter sends `: OPENROUTER PROCESSING' to keep the connection
-	 warm -- carries nothing.  A chunk with no choices is the trailing
-	 usage; one with `error' is an error."
-	| payload chunk choices delta |
+	"One line taken as an event of its own: the text of its data, or ''
+	 for a line that is not data -- a comment line, which OpenRouter sends
+	 as `: OPENROUTER PROCESSING' to keep the connection warm.  The stream
+	 is read by the event (streamedTextOfEvent:); this is the one-line
+	 case of it."
+	| payload |
 	payload := self sseDataOf: aLine.
 	payload isNil ifTrue: [^''].
-	payload := payload trimmed.
+	^self streamedTextOfEvent: payload
+]
+
+{ #category : 'the wire' }
+OpenAI >> streamedTextOfEvent: aString [
+	"Events whose data is a chunk -- a JSON document, on one line or
+	 more; LLM>>nextEventFrom: has joined them -- and a last `[DONE]'.  A
+	 chunk with no choices is the trailing usage; one with `error' is an
+	 error."
+	| payload chunk choices delta |
+	payload := aString trimmed.
 	payload = '[DONE]' ifTrue: [^nil].
 	(payload startsWith: '{') ifFalse: [^''].
 	chunk := self documentFrom: payload.

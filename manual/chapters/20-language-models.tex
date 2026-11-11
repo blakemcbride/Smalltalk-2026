@@ -87,7 +87,10 @@ Claude send: 'Tell me a story' do: [:piece | Transcript show: piece]
 
 Each piece of text goes to the block as the service sends it---a few words
 at a time, as server-sent events from Anthropic and OpenAI and as one JSON
-document a line from Ollama---and the whole is answered at the end. The
+document a line from Ollama---and the whole is answered at the end. An
+event is read whole, as the format defines it: it runs to a blank line, its
+data may come on several \ct{data:} lines, which are joined, and a line may
+end with CR LF, LF or CR alone. The
 wait is the same wait as before, and parks the process and not the worker,
 so a server answering many requests can have many of these in flight on a
 few threads. The timeout bounds each piece rather than the whole: a model

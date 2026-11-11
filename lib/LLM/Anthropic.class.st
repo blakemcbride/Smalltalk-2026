@@ -197,14 +197,29 @@ Anthropic >> stopReasonOf: aReply [
 ]
 
 { #category : 'the wire' }
+Anthropic >> isEventStream [
+	^true
+]
+
+{ #category : 'the wire' }
 Anthropic >> streamedTextOf: aLine [
-	"Server-sent events: `event: name' lines, which say nothing the data
-	 does not, and `data: {json}' lines.  The text is in
-	 content_block_delta's text_delta; message_delta carries the stop
-	 reason; message_stop is the end; error is an error."
-	| payload event type delta |
+	"One line taken as an event of its own: the text of its data, or ''
+	 for a line that is not data.  The stream is read by the event
+	 (streamedTextOfEvent:); this is the one-line case of it."
+	| payload |
 	payload := self sseDataOf: aLine.
 	payload isNil ifTrue: [^''].
+	^self streamedTextOfEvent: payload
+]
+
+{ #category : 'the wire' }
+Anthropic >> streamedTextOfEvent: payload [
+	"Server-sent events: `event: name' lines, which say nothing the data
+	 does not, and data that is a JSON document -- on one line or more;
+	 LLM>>nextEventFrom: has joined them.  The text is in
+	 content_block_delta's text_delta; message_delta carries the stop
+	 reason; message_stop is the end; error is an error."
+	| event type delta |
 	(payload startsWith: '{') ifFalse: [^''].
 	event := self documentFrom: payload.
 	type := (self string: 'type' of: event) ifNil: [''].

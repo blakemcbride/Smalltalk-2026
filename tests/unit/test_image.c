@@ -842,8 +842,13 @@
  *
  *  3537 -> 3539 with Bugs07 X-21: Integer class>>magnitudeOfDigits:radix:,
  *  primitive 238, and limbMagnitudeOfDigits:radix:, its fallback.
+ *
+ *  3539 -> 3546 with Bugs07 NET-11: LLM>>isEventStream, nextEventFrom: and
+ *  streamedTextOfEvent:, and isEventStream and streamedTextOfEvent: in
+ *  Anthropic and OpenAI, so that an event stream is read by the event and
+ *  not by the line.
  */
-#define LIB_METHODS             3539
+#define LIB_METHODS             3546
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -3459,8 +3464,11 @@ test_browsing(void)
      *  3181348 -> 3183075 with Bugs07 X-21: digits become an Integer in
      *  primitive 238, magnitudeOfDigits:radix:, with the Smalltalk loop as
      *  its fallback.
+     *
+     *  3183075 -> 3187088 with Bugs07 NET-11: a server-sent event is read
+     *  whole, its data lines joined, a line ending at CR LF, LF or CR.
      */
-    check_integer("(SourceFiles at: 1) contents size", 3183075);
+    check_integer("(SourceFiles at: 1) contents size", 3187088);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -14681,6 +14689,64 @@ test_bugs7f_net(void)
                  "add: (n isNil ifTrue: ['open'] ifFalse: ['closed']). c close] ensure: [s stop]. "
                  "^r asArray printString",
                  "(true true 'closed' )");
+
+    /*
+     *  NET-11.  The streamed-answer readers took every `data:' line as
+     *  one whole JSON document and LF as the only line end.  In the
+     *  server-sent-events format an event runs to a blank line, its data
+     *  is its data lines joined by LF, and a line ends at CR LF, LF or a
+     *  lone CR.  So an event whose JSON came on two data lines was an
+     *  LLMError, `not JSON', and a stream ended by lone CRs was one long
+     *  line with no data in it -- an LLMError that the stream ended early.
+     *  Each case is a body of its own, served by LLMTestCase's listener.
+     *  The first check: Anthropic with an event on two data lines, OpenAI
+     *  with one, OpenAI with lone CRs.  Before: (LLMError LLMError
+     *  LLMError ).  The second (split for the 63-literal limit): Anthropic
+     *  with CR LF, an `event:' line, a comment and an `id:', and the CR
+     *  and the LF of one line end in different chunks; and an event the
+     *  body ends in before its blank line, which is not an event -- its
+     *  [DONE] did not come.  Before: ('''Hello''' '''Hel''' ).
+     */
+    check_string("| a o run lf cr ev oe | "
+                 "a := AnthropicTest new. o := OpenAITest new. "
+                 "lf := String with: (Character value: 10). cr := String with: (Character value: 13). "
+                 "run := [:t :llm :reply | t serving: reply do: [:url | [(llm url: url; "
+                 "send: 'hi' do: [:p | ]) printString] on: LLMError do: [:e | e class name]]]. "
+                 "ev := [:x | '{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\","
+                 "\"text\":\"', x, '\"}}']. "
+                 "oe := [:x | '{\"choices\":[{\"delta\":{\"content\":\"', x, '\"}}]}']. "
+                 "^{run value: a value: (Anthropic apiKey: 'k' model: 'm') value: (a chunked: "
+                 "'data: {\"type\":\"content_block_delta\",', lf, "
+                 "'data: \"delta\":{\"type\":\"text_delta\",\"text\":\"Hel\"}}', lf, lf, "
+                 "'data: ', (ev value: 'lo'), lf, lf, 'data: {\"type\":\"message_stop\"}', lf, lf). "
+                 "run value: o value: (OpenAI apiKey: 'k' model: 'm') value: (o chunked: "
+                 "'data: {\"choices\":[{\"delta\":', lf, 'data: {\"content\":\"Hel\"}}]}', lf, lf, "
+                 "'data: [DONE]', lf, lf). "
+                 "run value: o value: (OpenAI apiKey: 'k' model: 'm') value: (o chunked: "
+                 "'data: ', (oe value: 'Hel'), cr, cr, 'data: ', (oe value: 'lo'), cr, cr, "
+                 "'data: [DONE]', cr, cr)} printString",
+                 "('''Hello''' '''Hel''' '''Hello''' )");
+    check_string("| a o run lf cr crlf ev oe split b4a b4 | "
+                 "a := AnthropicTest new. o := OpenAITest new. "
+                 "lf := String with: (Character value: 10). cr := String with: (Character value: 13). "
+                 "crlf := cr, lf. "
+                 "run := [:t :llm :reply | t serving: reply do: [:url | [(llm url: url; "
+                 "send: 'hi' do: [:p | ]) printString] on: LLMError do: [:e | e class name]]]. "
+                 "ev := [:x | '{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\","
+                 "\"text\":\"', x, '\"}}']. "
+                 "oe := [:x | '{\"choices\":[{\"delta\":{\"content\":\"', x, '\"}}]}']. "
+                 "split := [:body :at | 'HTTP/1.1 200 OK', crlf, 'Transfer-Encoding: chunked', crlf, crlf, "
+                 "(a hex: at), crlf, (body copyFrom: 1 to: at), crlf, "
+                 "(a hex: body size - at), crlf, (body copyFrom: at + 1 to: body size), crlf, "
+                 "'0', crlf, crlf]. "
+                 "b4a := 'event: content_block_delta', crlf, ': a comment', crlf, 'id: 7', crlf, "
+                 "'data: ', (ev value: 'Hel'), crlf, crlf, 'data: ', (ev value: 'lo'), cr. "
+                 "b4 := b4a, lf, crlf, 'data: {\"type\":\"message_stop\"}', crlf, crlf. "
+                 "^{run value: a value: (Anthropic apiKey: 'k' model: 'm') value: (split value: b4 "
+                 "value: b4a size). "
+                 "run value: o value: (OpenAI apiKey: 'k' model: 'm') value: (o chunked: "
+                 "'data: ', (oe value: 'Hel'), lf, lf, 'data: [DONE]', lf)} printString",
+                 "('''Hello''' LLMError )");
 
     test_dialect = ST_DIALECT_BLUE_BOOK;
 }

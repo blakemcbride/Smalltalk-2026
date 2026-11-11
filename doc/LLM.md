@@ -54,6 +54,7 @@ service's wire looks like:
 | `toolCallsOf:` | `tool_use` blocks | `message.tool_calls`, arguments as a JSON **string** | `message.tool_calls`, arguments as JSON |
 | `toolResultMessagesFor:results:` | one user message of `tool_result` blocks | one message of role `tool` per call | one message of role `tool` per call |
 | `streamedTextOf:` | SSE: `content_block_delta` / `text_delta`; `message_stop` ends | SSE: `choices[0].delta.content`; `data: [DONE]` ends | one JSON document a line; `done: true` ends |
+| `isEventStream` | true: read by the event, `streamedTextOfEvent:` | true: read by the event, `streamedTextOfEvent:` | false: read by the line |
 | `stopReasonOf:` | `stop_reason` | `choices[0].finish_reason` | `done_reason` |
 
 The loop that uses them is `LLM>>answerFor:tools:do:`: post the messages;
@@ -189,6 +190,15 @@ must be refused. Neither is in `tests/profiles.expected`, for the reason
 - **An event stream's lines cross chunk boundaries.** A server chunks by
   its buffer, not by the line; `HttpBodyStream>>nextLine` reads through
   the boundary, and the test puts one inside an event to prove it.
+- **An event is not a line.** In server-sent events an event runs to a
+  blank line, its data is every `data` line in it joined by a line feed,
+  and a line ends at CR LF, LF or a lone CR. The readers took each `data`
+  line as a whole JSON document and LF as the only end, so JSON on two
+  data lines was *not JSON* and a stream of lone CRs had no data at all
+  (Bugs07 NET-11). `LLM>>nextEventFrom:` reads the body by the event —
+  comments, `event`, `id` and `retry` passed over — and an event the body
+  ends in before its blank line is dropped, as the format says, so a
+  stream whose end event is cut off is an `LLMError`, not an answer.
 - **The JSON reader's exact decimals are the wrong thing for a vector.**
   `0.25` reads as `1/4`, correctly; `embed:` converts.
 - **`#(true false)` is two Symbols in this dialect.** A test that wrote it

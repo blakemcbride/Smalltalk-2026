@@ -334,15 +334,89 @@ LLM >> sseDataOf: aLine [
 	 the colon and ONE optional space after it is not part of the value.
 	 A line with no colon at all is a field with an empty value, and a line
 	 beginning with a colon is a comment -- OpenRouter's keep-alive is
-	 `: OPENROUTER PROCESSING' -- and neither is data."
+	 `: OPENROUTER PROCESSING' -- and not data; `data' alone is a data
+	 field with an empty value."
 
 	| colon |
+	aLine = 'data' ifTrue: [^''].
 	colon := aLine indexOf: $:.
 	colon < 2 ifTrue: [^nil].
 	(aLine copyFrom: 1 to: colon - 1) = 'data' ifFalse: [^nil].
 	^(colon < aLine size and: [(aLine at: colon + 1) = $ ])
 		ifTrue: [aLine copyFrom: colon + 2 to: aLine size]
 		ifFalse: [aLine copyFrom: colon + 1 to: aLine size]
+]
+
+{ #category : 'the wire' }
+LLM >> isEventStream [
+	"Whether the service streams server-sent events -- a reply read by
+	 the event, see nextEventFrom: -- rather than one JSON document a
+	 line."
+	^false
+]
+
+{ #category : 'the wire' }
+LLM >> nextEventFrom: aBodyStream [
+	"The data of the next server-sent event in aBodyStream, or nil when
+	 the body ends before another event does.
+
+	 AN EVENT, NOT A LINE.  In the format (WHATWG HTML, server-sent
+	 events) an event is the run of lines up to a blank line, and its
+	 data is the value of every `data' line in it, joined by a line feed;
+	 a line ends at CR LF, at LF, or at a lone CR.  The services' readers
+	 took every `data' line as one whole JSON document and LF as the only
+	 line end, so an event whose JSON came on two data lines -- legal, and
+	 what a proxy that re-wraps long lines sends -- was an LLMError, `not
+	 JSON', and a stream whose lines ended with CR alone was one long line
+	 holding no data at all (Bugs07 NET-11).  Here the lines are gathered
+	 and the event is answered at its blank line: comments and the other
+	 fields (event, id, retry) are passed over, and a blank line with no
+	 data before it answers nothing and goes on.
+
+	 A lone CR ends its line at once, without waiting for the next byte to
+	 see whether it is an LF -- a stream must not hold back an event for a
+	 byte that may not come for a while -- and an LF that then does follow
+	 is passed over.  One left over at the start of the next event reads as
+	 an empty line, which with no data before it is nothing.
+
+	 An event the body ends in the middle of, before its blank line, is
+	 not an event: the format says it is dropped, and it is.  Whether the
+	 answer was whole is then streamFor:do:'s question, asked of the end
+	 line that did or did not come."
+	| lf cr data c afterCR out line value |
+	lf := Character value: 10.
+	cr := Character value: 13.
+	data := nil.
+	afterCR := false.
+	[c := aBodyStream next.
+	 (afterCR and: [c == lf]) ifTrue: [c := aBodyStream next].
+	 c isNil ifTrue: [^nil].
+	 out := WriteStream on: (String new: 128).
+	 [c notNil and: [c ~~ lf and: [c ~~ cr]]] whileTrue: [
+		out nextPut: c.
+		c := aBodyStream next].
+	 afterCR := c == cr.
+	 line := out contents.
+	 line isEmpty
+		ifTrue: [
+			data notNil ifTrue: [
+				data := data contents.
+				^data copyFrom: 1 to: data size - 1]]
+		ifFalse: [
+			value := self sseDataOf: line.
+			value notNil ifTrue: [
+				data isNil ifTrue: [data := WriteStream on: (String new: 256)].
+				data nextPutAll: value; nextPut: lf]].
+	 c isNil ifTrue: [^nil]] repeat
+]
+
+{ #category : 'the wire' }
+LLM >> streamedTextOfEvent: aString [
+	"The text the data of one server-sent event carries, as
+	 streamedTextOf: answers for a line: '' for none, nil for the event
+	 that ends the stream, an LLMError for one that reports one.  For a
+	 service whose isEventStream is true."
+	^self subclassResponsibility
 ]
 
 { #category : 'the wire' }
@@ -431,7 +505,11 @@ LLM >> streamFor: messages do: aBlock [
 	 the connection is closed -- and a body that runs out first is an
 	 LLMError, carrying in its body what had come, which aBlock has
 	 already been given.  The conversation is not told an answer that
-	 was not given."
+	 was not given.
+
+	 What comes off the wire is a line for a service that streams a JSON
+	 document a line, and an event's data for one that streams
+	 server-sent events -- see nextEventFrom:, and Bugs07 NET-11."
 	| out piece |
 	lastResponse := nil.
 	lastStopReason := nil.
@@ -439,7 +517,9 @@ LLM >> streamFor: messages do: aBlock [
 	out := WriteStream on: (String new: 256).
 	self postJson: (self requestBodyFor: messages tools: nil stream: true) to: self chatUrl
 		linesUntil: [:line |
-			piece := self streamedTextOf: line.
+			piece := self isEventStream
+				ifTrue: [self streamedTextOfEvent: line]
+				ifFalse: [self streamedTextOf: line].
 			piece isNil ifTrue: [streamEnded := true].
 			(piece notNil and: [piece notEmpty]) ifTrue: [
 				out nextPutAll: piece.
@@ -531,16 +611,20 @@ LLM >> malformed: aReply because: aReason [
 
 { #category : 'http' }
 LLM >> postJson: aJSONObject to: aUrl linesUntil: aBlock [
-	"A streamed reply, each line of its body to aBlock as it arrives,
-	 until aBlock answers true or the body ends; the connection is closed
-	 either way, with whatever was after that line unread.  An error
+	"A streamed reply, each line of its body to aBlock as it arrives --
+	 each event's data, for a service that streams events (nextEventFrom:)
+	 -- until aBlock answers true or the body ends; the connection is
+	 closed either way, with whatever was after that unread.  An error
 	 reply is not a stream: it is read whole and raised."
 	self client post: aUrl body: aJSONObject asJsonString contentType: 'application/json' do: [:reply |
 		| body line |
 		lastStatus := reply status.
 		reply isSuccess ifFalse: [self failed: reply status body: reply body].
 		body := reply bodyStream.
-		[(line := body nextLine) notNil and: [(aBlock value: line) not]] whileTrue]
+		[line := self isEventStream
+			ifTrue: [self nextEventFrom: body]
+			ifFalse: [body nextLine].
+		 line notNil and: [(aBlock value: line) not]] whileTrue]
 ]
 
 { #category : 'private' }
