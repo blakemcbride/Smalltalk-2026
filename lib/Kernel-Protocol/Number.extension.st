@@ -462,3 +462,30 @@ Number >> to: stop by: step do: aBlock [
 				aBlock value: nextValue.
 				nextValue := nextValue + step]]
 ]
+
+{ #category : '*Kernel-Protocol' }
+Number >> \\ aNumber [
+	"Modulo: the remainder of the division //, with aNumber's sign.
+	 9 \\ 4 = 1, -9 \\ 4 = 3, 9 \\ -4 = -3.
+
+	 1983's formula, `self - (self // aNumber * aNumber)', except that a
+	 Float argument makes me a Float first.  Without that, `(2 raisedTo:
+	 80) \\ 3.5' took the formula with mixed arithmetic -- the quotient
+	 rounded to a double and back -- and answered 0.0 for a remainder of
+	 exactly 0.5; as a Float the receiver reaches Float>>\\, which is exact
+	 (Bugs07 KERNA-8).  Converting is what `+' and every other operator
+	 already do with a Float on one side."
+	(aNumber isFloat and: [self isFloat not])
+		ifTrue: [^self retry: #\\ coercing: aNumber].
+	^self - (self // aNumber * aNumber)
+]
+
+{ #category : '*Kernel-Protocol' }
+Number >> rem: aNumber [
+	"The remainder of the division quo:, with my sign.  9 rem: 4 = 1,
+	 -9 rem: 4 = -1.  1983's formula; a Float argument makes me a Float
+	 first, so that Float>>rem: computes it exactly.  See \\."
+	(aNumber isFloat and: [self isFloat not])
+		ifTrue: [^self retry: #rem: coercing: aNumber].
+	^self - ((self quo: aNumber) * aNumber)
+]

@@ -713,3 +713,77 @@ Float >> >= aNumber [
 	<primitive: 46>
 	^self retry: #>= coercing: aNumber
 ]
+
+{ #category : '*Kernel-Protocol' }
+Float >> rem: aNumber [
+	"The remainder of dividing me by aNumber with the quotient truncated
+	 towards zero, carrying my sign -- EXACTLY, as C's fmod computes it.
+
+	 Number>>rem: is `self - ((self quo: aNumber) * aNumber)': the
+	 quotient is rounded to a double before it is truncated, multiplied
+	 back with a second rounding, and subtracted.  Once the quotient passes
+	 2^53 what is left is rounding error, usually 0.0: `1.0e20 rem: 3' was
+	 0.0, although 1.0e20 is exactly 10^20 and 10^20 leaves 1; and below
+	 2^53 the formula is often an ulp out, or a whole divisor out at the
+	 quotient's boundary -- `1.0 \\ 0.1' was 0.0 where the remainder of
+	 those two doubles is 0.09999999999999995 (Bugs07 KERNA-8).
+
+	 The remainder of two doubles is itself a double -- it is smaller than
+	 the divisor and a multiple of the smaller one's last place -- so it can
+	 be had with no rounding at all, in Integers.  A double is a mantissa
+	 below 2^53 times a power of two (asExactFraction says how), so with mx
+	 and my the two mantissas and k the difference of the exponents, the
+	 answer is `(mx * 2^k) \\ my' scaled back by the divisor's power of
+	 two.  That product is as long as the quotient, two thousand bits for
+	 the widest pair there is, and a LargeInteger division of it costs a
+	 third of a millisecond at 2^65; so it is never made.  The remainder is
+	 carried instead, a few bits of the shift at a time -- `r := (r
+	 bitShift: s) \\ my' -- nine bits a step, because r is below my and
+	 so below 2^53, and 2^62 is this build's SmallInteger limit: `1.0e20
+	 \\ 3' is eight steps of SmallInteger arithmetic.  The nine is speed,
+	 not correctness; on a narrower build the steps promote to
+	 LargeInteger and answer the same.
+
+	 A divisor larger than me in magnitude leaves me.  An argument that is
+	 not a Float is made one, as every other Float arithmetic does
+	 (Number>>retry:coercing:).  A zero, an infinity or a NaN on either
+	 side keeps the 1983 arithmetic, its answers and its errors.  An exact
+	 multiple leaves 0.0 whatever my sign, as that arithmetic answered."
+	| ex ey my r k |
+	aNumber isFloat ifFalse: [^self retry: #rem: coercing: aNumber].
+	(self isFinite and: [aNumber isFinite and: [self ~= 0.0 and: [aNumber ~= 0.0]]])
+		ifFalse: [^super rem: aNumber].
+	ex := self exponent.
+	ey := aNumber exponent.
+	ex < ey ifTrue: [^self].
+	my := (aNumber abs timesTwoPower: 52 - ey) truncated.
+	r := (self abs timesTwoPower: 52 - ex) truncated \\ my.
+	k := ex - ey.
+	[k > 0] whileTrue: [ | s |
+		s := k min: 9.
+		r := (r bitShift: s) \\ my.
+		k := k - s].
+	r = 0 ifTrue: [^0.0].
+	r := r asFloat timesTwoPower: ey - 52.
+	^self < 0.0 ifTrue: [r negated] ifFalse: [r]
+]
+
+{ #category : '*Kernel-Protocol' }
+Float >> \\ aNumber [
+	"The remainder of dividing me by aNumber with the quotient floored,
+	 carrying aNumber's sign: the exact remainder rem: computes, moved
+	 into aNumber's direction by one aNumber when the signs differ.
+
+	 That last addition rounds when the sum is not a double -- a tiny
+	 negative remainder plus a large divisor -- and can then come to the
+	 divisor itself, which is what C, Python and IEEE's floored remainder
+	 all answer for it.  Everything else about it is rem:'s, so see there
+	 for why this is not Number>>\\ (Bugs07 KERNA-8)."
+	| r |
+	aNumber isFloat ifFalse: [^self retry: #\\ coercing: aNumber].
+	(self isFinite and: [aNumber isFinite and: [aNumber ~= 0.0]])
+		ifFalse: [^super \\ aNumber].
+	r := self rem: aNumber.
+	(r ~= 0.0 and: [(r < 0.0) ~= (aNumber < 0.0)]) ifTrue: [^r + aNumber].
+	^r
+]

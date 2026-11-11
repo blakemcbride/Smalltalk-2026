@@ -1204,3 +1204,16 @@ Integer >> >= aNumber [
 	aNumber isInteger ifTrue: [^(self < aNumber) not].
 	^self retry: #>= coercing: aNumber
 ]
+
+{ #category : '*Kernel-Protocol' }
+Integer >> \\ aNumber [
+	"Modulo: the remainder of the division //, with aNumber's sign.
+	 9 \\ 4 = 1, -9 \\ 4 = 3, 9 \\ -4 = -3, -9 \\ -4 = -1.
+
+	 1983's, which repeats Number's formula, with Number>>\\'s one change:
+	 a Float argument makes me a Float, so the remainder is Float>>\\'s
+	 exact one (Bugs07 KERNA-8).  The SmallInteger and LargePositiveInteger
+	 primitives come here when they decline, as before."
+	aNumber isFloat ifTrue: [^self retry: #\\ coercing: aNumber].
+	^self - (self // aNumber * aNumber)
+]

@@ -770,8 +770,12 @@
  *
  *  3483 -> 3485 with Bugs07 KERNA-6: Interval>>includes: and
  *  indexOf:ifAbsent:, which find an element by arithmetic.
+ *
+ *  3485 -> 3490 with Bugs07 KERNA-8: Float>>rem: and \\, the exact
+ *  remainder of two doubles, and Number>>\\, Number>>rem: and Integer>>\\,
+ *  which make an exact receiver a Float when the argument is one.
  */
-#define LIB_METHODS             3485
+#define LIB_METHODS             3490
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -3306,8 +3310,11 @@ test_browsing(void)
      *
      *  3115872 -> 3116969 with Bugs07 KERNA-7: two Intervals are equal when
      *  their elements are, empty and single ones included.
+     *
+     *  3116969 -> 3122006 with Bugs07 KERNA-8: the remainder of two Floats
+     *  is exact.
      */
-    check_integer("(SourceFiles at: 1) contents size", 3116969);
+    check_integer("(SourceFiles at: 1) contents size", 3122006);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -14051,6 +14058,45 @@ test_bugs7f_kern(void)
                  "    ifFalse: [bad add: {a. b}]]]. "
                  "^bad asArray printString",
                  "()");
+
+    /*
+     *  KERNA-8.  Float \\ and rem: were 1983's `a - (a // b * b)': the
+     *  quotient rounded to a double before it is floored, multiplied back
+     *  and subtracted, so past 2^53 nothing was left but rounding error --
+     *  `1.0e20 \\ 3' was 0.0 for an exact remainder of 1 -- and below it
+     *  the answer was often an ulp out, or a whole divisor at the
+     *  quotient's boundary (`1.0 \\ 0.1').  The remainder of two doubles
+     *  is exact now, and an Integer or Fraction against a Float is made a
+     *  Float first.  The first check holds the audit's cases and the
+     *  extremes of the exponent range to C's fmod and Python's %; the
+     *  second, eighty random pairs over thirty decades with both signs, to
+     *  the exact remainder of the two values computed in Fractions (178 of
+     *  309 such pairs disagreed before); the third, that what did not
+     *  change did not change.
+     */
+    check_string("^{1.0e20 \\\\ 3. 1.0e20 rem: 3. (2 raisedTo: 80) \\\\ 3.5. "
+                 "  (2 raisedTo: 80) rem: -3.5. 1.0 \\\\ 0.1. -1.0e20 \\\\ 3.0. "
+                 "  1.0e20 \\\\ -3.0. -1.0e20 rem: 3.0. 1.0e300 \\\\ 7.0. "
+                 "  1.0e300 \\\\ 3.0e-300. 5.0e-324 \\\\ 3.0. -1.0e-20 \\\\ 3.0. "
+                 "  1234567.89 \\\\ 1. -7.5 \\\\ 2. -7.5 rem: 2} printString",
+                 "(1.0 1.0 0.5 0.5 0.09999999999999995 2.0 -2.0 -1.0 1.0 "
+                 "9.626317689605992e-301 5.0e-324 3.0 0.8899999998975545 0.5 -1.5 )");
+    check_string("| r bad x y | r := Random seed: 7. bad := 0. "
+                 "80 timesRepeat: [ "
+                 "  x := (r next - 0.5) * (10.0 raisedTo: (r next * 40) truncated - 10). "
+                 "  y := (r next - 0.5) * (10.0 raisedTo: (r next * 20) truncated - 5). "
+                 "  ((x rem: y) = (x asExactFraction rem: y asExactFraction) asFloat "
+                 "    and: [(x \\\\ y) = (x asExactFraction \\\\ y asExactFraction) asFloat]) "
+                 "      ifFalse: [bad := bad + 1]]. "
+                 "^bad printString",
+                 "0");
+    check_string("^{7 \\\\ 2.5. -7 \\\\ 2.5. 7 rem: -2.5. (1/2) \\\\ 0.3. 7 \\\\ 2. -7 \\\\ 2. "
+                 "  7 rem: -2. (7/2) \\\\ (1/3). 12.0 \\\\ 5. 6.0 \\\\ 3.0. -6.0 rem: 3.0. "
+                 "  [1.0 \\\\ 0.0] on: ZeroDivide do: [:e | #zd]. "
+                 "  [1.0 rem: 0] on: ZeroDivide do: [:e | #zd]. "
+                 "  [Float infinity \\\\ 2.0] on: Error do: [:e | #inf]. "
+                 "  (3.0 \\\\ Float infinity) isNaN} printString",
+                 "(2.0 0.5 2.0 0.2 1 1 1 (1/6) 2.0 0.0 0.0 zd zd inf true )");
 
     test_dialect = ST_DIALECT_BLUE_BOOK;
 }
