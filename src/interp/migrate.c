@@ -283,6 +283,31 @@ mark_reshaped_activations(const migrate_args *a, uint32_t n)
     }
     free(sorted);
 }
+
+/*
+ *  Bugs07 X-18.  The marking alone, for 1983's fallback loop.
+ *
+ *  When this primitive refuses -- an instance that cannot change identity
+ *  -- ClassDescription>>updateInstancesFrom: does the work the 1983 way, a
+ *  become: at a time, and the activations still running on those
+ *  instances were never told: they kept only the receiver bound become:
+ *  recomputes, so an old method went on indexing the new body by its old
+ *  offsets, inside it and never past it, but at the wrong field.  So the
+ *  fallback asks for this afterwards, with nil for the new instances: the
+ *  old ones have been given their new bodies by then, and the walk marks
+ *  every context whose receiver is one of them, inside a safepoint as the
+ *  primitive's own marking is.  What remains is the window while the loop
+ *  runs, between one instance's become: and this, which only the
+ *  primitive's single safepoint closes.
+ */
+static uint32_t
+mark_locked(void *user)
+{
+    migrate_args   *a = (migrate_args *) user;
+
+    mark_reshaped_activations(a, OM_fetch_word_length(a->olds));
+    return 1;
+}
 #endif
 
 static uint32_t
@@ -313,6 +338,11 @@ migrate_locked(void *user)
 /*
  *  234: <old instances> <new instances> <permutation> <old named count>
  *
+ *  With nil for the new instances it moves nothing and only marks the
+ *  activations running on the old ones, which 1983's fallback loop has
+ *  already migrated (mark_locked; the 64-bit memory only -- the Blue Book
+ *  one has no mark to set and fails).
+ *
  *  Answers the receiver.  Fails, having changed nothing, if the arguments
  *  are not three Arrays of equal shape and a non-negative SmallInteger, or
  *  if any one of the instances cannot change identity -- a pinned object,
@@ -336,6 +366,22 @@ ST_prim_migrate_instances(void)
 
     if (!OM_is_object(args.olds) || !OM_pointer_bit(args.olds))
         return 0;
+#if defined(ST_OM_MT)
+    /*  nil for the new instances: mark the activations only (X-18).  */
+    if (args.news == ST_NIL) {
+        if (!OM_is_object(args.map) || !OM_pointer_bit(args.map))
+            return 0;
+        if (WORKER_count() > 0) {
+            if (!WORKER_at_safepoint(mark_locked, &args))
+                return 0;
+        }  else  {
+            (void) mark_locked(&args);
+        }
+        ST_pop_n(4);
+        ST_refresh_receiver_limit();
+        return 1;
+    }
+#endif
     if (!OM_is_object(args.news) || !OM_pointer_bit(args.news))
         return 0;
     if (!OM_is_object(args.map) || !OM_pointer_bit(args.map))

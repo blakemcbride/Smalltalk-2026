@@ -20,6 +20,11 @@ Behavior >> primMigrate: oldInstances to: newInstances permuting: aMap oldNamed:
 	 Nil is not an error: updateInstancesFrom: then does the same work the
 	 1983 way, which is what this image did before there was a primitive.
 
+	 nil for newInstances moves nothing: it marks the activations running
+	 on oldInstances -- already given their new bodies by that 1983 loop
+	 -- with how many leading fields kept their offsets, which is what
+	 the primitive does for its own migration (Bugs07 X-18).
+
 	 THE NEW INSTANCES ARE MADE OUT HERE, and that is not an oversight.
 	 Allocating inside a safepoint can want a collection, a collection wants
 	 a safepoint of its own, and safepoints do not nest: it would deadlock

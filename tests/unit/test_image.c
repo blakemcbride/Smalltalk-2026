@@ -3441,8 +3441,11 @@ test_browsing(void)
      *
      *  3174727 -> 3177039 with Bugs07 X-29: an error a forkParallel: block
      *  does not handle is reported, as fork's is.
+     *
+     *  3177039 -> 3177688 with Bugs07 X-18: 1983's reshape fallback asks
+     *  primitive 234 to mark the activations it migrated.
      */
-    check_integer("(SourceFiles at: 1) contents size", 3177039);
+    check_integer("(SourceFiles at: 1) contents size", 3177688);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -15229,6 +15232,36 @@ test_bugs7f_vm(void)
                   "X-10 a frame word of zeros abandons the method");
     bugs7f_expect(text, "\n(caught after )\n",
                   "X-10 a frame of zeros is a CorruptMethod");
+
+    /*
+     *  X-18.  When primitive 234 refuses a reshape, 1983's loop does it a
+     *  become: at a time, and an activation of an old method still running
+     *  on one of the instances was never told which fields moved: with a
+     *  variable added in front, `d := d + 1' read `c'.  The fallback now
+     *  asks 234 to mark those activations (nil for the new instances), and
+     *  the old method stops as a CorruptMethod at the moved field.  The
+     *  class side forces the fallback by refusing every real migration.
+     */
+    bugs7f_shell(dir, "\"$ST2026\" -bootstrap -profile profiles/st2026.profile"
+                      " -eval \"| c i s r |"
+                      " Object subclass: #ZzX18 instanceVariableNames: 'a b c d'"
+                      " classVariableNames: '' poolDictionaries: '' category: 'Zz'."
+                      " c := Smalltalk at: #ZzX18."
+                      " c class compile: 'primMigrate: o to: n permuting: m"
+                      " oldNamed: k n isNil ifFalse: [^nil]. ^super primMigrate: o"
+                      " to: n permuting: m oldNamed: k'."
+                      " c compile: 'stepOn: s d := 1. s wait. d := d + 1. ^d'."
+                      " i := c new. s := Semaphore new."
+                      " [r := [i stepOn: s] on: CorruptMethod do: [:e |"
+                      " #CorruptMethod]] fork. Processor yield."
+                      " Object subclass: #ZzX18 instanceVariableNames: 'x a b c d'"
+                      " classVariableNames: '' poolDictionaries: '' category: 'Zz'."
+                      " s signal. Processor yield."
+                      " {r. i instVarAt: 4. i instVarAt: 5}\"",
+                 text, sizeof text);
+    bugs7f_expect(text, "\n(CorruptMethod nil 1 )\n",
+                  "X-18 the fallback marks the activations it migrated");
+    bugs7f_expect(text, "rc=0", "X-18 and the reshape itself goes through");
 
     snprintf(command, sizeof command, "rm -rf %s", dir);
     (void) system(command);

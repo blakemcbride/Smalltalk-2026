@@ -84,5 +84,15 @@ ClassDescription >> updateInstancesFrom: oldClass [
 		variable
 			ifTrue: [1 to: old basicSize do:
 						[:offset | new basicAt: offset put: (old basicAt: offset)]].
-		old become: new]
+		old become: new].
+	"And the methods still running on them told which fields moved, as
+	 the primitive tells them when it does the work: nil for the new
+	 instances asks for that alone (Bugs07 X-18).  An old method that
+	 names a moved field then stops as a CorruptMethod rather than read
+	 or write its neighbour."
+	self
+		primMigrate: olds
+		to: nil
+		permuting: map
+		oldNamed: oldClass instSize
 ]
