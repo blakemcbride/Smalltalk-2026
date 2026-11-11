@@ -854,8 +854,12 @@
  *  3547 -> 3551 with Bugs07 X-20: ChangeListController>>fileOut,
  *  ChangeList>>fileOutNamed:, FileDirectory>>replaceFileNamed:with: and
  *  PosixFileDirectory>>replaceFileNamed:with:.
+ *
+ *  3551 -> 3554 with Bugs07 X-9: SortedCollection>>grow and setSortBlock:
+ *  slotsOf:from:to:, which grow by copying rather than re-sorting, and
+ *  Delay>>leaveQueue, a retire's binary search.
  */
-#define LIB_METHODS             3551
+#define LIB_METHODS             3554
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -3481,8 +3485,11 @@ test_browsing(void)
      *  3188413 -> 3191940 with Bugs07 X-20: the change list's file out
      *  writes through replaceTextFile:using:, which replaces the old file
      *  in one rename.
+     *
+     *  3191940 -> 3195189 with Bugs07 X-9: a SortedCollection grows by
+     *  copying, and a Delay leaves the queue by binary search.
      */
-    check_integer("(SourceFiles at: 1) contents size", 3191940);
+    check_integer("(SourceFiles at: 1) contents size", 3195189);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -15700,6 +15707,50 @@ test_bugs7f_sched(void)
                  "[t suspendedContext isNil] whileFalse: [(Delay forMilliseconds: 1) wait]. "
                  "log asArray printString] ensure: [DeferredStop graceMilliseconds: nil]",
                  "(in out terminateReturned )");
+
+    /*
+     *  X-9: a SortedCollection that grows copies its elements; 1983's grow
+     *  added them to the larger collection with addAll:, which re-sorted
+     *  them -- a whole merge sort, the sort block called for every
+     *  comparison in it, for a collection in order already, a dozen times
+     *  on the way to twenty thousand elements.  The block is not called at
+     *  all now, and the order and the block are kept.  The old image
+     *  called it 9 times here: (9 true true 0 true ).
+     */
+    check_string("| n sc before blk | n := 0. "
+                 "blk := [:a :b | n := n + 1. a <= b]. "
+                 "sc := SortedCollection sortBlock: blk. "
+                 "1 to: 10 do: [:i | sc add: i]. before := n. sc grow. "
+                 "^{n - before. sc asArray = (1 to: 10) asArray. "
+                 "sc basicSize > 10. (sc add: 0; first). sc sortBlock == blk} "
+                 "printString",
+                 "(0 true true 0 true )");
+
+    /*
+     *  And the Delay queue, which a retire left by a walk from the front
+     *  with = in the interpreter: three thousand queued delays retired in
+     *  random order was about forty million bytecodes, and did not finish
+     *  inside this harness's twenty million (the old image: did not
+     *  finish).  A binary search on the
+     *  resumption time and an identity scan of the delays due in the same
+     *  millisecond is a few hundred each.  Several share a millisecond
+     *  here, and every one must be gone from the queue afterwards,
+     *  none still marked waiting (its fourth slot, delayInProgress).
+     */
+    check_string("| ds r order queue | r := 1. "
+                 "ds := (1 to: 3000) collect: [:i | r := r * 75 + 74 \\\\ 65537. "
+                 "Delay forMilliseconds: 600000 + (r \\\\ 500)]. "
+                 "ds do: [:d | d schedule]. "
+                 "order := (1 to: 3000) asArray. "
+                 "3000 to: 2 by: -1 do: [:i | | j x | r := r * 75 + 74 \\\\ 65537. "
+                 "j := r \\\\ i + 1. x := order at: i. "
+                 "order at: i put: (order at: j). order at: j put: x]. "
+                 "order do: [:i | (ds at: i) retire]. "
+                 "queue := Delay classPool at: #SuspendedDelays. "
+                 "^{(ds select: [:d | queue includes: d]) size. "
+                 "ds includes: (Delay classPool at: #ActiveDelay). "
+                 "ds anySatisfy: [:d | d instVarAt: 4]} printString",
+                 "(0 false false )");
 
     test_dialect = ST_DIALECT_BLUE_BOOK;
 }

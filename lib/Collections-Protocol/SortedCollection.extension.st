@@ -129,6 +129,42 @@ SortedCollection >> reSort [
 ]
 
 { #category : '*Collections-Protocol' }
+SortedCollection >> grow [
+	"Become larger, with my elements in the order they are in and the sort
+	 block I have.
+
+	 Bugs07 X-9.  1983's filled the larger collection with `newSelf
+	 addAll: self', and addAll: of more than a third of the receiver's
+	 size appends and re-sorts -- so every growth sorted again a
+	 collection that was in order already: a whole merge sort, the sort
+	 block called for every comparison in it, a dozen times on the way to
+	 twenty thousand elements added one at a time.  And under a strict
+	 block, which leaves the order of equal elements to the sort, a
+	 growth put them in another order: (0->9) (0->6) (0->3) came out
+	 (0->3) (0->6) (0->9) with nothing added in between.  They are in
+	 order, so they are copied, in one primitive, and the block is not
+	 called."
+	| newSelf |
+	newSelf := self species new: self size + self growSize.
+	newSelf setSortBlock: sortBlock slotsOf: self from: firstIndex to: lastIndex.
+	self become: newSelf
+]
+
+{ #category : '*Collections-Protocol' }
+SortedCollection >> setSortBlock: aBlock slotsOf: aCollection from: first to: last [
+	"Private, for grow, sent to a new and empty collection: take aBlock as
+	 my sort block as it is -- it was made one already, and sortBlock:
+	 would re-sort -- and aCollection's slots first to last, indices into
+	 its underlying Array, as my elements, in that order, from the start
+	 of mine."
+	sortBlock := aBlock.
+	firstIndex := 1.
+	lastIndex := last - first + 1.
+	lastIndex > 0 ifTrue: [
+		self basicReplaceFrom: 1 to: lastIndex with: aCollection startingAt: first]
+]
+
+{ #category : '*Collections-Protocol' }
 SortedCollection >> addFirst: newObject [
 	"Where an element goes is the sortBlock's decision, not the caller's.
 	 The class's own add: and addAll: reach OrderedCollection's addLast:

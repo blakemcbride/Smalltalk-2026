@@ -606,7 +606,50 @@ Delay >> retire [
 					ActiveDelay notNil
 						ifTrue: [ActiveDelay armTimer]
 						ifFalse: [Processor signal: nil atTime: 0]]
-				ifFalse: [SuspendedDelays remove: self ifAbsent: []]]]
+				ifFalse: [self leaveQueue]]]
+]
+
+{ #category : '*Concurrency' }
+Delay >> leaveQueue [
+	"With AccessProtect held: take me out of SuspendedDelays, where I am
+	 queued behind the head.
+
+	 Bugs07 X-9.  Found by a binary search on my resumption time, which
+	 is what the queue is sorted by, and then by identity among the
+	 delays due in the same millisecond.  This was `SuspendedDelays
+	 remove: self ifAbsent: []', a walk from the front comparing each
+	 delay with = in the interpreter: the one operation on the queue that
+	 was not a binary search and a move in C, and the one every timed
+	 wait that ends early does -- on a server, every socket read answered
+	 before its timeout.  Ten thousand pending delays retired in random
+	 order took ten seconds on one worker; they take a third of one.
+
+	 The queue stays a sorted collection rather than becoming a heap:
+	 adding is a binary search and one move in C, taking the head is
+	 removeFirst, and taking any other delay out is this, so a heap would
+	 buy nothing and cost every Delay a slot for its place in it.
+
+	 The walk is kept for a delay not found where its time says.  Nothing
+	 moves a queued delay's time but postSnapshot:, which moves them all
+	 by one amount and keeps the order; a delay that is somehow out of
+	 place is still taken out, not left in the queue."
+	| low high mid index |
+	low := 1.
+	high := SuspendedDelays size.
+	[low <= high] whileTrue: [
+		mid := low + high // 2.
+		(SuspendedDelays at: mid) resumptionTime < resumptionTime
+			ifTrue: [low := mid + 1]
+			ifFalse: [high := mid - 1]].
+	index := low.
+	[index <= SuspendedDelays size
+		and: [(SuspendedDelays at: index) resumptionTime = resumptionTime]]
+			whileTrue: [
+				(SuspendedDelays at: index) == self ifTrue: [
+					SuspendedDelays removeIndex: index.
+					^self].
+				index := index + 1].
+	SuspendedDelays remove: self ifAbsent: []
 ]
 
 { #category : '*Concurrency' }
