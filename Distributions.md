@@ -240,7 +240,7 @@ two archives by the last step below.
 
 **1. Commit and push**, and pick the version. The binary reports
 `ST_VERSION` from `src/main.c`; the tag is `v` and the version, as in
-`v0.1.0`.
+`v0.2.0`.
 
 **2. The manual, on Linux:**
 
@@ -310,7 +310,7 @@ never built the tree when there is one.
 **8. Publish:**
 
 ```sh
-gh release create v0.1.0 --target main --title "Smalltalk-2026 0.1.0" \
+gh release create v0.2.0 --target main --title "Smalltalk-2026 0.2.0" \
     --notes-file notes.md \
     distributions/linux-x86_64.tar.gz \
     distributions/macos-arm64.tar.gz \
@@ -318,9 +318,9 @@ gh release create v0.1.0 --target main --title "Smalltalk-2026 0.1.0" \
 ```
 
 `--target` takes a branch or a full commit hash, not a short one. To
-replace an archive on a release that exists, `gh release upload v0.1.0
-<file> --clobber`; to take one down, `gh release delete-asset v0.1.0
-<name>`; to change the notes, `gh release edit v0.1.0 --notes-file
+replace an archive on a release that exists, `gh release upload v0.2.0
+<file> --clobber`; to take one down, `gh release delete-asset v0.2.0
+<name>`; to change the notes, `gh release edit v0.2.0 --notes-file
 notes.md`. The notes should carry, per platform, the archive's name and
 what it runs on: the glibc floor from the Linux README, the macOS floor and
 processor from the macOS one, and the Visual C++ Redistributable for

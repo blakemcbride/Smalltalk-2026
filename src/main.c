@@ -78,7 +78,7 @@ static uint64_t evaluate_budget = EVAL_BYTECODE_BUDGET;
 #include <SDL3/SDL_main.h>
 #endif
 
-#define ST_VERSION      "0.1.0-phase1"
+#define ST_VERSION      "0.2.0"
 
 #if defined(ST_OM_BB)
 #define ST_OM_NAME      "bb (16-bit Blue Book, validation harness)"
