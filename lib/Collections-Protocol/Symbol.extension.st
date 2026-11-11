@@ -45,14 +45,15 @@ Symbol >> = anObject [
 	 element-first: `Week indexOfDay: 'Friday'` searches a table of Symbols
 	 with a String and answered 0.
 
-	 What this does NOT do is make hash agree.  Symbol>>hash is derived from
-	 the object pointer and String>>hash from the characters, so a Set or a
-	 Dictionary holding both kinds can still fail to find one by the other.
-	 That inconsistency is not introduced here -- String>>= has had this
-	 behaviour all along -- and fixing it means changing the hash the image's
-	 own Symbol table is built on, which is a larger and separate thing."
+	 A Text spelling the same characters is equal too, because a Text is
+	 equal to me and to that String: `'abc' asText = #abc' was true and
+	 `#abc = 'abc' asText' false, and with the hashes agreeing a Set
+	 holding the one found the other in one direction only (Bugs07
+	 KERNA-10).  Symbol>>hash below is the String's, so all three hash
+	 alike and a Set or Dictionary finds any of them by the others."
 	self == anObject ifTrue: [^true].
 	anObject isSymbol ifTrue: [^false].
+	(anObject isKindOf: Text) ifTrue: [^anObject string = self].
 	^(anObject isKindOf: String) and: [anObject = self]
 ]
 

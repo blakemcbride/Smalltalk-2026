@@ -798,8 +798,11 @@
  *
  *  3506 -> 3509 with Bugs07 NET-12: HttpRequest>>addHeader:value: and
  *  refuseWithoutAHost, and HttpResponse>>hasNoBody.
+ *
+ *  3509 -> 3510 with Bugs07 KERNA-10: Text>>=, which answers false for
+ *  anything that is not text instead of sending it string.
  */
-#define LIB_METHODS             3509
+#define LIB_METHODS             3510
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -3369,8 +3372,11 @@ test_browsing(void)
      *
      *  3138012 -> 3143632 with Bugs07 NET-12: one Host, the absolute form,
      *  a repeated header as one list, and no length on a 204.
+     *
+     *  3143632 -> 3144550 with Bugs07 KERNA-10: Text>>= answers false for
+     *  what is not text, and Symbol>>= accepts a Text.
      */
-    check_integer("(SourceFiles at: 1) contents size", 3143632);
+    check_integer("(SourceFiles at: 1) contents size", 3144550);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -14171,6 +14177,26 @@ test_bugs7f_kern(void)
                  "  Number readFrom: '99rZZ'. Number readFrom: s. s upToEnd. "
                  "  '36rZZ' asNumber. '16r-ff' asNumber} printString",
                  "(5 772 50 100 12 nil -50 40 37 99 100 'rows' 1295 -255 )");
+
+    /*
+     *  KERNA-10.  1983's Text>>= sent `string' to its argument, so a Text
+     *  compared with anything that is not text raised doesNotUnderstand
+     *  -- `(OrderedCollection with: aText) indexOf: nil' failed -- and
+     *  Symbol>>= accepted a String but not a Text, so `#abc = 'abc' asText'
+     *  was false while the reverse was true and a Set of the one did not
+     *  find the other.  Not text is unequal now, and text is compared by
+     *  its characters from either side.
+     */
+    check_string("^{['abc' asText = 3] on: MessageNotUnderstood do: [:e | e messageText]. "
+                 "  [(OrderedCollection with: 'abc' asText) indexOf: nil] "
+                 "    on: MessageNotUnderstood do: [:e | e messageText]. "
+                 "  #abc = 'abc' asText. 'abc' asText = #abc. "
+                 "  (Set with: #abc) includes: 'abc' asText. "
+                 "  (Set with: 'abc' asText) includes: #abc. 'abc' hash = #abc hash. "
+                 "  'abc' asText = 'abc'. 'abc' = 'abc' asText. 'abc' asText = 'abc' asText. "
+                 "  'abc' asText = 'abd' asText. 'abc' asText = #(1 2). 'abc' asText = nil. "
+                 "  #abd = 'abc' asText} printString",
+                 "(false 0 true true true true true true true true false false false false )");
 
     test_dialect = ST_DIALECT_BLUE_BOOK;
 }
