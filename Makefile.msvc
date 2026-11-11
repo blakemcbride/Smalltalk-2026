@@ -469,9 +469,36 @@ test: sdl3_ok $(BIN)
 #  as windows-x86_64\LICENSE, and an unzip anywhere else makes a flat file
 #  of that name rather than a folder.
 #
+#  And the licences of what in it is other people's, in licenses\ (Bugs07
+#  DOCS-2): the OFL of the face compiled into the binary, the MIT notice of
+#  the 1983 sources compiled into the image, SDL3's zlib licence and
+#  OpenSSL's Apache licence -- the last a condition of shipping its DLLs at
+#  all.  LICENSING.md is tools\dist\LICENSING.md, which describes the
+#  distribution; doc\LICENSING.md describes the source tree.  The two
+#  libraries' licence files are looked for where their development packages
+#  keep them -- SDL's -VC.zip and vcpkg for SDL3, ShiningLight's installer
+#  for OpenSSL -- and SDL3LICENSE= and OPENSSLLICENSE= name them otherwise;
+#  `dist' stops when one cannot be found rather than ship without it.
+#
 DIST = distributions\windows-x86_64
 !IFNDEF SDL3DLL
 SDL3DLL = $(SDL3)\lib\x64\SDL3.dll
+!ENDIF
+!IFNDEF SDL3LICENSE
+!IF EXIST("$(SDL3)\LICENSE.txt")
+SDL3LICENSE = $(SDL3)\LICENSE.txt
+!ELSEIF EXIST("$(SDL3)\share\sdl3\copyright")
+SDL3LICENSE = $(SDL3)\share\sdl3\copyright
+!ENDIF
+!ENDIF
+!IFNDEF OPENSSLLICENSE
+!IF EXIST("$(OPENSSL)\license.txt")
+OPENSSLLICENSE = $(OPENSSL)\license.txt
+!ELSEIF EXIST("$(OPENSSL)\LICENSE")
+OPENSSLLICENSE = $(OPENSSL)\LICENSE
+!ELSEIF EXIST("$(OPENSSL)\share\openssl\copyright")
+OPENSSLLICENSE = $(OPENSSL)\share\openssl\copyright
+!ENDIF
 !ENDIF
 
 dist: sdl3_ok $(BIN)
@@ -485,6 +512,14 @@ dist: sdl3_ok $(BIN)
 	@echo.
 	@echo and run nmake again, or name another with OPENSSL=, or say NOTLS=1 to
 	@echo ship without https.
+	@exit 1
+!ELSEIF !defined(SDL3LICENSE)
+	@echo dist: no licence text for SDL3 in $(SDL3) -- a distribution must carry
+	@echo the licence of every library it bundles.  Name it with SDL3LICENSE=
+	@exit 1
+!ELSEIF defined(HAVE_TLS) && !defined(OPENSSLLICENSE)
+	@echo dist: no licence text for OpenSSL in $(OPENSSL) -- its Apache licence
+	@echo must go with its DLLs.  Name it with OPENSSLLICENSE=
 	@exit 1
 !ELSE
 	@if exist $(DIST) rmdir /s /q $(DIST)
@@ -500,7 +535,17 @@ dist: sdl3_ok $(BIN)
 	$(DIST)\st2026.exe -bootstrap -profile profiles\st2026.profile -o $(DIST)\st2026.image
 	copy /y tools\dist\README-windows.md $(DIST)\README.md
 	copy /y LICENSE $(DIST)\LICENSE
-	copy /y doc\LICENSING.md $(DIST)\LICENSING.md
+	copy /y tools\dist\LICENSING.md $(DIST)\LICENSING.md
+	mkdir $(DIST)\licenses
+	copy /y src\gfx\LICENSE.font $(DIST)\licenses\LICENSE.font
+	copy /y sources\LICENSE $(DIST)\licenses\LICENSE.smalltalk-80
+	copy /y tools\dist\BUNDLED-windows.md $(DIST)\licenses\BUNDLED.md
+	mkdir $(DIST)\licenses\SDL3
+	copy /y "$(SDL3LICENSE)" $(DIST)\licenses\SDL3\LICENSE.txt
+!IFDEF HAVE_TLS
+	mkdir $(DIST)\licenses\OpenSSL
+	copy /y "$(OPENSSLLICENSE)" $(DIST)\licenses\OpenSSL\LICENSE.txt
+!ENDIF
 	@if exist manual\smalltalk-2026-manual.pdf copy /y manual\smalltalk-2026-manual.pdf $(DIST)
 	tar -a -c -f $(DIST).zip -C distributions windows-x86_64
 	@echo   distribution in $(DIST), and as $(DIST).zip

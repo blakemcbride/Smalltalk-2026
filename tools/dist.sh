@@ -19,6 +19,19 @@
 #    macOS   every library from outside /usr/lib and /System -- Homebrew's
 #            SDL3, and its OpenSSL when the build found one.
 #
+#  And the licence of everything in it that is other people's, in licenses/
+#  (Bugs07 DOCS-2): the OFL of the face compiled into the binary, the MIT
+#  notice of the 1983 sources compiled into the image, and the licence text
+#  of every bundled library, found where the package that installed it put
+#  it, with licenses/BUNDLED.md saying which is which and where each
+#  library's source is.  LICENSING.md is tools/dist/LICENSING.md, which
+#  describes this directory -- not doc/LICENSING.md, which describes the
+#  source tree and names files a distribution does not have.  A bundled
+#  library whose licence cannot be found stops the build: the libraries'
+#  licences are conditions of shipping them, and the LGPL of unixODBC and
+#  libltdl and the Apache licence of OpenSSL both require the text to go
+#  with the copy.
+#
 set -eu
 
 DIR=$1
@@ -30,6 +43,116 @@ ARCH=$(uname -m)
 [ -x "$BIN" ] || { echo "dist: $BIN is missing" >&2; exit 1; }
 mkdir -p "$DIR/lib"
 
+LIC=$DIR/licenses
+rm -rf "$LIC"
+mkdir -p "$LIC"
+cp -f "$ROOT/src/gfx/LICENSE.font" "$LIC/LICENSE.font"
+cp -f "$ROOT/sources/LICENSE" "$LIC/LICENSE.smalltalk-80"
+{
+    echo "# The libraries bundled with this distribution"
+    echo
+    echo "Each is a copy of the library as the package named here installed it on"
+    echo "the machine that built this distribution, unmodified. Its licence text is"
+    echo "in the directory of \`licenses/\` named in the fifth column."
+    echo
+    echo "| File | Package | Version | Licence | Text | Source |"
+    echo "|---|---|---|---|---|---|"
+} > "$LIC/BUNDLED.md"
+
+#  A path with every symbolic link in it resolved: readlink -f where there
+#  is one (Linux, macOS 12.3 and later), and the directory resolved by cd
+#  where there is not, which is enough to find a Homebrew keg.
+resolve() {
+    readlink -f "$1" 2>/dev/null \
+        || echo "$(cd "$(dirname "$1")" && pwd -P)/$(basename "$1")"
+}
+
+#  note_library SHIPPED FROM: SHIPPED (lib/libodbc.so.2) was copied from FROM.
+#  Copy its licence files into licenses/<package>/ and give it a row in
+#  BUNDLED.md.  Asked of the package manager that owns the file -- rpm, then
+#  dpkg -- then of a Homebrew keg, then, for a library built by hand (the
+#  container's SDL3), of <prefix>/share/licenses and <prefix>/share/doc.
+note_library() {
+    shipped=$1
+    real=$(resolve "$2")
+    pkg='' version='' licence='' source='' files=''
+    #  rpm says `not owned by any package' on its standard output, so its
+    #  exit status, not its output, is the answer.
+    if command -v rpm > /dev/null 2>&1 \
+       && pkg=$(rpm -qf --qf '%{NAME}\n' "$real" 2> /dev/null) \
+       && pkg=$(echo "$pkg" | head -1) && [ -n "$pkg" ]; then
+        version=$(rpm -q --qf '%{VERSION}-%{RELEASE}' "$pkg")
+        licence=$(rpm -q --qf '%{LICENSE}' "$pkg")
+        source="source package $(rpm -q --qf '%{SOURCERPM}' "$pkg") of the distribution that built it"
+        files=$(rpm -qL "$pkg" 2> /dev/null || true)
+    else
+        pkg=
+    fi
+    if [ -z "$pkg" ] && command -v dpkg-query > /dev/null 2>&1; then
+        #  usrmerge: the database may name /lib what the link resolves to
+        #  /usr/lib, or the other way round.
+        for candidate in "$real" "$2" "${real#/usr}" "/usr$2"; do
+            pkg=$(dpkg-query -S "$candidate" 2> /dev/null | head -1 | cut -d: -f1)
+            [ -n "$pkg" ] && break
+        done
+        if [ -n "$pkg" ]; then
+            version=$(dpkg-query -W -f='${Version}' "$pkg")
+            src=$(dpkg-query -W -f='${source:Package}' "$pkg")
+            srcver=$(dpkg-query -W -f='${source:Version}' "$pkg")
+            licence="see its copyright file"
+            source="source package $src $srcver (apt-get source $src=$srcver)"
+            files=/usr/share/doc/$pkg/copyright
+        fi
+    fi
+    if [ -z "$pkg" ]; then
+        case $real in
+        */Cellar/*/*/*)
+            keg=$(echo "$real" | sed 's|^\(.*/Cellar/[^/]*/[^/]*\)/.*|\1|')
+            pkg=$(basename "$(dirname "$keg")")
+            version=$(basename "$keg")
+            licence="see its licence text"
+            source="Homebrew formula $pkg $version (brew info $pkg names its source)"
+            files=$(find "$keg" -maxdepth 1 -type f \( -iname 'licen[cs]e*' \
+                    -o -iname 'copying*' -o -iname 'notice*' -o -iname 'copyright*' \))
+            ;;
+        esac
+    fi
+    if [ -z "$pkg" ]; then
+        #  Built by hand: lib/<file> under a prefix, its licence under
+        #  <prefix>/share/licenses/<name> or <prefix>/share/doc/<name>.
+        stem=$(basename "$real" | sed -e 's/^lib//' -e 's/\..*//')
+        prefix=$(dirname "$(dirname "$real")")
+        for dir in "$prefix"/share/licenses/* "$prefix"/share/doc/*; do
+            [ -d "$dir" ] || continue
+            name=$(basename "$dir")
+            [ "$(echo "$name" | tr '[:upper:]' '[:lower:]')" = "$(echo "$stem" | tr '[:upper:]' '[:lower:]')" ] || continue
+            files=$(find "$dir" -maxdepth 1 -type f \( -iname 'licen[cs]e*' \
+                    -o -iname 'copying*' -o -iname 'copyright*' \))
+            [ -n "$files" ] || continue
+            pkg=$name
+            version=$(basename "$real")
+            licence="see its licence text"
+            source="not from a package: built from $name's own release by the recipe that made this distribution"
+            break
+        done
+    fi
+    [ -n "$pkg" ] && [ -n "$files" ] || {
+        echo "dist: no licence text found for $shipped (from $real); a distribution" >&2
+        echo "dist: must carry the licence of every library it bundles" >&2
+        exit 1
+    }
+    mkdir -p "$LIC/$pkg"
+    for f in $files; do
+        [ -f "$f" ] && cp -f "$f" "$LIC/$pkg/"
+    done
+    [ -n "$(ls "$LIC/$pkg")" ] || {
+        echo "dist: the licence of $shipped is listed as $files and is not there" >&2
+        exit 1
+    }
+    echo "| \`$shipped\` | $pkg | $version | $licence | \`licenses/$pkg/\` | $source |" \
+        >> "$LIC/BUNDLED.md"
+}
+
 case $OS in
 Linux)
     for name in libSDL3.so.0 libodbc.so.2 libltdl.so.7; do
@@ -37,6 +160,7 @@ Linux)
         [ -n "$path" ] || continue
         cp -fL "$path" "$DIR/lib/$name"
         chmod 644 "$DIR/lib/$name"
+        note_library "lib/$name" "$path"
     done
     #  The run path is DT_RPATH, so the libltdl libodbc wants is found here
     #  too.  Anything still resolving outside lib/ but on the list is a
@@ -68,6 +192,7 @@ Darwin)
             done_list="$done_list $base"
             cp -fL "$path" "$DIR/lib/$base"
             chmod 644 "$DIR/lib/$base"
+            note_library "lib/$base" "$path"
             install_name_tool -id "@rpath/$base" "$DIR/lib/$base"
             next="$next $(external "$DIR/lib/$base")"
         done
@@ -113,7 +238,7 @@ VERSION=$("$BIN" -version | head -1 | sed 's/^Smalltalk-2026 //')
 CONFIG=$("$BIN" -version | tail -n +2 | grep -v "CPUs")
 
 cp -f "$ROOT/LICENSE" "$DIR/LICENSE"
-cp -f "$ROOT/doc/LICENSING.md" "$DIR/LICENSING.md"
+cp -f "$ROOT/tools/dist/LICENSING.md" "$DIR/LICENSING.md"
 [ -f "$ROOT/manual/smalltalk-2026-manual.pdf" ] \
     && cp -f "$ROOT/manual/smalltalk-2026-manual.pdf" "$DIR/"
 

@@ -64,6 +64,28 @@ If you regenerate from a **different** font, replace `src/gfx/LICENSE.font` with
 that font's licence and check it permits what you are doing. The generated
 header will name the new font and hash it, but it cannot know the terms.
 
+## Binary distributions
+
+A binary distribution (`Distributions.md`) is not the source tree, and this
+file is not what it ships. It carries `tools/dist/LICENSING.md`, which
+describes what is in the distribution, and a `licenses/` directory with the
+texts the parts that are other people's require to travel with them:
+
+- `LICENSE.font` — `src/gfx/LICENSE.font`, because the face tables are
+  compiled into the binary;
+- `LICENSE.smalltalk-80` — `sources/LICENSE`, Mark Bush's MIT notice,
+  because the 1983 class library is compiled into the image, and MIT asks
+  for the notice in every copy;
+- a directory per bundled library — SDL3 (zlib), unixODBC and libltdl
+  (LGPL-2.1-or-later) on Linux, whatever Homebrew libraries macOS needs,
+  SDL3 and OpenSSL (Apache-2.0) on Windows — holding the licence text
+  found where the library's package put it, and `BUNDLED.md` listing each
+  one with its version and where its source is.
+
+`pharo/` and `demo/` are not in a distribution, and neither is their
+licence. The release recipe (`tools/dist.sh`, `Makefile.msvc`'s `dist`)
+stops when it cannot find the licence of a library it bundles.
+
 ## Copyright notices in imported files
 
 Pharo's Tonel files do not carry per-file copyright headers; the notice lives in the

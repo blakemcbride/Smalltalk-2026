@@ -11,7 +11,7 @@ Source, documentation and issues: <https://github.com/blakemcbride/Smalltalk-202
 | `st2026.image`, `st2026.image.changes` | a ready-to-run image: the class library, its source, and the desktop |
 | `lib/` | SDL3 (and OpenSSL, when this build has it), bundled so you need not install them |
 | `smalltalk-2026-manual.pdf` | the manual |
-| `LICENSE`, `LICENSING.md` | the licence, and the provenance of the parts that are other people's |
+| `LICENSE`, `LICENSING.md`, `licenses/` | the licence; what in this directory is other people's and under what terms; and their licence texts, with `licenses/BUNDLED.md` listing the bundled libraries |
 
 This build reports:
 

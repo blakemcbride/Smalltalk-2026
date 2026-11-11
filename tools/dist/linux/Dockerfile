@@ -9,6 +9,11 @@
 #  libSDL3.so.0 this makes links nothing but libc and libm, and runs on a
 #  machine that has only some of them.
 #
+#  Its LICENSE.txt is installed under /usr/local/share/licenses/SDL3, where
+#  tools/dist.sh looks for the licence of a library no package owns: the
+#  distribution has to carry it (Bugs07 DOCS-2), and the source tree it
+#  came from is deleted once SDL is built.
+#
 FROM ubuntu:24.04
 
 ARG SDL3_VERSION=3.4.18
@@ -30,5 +35,6 @@ RUN git clone --depth 1 --branch release-${SDL3_VERSION} https://github.com/libs
         -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF \
     && cmake --build /tmp/SDL/build \
     && cmake --install /tmp/SDL/build \
+    && install -D -m 644 /tmp/SDL/LICENSE.txt /usr/local/share/licenses/SDL3/LICENSE.txt \
     && ldconfig \
     && rm -rf /tmp/SDL

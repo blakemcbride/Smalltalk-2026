@@ -29,7 +29,9 @@ with `OM=bb`, `HEADLESS=1`, `TSAN=1` or `ASAN=1`, and `nmake ... dist` without
 | `st2026.image`, `st2026.image.changes` | bootstrapped from `profiles/st2026.profile` by the binary being shipped |
 | `README.md` | from `tools/dist/README-<platform>.md` |
 | `smalltalk-2026-manual.pdf` | copied from `manual/` when it has been built |
-| `LICENSE`, `LICENSING.md` | from the top of the tree and `doc/` |
+| `LICENSE` | from the top of the tree |
+| `LICENSING.md` | `tools/dist/LICENSING.md`: what in the distribution is other people's, and under what terms |
+| `licenses/` | the licence texts of what is other people's: `LICENSE.font` (`src/gfx/`, the OFL of the face compiled into the binary), `LICENSE.smalltalk-80` (`sources/LICENSE`, the MIT notice of the 1983 class library in the image), a directory per bundled library holding its licence, and `BUNDLED.md`, which lists the bundled libraries with their package, version, licence and where their source is |
 
 The image carries every method's source in itself, so a distribution needs
 nothing else from the tree: not `sources/`, `lib/`, `pharo/` nor the profiles.
@@ -41,6 +43,7 @@ nothing else from the tree: not `sources/`, `lib/`, `pharo/` nor the profiles.
 | `Makefile`, target `dist` | links the binary again into the distribution directory, then runs `tools/dist.sh` |
 | `tools/dist.sh` | bundles the libraries, bootstraps the image, fills in the README, copies the rest, packs the `.tar.gz` |
 | `tools/dist/README-linux.md`, `README-macos.md`, `README-windows.md` | the READMEs, as templates |
+| `tools/dist/LICENSING.md`, `BUNDLED-windows.md` | the distribution's `LICENSING.md`, and Windows' `licenses/BUNDLED.md` |
 | `Makefile.msvc`, target `dist` | all of the above for Windows, in nmake |
 
 The Linux and macOS templates take fields that `tools/dist.sh` fills in from
@@ -65,6 +68,18 @@ package for it. unixODBC, because the binary links libodbc whether or not
 anyone uses a database, and a machine without it would refuse to start the
 program. After copying, `tools/dist.sh` checks with `ldd` that all three
 resolve inside `lib/`, and stops if one does not.
+
+**Their licences go with them.** For each library it copies,
+`tools/dist.sh` asks the package manager which package installed it (`rpm
+-qf`, then `dpkg-query -S`) and copies that package's licence files (`rpm
+-qL`; Debian's `/usr/share/doc/<package>/copyright`) into
+`licenses/<package>/`, with a row in `licenses/BUNDLED.md` naming the
+package, its version and its source package. A library no package owns —
+the container's SDL3, built from source — has its licence looked for under
+`<prefix>/share/licenses/<name>`, which is where the container's Dockerfile
+installs SDL's. A bundled library with no licence to be found stops the
+build: unixODBC and libltdl are LGPL, and the licence has to travel with
+the copy.
 
 Left to the system, and named in the README with the command that installs
 them on each distribution: glibc, OpenSSL 3 and zlib. Every desktop
@@ -180,6 +195,15 @@ Visual C++ Redistributable, with the download link and the `winget`
 command. The binary is not signed, so the README also covers SmartScreen
 and unblocking a downloaded zip.
 
+**Licences.** `licenses\` gets the face's and the 1983 sources' licences,
+`tools\dist\BUNDLED-windows.md` as `BUNDLED.md`, SDL3's licence and, in a
+build with `https`, OpenSSL's: Apache-2.0, which has to go with its DLLs.
+SDL3's is looked for at `$(SDL3)\LICENSE.txt` (SDL's `-VC.zip`) and
+`$(SDL3)\share\sdl3\copyright` (vcpkg), OpenSSL's at
+`$(OPENSSL)\license.txt` (ShiningLight's installer), `LICENSE` and
+`share\openssl\copyright`; `SDL3LICENSE=` and `OPENSSLLICENSE=` name them
+otherwise, and `dist` refuses to run when one cannot be found.
+
 ## Checking a distribution
 
 Unpack the archive somewhere outside the tree and run, from inside it:
@@ -192,7 +216,9 @@ Unpack the archive somewhere outside the tree and run, from inside it:
 
 On Linux, `ldd ./st2026` should show `libSDL3`, `libodbc` and `libltdl`
 inside `lib/`; on macOS, `otool -L ./st2026` should show `@rpath/` for
-everything outside `/usr/lib` and `/System`.
+everything outside `/usr/lib` and `/System`. Every library in `lib/` (or
+beside `st2026.exe`) should have a row in `licenses/BUNDLED.md` and a
+directory under `licenses/` with its licence text in it.
 
 Best of all is a machine that has never built the tree: one with no SDL3,
 no unixODBC and no Homebrew, at the oldest system version the README claims.
