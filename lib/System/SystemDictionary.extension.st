@@ -36,10 +36,25 @@ SystemDictionary >> at: aKey put: anObject [
 
 	 And a name spelt as a String is filed as the Symbol it spells,
 	 interned here, before the globals lock, because the system's lock
-	 order is Symbols -> Globals (Bugs07 KERNB-8); see globalNameFor:."
+	 order is Symbols -> Globals (Bugs07 KERNB-8); see globalNameFor:.
+
+	 And every write tells classNames, once it is in the table (Bugs07
+	 KERNB-9).  1983 flushed the class names only when a NEW name was
+	 filed, and a class definition files its name new only when nothing
+	 was compiled against it first: a name some method referred to
+	 before the class existed comes over from Undeclared with nil in it,
+	 then the class is stored into that binding, and neither step
+	 flushed -- so classNames, asked once before, went on leaving the
+	 class out, on one thread, for good.  Under
+	 profiles/pharo-collections the declaration's lockedAt:put: is
+	 Pharo's and flushed nothing at all.  Every value written may be a
+	 class, or replace one; the flush costs a classNames that follows
+	 it one walk."
 	| name |
 	name := self globalNameFor: aKey.
-	^LibraryLocks holdingGlobals: [self lockedAt: name put: anObject]
+	LibraryLocks holdingGlobals: [self lockedAt: name put: anObject].
+	self flushClassNameCache.
+	^anObject
 ]
 
 { #category : '*System' }
@@ -97,11 +112,14 @@ SystemDictionary >> add: anAssociation [
 	"Under the same lock as at:put:; the two are the only ways in.
 
 	 The Association becomes the binding, so its key is the name, made
-	 a Symbol first as at:put: makes it (Bugs07 KERNB-8)."
+	 a Symbol first as at:put: makes it (Bugs07 KERNB-8); and the class
+	 names are flushed after it, as at:put: flushes them (KERNB-9)."
 	| name |
 	name := self globalNameFor: anAssociation key.
 	name == anAssociation key ifFalse: [anAssociation key: name].
-	^LibraryLocks holdingGlobals: [super add: anAssociation]
+	LibraryLocks holdingGlobals: [super add: anAssociation].
+	self flushClassNameCache.
+	^anAssociation
 ]
 
 { #category : '*System' }
@@ -119,7 +137,10 @@ SystemDictionary >> removeKey: key ifAbsent: aBlock [
 	 answered the Association.
 
 	 aBlock runs after the lock is given back, not inside it (Bugs07
-	 KERNB-2); see at:ifAbsent:."
+	 KERNB-2); see at:ifAbsent:.  The class names are flushed after a
+	 removal, as at:put: flushes them (KERNB-9): 1983's
+	 removeClassNamed: flushed for itself, and a class taken out by
+	 removeKey: stayed in classNames."
 	| absent removed |
 	absent := false.
 	removed := LibraryLocks holdingGlobals: [ | binding old |
@@ -138,6 +159,7 @@ SystemDictionary >> removeKey: key ifAbsent: aBlock [
 				Undeclared add: binding.
 				key -> old]].
 	absent ifTrue: [^aBlock value].
+	self flushClassNameCache.
 	^removed
 ]
 
@@ -169,15 +191,65 @@ SystemDictionary >> declare: key from: aDictionary [
 
 { #category : '*System' }
 SystemDictionary >> classNames [
-	"Answer a SortedCollection of all class names, cached.
+	"Answer a SortedCollection of all class names: a copy of the cached
+	 one, made afresh when something has been written since.
 
 	 1983 read CachedClassNames twice -- once to test it for nil and once
 	 to answer it -- and flushClassNameCache, which every class definition
-	 sends, could set it to nil between the two.  Read once."
+	 sends, could set it to nil between the two.  Read once.  What is
+	 there is the list or the mark of a flush (see flushClassNameCache),
+	 and anything but a list is computed again.
+
+	 A copy (Bugs07 KERNB-9).  The answer was the cached collection
+	 itself, so one caller's edit was every caller's:
+	 SystemTracer>>allCallsOn:clampedBy: removes from it the names it was
+	 told to skip, and those classes were then missing from classNames,
+	 and from allClassesDo:, which walks it, until the next definition
+	 anywhere."
 	| names |
 	names := CachedClassNames.
-	names == nil ifTrue: [^self newClassNames].
-	^names
+	(names isKindOf: SortedCollection) ifFalse: [^self newClassNames].
+	^names copy
+]
+
+{ #category : '*System' }
+SystemDictionary >> flushClassNameCache [
+	"Invalidate the cached class names (see classNames), with a mark no
+	 flush has used before.
+
+	 1983 stored nil, and newClassNames stored the list it had computed
+	 whatever had happened while it computed it (Bugs07 KERNB-9).  The
+	 walk takes a while -- it visits every global -- and a class defined
+	 on another worker meanwhile flushed BEFORE the walk stored its
+	 list, which did not have that class in it: nil over nil, and then
+	 the stale list over that, kept until the next definition anywhere.
+	 Four workers defining fifty classes each beside four asking
+	 classNames left two to six of the two hundred out, three runs in
+	 five.  A fresh object for
+	 each flush lets a walk tell: newClassNames reads the mark before it
+	 begins and puts its list in place only over that same mark, so a
+	 flush in between leaves its own mark there and the list is not
+	 kept.  Every writer flushes after its write is in the table, which
+	 is what makes it enough: a walk that began before the write either
+	 copied the table after it or is overtaken by its flush."
+	CachedClassNames := Object new
+]
+
+{ #category : '*System' }
+SystemDictionary >> newClassNames [
+	"Compute the class names, keep them unless a flush has come since
+	 this began, and answer a copy; see flushClassNameCache."
+	| mark names |
+	mark := CachedClassNames.
+	names := OrderedCollection new: self size.
+	self do: [:each | (each isKindOf: Class) ifTrue: [names add: each name]].
+	names := names asSortedCollection.
+	"The class variable's binding, compare-and-swapped in its value
+	 field: a plain store here is the stale list the comment above
+	 describes."
+	(self class classPool associationAt: #CachedClassNames)
+		compareAndSwapSlot: 2 from: mark to: names.
+	^names copy
 ]
 
 { #category : '*System' }

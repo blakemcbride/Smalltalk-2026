@@ -774,8 +774,12 @@
  *  3485 -> 3490 with Bugs07 KERNA-8: Float>>rem: and \\, the exact
  *  remainder of two doubles, and Number>>\\, Number>>rem: and Integer>>\\,
  *  which make an exact receiver a Float when the argument is one.
+ *
+ *  3490 -> 3492 with Bugs07 KERNB-9: SystemDictionary>>flushClassNameCache
+ *  and newClassNames, 1983's replaced, so that a list computed across a
+ *  flush is not kept.
  */
-#define LIB_METHODS             3490
+#define LIB_METHODS             3492
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -3313,8 +3317,11 @@ test_browsing(void)
      *
      *  3116969 -> 3122006 with Bugs07 KERNA-8: the remainder of two Floats
      *  is exact.
+     *
+     *  3122006 -> 3125384 with Bugs07 KERNB-9: classNames keeps no list
+     *  computed across a flush, and answers a copy.
      */
-    check_integer("(SourceFiles at: 1) contents size", 3122006);
+    check_integer("(SourceFiles at: 1) contents size", 3125384);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -14244,7 +14251,8 @@ test_bugs7f_gui(void)
 }
 
 /*
- *  Bugs07, round 6: the KERNB group's lows -- Smalltalk's keys (KERNB-8).
+ *  Bugs07, round 6: the KERNB group's lows -- Smalltalk's keys (KERNB-8)
+ *  and its class names (KERNB-9).
  *  What needs workers or another profile is in
  *  tests/unit/test_serve_faults.c, bugs7f_kernb.
  */
@@ -14284,6 +14292,46 @@ test_bugs7f_kernb(void)
     check_string("Smalltalk removeKey: #Bugs7fKbE. "
                  "^(Smalltalk keys detect: [:k | k isSymbol not] ifNone: [#none]) printString",
                  "none");
+
+    /*
+     *  KERNB-9: Smalltalk classNames.  First, a class whose name a
+     *  method was compiled against before it existed: the binding comes
+     *  over from Undeclared and the class is stored into it, and neither
+     *  step flushed the cached names, so a classNames asked before the
+     *  definition went on leaving the class out.  Before: false.
+     */
+    check_boolean("Object subclass: #Bugs7fKbCnHolder instanceVariableNames: '' "
+                  "classVariableNames: '' poolDictionaries: '' category: 'Bugs7f'. "
+                  "(Smalltalk at: #Bugs7fKbCnHolder) compile: 'early ^Bugs7fKbCnEarly' "
+                  "classified: 'probe' notifying: nil. "
+                  "Smalltalk classNames size. "
+                  "Object subclass: #Bugs7fKbCnEarly instanceVariableNames: '' "
+                  "classVariableNames: '' poolDictionaries: '' category: 'Bugs7f'. "
+                  "^Smalltalk classNames includes: #Bugs7fKbCnEarly", 1);
+    /*
+     *  A class defined while classNames is being computed.  The walk
+     *  sends isKindOf: to every global, and this global's isKindOf:
+     *  defines a class -- the definition another worker makes part way
+     *  through the walk, made deterministic.  The definition flushed
+     *  nil over nil and the walk then stored its list, which did not
+     *  have the class in it.  Before: false.
+     */
+    check_boolean("Object subclass: #Bugs7fKbCnHook instanceVariableNames: '' "
+                  "classVariableNames: '' poolDictionaries: '' category: 'Bugs7f'. "
+                  "(Smalltalk at: #Bugs7fKbCnHook) compile: 'isKindOf: aClass "
+                  "(Smalltalk includesKey: #Bugs7fKbCnLate) ifFalse: [Object subclass: "
+                  "#Bugs7fKbCnLate instanceVariableNames: '''' classVariableNames: '''' "
+                  "poolDictionaries: '''' category: ''Bugs7f'']. ^false' "
+                  "classified: 'probe' notifying: nil. "
+                  "Smalltalk at: #Bugs7fKbCnHookOne put: (Smalltalk at: #Bugs7fKbCnHook) new. "
+                  "Smalltalk flushClassNameCache. "
+                  "Smalltalk classNames size. "
+                  "Smalltalk removeKey: #Bugs7fKbCnHookOne. "
+                  "^Smalltalk classNames includes: #Bugs7fKbCnLate", 1);
+    /*  And each caller has its own copy: an edit to one answer is not
+        in the next.  Before: false.  */
+    check_boolean("Smalltalk classNames remove: #Object. "
+                  "^Smalltalk classNames includes: #Object", 1);
 }
 
 static void

@@ -5417,6 +5417,31 @@ bugs7f_kernb(void)
     }
     expect(out, "\n(refused 3 0 )\n",
            "KERNB-8 Smalltalk's keys under pharo-collections");
+
+    /*
+     *  KERNB-9: four workers defining fifty classes each beside four
+     *  asking Smalltalk classNames in a loop.  A definition that landed
+     *  while a walk was computing the list flushed before the walk
+     *  stored it, and the stale list stayed the cache.  Before: two to
+     *  six of the two hundred missing, three runs in five on eight
+     *  workers; the deterministic case is in test_image.
+     */
+    bugs7_probe("bugs7f-kernb9.st",
+        "| done stop missing names |\n"
+        "done := Semaphore new. stop := false.\n"
+        "1 to: 4 do: [:w | [1 to: 50 do: [:i | Object subclass: ('Bugs7fCN', "
+        "w printString, 'x', i printString) asSymbol instanceVariableNames: '' "
+        "classVariableNames: '' poolDictionaries: '' category: 'Bugs7f']. "
+        "done signal] fork].\n"
+        "1 to: 4 do: [:w | [[stop] whileFalse: [Smalltalk classNames size]. "
+        "done signal] fork].\n"
+        "1 to: 4 do: [:i | done wait]. stop := true. 1 to: 4 do: [:i | done wait].\n"
+        "names := Smalltalk classNames. missing := 0.\n"
+        "1 to: 4 do: [:w | 1 to: 50 do: [:i | (names includes: ('Bugs7fCN', "
+        "w printString, 'x', i printString) asSymbol) ifFalse: [missing := missing + 1]]].\n"
+        "^'classNames missing ', missing printString\n",
+        8, "==> 'classNames missing 0'",
+        "KERNB-9 classNames beside definitions on eight workers");
 }
 
 /*
