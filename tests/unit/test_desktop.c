@@ -72,6 +72,18 @@ build_desktop(void)
     st_boot_init_report init;
     char                err[256];
 
+#ifndef ST_OM_MT
+    /*
+     *  Bugs07 X-4.  The bootstrap builds images for the 64-bit object
+     *  memory only, which is why test_bootstrap and test_image skip under
+     *  OM=bb; this one bootstrapped anyway, and a failed bootstrap is a
+     *  failed suite (Bugs6 DOCS-8), so `make OM=bb test' could not pass.
+     *  Skipped in the same words.  The clipboard checks in main do not
+     *  need an image and still run.
+     */
+    printf("skipped: the bootstrap targets the 64-bit object memory\n");
+    return 0;
+#endif
     if (!PROFILE_expand(PROFILE, &sources, &source_dialects, err, sizeof err)) {
         printf("skipped: %s\n", err);
         /*  A failed suite under make, which sets ST2026_BIN (Bugs6 DOCS-8).  */
