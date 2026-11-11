@@ -52,11 +52,26 @@ pushed and left behind, and removed when the body ends.
 Variables are named t1, t2, ... in the order a frame first needs them, as
 1983 named a method's temporaries; source is what carries real names.
 
-One instance variable is not 1983's meaning any longer: lastJumpPc served
-only the jump analysis this file replaces, and counts temporary names
-here.  Decompiler is a 1983 class whose definition this library does not
-redefine, and a counter needs somewhere to live that is the instance's
-own: a class variable would be shared by two workers decompiling at once.
+INLINED BLOCKS' TEMPORARIES.  An inlined block that declares a temporary
+a closure inside it captures makes a vector of its own where it begins,
+on every entry (Bugs6 COMP-5), so that each iteration's closures see
+their own variable.  The vector's names are declared in THAT block --
+`[i < 3] whileTrue: [| t4 | t4 _ i. ...]' -- and not with the method's
+or the closure's temporaries: declared further out, the text compiled to
+the code before COMP-5, one variable for every iteration, and a loop of
+closures that answered (0 1 2) came back answering (2 2 2) (Bugs07
+COMP-4).  Each inlined block read -- a conditional's arm, a loop's test
+and body -- opens a scope; a vector stored into the frame while it is
+open is that block's, is declared in its BlockNode when it closes, and
+its frame slot is emptied then, so nothing further out declares it too.
+
+Two instance variables are not 1983's meaning any longer.  lastJumpPc
+served only the jump analysis this file replaces, and counts temporary
+names here; exit, the same analysis's jump target, holds the scopes of
+the inlined blocks being read.  Decompiler is a 1983 class whose
+definition this library does not redefine, and state needs somewhere to
+live that is the instance's own: a class variable would be shared by two
+workers decompiling at once.
 "
 Extension { #name : 'Decompiler' }
 
@@ -72,6 +87,8 @@ Decompiler >> decompile: aSelector in: aClass method: aMethod using: aConstructo
 	self initSymbols: aClass.
 	lastJumpPc := tempVars size.
 	tempVars := tempVars , (Array new: 256 - tempVars size).
+	"The method's own scope: no inlined block is open yet."
+	exit := OrderedCollection with: OrderedCollection new.
 	vectorSlot := nil.
 	method isQuick
 		ifTrue: [block := self quickMethod]
@@ -83,8 +100,9 @@ Decompiler >> decompile: aSelector in: aClass method: aMethod using: aConstructo
 			block := self blockTo: method endPC + 1.
 			stack isEmpty ifFalse: [self error: 'stack not empty']].
 	vars := OrderedCollection new.
-	"Every vector in the frame, the prologue's and an inlined block's alike
-	 (pushNewArray:), declares the variables it holds."
+	"Every vector left in the frame declares the variables it holds: the
+	 prologue's.  An inlined block's was declared in that block, and its
+	 slot emptied, when the block's scope closed."
 	1 to: 256 do: [:i | | each |
 		each := tempVars at: i.
 		(each isKindOf: Array)
@@ -270,10 +288,52 @@ Decompiler >> pushNewArray: operand [
 { #category : '*Compiler-Fixes' }
 Decompiler >> popIntoTemporaryVariable: offset [
 	"1983's -- unless what is popped is a vector just made (see
-	 pushNewArray:), which belongs in the frame slot and is no statement."
+	 pushNewArray:), which belongs in the frame slot and is no statement,
+	 and to the inlined block being read, whose scope records it with
+	 where it was made and where it is kept."
+	| vector |
 	(stack notEmpty and: [stack last isKindOf: Array]) ifTrue: [
-		^tempVars at: offset + 1 put: stack removeLast].
+		vector := stack removeLast.
+		exit last addLast: (Array with: lastPc with: offset with: vector).
+		^tempVars at: offset + 1 put: vector].
 	self pushTemporaryVariable: offset; doStore: statements
+]
+
+{ #category : '*Compiler-Fixes' }
+Decompiler >> openInlinedScope [
+	"Begin reading an inlined block: the vectors stored from here until
+	 the matching close are its own."
+	^exit addLast: OrderedCollection new
+]
+
+{ #category : '*Compiler-Fixes' }
+Decompiler >> close: scope declaringIn: aBlockNode [
+	"Finish reading the inlined block that opened scope, now aBlockNode:
+	 declare in it the variables of the vectors it made, and empty their
+	 frame slots, so that neither an enclosing block, nor the closure or
+	 method the frame belongs to, declares them again.  The slot is the
+	 block's alone: code after the block does not read it, and a later
+	 block that reuses it makes it again.  Answer aBlockNode."
+	| nodes |
+	exit removeLast == scope
+		ifFalse: [^self error: 'inlined blocks closed out of order'].
+	nodes := OrderedCollection new.
+	scope do: [:entry |
+		self vector: (entry at: 3) do: [:node |
+			(nodes includes: node) ifFalse: [nodes addLast: node]].
+		(tempVars at: (entry at: 2) + 1) == (entry at: 3)
+			ifTrue: [tempVars at: (entry at: 2) + 1 put: nil]].
+	aBlockNode declareTemporaries: nodes.
+	^aBlockNode
+]
+
+{ #category : '*Compiler-Fixes' }
+Decompiler >> inlinedBlockTo: end [
+	"blockTo:, for an inlined block: a conditional's arm.  See
+	 openInlinedScope."
+	| scope |
+	scope := self openInlinedScope.
+	^self close: scope declaringIn: (self blockTo: end)
 ]
 
 { #category : '*Compiler-Fixes' }
@@ -315,7 +375,9 @@ Decompiler >> closureCopying: copiedCount arguments: argumentCount size: size [
 	base + 1 to: frame size do: [:i | | each |
 		each := frame at: i.
 		(each isKindOf: ParseNode) ifTrue: [locals addLast: each].
-		"An inlined block's vector inside the closure (pushNewArray:)."
+		"A vector no inlined block claimed: none is left now -- each is
+		 declared in its own block (close:declaringIn:) -- but one would
+		 still have to be declared somewhere."
 		(each isKindOf: Array) ifTrue: [
 			self vector: each do: [:node |
 				((arguments includes: node) or: [locals includes: node])
@@ -387,7 +449,7 @@ Decompiler >> jump: dist if: condition [
 	 loop.  The jump at the end of the first arm says which; see the class
 	 comment for the layouts."
 	| condPc elseStart end skip byte skipDist cond trueBlock falseBlock thenBlock
-	  elseBlock testPc test body node |
+	  elseBlock testPc test body node scope testBlock bodyBlock |
 	condPc := lastPc.
 	elseStart := pc + dist.
 	end := limit.
@@ -398,15 +460,26 @@ Decompiler >> jump: dist if: condition [
 	skipDist := byte - 164 * 256 + (method at: skip + 1).
 	cond := stack removeLast.
 	skipDist < 0 ifTrue: [
-		"A loop: the test runs from the jump's target up to here."
+		"A loop: the test runs from the jump's target up to here.  It has
+		 been read once already, as the end of the run it closes; that
+		 reading's statements are taken back below, and a vector it made
+		 goes with them, or the enclosing block would declare it too."
 		testPc := elseStart + skipDist.
+		exit last removeAll: (exit last select: [:entry |
+			(entry at: 1) >= testPc and: [(entry at: 1) < condPc]]).
 		pc := testPc.
+		scope := self openInlinedScope.
 		test := self statementsTo: condPc.
 		test size - 1 timesRepeat: [statements removeLast].
+		testBlock := self close: scope declaringIn: (constructor codeBlock: test returns: false).
 		pc := condPc + 2.
+		scope := self openInlinedScope.
 		body := self statementsTo: skip.
+		bodyBlock := self
+			close: scope
+			declaringIn: (constructor codeBlock: body returns: false).
 		node := constructor
-			codeMessage: (constructor codeBlock: test returns: false)
+			codeMessage: testBlock
 			selector: (constructor
 				codeSelector: (body isEmpty
 					ifTrue: [condition ifTrue: [#whileFalse] ifFalse: [#whileTrue]]
@@ -414,15 +487,15 @@ Decompiler >> jump: dist if: condition [
 				code: #macro)
 			arguments: (body isEmpty
 				ifTrue: [#()]
-				ifFalse: [Array with: (constructor codeBlock: body returns: false)]).
+				ifFalse: [Array with: bodyBlock]).
 		pc := elseStart.
 		(pc < end and: [(method at: pc) = 115])
 			ifTrue: [pc := pc + 1. stack addLast: node]
 			ifFalse: [statements addLast: node].
 		^self].
-	thenBlock := self blockTo: skip.
+	thenBlock := self inlinedBlockTo: skip.
 	pc := elseStart.
-	elseBlock := self blockTo: elseStart + skipDist.
+	elseBlock := self inlinedBlockTo: elseStart + skipDist.
 	"The arm taken when the condition is true comes first."
 	condition
 		ifTrue: [trueBlock := elseBlock. falseBlock := thenBlock]

@@ -752,8 +752,12 @@
  *
  *  3470 -> 3471 with Bugs07 KERNA-4: Interval>>last, element size as
  *  at: and do: compute it.
+ *
+ *  3471 -> 3474 with Bugs07 COMP-4: Decompiler>>openInlinedScope,
+ *  close:declaringIn: and inlinedBlockTo:, which declare an inlined
+ *  block's vector in that block.
  */
-#define LIB_METHODS             3471
+#define LIB_METHODS             3474
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -3256,8 +3260,11 @@ test_browsing(void)
      *
      *  3093936 -> 3094894 with Bugs07 KERNA-4: Interval>>last is element
      *  size, computed as at: and do: compute it.
+     *
+     *  3094894 -> 3097153 with Bugs07 COMP-4: the Decompiler declares an
+     *  inlined block's vector in that block.
      */
-    check_integer("(SourceFiles at: 1) contents size", 3094894);
+    check_integer("(SourceFiles at: 1) contents size", 3097153);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -13279,6 +13286,59 @@ test_bugs7e_kern(void)
                   "  (i isEmpty or: [i last = (i at: i size) and: [i last = i asArray last "
                   "    and: [i includes: i last]]]) ifFalse: [bad := bad + 1]]. "
                   "^bad", 0);
+
+    /*
+     *  COMP-4.  An inlined block that declares a temporary a closure in it
+     *  shares makes a vector of its own on every entry (Bugs6 COMP-5); the
+     *  Decompiler declared the vector's names with the method's, and the
+     *  text compiled to the code before COMP-5, one variable for every
+     *  iteration: (0 1 2) came back (2 2 2).  The names are declared in
+     *  the block now.  The first check is the text; the second is a
+     *  differential over Bugs6 COMP-5's cases and their neighbours -- a
+     *  loop body, a loop's own test, an ifTrue: arm and an and: block
+     *  inside a loop, two loops one after the other, a loop inside a loop,
+     *  a closure in a closure -- each compiled, decompiled, compiled again
+     *  under another name and run: original / round trip.
+     */
+    check_string("Object compile: 'zzDec4 | bs i | bs := OrderedCollection new. i := 0. "
+                 "[i < 3] whileTrue: [ | t | t := i. bs add: [t]. i := i + 1]. "
+                 "^(bs collect: [:b | b value]) asArray'. "
+                 "^(Object decompile: #zzDec4) decompileString",
+                 "zzDec4\r\t| t2 t3 |\r\tt2 _ OrderedCollection new.\r\tt3 _ 0.\r"
+                 "\t[t3 < 3]\r\t\twhileTrue: \r\t\t\t[| t4 | \r\t\t\tt4 _ t3.\r"
+                 "\t\t\tt2 add: [t4].\r\t\t\tt3 _ t3 + 1].\r"
+                 "\t^(t2 collect: [:t5 | t5 value]) asArray");
+    check_string("| srcs log | log := WriteStream on: String new. "
+                 "srcs := #("
+                 "'[i < 3] whileTrue: [ | t | t := i. bs add: [t]. i := i + 1]' "
+                 "'[i < 3] whileFalse: [ | t | t := i. bs add: [t]. i := i + 1]. i := 0. "
+                 "[i >= 3] whileFalse: [ | t | t := i. bs add: [t]. i := i + 1]' "
+                 "'[ | t | t := i. bs add: [t]. i := i + 1. i < 3] whileTrue' "
+                 "'[i < 4] whileTrue: [i even ifTrue: [ | t | t := i. bs add: [t]] "
+                 "ifFalse: [ | u | u := i * 10. bs add: [u]]. i := i + 1]' "
+                 "'[i < 3] whileTrue: [(i >= 0 and: [ | t | t := i. bs add: [t]. true]) "
+                 "ifTrue: [i := i + 1]]' "
+                 "'[i < 2] whileTrue: [ | t | t := i. bs add: [t]. i := i + 1]. "
+                 "[i < 4] whileTrue: [ | u | u := i * 10. bs add: [u]. i := i + 1]' "
+                 "'[i < 2] whileTrue: [ | t j | t := i. j := 0. [j < 2] whileTrue: "
+                 "[ | u | u := t * 10 + j. bs add: [u + t]. j := j + 1]. i := i + 1]' "
+                 "'[i < 3] whileTrue: [ | t | t := i. #(1) do: [:e | bs add: [t + e]]. "
+                 "i := i + 1]' "
+                 "'#(1 2) do: [:k | | j | j := 0. [j < 2] whileTrue: [ | t | "
+                 "t := k * 10 + j. bs add: [t]. j := j + 1]]'). "
+                 "srcs do: [:src | | a b | "
+                 "  Object compile: 'zzDec4 | bs i | bs := OrderedCollection new. i := 0. ', "
+                 "    src, '. ^(bs collect: [:x | x value]) asArray'. "
+                 "  a := nil zzDec4. "
+                 "  Object compile: ((Object decompile: #zzDec4) decompileString "
+                 "    copyReplaceAll: 'zzDec4' with: 'zzDec4Back'). "
+                 "  b := nil zzDec4Back. "
+                 "  log print: a; nextPut: $/; print: b; space]. "
+                 "Object removeSelector: #zzDec4; removeSelector: #zzDec4Back. "
+                 "^log contents",
+                 "(0 1 2 )/(0 1 2 ) (0 1 2 )/(0 1 2 ) (0 1 2 )/(0 1 2 ) "
+                 "(0 10 2 30 )/(0 10 2 30 ) (0 1 2 )/(0 1 2 ) (0 1 20 30 )/(0 1 20 30 ) "
+                 "(0 1 11 12 )/(0 1 11 12 ) (1 2 3 )/(1 2 3 ) (10 11 20 21 )/(10 11 20 21 ) ");
 
     test_dialect = ST_DIALECT_BLUE_BOOK;
 }
