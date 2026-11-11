@@ -824,8 +824,11 @@
  *  3525 -> 3528 with Bugs07 X-26: CompiledMethod>>recompiledFrom:in:, and
  *  Debugger>>computeSourceMap and pcRange, which select the message a frame
  *  is at from the C compiler's map of the method.
+ *
+ *  3528 -> 3529 with Bugs07 X-7: Delay class>>runTimingLoopOn:, the timing
+ *  process's loop, which arms a retry before every pass.
  */
-#define LIB_METHODS             3528
+#define LIB_METHODS             3529
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -3420,8 +3423,11 @@ test_browsing(void)
      *
      *  3166258 -> 3167044 with Bugs07 X-19: a Class file's write-back
      *  refuses to leave out a method it held, as an extension file's does.
+     *
+     *  3167044 -> 3171082 with Bugs07 X-7: the timing process arms a retry
+     *  before every pass, so a pass cut short by OutOfMemory loses nothing.
      */
-    check_integer("(SourceFiles at: 1) contents size", 3167044);
+    check_integer("(SourceFiles at: 1) contents size", 3171082);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.

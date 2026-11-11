@@ -140,6 +140,13 @@ process waiting on one, every worker is in the idle loop, and a loop that only
 looks at what is already ready will look forever. Something outside the
 scheduler has to hold the clock.
 
+The process that resumes delays arms that clock for itself before every pass
+over the queue: a retry ten milliseconds on, doubling to a second while passes
+keep failing, which a pass that completes replaces with the head's deadline or
+cancels. So a pass cut short -- the process told `OutOfMemory` while another
+holds the object table full -- is made again when the retry fires, and no
+delay is lost to it (Bugs07 X-7).
+
 Two rules came out of building it, both learned by getting them wrong:
 
 - **A timer that has fired but not yet delivered is still pending.** Clearing

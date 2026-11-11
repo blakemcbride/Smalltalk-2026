@@ -175,7 +175,10 @@ There is a dedicated VM timer thread holding the clock, and it posts to the
 async signal queue when a deadline passes. The process that resumes delays
 treats that signal as \emph{look at the clock}: it resumes whatever is due
 and re-arms the timer for whatever is not, so a signal that arrives late, or
-twice, is harmless. 1983's assumed every signal was the one it had armed for,
+twice, is harmless. Before each look it arms the timer for another a moment
+later, so a look cut short---the process told \ct{OutOfMemory} while another
+process holds the object table full---is taken again, and no delay is lost
+to it. 1983's assumed every signal was the one it had armed for,
 and two workers waiting on one-millisecond delays hung it every time.
 
 \begin{stnote}

@@ -5791,6 +5791,122 @@ bugs7f_sched(void)
         "^r\n",
         1, "==> (true true )",
         "X-5 a held victim's terminator lets a lower-priority holder run");
+
+    /*
+     *  X-7: the Delay timing process told OutOfMemory.  It is told it like
+     *  any process when it must run while the table is full, and a pass
+     *  cut short that way armed nothing again: the tick that woke it was
+     *  the last, and every Delay waited for ever -- until some later wait
+     *  happened to re-arm the timer.  The timer is armed for a retry now
+     *  before every pass.  First the error itself, told by signalException:
+     *  where a refused send tells it, inside the pass: the timing process
+     *  is woken while the probe holds AccessProtect, and told OutOfMemory
+     *  while it waits for it.  The Delay must still come due, unaided,
+     *  within three seconds.  The old image: (false true ).
+     */
+    bugs7_probe("bugs7f-x7-told.st",
+        "| t d1 d2 dl ts ap tp r1 |\n"
+        "ts := Delay classPool at: #TimingSemaphore.\n"
+        "ap := Delay classPool at: #AccessProtect.\n"
+        "d1 := false. d2 := false.\n"
+        "dl := Delay forMilliseconds: 300.\n"
+        "[dl delaySemaphore wait. d1 := true] fork.\n"
+        "dl schedule.\n"
+        "ap wait.\n"
+        "Processor signal: ts atTime: "
+        "Time millisecondClockValue + 1 \\\\ 1073741824.\n"
+        "t := Time millisecondClockValue.\n"
+        "[ap isEmpty and: [Time millisecondClockValue - t < 2000]] "
+        "whileTrue: [Processor yield].\n"
+        "tp := ap first.\n"
+        "tp signalException: OutOfMemory new.\n"
+        "t := Time millisecondClockValue.\n"
+        "[Time millisecondClockValue - t < 50] whileTrue: [Processor yield].\n"
+        "ap signal.\n"
+        "t := Time millisecondClockValue.\n"
+        "[d1 or: [Time millisecondClockValue - t > 3000]] "
+        "whileFalse: [Processor yield].\n"
+        "r1 := d1.\n"
+        "[(Delay forMilliseconds: 10) wait. d2 := true] fork.\n"
+        "t := Time millisecondClockValue.\n"
+        "[d2 or: [Time millisecondClockValue - t > 2000]] "
+        "whileFalse: [Processor yield].\n"
+        "^{r1. d2}\n",
+        1, "==> (true true )",
+        "X-7 a timing process told OutOfMemory in its pass comes round again");
+
+    /*
+     *  And told by the table.  A Delay is queued with the timer cancelled,
+     *  so it comes due unnoticed; a runaway fills the table and holds it
+     *  in its handler, the probe takes what little is left, and only then
+     *  wakes the timing process, which finds no room for its pass.  A
+     *  second later the room is given back, and the Delay must come due
+     *  within five.  The old image reported the timing process's
+     *  OutOfMemory and answered (false true ).
+     */
+    {
+        static char out[65536];
+        const char *probe = fixture("bugs7f-x7-full.st");
+        char        batch[1024];
+        char        command[2048];
+        int         status;
+
+        if (write_file(probe,
+                "| t told hold d1 d2 dl ts k r1 |\n"
+                "told := Semaphore new. hold := Semaphore new.\n"
+                "ts := Delay classPool at: #TimingSemaphore.\n"
+                "d1 := false. d2 := false.\n"
+                "dl := Delay forMilliseconds: 100.\n"
+                "[dl delaySemaphore wait. d1 := true] fork.\n"
+                "dl schedule.\n"
+                "Processor signal: nil atTime: 0.\n"
+                "k := OrderedCollection new: 200000.\n"
+                "[ | a | a := OrderedCollection new: 1100000.\n"
+                "  [[a add: (Array new: 1)] repeat] on: OutOfMemory do: "
+                "[:e | told signal. hold wait. a := nil]] fork.\n"
+                "told wait.\n"
+                "[[k add: (Array new: 1)] repeat] on: OutOfMemory do: "
+                "[:e | e return: nil].\n"
+                "Processor signal: ts atTime: "
+                "Time millisecondClockValue + 1 \\\\ 1073741824.\n"
+                "t := Time millisecondClockValue.\n"
+                "[Time millisecondClockValue - t < 1000] "
+                "whileTrue: [Processor yield].\n"
+                "k := nil.\n"
+                "hold signal.\n"
+                "t := Time millisecondClockValue.\n"
+                "[d1 or: [Time millisecondClockValue - t > 5000]] "
+                "whileFalse: [Processor yield].\n"
+                "r1 := d1.\n"
+                "[(Delay forMilliseconds: 10) wait. d2 := true] fork.\n"
+                "t := Time millisecondClockValue.\n"
+                "[d2 or: [Time millisecondClockValue - t > 2000]] "
+                "whileFalse: [Processor yield].\n"
+                "^{r1. d2}\n") == 0) {
+            snprintf(batch, sizeof batch,
+                     "Compiler evaluate: (FileStream oldFileNamed: '%s') "
+                     "contentsOfEntireFile\n3 + 4\n", probe);
+            if (write_file(BATCH, batch) == 0) {
+                snprintf(command, sizeof command,
+                         "ST_MAX_OBJECTS=1048576 " ST_TEST_TIMEOUT " -k 2 "
+                         SERVE_SECONDS " %s -serve %s -workers 2 "
+                         "\"$(cat %s)\" 2>&1",
+                         st2026, IMAGE, BATCH);
+                status = run(command, out, sizeof out);
+                ++st_test_checks;
+                if (status < 0) {
+                    ++st_test_failures;
+                    printf("  FAIL X-7: could not run the server\n");
+                } else {
+                    expect(out, "contentsOfEntireFile ==> (true true )",
+                           "X-7 a timing process refused room comes round "
+                           "again");
+                    expect(out, "3 + 4 ==> 7", "X-7 the pool carried on");
+                }
+            }
+            unlink(probe);
+        }
+    }
 }
 
 /*

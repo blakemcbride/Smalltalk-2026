@@ -21,11 +21,14 @@ not as `the head is due'.  Holding AccessProtect, it resumes every delay
 whose time has come -- the head and whatever behind it is due too -- and
 re-arms the timer for whatever is left at the head.  A signal that arrives
 with nothing due re-arms and goes round again; a signal that arrives with
-ActiveDelay nil does nothing at all.  Nothing resets the semaphore, and
-the timer is cancelled in one place only -- retire, when the delay it
-takes out was the last -- with AccessProtect held like every arm, so
-there is nothing to race.  Re-arming replaces the VM's one outstanding
-request, which is what primitive 136 does anyway.
+ActiveDelay nil cancels the timer and does nothing else.  Nothing resets
+the semaphore, and the timer is cancelled in two places only -- retire,
+when the delay it takes out was the last, and a pass that leaves nothing
+queued -- with AccessProtect held like every arm, so there is nothing to
+race.  Re-arming replaces the VM's one outstanding request, which is what
+primitive 136 does anyway.  The one arm made without the lock is the
+timing process's retry, made before each pass and replaced by whatever
+the pass arms (runTimingLoopOn:).
 
 The lock is taken with critical: in the timing process, in wait and in
 retire, so an error inside any of them -- setResumption refusing a Delay
@@ -105,12 +108,57 @@ Delay class >> initializeTimingProcess [
 	 replaced it, and the collector takes them both."
 	| semaphore |
 	semaphore := TimingSemaphore.
-	[[true] whileTrue: [
+	[self runTimingLoopOn: semaphore] forkAt: Processor timingPriority
+]
+
+{ #category : '*Concurrency' }
+Delay class >> runTimingLoopOn: semaphore [
+	"The timing process: wait on semaphore, then resume whatever is due
+	 and arm the timer for the rest -- for ever, whatever a pass meets.
+
+	 Bugs07 X-7.  A pass allocates, as everything does -- a context for
+	 every send and a closure for every block -- and when another process
+	 holds the object table full the timing process is told OutOfMemory
+	 like any other.  It was told where nothing could hear it: the
+	 blocks of the pass were made on every round, outside the on: Error
+	 do: that guarded it, so the error went unhandled, the pass never
+	 ran, and nothing armed the timer again.  The tick that woke it was
+	 the only one there would ever be: every Delay already waiting, and
+	 every later one queued behind them, waited for ever, and an image
+	 with nothing else to do stopped with every process blocked.  An
+	 OutOfMemory caught inside the pass was no better: the handler
+	 reported it and went back to waiting for a signal nobody would send.
+
+	 So the timer is armed for a retry FIRST, before anything that can
+	 allocate: `Processor signal:atTime:', the clock and the arithmetic
+	 are primitives that make no object.  A pass that completes arms for
+	 the head of the queue or, with nothing waiting, cancels
+	 (resumeWhatIsDue), and that replaces the retry -- there is one
+	 request outstanding, and every pass that completes leaves the last
+	 one made with AccessProtect held.  A pass that does not complete,
+	 for want of room or for an error, leaves the retry, and the queue is
+	 looked at again when it fires: ten milliseconds, doubling to a
+	 second while passes keep failing, so a table that stays full is not
+	 met by a storm of collections at the highest priority in the image,
+	 which on one worker would keep out the very process that could give
+	 the room back.  The blocks are made once, here, while there is room;
+	 an OutOfMemory is not reported, being not this process's fault and
+	 reported where it is, and every other Error is reported, as it
+	 always was (Bugs6 SCHED-7).  A refusal outside the pass -- the
+	 on:do: itself -- goes to the unhandled-error report, which on this
+	 process unwinds nothing and answers, and the retry comes round the
+	 same."
+	| retry pass failed |
+	retry := 10.
+	pass := [AccessProtect critical: [self resumeWhatIsDue]. retry := 10].
+	failed := [:e |
+		(e isKindOf: OutOfMemory) ifFalse: [e reportAsText].
+		e return: nil].
+	[true] whileTrue: [
 		semaphore wait.
-		[AccessProtect critical: [self resumeWhatIsDue]]
-			on: Error
-			do: [:e | e reportAsText. e return: nil]]]
-			forkAt: Processor timingPriority
+		Processor signal: semaphore atTime: Time millisecondClockValue + retry \\ 1073741824.
+		retry < 1000 ifTrue: [retry := retry * 2].
+		pass on: Error do: failed]
 ]
 
 { #category : '*Concurrency' }
@@ -253,16 +301,32 @@ Delay class >> postSnapshot: clocks [
 { #category : '*Concurrency' }
 Delay class >> resumeWhatIsDue [
 	"With AccessProtect held: resume every delay whose time has come, and
-	 arm the timer for the earliest that has not."
+	 arm the timer for the earliest that has not -- or, with none left,
+	 cancel it.
+
+	 In an order that a pass cut short anywhere loses nothing (Bugs07
+	 X-7): the timing process can be told OutOfMemory at any send here,
+	 and it comes round again (runTimingLoopOn:).  The head is resumed
+	 BEFORE it is replaced: replaced first, a pass stopped at `resume'
+	 had taken it out of the queue and woken nobody, and its waiter slept
+	 for ever.  Resumed first, a pass stopped after the resume finds it
+	 at the head again next time, and resume is a no-op for a Delay no
+	 longer waiting; its waiter, scheduling it again before then, takes
+	 it off the head itself (schedule).  The cancel is what lets the retry the timing
+	 process arms before every pass go: with nothing waiting it would
+	 otherwise fire, find nothing, arm again and fire again, and a timer
+	 always pending is a run the scheduler never calls blocked (Bugs07
+	 SCHED-7)."
 	| now |
 	now := Time millisecondClockValue.
-	[ActiveDelay notNil and: [ActiveDelay resumptionTime <= now]] whileTrue: [ | done |
-		done := ActiveDelay.
+	[ActiveDelay notNil and: [ActiveDelay resumptionTime <= now]] whileTrue: [
+		ActiveDelay resume.
 		ActiveDelay := SuspendedDelays isEmpty
 			ifTrue: [nil]
-			ifFalse: [SuspendedDelays removeFirst].
-		done resume].
-	ActiveDelay notNil ifTrue: [ActiveDelay armTimer]
+			ifFalse: [SuspendedDelays removeFirst]].
+	ActiveDelay notNil
+		ifTrue: [ActiveDelay armTimer]
+		ifFalse: [Processor signal: nil atTime: 0]
 ]
 
 { #category : '*Concurrency' }
@@ -315,6 +379,14 @@ Delay >> schedule [
 	 changed as wait's comment says."
 	AccessProtect critical: [
 	 self setResumption.
+	 ActiveDelay == self ifTrue: [
+		"Still the head although no longer waiting: resumed by a pass
+		 of the timing process that was cut short before it replaced
+		 me (Bugs07 X-7; see resumeWhatIsDue).  Replaced here, so that
+		 I am not the head and queued behind it at once."
+		ActiveDelay := SuspendedDelays isEmpty
+			ifTrue: [nil]
+			ifFalse: [SuspendedDelays removeFirst]].
 	 (ActiveDelay isNil or: [resumptionTime < ActiveDelay resumptionTime])
 		ifTrue: [ | displaced |
 			displaced := ActiveDelay.
@@ -482,7 +554,12 @@ Delay >> shiftResumptionBy: milliseconds notBefore: now [
 
 { #category : '*Concurrency' }
 Delay >> resume [
-	"My time has come: release my waiter.  With AccessProtect held."
+	"My time has come: release my waiter.  With AccessProtect held.  Once:
+	 a Delay no longer waiting -- resumed already, by a pass of the timing
+	 process cut short after it (Bugs07 X-7), or retired -- signals
+	 nothing, since a second signal would end its waiter's next wait at
+	 once."
+	delayInProgress ifFalse: [^self].
 	delayInProgress := false.
 	delaySemaphore signal
 ]
