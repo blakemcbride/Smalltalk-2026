@@ -827,8 +827,12 @@
  *
  *  3528 -> 3529 with Bugs07 X-7: Delay class>>runTimingLoopOn:, the timing
  *  process's loop, which arms a retry before every pass.
+ *
+ *  3529 -> 3533 with Bugs07 X-26: ContextPart>>simulateRestartOf: and
+ *  completeCallee:, Debugger>>step and reachedBy:, for a retry under
+ *  simulation and a step that unwinds past the frame stepped.
  */
-#define LIB_METHODS             3529
+#define LIB_METHODS             3533
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -3426,8 +3430,12 @@ test_browsing(void)
      *
      *  3167044 -> 3171082 with Bugs07 X-7: the timing process arms a retry
      *  before every pass, so a pass cut short by OutOfMemory loses nothing.
+     *
+     *  3171082 -> 3174727 with Bugs07 X-26: the simulator retries, finds a
+     *  nested block's home and ends where its simulation began, and the
+     *  Debugger's step follows a send that unwinds past the frame.
      */
-    check_integer("(SourceFiles at: 1) contents size", 3171082);
+    check_integer("(SourceFiles at: 1) contents size", 3174727);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -14722,6 +14730,55 @@ test_bugs7f_gui(void)
                  "('suspend' 'inject: 0 into: [:s :e | s + e. "
                  "Processor activeProcess suspend. s + e]' "
                  "'suspend' 'value: 10' 'add: j' '^a' )");
+
+    /*
+     *  X-26, the simulator.  An exception's retry and retryUsing: are
+     *  primitive 251, which run for real refused the simulated frame:
+     *  `a primitive has failed'.  A block inside a block answered the
+     *  outer block's frame for its home.  runSimulated: stood on its
+     *  caller's frame, so a handler below it ran inside the simulation
+     *  and returned through live frames, and the simulation ran on
+     *  through the rest of the caller's program; it now stands on a
+     *  frame of its own, and a Warning the block leaves unhandled is
+     *  unhandled inside it (Pharo's runSimulated: is the same).  And the
+     *  Debugger's step over a send whose callee's exception is handled
+     *  below the stepped frame went on showing that frame, gone from the
+     *  stack; it now shows the frame the simulation reached, and the
+     *  process resumed from there finishes as it would have.  Before:
+     *  the retries raised, home was false, the run-loose probe simulated
+     *  the rest of the doIt, and the step stayed at zzB7fRaise.
+     */
+    check_string("| r p d res | "
+                 "Object compile: 'zzB7fHome ^Array with: thisContext "
+                 "with: [[3]] value' classified: #probe. "
+                 "Object compile: 'zzB7fRaise Processor activeProcess suspend. "
+                 "^Error signal: ''x''' classified: #probe. "
+                 "Object compile: 'zzB7fStep: log ^log add: ([self zzB7fRaise] "
+                 "on: Error do: [:e | #handled])' classified: #probe. "
+                 "^[r := OrderedCollection new. "
+                 "r add: (ContextPart runSimulated: [ | n | n := 0. "
+                 "[n := n + 1. n < 3 ifTrue: [Error signal: 'again']. n] "
+                 "on: Error do: [:e | e retry]]). "
+                 "r add: (ContextPart runSimulated: [ | n | n := 0. "
+                 "[n := n + 1. n < 3 ifTrue: [Error signal: 'again']. n] "
+                 "on: Error do: [:e | e retryUsing: [#other]]]). "
+                 "res := nil zzB7fHome. r add: (res at: 2) home == (res at: 1). "
+                 "r add: ([ContextPart runSimulated: [(Warning signal: 'w') isNil "
+                 "ifTrue: [#inside] ifFalse: [#resumed]]] "
+                 "on: Warning do: [:e | #outside]). "
+                 "res := OrderedCollection new. "
+                 "p := [nil zzB7fStep: res] newProcess. p resume. "
+                 "(Delay forMilliseconds: 30) wait. "
+                 "d := Debugger new process: p context: p suspendedContext "
+                 "interrupted: true. d openInspectors. "
+                 "d context: p suspendedContext. "
+                 "r add: d context selector. d step. r add: d context selector. "
+                 "p suspendedContext: d context. p resume. "
+                 "(Delay forMilliseconds: 30) wait. r add: res asArray. "
+                 "r asArray printString] "
+                 "ensure: [#(zzB7fHome zzB7fRaise zzB7fStep:) do: [:s | "
+                 "Object removeSelector: s]]",
+                 "(3 other true inside zzB7fRaise zzB7fStep: (handled ) )");
 
 #ifdef ST_HAVE_SDL3
     /*

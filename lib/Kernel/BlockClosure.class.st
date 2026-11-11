@@ -161,8 +161,18 @@ BlockClosure >> home [
 	"The method context this closure was ultimately written in.
 
 	 outerContext is one step out, which for a closure inside a closure is
-	 another closure's activation; home walks the rest of the way."
-	^outerContext ifNotNil: [:c | c home]
+	 another closure's activation -- a MethodContext too, whose own home
+	 is itself, so asking it answered the outer block's frame and not the
+	 method's (Bugs07 X-26).  The walk goes out through each frame's
+	 closure (field five of a MethodContext) to the frame running none,
+	 as Pharo's Context>>home does."
+	| ctx closure |
+	ctx := outerContext.
+	[ctx notNil
+		and: [(ctx isKindOf: MethodContext)
+		and: [(closure := ctx instVarAt: 5) isKindOf: BlockClosure]]]
+			whileTrue: [ctx := closure outerContext].
+	^ctx ifNotNil: [:c | c home]
 ]
 
 { #category : 'accessing' }

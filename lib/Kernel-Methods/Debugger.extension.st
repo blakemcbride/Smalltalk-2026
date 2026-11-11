@@ -52,6 +52,14 @@ that ends after it.  1983's also looked its answer up with an index from
 indexForInserting:, which counts the SortedCollection's storage, in at:,
 which counts its elements -- right only while nothing had been removed
 from the front.
+
+`step' goes on from the frame ContextPart>>completeCallee: says the
+simulation reached.  Stepping over a send whose callee raised an exception
+handled below the selected frame -- or retried, or returned from a block
+whose home lies below -- unwinds past that frame; 1983's Debugger then
+stepped the frame anyway and went on showing it, a frame that was no
+longer on the process's stack, and `proceed' resumed the process there
+(Bugs07 X-26).
 "
 Extension { #name : 'Debugger' }
 
@@ -162,4 +170,45 @@ Debugger >> pcRange [
 	end := 0.
 	3 to: sourceMap size by: 3 do: [:i | end := end max: (sourceMap at: i)].
 	^end + 1 to: end
+]
+
+{ #category : '*Kernel-Methods-Fixes' }
+Debugger >> step [
+	"1983's, going on from the frame the simulation reached when the step
+	 unwound past the selected one.  See the comment above."
+	| currentContext reached |
+	self checkContextSelection.
+	processHandle interrupted ifFalse: [processHandle topContext push: processHandle proceedValue].
+	processHandle interrupted: true. "simulation leaves same state as interrupting"
+	context == processHandle topContext
+		ifTrue:
+			[currentContext := context.
+			currentContext stepToSendOrReturn.
+			currentContext willReturn
+				ifTrue:
+					[currentContext := currentContext step.
+					currentContext stepToSendOrReturn.
+					self resetContext: currentContext]
+				ifFalse:
+					[reached := currentContext completeCallee: currentContext step.
+					reached == currentContext
+						ifTrue: [self changed: #pc. self updateInspectors]
+						ifFalse: [self reachedBy: reached]]]
+		ifFalse:
+			["Have to complete any stuff called from here"
+			reached := context completeCallee: processHandle topContext.
+			reached == context
+				ifTrue: [self resetContext: context]
+				ifFalse: [self reachedBy: reached]]
+]
+
+{ #category : '*Kernel-Methods-Fixes' }
+Debugger >> reachedBy: aContextOrNil [
+	"The simulation of a step ended in aContext, below the frame that was
+	 stepped, or (nil) returned past the bottom of the process.  Show the
+	 one, or say the other."
+	aContextOrNil isNil ifTrue: [
+		^self notify: 'The process has run to its end.'].
+	aContextOrNil stepToSendOrReturn.
+	self resetContext: aContextOrNil
 ]

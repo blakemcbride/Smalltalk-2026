@@ -48,11 +48,33 @@ refuse a context that is not on the real stack, which every simulated one
 is not.  Here they cut the simulated stack back and push the value, which
 is what they do to a real one.
 
+Nor is 251, restartAndJump, which is how an exception's retry and
+retryUsing: start their handler's frame again.  Run for real it refuses a
+context that is not on the real stack, so a retry failed in the
+simulation, `a primitive has failed' (Bugs07 X-26).  Here it cuts the
+simulated stack back to the frame and restarts it as MethodContext>>
+restart does, temporaries nil.
+
 What is still run for real is what 1983 ran for real: every other
 primitive.  A process primitive (a Semaphore's wait, a Process's suspend)
-therefore acts on the process doing the simulating, and 251
-(restartAndJump, an exception's retry) refuses as a dead context and
-fails in the simulation.
+therefore acts on the process doing the simulating, as it does in 1983
+and in Pharo: stepping over `Processor activeProcess suspend' suspends
+the Debugger's process, not the one being debugged.
+
+Where a simulation ends.  runSimulated: ran the block on top of its
+caller's own frame, so an exception the block did not handle was looked
+for in the real frames below, and a handler found there ran inside the
+simulation and returned through them -- emptying frames that were still
+running and simulating the rest of the caller's program after them
+(Bugs07 X-26).  The simulation now stands on a frame of its own with no
+sender, as Pharo's does: it ends when that frame is returned to, and
+nothing below it is reached.  An exception the block leaves unhandled is
+unhandled inside the simulation.  And completeCallee:, which runs a
+callee until it returns -- the Debugger's `step' over a send -- stopped
+when the simulation unwound past the frame it was completing, as when the
+callee's exception was handled below it, and then stepped that frame,
+which was no longer on the stack; it answers the frame the simulation
+reached instead, and the Debugger goes on from there.
 
 And until now NO primitive ran, closures or not.  tryPrimitiveFor: opened
 with a `fast check' that the method's flags were under 4 --
@@ -171,6 +193,7 @@ ContextPart >> doPrimitive: primitiveIndex receiver: receiver args: arguments [
 	 comment above."
 
 	| numberArguments primitiveMethod value |
+	primitiveIndex = 251 ifTrue: [^self simulateRestartOf: receiver].
 	((primitiveIndex between: 201 and: 205)
 		or: [primitiveIndex = 221 or: [primitiveIndex = 222]])
 			ifTrue: [^self activateClosure: receiver withArgs: arguments].
@@ -300,22 +323,67 @@ ContextPart >> runSimulated: aBlock contextAtEachStep: block2 [
 
 	 1983's, for a BlockClosure as well as a BlockContext: a closure is
 	 not itself a context, so the simulation starts in the activation
-	 its value would make, with me as the sender."
-	| current |
+	 its value would make.  Its sender is a frame of the simulation's
+	 own, not me; see the comment above."
+	| bottom current |
 	aBlock hasMethodReturn
 		ifTrue: [self error: 'simulation of blocks with ^ can run loose'].
 	self class initPrimitives.
+	"The frame the simulation returns to, standing in for me: mine is
+	 running, and the frames below it are not the simulation's."
+	bottom := MethodContext
+		sender: nil
+		receiver: self
+		method: thisContext method
+		arguments: (Array with: aBlock with: block2).
 	(aBlock isKindOf: BlockClosure)
 		ifTrue: [
-			current := self activateClosure: aBlock withArgs: #().
+			current := bottom activateClosure: aBlock withArgs: #().
 			current == #primitiveFail ifTrue: [
 				^self error: 'runSimulated: takes a block of no arguments']]
 		ifFalse: [
 			current := aBlock.
-			current pushArgs: Array new from: self].
-	[current == self]
+			current pushArgs: Array new from: bottom].
+	[current == bottom]
 		whileFalse:
-			[block2 value: current.
+			[current isNil ifTrue: [
+				^self error: 'the simulation returned past where it began'].
+			block2 value: current.
 			current := current step].
-	^self pop
+	^bottom pop
+]
+
+{ #category : '*Kernel-Methods-Fixes' }
+ContextPart >> simulateRestartOf: aContext [
+	"Primitive 251, restartAndJump, sent from me: aContext starts again
+	 from its first bytecode with its temporaries nil, and the simulation
+	 goes on in it.  Everything above it goes, as from a real stack.
+	 Fails, as it does, unless aContext is a frame on my stack."
+	(aContext isKindOf: MethodContext) ifFalse: [^#primitiveFail].
+	(self == aContext or: [self hasSender: aContext]) ifFalse: [^#primitiveFail].
+	self releaseTo: aContext.
+	aContext restart.
+	^aContext
+]
+
+{ #category : '*Kernel-Methods-Fixes' }
+ContextPart >> completeCallee: aContext [
+	"Simulate the execution of bytecodes until a return to the receiver,
+	 and answer the frame the simulation is in then: the receiver, at its
+	 next send or return -- or the frame it unwound to, when what ran
+	 returned past the receiver (an exception handled below it, a retry,
+	 a ^ from a block whose home lies below), or nil when it returned past
+	 the bottom of the stack.  1983's stopped there too, and then stepped
+	 the receiver, which was no longer on the stack.  See the comment
+	 above."
+	| ctxt current |
+	self class initPrimitives.
+	ctxt := aContext.
+	[ctxt notNil and: [ctxt == current or: [ctxt hasSender: self]]]
+		whileTrue:
+			[current := ctxt.
+			ctxt := ctxt step].
+	ctxt == self ifFalse: [^ctxt].
+	self stepToSendOrReturn.
+	^self
 ]
