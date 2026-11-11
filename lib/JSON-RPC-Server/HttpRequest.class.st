@@ -33,6 +33,22 @@ front end sends an upload in.
 
 The same parser reads from a SocketStream on a connection and from a
 ReadStream on a String, which is how the tests read it without a socket.
+
+EXPECT: 100-CONTINUE.  A client with a large body may send its headers
+alone and wait to be told to go on: curl does for every body over a
+megabyte, and so do libcurl's users, PHP's Guzzle among them.  RFC 7231
+says the server MUST then either answer at once with a final status or
+send the interim `100 Continue'.  This parser did neither -- it went
+straight to reading a body the client was holding back, and curl waited a
+second before sending it anyway, while a client with no such fallback
+waited for its own timeout (Bugs07 NET-9).  Whoever reads from a
+connection passes readFrom:maxBodyBytes:continue: a block that writes the
+interim response, and it is run once the headers have been read and the
+length accepted, just before the body is read, for an HTTP/1.1 request
+with a body that asks for it.  A refusal the headers already decide -- a
+413, a 411 -- is the immediate final status instead, as it always was.  An
+expectation other than 100-continue is 417, which RFC 7231 allows; an
+HTTP/1.0 request's Expect is ignored, which it requires.
 "
 Class {
 	#name : 'HttpRequest',
@@ -45,7 +61,15 @@ Class {
 HttpRequest class >> readFrom: aStream maxBodyBytes: limit [
 	"Read one request.  Answer nil if the stream ended before a request
 	 line -- the peer went away between requests, which is not an error."
-	^self new readFrom: aStream maxBodyBytes: limit
+	^self new readFrom: aStream maxBodyBytes: limit continue: nil
+]
+
+{ #category : 'instance creation' }
+HttpRequest class >> readFrom: aStream maxBodyBytes: limit continue: aBlockOrNil [
+	"Read one request, evaluating aBlockOrNil -- which writes `100
+	 Continue' on the connection -- when the client is holding its body
+	 back until it is told to send it.  See the class comment, EXPECT."
+	^self new readFrom: aStream maxBodyBytes: limit continue: aBlockOrNil
 ]
 
 { #category : 'instance creation' }
@@ -94,7 +118,7 @@ HttpRequest >> nextLineFrom: aStream limit: anInteger status: statusForTooLong [
 ]
 
 { #category : 'private - reading' }
-HttpRequest >> readFrom: aStream maxBodyBytes: limit [
+HttpRequest >> readFrom: aStream maxBodyBytes: limit continue: aBlockOrNil [
 	| line words count |
 	headers := Dictionary new.
 	line := self nextLineFrom: aStream limit: 8192 status: 414.
@@ -139,11 +163,11 @@ HttpRequest >> readFrom: aStream maxBodyBytes: limit [
 			ifTrue: [HttpError status: 400 reason: 'two Content-Length headers'].
 		value := (line copyFrom: colon + 1 to: line size) trimmed.
 		headers at: name put: value].
-	self readBodyFrom: aStream maxBodyBytes: limit
+	self readBodyFrom: aStream maxBodyBytes: limit continue: aBlockOrNil
 ]
 
 { #category : 'private - reading' }
-HttpRequest >> readBodyFrom: aStream maxBodyBytes: limit [
+HttpRequest >> readBodyFrom: aStream maxBodyBytes: limit continue: aBlockOrNil [
 	"The body, of the length the headers declare.
 
 	 THE LENGTH IS ALL DIGITS OR IT IS NOT A LENGTH.  asInteger reads as far
@@ -179,14 +203,32 @@ HttpRequest >> readBodyFrom: aStream maxBodyBytes: limit [
 	length := text asInteger.
 	(length isNil or: [length < 0]) ifTrue: [HttpError status: 400 reason: 'not a length: ', text].
 	length > limit ifTrue: [HttpError status: 413 reason: 'the body is larger than ', limit printString, ' bytes'].
+	"The headers are read and the length is accepted: a client waiting to
+	 be told to send its body is told now (see the class comment, EXPECT)."
+	(self expectsContinue and: [length > 0 and: [aBlockOrNil notNil]])
+		ifTrue: [aBlockOrNil value].
 	body := aStream next: length.
 	body size < length ifTrue: [HttpError status: 400 reason: 'the body was cut off']
+]
+
+{ #category : 'private - reading' }
+HttpRequest >> expectsContinue [
+	"Whether the client has said it will send its body only once it is
+	 told to -- Expect: 100-continue, in HTTP/1.1.  Any other expectation
+	 is 417; an HTTP/1.0 request's Expect is ignored, as RFC 7231 says it
+	 must be.  See the class comment, EXPECT."
+	| expect |
+	expect := self headerAt: 'expect'.
+	(expect isNil or: [version = 'HTTP/1.0']) ifTrue: [^false].
+	expect asLowercase = '100-continue' ifFalse: [
+		HttpError status: 417 reason: 'an expectation this server cannot meet: ', expect].
+	^true
 ]
 
 { #category : 'private' }
 HttpRequest >> significantDigitsIn: aString [
 	"How many digits aString has after its leading zeros; aString is all
-	 digits.  See readBodyFrom:maxBodyBytes:."
+	 digits.  See readBodyFrom:maxBodyBytes:continue:."
 	| first |
 	first := aString findFirst: [:c | c ~= $0].
 	first = 0 ifTrue: [^0].

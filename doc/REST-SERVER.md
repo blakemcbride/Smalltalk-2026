@@ -248,7 +248,10 @@ open connections. Nothing in either package is a class variable written after
 
 `HttpServer` is HTTP/1.1 with what a JSON-RPC front end needs and nothing
 else: `Content-Length` bodies (chunked is refused with 411, since a JSON-RPC
-client always knows how long its document is), keep-alive with an idle
+client always knows how long its document is), `Expect: 100-continue`
+answered with `100 Continue` once the declared length is accepted (413 at once
+when it is not, any other expectation 417), so curl and libcurl do not wait
+a second before each large upload, keep-alive with an idle
 timeout, multipart/form-data, and files under a document root for every path
 no handler claims — `..` refused, a directory answering its `index.html`,
 the content type by extension. Every reading is bounded: a line over 8,192

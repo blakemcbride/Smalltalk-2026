@@ -134,7 +134,10 @@ unless \ct{maxRequestBytes:} says otherwise) are refused before they are
 read, each with its own status---a \ct{Content-Length} with more digits than
 the limit is refused by counting them, before it is converted; a body with no declared length---chunked---is
 refused with 411, because a JSON-RPC client always knows how long its document
-is. Time and number are bounded too: a request not complete 120 seconds after
+is. A client that sends \ct{Expect: 100-continue} and holds its body back is
+told \ct{100 Continue} as soon as the declared length is accepted, and 413
+at once when it is not, so curl and libcurl do not wait a second before each
+large upload; an expectation the server does not know is 417. Time and number are bounded too: a request not complete 120 seconds after
 its first byte is cut off, a client that takes nothing of its reply for 30
 seconds is dropped, and above 1,024 open connections the answer is 503---fewer
 when the process's descriptor limit would not leave room beside them for

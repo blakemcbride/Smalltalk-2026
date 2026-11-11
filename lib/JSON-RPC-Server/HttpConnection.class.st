@@ -93,7 +93,8 @@ HttpConnection >> serveOne [
 	stream atEnd ifTrue: [^false].
 	self beBusy.
 	stream deadlineIn: server requestMilliseconds.
-	request := [HttpRequest readFrom: stream maxBodyBytes: server maxRequestBytes]
+	request := [HttpRequest readFrom: stream maxBodyBytes: server maxRequestBytes
+			continue: [self writeContinue]]
 		on: HttpError
 		do: [:e |
 			self write: (HttpResponse error: e status reason: e messageText) keepAlive: false.
@@ -124,6 +125,19 @@ HttpConnection >> serveOne [
 	 Answered and ending: in flight until run has closed the socket."
 	keepAlive ifTrue: [self beIdle].
 	^keepAlive
+]
+
+{ #category : 'private' }
+HttpConnection >> writeContinue [
+	"The interim response that tells a client which sent Expect:
+	 100-continue to send its body now: a status line and the blank line,
+	 no headers, flushed at once.  A client that has stopped waiting and
+	 sent the body anyway reads it and goes on (Bugs07 NET-9; see
+	 HttpRequest's class comment, EXPECT)."
+	stream nextPutAll: 'HTTP/1.1 100 Continue';
+		nextPutAll: (String with: (Character value: 13) with: (Character value: 10)
+			with: (Character value: 13) with: (Character value: 10)).
+	stream flush
 ]
 
 { #category : 'private' }

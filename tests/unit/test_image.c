@@ -760,8 +760,12 @@
  *  3474 -> 3479 with Bugs07 NET-8: JSONParser class>>defaultMaxDigits and
  *  maxExponent, and JSONWriter>>writeDigits:exponent:, twosIn: and
  *  fivesIn:.
+ *
+ *  3479 -> 3482 with Bugs07 NET-9: HttpRequest class>>readFrom:
+ *  maxBodyBytes:continue:, HttpRequest>>expectsContinue and
+ *  HttpConnection>>writeContinue, which answer Expect: 100-continue.
  */
-#define LIB_METHODS             3479
+#define LIB_METHODS             3482
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -3274,8 +3278,11 @@ test_browsing(void)
      *  3099025 -> 3105407 with Bugs07 NET-8: the writer writes a number
      *  with an exponent when the parser would not read it in full, and
      *  finds a fraction's twos and fives without dividing them out.
+     *
+     *  3105407 -> 3108207 with Bugs07 NET-9: a request that expects
+     *  100-continue is told to send its body once its length is accepted.
      */
-    check_integer("(SourceFiles at: 1) contents size", 3105407);
+    check_integer("(SourceFiles at: 1) contents size", 3108207);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -13622,6 +13629,57 @@ test_bugs7e_net(void)
      *  1.5e-400 -- these five ran out this harness's budget.  */
     check_boolean("| p | p := JSONParser parse: '[1.5e-400,5e-324,1.25e-399,7e-350,3e-380]'. "
                   "^(JSONParser parse: (JSONWriter write: p)) = p", 1);
+
+    /*
+     *  NET-9.  RFC 7231: a server that receives Expect: 100-continue in an
+     *  HTTP/1.1 request MUST answer at once with a final status or with
+     *  `100 Continue'.  This one did neither and went straight to reading
+     *  a body the client was holding back: curl, which sends the
+     *  expectation for every body over a megabyte, waited a second per
+     *  upload, and a client with no fallback waited for its own timeout.
+     *  First the parser: the block that writes the interim response runs
+     *  once the length is accepted, for HTTP/1.1 with a body that asks
+     *  (in any case), and not for HTTP/1.0, an empty body or no Expect; an
+     *  expectation it cannot meet is 417, and a body over the limit is
+     *  still the immediate 413.  Then over a socket: a raw client sends
+     *  only the headers and waits.  Before: the parser has no such reading
+     *  (doesNotUnderstand), and the client got `nothing in 2 s'.
+     */
+    check_string("| crlf run | "
+                 "crlf := String with: (Character value: 13) with: (Character value: 10). "
+                 "run := [:version :expect :length | | text n | n := 0. "
+                 "text := 'POST /x ', version, crlf, 'Host: x', crlf, "
+                 "'Content-Length: ', length printString, crlf, "
+                 "(expect isNil ifTrue: [''] ifFalse: ['Expect: ', expect, crlf]), crlf, "
+                 "(String new: length withAll: $a). "
+                 "[HttpRequest readFrom: (ReadStream on: text) maxBodyBytes: 10 "
+                 "continue: [n := n + 1]. n] on: HttpError do: [:e | e status]]. "
+                 "^{run value: 'HTTP/1.1' value: '100-continue' value: 5. "
+                 "run value: 'HTTP/1.1' value: '100-Continue' value: 5. "
+                 "run value: 'HTTP/1.0' value: '100-continue' value: 5. "
+                 "run value: 'HTTP/1.1' value: '100-continue' value: 0. "
+                 "run value: 'HTTP/1.1' value: nil value: 5. "
+                 "run value: 'HTTP/1.1' value: 'teapot' value: 5. "
+                 "run value: 'HTTP/1.1' value: '100-continue' value: 11} printString",
+                 "(1 1 0 0 0 417 413 )");
+    check_string("| s c crlf buf n first rest r | "
+                 "crlf := String with: (Character value: 13) with: (Character value: 10). "
+                 "s := HttpServer new port: 0; bindAddress: '127.0.0.1'; yourself. "
+                 "s at: '/x' put: [:q | HttpResponse text: 'got ', q body size printString]. "
+                 "s start. r := OrderedCollection new. "
+                 "[c := Socket connectTo: '127.0.0.1' port: s port. "
+                 "c send: 'POST /x HTTP/1.1', crlf, 'Host: x', crlf, 'Content-Length: 5', crlf, "
+                 "'Expect: 100-continue', crlf, crlf. "
+                 "buf := String new: 200. n := c receiveInto: buf timeout: 2000. "
+                 "first := n isNil ifTrue: ['nothing in 2 s'] ifFalse: [buf copyFrom: 1 to: n]. "
+                 "r add: (first copyReplaceAll: crlf with: '|'). "
+                 "c send: 'hello'. rest := ''. "
+                 "[(n := c receiveInto: buf timeout: 2000) notNil and: [n > 0 and: "
+                 "[(rest includesSubstring: 'got') not]]] whileTrue: "
+                 "[rest := rest, (buf copyFrom: 1 to: n)]. "
+                 "r add: (rest includesSubstring: 'got 5'). c close] ensure: [s stop]. "
+                 "^r asArray printString",
+                 "('HTTP/1.1 100 Continue||' true )");
 
     test_dialect = ST_DIALECT_BLUE_BOOK;
 }
