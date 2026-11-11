@@ -138,3 +138,26 @@ Interval >> collect: aBlock [
 	1 to: size do: [:i | result at: i put: (aBlock value: start + (step * (i - 1)))].
 	^result
 ]
+
+{ #category : '*Collections-Protocol' }
+Interval >> last [
+	"My last element: the one at: size answers, and the last do: delivers.
+
+	 1983 computes it as `stop - (stop - start \\ step)', which is my last
+	 element in exact arithmetic and a different floating-point expression
+	 from do:'s `start + (step * (i - 1))' -- two subtractions and a Float
+	 \\, itself `a - (a // b * b)' -- so for a Float or mixed Interval it
+	 rounded elsewhere: `(0.1 to: -8 by: -10) last' was 0.09999999999999964
+	 where the one element is 0.1, and the Interval did not include its own
+	 last, nor find it with indexOf: (Bugs07 KERNA-4).  do:, reverseDo:,
+	 collect: and at: already compute element i one way since Bugs6
+	 KERNA-2; last is element size, the same way.
+
+	 Empty, there is no element to answer, and 1983's expression is kept:
+	 it is where the walk would have stopped, which is what Pharo answers
+	 too."
+	| size |
+	size := self size.
+	size = 0 ifTrue: [^stop - (stop - start \\ step)].
+	^start + (step * (size - 1))
+]

@@ -749,8 +749,11 @@
  *  and its synthesized class-side new), Error>>unhandledErrorDefaultAction
  *  (the report defaultAction made before), and Exception>>detachedCopy
  *  and forgetFrames, the copy BlockClosure>>on:fork: hands its handler.
+ *
+ *  3470 -> 3471 with Bugs07 KERNA-4: Interval>>last, element size as
+ *  at: and do: compute it.
  */
-#define LIB_METHODS             3470
+#define LIB_METHODS             3471
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -3250,8 +3253,11 @@ test_browsing(void)
      *  3086923 -> 3093936 with Bugs07 KERNB-7: UnhandledError, offered by
      *  Error>>defaultAction before its report, and the detached copy of an
      *  exception BlockClosure>>on:fork: gives its handler.
+     *
+     *  3093936 -> 3094894 with Bugs07 KERNA-4: Interval>>last is element
+     *  size, computed as at: and do: compute it.
      */
-    check_integer("(SourceFiles at: 1) contents size", 3093936);
+    check_integer("(SourceFiles at: 1) contents size", 3094894);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -13246,6 +13252,33 @@ test_bugs7e_kern(void)
                  "    add: #after]. "
                  "(Delay forMilliseconds: 20) wait. ^{r. log asArray} printString",
                  "(nil (nil nil 'division by 0' nil after ) )");
+
+    /*
+     *  KERNA-4.  Interval>>last was still 1983's `stop - (stop - start \\
+     *  step)', a different floating-point expression from the one do:,
+     *  collect: and at: use since Bugs6 KERNA-2, so a Float or mixed
+     *  Interval's last was not its last element, and the Interval did not
+     *  include it: the audit's two, then a sweep over Fraction, Float and
+     *  mixed bounds and steps (the audit's 1,500 found 35, all through
+     *  last; these 300 found 5).  An empty Interval keeps 1983's answer.
+     */
+    check_string("| i j | i := 0.1 to: -8 by: -10. j := -1.56 to: 3 by: 20. "
+                 "^{i last. i includes: i last. i last = (i at: i size). "
+                 "(i indexOf: i last) = i size. j last. j last = j asArray last. "
+                 "(1 to: 0) last. (5 to: 1) last. (1 to: 10 by: 3) last} printString",
+                 "(0.1 true true true -1.56 true 0 1 10 )");
+    check_integer("| r rnd bad | r := 4242. bad := 0. "
+                  "rnd := [r := r * 1103515245 + 12345 \\\\ 2147483648. r]. "
+                  "1 to: 300 do: [:k | | a b s i | "
+                  "  a := rnd value \\\\ 2001 - 1000. b := rnd value \\\\ 401 - 200. "
+                  "  s := rnd value \\\\ 39 - 19. s = 0 ifTrue: [s := 7]. "
+                  "  k \\\\ 3 = 0 ifTrue: [a := a / 100.0. b := a + (b / 100.0). s := s / 10.0]. "
+                  "  k \\\\ 3 = 1 ifTrue: [a := a / 7. b := a + (b / 7). s := s / 3]. "
+                  "  k \\\\ 3 = 2 ifTrue: [a := a / 100.0. b := b \\\\ 21 - 10. s := s / 4]. "
+                  "  i := a to: b by: s. "
+                  "  (i isEmpty or: [i last = (i at: i size) and: [i last = i asArray last "
+                  "    and: [i includes: i last]]]) ifFalse: [bad := bad + 1]]. "
+                  "^bad", 0);
 
     test_dialect = ST_DIALECT_BLUE_BOOK;
 }
