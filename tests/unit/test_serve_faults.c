@@ -5152,6 +5152,146 @@ bugs7e_files(void)
     unlink(log);
 }
 
+/*
+ *  Bugs07, round 5: the scheduler group's findings.
+ *
+ *  One server run that must end in the deadlock verdict: the probe leaves
+ *  every process blocked on purpose, and the verdict -- and the exit 1
+ *  that goes with it -- is the answer.  A run in which something still
+ *  claims to be a wait somebody will end never gives it and is killed at
+ *  SERVE_SECONDS instead.
+ */
+static void
+bugs7e_verdict_probe(const char *name, const char *text, unsigned workers,
+                     const char *marker, const char *what)
+{
+    static char out[65536];
+    const char *probe = fixture(name);
+    char        batch[1024];
+    char        command[2048];
+    int         status;
+
+    ++st_test_checks;
+    snprintf(batch, sizeof batch,
+             "Compiler evaluate: (FileStream oldFileNamed: '%s') "
+             "contentsOfEntireFile\n3 + 4\n", probe);
+    if (write_file(probe, text) != 0 || write_file(BATCH, batch) != 0) {
+        ++st_test_failures;
+        printf("  FAIL %s: could not write the probe\n", what);
+        return;
+    }
+    snprintf(command, sizeof command,
+             ST_TEST_TIMEOUT " -k 2 " SERVE_SECONDS " %s -serve %s -workers %u"
+             " \"$(cat %s)\" 2>&1", st2026, IMAGE, workers, BATCH);
+    status = run(command, out, sizeof out);
+    if (status != 1) {
+        ++st_test_failures;
+        printf("  FAIL %s on %u worker%s: exit %d, want 1 (the verdict)\n",
+               what, workers, workers == 1 ? "" : "s", status);
+    }
+    expect(out, marker, what);
+    expect(out, "every process is blocked", what);
+    unlink(probe);
+}
+
+static void
+bugs7e_sched(void)
+{
+    /*
+     *  SCHED-7: a socket wait that does not come back.  terminate and
+     *  signalException: take the waiter off the socket's Semaphore and
+     *  unwind it, and the timed wait retired its watchdog and gave its
+     *  interest back only on the ordinary path, the untimed one never
+     *  gave it back at all.  So the watchdog's Delay kept the timer
+     *  armed for the rest of its term, and the socket stayed armed for as
+     *  long as it was open -- both of which the scheduler reads as a wait
+     *  somebody will end -- and an image whose every process had stopped
+     *  never said so.  And a Delay retired early, the watchdog's on every
+     *  timed wait that ended in time, left the timer armed for its old
+     *  deadline when it was the last in the queue, which held the verdict
+     *  off just the same with the queue empty.
+     *
+     *  Each probe below ends with every process blocked; the verdict must
+     *  come at once.  The terms are an hour, longer than any SERVE_SECONDS,
+     *  so a run that waits them out is killed and fails.  Before the fix
+     *  all five were killed: the first and last by the timer armed for the
+     *  hour, the others by the socket left armed.  Waiting for the waiter
+     *  to be ON the socket's Semaphore, rather than for a fixed time, makes
+     *  sure it is the wait that is cut short and not the setting up.  The
+     *  last probe waits for its accept by yielding and not on a Delay of
+     *  its own: a Delay queued in front of the watchdog's when that is
+     *  retired re-arms the timer for itself and hides the fault.
+     */
+    static const struct { const char *name, *text, *marker, *what; } probes[] = {
+        { "bugs7e-sched7-terminate-timed.st",
+          "| srv p |\n"
+          "srv := ServerSocket listenOn: 0.\n"
+          "p := [srv acceptTimeout: 3600000] fork.\n"
+          "[(srv instVarAt: 2) isEmpty] whileTrue: [(Delay forMilliseconds: 5) wait].\n"
+          "p terminate. srv close.\n"
+          "('SCHED-7 timed ended ', p suspendedContext isNil printString) displayNl.\n"
+          "Semaphore new wait.\n"
+          "^#unreachable\n",
+          "SCHED-7 timed ended true",
+          "SCHED-7 a terminated timed wait retires its watchdog" },
+        { "bugs7e-sched7-terminate-untimed.st",
+          "| srv p |\n"
+          "srv := ServerSocket listenOn: 0.\n"
+          "p := [srv accept] fork.\n"
+          "[(srv instVarAt: 2) isEmpty] whileTrue: [(Delay forMilliseconds: 5) wait].\n"
+          "p terminate.\n"
+          "('SCHED-7 untimed ended ', p suspendedContext isNil printString) displayNl.\n"
+          "Semaphore new wait.\n"
+          "^#unreachable\n",
+          "SCHED-7 untimed ended true",
+          "SCHED-7 a terminated untimed wait disarms its open socket" },
+        { "bugs7e-sched7-signal-timed.st",
+          "| srv p r |\n"
+          "srv := ServerSocket listenOn: 0.\n"
+          "p := [r := [srv acceptTimeout: 3600000] on: Error do: [:e | #caught]] fork.\n"
+          "[(srv instVarAt: 2) isEmpty] whileTrue: [(Delay forMilliseconds: 5) wait].\n"
+          "p signalException: Error new.\n"
+          "[p suspendedContext isNil] whileFalse: [(Delay forMilliseconds: 5) wait].\n"
+          "('SCHED-7 timed unwound ', r printString) displayNl.\n"
+          "Semaphore new wait.\n"
+          "^#unreachable\n",
+          "SCHED-7 timed unwound caught",
+          "SCHED-7 a timed wait unwound by an exception cleans up" },
+        { "bugs7e-sched7-signal-untimed.st",
+          "| srv p r |\n"
+          "srv := ServerSocket listenOn: 0.\n"
+          "p := [r := [srv accept] on: Error do: [:e | #caught]] fork.\n"
+          "[(srv instVarAt: 2) isEmpty] whileTrue: [(Delay forMilliseconds: 5) wait].\n"
+          "p signalException: Error new.\n"
+          "[p suspendedContext isNil] whileFalse: [(Delay forMilliseconds: 5) wait].\n"
+          "('SCHED-7 untimed unwound ', r printString) displayNl.\n"
+          "Semaphore new wait.\n"
+          "^#unreachable\n",
+          "SCHED-7 untimed unwound caught",
+          "SCHED-7 an untimed wait unwound by an exception disarms" },
+        { "bugs7e-sched7-retired-last.st",
+          "| srv p c a |\n"
+          "srv := ServerSocket listenOn: 0.\n"
+          "p := [a := srv acceptTimeout: 3600000] fork.\n"
+          "[(srv instVarAt: 2) isEmpty] whileTrue: [(Delay forMilliseconds: 5) wait].\n"
+          "c := Socket connectTo: '127.0.0.1' port: srv localPort.\n"
+          "[a isNil] whileTrue: [Processor yield].\n"
+          "('SCHED-7 accepted ', a isOpen printString) displayNl.\n"
+          "Semaphore new wait.\n"
+          "^#unreachable\n",
+          "SCHED-7 accepted true",
+          "SCHED-7 the last Delay retired early cancels the timer" },
+    };
+    unsigned    k;
+
+    for (k = 0; k < sizeof probes / sizeof probes[0]; ++k) {
+        bugs7e_verdict_probe(probes[k].name, probes[k].text, 1,
+                             probes[k].marker, probes[k].what);
+        bugs7e_verdict_probe(probes[k].name, probes[k].text, 4,
+                             probes[k].marker, probes[k].what);
+    }
+}
+
 int
 main(void)
 {
@@ -5830,6 +5970,7 @@ main(void)
     bugs7e_vm();
     bugs7e_net();
     bugs7e_files();
+    bugs7e_sched();
 
     unlink(IMAGE);
     unlink(BATCH);

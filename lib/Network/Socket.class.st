@@ -356,10 +356,12 @@ Socket >> disarm: maskInteger [
 	"Take back an interest asked for by arm: and not spent.
 
 	 An arm is one-shot and is normally spent by the delivery that wakes
-	 the waiter, so nothing else here disarms.  A TIMED wait is the one
-	 case where the waiter leaves without a delivery, and the interest it
-	 asked for would otherwise stay in the poll set with no process behind
-	 it for as long as the socket is open.
+	 the waiter.  Two kinds of waiter leave without one: a TIMED wait the
+	 watchdog ended, and ANY wait cut short -- the waiter terminated, or
+	 sent an exception that unwinds it (valueWithin: around a read, a
+	 supervisor stopping a connection handler).  The interest either of
+	 them asked for would otherwise stay in the poll set with no process
+	 behind it for as long as the socket is open.
 
 	 That mattered more than a stale entry in a poll set.  The scheduler
 	 asks the network whether anything is armed before it will say that
@@ -369,9 +371,13 @@ Socket >> disarm: maskInteger [
 	 saying so.  With one worker there is no other backstop at all.
 
 	 Sent whether or not the wait timed out, because the waiter cannot
-	 tell: the delivery and the watchdog can land in either order.  The
-	 primitive clears only what is still set, so the spent case is a
-	 no-op."
+	 tell: the delivery and the watchdog can land in either order; and on
+	 the way out of a wait that is unwound, because the delivery may have
+	 come just before the unwind did.  The primitive clears only what is
+	 still set, so the spent case is a no-op.  Taking back an interest
+	 can take back only this socket's, in one direction, and a socket
+	 has one reader and one writer at a time (see the class comment), so
+	 nobody else's wait is disturbed."
 
 	self isOpen ifFalse: [^self].
 	self class primCommand: 26 with: handle with: maskInteger with: nil
@@ -380,17 +386,31 @@ Socket >> disarm: maskInteger [
 { #category : 'waiting' }
 Socket >> waitReadable [
 	"Arm for reading and wait for the signal.  The caller calls again
-	 afterwards, and treats a false answer as a reason to come back here."
+	 afterwards, and treats a false answer as a reason to come back here.
 
-	self arm: 1.
-	readSemaphore wait.
+	 A wait that does not come back -- the process terminated here, or
+	 sent an exception whose handler returns past this -- takes its
+	 interest back on the way out (Bugs07 SCHED-7).  Left armed, the
+	 socket told the scheduler that somebody was parked on it for as long
+	 as it stayed open, and an image whose every process had stopped
+	 never said so: a terminated `accept' on a listener nobody closes
+	 held the deadlock verdict off for ever.  The arm is inside the
+	 protected block, so a process stopped anywhere between the two is
+	 covered too, and a delivery that has already spent the arm makes the
+	 disarm a no-op.  ifCurtailed: and not ensure:, because the ordinary
+	 way out is the delivery, which has spent the arm already."
+
+	[self arm: 1.
+	 readSemaphore wait] ifCurtailed: [self disarm: 1].
 	self checkOpen
 ]
 
 { #category : 'waiting' }
 Socket >> waitWritable [
-	self arm: 2.
-	writeSemaphore wait.
+	"As waitReadable, for the other direction."
+
+	[self arm: 2.
+	 writeSemaphore wait] ifCurtailed: [self disarm: 2].
 	self checkOpen
 ]
 
@@ -463,20 +483,36 @@ Socket >> wait: maskInteger on: aSemaphore timeout: milliseconds [
 	 which of the two woke it, and a Delay that has already fired is left
 	 with one signal on a semaphore nobody waits on again."
 	| deadline done watchdog |
-	self arm: maskInteger.
 	deadline := Time millisecondClockValue + milliseconds.
 	done := false.
 	watchdog := Delay forMilliseconds: milliseconds.
-	[watchdog wait.
-	 done ifFalse: [aSemaphore signal]] fork.
-	aSemaphore wait.
-	done := true.
-	watchdog delaySemaphore signal.
-	"The interest goes back whichever of the two woke us -- see disarm:.
-	 Left armed, a wait that timed out kept the network saying that
-	 somebody was waiting on this socket, which is the answer the
-	 scheduler reads before deciding the image is deadlocked."
-	self disarm: maskInteger.
+	"The retiring and the disarm are in an ensure:, not after the wait
+	 (Bugs07 SCHED-7).  terminate and signalException: take the waiter
+	 off aSemaphore and unwind it, and a cleanup that only the ordinary
+	 path reached never ran for them: the watchdog sat on its Delay for
+	 the rest of the term -- the timer armed, which the scheduler reads
+	 as a wait somebody will end -- and the socket stayed armed, read
+	 the same way, for as long as it was open.  A process terminated in
+	 a five-minute read held `every process is blocked' off for five
+	 minutes, and for ever if nobody closed the socket.  Everything that
+	 needs cleaning up is made inside the protected block, after the
+	 Delay it retires exists, so the cleanup is right wherever the
+	 process is stopped: a signal banked on a watchdog that never waited
+	 is a signal nobody reads, and a disarm of an arm never made is a
+	 no-op."
+	[self arm: maskInteger.
+	 [watchdog wait.
+	  done ifFalse: [aSemaphore signal]] fork.
+	 aSemaphore wait]
+		ensure: [
+			done := true.
+			watchdog delaySemaphore signal.
+			"The interest goes back whichever of the two woke us -- see
+			 disarm:.  Left armed, a wait that timed out kept the network
+			 saying that somebody was waiting on this socket, which is the
+			 answer the scheduler reads before deciding the image is
+			 deadlocked."
+			self disarm: maskInteger].
 	self checkOpen.
 	^Time millisecondClockValue < deadline
 ]

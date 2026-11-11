@@ -3227,8 +3227,12 @@ test_browsing(void)
      *
      *  3079383 -> 3083313 with Bugs07 FILES-8: a page a stream turns at the
      *  end of its file is kept back to go out with the rest of the line.
+     *
+     *  3083313 -> 3086622 with Bugs07 SCHED-7: a socket wait cut short
+     *  retires its watchdog and gives its interest back, and retiring the
+     *  last Delay cancels the timer.
      */
-    check_integer("(SourceFiles at: 1) contents size", 3083313);
+    check_integer("(SourceFiles at: 1) contents size", 3086622);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.

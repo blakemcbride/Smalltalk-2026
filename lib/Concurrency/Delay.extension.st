@@ -21,10 +21,11 @@ not as `the head is due'.  Holding AccessProtect, it resumes every delay
 whose time has come -- the head and whatever behind it is due too -- and
 re-arms the timer for whatever is left at the head.  A signal that arrives
 with nothing due re-arms and goes round again; a signal that arrives with
-ActiveDelay nil does nothing at all.  Nothing cancels the timer and
-nothing resets the semaphore, so there is nothing to race.  Re-arming
-replaces the VM's one outstanding request, which is what primitive 136
-does anyway.
+ActiveDelay nil does nothing at all.  Nothing resets the semaphore, and
+the timer is cancelled in one place only -- retire, when the delay it
+takes out was the last -- with AccessProtect held like every arm, so
+there is nothing to race.  Re-arming replaces the VM's one outstanding
+request, which is what primitive 136 does anyway.
 
 The lock is taken with critical: in the timing process, in wait and in
 retire, so an error inside any of them -- setResumption refusing a Delay
@@ -499,7 +500,24 @@ Delay >> retire [
 
 	 The head is replaced and the timer re-armed for whatever is behind
 	 it, so retiring the delay everything else is queued behind does not
-	 leave the queue with nothing counting it."
+	 leave the queue with nothing counting it.
+
+	 And retiring the LAST delay cancels the timer (Bugs07 SCHED-7).  It
+	 used to leave it armed for the delay just taken out, and an armed
+	 timer is what the scheduler reads as `a wait somebody will end':
+	 it will not say that every process is blocked while one is
+	 pending.  So the queue was empty and the verdict still held off for
+	 the rest of the retired delay's term -- after every timed socket
+	 wait that ended early, which is every successful timed read, and
+	 after a process terminated in one.  A five-minute read that
+	 answered in a millisecond kept an image that had then really
+	 stopped silent for five minutes, which is the silence CHRON-6
+	 retired the watchdog to end.  The cancel is safe for the reason the
+	 timing process is: every arm and this cancel happen with
+	 AccessProtect held, so no arm for a newer head can be undone by it,
+	 and a signal the timer had already sent before the cancel finds
+	 ActiveDelay nil, or a head not yet due that it re-arms for, and is a
+	 wasted trip round the loop."
 	AccessProtect critical: [
 		delayInProgress ifTrue: [
 			delayInProgress := false.
@@ -508,7 +526,9 @@ Delay >> retire [
 					ActiveDelay := SuspendedDelays isEmpty
 						ifTrue: [nil]
 						ifFalse: [SuspendedDelays removeFirst].
-					ActiveDelay notNil ifTrue: [ActiveDelay armTimer]]
+					ActiveDelay notNil
+						ifTrue: [ActiveDelay armTimer]
+						ifFalse: [Processor signal: nil atTime: 0]]
 				ifFalse: [SuspendedDelays remove: self ifAbsent: []]]]
 ]
 
