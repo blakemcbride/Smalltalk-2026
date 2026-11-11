@@ -353,7 +353,8 @@ record_primitive(st_survey *s, const st_compiled_code *code,
  */
 static int
 survey_method(const char *class_name, int class_side, const char *category,
-              const char *source, const char *file, unsigned line, void *user)
+              const char *source, const char *file,
+              const st_source_lines *lines, void *user)
 {
     st_survey          *s = (st_survey *) user;
     st_compile_context  ctx;
@@ -361,7 +362,7 @@ survey_method(const char *class_name, int class_side, const char *category,
     const char         *ivars[256];
 
     (void) category;
-    (void) line;
+    (void) lines;
 
     memset(&ctx, 0, sizeof ctx);
     ctx.instance_variable_count = instance_variables_of(s, class_name, class_side,

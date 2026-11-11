@@ -5419,6 +5419,51 @@ bugs7f_kernb(void)
            "KERNB-8 Smalltalk's keys under pharo-collections");
 }
 
+/*
+ *  Bugs07 round 6, COMP: the line a Tonel method's errors and doctests are
+ *  reported on.
+ */
+static void
+bugs7f_comp(void)
+{
+    static char out[65536];
+    char        command[2048];
+    const char *allman = fixture("bugs7f-comp5-LnA.class.st");
+    const char *own    = fixture("bugs7f-comp5-LdA.class.st");
+
+    /*
+     *  COMP-5.  A `[' on the line under the pattern: the `)' is on line 12
+     *  and was reported on 11.  And the doctests of a method whose `['
+     *  stands alone, and of one whose class name stands on a line of its
+     *  own: on lines 10 and 17, reported on 9 and 16.
+     */
+    write_file(allman,
+        "Class {\n\t#name : 'LnA',\n\t#superclass : 'Object',\n"
+        "\t#category : 'Ln'\n}\n\n{ #category : 'x' }\nLnA >> m1\n[\n"
+        "\t| x |\n\tx := 1.\n\tx := ) .\n\t^x\n]\n");
+    snprintf(command, sizeof command,
+             "%s -bootstrap -profile profiles/st2026.profile %s -eval 1 2>&1",
+             st2026, allman);
+    run(command, out, sizeof out);
+    expect(out, "LnA.class.st:12: in LnA: unexpected token",
+           "COMP-5 an error under a `[' on its own line");
+    write_file(own,
+        "Class {\n\t#name : 'LdA',\n\t#superclass : 'Object',\n"
+        "\t#category : 'Ln'\n}\n\n{ #category : 'x' }\nLdA class >> m1\n"
+        "[\n\t\"3 + 4 >>> 8\"\n\t^1\n]\n\n{ #category : 'x' }\nLdA\n"
+        "  class >> m3 [\n\t\"3 + 4 >>> 10\"\n\t^1\n]\n");
+    snprintf(command, sizeof command,
+             "%s -bootstrap -profile profiles/st2026.profile %s -doctests %s 2>&1",
+             st2026, own, own);
+    run(command, out, sizeof out);
+    expect(out, "LdA.class.st:10, LdA class)",
+           "COMP-5 a doctest under a `[' on its own line");
+    expect(out, "LdA.class.st:17, LdA class)",
+           "COMP-5 a doctest of a method whose class name stands alone");
+    unlink(allman);
+    unlink(own);
+}
+
 int
 main(void)
 {
@@ -6100,6 +6145,7 @@ main(void)
     bugs7e_sched();
     bugs7e_kern();
     bugs7f_kernb();
+    bugs7f_comp();
 
     unlink(IMAGE);
     unlink(BATCH);

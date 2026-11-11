@@ -1020,10 +1020,11 @@ count_class_def(const st_source_class_def *def, void *user)
 
 static int
 count_method(const char *class_name, int class_side, const char *category,
-             const char *source, const char *file, unsigned line, void *user)
+             const char *source, const char *file,
+             const st_source_lines *lines, void *user)
 {
     (void) class_name; (void) class_side; (void) category; (void) source;
-    (void) file; (void) line;
+    (void) file; (void) lines;
     ((tonel_count *) user)->methods++;
     return 1;
 }

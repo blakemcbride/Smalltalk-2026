@@ -198,6 +198,16 @@ skip_method_body(tonel *t)
  *  return, because that is a complete method as COMPILE_method already
  *  understands one -- so Tonel needs no idea what a selector is, and the
  *  two formats cannot disagree about how a method is read.
+ *
+ *  The join is why the sink is told where the body starts as well as where
+ *  the pattern does (st_source_lines, source.h).  The body's first source
+ *  line is the rest of the `[' line, one after the pattern's last, and the
+ *  `[' may stand any number of lines below that: on a line of its own, or
+ *  after a blank one.  The sink was handed the class name's line alone and
+ *  assumed the rest, so with `[' under the pattern every compile error and
+ *  every doctest was named a line early per line between them, and with
+ *  the class name on a line of its own above `class >>' the same again
+ *  (Bugs07 COMP-5).
  */
 static int
 read_method(tonel *t, const char *category)
@@ -208,12 +218,11 @@ read_method(tonel *t, const char *category)
     size_t      n = 0;
     size_t      body_start;
     size_t      body_end;
-    unsigned    line_at_pattern;
+    st_source_lines lines;
     int         class_side = 0;
     int         ok;
 
     skip_separators(t, NULL, 0);
-    line_at_pattern = t->c.line;
     while (!at_end(t) && (isalnum((unsigned char) here(t)) || here(t) == '_')
         && n + 1 < sizeof class_name) {
         class_name[n++] = here(t);
@@ -248,8 +257,10 @@ read_method(tonel *t, const char *category)
      *  The body was always sized to its own length; now the pattern is.
      */
     skip_separators(t, NULL, 0);
+    lines.line = t->c.line;         /*  where the pattern's text starts  */
     {
         size_t  start = t->c.pos;
+        size_t  i;
 
         while (!at_end(t) && here(t) != '[')
             advance(t);
@@ -263,7 +274,18 @@ read_method(tonel *t, const char *category)
         }
         memcpy(pattern, t->c.text + start, n);
         pattern[n] = '\0';
+        /*
+         *  The body begins on the source line after the pattern's last,
+         *  counting line ends as the lexer does: CR, LF, and a CR LF pair
+         *  once.
+         */
+        lines.body = 2;
+        for (i = 0; i < n; ++i)
+            if (pattern[i] == '\n'
+             || (pattern[i] == '\r' && pattern[i + 1] != '\n'))
+                ++lines.body;
     }
+    lines.body_line = t->c.line;    /*  the line the `[' is on  */
     if (at_end(t)) {
         fail(t, "expected [ to open the body of %s", pattern);
         free(pattern);
@@ -307,7 +329,7 @@ read_method(tonel *t, const char *category)
 
     ok = t->sink->method
            ? t->sink->method(class_name, class_side, category, source,
-                             t->path, line_at_pattern, t->user)
+                             t->path, &lines, t->user)
            : 1;
     free(source);
     free(pattern);

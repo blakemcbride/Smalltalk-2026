@@ -22,6 +22,7 @@
 
 #include "source.h"
 #include "profile.h"
+#include "doctest.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -36,7 +37,7 @@ typedef struct {
     int         class_side;
     char        category[128];
     char        source[2048];
-    unsigned    line;
+    st_source_lines lines;
 } rec_method;
 
 typedef struct {
@@ -137,8 +138,8 @@ rec_comment(const char *class_name, int class_side, const char *text,
 
 static int
 rec_method_event(const char *class_name, int class_side, const char *category,
-                 const char *source, const char *file, unsigned line,
-                 void *user)
+                 const char *source, const char *file,
+                 const st_source_lines *lines, void *user)
 {
     recorder   *r = (recorder *) user;
     rec_method *m;
@@ -152,7 +153,7 @@ rec_method_event(const char *class_name, int class_side, const char *category,
     m->class_side = class_side;
     snprintf(m->category, sizeof m->category, "%s", category ? category : "");
     snprintf(m->source, sizeof m->source, "%s", source);
-    m->line = line;
+    m->lines = *lines;
     return 1;
 }
 
@@ -740,6 +741,114 @@ test_profiles(void)
     SRC_names_free(&files);
 }
 
+/*
+ *  Bugs07 COMP-5: where a method's lines are in its file.
+ *
+ *  Tonel allows line ends between the class name, `>>', the pattern and
+ *  the `['.  The reader handed its sink the class name's line alone, and
+ *  the sinks assumed `Foo >> bar [' on that one line, so a `[' on a line
+ *  of its own, a blank line before it, or a class name on a line above
+ *  `class >>' named every compile error and every doctest a line early per
+ *  line skipped.  Now the reader says where the pattern starts, which
+ *  source line the body begins on and which file line that is, and
+ *  SRC_file_line turns any source line into the file's.
+ */
+static int
+write_text(const char *name, const char *text, char *path, size_t path_len)
+{
+    FILE   *f;
+
+    snprintf(path, path_len, "%s/%ld-tonel-%s",
+             st_test_dir(), st_test_pid(), name);
+    f = fopen(path, "wb");
+    if (!f) {
+        printf("  cannot write %s\n", path);
+        return 0;
+    }
+    fwrite(text, 1, strlen(text), f);
+    fclose(f);
+    return 1;
+}
+
+static void
+test_bugs7f_comp(void)
+{
+    static const char header[] =
+        "Class {\n\t#name : 'LnA',\n\t#superclass : 'Object',\n"
+        "\t#category : 'Ln'\n}\n\n";                /*  lines 1-6  */
+    char        text[2048];
+    char        path[512];
+    char        error[512] = "";
+    recorder    r;
+    st_doctest_list examples;
+    unsigned    i;
+
+    /*
+     *  Five layouts, one method each, in this order (file lines):
+     *    8  LnA >> allman      9  [            10  ^1
+     *   14  LnA >> blank      15  (blank)      16  [       17  ^2
+     *   21  LnA               22  class >> own [           23  ^3
+     *   27  LnA >> wrap: a    28  with: b [    29  ^a
+     *   33  LnA >> same [ ^1 ]                 -- Pharo's own layout
+     */
+    snprintf(text, sizeof text, "%s"
+        "{ #category : 'x' }\nLnA >> allman\n[\n\t^1\n]\n\n"
+        "{ #category : 'x' }\nLnA >> blank\n\n[\n\t^2\n]\n\n"
+        "{ #category : 'x' }\nLnA\n  class >> own [\n\t^3\n]\n\n"
+        "{ #category : 'x' }\nLnA >> wrap: a\n\twith: b [\n\t^a\n]\n\n"
+        "{ #category : 'x' }\nLnA >> same [ ^1 ]\n", header);
+    CHECK(read_text("lines.class.st", text, &r, error, sizeof error));
+    if (error[0])
+        printf("  error: %s\n", error);
+    CHECK_EQ_INT((int) r.method_count, 5);
+    if (r.method_count == 5) {
+        /*
+         *  A method's source is its pattern, the reader's carriage return,
+         *  and the body from just after the `[': so source line 1 is the
+         *  pattern's first, and the line after the pattern's last is the
+         *  rest of the `[' line.
+         */
+        CHECK_EQ_INT((int) SRC_file_line(&r.methods[0].lines, 1), 8);
+        CHECK_EQ_INT((int) SRC_file_line(&r.methods[0].lines, 2), 9);
+        CHECK_EQ_INT((int) SRC_file_line(&r.methods[0].lines, 3), 10);
+        CHECK_EQ_INT((int) SRC_file_line(&r.methods[1].lines, 1), 14);
+        CHECK_EQ_INT((int) SRC_file_line(&r.methods[1].lines, 2), 16);
+        CHECK_EQ_INT((int) SRC_file_line(&r.methods[1].lines, 3), 17);
+        /*  The pattern starts on 22, not on the class name's 21.  */
+        CHECK_EQ_INT((int) SRC_file_line(&r.methods[2].lines, 1), 22);
+        CHECK_EQ_INT((int) SRC_file_line(&r.methods[2].lines, 2), 22);
+        CHECK_EQ_INT((int) SRC_file_line(&r.methods[2].lines, 3), 23);
+        /*  The pattern is source lines 1 and 2; ^a is source line 4.  */
+        CHECK_EQ_INT((int) SRC_file_line(&r.methods[3].lines, 1), 27);
+        CHECK_EQ_INT((int) SRC_file_line(&r.methods[3].lines, 2), 28);
+        CHECK_EQ_INT((int) SRC_file_line(&r.methods[3].lines, 3), 28);
+        CHECK_EQ_INT((int) SRC_file_line(&r.methods[3].lines, 4), 29);
+        CHECK_EQ_INT((int) SRC_file_line(&r.methods[4].lines, 1), 33);
+        CHECK_EQ_INT((int) SRC_file_line(&r.methods[4].lines, 2), 33);
+        /*  0, a compiler that named no line: the method's first  */
+        CHECK_EQ_INT((int) SRC_file_line(&r.methods[0].lines, 0), 8);
+    }
+
+    /*
+     *  The doctests, through DOCTEST_scan: the audit's two layouts, whose
+     *  examples are on lines 10 and 17 and were reported as 9 and 16.
+     */
+    if (write_text("LdA.class.st",
+            "Class {\n\t#name : 'LdA',\n\t#superclass : 'Object',\n"
+            "\t#category : 'Ln'\n}\n\n{ #category : 'x' }\nLdA class >> m1\n"
+            "[\n\t\"3 + 4 >>> 8\"\n\t^1\n]\n\n{ #category : 'x' }\nLdA\n"
+            "  class >> m3 [\n\t\"3 + 4 >>> 10\"\n\t^1\n]\n",
+            path, sizeof path)) {
+        memset(&examples, 0, sizeof examples);
+        CHECK(DOCTEST_scan(path, &examples, error, sizeof error));
+        CHECK_EQ_INT((int) examples.count, 2);
+        for (i = 0; i < examples.count && i < 2; ++i)
+            CHECK_EQ_INT((int) examples.items[i].line, i == 0 ? 10 : 17);
+        DOCTEST_free(&examples);
+        remove(path);
+    }
+}
+
 int
 main(void)
 {
@@ -755,6 +864,7 @@ main(void)
     test_a_package_file_defines_nothing();
     test_a_byte_order_mark_is_skipped();
     test_profiles();
+    test_bugs7f_comp();
 
     return ST_TEST_END();
 }

@@ -95,6 +95,51 @@ typedef struct {
 } st_source_class_def;
 
 /*
+ *  Where a method's lines are in its file.
+ *
+ *  A compiler error and a doctest name a line of the SOURCE they were
+ *  handed, and a human wants the line of the FILE.  For a chunk method the
+ *  two differ by a constant: the source is the file's own text from
+ *  `line' on, so source line k is file line `line + k - 1'.
+ *
+ *  A Tonel method is not one piece of the file.  Its source is the
+ *  pattern, a carriage return the reader adds, and the body after the
+ *  `['; and Tonel allows any white space -- line ends included -- between
+ *  the class name, the `>>', the pattern and the `['.  So the pattern's
+ *  lines run on from the line the pattern starts on, the body's run on
+ *  from the line the `[' is on, and the two are related by nothing the
+ *  source records.  One number cannot carry that: the sinks used to be
+ *  handed the line of the CLASS NAME and to assume the pattern was on it
+ *  and ended at a `[' on the same line, which is how Pharo writes a
+ *  method and is not how every person does -- `[' on a line of its own,
+ *  or a class name broken from its `>>', put every compile error and
+ *  every doctest that many lines early (Bugs07 COMP-5).
+ *
+ *  So a reader states both halves:
+ *
+ *      line        the file line the source's first line is on
+ *      body        the source line the body begins on, or 0 when the
+ *                  source is one run of the file's own lines (a chunk)
+ *      body_line   the file line that source line is on
+ *
+ *  and SRC_file_line, below, is the one place that turns a source line
+ *  into a file line -- for the bootstrap's errors and for the doctests
+ *  alike, so the two cannot disagree.
+ */
+typedef struct {
+    unsigned    line;
+    unsigned    body;
+    unsigned    body_line;
+} st_source_lines;
+
+/*
+ *  The file line of source line `source_line' (one-based) of a method
+ *  whose lines are `at'.  0 -- a compiler that could not say -- answers
+ *  the method's own first line.
+ */
+unsigned    SRC_file_line(const st_source_lines *at, unsigned source_line);
+
+/*
  *  Every callback answers non-zero to continue and zero to stop the file.
  *  diagnostic never stops anything; it reports something the producer could
  *  not act on, and the sink decides whether that is fatal.
@@ -107,7 +152,8 @@ typedef struct {
                     void *user);
     int  (*method)(const char *class_name, int class_side,
                    const char *category, const char *source,
-                   const char *file, unsigned line, void *user);
+                   const char *file, const st_source_lines *lines,
+                   void *user);
     void (*diagnostic)(const char *file, unsigned line, const char *message,
                        void *user);
 } st_source_sink;

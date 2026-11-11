@@ -210,12 +210,12 @@ statement_end(char *p, const char *end)
  */
 static void
 scan_comment(st_doctest_list *l, char *text, const char *where,
-             const char *file, unsigned line)
+             const char *file, const st_source_lines *lines, unsigned line)
 {
     char       *p = text;
     char       *sep = find_separator(p);
     const char *scan;
-    unsigned    at_line = line;
+    unsigned    at_line = line;     /*  a line of the method's source  */
 
     while (sep) {
         char   *expression = p;
@@ -257,28 +257,30 @@ scan_comment(st_doctest_list *l, char *text, const char *where,
          *  angle brackets, and it leaves nothing on the right.
          */
         if (expression[0] && expected[0])
-            add(l, expression, expected, where, file, example_line);
+            add(l, expression, expected, where, file,
+                SRC_file_line(lines, example_line));
         sep = p ? find_separator(p) : NULL;
     }
 }
 
 static int
 doctest_method(const char *class_name, int class_side, const char *category,
-               const char *source, const char *file, unsigned line,
-               void *user)
+               const char *source, const char *file,
+               const st_source_lines *lines, void *user)
 {
     st_doctest_list    *l = (st_doctest_list *) user;
     char                where[192];
     const char         *p = source;
     /*
-     *  The Tonel reader puts a carriage return of its own between the
-     *  pattern and the body, which the count below sees as a line the
-     *  file has not got; counted from one line earlier, every example
-     *  lands on its own line (Bugs6 COMP-9).  The chunk reader's source
-     *  begins with the chunk's own line end and is counted as it comes.
+     *  Lines of the SOURCE are counted here, from one, and turned into
+     *  lines of the file only when an example is recorded, by the reader's
+     *  own account of where the source's lines are (SRC_file_line).  The
+     *  count used to start from the file line the reader named, less one
+     *  for Tonel's joining carriage return (Bugs6 COMP-9) -- right only
+     *  when the pattern and its `[' share the class name's line, and a
+     *  line early for every line between them otherwise (Bugs07 COMP-5).
      */
-    unsigned            at_line = line
-        - (line > 0 && strcmp(SRC_format_of(file), "tonel") == 0 ? 1 : 0);
+    unsigned            at_line = 1;
 
     (void) category;
 
@@ -330,7 +332,7 @@ doctest_method(const char *class_name, int class_side, const char *category,
             body = duplicate(start, (size_t) (p - start));
             if (body) {
                 undouble(body);
-                scan_comment(l, body, where, file, start_line);
+                scan_comment(l, body, where, file, lines, start_line);
                 free(body);
             }
             if (*p)

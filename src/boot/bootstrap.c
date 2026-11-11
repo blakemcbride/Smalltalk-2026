@@ -23,30 +23,6 @@
 #include <string.h>
 #include <ctype.h>
 
-/*
- *  The line of a file that a compile error is on.
- *
- *  The compiler's error_line is one-based within the source it was handed,
- *  and the chunk reader's source begins on the line the reader names, so
- *  the file line is line + error_line - 1.  The Tonel reader puts a
- *  carriage return of its own between the pattern and the body, and the
- *  body begins with the file's own line end, so from the body on its
- *  count is one more than the file's.  The two were simply added before,
- *  which named a line two past the Tonel error and one past a chunk one
- *  -- and with the lexer not counting line ends inside comments and
- *  strings, the two mistakes cancelled or compounded at random (Bugs6
- *  COMP-9).
- */
-static unsigned
-file_line_of(const char *file, unsigned line, unsigned error_line)
-{
-    unsigned    at = line + (error_line ? error_line - 1 : 0);
-
-    if (error_line > 1 && strcmp(SRC_format_of(file), "tonel") == 0)
-        --at;
-    return at;
-}
-
 #define MAX_IVARS       256
 /*
  *  Initial sizes, not ceilings.  Every table below this line grows; the
@@ -166,7 +142,7 @@ typedef struct {
 typedef struct {
     char       *source;
     char       *file;
-    unsigned    line;
+    st_source_lines lines;          /*  where its lines are in the file  */
     char        category[64];
     int         class_side;
     int         dialect;
@@ -1597,8 +1573,8 @@ new_trait_entry(void)
 
 static int
 trait_add_method(boot_trait *t, int class_side, const char *category,
-                 const char *source, const char *file, unsigned line,
-                 int dialect)
+                 const char *source, const char *file,
+                 const st_source_lines *lines, int dialect)
 {
     trait_method   *m;
 
@@ -1622,7 +1598,7 @@ trait_add_method(boot_trait *t, int class_side, const char *category,
         memset(m, 0, sizeof *m);
         return 0;
     }
-    m->line       = line;
+    m->lines      = *lines;
     m->class_side = class_side;
     m->dialect    = dialect;
     snprintf(m->category, sizeof m->category, "%.63s",
@@ -2138,7 +2114,8 @@ link_class_objects(void)
 
 static int
 compile_into(boot_class *c, int class_side, const char *source,
-             const char *file, unsigned line, const char *protocol)
+             const char *file, const st_source_lines *lines,
+             const char *protocol)
 {
     st_compile_context  ctx;
     st_compile_result   res;
@@ -2219,7 +2196,14 @@ compile_into(boot_class *c, int class_side, const char *source,
     ctx.dialect            = current_dialect;
 
     if (COMPILE_method(source, &ctx, &res) != 0) {
-        unsigned    at = file_line_of(file, line, res.error_line);
+        /*
+         *  The compiler names a line of the source; the reader said where
+         *  those lines are in the file.  This used to be the sum of the two
+         *  with a Tonel adjustment that assumed `Foo >> bar [' on one line
+         *  (Bugs6 COMP-9), which named a line early for every line between
+         *  a pattern and its `[' (Bugs07 COMP-5).
+         */
+        unsigned    at = SRC_file_line(lines, res.error_line);
 
         boot_fail("%s:%u: in %s%s: %s", file, at,
                   c->name, class_side ? " class" : "", res.error);
@@ -2288,7 +2272,8 @@ compile_into(boot_class *c, int class_side, const char *source,
              */
             if (source_overflowed == 1)
                 boot_note("%s:%u: out of source-file room; methods from here "
-                          "on will have no source", file, line);
+                          "on will have no source", file,
+                          lines ? lines->line : 0);
         }  else if (size >= 3) {
             OM_store_byte(size - 3, res.method, (uint8_t) (position & 0xFF));
             OM_store_byte(size - 2, res.method,
@@ -2522,7 +2507,8 @@ sink_comment(const char *class_name, int class_side, const char *text,
 
 static int
 sink_method(const char *class_name, int class_side, const char *category,
-            const char *source, const char *file, unsigned line, void *user)
+            const char *source, const char *file,
+            const st_source_lines *lines, void *user)
 {
     boot_sink_state    *state = (boot_sink_state *) user;
     boot_class         *c;
@@ -2538,7 +2524,7 @@ sink_method(const char *class_name, int class_side, const char *category,
     if (t) {
         if (!state->definitions)
             return 1;               /*  captured already  */
-        if (!trait_add_method(t, class_side, category, source, file, line,
+        if (!trait_add_method(t, class_side, category, source, file, lines,
                               current_dialect)) {
             boot_fail("out of memory for a method of trait %s", class_name);
             return 0;
@@ -2556,11 +2542,11 @@ sink_method(const char *class_name, int class_side, const char *category,
         return 1;
     c = find_class(class_name);
     if (!c) {
-        boot_fail("%s:%u: methods for unknown class %s", file, line,
+        boot_fail("%s:%u: methods for unknown class %s", file, lines->line,
                   class_name);
         return 0;
     }
-    return compile_into(c, class_side, source, file, line, category);
+    return compile_into(c, class_side, source, file, lines, category);
 }
 
 static void
@@ -3139,7 +3125,7 @@ gather_trait(const char *name, const char *who, flat_list *out,
         if (COMPILE_selector_of(t->methods[i].source, item.selector,
                                 sizeof item.selector) != 0) {
             boot_note("%s:%u: in trait %s: not a method pattern",
-                      t->methods[i].file, t->methods[i].line, t->name);
+                      t->methods[i].file, t->methods[i].lines.line, t->name);
             return 0;
         }
         /*
@@ -3273,8 +3259,8 @@ flatten_traits(void)
                      all.items[i].origin->name);
             saved = current_dialect;
             current_dialect = m->dialect;
-            if (!compile_into(c, m->class_side, m->source, m->file, m->line,
-                              protocol)) {
+            if (!compile_into(c, m->class_side, m->source, m->file,
+                              &m->lines, protocol)) {
                 current_dialect = saved;
                 flat_free(&all);
                 return 0;
@@ -3429,7 +3415,7 @@ synthesize_initializing_new(void)
                         OM_fetch_pointer(CLASS_METHOD_DICT, meta), "new")))
                     continue;
             }
-            if (!compile_into(c, 1, source, "<the loader>", 0,
+            if (!compile_into(c, 1, source, "<the loader>", NULL,
                               "instance creation"))
                 return 0;
             ++made;
@@ -3718,7 +3704,8 @@ senders_of(st_oop selector_oop, const boot_class *skip, int skip_side,
 static int
 supersede_saw_method(const char *class_name, int class_side,
                      const char *category, const char *source,
-                     const char *file, unsigned line, void *user)
+                     const char *file, const st_source_lines *lines,
+                     void *user)
 {
     supersede_scan *scan = user;
     boot_class     *c;
@@ -3728,7 +3715,7 @@ supersede_saw_method(const char *class_name, int class_side,
 
     (void) category;
     (void) file;
-    (void) line;
+    (void) lines;
 
     if (COMPILE_selector_of(source, selector, sizeof selector) != 0)
         return 1;                       /*  no pattern: not our question  */

@@ -760,9 +760,15 @@ read_chunks(const char *path, const st_source_sink *sink, void *user,
              */
         }
         if (in_methods) {
+            /*  One run of the file's own lines: no body of its own.  */
+            st_source_lines lines;
+
+            lines.line      = CHUNK_line(reader);
+            lines.body      = 0;
+            lines.body_line = 0;
             if (have_class && sink->method
              && !sink->method(class_name, class_side, protocol, chunk.text,
-                              path, CHUNK_line(reader), user))
+                              path, &lines, user))
                 stopped = 1;
             continue;
         }
@@ -772,6 +778,20 @@ read_chunks(const char *path, const st_source_sink *sink, void *user,
     }
     CHUNK_close(reader);
     return !stopped;
+}
+
+/*  ----------  Lines  ----------  */
+
+unsigned
+SRC_file_line(const st_source_lines *at, unsigned source_line)
+{
+    if (!at)
+        return 0;
+    if (source_line == 0)
+        return at->line;
+    if (at->body && source_line >= at->body)
+        return at->body_line + (source_line - at->body);
+    return at->line + source_line - 1;
 }
 
 /*  ----------  Dispatch  ----------  */
