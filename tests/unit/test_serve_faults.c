@@ -5498,6 +5498,30 @@ bugs7f_kernb(void)
         "^'classNames missing ', missing printString\n",
         8, "==> 'classNames missing 0'",
         "KERNB-9 classNames beside definitions on eight workers");
+
+    /*
+     *  KERNB-10: lib/Probe ships in every st2026 image and its class-side
+     *  state is any worker's.  Eight workers each take MeasureTable's
+     *  default -- made on first use, so it is reset first -- and add two
+     *  thousand Lengths to it.  Before: Measure made counted 15,892 and
+     *  15,857 of 16,000, two defaults were made, and the shared
+     *  OrderedCollection lost thousands of entries and raised on others.
+     */
+    bugs7_probe("bugs7f-kernb10.st",
+        "| done before tables go |\n"
+        "MeasureTable instVarAt: (MeasureTable class allInstVarNames indexOf: 'default') "
+        "put: nil.\n"
+        "done := Semaphore new. go := Semaphore new. before := Measure made. "
+        "tables := Array new: 8.\n"
+        "1 to: 8 do: [:w | [go wait. tables at: w put: MeasureTable default. "
+        "1 to: 2000 do: [:i | [(tables at: w) add: (Length of: i)] on: Error do: "
+        "[:e | e return: nil]]. done signal] fork].\n"
+        "(Delay forMilliseconds: 50) wait. 1 to: 8 do: [:i | go signal].\n"
+        "1 to: 8 do: [:i | done wait].\n"
+        "^'made ', (Measure made - before) printString, ' defaults ', "
+        "tables asSet size printString, ' held ', MeasureTable default size printString\n",
+        8, "==> 'made 16000 defaults 1 held 16000'",
+        "KERNB-10 lib/Probe's counter and default table on eight workers");
 }
 
 /*

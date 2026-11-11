@@ -782,8 +782,11 @@
  *  3492 -> 3499 with Bugs07 FILES-13: DbQueryBuilder>>databaseKind and
  *  limitsAtFront (SQL Server's TOP), and DbQueryBuilderTest>>on:kind: and
  *  its four tests of the SQL Server and Oracle spellings.
+ *
+ *  3499 -> 3501 with Bugs07 KERNB-10: Measure class>>countMade and
+ *  MeasureTable>>lock, lib/Probe's shared state made safe on workers.
  */
-#define LIB_METHODS             3499
+#define LIB_METHODS             3501
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -3335,8 +3338,11 @@ test_browsing(void)
      *  3125895 -> 3129110 with Bugs07 FILES-13: limit: on SQL Server is TOP
      *  after SELECT when there is no ORDER BY, which its OFFSET ... FETCH
      *  needs, and the tests that say so.
+     *
+     *  3129110 -> 3131538 with Bugs07 KERNB-10: lib/Probe's counter and
+     *  default table are safe on workers.
      */
-    check_integer("(SourceFiles at: 1) contents size", 3129110);
+    check_integer("(SourceFiles at: 1) contents size", 3131538);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -14284,8 +14290,8 @@ test_bugs7f_gui(void)
 }
 
 /*
- *  Bugs07, round 6: the KERNB group's lows -- Smalltalk's keys (KERNB-8)
- *  and its class names (KERNB-9).
+ *  Bugs07, round 6: the KERNB group's lows -- Smalltalk's keys (KERNB-8),
+ *  its class names (KERNB-9) and lib/Probe's class-side state (KERNB-10).
  *  What needs workers or another profile is in
  *  tests/unit/test_serve_faults.c, bugs7f_kernb.
  */
@@ -14365,6 +14371,25 @@ test_bugs7f_kernb(void)
         in the next.  Before: false.  */
     check_boolean("Smalltalk classNames remove: #Object. "
                   "^Smalltalk classNames includes: #Object", 1);
+
+    /*
+     *  KERNB-10, on one thread: what lib/Probe's two shared things still
+     *  do.  Measure counts every Measure made, by compare-and-swap now;
+     *  MeasureTable's default is one table, its entries are under a
+     *  Mutex, and a table made without new makes its Mutex on first use.
+     *  The race itself needs workers: test_serve_faults, bugs7f_kernb.
+     */
+    check_string("| before r t | before := Measure made. "
+                 "r := OrderedCollection new. "
+                 "Length of: 3. (Mass of: 4) + (Mass of: 5). "
+                 "r add: Measure made - before. "
+                 "r add: MeasureTable default == MeasureTable default. "
+                 "t := MeasureTable new. t add: (Length of: 3); add: (Length of: 4). "
+                 "r add: t total; add: t size. "
+                 "t := MeasureTable basicNew. t add: (Length of: 5). "
+                 "r add: t total; add: t size. "
+                 "^r asArray printString",
+                 "(4 true 7 2 5 1 )");
 }
 
 static void
