@@ -109,6 +109,10 @@ inside \ct{aMutex critical:}, say---is unwound from outside after all, its
 \ct{ensure:} releasing the lock, or the exception is raised where the process
 stands. A \ct{terminate} beats any exception: an exception put off to the
 end of a section is never raised in a process that is to end there.
+Exceptions sent to a process before it runs again are raised newest first,
+inside a section or out of one, as in Pharo. A handler that resumes one lets
+the next be raised; one that returns out of its \ct{on:do:} unwinds past the
+others, and they are never raised.
 \ct{DeferredStop graceMilliseconds:} sets another bound, and \ct{nil} puts
 the tenth of a second back. A process
 that would wait inside the section instead---in \ct{Monitor>>waitUntil:},

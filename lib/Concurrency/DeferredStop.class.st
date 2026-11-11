@@ -28,15 +28,21 @@ block once more, the handler for the exception unwound past the outer
 wrapping, and the terminate was lost -- the process ran on.
 
 So the requests are kept, not wrapped: a terminate beats any signal, and
-signals queue in the order they came.  They are acted on only by the
-process they were made for, never by a terminator unwinding it -- that one
-is ending it anyway -- and never from inside the process's own terminate.
-An exception is not raised from inside another exception's unwind; it is
-dropped there, as the unwind is leaving the place it was aimed at.  And it
-is raised in the frame the section's unwind block returns to, after the
-block has returned, not inside it: inside, the process would count as
-running an unwind block for as long as the handler ran, and a terminate
-sent meanwhile would be put off to a point the handler's return: skips.
+signals queue in the order they came and are raised newest first -- the
+order Process>>signalException: raises them in outside a section, where
+each is a frame on top of the last, and the order Pharo raises them in
+everywhere (Bugs07 X-6).  A handler that resumes one lets the next be
+raised; one that returns out of its on:do: unwinds past the rest, which
+are never raised, outside a section as inside.  They are acted on only
+by the process they were made for, never by a terminator unwinding it --
+that one is ending it anyway -- and never from inside the process's own
+terminate.  An exception is not raised from inside another exception's
+unwind; it is dropped there, as the unwind is leaving the place it was
+aimed at.  And it is raised in the frame the section's unwind block
+returns to, after the block has returned, not inside it: inside, the
+process would count as running an unwind block for as long as the handler
+ran, and a terminate sent meanwhile would be put off to a point the
+handler's return: skips.
 
 A process that has been let finish a section must not go to sleep in it:
 the stop would then wait for whatever wakes it, which for a consumer in
@@ -169,8 +175,8 @@ DeferredStop >> withdraw: anException [
 
 { #category : 'requesting' }
 DeferredStop >> signal: anException [
-	"Raise anException in the process when the section ends, after any
-	 already asked for."
+	"Raise anException in the process when the section ends, before any
+	 already asked for: newest first, as outside a section."
 	exceptions isNil ifTrue: [exceptions := OrderedCollection new].
 	exceptions addLast: anException
 ]
@@ -220,7 +226,7 @@ DeferredStop >> raiseAfter: anUnwinder [
 	exceptions isNil ifTrue: [^nil].
 	pending := exceptions.
 	exceptions := nil.
-	frame := [pending do: [:each | each signal]. nil] asContext.
+	frame := [pending reverseDo: [:each | each signal]. nil] asContext.
 	"Field one of any context is its sender."
 	frame instVarAt: 1 put: anUnwinder sender.
 	anUnwinder instVarAt: 1 put: frame.
@@ -234,12 +240,12 @@ DeferredStop >> takeEffect [
 	 process is about to wait or has just come back from waiting.  A
 	 terminate ends it from here, through the section's unwind block,
 	 which is still me and then finds the process's own terminate under
-	 way; the exceptions are raised here, once each, and a handler that
-	 resumes one lets the wait go on."
+	 way; the exceptions are raised here, once each, newest first, and a
+	 handler that resumes the last lets the wait go on."
 	| pending |
 	terminating ifTrue: [^process terminate].
 	exceptions isNil ifTrue: [^nil].
 	pending := exceptions.
 	exceptions := nil.
-	pending do: [:each | each signal]
+	pending reverseDo: [:each | each signal]
 ]

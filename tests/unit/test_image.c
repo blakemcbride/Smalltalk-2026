@@ -3488,8 +3488,11 @@ test_browsing(void)
      *
      *  3191940 -> 3195189 with Bugs07 X-9: a SortedCollection grows by
      *  copying, and a Delay leaves the queue by binary search.
+     *
+     *  3195189 -> 3195626 with Bugs07 X-6: exceptions held to the end of
+     *  a section are raised newest first, as outside one.
      */
-    check_integer("(SourceFiles at: 1) contents size", 3195189);
+    check_integer("(SourceFiles at: 1) contents size", 3195626);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -15751,6 +15754,55 @@ test_bugs7f_sched(void)
                  "ds includes: (Delay classPool at: #ActiveDelay). "
                  "ds anySatisfy: [:d | d instVarAt: 4]} printString",
                  "(0 false false )");
+
+    /*
+     *  X-6, Blake's call of 2026-11-11: exceptions sent to a process
+     *  before it runs again are raised newest first, as Pharo raises
+     *  them, inside a critical: section as outside one.  Outside, each
+     *  is a frame spliced on top of the last.  Inside, a DeferredStop
+     *  keeps them, and raised them oldest first -- the old image:
+     *  (second first) from takeEffect, (in first second out) from a
+     *  section.  The handlers resume, so every one is raised.
+     */
+    check_string("| d log | log := OrderedCollection new. "
+                 "d := DeferredStop for: nil guarding: [] in: nil. "
+                 "d signal: (Warning new messageText: #first); "
+                 "  signal: (Warning new messageText: #second). "
+                 "[d takeEffect] on: Warning do: [:e | log add: e messageText. e resume: nil]. "
+                 "^log asArray printString",
+                 "(second first )");
+    check_string("| log p go | log := OrderedCollection new. go := false. "
+                 "p := [[log add: #in. [go] whileFalse: [Processor yield]. log add: #out] "
+                 "  on: Warning do: [:e | log add: e messageText. e resume: nil]] fork. "
+                 "[log isEmpty] whileTrue: [Processor yield]. "
+                 "p suspend. "
+                 "p signalException: (Warning new messageText: #first). "
+                 "p signalException: (Warning new messageText: #second). "
+                 "go := true. p resume. "
+                 "500 timesRepeat: [(log includes: #out) ifFalse: [(Delay forMilliseconds: 10) wait]]. "
+                 "^log asArray printString",
+                 "(in second first out )");
+    /*
+     *  And in a section, where the two are sent from processes of their
+     *  own, each waiting through a grace of ten seconds for its
+     *  exception; the second is sent a tenth of a second after the
+     *  first, and the section ends a tenth of a second after that.
+     */
+    check_string("| m log p go | DeferredStop graceMilliseconds: 10000. ^["
+                 "m := Mutex new. log := OrderedCollection new. go := false. "
+                 "p := [[m critical: [log add: #in. [go] whileFalse: [Processor yield]]. "
+                 "  log add: #out] on: Warning do: [:e | log add: e messageText. e resume: nil]] fork. "
+                 "[log isEmpty] whileTrue: [Processor yield]. "
+                 "[p signalException: (Warning new messageText: #first)] "
+                 "  forkAt: Processor activePriority + 1. "
+                 "Processor yield. (Delay forMilliseconds: 100) wait. "
+                 "[p signalException: (Warning new messageText: #second)] "
+                 "  forkAt: Processor activePriority + 1. "
+                 "Processor yield. (Delay forMilliseconds: 100) wait. "
+                 "go := true. "
+                 "500 timesRepeat: [(log includes: #out) ifFalse: [(Delay forMilliseconds: 10) wait]]. "
+                 "log asArray printString] ensure: [DeferredStop graceMilliseconds: nil]",
+                 "(in second first out )");
 
     test_dialect = ST_DIALECT_BLUE_BOOK;
 }
