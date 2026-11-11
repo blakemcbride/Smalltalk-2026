@@ -17,7 +17,9 @@
 #            desktop distribution has them, and a private OpenSSL would not
 #            find the system's certificates.
 #    macOS   every library from outside /usr/lib and /System -- Homebrew's
-#            SDL3, and its OpenSSL when the build found one.
+#            SDL3, and its OpenSSL and unixODBC when the build found them.
+#            The README's database section says which driver manager that
+#            is and where it looks for drivers (Bugs07 DOCS-3).
 #
 #  And the licence of everything in it that is other people's, in licenses/
 #  (Bugs07 DOCS-2): the OFL of the face compiled into the binary, the MIT
@@ -217,6 +219,27 @@ Darwin)
     done
     MACOS=$(sw_vers -productVersion)
     TEMPLATE=README-macos.md
+    #  Which ODBC driver manager the user's copy will load, for the README's
+    #  database section (Bugs07 DOCS-3).  It said "ODBC (iODBC) is part of
+    #  macOS" whatever was bundled, and the release recipe bundles
+    #  Homebrew's unixODBC, which does not read the files a macOS driver
+    #  installer registers with (/Library/ODBC) but the directory Homebrew
+    #  compiled into it -- on the user's machine usually not there at all --
+    #  so a driver installed as the README said was never found.  Asked of
+    #  what was shipped: a libodbc in lib/ is unixODBC, a libiodbc the
+    #  binary still names is the system's iODBC, and neither is a build
+    #  without the database.  The template holds all three texts; the awk
+    #  below keeps the one named here.
+    if ls "$DIR"/lib/libodbc.*dylib > /dev/null 2>&1; then
+        ODBC=unixodbc
+        ODBC_INI=$(odbcinst -j 2> /dev/null | sed -n 's/^DRIVERS\.*: *//p')
+        [ -n "$ODBC_INI" ] \
+            || ODBC_INI="$(brew --prefix 2> /dev/null || echo /opt/homebrew)/etc/odbcinst.ini"
+    elif otool -L "$BIN" | grep -q libiodbc; then
+        ODBC=iodbc
+    else
+        ODBC=none
+    fi
     ;;
 *)
     echo "dist: no distribution recipe for $OS" >&2
@@ -244,13 +267,22 @@ cp -f "$ROOT/tools/dist/LICENSING.md" "$DIR/LICENSING.md"
 
 #  The template's @NAME@ fields; CONFIG is several lines, so it goes in by
 #  awk rather than sed, and through the environment rather than -v, which
-#  macOS's awk refuses a newline in.
+#  macOS's awk refuses a newline in.  A line `@ODBC <name>@' opens a block
+#  kept only when <name> is the driver manager found above, and `@ODBC end@'
+#  closes it.
 D_VERSION=$VERSION D_ARCH=$ARCH D_DIR=$(basename "$DIR") \
-D_GLIBC=${GLIBC:-} D_MACOS=${MACOS:-} D_CONFIG=$CONFIG awk '
+D_GLIBC=${GLIBC:-} D_MACOS=${MACOS:-} D_CONFIG=$CONFIG \
+D_ODBC=${ODBC:-} D_ODBCINI=${ODBC_INI:-} awk '
     {
+        if ($0 ~ /^@ODBC [a-z]+@$/) {
+            block = substr($0, 7, length($0) - 7)
+            if (block == "end") block = ""
+            next
+        }
+        if (block != "" && block != ENVIRON["D_ODBC"]) next
         gsub(/@VERSION@/, ENVIRON["D_VERSION"]); gsub(/@ARCH@/, ENVIRON["D_ARCH"])
         gsub(/@DIR@/, ENVIRON["D_DIR"]);         gsub(/@GLIBC@/, ENVIRON["D_GLIBC"])
-        gsub(/@MACOS@/, ENVIRON["D_MACOS"])
+        gsub(/@MACOS@/, ENVIRON["D_MACOS"]);     gsub(/@ODBCINI@/, ENVIRON["D_ODBCINI"])
         if ($0 == "@CONFIG@") print ENVIRON["D_CONFIG"]; else print
     }' "$ROOT/tools/dist/$TEMPLATE" > "$DIR/README.md"
 

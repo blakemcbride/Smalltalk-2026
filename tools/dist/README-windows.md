@@ -45,11 +45,26 @@ separately; `https` checks servers against Windows' own certificate store.
 
 ## Install
 
-1. Unzip `windows-x86_64.zip` to a folder **you can write to** — the image
-   records your work beside itself — such as `C:\Users\<you>\st2026`.
-   Not `C:\Program Files`, which ordinary programs cannot write to.
-2. If Windows marked the zip as downloaded, unblock it *before* unzipping:
-   right-click the zip → **Properties** → tick **Unblock** → **OK**.
+1. If Windows marked the zip as downloaded, unblock it first, *before*
+   unzipping: right-click the zip → **Properties** → tick **Unblock** →
+   **OK**.
+2. Unzip it into a folder **you can write to** — the image records your
+   work beside itself — such as your user folder, `C:\Users\<you>`. Not
+   `C:\Program Files`, which ordinary programs cannot write to. The zip
+   holds one folder, `windows-x86_64`; rename it to `st2026`. In a Command
+   Prompt, with the zip in your Downloads folder:
+
+   ```bat
+   cd %USERPROFILE%
+   tar -xf Downloads\windows-x86_64.zip
+   ren windows-x86_64 st2026
+   ```
+
+   Explorer's **Extract All…** works too, but it proposes a folder named
+   after the zip and puts the zip's own `windows-x86_64` folder inside
+   that: extract to `C:\Users\<you>` instead, then rename the
+   `windows-x86_64` folder to `st2026`. Either way `st2026.exe` ends up in
+   `C:\Users\<you>\st2026`, where the commands below look for it.
 3. Keep the `.dll` files in the same folder as `st2026.exe`.
 
 ## Run

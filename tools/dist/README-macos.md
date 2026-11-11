@@ -9,7 +9,7 @@ Source, documentation and issues: <https://github.com/blakemcbride/Smalltalk-202
 |---|---|
 | `st2026` | the virtual machine |
 | `st2026.image`, `st2026.image.changes` | a ready-to-run image: the class library, its source, and the desktop |
-| `lib/` | SDL3 (and OpenSSL, when this build has it), bundled so you need not install them |
+| `lib/` | the libraries macOS lacks — SDL3, and OpenSSL and unixODBC when this build has them — bundled so you need not install them |
 | `smalltalk-2026-manual.pdf` | the manual |
 | `LICENSE`, `LICENSING.md`, `licenses/` | the licence; what in this directory is other people's and under what terms; and their licence texts, with `licenses/BUNDLED.md` listing the bundled libraries |
 
@@ -38,14 +38,42 @@ An `arm64` build does not run on an Intel Mac.
 ### 2. Nothing else to install
 
 Everything the program needs that macOS lacks is in `lib/`. You do **not**
-need Homebrew, Xcode or SDL3. ODBC (iODBC) is part of macOS.
+need Homebrew, Xcode or SDL3.
 
 ### 3. Optional: an ODBC driver, for the Database package
 
-To reach a particular database, install that database's ODBC driver for
-macOS (PostgreSQL's psqlODBC, SQLite ODBC, and so on) and register it in
-the driver manager's `odbcinst.ini`, as the driver's own instructions say.
-`./st2026 -version` shows whether this build has database support at all.
+@ODBC unixodbc@
+The ODBC driver manager is **unixODBC**, bundled in `lib/` — not the iODBC
+that macOS driver installers register with, so a driver has to be shown to
+it. Install the database's ODBC driver for macOS (PostgreSQL's psqlODBC,
+SQLite ODBC, and so on), and then either name the driver's library in the
+connection string, which needs no registration at all:
+
+```
+Driver=/path/to/the/driver.dylib;Database=...
+```
+
+or tell unixODBC where the driver is registered. An installer for macOS
+writes `/Library/ODBC/odbcinst.ini`, and its data sources to
+`/Library/ODBC/odbc.ini`, in the format unixODBC reads, so setting this
+before running `st2026` makes them visible:
+
+```sh
+export ODBCSYSINI=/Library/ODBC
+```
+
+Without `ODBCSYSINI`, unixODBC looks for drivers in `@ODBCINI@`, where the
+machine that built this kept them — on most others, a file that does not
+exist.
+@ODBC iodbc@
+The ODBC driver manager is macOS's own iODBC. Install the database's ODBC
+driver for macOS (PostgreSQL's psqlODBC, SQLite ODBC, and so on) and
+register it in `/Library/ODBC/odbcinst.ini`, as the driver's own
+instructions say.
+@ODBC none@
+This build has no database support: `./st2026 -version` says
+`database : none (NODB)`.
+@ODBC end@
 
 ## Install
 

@@ -312,7 +312,7 @@ sdl3_ok:
 	@echo st2026 draws its display through SDL3.  Point SDL3= at a development
 	@echo package -- the directory holding include\ and lib\ -- as in:
 	@echo.
-	@echo     nmake /f Makefile.msvc SDL3=C:\SDL3-3.4.14
+	@echo     nmake /f Makefile.msvc SDL3=C:\SDL3-3.4.18
 	@echo.
 	@echo Get one from https://libsdl.org/
 	@echo.
@@ -503,7 +503,7 @@ OPENSSLLICENSE = $(OPENSSL)\share\openssl\copyright
 
 dist: sdl3_ok $(BIN)
 !IF !defined(SDL3) || defined(HEADLESS) || "$(OM)" != "mt"
-	@echo dist: build the windowed OM=mt system -- nmake /f Makefile.msvc dist SDL3=C:\SDL3-3.4.14
+	@echo dist: build the windowed OM=mt system -- nmake /f Makefile.msvc dist SDL3=C:\SDL3-3.4.18
 	@exit 1
 !ELSEIF !defined(HAVE_TLS) && !defined(NOTLS)
 	@echo dist: no OpenSSL, so this build has no https.  Install one --

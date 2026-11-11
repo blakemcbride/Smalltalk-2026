@@ -139,6 +139,14 @@ Homebrew's OpenSSL is keg-only, so a plain `make dist` finds no OpenSSL
 and builds without `https`; and without unixODBC it builds without the
 database. The release recipe below says how to have both.
 
+The README's database section is written for the driver manager the
+distribution actually loads. A bundled unixODBC does not read
+`/Library/ODBC`, where macOS driver installers register, but the
+directory Homebrew compiled into it, which a user's Mac usually does not
+have; so that README says to name the driver's library in the connection
+string, or to `export ODBCSYSINI=/Library/ODBC`. A build against the
+system's iODBC gets the iODBC text, and a build without ODBC says so.
+
 The README's macOS floor is the building machine's `sw_vers
 -productVersion`, and its architecture is the building machine's. An
 `arm64` distribution does not run on an Intel Mac; an `x86_64` one runs on

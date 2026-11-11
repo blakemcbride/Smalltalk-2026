@@ -23,7 +23,7 @@ This build reports:
 
 You need all of the following. Most desktop Linux systems already have them.
 
-### 1. A 64-bit Intel/AMD (@ARCH@) Linux with glibc @GLIBC@ or later
+### 1. A 64-bit Linux on @ARCH@, with glibc @GLIBC@ or later
 
 Check with:
 
