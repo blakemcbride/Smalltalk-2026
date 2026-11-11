@@ -767,8 +767,11 @@
  *
  *  3482 -> 3483 with Bugs07 GUI-7: Form>>rotateBy:, which decides by the
  *  angle modulo four turns everywhere it computed it.
+ *
+ *  3483 -> 3485 with Bugs07 KERNA-6: Interval>>includes: and
+ *  indexOf:ifAbsent:, which find an element by arithmetic.
  */
-#define LIB_METHODS             3483
+#define LIB_METHODS             3485
 /*
  *  The extension packages define no CLASSES, and a category is a property
  *  of a class definition, so Kernel-Methods-Fixes and System-Runtime add
@@ -3293,8 +3296,11 @@ test_browsing(void)
      *
      *  3108991 -> 3110880 with Bugs07 GUI-7: Form>>rotateBy: decides by the
      *  angle modulo four turns.
+     *
+     *  3110880 -> 3114292 with Bugs07 KERNA-6: Interval finds an element by
+     *  arithmetic rather than by walking every one.
      */
-    check_integer("(SourceFiles at: 1) contents size", 3110880);
+    check_integer("(SourceFiles at: 1) contents size", 3114292);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
@@ -13899,6 +13905,46 @@ test_bugs7f_kern(void)
                  "collect: [:d | d isSymbol | d isInteger ifTrue: [d] "
                  "  ifFalse: [{d dayOfMonth. d monthIndex. d year}]]) printString",
                  "((4 3 12 ) (20 11 7 ) (4 3 100 ) (3 12 1904 ) (5 4 82 ) 12 refused )");
+
+    /*
+     *  KERNA-6.  Interval>>includes: and indexOf: walked every element, so
+     *  an absent value in `(1 to: SmallInteger maxVal)' never answered and
+     *  a million elements took half a second.  Now the index comes from
+     *  the arithmetic and is confirmed by computing the element; the first
+     *  check is out of the old walk's reach within this harness's budget.
+     *  The second holds the new answer to the walk's over Integer,
+     *  Fraction, Float and mixed Intervals, both directions, empty and
+     *  single, a LargeInteger one, and one whose Float step is small
+     *  beside its elements so that several elements are the same Float --
+     *  probed with each Interval's elements, the points halfway between
+     *  them, and values outside, not numbers, infinite and NaN; the walk
+     *  is the same search over the Interval's asArray.
+     */
+    check_string("^{(1 to: SmallInteger maxVal) includes: 0. "
+                 "  (1 to: SmallInteger maxVal) indexOf: SmallInteger maxVal. "
+                 "  (1 to: 10000000) includes: 5.5. (1 to: 10000000) indexOf: 9999999. "
+                 "  (SmallInteger maxVal to: 1 by: -1) indexOf: 1. "
+                 "  (1 to: SmallInteger maxVal) includes: nil} printString",
+                 "(false 4611686018427387903 false 9999999 4611686018427387903 false )");
+    check_string("| ivs bad big | big := (2 raisedTo: 53) asFloat. "
+                 "ivs := {1 to: 10. 10 to: 1 by: -1. 1 to: 0. 5 to: 5. 1 to: 20 by: 3. "
+                 "  1/3 to: 5 by: 1/2. 0 to: 1 by: 0.1. 0.1 to: -8 by: -10. "
+                 "  -3 to: 3 by: 0.7. big to: big + 8 by: 0.25. big to: big - 8 by: -0.25. "
+                 "  (2 raisedTo: 70) to: (2 raisedTo: 70) + 20 by: 3. 0.3 to: 0.9 by: 0.3. "
+                 "  -1 to: -10 by: -1.5}. "
+                 "bad := OrderedCollection new. "
+                 "ivs do: [:iv | | arr probes | "
+                 "  arr := iv asArray. probes := arr asOrderedCollection. "
+                 "  2 to: arr size do: [:j | probes add: (arr at: j - 1) + (arr at: j) / 2]. "
+                 "  probes addAll: {0. 100. 0.5. 1/2. 5.5. 2.0. nil. 'a'. 2@2. "
+                 "    Float infinity. Float nan. big + 2. big + 3. 0.6. 0.9. "
+                 "    (2 raisedTo: 70) + 9. (2 raisedTo: 70) + 10}. "
+                 "  probes do: [:v | | a b | "
+                 "    a := iv indexOf: v. b := arr indexOf: v. "
+                 "    (a = b and: [(iv includes: v) = (b > 0)]) "
+                 "      ifFalse: [bad add: {iv. v. a. b}]]]. "
+                 "^bad asArray printString",
+                 "()");
 
     test_dialect = ST_DIALECT_BLUE_BOOK;
 }

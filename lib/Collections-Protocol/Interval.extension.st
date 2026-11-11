@@ -161,3 +161,82 @@ Interval >> last [
 	size = 0 ifTrue: [^stop - (stop - start \\ step)].
 	^start + (step * (size - 1))
 ]
+
+{ #category : '*Collections-Protocol' }
+Interval >> includes: anObject [
+	"Whether one of my elements is equal to anObject: indexOf:ifAbsent:,
+	 which finds it by arithmetic rather than by looking at every element.
+	 See there."
+	^(self indexOf: anObject ifAbsent: [0]) > 0
+]
+
+{ #category : '*Collections-Protocol' }
+Interval >> indexOf: anElement ifAbsent: exceptionBlock [
+	"The index of my first element equal to anElement, or exceptionBlock's
+	 value when none is -- the answer the inherited walk gives, found
+	 without the walk.
+
+	 Collection>>includes: and SequenceableCollection>>indexOf:ifAbsent:
+	 compare anElement with every element in turn, an interpreted at: and
+	 = each, so `(1 to: 1000000) includes: 0' took half a second, a Float
+	 argument against ten million Integers a minute and a half, and a range
+	 guard written the natural way, `(1 to: limit) includes: n', never
+	 answered for an n outside `(1 to: SmallInteger maxVal)' (Bugs07
+	 KERNA-6).  An Interval knows where its elements are: the one nearest
+	 anElement is at `(anElement - start) / step', rounded, plus one.
+
+	 Element i is `start + (step * (i - 1))', as at: and do: compute it,
+	 and the answer is confirmed by computing it, so it is the walk's
+	 exactly, Float steps included.  The elements are monotonic in i --
+	 each is two rounded operations of a quantity that is, and rounding
+	 keeps order -- so the elements equal to anElement, if any, are one
+	 run of indices next to the estimate.  Exact arithmetic puts the run
+	 at the estimate itself; Float rounding can put it a step or two away,
+	 or make it longer than one element when the step is small beside the
+	 elements' magnitude (`2.0 raisedTo: 53' plus a quarter at a time).
+	 So the search starts at the estimate and walks towards anElement only
+	 until it finds it or passes it, and a match is followed back to the
+	 first of its run, which is the one the walk would have met first.  For
+	 any Interval worth an estimate that is one or two comparisons.
+
+	 Every element is a Number, and no Number equals anything else (a Point
+	 included), so anything that is not a Number is absent without
+	 arithmetic it might not answer: `(1 to: 3) includes: nil' is false,
+	 as it was.  isKindOf: rather than isNumber, because DbColumnInfo
+	 answers isNumber about the column it describes.  An infinite or NaN
+	 estimate means anElement is one of those, which no element of an
+	 Interval that has a size can be."
+	| size k e before |
+	(anElement isKindOf: Number) ifFalse: [^exceptionBlock value].
+	size := self size.
+	size = 0 ifTrue: [^exceptionBlock value].
+	k := anElement - start / step.
+	(k isFloat and: [k isFinite not]) ifTrue: [^exceptionBlock value].
+	k := (k rounded + 1 max: 1) min: size.
+	e := start + (step * (k - 1)).
+	e = anElement ifTrue: [
+		[k > 1 and: [start + (step * (k - 2)) = anElement]]
+			whileTrue: [k := k - 1].
+		^k].
+	"Whether an element comes before anElement in my order."
+	before := step > 0
+		ifTrue: [[:x | x < anElement]]
+		ifFalse: [[:x | x > anElement]].
+	(before value: e)
+		ifTrue: [
+			[k < size] whileTrue: [
+				k := k + 1.
+				e := start + (step * (k - 1)).
+				e = anElement ifTrue: [^k].
+				(before value: e) ifFalse: [^exceptionBlock value]]]
+		ifFalse: [
+			[k > 1] whileTrue: [
+				k := k - 1.
+				e := start + (step * (k - 1)).
+				e = anElement ifTrue: [
+					[k > 1 and: [start + (step * (k - 2)) = anElement]]
+						whileTrue: [k := k - 1].
+					^k].
+				(before value: e) ifTrue: [^exceptionBlock value]]].
+	^exceptionBlock value
+]
