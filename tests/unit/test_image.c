@@ -14359,6 +14359,54 @@ test_bugs7f_kern(void)
                  "^bad asArray printString",
                  "()");
 
+    /*
+     *  KERNA-13.  The manual's figure of the collection hierarchy put
+     *  Interval under ArrayedCollection; it is a direct
+     *  SequenceableCollection.  The figure is read here, line by line, and
+     *  each class's indentation names its superclass, which the image is
+     *  asked for -- so the figure and the image cannot drift apart again.
+     */
+    {
+        FILE       *f = fopen("manual/chapters/13-collections.tex", "rb");
+        char        line[256];
+        char        names[16][64];
+        int         in_figure = 0, seen = 0, depth;
+
+        CHECK(f != NULL);
+        while (f && fgets(line, sizeof line, f)) {
+            char       *p = line;
+            size_t      n;
+
+            if (!in_figure) {
+                if (seen == 0 && strncmp(line, "\\begin{plain}", 13) == 0)
+                    in_figure = 1;
+                continue;
+            }
+            if (strncmp(line, "\\end{plain}", 11) == 0)
+                break;
+            while (*p == ' ')
+                ++p;
+            depth = (int) (p - line) / 2;
+            n = strcspn(p, " \r\n");
+            if (n == 0 || n >= sizeof names[0] || depth >= 16)
+                continue;
+            memcpy(names[depth], p, n);
+            names[depth][n] = '\0';
+            ++seen;
+            if (depth > 0) {
+                char    expr[256];
+
+                snprintf(expr, sizeof expr,
+                         "^(Smalltalk at: #%s) superclass name asString",
+                         names[depth]);
+                check_string(expr, names[depth - 1]);
+            }
+        }
+        if (f)
+            fclose(f);
+        CHECK(seen >= 15);
+    }
+
     test_dialect = ST_DIALECT_BLUE_BOOK;
 }
 
