@@ -51,7 +51,13 @@ PosixFile >> size [
 	 file anybody in the image opened failed with `Too many open files'.
 	 A File that was open before the question stays open; one opened only
 	 to answer it is closed again, error or not, and the next question
-	 that needs it opens it again."
+	 that needs it opens it again.
+
+	 An open File answers without a block.  A FileStream asks its File's
+	 size once a page, ten thousand times for five megabytes, and a block
+	 made each time is a cycle with its home context that only a
+	 collection frees: a hundred such reads held 200 MB until one ran."
+	fd notNil ifTrue: [^super size].
 	^self closingIfOpenedBy: [super size]
 ]
 
@@ -59,6 +65,7 @@ PosixFile >> size [
 PosixFile >> characterSize [
 	"Answer my size in characters, leaving me closed if I was closed when
 	 asked, for the reason size does (Bugs07 FILES-15)."
+	fd notNil ifTrue: [^super characterSize].
 	^self closingIfOpenedBy: [super characterSize]
 ]
 

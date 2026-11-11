@@ -3414,8 +3414,11 @@ test_browsing(void)
      *
      *  3162580 -> 3165909 with Bugs07 X-26: the Debugger selects the
      *  message a frame is at from the C compiler's map of the method.
+     *
+     *  3165909 -> 3166258 with Bugs07 FILES-15: an open File answers its
+     *  size without making a block.
      */
-    check_integer("(SourceFiles at: 1) contents size", 3165909);
+    check_integer("(SourceFiles at: 1) contents size", 3166258);
 
     /*
      *  What TonelWriter writes, src/compiler/tonel.c reads.
