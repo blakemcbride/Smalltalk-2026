@@ -40,6 +40,9 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <time.h>
+#ifdef ST_HAVE_SDL3
+#include <SDL3/SDL_keycode.h>     /*  the keycodes test_bugs7d_gui sends  */
+#endif
 
 
 /*
@@ -12996,6 +12999,109 @@ test_bugs7d_gui(void)
                  "value: [:c | c])) printString] "
                  "ensure: [Object removeSelector: #zzB7dRevert]",
                  "((true true 1 ) (false true 1 ) (true true 0 ) )");
+
+#ifdef ST_HAVE_SDL3
+    /*
+     *  GUI-2.  The window sent a key's unshifted layout code and the image
+     *  applied Shift through a US map, so only a US layout typed what it
+     *  said: AltGr was not a modifier anything knew, and AltGr-8 on a German
+     *  keyboard -- `[' -- typed 8; Shift-8 -- `(' -- typed `*'; the keypad,
+     *  Enter included, typed nothing.  Characters now come from the window
+     *  system's text, which has the layout applied, and the key that typed
+     *  one is not sent.
+     *
+     *  Driven here through the translation the pump runs -- each key as a
+     *  German window system on X11 delivers it: the key going down with its
+     *  modifiers, the text it typed, the key coming up -- and read back as
+     *  the IMAGE decodes it, through the real input process and keyboard
+     *  map.  Before (the same events through the old translation):
+     *  `*89<70q+&a' -- the key under each character, shifted the US way --
+     *  then control-q for the Windows AltGr, and nothing at all for
+     *  AltGr-sharp-s, the keypad's 1 or its Enter; the shift case below
+     *  typed `*' and the keypad's 4 did not move the caret.
+     */
+    {
+        static const struct {
+            uint32_t    key;
+            unsigned    mod;
+            const char *text;
+        } typed[] = {
+            { '8',          SDL_KMOD_LSHIFT,    "("  },     /*  Shift-8  */
+            { '8',          SDL_KMOD_MODE,      "["  },     /*  AltGr-8  */
+            { '9',          SDL_KMOD_MODE,      "]"  },
+            { '<',          SDL_KMOD_MODE,      "|"  },
+            { '7',          SDL_KMOD_MODE,      "{"  },
+            { '0',          SDL_KMOD_MODE,      "}"  },
+            { 'q',          SDL_KMOD_MODE,      "@"  },
+            { 0xDF,         SDL_KMOD_MODE,      "\\" },   /*  AltGr-sharp s  */
+            { '+',          SDL_KMOD_MODE,      "~"  },
+            { 0xDF,         0,                  "\303\237" },  /*  sharp s itself  */
+            { '7',          SDL_KMOD_LSHIFT,    "/"  },
+            { SDLK_KP_1,    SDL_KMOD_NUM,       "1"  },
+            { SDLK_KP_ENTER, SDL_KMOD_NUM,      NULL },
+            { 'a',          0,                  "a"  },
+        };
+        unsigned    i;
+
+        evaluate("[Sensor keyboardPressed] whileTrue: [Sensor keyboard]. ^1");
+        for (i = 0; i < sizeof typed / sizeof typed[0]; ++i) {
+            int shifted = (typed[i].mod & SDL_KMOD_LSHIFT) != 0;
+
+            if (shifted)
+                GFX_key_event(1, SDLK_LSHIFT, SDL_KMOD_LSHIFT);
+            GFX_key_event(1, typed[i].key, typed[i].mod);
+            if (typed[i].text)
+                GFX_text_event(typed[i].text, typed[i].mod);
+            GFX_key_event(0, typed[i].key, typed[i].mod);
+            if (shifted)
+                GFX_key_event(0, SDLK_LSHIFT, 0);
+        }
+        /*  Windows reports AltGr as left control and right Alt.  */
+        GFX_key_event(1, SDLK_LCTRL, SDL_KMOD_LCTRL);
+        GFX_key_event(1, 'q', SDL_KMOD_LCTRL | SDL_KMOD_RALT);
+        GFX_text_event("@", SDL_KMOD_LCTRL | SDL_KMOD_RALT);
+        GFX_key_event(0, 'q', SDL_KMOD_LCTRL | SDL_KMOD_RALT);
+        GFX_key_event(0, SDLK_LCTRL, 0);
+        for (i = 0; i < 100 && GFX_event_pending(); ++i)
+            evaluate("Processor yield. ^1");
+        check_string("| s | s := WriteStream on: String new. "
+                     "[Sensor keyboardPressed] whileTrue: [| c | c := Sensor keyboard. "
+                     "c = Character cr ifTrue: [s nextPutAll: '<cr>'] ifFalse: [s nextPut: c]]. "
+                     "^s contents",
+                     "([]|{}@\\~/1<cr>a@");
+
+        /*
+         *  A shift held through a typed character is let go for it and
+         *  pressed again, so the image still has it down afterwards; with
+         *  Num Lock off a keypad digit is the editing key printed on it;
+         *  and a control chord still goes as its key, control and all --
+         *  Ctrl-W, the editor's delete-a-word, decodes to its 1983 code 145
+         *  -- with the text a window system might also send for it dropped.
+         */
+        GFX_key_event(1, SDLK_LSHIFT, SDL_KMOD_LSHIFT);
+        GFX_key_event(1, '8', SDL_KMOD_LSHIFT);
+        GFX_text_event("(", SDL_KMOD_LSHIFT);
+        GFX_key_event(0, '8', SDL_KMOD_LSHIFT);
+        for (i = 0; i < 100 && GFX_event_pending(); ++i)
+            evaluate("Processor yield. ^1");
+        check_string("^Sensor leftShiftDown printString, ' ', Sensor keyboard printString",
+                     "true $(");
+        GFX_key_event(0, SDLK_LSHIFT, 0);
+        GFX_key_event(1, SDLK_KP_4, 0);
+        GFX_key_event(0, SDLK_KP_4, 0);
+        GFX_key_event(1, SDLK_LCTRL, SDL_KMOD_LCTRL);
+        GFX_key_event(1, 'w', SDL_KMOD_LCTRL);
+        GFX_text_event("w", SDL_KMOD_LCTRL);
+        GFX_key_event(0, 'w', SDL_KMOD_LCTRL);
+        GFX_key_event(0, SDLK_LCTRL, 0);
+        for (i = 0; i < 100 && GFX_event_pending(); ++i)
+            evaluate("Processor yield. ^1");
+        check_string("| r | r := OrderedCollection new. r add: Sensor leftShiftDown. "
+                     "[Sensor keyboardPressed] whileTrue: [r add: Sensor keyboard asInteger]. "
+                     "^r asArray printString",
+                     "(false 152 145 )");
+    }
+#endif
 
     test_dialect = ST_DIALECT_BLUE_BOOK;
 }

@@ -459,12 +459,35 @@ GFX_inject_button(unsigned code, int down)
     queue_transition(down ? ST_EVENT_BISTATE_ON : ST_EVENT_BISTATE_OFF, code);
 }
 
+/*
+ *  The four keys InputState keeps a state for rather than queueing: left
+ *  shift, right shift, control and lock, 8r210 to 8r213.  The window keeps
+ *  its own note of which of them it has told the image are down, so that a
+ *  character typed as text can be delivered with them let go and pressed
+ *  again (see queue_typed, and the comment above GFX_key_event).
+ */
+#define KEY_META_FIRST      136
+#define KEY_META_LAST       139
+
+static unsigned meta_held;
+
+static void
+queue_key(unsigned code, int down)
+{
+    if (code >= KEY_META_FIRST && code <= KEY_META_LAST) {
+        unsigned    bit = 1u << (code - KEY_META_FIRST);
+
+        meta_held = down ? (meta_held | bit) : (meta_held & ~bit);
+    }
+    queue_transition(down ? ST_EVENT_BISTATE_ON : ST_EVENT_BISTATE_OFF, code);
+}
+
 void
 GFX_inject_key(unsigned code, int down)
 {
     if (code > KEY_CODE_MAX)
         return;
-    queue_transition(down ? ST_EVENT_BISTATE_ON : ST_EVENT_BISTATE_OFF, code);
+    queue_key(code, down);
 }
 
 /*
@@ -523,6 +546,10 @@ void    GFX_warp_pointer(int x, int y) { warp_locally(x, y); }
 void    GFX_present_if_undoing(const gfx_blit *b) { (void) b; }
 char   *GFX_clipboard_text(void) { return NULL; }
 int     GFX_clipboard_set(const char *text) { (void) text; return -1; }
+void    GFX_key_event(int down, uint32_t key, unsigned mod)
+            { (void) down; (void) key; (void) mod; }
+void    GFX_text_event(const char *utf8, unsigned mod)
+            { (void) utf8; (void) mod; }
 
 /*
  *  Nothing to adopt.  The other half of this file rebuilds the texture and
@@ -581,6 +608,13 @@ static SDL_Renderer    *renderer;
 static SDL_Texture     *texture;
 static int              texture_w;
 static int              texture_h;
+
+/*
+ *  Whether characters come from the window system's text; see the comment
+ *  above GFX_key_event.  Set until GFX_open finds otherwise, so a test that
+ *  drives the translation with no window gets the path a window takes.
+ */
+static int              text_input = 1;
 
 static uint8_t *coverage;
 static int      coverage_w;
@@ -1242,6 +1276,17 @@ GFX_open(const char *title, int width, int height, char *errbuf, size_t errlen)
     fit_display_to_window();
     retitle_if_tracing();
     GFX_damage_all();
+    /*
+     *  Characters are taken from the window system's text, which knows the
+     *  layout; see the comment above GFX_key_event.  SDL 3 starts text
+     *  input only when asked.  Refused, the keys go as they always did and
+     *  the image decodes them for a US keyboard, which is worth a line.
+     */
+    text_input = SDL_StartTextInput(window) ? 1 : 0;
+    if (!text_input)
+        fprintf(stderr, "st2026: the window system has no text input for this"
+                        " window (%s); keys are decoded for a US layout\n",
+                SDL_GetError());
     return 0;
 }
 
@@ -1889,6 +1934,220 @@ handle_mouse_motion(float x, float y)
     queue_motion(nx, ny);
 }
 
+/*
+ *  ----------  Keys and typed text  ----------
+ *
+ *  What the image is told when a key is struck, and why characters come
+ *  from the window system's text rather than from the key (Bugs07 GUI-2).
+ *
+ *  The image can decode a key itself.  Given the code a key carries --
+ *  SDL's keycode for it, which is the layout's character for the key
+ *  UNSHIFTED -- and the shift, control and lock keys as they go down and
+ *  up, InputSensor's keyboard map turns the two into a character: 1983's
+ *  Alto map, corrected in three places for a US keyboard
+ *  (lib/Keyboard-Map).  That is right for a US keyboard and for nothing
+ *  else, and every key used to be sent that way.  On a German keyboard
+ *  Shift-8 is `(' and the map, which thinks it is looking at a US 8, typed
+ *  `*'; AltGr, which every European layout uses for the characters
+ *  Smalltalk is written in, is not a key the map knows, so AltGr-8 typed
+ *  the 8 under the `[' -- a block, a temporaries list and a cascade could
+ *  not be typed at all.  The map cannot be taught every layout, and it
+ *  does not need to be: the window system has already worked out what
+ *  every key typed, layout, Shift, AltGr and dead keys included, and says
+ *  so in a text-input event.
+ *
+ *  So a character comes from the text event, and the key that typed it is
+ *  not sent.  It arrives at the image as that character's code with no
+ *  modifier held -- the map's unmodified plane gives every printable ASCII
+ *  code back as itself, so the image types exactly what the layout typed.
+ *  A shift the image believes is down is let go for the character and
+ *  pressed again after it (queue_typed), which also covers control when it
+ *  is half of AltGr, as Windows reports AltGr.  Nothing changes in the
+ *  image, and an image built before this types correctly too.
+ *
+ *  Keys that are not characters still go as keys: Return, Backspace, Tab,
+ *  Escape, the editing keys, the shift, control and lock keys themselves,
+ *  and a CONTROL CHORD -- control with a printable key and no Alt, AltGr or
+ *  Command -- which is how the editor's few control commands, and the
+ *  interrupt key, are reached; the window system types nothing for those.
+ *
+ *  The keypad: Enter is Return, and with Num Lock off the digits are the
+ *  editing keys printed on them; with it on they type, through text.  SDL
+ *  gives keypad keys keycodes of their own whatever Num Lock says, above
+ *  2^30, which is why the whole keypad, Enter included, typed nothing.
+ *
+ *  What is not typed: a character outside ASCII -- a sharp s, an umlaut,
+ *  an accent.  The desktop's face has no glyph past 126, and a code from 128
+ *  up is already something else to the image -- a mouse button, a shift
+ *  key, an editing key, or one of the editor's control commands -- so
+ *  there is no code that could carry one.  Text pasted from outside still
+ *  brings such characters in as the bytes of their UTF-8 (lib/Clipboard).
+ *  An Alt or Command chord types nothing either, where it used to type its
+ *  bare letter.
+ *
+ *  If the window system will not start text input, the keys are sent as
+ *  they always were and the US map decodes them; the keypad and its Enter
+ *  are decoded here in that case, since text would have carried them.
+ */
+/*  Control held with a printable key, and nothing that makes it a
+ *  character instead -- Windows reports AltGr as control and right Alt.  */
+static int
+control_chord(unsigned mod)
+{
+    return (mod & SDL_KMOD_CTRL) != 0
+        && (mod & (SDL_KMOD_ALT | SDL_KMOD_MODE | SDL_KMOD_GUI)) == 0;
+}
+
+/*  A keypad key's code, or 0 when it has none or types through text.  */
+static unsigned
+keypad_code(SDL_Keycode key, unsigned mod)
+{
+    if (key == SDLK_KP_ENTER)
+        return 13;
+    if (!(mod & SDL_KMOD_NUM)) {
+        /*  The editing keys printed on the keys; codes as below.  */
+        switch (key) {
+        case SDLK_KP_4:         return 152;
+        case SDLK_KP_6:         return 153;
+        case SDLK_KP_8:         return 154;
+        case SDLK_KP_2:         return 155;
+        case SDLK_KP_7:         return 156;
+        case SDLK_KP_1:         return 157;
+        case SDLK_KP_PERIOD:    return 146;
+        default:                break;
+        }
+    }
+    if (text_input)
+        return 0;
+    switch (key) {
+    case SDLK_KP_DIVIDE:        return '/';
+    case SDLK_KP_MULTIPLY:      return '*';
+    case SDLK_KP_MINUS:         return '-';
+    case SDLK_KP_PLUS:          return '+';
+    default:                    break;
+    }
+    if (!(mod & SDL_KMOD_NUM))
+        return 0;
+    if (key == SDLK_KP_PERIOD)
+        return '.';
+    if (key >= SDLK_KP_1 && key <= SDLK_KP_9)
+        return '1' + (unsigned) (key - SDLK_KP_1);
+    if (key == SDLK_KP_0)
+        return '0';
+    return 0;
+}
+
+/*  What a key sends the image, or 0 for nothing.  */
+static unsigned
+key_code(SDL_Keycode key, unsigned mod)
+{
+    switch (key) {
+    case SDLK_LSHIFT:       return 136;
+    case SDLK_RSHIFT:       return 137;
+    case SDLK_LCTRL:
+    case SDLK_RCTRL:        return 138;
+    case SDLK_CAPSLOCK:     return 139;
+    case SDLK_RETURN:       return 13;
+    case SDLK_BACKSPACE:    return 8;
+    case SDLK_TAB:          return 9;
+    case SDLK_ESCAPE:       return 27;
+    /*
+     *  The keys the Alto keyboard did not have.  Their SDL keycodes
+     *  are far above 255 -- all but Delete's, which is 127 and means
+     *  something else here -- so they are given codes of their own
+     *  inside the range InputState>>keyAt:put: passes through to the
+     *  keyboard queue: above the mouse and keyset bits at 128-135 and
+     *  the modifier keys at 136-139, and clear of 140-145, which the
+     *  1983 keyboard map already spends on the Alto's own special
+     *  keys.
+     *
+     *  Delete is 146 rather than the 158 that would have kept this
+     *  block together, because 158 is the code the image already
+     *  decodes to BS2 and dispatches to
+     *  ParagraphEditor>>leaveBrackets:.  It is not 127 either: 127 is
+     *  what SDL reports for the key, and the 1983 map turns 127 into
+     *  Cut, because on the Alto DEL was the cut key.  On a keyboard
+     *  made since, the key to the right of Backspace deletes forward.
+     *
+     *  Control is NOT part of the code.  It travels with the event as
+     *  meta state -- InputState>>keyAt:put: puts it there and
+     *  KeyboardEvent>>hasCtrl reads it back -- so control-left is the
+     *  same 152 as left, and the image decides what the pair means.
+     *
+     *  lib/Keyboard-Map is the other half and has to agree with this
+     *  list: InputSensor>>initMap makes these codes decode to
+     *  themselves instead of to `unassigned', and
+     *  ParagraphEditor>>normalCharacter: moves the caret or deletes
+     *  rather than typing them.  InputSensor class>>editingKeyCodes
+     *  is where the image says the same seven numbers.
+     */
+    case SDLK_LEFT:         return 152;
+    case SDLK_RIGHT:        return 153;
+    case SDLK_UP:           return 154;
+    case SDLK_DOWN:         return 155;
+    case SDLK_HOME:         return 156;
+    case SDLK_END:          return 157;
+    case SDLK_DELETE:       return 146;
+    default:                break;
+    }
+    if (key >= SDLK_KP_DIVIDE && key <= SDLK_KP_PERIOD)
+        return keypad_code(key, mod);
+    /*  A printable key is a character, and the text event brings it.  */
+    if (key >= 32 && key < 127)
+        return (!text_input || control_chord(mod)) ? (unsigned) key : 0;
+    return 0;
+}
+
+/*
+ *  A character the layout typed: its code, pressed and released with
+ *  every key the image keeps a state for let go around it, so that the
+ *  map's unmodified plane -- which answers every printable ASCII code as
+ *  itself -- is the one that decodes it.
+ */
+static void
+queue_typed(unsigned code)
+{
+    unsigned    held = meta_held;
+    unsigned    i;
+
+    for (i = 0; i <= KEY_META_LAST - KEY_META_FIRST; ++i) {
+        if (held & (1u << i))
+            queue_key(KEY_META_FIRST + i, 0);
+    }
+    queue_key(code, 1);
+    queue_key(code, 0);
+    for (i = 0; i <= KEY_META_LAST - KEY_META_FIRST; ++i) {
+        if (held & (1u << i))
+            queue_key(KEY_META_FIRST + i, 1);
+    }
+}
+
+void
+GFX_key_event(int down, uint32_t key, unsigned mod)
+{
+    unsigned    code = key_code((SDL_Keycode) key, mod);
+
+    if (code != 0)
+        queue_key(code, down);
+}
+
+void
+GFX_text_event(const char *utf8, unsigned mod)
+{
+    const unsigned char *p;
+
+    /*  A control chord went as its key, should a window system also send
+     *  it as text.  */
+    if (!utf8 || control_chord(mod))
+        return;
+    /*  Byte by byte: no byte of a longer UTF-8 sequence is below 128, so
+     *  each ASCII byte is a whole character and the rest are dropped.  */
+    for (p = (const unsigned char *) utf8; *p; ++p) {
+        if (*p >= 32 && *p < 127)
+            queue_typed(*p);
+    }
+}
+
 int
 GFX_pump(void)
 {
@@ -1984,83 +2243,14 @@ GFX_pump(void)
         }
 
         case SDL_EVENT_KEY_DOWN:
-        case SDL_EVENT_KEY_UP: {
-            int         down = (event.type == SDL_EVENT_KEY_DOWN);
-            SDL_Keycode key  = event.key.key;
-            unsigned    code;
-
-            /*
-             *  Only the ASCII range maps directly; the image's keyboard map
-             *  handles the rest and the modifier keys have their own codes.
-             */
-            if (key == SDLK_LSHIFT)
-                code = 136;
-            else if (key == SDLK_RSHIFT)
-                code = 137;
-            else if (key == SDLK_LCTRL || key == SDLK_RCTRL)
-                code = 138;
-            else if (key == SDLK_CAPSLOCK)
-                code = 139;
-            else if (key == SDLK_RETURN)
-                code = 13;
-            else if (key == SDLK_BACKSPACE)
-                code = 8;
-            else if (key == SDLK_TAB)
-                code = 9;
-            else if (key == SDLK_ESCAPE)
-                code = 27;
-            /*
-             *  The keys the Alto keyboard did not have.  Their SDL keycodes
-             *  are far above 255 -- all but Delete's, which is 127 and means
-             *  something else here -- so they are given codes of their own
-             *  inside the range InputState>>keyAt:put: passes through to the
-             *  keyboard queue: above the mouse and keyset bits at 128-135 and
-             *  the modifier keys at 136-139, and clear of 140-145, which the
-             *  1983 keyboard map already spends on the Alto's own special
-             *  keys.
-             *
-             *  Delete is 146 rather than the 158 that would have kept this
-             *  block together, because 158 is the code the image already
-             *  decodes to BS2 and dispatches to
-             *  ParagraphEditor>>leaveBrackets:.  It is not 127 either: 127 is
-             *  what SDL reports for the key, and the 1983 map turns 127 into
-             *  Cut, because on the Alto DEL was the cut key.  On a keyboard
-             *  made since, the key to the right of Backspace deletes forward.
-             *
-             *  Control is NOT part of the code.  It travels with the event as
-             *  meta state -- InputState>>keyAt:put: puts it there and
-             *  KeyboardEvent>>hasCtrl reads it back -- so control-left is the
-             *  same 152 as left, and the image decides what the pair means.
-             *
-             *  lib/Keyboard-Map is the other half and has to agree with this
-             *  list: InputSensor>>initMap makes these codes decode to
-             *  themselves instead of to `unassigned', and
-             *  ParagraphEditor>>normalCharacter: moves the caret or deletes
-             *  rather than typing them.  InputSensor class>>editingKeyCodes
-             *  is where the image says the same seven numbers.
-             */
-            else if (key == SDLK_LEFT)
-                code = 152;
-            else if (key == SDLK_RIGHT)
-                code = 153;
-            else if (key == SDLK_UP)
-                code = 154;
-            else if (key == SDLK_DOWN)
-                code = 155;
-            else if (key == SDLK_HOME)
-                code = 156;
-            else if (key == SDLK_END)
-                code = 157;
-            else if (key == SDLK_DELETE)
-                code = 146;
-            else if (key < 128)
-                code = (unsigned) key;
-            else
-                break;
-            queue_transition(down ? ST_EVENT_BISTATE_ON : ST_EVENT_BISTATE_OFF,
-                        code);
+        case SDL_EVENT_KEY_UP:
+            GFX_key_event(event.type == SDL_EVENT_KEY_DOWN,
+                          (uint32_t) event.key.key, (unsigned) event.key.mod);
             break;
-        }
+
+        case SDL_EVENT_TEXT_INPUT:
+            GFX_text_event(event.text.text, (unsigned) SDL_GetModState());
+            break;
 
         default:
             break;

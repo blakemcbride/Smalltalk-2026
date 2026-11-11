@@ -1,14 +1,29 @@
 "
 The keyboard in front of the user, rather than the Alto's.
 
-The window sends the code a key carries UNSHIFTED -- SDL's keycode for the
-layout, before any modifier is applied -- and the image is what applies the
-shift, through a map built by InputSensor class>>initialize.  That map is
-1983's, which is to say the Alto's, and the Alto's keyboard is not the one
-anybody has.  Everything unshifted agrees; three shifted keys do not, and
-all three are keys a Smalltalk programmer reaches for.  Seven keys are
-missing outright: the four arrows, home, end, and the delete that goes
-forward.
+A key arrives as a code and the state of the shift, control and lock keys,
+and the image turns the two into a character through a map built by
+InputSensor class>>initialize.  That map is 1983's, which is to say the
+Alto's, and the Alto's keyboard is not the one anybody has.
+
+What a CHARACTER key typed is decided before it gets here.  The window
+takes it from the window system's text input, which has applied the
+layout, Shift, AltGr and dead keys, and sends that character's code with
+no modifier held -- and the map's unmodified plane answers every printable
+ASCII code as itself, so whatever the keyboard, the image types what the
+layout typed (Bugs07 GUI-2; the comment above GFX_key_event in
+src/gfx/display.c has the rest).  Before that, the window sent the code the
+key carried unshifted and the map applied Shift for a US keyboard, which
+made every other layout type the wrong characters and AltGr none at all.
+
+So the map now decodes keys that are not characters -- Return, Tab,
+Backspace, Escape and the editing keys below -- and control chords, and
+the shift plane matters only for those, and for typing on a window system
+that refuses text input, when the window falls back to sending keys for a
+US layout.  For that case the shift plane is still corrected: three
+shifted keys disagree with a US keyboard, and all three are keys a
+Smalltalk programmer reaches for.  Seven keys are missing outright: the
+four arrows, home, end, and the delete that goes forward.
 
 The keyboard map is a String of 256 entries for each of the five meta states
 -- none, shift, control, shift and control, lock -- indexed by

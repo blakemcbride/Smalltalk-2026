@@ -104,6 +104,17 @@ void    GFX_inject_key(unsigned code, int down);
 void    GFX_inject_wheel(int notches);
 
 /*
+ *  What the pump does with a key going down or up (an SDL keycode and
+ *  modifier mask) and with the text a window system says was typed.  Keys
+ *  that are characters are left to the text, which has the layout applied;
+ *  see the comment above GFX_key_event in display.c.  Public so a test can
+ *  drive the translation without a window; built without SDL3, they do
+ *  nothing.
+ */
+void    GFX_key_event(int down, uint32_t key, unsigned mod);
+void    GFX_text_event(const char *utf8, unsigned mod);
+
+/*
  *  Post the window-exposed event a window manager posts when the window
  *  comes back into view.  It goes through SDL_PushEvent, so the pump reads
  *  it exactly as it reads the real one -- which is the point: the repaint
