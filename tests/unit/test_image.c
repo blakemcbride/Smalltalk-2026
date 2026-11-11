@@ -13681,6 +13681,58 @@ test_bugs7e_net(void)
                  "^r asArray printString",
                  "('HTTP/1.1 100 Continue||' true )");
 
+    /*
+     *  NET-6.  The demo's Login spent a PBKDF2 for a name with no row, so
+     *  that a missing user cost what a present one did -- but only for a
+     *  String password.  PasswordHash>>verify:against: answers false for
+     *  anything else before it derives anything, so a login with the
+     *  password null, a number, an object or left out took two
+     *  milliseconds for a user that exists and two hundred for one that
+     *  does not: one request a name said which accounts exist.  Login now
+     *  refuses such a password before the lookup, at the cost of the same
+     *  verify.  Each refused login here must take at least a quarter of
+     *  what a wrong String password for a real user takes (the full
+     *  derivation; the split was a hundredfold), and the right password
+     *  still logs in.  The class is demo/backend's own, loaded as the
+     *  server loads it and removed after.  Before: (true (true false true
+     *  false false true ) true ).  Through SQLite, skipped where there is
+     *  no driver.
+     */
+    db = st_test_path("bugs7e-net6.db");
+    unlink(db);
+    snprintf(expression, sizeof expression,
+             "[(DbConnection open: 'DRIVER=SQLITE3;Database=%s;') close. true] "
+             "on: Error do: [:e | false]", db);
+    if (evaluate(expression) == ST_TRUE) {
+        snprintf(expression, sizeof expression,
+                 "| c login srv req t r times ok | "
+                 "c := DbConnection open: 'DRIVER=SQLITE3;Database=%s;'. "
+                 "r := OrderedCollection new. times := OrderedCollection new. "
+                 "[c execute: 'create table users (user_id integer, user_name varchar(40), "
+                 "user_password varchar(200), user_active char(1))'. "
+                 "c execute: 'insert into users values (1, ''ada'', ?, ''Y'')' "
+                 "with: {PasswordHash hash: 'secret'}. "
+                 "login := (RestServiceLoader on: 'demo/backend') classFor: 'Login'. "
+                 "srv := RestServer new. "
+                 "req := (RestRequest server: srv httpRequest: nil injson: nil outjson: nil) "
+                 "db: c; yourself. "
+                 "{{'ada'. 'wrong'}. {'ada'. nil}. {'nobody'. nil}. {'ada'. 42}. "
+                 "{'ada'. Dictionary new}. {'nobody'. 'wrong'}} do: [:p | "
+                 "t := Time millisecondClockValue. "
+                 "r add: (login login: p first password: p last outjson: Dictionary new "
+                 "request: req). "
+                 "times add: Time millisecondClockValue - t]. "
+                 "ok := (login login: 'ada' password: 'secret' outjson: Dictionary new "
+                 "request: req) notNil] "
+                 "ensure: [c close. login notNil ifTrue: "
+                 "[TonelSource forget: login. login removeFromSystem]]. "
+                 "^{(r allSatisfy: [:x | x isNil]). "
+                 "(times collect: [:x | x * 4 >= times first]) asArray. ok} printString", db);
+        check_string(expression, "(true (true true true true true true ) true )");
+    } else
+        printf("  skipped NET-6: no SQLITE3 driver\n");
+    unlink(db);
+
     test_dialect = ST_DIALECT_BLUE_BOOK;
 }
 

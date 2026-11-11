@@ -27,9 +27,21 @@ Class {
 
 { #category : 'login' }
 Login class >> login: username password: password outjson: outjson request: request [
-	"Validate a user's name and password; answer their RestUserData, or nil."
+	"Validate a user's name and password; answer their RestUserData, or nil.
+
+	 A PASSWORD THAT IS NOT TEXT IS REFUSED BEFORE ANYTHING IS LOOKED UP,
+	 at the cost of a verify.  The password is whatever the client put in
+	 the document -- null, a number, an object, or nothing at all -- and
+	 PasswordHash>>verify:against: answers false for anything but a
+	 String before it derives anything, so for a name that exists such a
+	 login took four milliseconds, and for one that does not the full
+	 verify spendAVerifyOn: spends, two hundred: one request a name said
+	 which accounts exist (Bugs07 NET-6).  Refused here, every such login
+	 costs the same verify whoever it names, and the database is asked
+	 nothing, for any name."
 	| rec stored |
 	request db isNil ifTrue: [^nil].
+	password isString ifFalse: [self spendAVerifyOn: password. ^nil].
 	rec := request db
 		fetchOne: 'select user_id, user_password from users where user_name = ? and user_active = ''Y'''
 		with: (Array with: username).
