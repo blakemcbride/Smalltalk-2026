@@ -32,6 +32,7 @@
 #include "source.h"
 #include "tonel.h"
 #include "st_port.h"
+#include "prim.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -13300,6 +13301,131 @@ test_bugs7e_net(void)
     test_dialect = ST_DIALECT_BLUE_BOOK;
 }
 
+/*
+ *  Bugs07, round 5: the interpreter's findings one process can show.
+ *  INTERP-7 needs workers and is in test_serve_faults.c (bugs7e_vm).
+ */
+static void
+test_bugs7e_vm(void)
+{
+    test_dialect = ST_DIALECT_CLOSURES;
+
+    /*
+     *  INTERP-6.  92 (Cursor class>>cursorLink:) and 94
+     *  (InputState>>primSampleInterval:) succeeded without popping their
+     *  argument: the answer was the argument and the receiver stayed in
+     *  the sender's frame, so inside an expression every later argument
+     *  moved -- with:with:with: went to 1.  131 (PosixFileDirectory>>
+     *  doPrimitive:arg1:arg2:) popped three of its four and did the same.
+     */
+    check_string("^(Cursor cursorLink: false) printString", "Cursor");
+    check_string("^[(Array with: 1 with: (Cursor cursorLink: true) with: 3) "
+                 "printString] on: Error do: [:e | e messageText]",
+                 "(1 Cursor 3 )");
+    check_string("^[(Array with: 1 with: (InputState new primSampleInterval: 5) "
+                 "with: 3) printString] on: Error do: [:e | e messageText]",
+                 "(1 an InputState 3 )");
+    check_string("^[(Array with: 1 with: (PosixFileDirectory new doPrimitive: 6 "
+                 "arg1: 'zz-bugs7e-no-such-file' arg2: nil) with: 3) printString] "
+                 "on: Error do: [:e | e messageText]",
+                 "(1 false 3 )");
+    /*
+     *  And a primitive declared on a method of another arity is refused,
+     *  so the method's body runs.  With fewer arguments than the primitive
+     *  takes, 1 added the caller's temporary to 3 and wrote the sum over
+     *  it (8, and t was gone); with more, 110 compared the two arguments
+     *  and left one behind.  1983's AltoFile declares 135, here the clock,
+     *  on a method of two arguments: its fallback raises now, where the
+     *  clock's answer replaced one slot of three.
+     */
+    check_string("SmallInteger compile: 'zzB7eZork <primitive: 1> ^#failed'. "
+                 "Object compile: 'zzB7eThrice | t | t := 5. "
+                 "^{3 zzB7eZork. t}'. "
+                 "Object compile: 'zzB7eTwo: a and: b <primitive: 110> "
+                 "^#failed'. "
+                 "^[{nil zzB7eThrice. nil zzB7eTwo: 4 and: 4. 7} printString] "
+                 "ensure: [SmallInteger removeSelector: #zzB7eZork. "
+                 "Object removeSelector: #zzB7eThrice. "
+                 "Object removeSelector: #zzB7eTwo:and:]",
+                 "((failed 5 ) failed 7 )");
+    check_string("^(Array with: 1 with: ([AltoFile new "
+                 "beSnapshotSerialNumber: 7 leaderVirtualDiskAddr: 9] "
+                 "on: Error do: [:e | #refused]) with: 3) printString",
+                 "(1 refused 3 )");
+    /*  perform: reads the count itself and still takes every count.  */
+    check_string("^{3 perform: #+ with: 4. 3 perform: #between:and: with: 1 "
+                 "with: 5. 3 perform: #abs. "
+                 "[:a :b | a + b] valueWithArguments: #(1 2)} printString",
+                 "(7 true 3 3 )");
+
+    /*
+     *  Every method this image ships that names a primitive the table
+     *  lists has the table's count, so the check refuses none of them --
+     *  except AltoFile's two, which name the Alto's own 128 and 135 and
+     *  are meant to be refused.  A method added later with a count the
+     *  table does not expect fails here rather than silently running its
+     *  fallback for ever.  Object>>tryPrimitive0 to 4 are left out: they
+     *  are the simulator's templates, whose number is a placeholder that
+     *  ContextPart>>doPrimitive:receiver:args: replaces in a copy, chosen
+     *  by the simulated method's own count.
+     */
+    {
+        static char text[131072];
+        st_oop      value;
+        const char *line;
+        unsigned    seen = 0;
+        unsigned    alto = 0;
+
+        value = evaluate(
+            "| s | s := WriteStream on: (String new: 1000). "
+            "Smalltalk allBehaviorsDo: [:c | c selectors do: [:sel | | m | "
+            "m := c compiledMethodAt: sel. m primitive > 0 ifTrue: ["
+            "s print: m primitive; space; print: m numArgs; space; "
+            "nextPutAll: c name; nextPutAll: '>>'; nextPutAll: sel; "
+            "nextPut: (Character value: 10)]]]. ^s contents");
+        ++st_test_checks;
+        if (!OM_is_present(value)) {
+            ++st_test_failures;
+            printf("  FAIL INTERP-6 the image's primitive methods: no answer\n");
+        } else {
+            OM_string_of(value, text, sizeof text);
+            for (line = text; *line; ) {
+                const char *end = strchr(line, '\n');
+                unsigned    number;
+                unsigned    count;
+                int         takes;
+                int         used = 0;
+
+                if (sscanf(line, "%u %u %n", &number, &count, &used) == 2) {
+                    takes = ST_primitive_arity(number);
+                    ++seen;
+                    if (takes < 0 || (unsigned) takes == count
+                     || strncmp(line + used, "Object>>tryPrimitive", 20) == 0) {
+                        /*  agrees, or is the simulator's template  */
+                    } else if (strncmp(line + used, "AltoFile>>", 10) == 0) {
+                        ++alto;
+                    } else {
+                        ++st_test_failures;
+                        printf("  FAIL INTERP-6 %.*s: primitive %u takes "
+                               "%d\n", end ? (int) (end - line) : 80,
+                               line, number, takes);
+                    }
+                }
+                if (!end)
+                    break;
+                line = end + 1;
+            }
+            ++st_test_checks;
+            if (seen < 200 || alto != 2) {
+                ++st_test_failures;
+                printf("  FAIL INTERP-6 primitive methods seen %u (want 200 "
+                       "or more), AltoFile mismatches %u (want 2)\n",
+                       seen, alto);
+            }
+        }
+    }
+}
+
 int
 main(void)
 {
@@ -13455,6 +13581,7 @@ main(void)
     test_bugs7e_kern();
     test_bugs7e_om();
     test_bugs7e_net();
+    test_bugs7e_vm();
 
     OM_shutdown();
     return ST_TEST_END();

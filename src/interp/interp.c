@@ -3351,6 +3351,23 @@ run_method_found(st_oop receiver, st_oop method)
     if (st_vm.primitive_index > 0) {
         ST_trace_primitive(st_vm.primitive_index);
         st_vm.success = 1;
+        /*
+         *  Only when this method supplies the arguments the primitive
+         *  takes (Bugs07 INTERP-6).  Each handler pops the count of the
+         *  method it was written for, and nothing held it to the method
+         *  actually running: a primitive declared on a method of fewer
+         *  arguments read the caller's temporary below the receiver as an
+         *  operand and popped it, one declared on a method of more left an
+         *  argument behind, and either way the sender's stack was a slot
+         *  off from there on.  The count is right here -- the header check
+         *  above has just matched it to the send -- so a mismatch is
+         *  refused as any failing primitive is, and the body runs.  The
+         *  trace above still shows the attempt, as it does for a failure.
+         */
+        if (!ST_primitive_fits(st_vm.primitive_index, st_vm.argument_count)) {
+            activate_new_method();
+            return;
+        }
 #ifdef ST_OM_MT
         (void) OM_take_table_refused();
 #endif

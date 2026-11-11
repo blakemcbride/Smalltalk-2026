@@ -299,12 +299,68 @@ test_the_1983_library(void)
     SURVEY_free(&s);
 }
 
+/*
+ *  ----------  How many arguments each one takes (Bugs07 INTERP-6)  ----------
+ *
+ *  The interpreter refuses a primitive whose method's argument count is not
+ *  the one prim.c's table lists, so a number the switch dispatches and the
+ *  table leaves out is a primitive nobody holds to its count.  The status
+ *  table is the list this file can walk: every number it says the VM
+ *  answers must have a count, and the two marks must have none.
+ */
+static void
+test_bugs7e_vm(void)
+{
+    unsigned    i;
+
+    for (i = 1; i <= 255; ++i) {
+        st_primitive_status status = ST_primitive_status_of(i, NULL);
+
+        if (status == ST_PRIM_PRESENT || status == ST_PRIM_ACCEPTED) {
+            if (ST_primitive_arity(i) == ST_PRIM_ARITY_UNKNOWN) {
+                ++st_test_failures;
+                printf("  FAIL primitive %u is answered and has no count\n", i);
+            }
+            ++st_test_checks;
+        }
+    }
+    CHECK_EQ_INT(ST_primitive_arity(198), ST_PRIM_ARITY_UNKNOWN);
+    CHECK_EQ_INT(ST_primitive_arity(199), ST_PRIM_ARITY_UNKNOWN);
+    CHECK_EQ_INT(ST_primitive_arity(21), ST_PRIM_ARITY_UNKNOWN);
+    CHECK_EQ_INT(ST_primitive_arity(300), ST_PRIM_ARITY_UNKNOWN);
+
+    /*  The ones the finding was about, and some neighbours.  */
+    CHECK_EQ_INT(ST_primitive_arity(1), 1);
+    CHECK_EQ_INT(ST_primitive_arity(62), 0);
+    CHECK_EQ_INT(ST_primitive_arity(92), 1);
+    CHECK_EQ_INT(ST_primitive_arity(94), 1);
+    CHECK_EQ_INT(ST_primitive_arity(131), 3);
+    CHECK_EQ_INT(ST_primitive_arity(135), 0);
+    CHECK_EQ_INT(ST_primitive_arity(228), 5);
+    CHECK_EQ_INT(ST_primitive_arity(242), 0);
+    CHECK_EQ_INT(ST_primitive_arity(ST_PRIMITIVE_STRING_HASH), 0);
+    CHECK_EQ_INT(ST_primitive_arity(81), ST_PRIM_ARITY_VARIES);
+    CHECK_EQ_INT(ST_primitive_arity(83), ST_PRIM_ARITY_VARIES);
+    CHECK_EQ_INT(ST_primitive_arity(132), ST_PRIM_ARITY_VARIES);
+
+    CHECK(ST_primitive_fits(1, 1));
+    CHECK(!ST_primitive_fits(1, 0));
+    CHECK(!ST_primitive_fits(1, 2));
+    CHECK(!ST_primitive_fits(135, 2));      /*  1983's AltoFile  */
+    CHECK(!ST_primitive_fits(242, 2));      /*  Pharo's 242  */
+    CHECK(ST_primitive_fits(83, 1));
+    CHECK(ST_primitive_fits(83, 4));
+    CHECK(ST_primitive_fits(21, 7));        /*  absent: it fails anyway  */
+    CHECK(ST_primitive_fits(300, 0));
+}
+
 int
 main(void)
 {
     ST_TEST_BEGIN("primitives");
 
     test_the_four_answers();
+    test_bugs7e_vm();
     test_the_report_counts_what_source_asks_for();
     test_a_named_primitive_is_not_just_117();
     test_class_side_methods_are_labelled();

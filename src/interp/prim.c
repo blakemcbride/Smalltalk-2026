@@ -3451,7 +3451,7 @@ primitive_directory_command(void)
         free(names);
         if (failed)
             return 0;
-        ST_pop_n(3);
+        ST_pop_n(4);                /*  see the end of this function  */
         ST_push(array);
         return 1;
     }
@@ -3496,7 +3496,16 @@ primitive_directory_command(void)
     default:
         return 0;
     }
-    ST_pop_n(3);
+    /*
+     *  The receiver and THREE arguments: doPrimitive:arg1:arg2: is a
+     *  three-argument method.  This popped three, so the answer took the
+     *  code's slot and the PosixFileDirectory stayed behind it in the
+     *  sender's frame -- harmless where the send was a statement or a
+     *  return, and a shifted argument everywhere else: `Array with: 1
+     *  with: (aDir doPrimitive: 6 arg1: 'x' arg2: nil) with: 3' sent
+     *  with:with:with: to 1 (found with Bugs07 INTERP-6).
+     */
+    ST_pop_n(4);
     ST_push(answer);
     return 1;
 }
@@ -5831,14 +5840,19 @@ primitive_utc_microsecond_clock(void)
  *
  *  Numbers matter here, and the range had to be chosen twice.  The plan
  *  reserved 240-245; Pharo turned out to use 240 and 242 for its clocks,
- *  249 for a bulk become: and 254 for VM parameters, so ported source
- *  names four of them and this system may not.  What is left in the top
- *  block, after Pharo and after 246-248 and 250-251 which are already
- *  ours, was written down once as 241, 243, 244, 245, 252, 253 and 255 and
- *  has drifted since: 241 and 243-248 and 250-253 are all in use now, and
- *  255 goes to Float>>printString below.  That leaves 249 and 254, which
- *  Pharo names, and nothing else.  A list of free numbers in a comment is a
- *  list that goes stale; the switch below is the only authority.
+ *  249 for a bulk become: and 254 for VM parameters.  This system took all
+ *  four in the end, two of them for something else: 240 is the UTC
+ *  microsecond clock, as in Pharo; 242 is InputSensor>>wheelDelta, where
+ *  Pharo's is the two-argument signal:atUTCMicroseconds:; 249 is the bulk
+ *  become:, elementsForwardIdentityTo:; and 254 is FileStream
+ *  nativeLineEnd, where Pharo's is vmParameterAt:.  241, 243-248 and
+ *  250-253 are this system's own, and 255 is Float>>printString below, so
+ *  no number in the top block is free.  Ported source that names 242 or
+ *  254 in Pharo's sense reaches a primitive that means something else
+ *  here; the argument-count table after the dispatch switch refuses it
+ *  when the counts differ, so the method's own body runs (Bugs07
+ *  INTERP-6).  A list of numbers in a comment is a list that goes stale;
+ *  the switch is the only authority.
  *
  *  The header gives the primitive index eight bits, so there is nowhere
  *  else to go: every number this VM will ever have is below 256, and the
@@ -7535,9 +7549,19 @@ ST_primitive_dispatch(unsigned index)
     case 89:  return 1;         /*  flushCache: we keep no method cache yet  */
     case 90:  return primitive_mouse_point();
     case 91:  return primitive_cursor_loc_put();
-    case 92:  return 1;         /*  cursorLink:                              */
+    /*
+     *  92 and 94 succeed and do nothing -- the host owns the pointer and
+     *  samples it -- but each is a ONE-argument method, so doing nothing
+     *  still means popping the argument and answering the receiver, as a
+     *  1983 method with no explicit return does.  They returned 1 with the
+     *  stack untouched, so the answer was the ARGUMENT and the receiver
+     *  stayed behind as an extra slot in the sender's frame:
+     *  `Array with: 1 with: (Cursor cursorLink: false) with: 3' sent
+     *  with:with:with: to 1 (Bugs07 INTERP-6).
+     */
+    case 92:  ST_pop_n(1); return 1;    /*  cursorLink:                  */
     case 93:  return primitive_input_semaphore();
-    case 94:  return 1;         /*  sampleInterval:                          */
+    case 94:  ST_pop_n(1); return 1;    /*  primSampleInterval:          */
     case 95:  return primitive_input_word();
     case 96:  return primitive_copy_bits();
     case 98:  return primitive_time_words_into();
@@ -7660,7 +7684,9 @@ ST_primitive_dispatch(unsigned index)
     /*  Told apart by arity; see primitive_last_error.  */
     case 132: return st_vm.argument_count == 0
                      ? primitive_last_error()
-                     : primitive_inst_vars_include();
+                     : st_vm.argument_count == 1
+                     ? primitive_inst_vars_include()
+                     : 0;
     case 97:  return primitive_snapshot();
     case 128: return primitive_be_snapshot_file();
     case 130: return primitive_file_command();
@@ -7698,6 +7724,133 @@ ST_primitive_dispatch(unsigned index)
     case 111: return primitive_class();
     default:  return 0;
     }
+}
+
+/*
+ *  ----------  How many arguments each primitive takes  ----------
+ *
+ *  A primitive that succeeds pops the receiver and its arguments and pushes
+ *  one answer (prim.h), and every handler above pops a FIXED count: the
+ *  count of the method it was written for.  Nothing compared that count
+ *  with the method actually running it, so a primitive named by a method
+ *  of another arity reached past the arguments it was given --
+ *  `SmallInteger>>zork <primitive: 1>' sent as `t := 5. ^3 zork' added the
+ *  caller's temporary t to 3, answered 8 and wrote it over t -- or left an
+ *  argument behind in the sender's frame, where it shifted every argument
+ *  pushed after it (Bugs07 INTERP-6).  stack_depth_ok catches only a read
+ *  below the floor of the sender's frame, and above that floor lie the
+ *  sender's own temporaries -- a wrong answer, not a refused one.
+ *
+ *  That is not only a porting slip.  Ported Pharo source names numbers
+ *  this VM gives other meanings -- Pharo's 242 is the two-argument
+ *  signal:atUTCMicroseconds: and here is wheelDelta; its 100 is
+ *  perform:withArguments:inSuperclass: and here is signal:atMilliseconds:;
+ *  its mirror primitives (Context>>objectClass:, object:instVarAt: and
+ *  kin) send 111, 73 and others with the object as one argument more --
+ *  and the 1983 sources declare the Alto's own 128 and 135 on AltoFile
+ *  methods of five and two arguments, which here are beSnapshotFile and
+ *  the millisecond clock.
+ *
+ *  So run_method_found asks ST_primitive_fits before it dispatches, and
+ *  the primitive FAILS when the method's argument count is not the one
+ *  listed here: the method's Smalltalk body runs, exactly as for any other
+ *  refusal -- a clean fallback where there was a stack shift.  The table
+ *  holds the count plus one, so that a number left out reads 0 and is not
+ *  checked.  Every number the switch above dispatches is listed, and
+ *  test_primitives checks that every number the status table below claims
+ *  is; a number listed twice is an -Woverride-init warning (-Wextra).
+ *  PRIMITIVE_ARGS_VARY marks the three that read the count themselves: 81
+ *  (BlockContext value, value:, ...), 83 (perform:, perform:with:, ...)
+ *  and 132 (lastError or instVarsInclude:, told apart by it).
+ *
+ *  The special-selector bytecodes do not come this way: they run 1-18,
+ *  110 and 111 on a stack the bytecode itself laid out, which has the
+ *  count those take by construction.
+ */
+#define TAKES(n)            ((unsigned char) ((n) + 1))
+#define PRIMITIVE_ARGS_VARY ((unsigned char) 0xFF)
+
+static const unsigned char primitive_takes[256] = {
+    /*  None: the receiver alone.  */
+    [ 40] = TAKES(0), [ 51] = TAKES(0), [ 52] = TAKES(0), [ 53] = TAKES(0),
+    [ 55] = TAKES(0), [ 56] = TAKES(0), [ 57] = TAKES(0), [ 58] = TAKES(0),
+    [ 59] = TAKES(0), [ 62] = TAKES(0), [ 70] = TAKES(0), [ 75] = TAKES(0),
+    [ 77] = TAKES(0), [ 78] = TAKES(0), [ 85] = TAKES(0), [ 86] = TAKES(0),
+    [ 87] = TAKES(0), [ 88] = TAKES(0), [ 89] = TAKES(0), [ 90] = TAKES(0),
+    [ 95] = TAKES(0), [ 96] = TAKES(0), [ 97] = TAKES(0), [101] = TAKES(0),
+    [102] = TAKES(0), [111] = TAKES(0), [112] = TAKES(0), [113] = TAKES(0),
+    [115] = TAKES(0), [128] = TAKES(0), [135] = TAKES(0), [148] = TAKES(0),
+    [159] = TAKES(0), [163] = TAKES(0), [167] = TAKES(0), [171] = TAKES(0),
+    [183] = TAKES(0), [197] = TAKES(0), [201] = TAKES(0), [207] = TAKES(0),
+    [219] = TAKES(0), [221] = TAKES(0), [224] = TAKES(0), [225] = TAKES(0),
+    [226] = TAKES(0), [227] = TAKES(0), [232] = TAKES(0), [233] = TAKES(0),
+    [239] = TAKES(0), [240] = TAKES(0), [241] = TAKES(0), [242] = TAKES(0),
+    [243] = TAKES(0), [244] = TAKES(0), [250] = TAKES(0), [251] = TAKES(0),
+    [254] = TAKES(0), [255] = TAKES(0),
+    [ST_PRIMITIVE_STRING_HASH] = TAKES(0),
+
+    /*  One.  */
+    [  1] = TAKES(1), [  2] = TAKES(1), [  3] = TAKES(1), [  4] = TAKES(1),
+    [  5] = TAKES(1), [  6] = TAKES(1), [  7] = TAKES(1), [  8] = TAKES(1),
+    [  9] = TAKES(1), [ 10] = TAKES(1), [ 11] = TAKES(1), [ 12] = TAKES(1),
+    [ 13] = TAKES(1), [ 14] = TAKES(1), [ 15] = TAKES(1), [ 16] = TAKES(1),
+    [ 17] = TAKES(1), [ 18] = TAKES(1), [ 41] = TAKES(1), [ 42] = TAKES(1),
+    [ 43] = TAKES(1), [ 44] = TAKES(1), [ 45] = TAKES(1), [ 46] = TAKES(1),
+    [ 47] = TAKES(1), [ 48] = TAKES(1), [ 49] = TAKES(1), [ 50] = TAKES(1),
+    [ 54] = TAKES(1), [ 60] = TAKES(1), [ 63] = TAKES(1), [ 68] = TAKES(1),
+    [ 71] = TAKES(1), [ 72] = TAKES(1), [ 73] = TAKES(1), [ 80] = TAKES(1),
+    [ 82] = TAKES(1), [ 91] = TAKES(1), [ 92] = TAKES(1), [ 93] = TAKES(1),
+    [ 94] = TAKES(1), [ 98] = TAKES(1), [ 99] = TAKES(1), [110] = TAKES(1),
+    [133] = TAKES(1), [164] = TAKES(1), [168] = TAKES(1), [169] = TAKES(1),
+    [170] = TAKES(1), [173] = TAKES(1), [184] = TAKES(1), [195] = TAKES(1),
+    [202] = TAKES(1), [206] = TAKES(1), [222] = TAKES(1), [229] = TAKES(1),
+    [230] = TAKES(1), [231] = TAKES(1), [235] = TAKES(1), [236] = TAKES(1),
+    [237] = TAKES(1), [246] = TAKES(1), [247] = TAKES(1), [248] = TAKES(1),
+    [249] = TAKES(1), [252] = TAKES(1), [253] = TAKES(1),
+
+    /*  Two.  */
+    [ 61] = TAKES(2), [ 64] = TAKES(2), [ 69] = TAKES(2), [ 74] = TAKES(2),
+    [ 79] = TAKES(2), [ 84] = TAKES(2), [100] = TAKES(2), [136] = TAKES(2),
+    [174] = TAKES(2), [188] = TAKES(2), [203] = TAKES(2), [210] = TAKES(2),
+    [220] = TAKES(2),
+
+    /*  Three, four and five.  */
+    [116] = TAKES(3), [130] = TAKES(3), [131] = TAKES(3), [204] = TAKES(3),
+    [245] = TAKES(3),
+    [105] = TAKES(4), [129] = TAKES(4), [205] = TAKES(4), [208] = TAKES(4),
+    [209] = TAKES(4), [234] = TAKES(4),
+    [228] = TAKES(5),
+
+    /*  Told apart at run time.  */
+    [ 81] = PRIMITIVE_ARGS_VARY, [ 83] = PRIMITIVE_ARGS_VARY,
+    [132] = PRIMITIVE_ARGS_VARY
+};
+
+int
+ST_primitive_fits(unsigned index, unsigned argument_count)
+{
+    unsigned char   takes;
+
+    if (index >= sizeof primitive_takes)
+        return 1;
+    takes = primitive_takes[index];
+    return takes == 0 || takes == PRIMITIVE_ARGS_VARY
+        || argument_count + 1 == takes;
+}
+
+int
+ST_primitive_arity(unsigned index)
+{
+    unsigned char   takes;
+
+    if (index >= sizeof primitive_takes)
+        return ST_PRIM_ARITY_UNKNOWN;
+    takes = primitive_takes[index];
+    if (takes == 0)
+        return ST_PRIM_ARITY_UNKNOWN;
+    if (takes == PRIMITIVE_ARGS_VARY)
+        return ST_PRIM_ARITY_VARIES;
+    return takes - 1;
 }
 
 /*

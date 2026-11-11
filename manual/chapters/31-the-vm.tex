@@ -97,6 +97,14 @@ Smalltalk body never runs, and if it fails the body runs as a fallback. That
 fallback is why \ct{SmallInteger>>+} can hand off to \ct{LargePositiveInteger}
 arithmetic without the VM knowing anything about large integers.
 
+Each primitive takes a fixed number of arguments, and it also fails when the
+method declaring it takes a different number: \ct{<primitive: 1>} on a unary
+method runs that method's body rather than adding something to the receiver.
+That makes a number declared on a method of the wrong shape---a slip, or a
+number Pharo uses for another operation---a clean fallback. Three primitives
+read the count themselves and take any: 81 (\ct{BlockContext>>value} and its
+kin), 83 (\ct{perform:} and its kin) and 132.
+
 Two primitives in this system are not operations at all but \emph{labels}: 198
 and 199 mark unwind and handler frames, and nothing implements them, so they
 always fail and the Smalltalk body runs. Signalling finds them by walking the

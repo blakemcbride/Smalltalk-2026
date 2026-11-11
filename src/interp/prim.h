@@ -77,6 +77,23 @@ typedef enum {
 st_primitive_status ST_primitive_status_of(unsigned index, const char **name);
 
 /*
+ *  Does a method of argument_count arguments supply what primitive index
+ *  consumes?  The interpreter asks before every numbered primitive and runs
+ *  the method's Smalltalk body when the answer is no (Bugs07 INTERP-6; the
+ *  table in prim.c says why).  A number this VM does not dispatch fits any
+ *  method: it fails anyway.
+ *
+ *  ST_primitive_arity answers the count itself, for tests and reports:
+ *  ST_PRIM_ARITY_VARIES for the three that read it at run time (81, 83,
+ *  132), ST_PRIM_ARITY_UNKNOWN for a number the table does not list.
+ */
+#define ST_PRIM_ARITY_VARIES    (-1)
+#define ST_PRIM_ARITY_UNKNOWN   (-2)
+
+int     ST_primitive_fits(unsigned index, unsigned argument_count);
+int     ST_primitive_arity(unsigned index);
+
+/*
  *  String>>hash: the number, and the function behind it.
  *
  *  Exported because the bootstrap places symbols in the library's own
